@@ -56,7 +56,9 @@ def pinned_file_lines(path: str) -> list[str] | None:
     if path not in _file_cache:
         proc = subprocess.run(
             ["git", "show", f"{PIN}:{path}"],
-            cwd=REPO_ROOT, capture_output=True, text=True,
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
         )
         _file_cache[path] = proc.stdout.splitlines() if proc.returncode == 0 else None
     return _file_cache[path]
@@ -156,7 +158,7 @@ def audit_row(row: dict) -> dict:
             lines = pinned_file_lines(path) or []
             for lo, hi in ranges:
                 if hi <= len(lines):
-                    windows.append("\n".join(lines[lo - 1:hi]))
+                    windows.append("\n".join(lines[lo - 1 : hi]))
     record["paths_checked"] = len(paths)
     record["symbol_class"] = classify_symbol(ev.get("symbol", ""), windows)
     record["test_class"] = classify_test(ev.get("test", ""))
@@ -167,7 +169,9 @@ def audit_row(row: dict) -> dict:
 
 
 def load_rows() -> list[dict]:
-    return [json.loads(l) for l in CROSSWALK_JSONL.read_text().splitlines() if l.strip()]
+    return [
+        json.loads(l) for l in CROSSWALK_JSONL.read_text().splitlines() if l.strip()
+    ]
 
 
 # Spot checks named by the CEN-02 done-check: pinned artifacts whose
@@ -187,7 +191,9 @@ class TestCensusEvidence(unittest.TestCase):
         """The CEN-02 oracle: counterexamples cannot upgrade a claim."""
         target = "work.note.edit"
         exact = {
-            "symbol": target, "kind": "source", "mock": False,
+            "symbol": target,
+            "kind": "source",
+            "mock": False,
             "symbol_class": "exact",
         }
         # Positive control: exact-symbol source evidence supports.

@@ -17,7 +17,7 @@
 
 import type { ProjectPoolEdgeDiagnostic, ProjectPoolItem, RefKey } from "./model.ts";
 import { isValidRef } from "./model.ts";
-import { buildEpicRollups } from "./epics.ts";
+import { buildEpicRollups, uniqueEpicItemsByRef, uniqueProjectItemsByRef } from "./epics.ts";
 import { effortWeight, modeOf } from "./weights.ts";
 
 export const EPIC_GRAPH_DEFAULT_CAP = 120;
@@ -65,8 +65,7 @@ export interface EpicSelectorEntry {
 export function epicSelector(pool: readonly ProjectPoolItem[]): EpicSelectorEntry[] {
   const rollups = buildEpicRollups(pool);
   const entries: EpicSelectorEntry[] = [];
-  for (const item of pool) {
-    if (item.kind !== "Epic") continue;
+  for (const item of uniqueEpicItemsByRef(pool)) {
     const rollup = rollups.get(item.ref);
     if (!rollup || rollup.total === 0) continue;
     entries.push({
@@ -271,8 +270,12 @@ function stronglyConnectedComponents(
 }
 
 function cycleComponents(refs: Iterable<RefKey>, edges: readonly EpicGraphEdge[], kind: EpicGraphEdgeType): RefKey[][] {
-  const selfLoops = new Set(edges.filter((edge) => edge.type === kind && edge.from === edge.to).map((edge) => edge.from));
-  return stronglyConnectedComponents(refs, edges, kind).filter((component) => component.length > 1 || selfLoops.has(component[0]!));
+  const selfLoops = new Set(
+    edges.filter((edge) => edge.type === kind && edge.from === edge.to).map((edge) => edge.from),
+  );
+  return stronglyConnectedComponents(refs, edges, kind).filter(
+    (component) => component.length > 1 || selfLoops.has(component[0]!),
+  );
 }
 
 function safeRefs(value: unknown): RefKey[] {
@@ -302,12 +305,14 @@ export function epicGraph(
   epicRef: RefKey,
   cap: number = EPIC_GRAPH_DEFAULT_CAP,
 ): EpicGraph {
-  const byRef = new Map(pool.map((p) => [p.ref, p]));
-  const epicItem = byRef.get(epicRef);
-  if (!epicItem || epicItem.kind !== "Epic") {
+  // Preserve raw board memberships upstream, but graph each canonical issue once.
+  const uniquePool = uniqueProjectItemsByRef(pool);
+  const byRef = new Map(uniquePool.map((p) => [p.ref, p]));
+  const epicItem = pool.find((p) => p.ref === epicRef && p.kind === "Epic");
+  if (!epicItem) {
     return unavailable(`epic ${epicRef} is not in this pool, so its dependency graph is unavailable`);
   }
-  const members = pool.filter((p) => p.epicRef === epicRef);
+  const members = uniqueProjectItemsByRef(uniquePool.filter((p) => p.epicRef === epicRef));
   if (members.length === 0) {
     return unavailable(`no pool items belong to epic ${epicRef} yet — it is not yet graphed`);
   }
@@ -374,7 +379,7 @@ export function epicGraph(
   // but a deeper cycle that affects this epic remains named and linked.
   const poolDependencyEdges: EpicGraphEdge[] = [];
   const poolHierarchyEdges: EpicGraphEdge[] = [];
-  for (const item of pool) {
+  for (const item of uniquePool) {
     if (isValidRef(item.parentRef) && byRef.has(item.parentRef)) {
       poolHierarchyEdges.push({ from: item.parentRef, to: item.ref, type: "hierarchy" });
     }
@@ -399,13 +404,19 @@ export function epicGraph(
   const sccDependencyEdges = [...poolDependencyEdges];
   for (const item of pool) {
     for (const blocker of safeRefs(item.blockedBy)) {
-      if (externalDependencyRefs.has(blocker)) sccDependencyEdges.push({ from: item.ref, to: blocker, type: "dependency" });
+      if (externalDependencyRefs.has(blocker))
+        sccDependencyEdges.push({ from: item.ref, to: blocker, type: "dependency" });
     }
     for (const blocked of safeRefs(item.blocks)) {
-      if (externalDependencyRefs.has(blocked)) sccDependencyEdges.push({ from: blocked, to: item.ref, type: "dependency" });
+      if (externalDependencyRefs.has(blocked))
+        sccDependencyEdges.push({ from: blocked, to: item.ref, type: "dependency" });
     }
   }
-  const fullDependencyCycles = cycleComponents([...byRef.keys(), ...externalDependencyRefs], sccDependencyEdges, "dependency");
+  const fullDependencyCycles = cycleComponents(
+    [...byRef.keys(), ...externalDependencyRefs],
+    sccDependencyEdges,
+    "dependency",
+  );
   const cyclicDependencyRefs = new Set(fullDependencyCycles.flat());
   const dependencyChildren = new Map<RefKey, RefKey[]>();
   for (const edge of sccDependencyEdges) {
@@ -435,7 +446,8 @@ export function epicGraph(
   const ancestorStack = [...allRefs];
   while (ancestorStack.length) {
     const item = byRef.get(ancestorStack.pop()!);
-    if (!item || !isValidRef(item.parentRef) || !byRef.has(item.parentRef) || hierarchyRelevantRefs.has(item.parentRef)) continue;
+    if (!item || !isValidRef(item.parentRef) || !byRef.has(item.parentRef) || hierarchyRelevantRefs.has(item.parentRef))
+      continue;
     hierarchyRelevantRefs.add(item.parentRef);
     ancestorStack.push(item.parentRef);
   }
@@ -462,7 +474,10 @@ export function epicGraph(
     if (item.parentRef !== undefined && !isValidRef(item.parentRef)) {
       addDiagnostic(item.ref, { relation: "parent", state: "malformed", target: String(item.parentRef) });
     }
-    for (const [relation, raw] of [["blockedBy", item.blockedBy], ["blocks", item.blocks]] as const) {
+    for (const [relation, raw] of [
+      ["blockedBy", item.blockedBy],
+      ["blocks", item.blocks],
+    ] as const) {
       if (raw === undefined) continue;
       if (!Array.isArray(raw)) {
         addDiagnostic(item.ref, { relation, state: "unavailable", target: null });
@@ -473,8 +488,12 @@ export function epicGraph(
       }
     }
   }
-  diagnosticRows.sort((a, b) =>
-    a.sourceRef.localeCompare(b.sourceRef) || a.relation.localeCompare(b.relation) || a.state.localeCompare(b.state) || (a.target ?? "").localeCompare(b.target ?? ""),
+  diagnosticRows.sort(
+    (a, b) =>
+      a.sourceRef.localeCompare(b.sourceRef) ||
+      a.relation.localeCompare(b.relation) ||
+      a.state.localeCompare(b.state) ||
+      (a.target ?? "").localeCompare(b.target ?? ""),
   );
 
   // Lay out the hierarchy condensation graph. A cycle is one layout group,
@@ -509,7 +528,9 @@ export function epicGraph(
     for (const ref of hierarchyComponents[index]!) {
       if (shownRefs.has(ref)) layout.set(ref, { depth, row: layout.size });
     }
-    for (const child of [...componentChildren.get(index)!].sort((a, b) => byRefOrder(componentKey(a), componentKey(b)))) {
+    for (const child of [...componentChildren.get(index)!].sort((a, b) =>
+      byRefOrder(componentKey(a), componentKey(b)),
+    )) {
       visitComponent(child, depth + 1);
     }
   };

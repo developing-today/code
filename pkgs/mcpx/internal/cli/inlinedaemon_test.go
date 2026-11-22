@@ -256,3 +256,26 @@ func TestInProcessTransportRoundTrip(t *testing.T) {
 		t.Errorf("body = %q, want the echoed request body", body)
 	}
 }
+
+// daemon.inline=always (#1868 point 2): the ladder skips the socket and
+// spawn rungs and runs in-process, recording both skips.
+func TestConnectForceInlineSkipsSocketAndSpawn(t *testing.T) {
+	a := inlineDaemonApp(t)
+	defer a.CloseInline()
+	_, ladder, err := a.Connect(context.Background(), ConnectOptions{ForceInline: true})
+	if err != nil {
+		t.Fatalf("Connect(ForceInline): %v", err)
+	}
+	if ladder.Chosen != "inline" {
+		t.Fatalf("Chosen = %q, want inline; attempts: %+v", ladder.Chosen, ladder.Attempts)
+	}
+	var skipped []string
+	for _, at := range ladder.Attempts {
+		if strings.Contains(at.Detail, "skipped by daemon.inline=always") {
+			skipped = append(skipped, at.How)
+		}
+	}
+	if len(skipped) != 2 {
+		t.Fatalf("skipped rungs = %v, want socket and spawn; attempts: %+v", skipped, ladder.Attempts)
+	}
+}

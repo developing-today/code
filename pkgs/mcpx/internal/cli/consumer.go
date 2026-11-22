@@ -91,6 +91,10 @@ func (c *Client) SaveRecipe(ctx context.Context, name, source string, overwrite 
 		map[string]any{"source": source, "overwrite": overwrite})
 }
 
+func (c *Client) RemoveRecipe(ctx context.Context, name string) (json.RawMessage, error) {
+	return c.do(ctx, "DELETE", "/v1/recipes/"+url.PathEscape(name), nil)
+}
+
 // Resolution is the answer shape recipe_run and intent share.
 type Resolution struct {
 	Autonomy     string                `json:"autonomy"`
@@ -371,6 +375,20 @@ func (a *App) CmdRecipes(ctx context.Context, args []string) error {
 		fmt.Printf("Saved %s\nRun it with: mcpx recipes run %s\n", doc.Path, fs.Arg(0))
 		return nil
 
+	case "remove":
+		if fs.NArg() != 1 {
+			return errors.New("usage: mcpx recipes remove <name>")
+		}
+		raw, rerr := c.RemoveRecipe(ctx, fs.Arg(0))
+		if rerr != nil {
+			return rerr
+		}
+		if a.JSON {
+			return a.out(json.RawMessage(raw))
+		}
+		fmt.Printf("Removed recipe %s\n", fs.Arg(0))
+		return nil
+
 	case "run":
 		if fs.NArg() == 0 {
 			return errors.New("usage: mcpx recipes run <name> [key=value...]")
@@ -389,7 +407,7 @@ func (a *App) CmdRecipes(ctx context.Context, args []string) error {
 		}
 		return a.showResolution(res)
 	}
-	return fmt.Errorf("unknown subcommand %q; try list, show, match, save or run", sub)
+	return fmt.Errorf("unknown subcommand %q; try list, show, match, save, remove or run", sub)
 }
 
 func placeholderNames(r recipes.Recipe) string {

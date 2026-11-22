@@ -46,7 +46,7 @@ order — the verdict note (gap list first) is what the session acts on.
 - Prior gap lists this pass must shrink: <links to pass-0 … pass-(n-1) gap lists>
 - Fresh vs iterating: <`fresh session` (default) | `iterate in place`>
 - Exception or explicit none: <named exception with reason, or `none applies —
-  fresh session per the default`>
+fresh session per the default`>
 
 ## 6. Route floor from the verdict + pool measurement gate
 

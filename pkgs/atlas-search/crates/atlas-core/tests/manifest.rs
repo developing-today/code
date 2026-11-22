@@ -86,27 +86,61 @@ fn builtin_manifest_expresses_todays_surface() {
     m.validate().expect("built-in manifest validates");
     assert_eq!(m.surface_identity(false), "builtin");
     assert!(m.surface_identity(true).starts_with("manifest v1:"));
-    assert_eq!(m.compute_hash(), m.content_hash, "hash is stable and self-consistent");
+    assert_eq!(
+        m.compute_hash(),
+        m.content_hash,
+        "hash is stable and self-consistent"
+    );
 }
 
 #[test]
 fn validation_rejects_what_a_manifest_can_never_do() {
     // §6.1: no sensitivity keys exist in the schema — naming one is an error.
-    let m = manifest_with(vec![dim("sensitivity", Shape::ScalarIn, Semantics::Exact, Some("kind"))]);
+    let m = manifest_with(vec![dim(
+        "sensitivity",
+        Shape::ScalarIn,
+        Semantics::Exact,
+        Some("kind"),
+    )]);
     assert!(m.validate().is_err());
-    let m = manifest_with(vec![dim("sens_tier", Shape::ScalarIn, Semantics::Exact, Some("kind"))]);
+    let m = manifest_with(vec![dim(
+        "sens_tier",
+        Shape::ScalarIn,
+        Semantics::Exact,
+        Some("kind"),
+    )]);
     assert!(m.validate().is_err());
     // §6.2: column shapes bind only to the code-known allowlist.
-    let m = manifest_with(vec![dim("secret_col", Shape::ScalarIn, Semantics::Exact, Some("password"))]);
+    let m = manifest_with(vec![dim(
+        "secret_col",
+        Shape::ScalarIn,
+        Semantics::Exact,
+        Some("password"),
+    )]);
     assert!(m.validate().is_err());
     // §6.2: a generic_list key may not collide with a built-in dimension.
-    let m = manifest_with(vec![dim("topics", Shape::GenericList, Semantics::Exact, None)]);
+    let m = manifest_with(vec![dim(
+        "topics",
+        Shape::GenericList,
+        Semantics::Exact,
+        None,
+    )]);
     assert!(m.validate().is_err());
     // §6.2: generic keys follow the code-side pattern.
-    let m = manifest_with(vec![dim("Source App!", Shape::GenericList, Semantics::Exact, None)]);
+    let m = manifest_with(vec![dim(
+        "Source App!",
+        Shape::GenericList,
+        Semantics::Exact,
+        None,
+    )]);
     assert!(m.validate().is_err());
     // generic_list binds the store, never a column.
-    let m = manifest_with(vec![dim("source_app", Shape::GenericList, Semantics::Exact, Some("kind"))]);
+    let m = manifest_with(vec![dim(
+        "source_app",
+        Shape::GenericList,
+        Semantics::Exact,
+        Some("kind"),
+    )]);
     assert!(m.validate().is_err());
     // duplicates are rejected.
     let m = manifest_with(vec![
@@ -115,7 +149,12 @@ fn validation_rejects_what_a_manifest_can_never_do() {
     ]);
     assert!(m.validate().is_err());
     // a well-formed generic_list dimension is accepted.
-    let m = manifest_with(vec![dim("source_app", Shape::GenericList, Semantics::Exact, None)]);
+    let m = manifest_with(vec![dim(
+        "source_app",
+        Shape::GenericList,
+        Semantics::Exact,
+        None,
+    )]);
     m.validate().expect("generic_list dimension validates");
 }
 
@@ -132,11 +171,21 @@ fn loader_absent_table_is_builtin_without_warning() {
 fn loader_reads_a_valid_manifest_including_generic_dimensions() {
     let con = Connection::open_in_memory().expect("db");
     let mut dims = builtin_manifest().dimensions;
-    dims.push(dim("source_app", Shape::GenericList, Semantics::Exact, None));
+    dims.push(dim(
+        "source_app",
+        Shape::GenericList,
+        Semantics::Exact,
+        None,
+    ));
     let stored = manifest_with(dims);
     write_manifest_table(&con, &stored);
     let loaded = load_manifest(&con, &["main"]);
-    assert_eq!(loaded.source, ManifestSource::Table { schema: "main".to_string() });
+    assert_eq!(
+        loaded.source,
+        ManifestSource::Table {
+            schema: "main".to_string()
+        }
+    );
     assert!(loaded.warning.is_none());
     assert_eq!(loaded.manifest, stored);
     assert!(loaded.describe().contains("classification_manifest (main)"));
@@ -189,11 +238,8 @@ fn loader_falls_back_on_unknown_shape_and_sensitivity_rows() {
 fn generic_list_exact_matching_is_decoded_element_equality() {
     let con = Connection::open_in_memory().expect("db");
     con.execute_batch(GENERIC_LABELS_DDL).expect("store ddl");
-    con.execute(
-        "CREATE TABLE sessions (id TEXT PRIMARY KEY)",
-        [],
-    )
-    .expect("sessions");
+    con.execute("CREATE TABLE sessions (id TEXT PRIMARY KEY)", [])
+        .expect("sessions");
     con.execute_batch(
         "INSERT INTO sessions VALUES ('s1'), ('s2');
          INSERT INTO generic_labels VALUES ('s1', 'topics', '[\"a\", \"b\"]');
@@ -206,7 +252,9 @@ fn generic_list_exact_matching_is_decoded_element_equality() {
         let sql = format!("SELECT s.id FROM sessions s WHERE {frag} ORDER BY s.id");
         let mut stmt = con.prepare(&sql).expect("prepare");
         let rows = stmt
-            .query_map(rusqlite::params_from_iter(params.iter()), |r| r.get::<_, String>(0))
+            .query_map(rusqlite::params_from_iter(params.iter()), |r| {
+                r.get::<_, String>(0)
+            })
             .expect("query");
         rows.map(|r| r.expect("row")).collect()
     };
@@ -215,14 +263,18 @@ fn generic_list_exact_matching_is_decoded_element_equality() {
     // §5's boundary case: the value a", "b must never line up with the
     // two elements "a", "b".
     assert!(run(&["a\", \"b".to_string()]).is_empty());
-    assert_eq!(run(&["rust".to_string(), "a".to_string()]), vec!["s1", "s2"]);
+    assert_eq!(
+        run(&["rust".to_string(), "a".to_string()]),
+        vec!["s1", "s2"]
+    );
 }
 
 #[test]
 fn generic_list_pattern_matching_translates_globs() {
     let con = Connection::open_in_memory().expect("db");
     con.execute_batch(GENERIC_LABELS_DDL).expect("store ddl");
-    con.execute("CREATE TABLE sessions (id TEXT PRIMARY KEY)", []).expect("sessions");
+    con.execute("CREATE TABLE sessions (id TEXT PRIMARY KEY)", [])
+        .expect("sessions");
     con.execute_batch(
         "INSERT INTO sessions VALUES ('s1'), ('s2'), ('s3');
          INSERT INTO generic_labels VALUES ('s1', 'topics', '[\"rust\"]');
@@ -233,15 +285,21 @@ fn generic_list_pattern_matching_translates_globs() {
     let run = |values: &[String]| -> usize {
         let (frag, params) = generic_list_filter("topics", Semantics::Pattern, values, "s.id");
         let sql = format!("SELECT COUNT(*) FROM sessions s WHERE {frag}");
-        con.query_row(&sql, rusqlite::params_from_iter(params.iter()), |r| r.get::<_, i64>(0))
-            .expect("query") as usize
+        con.query_row(&sql, rusqlite::params_from_iter(params.iter()), |r| {
+            r.get::<_, i64>(0)
+        })
+        .expect("query") as usize
     };
     assert_eq!(run(&["ru*".to_string()]), 1);
     assert_eq!(run(&["go*".to_string()]), 0);
     // §5: LIKE metacharacters in the glob's literal text stay literal —
     // "a%b" names the one element with a literal %, never "axb".
     assert_eq!(run(&["a%b".to_string()]), 1);
-    assert_eq!(run(&["a_b".to_string()]), 0, "an underscore in the glob is a literal underscore");
+    assert_eq!(
+        run(&["a_b".to_string()]),
+        0,
+        "an underscore in the glob is a literal underscore"
+    );
     // …while the glob's own wildcards work: ? is exactly one character.
     assert_eq!(run(&["a?b".to_string()]), 2);
 }

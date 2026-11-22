@@ -52,6 +52,9 @@ pub const HEADER_BYTES: usize = 13;
 /// non-DATA payloads and fit far below this.
 pub const MAX_FRAME_BODY: usize = HEADER_BYTES + 256 * 1024;
 
+/// Largest wire representation retained while an incomplete frame arrives.
+const MAX_FRAME_WIRE_BYTES: usize = 4 + MAX_FRAME_BODY;
+
 /// Initial per-stream credit window, in bytes (decision §3).
 pub const INITIAL_STREAM_CREDIT: u64 = 64 * 1024;
 
@@ -371,6 +374,7 @@ pub fn stream_id_is_initiator(stream_id: u32) -> bool {
 /// an encoded frame sequence, the decoded frames are identical.
 #[derive(Debug, Default)]
 pub struct FrameDecoder {
+    /// Bytes from a prior feed that have not yet completed one frame.
     buf: Vec<u8>,
 }
 
@@ -381,11 +385,64 @@ impl FrameDecoder {
 
     /// Append bytes and return every frame completed by them.
     pub fn feed(&mut self, bytes: &[u8]) -> Result<Vec<Frame>> {
-        self.buf.extend_from_slice(bytes);
         let mut frames = Vec::new();
-        while let Some((frame, consumed)) = Frame::decode_prefix(&self.buf)? {
-            self.buf.drain(..consumed);
+
+        // Finish a frame carried over from the prior feed. Fill only the
+        // prefix first so malformed lengths are rejected before copying an
+        // arbitrary caller-provided suffix into decoder storage.
+        let mut input = bytes;
+        if !self.buf.is_empty() {
+            if self.buf.len() < 4 {
+                let take = (4 - self.buf.len()).min(input.len());
+                self.buf.extend_from_slice(&input[..take]);
+                input = &input[take..];
+                if self.buf.len() < 4 {
+                    return Ok(frames);
+                }
+            }
+
+            // This validates the declared length as soon as all four prefix
+            // bytes are present, without requiring any body bytes.
+            let _ = Frame::decode_prefix(&self.buf)?;
+            let body_len = u32::from_be_bytes(
+                self.buf[..4]
+                    .try_into()
+                    .context("frame length prefix must be four bytes")?,
+            ) as usize;
+            let wire_len = 4 + body_len;
+            debug_assert!(wire_len <= MAX_FRAME_WIRE_BYTES);
+
+            let take = (wire_len - self.buf.len()).min(input.len());
+            self.buf.extend_from_slice(&input[..take]);
+            input = &input[take..];
+            if self.buf.len() < wire_len {
+                return Ok(frames);
+            }
+
+            let (frame, consumed) = Frame::decode_prefix(&self.buf)?
+                .context("complete buffered frame was not decoded")?;
+            debug_assert_eq!(consumed, wire_len);
             frames.push(frame);
+            self.buf.clear();
+        }
+
+        // Decode directly from the caller's slice. Only the final incomplete
+        // frame is copied into `buf`, so a batch may contain any number of
+        // valid frames without becoming an aggregate buffer limit.
+        let mut offset = 0;
+        while offset < input.len() {
+            match Frame::decode_prefix(&input[offset..])? {
+                Some((frame, consumed)) => {
+                    frames.push(frame);
+                    offset += consumed;
+                }
+                None => {
+                    let pending = &input[offset..];
+                    debug_assert!(pending.len() < MAX_FRAME_WIRE_BYTES);
+                    self.buf.extend_from_slice(pending);
+                    break;
+                }
+            }
         }
         Ok(frames)
     }
@@ -401,26 +458,52 @@ impl FrameDecoder {
 /// [`CreditWindow::try_consume`] refuses rather than going negative,
 /// and the leg's reaction to a peer that overruns is an ERROR frame
 /// with [`ErrorReason::CreditOverrun`], built by the mux slice.
+///
+/// The window is also bounded above (#8970): the relay backpressure
+/// design requires hard finite per-stream and aggregate
+/// per-connection limits, with credit returning only as bounded
+/// buffer space is released. Each window therefore carries an
+/// explicit `ceiling` set at construction from the effective
+/// configuration — the design delegates the limit to configuration,
+/// so no universal deployment limit is invented here. The built-in
+/// constructors are fixed-size windows (ceiling = the configured
+/// initial credit): a WINDOW_UPDATE can only return credit the
+/// sender has actually consumed. A deployment that negotiates a
+/// larger maximum constructs the window with that ceiling via
+/// [`CreditWindow::new`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CreditWindow {
     available: u64,
+    ceiling: u64,
 }
 
 impl CreditWindow {
-    pub fn new(initial: u64) -> Self {
-        Self { available: initial }
+    /// A window holding `initial` credit that may never hold more
+    /// than `ceiling`. A ceiling below the initial grant is raised
+    /// to the initial grant: a window must always be able to hold
+    /// the credit it was constructed with.
+    pub fn new(initial: u64, ceiling: u64) -> Self {
+        Self {
+            available: initial,
+            ceiling: ceiling.max(initial),
+        }
     }
 
     pub fn per_stream() -> Self {
-        Self::new(INITIAL_STREAM_CREDIT)
+        Self::new(INITIAL_STREAM_CREDIT, INITIAL_STREAM_CREDIT)
     }
 
     pub fn per_connection() -> Self {
-        Self::new(INITIAL_CONNECTION_CREDIT)
+        Self::new(INITIAL_CONNECTION_CREDIT, INITIAL_CONNECTION_CREDIT)
     }
 
     pub fn available(&self) -> u64 {
         self.available
+    }
+
+    /// The finite maximum this window may ever hold.
+    pub fn ceiling(&self) -> u64 {
+        self.ceiling
     }
 
     /// Consume `bytes` of credit; `false` (and no state change) when the
@@ -433,9 +516,27 @@ impl CreditWindow {
         true
     }
 
-    /// Grant additional credit (a received WINDOW_UPDATE).
-    pub fn grant(&mut self, bytes: u64) {
-        self.available = self.available.saturating_add(bytes);
+    /// Grant additional credit (a received WINDOW_UPDATE). A grant
+    /// that would push the window past its ceiling — or overflow —
+    /// is an explicit protocol/resource error (the mux slice maps it
+    /// to [`ErrorReason::CreditOverrun`]): the window is left
+    /// unchanged, never silently saturated (#8970).
+    pub fn grant(&mut self, bytes: u64) -> Result<()> {
+        let next = self.available.checked_add(bytes).with_context(|| {
+            format!(
+                "credit grant of {bytes} bytes overflows the window ({} available)",
+                self.available
+            )
+        })?;
+        if next > self.ceiling {
+            bail!(
+                "credit grant of {bytes} bytes exceeds the window ceiling ({} available, {} ceiling)",
+                self.available,
+                self.ceiling
+            );
+        }
+        self.available = next;
+        Ok(())
     }
 }
 
@@ -515,7 +616,10 @@ mod tests {
         }
 
         /// Oracle: credit is never exceeded — any consume sequence the
-        /// window accepts sums to at most initial + granted.
+        /// window accepts sums to at most initial + granted, and the
+        /// window never holds more than its ceiling (#8970): a grant
+        /// the window refuses changes neither the accounting nor the
+        /// window state.
         #[test]
         fn credit_is_never_exceeded(
             ops in prop::collection::vec((any::<bool>(), 0u64..200_000), 0..32),
@@ -525,15 +629,57 @@ mod tests {
             let mut consumed = 0u64;
             for (is_grant, amount) in ops {
                 if is_grant {
-                    window.grant(amount);
-                    granted += amount;
+                    if window.grant(amount).is_ok() {
+                        granted += amount;
+                    }
                 } else if window.try_consume(amount) {
                     consumed += amount;
                 }
                 prop_assert!(consumed <= granted);
                 prop_assert_eq!(window.available(), granted - consumed);
+                prop_assert!(window.available() <= window.ceiling());
             }
         }
+    }
+
+    #[test]
+    fn credit_grant_returns_consumed_credit_up_to_the_ceiling() {
+        // #8970: normal credit return — consume, then a WINDOW_UPDATE
+        // returns exactly the consumed space.
+        let mut window = CreditWindow::per_stream();
+        assert!(window.try_consume(1_000));
+        window.grant(1_000).unwrap();
+        assert_eq!(window.available(), INITIAL_STREAM_CREDIT);
+        // An exact-ceiling grant on a drained window is accepted.
+        let mut drained = CreditWindow::per_stream();
+        assert!(drained.try_consume(INITIAL_STREAM_CREDIT));
+        drained.grant(INITIAL_STREAM_CREDIT).unwrap();
+        assert_eq!(drained.available(), drained.ceiling());
+    }
+
+    #[test]
+    fn credit_grant_past_the_ceiling_is_refused_without_state_change() {
+        // #8970: over-ceiling and repeated WINDOW_UPDATE grants are
+        // explicit errors and never mutate the window (no silent
+        // saturation toward u64::MAX).
+        let mut window = CreditWindow::per_stream();
+        let before = window;
+        assert!(window.grant(1).is_err());
+        assert_eq!(window, before);
+        for _ in 0..4 {
+            assert!(window.grant(u64::from(u32::MAX)).is_err());
+        }
+        assert_eq!(window, before);
+        // Overflow itself is an error, not a saturation.
+        assert!(window.grant(u64::MAX).is_err());
+        assert_eq!(window, before);
+        // A configured ceiling above the initial grant admits grants
+        // up to that ceiling and no further.
+        let mut configured = CreditWindow::new(100, 250);
+        configured.grant(150).unwrap();
+        assert_eq!(configured.available(), 250);
+        assert!(configured.grant(1).is_err());
+        assert_eq!(configured.available(), 250);
     }
 
     #[test]
@@ -631,6 +777,48 @@ mod tests {
         assert!(decoder.feed(&wire[..6]).unwrap().is_empty());
         let completed = decoder.feed(&wire[6..]).unwrap();
         assert_eq!(completed, vec![frame]);
+    }
+
+    #[test]
+    fn large_batch_of_small_frames_decodes_without_an_aggregate_feed_cap() {
+        // Oracle: compare against the exact input frame sequence. The batch
+        // is larger than the maximum retained single-frame wire size.
+        let frame = Frame::new(FrameType::Ping, 0, 0, Vec::new()).unwrap();
+        let encoded = frame.encode().unwrap();
+        let count = MAX_FRAME_WIRE_BYTES / encoded.len() + 1;
+        let mut wire = Vec::with_capacity(count * encoded.len());
+        for _ in 0..count {
+            wire.extend_from_slice(&encoded);
+        }
+
+        let mut decoder = FrameDecoder::new();
+        let decoded = decoder.feed(&wire).unwrap();
+
+        assert_eq!(decoded, vec![frame; count]);
+        assert_eq!(decoder.pending_bytes(), 0);
+    }
+
+    #[test]
+    fn incomplete_frame_storage_is_bounded_and_oversized_prefix_is_rejected_early() {
+        // An incomplete maximum-size body retains less than the maximum
+        // legal wire size; no complete frame bytes are discarded or lost.
+        let mut partial = Vec::with_capacity(MAX_FRAME_WIRE_BYTES - 1);
+        partial.extend_from_slice(&u32::try_from(MAX_FRAME_BODY).unwrap().to_be_bytes());
+        partial.resize(MAX_FRAME_WIRE_BYTES - 1, 0);
+        let mut decoder = FrameDecoder::new();
+        assert!(decoder.feed(&partial).unwrap().is_empty());
+        assert_eq!(decoder.pending_bytes(), MAX_FRAME_WIRE_BYTES - 1);
+
+        // The decoder reads only the missing prefix byte before rejecting;
+        // the large unrelated suffix is never copied into retained storage.
+        let mut oversized = Vec::with_capacity(1 + MAX_FRAME_WIRE_BYTES);
+        oversized.push(0);
+        oversized.extend_from_slice(&u32::try_from(MAX_FRAME_BODY + 1).unwrap().to_be_bytes()[1..]);
+        oversized.resize(1 + MAX_FRAME_WIRE_BYTES, 0);
+        let mut decoder = FrameDecoder::new();
+        assert!(decoder.feed(&oversized[..3]).unwrap().is_empty());
+        assert!(decoder.feed(&oversized[3..]).is_err());
+        assert_eq!(decoder.pending_bytes(), 4);
     }
 
     #[test]

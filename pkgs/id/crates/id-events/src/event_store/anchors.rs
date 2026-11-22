@@ -93,7 +93,7 @@ impl EventStore {
         let join = if policy.history == History::Full {
             None
         } else {
-            super::chat::join_event(&stored, &resolved.applied, reader, &causal_parents)
+            super::chat::join_event(&stored, &resolved.applied, group, reader, &causal_parents)
         };
 
         let mut records = Vec::new();

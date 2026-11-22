@@ -31,7 +31,8 @@
 //!   epoch_be)` over the record's current epoch): the ciphertext and
 //!   counters are dropped and only the tombstone remains, so replaying
 //!   the pre-delete signed upload cannot resurrect the backup. Account
-//!   deletion purges the tombstone itself.
+//!   deletion purges the tombstone but retains a generation floor, so
+//!   the exact signed upload remains refused after purge.
 //! - Restore bookkeeping (#5033 item 5, interim rule): a
 //!   download-for-restore increments `restore_epoch` and emits a
 //!   notification for every bound device; the restored key is not
@@ -81,8 +82,11 @@ const MAX_LANES: u32 = 4;
 /// Per-identity download budget from the #5033 decision: 10 per hour,
 /// 50 per day, per `H(pub)`.
 pub const DOWNLOAD_HOUR_LIMIT: u64 = 10;
+/// Length of the hourly backup-download window, in milliseconds.
 pub const DOWNLOAD_HOUR_WINDOW_MS: u64 = 3_600_000;
+/// Maximum backup downloads allowed per day window.
 pub const DOWNLOAD_DAY_LIMIT: u64 = 50;
+/// Length of the daily backup-download window, in milliseconds.
 pub const DOWNLOAD_DAY_WINDOW_MS: u64 = 86_400_000;
 
 /// `H(pub)`: SHA-256 of the identity public key. The only identity a
@@ -128,10 +132,26 @@ pub fn delete_message(key_hash: &[u8; 32], epoch: u64) -> Vec<u8> {
 }
 
 /// Client side: sign an upload for `signing_key`'s identity.
-pub fn sign_upload(signing_key: &SigningKey, envelope: &[u8], epoch: u64) -> [u8; 64] {
+///
+/// The envelope must pass the same structural check every store runs
+/// at receipt ([`BackupStore::upload`] calls `validate_envelope` before
+/// it looks at the signature), so a signature is only ever produced for
+/// an envelope a store can accept (#8842). The epoch rules stay
+/// receipt-only: they depend on the store's current record.
+///
+/// # Errors
+///
+/// [`BackupError::MalformedEnvelope`] when the envelope is not a
+/// well-formed v1 key envelope.
+pub fn sign_upload(
+    signing_key: &SigningKey,
+    envelope: &[u8],
+    epoch: u64,
+) -> Result<[u8; 64], BackupError> {
+    validate_envelope(envelope)?;
     let public = signing_key.verifying_key().to_bytes();
     let msg = upload_message(&key_hash(&public), &envelope_sha256(envelope), epoch);
-    signing_key.sign(&msg).to_bytes()
+    Ok(signing_key.sign(&msg).to_bytes())
 }
 
 /// Client side: sign a delete for `signing_key`'s identity at the
@@ -159,6 +179,8 @@ pub enum BackupError {
     /// The backup was deleted and this upload's epoch does not exceed
     /// the tombstone's final epoch — a replay, not a new backup.
     Tombstoned { final_epoch: u64 },
+    /// Account deletion permanently disabled uploads for this identity key.
+    Purged,
     /// The per-identity download budget is exhausted; retry after the
     /// given number of milliseconds.
     DownloadBudgetExceeded { retry_after_ms: u64 },
@@ -181,6 +203,7 @@ impl fmt::Display for BackupError {
                 f,
                 "backup was deleted at epoch {final_epoch}; replayed uploads cannot resurrect it"
             ),
+            Self::Purged => write!(f, "backup uploads are disabled after account deletion"),
             Self::DownloadBudgetExceeded { retry_after_ms } => write!(
                 f,
                 "download budget exceeded; retry after {retry_after_ms} ms"
@@ -621,6 +644,12 @@ impl BackupStore {
                 record.epoch = epoch;
             }
             None => {
+                // `generations` deliberately survives tombstone purge. A
+                // previously-created identity with no entry is therefore a
+                // purged account, not an authorized first upload.
+                if self.generation(&hash) > 0 {
+                    return Err(BackupError::Purged);
+                }
                 self.bump_generation(&hash);
                 self.entries.insert(
                     hash,
@@ -893,6 +922,35 @@ mod tests {
     use super::*;
     use proptest::prelude::*;
 
+    /// A raw upload signature with no envelope check, so receipt-side
+    /// tests can present a correctly signed malformed envelope.
+    fn sign_upload_unchecked(signing_key: &SigningKey, envelope: &[u8], epoch: u64) -> [u8; 64] {
+        let public = signing_key.verifying_key().to_bytes();
+        let msg = upload_message(&key_hash(&public), &envelope_sha256(envelope), epoch);
+        signing_key.sign(&msg).to_bytes()
+    }
+
+    /// #8842: the signer refuses every envelope a store would refuse,
+    /// with the same error, and signs a valid one exactly as before.
+    #[test]
+    fn sign_upload_refuses_malformed_envelopes_at_sign_time() {
+        let (signing, _public, secret) = identity(6);
+        let envelope = envelope_for(&secret);
+        assert_eq!(
+            sign_upload(&signing, &envelope, 1).unwrap(),
+            sign_upload_unchecked(&signing, &envelope, 1)
+        );
+        let mut bad_magic = envelope.clone();
+        bad_magic[0] = b'X';
+        let mut bad_version = envelope.clone();
+        bad_version[ENVELOPE_VERSION_OFFSET] = 2;
+        for bad in [envelope[..100].to_vec(), bad_magic, bad_version, Vec::new()] {
+            let err = sign_upload(&signing, &bad, 1).unwrap_err();
+            assert!(matches!(err, BackupError::MalformedEnvelope(_)), "{err}");
+            assert_eq!(err, validate_envelope(&bad).unwrap_err());
+        }
+    }
+
     const PASSPHRASE: &[u8] = b"correct horse battery staple";
 
     fn identity(seed: u8) -> (SigningKey, [u8; 32], [u8; 32]) {
@@ -909,7 +967,7 @@ mod tests {
         let (signing, public, secret) = identity(7);
         let envelope = envelope_for(&secret);
         let mut store = BackupStore::new();
-        let sig = sign_upload(&signing, &envelope, 1);
+        let sig = sign_upload(&signing, &envelope, 1).unwrap();
         store.upload(&public, &envelope, 1, &sig, 1_000).unwrap();
         (store, signing, public, envelope)
     }
@@ -949,17 +1007,17 @@ mod tests {
         let envelope = envelope_for(&secret);
         let mut store = BackupStore::new();
 
-        let bad_sig = sign_upload(&SigningKey::from_bytes(&[9; 32]), &envelope, 1);
+        let bad_sig = sign_upload(&SigningKey::from_bytes(&[9; 32]), &envelope, 1).unwrap();
         assert_eq!(
             store.upload(&public, &envelope, 1, &bad_sig, 0),
             Err(BackupError::BadSignature)
         );
 
-        let sig = sign_upload(&signing, &envelope, 1);
+        let sig = sign_upload(&signing, &envelope, 1).unwrap();
         store.upload(&public, &envelope, 1, &sig, 0).unwrap();
 
         // Equal and lower epochs are both non-increasing.
-        let sig_equal = sign_upload(&signing, &envelope, 1);
+        let sig_equal = sign_upload(&signing, &envelope, 1).unwrap();
         assert_eq!(
             store.upload(&public, &envelope, 1, &sig_equal, 10),
             Err(BackupError::StaleEpoch {
@@ -968,7 +1026,7 @@ mod tests {
             })
         );
         let other = envelope_for(&[4; 32]);
-        let sig_higher = sign_upload(&signing, &other, 2);
+        let sig_higher = sign_upload(&signing, &other, 2).unwrap();
         let receipt = store.upload(&public, &other, 2, &sig_higher, 20).unwrap();
         assert_eq!(receipt.epoch, 2);
         assert_eq!(store.record(&public).unwrap().envelope(), other.as_slice());
@@ -981,7 +1039,7 @@ mod tests {
         let (signing, public, secret) = identity(5);
         let envelope = envelope_for(&secret);
         let mut store = BackupStore::new();
-        let sig = sign_upload(&signing, &envelope, 1);
+        let sig = sign_upload(&signing, &envelope, 1).unwrap();
 
         assert!(matches!(
             store.upload(&public, &envelope[..100], 1, &sig, 0),
@@ -1210,7 +1268,7 @@ mod tests {
         // delivering, then recreate at a higher upload epoch.
         let delete_sig = sign_delete(&signing, 1);
         store.delete(&public, &delete_sig).unwrap();
-        let recreate_sig = sign_upload(&signing, &envelope, 2);
+        let recreate_sig = sign_upload(&signing, &envelope, 2).unwrap();
         store
             .upload(&public, &envelope, 2, &recreate_sig, 6_000)
             .unwrap();
@@ -1249,7 +1307,12 @@ mod tests {
         ] {
             let mut bad = envelope.clone();
             mutate(&mut bad);
-            let sig = sign_upload(&signing, &bad, 1);
+            assert!(matches!(
+                sign_upload(&signing, &bad, 1),
+                Err(BackupError::MalformedEnvelope(_))
+            ));
+            // Receipt refuses it too, even with a signature over it.
+            let sig = sign_upload_unchecked(&signing, &bad, 1);
             assert!(matches!(
                 store.upload(&public, &bad, 1, &sig, 0),
                 Err(BackupError::MalformedEnvelope(_))
@@ -1276,7 +1339,7 @@ mod tests {
         assert_eq!(store.tombstone(&public), Some(tombstone));
 
         // Replay: the exact pre-delete upload, signature and all.
-        let replay_sig = sign_upload(&signing, &envelope, 1);
+        let replay_sig = sign_upload(&signing, &envelope, 1).unwrap();
         assert_eq!(
             store.upload(&public, &envelope, 1, &replay_sig, 9_999),
             Err(BackupError::Tombstoned { final_epoch: 1 })
@@ -1290,6 +1353,32 @@ mod tests {
         // Account deletion purges the tombstone.
         assert!(store.purge_tombstone(&public));
         assert_eq!(store.download(&public, 10_000), Err(BackupError::NotFound));
+    }
+
+    #[test]
+    fn purged_backup_rejects_replay_but_new_identity_can_create_backup() {
+        let (mut store, signing, public, envelope) = uploaded_store();
+        let delete_sig = sign_delete(&signing, 1);
+        store.delete(&public, &delete_sig).unwrap();
+        assert!(store.purge_tombstone(&public));
+
+        let replay_sig = sign_upload(&signing, &envelope, 1).unwrap();
+        assert_eq!(
+            store.upload(&public, &envelope, 1, &replay_sig, 9_999),
+            Err(BackupError::Purged)
+        );
+        assert!(store.record(&public).is_none());
+        assert_eq!(store.download(&public, 10_000), Err(BackupError::NotFound));
+
+        // A separately authorized identity generation has a new public key
+        // and therefore does not inherit the deleted identity's purge marker.
+        let (new_signing, new_public, new_secret) = identity(12);
+        let new_envelope = envelope_for(&new_secret);
+        let new_sig = sign_upload(&new_signing, &new_envelope, 1).unwrap();
+        store
+            .upload(&new_public, &new_envelope, 1, &new_sig, 11_000)
+            .unwrap();
+        assert!(store.record(&new_public).is_some());
     }
 
     #[test]

@@ -58,6 +58,7 @@ with tempfile.TemporaryDirectory(prefix="claimant-offline-") as tmp:
         ("offline_claimant", ROOT / "test_claimant.py"),
         ("offline_poll", ROOT / "test_poll.py"),
         ("offline_mode", ROOT / "test" / "test_claimant.py"),
+        ("offline_prompt_constants", ROOT / "test_prompt_constants.py"),
     ):
         suite.addTests(unittest.defaultTestLoader.loadTestsFromModule(load(name, path)))
     result = unittest.TextTestRunner(verbosity=2).run(suite)

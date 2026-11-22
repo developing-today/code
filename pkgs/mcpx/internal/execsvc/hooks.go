@@ -71,16 +71,18 @@ var hookTimeout = defaults.ExecHookTimeout
 // exists is a file; anything else is source.
 //
 // `Prompt` is prompt text with @placeholders, sent to the configured model
-// provider (prompt_hooks.go). Its only implemented effect is advise.
+// provider (prompt_hooks.go). Its implemented effects are advise (any
+// phase) and propose (the outcome phases only; #11141).
 type Hook struct {
 	Phase  string `json:"phase"`
 	Script string `json:"script"`
 	// Prompt is the prompt action's text. Mutually exclusive with Script.
 	Prompt string `json:"prompt,omitempty"`
 	// Effect declares what the hook's output may do. For a prompt hook it
-	// must be empty or advise in this version; for a script hook it must
-	// agree with the phase's fixed effect when set. Anything else is
-	// refused at validation rather than silently ignored.
+	// must be empty (advise), advise, or propose at an outcome phase;
+	// for a script hook it must agree with the phase's fixed effect when
+	// set. Anything else is refused at validation rather than silently
+	// ignored.
 	Effect string `json:"effect,omitempty"`
 	// Model selects the model a prompt hook asks, in the provider/model
 	// namespace; empty takes the configured default. Script hooks ignore it.
@@ -104,11 +106,15 @@ type HookFrame struct {
 	DurationMs int64           `json:"durationMs,omitempty"`
 	Changed    bool            `json:"changed"`
 	Original   json.RawMessage `json:"original,omitempty"`
-	// Dropped names the keys an output carried that its phase may not
+	// Dropped names the keys an output carried that its action or phase may not
 	// honour. Reported rather than silently ignored.
 	Dropped []string `json:"dropped,omitempty"`
 	Advice  string   `json:"advice,omitempty"`
-	Error   string   `json:"error,omitempty"`
+	// Propose is a prompt hook's proposed replacement (effect
+	// propose), carried beside the original result or error and
+	// never applied by mcpx (0002). Empty for every other hook.
+	Propose json.RawMessage `json:"propose,omitempty"`
+	Error   string          `json:"error,omitempty"`
 	// Model and Provider name what answered a prompt hook, as the model
 	// layer reports them. Empty for script hooks.
 	Model    string `json:"model,omitempty"`
@@ -131,6 +137,11 @@ type hookContext struct {
 	// Calls are the tool calls the script made before this hook ran, in
 	// the same hashed-arguments shape call frames carry.
 	Calls []CallInfo `json:"calls,omitempty"`
+	// CallsError is non-empty when the run could not collect its tool-call
+	// history. In that case @calls is an explicit unavailable object, not [];
+	// scripts can branch on this field rather than mistaking missing history
+	// for a run that made no calls.
+	CallsError string `json:"callsError,omitempty"`
 }
 
 // hookOutput is what a hook may return: one JSON object on stdout.
@@ -170,8 +181,16 @@ func validateHooks(hooks []Hook, origin string) error {
 		case !hasScript && !hasPrompt:
 			return fmt.Errorf("exec: %s hook %d (%s): declares neither script nor prompt", origin, i, h.Phase)
 		}
-		if hasPrompt && h.Effect != "" && h.Effect != hookEffectAdvise {
-			return fmt.Errorf("exec: %s hook %d (%s): prompt effect %q is not implemented (only %q in this slice; the other dial levels stay with #1929)", origin, i, h.Phase, h.Effect, hookEffectAdvise)
+		if hasPrompt {
+			switch h.Effect {
+			case "", hookEffectAdvise:
+			case hookEffectPropose:
+				if h.Phase != HookOnSuccess && h.Phase != HookOnError {
+					return fmt.Errorf("exec: %s hook %d (%s): prompt effect %q is only available at %s and %s: a proposal needs a result or an error to propose against, and %s is clamped to at most %q (0001)", origin, i, h.Phase, h.Effect, HookOnSuccess, HookOnError, h.Phase, hookEffectAdvise)
+				}
+			default:
+				return fmt.Errorf("exec: %s hook %d (%s): prompt effect %q is not implemented (only %q and %q are implemented for prompt hooks; the other dial levels stay with #1929)", origin, i, h.Phase, h.Effect, hookEffectAdvise, hookEffectPropose)
+			}
 		}
 		if hasScript && h.Effect != "" && h.Effect != effectFor(h.Phase) {
 			return fmt.Errorf("exec: %s hook %d (%s): script effect %q conflicts with the phase's fixed effect %q", origin, i, h.Phase, h.Effect, effectFor(h.Phase))
@@ -240,9 +259,10 @@ func (s *Service) runHooks(ctx context.Context, phase string, hooks []Hook, hctx
 		// hook carrying one must still run its script (Codex
 		// review, PR #9021).
 		if strings.TrimSpace(h.Prompt) != "" {
-			// A prompt hook only advises: its frame carries the advice,
-			// and applyHookResult is never consulted for it, so it cannot
-			// change the outcome whatever phase it runs in.
+			// A prompt hook never transforms the outcome: advise and
+			// propose both ride in its frame, and applyHookResult is
+			// never consulted for it, so it cannot change the outcome
+			// whatever phase it runs in.
 			run = s.runPromptHook(ctx, phase, h, hctx, ropts, res)
 		} else {
 			run = s.runOneHook(ctx, phase, h, hctx, ropts, res, emit)
@@ -375,19 +395,33 @@ func (s *Service) runOneHook(ctx context.Context, phase string, h Hook, hctx hoo
 		out.Frame.Error = "the hook timed out"
 	}
 
+	out.readScriptOutput(stdout.String())
+	return out
+}
+
+// readScriptOutput decodes only a successfully completed script/module hook.
+func (out *hookRun) readScriptOutput(stdout string) {
 	if !out.Failed {
-		text := strings.TrimSpace(stdout.String())
+		text := strings.TrimSpace(stdout)
 		if text != "" {
 			if err := json.Unmarshal([]byte(text), &out.Out); err != nil {
-				// Not an object is not a failure: a hook that printed a
-				// sentence advised, and saying so is more useful than
-				// refusing the answer it did give.
+				// Preserve the existing advice fallback for non-object or invalid output.
 				out.Out = hookOutput{Advise: text}
+			} else {
+				// These effect keys have no script/module implementation. Report
+				// exact top-level presence in fixed order; never interpret values.
+				var fields map[string]json.RawMessage
+				if json.Unmarshal([]byte(text), &fields) == nil {
+					for _, key := range []string{"ask", "refuse", "propose", "run"} {
+						if _, present := fields[key]; present {
+							out.Frame.Dropped = append(out.Frame.Dropped, key)
+						}
+					}
+				}
 			}
 		}
 		out.Frame.Advice = out.Out.Advise
 	}
-	return out
 }
 
 // applyHookResult honours what a hook may change in its phase.

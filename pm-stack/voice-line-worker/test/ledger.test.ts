@@ -47,9 +47,7 @@ describe("parseQueueSnapshotResult", () => {
 
   test("no rows -> null", () => {
     const empty = {
-      results: [
-        { type: "ok", response: { type: "execute", result: { cols: [], rows: [] } } },
-      ],
+      results: [{ type: "ok", response: { type: "execute", result: { cols: [], rows: [] } } }],
     };
     expect(parseQueueSnapshotResult(empty as never)).toBeNull();
   });

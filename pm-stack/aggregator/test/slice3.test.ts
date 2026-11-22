@@ -807,6 +807,9 @@ let port = 0;
 const tmp = mkdtempSync(join(tmpdir(), "agg-slice3-"));
 const annotationsFile = join(tmp, "roadmap-annotations.json");
 
+// #10467: starting the aggregator subprocess can take longer than bun's
+// default 5 s hook budget on a loaded machine; give the hook room to
+// reach its own readiness deadline and fail with that message instead.
 beforeAll(async () => {
   port = 5200 + Math.floor(Math.random() * 800);
   const commentsFile = join(tmp, "comments.json");
@@ -847,7 +850,7 @@ beforeAll(async () => {
     await Bun.sleep(120);
   }
   expect(ready).toBe(true);
-});
+}, 60_000);
 
 afterAll(() => {
   proc?.kill();
@@ -904,7 +907,10 @@ describe("slice-3 routes", () => {
     const ref = "gh:developing-today/code#906";
     const note = await post({ objectRef: ref, kind: "note", author, body: "a plain note" });
     expect(note.status).toBe(201);
-    expect(((await note.json()) as { comment: { authorVerified: boolean } }).comment.authorVerified).toBe(false);
+    const noteComment = ((await note.json()) as { comment: { authorVerified: boolean; provenance: string } }).comment;
+    expect(noteComment.authorVerified).toBe(false);
+    // #9606: no Access configured here, so the body author is a claim.
+    expect(noteComment.provenance).toBe("asserted-legacy");
     const msg = await post({ objectRef: ref, kind: "message", author, body: "Muse: please check X" });
     const msgBody = (await msg.json()) as { comment: { id: string } };
     const ghRes = await post({

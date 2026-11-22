@@ -449,7 +449,7 @@ impl ProviderBroker {
                     },
                     Err(ReplyFailure::Refused(code)) => BrokerCompletion {
                         guest_request_id: entry.guest_request_id.clone(),
-                        outcome: Err(CapError::denied_with(code.clone())),
+                        outcome: Err(CapError::denied_with(stable_refusal_code(code))),
                     },
                     Err(ReplyFailure::Malformed) => BrokerCompletion {
                         guest_request_id: entry.guest_request_id.clone(),
@@ -510,6 +510,30 @@ impl ProviderBroker {
             self.audit(&entry, "invalid_reply", None);
             self.changed.notify_one();
         }
+    }
+
+    /// Record the world actor's restarted refusal of a client-provider
+    /// request (design section 4, flow step 6): the request was already
+    /// listed when the world reopened, so it is refused unattributed
+    /// without reaching [`begin`](Self::begin). The refusal is still a
+    /// host provider decision, so it belongs in the same F12.6 trail —
+    /// outcome `denied`, reason `restarted`, arguments digest only —
+    /// keeping the audit complete across a reopen.
+    pub(crate) fn note_restarted_refusal(
+        &self,
+        manifest: &ProviderManifest,
+        actor: &str,
+        args: &serde_json::Value,
+    ) {
+        let args_digest = args_digest(args);
+        let ctx = AuditCtx {
+            provider: manifest.name,
+            provider_version: manifest.version,
+            actor,
+            args_digest: &args_digest,
+            nonce: None,
+        };
+        self.audit_ctx(&ctx, "denied", Some("restarted"));
     }
 
     /// Complete every pending request whose deadline has passed.
@@ -606,6 +630,30 @@ struct AuditCtx<'a> {
     actor: &'a str,
     args_digest: &'a str,
     nonce: Option<&'a str>,
+}
+
+/// The refusal code a client reply may carry into the guest's
+/// result event: a short stable token (lowercase `snake_case`, at
+/// most 64 bytes) — the shape of every refusal constant the shell
+/// adapter itself returns. A reply is client input at the host
+/// boundary, and the code lands in the durable journal as the
+/// result event's `reason`; an arbitrary string (a local path, file
+/// content, a paragraph of text) must never be journaled as a
+/// refusal reason, so anything outside the stable shape is replaced
+/// by the generic `provider_refused`. The host audit outcome is
+/// unaffected: it never carried the client code.
+fn stable_refusal_code(code: &str) -> String {
+    let stable = !code.is_empty()
+        && code.len() <= 64
+        && code.bytes().next().is_some_and(|b| b.is_ascii_lowercase())
+        && code
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_');
+    if stable {
+        code.to_owned()
+    } else {
+        "provider_refused".to_owned()
+    }
 }
 
 /// BLAKE3 of the canonical args JSON — the only args-derived value
@@ -1129,5 +1177,167 @@ mod tests {
             .begin(allowed_begin(&broker, &host_manifest, Some(SESSION_A)))
             .expect_err("host provider refused");
         assert_eq!(error.code(), "unknown_cap");
+    }
+
+    // -- F13.7 step 6: the real client.file.read manifest through
+    //    the broker, the refusal-code trust boundary, and the
+    //    restarted-refusal audit record. ---------------------------
+
+    #[test]
+    fn real_manifest_args_are_validated_against_its_schema() {
+        let (broker, _audit) = broker();
+        let manifest = &crate::world_caps::CLIENT_FILE_READ_MANIFEST;
+        broker.register_offer(SESSION_A, vec![manifest.name.to_owned()]);
+        // Missing the manifest's one required argument.
+        let missing = serde_json::json!({});
+        let mut request = allowed_begin(&broker, manifest, Some(SESSION_A));
+        request.args = &missing;
+        let err = broker.begin(request).expect_err("missing path refuses");
+        assert_eq!(err.code(), "bad_args");
+        assert_eq!(
+            err.reason().map(String::as_str),
+            Some("missing_required_arg")
+        );
+        // The path must be a string.
+        let wrong_type = serde_json::json!({ "path": 42 });
+        let mut request = allowed_begin(&broker, manifest, Some(SESSION_A));
+        request.args = &wrong_type;
+        assert_eq!(
+            broker
+                .begin(request)
+                .expect_err("non-string path refuses")
+                .code(),
+            "bad_args"
+        );
+        // Serialized args over the manifest's 8 KiB ArgsBytes bound
+        // refuse whole, before any frame is dispatched.
+        let big = serde_json::json!({ "path": "x".repeat(9000) });
+        let mut request = allowed_begin(&broker, manifest, Some(SESSION_A));
+        request.args = &big;
+        assert_eq!(
+            broker
+                .begin(request)
+                .expect_err("oversize args refuse")
+                .code(),
+            "bad_args"
+        );
+        assert_eq!(broker.pending_count(), 0);
+        // A well-formed request begins. (allowed_begin's default args
+        // are {"path": "notes/readme.txt"}.)
+        assert!(
+            broker
+                .begin(allowed_begin(&broker, manifest, Some(SESSION_A)))
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn real_manifest_result_bound_is_the_manifests_32_kib() {
+        let (broker, _audit) = broker();
+        let manifest = &crate::world_caps::CLIENT_FILE_READ_MANIFEST;
+        broker.register_offer(SESSION_A, vec![manifest.name.to_owned()]);
+        let frame = broker
+            .begin(allowed_begin(&broker, manifest, Some(SESSION_A)))
+            .expect("request begins");
+        let outcome = broker.accept_reply(
+            SESSION_A,
+            &frame.nonce,
+            true,
+            Some(vec![7_u8; 32_768]),
+            None,
+        );
+        assert_eq!(outcome, ReplyOutcome::Accepted);
+        assert!(drain_one(&broker).outcome.is_ok());
+
+        let frame = broker
+            .begin(allowed_begin(&broker, manifest, Some(SESSION_A)))
+            .expect("request begins");
+        broker.accept_reply(
+            SESSION_A,
+            &frame.nonce,
+            true,
+            Some(vec![7_u8; 32_769]),
+            None,
+        );
+        let completion = drain_one(&broker);
+        assert_eq!(
+            completion
+                .outcome
+                .expect_err("oversize result refuses")
+                .code(),
+            "result_too_large"
+        );
+    }
+
+    #[test]
+    fn client_refusal_codes_outside_the_stable_shape_are_replaced() {
+        // A refusal code lands in the durable journal as the result
+        // event's reason, so a client implementation must not be
+        // able to journal arbitrary text — a local path, prose,
+        // file content — through it. Anything that is not a short
+        // lowercase snake_case token becomes `provider_refused`.
+        let overlong: &'static str = Box::leak("x".repeat(65).into_boxed_str());
+        for code in [
+            "/home/user/notes.txt",
+            "Has Spaces",
+            "UPPER_CASE",
+            "two words",
+            "",
+            overlong,
+        ] {
+            let (broker, _audit) = broker();
+            let adapter = FakeAdapter {
+                session: SESSION_A,
+                behaviour: FakeBehaviour::Refuse(code),
+            };
+            adapter.offer(&broker);
+            let frame = begin_ok(&broker);
+            let outcome = adapter.handle(&broker, &frame).expect("reply handled");
+            assert_eq!(outcome, ReplyOutcome::ClientRefused, "code {code:?}");
+            let completion = drain_one(&broker);
+            let event =
+                crate::world_caps::result_event(&completion.guest_request_id, completion.outcome);
+            let parsed: serde_json::Value = serde_json::from_str(&event).unwrap();
+            assert_eq!(parsed["error"], "cap_denied", "code {code:?}");
+            assert_eq!(parsed["reason"], "provider_refused", "code {code:?}");
+        }
+        // The shell adapter's own stable codes pass through untouched.
+        let (broker, _audit) = broker();
+        let adapter = FakeAdapter {
+            session: SESSION_A,
+            behaviour: FakeBehaviour::Refuse("file_read_invalid_path"),
+        };
+        adapter.offer(&broker);
+        let frame = begin_ok(&broker);
+        adapter.handle(&broker, &frame).expect("reply handled");
+        let completion = drain_one(&broker);
+        let event =
+            crate::world_caps::result_event(&completion.guest_request_id, completion.outcome);
+        let parsed: serde_json::Value = serde_json::from_str(&event).unwrap();
+        assert_eq!(parsed["reason"], "file_read_invalid_path");
+    }
+
+    #[test]
+    fn restarted_refusal_is_recorded_in_the_audit_trail() {
+        let (broker, audit) = broker();
+        broker.note_restarted_refusal(
+            &crate::world_caps::CLIENT_FILE_READ_MANIFEST,
+            "program",
+            args(),
+        );
+        let records: Vec<_> = audit
+            .records()
+            .into_iter()
+            .filter(|record| record.action == "client_provider_use")
+            .collect();
+        assert_eq!(records.len(), 1);
+        let record = &records[0];
+        assert_eq!(record.outcome, "denied");
+        assert_eq!(record.parameters["provider"], "client.file.read");
+        assert_eq!(record.parameters["reason"], "restarted");
+        assert!(
+            !record.parameters.to_string().contains("notes/readme.txt"),
+            "audit carries the args digest, never argument values: {record:?}"
+        );
     }
 }

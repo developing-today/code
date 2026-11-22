@@ -49,6 +49,14 @@ reconcile-YYYY-MM-DD.md  weekly sweep reports
 - **Secrets:** by name only, in Bitwarden Secrets Manager — see
   `config.json` → `app.bitwarden_secret_names`. Values never enter this
   repo, the backup tree, or chat.
+- **Cold-bundle drill:** `bin/bundle_cold.py --repo OWNER/REPO` creates a
+  self-contained Git bundle from one planned, valid mirror and publishes it
+  under `cold-bundles/` only after an empty-repository verify and clone-HEAD
+  comparison. `bin/bundle_r2.py --repo OWNER/REPO --bucket NAME` repeats that
+  drill, uploads the bundle through the existing `r2bak` rclone remote, then
+  downloads and compares the remote bytes. It requires the caller to configure
+  `r2bak` from runtime credentials (the laptop backup scripts use Bitwarden by
+  secret name); it does not provision a bucket or schedule recurring uploads.
 
 ## System contract — a mirror is what it can prove (design #3282)
 

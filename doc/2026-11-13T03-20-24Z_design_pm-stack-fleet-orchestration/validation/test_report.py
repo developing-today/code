@@ -26,12 +26,21 @@ report = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = report
 spec.loader.exec_module(report)
 
-REQUIRED = ["run_id", "seed", "sample_count", "oracle",
-            "uncertainty", "fixture_provenance", "threshold"]
+REQUIRED = [
+    "run_id",
+    "seed",
+    "sample_count",
+    "oracle",
+    "uncertainty",
+    "fixture_provenance",
+    "threshold",
+]
 
 
 class TestMissingMeasurements(unittest.TestCase):
-    def test_report_marks_missing_measurement_and_does_not_claim_production_benefit(self):
+    def test_report_marks_missing_measurement_and_does_not_claim_production_benefit(
+        self,
+    ):
         # An artifact carrying nothing: every required measurement is
         # marked missing by name, and the rendered report still refuses
         # to call a synthetic simulation a production result.
@@ -73,14 +82,20 @@ class TestCommittedArtifact(unittest.TestCase):
 
     def test_report_separates_facts_outputs_inference_recommendation(self):
         text = report.render_report(self.artifact, report.artifact_digest(self.raw))
-        for header in ("## External source facts", "## Measured model outputs",
-                       "## Inference", "## Recommendation"):
+        for header in (
+            "## External source facts",
+            "## Measured model outputs",
+            "## Inference",
+            "## Recommendation",
+        ):
             self.assertIn(header, text)
 
     def test_report_is_deterministic(self):
         digest = report.artifact_digest(self.raw)
-        self.assertEqual(report.render_report(self.artifact, digest),
-                         report.render_report(self.artifact, digest))
+        self.assertEqual(
+            report.render_report(self.artifact, digest),
+            report.render_report(self.artifact, digest),
+        )
 
 
 if __name__ == "__main__":

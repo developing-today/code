@@ -242,9 +242,10 @@ pub fn find_matches(
 /// subject appeals — lives here, never on the list (#5878 D4).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SanctionsBoundary {
-    /// The list this boundary reads, by id. The version in force is
-    /// whichever [`ListVersion`] the caller evaluates against; the
-    /// decision records it exactly.
+    /// The list this boundary reads, by id. Evaluation refuses a
+    /// [`ListVersion`] whose id differs, or that is not in force at
+    /// the decision time ([`SanctionsEvaluationError`]); the decision
+    /// records the exact version applied.
     pub list_id: String,
     /// Interactions this boundary covers (§5.2). An omitted
     /// interaction is not covered; the set may not be empty.
@@ -299,6 +300,59 @@ impl SanctionsBoundary {
     }
 }
 
+/// Why a sanctions evaluation was refused before any decision was
+/// recorded (#8376). Evaluation binds to the boundary's declared
+/// list: a decision computed against another list, or against a
+/// version outside its effective window, would enforce the wrong
+/// operator policy — or clear a restriction incorrectly — under an
+/// audit record that cannot reproduce the asserted match.
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum SanctionsEvaluationError {
+    /// The list evaluated against is not the list the boundary
+    /// declares.
+    #[error("sanctions boundary reads list {expected}, but evaluation was given list {actual}")]
+    WrongList {
+        /// The boundary's declared list id.
+        expected: String,
+        /// The id of the list actually passed.
+        actual: String,
+    },
+    /// The list version is not in force at the decision time.
+    #[error("list {id} version {version} is not in force at {now}")]
+    ListNotActive {
+        /// The list id.
+        id: String,
+        /// The list version.
+        version: u64,
+        /// The decision time the version was checked against.
+        now: u64,
+    },
+}
+
+/// The binding every evaluation enforces (#8376): the list must be
+/// the boundary's declared list, and the version in force at the
+/// decision time.
+fn check_binding(
+    boundary: &SanctionsBoundary,
+    list: &ListVersion,
+    now: u64,
+) -> Result<(), SanctionsEvaluationError> {
+    if list.id != boundary.list_id {
+        return Err(SanctionsEvaluationError::WrongList {
+            expected: boundary.list_id.clone(),
+            actual: list.id.clone(),
+        });
+    }
+    if !list.is_active_at(now) {
+        return Err(SanctionsEvaluationError::ListNotActive {
+            id: list.id.clone(),
+            version: list.version,
+            now,
+        });
+    }
+    Ok(())
+}
+
 /// What a sanctions evaluation decided.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -338,7 +392,16 @@ pub struct SanctionsDecision {
 
 /// Evaluate one interaction for one subject against a boundary.
 ///
+/// The evaluation is bound to the boundary's declared list (#8376):
+/// `list` must be that list, and the version in force at `now`, and
+/// the subject's matches are computed from that exact list inside
+/// this call — a caller cannot supply matches minted against another
+/// list or version and have them recorded against this one.
+///
 /// Rules, in order:
+/// 0. A list that is not the boundary's, or not in force at `now`,
+///    is refused ([`SanctionsEvaluationError`]); no decision is
+///    recorded.
 /// 1. An interaction outside the boundary's scope is not covered:
 ///    allow (§5.2).
 /// 2. No match: allow.
@@ -348,14 +411,20 @@ pub struct SanctionsDecision {
 ///    for review instead (grandfathering, §5.3; acceptance of #7785).
 /// 5. A strong match with no existing access denies, naming the
 ///    boundary's appeal path (§5.4).
-#[must_use]
+///
+/// # Errors
+/// [`SanctionsEvaluationError`] when the binding (rule 0) fails.
 pub fn evaluate(
     boundary: &SanctionsBoundary,
     list: &ListVersion,
     point: EnforcementPoint,
-    matches: &[SubjectMatch],
+    subject_country: Option<&str>,
+    subject_native_ids: &BTreeSet<String>,
+    subject_names: &BTreeSet<String>,
     subject_has_existing_access: bool,
-) -> SanctionsDecision {
+    now: u64,
+) -> Result<SanctionsDecision, SanctionsEvaluationError> {
+    check_binding(boundary, list, now)?;
     let record = |outcome, matched_entry, appeal_path| SanctionsDecision {
         list: list.reference(),
         point,
@@ -364,8 +433,9 @@ pub fn evaluate(
         appeal_path,
     };
     if !boundary.scope.contains(&point) {
-        return record(DecisionOutcome::Allow, None, None);
+        return Ok(record(DecisionOutcome::Allow, None, None));
     }
+    let matches = find_matches(list, subject_country, subject_native_ids, subject_names);
     // The strongest match decides; entry keys are compared so the
     // recorded entry is deterministic for a given match set.
     let strongest = matches.iter().max_by(|a, b| {
@@ -374,11 +444,11 @@ pub fn evaluate(
             .then_with(|| a.entry_key.cmp(&b.entry_key))
     });
     let Some(m) = strongest else {
-        return record(DecisionOutcome::Allow, None, None);
+        return Ok(record(DecisionOutcome::Allow, None, None));
     };
     let entry = Some(m.entry_key.clone());
     let appeal = Some(boundary.appeal_path.clone());
-    match m.basis {
+    Ok(match m.basis {
         MatchBasis::WeakNameOnly => record(DecisionOutcome::FlagForReview, entry, appeal),
         MatchBasis::StrongIdentifier => {
             if subject_has_existing_access {
@@ -387,7 +457,7 @@ pub fn evaluate(
                 record(DecisionOutcome::Deny, entry, appeal)
             }
         }
-    }
+    })
 }
 
 /// The removal side of a list change (§5.3): a subject who matched
@@ -395,24 +465,36 @@ pub fn evaluate(
 /// one is cleared, and the clearing is itself a recorded decision
 /// against the current version. Returns `None` when the subject did
 /// not match before either (nothing to clear).
-#[must_use]
+///
+/// Bound like [`evaluate`] (#8376): `current` must be the boundary's
+/// declared list and in force at `now`, and the subject's current
+/// matches are computed from `current` inside this call — a clearing
+/// is never recorded against an unrelated or inactive list.
+///
+/// # Errors
+/// [`SanctionsEvaluationError`] when the binding fails.
 pub fn cleared_by_removal(
     boundary: &SanctionsBoundary,
     current: &ListVersion,
     point: EnforcementPoint,
     matched_under_previous: bool,
-    matches_now: &[SubjectMatch],
-) -> Option<SanctionsDecision> {
+    subject_country: Option<&str>,
+    subject_native_ids: &BTreeSet<String>,
+    subject_names: &BTreeSet<String>,
+    now: u64,
+) -> Result<Option<SanctionsDecision>, SanctionsEvaluationError> {
+    check_binding(boundary, current, now)?;
+    let matches_now = find_matches(current, subject_country, subject_native_ids, subject_names);
     if !matched_under_previous || !matches_now.is_empty() || !boundary.scope.contains(&point) {
-        return None;
+        return Ok(None);
     }
-    Some(SanctionsDecision {
+    Ok(Some(SanctionsDecision {
         list: current.reference(),
         point,
         outcome: DecisionOutcome::Cleared,
         matched_entry: None,
         appeal_path: None,
-    })
+    }))
 }
 
 #[cfg(test)]
@@ -475,8 +557,19 @@ mod tests {
         let l = list(1, vec![SanctionsEntry::Country { code: "CU".into() }]);
         let m = find_matches(&l, Some("CU"), &BTreeSet::new(), &BTreeSet::new());
         assert_eq!(m.len(), 1);
-        let d = evaluate(&boundary(), &l, EnforcementPoint::BlobStorage, &m, false);
+        let d = evaluate(
+            &boundary(),
+            &l,
+            EnforcementPoint::BlobStorage,
+            Some("CU"),
+            &BTreeSet::new(),
+            &BTreeSet::new(),
+            false,
+            100,
+        )
+        .unwrap();
         assert_eq!(d.outcome, DecisionOutcome::Allow);
+        let _ = &m;
     }
 
     #[test]
@@ -490,9 +583,14 @@ mod tests {
             &boundary(),
             &l,
             EnforcementPoint::AccountCreation,
-            &m,
+            Some("CU"),
+            &BTreeSet::new(),
+            &BTreeSet::new(),
             false,
-        );
+            100,
+        )
+        .unwrap();
+        let _ = &m;
         assert_eq!(d.outcome, DecisionOutcome::Deny);
         assert_eq!(
             d.appeal_path.as_deref(),
@@ -528,7 +626,18 @@ mod tests {
         );
         assert_eq!(m.len(), 1);
         assert_eq!(m[0].basis, MatchBasis::WeakNameOnly);
-        let d = evaluate(&boundary(), &l, EnforcementPoint::Login, &m, false);
+        let d = evaluate(
+            &boundary(),
+            &l,
+            EnforcementPoint::Login,
+            None,
+            &BTreeSet::new(),
+            &BTreeSet::from(["Alex Example".to_string()]),
+            false,
+            100,
+        )
+        .unwrap();
+        let _ = &m;
         assert_eq!(d.outcome, DecisionOutcome::FlagForReview);
     }
 
@@ -541,7 +650,18 @@ mod tests {
         let before = find_matches(&v1, Some("CU"), &BTreeSet::new(), &BTreeSet::new());
         assert!(before.is_empty());
         let after = find_matches(&v2, Some("CU"), &BTreeSet::new(), &BTreeSet::new());
-        let d = evaluate(&boundary(), &v2, EnforcementPoint::Login, &after, true);
+        let d = evaluate(
+            &boundary(),
+            &v2,
+            EnforcementPoint::Login,
+            Some("CU"),
+            &BTreeSet::new(),
+            &BTreeSet::new(),
+            true,
+            100,
+        )
+        .unwrap();
+        let _ = &after;
         assert_eq!(d.outcome, DecisionOutcome::FlagForReview);
         assert_eq!(d.list.version, 2);
     }
@@ -551,14 +671,34 @@ mod tests {
         // Oracle: design §5.3 — an entry removed clears the subjects
         // it had flagged, and the clearing is logged.
         let current = list(3, vec![]);
-        let d = cleared_by_removal(&boundary(), &current, EnforcementPoint::Login, true, &[])
-            .expect("a previously matched subject with no current match is cleared");
+        let d = cleared_by_removal(
+            &boundary(),
+            &current,
+            EnforcementPoint::Login,
+            true,
+            Some("CU"),
+            &BTreeSet::new(),
+            &BTreeSet::new(),
+            100,
+        )
+        .unwrap()
+        .expect("a previously matched subject with no current match is cleared");
         assert_eq!(d.outcome, DecisionOutcome::Cleared);
         assert_eq!(d.list.version, 3);
         // No prior match: nothing to clear.
         assert!(
-            cleared_by_removal(&boundary(), &current, EnforcementPoint::Login, false, &[])
-                .is_none()
+            cleared_by_removal(
+                &boundary(),
+                &current,
+                EnforcementPoint::Login,
+                false,
+                Some("CU"),
+                &BTreeSet::new(),
+                &BTreeSet::new(),
+                100,
+            )
+            .unwrap()
+            .is_none()
         );
     }
 
@@ -577,6 +717,123 @@ mod tests {
                 version: 5
             }
         );
+    }
+
+    #[test]
+    fn evaluation_refuses_a_list_the_boundary_does_not_declare() {
+        // Regression for #8376: a boundary for list A evaluated with
+        // list B and a strong match from B returned Deny and recorded
+        // B. The binding now refuses before any decision.
+        let mut other = list(1, vec![SanctionsEntry::Country { code: "CU".into() }]);
+        other.id = "someone-elses-list".to_string();
+        assert_eq!(
+            evaluate(
+                &boundary(),
+                &other,
+                EnforcementPoint::Login,
+                Some("CU"),
+                &BTreeSet::new(),
+                &BTreeSet::new(),
+                false,
+                100,
+            ),
+            Err(SanctionsEvaluationError::WrongList {
+                expected: "operator-list".to_string(),
+                actual: "someone-elses-list".to_string(),
+            })
+        );
+        // And the declared list, which carries no CU entry, allows
+        // the same subject: matches are computed from the evaluated
+        // list, never imported from another one.
+        let declared = list(1, vec![]);
+        let d = evaluate(
+            &boundary(),
+            &declared,
+            EnforcementPoint::Login,
+            Some("CU"),
+            &BTreeSet::new(),
+            &BTreeSet::new(),
+            false,
+            100,
+        )
+        .unwrap();
+        assert_eq!(d.outcome, DecisionOutcome::Allow);
+    }
+
+    #[test]
+    fn evaluation_refuses_a_version_outside_its_effective_window() {
+        // Regression for #8376: neither entry point received an
+        // evaluation time, so an inactive version decided as if in
+        // force.
+        let l = list(1, vec![SanctionsEntry::Country { code: "CU".into() }]);
+        assert_eq!(
+            evaluate(
+                &boundary(),
+                &l,
+                EnforcementPoint::Login,
+                Some("CU"),
+                &BTreeSet::new(),
+                &BTreeSet::new(),
+                false,
+                99,
+            ),
+            Err(SanctionsEvaluationError::ListNotActive {
+                id: "operator-list".to_string(),
+                version: 1,
+                now: 99,
+            })
+        );
+        let mut ended = list(1, vec![SanctionsEntry::Country { code: "CU".into() }]);
+        ended.effective_to = Some(200);
+        assert!(matches!(
+            evaluate(
+                &boundary(),
+                &ended,
+                EnforcementPoint::Login,
+                Some("CU"),
+                &BTreeSet::new(),
+                &BTreeSet::new(),
+                false,
+                200,
+            ),
+            Err(SanctionsEvaluationError::ListNotActive { .. })
+        ));
+    }
+
+    #[test]
+    fn clearing_refuses_an_unrelated_or_inactive_list() {
+        // Regression for #8376: cleared_by_removal accepted an
+        // unrelated or inactive list and recorded a Cleared decision
+        // against it.
+        let mut other = list(3, vec![]);
+        other.id = "unrelated-list".to_string();
+        assert!(matches!(
+            cleared_by_removal(
+                &boundary(),
+                &other,
+                EnforcementPoint::Login,
+                true,
+                Some("CU"),
+                &BTreeSet::new(),
+                &BTreeSet::new(),
+                100,
+            ),
+            Err(SanctionsEvaluationError::WrongList { .. })
+        ));
+        let current = list(3, vec![]);
+        assert!(matches!(
+            cleared_by_removal(
+                &boundary(),
+                &current,
+                EnforcementPoint::Login,
+                true,
+                Some("CU"),
+                &BTreeSet::new(),
+                &BTreeSet::new(),
+                99,
+            ),
+            Err(SanctionsEvaluationError::ListNotActive { .. })
+        ));
     }
 
     mod property {
@@ -609,15 +866,19 @@ mod tests {
                 v2_entries.extend(added.iter().cloned());
                 v2_entries.push(SanctionsEntry::Country { code: country.clone() });
                 let v2 = list(2, v2_entries);
-                let matches = find_matches(&v2, Some(&country), &BTreeSet::new(), &BTreeSet::new());
-                prop_assume!(!matches.is_empty());
+                // The pushed country entry guarantees a strong match
+                // computed from v2 itself; no assumption needed.
                 let d = evaluate(
                     &boundary(),
                     &v2,
                     EnforcementPoint::Login,
-                    &matches,
+                    Some(&country),
+                    &BTreeSet::new(),
+                    &BTreeSet::new(),
                     true,
-                );
+                    100,
+                )
+                .unwrap();
                 prop_assert_eq!(d.outcome, DecisionOutcome::FlagForReview);
                 prop_assert_eq!(d.list.version, 2);
             }
@@ -629,12 +890,26 @@ mod tests {
                 entries in prop::collection::vec(entry_strategy(), 0..6),
                 has_access in any::<bool>(),
             ) {
+                let mut entries = entries;
+                entries.push(SanctionsEntry::Person {
+                    native_id: "p-weak".to_string(),
+                    names: BTreeSet::from(["Alex Example".to_string()]),
+                    date_of_birth: None,
+                });
                 let l = list(1, entries);
-                let m = vec![SubjectMatch {
-                    entry_key: "any".to_string(),
-                    basis: MatchBasis::WeakNameOnly,
-                }];
-                let d = evaluate(&boundary(), &l, EnforcementPoint::Login, &m, has_access);
+                // Country is None and native ids are empty, so the
+                // only possible match is the weak name-only one.
+                let d = evaluate(
+                    &boundary(),
+                    &l,
+                    EnforcementPoint::Login,
+                    None,
+                    &BTreeSet::new(),
+                    &BTreeSet::from(["Alex Example".to_string()]),
+                    has_access,
+                    100,
+                )
+                .unwrap();
                 prop_assert_eq!(d.outcome, DecisionOutcome::FlagForReview);
             }
         }

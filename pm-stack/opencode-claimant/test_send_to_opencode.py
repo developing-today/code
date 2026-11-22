@@ -136,7 +136,13 @@ class FakeQueue:
         return None
 
 
-def fake_server(worktree, prompt_ok=True, create_directory=None):
+def fake_server(
+    worktree, prompt_ok=True, create_directory=None, message_reads=None, delete_ok=True
+):
+    """message_reads, when given, is the sequence of
+    claimant._get_messages answers (None = unreadable); otherwise the
+    real reader runs against the fake transport, whose dict body
+    reads as unknown."""
     deleted = []
     prompts = []
 
@@ -150,11 +156,16 @@ def fake_server(worktree, prompt_ok=True, create_directory=None):
         prompts.append(prompt)
         return prompt_ok
 
+    extra = {}
+    if message_reads is not None:
+        reads = list(message_reads)
+        extra["_get_messages"] = lambda sid: reads.pop(0) if reads else []
     patches = patch.multiple(
         claimant,
         _server_request=server_request,
         _send_prompt=send_prompt,
-        _delete_session=lambda sid: deleted.append(sid) or True,
+        _delete_session=lambda sid: deleted.append(sid) or delete_ok,
+        **extra,
     )
     return patches, deleted, prompts
 
@@ -179,10 +190,12 @@ def run_send(worktree, fq=None, server_kw=None, **send_kw):
         server_patches,
         patch.object(launch_one, "queue", fq),
         patch.object(launch_one, "hard_stop_reason", return_value=None),
-        patch.object(launch_one, "post_agent_note", return_value=(True, None)),
+        patch.object(launch_one, "post_agent_note", return_value=(True, None)) as note,
         patch.object(send, "is_worktree_of", return_value=True),
+        patch.object(send, "PROMPT_SETTLE_INTERVAL_S", 0),
     ):
         rec = send.send(**kw)
+    fq.note_calls = note.call_count
     return rec, fq, deleted, prompts
 
 
@@ -376,13 +389,96 @@ class TestRollback(unittest.TestCase):
             self.assertEqual(rec["phase"], "assign")
             self.assertEqual(created, [])
 
-    def test_prompt_failure_keeps_the_binding(self):
+    def test_prompt_failure_on_unreadable_session_keeps_the_binding(self):
         with tempfile.TemporaryDirectory() as wt:
-            rec, _fq, deleted, _prompts = run_send(wt, server_kw={"prompt_ok": False})
+            rec, fq, deleted, _prompts = run_send(wt, server_kw={"prompt_ok": False})
             self.assertFalse(rec["ok"])
             self.assertFalse(rec["rolled_back"])
+            self.assertEqual(rec["prompt_settled"], "unknown")
             self.assertIn("prompt_failed", rec["reason"])
             self.assertEqual(deleted, [])
+            self.assertNotIn("release", fq.verbs())
+
+    def test_prompt_timeout_on_empty_session_deletes_and_releases(self):
+        # #11287: the prompt POST timed out and the fresh session
+        # stayed empty through every settle read.
+        with tempfile.TemporaryDirectory() as wt:
+            rec, fq, deleted, _prompts = run_send(
+                wt, server_kw={"prompt_ok": False, "message_reads": [[], [], [], []]}
+            )
+            self.assertFalse(rec["ok"])
+            self.assertFalse(rec["prompt_ok"])
+            self.assertEqual(rec["prompt_settled"], "empty")
+            self.assertTrue(rec["rolled_back"])
+            self.assertTrue(rec["released"])
+            self.assertEqual(deleted, [NEW_SESSION])
+            release = [c for c in fq.calls if c[0] == "release"]
+            self.assertEqual(len(release), 1)
+            self.assertEqual(release[0][1], "777")
+            self.assertEqual(
+                release[0][release[0].index("--worker") + 1], "opencode-claimant"
+            )
+            self.assertIn(NEW_SESSION, release[0][release[0].index("--reason") + 1])
+            # The released task gets no launch note on its issue.
+            self.assertEqual(fq.note_calls, 0)
+            # Release comes after the transfer, never before.
+            self.assertLess(fq.verbs().index("claim"), fq.verbs().index("release"))
+
+    def test_prompt_that_lands_late_counts_as_delivered(self):
+        # Task 20001's shape: the POST returned 499 but the message
+        # was on the session a few seconds later.
+        with tempfile.TemporaryDirectory() as wt:
+            rec, fq, deleted, _prompts = run_send(
+                wt,
+                server_kw={
+                    "prompt_ok": False,
+                    "message_reads": [[], [{"id": "msg_1"}]],
+                },
+            )
+            self.assertTrue(rec["ok"])
+            self.assertTrue(rec["prompt_ok"])
+            self.assertEqual(rec["prompt_settled"], "delivered")
+            self.assertEqual(deleted, [])
+            self.assertNotIn("release", fq.verbs())
+            self.assertEqual(fq.note_calls, 1)
+
+    def test_unverified_delete_keeps_the_binding(self):
+        with tempfile.TemporaryDirectory() as wt:
+            rec, fq, deleted, _prompts = run_send(
+                wt,
+                server_kw={
+                    "prompt_ok": False,
+                    "message_reads": [[], [], [], []],
+                    "delete_ok": False,
+                },
+            )
+            self.assertFalse(rec["ok"])
+            self.assertFalse(rec["rolled_back"])
+            self.assertEqual(deleted, [NEW_SESSION])
+            self.assertNotIn("release", fq.verbs())
+            self.assertIn("delete was not verified", rec["reason"])
+
+
+class TestSettleFailedPrompt(unittest.TestCase):
+    def settle(self, reads):
+        answers = list(reads)
+        slept = []
+        with patch.object(claimant, "_get_messages", lambda sid: answers.pop(0)):
+            verdict = send.settle_failed_prompt(
+                NEW_SESSION, reads=len(reads), interval=7, sleep=slept.append
+            )
+        return verdict, slept
+
+    def test_all_empty_is_empty(self):
+        self.assertEqual(self.settle([[], [], []]), ("empty", [7, 7]))
+
+    def test_any_message_is_delivered_and_stops_reading(self):
+        verdict, slept = self.settle([[], [{"id": "m"}], []])
+        self.assertEqual(verdict, "delivered")
+        self.assertEqual(slept, [7])
+
+    def test_an_unreadable_read_is_never_empty(self):
+        self.assertEqual(self.settle([[], None, []])[0], "unknown")
 
 
 class TestPlatformLimitation(unittest.TestCase):

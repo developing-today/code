@@ -30,7 +30,7 @@ axioms:
 - **Approvals never reconstruct the existing key** (#2060 §6.3). Any
   scheme that hands guardians shares of key material (Shamir splitting
   of the identity or its unwrap key) gives k colluding guardians the
-  *existing* signing key immediately, before any delay or veto can
+  _existing_ signing key immediately, before any delay or veto can
   run, and epoch binding does not revoke that. Shamir splitting is
   therefore excluded, as #2382 itself directs. Guardians authorise a
   **successor** key; the existing key is never reconstructed,
@@ -43,7 +43,7 @@ axioms:
 ## Decision 1 — where the records live: keyset chain + recovery annex
 
 The guardian set lives in the identity's #2380 keyset log, in the
-entry the ADR already reserved. Recovery *process* records cannot be
+entry the ADR already reserved. Recovery _process_ records cannot be
 ordinary chain entries: a chain record is valid only if its author
 was authorised at its position (ADR Decision 4 rule 3), and a
 recovery request is authored by a brand-new successor key that holds
@@ -167,7 +167,8 @@ if all of the following hold, evaluated from the fold at that head
 and the annex:
 
 1. The request exists, is unconsumed, and its `successor_*` fields
-   equal the rotation's.
+   equal the rotation's; the successor admin key has never appeared
+   in the pinned fold's admin-key map (including revoked keys).
 2. `approval_hashes` resolve to approvals for this `request_id`
    from at least `threshold` **distinct** guardian identities in
    the guardian set folded at that head, each signed by an Active
@@ -214,9 +215,9 @@ ancestor of the canonical head) and the directory marks it consumed.
   `created_at`. A directory first-seen time **earlier** than
   `created_at` is impossible for an honest relay, so verifiers
   reject any attestation chain with `request_first_seen <
-  created_at`, and compute the delay from
+created_at`, and compute the delay from
   `max(created_at, request_first_seen)`. A malicious or compromised
-  relay can therefore only *lengthen* the delay (by withholding) or
+  relay can therefore only _lengthen_ the delay (by withholding) or
   refuse service — availability attacks, not safety attacks. It
   cannot forge an approval (signatures), cannot mint a cancellation
   (signatures), and cannot backdate (this rule).
@@ -224,7 +225,10 @@ ancestor of the canonical head) and the directory marks it consumed.
   device key (Decision 2) cancels, at any time before the rotation
   folds. Cancellation is itself an annex record relayed and
   timestamped by the directory; a cancellation first seen after a
-  rotation has already folded is void (the rotation is chain
+  rotation has already folded is void. The directory stamps both in
+  whole Unix seconds, so a cancellation first seen in the same second
+  as the rotation counts as before it, whichever arrived first; the
+  status flow and Rule R agree on this (#11773). (The rotation is chain
   history; the remedy for a folded hostile rotation is a fresh
   recovery or admin action by the successor's opponents using the
   carried-over guardian set — stated plainly: after the delay, the
@@ -259,17 +263,17 @@ guardian set. Authority lives in the fold rule, not in a joint key.
 
 Rationale, against the alternative (a FROST-style threshold
 identity, #2060 §4.4 option 2, where the identity key itself is a
-threshold key and recovery signs under the *same* public key):
+threshold key and recovery signs under the _same_ public key):
 
 - §8.5.4's gap is specifically about **no-successor-needed
   rotation** — keeping one public key across recovery. #2382 does
   not ask for that; it asks for successor-key rotation with delay
   and cancel, which the investigation's own §6.3 names as the
   property that closes the reconstruction hole ("shares authorise
-  a *new* key and the existing signing key is never
+  a _new_ key and the existing signing key is never
   reconstructed"). A threshold-of-signatures delivers exactly
   that property with zero new primitives.
-- A threshold identity key changes key *generation* for every
+- A threshold identity key changes key _generation_ for every
   account (distributed key generation among guardians, resharing
   on guardian churn — the liveness problem §8.5.5 flags as
   unsolved), not just the recovery path. That is a programme-level
@@ -298,7 +302,7 @@ slow one:
 1. **Adding is instant; removing is delayed.** A
    `GuardianSetUpdated` that only adds guardians or raises the
    threshold folds immediately. One that **removes a guardian or
-   lowers the threshold** is a *delayed change*: the fold records
+   lowers the threshold** is a _delayed change_: the fold records
    it as pending with the same 72h delay (directory timestamps,
    Decision 4 math), the pre-change set remains the effective set
    until the delay elapses, and any admin key can cancel the
@@ -317,7 +321,7 @@ slow one:
    guardian who is notified can warn the user out of band, and a
    surviving device cancels the pending change or the recovery.
 4. **Bounded residual.** An attacker who holds an admin key
-   *undetected for longer than the delay* can complete an
+   _undetected for longer than the delay_ can complete an
    eviction. No record format prevents that; the mitigations are
    the delay, the notifications, and checkpoint finality (a
    checkpoint-final head cannot be displaced by a forked
@@ -348,7 +352,7 @@ equivalents) in `pkgs/id` test suites, in the `directory_log` /
    device-key cancellation before the delay ends the request.
 8. `rotation_before_delay_rejected` — first-seen arithmetic,
    including a backdated relay attestation (`first_seen <
-   created_at`) rejected.
+created_at`) rejected.
 9. `guardian_eviction_attack_fails_within_delay` — remove honest
    guardians + add sockpuppets + request recovery inside the
    window: rotation rejected (set pinned at request head;
@@ -393,3 +397,40 @@ When (1)–(3) land, #2382's remaining acceptance item (delay +
 cancel + notify implemented with tests, including the eviction
 case) is discharged by tests 7–10 above; this record discharges
 the specification items.
+
+**Implementation status (2026-11-18).** Records and Rule R:
+`pkgs/id/crates/id-directory/src/recovery.rs` (`check_rotation`,
+`apply_rotation`, `notify_targets`). Item 2: `RecoveryEvidence` is a
+`keyset::RecoveryRule`, and `keyset::fold_with_recovery` folds a
+rotation that passes Rule R into the chain. At a fork it never
+displaces a checkpoint-final head, and it takes no revocation
+priority: an ordinary continuation of the pinned head wins, which is
+Decision 3's "request is moot" case. A checkpoint taken after the
+rotation (`checkpoint_final_heads_with_recovery`) makes it final, so a
+late surviving-key sibling cannot undo it. Decision 6: a
+`GuardianSetUpdated` that removes a guardian or lowers the threshold
+is held as `KeysetState::pending_guardian_set` and replaces the set
+only once the next record (or the recovery request) is first seen at
+least `RECOVERY_DELAY_SECONDS` after the change was. Widening changes
+apply at once, and a later update replaces or cancels the pending one.
+The plain `fold` has no timestamps, so there a removal stays pending
+and the old set keeps counting; `RecoveryEvidence::keyset_first_seen`
+supplies the times. Relay: `recovery_relay::RecoveryRelay` stores
+annex and keyset records and attests each one's first-seen time once,
+in an append-only JSONL file. It refuses any record that does not
+verify, never moves a time it attested, and never attests a request
+before its `created_at`, so it can only lengthen a delay. Its `annex`
+and `keyset_first_seen` feed `RecoveryEvidence` directly. Client
+flow: `recovery_flow` builds the request, approval, cancellation and
+rotation records, and `recovery_flow::progress` says whether a request
+is waiting (approvals so far, threshold, earliest rotation time),
+cancelled, or ready, with the approval hashes the rotation should
+name. `id keyset guardians` names the guardians. `recovery_view::RelayView` folds one identity
+from a relay (anchored at the genesis its own key signed, with every
+other relayed identity folded as a possible guardian) and says whether
+a request is open, moot because the keyset moved on, or complete.
+`id keyset recovery publish|request|approve|cancel|status|complete`
+runs the flow through a shared relay file and prints who must be told
+of a request. Still open: serving the relay over the directory's
+network API, and delivering the notifications rather than printing
+their targets.

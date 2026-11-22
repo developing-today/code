@@ -1,4 +1,5 @@
 # Source 01 — Meta Newsroom launch post (OFFICIAL, verified live)
+
 - URL: https://about.fb.com/news/2026/09/introducing-muse-personal-ai-agent/
 - Read: 2026-10-01 (UTC) via live browser + text fetch
 - Title: "Introducing Muse: The World's First Personal AI Agent Built for Everyone", dated September 8, 2026.
@@ -17,11 +18,13 @@
 - No token figures in the post; no tiers named in post.
 
 # Source 02 — Meta Help Center: scheduled tasks (OFFICIAL, verified live)
+
 - URL: https://www.meta.com/help/artificial-intelligence/1484325780075655/
 - Read: 2026-10-01 (UTC) via text fetch
 - Official docs confirm: one-time, location-based, and recurring scheduled tasks/reminders ("Every Monday at 9am, remind me to submit my timesheet"); delivered as messages in the conversation; time-zone based; continue until cancelled; "What reminders do I have?" listing; Upcoming tab in app.
 
 # Source 03 — Meta Help Center: personality & memories (OFFICIAL, verified live)
+
 - URL: https://www.meta.com/help/artificial-intelligence/995796179982326/
 - Read: 2026-10-01 (UTC) via text fetch
 - Customizable: Name, personality and tone, communication style, Memories, "Emoji and identity: Muse has a visual identity including an avatar and tagline that you can update."
@@ -30,6 +33,7 @@
 - Can import memory from other assistants (Settings → Data Controls → Import memory; upload .zip of exported chats)
 
 # Source 04 — Meta blog: Muse on AI glasses (OFFICIAL, verified live)
+
 - URL: https://www.meta.com/blog/muse-personal-agent-ai-glasses/
 - Read: 2026-10-01 (UTC) via text fetch
 - At Connect 2026: "AI glasses will be powered by your personal AI agent from Muse"; coming to glasses (no date in post; other coverage says "coming months"); wake Muse by saying its name; workouts, meal logging, appointments, flight prices, buying products seen — hands-free; Muse works in background, checks back when done.

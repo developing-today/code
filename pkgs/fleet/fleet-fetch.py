@@ -16,15 +16,10 @@ Writes go through the libSQL HTTP pipeline to fleet-queue (token by
 name: turso.fleet-queue-rw-token). Failure of one repo never fails
 the others; exit is non-zero only if ALL repos fail.
 
-History: snapshots/watermarks lived in Supabase muse-dev
-(agent.repo_snapshots / agent.watermarks) until 2026-11-07, when the
-#5693 ci re-home moved them to fleet-queue alongside the github-ci
-Worker (which advances head_sha in the same table on push). The
-snapshot_refresh event's sink (#5690, AGENT_EVENTS_SINK) had already
-flipped to turso; the PG event leg is retired with this repoint —
-the event now always lands in the fleet-queue events table.
-Cutover: doc/fleet/agent-events-turso.md in developing-today/code.
+Snapshots/watermarks and the snapshot_refresh event all live in the
+fleet-queue Turso DB (doc/fleet/agent-events-turso.md).
 """
+
 import json
 import os
 import subprocess
@@ -78,13 +73,12 @@ def events_sink():
 def queue_token():
     """fleet-queue RW token, resolved by name via the secrets CLI,
     never stored here."""
-    tok = run(["fleet", "secrets", "get", "turso.fleet-queue-rw-token"],
-              timeout=60)
+    tok = run(["fleet", "secrets", "get", "turso.fleet-queue-rw-token"], timeout=60)
     token = tok.stdout.strip()
     if tok.returncode != 0 or not token:
         raise RuntimeError(
-            f"secrets get turso.fleet-queue-rw-token failed: "
-            f"{tok.stderr.strip()[:200]}")
+            f"secrets get turso.fleet-queue-rw-token failed: {tok.stderr.strip()[:200]}"
+        )
     return token
 
 
@@ -92,20 +86,32 @@ def turso_pipeline(statements):
     """Run SQL statements against fleet-queue via the libSQL HTTP
     pipeline. Raises on any error result."""
     import urllib.request
-    body = json.dumps({"requests": [
-        *[{"type": "execute", "stmt": {"sql": s}} for s in statements],
-        {"type": "close"}]}).encode()
+
+    body = json.dumps(
+        {
+            "requests": [
+                *[{"type": "execute", "stmt": {"sql": s}} for s in statements],
+                {"type": "close"},
+            ]
+        }
+    ).encode()
     req = urllib.request.Request(
-        EVENTS_TURSO_URL + "/v2/pipeline", data=body, method="POST",
-        headers={"Authorization": f"Bearer {queue_token()}",
-                 "Content-Type": "application/json"})
+        EVENTS_TURSO_URL + "/v2/pipeline",
+        data=body,
+        method="POST",
+        headers={
+            "Authorization": f"Bearer {queue_token()}",
+            "Content-Type": "application/json",
+        },
+    )
     with urllib.request.urlopen(req, timeout=60) as resp:
         out = json.loads(resp.read())
     failed = [r for r in out.get("results", []) if r.get("type") == "error"]
     if failed:
         raise RuntimeError(
             f"turso pipeline failed: "
-            f"{failed[0].get('error', {}).get('message', 'pipeline error')}"[:200])
+            f"{failed[0].get('error', {}).get('message', 'pipeline error')}"[:200]
+        )
 
 
 def turso_events_append(kind, detail, at_iso):
@@ -116,10 +122,14 @@ def turso_events_append(kind, detail, at_iso):
     created = at_iso.replace("+00:00", "Z")
     if "." in created:
         created = created.split(".")[0] + "Z"
-    sql = ("insert into events (worker_id, task_id, kind, detail,"
-           " created_at) values (" + ", ".join([
-               q("fleet-fetcher"), "NULL", q(kind),
-               q(json.dumps(detail)), q(created)]) + ")")
+    sql = (
+        "insert into events (worker_id, task_id, kind, detail,"
+        " created_at) values ("
+        + ", ".join(
+            [q("fleet-fetcher"), "NULL", q(kind), q(json.dumps(detail)), q(created)]
+        )
+        + ")"
+    )
     turso_pipeline([sql])
 
 
@@ -128,8 +138,7 @@ def run(cmd, timeout=120, env_extra=None):
     env["TMPDIR"] = SQL_TMPDIR  # keep children off the small /tmp tmpfs
     if env_extra:
         env.update(env_extra)
-    return subprocess.run(cmd, capture_output=True, text=True,
-                          timeout=timeout, env=env)
+    return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, env=env)
 
 
 def gh_api(path):
@@ -144,6 +153,7 @@ def gh_api(path):
             last_err = str(exc)[:300]
         if attempt == 0:
             import time
+
             time.sleep(5)
     raise RuntimeError(f"gh api {path}: {last_err}")
 
@@ -160,36 +170,48 @@ def fetch_repo(repo):
     head_sha = commit.get("sha")
 
     prs_raw = gh_api(f"repos/{repo}/pulls?state=open&per_page={CAP}")
-    open_prs = [{
-        "number": p["number"],
-        "title": p.get("title"),
-        "author": (p.get("user") or {}).get("login"),
-        "head_ref": (p.get("head") or {}).get("ref"),
-        "updated_at": p.get("updated_at"),
-        "is_draft": bool(p.get("draft")),
-    } for p in prs_raw]
-    pr_count = gh_api(
-        f"search/issues?q=repo:{repo}+type:pr+state:open&per_page=1"
-    )["total_count"]
+    open_prs = [
+        {
+            "number": p["number"],
+            "title": p.get("title"),
+            "author": (p.get("user") or {}).get("login"),
+            "head_ref": (p.get("head") or {}).get("ref"),
+            "updated_at": p.get("updated_at"),
+            "is_draft": bool(p.get("draft")),
+        }
+        for p in prs_raw
+    ]
+    pr_count = gh_api(f"search/issues?q=repo:{repo}+type:pr+state:open&per_page=1")[
+        "total_count"
+    ]
 
     issues_raw = gh_api(f"repos/{repo}/issues?state=open&per_page={CAP}")
-    open_issues = [{
-        "number": i["number"],
-        "title": i.get("title"),
-        "labels": [l.get("name") for l in i.get("labels", [])],
-        "updated_at": i.get("updated_at"),
-    } for i in issues_raw if "pull_request" not in i]
+    open_issues = [
+        {
+            "number": i["number"],
+            "title": i.get("title"),
+            "labels": [l.get("name") for l in i.get("labels", [])],
+            "updated_at": i.get("updated_at"),
+        }
+        for i in issues_raw
+        if "pull_request" not in i
+    ]
     issue_count = gh_api(
         f"search/issues?q=repo:{repo}+type:issue+state:open&per_page=1"
     )["total_count"]
 
     runs_raw = gh_api(f"repos/{repo}/actions/runs?per_page=10")
-    ci_summary = {"runs": [{
-        "name": r.get("name"),
-        "status": r.get("status"),
-        "conclusion": r.get("conclusion"),
-        "updated_at": r.get("updated_at"),
-    } for r in runs_raw.get("workflow_runs", [])]}
+    ci_summary = {
+        "runs": [
+            {
+                "name": r.get("name"),
+                "status": r.get("status"),
+                "conclusion": r.get("conclusion"),
+                "updated_at": r.get("updated_at"),
+            }
+            for r in runs_raw.get("workflow_runs", [])
+        ]
+    }
 
     snapshot = {
         "repo": repo,
@@ -214,9 +236,8 @@ def fetch_repo(repo):
 
 
 def write_sql(statements):
-    """Kept name, new home (#5693): statements run against the
-    fleet-queue Turso DB (agent_repo_snapshots / agent_watermarks /
-    events), not Supabase."""
+    """Statements run against the fleet-queue Turso DB
+    (agent_repo_snapshots / agent_watermarks / events)."""
     turso_pipeline(statements)
 
 
@@ -255,7 +276,7 @@ def main():
     from concurrent.futures import ThreadPoolExecutor
 
     started = now_iso()
-    results = {}   # repo -> {"ok": bool, ...}
+    results = {}  # repo -> {"ok": bool, ...}
     snapshots = {}
 
     # Fetch all repos in parallel (subprocess-bound work); one repo's
@@ -276,7 +297,7 @@ def main():
             except Exception as exc:
                 results[repo] = {"ok": False, "error": str(exc)[:300]}
 
-    # Write each snapshot in its own supabase-exec call so one bad write
+    # Write each snapshot in its own pipeline call so one bad write
     # cannot sink the repos that fetched fine.
     write_errors = []
     for repo, snap in snapshots.items():
@@ -289,7 +310,7 @@ def main():
 
     ok_repos = [r for r, v in results.items() if v["ok"]]
     sink = events_sink()
-    ev_detail = {'at': started, 'repos': results}
+    ev_detail = {"at": started, "repos": results}
     final_stmts = [
         "insert into agent_watermarks (key, value, updated_at) values ("
         f"'fetcher:last_run', {q(json.dumps({'at': started, 'repos_ok': ok_repos, 'repos_failed': [r for r, v in results.items() if not v['ok']]}))}, "
@@ -313,12 +334,16 @@ def main():
         db_ok = False
         write_errors.append(f"turso-events: {str(exc)[:200]}")
 
-    summary = (f"{started} fleet-fetch: "
-               + " ".join(
-                   f"{r}=ok(prs={v['open_prs']},issues={v['open_issues']})"
-                   if v.get("ok") else f"{r}=FAIL({v.get('error', '?')[:80]})"
-                   for r, v in results.items())
-               + f" db_write={'ok' if db_ok else 'FAIL'}")
+    summary = (
+        f"{started} fleet-fetch: "
+        + " ".join(
+            f"{r}=ok(prs={v['open_prs']},issues={v['open_issues']})"
+            if v.get("ok")
+            else f"{r}=FAIL({v.get('error', '?')[:80]})"
+            for r, v in results.items()
+        )
+        + f" db_write={'ok' if db_ok else 'FAIL'}"
+    )
     if sink != "pg":
         summary += f" events_sink={sink}"
     if sink_notes:

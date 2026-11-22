@@ -1,9 +1,11 @@
 # Meta "Muse" Personal AI Agent — Comprehensive Research Report
+
 Research date: 2026-09-30 / 2026-10-01 (UTC). Mission dated Sept 30, 2026.
 
 **Label key:** **[OFFICIAL]** Meta statements/docs (verified live where noted) · **[PRESS]** journalism/reporting · **[RUMOR]** unverified community claims.
 
 ## Summary
+
 Meta launched **Muse**, its "personal AI agent," on **September 8, 2026** (US only, iOS/Android/muse.ai/WhatsApp; 18+), powered by the **Muse Spark** model family, running on a per-user cloud computer ("Muse Secure VM") with a separate "Sentinel" agent gating internet access. At launch Meta's stated vision: a first step toward **personal superintelligence**. Connect 2026 (Sept 23) expanded it: Mac computer use, agent email address, Realtime Voice + Realtime Avatar, AI-glasses access, Muse Charm keychain device, and a connectors/developer platform (opened ~Sept 18). Pricing: free (100M tokens/week per Zuckerberg's own post — not in official docs), Power $20/mo (500M tokens/week), Maximum $100/mo (3B/week). No paid-plugin marketplace, no developer revenue share, and no announced plan to merge Muse Code (CLI) with the consumer app. Personalization files (SOUL.md etc.) exist in the app but are not officially documented; the OpenClaw resemblance was publicly admitted as "heavily inspired" by Meta's Nat Friedman.
 
 ---
@@ -11,6 +13,7 @@ Meta launched **Muse**, its "personal AI agent," on **September 8, 2026** (US on
 ## 1. RELEASE & CREATION
 
 **[OFFICIAL — verified live]** Meta Newsroom, "Introducing Muse: The World's First Personal AI Agent Built for Everyone," September 8, 2026 — https://about.fb.com/news/2026/09/introducing-muse-personal-ai-agent/
+
 - "secure, private personal AI agent that proactively helps with people's goals and suggests ideas"
 - Runs on "Muse Secure VM, a dedicated, virtual machine (VM) that houses both the agent and a person's data"
 - Usable "in the Muse app or directly in WhatsApp"
@@ -24,6 +27,7 @@ Meta launched **Muse**, its "personal AI agent," on **September 8, 2026** (US on
 - Availability: "rolling out in the US on iOS, Android, and muse.ai, and coming soon to AI glasses. It's free for most of what people need, with subscription plans for people who want to do more."
 
 **[PRESS]** Launch context:
+
 - Development led under chief AI officer Alexandr Wang (Scale AI founder; Meta bought 49% of Scale AI for $14.3B in June 2025); Muse Spark first introduced April 2026 (Axios via Wikipedia: https://en.wikipedia.org/wiki/Muse_(AI_agent))
 - Reuters reported Meta delayed the original April launch to harden security after internal tests exposed sensitive data (iCloud photos), via https://www.webpronews.com/metas-muse-ai-agent-takes-on-your-to-do-list-a-personal-ai-that-acts-not-just-answers/
 - TechCrunch launch coverage (Sept 8): https://techcrunch.com (via dev.to citations) — tiers reported as free/$20/$100; payment card required at signup; VP of AI products Vishal Shah told Engadget the agent "isn't really limited in what it can do" because it can write its own software
@@ -34,12 +38,14 @@ Meta launched **Muse**, its "personal AI agent," on **September 8, 2026** (US on
 ## 2. RELATIONSHIP TO OTHER META OFFERINGS
 
 **[OFFICIAL]** The consumer Muse agent and Meta AI assistant are **separate products**:
+
 - Meta's July 24, 2026 newsroom post "Meta AI Doesn't Just Think, It Acts" (https://about.fb.com/news/category/product-news/) covers Meta AI as its own product line
 - Engadget: "Muse is separate from the existing Meta AI app with its own iOS and Android apps and website" — https://www.engadget.com/2256577/how-to-get-started-with-meta-s-new-ai-agent-muse/
 - dev.to 13-tests guide: "Not the same as Meta AI: The Meta AI assistant inside Instagram and Messenger is a separate product" — https://dev.to/hao_kang_82922526dfe5d934/meta-muse-in-13-real-world-tests-what-to-delegate-what-to-verify-3hlh
 
 **[PRESS]** Shared foundation, distinct products (via https://memeburn.com/meta-has-five-products-called-muse-and-only-one-of-them-runs-your-life/):
-- **Muse Spark** (April 2026): model family that "replaced Llama across Meta's consumer products" — i.e., the Meta AI app/assistant now runs on Muse Spark. Shared *model*, not the same product.
+
+- **Muse Spark** (April 2026): model family that "replaced Llama across Meta's consumer products" — i.e., the Meta AI app/assistant now runs on Muse Spark. Shared _model_, not the same product.
 - **Muse Image** (July 2026): image-generation model in Meta AI/Instagram/WhatsApp; **Muse Video** (July 2026, preview)
 - **Muse Code** (Aug 2026): terminal coding agent on Muse Spark 1.2 (macOS/Linux) — separate developer product with its own docs, plugin system, and SDK; same model family, separate product
 - **Muse** (Sept 8, 2026): the consumer personal agent
@@ -52,6 +58,7 @@ No official statement found that Meta will merge or retire the Meta AI app into 
 ## 3. ROADMAP & INTENTIONS
 
 **[OFFICIAL]** Stated by Meta:
+
 1. **Muse Confidential VM** — "later this year": whole VM encrypted with user-held key; not even Meta can access (launch post)
 2. **AI glasses** — Muse coming to Meta AI glasses ("coming months"; wake word = say the agent's name; vision-enabled, acts on what wearer sees) — https://www.meta.com/blog/muse-personal-agent-ai-glasses/ and Connect coverage
 3. **Mac computer use** — now live in Muse for Mac app (drive any app with permission; continues after user walks away) — Connect announcement (https://www.ai-generative.org/news/meta-expands-muse-with-mac-computer-use-agent-email-and-planned-glasses-access)
@@ -71,7 +78,7 @@ No official statement found that Meta will merge or retire the Meta AI app into 
 - **[RUMOR]** testingcatalog (Sept 26, https://www.testingcatalog.com/meta-prepares-screen-viewing-and-web-voice-calls-for-muse/): recent Muse web build contains an unreleased **screen-view tab** (watch the agent's virtual computer) and a **web voice-call UI** ("phone call" style). In-build, not shipped.
 - **[RUMOR]** Community referral reports (https://www.allblogthings.com/2026/09/how-to-get-free-muse-ai-app-credits-1b-tokens-referral-code-guide.html): invite codes grant bonus tokens (reportedly ~1B tokens/referral, max 20 referrals = 21B total), stacking on weekly allowance, no expiry. Not confirmed by Meta.
 - **[RUMOR]** The Information (August, pre-launch): Meta considered a premium tier as high as **$199.99/mo**. Never shipped (via https://aistockwire.com/blog/meta-launches-muse-personal-ai-agent-secure-vm-sentinel-pricing-september-2026).
-- **[RUMOR]** OpenClaw resemblance: X threads (Sept 13) — Peter Steinberger (OpenClaw creator) and Ansh Nanda ("Muse is LITERALLY OpenClaw for normies") noted near-identical SOUL.md/IDENTITY.md/MEMORY.md/AGENTS.md/TOOLS.md files. Nat Friedman publicly replied: "heavily inspired as a product by OpenClaw" but built from scratch — making the *existence* of the similarity **[PRESS-verified]** while exact file-identity claims remain community-reported (https://www.webpronews.com/metas-muse-borrowed-openclaws-soul-and-doesnt-deny-it/).
+- **[RUMOR]** OpenClaw resemblance: X threads (Sept 13) — Peter Steinberger (OpenClaw creator) and Ansh Nanda ("Muse is LITERALLY OpenClaw for normies") noted near-identical SOUL.md/IDENTITY.md/MEMORY.md/AGENTS.md/TOOLS.md files. Nat Friedman publicly replied: "heavily inspired as a product by OpenClaw" but built from scratch — making the _existence_ of the similarity **[PRESS-verified]** while exact file-identity claims remain community-reported (https://www.webpronews.com/metas-muse-borrowed-openclaws-soul-and-doesnt-deny-it/).
 - **[PRESS, reported by Reuters/404 Media]** Outbound phone-calling beta (Sept 16, Meta engineer Ryan Fox on X) routed some calls to **trained human agents** without disclosure; Meta VP acknowledged "was a miss" and rolled the feature back. Not a rumor — reported by Reuters; disclosure failure confirmed by Meta.
 
 ---
@@ -82,7 +89,7 @@ No official statement found that Meta will merge or retire the Meta AI app into 
 - **[PRESS]** The submission process is a curated funnel, not self-service: "no SDK, no API spec, no developer terms, no disclosed fees or revenue share" (https://www.zeniteq.com/ai-connectors-could-make-muse-the-new-app-store-chjm9q; https://shipwithmuse.live/blog/muse-developer-platform). >1,500 developers applied in the first week (Benzinga via TheStreet).
 - **Custom connectors:** any user can have Muse build a custom connector from a public API/CLI; Meta does NOT review custom connectors (https://www.zeniteq.com/…, community templates e.g. https://github.com/AstroxNetwork/muse-connector-template).
 - **Paid plug-ins / marketplace monetization:** None found. No paid-plugin marketplace, no developer revenue share, no published fee structure. Meta's own monetization is a small transaction fee from merchants (Section 3). [No official statement — gap, not a denial.]
-- **Public API/SDK for the consumer agent:** None. Meta sells the underlying *models* via Meta Model API (`muse-spark-1.3` at $1.25/$4.25 per M tokens, 1M context) — https://dev.meta.ai/docs/cookbook/long-context — but the agent platform (Secure VM, Sentinel, connectors) is a product, not a platform, per community analysis (https://medium.com/@mansi.more943/metas-muse-c90cadbffa4a).
+- **Public API/SDK for the consumer agent:** None. Meta sells the underlying _models_ via Meta Model API (`muse-spark-1.3` at $1.25/$4.25 per M tokens, 1M context) — https://dev.meta.ai/docs/cookbook/long-context — but the agent platform (Secure VM, Sentinel, connectors) is a product, not a platform, per community analysis (https://medium.com/@mansi.more943/metas-muse-c90cadbffa4a).
 - **Muse Code (CLI) relationship:** separate developer product (Aug 2026) with its own experimental plugin system (`muse plugins marketplace add/install/approve`), SKILL.md skills, MCP support, SDK at https://github.com/meta-models/muse-code-sdk, and its own subscriptions ($5/$15/$50/mo) — [OFFICIAL: https://dev.meta.ai/docs/muse-code/configuration, https://dev.meta.ai/help/subscriptions/what-is-a-muse-code-subscription]. No announced plan to merge Muse Code with the consumer Muse app.
 
 ---
@@ -94,6 +101,7 @@ No official statement found that Meta will merge or retire the Meta AI app into 
 **[OFFICIAL docs]** Scheduled automation is a supported primitive: one-time, location-based, and **recurring tasks** ("Every Monday at 9am…"), delivered as chat messages, viewable via "What reminders do I have?" / Upcoming tab, continuing until cancelled — https://www.meta.com/help/artificial-intelligence/1484325780075655/
 
 **[COMMUNITY]** Concrete power-use examples:
+
 - dev.to Ying Liao walkthrough: connectors + scheduled tasks as an automation runtime — e.g., weekday 7am digest jobs that pull Gmail/Calendar and report back (http://dev.to/ying_liao_0a481102ff971b4/automating-real-work-with-muse-connectors-scheduled-tasks-58co)
 - dev.to Hao Kang: 13 real-world tests — inbox triage with read-only Gmail, travel booking, long forms (https://dev.to/hao_kang_82922526dfe5d934/meta-muse-in-13-real-world-tests-what-to-delegate-what-to-verify-3hlh)
 - Maya Farah (Meta employee, launch day): her agent "Foo" **with a subagent** manages inbox, tracks projects, books travel, flags priorities — evidence subagents exist in the consumer app (https://www.linkedin.com/posts/mayafarah_meet-muse-today-we-launched-muse-metas-activity-7503354841973280768-_GdF)
@@ -117,11 +125,12 @@ No official statement found that Meta will merge or retire the Meta AI app into 
 ## 8. TIERS
 
 **[OFFICIAL — verified live on Meta's Help Center, 2026-10-01]** https://www.meta.com/help/subscriptions/1021145227643680/
-| Tier | Price | Weekly allowance |
-|---|---|---|
-| Free | $0 | Numeric figure NOT published; "available for free with a usage limit… upgrade to a paid subscription or wait until your free usage limit refreshes" |
-| Power | $20/mo | 500M Muse tokens/week |
-| Maximum | $100/mo | 3B Muse tokens/week |
+
+| Tier    | Price   | Weekly allowance                                                                                                                                    |
+| ------- | ------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Free    | $0      | Numeric figure NOT published; "available for free with a usage limit… upgrade to a paid subscription or wait until your free usage limit refreshes" |
+| Power   | $20/mo  | 500M Muse tokens/week                                                                                                                               |
+| Maximum | $100/mo | 3B Muse tokens/week                                                                                                                                 |
 
 - Requirements: Meta account, 18+/age of majority, supported country (US; Canada added ~Sept 18 per iPhone in Canada/press). Auto-renews monthly; subscribe via app or muse.ai.
 - **[FIRST-PARTY CEO]** Free-tier number: Zuckerberg's launch-day Threads post — "free to use for up to **100M tokens per week**" (drawpie's adversarial re-check traced it directly to Zuckerberg; Bloomberg Sept 8 carried the same figure; CNET reported it). Not in launch post or help docs.
@@ -162,6 +171,7 @@ No official statement found that Meta will merge or retire the Meta AI app into 
 ---
 
 ## Could not verify / Open questions
+
 1. Exact free-tier token number in official docs — Zuckerberg's 100M/week figure never appears in Meta's help center; treat help-center language ("usage limit… refreshes") as canonical, 100M/week as CEO-stated.
 2. Whether a payment card is truly required for the free tier — press reports conflict.
 3. GA dates for: agent email address, Realtime Avatar/video chat, AI-glasses integration, Muse Charm pricing/markets, Confidential VM ("later this year").
@@ -170,6 +180,7 @@ No official statement found that Meta will merge or retire the Meta AI app into 
 6. How each personalization file (SOUL.md etc.) precisely affects behavior — Meta has not documented this; community descriptions are the only source.
 
 ## Sources
+
 - [OFFICIAL, verified live 2026-10-01] Meta Newsroom launch post (Sept 8, 2026): https://about.fb.com/news/2026/09/introducing-muse-personal-ai-agent/
 - [OFFICIAL, verified live 2026-10-01] Meta Help Center — subscriptions: https://www.meta.com/help/subscriptions/1021145227643680/
 - [OFFICIAL, verified live 2026-10-01] Meta Help Center — personality & memories: https://www.meta.com/help/artificial-intelligence/995796179982326/

@@ -339,8 +339,8 @@ impl Registry {
             .collect()
     }
 
-    /// Save the registry atomically: write a sibling temp file, then
-    /// rename over `path`, so a crash mid-save keeps the previous set.
+    /// Save the registry durably: sync a sibling temp file, then rename
+    /// over `path`, so a crash mid-save keeps the previous set.
     ///
     /// # Errors
     ///
@@ -353,8 +353,13 @@ impl Registry {
         }
         let json = serde_json::to_string_pretty(self).context("serialising publications")?;
         let temp = path.with_extension("json.tmp");
-        std::fs::write(&temp, json).with_context(|| format!("writing {}", temp.display()))?;
-        std::fs::rename(&temp, path).with_context(|| format!("replacing {}", path.display()))?;
+        id_core::durable_write::write_durable(path, &temp, json.as_bytes()).with_context(|| {
+            format!(
+                "durably writing publications file {} via {}",
+                path.display(),
+                temp.display()
+            )
+        })?;
         Ok(())
     }
 

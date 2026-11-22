@@ -24,6 +24,8 @@ import (
 	"time"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
 )
 
 // Spec is the subset of OpenAPI that matters for making calls.
@@ -154,7 +156,15 @@ func Load(ctx context.Context, source string, timeout time.Duration) (*Spec, err
 		if resp.StatusCode != http.StatusOK {
 			return nil, fmt.Errorf("%s returned %s", source, resp.Status)
 		}
-		raw, err = io.ReadAll(io.LimitReader(resp.Body, 32<<20))
+		// Contract decision 2 (#4375, #8271): a fetched spec is a
+		// buffered success body — refuse it past the named cap
+		// (read cap+1, fail when the extra byte exists) instead of
+		// silently truncating it into a shorter document.
+		raw, err = io.ReadAll(io.LimitReader(resp.Body, defaults.OpenAPISpecBodyLimit+1))
+		if err == nil && int64(len(raw)) > defaults.OpenAPISpecBodyLimit {
+			err = fmt.Errorf("fetching %s: spec exceeds the %d-byte limit",
+				source, defaults.OpenAPISpecBodyLimit)
+		}
 	} else {
 		raw, err = os.ReadFile(source)
 	}
@@ -687,9 +697,16 @@ func (a *API) Call(ctx context.Context, tool string, args map[string]any) (*Resu
 		return nil, fmt.Errorf("%s %s: %w", spec.Method, target, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, 32<<20))
+	// Contract decision 2 (#4375, #8271): the call's buffered
+	// response body is refused past the named cap, never silently
+	// truncated into a shorter result.
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, defaults.OpenAPISpecBodyLimit+1))
 	if err != nil {
 		return nil, err
+	}
+	if int64(len(raw)) > defaults.OpenAPISpecBodyLimit {
+		return nil, fmt.Errorf("%s %s: response body exceeds the %d-byte limit",
+			spec.Method, target, defaults.OpenAPISpecBodyLimit)
 	}
 
 	res := &Result{Status: resp.StatusCode, Body: string(raw), URL: target}

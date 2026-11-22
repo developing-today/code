@@ -8,12 +8,16 @@ use std::time::Instant;
 use atlas_core::filters::Filters;
 use atlas_core::shards::scan::{FanoutQuery, fanout_scan};
 use atlas_core::shards::{Tier, TierCeiling, open_from_spec};
-use atlas_core::{AtlasEmbedder, QueryEmbedder, DEFAULT_VEC_TABLE};
+use atlas_core::{AtlasEmbedder, DEFAULT_VEC_TABLE, QueryEmbedder};
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
-    let shard_dir = args.get(1).expect("usage: shard_bench <shard_dir> <query> [iters]");
-    let query = args.get(2).expect("usage: shard_bench <shard_dir> <query> [iters]");
+    let shard_dir = args
+        .get(1)
+        .expect("usage: shard_bench <shard_dir> <query> [iters]");
+    let query = args
+        .get(2)
+        .expect("usage: shard_bench <shard_dir> <query> [iters]");
     let iters: usize = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(50);
 
     let model_dir = std::env::var("ATLAS_MODEL_DIR").expect("ATLAS_MODEL_DIR");

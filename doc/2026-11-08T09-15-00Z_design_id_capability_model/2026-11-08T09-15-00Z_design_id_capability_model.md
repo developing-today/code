@@ -9,15 +9,15 @@
 
 ## Decision summary
 
-| Question | Decision | Where |
-| --- | --- | --- |
-| Do we have more than one platform? | **No — one platform tree per server, one static provider catalog.** Six `PlatformModule` entries, two execution tiers (Wasm guest, native worker). Per-world platform selection does not exist today and is what this design adds. | §1 |
-| Capability vocabulary v1 | Four tiers over one flat namespace: `standard` (today's catalog, default), `sandbox.fs` (sandbox file read+write, opt-in), `host.fs.read` (arbitrary file read, opt-in, admin-hard), `net.out` (arbitrary network out, opt-in, admin-hard). Expanded namespaces below; the four required names map one-to-one onto the tiers. | §2 |
-| Declaration vs discovery | The **requested** set is declared by the world (a manifest); the **discovered-used** set is derived, never hand-written (#5997 §1/§3); the **effective grant** is what the server permits. Invariant: `discovered-used ⊆ requested` and `discovered-used ⊆ granted ∩ ceiling`. | §3 |
-| Registry schema | One registry record per world release identity carrying `requested`, `discovered_used` (with a certification state and provenance) and the effective grant as separate facts; absent/uncertified usage is **unknown**, never empty. | §4 |
-| Custom-platform compile path | A **requirement-set platform**: the compile tooling synthesises the minimal platform tree that satisfies the requested set, signed and content-addressed; paid in compile credits by the requesting author; shared across identical requirement sets by content hash. | §5 |
-| Expansive-platform case (S15) | A world on a wider platform is displayed and enforced against its **discovered-used** set, not its requested set; the requested set is the ceiling, the used set is the honest claim. | §6 |
-| Interaction with writer-set authority (#5545) | **Separate axis, intersecting only at admission.** A capability grant is not a writer-set grant: it bounds what the code may call, not whose writes count. Split cleanly; the one intersection rule is stated. | §7 |
+| Question                                      | Decision                                                                                                                                                                                                                                                                                                                      | Where |
+| --------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----- |
+| Do we have more than one platform?            | **No — one platform tree per server, one static provider catalog.** Six `PlatformModule` entries, two execution tiers (Wasm guest, native worker). Per-world platform selection does not exist today and is what this design adds.                                                                                            | §1    |
+| Capability vocabulary v1                      | Four tiers over one flat namespace: `standard` (today's catalog, default), `sandbox.fs` (sandbox file read+write, opt-in), `host.fs.read` (arbitrary file read, opt-in, admin-hard), `net.out` (arbitrary network out, opt-in, admin-hard). Expanded namespaces below; the four required names map one-to-one onto the tiers. | §2    |
+| Declaration vs discovery                      | The **requested** set is declared by the world (a manifest); the **discovered-used** set is derived, never hand-written (#5997 §1/§3); the **effective grant** is what the server permits. Invariant: `discovered-used ⊆ requested` and `discovered-used ⊆ granted ∩ ceiling`.                                                | §3    |
+| Registry schema                               | One registry record per world release identity carrying `requested`, `discovered_used` (with a certification state and provenance) and the effective grant as separate facts; absent/uncertified usage is **unknown**, never empty.                                                                                           | §4    |
+| Custom-platform compile path                  | A **requirement-set platform**: the compile tooling synthesises the minimal platform tree that satisfies the requested set, signed and content-addressed; paid in compile credits by the requesting author; shared across identical requirement sets by content hash.                                                         | §5    |
+| Expansive-platform case (S15)                 | A world on a wider platform is displayed and enforced against its **discovered-used** set, not its requested set; the requested set is the ceiling, the used set is the honest claim.                                                                                                                                         | §6    |
+| Interaction with writer-set authority (#5545) | **Separate axis, intersecting only at admission.** A capability grant is not a writer-set grant: it bounds what the code may call, not whose writes count. Split cleanly; the one intersection rule is stated.                                                                                                                | §7    |
 
 ## 1. S9 — the platform inventory, answered at this checkout
 
@@ -41,24 +41,24 @@ One reduced fixture exists — `pkgs/id/examples/roc-world/platform-no-caps.roc`
 
 Per the F10 architecture recorded on #5958: the **Wasm guest** tier (import-free Wasm, deterministic wasmtime fuel — `pkgs/id/src/sandbox.rs`) and the **admin-installed native** tier (`world_native.rs:1-15`, seccomp allowlist with no `open*` and no sockets, `no_new_privs`, rlimits, never peer-downloaded). Both run the same platform ABI over the same frames.
 
-**Consequence for this design.** Nothing today can grant a world filesystem or network authority, at any tier. The vocabulary in §2 is therefore new surface, and the mechanism that gives a world *a different platform* (S14) does not exist — it is specified in §5.
+**Consequence for this design.** Nothing today can grant a world filesystem or network authority, at any tier. The vocabulary in §2 is therefore new surface, and the mechanism that gives a world _a different platform_ (S14) does not exist — it is specified in §5.
 
 ## 2. Capability vocabulary v1 (S12)
 
 One flat, dotted, never-reused namespace (the existing naming rules: ASCII, ≤64 bytes, meaning never changes). The four names the brief requires map onto four **tiers**, and the tier — not the individual capability — is what the default posture and the server admin approve.
 
-| Tier | Names in v1 | Default | Grant authority | What it means |
-| --- | --- | --- | --- | --- |
-| `standard` | today's catalog, including `loc.*` sensor caps and the six platform modules | **on** (unchanged) | world ceiling + grant, as today | Server data, presentation, and sensor caps under existing consent rules. No filesystem, no network. |
-| `sandbox.fs` | `fs.read`, `fs.write` | **off** | server admin enables the tier; world ceiling + grant narrow it | Read/write inside the world's own scratch directory only. Path is server-chosen; no `..`, no symlink traversal, no absolute paths. |
-| `host.fs.read` | `fs.host_read` | **off** | server admin enables the tier *and* names each readable root | Arbitrary file read on the host, bounded to admin-named roots. This is the dangerous tier: it is a host-disclosure capability, not a convenience. |
-| `net.out` | `net.connect` | **off** | server admin enables the tier *and* names allowed destinations | Arbitrary outbound network. v1 records "arbitrary"; a destination allowlist is the minimal safe form and is required at the admin surface. |
+| Tier           | Names in v1                                                                 | Default            | Grant authority                                                | What it means                                                                                                                                     |
+| -------------- | --------------------------------------------------------------------------- | ------------------ | -------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `standard`     | today's catalog, including `loc.*` sensor caps and the six platform modules | **on** (unchanged) | world ceiling + grant, as today                                | Server data, presentation, and sensor caps under existing consent rules. No filesystem, no network.                                               |
+| `sandbox.fs`   | `fs.read`, `fs.write`                                                       | **off**            | server admin enables the tier; world ceiling + grant narrow it | Read/write inside the world's own scratch directory only. Path is server-chosen; no `..`, no symlink traversal, no absolute paths.                |
+| `host.fs.read` | `fs.host_read`                                                              | **off**            | server admin enables the tier _and_ names each readable root   | Arbitrary file read on the host, bounded to admin-named roots. This is the dangerous tier: it is a host-disclosure capability, not a convenience. |
+| `net.out`      | `net.connect`                                                               | **off**            | server admin enables the tier _and_ names allowed destinations | Arbitrary outbound network. v1 records "arbitrary"; a destination allowlist is the minimal safe form and is required at the admin surface.        |
 
 Rationale for tiers rather than four independent grants:
 
 1. **The brief's four names are not peers.** "Standard" is the existing posture; the other three are expansions of it, in ascending danger. Tiers let an admin say "this server allows sandbox files, but never host reads or network" in one decision, and let the registry display the posture as one sentence.
 2. **The C2 default is a tier default, not a per-name default.** Keeping it per-name invites drift (one new name quietly default-on); keeping it per-tier makes "default does not move" a property of the tier table, testable as one assertion.
-3. **Future granularity fits underneath.** A later `net.connect:api.example.com` or `fs.read:<root>` is a narrowing *within* a tier, not a new tier; the vocabulary stays additive.
+3. **Future granularity fits underneath.** A later `net.connect:api.example.com` or `fs.read:<root>` is a narrowing _within_ a tier, not a new tier; the vocabulary stays additive.
 
 Deliberately **not** in v1: process/exec, raw device access, camera/microphone (these are the `media.*`/`form.*` surface of the capability taxonomy investigation, a separate track), and write access outside the sandbox. Naming them here as out of scope keeps "arbitrary file read" from being read as "arbitrary file write".
 
@@ -68,11 +68,11 @@ Every new name is a **host-request provider** in the existing shape (`{id, cap, 
 
 Three sets, three different authorities, never conflated:
 
-| Set | Who produces it | What it means | Trust |
-| --- | --- | --- | --- |
-| **requested** | the world's manifest (declared by the author) | "this world asks for these capabilities" | a request, not a grant; may over-ask |
-| **discovered-used** | the derivation tool (#5998), static call-graph reachability over the closed platform namespace, per #5997 §1 | "these are the exact platform functions this release can call" | authoritative only when certification succeeded; never hand-written |
-| **effective grant** | the server: `granted ∩ server ceiling ∩ world ceiling ∩ catalog`, existing `CapLedger::effective()` (`world_caps.rs:1358-1377`) | "this world may use these now" | authority |
+| Set                 | Who produces it                                                                                                                 | What it means                                                  | Trust                                                               |
+| ------------------- | ------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------- | ------------------------------------------------------------------- |
+| **requested**       | the world's manifest (declared by the author)                                                                                   | "this world asks for these capabilities"                       | a request, not a grant; may over-ask                                |
+| **discovered-used** | the derivation tool (#5998), static call-graph reachability over the closed platform namespace, per #5997 §1                    | "these are the exact platform functions this release can call" | authoritative only when certification succeeded; never hand-written |
+| **effective grant** | the server: `granted ∩ server ceiling ∩ world ceiling ∩ catalog`, existing `CapLedger::effective()` (`world_caps.rs:1358-1377`) | "this world may use these now"                                 | authority                                                           |
 
 **The two invariants** (both fail closed):
 
@@ -83,30 +83,30 @@ discovered-used ⊆ effective grant
 
 The first is checked at admission: a derived set wider than the declaration is a **manifest defect** (the author under-declared), refused with a diagnostic naming the extra names. The second is checked at admission and at run: a use outside the effective grant is the existing `cap_denied`, unchanged.
 
-**Why the used set is derived and not declared.** #5997 §3 already settled this: an in-type signature cannot drift from the code, while a hand-written manifest can, and Roc has no effect rows to carry it. The mitigation is structural — humans declare the *ceiling* (requested), machines compute *usage* (discovered). This design adopts that split verbatim and does not re-open it.
+**Why the used set is derived and not declared.** #5997 §3 already settled this: an in-type signature cannot drift from the code, while a hand-written manifest can, and Roc has no effect rows to carry it. The mitigation is structural — humans declare the _ceiling_ (requested), machines compute _usage_ (discovered). This design adopts that split verbatim and does not re-open it.
 
 ### 3.1 Discovery mechanism: static first, profiling as corroboration
 
 Answering the issue's first open question directly:
 
 - **Static analysis is the certification mechanism.** Call-graph reachability over the closed platform-function namespace produces the discovered-used set. It is path-independent by construction: it enumerates every platform function reachable from the entry points, which is exactly the "same for every run" question the issue asks. Higher-order boundaries take the union of possible targets; where the target set cannot be enumerated, certification fails rather than guessing (#5997 §1, and #6000 §1's five certification-voiding features).
-- **Data-encoded capabilities are inside the analysis surface.** Not every capability is exercised by *calling* a platform function. The ABI also accepts arbitrary strings from `program.wants` (`pkgs/id/examples/roc-world/platform.roc:56-57`), and existing worlds use that channel as data, not as calls: `pkgs/id/examples/territory/main.roc:114-115` subscribes to `players` by returning literal JSON without invoking any capability-specific platform function, and `RocCap` helpers likewise construct JSON rather than call host functions. A call-graph-only derivation would miss exactly these capabilities and either under-report the used set or leave ordinary worlds uncertifiable. The derivation must therefore analyze, conservatively, every value reachable code can emit through `program.wants` and RocCap-style JSON construction: any capability named by an emittable request/subscription value counts in `discovered_used`, exactly as if the corresponding platform function had been called. Where the emittable values are not a closed, statically enumerable set of literals (arbitrary string construction, concatenation from runtime input), certification **fails** with that reason — it never certifies a call-graph-only subset as the used set. (Restricting the ABI so requests are typed values rather than arbitrary strings would remove this failure mode; that is an ABI change, out of scope for this design, and is recorded here as the known cost of the current string channel.)
+- **Data-encoded capabilities are inside the analysis surface.** Not every capability is exercised by _calling_ a platform function. The ABI also accepts arbitrary strings from `program.wants` (`pkgs/id/examples/roc-world/platform.roc:56-57`), and existing worlds use that channel as data, not as calls: `pkgs/id/examples/territory/main.roc:114-115` subscribes to `players` by returning literal JSON without invoking any capability-specific platform function, and `RocCap` helpers likewise construct JSON rather than call host functions. A call-graph-only derivation would miss exactly these capabilities and either under-report the used set or leave ordinary worlds uncertifiable. The derivation must therefore analyze, conservatively, every value reachable code can emit through `program.wants` and RocCap-style JSON construction: any capability named by an emittable request/subscription value counts in `discovered_used`, exactly as if the corresponding platform function had been called. Where the emittable values are not a closed, statically enumerable set of literals (arbitrary string construction, concatenation from runtime input), certification **fails** with that reason — it never certifies a call-graph-only subset as the used set. (Restricting the ABI so requests are typed values rather than arbitrary strings would remove this failure mode; that is an ABI change, out of scope for this design, and is recorded here as the known cost of the current string channel.)
 - **Profiling is corroboration, not certification.** A profiling run (platform-call instrumentation during execution) cannot prove absence — it only sees paths taken. It is retained for three jobs: (a) detecting **drift**, a runtime use of a name outside the certified set, which is a hard fault (§3.2); (b) **ranking** the used set by hotness for the observability surface (#6017), which is presentational only; (c) **test evidence** that a derived set is not vacuous.
 - **Neither mechanism is alone sufficient**, so the design names both and their roles. A registry that showed only the static set would hide real-path usage; one that showed only the profile would present a path-dependent sample as if it were the whole truth.
 
 ### 3.2 Reconciliation when static and profiling disagree
 
-| Case | Meaning | Action |
-| --- | --- | --- |
-| Profile ⊆ static | Normal. The profile exercised a subset of reachable calls. | None; the static set stays authoritative. |
+| Case                                                     | Meaning                                                                                                 | Action                                                                                                                                                                                                                                                                                                                                                                                               |
+| -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Profile ⊆ static                                         | Normal. The profile exercised a subset of reachable calls.                                              | None; the static set stays authoritative.                                                                                                                                                                                                                                                                                                                                                            |
 | Profile uses a name **outside** the certified static set | The certification premise is broken (dynamic loading, reflection, an analyzer bug, or a stale artifact) | **Hard fault.** The world is quarantined: the use is refused (`cap_denied`, reason `outside_certified_set`), the world is marked **not certified** in the registry with the offending name and the run evidence, and re-certification is required before the world runs again. Never silently widen the set at runtime — that is exactly the OCaml-style runtime-discovery failure #5997 §4 rejects. |
-| Static names the profile never called | Normal over-approximation (a branch not taken, a dead-but-reachable path). | None; the registry shows the static set and #6017 may annotate "not observed in the last N runs". The annotation never reduces the set. |
+| Static names the profile never called                    | Normal over-approximation (a branch not taken, a dead-but-reachable path).                              | None; the registry shows the static set and #6017 may annotate "not observed in the last N runs". The annotation never reduces the set.                                                                                                                                                                                                                                                              |
 
 The asymmetry is deliberate: over-approximation is safe (the world looks more capable than it is), under-approximation is not (a capability was reached that nobody certified). Only the second is a defect.
 
 ### 3.3 Path-dependent used sets, presented honestly
 
-The used set is a property of the **code** — the set of platform functions that *can* be called — not of a run. A world whose `init` reads a file only when a flag is set still *uses* file read; the fact that a particular run did not take that path is an observation, not a capability fact.
+The used set is a property of the **code** — the set of platform functions that _can_ be called — not of a run. A world whose `init` reads a file only when a flag is set still _uses_ file read; the fact that a particular run did not take that path is an observation, not a capability fact.
 
 Presentation rules (binding on #6017):
 
@@ -120,9 +120,9 @@ The canonical schema lives here; #6000's semantics and #6017's presentation cons
 
 ### 4.1 One record per release identity
 
-A registry entry describes an immutable **world release** (the artifact plus its transitive dependency closure), identified by the content-addressed identity of #5965 §2 and #5997 §2 (platform tree hash + source closure hash + DLL closure hash + compiler digest + target). It is *not* a per-world-row record: a world that republishes new code gets a new entry; a world restored from a checkpoint keeps its entry.
+A registry entry describes an immutable **world release** (the artifact plus its transitive dependency closure), identified by the content-addressed identity of #5965 §2 and #5997 §2 (platform tree hash + source closure hash + DLL closure hash + compiler digest + target). It is _not_ a per-world-row record: a world that republishes new code gets a new entry; a world restored from a checkpoint keeps its entry.
 
-Certification content (`requested`, `discovered_used`, `custom_platform`) is a property of the release and lives here. **Effective grants and runtime observations are not fields of this record**: they are properties of a *world instance* running the release (§4.2.1). Two worlds on one server can run the same release under different grants and ceilings — the ledger and ceiling are stored per `WorldCore` (`pkgs/id/src/world/core.rs:145-153`) and updated per world (`world/actor.rs:1769-1780`) — so a single release-keyed `effective_grant` would overwrite one world's authority report with another's.
+Certification content (`requested`, `discovered_used`, `custom_platform`) is a property of the release and lives here. **Effective grants and runtime observations are not fields of this record**: they are properties of a _world instance_ running the release (§4.2.1). Two worlds on one server can run the same release under different grants and ceilings — the ledger and ceiling are stored per `WorldCore` (`pkgs/id/src/world/core.rs:145-153`) and updated per world (`world/actor.rs:1769-1780`) — so a single release-keyed `effective_grant` would overwrite one world's authority report with another's.
 
 ### 4.2 Shape
 
@@ -131,9 +131,9 @@ Certification content (`requested`, `discovered_used`, `custom_platform`) is a p
   "v": 1,
   "release": {
     "identity": "<blake3 hex>",
-    "platform": {"name": "roc-world", "tree_hash": "<blake3 hex>", "abi_version": 1},
+    "platform": { "name": "roc-world", "tree_hash": "<blake3 hex>", "abi_version": 1 },
     "compiler": "<blake3 hex>",
-    "analyzer": {"version": "<semver>", "policy": "<id>"}
+    "analyzer": { "version": "<semver>", "policy": "<id>" }
   },
   "requested": {
     "tiers": ["standard"],
@@ -179,7 +179,7 @@ Effective grants and runtime observations are recorded per **world instance**, k
 }
 ```
 
-Admission and presentation join the two records on `release identity`: the release record says what the code *can* use and what its author *asked* for; the instance record says what *this* world may use now and what it has been seen using. Neither record alone is an authority report, and a consumer must never read a release record as if it carried a grant.
+Admission and presentation join the two records on `release identity`: the release record says what the code _can_ use and what its author _asked_ for; the instance record says what _this_ world may use now and what it has been seen using. Neither record alone is an authority report, and a consumer must never read a release record as if it carried a grant.
 
 Rules that make the shape honest:
 
@@ -192,14 +192,14 @@ Rules that make the shape honest:
 ### 4.3 What the schema deliberately does not carry
 
 - **Runtime usage counters as a used set.** `CapsReport.usage` (`world_caps.rs:1226-1230`, `:1426-1454`) stays what it is: local, unsigned, journaled observation. It is an input to `observed`, never to `discovered_used` (#6000 §2 states the same rule).
-- **Signatures.** The registry record is server-local state, like grants and ceilings (`world_caps.rs:61-64`). Signing a capability registry is not in v1; a receiving server re-derives rather than trusting a foreign claim. If cross-server registry sharing is wanted later, it is a transfer of *derivation evidence*, not of a trusted verdict.
+- **Signatures.** The registry record is server-local state, like grants and ceilings (`world_caps.rs:61-64`). Signing a capability registry is not in v1; a receiving server re-derives rather than trusting a foreign claim. If cross-server registry sharing is wanted later, it is a transfer of _derivation evidence_, not of a trusted verdict.
 - **History.** The entry is the current fact for a release identity; history/#6017's diffs are a later schema addition, explicitly deferred to #6017.
 
 ## 5. The custom-platform compile path (S14, S15)
 
 ### 5.1 What "custom platform" means here
 
-A platform is a tree: `platform.roc` (which `exposes` the module list and `provides` the host functions) plus its `.roc` modules plus `targets/`. The stock tree exposes all six modules and, under C2, no file or network host functions. A world that needs `fs.read` cannot get it by importing harder — the platform must *provide* a host function that performs the read, and the OS sandbox must permit the syscall. So S14 is not "pick a different prebuilt platform" (there is only one, §1); it is **synthesise the minimal platform tree that provides exactly the requested capability set**.
+A platform is a tree: `platform.roc` (which `exposes` the module list and `provides` the host functions) plus its `.roc` modules plus `targets/`. The stock tree exposes all six modules and, under C2, no file or network host functions. A world that needs `fs.read` cannot get it by importing harder — the platform must _provide_ a host function that performs the read, and the OS sandbox must permit the syscall. So S14 is not "pick a different prebuilt platform" (there is only one, §1); it is **synthesise the minimal platform tree that provides exactly the requested capability set**.
 
 ### 5.2 The requirement set is the cache key
 
@@ -214,7 +214,7 @@ requested_key = BLAKE3(
 
 Two worlds that request the same set on the same ABI and base tree get the **same** synthesised platform — this is the "caching and sharing across identical requirement sets" the issue asks for, and it falls out of content addressing rather than a bespoke registry. The synthesised tree is stored under its own tree hash and recorded in the release's `custom_platform.tree_hash`; the compile cache key of #5965 §2.1 already includes the platform tree hash, so artifact caching composes with no new mechanism.
 
-Narrowing the key: a world requesting `{standard, sandbox.fs}` is `{standard}`-plus-`fs.*`; a world requesting `{standard, net.out}` is a different key. The key is the request, never the *used* set — a world that requests file access but provably never calls it still gets the file-capable platform, because "provably never calls it" is a property of analysis, not of the ABI it was compiled against. (Compiling against the minimal platform its used set proves sufficient is a possible optimisation; it is deliberately not v1, because it would make the artifact's platform depend on analysis results and complicate re-certification.)
+Narrowing the key: a world requesting `{standard, sandbox.fs}` is `{standard}`-plus-`fs.*`; a world requesting `{standard, net.out}` is a different key. The key is the request, never the _used_ set — a world that requests file access but provably never calls it still gets the file-capable platform, because "provably never calls it" is a property of analysis, not of the ABI it was compiled against. (Compiling against the minimal platform its used set proves sufficient is a possible optimisation; it is deliberately not v1, because it would make the artifact's platform depend on analysis results and complicate re-certification.)
 
 ### 5.3 Synthesis is a second compile, and someone pays
 
@@ -236,13 +236,13 @@ A world may be given a platform wider than it uses. The design keeps the two fac
 
 ## 6. What this decides for the issue's open questions
 
-| Open question (issue) | Answer | Owner if split |
-| --- | --- | --- |
-| Discovery mechanism; reconciliation when static and profiling disagree | Static call-graph derivation certifies; profiling corroborates. Profile-outside-static is a hard fault and a certification revocation; static-outside-profile is normal over-approximation. (§3.1–3.2) | Tool internals: #5998; exception features: #6000 |
-| Is the used set code-fixed or path-dependent; how to present a path-dependent set honestly | It is a property of the code (the reachable set), so it is path-independent; observations are a separate field and are never substituted. (§3.3) | Presentation: #6017 |
-| Custom-platform compilation: who pays, how long, cached/shared | The requesting author pays in compile credits (#5965); minutes-scale build; keyed by `requested_key` so identical requirement sets share one tree and its compiled worlds. (§5.2–5.3) | Compile economics: #5965 |
-| How the requested/used pair interacts with writer-set authority (#5545) | Separate axis; a capability grant is not a writer-set grant. (§7) | Writer-set mechanics: #5545 |
-| Do we have more than one platform? (S9) | No: one tree, one catalog, six modules, two tiers. (§1) | — |
+| Open question (issue)                                                                      | Answer                                                                                                                                                                                                 | Owner if split                                   |
+| ------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------ |
+| Discovery mechanism; reconciliation when static and profiling disagree                     | Static call-graph derivation certifies; profiling corroborates. Profile-outside-static is a hard fault and a certification revocation; static-outside-profile is normal over-approximation. (§3.1–3.2) | Tool internals: #5998; exception features: #6000 |
+| Is the used set code-fixed or path-dependent; how to present a path-dependent set honestly | It is a property of the code (the reachable set), so it is path-independent; observations are a separate field and are never substituted. (§3.3)                                                       | Presentation: #6017                              |
+| Custom-platform compilation: who pays, how long, cached/shared                             | The requesting author pays in compile credits (#5965); minutes-scale build; keyed by `requested_key` so identical requirement sets share one tree and its compiled worlds. (§5.2–5.3)                  | Compile economics: #5965                         |
+| How the requested/used pair interacts with writer-set authority (#5545)                    | Separate axis; a capability grant is not a writer-set grant. (§7)                                                                                                                                      | Writer-set mechanics: #5545                      |
+| Do we have more than one platform? (S9)                                                    | No: one tree, one catalog, six modules, two tiers. (§1)                                                                                                                                                | —                                                |
 
 ## 7. The writer-set authority interaction (#5545)
 
@@ -250,7 +250,7 @@ Writer-set authority answers **"whose writes count in a view"** — a signed, ve
 
 - **A capability grant is not a writer-set grant.** An author admitted to a writer set gets no filesystem or network authority by that fact; a world granted `net.out` gets no say in whose writes count.
 - **A writer-set grant is not a capability grant.** Adding an author to a writer set does not widen the world's requested/used/effective sets.
-- **The one intersection is admission of a capability-bearing world.** Publishing a world that requests an extension tier is currently first-party only (C2); when that changes, the natural rule is that the **publisher's writer-set authority over the world's own definition** is what makes the declaration trustworthy — but that is a future decision, not v1. v1 states only that the two checks run independently: writer-set admission for *content*, capability admission for *execution*.
+- **The one intersection is admission of a capability-bearing world.** Publishing a world that requests an extension tier is currently first-party only (C2); when that changes, the natural rule is that the **publisher's writer-set authority over the world's own definition** is what makes the declaration trustworthy — but that is a future decision, not v1. v1 states only that the two checks run independently: writer-set admission for _content_, capability admission for _execution_.
 
 If a later design wants the pair coupled (for example, "only the world's writer set may raise its requested ceiling"), that is an explicit follow-on under #5545; this note does not couple them by default.
 

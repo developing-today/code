@@ -5,7 +5,7 @@ something breaks without it.
 
 ## Go libraries
 
-**Eleven**, and `pkgs/mcpx/package.nix` states the trade for each one beside
+**Twelve**, and `pkgs/mcpx/package.nix` states the trade for each one beside
 the `vendorHash` that pays for them.
 
 | module                                     | what it is for                                                                                                                                                                                                           |
@@ -21,6 +21,7 @@ the `vendorHash` that pays for them.
 | `golang.org/x/sys`                         | the OS-specific syscalls the standard library does not expose (peer credentials on the daemon socket, process groups)                                                                                                    |
 | `golang.org/x/net`                         | `publicsuffix` and `idna` at the elicitation answer review (`internal/cli/elicit.go`): the registrable domain under a URL about to be answered, plus both host forms and a punycode warning (#1678)                      |
 | `tailscale.com`                            | the tsnet identity transport (#1967): the daemon embeds a Tailscale node and is reachable by its tailnet identity, still as a pure-Go `CGO_ENABLED=0` binary                                                             |
+| `github.com/creack/pty`                    | a PTY for the `output.color` end-to-end probe; production code does not use it                                                                                                                                           |
 
 The three `charmbracelet` modules are one decision, not three: they cost about
 1.2 MB in the stripped binary and replace raw terminal handling -- escape

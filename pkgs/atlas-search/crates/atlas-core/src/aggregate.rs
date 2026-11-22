@@ -47,8 +47,10 @@
 //! already in place).
 //!
 //! Out of scope (later #5669 slices): hosted Turso shard creation (the
-//! deployment surface), multi-unit aggregation into one shard, and
-//! merge-on-close archival of the staging DB file.
+//! deployment surface) and multi-unit aggregation into one shard. The
+//! merge-on-close archival of the staging DB file is performed by
+//! [`Registry::promote`] (the unit's DB is branched beside itself as
+//! `*.archive` at promotion, stage.rs), so it needs nothing here.
 
 use std::path::{Path, PathBuf};
 

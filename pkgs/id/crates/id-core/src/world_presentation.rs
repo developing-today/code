@@ -1728,10 +1728,10 @@ mod tests {
             "diff {diff:?} vs full repaint"
         );
 
-        let mut patched = vt100::Parser::new(24, 80, 0);
+        let mut patched = vt100::Parser::default();
         patched.process(previous.render_ansi().unwrap().as_bytes());
         patched.process(diff.as_bytes());
-        let mut repainted = vt100::Parser::new(24, 80, 0);
+        let mut repainted = vt100::Parser::default();
         repainted.process(full.as_bytes());
         assert_eq!(patched.screen().contents(), repainted.screen().contents());
     }
@@ -1757,10 +1757,18 @@ mod tests {
 
         let diff = next.render_ansi_diff(&previous).unwrap();
         assert!(diff.contains("\x1b[0;1;38;5;2m"));
-        let mut patched = vt100::Parser::new(1, 6, 0);
+        let mut patched = vt100::Parser::new(
+            std::num::NonZeroU16::MIN,
+            std::num::NonZeroU16::new(6).unwrap(),
+            0,
+        );
         patched.process(previous.render_ansi().unwrap().as_bytes());
         patched.process(diff.as_bytes());
-        let mut repainted = vt100::Parser::new(1, 6, 0);
+        let mut repainted = vt100::Parser::new(
+            std::num::NonZeroU16::MIN,
+            std::num::NonZeroU16::new(6).unwrap(),
+            0,
+        );
         repainted.process(next.render_ansi().unwrap().as_bytes());
         assert_eq!(patched.screen().contents(), repainted.screen().contents());
         assert_eq!(patched.screen().cell(0, 1), repainted.screen().cell(0, 1));

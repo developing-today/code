@@ -1,8 +1,8 @@
 // Environment configuration. Secrets are read by NAME from the environment
-// only — never committed, never printed. Everything has a fixture-safe
-// default except SUPABASE_URL, which is required: its previous default
-// pointed at the deleted legacy muse-dev project (#5120), so a missing
-// value now fails loudly at startup instead of silently queueing nowhere.
+// only — never committed, never printed. The queue needs no secret in
+// this process at all (#9028): dispatch talks to the fleet queue broker
+// with the broker token, which stays in its token file
+// (~/.config/queue-broker/token) and is read at client construction.
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -18,7 +18,7 @@ export const FLEET_REPOS = [
   "dezren39/dezren39",
 ] as const;
 
-/** Repo -> Supabase queue name (repo-health pilot queues). */
+/** Repo -> queue name (repo-health pilot queues). */
 export const REPO_QUEUES: Record<string, string> = {
   "developing-today/code": "repo-health-code-pilot",
   "developing-today-forks/opencode": "repo-health-opencode-pilot",
@@ -58,8 +58,12 @@ export interface Config {
   oidcAudience: string;
   /** Repos either auth form may dispatch for. */
   repoAllowlist: string[];
-  supabaseUrl: string;
-  supabaseServiceRoleKey: string | null;
+  /** Queue broker base URL (QUEUE_BROKER_URL). */
+  queueBrokerUrl: string;
+  /** File holding the queue broker token (QUEUE_BROKER_TOKEN_FILE). */
+  queueBrokerTokenFile: string;
+  /** Inline queue broker token (QUEUE_BROKER_TOKEN); wins over the file. */
+  queueBrokerToken: string | null;
   opencodeUrl: string;
   /** File holding the OpenCode server's state incl. its password (read at
    * runtime on the laptop; the value is never logged or stored here). */
@@ -67,6 +71,10 @@ export interface Config {
   githubAppId: string | null;
   /** Decoded PEM for the GitHub App private key (memory only). */
   githubAppPrivateKeyPem: string | null;
+  /** Where launches into a primary clone get their own worktree
+   * (PM_DISPATCH_WORKTREE_ROOT, default ~/git/fleet; "off" runs in the
+   * requested directory as before). code#12213. */
+  worktreeRoot: string | null;
 }
 
 export function loadConfig(env: Record<string, string | undefined> = process.env): Config {
@@ -97,12 +105,6 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
       appPem = null;
     }
   }
-  const supabaseUrl = env.SUPABASE_URL?.trim();
-  if (!supabaseUrl) {
-    throw new Error(
-      "SUPABASE_URL is not set: pm-dispatch requires the fleet Supabase (muse-dev2) project URL. There is no default — the previous one pointed at the deleted legacy muse-dev project (#5120). The laptop deployment renders it from the pm-stack SOPS file (pm-stack/dispatch/install.sh).",
-    );
-  }
   return {
     port,
     hosts,
@@ -110,11 +112,16 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     apiToken: env.DISPATCH_API_TOKEN?.trim() ? env.DISPATCH_API_TOKEN.trim() : null,
     oidcAudience: s(env.DISPATCH_OIDC_AUDIENCE, "pm-dispatch"),
     repoAllowlist: allowlist,
-    supabaseUrl: supabaseUrl.replace(/\/$/, ""),
-    supabaseServiceRoleKey: env.SUPABASE_SERVICE_ROLE_KEY?.trim() ? env.SUPABASE_SERVICE_ROLE_KEY.trim() : null,
+    queueBrokerUrl: s(env.QUEUE_BROKER_URL, "http://100.99.113.103:4801").replace(/\/$/, ""),
+    queueBrokerTokenFile: s(env.QUEUE_BROKER_TOKEN_FILE, join(homedir(), ".config", "queue-broker", "token")),
+    queueBrokerToken: env.QUEUE_BROKER_TOKEN?.trim() ? env.QUEUE_BROKER_TOKEN.trim() : null,
     opencodeUrl: s(env.OPENCODE_URL, "http://127.0.0.1:13420").replace(/\/$/, ""),
     opencodeAuthFile: s(env.OPENCODE_AUTH_FILE, join(homedir(), ".local", "state", "opencode", "service-prod.json")),
     githubAppId: env.GITHUB_APP_ID?.trim() ? env.GITHUB_APP_ID.trim() : null,
     githubAppPrivateKeyPem: appPem,
+    worktreeRoot:
+      env.PM_DISPATCH_WORKTREE_ROOT?.trim().toLowerCase() === "off"
+        ? null
+        : s(env.PM_DISPATCH_WORKTREE_ROOT, join(homedir(), "git", "fleet")),
   };
 }

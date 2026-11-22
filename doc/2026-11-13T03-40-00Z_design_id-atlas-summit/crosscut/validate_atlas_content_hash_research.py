@@ -52,7 +52,9 @@ def check(ok, label, detail=""):
 def canonical_form(vector):
     out = f"v{vector['version']}\n"
     for d in vector["dimensions"]:
-        out += f"{d['name']}|{d['shape']}|{d['semantics']}|{d.get('label_column') or ''}\n"
+        out += (
+            f"{d['name']}|{d['shape']}|{d['semantics']}|{d.get('label_column') or ''}\n"
+        )
     return out
 
 
@@ -60,7 +62,10 @@ def main():
     data = json.loads(VECTORS.read_text())
 
     chunk = data["chunk_content_hash"]
-    check(chunk["status"] == "producer_unavailable", "chunk status is producer_unavailable")
+    check(
+        chunk["status"] == "producer_unavailable",
+        "chunk status is producer_unavailable",
+    )
     check(chunk["producer"] is None, "chunk producer is null")
     check(chunk["algorithm"] is None, "chunk algorithm is null")
     check(chunk["profile"] is None, "chunk profile is null")

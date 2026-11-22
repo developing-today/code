@@ -57,10 +57,31 @@ mod types;
 /// World-service constructors and module lifecycle (split from this module, #4717).
 mod service;
 
+/// Document store API (split from this module, #8594).
+mod documents;
+
+/// Session core loop (split from this module, #8594).
+mod session_core;
+/// View state and view sending (split from this module, #8594).
+mod view;
+
+pub(crate) use session_core::run_world_session;
+pub(crate) use view::{
+    PresenceGuard, ScreenSubscriptionState, ViewRevisionState, Viewport, normalize_paste, send_view,
+};
+
+pub(crate) use documents::{
+    DocumentError, DocumentPageSelector, MAX_DOCUMENT_BYTES, MAX_DOCUMENT_LIST_BYTES,
+    MAX_DOCUMENT_LIST_ITEMS, document_name_wire_size, document_names_page, document_session,
+    documents_session, is_public_document_name, is_viewable_document_name, list_document_names,
+    list_public_documents, read_document, read_public_document,
+};
+
 pub use types::MAX_ADMIN_TOKEN_BYTES;
 pub(crate) use types::{
-    CAPS_CEILING_NOTICE, ClientFrame, MAX_CAPABILITY_BYTES, MAX_CONCURRENT_MODULE_UPLOADS,
-    MAX_RESUME_TOKEN_BYTES, ServerFrame, invite_bounds,
+    CAPS_CEILING_NOTICE, ClientFrame, HoverEvent, InputEnvironment, InputRefusalReason,
+    MAX_CAPABILITY_BYTES, MAX_CONCURRENT_MODULE_UPLOADS, MAX_RESUME_TOKEN_BYTES, PointerButton,
+    PointerEvent, SEMANTIC_EVENT_CLASSES, ScreenRegion, ServerFrame, invite_bounds,
 };
 pub use types::{
     INVITE_DEFAULT_SECS, INVITE_MAX_SECS, Inbound, InstallError, InviteError, InviteResponse,
@@ -74,9 +95,22 @@ pub fn module_hash(wasm: &[u8]) -> String {
     Hash::new(wasm).to_string()
 }
 
+/// The exact message a [`ModuleSignature`] signs for `wasm`.
+///
+/// It is `b"developing-today/id-world-module/v1\0"` followed by the 32-byte
+/// BLAKE3 digest of the module bytes. Program bundles (#8280) sign their
+/// payload with this same message so a bundle installs into a trust-listed
+/// world.
+#[must_use]
+pub fn module_signing_message(wasm: &[u8]) -> Vec<u8> {
+    let mut message = b"developing-today/id-world-module/v1\0".to_vec();
+    message.extend_from_slice(blake3::hash(wasm).as_bytes());
+    message
+}
+
 /// Verify an upload against the configured publisher trust list. Signatures
 /// cover a domain-separated BLAKE3 digest, not a transport-specific encoding.
-fn verify_module_signature(
+pub(crate) fn verify_module_signature(
     trusted_keys: &[[u8; 32]],
     wasm: &[u8],
     signature: Option<&ModuleSignature>,
@@ -99,10 +133,7 @@ fn verify_module_signature(
     let key = ed25519_dalek::VerifyingKey::from_bytes(&public_key)
         .map_err(|_| InstallError::UntrustedModule)?;
     let signature = ed25519_dalek::Signature::from_bytes(&signature_bytes);
-    let digest = blake3::hash(wasm);
-    let mut message = b"developing-today/id-world-module/v1\0".to_vec();
-    message.extend_from_slice(digest.as_bytes());
-    key.verify_strict(&message, &signature)
+    key.verify_strict(&module_signing_message(wasm), &signature)
         .map_err(|_| InstallError::UntrustedModule)
 }
 
@@ -548,756 +579,6 @@ pub(crate) fn moderation_authority(
     Ok(Authority::Signed(key))
 }
 
-/// Serve one session against its resolved world, starting from its first frame.
-async fn run_world_session<I: SessionIo>(
-    service: &WorldService,
-    io: &mut I,
-    frame: ClientFrame,
-    world_name: &str,
-    documents_store: Option<Store>,
-) {
-    match frame {
-        ClientFrame::Join {
-            capability,
-            after,
-            screen_patches,
-            resume_token,
-        } => {
-            if capability.len() > MAX_CAPABILITY_BYTES {
-                let _ = send_error(service.frame_meter(), io, "invalid join capability").await;
-                return;
-            }
-            joined(
-                service,
-                io,
-                world_name,
-                JoinCapability::from_wire(capability),
-                after,
-                screen_patches,
-                resume_token,
-                documents_store,
-            )
-            .await;
-        }
-        ClientFrame::FormResult { .. } => {
-            let _ = send_error(
-                service.frame_meter(),
-                io,
-                "form results need a joined session",
-            )
-            .await;
-        }
-        ClientFrame::Invite {
-            admin_token,
-            display_name,
-            expires_in_secs,
-            uses,
-            role,
-        } => match role.as_deref().map(WorldScopes::from_role) {
-            Some(None) => {
-                let _ = send_error(service.frame_meter(),
-                    io,
-                    "unknown invite role; use spectator, observer, player, guest, delegator, builder, or moderator",
-                )
-                .await;
-                audit_admin_frame(world_name, "Invite", "refused", serde_json::json!({}));
-            }
-            role_scopes => match service
-                .invite_scoped(
-                    Some(&admin_token),
-                    display_name,
-                    expires_in_secs,
-                    uses,
-                    role_scopes.flatten().unwrap_or(WorldScopes::GUEST),
-                )
-                .await
-            {
-                Ok(invite) => {
-                    let _ =
-                        send_json(service.frame_meter(), io, &ServerFrame::Invite(&invite)).await;
-                    audit_admin_frame(world_name, "Invite", "accepted", serde_json::json!({}));
-                }
-                Err(InviteError::InvalidBounds(message)) => {
-                    let _ = send_error(service.frame_meter(), io, message).await;
-                    audit_admin_frame(world_name, "Invite", "refused", serde_json::json!({}));
-                }
-                Err(InviteError::Disabled) => {
-                    let _ = send_error(service.frame_meter(), io, "invites are not enabled").await;
-                    audit_admin_frame(world_name, "Invite", "refused", serde_json::json!({}));
-                }
-                Err(InviteError::Unauthorized) => {
-                    let _ = send_error(service.frame_meter(), io, "invite denied").await;
-                    audit_admin_frame(world_name, "Invite", "refused", serde_json::json!({}));
-                }
-                Err(InviteError::Unavailable) => {
-                    let _ = send_error(
-                        service.frame_meter(),
-                        io,
-                        "world cannot issue another invite",
-                    )
-                    .await;
-                    audit_admin_frame(world_name, "Invite", "refused", serde_json::json!({}));
-                }
-            },
-        },
-        // Query frames keep the session open for further queries: a client
-        // can page through records, and may still join later on.
-        ClientFrame::Info { .. }
-        | ClientFrame::Metrics { .. }
-        | ClientFrame::Records { .. }
-        | ClientFrame::RecordsTicket { .. }
-        | ClientFrame::Documents { .. }
-        | ClientFrame::Document { .. }
-        | ClientFrame::DownloadModule { .. } => {
-            query_session(service, io, frame, world_name, documents_store).await;
-        }
-        ClientFrame::InstallBegin {
-            admin_token,
-            total_bytes,
-            module_hash,
-            signature,
-            seed,
-        } => {
-            // The pre-join path is admin-only (design #835 phase 3):
-            // joined builder sessions are already past this point, so
-            // an omitted token here names no authority at all.
-            let Some(admin_token) = admin_token else {
-                let _ = send_error(service.frame_meter(), io, "module install denied").await;
-                return;
-            };
-            if service.source_only() {
-                if service.authorize_admin(Some(&admin_token)).is_err() {
-                    audit_admin_frame(world_name, "InstallBegin", "refused", serde_json::json!({}));
-                    let _ = send_error(service.frame_meter(), io, "module install denied").await;
-                    return;
-                }
-                audit_admin_frame(
-                    world_name,
-                    "InstallBegin",
-                    "refused",
-                    serde_json::json!({"reason": "source_only"}),
-                );
-                let _ = send_error(
-                    service.frame_meter(),
-                    io,
-                    "raw module uploads are disabled by source-only policy",
-                )
-                .await;
-                return;
-            }
-            let install_result = install_module_session(
-                service,
-                io,
-                &admin_token,
-                total_bytes,
-                module_hash.as_deref(),
-                signature.as_ref(),
-                seed,
-            )
-            .await;
-            audit_admin_frame(
-                world_name,
-                "InstallBegin",
-                if install_result.is_ok() {
-                    "accepted"
-                } else {
-                    "refused"
-                },
-                serde_json::json!({"total_bytes": total_bytes}),
-            );
-            if let Err(message) = install_result {
-                let _ = send_error(service.frame_meter(), io, message).await;
-            }
-        }
-        ClientFrame::Caps { capability } => {
-            let token = JoinCapability::from_wire(capability);
-            if service.world().participant_id(token).await.is_err() {
-                let _ = send_error(service.frame_meter(), io, "join denied").await;
-            } else {
-                io.mark_authorized();
-                match service.world().caps_report().await {
-                    Ok(report) => {
-                        let _ = send_json(service.frame_meter(), io, &ServerFrame::Caps { report })
-                            .await;
-                    }
-                    Err(_) => {
-                        let _ =
-                            send_error(service.frame_meter(), io, "capability report unavailable")
-                                .await;
-                    }
-                }
-            }
-        }
-        ClientFrame::UpdateCaps {
-            admin_token,
-            grant,
-            revoke,
-        } => match service.authorize_admin(Some(&admin_token)) {
-            Ok(()) => match service.world().update_caps(grant, revoke).await {
-                Ok(report) => {
-                    let _ =
-                        send_json(service.frame_meter(), io, &ServerFrame::Caps { report }).await;
-                }
-                Err(error) => {
-                    let _ = send_error(service.frame_meter(), io, &format!("{error:#}")).await;
-                }
-            },
-            Err(_) => {
-                let _ = send_error(service.frame_meter(), io, "admin denied").await;
-            }
-        },
-        ClientFrame::SetCapsCeiling {
-            admin_token,
-            ceiling,
-        } => match service.set_caps_ceiling(Some(&admin_token), ceiling).await {
-            Ok(report) => {
-                let _ = send_json(
-                    service.frame_meter(),
-                    io,
-                    &ServerFrame::CapsCeiling {
-                        report,
-                        message: CAPS_CEILING_NOTICE,
-                    },
-                )
-                .await;
-            }
-            Err(error) => {
-                let _ = send_error(service.frame_meter(), io, &format!("{error:#}")).await;
-            }
-        },
-        ClientFrame::SetExecutionProfile {
-            admin_token,
-            profile,
-        } => match service
-            .set_execution_profile(Some(&admin_token), profile)
-            .await
-        {
-            Ok(update) => {
-                let _ = send_json(service.frame_meter(),
-                    io,
-                    &ServerFrame::ExecutionProfile {
-                        update,
-                        message: "profile saved; it applies on the next program install or process restart, not to the running instance",
-                    },
-                )
-                .await;
-                audit_admin_frame(
-                    world_name,
-                    "SetExecutionProfile",
-                    "accepted",
-                    serde_json::json!({}),
-                );
-            }
-            Err(error) => {
-                audit_admin_frame(
-                    world_name,
-                    "SetExecutionProfile",
-                    "refused",
-                    serde_json::json!({}),
-                );
-                let _ = send_error(service.frame_meter(), io, &format!("{error:#}")).await;
-            }
-        },
-        ClientFrame::SetSchedule {
-            admin_token,
-            id,
-            at_ms,
-        } => match service.set_schedule(Some(&admin_token), id, at_ms).await {
-            Ok(schedules) => {
-                let _ = send_json(
-                    service.frame_meter(),
-                    io,
-                    &ServerFrame::Schedules { schedules },
-                )
-                .await;
-            }
-            Err(error) => {
-                let _ = send_error(service.frame_meter(), io, &format!("{error:#}")).await;
-            }
-        },
-        ClientFrame::CancelSchedule { admin_token, id } => {
-            match service.cancel_schedule(Some(&admin_token), id).await {
-                Ok(schedules) => {
-                    let _ = send_json(
-                        service.frame_meter(),
-                        io,
-                        &ServerFrame::Schedules { schedules },
-                    )
-                    .await;
-                }
-                Err(error) => {
-                    let _ = send_error(service.frame_meter(), io, &format!("{error:#}")).await;
-                }
-            }
-        }
-        ClientFrame::DownloadModuleAdmin {
-            admin_token,
-            module_hash,
-        } => {
-            if let Err(message) =
-                download_module_admin_session(service, io, &admin_token, &module_hash).await
-            {
-                let _ = send_error(service.frame_meter(), io, message).await;
-            }
-        }
-        ClientFrame::EventHistoryAdmin { admin_token } => {
-            let result = event_history_admin_session(service, io, &admin_token).await;
-            audit_admin_frame(
-                world_name,
-                "EventHistoryAdmin",
-                if result.is_ok() {
-                    "accepted"
-                } else {
-                    "refused"
-                },
-                serde_json::json!({}),
-            );
-            if let Err(message) = result {
-                let _ = send_error(service.frame_meter(), io, message).await;
-            }
-        }
-        ClientFrame::WorldState {
-            admin_token,
-            capability,
-        } => {
-            let admin_ok = admin_token
-                .as_deref()
-                .is_some_and(|token| service.authorize_admin(Some(token)).is_ok());
-            let cap_ok = if admin_ok {
-                true
-            } else if let Some(cap) = capability.as_deref() {
-                let token = JoinCapability::from_wire(cap.to_string());
-                service.world().participant_id(token).await.is_ok()
-            } else {
-                false
-            };
-            if !admin_ok && !cap_ok {
-                let _ = send_error(service.frame_meter(), io, "access denied").await;
-            } else {
-                match service.world().manifest_state().await {
-                    Ok((seed, schedules)) => {
-                        let _ = send_json(
-                            service.frame_meter(),
-                            io,
-                            &ServerFrame::WorldState {
-                                seed: admin_ok.then_some(seed),
-                                schedules,
-                            },
-                        )
-                        .await;
-                    }
-                    Err(error) => {
-                        let _ = send_error(service.frame_meter(), io, &format!("{error:#}")).await;
-                    }
-                }
-            }
-        }
-        ClientFrame::ExecutionProfileInfo {
-            admin_token,
-            capability,
-        } => {
-            let auth_ok = if let Some(admin) = admin_token.as_deref() {
-                service.authorize_admin(Some(admin)).is_ok()
-            } else if let Some(cap) = capability.as_deref() {
-                let token = JoinCapability::from_wire(cap.to_string());
-                service.world().participant_id(token).await.is_ok()
-            } else {
-                false
-            };
-            if !auth_ok {
-                let _ = send_error(service.frame_meter(), io, "access denied").await;
-            } else {
-                match service.world().execution_profile().await {
-                    Ok(profile) => {
-                        let _ = send_json(
-                            service.frame_meter(),
-                            io,
-                            &ServerFrame::ExecutionProfile {
-                                update: crate::world::ExecutionProfileUpdate {
-                                    requested: profile,
-                                    applies_on_next_program_install_or_process_restart: false,
-                                },
-                                message: "current persisted execution profile",
-                            },
-                        )
-                        .await;
-                    }
-                    Err(error) => {
-                        let _ = send_error(service.frame_meter(), io, &format!("{error:#}")).await;
-                    }
-                }
-            }
-        }
-        #[cfg(feature = "sandbox")]
-        ClientFrame::Compile {
-            admin_token,
-            files,
-            seed,
-            native,
-        } => {
-            let seed = seed.unwrap_or_else(|| rand::rng().random::<u64>());
-            let spec = CompileSpec {
-                files: files
-                    .into_iter()
-                    .map(|file| (file.name, file.content))
-                    .collect(),
-                seed,
-                native,
-            };
-            match service.compile_and_install(Some(&admin_token), &spec).await {
-                Ok((module_hash, sequence, diagnostics)) => {
-                    let _ = send_json(
-                        service.frame_meter(),
-                        io,
-                        &ServerFrame::Compiled {
-                            module_hash,
-                            sequence,
-                            diagnostics,
-                        },
-                    )
-                    .await;
-                    audit_admin_frame(world_name, "Compile", "accepted", serde_json::json!({}));
-                }
-                Err(message) => {
-                    audit_admin_frame(world_name, "Compile", "refused", serde_json::json!({}));
-                    let _ = send_error(service.frame_meter(), io, &message).await;
-                }
-            }
-        }
-        #[cfg(not(feature = "sandbox"))]
-        ClientFrame::Compile { .. } => {
-            audit_admin_frame(world_name, "Compile", "refused", serde_json::json!({}));
-            let _ = send_error(
-                service.frame_meter(),
-                io,
-                "compilation is not enabled on this server",
-            )
-            .await;
-        }
-        ClientFrame::InstallChunk { .. }
-        | ClientFrame::InstallEnd
-        | ClientFrame::Directory { .. }
-        | ClientFrame::ListWorlds { .. }
-        | ClientFrame::CreateWorld { .. }
-        | ClientFrame::SetIsolation { .. }
-        | ClientFrame::SetCrossWorldWrite { .. }
-        | ClientFrame::ForceCrossWorldWrite { .. }
-        | ClientFrame::SetFileScope { .. }
-        | ClientFrame::Chat { .. }
-        | ClientFrame::Attenuate { .. }
-        | ClientFrame::DelegateToFriend { .. }
-        | ClientFrame::Input { .. }
-        | ClientFrame::Resize { .. }
-        | ClientFrame::Revoke { .. }
-        | ClientFrame::Paste { .. }
-        | ClientFrame::ProviderOffer { .. }
-        | ClientFrame::ProviderReply { .. }
-        | ClientFrame::FormResult { .. } => {
-            let _ = send_error(
-                service.frame_meter(),
-                io,
-                "first frame must be join, invite or install_begin",
-            )
-            .await;
-        }
-    }
-}
-
-/// Serve query frames (`info`, `caps`, `execution_profile`, `metrics`,
-/// `records`, `records_ticket`, `download_module`) until the peer closes,
-/// denies, or sends a frame that
-/// ends the session. A `join` frame switches to the joined session.
-async fn query_session<I: SessionIo>(
-    service: &WorldService,
-    io: &mut I,
-    first: ClientFrame,
-    world_name: &str,
-    documents_store: Option<Store>,
-) {
-    let mut next = Some(first);
-    loop {
-        let frame = match next.take() {
-            Some(frame) => frame,
-            None => match io.recv().await {
-                Inbound::Text(text) => {
-                    if let Ok(frame) = parse_json_without_duplicate_keys(&text)
-                        .and_then(|value| serde_json::from_value::<ClientFrame>(value))
-                    {
-                        frame
-                    } else {
-                        let _ = send_error(service.frame_meter(), io, "invalid world frame").await;
-                        return;
-                    }
-                }
-                Inbound::Oversized => {
-                    let _ = send_error(service.frame_meter(), io, "world frame is too large").await;
-                    return;
-                }
-                Inbound::Unsupported => {
-                    let _ =
-                        send_error(service.frame_meter(), io, "frames must be UTF-8 text").await;
-                    return;
-                }
-                Inbound::Closed => return,
-            },
-        };
-        match frame {
-            ClientFrame::Join {
-                capability,
-                after,
-                screen_patches,
-                resume_token,
-            } => {
-                if capability.len() > MAX_CAPABILITY_BYTES {
-                    let _ = send_error(service.frame_meter(), io, "invalid join capability").await;
-                    return;
-                }
-                joined(
-                    service,
-                    io,
-                    world_name,
-                    JoinCapability::from_wire(capability),
-                    after,
-                    screen_patches,
-                    resume_token,
-                    documents_store.clone(),
-                )
-                .await;
-                return;
-            }
-            ClientFrame::Info { capability } => {
-                let token = JoinCapability::from_wire(capability);
-                if let Ok(snapshot) = service.world().snapshot(token).await {
-                    io.mark_authorized();
-                    if !send_json(
-                        service.frame_meter(),
-                        io,
-                        &ServerFrame::ModuleInfo {
-                            world_id: snapshot.world_id,
-                            active_module_hash: snapshot.active_module_hash,
-                            active_module_provenance: snapshot.active_module_provenance,
-                            current_sequence: snapshot.current_sequence,
-                        },
-                    )
-                    .await
-                    {
-                        return;
-                    }
-                } else {
-                    let _ = send_error(service.frame_meter(), io, "join denied").await;
-                    return;
-                }
-            }
-            ClientFrame::Metrics { capability } => {
-                // Authorized exactly like `info`: holding a capability
-                // that snapshots the world is enough to read its metrics.
-                let token = JoinCapability::from_wire(capability);
-                match service.world().snapshot(token).await {
-                    Ok(_) => {
-                        io.mark_authorized();
-                        match service.world().metrics().await {
-                            Ok(metrics) => {
-                                if !send_json(
-                                    service.frame_meter(),
-                                    io,
-                                    &ServerFrame::Metrics { metrics },
-                                )
-                                .await
-                                {
-                                    return;
-                                }
-                            }
-                            Err(error) => {
-                                let _ =
-                                    send_error(service.frame_meter(), io, &format!("{error:#}"))
-                                        .await;
-                                return;
-                            }
-                        }
-                    }
-                    Err(_) => {
-                        let _ = send_error(service.frame_meter(), io, "join denied").await;
-                        return;
-                    }
-                }
-            }
-            ClientFrame::Records {
-                capability,
-                prefix,
-                after,
-            } => {
-                let token = JoinCapability::from_wire(capability);
-                if service.world().participant_id(token.clone()).await.is_ok() {
-                    io.mark_authorized();
-                }
-                if let Err(message) = records_session(
-                    service.frame_meter(),
-                    service.world(),
-                    io,
-                    token,
-                    prefix.as_deref(),
-                    after.as_deref(),
-                )
-                .await
-                {
-                    let _ = send_error(service.frame_meter(), io, message).await;
-                    return;
-                }
-            }
-            ClientFrame::RecordsTicket { capability } => {
-                let token = JoinCapability::from_wire(capability);
-                if service.world().participant_id(token).await.is_err() {
-                    let _ = send_error(service.frame_meter(), io, "join denied").await;
-                    return;
-                }
-                io.mark_authorized();
-                match records_ticket_session(service, io).await {
-                    Ok(()) => {}
-                    Err(message) => {
-                        let _ = send_error(service.frame_meter(), io, message).await;
-                        return;
-                    }
-                }
-            }
-            ClientFrame::Documents {
-                capability,
-                prefix,
-                after,
-            } => {
-                let token = JoinCapability::from_wire(capability);
-                if service.world().participant_id(token.clone()).await.is_ok() {
-                    io.mark_authorized();
-                }
-                let store = documents_store.as_ref().or(service.blobs.as_ref());
-                if let Err(message) = documents_session(
-                    service.frame_meter(),
-                    service.world(),
-                    io,
-                    token,
-                    store,
-                    prefix.as_deref(),
-                    after.as_deref(),
-                )
-                .await
-                {
-                    let _ = send_error(service.frame_meter(), io, message).await;
-                    return;
-                }
-            }
-            ClientFrame::Document { capability, name } => {
-                let token = JoinCapability::from_wire(capability);
-                if service.world().participant_id(token.clone()).await.is_ok() {
-                    io.mark_authorized();
-                }
-                let store = documents_store.as_ref().or(service.blobs.as_ref());
-                if let Err(message) = document_session(
-                    service.frame_meter(),
-                    service.world(),
-                    io,
-                    token,
-                    store,
-                    &name,
-                )
-                .await
-                {
-                    let _ = send_error(service.frame_meter(), io, message).await;
-                    return;
-                }
-            }
-            ClientFrame::DownloadModule {
-                capability,
-                module_hash,
-            } => {
-                let token = JoinCapability::from_wire(capability);
-                if service.world().snapshot(token).await.is_err() {
-                    let _ = send_error(service.frame_meter(), io, "join denied").await;
-                    return;
-                }
-                io.mark_authorized();
-                if let Err(message) = download_module_session(service, io, &module_hash).await {
-                    let _ = send_error(service.frame_meter(), io, message).await;
-                    return;
-                }
-            }
-            ClientFrame::Caps { capability } => {
-                // Read-only like `info`/`metrics` (#6802): the stats
-                // verb chains info -> caps -> profile -> metrics over
-                // one connection, so the query session serves caps
-                // with the first-frame authorization (a participant
-                // capability) instead of refusing the frame.
-                let token = JoinCapability::from_wire(capability);
-                if service.world().participant_id(token).await.is_err() {
-                    let _ = send_error(service.frame_meter(), io, "join denied").await;
-                    return;
-                }
-                io.mark_authorized();
-                match service.world().caps_report().await {
-                    Ok(report) => {
-                        if !send_json(service.frame_meter(), io, &ServerFrame::Caps { report })
-                            .await
-                        {
-                            return;
-                        }
-                    }
-                    Err(_) => {
-                        let _ =
-                            send_error(service.frame_meter(), io, "capability report unavailable")
-                                .await;
-                        return;
-                    }
-                }
-            }
-            ClientFrame::ExecutionProfileInfo {
-                admin_token,
-                capability,
-            } => {
-                // Same authorization as the first-frame handler: an
-                // admin token, or a participant capability (the stats
-                // verb sends the latter). (#6802)
-                let auth_ok = if let Some(admin) = admin_token.as_deref() {
-                    service.authorize_admin(Some(admin)).is_ok()
-                } else if let Some(cap) = capability.as_deref() {
-                    let token = JoinCapability::from_wire(cap.to_string());
-                    service.world().participant_id(token).await.is_ok()
-                } else {
-                    false
-                };
-                if !auth_ok {
-                    let _ = send_error(service.frame_meter(), io, "access denied").await;
-                    return;
-                }
-                match service.world().execution_profile().await {
-                    Ok(profile) => {
-                        if !send_json(
-                            service.frame_meter(),
-                            io,
-                            &ServerFrame::ExecutionProfile {
-                                update: crate::world::ExecutionProfileUpdate {
-                                    requested: profile,
-                                    applies_on_next_program_install_or_process_restart: false,
-                                },
-                                message: "current persisted execution profile",
-                            },
-                        )
-                        .await
-                        {
-                            return;
-                        }
-                    }
-                    Err(error) => {
-                        let _ = send_error(service.frame_meter(), io, &format!("{error:#}")).await;
-                        return;
-                    }
-                }
-            }
-            _ => {
-                let _ = send_error(service.frame_meter(), io, "expected a query frame").await;
-                return;
-            }
-        }
-    }
-}
-
 /// Answer a `records_ticket` query.
 async fn records_ticket_session<I: SessionIo>(
     service: &WorldService,
@@ -1383,320 +664,6 @@ async fn records_session<I: SessionIo>(
         return Err("connection closed");
     }
     Ok(())
-}
-
-pub(crate) const MAX_DOCUMENT_BYTES: usize = 64 * 1024;
-pub(crate) const MAX_DOCUMENT_LIST_BYTES: usize = 32 * 1024;
-pub(crate) const MAX_DOCUMENT_LIST_ITEMS: usize = 512;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum DocumentError {
-    InvalidName,
-    Missing,
-    TooLarge,
-    Binary,
-    Unavailable,
-}
-
-impl DocumentError {
-    pub(crate) const fn message(self) -> &'static str {
-        match self {
-            Self::InvalidName => "document name must be a public .txt, .md, or .markdown tag",
-            Self::Missing => "document not found",
-            Self::TooLarge => "document exceeds the 64 KiB SSH viewing limit",
-            Self::Binary => "document is not valid UTF-8 text",
-            Self::Unavailable => "document unavailable",
-        }
-    }
-}
-
-pub(crate) fn is_viewable_document_name(name: &str) -> bool {
-    if !is_public_document_name(name) {
-        return false;
-    }
-    let lower = name.to_ascii_lowercase();
-    lower.ends_with(".md") || lower.ends_with(".markdown") || lower.ends_with(".txt")
-}
-
-pub(crate) fn is_public_document_name(name: &str) -> bool {
-    !name.is_empty()
-        && !crate::tags::is_internal_tag(name)
-        && !name.contains('/')
-        && !name.contains('\\')
-        && !name.chars().any(char::is_control)
-}
-
-/// All public document names in the store, sorted, filtered by
-/// `prefix` and continued after `after` (exclusive). The session
-/// layer owns the serving rules (D1-040 decision 7); renderers only
-/// format the names they are given.
-pub(crate) async fn list_document_names(
-    store: &Store,
-    prefix: Option<&str>,
-    after: Option<&str>,
-) -> anyhow::Result<Vec<String>> {
-    let mut tags = store.tags().list().await?;
-    let mut names = Vec::new();
-    while let Some(item) = tags.next().await {
-        let item = item?;
-        let Ok(name) = std::str::from_utf8(item.name.as_ref()) else {
-            continue;
-        };
-        if !is_public_document_name(name) || prefix.is_some_and(|p| !name.starts_with(p)) {
-            continue;
-        }
-        if after.is_some_and(|a| name <= a) {
-            continue;
-        }
-        names.push(name.to_owned());
-    }
-    names.sort();
-    Ok(names)
-}
-
-/// The on-wire size of one name in a `documents` frame: its JSON
-/// string encoding (quotes and escapes included) plus the separator.
-/// Raw byte length is not enough — a quote-heavy name grows when
-/// serialized, and the frame budget is a serialized budget.
-fn document_name_wire_size(name: &str) -> usize {
-    serde_json::to_vec(name).map_or(name.len() + 2, |bytes| bytes.len()) + 1
-}
-
-/// One page of document names under the records byte-page rule: the
-/// page's `next_after` is the last name *included*, so the exclusive
-/// continuation never skips a name.
-pub(crate) fn document_names_page(
-    names: &[String],
-) -> Result<(Vec<String>, Option<String>), &'static str> {
-    let mut page = Vec::new();
-    let mut used = 0usize;
-    let mut more = false;
-    for name in names {
-        let size = document_name_wire_size(name);
-        if used + size > MAX_RECORDS_PAGE_BYTES {
-            if page.is_empty() {
-                return Err("a document name is too large to serve in one page");
-            }
-            more = true;
-            break;
-        }
-        used += size;
-        page.push(name.clone());
-    }
-    let next_after = if more { page.last().cloned() } else { None };
-    Ok((page, next_after))
-}
-
-/// Bounded selection of one documents page from a name stream
-/// (Codex P2 on PR #7678): collecting and sorting the whole store to
-/// serve a bounded page does not scale, so candidates are held in a
-/// max-heap whose serialized size stays within the page budget;
-/// larger names are evicted as smaller ones arrive. Eviction is
-/// tracked so the continuation cursor never skips an evicted name:
-/// the cursor only ever names a served name that sorts before every
-/// evicted name, or the last served name below the smallest evicted
-/// name.
-#[derive(Default)]
-pub(crate) struct DocumentPageSelector {
-    heap: std::collections::BinaryHeap<String>,
-    heap_bytes: usize,
-    min_evicted: Option<String>,
-}
-
-impl DocumentPageSelector {
-    pub(crate) fn push(&mut self, name: String) {
-        self.heap_bytes += document_name_wire_size(&name);
-        self.heap.push(name);
-        while self.heap_bytes > MAX_RECORDS_PAGE_BYTES && self.heap.len() > 1 {
-            let evicted = self.heap.pop().unwrap_or_default();
-            self.heap_bytes -= document_name_wire_size(&evicted);
-            if self
-                .min_evicted
-                .as_deref()
-                .is_none_or(|min| evicted.as_str() < min)
-            {
-                self.min_evicted = Some(evicted);
-            }
-        }
-    }
-
-    pub(crate) fn finish(self) -> Result<(Vec<String>, Option<String>), &'static str> {
-        let mut candidates: Vec<String> = self.heap.into_vec();
-        candidates.sort();
-        let (mut page, mut next_after) = document_names_page(&candidates)?;
-        if let Some(min_evicted) = &self.min_evicted {
-            if page.iter().any(|name| name.as_str() > min_evicted.as_str()) {
-                // A served name sorts after an evicted one: resuming after
-                // it would skip the evicted name. Serve only the names
-                // below the smallest evicted name; the rest follow on the
-                // continuation.
-                let cut = page.partition_point(|name| name.as_str() < min_evicted.as_str());
-                page.truncate(cut);
-                next_after = page.last().cloned();
-            } else if next_after.is_none() {
-                // The whole candidate set was served, but evicted names
-                // follow it.
-                next_after = page.last().cloned();
-            }
-        }
-        Ok((page, next_after))
-    }
-}
-
-/// Read one public document as (byte size, UTF-8 text), enforcing the
-/// viewable-name rules and the per-document byte cap server-side.
-pub(crate) async fn read_document(
-    store: &Store,
-    name: &str,
-) -> Result<(u64, String), DocumentError> {
-    if !is_viewable_document_name(name) {
-        return Err(DocumentError::InvalidName);
-    }
-    let tag = store
-        .tags()
-        .get(name)
-        .await
-        .map_err(|_| DocumentError::Unavailable)?
-        .ok_or(DocumentError::Missing)?;
-    let size = match store.blobs().status(tag.hash).await {
-        Ok(iroh_blobs::api::blobs::BlobStatus::Complete { size }) => size,
-        _ => return Err(DocumentError::Unavailable),
-    };
-    if size > MAX_DOCUMENT_BYTES as u64 {
-        return Err(DocumentError::TooLarge);
-    }
-    let bytes = store
-        .blobs()
-        .get_bytes(tag.hash)
-        .await
-        .map_err(|_| DocumentError::Unavailable)?;
-    if bytes.len() > MAX_DOCUMENT_BYTES {
-        return Err(DocumentError::TooLarge);
-    }
-    let text = std::str::from_utf8(&bytes).map_err(|_| DocumentError::Binary)?;
-    Ok((size, text.to_owned()))
-}
-
-/// The rendered listing the SSH shell has always produced, kept as a
-/// parity reference for the frame-served listing (D1-040 test plan).
-pub(crate) async fn list_public_documents(
-    store: &Store,
-    prefix: Option<&str>,
-) -> anyhow::Result<String> {
-    let mut names = Vec::new();
-    let mut total_bytes = 0usize;
-    let mut truncated = false;
-    for name in list_document_names(store, prefix, None).await? {
-        let line = format!("{name}\n");
-        if names.len() >= MAX_DOCUMENT_LIST_ITEMS
-            || total_bytes + line.len() > MAX_DOCUMENT_LIST_BYTES
-        {
-            truncated = true;
-            break;
-        }
-        total_bytes += line.len();
-        names.push(name);
-    }
-    let mut output = String::from("public named files:\n");
-    if names.is_empty() {
-        output.push_str("(none)\n");
-    } else {
-        for name in names {
-            output.push_str(&name);
-            output.push('\n');
-        }
-    }
-    if truncated {
-        output.push_str("[listing truncated]\n");
-    }
-    output.push_str("View UTF-8 .txt/.md/.markdown files with /document <name>.\n");
-    Ok(output)
-}
-
-/// The rendered read the SSH shell has always produced: the header is
-/// a rendering each client formats from the `document` frame's fields.
-pub(crate) async fn read_public_document(
-    store: &Store,
-    name: &str,
-) -> Result<String, DocumentError> {
-    let (size, text) = read_document(store, name).await?;
-    Ok(format!("--- {name} ({size} bytes; read-only) ---\n{text}"))
-}
-
-async fn documents_session<I: SessionIo>(
-    meter: &WorldMetrics,
-    world: &WorldHandle,
-    io: &mut I,
-    token: JoinCapability,
-    store: Option<&Store>,
-    prefix: Option<&str>,
-    after: Option<&str>,
-) -> Result<(), &'static str> {
-    if world.participant_id(token).await.is_err() {
-        return Err("join denied");
-    }
-    let Some(store) = store else {
-        return Err("documents unavailable");
-    };
-    let mut tags = store
-        .tags()
-        .list()
-        .await
-        .map_err(|_| "documents unavailable")?;
-    let mut selector = DocumentPageSelector::default();
-    while let Some(item) = tags.next().await {
-        let item = item.map_err(|_| "documents unavailable")?;
-        let Ok(name) = std::str::from_utf8(item.name.as_ref()) else {
-            continue;
-        };
-        if !is_public_document_name(name) || prefix.is_some_and(|p| !name.starts_with(p)) {
-            continue;
-        }
-        if after.is_some_and(|a| name <= a) {
-            continue;
-        }
-        selector.push(name.to_owned());
-    }
-    let (names, next_after) = selector.finish()?;
-    if !send_json(meter, io, &ServerFrame::Documents { names, next_after }).await {
-        return Err("connection closed");
-    }
-    Ok(())
-}
-
-async fn document_session<I: SessionIo>(
-    meter: &WorldMetrics,
-    world: &WorldHandle,
-    io: &mut I,
-    token: JoinCapability,
-    store: Option<&Store>,
-    name: &str,
-) -> Result<(), &'static str> {
-    if world.participant_id(token).await.is_err() {
-        return Err("join denied");
-    }
-    let Some(store) = store else {
-        return Err("documents unavailable");
-    };
-    match read_document(store, name).await {
-        Ok((size, text)) => {
-            if !send_json(
-                meter,
-                io,
-                &ServerFrame::Document {
-                    name: name.to_owned(),
-                    size,
-                    text,
-                },
-            )
-            .await
-            {
-                return Err("connection closed");
-            }
-            Ok(())
-        }
-        Err(error) => Err(error.message()),
-    }
 }
 
 async fn event_history_admin_session<I: SessionIo>(
@@ -2156,6 +1123,7 @@ async fn joined<I: SessionIo>(
     after: Option<u64>,
     screen_patches: bool,
     resume_token: Option<String>,
+    agent_profile: bool,
     documents_store: Option<Store>,
 ) {
     let world = service.world();
@@ -2178,6 +1146,11 @@ async fn joined<I: SessionIo>(
     let mut viewport = None;
     let mut view_state = ViewRevisionState::default();
     view_state.participant = participant_id;
+    // Agent profile (contract revision 11, #6300 section 4.2): the join
+    // flag is the capability advertisement; it changes only what this
+    // session is sent (semantic diffs for its subscription), never its
+    // authority.
+    view_state.agent_profile = agent_profile;
     // The token is a cursor for a later view send, never a bypass: the join
     // capability above already authorized this session. An oversized token
     // cannot name a retained baseline, so it is dropped here and the client
@@ -2368,6 +1341,24 @@ async fn joined<I: SessionIo>(
                     if !send_json(service.frame_meter(), io, &ServerFrame::Event { event: &shown }).await {
                         break;
                     }
+                    // Agent profile (contract revision 11, #6300 section
+                    // 4.2): a subscribed agent session also receives the
+                    // event as a semantic diff — what changed in world
+                    // terms, scoped to its subscription's event classes.
+                    if let Some((class, change)) = semantic_event_change(&shown) {
+                        if view_state.wants_event_diff(class) {
+                            let diff_frame = ServerFrame::SemanticDiff {
+                                sequence: shown.sequence,
+                                view_revision: view_state.current_revision().unwrap_or(0),
+                                base_view_revision: None,
+                                changes: vec![change],
+                                region: None,
+                            };
+                            if !send_json(service.frame_meter(), io, &diff_frame).await {
+                                break;
+                            }
+                        }
+                    }
                     pending_view_sequence = cursor;
                     pending_view_deadline.get_or_insert_with(|| tokio::time::Instant::now() + VIEW_COALESCE_WINDOW);
                 }
@@ -2442,204 +1433,6 @@ async fn joined<I: SessionIo>(
     world.shared_provider_broker().remove_session(session_id);
 }
 
-/// Returns the participant's presence when the session ends, however it ends.
-pub(crate) struct PresenceGuard {
-    world: WorldHandle,
-    participant: u64,
-}
-
-impl Drop for PresenceGuard {
-    fn drop(&mut self) {
-        let world = self.world.clone();
-        let participant = self.participant;
-        tokio::spawn(async move {
-            world.presence(participant, false).await;
-        });
-    }
-}
-
-#[derive(Default)]
-struct ViewRevisionState {
-    next_revision: u64,
-    screen: Option<(u64, crate::world_presentation::ScreenSurface)>,
-    /// The participant this connection joined as, bound into resume tokens.
-    participant: u64,
-    /// A resume token presented at join and not yet consumed by a view send.
-    pending_resume: Option<String>,
-}
-
-impl ViewRevisionState {
-    fn reset(&mut self) {
-        self.screen = None;
-    }
-}
-
-async fn send_view<I: SessionIo>(
-    service: &WorldService,
-    io: &mut I,
-    token: &JoinCapability,
-    sequence: u64,
-    viewport: Option<Viewport>,
-    view_state: &mut ViewRevisionState,
-    screen_patches: bool,
-) -> bool {
-    let world = service.world();
-    let view = match viewport {
-        Some(viewport) => {
-            let width = u16::try_from(viewport.width).unwrap_or(u16::MAX);
-            let height = u16::try_from(viewport.height).unwrap_or(u16::MAX);
-            world.view_at(token.clone(), width, height).await
-        }
-        None => world.view(token.clone()).await,
-    };
-    match view {
-        Ok(Some(data)) => {
-            if data.len() > MAX_FRAME_BYTES {
-                return send_error(service.frame_meter(), io, "world presentation is too large")
-                    .await;
-            }
-            let surface = match crate::world_presentation::parse_surface(&data) {
-                Ok(Some(crate::world_presentation::WorldSurface::Screen(screen))) => {
-                    let screen = viewport.map_or(screen.clone(), |viewport| {
-                        screen.fit(viewport.width, viewport.height)
-                    });
-                    Some(crate::world_presentation::WorldSurface::Screen(screen))
-                }
-                Ok(surface) => surface,
-                Err(_) => {
-                    return send_error(
-                        service.frame_meter(),
-                        io,
-                        "invalid world screen presentation",
-                    )
-                    .await;
-                }
-            };
-            let screen = match surface.as_ref() {
-                Some(crate::world_presentation::WorldSurface::Screen(screen)) => Some(screen),
-                _ => None,
-            };
-
-            // A resume token presented at join restores its retained baseline
-            // once the viewport is known, so this first frame can be a
-            // catch-up patch. An unknown, expired, tampered, foreign or
-            // shape-mismatched token is a miss: the client gets a full view.
-            if screen_patches && view_state.screen.is_none() {
-                if let (Some(resume), Some(current)) = (view_state.pending_resume.take(), screen) {
-                    let base = service.resume_baselines.lock().await.take_matching(
-                        &resume,
-                        view_state.participant,
-                        current.version,
-                        current.width,
-                        current.height,
-                    );
-                    if let Some(base) = base {
-                        view_state.next_revision = view_state
-                            .next_revision
-                            .max(base.revision.saturating_add(1));
-                        view_state.screen = Some((base.revision, base.screen));
-                    }
-                }
-            }
-
-            let view_revision = view_state.next_revision;
-            view_state.next_revision = view_state.next_revision.saturating_add(1);
-            // Retain the revision this frame applies and name it with a fresh
-            // token, so the next reconnect can resume from exactly here.
-            let resume_token = match (screen_patches, screen) {
-                (true, Some(current)) => Some(service.resume_baselines.lock().await.issue(
-                    resume::ScreenBaseline::new(
-                        view_state.participant,
-                        view_revision,
-                        current.version,
-                        current.width,
-                        current.height,
-                        current.clone(),
-                    ),
-                )),
-                _ => None,
-            };
-
-            if let (true, Some(screen), Some((base_view_revision, previous))) =
-                (screen_patches, screen, view_state.screen.as_ref())
-            {
-                if let Some(patch) = crate::world_presentation::ScreenPatch::diff(previous, screen)
-                {
-                    let delta_frame = ServerFrame::View {
-                        sequence,
-                        data: "",
-                        surface: None,
-                        view_revision,
-                        base_view_revision: Some(*base_view_revision),
-                        patch: Some(&patch),
-                        resume_token: resume_token.as_deref(),
-                    };
-                    let full_frame = ServerFrame::View {
-                        sequence,
-                        data: &data,
-                        surface: surface.as_ref(),
-                        view_revision,
-                        base_view_revision: None,
-                        patch: None,
-                        resume_token: resume_token.as_deref(),
-                    };
-                    let delta_size = serde_json::to_vec(&delta_frame).map(|bytes| bytes.len());
-                    let full_size = serde_json::to_vec(&full_frame).map(|bytes| bytes.len());
-                    if matches!((delta_size, full_size), (Ok(delta), Ok(full)) if delta < full) {
-                        let sent = send_json(service.frame_meter(), io, &delta_frame).await;
-                        if sent {
-                            view_state.screen = Some((view_revision, screen.clone()));
-                        }
-                        return sent;
-                    }
-                }
-            }
-
-            let full_frame = ServerFrame::View {
-                sequence,
-                data: &data,
-                surface: surface.as_ref(),
-                view_revision,
-                base_view_revision: None,
-                patch: None,
-                resume_token: resume_token.as_deref(),
-            };
-            let sent = send_json(service.frame_meter(), io, &full_frame).await;
-            if sent && screen_patches {
-                view_state.screen = screen.map(|screen| (view_revision, screen.clone()));
-            } else {
-                view_state.reset();
-            }
-            sent
-        }
-        Ok(None) => {
-            view_state.reset();
-            true
-        }
-        Err(_) => false,
-    }
-}
-
-/// Connection-local terminal/browser dimensions. This value is intentionally
-/// absent from world events and snapshots.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct Viewport {
-    width: usize,
-    height: usize,
-}
-
-pub(crate) fn normalize_paste(text: &str) -> Result<Vec<u8>, &'static str> {
-    let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
-    if normalized.len() > 4096
-        || normalized
-            .chars()
-            .any(|ch| ch.is_control() && ch != '\n' && ch != '\t')
-    {
-        return Err("paste must be at most 4096 UTF-8 bytes and contain no control characters");
-    }
-    Ok(normalized.into_bytes())
-}
-
 const USES_REFUSED: &str = "a delegation may not carry `uses`: a delegated grant has no use count, and the host's limit still applies";
 
 /// Whether a delegation frame names `uses` anywhere in it. The field was
@@ -2661,6 +1454,41 @@ pub(crate) fn names_uses(value: &serde_json::Value) -> bool {
             .any(|(key, inner)| key == "uses" || names_uses(inner)),
         serde_json::Value::Array(items) => items.iter().any(names_uses),
         _ => false,
+    }
+}
+
+/// The semantic reading of one projected world event (contract revision
+/// 11, #6300 section 4.2): its subscribable class and the change object a
+/// `semantic_diff` carries for it. The change describes what happened in
+/// world terms, never the raw payload — an input event's bytes and a
+/// system event's JSON stay out of the diff, and a program install's
+/// seed is not a change field at all.
+fn semantic_event_change(
+    event: &crate::world::WorldEvent,
+) -> Option<(&'static str, serde_json::Value)> {
+    use crate::world::WorldEventKind;
+    let participant_id = event.participant_id;
+    match &event.kind {
+        WorldEventKind::Chat(text) => Some((
+            "chat_posted",
+            serde_json::json!({"kind": "chat_posted", "participant_id": participant_id, "text": text}),
+        )),
+        WorldEventKind::Input(_) => Some((
+            "input_applied",
+            serde_json::json!({"kind": "input_applied", "participant_id": participant_id}),
+        )),
+        WorldEventKind::EntityInput { entity_ref, .. } => Some((
+            "object_changed",
+            serde_json::json!({"kind": "object_changed", "participant_id": participant_id, "entity_ref": entity_ref}),
+        )),
+        WorldEventKind::System { .. } => Some((
+            "system_event",
+            serde_json::json!({"kind": "system_event", "participant_id": participant_id}),
+        )),
+        WorldEventKind::ProgramInstalled { module_hash, .. } => Some((
+            "program_changed",
+            serde_json::json!({"kind": "program_changed", "participant_id": participant_id, "module_hash": module_hash}),
+        )),
     }
 }
 
@@ -2689,7 +1517,132 @@ async fn handle_client_frame<I: SessionIo>(
     let Ok(frame) = serde_json::from_value::<ClientFrame>(value) else {
         return send_error(service.frame_meter(), io, "invalid world frame").await;
     };
+    // Stale-decision gate (contract revision 11, #6300 section 4.3): an
+    // agent input frame carrying `screen_revision` is applied only while
+    // that revision is still this session's current screen revision. A
+    // stale input is rejected before any dispatch — nothing is journaled
+    // and no authority is exercised — with a `stale_decision` error, and
+    // the current view follows so the agent can re-decide against fresh
+    // state. Frames without the token are decided as before.
+    let decided_against = match &frame {
+        ClientFrame::Input {
+            screen_revision, ..
+        }
+        | ClientFrame::Chat {
+            screen_revision, ..
+        }
+        | ClientFrame::Paste {
+            screen_revision, ..
+        }
+        | ClientFrame::FormResult {
+            screen_revision, ..
+        }
+        | ClientFrame::Pointer {
+            screen_revision, ..
+        } => *screen_revision,
+        _ => None,
+    };
+    if let Some(decided) = decided_against {
+        if view_state.current_revision() != Some(decided) {
+            let current = view_state
+                .current_revision()
+                .map_or_else(|| "none".to_owned(), |revision| revision.to_string());
+            let message = format!(
+                "stale decision: input was decided against screen revision {decided}, current is {current}"
+            );
+            if !send_json(
+                service.frame_meter(),
+                io,
+                &ServerFrame::Error {
+                    message: &message,
+                    code: Some("stale_decision"),
+                },
+            )
+            .await
+            {
+                return false;
+            }
+            return send_view(
+                service,
+                io,
+                token,
+                sequence,
+                *viewport,
+                view_state,
+                screen_patches,
+            )
+            .await;
+        }
+    }
     let result = match frame {
+        ClientFrame::ScreenSubscribe {
+            region,
+            event_classes,
+        } => {
+            // Agent profile (contract revision 11, #6300 section 4.2):
+            // record this session's subscription and echo it back with
+            // the current screen revision. The subscription is
+            // connection-local presentation context — nothing journals.
+            if !view_state.agent_profile {
+                return send_error(
+                    service.frame_meter(),
+                    io,
+                    "screen_subscribe needs the agent profile: join with agent_profile",
+                )
+                .await;
+            }
+            if let Some(region) = region {
+                let in_bounds = region.width >= 1
+                    && region.height >= 1
+                    && region.x < 500
+                    && region.y < 200
+                    && region.x.saturating_add(region.width) <= 500
+                    && region.y.saturating_add(region.height) <= 200;
+                if !in_bounds {
+                    return send_error(
+                        service.frame_meter(),
+                        io,
+                        "subscription region must fit the 500x200 screen: x+width <= 500, y+height <= 200, width and height at least 1",
+                    )
+                    .await;
+                }
+            }
+            if region.is_none() && event_classes.is_none() {
+                return send_error(
+                    service.frame_meter(),
+                    io,
+                    "screen_subscribe needs a region and/or event_classes",
+                )
+                .await;
+            }
+            if let Some(classes) = &event_classes {
+                if let Some(unknown) = classes
+                    .iter()
+                    .find(|named| !SEMANTIC_EVENT_CLASSES.contains(&named.as_str()))
+                {
+                    return send_error(
+                        service.frame_meter(),
+                        io,
+                        &format!("unknown semantic event class `{unknown}`"),
+                    )
+                    .await;
+                }
+            }
+            view_state.subscription = Some(ScreenSubscriptionState {
+                region,
+                event_classes: event_classes.clone(),
+            });
+            return send_json(
+                service.frame_meter(),
+                io,
+                &ServerFrame::ScreenSubscription {
+                    region,
+                    event_classes,
+                    view_revision: view_state.current_revision().unwrap_or(0),
+                },
+            )
+            .await;
+        }
         ClientFrame::ProviderOffer { providers } => {
             // F13.7 step 3: record what this session's shell can
             // serve. An offer enables nothing by itself — the broker
@@ -2760,6 +1713,7 @@ async fn handle_client_frame<I: SessionIo>(
             presentation_token,
             action,
             values,
+            ..
         } => {
             let result = id_core::world_presentation::FormResult {
                 form_id: form_id.clone(),
@@ -2819,7 +1773,7 @@ async fn handle_client_frame<I: SessionIo>(
                 }
             }
         }
-        ClientFrame::Chat { text } => world.chat(token.clone(), text).await,
+        ClientFrame::Chat { text, .. } => world.chat(token.clone(), text).await,
         ClientFrame::Resize { width, height } => {
             if width == 0 || height == 0 || width > 500 || height > 200 {
                 return send_error(
@@ -2856,7 +1810,7 @@ async fn handle_client_frame<I: SessionIo>(
             )
             .await;
         }
-        ClientFrame::Paste { text } => {
+        ClientFrame::Paste { text, .. } => {
             let Ok(bytes) = normalize_paste(&text) else {
                 return send_error(
                     service.frame_meter(),
@@ -2869,7 +1823,7 @@ async fn handle_client_frame<I: SessionIo>(
                 .input_from_session(token.clone(), bytes, session_id)
                 .await
         }
-        ClientFrame::Input { data_hex } => match decode_hex(&data_hex) {
+        ClientFrame::Input { data_hex, .. } => match decode_hex(&data_hex) {
             Some(data) => {
                 world
                     .input_from_session(token.clone(), data, session_id)
@@ -2880,6 +1834,110 @@ async fn handle_client_frame<I: SessionIo>(
                     .await;
             }
         },
+        ClientFrame::Pointer {
+            event,
+            environment,
+            pointer_id,
+            x,
+            y,
+            button,
+            held_duration_ms,
+            is_click,
+            dx,
+            dy,
+            // The stale-decision token was checked before dispatch; it
+            // is not part of the journaled input.
+            ..
+        } => {
+            // #1831 slice S2 (input event model design, Decision 3):
+            // activation events are journaled and replayed like
+            // keyboard `Input`, in sequence order — the frame's
+            // canonical JSON goes through the same input path, which
+            // also namespaces the connection-local pointer_id with
+            // this session's identity. `secondary_press` is a
+            // per-environment extra: Android has no secondary button
+            // (long_press is its equivalent), so it is refused with
+            // the design's named reason — never silently dropped.
+            if event == PointerEvent::SecondaryPress && environment == InputEnvironment::Android {
+                let _ = send_json(
+                    service.frame_meter(),
+                    io,
+                    &ServerFrame::InputRefused {
+                        event: "secondary_press",
+                        environment: Some(environment),
+                        reason: InputRefusalReason::NoSecondaryButton,
+                    },
+                )
+                .await;
+                return true;
+            }
+            let mut encoded = serde_json::json!({
+                "type": "pointer",
+                "event": event,
+                "environment": environment,
+                "pointer_id": pointer_id,
+                "x": x,
+                "y": y,
+            });
+            if let Some(button) = button {
+                encoded["button"] = serde_json::json!(button);
+            }
+            if let Some(held_duration_ms) = held_duration_ms {
+                encoded["held_duration_ms"] = serde_json::json!(held_duration_ms);
+            }
+            if let Some(is_click) = is_click {
+                encoded["is_click"] = serde_json::json!(is_click);
+            }
+            if let Some(dx) = dx {
+                encoded["dx"] = serde_json::json!(dx);
+            }
+            if let Some(dy) = dy {
+                encoded["dy"] = serde_json::json!(dy);
+            }
+            match serde_json::to_vec(&encoded) {
+                Ok(bytes) => {
+                    world
+                        .input_from_session(token.clone(), bytes, session_id)
+                        .await
+                }
+                Err(_) => {
+                    return send_error(
+                        service.frame_meter(),
+                        io,
+                        "pointer frame could not be encoded",
+                    )
+                    .await;
+                }
+            }
+        }
+        ClientFrame::Hover {
+            event, environment, ..
+        } => {
+            // #1831 slice S2, Decision 3: hover is ephemeral —
+            // connection-local presentation context, never journaled
+            // and never seen by other sessions. Android producers
+            // cannot produce it (the design's extras table), so it is
+            // refused there with the named reason; elsewhere it is
+            // accepted, and its presentation consumer is later S2 work.
+            if environment == InputEnvironment::Android {
+                let event_name = match event {
+                    HoverEvent::HoverEnter => "hover_enter",
+                    HoverEvent::HoverLeave => "hover_leave",
+                    HoverEvent::HoverMove => "hover_move",
+                };
+                let _ = send_json(
+                    service.frame_meter(),
+                    io,
+                    &ServerFrame::InputRefused {
+                        event: event_name,
+                        environment: Some(environment),
+                        reason: InputRefusalReason::HoverUnsupported,
+                    },
+                )
+                .await;
+            }
+            return true;
+        }
         ClientFrame::Records { prefix, after, .. } => {
             // Authorized by the session's own capability.
             if let Err(message) = records_session(
@@ -3241,6 +2299,43 @@ async fn handle_client_frame<I: SessionIo>(
                     .await;
                 }
             }
+        }
+        ClientFrame::Hover { .. } => {
+            // #1831 slice S2: hover is ephemeral presentation context,
+            // like resize without a consumer — the host has no hover
+            // consumer yet, so it is accepted and dropped by design:
+            // never journaled, never answered.
+            return true;
+        }
+        ClientFrame::Pointer {
+            event, environment, ..
+        } => {
+            // #1831 slice S2 landed the pointer contract frames
+            // (revision 10) ahead of the host's pointer routing, which
+            // left these matches non-exhaustive and the crate not
+            // compiling. Until the manifest-declared routing lands, a
+            // pointer event is refused explicitly with the design's
+            // `input_refused` answer — an input event is never silently
+            // dropped (contract `features.input_events`).
+            let event_name = match event {
+                PointerEvent::Press => "press",
+                PointerEvent::Release => "release",
+                PointerEvent::Cancel => "cancel",
+                PointerEvent::DragMove => "drag_move",
+                PointerEvent::Scroll => "scroll",
+                PointerEvent::LongPress => "long_press",
+                PointerEvent::SecondaryPress => "secondary_press",
+            };
+            return send_json(
+                service.frame_meter(),
+                io,
+                &ServerFrame::InputRefused {
+                    event: event_name,
+                    environment: Some(environment),
+                    reason: InputRefusalReason::UnknownOrUnsupportedEvent,
+                },
+            )
+            .await;
         }
         ClientFrame::Join { .. }
         | ClientFrame::Invite { .. }

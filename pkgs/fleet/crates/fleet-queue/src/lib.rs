@@ -23,6 +23,8 @@
 pub mod backoff;
 pub mod bin_args;
 pub mod creation_outbox;
+#[cfg(any(feature = "client", feature = "queue-broker"))]
+pub mod disposition;
 mod home;
 pub mod log;
 pub mod merge_intent;
@@ -35,6 +37,7 @@ pub mod client;
 pub mod fallback;
 #[cfg(feature = "client")]
 pub mod needs_drew;
+pub mod person_wait;
 #[cfg(feature = "client")]
 pub mod placement;
 #[cfg(feature = "queue-broker")]

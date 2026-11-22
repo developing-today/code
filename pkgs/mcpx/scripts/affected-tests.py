@@ -558,7 +558,9 @@ def main():
         e2e_diff += untracked_added_text(mcpx, sorted(edited_e2e_all), untracked)
         if "newEnv" in e2e_diff:
             harness = True
-        changed_e2e_tests = changed_test_names(mcpx, edited_e2e_all, root, args.base, untracked)
+        changed_e2e_tests = changed_test_names(
+            mcpx, edited_e2e_all, root, args.base, untracked
+        )
     sample = []
     if harness:
         # The rule-4 sample is reserved its slots before the budget is

@@ -104,9 +104,21 @@ mod tests {
         }
     }
 
+    /// Append like `FileJournal`: raise the `Created` header to the version
+    /// the entry requires, so restore sees the journal a writer would leave.
+    pub(super) fn push_bumped(entries: &mut Vec<JournalEntry>, entry: &JournalEntry) {
+        let required = journal_version_required_by(entry);
+        if let Some(JournalEntry::Created { version, .. }) = entries.first_mut() {
+            if *version < required {
+                *version = required;
+            }
+        }
+        entries.push(entry.clone());
+    }
+
     impl WorldJournal for TransferJournal {
         fn append(&mut self, entry: &JournalEntry) -> Result<()> {
-            self.0.lock().unwrap().push(entry.clone());
+            push_bumped(&mut self.0.lock().unwrap(), entry);
             Ok(())
         }
     }
@@ -1674,11 +1686,13 @@ mod tests {
                 "{entry:?}"
             );
         }
-        // The max-version pin moved to version 10 with portal grants
-        // (F12.14 wiring, code#1068), after version 9 for signed play
-        // (#4346) and version 8 for recurring schedules (#1355);
-        // the lease entries still require exactly 7.
-        assert_eq!(MAX_JOURNAL_VERSION, JOURNAL_VERSION_PORTALS);
+        // The max-version pin moved to version 11 with program-bundle
+        // installs (#8280), after version 10 for portal grants (F12.14
+        // wiring, code#1068), version 9 for signed play (#4346) and
+        // version 8 for recurring schedules (#1355); the lease entries
+        // still require exactly 7.
+        // Version 12 (#11960) records join and revoke times.
+        assert_eq!(MAX_JOURNAL_VERSION, JOURNAL_VERSION_JOIN_TIMES);
         // A checkpoint carrying a non-bootstrap lease also requires
         // version 7; one without a lease keeps its existing version.
         let mut lease = WriteLease::bootstrap();
@@ -2492,10 +2506,7 @@ mod tests {
         let entries = core.checkpoint_entries(snapshot.clone()).unwrap();
         assert!(matches!(
             entries.first(),
-            Some(JournalEntry::Created {
-                version: JOURNAL_VERSION_CHECKPOINT_PARTS,
-                ..
-            })
+            Some(JournalEntry::Created { version, .. }) if *version >= JOURNAL_VERSION_CHECKPOINT_PARTS
         ));
         assert!(entries.iter().all(|entry| {
             serde_json::to_vec(entry).is_ok_and(|bytes| bytes.len() <= MAX_CHECKPOINT_PART_BYTES)
@@ -2706,6 +2717,103 @@ mod tests {
         assert_eq!(restored.program.unwrap().provenance, Some(provenance));
     }
 
+    fn sample_bundle_provenance() -> ModuleProvenance {
+        let author = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
+        let bundle = crate::program_bundle::export(
+            b"bundle payload".to_vec(),
+            crate::program_bundle::ProgramSpec {
+                name: "chess",
+                version: 1,
+                licence: None,
+                description: None,
+                categories: &[],
+            },
+            &author,
+        )
+        .unwrap();
+        ModuleProvenance::Bundle(bundle.provenance())
+    }
+
+    fn install_event(provenance: Option<ModuleProvenance>) -> WorldEvent {
+        WorldEvent {
+            sequence: 1,
+            participant_id: 0,
+            kind: WorldEventKind::ProgramInstalled {
+                module_hash: "h".to_owned(),
+                seed: 1,
+                provenance,
+                trust: None,
+            },
+        }
+    }
+
+    /// #8280: an older binary cannot parse bundle provenance, so every entry
+    /// that carries it raises the header to the program-bundle version, and
+    /// nothing else does.
+    #[test]
+    fn bundle_provenance_requires_the_program_bundle_journal_version() {
+        let bundle = sample_bundle_provenance();
+        let committed = |provenance| JournalEntry::Committed {
+            event: install_event(provenance),
+        };
+        assert_eq!(
+            journal_version_required_by(&committed(Some(bundle.clone()))),
+            JOURNAL_VERSION_PROGRAM_BUNDLE
+        );
+        assert_eq!(
+            journal_version_required_by(&committed(Some(ModuleProvenance::Artifact))),
+            JOURNAL_VERSION
+        );
+        assert_eq!(
+            journal_version_required_by(&committed(None)),
+            JOURNAL_VERSION
+        );
+        let part = JournalEntry::CheckpointEventsPart {
+            sequence: 1,
+            part_index: 0,
+            part_count: 1,
+            events: vec![install_event(Some(bundle))],
+        };
+        assert_eq!(
+            journal_version_required_by(&part),
+            JOURNAL_VERSION_PROGRAM_BUNDLE
+        );
+        let plain_part = JournalEntry::CheckpointEventsPart {
+            sequence: 1,
+            part_index: 0,
+            part_count: 1,
+            events: vec![install_event(None)],
+        };
+        assert_eq!(
+            journal_version_required_by(&plain_part),
+            JOURNAL_VERSION_CHECKPOINT_PARTS
+        );
+    }
+
+    #[test]
+    fn bundle_provenance_survives_checkpoint_compaction_and_restore() {
+        let provenance = sample_bundle_provenance();
+        let mut core = world(8);
+        core.active_module_hash = Some("h".to_owned());
+        core.active_module_provenance = Some(provenance.clone());
+        core.active_seed = 7;
+        let entries = core.checkpoint_entries("state".to_owned()).unwrap();
+        assert!(
+            entries.iter().any(|entry| matches!(
+                entry,
+                JournalEntry::Created { version, .. } if *version == JOURNAL_VERSION_PROGRAM_BUNDLE
+            )),
+            "the compacted header carries the program-bundle version: {entries:?}"
+        );
+
+        let restored = WorldCore::restore("test-world", WorldLimits::default(), entries).unwrap();
+        assert_eq!(
+            restored.core.active_module_provenance,
+            Some(provenance.clone())
+        );
+        assert_eq!(restored.program.unwrap().provenance, Some(provenance));
+    }
+
     /// A program driven by numeric inputs: each input switches its `wants`
     /// script, and every host event is recorded. Request ids embed the input
     /// count, so re-sending an input asks again.
@@ -2811,6 +2919,93 @@ mod tests {
             report.missing.contains(&"time.now".to_owned()),
             "{report:?}"
         );
+    }
+
+    /// #796 item 9-5 oracle: an ungranted read returns only cap_denied,
+    /// while the identical granted read returns the seeded history line.
+    /// Both paths must account for exactly one request in the ledger.
+    async fn assert_chat_history_policy_result(granted: bool) {
+        struct HistoryProbe(Arc<Mutex<Vec<serde_json::Value>>>);
+
+        impl WorldProgram for HistoryProbe {
+            fn update(&mut self, event: &WorldEvent) -> Result<()> {
+                if let WorldEventKind::System { event } = &event.kind {
+                    let value: serde_json::Value = serde_json::from_str(event)?;
+                    if value["cap"] == "result" && value["id"] == "history-proof" {
+                        self.0.lock().unwrap().push(value);
+                    }
+                }
+                Ok(())
+            }
+
+            fn wants(&mut self) -> Result<Option<String>> {
+                // Keep the same request visible for the capability report;
+                // the actor must deduplicate its already answered id.
+                let requests = serde_json::json!([{
+                    "id": "history-proof", "cap": "chat.history", "args": {"count": 1}
+                }]);
+                Ok(Some(serde_json::json!({"requests": requests}).to_string()))
+            }
+        }
+
+        let mut core = world(16);
+        if granted {
+            core.ledger
+                .set_granted(BTreeSet::from(["chat.history".to_owned()]));
+        }
+        core.events.push_back(WorldEvent {
+            sequence: 1,
+            participant_id: 7,
+            kind: WorldEventKind::Chat("history-proof-line".to_owned()),
+        });
+        let results = Arc::new(Mutex::new(Vec::new()));
+        let handle = WorldHandle::spawn_with_program(core, Box::new(HistoryProbe(results.clone())));
+        let (_, token) = handle.issue("ann", WorldScopes::GUEST).await.unwrap();
+        handle.input(token.clone(), b"read".to_vec()).await.unwrap();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while results.lock().unwrap().is_empty() {
+            assert!(Instant::now() < deadline, "no history result delivered");
+            tokio::task::yield_now().await;
+        }
+        // A second evaluation must not count or deliver the answered request again.
+        handle.input(token, b"read".to_vec()).await.unwrap();
+        let report = handle.caps_report().await.unwrap();
+
+        let results = results.lock().unwrap();
+        assert_eq!(results.len(), 1, "one result must reach the program");
+        let result = &results[0];
+        assert_eq!(report.policy, "deny");
+        let usage = report.usage["chat.history"];
+        if granted {
+            assert_eq!(result["ok"], true, "{result}");
+            let lines = result["value"]["lines"].as_array().unwrap();
+            assert_eq!(lines.len(), 1);
+            assert_eq!(lines[0]["text"], "history-proof-line");
+            assert_eq!(usage.allowed, 1);
+            assert_eq!(usage.denied, 0);
+            assert!(!report.missing.contains(&"chat.history".to_owned()));
+        } else {
+            assert_eq!(
+                result,
+                &serde_json::json!({
+                    "cap": "result", "id": "history-proof", "ok": false, "error": "cap_denied"
+                }),
+                "denial must contain no history value or lines"
+            );
+            assert_eq!(usage.denied, 1);
+            assert_eq!(usage.allowed, 0);
+            assert!(report.missing.contains(&"chat.history".to_owned()));
+        }
+    }
+
+    #[tokio::test]
+    async fn chat_history_policy_ungranted_is_refused_counted_and_delivered() {
+        assert_chat_history_policy_result(false).await;
+    }
+
+    #[tokio::test]
+    async fn chat_history_policy_granted_delivers_history_and_counts_once() {
+        assert_chat_history_policy_result(true).await;
     }
 
     #[tokio::test]
@@ -3418,6 +3613,7 @@ mod tests {
                 granted: vec!["time.now".to_owned()],
             },
             JournalEntry::Issued {
+                issued_at: None,
                 participant: Participant {
                     id: 1,
                     display_name: "ann".to_owned(),
@@ -3455,6 +3651,7 @@ mod tests {
         let secret = "ef".repeat(32);
         let digest = hex_encode(&token_digest(&format!("{participant_id}.{secret}")));
         JournalEntry::Issued {
+            issued_at: None,
             participant: Participant {
                 id: participant_id,
                 display_name: format!("ann-{participant_id}"),
@@ -3562,6 +3759,7 @@ mod tests {
         let error = restore_author_entries(vec![
             issued_entry(WorldScopes::GUEST.bits()),
             JournalEntry::Revoked {
+                revoked_at: None,
                 participant_id: 1,
                 by: None,
             },
@@ -3631,6 +3829,7 @@ mod tests {
             issued_entry(WorldScopes::GUEST.bits()),
             committed_event(1, 1, WorldEventKind::Chat("before revoke".to_owned())),
             JournalEntry::Revoked {
+                revoked_at: None,
                 participant_id: 1,
                 by: None,
             },
@@ -3674,6 +3873,7 @@ mod tests {
         let secret = "ef".repeat(32);
         let issued_with =
             |id: u64, scopes: u8, parent: Option<u64>, subject: &str| JournalEntry::Issued {
+                issued_at: None,
                 participant: Participant {
                     id,
                     display_name: format!("delegate-{id}"),
@@ -3863,6 +4063,7 @@ mod tests {
                 version: JOURNAL_VERSION,
             },
             JournalEntry::Issued {
+                issued_at: None,
                 participant: Participant {
                     id: 1,
                     display_name: "ann".to_owned(),
@@ -4009,10 +4210,7 @@ mod tests {
         let checkpoint = core.checkpoint_entries("snapshot".to_owned()).unwrap();
         assert!(matches!(
             checkpoint.first(),
-            Some(JournalEntry::Created {
-                version: JOURNAL_VERSION_OPEN_PRESENCE,
-                ..
-            })
+            Some(JournalEntry::Created { version, .. }) if *version >= JOURNAL_VERSION_OPEN_PRESENCE
         ));
         assert!(matches!(
             checkpoint.last(),
@@ -4091,6 +4289,12 @@ mod tests {
         if let Some(JournalEntry::Checkpoint { open_presence, .. }) = legacy.last_mut() {
             *open_presence = None;
         }
+        // A journal from before join times never carried them.
+        for entry in &mut legacy {
+            if let JournalEntry::Issued { issued_at, .. } = entry {
+                *issued_at = None;
+            }
+        }
         let reopened =
             WorldCore::restore("presence-checkpoint", WorldLimits::default(), legacy).unwrap();
         assert_eq!(reopened.replay.len(), 1);
@@ -4144,6 +4348,12 @@ mod tests {
             let mut legacy = checkpoint.clone();
             if let Some(JournalEntry::Created { version, .. }) = legacy.first_mut() {
                 *version = JOURNAL_VERSION_REGION_HANDOFF;
+            }
+            // A journal from before join times never carried them.
+            for entry in &mut legacy {
+                if let JournalEntry::Issued { issued_at, .. } = entry {
+                    *issued_at = None;
+                }
             }
             if let Some(JournalEntry::Checkpoint {
                 admin_history,
@@ -5261,6 +5471,85 @@ mod tests {
         assert_eq!(fresh["ok"], true);
     }
 
+    /// A program that wants a `client.file.read` whose id flips from
+    /// `read-stale` to `read-fresh` once it hears the first result.
+    struct ReopenRead {
+        heard: Arc<std::sync::Mutex<Vec<String>>>,
+    }
+
+    impl WorldProgram for ReopenRead {
+        fn update(&mut self, event: &WorldEvent) -> Result<()> {
+            if let WorldEventKind::System { event } = &event.kind {
+                self.heard.lock().unwrap().push(event.clone());
+            }
+            Ok(())
+        }
+
+        fn wants(&mut self) -> Result<Option<String>> {
+            let id = if self.heard.lock().unwrap().is_empty() {
+                "read-stale"
+            } else {
+                "read-fresh"
+            };
+            Ok(Some(
+                serde_json::json!({
+                    "v": 1,
+                    "requests": [{
+                        "id": id,
+                        "cap": "client.file.read",
+                        "args": {"path": "notes.txt"},
+                    }],
+                })
+                .to_string(),
+            ))
+        }
+    }
+
+    /// F13.7 step 6: the restart rule covers client providers too. A
+    /// pre-open `client.file.read` want is refused `restarted` and
+    /// never routed to a client — no local file is read unattributed
+    /// after a reopen — and the refusal joins the provider audit
+    /// trail (broker-level coverage:
+    /// `restarted_refusal_is_recorded_in_the_audit_trail`). A fresh
+    /// want in the same pass still reaches the broker.
+    #[tokio::test]
+    async fn reopened_client_provider_wants_are_refused_not_routed() {
+        let mut core = world(16);
+        core.ledger
+            .set_allowed(BTreeSet::from(["client.file.read".to_owned()]));
+        core.ledger
+            .set_granted(BTreeSet::from(["client.file.read".to_owned()]));
+        let heard = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut actor = WorldActor::for_test(
+            core,
+            Box::new(ReopenRead {
+                heard: heard.clone(),
+            }),
+            None,
+        );
+        actor.stale_wants_at_open = BTreeSet::from(["read-stale".to_owned()]);
+
+        actor.after_change().await;
+
+        let heard = heard.lock().unwrap();
+        assert_eq!(heard.len(), 2, "unexpected deliveries: {heard:?}");
+        let refusal: serde_json::Value = serde_json::from_str(&heard[0]).unwrap();
+        assert_eq!(refusal["id"], "read-stale");
+        assert_eq!(refusal["ok"], false);
+        assert_eq!(refusal["error"], "actor_denied");
+        assert_eq!(refusal["reason"], "restarted");
+        // The fresh want reached the broker, which refused it
+        // unattributed (this harness has no joined session) rather
+        // than routing it to any client.
+        let fresh: serde_json::Value = serde_json::from_str(&heard[1]).unwrap();
+        assert_eq!(fresh["id"], "read-fresh");
+        assert_eq!(fresh["ok"], false);
+        assert_eq!(fresh["error"], "actor_denied");
+        assert_eq!(fresh["reason"], "unattributed");
+        assert_eq!(actor.provider_broker.pending_count(), 0);
+        assert!(actor.handled_requests.contains("read-stale"));
+    }
+
     /// The capture half of the restart rule: `spawn_restored` refuses the
     /// requests present in `wants` at open, while a fresh spawn executes the
     /// same wants.
@@ -5821,6 +6110,7 @@ mod tests {
                 version: JOURNAL_VERSION,
             },
             JournalEntry::Issued {
+                issued_at: None,
                 participant: owner.clone(),
                 digest: hex_encode(&token_digest(token.expose())),
                 scopes: WorldScopes::GUEST.bits(),
@@ -5871,6 +6161,7 @@ mod tests {
                 version: JOURNAL_VERSION,
             },
             JournalEntry::Issued {
+                issued_at: None,
                 participant: owner,
                 digest,
                 scopes: WorldScopes::GUEST.bits(),
@@ -5915,6 +6206,7 @@ mod tests {
                 version: JOURNAL_VERSION,
             },
             JournalEntry::Issued {
+                issued_at: None,
                 participant: owner,
                 digest: hex_encode(&token_digest(owner_token.expose())),
                 scopes: WorldScopes::GUEST.union(WorldScopes::DELEGATE).bits(),
@@ -5925,6 +6217,7 @@ mod tests {
                 subject: None,
             },
             JournalEntry::Issued {
+                issued_at: None,
                 participant: child,
                 digest,
                 scopes: WorldScopes::JOIN.bits(),
@@ -5958,10 +6251,11 @@ mod tests {
             .unwrap();
         let created = JournalEntry::Created {
             world_id: "test-world".to_owned(),
-            version: JOURNAL_VERSION,
+            version: MAX_JOURNAL_VERSION,
         };
         let owner_issued = source.issued_entry(owner.id).unwrap();
         let parent_revoked = JournalEntry::Revoked {
+            revoked_at: None,
             participant_id: owner.id,
             by: None,
         };
@@ -5998,6 +6292,7 @@ mod tests {
                 parent_revoked,
                 child_issued,
                 JournalEntry::Revoked {
+                    revoked_at: None,
                     participant_id: child.id,
                     by: None,
                 },
@@ -6023,6 +6318,7 @@ mod tests {
             .issue_capability("Ada", WorldScopes::GUEST, CapabilityBounds::default())
             .unwrap();
         let legitimate = JournalEntry::Issued {
+            issued_at: None,
             participant: owner,
             digest: hex_encode(&token_digest(owner_token.expose())),
             scopes: WorldScopes::GUEST.bits(),
@@ -6033,6 +6329,7 @@ mod tests {
             subject: None,
         };
         let forged = JournalEntry::Issued {
+            issued_at: None,
             participant: Participant {
                 id: 0,
                 display_name: "host".to_owned(),
@@ -6078,6 +6375,7 @@ mod tests {
             .issue_capability("Ada", WorldScopes::GUEST, CapabilityBounds::default())
             .unwrap();
         let legitimate = JournalEntry::Issued {
+            issued_at: None,
             participant: owner.clone(),
             digest: hex_encode(&token_digest(owner_token.expose())),
             scopes: WorldScopes::GUEST.bits(),
@@ -6103,6 +6401,7 @@ mod tests {
         // restores fine: those journals predate the current sanitizer
         // and restored successfully before this check existed.
         let legacy = JournalEntry::Issued {
+            issued_at: None,
             participant: Participant {
                 id: 1,
                 display_name: "\u{1f468}\u{200d}\u{1f469}\u{200d}\u{1f467}".to_owned(),
@@ -6126,6 +6425,7 @@ mod tests {
         // also restores fine: that journal was written by a live mint
         // path, and refusing it bricks the world.
         let boundary = JournalEntry::Issued {
+            issued_at: None,
             participant: Participant {
                 id: 1,
                 display_name: format!("{} ", "a".repeat(47)),
@@ -6155,6 +6455,7 @@ mod tests {
             .unwrap();
         assert_eq!(minted.display_name, "a".repeat(47));
         let minted_entry = JournalEntry::Issued {
+            issued_at: None,
             participant: minted.clone(),
             digest: hex_encode(&token_digest(minted_token.expose())),
             scopes: WorldScopes::GUEST.bits(),
@@ -6178,6 +6479,7 @@ mod tests {
             "\u{1}\u{2}".to_owned(),
         ] {
             let forged = JournalEntry::Issued {
+                issued_at: None,
                 participant: Participant {
                     id: 1,
                     display_name: bad_name.clone(),
@@ -6210,7 +6512,7 @@ mod tests {
         let mut source = world(8);
         let mut entries = vec![JournalEntry::Created {
             world_id: "test-world".to_owned(),
-            version: JOURNAL_VERSION,
+            version: MAX_JOURNAL_VERSION,
         }];
         for name in ["Ada", "Bo", "Cy"] {
             let (participant, _) = join(&mut source, name);
@@ -6240,7 +6542,7 @@ mod tests {
         let entries = vec![
             JournalEntry::Created {
                 world_id: "test-world".to_owned(),
-                version: JOURNAL_VERSION,
+                version: MAX_JOURNAL_VERSION,
             },
             source.issued_entry(first.id).unwrap(),
             source.issued_entry(second.id).unwrap(),
@@ -6268,11 +6570,12 @@ mod tests {
         let entries = vec![
             JournalEntry::Created {
                 world_id: "test-world".to_owned(),
-                version: JOURNAL_VERSION,
+                version: MAX_JOURNAL_VERSION,
             },
             source.issued_entry(first.id).unwrap(),
             source.issued_entry(second.id).unwrap(),
             JournalEntry::Revoked {
+                revoked_at: None,
                 participant_id: first.id,
                 by: None,
             },
@@ -6357,6 +6660,215 @@ mod tests {
         assert_eq!(snapshot.events.len(), 2);
     }
 
+    /// #11778: a checkpoint keeps who revoked a capability. It wrote
+    /// `by: None` for every revocation, so after compaction a moderator's
+    /// revoke replayed as the admin's and the audit actor was lost.
+    /// #11960: mint stamps the world clock's time on each capability,
+    /// a revoke stamps every capability it revokes, and a checkpoint and a
+    /// restore keep both, delegated descendants included.
+    #[test]
+    fn join_and_revoke_times_survive_checkpoint_and_restore_11960() {
+        fn times(entries: &[JournalEntry]) -> Vec<(u64, Option<u64>, Option<u64>)> {
+            let mut issued: Vec<(u64, Option<u64>, Option<u64>)> = entries
+                .iter()
+                .filter_map(|entry| match entry {
+                    JournalEntry::Issued {
+                        participant,
+                        issued_at,
+                        ..
+                    } => Some((participant.id, *issued_at, None)),
+                    _ => None,
+                })
+                .collect();
+            for entry in entries {
+                if let JournalEntry::Revoked {
+                    participant_id,
+                    revoked_at,
+                    ..
+                } = entry
+                    && let Some(row) = issued.iter_mut().find(|row| row.0 == *participant_id)
+                {
+                    row.2 = *revoked_at;
+                }
+            }
+            issued
+        }
+        let clock = Arc::new(SplitClock {
+            wall_ms: AtomicU64::new(1_000),
+            monotonic_ms: AtomicU64::new(0),
+            monotonic_origin: Instant::now(),
+        });
+        let mut core =
+            WorldCore::new_with_clock("test-world", WorldLimits::default(), clock.clone()).unwrap();
+        core.active_module_hash = Some("module".to_owned());
+        let root = WorldScopes::GUEST.union(WorldScopes::DELEGATE);
+        let (owner, owner_token) = core
+            .issue_capability("Owner", root, CapabilityBounds::default())
+            .unwrap();
+        clock.wall_ms.store(2_000, Ordering::SeqCst);
+        let (child, _) = core
+            .delegate(
+                &owner_token,
+                WorldScopes::GUEST,
+                CapabilityBounds::default(),
+                "Child",
+                None,
+            )
+            .unwrap();
+        clock.wall_ms.store(3_000, Ordering::SeqCst);
+        let (kept, _) = join(&mut core, "Kept");
+        let mut revoked = core.revoke_tree_at(owner.id, None, Some(4_000));
+        revoked.sort_unstable();
+        assert_eq!(revoked, vec![owner.id, child.id]);
+        // Revoking a revoked capability again changes no recorded time.
+        assert!(core.revoke_tree_at(owner.id, None, Some(9_999)).is_empty());
+
+        let expected = vec![
+            (owner.id, Some(1_000), Some(4_000)),
+            (child.id, Some(2_000), Some(4_000)),
+            (kept.id, Some(3_000), None),
+        ];
+        let compacted = core.checkpoint_entries("{}".to_owned()).unwrap();
+        assert_eq!(times(&compacted), expected);
+        // The header names the version its timed entries require.
+        assert!(matches!(
+            compacted.first(),
+            Some(JournalEntry::Created { version, .. }) if *version >= JOURNAL_VERSION_JOIN_TIMES
+        ));
+        let restored = WorldCore::restore("test-world", WorldLimits::default(), compacted)
+            .unwrap()
+            .core;
+        assert_eq!(
+            times(&restored.checkpoint_entries("{}".to_owned()).unwrap()),
+            expected
+        );
+    }
+
+    /// #11960: an entry carrying a time requires version 12, one without
+    /// stays readable by older binaries, and a header older than the entry
+    /// is refused at restore.
+    #[test]
+    fn timed_entries_require_the_join_times_version_11960() {
+        let untimed = issued_entry_for(1, WorldScopes::GUEST.bits());
+        assert_eq!(journal_version_required_by(&untimed), JOURNAL_VERSION);
+        let JournalEntry::Issued {
+            participant,
+            digest,
+            scopes,
+            parent,
+            expires_at,
+            uses,
+            used,
+            subject,
+            ..
+        } = untimed
+        else {
+            unreachable!()
+        };
+        let timed = JournalEntry::Issued {
+            participant,
+            digest,
+            scopes,
+            parent,
+            expires_at,
+            uses,
+            used,
+            subject,
+            issued_at: Some(5),
+        };
+        assert_eq!(
+            journal_version_required_by(&timed),
+            JOURNAL_VERSION_JOIN_TIMES
+        );
+        let revoke = |revoked_at| JournalEntry::Revoked {
+            participant_id: 1,
+            by: None,
+            revoked_at,
+        };
+        assert_eq!(journal_version_required_by(&revoke(None)), JOURNAL_VERSION);
+        assert_eq!(
+            journal_version_required_by(&revoke(Some(6))),
+            JOURNAL_VERSION_JOIN_TIMES
+        );
+        let header = |version| JournalEntry::Created {
+            world_id: "test-world".to_owned(),
+            version,
+        };
+        let old = WorldCore::restore(
+            "test-world",
+            WorldLimits::default(),
+            vec![header(JOURNAL_VERSION_PROGRAM_BUNDLE), timed.clone()],
+        );
+        let error = old.err().expect("an older header refuses a timed entry");
+        assert!(
+            error.to_string().contains("requires version 12"),
+            "{error:#}"
+        );
+        let new = WorldCore::restore(
+            "test-world",
+            WorldLimits::default(),
+            vec![header(JOURNAL_VERSION_JOIN_TIMES), timed],
+        )
+        .unwrap()
+        .core;
+        assert_eq!(new.capabilities.get(&1).unwrap().issued_at, Some(5));
+        // An untimed entry still reads, and its time stays unknown, not zero.
+        let legacy = WorldCore::restore(
+            "test-world",
+            WorldLimits::default(),
+            vec![
+                header(JOURNAL_VERSION),
+                issued_entry_for(1, WorldScopes::GUEST.bits()),
+            ],
+        )
+        .unwrap()
+        .core;
+        assert_eq!(legacy.capabilities.get(&1).unwrap().issued_at, None);
+    }
+
+    #[test]
+    fn checkpoint_keeps_the_revoking_moderator_11778() {
+        fn revocations(entries: &[JournalEntry]) -> Vec<(u64, Option<u64>)> {
+            entries
+                .iter()
+                .filter_map(|entry| match entry {
+                    JournalEntry::Revoked {
+                        participant_id, by, ..
+                    } => Some((*participant_id, *by)),
+                    _ => None,
+                })
+                .collect()
+        }
+        let mut core = world(8);
+        core.active_module_hash = Some("module".to_owned());
+        let (moderated, _) = join(&mut core, "Ada");
+        let (by_admin, _) = join(&mut core, "Bo");
+        let (moderator, _) = join(&mut core, "Cy");
+        assert_eq!(
+            core.revoke_tree_by(moderated.id, Some(moderator.id)),
+            vec![moderated.id]
+        );
+        assert_eq!(core.revoke_tree_by(by_admin.id, None), vec![by_admin.id]);
+        // A second revoke of a revoked capability changes nothing, the
+        // recorded actor included.
+        assert!(
+            core.revoke_tree_by(moderated.id, Some(by_admin.id))
+                .is_empty()
+        );
+
+        let compacted = core.checkpoint_entries("{}".to_owned()).unwrap();
+        let expected = vec![(moderated.id, Some(moderator.id)), (by_admin.id, None)];
+        assert_eq!(revocations(&compacted), expected);
+
+        // Replaying the checkpoint and compacting again keeps the actor.
+        let mut restored = WorldCore::restore("test-world", WorldLimits::default(), compacted)
+            .unwrap()
+            .core;
+        restored.active_module_hash = Some("module".to_owned());
+        let again = restored.checkpoint_entries("{}".to_owned()).unwrap();
+        assert_eq!(revocations(&again), expected);
+    }
+
     #[test]
     fn revoked_capabilities_cannot_read_or_write() {
         let mut core = world(8);
@@ -6427,6 +6939,26 @@ mod tests {
             from_ada, accepted,
             "every line accepted before the removal is kept, and none after it"
         );
+    }
+
+    /// #11775: metrics count distinct connected participants as well as
+    /// sessions, so an owner report's active count is not inflated by one
+    /// participant holding several sessions.
+    #[tokio::test]
+    async fn metrics_count_connected_participants_and_sessions() {
+        let handle = WorldHandle::spawn(WorldCore::new("w", WorldLimits::default()).unwrap());
+        let (ada, _) = handle.issue("Ada", WorldScopes::GUEST).await.unwrap();
+        let (bo, _) = handle.issue("Bo", WorldScopes::GUEST).await.unwrap();
+        let idle = handle.metrics().await.unwrap();
+        assert_eq!((idle.sessions, idle.participants), (0, 0));
+        handle.presence(ada.id, true).await;
+        handle.presence(ada.id, true).await;
+        handle.presence(bo.id, true).await;
+        let busy = handle.metrics().await.unwrap();
+        assert_eq!((busy.sessions, busy.participants), (3, 2));
+        handle.presence(bo.id, false).await;
+        let after = handle.metrics().await.unwrap();
+        assert_eq!((after.sessions, after.participants), (2, 1));
     }
 
     #[test]
@@ -6603,6 +7135,7 @@ mod tests {
                 version: JOURNAL_VERSION,
             },
             JournalEntry::Issued {
+                issued_at: None,
                 participant: Participant {
                     id: 1,
                     display_name: "ann".to_owned(),
@@ -6616,6 +7149,7 @@ mod tests {
                 subject: None,
             },
             JournalEntry::Issued {
+                issued_at: None,
                 participant: Participant {
                     id: 2,
                     display_name: "bo".to_owned(),
@@ -7849,7 +8383,7 @@ mod tests {
     fn signed_journal(core: &WorldCore) -> Vec<JournalEntry> {
         let mut entries = vec![JournalEntry::Created {
             world_id: "ttt-journal".to_owned(),
-            version: JOURNAL_VERSION_SIGNED_PLAY,
+            version: MAX_JOURNAL_VERSION,
         }];
         let mut ids: Vec<u64> = core.author_keys.keys().copied().collect();
         ids.sort_unstable();
@@ -9125,7 +9659,7 @@ mod schedule_tests {
 
     impl WorldJournal for Recorded {
         fn append(&mut self, entry: &JournalEntry) -> Result<()> {
-            self.0.lock().unwrap().push(entry.clone());
+            super::tests::push_bumped(&mut self.0.lock().unwrap(), entry);
             Ok(())
         }
     }
@@ -9157,7 +9691,7 @@ mod schedule_tests {
         // the participant before it was issued -- a state no live path can
         // write, and restore refuses it (#2894).
         let issued = core.issued_entry(ann.id).unwrap();
-        journal.0.lock().unwrap().push(issued);
+        super::tests::push_bumped(&mut journal.0.lock().unwrap(), &issued);
         let program = Scheduler {
             refuse_fires,
             ..Scheduler::default()
@@ -9182,6 +9716,173 @@ mod schedule_tests {
         actor.after_change().await;
         actor.acting = None;
         let _ = response.await.unwrap().unwrap();
+    }
+
+    /// A journal that records how the actor persisted - plain appends
+    /// vs batches with their sizes - so a group-commit test observes the
+    /// batching itself, not just its effects (#8239).
+    #[derive(Clone, Default)]
+    struct BatchJournal {
+        entries: Arc<std::sync::Mutex<Vec<JournalEntry>>>,
+        appends: Arc<std::sync::Mutex<usize>>,
+        batches: Arc<std::sync::Mutex<Vec<usize>>>,
+    }
+
+    impl BatchJournal {
+        fn for_world(world_id: &str) -> Self {
+            let journal = Self::default();
+            journal.entries.lock().unwrap().push(JournalEntry::Created {
+                world_id: world_id.to_owned(),
+                version: JOURNAL_VERSION,
+            });
+            journal
+        }
+
+        fn committed(&self) -> Vec<JournalEntry> {
+            self.entries
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|entry| matches!(entry, JournalEntry::Committed { .. }))
+                .cloned()
+                .collect()
+        }
+    }
+
+    impl WorldJournal for BatchJournal {
+        fn append(&mut self, entry: &JournalEntry) -> Result<()> {
+            *self.appends.lock().unwrap() += 1;
+            self.entries.lock().unwrap().push(entry.clone());
+            Ok(())
+        }
+
+        fn append_batch(&mut self, entries: &[JournalEntry]) -> Result<()> {
+            self.batches.lock().unwrap().push(entries.len());
+            self.entries.lock().unwrap().extend(entries.iter().cloned());
+            Ok(())
+        }
+    }
+
+    /// A program that refuses the input `boom` and accepts everything else.
+    struct BatchProgram;
+
+    impl WorldProgram for BatchProgram {
+        fn update(&mut self, event: &WorldEvent) -> Result<()> {
+            if let WorldEventKind::Input(input) = &event.kind {
+                ensure!(input != b"boom", "the program refuses this input");
+            }
+            Ok(())
+        }
+    }
+
+    fn batch_actor(
+        id: &str,
+        bounds: CapabilityBounds,
+    ) -> (WorldActor, JoinCapability, BatchJournal) {
+        let journal = BatchJournal::for_world(id);
+        let mut core = WorldCore::new(id, WorldLimits::default()).unwrap();
+        let (ann, token) = core
+            .issue_capability("ann", WorldScopes::GUEST, bounds)
+            .unwrap();
+        let issued = core.issued_entry(ann.id).unwrap();
+        journal.entries.lock().unwrap().push(issued);
+        let actor = WorldActor::for_test(
+            core,
+            Box::new(BatchProgram),
+            Some(Box::new(journal.clone())),
+        );
+        (actor, token, journal)
+    }
+
+    /// Drive one drained batch through the actor's batch handler and
+    /// collect every reply, in order.
+    async fn batch_replies(
+        actor: &mut WorldActor,
+        token: &JoinCapability,
+        inputs: &[&[u8]],
+    ) -> Vec<Result<WorldEvent>> {
+        let mut commands = Vec::new();
+        let mut responses = Vec::new();
+        for input in inputs {
+            let (reply, response) = tokio::sync::oneshot::channel();
+            commands.push(WorldCommand::Input {
+                token: token.clone(),
+                input: input.to_vec(),
+                session_id: None,
+                signed_move: None,
+                reply,
+            });
+            responses.push(response);
+        }
+        actor.handle_input_batch(commands).await;
+        let mut results = Vec::new();
+        for response in responses {
+            results.push(response.await.unwrap());
+        }
+        results
+    }
+
+    // #8239 oracle: a batch of N inputs commits N events in order, with
+    // consecutive sequences, persisted as ONE batch append and no plain
+    // appends - one sync covers the whole group.
+    #[tokio::test]
+    async fn input_batch_commits_n_events_with_one_batch_append() {
+        let (mut actor, token, journal) = batch_actor("batch-ok", CapabilityBounds::default());
+        let results = batch_replies(
+            &mut actor,
+            &token,
+            &[b"one", b"two", b"three", b"four", b"five"],
+        )
+        .await;
+        let sequences: Vec<u64> = results
+            .iter()
+            .map(|result| result.as_ref().unwrap().sequence)
+            .collect();
+        assert_eq!(sequences, vec![1, 2, 3, 4, 5]);
+        assert_eq!(journal.committed().len(), 5);
+        assert_eq!(*journal.batches.lock().unwrap(), vec![5]);
+        assert_eq!(*journal.appends.lock().unwrap(), 0);
+    }
+
+    // #8239 oracle: staging stops at the first program rejection - the
+    // staged prefix commits, the rejected input is answered with the
+    // rejection the single path produces, and the input after it is
+    // routed through the single path, where the now-unhealthy program
+    // refuses it as unavailable. Nothing after the prefix is journaled.
+    #[tokio::test]
+    async fn input_batch_stops_at_program_rejection() {
+        let (mut actor, token, journal) = batch_actor("batch-boom", CapabilityBounds::default());
+        let results = batch_replies(&mut actor, &token, &[b"one", b"boom", b"two"]).await;
+        assert!(results[0].is_ok(), "{:?}", results[0]);
+        let rejected = format!("{:#}", results[1].as_ref().unwrap_err());
+        assert!(
+            rejected.contains("world program rejected input"),
+            "{rejected}"
+        );
+        let unavailable = format!("{:#}", results[2].as_ref().unwrap_err());
+        assert!(unavailable.contains("unavailable"), "{unavailable}");
+        assert_eq!(journal.committed().len(), 1);
+        assert_eq!(*journal.batches.lock().unwrap(), vec![1]);
+        assert!(!actor.program_healthy);
+    }
+
+    // #8239 oracle: staged spends count against the uses limit before
+    // commit - a batch of three from a participant with two uses left
+    // admits exactly two, and the third is refused at prepare time with
+    // the single path's uses error.
+    #[tokio::test]
+    async fn input_batch_accounts_staged_spends_against_uses() {
+        let bounds = CapabilityBounds {
+            expires_at: None,
+            uses: Some(2),
+        };
+        let (mut actor, token, journal) = batch_actor("batch-uses", bounds);
+        let results = batch_replies(&mut actor, &token, &[b"one", b"two", b"three"]).await;
+        assert!(results[0].is_ok(), "{:?}", results[0]);
+        assert!(results[1].is_ok(), "{:?}", results[1]);
+        let refused = format!("{:#}", results[2].as_ref().unwrap_err());
+        assert!(refused.contains("no uses left"), "{refused}");
+        assert_eq!(journal.committed().len(), 2);
     }
 
     #[tokio::test]
@@ -9497,6 +10198,107 @@ mod schedule_tests {
                 .filter(|entry| matches!(entry, JournalEntry::ScheduleFired { .. }))
                 .count(),
             1
+        );
+    }
+
+    /// The ids of the journal's `ScheduleFired` entries, in journal order:
+    /// the fire history an operator reads from the world's journal.
+    fn journaled_fires(journal: &Recorded) -> Vec<String> {
+        journal
+            .entries()
+            .into_iter()
+            .filter_map(|entry| match entry {
+                JournalEntry::ScheduleFired { id } => Some(id),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// #8342 (#796 item 10-2, the firing ceiling): a firing storm cannot
+    /// exceed [`crate::world_caps::MAX_SCHEDULE_FIRES_PER_WAKEUP`] fires in
+    /// one wakeup.
+    ///
+    /// Oracle: that declared constant, checked against the journal's
+    /// `ScheduleFired` entries (the visible fire history). No live path can
+    /// pend more schedules than the bound, because
+    /// [`crate::world_caps::MAX_PENDING_SCHEDULES`] is no larger, so the
+    /// storm is planted directly to exercise the truncation itself: the
+    /// earliest due fire first, and the rest fire on the next wakeup with
+    /// none lost.
+    #[tokio::test]
+    async fn a_firing_storm_is_bounded_per_wakeup_and_the_rest_fire_next() {
+        let bound = crate::world_caps::MAX_SCHEDULE_FIRES_PER_WAKEUP;
+        assert!(
+            crate::world_caps::MAX_PENDING_SCHEDULES <= bound,
+            "a world's pending cap fits in one wakeup"
+        );
+        let extra = 8;
+        let (mut actor, clock, _token, journal) =
+            scheduling_actor("sched-storm", &["schedule.at"], false);
+        for index in 0..bound + extra {
+            let at = EPOCH_MS + u64::try_from(index).unwrap();
+            actor
+                .core
+                .schedules
+                .insert(format!("s{index:03}"), PendingSchedule::one_shot(at));
+        }
+        clock.advance(u64::try_from(bound + extra).unwrap());
+
+        actor.fire_schedules().await;
+        let first = journaled_fires(&journal);
+        assert_eq!(first.len(), bound, "one wakeup fires at most the bound");
+        let earliest: Vec<String> = (0..bound).map(|index| format!("s{index:03}")).collect();
+        assert_eq!(first, earliest, "the earliest due schedules fire first");
+        assert_eq!(
+            schedule_fires(&actor).len(),
+            bound,
+            "the program received exactly the journaled fires"
+        );
+        assert_eq!(actor.core.schedules.len(), extra, "the rest stay pending");
+
+        actor.fire_schedules().await;
+        assert_eq!(journaled_fires(&journal).len(), bound + extra);
+        assert!(actor.core.schedules.is_empty(), "no fire was lost");
+        actor.fire_schedules().await;
+        assert_eq!(
+            journaled_fires(&journal).len(),
+            bound + extra,
+            "nothing fires twice"
+        );
+    }
+
+    /// #8342: a recurring schedule that fell many intervals behind (a host
+    /// asleep, say) fires once per wakeup, never a catch-up burst, and its
+    /// series still ends at its count. Oracle: one journaled `ScheduleFired`
+    /// per wakeup and the schedule's `remaining` count.
+    #[tokio::test]
+    async fn a_recurring_schedule_far_behind_fires_once_per_wakeup() {
+        let (mut actor, clock, _token, journal) =
+            scheduling_actor("sched-behind", &["schedule.at"], false);
+        let remaining = 3;
+        actor.core.schedules.insert(
+            "r".to_owned(),
+            PendingSchedule {
+                at_ms: EPOCH_MS + 10,
+                interval_ms: Some(10),
+                remaining,
+                target: None,
+            },
+        );
+        clock.advance(10_000);
+        for wakeup in 1..=remaining {
+            actor.fire_schedules().await;
+            assert_eq!(
+                journaled_fires(&journal).len(),
+                usize::try_from(wakeup).unwrap(),
+                "wakeup {wakeup} fires the overdue series once"
+            );
+        }
+        assert!(actor.core.schedules.is_empty(), "the series ended");
+        actor.fire_schedules().await;
+        assert_eq!(
+            journaled_fires(&journal),
+            vec!["r".to_owned(); usize::try_from(remaining).unwrap()]
         );
     }
 
@@ -11835,4 +12637,13 @@ mod projection_guard_tests {
             other => panic!("unexpected kind: {other:?}"),
         }
     }
+}
+
+#[test]
+fn presence_change_refuses_a_duplicated_key() {
+    let text = presence_event(7, "ann", true);
+    assert_eq!(presence_change(&text), Some((7, true)));
+    // A lenient parse keeps the last "event" and reads a join (#8794).
+    let duplicated = text.replacen('{', r#"{"event":"left","#, 1);
+    assert_eq!(presence_change(&duplicated), None);
 }

@@ -161,12 +161,12 @@ The override changes the **effective clearance** the filter compares
 against; the levels and their semantics are #5817's and are not
 re-defined here.
 
-| Level | Ordinary remote query | Local query at own clearance | Override effect |
-| ----- | --------------------- | ---------------------------- | --------------- |
-| S0 Public | returned | returned | none needed |
-| S1 Internal | returned if cleared | returned if cleared | elevates clearance only |
-| S2 Confidential | returned if cleared | returned if cleared | elevates clearance only |
-| S3 Restricted | **never** (local-only, #5817 §5.4) | returned if cleared | **the S3 path** |
+| Level           | Ordinary remote query              | Local query at own clearance | Override effect         |
+| --------------- | ---------------------------------- | ---------------------------- | ----------------------- |
+| S0 Public       | returned                           | returned                     | none needed             |
+| S1 Internal     | returned if cleared                | returned if cleared          | elevates clearance only |
+| S2 Confidential | returned if cleared                | returned if cleared          | elevates clearance only |
+| S3 Restricted   | **never** (local-only, #5817 §5.4) | returned if cleared          | **the S3 path**         |
 
 - **S0–S2:** the override is equivalent to holding the next clearance up.
   Withheld-result signalling follows #5817 §6 at the effective clearance:

@@ -98,7 +98,8 @@ run_scenario() {
   # the run at verify, so the fixture carries every required file.
   for f in actions.json comments.json fleet-feed.json quota-current.json registry.json \
     quota-gatherer-state.json quota-gatherer-heartbeat.json events.json \
-    coverage-snapshot.json aa-last-good.json; do
+    coverage-snapshot.json aa-last-good.json \
+    decisions.json decision-events.jsonl; do
     printf '{}\n' >"$home/.local/state/pm-aggregator/$f"
   done
   printf '{}\n' >"$home/atlas/meta-quota-export/latest.json"

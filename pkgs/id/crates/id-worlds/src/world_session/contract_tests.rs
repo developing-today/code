@@ -262,3 +262,163 @@ async fn the_journaled_vs_ephemeral_boundary_is_what_the_contract_says() {
     assert!(checked >= 10, "{checked}");
     peer.assert_conforms();
 }
+
+/// Agent profile (contract revision 11, #6300 sections 4.2/4.3): a
+/// session that joins with the `agent_profile` capability flag receives
+/// semantic diffs scoped to its subscription, region subscriptions scope
+/// out event diffs, and an input carrying a stale-decision token is
+/// rejected without committing — while the same input carrying the
+/// current token commits exactly one event.
+#[tokio::test]
+async fn agent_profile_session_gets_scoped_diffs_and_stale_inputs_are_rejected() {
+    let svc = service();
+    let world = svc.world().clone();
+    world
+        .install_program("ab".repeat(32), 424_242, Box::new(Viewed))
+        .await
+        .unwrap();
+    let (_, guest) = world.issue("ada", WorldScopes::GUEST).await.unwrap();
+    let cap = guest.expose().to_owned();
+
+    fn newest_view_revision(frames: &[Value], fallback: u64) -> u64 {
+        frames
+            .iter()
+            .filter(|frame| frame["type"] == "view")
+            .last()
+            .and_then(|frame| frame["view_revision"].as_u64())
+            .unwrap_or(fallback)
+    }
+
+    let mut peer = CheckedPeer::connect(svc.clone());
+    peer.say(json!({"type": "join", "capability": cap, "after": null, "agent_profile": true}))
+        .await;
+    let frames = peer.drain().await;
+    let mut current_revision = newest_view_revision(&frames, u64::MAX);
+    assert_ne!(
+        current_revision,
+        u64::MAX,
+        "join must deliver a view: {frames:?}"
+    );
+
+    // Subscribe to chat events only: the acknowledgement names the
+    // subscription and the session's current screen revision.
+    peer.say(json!({"type": "screen_subscribe", "event_classes": ["chat_posted"]}))
+        .await;
+    let frames = peer.drain().await;
+    let subscription = frames
+        .iter()
+        .find(|frame| frame["type"] == "screen_subscription")
+        .unwrap_or_else(|| panic!("subscription ack: {frames:?}"));
+    assert_eq!(subscription["event_classes"], json!(["chat_posted"]));
+    assert_eq!(
+        subscription["view_revision"].as_u64().unwrap(),
+        current_revision
+    );
+
+    // A chat commits, arrives as an event, and — chat_posted being
+    // subscribed — also as a semantic diff describing it in world terms.
+    peer.say(json!({"type": "chat", "text": "hello agents"}))
+        .await;
+    let frames = peer.drain().await;
+    let diff = frames
+        .iter()
+        .find(|frame| frame["type"] == "semantic_diff")
+        .unwrap_or_else(|| panic!("chat semantic diff: {frames:?}"));
+    assert_eq!(diff["changes"][0]["kind"], "chat_posted");
+    assert_eq!(diff["changes"][0]["text"], "hello agents");
+    current_revision = newest_view_revision(&frames, current_revision);
+
+    // An input event is not a subscribed class: no semantic diff.
+    peer.say(json!({"type": "input", "data_hex": "6c"})).await;
+    let frames = peer.drain().await;
+    assert!(
+        !frames.iter().any(|frame| frame["type"] == "semantic_diff"),
+        "unsubscribed class leaked a diff: {frames:?}"
+    );
+    current_revision = newest_view_revision(&frames, current_revision);
+
+    // A region-only subscription scopes event diffs out entirely.
+    peer.say(
+        json!({"type": "screen_subscribe", "region": {"x": 0, "y": 0, "width": 5, "height": 1}}),
+    )
+    .await;
+    peer.drain().await;
+    peer.say(json!({"type": "chat", "text": "again"})).await;
+    let frames = peer.drain().await;
+    assert!(
+        !frames.iter().any(|frame| frame["type"] == "semantic_diff"),
+        "region-only subscription leaked an event diff: {frames:?}"
+    );
+    current_revision = newest_view_revision(&frames, current_revision);
+
+    // Stale-decision rejection: nothing commits, the answer is a
+    // `stale_decision` error, and the current view follows it.
+    let before = sequence(&world, &guest).await;
+    peer.say(json!({"type": "input", "data_hex": "6c", "screen_revision": current_revision + 100}))
+        .await;
+    let frames = peer.drain().await;
+    let error = frames
+        .iter()
+        .find(|frame| frame["type"] == "error")
+        .unwrap_or_else(|| panic!("stale rejection: {frames:?}"));
+    assert_eq!(error["code"], "stale_decision");
+    assert!(
+        frames.iter().any(|frame| frame["type"] == "view"),
+        "the current view follows a stale rejection: {frames:?}"
+    );
+    assert_eq!(
+        sequence(&world, &guest).await,
+        before,
+        "a stale input must not commit"
+    );
+    current_revision = newest_view_revision(&frames, current_revision);
+
+    // The same input decided against the current revision is applied.
+    peer.say(json!({"type": "input", "data_hex": "6c", "screen_revision": current_revision}))
+        .await;
+    peer.drain().await;
+    assert_eq!(
+        sequence(&world, &guest).await,
+        before + 1,
+        "a current input commits exactly one event"
+    );
+    peer.assert_conforms();
+}
+
+/// Reduced fidelity (design section 4.2): a session that never sets the
+/// agent flag gets no agent-profile frames, and a `screen_subscribe`
+/// from such a session is refused — the flag changes presentation only,
+/// never authority.
+#[tokio::test]
+async fn a_human_session_gets_no_agent_profile_frames() {
+    let svc = service();
+    let world = svc.world().clone();
+    world
+        .install_program("ab".repeat(32), 424_242, Box::new(Viewed))
+        .await
+        .unwrap();
+    let (_, guest) = world.issue("ada", WorldScopes::GUEST).await.unwrap();
+    let cap = guest.expose().to_owned();
+
+    let mut peer = CheckedPeer::connect(svc.clone());
+    peer.say(json!({"type": "join", "capability": cap, "after": null}))
+        .await;
+    peer.drain().await;
+    peer.say(json!({"type": "screen_subscribe", "event_classes": ["chat_posted"]}))
+        .await;
+    let frames = peer.drain().await;
+    assert!(
+        frames.iter().any(|frame| frame["type"] == "error"),
+        "subscribe without the agent flag is refused: {frames:?}"
+    );
+    peer.say(json!({"type": "chat", "text": "hello humans"}))
+        .await;
+    let frames = peer.drain().await;
+    assert!(
+        !frames
+            .iter()
+            .any(|frame| frame["type"] == "semantic_diff" || frame["type"] == "screen_subscription"),
+        "no agent-profile frames for a human session: {frames:?}"
+    );
+    peer.assert_conforms();
+}

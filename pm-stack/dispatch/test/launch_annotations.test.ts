@@ -11,12 +11,18 @@ import { annotateLaunch } from "../src/launch_annotations.ts";
 // never rejected — these stubs pin that contract.
 
 function stubs(
-  opts: { failComment?: boolean; failLabels?: boolean; failPatch?: boolean; failGet?: boolean; preExisting?: string | null } = {},
+  opts: {
+    failComment?: boolean;
+    failLabels?: boolean;
+    failNote?: boolean;
+    failGet?: boolean;
+    preExisting?: string | null;
+  } = {},
 ) {
   const calls: {
     comments: [string, number, string][];
     labels: [string, number, string[]][];
-    patches: [number, Record<string, unknown>][];
+    patches: [number, string][];
     gets: number[];
   } = { comments: [], labels: [], patches: [], gets: [] };
   const github = {
@@ -30,9 +36,9 @@ function stubs(
     },
   };
   const queue = {
-    async patchTask(id: number, fields: Record<string, unknown>): Promise<void> {
-      calls.patches.push([id, fields]);
-      if (opts.failPatch) throw new Error("queue unreachable");
+    async noteTask(id: number, note: string): Promise<void> {
+      calls.patches.push([id, note]);
+      if (opts.failNote) throw new Error("queue unreachable");
     },
     async getTask(id: number): Promise<{ last_error?: unknown } | null> {
       calls.gets.push(id);
@@ -75,7 +81,7 @@ describe("annotateLaunch", () => {
     expect(warnings[0]).toContain("github comment 500");
     expect(calls.patches).toHaveLength(1);
     expect(calls.patches[0][0]).toBe(5414);
-    expect(String(calls.patches[0][1].last_error)).toContain("github comment 500");
+    expect(calls.patches[0][1]).toContain("github comment 500");
   });
 
   test("a failed label attempt is warned + noted and the comment still ran", async () => {
@@ -86,7 +92,7 @@ describe("annotateLaunch", () => {
     expect(warnings[0]).toContain("issue labels");
     expect(warnings[0]).toContain("github labels 500");
     expect(calls.patches).toHaveLength(1);
-    expect(String(calls.patches[0][1].last_error)).toContain("github labels 500");
+    expect(calls.patches[0][1]).toContain("github labels 500");
   });
 
   test("when both fail, both warnings are returned and the final task note names both", async () => {
@@ -94,13 +100,13 @@ describe("annotateLaunch", () => {
     const warnings = await run(github, queue);
     expect(warnings).toHaveLength(2);
     expect(calls.patches).toHaveLength(2);
-    const finalNote = String(calls.patches[1][1].last_error);
+    const finalNote = calls.patches[1][1];
     expect(finalNote).toContain("github comment 500");
     expect(finalNote).toContain("github labels 500");
   });
 
   test("a failing task note does not reject the annotation pass", async () => {
-    const { calls, github, queue } = stubs({ failComment: true, failPatch: true });
+    const { calls, github, queue } = stubs({ failComment: true, failNote: true });
     const warnings = await run(github, queue);
     expect(warnings).toHaveLength(1);
     expect(calls.labels).toHaveLength(1);
@@ -126,7 +132,7 @@ describe("annotateLaunch", () => {
     expect(warnings).toHaveLength(1);
     expect(calls.gets).toEqual([5414]);
     expect(calls.patches).toHaveLength(1);
-    const note = String(calls.patches[0][1].last_error);
+    const note = calls.patches[0][1];
     expect(note).toContain("lane assignment failed");
     expect(note).toContain("github comment 500");
   });
@@ -140,7 +146,7 @@ describe("annotateLaunch", () => {
     const warnings = await run(github, queue);
     expect(warnings).toHaveLength(2);
     expect(calls.patches).toHaveLength(2);
-    const finalNote = String(calls.patches[1][1].last_error);
+    const finalNote = calls.patches[1][1];
     expect(finalNote).toContain("lane assignment failed");
     expect(finalNote).toContain("github comment 500");
     expect(finalNote).toContain("github labels 500");
@@ -151,6 +157,6 @@ describe("annotateLaunch", () => {
     const warnings = await run(github, queue);
     expect(warnings).toHaveLength(1);
     expect(calls.patches).toHaveLength(1);
-    expect(String(calls.patches[0][1].last_error)).toContain("github comment 500");
+    expect(calls.patches[0][1]).toContain("github comment 500");
   });
 });

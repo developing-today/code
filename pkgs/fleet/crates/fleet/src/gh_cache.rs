@@ -93,7 +93,8 @@ pub struct Cache<B> {
 }
 
 impl<B: Backend> Cache<B> {
-    pub fn new(backend: B) -> Cache<B> {        Cache {
+    pub fn new(backend: B) -> Cache<B> {
+        Cache {
             backend,
             mu: Mutex::new(State {
                 entries: HashMap::new(),
@@ -202,10 +203,8 @@ impl<B: Backend> Cache<B> {
             .find(|(login, _)| login.eq_ignore_ascii_case(owner))
             .map(|(_, id)| *id)
             .ok_or_else(|| format!("no app installation found for owner '{owner}'"))?;
-        self.get_or_mint(&format!("token:{app}:{owner}"), |b| {
-            b.mint_token(app, id)
-        })
-        .map(|(v, _)| v)
+        self.get_or_mint(&format!("token:{app}:{owner}"), |b| b.mint_token(app, id))
+            .map(|(v, _)| v)
     }
 
     /// The status snapshot: per-kind entry counts, hit/miss
@@ -245,7 +244,12 @@ impl<B: Backend> Cache<B> {
 /// `jwt`, `token` or `status`; `app`/`owner` qualify `jwt`/`token`,
 /// and `name` carries the secret name for the `personal` op (so the
 /// daemon never hardcodes which secret personal means).
-pub fn request(op: &str, app: Option<&str>, owner: Option<&str>, name: Option<&str>) -> serde_json::Value {
+pub fn request(
+    op: &str,
+    app: Option<&str>,
+    owner: Option<&str>,
+    name: Option<&str>,
+) -> serde_json::Value {
     let mut req = serde_json::json!({"v": PROTOCOL_VERSION, "op": op});
     if let Some(app) = app {
         req["app"] = app.into();
@@ -290,11 +294,14 @@ pub fn answer<B: Backend>(cache: &Cache<B>, req: &serde_json::Value) -> serde_js
             }
         }
         "status" => serde_json::json!({"ok": true, "status": cache.snapshot()}),
-        _ => err(format!("unknown op {op:?} (want personal|jwt|token|status)")),
+        _ => err(format!(
+            "unknown op {op:?} (want personal|jwt|token|status)"
+        )),
     }
 }
 
-fn ok_token(token: &str, ttl: u64) -> serde_json::Value {    serde_json::json!({"ok": true, "token": token, "expires_in": ttl})
+fn ok_token(token: &str, ttl: u64) -> serde_json::Value {
+    serde_json::json!({"ok": true, "token": token, "expires_in": ttl})
 }
 
 /// Parse a daemon response line: `Ok(token)` on success,
@@ -347,6 +354,15 @@ pub fn serve<B: Backend + 'static>(backend: B, bind: &str) -> i32 {
             return 3;
         }
     };
+    serve_listener(backend, listener, bind)
+}
+
+/// The daemon body of [`serve`] over an already-bound listener: run
+/// the accept loop and block until it breaks. Split out so a test can
+/// bind port 0 and keep the listener, rather than probe a port, drop
+/// it and race every other process for it before `serve` re-binds
+/// (code#11296). `label` names the listener in the failure line.
+pub fn serve_listener<B: Backend + 'static>(backend: B, listener: TcpListener, label: &str) -> i32 {
     let (_cache, accept) = serve_on(backend, listener);
     // serve_on's accept loop runs on its own thread and serve_on
     // returns at once; the daemon must not return while that loop
@@ -357,7 +373,7 @@ pub fn serve<B: Backend + 'static>(backend: B, bind: &str) -> i32 {
     // thread instead: serve() returns only when the loop actually
     // breaks, which is the only way to reach the failure exit.
     let _ = accept.join();
-    eprintln!("fleet gh cache-serve: listener on '{bind}' failed; exiting");
+    eprintln!("fleet gh cache-serve: listener on '{label}' failed; exiting");
     1
 }
 
@@ -564,7 +580,10 @@ mod tests {
 
         fn list_installations(&self, app: &str) -> Result<Vec<(String, i64)>, String> {
             self.mints.fetch_add(1, Ordering::SeqCst);
-            Ok(vec![("developing-today".to_string(), 7), (app.to_string(), 9)])
+            Ok(vec![
+                ("developing-today".to_string(), 7),
+                (app.to_string(), 9),
+            ])
         }
 
         fn mint_token(&self, app: &str, id: i64) -> Result<(String, u64), String> {
@@ -584,7 +603,12 @@ mod tests {
         assert_eq!(cache.secret("s").unwrap(), "tok-secret");
         assert_eq!(cache.secret("s").unwrap(), "tok-secret");
         assert_eq!(cache.jwt("fleet").unwrap(), "jwt-fleet");
-        assert_eq!(cache.installation_token("fleet", "developing-today").unwrap(), "ghs-fleet-7");
+        assert_eq!(
+            cache
+                .installation_token("fleet", "developing-today")
+                .unwrap(),
+            "ghs-fleet-7"
+        );
         // secret + jwt + installations-list + token = 4 mints;
         // the repeats above served from cache.
         assert_eq!(
@@ -599,7 +623,9 @@ mod tests {
     #[test]
     fn unknown_owner_names_the_owner() {
         let cache = Cache::new(FakeBackend::new());
-        let err = cache.installation_token("fleet", "nobody-here").unwrap_err();
+        let err = cache
+            .installation_token("fleet", "nobody-here")
+            .unwrap_err();
         assert!(err.contains("nobody-here"), "{err}");
     }
 
@@ -693,7 +719,11 @@ mod tests {
             let resp = fetch_one(&addr, &req, Duration::from_secs(2)).unwrap();
             assert_eq!(response_token(&resp).unwrap(), "tok-loopback");
         }
-        assert_eq!(mints.load(Ordering::SeqCst), 1, "daemon cached across connections");
+        assert_eq!(
+            mints.load(Ordering::SeqCst),
+            1,
+            "daemon cached across connections"
+        );
 
         // A bad version is a loud error, never a guess.
         let bad = serde_json::json!({"v": 999u32, "op": "personal"});
@@ -702,18 +732,19 @@ mod tests {
     }
 
     // Oracle: the daemon ENTRY POINT (serve, what `fleet gh
-    // cache-serve` actually runs) stays up and serves: it binds,
-    // answers real TCP clients, and caches across connections.
-    // serve_on alone passing is not proof — serve() once delegated
-    // to serve_on's spawned thread and exited immediately (task
-    // 17509, 2026-11-16), leaving no daemon listening at all.
+    // cache-serve` actually runs) stays up and serves: it answers
+    // real TCP clients and caches across connections. serve_on alone
+    // passing is not proof — serve() once delegated to serve_on's
+    // spawned thread and exited immediately (task 17509, 2026-11-16),
+    // leaving no daemon listening at all. The test drives
+    // serve_listener, which is serve() after its bind, over a
+    // listener it keeps: probing a port, dropping it and letting
+    // serve() re-bind raced other processes for the port and flaked
+    // the amd toplevel build (code#11296).
     #[test]
     fn serve_entry_point_stays_up_and_caches() {
-        // Pick a free port the same way the loopback test picks its
-        // listener, then hand the address to serve() as a string.
-        let probe = TcpListener::bind("127.0.0.1:0").unwrap();
-        let port = probe.local_addr().unwrap().port();
-        drop(probe);
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
         struct ServeCounting {
             mints: std::sync::Arc<AtomicUsize>,
         }
@@ -736,8 +767,9 @@ mod tests {
         let backend = ServeCounting {
             mints: std::sync::Arc::clone(&counter),
         };
-        let server = std::thread::spawn(move || serve(backend, &format!("127.0.0.1:{port}")));
         let addr = format!("127.0.0.1:{port}");
+        let label = addr.clone();
+        let server = std::thread::spawn(move || serve_listener(backend, listener, &label));
         let req = request("personal", None, None, Some("s"));
         // Bounded retry until the daemon thread binds and answers.
         let mut resp = None;
@@ -752,7 +784,41 @@ mod tests {
         assert_eq!(response_token(&resp).unwrap(), "tok-secret");
         let resp = fetch_one(&addr, &req, Duration::from_secs(2)).unwrap();
         assert_eq!(response_token(&resp).unwrap(), "tok-secret");
-        assert_eq!(counter.load(Ordering::SeqCst), 1, "daemon cached across connections");
-        assert!(!server.is_finished(), "serve() returned while its listener was healthy");
+        assert_eq!(
+            counter.load(Ordering::SeqCst),
+            1,
+            "daemon cached across connections"
+        );
+        assert!(
+            !server.is_finished(),
+            "serve() returned while its listener was healthy"
+        );
+    }
+
+    // serve()'s own bind step: an address it cannot bind is a loud
+    // exit 3, never a daemon that looks up but listens nowhere. The
+    // port is held by this test for the whole call, so there is no
+    // window for another process to change the outcome.
+    #[test]
+    fn serve_exits_3_when_it_cannot_bind() {
+        struct Never;
+        impl Backend for Never {
+            fn resolve_secret(&self, _n: &str) -> Result<String, String> {
+                unreachable!()
+            }
+            fn sign_jwt(&self, _a: &str) -> Result<(String, u64), String> {
+                unreachable!()
+            }
+            fn list_installations(&self, _a: &str) -> Result<Vec<(String, i64)>, String> {
+                unreachable!()
+            }
+            fn mint_token(&self, _a: &str, _i: i64) -> Result<(String, u64), String> {
+                unreachable!()
+            }
+        }
+        let held = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = held.local_addr().unwrap().to_string();
+        assert_eq!(serve(Never, &addr), 3);
+        drop(held);
     }
 }

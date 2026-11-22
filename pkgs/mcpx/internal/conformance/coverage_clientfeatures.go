@@ -52,6 +52,13 @@ func init() {
 		C("elicitation-client-highlight-domain", cliDomain),
 		C("elicitation-client-warn-punycode", cliPuny),
 		S("elicitation-state-storage-protected", storeProtected, storeMigrated),
+		// Decision 0007 (refuse-identity, #11198): a client-supplied
+		// session or user-id label grants nothing, and state is keyed by
+		// elicitation id, so questions sharing a session stay separate.
+		S("elicitation-server-no-trust-client-user-id",
+			"elicit.TestAClientSuppliedSessionGrantsNoAuthority@2025-11-25,2026-07-28"),
+		S("elicitation-state-not-session-id-alone",
+			"elicit.TestQuestionsSharingASessionStayAddressedById@2025-11-25"),
 		S("sampling-both-handle-sensitive-data", summaryEvents, retentionPrune),
 		C("sampling-both-handle-sensitive-data", summaryEvents, retentionPrune),
 		SReq("conformance.TestSamplingValidation",
@@ -155,8 +162,6 @@ func init() {
 		Gap{ID: "sampling-server-avoid-includecontext-values", Side: Server, Issue: "#210", Why: "an upstream sampling request is relayed as-is: tools and includeContext reach a client that did not declare sampling.tools or sampling.context"},
 		Gap{ID: "elicitation-server-state-bound-to-user", Side: Server, Issue: "#257", Why: "mcpx has no authenticated user: state is bound to the request, the session id is whatever the caller sends"},
 		Gap{ID: "elicitation-server-stored-state-bound-to-user", Side: Server, Issue: "#257", Why: "mcpx has no authenticated user: state is bound to the request, the session id is whatever the caller sends"},
-		Gap{ID: "elicitation-server-no-trust-client-user-id", Side: Server, Issue: "#257", Why: "mcpx has no authenticated user: state is bound to the request, the session id is whatever the caller sends"},
 		Gap{ID: "elicitation-server-follow-best-practices", Side: Server, Issue: "#255", Why: "requestState signing is sound and question storage is owner-only (0700/0600, #1676); there is no user identity"},
-		Gap{ID: "elicitation-state-not-session-id-alone", Side: Server, Issue: "#257", Why: "state is bound to the request, not a user; there is no user to bind to"},
 	)
 }

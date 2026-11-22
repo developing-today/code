@@ -113,6 +113,9 @@ pub enum FieldType {
     /// A non-negative integer.
     #[serde(rename = "u64")]
     U64,
+    /// A signed integer (e.g. a scroll delta, which may be negative).
+    #[serde(rename = "i64")]
+    I64,
     /// An array of strings.
     #[serde(rename = "string[]")]
     StringArray,
@@ -303,7 +306,9 @@ impl ShellContract {
     ///
     /// Fails if the document is not a valid contract.
     pub fn parse(text: &str) -> Result<Self, String> {
-        let raw: RawContract = serde_json::from_str(text).map_err(|error| error.to_string())?;
+        let raw: RawContract =
+            id_core::json_unique::from_slice_without_duplicate_keys(text.as_bytes())
+                .map_err(|error| error.to_string())?;
         Ok(Self {
             name: raw.contract,
             version: raw.version,
@@ -439,6 +444,13 @@ fn check_fields(
 }
 
 fn check_value(field: &Field, value: &Value) -> Result<(), String> {
+    if field.kind == FieldType::I64 {
+        return if value.as_i64().is_some() {
+            Ok(())
+        } else {
+            Err("must be an integer".to_owned())
+        };
+    }
     let integer_max = match field.kind {
         FieldType::U16 => Some(u64::from(u16::MAX)),
         FieldType::U32 => Some(u64::from(u32::MAX)),
@@ -488,7 +500,7 @@ fn check_value(field: &Field, value: &Value) -> Result<(), String> {
         FieldType::Array => Err("must be an array".to_owned()),
         FieldType::Object if value.is_object() => Ok(()),
         FieldType::Object => Err("must be an object".to_owned()),
-        FieldType::U16 | FieldType::U32 | FieldType::U64 => Ok(()),
+        FieldType::U16 | FieldType::U32 | FieldType::U64 | FieldType::I64 => Ok(()),
     }
 }
 
@@ -665,8 +677,9 @@ pub fn check_transcript(contract: &ShellContract, text: &str) -> anyhow::Result<
         if line.trim().is_empty() {
             continue;
         }
-        let entry: TranscriptLine = serde_json::from_str(line)
-            .map_err(|error| anyhow::anyhow!("transcript line {}: {error}", number + 1))?;
+        let entry: TranscriptLine =
+            id_core::json_unique::from_slice_without_duplicate_keys(line.as_bytes())
+                .map_err(|error| anyhow::anyhow!("transcript line {}: {error}", number + 1))?;
         match entry.from {
             Side::Client => check.client(&entry.frame),
             Side::Server => check.server(&entry.frame),
@@ -699,6 +712,7 @@ pub(crate) fn sample_client_frame(contract: &ShellContract, kind: &str, capabili
             FieldType::Hex => Value::from("00"),
             FieldType::Bool => Value::from(false),
             FieldType::U16 | FieldType::U32 | FieldType::U64 => Value::from(field.min.unwrap_or(1)),
+            FieldType::I64 => Value::from(1_i64),
             FieldType::StringArray | FieldType::Array => Value::Array(Vec::new()),
             FieldType::Object => Value::Object(serde_json::Map::new()),
         };

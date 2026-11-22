@@ -33,6 +33,7 @@ web-lint
 cargo-check
 prod-lines-check
 test-unit
+test-crate-integration
 test-native-shell
 test-rust-examples
 test-shard-0

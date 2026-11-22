@@ -44,11 +44,13 @@ pub const SUPPORTED_MANIFEST_VERSION: i64 = 1;
 
 /// Label columns a column shape may bind to (§6.2 allowlist, in
 /// code). A manifest naming anything else fails validation.
-pub const LABEL_COLUMN_ALLOWLIST: [&str; 5] = ["kind", "client", "topics", "projects", "created_at"];
+pub const LABEL_COLUMN_ALLOWLIST: [&str; 5] =
+    ["kind", "client", "topics", "projects", "created_at"];
 
 /// Dimension names of the built-in surface. A `generic_list` key may
 /// not collide with one (§6.2 reserved names).
-pub const BUILTIN_DIMENSION_NAMES: [&str; 5] = ["kind", "client", "topics", "projects", "created_at"];
+pub const BUILTIN_DIMENSION_NAMES: [&str; 5] =
+    ["kind", "client", "topics", "projects", "created_at"];
 
 /// Names in the sensitivity namespace. No manifest dimension may
 /// live there — the schema has no sensitivity keys (§6.1), so a row
@@ -59,9 +61,9 @@ pub const SENSITIVITY_NAMESPACE: [&str; 4] = ["sensitivity", "max_sensitivity", 
 /// namespace: exactly a reserved word, or built from one
 /// (`sensitivity_level`, `sens_tier`, ...).
 fn in_sensitivity_namespace(name: &str) -> bool {
-    SENSITIVITY_NAMESPACE
-        .iter()
-        .any(|w| name == *w || name.starts_with(&format!("{w}_")) || name.starts_with(&format!("{w}-")))
+    SENSITIVITY_NAMESPACE.iter().any(|w| {
+        name == *w || name.starts_with(&format!("{w}_")) || name.starts_with(&format!("{w}-"))
+    })
 }
 
 /// The code-side pattern for `generic_list` dimension keys (§6.2):
@@ -173,7 +175,10 @@ impl Manifest {
     pub fn compute_hash(&self) -> String {
         let mut h = Sha256::new();
         h.update(self.canonical().as_bytes());
-        format!("{:x}", h.finalize())
+        h.finalize()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>()
     }
 
     /// The effective surface identity for dedupe keys and source
@@ -458,12 +463,13 @@ pub fn parse_manifest_rows(rows: Vec<ManifestRow>) -> Result<Manifest> {
                 shape.as_deref().unwrap_or("")
             ))
         })?;
-        let semantics = Semantics::from_name(semantics.as_deref().unwrap_or("exact")).ok_or_else(|| {
-            Error::fatal(format!(
-                "classification manifest: dimension '{name}' has unknown semantics '{}'",
-                semantics.as_deref().unwrap_or("")
-            ))
-        })?;
+        let semantics =
+            Semantics::from_name(semantics.as_deref().unwrap_or("exact")).ok_or_else(|| {
+                Error::fatal(format!(
+                    "classification manifest: dimension '{name}' has unknown semantics '{}'",
+                    semantics.as_deref().unwrap_or("")
+                ))
+            })?;
         dimensions.push(Dimension {
             name,
             shape,
@@ -471,9 +477,8 @@ pub fn parse_manifest_rows(rows: Vec<ManifestRow>) -> Result<Manifest> {
             label_column,
         });
     }
-    let version = version.ok_or_else(|| {
-        Error::fatal("classification manifest: table is empty — no header row")
-    })?;
+    let version = version
+        .ok_or_else(|| Error::fatal("classification manifest: table is empty — no header row"))?;
     if version > SUPPORTED_MANIFEST_VERSION {
         return Err(Error::fatal(format!(
             "classification manifest: manifest_version {version} is newer than this binary supports \

@@ -25,6 +25,7 @@ use bevy::prelude::{
 };
 use id::world_presentation::WorldSurface;
 
+use crate::form::{FormPresenter, FormStatusOutcome, FormWidgets};
 use crate::session::SessionView;
 
 /// One styled cell of the render model.
@@ -228,6 +229,51 @@ pub fn palette_color(index: u8) -> Color {
 #[derive(Resource, Clone, Debug, Default)]
 pub struct PresentedView(pub Option<SessionView>);
 
+/// The trusted form currently rendered (#8938), or `None`.
+///
+/// The session loop feeds every new view through
+/// [`FormPresenter::present`] and every `form_result_status` reply
+/// through [`FormPresenter::settle`], so the native shell rotates the
+/// presentation token exactly as the SSH presenter does.
+#[derive(Resource, Clone, Debug, Default)]
+pub struct PresentedForm(pub FormPresenter);
+
+impl PresentedForm {
+    /// Fold one presented surface: a trusted form renders widgets, any
+    /// other view clears them.
+    pub fn apply_view(&mut self, view: &SessionView) {
+        self.0.present(view.surface.as_ref());
+    }
+
+    /// Fold one `form_result_status` reply; returns the widgets to draw
+    /// when the form was re-presented with a rotated token.
+    pub fn apply_status(&mut self, status: &serde_json::Value) -> Option<FormWidgets> {
+        match self.0.settle(status) {
+            Some(FormStatusOutcome::RePresented(_)) => self.0.widgets(),
+            _ => None,
+        }
+    }
+}
+
+/// Flat, render-ready lines for a trusted form: title, one line per
+/// field, one line per action. Widget rows come from this client's own
+/// manifest (see [`crate::form`]); nothing here is guest markup.
+#[must_use]
+pub fn form_widget_lines(widgets: &FormWidgets) -> Vec<String> {
+    let mut lines = vec![widgets.title.clone()];
+    for row in &widgets.rows {
+        lines.push(format!("{} [{}]", row.caption, row.hint));
+    }
+    for action in &widgets.actions {
+        lines.push(format!(
+            "[{}]{}",
+            action.id,
+            if action.cancel { " (cancel)" } else { "" }
+        ));
+    }
+    lines
+}
+
 /// Marker for the root UI node the renderer owns.
 #[derive(Component)]
 struct ScreenRoot;
@@ -248,6 +294,7 @@ pub struct ShellRenderPlugin;
 impl Plugin for ShellRenderPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<PresentedView>()
+            .init_resource::<PresentedForm>()
             .add_systems(Startup, spawn_root)
             .add_systems(Update, rebuild_rows);
     }
@@ -269,16 +316,20 @@ fn spawn_root(mut commands: Commands<'_, '_>) {
 #[allow(clippy::needless_pass_by_value)]
 fn rebuild_rows(
     presented: Res<'_, PresentedView>,
+    form: Res<'_, PresentedForm>,
     mut last_sequence: bevy::prelude::Local<'_, Option<u64>>,
+    mut last_form: bevy::prelude::Local<'_, Option<String>>,
     roots: Query<'_, '_, Entity, With<ScreenRoot>>,
     rows: Query<'_, '_, Entity, With<ScreenRow>>,
     mut commands: Commands<'_, '_>,
 ) {
     let sequence = presented.0.as_ref().map(|view| view.sequence);
-    if sequence == *last_sequence {
+    let form_id = form.0.active().map(|active| active.form_id.clone());
+    if sequence == *last_sequence && form_id == *last_form {
         return;
     }
     *last_sequence = sequence;
+    *last_form = form_id;
 
     for entity in &rows {
         commands.entity(entity).despawn();
@@ -286,7 +337,13 @@ fn rebuild_rows(
     let (Ok(root), Some(view)) = (roots.single(), presented.0.as_ref()) else {
         return;
     };
-    let grid = ScreenGrid::from_view(view);
+    // #8938: a trusted form renders its widgets; anything else renders
+    // the view as before (a form surface without trust falls through to
+    // its escape-free text projection inside ScreenGrid).
+    let grid = match (form.0.active(), form.0.widgets()) {
+        (Some(_), Some(widgets)) => ScreenGrid::from_text(&form_widget_lines(&widgets).join("\n")),
+        _ => ScreenGrid::from_view(view),
+    };
     for row in &grid.rows {
         let mut row_entity =
             commands.spawn((ScreenRow, bevy::prelude::Node::default(), Text::new("")));
@@ -399,5 +456,87 @@ mod tests {
         app.update();
         let mut query = app.world_mut().query::<&ScreenRow>();
         assert_eq!(query.iter(app.world()).count(), 0);
+    }
+
+    #[test]
+    fn a_trusted_form_renders_widget_lines_not_its_text_projection() {
+        let mut app = headless_app();
+        app.update();
+        let mut state = crate::session::SessionState::default();
+        state
+            .apply_server_frame(serde_json::json!({
+                "type": "view", "sequence": 9, "data": "fallback",
+                "surface": {"kind": "form", "version": 1, "form_id": "signup",
+                    "presentation_token": "0123456789abcdef0123456789abcdef",
+                    "title": "Sign up",
+                    "fields": [{"kind": "text", "id": "name", "label": "Name",
+                                "required": true, "max_length": 40}],
+                    "actions": [{"id": "submit", "label": "Send"},
+                                {"id": "cancel", "label": "Cancel", "kind": "cancel"}]},
+                "view_revision": 0
+            }))
+            .unwrap();
+        let view = state.view().unwrap().clone();
+
+        let mut form = PresentedForm::default();
+        form.apply_view(&view);
+        assert!(form.0.active().is_some(), "form must be trusted");
+        app.world_mut().insert_resource(form);
+        present_in_world(app.world_mut(), view);
+        app.update();
+
+        let mut query = app.world_mut().query::<&TextSpan>();
+        let spans: Vec<String> = query.iter(app.world()).map(|span| span.0.clone()).collect();
+        assert_eq!(
+            spans,
+            vec![
+                "Sign up".to_string(),
+                "Name * [text, max 40]".to_string(),
+                "[submit]".to_string(),
+                "[cancel] (cancel)".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn an_untrusted_form_falls_back_to_its_text_projection() {
+        let mut app = headless_app();
+        app.update();
+        let mut state = crate::session::SessionState::default();
+        state
+            .apply_server_frame(serde_json::json!({
+                "type": "view", "sequence": 11, "data": "fallback",
+                "surface": {"kind": "form", "version": 1, "form_id": "pick",
+                    "presentation_token": "0123456789abcdef0123456789abcdef",
+                    "title": "Pick",
+                    "fields": [{"kind": "text", "id": "name", "label": "Name",
+                                "required": true, "max_length": 40}],
+                    "actions": [{"id": "submit", "label": "Send"}]},
+                "view_revision": 0
+            }))
+            .unwrap();
+        let view = state.view().unwrap().clone();
+        // A presenter whose manifest has no text entry cannot collect the
+        // text field, so the form is not trusted and renders as text.
+        let mut form = PresentedForm(crate::form::FormPresenter::with_manifest(
+            serde_json::json!({
+                "keys": 0, "encoder": false, "pointer": false, "text_entry": "none",
+            }),
+        ));
+        form.apply_view(&view);
+        assert!(form.0.active().is_none());
+        app.world_mut().insert_resource(form);
+        present_in_world(app.world_mut(), view);
+        app.update();
+        let mut query = app.world_mut().query::<&TextSpan>();
+        let spans: Vec<String> = query.iter(app.world()).map(|span| span.0.clone()).collect();
+        assert_eq!(
+            spans,
+            vec![
+                "Pick".to_string(),
+                "1. Name (text, max 40)".to_string(),
+                "1. Send".to_string(),
+            ]
+        );
     }
 }

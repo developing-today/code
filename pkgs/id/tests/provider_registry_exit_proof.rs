@@ -16,8 +16,9 @@
 use std::collections::BTreeSet;
 
 use id::world_caps::{
-    CATALOG, CATALOG_ENTRIES, CapLedger, Decision, DefaultCeiling, PROVIDER_REGISTRY,
-    TEST_PROVIDER_NAME, catalog_names, default_ceiling_names,
+    CATALOG, CATALOG_ENTRIES, CLIENT_CATALOG_ENTRIES, CLIENT_FILE_READ_NAME, CapLedger, Decision,
+    DefaultCeiling, PROVIDER_REGISTRY, ProviderSide, TEST_PROVIDER_NAME, catalog_names,
+    default_ceiling_names,
 };
 use id::world_compile::{CompileSpec, check_imports};
 
@@ -54,7 +55,113 @@ fn the_probe_is_visible_in_the_capability_catalog() {
         Some(TEST_PROVIDER_NAME)
     );
     assert!(!CATALOG.contains(&TEST_PROVIDER_NAME));
-    assert_eq!(CATALOG.len() + 1, CATALOG_ENTRIES.len());
+
+    // The assembled registry decomposes exactly, in order: the legacy
+    // CATALOG's production entries, then the declared client segment
+    // (CLIENT_CATALOG_ENTRIES), then the test probe — and nothing else
+    // (#11016). The invariant is the decomposition against the declared
+    // segment, not a bare count: registry growth happens by declaring a
+    // segment, never by an entry appearing unaccounted for.
+    let production = CATALOG.len();
+    let client = CLIENT_CATALOG_ENTRIES.len();
+    assert_eq!(production + client + 1, CATALOG_ENTRIES.len());
+
+    let production_names: Vec<&str> = CATALOG_ENTRIES
+        .iter()
+        .take(production)
+        .map(|entry| entry.name)
+        .collect();
+    assert_eq!(
+        production_names.as_slice(),
+        CATALOG,
+        "the assembled registry must open with the legacy catalog, in order"
+    );
+
+    let assembled_client_names: Vec<&str> = CATALOG_ENTRIES
+        .iter()
+        .skip(production)
+        .take(client)
+        .map(|entry| entry.name)
+        .collect();
+    let declared_client_names: Vec<&str> = CLIENT_CATALOG_ENTRIES
+        .iter()
+        .map(|entry| entry.name)
+        .collect();
+    assert_eq!(
+        assembled_client_names, declared_client_names,
+        "the client segment of the assembled registry must be exactly the declared client entries"
+    );
+
+    // No duplicates and no unaccounted extras: the registry's name set
+    // is exactly the union of the three declared parts.
+    let assembled_names: Vec<&str> = CATALOG_ENTRIES.iter().map(|entry| entry.name).collect();
+    let unique: BTreeSet<&str> = assembled_names.iter().copied().collect();
+    assert_eq!(
+        unique.len(),
+        assembled_names.len(),
+        "registry names must be unique"
+    );
+    let expected: BTreeSet<&str> = CATALOG
+        .iter()
+        .copied()
+        .chain(declared_client_names.iter().copied())
+        .chain([TEST_PROVIDER_NAME])
+        .collect();
+    assert_eq!(unique, expected);
+}
+
+#[test]
+#[allow(clippy::expect_used)]
+fn the_client_segment_is_exactly_the_declared_client_providers() {
+    // Every client-side entry in the assembled registry comes from the
+    // declared client segment (its position is asserted in
+    // the_probe_is_visible_in_the_capability_catalog); here, its
+    // contents: the one F13.7 client provider, by name, client-side,
+    // excluded from every default ceiling, and absent from the legacy
+    // host CATALOG view.
+    let client_side: Vec<_> = CATALOG_ENTRIES
+        .iter()
+        .filter(|entry| entry.side == ProviderSide::Client)
+        .collect();
+    assert_eq!(
+        client_side.len(),
+        CLIENT_CATALOG_ENTRIES.len(),
+        "every client-side registry entry must come from the declared client segment"
+    );
+    for entry in CLIENT_CATALOG_ENTRIES {
+        assert_eq!(entry.side, ProviderSide::Client, "{}", entry.name);
+        assert_eq!(
+            entry.default_ceiling,
+            DefaultCeiling::Excluded,
+            "{}",
+            entry.name
+        );
+        assert!(
+            !CATALOG.contains(&entry.name),
+            "{} must not join the legacy host CATALOG view",
+            entry.name
+        );
+        assert!(
+            !default_ceiling_names().contains(entry.name),
+            "{} must stay out of every default ceiling",
+            entry.name
+        );
+    }
+
+    assert_eq!(
+        CLIENT_CATALOG_ENTRIES.len(),
+        1,
+        "F13.7 declares exactly one client provider so far"
+    );
+    let declared = CLIENT_CATALOG_ENTRIES
+        .first()
+        .expect("the client segment is non-empty");
+    assert_eq!(declared.name, CLIENT_FILE_READ_NAME);
+    let manifest = PROVIDER_REGISTRY
+        .get(CLIENT_FILE_READ_NAME)
+        .expect("the registry resolves the client provider by name");
+    assert_eq!(manifest, declared);
+    assert_eq!(manifest.version, 1);
 }
 
 #[test]

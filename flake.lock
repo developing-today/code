@@ -711,11 +711,11 @@
         "nixpkgs": "nixpkgs_17"
       },
       "locked": {
-        "lastModified": 1793665075,
-        "narHash": "sha256-xa5Wy5Y+Oag+7x5iq1SEfoT/8Cp+t9gNItErSr504HM=",
+        "lastModified": 1795030057,
+        "narHash": "sha256-tlIV1m85uC1LBFV8L1/QDwyP2aM8oTm6uaTlVjlItEo=",
         "owner": "dezren39",
         "repo": "fleet",
-        "rev": "082bd9e78bcac374d0b3bec89ec1ee9acd4386d1",
+        "rev": "a3c335a7416b3df2f5ebde0c98b6d9480193b1ea",
         "type": "github"
       },
       "original": {
@@ -1347,22 +1347,6 @@
         "owner": "juspay",
         "ref": "inventory-for-systems",
         "repo": "inspect",
-        "type": "github"
-      }
-    },
-    "mcpx-src": {
-      "flake": false,
-      "locked": {
-        "lastModified": 1794021949,
-        "narHash": "sha256-qiIa3rV7keHJCEdqMKILnsbr6SbRSYbFZXuCRO5PqeA=",
-        "owner": "developing-today",
-        "repo": "code",
-        "rev": "bcc090152f3fd7d97d5fbc81c4815224a39d4d30",
-        "type": "github"
-      },
-      "original": {
-        "owner": "developing-today",
-        "repo": "code",
         "type": "github"
       }
     },
@@ -2263,11 +2247,11 @@
         ]
       },
       "locked": {
-        "lastModified": 1794701110,
-        "narHash": "sha256-zaEglOngiL3LK/vWDPnTtBooaXrkX4YuVWwQrcIbcMg=",
+        "lastModified": 1795273809,
+        "narHash": "sha256-nJJw1bA5JuFewVTgzxNkt4QmRNO1hPIiMfdAFZ4iDG0=",
         "owner": "developing-today-forks",
         "repo": "openchamber",
-        "rev": "ce3173a4923e4bd365bea77f0b16c55636fbc8c2",
+        "rev": "750372c93a868b60f3650132b05ed66f55388b2f",
         "type": "github"
       },
       "original": {
@@ -2279,7 +2263,7 @@
     "opencode": {
       "inputs": {
         "fleet": "fleet_3",
-        "mcpx-src": "mcpx-src",
+        "mcpx-src": [],
         "nixpkgs": [
           "opencode",
           "fleet",
@@ -2287,11 +2271,11 @@
         ]
       },
       "locked": {
-        "lastModified": 1794878593,
-        "narHash": "sha256-01jFXYJVMa+NYxC12yiBAF6Q7E92Ku3KXTeeHFj6IuE=",
+        "lastModified": 1795261309,
+        "narHash": "sha256-CriaQjHmTHHa0iiZxMXCEBOfLN5hOuAjDJ9/3pNoui0=",
         "owner": "developing-today-forks",
         "repo": "opencode",
-        "rev": "bbc2f7aadde71f9c409b03df97dbaa3df4833997",
+        "rev": "b70580bbee83c4f5773e733b4859ff6afd8ea1d9",
         "type": "github"
       },
       "original": {

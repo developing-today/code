@@ -17,7 +17,7 @@
 
 import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import type { NeedsDrewCensus } from "./needs-drew.ts";
+import { needsDrewOwnerItems, type NeedsDrewCensus } from "./needs-drew.ts";
 import type { ProjectPoolItem, ProvenanceDetail, QuotaPool, QuotaView } from "./model.ts";
 import { poolState, windowPercent } from "./derive.ts";
 
@@ -226,13 +226,16 @@ export function buildDigest(inputs: DigestInputs): Digest {
   } else {
     const censusAgeMs = now.getTime() - Date.parse(inputs.needsDrew.fetchedAt);
     const censusStale = !inputs.needsDrew.complete || !Number.isFinite(censusAgeMs) || censusAgeMs > staleAgeMs;
+    // FDR-0013: only hands items and review requests are the owner's.
+    // A choice an agent parked on the owner is fleet work and is not
+    // listed here; the attention page counts those separately.
     const items = cap(
-      inputs.needsDrew.items.map(
+      needsDrewOwnerItems(inputs.needsDrew).map(
         (i): DigestItem => ({
           ref: i.ref,
           title: i.title,
           url: i.url,
-          note: i.reason ?? `labelled ${i.needsLabels.join(", ")} — no reason recorded on the item`,
+          note: i.hands?.action ?? i.reason ?? `labelled ${i.needsLabels.join(", ")} — no reason recorded on the item`,
         }),
       ),
     );

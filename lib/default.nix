@@ -251,20 +251,25 @@ let
     lib.mapAttrs' (
       name: config:
       lib.nameValuePair "unattended-installer_offline_${name}" (
-        inputs.unattended-installer.lib.diskoInstallerWrapper config {
-          # https://github.com/NixOS/nixpkgs/blob/master/nixos/modules/installer/cd-dvd/iso-image.nix
-          config = {
-            # isoImage.squashfsCompression = "gzip -Xcompression-level 1";
-            isoImage.squashfsCompression = "zstd -Xcompression-level 6"; # no longer needed? https://github.com/chrillefkr/nixos-unattended-installer/issues/3  https://www.reddit.com/r/NixOS/s/xvUTQmq1NN
-            unattendedInstaller = {
-              successAction = builtins.readFile (from-root "lib/unattended-installer_successAction.sh");
-              preDisko = builtins.readFile (from-root "lib/unattended-installer_preDisko.sh");
-              postDisko = builtins.readFile (from-root "lib/unattended-installer_postDisko.sh");
-              preInstall = builtins.readFile (from-root "lib/unattended-installer_preInstall.sh");
-              postInstall = builtins.readFile (from-root "lib/unattended-installer_postInstall.sh");
+        inputs.unattended-installer.lib.diskoInstallerWrapper
+          {
+            lib = inputs.nixpkgs.lib;
+            inherit (config) pkgs config;
+          }
+          {
+            # https://github.com/NixOS/nixpkgs/blob/master/nixos/modules/installer/cd-dvd/iso-image.nix
+            config = {
+              # isoImage.squashfsCompression = "gzip -Xcompression-level 1";
+              isoImage.squashfsCompression = "zstd -Xcompression-level 6"; # no longer needed? https://github.com/chrillefkr/nixos-unattended-installer/issues/3  https://www.reddit.com/r/NixOS/s/xvUTQmq1NN
+              unattendedInstaller = {
+                successAction = builtins.readFile (from-root "lib/unattended-installer_successAction.sh");
+                preDisko = builtins.readFile (from-root "lib/unattended-installer_preDisko.sh");
+                postDisko = builtins.readFile (from-root "lib/unattended-installer_postDisko.sh");
+                preInstall = builtins.readFile (from-root "lib/unattended-installer_preInstall.sh");
+                postInstall = builtins.readFile (from-root "lib/unattended-installer_postInstall.sh");
+              };
             };
-          };
-        }
+          }
       )
     ) configurations;
 
@@ -660,10 +665,67 @@ let
       ) justRecipes.recipes;
 
       mcpx = pkgs.callPackage ../pkgs/mcpx/package.nix { };
+      mcpxContainerBinary = pkgs.callPackage ../pkgs/mcpx/package.nix {
+        wrapWithRuntimes = false;
+        doCheck = false;
+      };
       mcpxContainer = pkgs.callPackage ../pkgs/mcpx/container-image.nix {
-        mcpx = pkgs.callPackage ../pkgs/mcpx/package.nix {
-          wrapWithRuntimes = false;
-          doCheck = false;
+        mcpx = mcpxContainerBinary;
+      };
+      mcpxTestImage = pkgs.dockerTools.buildLayeredImage {
+        name = "mcpx-e2e-test";
+        tag = "ci";
+        # This is a test harness, not the shipped image: Go builds the fake
+        # MCP server at test time, and the suite requires all wrapped runtimes.
+        # The mcpx executable is the same unwrapped artifact used by the user
+        # image; source is mounted read-only by the workflow.
+        contents = with pkgs; [
+          bash
+          bun
+          cacert
+          coreutils
+          deno
+          git
+          go_1_27
+          mcpxContainerBinary
+          nodejs
+          python3
+        ];
+        extraCommands = ''
+          mkdir -p tmp work usr/bin
+          chmod 1777 tmp work
+          ln -s ${pkgs.coreutils}/bin/env usr/bin/env
+        '';
+        config = {
+          Entrypoint = [ "${pkgs.bash}/bin/bash" ];
+          Cmd = [
+            "-lc"
+            "cd /workspace/pkgs/mcpx && go test ./internal/e2e -count=1 -timeout 30m"
+          ];
+          User = "0:0";
+          WorkingDir = "/workspace";
+          Env = [
+            "GOFLAGS=-buildvcs=false"
+            "HOME=/tmp"
+            "MCPX_TEST_BINARY=${mcpxContainerBinary}/bin/mcpx"
+            "MCPX_TEST_REQUIRE=deno,bun,node,python3"
+            "PATH=${
+              pkgs.lib.makeBinPath (
+                with pkgs;
+                [
+                  bash
+                  bun
+                  coreutils
+                  deno
+                  git
+                  go_1_27
+                  nodejs
+                  python3
+                ]
+              )
+            }:${mcpxContainerBinary}/bin"
+            "SSL_CERT_FILE=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt"
+          ];
         };
       };
       identity = pkgs.callPackage ../pkgs/identity/package.nix { };
@@ -681,6 +743,31 @@ let
         cf = pkgs.callPackage ../pkgs/cf { };
       };
       developingTodayBackupDeploy = pkgs.callPackage ../infra/github-backup/deploy.nix { };
+      # Issue #5767, phase 2: Worker flake packages + their deploy apps.
+      coldStoreRehydrator = pkgs.callPackage ../pkgs/cold-store-reaper/worker/package.nix { };
+      coldStoreRehydratorDeploy = pkgs.callPackage ../pkgs/cold-store-reaper/worker/deploy.nix {
+        coldStoreRehydratorBundle = coldStoreRehydrator;
+      };
+      labOpsHub = pkgs.callPackage ../pkgs/lab-ops-hub/package.nix { };
+      labOpsHubDeploy = pkgs.callPackage ../pkgs/lab-ops-hub/deploy.nix {
+        inherit labOpsHub;
+      };
+      cfContainerHello = pkgs.callPackage ../pkgs/cf-container-hello/package.nix { };
+      cfContainerHelloDeploy = pkgs.callPackage ../pkgs/cf-container-hello/deploy.nix {
+        inherit cfContainerHello;
+      };
+      queueTransportAlert = pkgs.callPackage ../pkgs/queue-transport-alert/worker/package.nix { };
+      queueTransportAlertDeploy = pkgs.callPackage ../pkgs/queue-transport-alert/worker/deploy.nix {
+        inherit queueTransportAlert;
+        cf = pkgs.callPackage ../pkgs/cf { };
+        wrangler = pkgs.callPackage ../pkgs/wrangler { };
+      };
+      messageBridge = pkgs.callPackage ../pkgs/message-bridge/worker/package.nix { };
+      messageBridgeDeploy = pkgs.callPackage ../pkgs/message-bridge/worker/deploy.nix {
+        inherit messageBridge;
+        cf = pkgs.callPackage ../pkgs/cf { };
+        wrangler = pkgs.callPackage ../pkgs/wrangler { };
+      };
     in
     {
       packages = {
@@ -690,6 +777,16 @@ let
           idMailDeploy
           pkarrDeploy
           developingTodayBackupDeploy
+          coldStoreRehydrator
+          coldStoreRehydratorDeploy
+          labOpsHub
+          labOpsHubDeploy
+          cfContainerHello
+          cfContainerHelloDeploy
+          queueTransportAlert
+          queueTransportAlertDeploy
+          messageBridge
+          messageBridgeDeploy
           ;
         mcpx-docs = mcpxDocs;
         mcpx-real-servers = mcpxRealServers;
@@ -699,6 +796,9 @@ let
         generic-runtime = genericRuntime;
         generic-js-runtime = genericJsRuntime;
         generic-python-runtime = genericPythonRuntime;
+      }
+      // pkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
+        mcpx-e2e-test-image = mcpxTestImage;
       };
       checks = {
         # The packaging test (#1981): run the built mcpx artifact --
@@ -720,11 +820,55 @@ let
               bash ${../pkgs/mcpx/packaging-test.sh} ${mcpx}
               touch $out
             '';
+
+        # Drift guard for the generated root just-recipes.json (#8029):
+        # fails when the checked-in JSON disagrees with the root justfile
+        # on the semantic recipe fields — the root counterpart of the
+        # pkgs/id just-recipes-drift guard (#2729). The script projects
+        # out generation noise (absolute source path, body
+        # serialisation), so this is green on any correctly regenerated
+        # file. Runs in a copied tree: `just --dump` at the root needs
+        # the root justfile, root.just, and the pkgs/id module file.
+        just-recipes-root-drift =
+          pkgs.runCommand "just-recipes-root-drift-test"
+            {
+              nativeBuildInputs = [
+                pkgs.bash
+                pkgs.jq
+                pkgs.just
+              ];
+            }
+            ''
+              tree=$PWD/tree
+              mkdir -p $tree/pkgs/id $tree/scripts
+              cp ${../justfile} $tree/justfile
+              cp ${../root.just} $tree/root.just
+              cp ${../just-recipes.json} $tree/just-recipes.json
+              cp ${../pkgs/id/justfile} $tree/pkgs/id/justfile
+              cp ${../scripts/just-recipes-root-check.sh} $tree/scripts/just-recipes-root-check.sh
+              cp ${../scripts/just-recipes-root-check-test.sh} $tree/scripts/just-recipes-root-check-test.sh
+              cd $tree
+              bash scripts/just-recipes-root-check.sh
+              bash scripts/just-recipes-root-check-test.sh
+              touch $out
+            '';
+      }
+      // pkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
+        # The e2e suite spawns daemon/runtime process trees and needs init to
+        # reap them. Expose the flake-built test image as the check output;
+        # mcpx-test runs the suite in that image with Docker's --init, outside
+        # the Nix build sandbox where those process trees cannot be reaped.
+        mcpx-e2e = mcpxTestImage;
       };
       apps = (pkgs.lib.mapAttrs mkRecipeApp publicRecipes) // {
         id-mail-deploy = mkApp idMailDeploy "Deploy the mail Worker from this checkout (needs Bitwarden and sops access)";
         pkarr-deploy = mkApp pkarrDeploy "Deploy the pkarr Worker via the cf versions flow (needs Bitwarden and sops access)";
         developing-today-backup-deploy = mkApp developingTodayBackupDeploy "Deploy the developing-today-backup Worker (github-backup webhook receiver) via the wrangler versions flow (needs Bitwarden and sops access)";
+        cold-store-rehydrator-deploy = mkApp coldStoreRehydratorDeploy "Deploy the cold-store-rehydrator Worker from its flake bundle via the wrangler versions flow (needs Bitwarden and sops access)";
+        lab-ops-hub-deploy = mkApp labOpsHubDeploy "Deploy the lab-ops-hub Worker and push its crawler container image as one command (needs Bitwarden and sops access)";
+        cf-container-hello-deploy = mkApp cfContainerHelloDeploy "Deploy the cf-container-hello Worker from its flake package (needs Bitwarden and sops access)";
+        queue-transport-alert-deploy = mkApp queueTransportAlertDeploy "Deploy the queue-transport-alert Worker (broker outage alert, code#6369) from its flake package via the cf versions flow (needs Bitwarden and sops access)";
+        message-bridge-deploy = mkApp messageBridgeDeploy "Deploy the message-bridge Worker (Claude custom connector that sends and receives messages, plus history page) through the cf versions flow (tagged version, then deployment) and set its access token; --code-only uploads code with Cloudflare env vars (CI), --deploy-version <id> rolls back, --print-urls prints the connector URL (needs Bitwarden and sops access)";
         mcpx = {
           type = "app";
           program = "${mcpx}/bin/mcpx";
@@ -1182,11 +1326,13 @@ let
         "atlas-backup"
         "laptop-autocommit-in-progress"
         "laptop-autocommit-merge-abort"
+        "laptop-autocommit-oversized"
         "laptop-backups-watchdog"
         "laptop-state-backup"
         "laptop-repo-keeper"
         "laptop-untracked-review"
         "openclaw-backup"
+        "oc-password-sync"
         "pm-dashboard-backup"
         "pm-dashboard-backup-copy"
         "pm-dashboard-backup-date"
@@ -1430,6 +1576,11 @@ let
               ${deployPkgs.deploy}/bin/deploy list > list.txt
               cat list.txt
               grep -q "queue-broker" list.txt
+              grep -q "cold-store-rehydrator" list.txt
+              grep -q "lab-ops-hub" list.txt
+              grep -q "cf-container-hello" list.txt
+              grep -q "queue-transport-alert" list.txt
+              grep -q "message-bridge" list.txt
               grep -q "secrets-broker" list.txt
               grep -q "session-proxy" list.txt
               grep -q "mcpx" list.txt

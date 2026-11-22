@@ -52,7 +52,7 @@ The six decisions, as implemented:
    retryable. A later success replaces the delivery row's outcome while the
    prior error is retained in `pmp_delivery_errors`. One deliberate
    deviation: an `invalid_json` delivery is recorded as an error and is
-   *not* counted as handled, so a redelivery is rejected 400 again rather
+   _not_ counted as handled, so a redelivery is rejected 400 again rather
    than acked as a duplicate — a malformed body can never become valid
    under the same GUID, and the 400 keeps the failure visible (pinned by
    the e2e test "invalid JSON redelivery remains a 400").
@@ -89,6 +89,7 @@ contract. "Conforms" was verified against the code and tests this audit,
 not assumed.
 
 **`pmp_items`** — via `store.upsertItem(s)` unless noted:
+
 - Webhook `issues` (all non-deleted actions) — conforms. The `transferred`
   action also lands here today; see disposition D-1 below.
 - Webhook `issues` `deleted` — `store.deleteItem` — conforms (decision 6).
@@ -101,6 +102,7 @@ not assumed.
   written from issues-shaped data).
 
 **`pmp_comments`** — via `store.upsertComment(s)` unless noted:
+
 - Webhook `issue_comment` created/edited — `commentCommon` — conforms.
 - Webhook `issue_comment` deleted — `store.markCommentDeleted` — conforms
   (absorbing tombstone, decision 5).

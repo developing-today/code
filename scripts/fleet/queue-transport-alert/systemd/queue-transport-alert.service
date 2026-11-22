@@ -1,0 +1,23 @@
+[Unit]
+Description=Repo-queue broker transport alert probe (#6369)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# Probes the broker's Tailscale listener with a bare TCP connect, so the
+# probe needs neither the queue nor the fleet binary. On the broker host
+# this still catches the 2026-11-18 failure mode (tailscaled stopped,
+# broker address gone) though not the host being off: run a second copy
+# from another tailnet machine or a scheduled sandbox run for that.
+#
+# Observe-only until ~/.config/queue-transport-alert/mode reads "apply";
+# then it files/comments on GitHub with the gh login of this user.
+ExecStart=/usr/bin/env bash -c '\
+  flag=""; \
+  if [ "$(cat "$HOME/.config/queue-transport-alert/mode" 2>/dev/null)" = "apply" ]; then \
+    flag="--apply"; \
+  fi; \
+  exec /usr/bin/env python3 %h/git/code/scripts/fleet/queue-transport-alert/check_transport.py \
+    --tcp 100.99.113.103:4801 --probe-timeout 10 $flag'
+WorkingDirectory=%h/git/code

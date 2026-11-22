@@ -59,7 +59,9 @@ describe("renderItem linked section honesty (#1500)", () => {
   test("partial with one resolved -> tally counts the resolved ref", () => {
     const items = new Map<RefKey, GhItem>([["developing-today/code#101", gh("developing-today/code#101")]]);
     const html = renderItem("Subject", "subj", LINKS, items, [], prov(PARTIAL_ITEMS, "live (projector)"));
-    expect(html).toContain("Linked issues / PRs — 2 linked · 1 resolved — resolution fell back to fixtures (projector off, #1199)");
+    expect(html).toContain(
+      "Linked issues / PRs — 2 linked · 1 resolved — resolution fell back to fixtures (projector off, #1199)",
+    );
   });
 
   test("(b) fully resolved -> plain header, no tally, no cause", () => {
@@ -78,7 +80,9 @@ describe("renderItem comment section honesty (#1500)", () => {
   test("(c) fixture comment facet -> banner + honest empty wording, never a bare 'no comments'", () => {
     const html = renderItem("Subject", "subj", LINKS, new Map(), [], prov(LIVE_ITEMS, "fixtures"));
     expect(html).toContain("The comment stream is fixture-sourced while the projector is off (#1199)");
-    expect(html).toContain("no comments loaded — the comment stream is fixture-sourced while the projector is off (#1199)");
+    expect(html).toContain(
+      "no comments loaded — the comment stream is fixture-sourced while the projector is off (#1199)",
+    );
     expect(html).not.toContain(">no comments</td>");
   });
 
@@ -110,13 +114,27 @@ describe("renderItem comment section honesty (#1500)", () => {
 
 describe("renderDiscuss fixture honesty (#1500)", () => {
   test("fixture comment facet -> banner + honest empty wording", () => {
-    const html = renderDiscuss("gh:developing-today/code#101", "Discuss", [], { identities: [] }, prov(LIVE_ITEMS, "fixtures"));
+    const html = renderDiscuss(
+      "gh:developing-today/code#101",
+      "Discuss",
+      [],
+      { identities: [] },
+      prov(LIVE_ITEMS, "fixtures"),
+    );
     expect(html).toContain("The comment stream is fixture-sourced while the projector is off (#1199)");
-    expect(html).toContain("no comments loaded — the comment stream is fixture-sourced while the projector is off (#1199)");
+    expect(html).toContain(
+      "no comments loaded — the comment stream is fixture-sourced while the projector is off (#1199)",
+    );
   });
 
   test("live comment facet -> no banner, no fixture empty wording", () => {
-    const html = renderDiscuss("gh:developing-today/code#101", "Discuss", [], { identities: [] }, prov(LIVE_ITEMS, "live (projector)"));
+    const html = renderDiscuss(
+      "gh:developing-today/code#101",
+      "Discuss",
+      [],
+      { identities: [] },
+      prov(LIVE_ITEMS, "live (projector)"),
+    );
     expect(html).not.toContain("fixture-sourced while the projector is off");
     expect(html).not.toContain("no comments loaded");
   });

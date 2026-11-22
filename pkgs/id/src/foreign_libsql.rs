@@ -1316,7 +1316,8 @@ fn classify_response(
 }
 
 fn parse_pipeline_rows(body: &str, query: &GrantedQuery) -> Result<Vec<Row>, AdapterError> {
-    let parsed: Json = serde_json::from_str(body).map_err(|_| AdapterError::MalformedResponse)?;
+    let parsed: Json = id_core::json_unique::parse_json_without_duplicate_keys(body)
+        .map_err(|_| AdapterError::MalformedResponse)?;
     let results = parsed
         .get("results")
         .and_then(Json::as_array)
@@ -1968,6 +1969,22 @@ mod tests {
         let error = adapter.query("main", &sample_query()).await.unwrap_err();
         assert_eq!(error, AdapterError::MalformedResponse);
         assert_eq!(adapter.transport.attempts(), 1);
+    }
+
+    /// A duplicated key in a response is malformed, not read as its last
+    /// value (#8794).
+    #[tokio::test]
+    async fn test_a_response_with_a_duplicated_key_is_malformed() {
+        let body = ok_pipeline_body("");
+        let rest = body.strip_prefix('{').unwrap();
+        let transport = ScriptTransport::default();
+        transport.push(Ok(TransportResponse {
+            status: 200,
+            body: format!("{{\"baton\":\"b0\",{rest}"),
+        }));
+        let adapter = scripted_adapter(transport);
+        let error = adapter.query("main", &sample_query()).await.unwrap_err();
+        assert_eq!(error, AdapterError::MalformedResponse);
     }
 
     /// Oracle: record item 7 — the breaker opens at the failure

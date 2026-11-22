@@ -23,10 +23,10 @@ PGPORT="${PGPORT:-55439}"
 export PGDATA
 
 cleanup() {
-    pg_ctl -D "$PGDATA" -m immediate stop >/dev/null 2>&1 || true
-    case "$PGDATA" in
-        /tmp/id-currency-registry-pg.*) rm -rf "$PGDATA" ;;
-    esac
+  pg_ctl -D "$PGDATA" -m immediate stop >/dev/null 2>&1 || true
+  case "$PGDATA" in
+  /tmp/id-currency-registry-pg.*) rm -rf "$PGDATA" ;;
+  esac
 }
 trap cleanup EXIT
 
@@ -41,15 +41,24 @@ echo "migration applied"
 first="$($PSQL -c "SELECT allocate_ledger('currency', 'abc')")"
 second="$($PSQL -c "SELECT allocate_ledger('currency', 'def')")"
 system="$($PSQL -c "SELECT allocate_ledger('system', 'fees')")"
-[ "$first" = "1048576" ] || { echo "FAIL: first currency ledger = $first, want 1048576"; exit 1; }
-[ "$second" = "1048577" ] || { echo "FAIL: second currency ledger = $second, want 1048577"; exit 1; }
-[ "$system" = "1" ] || { echo "FAIL: first system ledger = $system, want 1"; exit 1; }
+[ "$first" = "1048576" ] || {
+  echo "FAIL: first currency ledger = $first, want 1048576"
+  exit 1
+}
+[ "$second" = "1048577" ] || {
+  echo "FAIL: second currency ledger = $second, want 1048577"
+  exit 1
+}
+[ "$system" = "1" ] || {
+  echo "FAIL: first system ledger = $system, want 1"
+  exit 1
+}
 echo "allocator: monotonic, non-zero, range-split OK"
 
 # Never recycled: allocation rows cannot be deleted.
 if $PSQL -c "DELETE FROM ledger_allocation WHERE ledger_id = $first" >/dev/null 2>&1; then
-    echo "FAIL: ledger_allocation delete succeeded; ids could be recycled"
-    exit 1
+  echo "FAIL: ledger_allocation delete succeeded; ids could be recycled"
+  exit 1
 fi
 echo "allocator: delete (recycle) refused OK"
 
@@ -70,8 +79,8 @@ echo "registry: two issuers with symbol ABC OK"
 third="$($PSQL -c "SELECT allocate_ledger('currency', 'abc-again')")"
 if $PSQL -c "INSERT INTO currency (ledger_id, currency_id, name, symbol, scale, issuer_id)
              VALUES ($third, 'alice-abc', 'Copy', 'XYZ', 2, 'mallory')" >/dev/null 2>&1; then
-    echo "FAIL: duplicate currency_id was accepted"
-    exit 1
+  echo "FAIL: duplicate currency_id was accepted"
+  exit 1
 fi
 echo "registry: duplicate currency_id rejected OK"
 
@@ -79,23 +88,26 @@ echo "registry: duplicate currency_id rejected OK"
 fourth="$($PSQL -c "SELECT allocate_ledger('currency', 'alice-abc-2')")"
 if $PSQL -c "INSERT INTO currency (ledger_id, currency_id, name, symbol, scale, issuer_id)
              VALUES ($fourth, 'alice-abc-2', 'Copy', 'ABC', 2, 'alice')" >/dev/null 2>&1; then
-    echo "FAIL: duplicate (issuer, symbol) was accepted"
-    exit 1
+  echo "FAIL: duplicate (issuer, symbol) was accepted"
+  exit 1
 fi
 echo "registry: duplicate (issuer, symbol) rejected OK"
 
 # Range split is a schema constraint, not a convention.
 if $PSQL -c "INSERT INTO ledger_allocation (ledger_id, kind, owner_ref)
              VALUES (7, 'currency', 'out-of-range')" >/dev/null 2>&1; then
-    echo "FAIL: out-of-range currency allocation was accepted"
-    exit 1
+  echo "FAIL: out-of-range currency allocation was accepted"
+  exit 1
 fi
 echo "schema: range split enforced OK"
 
 # Down migration removes the schema.
 $PSQL -f "$DOWN" >/dev/null
 remaining="$($PSQL -c "SELECT count(*) FROM information_schema.tables WHERE table_name IN ('ledger_allocation','currency','currency_issuer','account')")"
-[ "$remaining" = "0" ] || { echo "FAIL: down migration left $remaining tables"; exit 1; }
+[ "$remaining" = "0" ] || {
+  echo "FAIL: down migration left $remaining tables"
+  exit 1
+}
 echo "down migration OK"
 
 echo "PASS: migration 0001 satisfies the #2317 acceptance checks"

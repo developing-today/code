@@ -2,7 +2,6 @@
 package cli
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -235,7 +234,12 @@ func NewClient(paths daemon.Paths, configPath string) *Client {
 // so pointing it at a real address costs nothing in code and was only ever
 // prevented by the dialler being hardcoded.
 func NewClientAt(paths daemon.Paths, configPath, endpoint string) *Client {
-	set := clientSettings()
+	return NewClientAtWithSettings(paths, configPath, endpoint, clientSettings())
+}
+
+// NewClientAtWithSettings targets a specific daemon with an explicit setting
+// view. It is also the seam for callers that already resolved client settings.
+func NewClientAtWithSettings(paths daemon.Paths, configPath, endpoint string, set *settings.Set) *Client {
 	c := &Client{paths: paths, cfg: configPath, set: set,
 		callSettings: callHeader(set),
 		endpoint:     strings.TrimRight(endpoint, "/")}
@@ -329,7 +333,7 @@ func NewClientAt(paths daemon.Paths, configPath, endpoint string) *Client {
 	// no address to fall back to, and the dialer says so when it cannot
 	// join (no TS_AUTHKEY) instead of retrying the name as plain TCP.
 	if host, port, isTSNet, perr := daemon.ParseTSNetEndpoint(c.endpoint); isTSNet {
-		dialer := daemon.NewTSNetDialer("mcpx-client")
+		dialer := daemon.NewTSNetDialer("mcpx-client", set.Duration("daemon.tsnetUpTimeout"))
 		dial := dialer.DialContext
 		if perr != nil {
 			dial = func(context.Context, string, string) (net.Conn, error) { return nil, perr }
@@ -477,6 +481,9 @@ func (c *Client) open(ctx context.Context, method, path string, body []byte, con
 		req.Header.Set(daemon.CallerVersionHeader, v)
 	}
 	c.authorize(req)
+	if mcpclient.TaskExecutionFrom(ctx) {
+		req.Header.Set(daemon.TaskExecutionHeader, "1")
+	}
 	resp, err := c.hc.Do(req)
 	if err != nil {
 		if isDialErr(err) {
@@ -1268,16 +1275,12 @@ func (c *Client) Stream(ctx context.Context, f events.Filter, fn func(events.Eve
 		streamClient := &http.Client{Transport: c.hc.Transport}
 		resp, err := streamClient.Do(req)
 		if err != nil {
-			select {
-			case <-ctx.Done():
+			if !waitForEventReconnect(ctx, c.set.Duration("events.reconnect")) {
 				return ctx.Err()
-			case <-time.After(c.set.Duration("events.reconnect")):
 			}
 			continue
 		}
-		sc := bufio.NewScanner(resp.Body)
-		sc.Buffer(make([]byte, 0, c.set.Bytes("http.streamBufferInit")),
-			int(c.set.Bytes("http.streamBufferMax")))
+		sc := newStreamScanner(resp.Body, c.set.Bytes("http.streamBufferInit"), c.set.Bytes("http.streamBufferMax"))
 		var data strings.Builder
 		for sc.Scan() {
 			line := sc.Text()
@@ -1298,6 +1301,20 @@ func (c *Client) Stream(ctx context.Context, f events.Filter, fn func(events.Eve
 			}
 		}
 		_ = resp.Body.Close()
+		if !waitForEventReconnect(ctx, c.set.Duration("events.reconnect")) {
+			return ctx.Err()
+		}
 	}
 	return ctx.Err()
+}
+
+func waitForEventReconnect(ctx context.Context, delay time.Duration) bool {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	}
 }

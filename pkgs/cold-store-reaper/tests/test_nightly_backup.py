@@ -7,8 +7,8 @@ Run:  python3 -m unittest discover -s pkgs/cold-store-reaper/tests -v
 Step isolation: one failing step must not starve the steps after it
 (the 2026-10-27 run lost prune-backups, sync-manifest, and status to a
 failed Turso export). The script still exits non-zero at the END so
-the cron reports the failure loudly, and guarded skips (no R2 creds,
-no Turso token) are not failures. Stubs arrive via the COLD_STORE_BIN
+the cron reports the failure loudly, and guarded skips (no Turso
+token) are not failures. Stubs arrive via the COLD_STORE_BIN
 and EXPORT_TURSO_BIN seams.
 """
 
@@ -84,19 +84,18 @@ class TestNightlyBackup(unittest.TestCase):
         log = self.capture / "cold-store.log"
         return log.read_text().splitlines() if log.exists() else []
 
-    def test_failing_middle_step_does_not_starve_later_steps(self):
-        env = {**self.env, "STUB_FAIL_STEP": "backup-supabase"}
+    def test_failing_first_step_does_not_starve_later_steps(self):
+        env = {**self.env, "STUB_FAIL_STEP": "backup-d1"}
         result = self.run_script(env=env)
         # loud failure: non-zero exit, the failed step is named
         self.assertNotEqual(result.returncode, 0, result.stdout)
-        self.assertIn("step backup-supabase: FAILED (exit 3)", result.stderr)
-        self.assertIn("FAILED steps: backup-supabase", result.stderr)
+        self.assertIn("step backup-d1: FAILED (exit 3)", result.stderr)
+        self.assertIn("FAILED steps: backup-d1", result.stderr)
         # but every later step still ran, in order
         self.assertEqual(
             self.calls(),
             [
                 "backup-d1",
-                "backup-supabase",
                 "export-turso",
                 "prune-backups --apply",
                 "sync-manifest",
@@ -113,20 +112,6 @@ class TestNightlyBackup(unittest.TestCase):
         self.assertIn("nightly-backup: all steps ok", result.stdout)
         self.assertIn("step prune-backups: ok", result.stdout)
         self.assertIn("step sync-manifest: ok", result.stdout)
-
-    def test_missing_r2_credentials_skip_supabase_without_failing(self):
-        env = {
-            k: v
-            for k, v in self.env.items()
-            if k not in ("R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY")
-        }
-        result = self.run_script(env=env)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn(
-            "step backup-supabase: skipped (R2 credentials not set)", result.stdout
-        )
-        self.assertNotIn("backup-supabase", self.calls())
-        self.assertIn("nightly-backup: all steps ok", result.stdout)
 
     def test_long_status_output_still_ok_and_truncated(self):
         # Regression: status printing >20 lines must not trip pipefail/SIGPIPE.

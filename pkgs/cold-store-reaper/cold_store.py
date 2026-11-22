@@ -63,7 +63,20 @@ SUBFOLDERS = ("bundles", "manifests", "db-backups")
 
 # DB-backup class (DESIGN.md section 5): nightly dumps live unbundled under
 # db-backups/<db>/, one subfolder per database.
-BACKUP_DBS = ("supabase", "turso", "d1")
+BACKUP_DBS = ("turso", "d1")
+# Retired families: no longer filed, but dumps already under
+# db-backups/<db>/ stay listable, retrievable and under retention.
+# Their folder is found, never created.
+LEGACY_BACKUP_DBS = ("supabase",)
+READ_BACKUP_DBS = BACKUP_DBS + LEGACY_BACKUP_DBS
+# Backup families whose folder holds one file per source database per
+# run, named <family>-<stamp>-<database>.<ext>: retention runs per
+# source database (keyed by the name after the stamp), not across the
+# family. export-turso.sh files every Turso database into db-backups/
+# turso/ each night; read as one series, "newest per day" kept one
+# database's export per night and trashed the rest (2026-11-17: keep
+# 20, prune 37 of that night's 38 fresh exports).
+PER_SOURCE_RETENTION_DBS = frozenset({"turso"})
 
 # Manifest sync target (DESIGN.md section 3): the hosted copy of this schema lives
 # in Cloudflare D1. The token comes from the environment only; the account
@@ -88,11 +101,21 @@ D1_MAX_PARAMS_PER_QUERY = 100
 LIST_MAX_PAGES = 10_000
 LIST_MAX_RESULTS = 1_000_000
 D1_SYNC_PARAM_BUDGET = 90
+# D1 answers a burst of REST queries with HTTP 429 ("Your account is
+# generating too much load on D1 DBs") or 503 when it is shedding load.
+# Nov 19: one 429 in the middle of a 47-statement sync failed the whole
+# nightly sync-manifest step, though the account was far below its
+# limits. Every sync statement is an idempotent upsert, so the same
+# statement is simply sent again after a pause: Retry-After when D1
+# gives one (capped), otherwise D1_SYNC_BACKOFF_SECONDS x attempt.
+D1_SYNC_ATTEMPTS = 5
+D1_SYNC_RETRY_STATUSES = (429, 503)
+D1_SYNC_BACKOFF_SECONDS = 2.0
+D1_SYNC_BACKOFF_CAP_SECONDS = 30.0
 
 
-# R2 (DESIGN.md sections 4-5): the supabase-backups bucket is both a
-# nightly filing source (backup-supabase) and the first eviction trial
-# bucket. Access is the S3 API at the account's R2 host, with
+# R2 (DESIGN.md sections 4-5): the supabase-backups bucket (a legacy
+# R2 bucket name) is the first eviction trial bucket. Access is the S3 API at the account's R2 host, with
 # bucket-scoped credentials from the environment only.
 DEFAULT_R2_HOST = "234b866b99ce2b142d7963d8d139cbfa.r2.cloudflarestorage.com"
 DEFAULT_R2_BUCKET = "supabase-backups"
@@ -475,6 +498,9 @@ class ColdStore:
         # Injectable so tests can zero it: transport-retry backoff for
         # the S3 layer (see _s3_request).
         self.s3_backoff_seconds = S3_TRANSPORT_BACKOFF_SECONDS
+        # Injectable so tests can zero it: the pause between D1 sync
+        # retries after a 429/503 (see _d1_sync_post).
+        self.d1_backoff_seconds = D1_SYNC_BACKOFF_SECONDS
 
     # ------------------------------------------------------------------ init
     def init(self) -> dict:
@@ -918,6 +944,12 @@ class ColdStore:
                 folders[key] = self._find_folder(
                     db, folders["db-backups"]
                 ) or self._create_folder(db, folders["db-backups"])
+        for db in LEGACY_BACKUP_DBS:
+            key = f"db-backups/{db}"
+            if not folders.get(key):
+                found = self._find_folder(db, folders["db-backups"])
+                if found:
+                    folders[key] = found
         state["folders"] = folders
         self.save_state(state)
         return folders
@@ -927,6 +959,21 @@ class ColdStore:
         if key not in folders:
             folders = self.ensure_folders()
         return folders[key]
+
+    def _legacy_backup_folder_id(self, db: str) -> str | None:
+        """Folder id of a retired backup family, or None when this
+        install never filed one (legacy folders are never created)."""
+        folders = self.load_state().get("folders") or {}
+        key = f"db-backups/{db}"
+        if key not in folders:
+            folders = self.ensure_folders()
+        return folders.get(key)
+
+    def _readable_backup_dbs(self) -> list[str]:
+        """Active families plus each retired family that has a folder."""
+        return list(BACKUP_DBS) + [
+            db for db in LEGACY_BACKUP_DBS if self._legacy_backup_folder_id(db)
+        ]
 
     # ------------------------------------------------------------------ pack
     def _run_zstd(self, args, **kwargs):
@@ -1375,14 +1422,19 @@ class ColdStore:
         }
 
     def list_backups(self, db_name: str | None = None) -> list[dict]:
-        if db_name is not None and db_name not in BACKUP_DBS:
+        if db_name is not None and db_name not in READ_BACKUP_DBS:
             raise ColdStoreError(
-                f"unknown backup db {db_name!r} — expected one of {', '.join(BACKUP_DBS)}"
+                f"unknown backup db {db_name!r} — expected one of {', '.join(READ_BACKUP_DBS)}"
             )
-        dbs = [db_name] if db_name else list(BACKUP_DBS)
+        dbs = [db_name] if db_name else self._readable_backup_dbs()
         out = []
         for db in dbs:
-            folder_id = self._folder_id(f"db-backups/{db}")
+            if db in LEGACY_BACKUP_DBS:
+                folder_id = self._legacy_backup_folder_id(db)
+                if not folder_id:
+                    continue
+            else:
+                folder_id = self._folder_id(f"db-backups/{db}")
             q = f"'{folder_id}' in parents and trashed = false"
             page_token = None
             seen_tokens = set()
@@ -1504,6 +1556,36 @@ class ColdStore:
                 prune.append({**f, "reasons": ["excess"]})
         return keep, prune, unparseable
 
+    @classmethod
+    def _per_source_retention_plan(
+        cls, db_name: str, files: list[dict]
+    ) -> tuple[list[dict], list[dict], list[dict]]:
+        """_retention_plan applied separately to each source database in
+        a family folder (PER_SOURCE_RETENTION_DBS). The source is the
+        part of <db>-<YYYYMMDDTHHMMSSZ>-<source> after the stamp; every
+        source keeps its own 30 daily / 12 weekly / 12 monthly set.
+        Unparseable names are never pruned, only reported."""
+        groups: dict[str, list[dict]] = {}
+        unparseable = []
+        for f in files:
+            m = re.fullmatch(re.escape(db_name) + r"-\d{8}T\d{6}Z-(.+)", f["name"])
+            if f["stamp"] is None or not m:
+                unparseable.append(f)
+                continue
+            groups.setdefault(m.group(1), []).append(f)
+        keep, prune = [], []
+        for group in groups.values():
+            k, p, _u = cls._retention_plan(group)
+            keep.extend(k)
+            prune.extend(p)
+
+        def order(f):
+            return (f["stamp"], f["name"])
+
+        keep.sort(key=order, reverse=True)
+        prune.sort(key=order, reverse=True)
+        return keep, prune, unparseable
+
     def prune_backups(
         self, db_name: str | None = None, apply: bool = False
     ) -> list[dict]:
@@ -1516,17 +1598,20 @@ class ColdStore:
         transfer_ledger row per file is written (direction 'trash',
         kind 'backup-prune', ref = filename).
         """
-        if db_name is not None and db_name not in BACKUP_DBS:
+        if db_name is not None and db_name not in READ_BACKUP_DBS:
             raise ColdStoreError(
-                f"unknown backup db {db_name!r} — expected one of {', '.join(BACKUP_DBS)}"
+                f"unknown backup db {db_name!r} — expected one of {', '.join(READ_BACKUP_DBS)}"
             )
-        dbs = [db_name] if db_name else list(BACKUP_DBS)
+        dbs = [db_name] if db_name else self._readable_backup_dbs()
         plans = []
         for db in dbs:
             rows = self.list_backups(db)
             for r in rows:
                 r["stamp"] = self._parse_backup_stamp(db, r["name"])
-            keep, prune, unparseable = self._retention_plan(rows)
+            if db in PER_SOURCE_RETENTION_DBS:
+                keep, prune, unparseable = self._per_source_retention_plan(db, rows)
+            else:
+                keep, prune, unparseable = self._retention_plan(rows)
             plans.append(
                 {
                     "db": db,
@@ -1577,13 +1662,18 @@ class ColdStore:
 
     def get_backup(self, db_name: str, name: str, out_path: str) -> dict:
         """Download one backup file, in full, by its exact Drive name."""
-        if db_name not in BACKUP_DBS:
+        if db_name not in READ_BACKUP_DBS:
             raise ColdStoreError(
-                f"unknown backup db {db_name!r} — expected one of {', '.join(BACKUP_DBS)}"
+                f"unknown backup db {db_name!r} — expected one of {', '.join(READ_BACKUP_DBS)}"
             )
         if "'" in name:
             raise ColdStoreError("backup name must not contain a single quote")
-        folder_id = self._folder_id(f"db-backups/{db_name}")
+        if db_name in LEGACY_BACKUP_DBS:
+            folder_id = self._legacy_backup_folder_id(db_name)
+            if not folder_id:
+                raise ColdStoreError(f"no {db_name} backups on this install")
+        else:
+            folder_id = self._folder_id(f"db-backups/{db_name}")
         q = f"'{folder_id}' in parents and name = '{name}' and trashed = false"
         url = (
             self.drive_base
@@ -1747,18 +1837,10 @@ class ColdStore:
         if dry_run:
             return total
         token, url = self._d1_endpoint()
+        retries = 0
         for stmt in statements:
-            status, _h, resp = http_request(
-                "POST",
-                url,
-                headers={
-                    "Authorization": f"Bearer {token}",
-                    "Content-Type": "application/json",
-                },
-                data=json.dumps(
-                    {"sql": stmt["sql"], "params": stmt["params"]}
-                ).encode(),
-            )
+            status, resp, used = self._d1_sync_post(token, url, stmt)
+            retries += used
             if status != 200:
                 raise ColdStoreError(
                     f"D1 sync failed (HTTP {status}) on table {stmt['table']}: "
@@ -1773,7 +1855,44 @@ class ColdStore:
                     f"D1 sync rejected a {stmt['table']} statement: "
                     f"{_d1_first_error_message(payload) or 'unknown error'}"
                 )
+        total["retries"] = retries
         return total
+
+    def _d1_retry_delay(self, headers: dict, attempt: int) -> float:
+        """Seconds to wait before retry number `attempt` (1-based)."""
+        retry_after = None
+        for key, value in (headers or {}).items():
+            if key.lower() == "retry-after":
+                try:
+                    retry_after = float(value)
+                except (TypeError, ValueError):
+                    retry_after = None
+                break
+        if retry_after is not None and retry_after >= 0:
+            return min(retry_after, D1_SYNC_BACKOFF_CAP_SECONDS)
+        return min(self.d1_backoff_seconds * attempt, D1_SYNC_BACKOFF_CAP_SECONDS)
+
+    def _d1_sync_post(self, token: str, url: str, stmt: dict):
+        """POST one sync statement, retrying D1's load-shedding answers.
+
+        Returns (status, body, retries used). A 429 or 503 is retried up
+        to D1_SYNC_ATTEMPTS times in all; any other status, or the last
+        throttled answer, goes back to the caller unchanged.
+        """
+        data = json.dumps({"sql": stmt["sql"], "params": stmt["params"]}).encode()
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+        }
+        attempt = 1
+        while True:
+            status, resp_headers, resp = http_request(
+                "POST", url, headers=headers, data=data
+            )
+            if status not in D1_SYNC_RETRY_STATUSES or attempt >= D1_SYNC_ATTEMPTS:
+                return status, resp, attempt - 1
+            time.sleep(self._d1_retry_delay(resp_headers, attempt))
+            attempt += 1
 
     # ------------------------------------------------------------- backup-d1
     @staticmethod
@@ -1915,7 +2034,7 @@ class ColdStore:
         method is GET, make exactly ONE curl attempt for the same URL
         (_s3_request_via_curl) before giving up: on a hostile-proxy
         night every urllib retry can truncate at a different offset
-        (seen live 2026-10-28, when backup-supabase died at its LIST),
+        (seen live 2026-10-28, when an R2 filing died at its LIST),
         while curl is immune. The curl response returns through the
         same (status, headers, body) shape, so callers' status
         handling (_s3_check) sees an HTTP error from curl exactly as
@@ -2038,10 +2157,9 @@ class ColdStore:
         truncate intermittently and retries absorb them, but
         multi-megabyte responses truncate systematically through this
         proxy (every attempt cut at the same byte count), while curl
-        is immune — the same reason the Supabase backup tooling
-        replays downloads with curl. `expected_size`, when the caller
-        knows it (backup-supabase has it from the listing), is the
-        byte count the curl body is verified against.
+        is immune. `expected_size`, when the caller knows it (e.g. from
+        the listing), is the byte count the curl body is verified
+        against.
         """
         problem = "no attempt made"
         for _attempt in range(S3_GET_ATTEMPTS):
@@ -2212,38 +2330,6 @@ class ColdStore:
     def s3_delete_object(self, bucket: str, key: str) -> None:
         status, _h, resp = self._s3_request("DELETE", bucket, key=key)
         self._s3_check(status, resp, f"DELETE {bucket}/{key}")
-
-    # ---------------------------------------------------------- backup from R2
-    def backup_supabase(self, bucket: str = DEFAULT_R2_BUCKET) -> dict:
-        """File the newest Supabase backup object from R2 as a supabase
-        backup (DESIGN section 5), via the put-backup machinery.
-
-        'Newest' is by S3 LastModified among the bucket's backup
-        objects; manifest.json is excluded — it is the backup system's
-        own index, not a dump. The download is byte-count verified
-        (s3_get_object). Filing is point-in-time, exactly like
-        backup-d1: unchanged content is filed again, and the content
-        sha256 is reported so the duplication is visible.
-        """
-        epoch = datetime.min.replace(tzinfo=timezone.utc)
-        objects = [
-            o
-            for o in self.s3_list_objects(bucket)
-            if o["key"].rsplit("/", 1)[-1] != "manifest.json"
-        ]
-        if not objects:
-            raise ColdStoreError(f"no backup objects found in R2 bucket {bucket}")
-        newest = max(objects, key=lambda o: (o["last_modified"] or epoch, o["key"]))
-        data = self.s3_get_object(bucket, newest["key"], expected_size=newest["size"])
-        staging = self.home / "staging"
-        staging.mkdir(parents=True, exist_ok=True)
-        path = staging / newest["key"].rsplit("/", 1)[-1]
-        path.write_bytes(data)
-        result = self.put_backup("supabase", str(path))
-        result["sha256"] = hashlib.sha256(data).hexdigest()
-        result["source_bucket"] = bucket
-        result["source_key"] = newest["key"]
-        return result
 
     # --------------------------------------------------------------- eviction
     def _object_cold_verified(self, conn, obj_hash: str):
@@ -2490,7 +2576,7 @@ def main(argv=None) -> int:
     p_list_backups = sub.add_parser(
         "list-backups", help="list DB backups in Drive, newest first"
     )
-    p_list_backups.add_argument("--db", choices=BACKUP_DBS, default=None)
+    p_list_backups.add_argument("--db", choices=READ_BACKUP_DBS, default=None)
     p_sync = sub.add_parser(
         "sync-manifest",
         help="push the local manifest to the D1 cold-store-manifest database (idempotent upserts)",
@@ -2504,7 +2590,7 @@ def main(argv=None) -> int:
         "prune-backups",
         help="enforce backup retention (30 daily / 12 weekly / 12 monthly, trash-not-delete); dry-run unless --apply",
     )
-    p_prune.add_argument("--db", choices=BACKUP_DBS, default=None)
+    p_prune.add_argument("--db", choices=READ_BACKUP_DBS, default=None)
     p_prune.add_argument(
         "--apply",
         action="store_true",
@@ -2513,18 +2599,13 @@ def main(argv=None) -> int:
     p_get_backup = sub.add_parser(
         "get-backup", help="download one backup file in full by its exact name"
     )
-    p_get_backup.add_argument("db", choices=BACKUP_DBS)
+    p_get_backup.add_argument("db", choices=READ_BACKUP_DBS)
     p_get_backup.add_argument("name")
     p_get_backup.add_argument("out_path")
     sub.add_parser(
         "backup-d1",
         help="export the D1 cold-store-manifest database and file it as a d1 backup",
     )
-    p_backup_sb = sub.add_parser(
-        "backup-supabase",
-        help="file the newest Supabase backup object from R2 into db-backups/supabase/",
-    )
-    p_backup_sb.add_argument("--bucket", default=DEFAULT_R2_BUCKET)
     p_evict_scan = sub.add_parser(
         "evict-scan",
         help="dry-run: verdict per R2 object — evictable only if cold in a verified bundle, old enough, and not among the newest kept (never deletes)",
@@ -2659,14 +2740,6 @@ def main(argv=None) -> int:
                 f"backup {result['name']}: {_human(result['bytes'])}, "
                 f"uploaded to Drive as {result['drive_file_id']} "
                 f"({result['rows']} row(s) across {len(result['tables'])} table(s))"
-            )
-        elif args.cmd == "backup-supabase":
-            result = store.backup_supabase(args.bucket)
-            print(
-                f"backup {result['name']}: {_human(result['bytes'])}, "
-                f"sha256 {result['sha256']}, "
-                f"uploaded to Drive as {result['drive_file_id']} "
-                f"(from r2://{result['source_bucket']}/{result['source_key']})"
             )
         elif args.cmd == "evict-scan":
             scan = store.evict_scan(args.bucket, args.min_age_days, args.keep_newest)

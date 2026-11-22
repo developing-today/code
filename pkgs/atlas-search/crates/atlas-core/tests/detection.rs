@@ -95,10 +95,16 @@ fn first_ingest_marks_every_blob_new() {
     let pass = ledger.detect_git(repo.path(), "corpus", &c1).unwrap();
 
     assert_eq!(pass.counts.new, 5, "all five blobs are new");
-    assert_eq!(pass.counts.changed + pass.counts.gone + pass.counts.unchanged, 0);
+    assert_eq!(
+        pass.counts.changed + pass.counts.gone + pass.counts.unchanged,
+        0
+    );
     assert_eq!(pass.from, None);
     assert_eq!(pass.to, c1);
-    assert_eq!(pass.bytes_read, 0, "detection reads tree objects, not blobs");
+    assert_eq!(
+        pass.bytes_read, 0,
+        "detection reads tree objects, not blobs"
+    );
     let landed = ledger.source("corpus").unwrap().landed.as_ref().unwrap();
     assert_eq!(landed.objects.len(), 5);
 }
@@ -111,18 +117,16 @@ fn unchanged_reingest_lands_zero_changes() {
 
     let mut ledger = DetectionLedger::new();
     ledger.detect_git(repo.path(), "corpus", &c1).unwrap();
-    let landed_before = ledger
-        .source("corpus")
-        .unwrap()
-        .landed
-        .clone()
-        .unwrap();
+    let landed_before = ledger.source("corpus").unwrap().landed.clone().unwrap();
 
     // Re-ingest the SAME commit. git names no changed blobs, so the
     // pass must land zero changes and leave the landed map untouched.
     let pass = ledger.detect_git(repo.path(), "corpus", &c1).unwrap();
 
-    assert!(pass.verdicts.is_empty(), "no object may be reported changed");
+    assert!(
+        pass.verdicts.is_empty(),
+        "no object may be reported changed"
+    );
     assert_eq!(pass.counts.changed, 0);
     assert_eq!(pass.counts.new, 0);
     assert_eq!(pass.counts.gone, 0);
@@ -173,7 +177,13 @@ fn single_file_edit_lands_only_that_delta() {
     assert_eq!(pass.counts.unchanged, 4);
     assert_eq!(pass.counts.new + pass.counts.gone, 0);
 
-    let objects = &ledger.source("corpus").unwrap().landed.as_ref().unwrap().objects;
+    let objects = &ledger
+        .source("corpus")
+        .unwrap()
+        .landed
+        .as_ref()
+        .unwrap()
+        .objects;
     for path in ["README.md", "src/b.rs", "src/nested/c.rs", "docs/design.md"] {
         assert_eq!(
             objects[path], objects_before[path],
@@ -209,8 +219,17 @@ fn untouched_metadata_survives_a_ledger_round_trip() {
     let loaded = DetectionLedger::load(&path).unwrap();
 
     assert_eq!(loaded.schema, DETECTION_LEDGER_SCHEMA);
-    let after = &loaded.source("corpus").unwrap().landed.as_ref().unwrap().objects;
-    assert_eq!(&before, after, "the ledger round-trips unchanged objects exactly");
+    let after = &loaded
+        .source("corpus")
+        .unwrap()
+        .landed
+        .as_ref()
+        .unwrap()
+        .objects;
+    assert_eq!(
+        &before, after,
+        "the ledger round-trips unchanged objects exactly"
+    );
     assert_eq!(
         loaded.source("corpus").unwrap().passes.len(),
         2,
@@ -235,7 +254,13 @@ fn deletion_reports_gone_without_reembedding() {
     assert_eq!(pass.verdicts[0].verdict, Verdict::Gone);
     assert!(pass.verdicts[0].blob.is_none());
     assert_eq!(pass.counts.gone, 1);
-    let objects = &ledger.source("corpus").unwrap().landed.as_ref().unwrap().objects;
+    let objects = &ledger
+        .source("corpus")
+        .unwrap()
+        .landed
+        .as_ref()
+        .unwrap()
+        .objects;
     assert!(!objects.contains_key("docs/design.md"));
 }
 
@@ -260,7 +285,13 @@ fn rename_is_one_changed_object_second_pass() {
     assert_eq!(renamed[0].path, "src/c.rs");
     assert_eq!(renamed[0].previous_path.as_deref(), Some("src/nested/c.rs"));
     assert_eq!(renamed[0].verdict, Verdict::Changed);
-    let objects = &ledger.source("corpus").unwrap().landed.as_ref().unwrap().objects;
+    let objects = &ledger
+        .source("corpus")
+        .unwrap()
+        .landed
+        .as_ref()
+        .unwrap()
+        .objects;
     assert!(!objects.contains_key("src/nested/c.rs"));
     assert!(objects.contains_key("src/c.rs"));
 }

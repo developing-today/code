@@ -20,7 +20,7 @@ Local checks:
 
 ## V2 contract and limits
 
-POST /api/provision {initialState} creates an empty personal store per authenticated account and one Site default shared store seeded by its first creator, idempotently. The display name is a nickname or Personal; identity is server-derived, never a browser UUID. Subsequent callers do not join the default shared store. Bootstrap includes personalStoreId and defaultSharedStoreId only if accessible. Default audience types are locked; names remain editable.
+POST /api/provision {initialState} creates an empty personal store per authenticated account and, idempotently, one Site default shared store. `DEFAULT_SHARED_OWNER` sets who seeds the shared store: unset keeps the prototype rule (the first account to provision), `none` seeds none, any other value is the one account ID that may. The personal store is named from the display name (nickname, or Personal) and follows it while it keeps that automatic name; identity is server-derived, never a browser UUID. Provisioning never joins an account to the default shared store. Bootstrap includes personalStoreId and defaultSharedStoreId only if accessible. Default audience types are locked; names remain editable.
 
 Open is an application audience, not public site access. Open stores start empty with their own categories. Signed-in Site visitors can read current visible items/tags, but unjoined readers get no notes, inventory, research, policy state or history. Only members with editor/admin may write. Conversion into/out of open is blocked to avoid exposing historical data. Archived open stores are inaccessible to nonmembers.
 

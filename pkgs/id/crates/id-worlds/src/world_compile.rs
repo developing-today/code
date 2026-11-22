@@ -628,6 +628,50 @@ const VERSION_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 /// spawn, non-zero exit, timeout — yields an empty string; the caller
 /// pins artifact identity by digest regardless.
 fn probe_compiler_version(roc_bin: &Path, timeout: Duration) -> String {
+    probe_compiler_version_outcome(roc_bin, timeout).into_version()
+}
+
+/// Which way a version probe ended (#8173). [`probe_compiler_version`]
+/// collapses every failure to an empty string ON PURPOSE — the probe
+/// is informational provenance and a compile must not fail over it —
+/// but that collapse also made the load flake in
+/// `version_probe_records_the_reported_version` undiagnosable: the
+/// failing assertion could not say whether the fake compiler failed
+/// to spawn, was killed at the deadline, or exited non-zero. The
+/// detailed outcome keeps the branches apart for tests and
+/// diagnostics; the compile path still records only the string.
+#[derive(Debug, PartialEq, Eq)]
+enum VersionProbeOutcome {
+    /// The compiler exited successfully; its trimmed reported version.
+    Reported(String),
+    /// The compiler process could not be spawned (or its stdout pipe
+    /// was unavailable): under load this is the resource-starvation
+    /// branch (fork/exec pressure), not a compiler answer.
+    SpawnFailed,
+    /// The compiler was still running at the probe deadline and was
+    /// killed: under load this is the scheduling-starvation branch.
+    TimedOut,
+    /// The compiler ran and exited non-zero (its exit code, when the
+    /// platform reports one). Deterministic for a given compiler —
+    /// never a load flake.
+    ExitedNonZero(Option<i32>),
+    /// Polling the child failed; the probe cannot say more.
+    WaitFailed,
+}
+
+impl VersionProbeOutcome {
+    /// The provenance string the compile path records: the reported
+    /// version, or empty for every failure branch (settled design —
+    /// artifact identity is pinned by `compiler_blake3`).
+    fn into_version(self) -> String {
+        match self {
+            VersionProbeOutcome::Reported(version) => version,
+            _ => String::new(),
+        }
+    }
+}
+
+fn probe_compiler_version_outcome(roc_bin: &Path, timeout: Duration) -> VersionProbeOutcome {
     use std::io::Read as _;
     let mut child = match std::process::Command::new(roc_bin)
         .arg("version")
@@ -637,14 +681,14 @@ fn probe_compiler_version(roc_bin: &Path, timeout: Duration) -> String {
         .spawn()
     {
         Ok(child) => child,
-        Err(_) => return String::new(),
+        Err(_) => return VersionProbeOutcome::SpawnFailed,
     };
     let mut stdout = match child.stdout.take() {
         Some(stdout) => stdout,
         None => {
             let _ = child.kill();
             let _ = child.wait();
-            return String::new();
+            return VersionProbeOutcome::SpawnFailed;
         }
     };
     set_nonblocking(&stdout);
@@ -669,25 +713,34 @@ fn probe_compiler_version(roc_bin: &Path, timeout: Duration) -> String {
     }
     let mut retained = Vec::new();
     let deadline = std::time::Instant::now() + timeout;
-    let status = loop {
+    enum ProbeEnd {
+        Exited(std::process::ExitStatus),
+        TimedOut,
+        WaitFailed,
+    }
+    let end = loop {
         drain(&mut stdout, &mut retained);
         match child.try_wait() {
-            Ok(Some(status)) => break Some(status),
+            Ok(Some(status)) => break ProbeEnd::Exited(status),
             Ok(None) => {
                 if std::time::Instant::now() >= deadline {
                     let _ = child.kill();
                     let _ = child.wait();
-                    break None;
+                    break ProbeEnd::TimedOut;
                 }
                 std::thread::sleep(Duration::from_millis(10));
             }
-            Err(_) => break None,
+            Err(_) => break ProbeEnd::WaitFailed,
         }
     };
     drain(&mut stdout, &mut retained);
-    match status {
-        Some(status) if status.success() => String::from_utf8_lossy(&retained).trim().to_owned(),
-        _ => String::new(),
+    match end {
+        ProbeEnd::Exited(status) if status.success() => {
+            VersionProbeOutcome::Reported(String::from_utf8_lossy(&retained).trim().to_owned())
+        }
+        ProbeEnd::Exited(status) => VersionProbeOutcome::ExitedNonZero(status.code()),
+        ProbeEnd::TimedOut => VersionProbeOutcome::TimedOut,
+        ProbeEnd::WaitFailed => VersionProbeOutcome::WaitFailed,
     }
 }
 
@@ -1236,9 +1289,40 @@ mod tests {
         let Some((_dir, bin)) = fake_compiler("echo 'roc version 9.9-test'\n") else {
             return;
         };
-        assert_eq!(
-            probe_compiler_version(&bin, Duration::from_secs(5)),
-            "roc version 9.9-test"
+        // #8173: this test flaked once in the Nix check phase under
+        // load average ~18 — the probe recorded "" for a healthy fake
+        // compiler and the failed assertion could not say which
+        // failure branch fired, because the wrapper collapses them
+        // all to "". Probe through the branch-distinguishing outcome
+        // and retry ONLY the transient branches (spawn failure and
+        // deadline kill — both are scheduling/resource starvation of
+        // the shell-script fake, not compiler answers). A non-zero
+        // exit is deterministic and fails at once, naming the branch;
+        // if every attempt starves, the panic names the last branch
+        // seen, so a recurrence is diagnosable instead of a bare "".
+        let mut last_transient = None;
+        for attempt in 1..=5_u32 {
+            match probe_compiler_version_outcome(&bin, Duration::from_secs(5)) {
+                VersionProbeOutcome::Reported(version) => {
+                    assert_eq!(version, "roc version 9.9-test", "attempt {attempt}");
+                    return;
+                }
+                outcome
+                    if matches!(
+                        outcome,
+                        VersionProbeOutcome::SpawnFailed | VersionProbeOutcome::TimedOut
+                    ) =>
+                {
+                    last_transient = Some(outcome);
+                    std::thread::sleep(Duration::from_millis(100 * u64::from(attempt)));
+                }
+                outcome => panic!(
+                    "fake compiler probe failed non-transiently on attempt {attempt}: {outcome:?}"
+                ),
+            }
+        }
+        panic!(
+            "fake compiler probe starved on all 5 attempts; last transient outcome: {last_transient:?}"
         );
     }
 
@@ -1252,8 +1336,12 @@ mod tests {
             return;
         };
         let started = std::time::Instant::now();
-        assert_eq!(probe_compiler_version(&bin, Duration::from_millis(200)), "");
+        let outcome = probe_compiler_version_outcome(&bin, Duration::from_millis(200));
         assert!(started.elapsed() < Duration::from_secs(5));
+        // The branch must be the deadline kill specifically (#8173),
+        // and the compile-path recording of it stays empty.
+        assert_eq!(outcome, VersionProbeOutcome::TimedOut);
+        assert_eq!(outcome.into_version(), "");
     }
 
     #[cfg(unix)]
@@ -1262,7 +1350,11 @@ mod tests {
         let Some((_dir, bin)) = fake_compiler("exit 3\n") else {
             return;
         };
-        assert_eq!(probe_compiler_version(&bin, Duration::from_secs(5)), "");
+        let outcome = probe_compiler_version_outcome(&bin, Duration::from_secs(5));
+        // The branch must be the non-zero exit specifically (#8173),
+        // and the compile-path recording of it stays empty.
+        assert_eq!(outcome, VersionProbeOutcome::ExitedNonZero(Some(3)));
+        assert_eq!(outcome.into_version(), "");
     }
 
     #[test]

@@ -216,6 +216,14 @@ pub trait Gh {
             ))
         })
     }
+    /// The signed-in user's own token, for a surface whose registry
+    /// entry says `"dispatch_as": "user"`. Dispatching a workflow with
+    /// a token the fleet already holds is a routine operation
+    /// (FDR-0013), so a surface the App is not installed on is still
+    /// usable. None where no user token is available.
+    fn user_token(&self) -> Option<String> {
+        None
+    }
     fn api(&self, method: &str, path: &str, token: &str, body: Option<&Value>) -> R<(u16, Value)>;
     /// `gh codespace list --json name,repository,state`, parsed.
     fn codespace_list(&self) -> R<Vec<Value>>;
@@ -237,6 +245,35 @@ pub trait Gh {
 struct RealGh {
     agent: ureq::Agent,
     tokens: RefCell<HashMap<String, String>>,
+    /// The user's token, looked up at most once per run: a miss is
+    /// remembered too, so a cascade over several `dispatch_as: user`
+    /// surfaces does not repeat a slow lookup.
+    user: RefCell<Option<Option<String>>>,
+}
+
+/// The fleet-secrets name of the `gh` hosts file (the personal leg
+/// `fleet gh` uses).
+const USER_HOSTS_SECRET: &str = "github-cli.hosts-yml";
+
+/// The `oauth_token` value in gh's hosts.yml content. Line-shaped on
+/// purpose, like `fleet gh`'s own reader: the file is a small
+/// fixed-shape config.
+fn hosts_yml_token(hosts_yml: &str) -> Option<String> {
+    hosts_yml.lines().find_map(|line| {
+        let rest = line.trim().strip_prefix("oauth_token:")?;
+        let value = rest.trim().trim_matches('"').trim_matches('\'');
+        (!value.is_empty()).then(|| value.to_string())
+    })
+}
+
+/// The first usable token out of an ordered list of lookups; a
+/// lookup that yields only whitespace counts as a miss.
+fn first_token(lookups: &[&dyn Fn() -> Option<String>]) -> Option<String> {
+    lookups
+        .iter()
+        .filter_map(|lookup| lookup())
+        .map(|t| t.trim().to_string())
+        .find(|t| !t.is_empty())
 }
 
 impl RealGh {
@@ -248,6 +285,7 @@ impl RealGh {
             .into();
         RealGh {
             agent,
+            user: RefCell::new(None),
             tokens: RefCell::new(HashMap::new()),
         }
     }
@@ -267,6 +305,42 @@ fn home_dir() -> String {
 }
 
 impl Gh for RealGh {
+    /// Where the user's token comes from, cheapest first: the
+    /// environment, the seat's own `gh` login, then the fleet secrets
+    /// chain by name (the same hosts file `fleet gh` reads). The
+    /// value goes into Authorization headers only.
+    fn user_token(&self) -> Option<String> {
+        if let Some(known) = self.user.borrow().as_ref() {
+            return known.clone();
+        }
+        let from_env = || {
+            ["GH_TOKEN", "GITHUB_TOKEN"]
+                .iter()
+                .filter_map(|k| std::env::var(k).ok())
+                .find(|v| !v.trim().is_empty())
+        };
+        let from_gh = || {
+            let out = std::process::Command::new("gh")
+                .args(["auth", "token"])
+                .stderr(std::process::Stdio::null())
+                .output()
+                .ok()?;
+            out.status
+                .success()
+                .then(|| String::from_utf8_lossy(&out.stdout).to_string())
+        };
+        let from_secrets = || {
+            let config = fleet_config::Config::load().unwrap_or_default();
+            let hosts = fleet_secrets::Resolver::default_chain(&config)
+                .resolve(USER_HOSTS_SECRET)
+                .ok()?;
+            hosts_yml_token(hosts.expose())
+        };
+        let found = first_token(&[&from_env, &from_gh, &from_secrets]);
+        *self.user.borrow_mut() = Some(found.clone());
+        found
+    }
+
     fn mint_token(&self, repo: &str) -> Option<String> {
         if let Some(tok) = self.tokens.borrow().get(repo) {
             return Some(tok.clone());
@@ -368,6 +442,38 @@ impl Gh for RealGh {
 
 fn surf_str<'a>(surface: &'a Value, key: &str) -> &'a str {
     surface.get(key).and_then(|v| v.as_str()).unwrap_or("")
+}
+
+/// Whether a surface dispatches with the user's own token instead of
+/// the App's installation token (registry field `dispatch_as`).
+fn dispatches_as_user(surface: &Value) -> bool {
+    surf_str(surface, "dispatch_as") == "user"
+}
+
+/// The token a surface's API calls use, when one is available: the
+/// user's for a `dispatch_as: user` surface, else the App's.
+fn surface_token(surface: &Value, gh: &dyn Gh) -> Option<String> {
+    if dispatches_as_user(surface) {
+        gh.user_token()
+    } else {
+        gh.mint_token(surf_str(surface, "repo"))
+    }
+}
+
+/// Why a surface has no token, for an eligibility reason or an error.
+fn no_token_reason(surface: &Value) -> String {
+    let repo = surf_str(surface, "repo");
+    if dispatches_as_user(surface) {
+        format!(
+            "{repo} dispatches as the user, and no user token is available here \
+             (GH_TOKEN, GITHUB_TOKEN or `gh auth token`)"
+        )
+    } else {
+        format!(
+            "app token cannot be minted for {repo} \u{2014} surface is \
+             unreachable by the App"
+        )
+    }
 }
 
 fn surf_targets(surface: &Value) -> Vec<String> {
@@ -655,6 +761,13 @@ fn base_eligible(surface: &Value, job: &Job) -> (bool, String) {
     if status != "active" {
         return (false, format!("surface status is '{status}', not 'active'"));
     }
+    let dispatch_as = surf_str(surface, "dispatch_as");
+    if !matches!(dispatch_as, "" | "app" | "user") {
+        return (
+            false,
+            format!("surface dispatch_as is '{dispatch_as}', not 'app' or 'user'"),
+        );
+    }
     let targets = surf_targets(surface);
     if !targets.iter().any(|t| t == "*") && !targets.iter().any(|t| t == &job.repo) {
         return (
@@ -663,6 +776,73 @@ fn base_eligible(surface: &Value, job: &Job) -> (bool, String) {
         );
     }
     (true, "eligible".to_string())
+}
+
+/// The dispatch_id for a surface whose workflow declares a
+/// `dispatch_id` input (registry flag `dispatch_id_input`, set for
+/// org-run.yml and dezren39/fleet's fleet-run.yml, which surface it
+/// in the run display title via `run-name:` — issue #8371). A fresh
+/// fp_ handle per dispatch. Surfaces without the flag get None:
+/// GitHub rejects dispatch inputs the workflow does not declare,
+/// so those keep the snapshot-exclusion fallback in correlate_run.
+fn dispatch_id_for(surface: &Value) -> Option<String> {
+    if surface.get("dispatch_id_input").and_then(|v| v.as_bool()) == Some(true) {
+        Some(new_handle(&rand_source::URandom))
+    } else {
+        None
+    }
+}
+
+/// Pick the run a dispatch created out of a workflow run list.
+/// Runs in the pre-dispatch snapshot (before_ids) and runs created
+/// before `since` are never candidates. With a dispatch_id, only a
+/// run whose display_title carries the id is a candidate — exact
+/// correlation even when another dispatch of the same workflow
+/// lands in the same poll window (issue #8371). Without one, the
+/// earliest new run wins (the snapshot-exclusion fallback).
+fn correlate_run(
+    runs: &[Value],
+    before_ids: &std::collections::HashSet<i64>,
+    since: i64,
+    dispatch_id: Option<&str>,
+) -> Option<(i64, String)> {
+    let mut candidates: Vec<(i64, i64, String)> = Vec::new();
+    for r in runs {
+        let id = r.get("id").and_then(|i| i.as_i64()).unwrap_or(0);
+        if before_ids.contains(&id) {
+            continue;
+        }
+        let created = r
+            .get("created_at")
+            .and_then(|c| c.as_str())
+            .and_then(parse_iso)
+            .unwrap_or(0);
+        if created < since {
+            continue;
+        }
+        if let Some(d) = dispatch_id {
+            let title = r
+                .get("display_title")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            if !title.contains(d) {
+                continue;
+            }
+        }
+        candidates.push((
+            created,
+            id,
+            r.get("html_url")
+                .and_then(|u| u.as_str())
+                .unwrap_or("")
+                .to_string(),
+        ));
+    }
+    candidates.sort();
+    candidates
+        .into_iter()
+        .next()
+        .map(|(_created, id, url)| (id, url))
 }
 
 pub struct GithubActionsAdapter {
@@ -680,7 +860,7 @@ impl GithubActionsAdapter {
     /// inputs ignore entry fields they do not know); the `runner`
     /// input is sent only when it changes something (blacksmith) —
     /// upstream's fleet-run rejects unknown inputs.
-    fn workflow_inputs(&self, job: &Job) -> Value {
+    fn workflow_inputs(&self, job: &Job, dispatch_id: Option<&str>) -> Value {
         let mut entry = Map::new();
         entry.insert("repo".into(), json!(job.repo));
         entry.insert("command".into(), json!(job.command));
@@ -730,6 +910,9 @@ impl GithubActionsAdapter {
         if !job.git_ref.is_empty() {
             inputs.insert("ref".into(), json!(job.git_ref));
         }
+        if let Some(id) = dispatch_id {
+            inputs.insert("dispatch_id".into(), json!(id));
+        }
         Value::Object(inputs)
     }
 
@@ -741,17 +924,20 @@ impl GithubActionsAdapter {
         let s = &self.surface;
         let repo = surf_str(s, "repo").to_string();
         let workflow = surf_str(s, "workflow").to_string();
-        let token = gh.app_token(&repo)?;
-        let inputs = self.workflow_inputs(job);
+        let token = surface_token(s, gh).ok_or_else(|| Die(no_token_reason(s)))?;
+        let dispatch_id = dispatch_id_for(s);
+        let inputs = self.workflow_inputs(job, dispatch_id.as_deref());
         // Correlate the created run with THIS dispatch (Codex P1
-        // on PR #8325): snapshot the workflow's existing run ids
-        // BEFORE submitting, so a run another job submitted just
-        // before us can never be attached to this handle; among
-        // the runs that appear after, attach the EARLIEST one, so
-        // a concurrent later submission is not attached either.
-        // (The workflows expose no dispatch-id input or run field
-        // to carry a unique id through; snapshot exclusion is the
-        // strongest correlation the runs API supports.)
+        // on PR #8325, exact-id fix in issue #8371): when the
+        // workflow declares a dispatch_id input (dispatch_id_for),
+        // the id generated above travels with the dispatch and the
+        // workflow surfaces it in the run's display title, so
+        // correlate_run can match exactly this dispatch's run even
+        // when another dispatch lands in the same poll window.
+        // The pre-dispatch snapshot of existing run ids is kept
+        // for every surface: it is the only correlation for
+        // workflows without the input (the fallback), and with an
+        // id it still excludes runs that predate this dispatch.
         let list_runs = |gh: &dyn Gh| -> R<Vec<Value>> {
             let (_st, runs) = gh.api(
                 "GET",
@@ -795,7 +981,6 @@ impl GithubActionsAdapter {
         let mut found: Option<(i64, String)> = None;
         for _ in 0..12 {
             gh.sleep_secs(3);
-            let mut candidates: Vec<(i64, i64, String)> = Vec::new();
             // A failed run-list request after the POST was
             // accepted (HTTP 204) must not abort the command: the
             // job is already executing, and discarding the
@@ -803,29 +988,12 @@ impl GithubActionsAdapter {
             // invite a duplicate submission). Treat it as "not
             // visible yet" and keep polling; after the loop the
             // caller records an accepted-but-unresolved session.
-            for r in list_runs(gh).unwrap_or_default() {
-                let id = r.get("id").and_then(|i| i.as_i64()).unwrap_or(0);
-                if before_ids.contains(&id) {
-                    continue;
-                }
-                let created = r
-                    .get("created_at")
-                    .and_then(|c| c.as_str())
-                    .and_then(parse_iso)
-                    .unwrap_or(0);
-                if created >= since {
-                    candidates.push((
-                        created,
-                        id,
-                        r.get("html_url")
-                            .and_then(|u| u.as_str())
-                            .unwrap_or("")
-                            .to_string(),
-                    ));
-                }
-            }
-            candidates.sort();
-            if let Some((_created, id, url)) = candidates.into_iter().next() {
+            if let Some((id, url)) = correlate_run(
+                &list_runs(gh).unwrap_or_default(),
+                &before_ids,
+                since,
+                dispatch_id.as_deref(),
+            ) {
                 found = Some((id, url));
                 break;
             }
@@ -859,7 +1027,7 @@ impl GithubActionsAdapter {
             }
         };
         let repo = surf_str(&self.surface, "repo");
-        let token = match gh.mint_token(repo) {
+        let token = match surface_token(&self.surface, gh) {
             Some(t) => t,
             None => {
                 return session
@@ -908,15 +1076,8 @@ impl Adapter for GithubActionsAdapter {
         // (Codex P2 on PR #8325): live token availability is part
         // of eligibility, so an inaccessible surface cannot win
         // the cascade and then abort at dispatch time.
-        let repo = surf_str(&self.surface, "repo");
-        if gh.mint_token(repo).is_none() {
-            return (
-                false,
-                format!(
-                    "app token cannot be minted for {repo} \u{2014} surface is \
-                     unreachable by the App"
-                ),
-            );
+        if surface_token(&self.surface, gh).is_none() {
+            return (false, no_token_reason(&self.surface));
         }
         (true, "eligible".to_string())
     }
@@ -1004,15 +1165,8 @@ impl Adapter for BlacksmithAdapter {
         if job.runner == "github" {
             return (false, "job pins runner=github".to_string());
         }
-        let repo = surf_str(&self.inner.surface, "repo");
-        if gh.mint_token(repo).is_none() {
-            return (
-                false,
-                format!(
-                    "app token cannot be minted for {repo} \u{2014} surface is \
-                     unreachable by the App"
-                ),
-            );
+        if surface_token(&self.inner.surface, gh).is_none() {
+            return (false, no_token_reason(&self.inner.surface));
         }
         // The budget binds pinned surfaces too (Codex round-4 on
         // PR #8325): a --surface pin is a placement choice, not a
@@ -1283,8 +1437,13 @@ pub fn build_ctx(
 ) -> Ctx {
     let owners = registry.get("owners").cloned().unwrap_or(json!({}));
     let mut hosts: HashMap<String, Vec<String>> = HashMap::new();
+    // Host repos whose every API call uses the user's token.
+    let mut user_repos: std::collections::HashSet<String> = std::collections::HashSet::new();
     for s in registry_surfaces(registry) {
         let kind = surf_str(&s, "kind");
+        if dispatches_as_user(&s) {
+            user_repos.insert(surf_str(&s, "repo").to_string());
+        }
         if (kind == "github-actions" || kind == "blacksmith") && !surf_str(&s, "repo").is_empty() {
             let repos = hosts.entry(surf_str(&s, "owner").to_string()).or_default();
             let repo = surf_str(&s, "repo").to_string();
@@ -1307,11 +1466,16 @@ pub fn build_ctx(
         let mut running: i64 = 0;
         let mut queued: i64 = 0;
         for repo in repos {
-            let token = match gh.mint_token(repo) {
+            let minted = if user_repos.contains(repo) {
+                gh.user_token()
+            } else {
+                gh.mint_token(repo)
+            };
+            let token = match minted {
                 Some(t) => t,
                 None => {
                     read_errors.push(format!(
-                        "{repo}: app token unavailable (not covered) — load counted as 0"
+                        "{repo}: no token available (not covered) — load counted as 0"
                     ));
                     continue;
                 }
@@ -1538,7 +1702,7 @@ fn refresh_session(store: &mut Value, handle: &str, registry: &Value, gh: &dyn G
                     && ["succeeded", "failed", "cancelled"].contains(&state.as_str())
                 {
                     let repo = surf_str(surface, "repo").to_string();
-                    if let Some(token) = gh.mint_token(&repo) {
+                    if let Some(token) = surface_token(surface, gh) {
                         if let Ok((200, run)) = gh.api(
                             "GET",
                             &format!("/repos/{repo}/actions/runs/{}", run_id.unwrap()),
@@ -2175,6 +2339,8 @@ mod tests {
         codespace_items: Vec<Value>,
         codespace_exit: i32,
         posts: RefCell<Vec<(String, Value)>>,
+        user_token: Option<String>,
+        post_tokens: RefCell<Vec<String>>,
     }
 
     impl Default for FakeGh {
@@ -2189,6 +2355,8 @@ mod tests {
                 codespace_items: Vec::new(),
                 codespace_exit: 0,
                 posts: RefCell::new(Vec::new()),
+                user_token: None,
+                post_tokens: RefCell::new(Vec::new()),
             }
         }
     }
@@ -2201,14 +2369,18 @@ mod tests {
                 None
             }
         }
+        fn user_token(&self) -> Option<String> {
+            self.user_token.clone()
+        }
         fn api(
             &self,
             method: &str,
             path: &str,
-            _token: &str,
+            token: &str,
             body: Option<&Value>,
         ) -> R<(u16, Value)> {
             if method == "POST" {
+                self.post_tokens.borrow_mut().push(token.to_string());
                 self.posts
                     .borrow_mut()
                     .push((path.to_string(), body.cloned().unwrap_or(Value::Null)));
@@ -2222,6 +2394,30 @@ mod tests {
                 let mut runs = self.workflow_runs.clone();
                 if !self.posts.borrow().is_empty() {
                     runs.extend(self.post_runs.iter().cloned());
+                    // Simulate run-name surfacing (issue #8371): a
+                    // workflow that received a dispatch_id input
+                    // shows it in the display_title of the run it
+                    // created, so post_runs without a title get the
+                    // id from the recorded POST.
+                    let posted_id = self.posts.borrow().last().and_then(|(_, b)| {
+                        b.get("inputs")
+                            .and_then(|i| i.get("dispatch_id"))
+                            .and_then(|d| d.as_str())
+                            .map(|s| s.to_string())
+                    });
+                    if let Some(did) = posted_id {
+                        let pre = self.workflow_runs.len();
+                        for r in runs.iter_mut().skip(pre) {
+                            if r.get("display_title").is_none() {
+                                if let Some(obj) = r.as_object_mut() {
+                                    obj.insert(
+                                        "display_title".into(),
+                                        json!(format!("fleet-run {did}")),
+                                    );
+                                }
+                            }
+                        }
+                    }
                 }
                 return Ok((200, json!({ "workflow_runs": runs })));
             }
@@ -2276,10 +2472,12 @@ mod tests {
             "surfaces": [
                 { "id": "fleet-personal", "kind": "github-actions", "owner": "dezren39",
                   "repo": "dezren39/fleet", "workflow": "fleet-run.yml",
+                  "dispatch_id_input": true,
                   "app_installation": 175747567, "status": "active",
                   "targets": ["developing-today/code"] },
                 { "id": "org-run", "kind": "github-actions", "owner": "developing-today",
                   "repo": "developing-today/code", "workflow": "org-run.yml",
+                  "dispatch_id_input": true,
                   "app_installation": 174792676, "status": "active",
                   "targets": ["developing-today/code", "developing-today/opencode"] },
                 { "id": "fleet-org-blacksmith", "kind": "blacksmith", "owner": "developing-today",
@@ -2529,7 +2727,7 @@ mod tests {
             force_runner: "github",
         };
         // Plain job: bare repo/command inputs, no runner, no jobs.
-        let inputs = ad.workflow_inputs(&job());
+        let inputs = ad.workflow_inputs(&job(), None);
         assert_eq!(inputs["repo"], json!("developing-today/code"));
         assert_eq!(inputs["command"], json!("nix build .#mcpx"));
         assert!(inputs.get("jobs").is_none());
@@ -2539,7 +2737,7 @@ mod tests {
         j.push_nix_cache = true;
         j.actions_cache = Some("tests:./out".to_string());
         j.git_ref = "abc123".to_string();
-        let inputs = ad.workflow_inputs(&j);
+        let inputs = ad.workflow_inputs(&j, None);
         let jobs: Value = serde_json::from_str(inputs["jobs"].as_str().unwrap()).unwrap();
         assert_eq!(jobs[0]["cache"]["push_nix"], json!(true));
         assert_eq!(jobs[0]["cache"]["actions_key"], json!("tests"));
@@ -2555,7 +2753,7 @@ mod tests {
             surface: org_surface.clone(),
             force_runner: "github",
         };
-        let inputs = org_ad.workflow_inputs(&job());
+        let inputs = org_ad.workflow_inputs(&job(), None);
         assert_eq!(inputs["setup_runner"], json!("github"));
         // Blacksmith variant sends the runner input.
         let bs_surface = find_surface(&reg, "fleet-org-blacksmith").unwrap();
@@ -2563,8 +2761,14 @@ mod tests {
             surface: bs_surface.clone(),
             force_runner: "blacksmith",
         };
-        let inputs = bs.workflow_inputs(&job());
+        let inputs = bs.workflow_inputs(&job(), None);
         assert_eq!(inputs["runner"], json!("blacksmith"));
+        // A dispatch_id is sent only when the caller generated one
+        // for a surface whose workflow declares the input (#8371).
+        let inputs = ad.workflow_inputs(&job(), Some("fp_abc123"));
+        assert_eq!(inputs["dispatch_id"], json!("fp_abc123"));
+        let inputs = ad.workflow_inputs(&job(), None);
+        assert!(inputs.get("dispatch_id").is_none());
     }
 
     #[test]
@@ -2584,6 +2788,11 @@ mod tests {
         let result = ad.dispatch(&job(), &gh).unwrap();
         assert_eq!(result.run_id, Some(4242));
         let posts = gh.posts.borrow();
+        let posted_id = posts[0].1["inputs"]["dispatch_id"].as_str().unwrap();
+        assert!(
+            posted_id.starts_with("fp_"),
+            "dispatch_id posted: {posted_id}"
+        );
         assert_eq!(posts.len(), 1);
         assert!(
             posts[0]
@@ -2686,9 +2895,92 @@ mod tests {
     }
 
     #[test]
-    fn dispatch_ignores_preexisting_run_and_picks_earliest_new_run() {
+    fn dispatch_id_correlates_exactly_with_interleaved_runs() {
+        // Issue #8371 acceptance: another dispatch of the same
+        // workflow lands in the same poll window, EARLIER than
+        // ours, carrying a different dispatch_id in its title.
+        // Snapshot exclusion alone would attach that run; the
+        // display-title match must attach ours instead.
         let reg = registry();
         let surface = find_surface(&reg, "fleet-personal").unwrap().clone();
+        let ad = adapter_for(&surface).unwrap();
+        let gh = FakeGh {
+            tokens_ok: true,
+            post_runs: vec![
+                json!({
+                    "id": 7001,
+                    "html_url": "https://github.com/dezren39/fleet/actions/runs/7001",
+                    "created_at": "2026-01-01T00:00:08Z",
+                    "display_title": "fleet-run fp_ffffffffffffffffffffffffffffffff"
+                }),
+                // Ours: no title in the fixture - FakeGh fills it
+                // from the recorded POST, like run-name does.
+                json!({
+                    "id": 7002,
+                    "html_url": "https://github.com/dezren39/fleet/actions/runs/7002",
+                    "created_at": "2026-01-01T00:00:20Z"
+                }),
+            ],
+            ..Default::default()
+        };
+        let result = ad.dispatch(&job(), &gh).unwrap();
+        assert_eq!(result.run_id, Some(7002));
+    }
+
+    #[test]
+    fn dispatch_id_with_only_a_foreign_run_stays_unresolved() {
+        // With an id in play, a same-window run that is not ours
+        // must never be attached; the dispatch stays
+        // accepted-but-unresolved instead.
+        let reg = registry();
+        let surface = find_surface(&reg, "fleet-personal").unwrap().clone();
+        let ad = adapter_for(&surface).unwrap();
+        let gh = FakeGh {
+            tokens_ok: true,
+            post_runs: vec![json!({
+                "id": 8001,
+                "html_url": "https://github.com/dezren39/fleet/actions/runs/8001",
+                "created_at": "2026-01-01T00:00:10Z",
+                "display_title": "fleet-run fp_ffffffffffffffffffffffffffffffff"
+            })],
+            ..Default::default()
+        };
+        let result = ad.dispatch(&job(), &gh).unwrap();
+        assert_eq!(result.run_id, None);
+        assert!(result.note.unwrap().contains("dispatch accepted"));
+    }
+
+    #[test]
+    fn correlate_run_fallback_and_id_match() {
+        let before: std::collections::HashSet<i64> = [1111].into_iter().collect();
+        let runs = vec![
+            json!({"id": 1111, "created_at": "2026-01-01T00:00:10Z", "html_url": "u1"}),
+            json!({"id": 2222, "created_at": "2026-01-01T00:00:20Z", "html_url": "u2",
+                    "display_title": "fleet-run fp_aaaa"}),
+            json!({"id": 3333, "created_at": "2026-01-01T00:00:08Z", "html_url": "u3",
+                    "display_title": "fleet-run fp_bbbb"}),
+        ];
+        let since = FIXED_NOW - 5;
+        // Fallback: earliest new run.
+        assert_eq!(
+            correlate_run(&runs, &before, since, None),
+            Some((3333, "u3".to_string()))
+        );
+        // Id match: the run carrying the id, not the earliest.
+        assert_eq!(
+            correlate_run(&runs, &before, since, Some("fp_aaaa")),
+            Some((2222, "u2".to_string()))
+        );
+        // Id with no matching run: no candidate.
+        assert_eq!(correlate_run(&runs, &before, since, Some("fp_zzzz")), None);
+    }
+
+    #[test]
+    fn dispatch_ignores_preexisting_run_and_picks_earliest_new_run() {
+        // Fallback path (issue #8371): a surface whose workflow
+        // declares no dispatch_id input keeps snapshot exclusion.
+        let reg = registry();
+        let surface = find_surface(&reg, "fleet-org-blacksmith").unwrap().clone();
         let ad = adapter_for(&surface).unwrap();
         let gh = FakeGh {
             tokens_ok: true,
@@ -2859,5 +3151,154 @@ mod tests {
         assert_eq!(back["sessions"]["fp_test"]["state"], json!("queued"));
         unsafe { std::env::remove_var("FLEET_PLACE_STATE") };
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ---- dispatch_as: user (FDR-0013) ----
+    //
+    // Oracle: the registry field's contract. A surface that says
+    // `dispatch_as: user` uses the user's token for eligibility and
+    // dispatch; every other surface keeps the App-only behaviour.
+
+    /// The personal fleet surface, re-declared as a fork the App is
+    /// not installed on, dispatching as the user.
+    fn user_surface() -> Value {
+        let reg = registry();
+        let mut surface = find_surface(&reg, "fleet-personal").unwrap().clone();
+        surface["id"] = json!("fleet-forks");
+        surface["dispatch_as"] = json!("user");
+        surface["app_installation"] = Value::Null;
+        surface
+    }
+
+    #[test]
+    fn hosts_yml_token_reads_the_oauth_token_line() {
+        // Oracle: gh's hosts.yml shape (a user block carrying
+        // oauth_token), the same fixture shape `fleet gh` tests use.
+        let yml = "github.com:\n    git_protocol: https\n    users:\n        someone:\n            oauth_token: TOKEN_VALUE\n    user: someone\n";
+        assert_eq!(hosts_yml_token(yml).as_deref(), Some("TOKEN_VALUE"));
+        assert_eq!(
+            hosts_yml_token("oauth_token: \"QUOTED\"\n").as_deref(),
+            Some("QUOTED")
+        );
+        // An empty value and a file without the line are misses.
+        assert_eq!(hosts_yml_token("oauth_token:\n"), None);
+        assert_eq!(hosts_yml_token("github.com:\n    user: someone\n"), None);
+    }
+
+    #[test]
+    fn first_token_takes_the_first_non_blank_lookup_in_order() {
+        let none = || None;
+        let blank = || Some("  \n".to_string());
+        let a = || Some(" a-token\n".to_string());
+        let b = || Some("b-token".to_string());
+        assert_eq!(
+            first_token(&[&none, &blank, &a, &b]).as_deref(),
+            Some("a-token")
+        );
+        assert_eq!(first_token(&[&b, &a]).as_deref(), Some("b-token"));
+        assert_eq!(first_token(&[&none, &blank]), None);
+        assert_eq!(first_token(&[]), None);
+    }
+
+    #[test]
+    fn a_user_dispatch_surface_is_eligible_and_posts_with_the_user_token() {
+        let surface = user_surface();
+        let ad = adapter_for(&surface).unwrap();
+        let gh = FakeGh {
+            // The App cannot mint for this repo at all.
+            tokens_ok: false,
+            user_token: Some("user-token".to_string()),
+            post_runs: vec![json!({
+                "id": 4242,
+                "html_url": "https://github.com/dezren39/fleet/actions/runs/4242",
+                "created_at": "2026-01-01T00:00:10Z"
+            })],
+            ..Default::default()
+        };
+        let c = ctx(&[("dezren39", (0, 0))], 0.0, false);
+        assert_eq!(ad.eligible(&job(), &c, &gh), (true, "eligible".to_string()));
+        let result = ad.dispatch(&job(), &gh).unwrap();
+        assert_eq!(result.run_id, Some(4242));
+        assert_eq!(gh.post_tokens.borrow().as_slice(), ["user-token"]);
+    }
+
+    #[test]
+    fn a_user_dispatch_surface_without_a_user_token_is_ineligible_and_says_why() {
+        let surface = user_surface();
+        let ad = adapter_for(&surface).unwrap();
+        let gh = FakeGh {
+            // An App token being available must not rescue it: the
+            // surface said which token it uses.
+            tokens_ok: true,
+            user_token: None,
+            ..Default::default()
+        };
+        let c = ctx(&[("dezren39", (0, 0))], 0.0, false);
+        let (ok, why) = ad.eligible(&job(), &c, &gh);
+        assert!(!ok);
+        assert!(why.contains("dispatches as the user"), "{why}");
+        let err = match ad.dispatch(&job(), &gh) {
+            Ok(_) => panic!("a surface with no token must not dispatch"),
+            Err(e) => e,
+        };
+        assert!(err.0.contains("no user token"), "{}", err.0);
+        assert!(gh.posts.borrow().is_empty());
+    }
+
+    #[test]
+    fn an_app_surface_never_falls_back_to_the_user_token() {
+        // Positive control for the two tests above: without the
+        // registry field, a user token changes nothing.
+        let reg = registry();
+        let surface = find_surface(&reg, "fleet-personal").unwrap().clone();
+        let ad = adapter_for(&surface).unwrap();
+        let gh = FakeGh {
+            tokens_ok: false,
+            user_token: Some("user-token".to_string()),
+            ..Default::default()
+        };
+        let c = ctx(&[("dezren39", (0, 0))], 0.0, false);
+        let (ok, why) = ad.eligible(&job(), &c, &gh);
+        assert!(!ok);
+        assert!(why.contains("unreachable by the App"), "{why}");
+    }
+
+    #[test]
+    fn an_unknown_dispatch_as_value_is_refused() {
+        let mut surface = user_surface();
+        surface["dispatch_as"] = json!("robot");
+        let ad = adapter_for(&surface).unwrap();
+        let gh = FakeGh {
+            user_token: Some("user-token".to_string()),
+            ..Default::default()
+        };
+        let c = ctx(&[("dezren39", (0, 0))], 0.0, false);
+        let (ok, why) = ad.eligible(&job(), &c, &gh);
+        assert!(!ok);
+        assert!(why.contains("not 'app' or 'user'"), "{why}");
+    }
+
+    #[test]
+    fn load_for_a_user_dispatch_host_is_read_with_the_user_token() {
+        let mut reg = registry();
+        reg["surfaces"] = json!([user_surface()]);
+        // No user token: the host's load cannot be read, and the
+        // context says so instead of counting it as zero silently.
+        let gh = FakeGh {
+            tokens_ok: true,
+            user_token: None,
+            ..Default::default()
+        };
+        let c = build_ctx(&reg, &json!({}), false, "", None, &gh);
+        assert_eq!(c.load_read_errors.len(), 1, "{:?}", c.load_read_errors);
+        assert!(c.load_read_errors[0].contains("dezren39/fleet"));
+        // With one, the read goes through.
+        let gh = FakeGh {
+            tokens_ok: false,
+            user_token: Some("user-token".to_string()),
+            ..Default::default()
+        };
+        let c = build_ctx(&reg, &json!({}), false, "", None, &gh);
+        assert!(c.load_read_errors.is_empty(), "{:?}", c.load_read_errors);
     }
 }

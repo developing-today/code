@@ -2,8 +2,10 @@ name: scripts-test
 
 on:
   workflow_dispatch:
-  push:
-    branches: [main]
+  schedule:
+    # Nightly instead of on every push to main (Drew, 2026-11-16; see
+    # .github/ci-policy.md "Nightly main CI").
+    - cron: "17 7 * * *"
 permissions:
   contents: read
 
@@ -48,6 +50,23 @@ jobs:
         run: python3 -m unittest discover -s nixos/services/power-guard -p 'test_*.py' -v
       - name: Run fleet-paperwork pacing regression tests (#5942)
         run: python3 -m unittest discover -s infra/fleet-paperwork/tests -p test_fleet_paperwork.py -v
+      - name: Run queue-reconcile coverage contract tests (#8028)
+        run: |
+          test -f scripts/fleet/queue-reconcile/test_check_coverage.py
+          python3 -I -m unittest discover -s scripts/fleet/queue-reconcile -p 'test_check_coverage.py' -v
+      - name: Run flow-report contract tests
+        run: |
+          test -f scripts/fleet/flow-report/test_flow_report.py
+          python3 -I -m unittest discover -s scripts/fleet/flow-report -p 'test_flow_report.py' -v
+      - name: Run graph encoding bake-off report check (#10219)
+        run: |
+          test -f doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-a-graph/test_validate_real_encoding_bakeoff.py
+          python3 -I -m unittest discover -s doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-a-graph -p 'test_validate_real_encoding_bakeoff.py' -v
+          python3 -I doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-a-graph/validate_real_encoding_bakeoff.py --check-committed
+      - name: Run queue transport alert contract tests (#6369)
+        run: |
+          test -f scripts/fleet/queue-transport-alert/test_check_transport.py
+          python3 -I -m unittest discover -s scripts/fleet/queue-transport-alert -p 'test_check_transport.py' -v
       - name: Run sops atomic writers regression tests (#6555)
         run: bash lib/sops-atomic-writers.test.sh
       - name: Run run-switch regression tests (#7667)

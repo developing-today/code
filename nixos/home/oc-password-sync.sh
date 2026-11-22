@@ -14,8 +14,17 @@
 # wrapper re-reads the file. Drift is judged against the password the
 # running OpenChamber process actually holds (its /proc environ),
 # falling back to the last-synced hash in the state file.
-# Invoked by oc-password-sync.path on service-prod.json changes, and
-# manually.
+# Invoked by oc-password-sync.path on service-prod.json changes, by
+# oc-password-sync-retry.timer every 15 minutes, and manually.
+#
+# Missed rotations (code#11140): the path unit fires once per change,
+# and the file can be mid-write at that moment. The parse is retried
+# a few times before giving up, and the periodic timer re-runs the
+# check so a rotation missed at trigger time still syncs without the
+# file changing again. A periodic run (OC_SYNC_PERIODIC=1) only ever
+# restarts a RUNNING OpenChamber that holds a stale password: it never
+# starts one that is down, since the start wrapper re-reads the file
+# at every start anyway.
 set -uo pipefail
 JSON="${OC_SERVICE_JSON:-$HOME/.local/state/opencode/service-prod.json}"
 STATE_DIR="$HOME/.local/state/openchamber"
@@ -28,9 +37,16 @@ if [ ! -f "$JSON" ]; then
   log "no service file at $JSON; skipping"
   exit 0
 fi
-NEW=$(OCF="$JSON" python3 -c 'import json,os; print(json.load(open(os.environ["OCF"]))["password"])' 2>/dev/null)
+PARSE_ATTEMPTS="${OC_PARSE_ATTEMPTS:-5}"
+PARSE_DELAY="${OC_PARSE_RETRY_DELAY:-2}"
+NEW=""
+for attempt in $(seq 1 "$PARSE_ATTEMPTS"); do
+  NEW=$(OCF="$JSON" python3 -c 'import json,os; print(json.load(open(os.environ["OCF"]))["password"])' 2>/dev/null)
+  [ -n "${NEW:-}" ] && break
+  [ "$attempt" -lt "$PARSE_ATTEMPTS" ] && sleep "$PARSE_DELAY"
+done
 if [ -z "${NEW:-}" ]; then
-  log "could not parse password from $JSON; skipping"
+  log "could not parse password from $JSON after $PARSE_ATTEMPTS attempts; skipping (the periodic run retries)"
   exit 0
 fi
 NEWHASH=$(printf %s "$NEW" | sha256sum | cut -d" " -f1)
@@ -46,6 +62,9 @@ if [ -n "$CUR" ]; then
     log "in sync; no action"
     exit 0
   fi
+elif [ "${OC_SYNC_PERIODIC:-0}" = "1" ]; then
+  log "periodic: openchamber not running; nothing to sync (its start wrapper reads the file)"
+  exit 0
 else
   # No live reading (OpenChamber down): compare against last-synced hash.
   LAST=$(cat "$STATE" 2>/dev/null || true)

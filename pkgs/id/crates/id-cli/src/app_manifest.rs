@@ -142,6 +142,24 @@ pub struct Interfaces {
     pub cli: Option<CliInterface>,
     #[serde(default)]
     pub web: Option<WebInterface>,
+    /// Input events the app opts into, separately for each producer
+    /// environment. Missing input declarations preserve keyboard-only apps.
+    #[serde(default)]
+    pub input: Option<InputInterfaces>,
+}
+
+/// Per-environment input event allowlists from the input-event-model design.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct InputInterfaces {
+    #[serde(default)]
+    pub native: Vec<String>,
+    #[serde(default)]
+    pub web: Vec<String>,
+    #[serde(default)]
+    pub tui: Vec<String>,
+    #[serde(default)]
+    pub android: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -157,6 +175,9 @@ pub struct WebInterface {
     pub route: String,
     #[serde(default)]
     pub socket: Option<String>,
+    /// `app` opts this app's own surface into taking over the browser menu.
+    #[serde(default)]
+    pub context_menu: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -220,6 +241,33 @@ pub fn parse_app_manifest(source: &str, folder_name: &str) -> Result<AppManifest
         );
         ensure_distinct_entries(&cli.commands, "interfaces.cli.commands")?;
     }
+    if let Some(input) = &manifest.interfaces.input {
+        for (environment, events) in [
+            ("native", input.native.as_slice()),
+            ("web", input.web.as_slice()),
+            ("tui", input.tui.as_slice()),
+            ("android", input.android.as_slice()),
+        ] {
+            let field = format!("interfaces.input.{environment}");
+            ensure_distinct_entries(events, &field)?;
+            for event in events {
+                if environment == "web"
+                    && event == "secondary_press"
+                    && manifest
+                        .interfaces
+                        .web
+                        .as_ref()
+                        .and_then(|web| web.context_menu.as_deref())
+                        == Some("app")
+                {
+                    continue;
+                }
+                if let Some(reason) = input_refusal(environment, event) {
+                    anyhow::bail!("{field} refuses event {event:?}: {reason}");
+                }
+            }
+        }
+    }
     if let Some(capabilities) = &manifest.capabilities {
         ensure_distinct_entries(&capabilities.request, "capabilities.request")?;
     }
@@ -265,6 +313,12 @@ pub fn parse_app_manifest(source: &str, folder_name: &str) -> Result<AppManifest
             "interfaces.web.mode must be adapter or direct"
         );
         ensure!(
+            web.context_menu
+                .as_deref()
+                .map_or(true, |mode| mode == "app"),
+            "interfaces.web.context_menu must be app when present"
+        );
+        ensure!(
             is_safe_web_path(&web.route),
             "interfaces.web.route must be an absolute path without traversal, empty or dot segments, whitespace, ? or #"
         );
@@ -284,6 +338,28 @@ pub fn parse_app_manifest(source: &str, folder_name: &str) -> Result<AppManifest
         }
     }
     Ok(manifest)
+}
+
+/// Return the design's explicit refusal reason when an event is not
+/// producible in an environment. `None` means the environment supports it.
+fn input_refusal(environment: &str, event: &str) -> Option<&'static str> {
+    let supported = match (environment, event) {
+        (_, "press" | "release" | "cancel" | "drag" | "scroll") => true,
+        ("native" | "web" | "android", "long_press") => true,
+        ("tui", "long_press") => return Some("no_timing_source"),
+        ("native" | "web" | "tui", "hover_enter" | "hover_leave" | "hover_move") => true,
+        ("android", "hover_enter" | "hover_leave" | "hover_move") => {
+            return Some("hover_unsupported");
+        }
+        ("native" | "tui", "secondary_press") => true,
+        ("web", "secondary_press") => return Some("context_menu_not_claimed"),
+        ("android", "secondary_press") => return Some("no_secondary_button"),
+        (_, "drag_move") => true,
+        (_, "pinch") => return Some("gesture_not_in_subset"),
+        (_, "multi_touch") => return Some("multi_touch_deferred"),
+        _ => return Some("unknown_or_unsupported_event"),
+    };
+    if supported { None } else { Some("unsupported") }
 }
 
 #[derive(Default)]
@@ -650,6 +726,55 @@ route = "/tic-tac-toe"
     }
 
     #[test]
+    fn input_event_allowlists_accept_supported_events_and_web_menu_opt_in() {
+        let source = MANIFEST.replace(
+            "route = \"/tic-tac-toe\"",
+            "route = \"/tic-tac-toe\"\ncontext_menu = \"app\"\n\n[interfaces.input]\nnative = [\"press\", \"release\", \"drag\", \"scroll\", \"long_press\", \"secondary_press\"]\nweb = [\"press\", \"release\", \"hover_enter\", \"hover_leave\", \"secondary_press\"]\ntui = [\"press\", \"release\", \"drag\", \"scroll\", \"hover_enter\", \"hover_leave\"]\nandroid = [\"press\", \"release\", \"drag\", \"scroll\", \"long_press\"]",
+        );
+        let manifest = parse_app_manifest(&source, "tic-tac-toe").unwrap();
+        let input = manifest.interfaces.input.unwrap();
+        assert_eq!(
+            input.web,
+            [
+                "press",
+                "release",
+                "hover_enter",
+                "hover_leave",
+                "secondary_press"
+            ]
+        );
+    }
+
+    #[test]
+    fn input_event_allowlists_refuse_unsupported_events_with_named_reasons() {
+        for (environment, event, reason) in [
+            ("web", "secondary_press", "context_menu_not_claimed"),
+            ("android", "hover_enter", "hover_unsupported"),
+            ("tui", "long_press", "no_timing_source"),
+            ("android", "pinch", "gesture_not_in_subset"),
+            ("android", "mystery", "unknown_or_unsupported_event"),
+        ] {
+            let source = MANIFEST.replace(
+                "route = \"/tic-tac-toe\"",
+                &format!(
+                    "route = \"/tic-tac-toe\"\n\n[interfaces.input]\n{environment} = [{event:?}]"
+                ),
+            );
+            let error = parse_app_manifest(&source, "tic-tac-toe").unwrap_err();
+            assert!(
+                error.to_string().contains(reason),
+                "{environment} {event} must be refused as {reason}: {error:#}"
+            );
+        }
+    }
+
+    #[test]
+    fn missing_input_interface_keeps_existing_keyboard_only_manifest_valid() {
+        let manifest = parse_app_manifest(MANIFEST, "tic-tac-toe").unwrap();
+        assert!(manifest.interfaces.input.is_none());
+    }
+
+    #[test]
     fn web_route_and_socket_must_be_safe_absolute_paths() {
         for route in ["/a/../b", "/a b", "/a?query", "/a#fragment"] {
             let source =
@@ -867,6 +992,7 @@ route = "/tic-tac-toe"
                 mode: "adapter".to_owned(),
                 route: format!("/apps/{owner_index}"),
                 socket: Some(format!("/ws/{owner_index}")),
+                context_menu: None,
             };
             index.register(&web, owner_index);
         }
@@ -875,6 +1001,7 @@ route = "/tic-tac-toe"
             mode: "adapter".to_owned(),
             route: "/apps/candidate".to_owned(),
             socket: Some("/ws/candidate".to_owned()),
+            context_menu: None,
         };
         assert_eq!(index.first_conflict(&candidate), None);
         // Oracle: each checked map access increments the test-only counter.

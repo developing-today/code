@@ -95,9 +95,12 @@ def parse_verdict_footers(comment_bodies):
                     "at": match.group("at"),
                 }
             )
+
     def sort_key(v):
         parsed = parse_ts(v["at"])
-        return parsed if parsed is not None else datetime.min.replace(tzinfo=timezone.utc)
+        return (
+            parsed if parsed is not None else datetime.min.replace(tzinfo=timezone.utc)
+        )
 
     verdicts.sort(key=sort_key)
     return verdicts
@@ -126,7 +129,8 @@ def check_verdict_without_packet(artifacts, packets):
         # Only review packets commission a pass; an unrelated live
         # packet for the same issue must not mask a protocol gap.
         live = [
-            p for p in live_packets_for(packets, artifact["number"])
+            p
+            for p in live_packets_for(packets, artifact["number"])
             if p.get("review_pass") is not None
         ]
         live_passes = {p.get("review_pass") for p in live}
@@ -181,7 +185,8 @@ def check_count_divergence(artifacts, packets):
         by_label = label_pass(labels)
         pass_labels = [l for l in labels if PASS_LABEL_RE.match(l)]
         live = [
-            p for p in live_packets_for(packets, artifact["number"])
+            p
+            for p in live_packets_for(packets, artifact["number"])
             if p.get("review_pass") is not None
         ]
         # With several live packets, the authoritative payload is the
@@ -216,7 +221,9 @@ def check_count_divergence(artifacts, packets):
             }
             if len(pass_labels) > 1:
                 finding["pass_labels"] = pass_labels
-            if by_payload is not None and (by_label != by_payload or len(pass_labels) > 1):
+            if by_payload is not None and (
+                by_label != by_payload or len(pass_labels) > 1
+            ):
                 finding["repair"] = {
                     "action": "set_label",
                     "remove": [l for l in labels if PASS_LABEL_RE.match(l)],
@@ -259,7 +266,9 @@ def check_stale_pass(packets, now, claim_latency_seconds=DEFAULT_CLAIM_LATENCY_S
                 )
         elif packet["status"] == "claimed" and claimed is not None:
             effort = packet.get("effort") or DEFAULT_EFFORT
-            deadline = EFFORT_DEADLINE_SECONDS.get(effort, EFFORT_DEADLINE_SECONDS[DEFAULT_EFFORT])
+            deadline = EFFORT_DEADLINE_SECONDS.get(
+                effort, EFFORT_DEADLINE_SECONDS[DEFAULT_EFFORT]
+            )
             age = (now - claimed).total_seconds()
             if age > deadline and not packet.get("verdicted"):
                 findings.append(
@@ -325,17 +334,35 @@ def collect_live_state(repo, queue):
     for kind, sub in (("issue", "issue"), ("pr", "pr")):
         out = _run(
             [
-                "gh", sub, "list", "--repo", repo, "--state", "all",
-                "--search", "label:review/second-pass OR label:review/pass-1 OR label:review/pass-2",
-                "--json", "number,state,labels", "--limit", "50",
+                "gh",
+                sub,
+                "list",
+                "--repo",
+                repo,
+                "--state",
+                "all",
+                "--search",
+                "label:review/second-pass OR label:review/pass-1 OR label:review/pass-2",
+                "--json",
+                "number,state,labels",
+                "--limit",
+                "50",
             ]
         )
         for row in json.loads(out or "[]"):
             labels = [l["name"] for l in row.get("labels", [])]
             comments = _run(
                 [
-                    "gh", sub, "view", str(row["number"]), "--repo", repo,
-                    "--json", "comments", "--jq", "[.comments[].body]",
+                    "gh",
+                    sub,
+                    "view",
+                    str(row["number"]),
+                    "--repo",
+                    repo,
+                    "--json",
+                    "comments",
+                    "--jq",
+                    "[.comments[].body]",
                 ]
             )
             artifacts.append(
@@ -349,7 +376,17 @@ def collect_live_state(repo, queue):
                 }
             )
     packets = []
-    out = _run(["fleet", "queue", "list", "--queue", queue, "--status", "queued,claimed,parked"])
+    out = _run(
+        [
+            "fleet",
+            "queue",
+            "list",
+            "--queue",
+            queue,
+            "--status",
+            "queued,claimed,parked",
+        ]
+    )
     for row in json.loads(out or "[]"):
         payload = row.get("payload") or {}
         review = payload.get("review") or {}
@@ -376,8 +413,16 @@ def collect_live_state(repo, queue):
     for issue in sorted({p["issue"] for p in packets} - covered):
         comments = _run(
             [
-                "gh", "issue", "view", str(issue), "--repo", repo,
-                "--json", "comments", "--jq", "[.comments[].body]",
+                "gh",
+                "issue",
+                "view",
+                str(issue),
+                "--repo",
+                repo,
+                "--json",
+                "comments",
+                "--jq",
+                "[.comments[].body]",
             ]
         )
         artifacts.append(
@@ -412,10 +457,12 @@ def main(argv=None):
     except (OSError, ValueError, subprocess.SubprocessError) as exc:
         # Report-only contract: a failed lookup emits an error record
         # and still exits 0, so one bad pull cannot lose the pass.
-        print(json.dumps(
-            {"check": "collection_error", "detail": f"{type(exc).__name__}: {exc}"},
-            sort_keys=True,
-        ))
+        print(
+            json.dumps(
+                {"check": "collection_error", "detail": f"{type(exc).__name__}: {exc}"},
+                sort_keys=True,
+            )
+        )
         return 0
     now = parse_ts(args.now) if args.now else None
     findings = run_checks(state, now=now)

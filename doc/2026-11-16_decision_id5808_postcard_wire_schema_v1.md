@@ -11,17 +11,17 @@
 
 ## Decision summary
 
-| Question | Decision |
-| --- | --- |
-| Encoding | postcard (the `postcard` crate, v1) over serde types, exactly as the live `pkgs/id` practice — varint integers, no field names, no padding, no alignment (D3) |
-| Frame shape | One canonical frame = the postcard encoding of one `Envelope` struct: a fixed-order header followed by an opaque payload (D1). Carrier framing (#5810) wraps this frame; it is never re-encoded per carrier |
-| Envelope fields | In order: schema major, schema minor, message-type discriminator, flags, sender, optional recipient, stream id, sequence, timestamp, extension/TLV list, payload (D1) |
-| Discriminators | One byte-range varint namespace for the parent §1 message family: 0 capability negotiation, 1 handshake/identity, 2 direct message, 3 relayed message, 4 control/keepalive, 5 error, 6 diagnostic/trace. Append-only, never reused, pinned by test (D2) |
-| Flags | Bit 0 compressed, bit 1 encrypted, bit 2 fragmented (semantics per D4 — a provenance marker for #5810 checked-chunk reassembly, never a decoder instruction). Bits 3–7 reserved: zero on send, ignored on receipt within a major |
-| Payload length | No separate length field inside the envelope: postcard length-prefixes the payload itself, and the outer carrier framing (#5810) owns frame delimiting. A second in-envelope length would be a redundant value that can disagree with the first (D1, §7) |
-| Size limit | The encoded frame is capped at **1 MiB** total — the #2036 frame cap, the #5810 per-frame cap, and the meta protocol's `MAX_REQUEST_BYTES` all agree. Oversize is a defined error, never truncation (D5) |
-| Decode rule | Exact decode: a frame that does not consume every byte is an error (trailing bytes, padding, and concatenated frames are rejected), ratifying `decode_meta_exact` in the meta protocol (D3) |
-| Golden vectors | Four normative byte-for-byte vectors in D6, one per shape class (minimal, addressed+encrypted, relayed+extension, error). Implementations pin them in a test the way `wire_format_is_pinned` pins the meta protocol's discriminants (D6) |
+| Question           | Decision                                                                                                                                                                                                                                                                                   |
+| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Encoding           | postcard (the `postcard` crate, v1) over serde types, exactly as the live `pkgs/id` practice — varint integers, no field names, no padding, no alignment (D3)                                                                                                                              |
+| Frame shape        | One canonical frame = the postcard encoding of one `Envelope` struct: a fixed-order header followed by an opaque payload (D1). Carrier framing (#5810) wraps this frame; it is never re-encoded per carrier                                                                                |
+| Envelope fields    | In order: schema major, schema minor, message-type discriminator, flags, sender, optional recipient, stream id, sequence, timestamp, extension/TLV list, payload (D1)                                                                                                                      |
+| Discriminators     | One byte-range varint namespace for the parent §1 message family: 0 capability negotiation, 1 handshake/identity, 2 direct message, 3 relayed message, 4 control/keepalive, 5 error, 6 diagnostic/trace. Append-only, never reused, pinned by test (D2)                                    |
+| Flags              | Bit 0 compressed, bit 1 encrypted, bit 2 fragmented (semantics per D4 — a provenance marker for #5810 checked-chunk reassembly, never a decoder instruction). Bits 3–7 reserved: zero on send, ignored on receipt within a major                                                           |
+| Payload length     | No separate length field inside the envelope: postcard length-prefixes the payload itself, and the outer carrier framing (#5810) owns frame delimiting. A second in-envelope length would be a redundant value that can disagree with the first (D1, §7)                                   |
+| Size limit         | The encoded frame is capped at **1 MiB** total — the #2036 frame cap, the #5810 per-frame cap, and the meta protocol's `MAX_REQUEST_BYTES` all agree. Oversize is a defined error, never truncation (D5)                                                                                   |
+| Decode rule        | Exact decode: a frame that does not consume every byte is an error (trailing bytes, padding, and concatenated frames are rejected), ratifying `decode_meta_exact` in the meta protocol (D3)                                                                                                |
+| Golden vectors     | Four normative byte-for-byte vectors in D6, one per shape class (minimal, addressed+encrypted, relayed+extension, error). Implementations pin them in a test the way `wire_format_is_pinned` pins the meta protocol's discriminants (D6)                                                   |
 | Existing protocols | `/iroh-meta/3` and the other live postcard protocols keep their current ALPN-governed bare-enum formats. This schema governs the #2036/#5674 messaging envelope; adopting it inside an existing protocol is that protocol's own major/ALPN event, never a silent reinterpretation (D3, §8) |
 
 ## 1. What the parent draft already fixed (not re-decided here)
@@ -41,19 +41,19 @@ This record settles the byte-level detail inside that frame: the exact field ord
 
 A v1 frame is the postcard encoding of exactly one value of this struct, fields in this order (postcard encodes struct fields in declaration order, with no names, tags, or padding):
 
-| # | Field | Type on the wire | Encoding |
-| --- | --- | --- | --- |
-| 1 | `major` | `u16` | postcard varint |
-| 2 | `minor` | `u16` | postcard varint |
-| 3 | `kind` | discriminator | postcard varint (D2 table) |
-| 4 | `flags` | `u8` bitfield | one raw byte (D4) |
-| 5 | `sender` | `[u8; 32]` | 32 raw bytes (the sender's endpoint ID) |
-| 6 | `recipient` | `Option<[u8; 32]>` | `0x00` = none (broadcast / relay-routed), `0x01` + 32 raw bytes = addressed |
-| 7 | `stream_id` | `u64` | postcard varint; 0 = no stream (single-frame exchange) |
-| 8 | `sequence` | `u64` | postcard varint; per-stream sequence, starting at 0 |
-| 9 | `timestamp_ms` | `u64` | postcard varint; Unix epoch milliseconds, 0 = the sender asserts no clock (clockless/store-and-forward origin) |
-| 10 | `extensions` | list of `(u16, bytes)` | varint count, then per entry: varint type, varint length, raw bytes (the TLV area) |
-| 11 | `payload` | bytes | varint length + raw bytes; opaque to the envelope layer |
+| #   | Field          | Type on the wire       | Encoding                                                                                                       |
+| --- | -------------- | ---------------------- | -------------------------------------------------------------------------------------------------------------- |
+| 1   | `major`        | `u16`                  | postcard varint                                                                                                |
+| 2   | `minor`        | `u16`                  | postcard varint                                                                                                |
+| 3   | `kind`         | discriminator          | postcard varint (D2 table)                                                                                     |
+| 4   | `flags`        | `u8` bitfield          | one raw byte (D4)                                                                                              |
+| 5   | `sender`       | `[u8; 32]`             | 32 raw bytes (the sender's endpoint ID)                                                                        |
+| 6   | `recipient`    | `Option<[u8; 32]>`     | `0x00` = none (broadcast / relay-routed), `0x01` + 32 raw bytes = addressed                                    |
+| 7   | `stream_id`    | `u64`                  | postcard varint; 0 = no stream (single-frame exchange)                                                         |
+| 8   | `sequence`     | `u64`                  | postcard varint; per-stream sequence, starting at 0                                                            |
+| 9   | `timestamp_ms` | `u64`                  | postcard varint; Unix epoch milliseconds, 0 = the sender asserts no clock (clockless/store-and-forward origin) |
+| 10  | `extensions`   | list of `(u16, bytes)` | varint count, then per entry: varint type, varint length, raw bytes (the TLV area)                             |
+| 11  | `payload`      | bytes                  | varint length + raw bytes; opaque to the envelope layer                                                        |
 
 Rules that follow from the shape:
 
@@ -65,17 +65,17 @@ Rules that follow from the shape:
 
 ## D2 — Discriminators: one namespace, append-only
 
-| Value | Kind | Payload, in brief |
-| --- | --- | --- |
-| 0 | Capability negotiation | Version ranges and adapter capabilities, per #5809 D2 |
-| 1 | Handshake / identity | Identity proof and the negotiation transcript confirmation (#5809 D2, #5815) |
-| 2 | Direct message | End-to-end payload for the addressed recipient |
-| 3 | Relayed message | Same payload shape as direct, carried for relay routing (#5813) |
-| 4 | Control / keepalive | Session control: keepalive, close, backpressure signals |
-| 5 | Error | First byte: error code (0x01 unsupported-version, 0x02 unknown-type, 0x03 truncated-frame, 0x04 oversized-frame, 0x05 no-common-version); remainder is a human-readable UTF-8 detail string, length-bounded by the frame cap |
-| 6 | Diagnostic / trace | Opt-in, authenticated path diagnostics (parent §7); never sent unsolicited |
+| Value | Kind                   | Payload, in brief                                                                                                                                                                                                            |
+| ----- | ---------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 0     | Capability negotiation | Version ranges and adapter capabilities, per #5809 D2                                                                                                                                                                        |
+| 1     | Handshake / identity   | Identity proof and the negotiation transcript confirmation (#5809 D2, #5815)                                                                                                                                                 |
+| 2     | Direct message         | End-to-end payload for the addressed recipient                                                                                                                                                                               |
+| 3     | Relayed message        | Same payload shape as direct, carried for relay routing (#5813)                                                                                                                                                              |
+| 4     | Control / keepalive    | Session control: keepalive, close, backpressure signals                                                                                                                                                                      |
+| 5     | Error                  | First byte: error code (0x01 unsupported-version, 0x02 unknown-type, 0x03 truncated-frame, 0x04 oversized-frame, 0x05 no-common-version); remainder is a human-readable UTF-8 detail string, length-bounded by the frame cap |
+| 6     | Diagnostic / trace     | Opt-in, authenticated path diagnostics (parent §7); never sent unsolicited                                                                                                                                                   |
 
-- **Append-only, never reused, never reordered** — the meta protocol's compatibility rule verbatim ("postcard encodes enum variants by position. Within a protocol version, new variants may only be *appended*"), applied to this namespace. Values 7–127 are reserved for assignment by later decision records in this series; 128–255 are experimental and must never appear in a settled session. A retired kind keeps its value forever.
+- **Append-only, never reused, never reordered** — the meta protocol's compatibility rule verbatim ("postcard encodes enum variants by position. Within a protocol version, new variants may only be _appended_"), applied to this namespace. Values 7–127 are reserved for assignment by later decision records in this series; 128–255 are experimental and must never appear in a settled session. A retired kind keeps its value forever.
 - **Unknown discriminator behaviour is #5809 D3, unchanged:** an endpoint answers with the error kind (code 0x02); a relay forwards the frame opaquely, byte-for-byte. No peer coerces an unknown kind into a known one.
 - **Discriminants are pinned by test** in any implementation, in the shape of the meta protocol's `wire_format_is_pinned` test: one assertion per assigned value, so an accidental reorder fails CI instead of corrupting the wire.
 
@@ -89,12 +89,12 @@ Rules that follow from the shape:
 
 ## D4 — Flags semantics
 
-| Bit | Name | Meaning |
-| --- | --- | --- |
-| 0 | `compressed` | The payload bytes are compressed (algorithm is a capability-negotiation item, #5809 D2 — not an envelope field) |
-| 1 | `encrypted` | The payload is end-to-end encrypted; envelope fields remain visible to relays exactly as #5813/#5815 specify |
-| 2 | `fragmented` | **Provenance only:** the logical payload exceeded one carrier frame and was carried as #5810 checked chunks, reassembled to the original bytes *before* postcard decoding. By the time any decoder sees this frame, the payload is whole. The flag records that chunking happened (for diagnostics and size accounting); it is never an instruction to reassemble, and a receiver must not reject or re-chunk a frame because of it |
-| 3–7 | reserved | Zero on send. A receiver ignores them within a major; assigning one is an additive minor act (#5809 D1) recorded in this series |
+| Bit | Name         | Meaning                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| --- | ------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 0   | `compressed` | The payload bytes are compressed (algorithm is a capability-negotiation item, #5809 D2 — not an envelope field)                                                                                                                                                                                                                                                                                                                     |
+| 1   | `encrypted`  | The payload is end-to-end encrypted; envelope fields remain visible to relays exactly as #5813/#5815 specify                                                                                                                                                                                                                                                                                                                        |
+| 2   | `fragmented` | **Provenance only:** the logical payload exceeded one carrier frame and was carried as #5810 checked chunks, reassembled to the original bytes _before_ postcard decoding. By the time any decoder sees this frame, the payload is whole. The flag records that chunking happened (for diagnostics and size accounting); it is never an instruction to reassemble, and a receiver must not reject or re-chunk a frame because of it |
+| 3–7 | reserved     | Zero on send. A receiver ignores them within a major; assigning one is an additive minor act (#5809 D1) recorded in this series                                                                                                                                                                                                                                                                                                     |
 
 Flags describe the payload as carried, never the envelope: no flag changes how fields 1–11 are decoded, so a relay that understands no flags can still route, forward, and preserve the frame.
 
@@ -103,7 +103,7 @@ Flags describe the payload as carried, never the envelope: no flag changes how f
 - **Frame cap: 1 MiB (1,048,576 bytes) for the whole encoded frame**, header included. This is the one number three sources already agree on: the #2036 frame cap (cited by #5810), #5810's per-frame cap, and the meta protocol's `MAX_REQUEST_BYTES`. This record fixes it as the envelope-layer rule so no fourth number appears.
 - The payload maximum is therefore 1 MiB minus the header actually encoded; senders compute it from the encoded frame, not from a nominal payload allowance.
 - A frame over the cap is refused with the oversized-frame error where a reply is possible; it is never truncated, split at the envelope layer (splitting is the carrier's checked-chunk mechanism, #5810), or partially decoded.
-- Length prefixes are validated against the cap *before* allocation (the #5810 bounded-resources invariant applies at this layer too).
+- Length prefixes are validated against the cap _before_ allocation (the #5810 bounded-resources invariant applies at this layer too).
 
 ## D6 — Golden vectors (schema v1.0, normative)
 

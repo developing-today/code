@@ -23,11 +23,18 @@
 /// advertise against, owned by `id-core` (slice 9110-02, #10160).
 pub use id_core::port;
 
+/// Content-ID helpers, owned by `id-core`. [`content_store`] names them
+/// as a sibling module, so the module is re-exported at this root.
+pub use id_core::content_id;
+
 pub mod chain;
 pub mod chat;
 pub mod chat_anchor;
+pub mod content_store;
 pub mod documents;
 pub mod event_types;
+pub mod graph_index;
+pub mod identity;
 pub mod issuer_rotation;
 pub mod media;
 pub mod note_checkpoints;

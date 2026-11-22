@@ -30,7 +30,7 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { timingSafeEqual } from "node:crypto";
 import { dirname } from "node:path";
-import type { DashAuthor, DashComment, DashCommentKind, RefKey } from "./model.ts";
+import type { CommentProvenance, DashAuthor, DashComment, DashCommentKind, RefKey } from "./model.ts";
 import { isValidRef, refUrl } from "./model.ts";
 import {
   archiveStoreBytes,
@@ -84,6 +84,7 @@ export function authorizeCommentAuthor(
 
 const GH_REF = /^[\w.-]+\/[\w.-]+#\d+$/;
 const COMMENT_KINDS = new Set<DashCommentKind>(["message", "note", "github"]);
+const REGISTRY_SOURCES = new Set(["opencode-sandbox", "opencode-laptop", "jules", "claude-code", "cron"]);
 
 function commentRecordProblem(value: unknown): string | null {
   if (!isRecord(value)) return "record must be an object";
@@ -96,6 +97,19 @@ function commentRecordProblem(value: unknown): string | null {
   if (!validateAuthor(value.author)) return "author must have a supported kind, id, and label";
   if (value.authorVerified !== undefined && typeof value.authorVerified !== "boolean") {
     return "authorVerified must be a boolean";
+  }
+  if (value.provenance !== undefined && value.provenance !== "verified" && value.provenance !== "asserted-legacy") {
+    return "provenance must be verified or asserted-legacy";
+  }
+  if (value.linkedIdentity !== undefined) {
+    if (
+      !isRecord(value.linkedIdentity) ||
+      typeof value.linkedIdentity.source !== "string" ||
+      !REGISTRY_SOURCES.has(value.linkedIdentity.source) ||
+      !isNonEmptyString(value.linkedIdentity.id)
+    ) {
+      return "linkedIdentity must have a source and non-empty id";
+    }
   }
   if (typeof value.body !== "string") return "body must be a string";
   if (
@@ -122,6 +136,15 @@ function commentRecordProblem(value: unknown): string | null {
       return "pending github comments require githubRef";
   }
   return null;
+}
+
+/**
+ * A comment's author provenance (#1253 §5). Records written before the
+ * marker existed carry an author that was only ever the caller's claim,
+ * so a missing marker reads as asserted-legacy, never as verified.
+ */
+export function commentProvenance(comment: Pick<DashComment, "provenance">): CommentProvenance {
+  return comment.provenance === "verified" ? "verified" : "asserted-legacy";
 }
 
 export function isObjectRef(s: unknown): s is string {
@@ -310,6 +333,15 @@ export class CommentsStore {
       valid.push(comment as DashComment);
     });
     this.comments = valid;
+    // #9607: persist the legacy marker once, without deriving identity or
+    // changing any author string. Existing explicit markers are untouched.
+    let migrated = false;
+    for (const comment of this.comments) {
+      if (comment.provenance === undefined) {
+        comment.provenance = "asserted-legacy";
+        migrated = true;
+      }
+    }
     if (invalid.length > 0) {
       const quarantined = await this.archive(this.file, raw, invalid);
       console.error(
@@ -318,6 +350,8 @@ export class CommentsStore {
       );
       // The exact source bytes and diagnostics are durable before this
       // atomic rewrite removes malformed rows from the active store.
+      await this.persist();
+    } else if (migrated) {
       await this.persist();
     }
   }
@@ -366,7 +400,10 @@ export class CommentsStore {
     return out;
   }
 
-  async add(input: NewComment, options: { authorVerified?: boolean } = {}): Promise<DashComment> {
+  async add(
+    input: NewComment,
+    options: { authorVerified?: boolean; provenance?: CommentProvenance } = {},
+  ): Promise<DashComment> {
     await this.load();
     const comment: DashComment = {
       id: newCommentId(),
@@ -374,6 +411,7 @@ export class CommentsStore {
       kind: input.kind,
       author: input.author,
       authorVerified: options.authorVerified === true,
+      provenance: options.provenance === "verified" ? "verified" : "asserted-legacy",
       body: input.body,
       createdAt: new Date().toISOString(),
       ...(input.kind === "message" ? { triageState: "new" as const } : {}),

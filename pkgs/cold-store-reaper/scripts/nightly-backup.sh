@@ -6,22 +6,17 @@
 # Steps, in order:
 #   1. cold-store backup-d1           export the D1 cold-store-manifest
 #                                     database and file it in db-backups/d1/
-#   2. cold-store backup-supabase     file the newest Supabase backup object
-#                                     from R2 in db-backups/supabase/ —
-#                                     only when the R2 credentials below
-#                                     are set; skipped (not an error)
-#                                     otherwise
-#   3. scripts/export-turso.sh        file a portable SQLite export of
+#   2. scripts/export-turso.sh        file a portable SQLite export of
 #                                     every Turso database in
 #                                     db-backups/turso/ — only when the
 #                                     Turso platform token below is set;
 #                                     skipped (not an error) otherwise
-#   4. cold-store prune-backups --apply
+#   3. cold-store prune-backups --apply
 #                                     enforce 30 daily / 12 weekly /
 #                                     12 monthly retention across all DBs
-#   5. cold-store sync-manifest       push the local manifest (including
+#   4. cold-store sync-manifest       push the local manifest (including
 #                                     tonight's ledger rows) to D1
-#   6. cold-store status              one-screen summary (head)
+#   5. cold-store status              one-screen summary (head)
 #
 # Steps are ISOLATED: a step that fails never starves the steps after
 # it (the 2026-10-27 run lost retention, manifest sync, and status to
@@ -36,16 +31,10 @@
 #                         (cloudflare.api-token-day-to-day) into the
 #                         cron environment; backup-d1 and sync-manifest
 #                         read it from the environment only.
-#   R2_ACCESS_KEY_ID      optional. Bucket-scoped S3 credentials for the
-#   R2_SECRET_ACCESS_KEY  supabase-backups bucket (Bitwarden:
-#                         cloudflare.r2-backups-access-key-id /
-#                         cloudflare.r2-backups-secret-access-key).
-#                         When either is unset, step 2 is skipped with
-#                         a one-line notice instead of failing the run.
 #   TURSO_PLATFORM_API_TOKEN
 #                         optional. Turso Platform API token (Bitwarden:
 #                         turso.platform-api-token-muse-cli). When unset,
-#                         step 3 is skipped with a one-line notice
+#                         step 2 is skipped with a one-line notice
 #                         instead of failing the run. See
 #                         scripts/export-turso.sh for its own env.
 #   COLD_STORE_HOME       optional; the reaper home (default
@@ -83,11 +72,6 @@ run_step() {
 }
 
 run_step backup-d1 "${COLD_STORE}" backup-d1
-if [[ -n ${R2_ACCESS_KEY_ID:-} && -n ${R2_SECRET_ACCESS_KEY:-} ]]; then
-  run_step backup-supabase "${COLD_STORE}" backup-supabase
-else
-  echo "nightly-backup: step backup-supabase: skipped (R2 credentials not set)"
-fi
 run_step export-turso "${EXPORT_TURSO}"
 run_step prune-backups "${COLD_STORE}" prune-backups --apply
 run_step sync-manifest "${COLD_STORE}" sync-manifest

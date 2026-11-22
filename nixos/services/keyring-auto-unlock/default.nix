@@ -60,6 +60,25 @@ let
   # command is everything after the last recognized flag). `optional`
   # so a stash failure can never fail a login; the stash script itself
   # also exits 0 unconditionally for the same reason.
+  # Gate in front of the stash: re-check the typed password with
+  # pam_unix and skip the stash (default=1 jumps over the next rule)
+  # unless it is correct. Without this, a mistyped password at sddm or
+  # a TTY replaced the good cached one and the next daemon restart
+  # could not unlock (#10724 review). `success=ignore` means the gate
+  # never changes whether the login itself succeeds; `use_first_pass`
+  # reuses the already-typed password instead of prompting again, and
+  # `nodelay` avoids a second failure delay on top of the real check.
+  stashGateRule = {
+    enable = true;
+    control = "[success=ignore default=1]";
+    modulePath = "${pkgs.linux-pam}/lib/security/pam_unix.so";
+    order = cfg.pamOrder - 1;
+    args = [
+      "use_first_pass"
+      "nodelay"
+    ];
+  };
+
   stashRule = {
     enable = true;
     control = "optional";
@@ -85,12 +104,14 @@ in
     pamOrder = lib.mkOption {
       type = lib.types.int;
       default = 12400;
-      description = "PAM auth order for the stash rule: after pam_unix/keyring auth (so authtok exists), before final unix sufficient.";
+      description = "PAM auth order for the stash rule: after pam_unix/keyring auth (so authtok exists), before final unix sufficient. The password check that gates it runs at pamOrder - 1, so keep that slot free.";
     };
   };
 
   config = lib.mkIf cfg.enable {
+    security.pam.services.sddm.rules.auth.keyring_stash_gate = stashGateRule;
     security.pam.services.sddm.rules.auth.keyring_stash = stashRule;
+    security.pam.services.login.rules.auth.keyring_stash_gate = stashGateRule;
     security.pam.services.login.rules.auth.keyring_stash = stashRule;
 
     home-manager.users.${cfg.user} = {

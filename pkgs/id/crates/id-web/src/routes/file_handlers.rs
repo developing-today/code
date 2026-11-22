@@ -93,6 +93,69 @@ pub(super) async fn save_handler(
     // archive, tag set and metadata writes are one claim.
     let _save_name_guard = state.upload_name_lock.lock().await;
 
+    // Stale-save conflict policy (#8524): the client's doc_id is the
+    // hash its edit is based on (the hash it loaded or last saved —
+    // see pkgs/id/web/src/main.ts). If the filename has since been
+    // bound to a different version, this save is stale: refuse it
+    // with an actionable conflict and preserve the current version,
+    // instead of silently superseding it while the archive helper —
+    // keyed to the stale hash — archives nothing and the displaced
+    // version loses its named archive. The check runs under the
+    // name lock above, so the binding it reads is the binding the
+    // tag set below would displace: no check-then-set window. A name
+    // with no binding yet (first save) passes, as does a doc_id that
+    // names the current binding; a doc_id that does not parse as a
+    // hash comes from a legacy client that cannot state a base and
+    // is not second-guessed here.
+    //
+    // #12146: if the binding cannot be read, the check cannot run, so
+    // the save is refused (503) rather than allowed to proceed as if
+    // the name were unbound.
+    let current_binding = match current_filename_hash(&state.store, &req.name).await {
+        Ok(binding) => binding,
+        Err(err) => {
+            tracing::error!(
+                "[routes] Save of '{}' refused: could not read its current version: {:#}",
+                req.name,
+                err
+            );
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(serde_json::json!({
+                    "error": format!(
+                        "Could not check whether '{}' has a newer version, so the save was not made. Try saving again.",
+                        req.name
+                    ),
+                    "reason": "current_version_unavailable",
+                })),
+            )
+                .into_response();
+        }
+    };
+    if let Some(current) = current_binding
+        && let Ok(base) = id_core::iroh_hash::parse_hash(&req.doc_id)
+        && base != current
+    {
+        tracing::info!(
+            "[routes] Save conflict for '{}': base {} is stale, current is {}",
+            req.name,
+            base,
+            current
+        );
+        return (
+            StatusCode::CONFLICT,
+            Json(serde_json::json!({
+                "error": format!(
+                    "Save conflict: '{}' has a newer version than the one this edit is based on. Reload the file and re-apply the edit.",
+                    req.name
+                ),
+                "reason": "stale_save_conflict",
+                "current_doc_id": current.to_string(),
+            })),
+        )
+            .into_response();
+    }
+
     // Convert ProseMirror doc to the appropriate format based on file name
     let bytes = match convert_doc_to_bytes(&req.name, &req.doc) {
         Ok(b) => b,
@@ -1577,6 +1640,23 @@ pub(super) fn extract_raw_text(doc: &serde_json::Value) -> String {
     }
 
     blocks.join("\n")
+}
+
+/// The hash the filename tag currently points to: `Ok(None)` when the
+/// name is not bound, `Err` when the tag store could not be read. Used
+/// by the stale-save conflict check (#8524), which must not mistake a
+/// read failure for "no binding" (#12146): that would skip the check
+/// and let a stale save supersede the current version.
+pub(super) async fn current_filename_hash(
+    store: &iroh_blobs::api::Store,
+    name: &str,
+) -> anyhow::Result<Option<iroh_blobs::Hash>> {
+    let tag = store
+        .tags()
+        .get(name)
+        .await
+        .map_err(|err| anyhow::anyhow!("reading the filename tag: {err}"))?;
+    Ok(tag.map(|tag_info| tag_info.hash))
 }
 
 /// Archive the original tag by creating a timestamped copy.

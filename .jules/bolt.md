@@ -29,9 +29,11 @@
 **Action:** When a range table is sorted and queried per hot cell, flatten it to `Int32Array` and binary-search it; extend single-code-unit fast paths to all single scalars (not just ASCII), excluding only the code points whose width semantics diverge between the fast and general paths. Verify equivalence exhaustively over the full code-point space before shipping.
 
 ## 2026-11-16 - [Client-keyed plain objects silently drop `__proto__`]
+
 **Learning:** Count maps keyed by client strings (`probe.foreignSeen[r] = ...` in `pm-stack/aggregator/src/push.ts`) never record a `"__proto__"` key: assignment hits the prototype setter instead of creating an own property, so the count silently vanishes. The sibling `mergeClasses` in `alerts.ts` takes arbitrary client keys the same way and has the same latent trap.
 **Action:** When bounding/capping client-keyed `Record<string, number>` maps, explicitly skip `__proto__` (and gate new-key checks on `Object.hasOwn`, not `in`); consider `Map` for new code.
 
 ## 2026-11-16 - [Shared laptop checkout: diffs are not all yours]
+
 **Learning:** The dispatch laptop checkout hosts concurrent lanes: `pkgs/id/web/src/image-browser.*` modifications and a `.Jules/palette.md` edit appeared in `git status` mid-run from another lane, after the run started clean.
 **Action:** Re-check `git status` right before committing and commit exact file paths only — never `git add .`.

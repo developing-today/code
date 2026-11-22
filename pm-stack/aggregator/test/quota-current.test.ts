@@ -465,6 +465,57 @@ describe("overlayTursoUsage (#1049)", () => {
       ["storage", 1.053323, "gb", 21.066],
     ]);
   });
+  test("the card's plan label and limits follow the read's plan (#10436)", () => {
+    const at = iso(5 * 60_000);
+    const out = overlayTursoUsage(
+      [tursoSvc()],
+      file([
+        entry({
+          serviceId: "turso",
+          providerId: "turso",
+          source: "turso-api",
+          planLabel: "scaler",
+          measuredAt: at,
+          windows: [
+            tursoWin("storage", 10.92672, 45.528, at),
+            tursoWin("rows-read", 2_849_000_000, 2.849, at),
+            tursoWin("rows-written", 6_670_000, 6.67, at),
+            tursoWin("sync", 1.22112, 5.088, at),
+          ],
+        }),
+      ]),
+      NOW,
+    );
+    const svc = out[0];
+    expect(svc.plan).toBe("Scaler (live read)");
+    expect(svc.sourceNote).toContain("plan and limits from the read (scaler)");
+    expect(svc.metrics.map((m) => [m.id, m.limit, m.percent])).toEqual([
+      ["storage", 24, 45.528],
+      ["rows-read", 100_000_000_000, 2.849],
+      ["rows-written", 100_000_000, 6.67],
+      ["sync", 24, 5.088],
+      // Absent from the fresh read: kept as a stale dated value with its own limit.
+      ["databases", 100, 1],
+    ]);
+  });
+  test("a read without a plan keeps the record's label and the Starter limits", () => {
+    const at = iso(5 * 60_000);
+    const out = overlayTursoUsage(
+      [tursoSvc()],
+      file([
+        entry({
+          serviceId: "turso",
+          providerId: "turso",
+          source: "turso-api",
+          measuredAt: at,
+          windows: [tursoWin("storage", 1.053323, 21.066, at)],
+        }),
+      ]),
+      NOW,
+    );
+    expect(out[0].plan).toBe("Starter Free $0");
+    expect(out[0].metrics[0].limit).toBe(5);
+  });
   test("prototype-spelling Turso windows are ignored like unknown names", () => {
     const at = iso(5 * 60_000);
     const names = ["databases", "constructor", "__proto__", "toString", "hasOwnProperty", "valueOf", "unknown-window"];
@@ -1400,15 +1451,29 @@ describe("non-pool registration (#10575)", () => {
     const out = overlayQuotaCurrent(
       baseView(),
       file([
-        ...["groq", "exaone", "google.muse", "google.gen-lang", "google.personal", "google.drew", "google.developing-today"].map((serviceId) =>
-          entry({ serviceId, state: "error", error: "no quota surface" }),
-        ),
+        ...[
+          "groq",
+          "exaone",
+          "google.muse",
+          "google.gen-lang",
+          "google.personal",
+          "google.drew",
+          "google.developing-today",
+        ].map((serviceId) => entry({ serviceId, state: "error", error: "no quota surface" })),
         entry({ serviceId: "some-new-provider", windows: [win("monthly", 3, iso(5 * 60_000))] }),
       ]),
       NOW,
     );
     const poolIds = out.pools.map((pool) => pool.id);
-    for (const serviceId of ["groq", "exaone", "google.muse", "google.gen-lang", "google.personal", "google.drew", "google.developing-today"]) {
+    for (const serviceId of [
+      "groq",
+      "exaone",
+      "google.muse",
+      "google.gen-lang",
+      "google.personal",
+      "google.drew",
+      "google.developing-today",
+    ]) {
       expect(poolIds).not.toContain(serviceId);
     }
     expect(poolIds).toContain("some-new-provider");
@@ -1435,7 +1500,9 @@ describe("intentionally uninstrumented pools keep their window state (#10684)", 
       provider: "Open Design",
       plan: "Go",
       state: "walled",
-      windows: [{ name: "7d", unit: "other", limit: 100, used: 100, percent: 100, resetsAt: "2026-11-17T11:44:41.000Z" }],
+      windows: [
+        { name: "7d", unit: "other", limit: 100, used: 100, percent: 100, resetsAt: "2026-11-17T11:44:41.000Z" },
+      ],
       extractionHealth: { ...uninstrumented },
     });
     return view;
@@ -1486,7 +1553,9 @@ describe("intentionally uninstrumented pools keep their window state (#10684)", 
       tickAt: iso(4 * 60_000),
       ok: true,
       durationMs: 900,
-      perProvider: { opendesign: { state: "error", ms: 12, rows: 1, error: "Open Design usage API returned HTTP 503" } },
+      perProvider: {
+        opendesign: { state: "error", ms: 12, rows: 1, error: "Open Design usage API returned HTTP 503" },
+      },
     };
     const out = overlayQuotaCurrent(view, f, NOW);
     const od = out.pools.find((p) => p.id === "opendesign")!;
@@ -1502,7 +1571,9 @@ describe("intentionally uninstrumented pools keep their window state (#10684)", 
     const at = iso(QUOTA_CURRENT_FRESH_MS + 10 * 60_000);
     const out = overlayQuotaCurrent(
       walledUninstrumentedView(),
-      file([entry({ serviceId: "opendesign", source: "opencode-quota", measuredAt: at, windows: [win("7d", 12, at)] })]),
+      file([
+        entry({ serviceId: "opendesign", source: "opencode-quota", measuredAt: at, windows: [win("7d", 12, at)] }),
+      ]),
       NOW,
     );
     const od = out.pools.find((p) => p.id === "opendesign")!;

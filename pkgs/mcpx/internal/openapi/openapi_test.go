@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
 	"github.com/developing-today/code/pkgs/mcpx/internal/openapi"
 )
 
@@ -569,5 +570,60 @@ func TestSameNameTwoLocationsIsABuildError(t *testing.T) {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("the error must name %s, got: %v", want, err)
 		}
+	}
+}
+
+func TestLoadRefusesASpecPastTheCap(t *testing.T) {
+	// #8271 / contract decision 2 (#4375): a fetched spec is refused
+	// past defaults.OpenAPISpecBodyLimit, never silently truncated
+	// into a shorter document that parses wrong downstream.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(strings.Repeat("x", int(defaults.OpenAPISpecBodyLimit)+1)))
+	}))
+	defer srv.Close()
+
+	_, err := openapi.Load(context.Background(), srv.URL+"/openapi.json", 0)
+	if err == nil || !strings.Contains(err.Error(), "exceeds") {
+		t.Fatalf("an over-cap spec must fail the fetch with an exceeds error, got: %v", err)
+	}
+}
+
+func TestLoadReadsASpecAtExactlyTheCap(t *testing.T) {
+	// The cap+1 pattern's boundary: exactly-at-cap is read whole
+	// (and then fails as the invalid document it is), not refused
+	// as over-cap.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(strings.Repeat("x", int(defaults.OpenAPISpecBodyLimit))))
+	}))
+	defer srv.Close()
+
+	_, err := openapi.Load(context.Background(), srv.URL+"/openapi.json", 0)
+	if err == nil {
+		t.Fatal("a cap-sized body of non-spec bytes must fail to parse")
+	}
+	if strings.Contains(err.Error(), "exceeds") {
+		t.Fatalf("an exactly-at-cap body must not be refused as over-cap: %v", err)
+	}
+}
+
+func TestCallRefusesAResponsePastTheCap(t *testing.T) {
+	// #8271 / contract decision 2 (#4375): a tool call's buffered
+	// response body is refused past the same named cap, never
+	// silently truncated into a shorter result.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(strings.Repeat("x", int(defaults.OpenAPISpecBodyLimit)+1)))
+	}))
+	defer srv.Close()
+
+	api := build(t, openapi.Options{BaseURL: srv.URL})
+	var tool string
+	for _, tl := range api.Tools {
+		if strings.HasSuffix(tl.Name, "getpet") {
+			tool = tl.Name
+		}
+	}
+	_, err := api.Call(context.Background(), tool, map[string]any{"petId": "123"})
+	if err == nil || !strings.Contains(err.Error(), "exceeds") {
+		t.Fatalf("an over-cap response must fail the call with an exceeds error, got: %v", err)
 	}
 }

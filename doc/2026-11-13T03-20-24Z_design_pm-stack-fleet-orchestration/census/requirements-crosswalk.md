@@ -303,10 +303,10 @@ tree `a038f084dbeb525494d7bb928ad91f597db2ac51`, run by
 `evidence_audit` object in `requirements-crosswalk.jsonl` — no row's
 status or pinned claim was rewritten).
 
-| Class | Rows | Result |
-|---|---|---|
-| `verified existing` / `partially implemented` | 47 | All structurally audited: pin correct, every cited path exists at the pin, every cited line range in bounds, required evidence fields (path/symbol/lines/test/timestamp) complete |
-| All other statuses | 342 | Every row carries explicit `missing_evidence` — no silent gaps (`verdict: missing_recorded`) |
+| Class                                         | Rows | Result                                                                                                                                                                            |
+| --------------------------------------------- | ---- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `verified existing` / `partially implemented` | 47   | All structurally audited: pin correct, every cited path exists at the pin, every cited line range in bounds, required evidence fields (path/symbol/lines/test/timestamp) complete |
+| All other statuses                            | 342  | Every row carries explicit `missing_evidence` — no silent gaps (`verdict: missing_recorded`)                                                                                      |
 
 **Findings (bounded claims, not upgrades):**
 

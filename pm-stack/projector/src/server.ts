@@ -107,9 +107,7 @@ export const MAX_CONSUMER_CHARS = 256;
 
 /** Read a JSON write body through the shared bounded-body discipline:
  *  413 on overflow, then JSON.parse with the caller's 400 on failure. */
-async function readBoundedJson(
-  req: Request,
-): Promise<{ ok: true; value: any } | { ok: false; response: Response }> {
+async function readBoundedJson(req: Request): Promise<{ ok: true; value: any } | { ok: false; response: Response }> {
   let raw: Uint8Array;
   try {
     raw = await readBoundedBody(req.body, MAX_WRITE_BODY_BYTES);
@@ -274,12 +272,7 @@ export async function handleRequest(
   }
 }
 
-async function routeRequest(
-  req: Request,
-  db: Client,
-  env: ServerEnv,
-  deps: ServerDeps = {},
-): Promise<Response> {
+async function routeRequest(req: Request, db: Client, env: ServerEnv, deps: ServerDeps = {}): Promise<Response> {
   const url = new URL(req.url);
   const path = url.pathname;
   const method = req.method;

@@ -1,5 +1,5 @@
-// The AA cost explorer as data. The source of record is the Supabase
-// `ainventory` schema (the AA import: v_rankings,
+// The AA cost explorer as data. The source of record is the Turso
+// `ainventory_*` tables (the AA import: v_rankings,
 // v_threshold_metrics, measurement_events (the canonical benchmark
 // store, code#4401), and the Test_Runs data in sheet_rows, read
 // through v_latest_import_batch where the store carries batch identity). The collector
@@ -26,7 +26,7 @@ import { isIsoDate } from "./validate.ts";
 import { antigravityPoolForModel, serviceIdFor } from "./quota-gather-map.ts";
 
 // --- scalar coercion ---------------------------------------------------------
-// The Supabase Management API serializes numeric columns as JSON
+// The store's JSON sections can carry numeric columns as JSON
 // strings, so every number crosses a coercion gate here; anything
 // unparseable becomes null ("not measured"), never 0.
 //
@@ -1056,7 +1056,7 @@ export function aaCatalogFromConfig(
 
 // --- section assembly + validation ---------------------------------------------
 
-/** The collector's raw Supabase payload (one jsonb object; snake-case
+/** The collector's raw store payload (one JSON object; snake-case
  * keys are renamed to the section's camelCase by the SQL itself). */
 export interface AaRawPayload {
   batch?: unknown;
@@ -1199,12 +1199,12 @@ function sheetRowsFromRaw(v: unknown): SheetRow[] {
 }
 
 /**
- * Assemble the feed section from the Supabase payload + the repo's
+ * Assemble the feed section from the store payload + the repo's
  * opencode config text (null/unparseable = coverage omitted, stated in
  * the section by its absence). Returns null when the payload is not
  * recognizably the AA data — the collector degrades to the absent form.
  */
-export function aaSectionFromSupabase(
+export function aaSectionFromPayload(
   raw: AaRawPayload,
   opencodeConfigText: string | null,
   generatedAt: string,

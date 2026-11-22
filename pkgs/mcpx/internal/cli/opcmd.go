@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -553,9 +552,7 @@ func (c *Client) streamOp(ctx context.Context, method, path string, body []byte,
 		return &HTTPError{Status: resp.StatusCode, Body: b,
 			Msg: fmt.Sprintf("http %d: %s", resp.StatusCode, strings.TrimSpace(string(b)))}
 	}
-	sc := bufio.NewScanner(resp.Body)
-	sc.Buffer(make([]byte, 0, c.set.Bytes("http.streamBufferInit")),
-		int(c.set.Bytes("http.streamBufferMax")))
+	sc := newStreamScanner(resp.Body, c.set.Bytes("http.streamBufferInit"), c.set.Bytes("http.streamBufferMax"))
 	var frames int
 	for sc.Scan() {
 		if data, ok := strings.CutPrefix(sc.Text(), "data: "); ok {

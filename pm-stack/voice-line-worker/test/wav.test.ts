@@ -12,8 +12,7 @@ describe("wavEncodePcm16", () => {
     const pcm = new Uint8Array([0x01, 0x00, 0xff, 0x7f, 0x00, 0x80]);
     const wav = wavEncodePcm16(pcm, 16000);
     expect(wav.byteLength).toBe(44 + pcm.byteLength);
-    const ascii = (off: number, n: number) =>
-      String.fromCharCode(...wav.subarray(off, off + n));
+    const ascii = (off: number, n: number) => String.fromCharCode(...wav.subarray(off, off + n));
     expect(ascii(0, 4)).toBe("RIFF");
     expect(ascii(8, 4)).toBe("WAVE");
     expect(ascii(12, 4)).toBe("fmt ");

@@ -105,10 +105,12 @@ func (a *App) ensure(ctx context.Context) (*Client, error) {
 	if a.client != nil && a.connected {
 		return a.client, nil
 	}
+	inlineMode := a.Settings().String("daemon.inline")
 	c, ladder, err := a.Connect(ctx, ConnectOptions{
 		Endpoint:    a.Settings().String("daemon.endpoint"),
 		AllowSpawn:  a.Settings().Bool("daemon.autostart"),
-		AllowInline: a.Settings().Bool("daemon.inline"),
+		AllowInline: inlineMode == "fallback" || inlineMode == "always",
+		ForceInline: inlineMode == "always",
 	})
 	if err != nil {
 		return nil, err
@@ -635,7 +637,7 @@ func (a *App) runScript(ctx context.Context, args []string, inline bool) error {
 		"javascript runtime: auto, deno, bun, node, a name from script.runtimes, or a path")
 	lang := fs.String("language", "",
 		"script language: auto, typescript, javascript, python, or roc (default: script.language)")
-	timeout := fs.Duration("timeout", 0, "kill the script after this long (0 = no limit)")
+	timeout := fs.Duration("timeout", 0, "kill the script after this long (default: exec.timeout; 0 = no limit)")
 	keep := fs.Bool("keep", false, "keep the generated client and script for inspection")
 	session := fs.String("session", "", "session key (default: a fresh one per run)")
 	format := fs.String("format", "", "log rendering: text, json, json-pretty, logfmt, compact, bare")
@@ -849,6 +851,7 @@ func (a *App) runScript(ctx context.Context, args []string, inline bool) error {
 		prefix: prefix, suffix: suffix, before: before, onSuccess: onSuccess,
 		onError: onError, launcher: *launcherFlag, noLauncher: *noLauncher,
 		typecheck: *typecheck, allowRepeat: allowRepeat, noConsole: *noConsole,
+		command: name,
 	})
 	if serr != nil {
 		return serr
@@ -878,6 +881,13 @@ func (a *App) runScript(ctx context.Context, args []string, inline bool) error {
 	}
 	if _, given := scanFlag(fs, args, "language"); given {
 		languagePref = *lang
+	}
+	// exec.timeout bounds a script wherever it runs. --timeout, when given,
+	// still wins, including --timeout 0 for no limit; without it the setting
+	// applies here as it does on the daemon, where it was the only place it
+	// was read (docs/in-name-only.md).
+	if _, given := scanFlag(fs, args, "timeout"); !given {
+		*timeout = a.Settings().Duration("exec.timeout")
 	}
 
 	if elsewhere {
@@ -1101,6 +1111,7 @@ func (a *App) runScript(ctx context.Context, args []string, inline bool) error {
 		opts.Env["MCPX_TRANSPORT_BEARER_TOKEN"] = tok
 	}
 	opts.TypeCheck = shape.typecheck
+	opts.TypeCheckDefaulted = shape.checkDefaulted
 	opts.TypeCheckOnError = shape.checkOnError
 	opts.TypeCheckOnUnsupported = shape.checkOnUnsupported
 	opts.Imports = shape.imports
@@ -1191,7 +1202,7 @@ func (a *App) runScript(ctx context.Context, args []string, inline bool) error {
 	if derr != nil {
 		return derr
 	}
-	svc := a.localService(store, c.Socket(), cfg)
+	svc := a.localService(store, c, cfg)
 	wire := execsvc.Options{
 		Session:   sessionKey,
 		Output:    eo.Output,
@@ -1331,6 +1342,15 @@ func runEnvelope(res *execsvc.Result, stdout string, logs []logging.Record, stre
 		values := make([]json.RawMessage, 0, len(streamed))
 		for _, v := range streamed {
 			values = append(values, v.Value)
+		}
+		// The service rewrites the emits it kept once the run ends:
+		// artifacts.interceptImages swaps an image or audio body for a
+		// resource_link to the stored artifact. The values collected live
+		// predate that, so taking them put the whole base64 body in the
+		// document beside the artifact meant to replace it. The service's
+		// copy is the same values in the same order, so prefer it.
+		if len(res.Emits) == len(values) {
+			values = res.Emits
 		}
 		env["results"] = values
 	}
@@ -2397,6 +2417,9 @@ type scriptFlags struct {
 	prefix, suffix, before, onSuccess, onError, allowRepeat *repeatable
 	launcher, typecheck                                     string
 	noLauncher, noConsole                                   bool
+	// command is the invoking command ("run" or "exec"): script.check's
+	// per-command default keys on it (#1868 point 4).
+	command string
 }
 
 // scriptShape is everything about a run that decides what program is built.
@@ -2408,15 +2431,18 @@ type scriptShape struct {
 	hooks                                       *hookGate
 	env                                         map[string]string
 	typecheck, checkOnError, checkOnUnsupported string
-	imports, importsOnDynamic                   string
-	importsOnMissing                            string
-	importsCrossProject                         string
-	importsNetwork                              string
-	launcher, launcherName                      string
-	allowRepeat                                 []string
-	captureConsole                              bool
-	prefix, suffix                              []string
-	before, onSuccess, onError                  []string
+	// checkDefaulted says the check is on only because run's
+	// per-command default switched it on (#1868 point 4).
+	checkDefaulted             bool
+	imports, importsOnDynamic  string
+	importsOnMissing           string
+	importsCrossProject        string
+	importsNetwork             string
+	launcher, launcherName     string
+	allowRepeat                []string
+	captureConsole             bool
+	prefix, suffix             []string
+	before, onSuccess, onError []string
 }
 
 // inlineSource splices prefix and suffix lines around a snippet. A snippet is
@@ -2456,6 +2482,17 @@ func (sh scriptShape) inlineSource(args []string) string {
 func (sh scriptShape) phases() runner.Phases {
 	return runner.Phases{Before: sh.before, Prefix: sh.prefix, OnSuccess: sh.onSuccess,
 		OnError: sh.onError, Suffix: sh.suffix}
+}
+
+// scriptCheckFor applies script.check's per-command default (#1868
+// point 4): the registry default is off, but run defaults the check on
+// (types) while exec stays off. A value given in any spelling — file,
+// variable, flag — is explicit and always wins, for both commands.
+func scriptCheckFor(command, resolved string, explicit bool) string {
+	if command == "run" && !explicit {
+		return "types"
+	}
+	return resolved
 }
 
 func (a *App) resolveScriptShape(cfg *config.Config, f scriptFlags) (scriptShape, error) {
@@ -2519,7 +2556,9 @@ func (a *App) resolveScriptShape(cfg *config.Config, f scriptFlags) (scriptShape
 
 	// Read the canonical setting after resolution so legacy path, variable,
 	// and flag spellings all pass through the same value normalization.
-	sh.typecheck = a.Settings().String("script.check")
+	checkExplicit := a.Settings().Given("script.check") || f.typecheck != ""
+	sh.checkDefaulted = f.command == "run" && !checkExplicit
+	sh.typecheck = scriptCheckFor(f.command, a.Settings().String("script.check"), checkExplicit)
 	sh.checkOnError = a.Settings().String("script.checkOnError")
 	sh.checkOnUnsupported = a.Settings().String("script.checkOnUnsupported")
 

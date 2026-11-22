@@ -165,6 +165,12 @@ type Options struct {
 	TypeCheckOnError string
 	// TypeCheckOnUnsupported selects what to do when the runtime cannot check.
 	TypeCheckOnUnsupported string
+	// TypeCheckDefaulted says the check is on only because a
+	// per-command default switched it on, not because anybody asked:
+	// the Deno-only notice is suppressed then (#1868 point 4). The
+	// zero value is deliberate -- a caller that names a mode in
+	// Options asked for the check.
+	TypeCheckDefaulted bool
 	// TypeCheckTimeout bounds that check.
 	TypeCheckTimeout time.Duration
 	// Imports selects the preflight import-graph stage: "off" or "report"
@@ -814,9 +820,9 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 		// checker the flags its own runtime would carry for this set
 		// (Codex review, PR #6111).
 		checkerFlags := checkerDepsFlags(rt.Kind, opts.TypeCheckOnUnsupported, opts.Deps, depsFlags)
-		rep := preflight.TypeCheckWithPolicy(ctx, rt.Bin, scriptPath, preflight.TypeCheckMode(mode), timeout,
+		rep := preflight.TypeCheckWithPolicyExplicit(ctx, rt.Bin, scriptPath, preflight.TypeCheckMode(mode), timeout,
 			append(append([]string{}, rt.ConfigArgs...), checkerFlags...), opts.Dir,
-			opts.TypeCheckOnError, opts.TypeCheckOnUnsupported)
+			opts.TypeCheckOnError, opts.TypeCheckOnUnsupported, !opts.TypeCheckDefaulted)
 		if err := rep.Err(); err != nil {
 			return nil, err
 		}
@@ -1437,17 +1443,25 @@ func expandCustom(text string, opts Options, scriptPath, base, export string,
 	// Braced, so that a template naming @entry twice produces two runs rather
 	// than a redeclaration error. Allowing a repeat and then emitting code
 	// that cannot compile would be a worse answer than refusing it outright.
+	// The export is known here, so the selection is made in Go rather
+	// than emitted as a ternary on a string literal: a constant condition
+	// is TS2872/TS2873 under deno check, and run checks by default
+	// (#1868 point 4), so the generated launcher must itself type check.
+	pick, call := "(mod as any).default", "await entry(argv)"
+	if export != "" {
+		pick, call = "(mod as any)["+jsonString(export)+"]", "await entry(...argv)"
+	}
 	entryBlock := fmt.Sprintf(`{
   %s
-  const entry = %s ? (mod as any)[%s] : (mod as any).default;
+  const entry = %s;
   if (typeof entry === "function") {
-    const __v = %s ? await entry(...argv) : await entry(argv);
+    const __v = %s;
     result.value = __v;
     if (__v !== undefined) {
       console.log(typeof __v === "string" ? __v : JSON.stringify(__v, null, 2));
     }
   }
-}`, importLine, jsonString(export), jsonString(export), jsonString(export))
+}`, importLine, pick, call)
 
 	fill := launcher.Fill{
 		launcher.Header:    launcherHeader(scriptPath, base, export),
@@ -1494,7 +1508,16 @@ func expandCustom(text string, opts Options, scriptPath, base, export string,
 		fmt.Fprintf(os.Stderr,
 			"mcpx: %s refers to neither @entry nor @import, so the script will not run\n", name)
 	}
-	return launcher.Expand(tpl, fill, launcher.Options{AllowRepeat: allow, Defs: defs})
+	out, err := launcher.Expand(tpl, fill, launcher.Options{AllowRepeat: allow, Defs: defs})
+	if err != nil {
+		return "", err
+	}
+	// The same ambient reference the built-in launcher carries: without
+	// it a checked run (the default for run, #1868 point 4) reports
+	// "Cannot find name 'log'" for every script that uses a global. A
+	// triple-slash directive only counts at the top of the file, so it
+	// goes first whatever the template puts there.
+	return "/// <reference path=\"./" + GlobalsFileName + "\" />\n" + out, nil
 }
 
 func referencesEntry(t launcher.Template) bool {

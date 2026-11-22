@@ -5,13 +5,10 @@ name: pm-scheduled-task-resolver
 # Basic-tier contract coverage for explicit scheduled-task validation.
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - ".github/scripts/resolve-pm-scheduled-tasks.sh"
-      - ".github/scripts/resolve-pm-scheduled-tasks.test.sh"
-      - ".github/workflows/pm-scheduled.yml"
-      - ".github/workflows/pm-scheduled-task-resolver.yml"
+  schedule:
+    # Nightly instead of on every push to main (Drew, 2026-11-16; see
+    # .github/ci-policy.md "Nightly main CI").
+    - cron: "17 7 * * *"
   workflow_dispatch:
 
 permissions:

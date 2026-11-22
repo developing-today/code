@@ -30,11 +30,7 @@ import {
   type WorkActionState,
 } from "../src/work-action-contract.ts";
 
-const ALL_ROLES = [
-  "work-action/preview",
-  "work-action/accept",
-  "work-action/apply",
-] as const;
+const ALL_ROLES = ["work-action/preview", "work-action/accept", "work-action/apply"] as const;
 
 const actor = (roles: readonly string[] = ALL_ROLES): WorkActionActor => ({
   kind: "drew",
@@ -47,9 +43,7 @@ const actor = (roles: readonly string[] = ALL_ROLES): WorkActionActor => ({
 function fixture(objectRef: string, version: string | null) {
   const versions = new Map<string, string | null>([[objectRef, version]]);
   const effects: WorkActionRequest[] = [];
-  const rolesByActor = new Map<string, readonly string[]>([
-    ["drew", ALL_ROLES],
-  ]);
+  const rolesByActor = new Map<string, readonly string[]>([["drew", ALL_ROLES]]);
   // The server's operation-key store: present means claimed, the value is
   // the receipt once the first apply finished.
   const operations = new Map<string, WorkActionReceipt | null>();
@@ -71,8 +65,7 @@ function fixture(objectRef: string, version: string | null) {
     effects,
     operations,
     setVersion: (v: string | null) => versions.set(objectRef, v),
-    setRoles: (id: string, roles: readonly string[]) =>
-      rolesByActor.set(id, roles),
+    setRoles: (id: string, roles: readonly string[]) => rolesByActor.set(id, roles),
   };
 }
 
@@ -88,10 +81,7 @@ const request = (over: Partial<WorkActionRequest> = {}): WorkActionRequest => ({
 
 /** draft → previewed → accepted → running → verified_complete, the happy chain. */
 function accepted(over: Partial<WorkActionRequest> = {}) {
-  const fx = fixture(
-    request(over).objectRef,
-    request(over).expectedWorkVersion,
-  );
+  const fx = fixture(request(over).objectRef, request(over).expectedWorkVersion);
   const envelope = acceptWorkAction(
     previewWorkAction(createWorkAction(request(over)), actor(), fx.authority),
     actor(),
@@ -115,12 +105,7 @@ describe("work action contract — state machine (oracle: declared edge table)",
       "verified_complete",
     ];
     expect([...WORK_ACTION_STATES].sort()).toEqual([...expectedStates].sort());
-    for (const state of [
-      "conflict",
-      "uncertain",
-      "rejected",
-      "verified_complete",
-    ] as WorkActionState[]) {
+    for (const state of ["conflict", "uncertain", "rejected", "verified_complete"] as WorkActionState[]) {
       expect(WORK_ACTION_EDGES[state]).toEqual([]);
       expect(isTerminalState(state)).toBe(true);
     }
@@ -144,12 +129,7 @@ describe("work action contract — state machine (oracle: declared edge table)",
   });
 
   test("downstream outcomes land on their declared state and keep the receipt", () => {
-    for (const outcome of [
-      "partial",
-      "pending_sync",
-      "conflict",
-      "uncertain",
-    ] as const) {
+    for (const outcome of ["partial", "pending_sync", "conflict", "uncertain"] as const) {
       const { fx, envelope } = accepted({ operationKey: `op-${outcome}` });
       const applied = applyWorkAction(envelope, actor(), fx.authority, {
         outcome,
@@ -171,11 +151,7 @@ describe("work action contract — state machine (oracle: declared edge table)",
     ).toThrow(/illegal edge draft/);
     const complete = applyWorkAction(
       acceptWorkAction(
-        previewWorkAction(
-          createWorkAction(request({ operationKey: "op-illegal" })),
-          actor(),
-          fx.authority,
-        ),
+        previewWorkAction(createWorkAction(request({ operationKey: "op-illegal" })), actor(), fx.authority),
         actor(),
         fx.authority,
       ),
@@ -183,9 +159,7 @@ describe("work action contract — state machine (oracle: declared edge table)",
       fx.authority,
       { outcome: "verified_complete" },
     );
-    expect(() => acceptWorkAction(complete, actor(), fx.authority)).toThrow(
-      /illegal edge verified_complete/,
-    );
+    expect(() => acceptWorkAction(complete, actor(), fx.authority)).toThrow(/illegal edge verified_complete/);
   });
 });
 
@@ -205,11 +179,7 @@ describe("work action contract — expected work version (oracle: authoritative 
 
   test("a version moved between preview and apply conflicts before the effect", () => {
     const fx = fixture("orch:item-9472", "wv-7");
-    const previewed = previewWorkAction(
-      createWorkAction(request()),
-      actor(),
-      fx.authority,
-    );
+    const previewed = previewWorkAction(createWorkAction(request()), actor(), fx.authority);
     expect(previewed.state).toBe("previewed");
     fx.setVersion("wv-8"); // someone else applied first
     const moved = acceptWorkAction(previewed, actor(), fx.authority);
@@ -220,11 +190,7 @@ describe("work action contract — expected work version (oracle: authoritative 
 
   test("an unreadable authoritative version is uncertain, never a silent apply", () => {
     const fx = fixture("orch:item-9472", null);
-    const previewed = previewWorkAction(
-      createWorkAction(request()),
-      actor(),
-      fx.authority,
-    );
+    const previewed = previewWorkAction(createWorkAction(request()), actor(), fx.authority);
     expect(previewed.state).toBe("uncertain");
     expect(previewed.receipt?.outcome).toBe("uncertain");
     expect(fx.effects).toHaveLength(0);
@@ -320,25 +286,13 @@ describe("work action contract — edge conformance (oracle: declared edge table
     const seen: WorkActionEnvelope[] = [];
     // preview: conflict and uncertain
     seen.push(
-      previewWorkAction(
-        createWorkAction(request()),
-        actor(),
-        fixture("orch:item-9472", "wv-9").authority,
-      ),
-      previewWorkAction(
-        createWorkAction(request()),
-        actor(),
-        fixture("orch:item-9472", null).authority,
-      ),
+      previewWorkAction(createWorkAction(request()), actor(), fixture("orch:item-9472", "wv-9").authority),
+      previewWorkAction(createWorkAction(request()), actor(), fixture("orch:item-9472", null).authority),
     );
     // accept and apply: moved, unreadable, revoked, and every outcome
     for (const move of ["wv-8", null] as const) {
       const fx = fixture("orch:item-9472", "wv-7");
-      const previewed = previewWorkAction(
-        createWorkAction(request()),
-        actor(),
-        fx.authority,
-      );
+      const previewed = previewWorkAction(createWorkAction(request()), actor(), fx.authority);
       fx.setVersion(move);
       seen.push(acceptWorkAction(previewed, actor(), fx.authority));
       const later = accepted();
@@ -349,21 +303,13 @@ describe("work action contract — edge conformance (oracle: declared edge table
         }),
       );
     }
-    for (const outcome of [
-      "verified_complete",
-      "partial",
-      "pending_sync",
-      "conflict",
-      "uncertain",
-    ] as const) {
+    for (const outcome of ["verified_complete", "partial", "pending_sync", "conflict", "uncertain"] as const) {
       const { fx, envelope } = accepted({ operationKey: `op-edge-${outcome}` });
       seen.push(applyWorkAction(envelope, actor(), fx.authority, { outcome }));
     }
     for (const envelope of seen) {
       for (const t of envelope.transitions) {
-        expect(`${t.from}->${t.to}:${canTransition(t.from, t.to)}`).toBe(
-          `${t.from}->${t.to}:true`,
-        );
+        expect(`${t.from}->${t.to}:${canTransition(t.from, t.to)}`).toBe(`${t.from}->${t.to}:true`);
       }
     }
   });
@@ -372,11 +318,7 @@ describe("work action contract — edge conformance (oracle: declared edge table
 describe("work action contract — server-side authorization (oracle: re-read roles)", () => {
   test("an actor without the preview role is rejected before any read of the work", () => {
     const fx = fixture("orch:item-9472", "wv-7");
-    const previewed = previewWorkAction(
-      createWorkAction(request()),
-      actor([]),
-      fx.authority,
-    );
+    const previewed = previewWorkAction(createWorkAction(request()), actor([]), fx.authority);
     expect(previewed.state).toBe("rejected");
     expect(previewed.receipt?.outcome).toBe("rejected");
     expect(fx.effects).toHaveLength(0);
@@ -396,11 +338,7 @@ describe("work action contract — server-side authorization (oracle: re-read ro
   test("a client claiming a role the server does not grant is refused at preview", () => {
     const fx = fixture("orch:item-9472", "wv-7");
     fx.setRoles("drew", []); // server says: no roles
-    const previewed = previewWorkAction(
-      createWorkAction(request()),
-      actor(ALL_ROLES),
-      fx.authority,
-    );
+    const previewed = previewWorkAction(createWorkAction(request()), actor(ALL_ROLES), fx.authority);
     expect(previewed.state).toBe("rejected");
     expect(fx.effects).toHaveLength(0);
   });
@@ -408,12 +346,8 @@ describe("work action contract — server-side authorization (oracle: re-read ro
 
 describe("work action contract — structural validation", () => {
   test("an envelope needs an operation key and an expected version", () => {
-    expect(() => createWorkAction(request({ operationKey: "  " }))).toThrow(
-      /operation key is required/,
-    );
-    expect(() =>
-      createWorkAction(request({ expectedWorkVersion: " " })),
-    ).toThrow(/expected work version is required/);
+    expect(() => createWorkAction(request({ operationKey: "  " }))).toThrow(/operation key is required/);
+    expect(() => createWorkAction(request({ expectedWorkVersion: " " }))).toThrow(/expected work version is required/);
   });
 
   test("a fresh envelope starts as a draft with no effect and no receipt", () => {

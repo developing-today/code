@@ -44,8 +44,6 @@ name: id
 # CI tier policy: see .github/ci-policy.md
 
 on:
-  push:
-    branches: [main]
   schedule:
     # Nightly backstop for the full flake check (main tier, #1781).
     - cron: "41 8 * * *"
@@ -71,12 +69,16 @@ jobs:
   # parallel job.
   guard:
     name: "basic: guard PR check list"
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     outputs:
       checks: ${{ steps.list.outputs.checks }}
     steps:
       - uses: actions/checkout@v7
+
+      # Synthetic Git fixtures only: no Cargo build or live mutation harness.
+      - name: Test planted-bug preflight safety refusals
+        run: python3 -I -m unittest discover -s pkgs/id/tests -p 'test_planted_bug_preflight.py' -v
 
       - name: Test matrix normalization
         run: bash .github/scripts/id-pr-checks-matrix.test.sh
@@ -130,7 +132,7 @@ jobs:
     name: "basic: nix flake check (${{ matrix.check }})"
     needs: guard
     if: github.event_name == 'push'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -194,7 +196,7 @@ jobs:
   # digests must match the x86_64-pinned values above.
   world-snapshot-arm64:
     name: "native arm64: world snapshot determinism"
-    if: github.event_name == 'push'
+    if: github.event_name == 'push' || github.event_name == 'schedule'
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 30
     env:
@@ -252,7 +254,7 @@ jobs:
     name: nix flake check
     needs: [check_each, world-snapshot-arm64, no-world]
     if: always() && github.event_name == 'push'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
       - name: Require every basic-tier job to succeed
@@ -276,7 +278,7 @@ jobs:
   full-flake-check:
     name: "full (main tier): nix flake check"
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v7

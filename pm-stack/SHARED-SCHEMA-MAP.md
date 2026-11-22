@@ -55,12 +55,12 @@ the stores above canonical in Supabase `muse-dev2` under the switch
 `PM_AGG_STORE_BACKEND=supabase` (`file` stays the dev/test/rollback
 backend, and the local JSON is then only a rebuildable cache):
 
-| Store | Table(s) | Migration |
-| --- | --- | --- |
-| `actions.json` | `public.agg_actions` | `20261105_0001_action_event_store` |
-| `activity-ingestion.json` | `public.agg_activity_ingestion`, `public.agg_activity_gaps` | `20261116_0001_aggregator_remote_stores` |
-| `snapshots/usage-YYYY-MM.jsonl` | `public.agg_usage_snapshots` | `20261116_0001_aggregator_remote_stores` |
-| `aa-last-good.json` | `public.agg_store_documents` (key `aa-last-good`) | `20261116_0001_aggregator_remote_stores` |
+| Store                           | Table(s)                                                    | Migration                                |
+| ------------------------------- | ----------------------------------------------------------- | ---------------------------------------- |
+| `actions.json`                  | `public.agg_actions`                                        | `20261105_0001_action_event_store`       |
+| `activity-ingestion.json`       | `public.agg_activity_ingestion`, `public.agg_activity_gaps` | `20261116_0001_aggregator_remote_stores` |
+| `snapshots/usage-YYYY-MM.jsonl` | `public.agg_usage_snapshots`                                | `20261116_0001_aggregator_remote_stores` |
+| `aa-last-good.json`             | `public.agg_store_documents` (key `aa-last-good`)           | `20261116_0001_aggregator_remote_stores` |
 
 The sibling stores (`freshness.json`, `notifications.jsonl`,
 `needs-drew.json`, `decisions.json`, `decision-events*.jsonl`,

@@ -7,9 +7,11 @@ name: bws freshness
 # Two jobs:
 # - fixture-tests runs the lib/bws-to-sops.sh --check contract tests with
 #   stubbed bws/sops binaries. It needs no credentials and runs on the
-#   schedule, on dispatch, and on pull requests that touch the check,
-#   its tests, or this workflow (#6646) — a --check contract regression
-#   is caught before merge, not by the nightly run on main.
+#   schedule and on dispatch only. It briefly ran on pull requests
+#   (#6646, PR #6689) until the 2026-11-13 owner ruling in
+#   .github/ci-policy.md (PR #9377) removed all PR triggers fleet-wide:
+#   CI is main-only, so a --check contract regression is caught by the
+#   nightly run on main, not before merge.
 # - live-check compares live BWS against secrets/sops/common/bws.yaml and
 #   keeps exactly one open drift issue per drift episode (commenting on
 #   repeats, closing it when a later run finds the mirror fresh again).
@@ -30,8 +32,8 @@ on:
   workflow_dispatch:
   schedule:
     - cron: "23 6 * * *"
-  # No push trigger exists in this workflow, so pull_request cannot
-  # double-run the fixture suite (ci-policy dedup rule).
+  # No push or pull_request triggers: main-only CI per the 2026-11-13
+  # owner ruling in .github/ci-policy.md (PR #9377).
 permissions:
   contents: read
 

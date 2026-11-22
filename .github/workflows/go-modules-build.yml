@@ -29,16 +29,10 @@ name: go modules build
 # pgx/cockroach indirects) with nothing noticing.
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - "pkgs/chat/**"
-      - "pkgs/database/**"
-      - "pkgs/graph/**"
-      - "pkgs/import/**"
-      - "pkgs/launcher/**"
-      - "pkgs/tea/**"
-      - ".github/workflows/go-modules-build.yml"
+  schedule:
+    # Nightly instead of on every push to main (Drew, 2026-11-16; see
+    # .github/ci-policy.md "Nightly main CI").
+    - cron: "17 7 * * *"
   workflow_dispatch:
 
 permissions:

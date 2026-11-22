@@ -577,8 +577,8 @@ class TestUploadFetch(ColdStoreTestBase):
         first = self.store.ensure_folders()
         second = self.store.ensure_folders()
         self.assertEqual(first, second)
-        # root + 3 subfolders + 3 db-backup subfolders (supabase/turso/d1)
-        self.assertEqual(len(self.fake.folders), 7)
+        # root + 3 subfolders + 2 db-backup subfolders (turso/d1)
+        self.assertEqual(len(self.fake.folders), 6)
 
     def test_upload_verify_and_fetch_roundtrip(self):
         # force multi-chunk resumable uploads against the fake (308 path)
@@ -847,7 +847,7 @@ class TestAtomicPrivateJson(ColdStoreTestBase):
         # #10820: Path.read_text() decodes before json.loads runs, so
         # non-UTF-8 bytes raised a raw UnicodeDecodeError, never the
         # ColdStoreError contract PR #4361 established.
-        self.store.state_path.write_bytes(b'{\xff\xfe not utf-8 \x80\x81')
+        self.store.state_path.write_bytes(b"{\xff\xfe not utf-8 \x80\x81")
         with self.assertRaises(cold_store.ColdStoreError) as ctx:
             self.store.load_state()
         self.assertNotIsInstance(ctx.exception, UnicodeDecodeError)
@@ -856,7 +856,7 @@ class TestAtomicPrivateJson(ColdStoreTestBase):
 
     def test_non_utf8_credentials_raises_cold_store_error(self):
         # #10820: same decode-before-parse gap as state.json.
-        self.store.credentials_path.write_bytes(b'{\xff\xfe not utf-8 \x80\x81')
+        self.store.credentials_path.write_bytes(b"{\xff\xfe not utf-8 \x80\x81")
         with self.assertRaises(cold_store.ColdStoreError) as ctx:
             self.store.load_credentials()
         self.assertNotIsInstance(ctx.exception, UnicodeDecodeError)
@@ -936,6 +936,11 @@ class FakeD1:
         self.fail = False
         self.mode = None  # "success_false" | "wrong_shape" definitive answers
         self.db = None
+        # Answer the next `throttle` requests with throttle_status (D1's
+        # load shedding), with a Retry-After header when retry_after is set.
+        self.throttle = 0
+        self.throttle_status = 429
+        self.retry_after = None
 
 
 def make_d1_handler(fake: FakeD1):
@@ -965,6 +970,27 @@ def make_d1_handler(fake: FakeD1):
                     "params": payload.get("params", []),
                 }
             )
+            if fake.throttle > 0:
+                fake.throttle -= 1
+                body = json.dumps(
+                    {
+                        "success": False,
+                        "errors": [
+                            {
+                                "message": "Your account is generating too much "
+                                "load on D1 DBs. Please back off and try again later."
+                            }
+                        ],
+                    }
+                ).encode()
+                self.send_response(fake.throttle_status)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                if fake.retry_after is not None:
+                    self.send_header("Retry-After", str(fake.retry_after))
+                self.end_headers()
+                self.wfile.write(body)
+                return
             if fake.mode == "success_false":
                 self._send(
                     200,
@@ -1267,7 +1293,7 @@ class TestBackups(ColdStoreTestBase):
             with self.assertRaisesRegex(
                 cold_store.ColdStoreError, "verification mismatch"
             ):
-                self.store.put_backup("supabase", str(dump))
+                self.store.put_backup("d1", str(dump))
 
         conn = self.store.db()
         rows = conn.execute(
@@ -1289,7 +1315,7 @@ class TestBackups(ColdStoreTestBase):
             with self.assertRaisesRegex(
                 cold_store.ColdStoreError, "files.get after backup upload failed"
             ):
-                self.store.put_backup("supabase", str(dump))
+                self.store.put_backup("d1", str(dump))
 
         conn = self.store.db()
         rows = conn.execute(
@@ -1317,7 +1343,7 @@ class TestBackups(ColdStoreTestBase):
             with self.assertRaisesRegex(
                 cold_store.ColdStoreError, "verification mismatch"
             ):
-                self.store.put_backup("supabase", str(dump))
+                self.store.put_backup("d1", str(dump))
 
         self.assertEqual(len(uploaded), 1)
         self.assertTrue(self.fake.file_meta[uploaded[0]]["trashed"])
@@ -1336,7 +1362,7 @@ class TestBackups(ColdStoreTestBase):
             with self.assertRaisesRegex(
                 cold_store.ColdStoreError, "files.get after backup upload failed"
             ):
-                self.store.put_backup("supabase", str(dump))
+                self.store.put_backup("d1", str(dump))
 
         self.assertEqual(len(self.fake.trashed_calls), 1)
         trashed_id = self.fake.trashed_calls[0]["id"]
@@ -1368,16 +1394,16 @@ class TestBackups(ColdStoreTestBase):
                     cold_store.ColdStoreError,
                     "verification mismatch.*ALSO failed to trash",
                 ):
-                    self.store.put_backup("supabase", str(dump))
+                    self.store.put_backup("d1", str(dump))
         self.assertEqual(len(uploaded), 1)
 
     def test_put_backup_naming_routing_ledger(self):
-        dump = self.write_src("dump.sql", b"-- fake supabase dump\n" * 10)
-        result = self.store.put_backup("supabase", str(dump))
-        self.assertRegex(result["name"], r"^supabase-\d{8}T\d{6}Z-dump\.sql$")
+        dump = self.write_src("dump.sql", b"-- fake d1 dump\n" * 10)
+        result = self.store.put_backup("d1", str(dump))
+        self.assertRegex(result["name"], r"^d1-\d{8}T\d{6}Z-dump\.sql$")
         folders = self.store.ensure_folders()
         meta = self.fake.file_meta[result["drive_file_id"]]
-        self.assertEqual(meta["parents"], [folders["db-backups/supabase"]])
+        self.assertEqual(meta["parents"], [folders["db-backups/d1"]])
         self.assertEqual(meta["name"], result["name"])
         self.assertEqual(self.fake.files[result["drive_file_id"]], dump.read_bytes())
         conn = self.store.db()
@@ -1398,23 +1424,23 @@ class TestBackups(ColdStoreTestBase):
     def test_list_backups_newest_first_and_filtered(self):
         a = self.write_src("a.sql", b"a")
         b = self.write_src("b.sql", b"b")
-        self.store.put_backup("supabase", str(a))
+        self.store.put_backup("d1", str(a))
         self.store.put_backup("turso", str(b))
         all_rows = self.store.list_backups()
         self.assertEqual(len(all_rows), 2)
         self.assertEqual(all_rows[0]["db"], "turso")  # later createdTime first
-        self.assertEqual(all_rows[1]["db"], "supabase")
-        only = self.store.list_backups("supabase")
+        self.assertEqual(all_rows[1]["db"], "d1")
+        only = self.store.list_backups("d1")
         self.assertEqual(len(only), 1)
-        self.assertEqual(only[0]["db"], "supabase")
+        self.assertEqual(only[0]["db"], "d1")
 
     def test_list_backups_follows_drive_pages(self):
-        folder = self.store.ensure_folders()["db-backups/supabase"]
+        folder = self.store.ensure_folders()["db-backups/d1"]
         self.fake.page_cap = 2
         names = [
-            "supabase-20260301T020000Z-export.sql",
-            "supabase-20260302T020000Z-export.sql",
-            "supabase-20260303T020000Z-export.sql",
+            "d1-20260301T020000Z-export.sql",
+            "d1-20260302T020000Z-export.sql",
+            "d1-20260303T020000Z-export.sql",
         ]
         for day, name in enumerate(names, start=1):
             self.seed_drive_file(
@@ -1423,7 +1449,7 @@ class TestBackups(ColdStoreTestBase):
                 created=f"2026-03-0{day}T02:00:00.000Z",
             )
 
-        rows = self.store.list_backups("supabase")
+        rows = self.store.list_backups("d1")
 
         self.assertEqual([row["name"] for row in rows], list(reversed(names)))
 
@@ -1514,7 +1540,7 @@ class TestDriveResponseShapes(ColdStoreTestBase):
                             with self.assertRaisesRegex(
                                 cold_store.ColdStoreError, "files.list for backups"
                             ):
-                                self.store.list_backups("supabase")
+                                self.store.list_backups("d1")
 
     def test_get_backup_rejects_wrong_response_shapes(self):
         invalid_bodies = (
@@ -1537,7 +1563,7 @@ class TestDriveResponseShapes(ColdStoreTestBase):
                                 "files.list for get-backup",
                             ):
                                 self.store.get_backup(
-                                    "supabase",
+                                    "d1",
                                     "backup.sql",
                                     str(Path(self.tmp.name) / "out.sql"),
                                 )
@@ -1706,6 +1732,73 @@ class TestSyncManifest(ColdStoreTestBase):
         self.assertIn("HTTP 500", str(ctx.exception))
         # The D1 API's own error text rides along, not just the status.
         self.assertIn("fake failure", str(ctx.exception))
+
+    def test_sync_retries_a_throttled_statement_and_finishes(self):
+        # Nov 19: one HTTP 429 in the middle of the nightly sync failed
+        # the whole sync-manifest step. A throttled statement is sent
+        # again after a pause, and every row still arrives once.
+        self.store.d1_backoff_seconds = 0
+        with mock.patch.dict(os.environ, {"CLOUDFLARE_API_TOKEN": "fake-cf-token"}):
+            baseline = self.store.sync_manifest()
+            self.d1.requests.clear()
+            self.d1.throttle = 2
+            result = self.store.sync_manifest()
+        self.assertEqual(result["retries"], 2)
+        self.assertEqual(result["rows"], baseline["rows"])
+        self.assertEqual(len(self.d1.requests), result["statements"] + 2)
+        # The first statement was sent three times, unchanged.
+        first = self.d1.requests[0]
+        for req in self.d1.requests[1:3]:
+            self.assertEqual(
+                (req["sql"], req["params"]), (first["sql"], first["params"])
+            )
+
+    def test_sync_retries_503_too(self):
+        self.store.d1_backoff_seconds = 0
+        self.d1.throttle = 1
+        self.d1.throttle_status = 503
+        with mock.patch.dict(os.environ, {"CLOUDFLARE_API_TOKEN": "fake-cf-token"}):
+            result = self.store.sync_manifest()
+        self.assertEqual(result["retries"], 1)
+
+    def test_sync_gives_up_after_the_last_attempt(self):
+        self.store.d1_backoff_seconds = 0
+        self.d1.throttle = cold_store.D1_SYNC_ATTEMPTS
+        with (
+            mock.patch.dict(os.environ, {"CLOUDFLARE_API_TOKEN": "fake-cf-token"}),
+            self.assertRaises(cold_store.ColdStoreError) as ctx,
+        ):
+            self.store.sync_manifest()
+        self.assertIn("HTTP 429", str(ctx.exception))
+        self.assertIn("too much load", str(ctx.exception))
+        self.assertEqual(len(self.d1.requests), cold_store.D1_SYNC_ATTEMPTS)
+
+    def test_sync_honours_retry_after_capped(self):
+        self.d1.throttle = 1
+        self.d1.retry_after = 7
+        sleeps = []
+        with (
+            mock.patch.object(cold_store.time, "sleep", sleeps.append),
+            mock.patch.dict(os.environ, {"CLOUDFLARE_API_TOKEN": "fake-cf-token"}),
+        ):
+            self.store.sync_manifest()
+        self.assertEqual(sleeps, [7.0])
+        self.assertEqual(
+            self.store._d1_retry_delay({"Retry-After": "3600"}, 1),
+            cold_store.D1_SYNC_BACKOFF_CAP_SECONDS,
+        )
+        self.store.d1_backoff_seconds = 2.0
+        self.assertEqual(self.store._d1_retry_delay({}, 3), 6.0)
+        self.assertEqual(self.store._d1_retry_delay({"Retry-After": "soon"}, 1), 2.0)
+
+    def test_sync_does_not_retry_other_errors(self):
+        self.d1.fail = True  # HTTP 500 is not load shedding
+        with (
+            mock.patch.dict(os.environ, {"CLOUDFLARE_API_TOKEN": "fake-cf-token"}),
+            self.assertRaises(cold_store.ColdStoreError),
+        ):
+            self.store.sync_manifest()
+        self.assertEqual(len(self.d1.requests), 1)
 
     def test_sync_requires_token(self):
         with mock.patch.dict(os.environ, self._env_without_token(), clear=True):
@@ -1888,11 +1981,99 @@ class TestPruneBackups(ColdStoreTestBase):
         # the union can never exceed 30 daily + 12 weekly + 12 monthly
         self.assertLessEqual(len(keep), 30 + 12 + 12)
 
+    def _seed_turso_nights(self, nights, databases, end=date(2026, 3, 31)):
+        folder = self.store.ensure_folders()["db-backups/turso"]
+        names = []
+        for i in range(nights):
+            d = end - timedelta(days=i)
+            for j, db in enumerate(databases):
+                # one export per database per night, minutes apart
+                name = f"turso-{d:%Y%m%d}T09{j:02d}00Z-{db}.db.gz"
+                self.seed_drive_file(name, folder, data=b"db")
+                names.append(name)
+        return folder, names
+
+    def test_turso_retention_is_per_database_not_per_family(self):
+        # 2026-11-17: export-turso files every Turso database each
+        # night; read as one series, "newest per day" kept one export
+        # per night and trashed the rest. Each database must keep its
+        # own newest-per-day, so a few nights of exports prune nothing.
+        databases = ["atlas", "atlas-ask-ledger", "fleet-queue", "voice-line-ledger"]
+        _folder, names = self._seed_turso_nights(3, databases)
+        plan = self.store.prune_backups("turso")[0]
+        self.assertEqual({f["name"] for f in plan["keep"]}, set(names))
+        self.assertEqual(plan["prune"], [])
+        self.assertEqual(plan["unparseable"], [])
+
+    def test_turso_retention_prunes_within_each_database(self):
+        databases = ["atlas", "fleet-queue"]
+        folder, _names = self._seed_turso_nights(1, databases)
+        # an earlier same-day export of atlas is the only excess file
+        dupe = "turso-20260331T080000Z-atlas.db.gz"
+        self.seed_drive_file(dupe, folder, data=b"db")
+        self.seed_drive_file("turso-notes.txt", folder, data=b"?")
+        plan = self.store.prune_backups("turso", apply=True)[0]
+        self.assertEqual([f["name"] for f in plan["prune"]], [dupe])
+        self.assertEqual(
+            {f["name"] for f in plan["keep"]},
+            {
+                "turso-20260331T090000Z-atlas.db.gz",
+                "turso-20260331T090100Z-fleet-queue.db.gz",
+            },
+        )
+        self.assertEqual({f["name"] for f in plan["unparseable"]}, {"turso-notes.txt"})
+        self.assertEqual(len(self.fake.trashed_calls), 1)
+
+    def test_turso_long_history_is_bounded_per_database(self):
+        databases = ["atlas", "fleet-queue"]
+        _folder, _names = self._seed_turso_nights(60, databases)
+        plan = self.store.prune_backups("turso")[0]
+        for db in databases:
+            kept = [f for f in plan["keep"] if f["name"].endswith(f"-{db}.db.gz")]
+            # 30 daily + the older weekly/monthly keepers, per database
+            self.assertGreaterEqual(len(kept), 30)
+            self.assertLessEqual(len(kept), 30 + 12 + 12)
+        self.assertEqual(len(plan["keep"]) + len(plan["prune"]), 120)
+
     def test_prune_all_dbs_and_unknown_db(self):
         plans = self.store.prune_backups()
         self.assertEqual([p["db"] for p in plans], list(cold_store.BACKUP_DBS))
         with self.assertRaises(cold_store.ColdStoreError):
             self.store.prune_backups("oracle")
+
+
+class TestLegacyBackupFamily(ColdStoreTestBase):
+    """Supabase is retired: nothing new is filed, no folder is created,
+    but dumps already in db-backups/supabase/ stay readable and pruned."""
+
+    def test_fresh_install_creates_no_legacy_folder(self):
+        folders = self.store.ensure_folders()
+        self.assertNotIn("db-backups/supabase", folders)
+        self.assertFalse(any(f["name"] == "supabase" for f in self.fake.folders))
+        self.assertEqual(self.store.list_backups("supabase"), [])
+        plans = self.store.prune_backups()
+        self.assertEqual([p["db"] for p in plans], list(cold_store.BACKUP_DBS))
+        with self.assertRaisesRegex(cold_store.ColdStoreError, "no supabase backups"):
+            self.store.get_backup("supabase", "x", str(Path(self.tmp.name) / "x"))
+
+    def test_existing_legacy_backups_stay_readable(self):
+        parent = self.store.ensure_folders()["db-backups"]
+        legacy = self.store._create_folder("supabase", parent)
+        name = "supabase-20261001T020000Z-db.backup.gz"
+        self.seed_drive_file(name, legacy, data=b"old dump")
+
+        rows = self.store.list_backups("supabase")
+        self.assertEqual([r["name"] for r in rows], [name])
+        self.assertIn("supabase", [r["db"] for r in self.store.list_backups()])
+        out = Path(self.tmp.name) / "old.gz"
+        self.store.get_backup("supabase", name, str(out))
+        self.assertEqual(out.read_bytes(), b"old dump")
+        plans = self.store.prune_backups()
+        self.assertEqual([p["db"] for p in plans], ["turso", "d1", "supabase"])
+
+        dump = self.write_src("dump.sql", b"x")
+        with self.assertRaises(cold_store.ColdStoreError):
+            self.store.put_backup("supabase", str(dump))
 
 
 class TestGetBackup(ColdStoreTestBase):
@@ -2071,7 +2252,7 @@ class TestS3TransportRetry(S3TestBase):
     egress proxy, R2 responses are intermittently truncated mid-body
     or dropped outright, and before the fix those escaped
     _s3_request as raw http.client tracebacks that killed
-    backup-supabase / evict-scan at the LIST step. Backoff is zeroed
+    evict-scan at the LIST step. Backoff is zeroed
     in S3TestBase.setUp, so these run instantly."""
 
     def _put_five(self):
@@ -2135,38 +2316,19 @@ class TestS3TransportRetry(S3TestBase):
         self.assertEqual(self.s3.deleted, ["pg/muse-dev/a.bin"])
 
 
-class TestBackupSupabase(S3TestBase):
-    def test_files_newest_non_manifest_with_truncation_retry(self):
-        older = b"older backup " * 40
-        newest = b"newest backup payload " * 60
-        old_key = self.key_for(hashlib.sha256(older).hexdigest())
-        new_key = self.key_for(hashlib.sha256(newest).hexdigest())
-        self.s3.put(old_key, older, "2026-10-20T02:00:00.000Z")
-        self.s3.put(new_key, newest, "2026-10-21T02:00:00.000Z")
-        # the bucket manifest is newer still — and is never a dump filing
-        self.s3.put("pg/muse-dev/manifest.json", b"{}", "2026-10-22T02:00:00.000Z")
-        # the first GET of the newest object arrives truncated (the
-        # live proxy failure mode); the client must retry the whole GET
-        self.s3.truncate_once.add(new_key)
-        result = self.store.backup_supabase()
-        self.assertEqual(result["source_key"], new_key)
-        self.assertRegex(
-            result["name"],
-            r"^supabase-\d{8}T\d{6}Z-" + re.escape(new_key.rsplit("/", 1)[-1]) + r"$",
+class TestS3GetObject(S3TestBase):
+    def test_truncated_first_get_is_retried_and_byte_verified(self):
+        body = b"newest backup payload " * 60
+        key = self.key_for(hashlib.sha256(body).hexdigest())
+        self.s3.put(key, body, "2026-10-21T02:00:00.000Z")
+        # the first GET arrives truncated (the live proxy failure mode);
+        # the client must retry the whole GET
+        self.s3.truncate_once.add(key)
+        data = self.store.s3_get_object(
+            "supabase-backups", key, expected_size=len(body)
         )
-        self.assertEqual(result["sha256"], hashlib.sha256(newest).hexdigest())
-        folders = self.store.ensure_folders()
-        meta = self.fake.file_meta[result["drive_file_id"]]
-        self.assertEqual(meta["parents"], [folders["db-backups/supabase"]])
-        # byte-count verification did its job: the filed copy is the
-        # whole object, not the truncated first response
-        self.assertEqual(self.fake.files[result["drive_file_id"]], newest)
-        self.assertGreaterEqual(len(self.s3.get_requests(new_key)), 2)
-
-    def test_no_backup_objects_errors(self):
-        self.s3.put("pg/muse-dev/manifest.json", b"{}", "2026-10-22T02:00:00.000Z")
-        with self.assertRaises(cold_store.ColdStoreError):
-            self.store.backup_supabase()
+        self.assertEqual(data, body)
+        self.assertGreaterEqual(len(self.s3.get_requests(key)), 2)
 
 
 class TestS3CurlFallback(S3TestBase):
@@ -2212,11 +2374,13 @@ class TestS3CurlFallback(S3TestBase):
 
         return mock.patch.object(self.store, "_curl_fetch", fake_fetch), calls
 
-    def test_fallback_after_urllib_exhaustion_files_backup(self):
+    def test_fallback_after_urllib_exhaustion_delivers_object(self):
         key = self._persistent_truncation()
         patcher, calls = self._stub_curl(self.BODY)
         with patcher:
-            result = self.store.backup_supabase()
+            data = self.store.s3_get_object(
+                "supabase-backups", key, expected_size=len(self.BODY)
+            )
         # exactly one curl attempt, and only after urllib was fully
         # exhausted: S3_GET_ATTEMPTS outer loops, each burning
         # S3_TRANSPORT_ATTEMPTS transport attempts on the object GET
@@ -2227,25 +2391,23 @@ class TestS3CurlFallback(S3TestBase):
         )
         self.assertTrue(calls[0]["url"].endswith("/" + key))
         self.assertEqual(calls[0]["access"], "test-access-key")
-        # the fallback body was byte-verified and filed whole
-        self.assertEqual(result["source_key"], key)
-        self.assertEqual(result["sha256"], hashlib.sha256(self.BODY).hexdigest())
-        self.assertEqual(self.fake.files[result["drive_file_id"]], self.BODY)
+        # the fallback body was byte-verified and delivered whole
+        self.assertEqual(data, self.BODY)
 
-    def test_short_curl_body_named_error_nothing_filed(self):
+    def test_short_curl_body_named_error(self):
         key = self._persistent_truncation()
-        files_before = dict(self.fake.files)
         patcher, calls = self._stub_curl(self.BODY[:100])
         with patcher:
             with self.assertRaises(cold_store.ColdStoreError) as ctx:
-                self.store.backup_supabase()
+                self.store.s3_get_object(
+                    "supabase-backups", key, expected_size=len(self.BODY)
+                )
         self.assertEqual(len(calls), 1)
         message = str(ctx.exception)
         self.assertIn("supabase-backups", message)
         self.assertIn(key, message)
         self.assertIn("curl fallback delivered 100 of", message)
         self.assertNotIn("test-secret-key", message)
-        self.assertEqual(self.fake.files, files_before)
 
     def test_curl_never_invoked_on_urllib_happy_path(self):
         body = b"small backup " * 20
@@ -2253,9 +2415,11 @@ class TestS3CurlFallback(S3TestBase):
         self.s3.put(key, body, "2026-10-21T02:00:00.000Z")
         patcher, calls = self._stub_curl(body)
         with patcher:
-            result = self.store.backup_supabase()
+            data = self.store.s3_get_object(
+                "supabase-backups", key, expected_size=len(body)
+            )
         self.assertEqual(calls, [])
-        self.assertEqual(result["sha256"], hashlib.sha256(body).hexdigest())
+        self.assertEqual(data, body)
 
     def test_curl_fetch_keeps_credentials_out_of_argv(self):
         """The spawned curl argv must never carry the credentials
@@ -2304,8 +2468,8 @@ class TestS3RequestCurlFallback(S3TestBase):
     """The curl fallback inside _s3_request for GET-class requests:
     on a hostile-proxy night (live 2026-10-28) EVERY urllib attempt
     at the bucket LIST truncated at a different offset, so the
-    transport retry loop exhausted and backup-supabase / evict-scan
-    died before their first object — the object-download fallback in
+    transport retry loop exhausted and evict-scan
+    died before its first object — the object-download fallback in
     TestS3CurlFallback never got a chance to run. A GET whose urllib
     attempts all fail at the transport level now gets exactly one
     curl attempt (stubbed here at the _curl_fetch_status transport
@@ -2372,26 +2536,6 @@ class TestS3RequestCurlFallback(S3TestBase):
         self.assertIn("list-type=2", calls[0]["url"])
         self.assertEqual(calls[0]["access"], "test-access-key")
         self.assertEqual(self.s3.list_attempts, cold_store.S3_TRANSPORT_ATTEMPTS)
-
-    def test_backup_supabase_proceeds_when_list_falls_back(self):
-        body = b"newest backup payload " * 60
-        key = self.key_for(hashlib.sha256(body).hexdigest())
-        self.s3.put(key, body, "2026-10-21T02:00:00.000Z")
-        self.s3.put("pg/muse-dev/manifest.json", b"{}", "2026-10-22T02:00:00.000Z")
-        self.s3.list_failures = ["truncate"] * cold_store.S3_TRANSPORT_ATTEMPTS
-        xml = self._list_xml(
-            [
-                (key, len(body), "2026-10-21T02:00:00.000Z"),
-                ("pg/muse-dev/manifest.json", 2, "2026-10-22T02:00:00.000Z"),
-            ]
-        )
-        patcher, calls = self._stub_curl_status((200, xml))
-        with patcher:
-            result = self.store.backup_supabase()
-        self.assertEqual(len(calls), 1)
-        self.assertEqual(result["source_key"], key)
-        self.assertEqual(result["sha256"], hashlib.sha256(body).hexdigest())
-        self.assertEqual(self.fake.files[result["drive_file_id"]], body)
 
     def test_curl_http_error_surfaces_as_s3_error_not_transport(self):
         self.s3.put("pg/muse-dev/a.bin", b"x", "2026-10-01T00:00:00.000Z")
@@ -2728,25 +2872,6 @@ class TestS3ListPageValidation(unittest.TestCase):
         )
         self.assertTrue(truncated)
         self.assertEqual(token, "tok2")
-
-
-class TestOffsetLessBackupPick(S3TestBase):
-    """backup_supabase picks the newest by LastModified with max():
-    a mixed listing used to crash the pick outright (#2110)."""
-
-    def test_newest_pick_ignores_offset_less_stamp(self):
-        aware_body = b"aware backup payload " * 10
-        aware_key = self.key_for(hashlib.sha256(aware_body).hexdigest())
-        naive_body = b"naive backup payload " * 10
-        naive_key = self.key_for(hashlib.sha256(naive_body).hexdigest())
-        self.s3.put(aware_key, aware_body, "2026-10-21T02:00:00.000Z")
-        # a later wall-clock reading, but its zone is unknown, so it
-        # is not evidence of newness and must not win the pick
-        self.s3.put(naive_key, naive_body, "2026-10-23T02:00:00.000")
-        self.s3.put("pg/muse-dev/manifest.json", b"{}", "2026-10-22T02:00:00.000Z")
-        result = self.store.backup_supabase()
-        self.assertEqual(result["source_key"], aware_key)
-        self.assertEqual(result["sha256"], hashlib.sha256(aware_body).hexdigest())
 
 
 class TestEvictApply(EvictTestBase):
@@ -3320,6 +3445,10 @@ class TestTursoExportScript(unittest.TestCase):
                 "TURSO_API_BASE": self.base,
                 "TURSO_DUMP_BASE": self.base,
                 "COLD_STORE_BIN": str(self.stub),
+                # keep failing-dump scenarios fast: 1 s between curl
+                # retries, no pause before the second pass
+                "TURSO_DUMP_RETRY_DELAY_SECONDS": "1",
+                "TURSO_DUMP_RETRY_PASS_DELAY_SECONDS": "0",
                 "NO_PROXY": "127.0.0.1,localhost",
                 "no_proxy": "127.0.0.1,localhost",
             }
@@ -3700,8 +3829,8 @@ class TestListingBounds6602Drive(ColdStoreTestBase):
                 mock.patch.object(self.store, "_auth_headers", lambda: {}),
             ):
                 with self.assertRaises(cold_store.ColdStoreError) as ctx:
-                    self.store.list_backups("supabase")
-        self.assertIn("supabase", str(ctx.exception))
+                    self.store.list_backups("d1")
+        self.assertIn("d1", str(ctx.exception))
         self.assertEqual(calls["n"], 5)
 
     def test_drive_result_bound_trips(self):
@@ -3717,7 +3846,7 @@ class TestListingBounds6602Drive(ColdStoreTestBase):
                 mock.patch.object(self.store, "_auth_headers", lambda: {}),
             ):
                 with self.assertRaises(cold_store.ColdStoreError):
-                    self.store.list_backups("supabase")
+                    self.store.list_backups("d1")
 
 
 class TestListingBounds6602S3(S3TestBase):

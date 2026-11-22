@@ -12,12 +12,12 @@ This public copy has the SECRET-SKIP path table and the UNSURE items that name c
 
 ## Totals per class (apparent, overlapping classes — do not sum)
 
-| class | approx. size | what dominates it |
-|---|---|---|
-| PUBLIC-SAFE | ~100–150 MB of unique Drew-authored material | `tools/*.sh` + service units, `notes/architecture` + `notes/research`, root `README/TODO/TOOLS.md`, `workspace/avatars` (59.1 MB), `workspace/custom-skills` |
-| PRIVATE | ~1.3 GB | session transcripts ~1.0 GB, `hatch-personal/` 59.3 MB (+ `.git` 29.7 MB), imports ~99.1 MB, plus goals/documents workspaces (details in private repo) |
-| SECRET-SKIP | ~7 KB of actual credential files (15 curated paths) + whole-directory holds for credential/profile stores — details in private repo | Paths + byte sizes only, in private repo |
-| LARGE-SKIP | ~95 GB apparent | nix store 31.4 GB, `git/` clones 44.9 GB, `.cache` 9.0 GB, `tmp` 8.3 GB, `.bun` 4.6 GB, toolchains in `tools` ~3.9 GB, `go/pkg` 3.0 GB |
+| class       | approx. size                                                                                                                        | what dominates it                                                                                                                                            |
+| ----------- | ----------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| PUBLIC-SAFE | ~100–150 MB of unique Drew-authored material                                                                                        | `tools/*.sh` + service units, `notes/architecture` + `notes/research`, root `README/TODO/TOOLS.md`, `workspace/avatars` (59.1 MB), `workspace/custom-skills` |
+| PRIVATE     | ~1.3 GB                                                                                                                             | session transcripts ~1.0 GB, `hatch-personal/` 59.3 MB (+ `.git` 29.7 MB), imports ~99.1 MB, plus goals/documents workspaces (details in private repo)       |
+| SECRET-SKIP | ~7 KB of actual credential files (15 curated paths) + whole-directory holds for credential/profile stores — details in private repo | Paths + byte sizes only, in private repo                                                                                                                     |
+| LARGE-SKIP  | ~95 GB apparent                                                                                                                     | nix store 31.4 GB, `git/` clones 44.9 GB, `.cache` 9.0 GB, `tmp` 8.3 GB, `.bun` 4.6 GB, toolchains in `tools` ~3.9 GB, `go/pkg` 3.0 GB                       |
 
 ## Biggest skipped items (LARGE-SKIP, with sizes)
 

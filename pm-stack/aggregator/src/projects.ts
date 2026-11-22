@@ -9,7 +9,18 @@
 // This module is pure parsing/mapping (no I/O except fetchProjectSnapshot,
 // whose fetch is injectable for tests), shared by the collector and
 // the live source so the wire shape is parsed exactly once.
-import type { GhItem, OrchestrationSection, ProjectAudit, ProjectPoolEdgeDiagnostic, ProjectPoolItem, RefKey } from "./model.ts";
+import type { BoardSnapshot, BoardEntry } from "./design-boards.ts";
+import type { BoardDef } from "./board-registry.ts";
+import { PROJECT_BOARDS as REGISTERED_PROJECT_BOARDS, validateBoardRegistry } from "./board-registry.ts";
+import type {
+  GhItem,
+  MilestoneRef,
+  OrchestrationSection,
+  ProjectAudit,
+  ProjectPoolEdgeDiagnostic,
+  ProjectPoolItem,
+  RefKey,
+} from "./model.ts";
 import { isValidRef, refKey } from "./model.ts";
 import { canonicalStatusFor, type CanonicalStatus } from "./status-taxonomy.ts";
 import { isIsoDate, isRecord, isTimestampNotFuture } from "./validate.ts";
@@ -19,6 +30,9 @@ export const PROJECT_ID = "PVT_kwDOAZNvF84Bouay";
 export const PROJECT_URL = "https://github.com/orgs/developing-today/projects/4";
 export const PROJECT_ORG = "developing-today";
 export const PROJECT_NUMBER = 4;
+
+/** Registry-backed board metadata; kept here as the shared collector API. */
+export { PROJECT_BOARDS } from "./board-registry.ts";
 
 /** GraphQL for one page of project items plus the board's audit schema. */
 export const PROJECT_QUERY = `query($id: ID!, $cursor: String) {
@@ -42,14 +56,15 @@ export const PROJECT_QUERY = `query($id: ID!, $cursor: String) {
           databaseId
           type
           content {
-            ... on Issue { number title state url repository { nameWithOwner } updatedAt closedAt author { login } labels(first: 20) { nodes { name } } parent { number url repository { nameWithOwner } } blockedBy(first: 50) { nodes { number url repository { nameWithOwner } } } blocking(first: 50) { nodes { number url repository { nameWithOwner } } } }
-            ... on PullRequest { number title state url repository { nameWithOwner } updatedAt mergedAt closedAt author { login } isDraft }
+            ... on Issue { number title body state url repository { nameWithOwner } updatedAt closedAt milestone { title dueOn closedAt } author { login } labels(first: 20) { nodes { name } } parent { number url repository { nameWithOwner } } blockedBy(first: 50) { nodes { number url repository { nameWithOwner } } } blocking(first: 50) { nodes { number url repository { nameWithOwner } } } }
+            ... on PullRequest { number title state url repository { nameWithOwner } updatedAt mergedAt closedAt milestone { title dueOn closedAt } author { login } isDraft }
             ... on DraftIssue { title }
           }
           fieldValues(first: 100) {
             nodes {
               ... on ProjectV2ItemFieldSingleSelectValue { name field { ... on ProjectV2FieldCommon { name } } }
               ... on ProjectV2ItemFieldTextValue { text field { ... on ProjectV2FieldCommon { name } } }
+              ... on ProjectV2ItemFieldDateValue { date field { ... on ProjectV2FieldCommon { name } } }
             }
           }
         }
@@ -59,6 +74,7 @@ export const PROJECT_QUERY = `query($id: ID!, $cursor: String) {
 }`;
 
 interface GqlFieldValue {
+  date?: string;
   name?: string;
   text?: string;
   field?: { name?: string } | null;
@@ -71,6 +87,7 @@ interface GqlEdgeNode {
 interface GqlContent {
   number?: number;
   title?: string;
+  body?: string;
   state?: string;
   url?: string;
   repository?: { nameWithOwner?: string } | null;
@@ -79,6 +96,8 @@ interface GqlContent {
   mergedAt?: string;
   author?: { login?: string } | null;
   isDraft?: boolean;
+  /** Milestone ingestion (#9067): { title, dueOn, closedAt } or null. */
+  milestone?: { title?: string; dueOn?: string | null; closedAt?: string | null } | null;
   labels?: { nodes?: { name?: string }[] } | null;
   /** Sub-issue parent (issues only; null when none). */
   parent?: GqlEdgeNode | null;
@@ -177,7 +196,7 @@ function edgeNodes(
  * Epic membership (epicRef) is NOT resolved here:
  * it needs the whole pool (parents may sit on other pages), so
  * resolveEpicRefs runs over the aggregate after all pages parse. */
-export function parseProjectItems(json: unknown, projectUrl = PROJECT_URL): ProjectPoolItem[] {
+export function parseProjectItems(json: unknown, projectUrl = PROJECT_URL, boardId?: string): ProjectPoolItem[] {
   const nodes = (json as GqlProjectPage)?.data?.node?.items?.nodes ?? [];
   const out: ProjectPoolItem[] = [];
   for (const item of nodes) {
@@ -198,6 +217,7 @@ export function parseProjectItems(json: unknown, projectUrl = PROJECT_URL): Proj
           .map((n) => edgeRef(n, "blockedBy", edgeDiagnostics))
           .filter((x): x is RefKey => x !== null)
       : [];
+    const historicalParentRefs = !isPr && typeof c.body === "string" ? historicalParentsFromMetadata(c.body) : [];
     const blocks = !isPr
       ? edgeNodes(c.blocking, "blocks", edgeDiagnostics)
           .map((n) => edgeRef(n, "blocks", edgeDiagnostics))
@@ -205,6 +225,7 @@ export function parseProjectItems(json: unknown, projectUrl = PROJECT_URL): Proj
       : [];
     out.push({
       id: item.id,
+      ...(boardId ? { boardId } : {}),
       // Normalize the nullable GraphQL databaseId to the model's optional
       // number: null becomes absent, so a valid item is never dropped by
       // isProjectPoolItem for an upstream null (Codex P2 on PR #4181).
@@ -224,6 +245,15 @@ export function parseProjectItems(json: unknown, projectUrl = PROJECT_URL): Proj
       updatedAt: c.updatedAt ?? "",
       ...(c.closedAt ? { closedAt: c.closedAt } : {}),
       ...(c.mergedAt ? { mergedAt: c.mergedAt } : {}),
+      ...(c.milestone && typeof c.milestone.title === "string"
+        ? {
+            milestone: {
+              title: c.milestone.title,
+              dueOn: c.milestone.dueOn ?? null,
+              closedAt: c.milestone.closedAt ?? null,
+            } satisfies MilestoneRef,
+          }
+        : {}),
       status: singleSelect(item, "Status"),
       area: singleSelect(item, "Area"),
       horizon: singleSelect(item, "Horizon"),
@@ -231,10 +261,38 @@ export function parseProjectItems(json: unknown, projectUrl = PROJECT_URL): Proj
       ...(parentRef ? { parentRef } : {}),
       ...(blockedBy.length ? { blockedBy } : {}),
       ...(blocks.length ? { blocks } : {}),
+      ...(historicalParentRefs.length ? { historicalParentRefs } : {}),
       ...(edgeDiagnostics.length ? { edgeDiagnostics } : {}),
     });
   }
   return out;
+}
+
+/** Read only explicitly historical parent links from the canonical PM metadata block. */
+export function historicalParentsFromMetadata(body: string): RefKey[] {
+  const block = /<!--\s*pm-metadata:start\s*-->([\s\S]*?)<!--\s*pm-metadata:end\s*-->/.exec(body)?.[1];
+  if (!block) return [];
+  const json = /```json\s*([\s\S]*?)```/i.exec(block)?.[1];
+  if (!json) return [];
+  try {
+    const metadata: unknown = JSON.parse(json);
+    if (!isRecord(metadata) || !Array.isArray(metadata.links)) return [];
+    return [
+      ...new Set(
+        metadata.links.flatMap((link) => {
+          if (!isRecord(link) || link.relation !== "parent" || link.status !== "historical" || !isRecord(link.target))
+            return [];
+          const target = link.target;
+          if (typeof target.repo !== "string" || !Number.isSafeInteger(target.number) || (target.number as number) <= 0)
+            return [];
+          const ref = refKey({ repo: target.repo, number: target.number as number });
+          return isValidRef(ref) ? [ref] : [];
+        }),
+      ),
+    ];
+  } catch {
+    return [];
+  }
 }
 
 /** Resolve epic membership over a fully parsed pool (#2399): every
@@ -243,17 +301,26 @@ export function parseProjectItems(json: unknown, projectUrl = PROJECT_URL): Proj
  * items with no epic ancestor, and chains that leave the pool keep the
  * field absent. Cycle-safe: a parent loop ends the walk with no epic. */
 export function resolveEpicRefs(items: ProjectPoolItem[]): ProjectPoolItem[] {
-  const byRef = new Map(items.map((p) => [p.ref, p] as const));
+  // An item appearing on several boards is one epic if any board classifies it as Epic.
+  const epicRefs = new Set(items.filter((p) => p.kind === "Epic").map((p) => p.ref));
+  const byRef = new Map<string, ProjectPoolItem>();
+  // Conflicting copies can have different parents; choose deterministically.
+  for (const p of [...items].sort(
+    (a, b) => a.ref.localeCompare(b.ref) || (a.parentRef ?? "").localeCompare(b.parentRef ?? ""),
+  )) {
+    if (!byRef.has(p.ref)) byRef.set(p.ref, p);
+  }
   return items.map((p) => {
-    if (p.kind === "Epic" || !p.parentRef) return p;
+    const { epicRef: _staleEpicRef, ...withoutEpicRef } = p;
+    if (epicRefs.has(p.ref) || !p.parentRef) return withoutEpicRef;
     const seen = new Set<string>([p.ref]);
     let cursor: ProjectPoolItem | undefined = byRef.get(p.parentRef);
     while (cursor && !seen.has(cursor.ref)) {
-      if (cursor.kind === "Epic") return { ...p, epicRef: cursor.ref };
+      if (epicRefs.has(cursor.ref)) return { ...withoutEpicRef, epicRef: cursor.ref };
       seen.add(cursor.ref);
       cursor = cursor.parentRef ? byRef.get(cursor.parentRef) : undefined;
     }
-    return p;
+    return withoutEpicRef;
   });
 }
 
@@ -317,6 +384,32 @@ export function parseProjectAudit(json: unknown, items: GqlItem[], generatedAt: 
   };
 }
 
+/** Retain draft cards and dates for the board family; never carry tokens/raw responses. */
+function parseBoardEntries(items: GqlItem[], projectUrl: string): BoardEntry[] {
+  const date = (item: GqlItem, names: string[]): string | null => {
+    const value = item.fieldValues?.nodes?.find((v) => v && names.includes(v.field?.name ?? ""))?.date;
+    return typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value) && isIsoDate(value) ? value : null;
+  };
+  return items.flatMap((item) => {
+    if (!item.id || !item.content || typeof item.content.title !== "string") return [];
+    return [
+      {
+        id: item.id,
+        title: item.content.title,
+        url: item.content.url ?? projectItemUrl(item.databaseId ?? undefined, projectUrl),
+        status: singleSelect(item, "Status"),
+        area: singleSelect(item, "Area"),
+        theme: singleSelect(item, "Theme"),
+        repo: item.content.repository?.nameWithOwner ?? null,
+        milestone: item.content.milestone?.title ?? null,
+        labels: (item.content.labels?.nodes ?? []).flatMap((l) => (typeof l?.name === "string" ? [l.name] : [])),
+        start: date(item, ["Start date", "Start", "Start Date"]),
+        target: date(item, ["Target date", "Target", "Target Date"]),
+      },
+    ];
+  });
+}
+
 /** Runtime gate for audit snapshots read from the collector-owned feed. */
 export function isProjectAudit(value: unknown): value is ProjectAudit {
   if (!isRecord(value) || !isRecord(value.counts)) return false;
@@ -333,6 +426,8 @@ export function isProjectAudit(value: unknown): value is ProjectAudit {
     isTimestampNotFuture(value.generatedAt) &&
     Number.isInteger(value.totalItems) &&
     (value.totalItems as number) >= 0 &&
+    (value.poolTotalItems === undefined ||
+      (Number.isInteger(value.poolTotalItems) && (value.poolTotalItems as number) >= (value.totalItems as number))) &&
     Array.isArray(value.fields) &&
     value.fields.every(
       (field) =>
@@ -365,6 +460,8 @@ export function isProjectAudit(value: unknown): value is ProjectAudit {
 }
 
 export interface ProjectSnapshot {
+  /** All board cards, including draft ideas, safe for cached rendering. */
+  board: BoardSnapshot;
   items: ProjectPoolItem[];
   audit: ProjectAudit;
   /** Section counts for feed health (#5180): the provider total made
@@ -377,11 +474,16 @@ export interface ProjectSnapshot {
   counts: { reportedTotal: number; emittedEntries: number };
 }
 
+/** Narrow fetch shape the pool readers need; fleet gh's routed adapter satisfies it without Bun's preconnect. */
+export type ProjectFetch = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
+
 /** Fetch the whole pool, board schema, views, and distributions (paginated). */
 export async function fetchProjectSnapshot(
   token: string,
-  fetchFn: typeof fetch = fetch,
+  fetchFn: ProjectFetch = fetch,
   generatedAt = new Date().toISOString(),
+  projectId = PROJECT_ID,
+  boardId?: string,
 ): Promise<ProjectSnapshot> {
   const parsedItems: ProjectPoolItem[] = [];
   const auditItems: GqlItem[] = [];
@@ -401,7 +503,7 @@ export async function fetchProjectSnapshot(
         "Content-Type": "application/json",
         "User-Agent": "pm-fleet-feed-collector",
       },
-      body: JSON.stringify({ query: PROJECT_QUERY, variables: { id: PROJECT_ID, cursor } }),
+      body: JSON.stringify({ query: PROJECT_QUERY, variables: { id: projectId, cursor } }),
       signal: AbortSignal.timeout(20_000),
     });
     if (!res.ok) throw new Error(`github GraphQL HTTP ${res.status}`);
@@ -426,7 +528,11 @@ export async function fetchProjectSnapshot(
     });
     auditItems.push(...freshNodes);
     const freshIds = new Set(freshNodes.map((node) => node.id));
-    parsedItems.push(...parseProjectItems(json).filter((item) => freshIds.has(item.id)));
+    parsedItems.push(
+      ...parseProjectItems(json, (json as GqlProjectPage).data?.node?.url ?? PROJECT_URL, boardId).filter((item) =>
+        freshIds.has(item.id),
+      ),
+    );
     const info = projectPageInfo(json);
     if (!info.hasNextPage) {
       if (auditItems.length < info.totalCount) {
@@ -435,9 +541,18 @@ export async function fetchProjectSnapshot(
         // items. Over-delivery is absorbed by the dedupe above.
         throw new Error(`github GraphQL project export incomplete (${auditItems.length}/${info.totalCount} items)`);
       }
+      const audit = parseProjectAudit(firstPage, auditItems, generatedAt);
       return {
+        board: {
+          number: audit.number,
+          url: audit.url,
+          generatedAt,
+          totalItems: audit.totalItems,
+          views: audit.views,
+          items: parseBoardEntries(auditItems, audit.url),
+        },
         items: resolveEpicRefs(parsedItems),
-        audit: parseProjectAudit(firstPage, auditItems, generatedAt),
+        audit,
         counts: {
           reportedTotal: info.totalCount - (auditItems.length - parsedItems.length),
           emittedEntries: parsedItems.length,
@@ -451,6 +566,51 @@ export async function fetchProjectSnapshot(
   throw new Error("github GraphQL project pagination ended unexpectedly");
 }
 
+export interface ProjectBoardsSnapshot {
+  items: ProjectPoolItem[];
+  audits: Record<string, ProjectAudit>;
+  boards: BoardSnapshot[];
+  failedBoardIds: string[];
+  counts: { reportedTotal: number; emittedEntries: number };
+}
+
+/** Collect the configured board family independently; a broken satellite never discards a healthy board. */
+export async function fetchProjectBoardsSnapshot(
+  token: string,
+  fetchFn: ProjectFetch,
+  generatedAt = new Date().toISOString(),
+  boards: readonly BoardDef[] = REGISTERED_PROJECT_BOARDS,
+): Promise<ProjectBoardsSnapshot> {
+  const problems = validateBoardRegistry(boards);
+  if (problems.length) throw new Error(`invalid project board registry: ${problems.join("; ")}`);
+  const items: ProjectPoolItem[] = [];
+  const audits: Record<string, ProjectAudit> = {};
+  const snapshots: BoardSnapshot[] = [];
+  const failedBoardIds: string[] = [];
+  let reportedTotal = 0;
+  let emittedEntries = 0;
+  for (const board of boards) {
+    try {
+      const snapshot = await fetchProjectSnapshot(token, fetchFn, generatedAt, board.nodeId, board.id);
+      if (!snapshot.items.length && board.role === "overall") throw new Error("board returned zero resolvable items");
+      items.push(...snapshot.items);
+      audits[board.id] = snapshot.audit;
+      snapshots.push(snapshot.board);
+      reportedTotal += snapshot.counts.reportedTotal;
+      emittedEntries += snapshot.counts.emittedEntries;
+    } catch {
+      failedBoardIds.push(board.id);
+    }
+  }
+  return {
+    items: resolveEpicRefs(items),
+    audits,
+    boards: snapshots,
+    failedBoardIds,
+    counts: { reportedTotal, emittedEntries },
+  };
+}
+
 /** Fetch the whole pool (paginated). Throws on HTTP/GraphQL errors so
  * the collector can fail-soft and omit the section. Never logs the token.
  * Pool-only path: it must NOT route through fetchProjectSnapshot — the
@@ -458,7 +618,7 @@ export async function fetchProjectSnapshot(
  * responses (e.g. the contract corpus) do not carry, and a missing audit
  * must never cost the pool. The collector uses fetchProjectSnapshot
  * for the audited section instead. */
-export async function fetchProjectPool(token: string, fetchFn: typeof fetch = fetch): Promise<ProjectPoolItem[]> {
+export async function fetchProjectPool(token: string, fetchFn: ProjectFetch = fetch): Promise<ProjectPoolItem[]> {
   const out: ProjectPoolItem[] = [];
   let cursor: string | null = null;
   let lastPageInfo: ReturnType<typeof projectPageInfo> | null = null;
@@ -530,9 +690,17 @@ export function isProjectPoolItem(v: unknown): v is ProjectPoolItem {
     (p.updatedAt === undefined || p.updatedAt === "" || isIsoDate(p.updatedAt)) &&
     (p.closedAt === undefined || typeof p.closedAt === "string") &&
     (p.mergedAt === undefined || typeof p.mergedAt === "string") &&
+    (p.milestone === undefined ||
+      (typeof p.milestone === "object" &&
+        p.milestone !== null &&
+        typeof p.milestone.title === "string" &&
+        (p.milestone.dueOn === null || typeof p.milestone.dueOn === "string") &&
+        (p.milestone.closedAt === null || typeof p.milestone.closedAt === "string"))) &&
     (p.state === "open" || p.state === "closed" || p.state === "merged") &&
     (p.parentRef === undefined || isValidRef(p.parentRef)) &&
     (p.epicRef === undefined || isValidRef(p.epicRef)) &&
+    (p.historicalParentRefs === undefined ||
+      (Array.isArray(p.historicalParentRefs) && p.historicalParentRefs.every(isValidRef))) &&
     (p.blockedBy === undefined || (Array.isArray(p.blockedBy) && p.blockedBy.every(isValidRef))) &&
     (p.blocks === undefined || (Array.isArray(p.blocks) && p.blocks.every(isValidRef))) &&
     (p.edgeDiagnostics === undefined ||
@@ -567,6 +735,9 @@ export function poolItemToGhItem(p: ProjectPoolItem): GhItem {
   };
 }
 
+/** Keep the first board membership for each canonical issue ref. Use only
+ * where an issue-level calculation must not count cross-board copies; the
+ * pool itself retains every membership for board attribution and rendering. */
 /** The derived state IS a canonical status (#1198): the derived side
  * and every source side speak the one taxonomy in status-taxonomy.ts. */
 export type DerivedProjectState = CanonicalStatus;

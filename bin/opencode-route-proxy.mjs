@@ -53,11 +53,11 @@
 //                                    incident replay; unset = wall clock
 import { createServer } from "node:http";
 import { readFileSync, statSync } from "node:fs";
-import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { DatabaseSync } from "node:sqlite";
 import { randomBytes } from "node:crypto";
+import { homePath } from "./home-dir.mjs";
 import { parseProxyMillis, parseProxyPort } from "./proxy-port.mjs";
 import { createRequestBodyCollector } from "./request-body.mjs";
 
@@ -71,14 +71,14 @@ const LEAF_TIMEOUT_MS = parseProxyMillis(
 const HERE = dirname(fileURLToPath(import.meta.url));
 const CONFIG_PATH =
   process.env.OPENCODE_ROUTE_PROXY_CONFIG ||
-  join(homedir(), ".local/share/opencode/opencode.jsonc");
+  homePath(process.env, "opencode-route-proxy (default OPENCODE_ROUTE_PROXY_CONFIG)", ".local/share/opencode/opencode.jsonc");
 const CONFIG_FALLBACK = join(HERE, "..", ".opencode", "opencode.jsonc");
 const RUNTIME_CONFIG_PATH =
   process.env.OPENCODE_ROUTE_PROXY_RUNTIME_CONFIG ||
-  join(homedir(), ".local/state/opencode/opencode-runtime.jsonc");
+  homePath(process.env, "opencode-route-proxy (default OPENCODE_ROUTE_PROXY_RUNTIME_CONFIG)", ".local/state/opencode/opencode-runtime.jsonc");
 const DB_PATH =
   process.env.OPENCODE_ROUTE_PROXY_DB ||
-  join(homedir(), ".local/share/opencode/opencode.db");
+  homePath(process.env, "opencode-route-proxy (default OPENCODE_ROUTE_PROXY_DB)", ".local/share/opencode/opencode.db");
 
 // Providers built into OpenCode itself (no block in opencode.jsonc):
 // instanceOf targets resolve here when the config has no block either.
@@ -611,21 +611,54 @@ const parseHHMM = (s) => {
   return hour * 60 + minute;
 };
 
-// At config load, name any model_route_windows entry whose start/end
-// is not a valid HH:MM (hour 00-23, minute 00-59) instead of silently
-// evaluating it (#4259). windowActive fails closed (never active) for
-// these entries, so a typo'd window surfaces as a loud no-match rather
-// than flipping a route gate to always-on/always-off/end-less.
+const WEEKDAY_NAMES = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"];
+
+const validTimeZone = (tz) => {
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: tz });
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+// Why a window entry can never match, or null when it is well formed.
+// start/end must be HH:MM in range (#4259); a present `timezone` must
+// be a real Intl time zone and a present `daysOfWeek` an array of
+// weekday names (#11176). windowActive fails closed (never active) for
+// every problem named here, so a typo'd window surfaces as a loud
+// no-match rather than flipping a route gate to always-on/always-off/
+// end-less, or (a string daysOfWeek) silently widening to every day.
+const windowProblems = (win) => {
+  const problems = [];
+  if (parseHHMM(win?.start) === null || parseHHMM(win?.end) === null)
+    problems.push(
+      `start=${JSON.stringify(win?.start)} end=${JSON.stringify(win?.end)} ` +
+        `(expected HH:MM with hour 00-23, minute 00-59)`,
+    );
+  if (win?.timezone != null && (typeof win.timezone !== "string" || !validTimeZone(win.timezone)))
+    problems.push(`timezone=${JSON.stringify(win.timezone)} (expected an IANA time zone such as "America/Chicago")`);
+  if (
+    win?.daysOfWeek != null &&
+    (!Array.isArray(win.daysOfWeek) ||
+      !win.daysOfWeek.every(
+        (d) => typeof d === "string" && WEEKDAY_NAMES.includes(d.trim().slice(0, 3).toLowerCase()),
+      ))
+  )
+    problems.push(`daysOfWeek=${JSON.stringify(win.daysOfWeek)} (expected an array of weekday names such as ["mon", "fri"])`);
+  return problems.length ? problems : null;
+};
+
+// At config load, name every model_route_windows entry that can never
+// match, with the offending values, instead of silently evaluating it.
 const warnInvalidWindows = (windows) => {
   if (!windows || typeof windows !== "object") return;
   for (const [name, win] of Object.entries(windows)) {
-    const start = parseHHMM(win?.start);
-    const end = parseHHMM(win?.end);
-    if (start === null || end === null) {
+    const problems = windowProblems(win);
+    if (problems) {
       console.error(
         `opencode-route-proxy: invalid model_route_windows["${name}"]: ` +
-          `start=${JSON.stringify(win?.start)} end=${JSON.stringify(win?.end)} ` +
-          `(expected HH:MM with hour 00-23, minute 00-59); window will never match`,
+          `${problems.join("; ")}; window will never match`,
       );
     }
   }
@@ -637,12 +670,11 @@ const warnInvalidWindows = (windows) => {
 // after-midnight leg belongs to the day the window opened, so its
 // daysOfWeek check uses the previous day (#3874): a Fri 22:00-02:00
 // window is active Sat 01:00 and inactive Fri 01:00.
-const WEEKDAY_NAMES = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"];
 const windowActive = (win, now) => {
   if (!win || typeof win !== "object") return false;
+  if (windowProblems(win)) return false;
   const start = parseHHMM(win.start);
   const end = parseHHMM(win.end);
-  if (start === null || end === null) return false;
   let parts;
   try {
     parts = new Intl.DateTimeFormat("en-US", {
@@ -659,7 +691,7 @@ const windowActive = (win, now) => {
   const day = String(get("weekday") || "").slice(0, 3).toLowerCase();
   const days =
     Array.isArray(win.daysOfWeek) && win.daysOfWeek.length
-      ? win.daysOfWeek.map((d) => String(d).slice(0, 3).toLowerCase())
+      ? win.daysOfWeek.map((d) => d.trim().slice(0, 3).toLowerCase())
       : null;
   const dayListed = (d) => !days || days.includes(d);
   const mins = Number(get("hour")) * 60 + Number(get("minute"));

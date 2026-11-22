@@ -133,3 +133,63 @@ func TestCapabilityGateReadsTheInitializeSnapshot(t *testing.T) {
 		t.Errorf("completion/complete gated although the snapshot advertises completions: %v", resp.Error)
 	}
 }
+
+// The #7844 widening of the gate: the skills extension methods
+// (skills/list, skills/get, resources/directory/read) are gated on
+// the extensions.skills advertisement, which exists only in
+// 2026-07-28 and only when skills are served. The era disposition
+// (docs/spec/revision-conflicts.md item C24): a 2026-07-28 peer
+// whose advertisement carries no skills extension gets -32601; a
+// pre-2026 peer keeps liberal acceptance, because its schema has
+// no extensions advertisement to gate on.
+
+func TestCapabilityGateRefusesUnadvertisedSkillsExtension(t *testing.T) {
+	// ExtrasOnly serves no skills, so capabilities() for a
+	// 2026-07-28 peer declares extensions without the skills entry:
+	// the extension methods are unadvertised for that peer.
+	s := mcpserver.New(newBackend(), "mcpx", "test")
+	s.ExtrasOnly = true
+	c := s.ConnForTest("gate-skills-modern")
+
+	for _, method := range []string{"skills/list", "skills/get", "resources/directory/read"} {
+		resp := s.HandleOn(context.Background(), c, mcpserver.Request(2, method,
+			modernParams(map[string]any{"uri": "skill://x"})))
+		if resp == nil || resp.Error == nil {
+			t.Fatalf("%s: not refused, resp = %+v", method, resp)
+		}
+		if resp.Error.Code != -32601 || !strings.Contains(resp.Error.Message, "capability extensions.skills not advertised") {
+			t.Errorf("%s: error = %d %q, want -32601 naming the extensions.skills capability",
+				method, resp.Error.Code, resp.Error.Message)
+		}
+	}
+}
+
+func TestCapabilityGateAdmitsAdvertisedSkillsExtension(t *testing.T) {
+	// A default server serves mcpx's own skills, so a 2026-07-28
+	// peer is advertised the skills extension and skills/list is
+	// answered by the skills handler, not refused by the gate.
+	s := mcpserver.New(newBackend(), "mcpx", "test")
+	c := s.ConnForTest("gate-skills-advertised")
+
+	resp := s.HandleOn(context.Background(), c, mcpserver.Request(2, "skills/list", modernParams(nil)))
+	if resp != nil && resp.Error != nil {
+		t.Fatalf("skills/list refused although the skills extension is advertised: %v", resp.Error)
+	}
+}
+
+func TestCapabilityGateKeepsLegacySkillsAcceptance(t *testing.T) {
+	// A pre-2026 peer's schema has no extensions advertisement, so
+	// the gate does not apply to the extension methods at all
+	// (gateEraApplies): even on a server serving no skills, the
+	// answer is the skills handler's own, never the gate's -32601.
+	s := mcpserver.New(newBackend(), "mcpx", "test")
+	s.ExtrasOnly = true
+	c := s.ConnForTest("gate-skills-legacy")
+	gateInit(t, s, c, "2025-03-26")
+
+	resp := s.HandleOn(context.Background(), c, mcpserver.Request(2, "skills/list", map[string]any{}))
+	if resp != nil && resp.Error != nil && resp.Error.Code == -32601 &&
+		strings.Contains(resp.Error.Message, "not advertised") {
+		t.Fatalf("skills/list gated for a legacy peer: %v", resp.Error)
+	}
+}

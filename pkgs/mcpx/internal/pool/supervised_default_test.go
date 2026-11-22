@@ -2,6 +2,7 @@ package pool_test
 
 import (
 	"context"
+	"errors"
 	"net"
 	"os"
 	"path/filepath"
@@ -17,8 +18,8 @@ import (
 )
 
 // Phase 3 of #1384 (#9963), the headline acceptance: a fresh daemon
-// start with a default config — loaded from a file, no supervised
-// key anywhere — runs its stdio servers supervised. The pool is what
+// start with a config loaded from a file that opts its stdio server
+// in runs it supervised (opt-in while sockets are keyed by name). The pool is what
 // a daemon start builds from the resolved config, so the proof is:
 // load, resolve, acquire, and a supervisor socket exists with the
 // instance's child behind it.
@@ -28,7 +29,7 @@ func TestDefaultConfigStdioRunsSupervised(t *testing.T) {
 	bin := testsupport.EraMCPBinary(t)
 	log := filepath.Join(t.TempDir(), "frames")
 	cfgPath := filepath.Join(t.TempDir(), "mcpx.json")
-	body := `{"mcpServers": {"era": {"command": "` + bin + `", "env": {"ERAMCP_MODE": "modern", "ERAMCP_LOG": "` + log + `"}}}}`
+	body := `{"mcpServers": {"era": {"command": "` + bin + `", "env": {"ERAMCP_MODE": "modern", "ERAMCP_LOG": "` + log + `"}, "mcpx": {"supervised": true}}}}`
 	if err := os.WriteFile(cfgPath, []byte(body), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -41,7 +42,7 @@ func TestDefaultConfigStdioRunsSupervised(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !r.Mcpx.SupervisedEnabled() {
-		t.Fatal("default config should resolve to supervised")
+		t.Fatal("an opted-in config should resolve to supervised")
 	}
 	p := pool.New(r)
 	defer p.Close()
@@ -60,19 +61,26 @@ func TestDefaultConfigStdioRunsSupervised(t *testing.T) {
 		t.Fatalf("status instances = %+v, want one with a child pid", st.Instances)
 	}
 	childPID := st.Instances[0].PID
+	// An attached daemon owns this supervisor: a scan during pool shutdown
+	// can legitimately be refused until the transport finishes detaching.
+	outcomes := mcpclient.ScanSupervisorSockets(stateDir, nil, nil)
+	if len(outcomes) != 1 || outcomes[0].Action != "refused" {
+		t.Fatalf("scan while attached = %+v, want one refused supervisor", outcomes)
+	}
 	lease.Release()
 	p.Close()
 	// The child survives the pool (that is the point of supervised);
-	// reap it through the scan so the test leaves nothing behind.
-	// The reap is acknowledged before the supervisor finishes the
-	// kill, so wait for the child to actually exit.
-	mcpclient.ScanSupervisorSockets(stateDir, nil, nil)
-	deadline := time.Now().Add(10 * time.Second)
-	for syscall.Kill(childPID, 0) == nil {
-		if time.Now().After(deadline) {
-			t.Fatalf("supervised child %d still alive after the reap", childPID)
-		}
-		time.Sleep(20 * time.Millisecond)
+	// reap it through the scan so the test leaves nothing behind. Closing
+	// the pool's connection detaches asynchronously; StopSupervisors retries
+	// a refusal while that detach finishes and waits for the child to be
+	// reaped before returning.
+	if err := testsupport.StopSupervisors(stateDir); err != nil {
+		t.Fatalf("stop supervised child: %v", err)
+	}
+	if err := syscall.Kill(childPID, 0); err == nil {
+		t.Fatalf("supervised child %d still alive after the reap", childPID)
+	} else if !errors.Is(err, syscall.ESRCH) {
+		t.Fatalf("check supervised child %d after the reap: %v", childPID, err)
 	}
 }
 
@@ -84,6 +92,9 @@ func TestAdoptProtocolRefusalSurfacesInStatus(t *testing.T) {
 	stateDir := t.TempDir()
 	t.Setenv("MCPX_STATE_DIR", stateDir)
 	sock := mcpclient.SupervisorSocketPath(stateDir, "era")
+	if err := os.MkdirAll(filepath.Dir(sock), 0o700); err != nil {
+		t.Fatal(err)
+	}
 	ln, err := net.Listen("unix", sock)
 	if err != nil {
 		t.Fatal(err)

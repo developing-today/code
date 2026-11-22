@@ -195,6 +195,7 @@ pub enum DenyReason {
     OutOfPolicy(Plane),
 }
 
+/// The outcome of a residency check: allowed, or refused.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Decision {
     /// Every required plane and hop was allowed.

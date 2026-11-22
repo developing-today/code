@@ -31,8 +31,9 @@ import urllib.request
 import urllib.error
 
 API_BASE = "https://slack.com/api/"
-DEFAULT_DB = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                          "state", "archer-slack.db")
+DEFAULT_DB = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "state", "archer-slack.db"
+)
 NOISE_SUBTYPES = {"channel_join", "channel_leave"}
 
 
@@ -61,9 +62,14 @@ class SlackClient:
             form[key] = val
         body = urllib.parse.urlencode(form).encode("utf-8")
         req = urllib.request.Request(
-            API_BASE + method, data=body, method="POST",
-            headers={"Authorization": "Bearer " + self._token,
-                     "Content-Type": "application/x-www-form-urlencoded"})
+            API_BASE + method,
+            data=body,
+            method="POST",
+            headers={
+                "Authorization": "Bearer " + self._token,
+                "Content-Type": "application/x-www-form-urlencoded",
+            },
+        )
         data = None
         for attempt in range(3):
             try:
@@ -73,11 +79,11 @@ class SlackClient:
             except urllib.error.HTTPError as e:
                 if e.code == 429:
                     retry = e.headers.get("Retry-After", "?")
-                    raise SlackAPIError(f"ratelimited on {method} "
-                                        f"(retry after {retry}s)")
+                    raise SlackAPIError(
+                        f"ratelimited on {method} (retry after {retry}s)"
+                    )
                 raise SlackAPIError(f"HTTP {e.code} on {method}")
-            except (ConnectionError, TimeoutError,
-                    urllib.error.URLError) as e:
+            except (ConnectionError, TimeoutError, urllib.error.URLError) as e:
                 # Transient transport failure (Slack intermittently closes
                 # connections: http.client.RemoteDisconnected). Retry with
                 # backoff — pulls are idempotent (watermark + seen-set).
@@ -85,13 +91,15 @@ class SlackClient:
                     time.sleep(2 * (attempt + 1))
                     continue
                 raise SlackAPIError(
-                    f"transport error on {method} after 3 attempts: {e}")
+                    f"transport error on {method} after 3 attempts: {e}"
+                )
         if not data.get("ok", False):
             raise SlackAPIError(f"{method}: {data.get('error', 'unknown')}")
         return data
 
 
 # ---------- state ----------
+
 
 def open_state(path):
     os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -119,8 +127,8 @@ def open_state(path):
 
 def get_watermark(conn, channel):
     row = conn.execute(
-        "SELECT watermark_ts FROM watermarks WHERE channel_id = ?",
-        (channel,)).fetchone()
+        "SELECT watermark_ts FROM watermarks WHERE channel_id = ?", (channel,)
+    ).fetchone()
     return row[0] if row else "0"
 
 
@@ -129,13 +137,17 @@ def set_watermark(conn, channel, ts):
         "INSERT INTO watermarks VALUES (?, ?, ?) "
         "ON CONFLICT(channel_id) DO UPDATE SET watermark_ts = excluded.watermark_ts, "
         "updated_at = excluded.updated_at",
-        (channel, ts, time.time()))
+        (channel, ts, time.time()),
+    )
 
 
 def is_seen(conn, channel, ts):
-    return conn.execute(
-        "SELECT 1 FROM seen WHERE channel_id = ? AND ts = ?",
-        (channel, ts)).fetchone() is not None
+    return (
+        conn.execute(
+            "SELECT 1 FROM seen WHERE channel_id = ? AND ts = ?", (channel, ts)
+        ).fetchone()
+        is not None
+    )
 
 
 def mark_seen(conn, channel, ts):
@@ -143,6 +155,7 @@ def mark_seen(conn, channel, ts):
 
 
 # ---------- pulling ----------
+
 
 def _paged(client, method, items_key, **params):
     items, cursor = [], None
@@ -170,8 +183,15 @@ def normalize(channel, msg, thread_ts=None):
     }
 
 
-def pull_channel(client, conn, channel, dry_run=False, overlap_seconds=0,
-                 thread_lookback_seconds=7 * 24 * 3600, max_threads=25):
+def pull_channel(
+    client,
+    conn,
+    channel,
+    dry_run=False,
+    overlap_seconds=0,
+    thread_lookback_seconds=7 * 24 * 3600,
+    max_threads=25,
+):
     """Return (new_messages, new_watermark). Raises SlackAPIError on failure."""
     wm = get_watermark(conn, channel)
     oldest = wm
@@ -183,16 +203,28 @@ def pull_channel(client, conn, channel, dry_run=False, overlap_seconds=0,
     # One retry absorbs the transient; a second failure is real and
     # propagates. Safe because pulls are idempotent (watermark + seen-set).
     try:
-        history = _paged(client, "conversations.history", "messages",
-                         channel=channel, oldest=oldest, inclusive=False,
-                         limit=200)
+        history = _paged(
+            client,
+            "conversations.history",
+            "messages",
+            channel=channel,
+            oldest=oldest,
+            inclusive=False,
+            limit=200,
+        )
     except SlackAPIError as e:
         if "invalid_arguments" not in str(e):
             raise
         time.sleep(5)
-        history = _paged(client, "conversations.history", "messages",
-                         channel=channel, oldest=oldest, inclusive=False,
-                         limit=200)
+        history = _paged(
+            client,
+            "conversations.history",
+            "messages",
+            channel=channel,
+            oldest=oldest,
+            inclusive=False,
+            limit=200,
+        )
     fresh, max_ts, max_ts_str = [], float(wm), wm
     for msg in sorted(history, key=lambda m: float(m.get("ts", 0))):
         ts = msg.get("ts")
@@ -209,7 +241,8 @@ def pull_channel(client, conn, channel, dry_run=False, overlap_seconds=0,
         conn.execute(
             "INSERT INTO threads VALUES (?, ?, ?) "
             "ON CONFLICT(channel_id, thread_ts) DO NOTHING",
-            (channel, ts, ts))
+            (channel, ts, ts),
+        )
         if is_seen(conn, channel, ts):
             continue
         mark_seen(conn, channel, ts)
@@ -220,24 +253,34 @@ def pull_channel(client, conn, channel, dry_run=False, overlap_seconds=0,
     rows = conn.execute(
         "SELECT thread_ts, watermark_ts FROM threads WHERE channel_id = ? "
         "AND CAST(thread_ts AS REAL) > ? ORDER BY thread_ts DESC LIMIT ?",
-        (channel, cutoff, max_threads)).fetchall()
+        (channel, cutoff, max_threads),
+    ).fetchall()
     for thread_ts, thread_wm in rows:
         try:
-            replies = _paged(client, "conversations.replies", "messages",
-                              channel=channel, ts=thread_ts,
-                              oldest=thread_wm, inclusive=False, limit=200)
+            replies = _paged(
+                client,
+                "conversations.replies",
+                "messages",
+                channel=channel,
+                ts=thread_ts,
+                oldest=thread_wm,
+                inclusive=False,
+                limit=200,
+            )
         except SlackAPIError as e:
             # One bad thread must not poison the whole channel pull.
             # invalid_arguments is permanent (e.g. a thread_broadcast reply
             # tracked as a parent — Slack will never accept it), so drop the
             # thread from the sweep. Anything else (transport after retries)
             # keeps its row and is retried next cycle.
-            print(f"puller: thread {thread_ts} in {channel} skipped: {e}",
-                  file=sys.stderr)
+            print(
+                f"puller: thread {thread_ts} in {channel} skipped: {e}", file=sys.stderr
+            )
             if "invalid_arguments" in str(e):
                 conn.execute(
-                    "DELETE FROM threads WHERE channel_id = ? "
-                    "AND thread_ts = ?", (channel, thread_ts))
+                    "DELETE FROM threads WHERE channel_id = ? AND thread_ts = ?",
+                    (channel, thread_ts),
+                )
             continue
         new_thread_wm, new_thread_wm_str = float(thread_wm), thread_wm
         for rep in sorted(replies, key=lambda m: float(m.get("ts", 0))):
@@ -254,7 +297,8 @@ def pull_channel(client, conn, channel, dry_run=False, overlap_seconds=0,
             conn.execute(
                 "UPDATE threads SET watermark_ts = ? "
                 "WHERE channel_id = ? AND thread_ts = ?",
-                (new_thread_wm_str, channel, thread_ts))
+                (new_thread_wm_str, channel, thread_ts),
+            )
 
     fresh.sort(key=lambda m: float(m["ts"]))
     if dry_run:
@@ -267,13 +311,19 @@ def pull_channel(client, conn, channel, dry_run=False, overlap_seconds=0,
 
 
 def list_channels(client):
-    chans = _paged(client, "conversations.list", "channels",
-                   types="public_channel,private_channel",
-                   exclude_archived=True, limit=200)
+    chans = _paged(
+        client,
+        "conversations.list",
+        "channels",
+        types="public_channel,private_channel",
+        exclude_archived=True,
+        limit=200,
+    )
     return [c for c in chans if c.get("is_member", True)]
 
 
 # ---------- CLI ----------
+
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__)
@@ -298,15 +348,30 @@ def main(argv=None):
 
     if args.cmd == "auth-test":
         data = client.call("auth.test")
-        print(json.dumps({k: data.get(k) for k in
-                          ("team", "team_id", "user", "user_id", "bot_id")},
-                         indent=2))
+        print(
+            json.dumps(
+                {
+                    k: data.get(k)
+                    for k in ("team", "team_id", "user", "user_id", "bot_id")
+                },
+                indent=2,
+            )
+        )
         return 0
     if args.cmd == "list-channels":
-        print(json.dumps(
-            [{"id": c["id"], "name": c.get("name"),
-              "is_private": c.get("is_private", False)}
-             for c in list_channels(client)], indent=2))
+        print(
+            json.dumps(
+                [
+                    {
+                        "id": c["id"],
+                        "name": c.get("name"),
+                        "is_private": c.get("is_private", False),
+                    }
+                    for c in list_channels(client)
+                ],
+                indent=2,
+            )
+        )
         return 0
     if args.cmd == "join":
         client.call("conversations.join", channel=args.channel)
@@ -317,8 +382,7 @@ def main(argv=None):
         if args.thread_ts:
             params["thread_ts"] = args.thread_ts
         data = client.call("chat.postMessage", **params)
-        print(json.dumps({"posted": data.get("ts"),
-                          "channel": data.get("channel")}))
+        print(json.dumps({"posted": data.get("ts"), "channel": data.get("channel")}))
         return 0
     if args.cmd == "pull":
         conn = open_state(args.db)
@@ -327,8 +391,12 @@ def main(argv=None):
         for channel in channels:
             try:
                 fresh, wm = pull_channel(
-                    client, conn, channel, dry_run=args.dry_run,
-                    overlap_seconds=args.overlap_seconds)
+                    client,
+                    conn,
+                    channel,
+                    dry_run=args.dry_run,
+                    overlap_seconds=args.overlap_seconds,
+                )
                 out["messages"].extend(fresh)
                 out["watermarks"][channel] = wm
             except SlackAPIError as e:

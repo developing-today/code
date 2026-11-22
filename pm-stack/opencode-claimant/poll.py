@@ -83,15 +83,37 @@ the two entry points cannot diverge in shape.
 import ast
 import base64
 import json
+import http.client
 import os
 import re
 import subprocess
+import socket
 import sys
 import tempfile
 import time
 import urllib.request
+import urllib.error
 from datetime import datetime, timezone
 from pathlib import Path
+
+
+def _required_home() -> Path:
+    """Home per the #5762 home-resolution contract (code#8221): a
+    non-empty HOME, or a named error -- never the passwd fallback
+    Path.home() applies when HOME is unset. The claimant is fired
+    programmatically (OpenChamber cron), a context with no HOME
+    guarantee, and every path anchored below is fleet state."""
+    home = os.environ.get("HOME")
+    if not home:
+        raise RuntimeError(
+            "HOME is unset or empty: opencode-claimant cannot resolve "
+            "its state paths (#5762 home-resolution contract)"
+        )
+    return Path(home)
+
+
+HOME_DIR = _required_home()
+
 
 QUEUES = [
     "repo-health-code-pilot",
@@ -142,8 +164,8 @@ SCHEDULED_TITLE_PREFIXES = (
 # (~/.local/bin/repo-queue -> ~/.local/bin/fleet); the hand-built
 # ~/fleet-brokers/bin tree was retired by the code#5362 cutover
 # (task 12731).
-REPO_QUEUE_CMD = Path.home() / ".local" / "bin" / "repo-queue"
-PRIMARY_CLONE = Path.home() / "git" / "code"
+REPO_QUEUE_CMD = HOME_DIR / ".local" / "bin" / "repo-queue"
+PRIMARY_CLONE = HOME_DIR / "git" / "code"
 
 # Queue-broker coordinates for the rich /list read, mirroring the
 # fleet client's own resolution (pkgs/fleet crates/fleet-queue
@@ -152,8 +174,8 @@ PRIMARY_CLONE = Path.home() / "git" / "code"
 # for the client token. The token is read at call time, travels in the
 # X-Agent-Token header exactly as the binary sends it, and is never
 # logged.
-BROKER_URL_FILE = Path.home() / ".config" / "repo-queue" / "broker-url"
-BROKER_TOKEN_FILE = Path.home() / ".config" / "queue-broker" / "token"
+BROKER_URL_FILE = HOME_DIR / ".config" / "repo-queue" / "broker-url"
+BROKER_TOKEN_FILE = HOME_DIR / ".config" / "queue-broker" / "token"
 # One page at the broker's own maximum (LIST_LIMIT_MAX = 500 in
 # client.rs). A queue's claimed set is far smaller; and a short page
 # could only ever under-report candidates, never invent one.
@@ -165,13 +187,13 @@ LIST_LIMIT = 500
 # database. The broker's own /lane route ASSIGNS a lane — it is a
 # write, and poll.py is read-only by construction, so the ledger is
 # never read through it (Codex finding on PR #7059).
-TURSO_EXEC = Path.home() / "tools" / "turso-exec.py"
+TURSO_EXEC = HOME_DIR / "tools" / "turso-exec.py"
 LEDGER_DB = "fleet-queue"
 
 OPENCODE_URL = os.environ.get("OPENCODE_URL", "http://127.0.0.1:13420")
 AUTH_FILE = os.environ.get(
     "OPENCODE_AUTH_FILE",
-    os.path.expanduser("~/.local/state/opencode/service-prod.json"),
+    str(HOME_DIR / ".local/state/opencode/service-prod.json"),
 )
 
 UUID_LANE = re.compile(
@@ -594,6 +616,26 @@ def fetch_active_ids():
     return None
 
 
+class _UnixHTTPConnection(http.client.HTTPConnection):
+    """HTTP framing over the configured broker socket; no DNS/TCP fallback."""
+
+    def __init__(self, socket_path, timeout=30):
+        if not socket_path.startswith("/") or "\x00" in socket_path:
+            raise ValueError("unix broker URL requires an absolute socket path")
+        super().__init__("localhost", timeout=timeout)
+        self.socket_path = socket_path
+
+    def connect(self):
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        try:
+            sock.settimeout(self.timeout)
+            sock.connect(self.socket_path)
+        except BaseException:
+            sock.close()
+            raise
+        self.sock = sock
+
+
 def _broker_post(path, body):
     """POST a JSON body to the queue-broker and return the decoded
     response object. Raises on any transport, credential or protocol
@@ -607,17 +649,55 @@ def _broker_post(path, body):
         if token_file
         else BROKER_TOKEN_FILE.read_text().strip()
     )
-    req = urllib.request.Request(
-        url.rstrip("/") + path,
-        data=json.dumps(body).encode(),
-        headers={"X-Agent-Token": token, "Content-Type": "application/json"},
-        method="POST",
-    )
-    with urllib.request.urlopen(req, timeout=30) as res:
-        data = json.loads(res.read() or "null")
+    payload = json.dumps(body).encode()
+    headers = {"X-Agent-Token": token, "Content-Type": "application/json"}
+    if url.startswith("unix://"):
+        # Same HTTP API/auth as TCP, but the URL suffix is a literal socket
+        # path, not an HTTP base URL. Never append /list to that filename.
+        conn = _UnixHTTPConnection(url[len("unix://") :], timeout=30)
+        try:
+            conn.request("POST", path, body=payload, headers=headers)
+            with conn.getresponse() as res:
+                # No redirects or fallback to a different broker/auth target.
+                if not 200 <= res.status < 300:
+                    error = urllib.error.HTTPError(
+                        url + path, res.status, res.reason, res.headers, res
+                    )
+                    # This helper exposes decoded JSON, never an open error
+                    # response; close the wrapper as well as the connection.
+                    error.close()
+                    raise error
+                data = json.loads(res.read() or "null")
+        finally:
+            conn.close()
+    else:
+        req = urllib.request.Request(
+            url.rstrip("/") + path,
+            data=payload,
+            headers=headers,
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=30) as res:
+            data = json.loads(res.read() or "null")
     if isinstance(data, dict) and data.get("ok") is False:
         raise RuntimeError(f"broker {path} failed: {str(data.get('error'))[:200]}")
     return data
+
+
+# Read failures from the most recent poll cycle, keyed (queue, status)
+# -> first-line error text (#8042). _fetch_rows still returns [] on a
+# failure — a queue that cannot be read contributes no candidates and
+# no stuck-bound rows, and the cap still fails closed via the session
+# reads, so a partial view can never cause a launch by itself — but the
+# failure is RECORDED here so main() can publish read_ok per queue and
+# a consumer never has to mistake an unread queue for an empty one.
+_READ_ERRORS = {}
+
+
+def queue_read_errors(queue):
+    """Recorded read errors for one queue from the latest poll cycle:
+    {status: error text}; empty when every read for the queue succeeded."""
+    return {status: err for (q, status), err in _READ_ERRORS.items() if q == queue}
 
 
 def _fetch_rows(queue, status):
@@ -628,7 +708,8 @@ def _fetch_rows(queue, status):
     (#7325/#7375). Returns [] with a warning on any failure: a queue
     that cannot be read contributes no candidates and no stuck-bound
     rows, and the cap still fails closed via the session reads, so a
-    partial view can never cause a launch by itself."""
+    partial view can never cause a launch by itself. The failure is
+    also recorded in _READ_ERRORS (#8042)."""
     try:
         data = _broker_post(
             "/list",
@@ -641,10 +722,12 @@ def _fetch_rows(queue, status):
         )
     except Exception as e:
         print(f"Warning: Could not poll queue {queue}: {e}", file=sys.stderr)
+        _READ_ERRORS[(queue, status)] = str(e)[:200]
         return []
     if isinstance(data, dict):
         data = data.get("rows") or []
     if not isinstance(data, list):
+        _READ_ERRORS[(queue, status)] = "unexpected broker response shape"
         return []
     rows = []
     for row in data:
@@ -866,6 +949,7 @@ def main():
         for s in sessions:
             if isinstance(s, dict) and s.get("id"):
                 session_by_id[s["id"]] = s
+    _READ_ERRORS.clear()
     out = {"queues": {}, "candidates": [], "stuck_bound": [], "stale_binding": []}
     # Fetch every queue's rows first so the lane ledger is read ONCE
     # for the whole poll (#5508): candidate-shaped rows from claimed
@@ -900,12 +984,18 @@ def main():
             )
             for r in get_stuck_bound(rows, session_by_id, active_ids, now_ms)
         ]
+        read_errors = queue_read_errors(q)
         out["queues"][q] = {
             "claimed": len(rows),
             "handed_off": len(handed_off_rows),
             "candidates": cands,
             "stuck_bound": stuck,
             "stale_binding": stale,
+            # #8042: a queue whose broker read failed is UNKNOWN, not
+            # empty — consumers (claimant gate_step) must not conclude
+            # "no candidates" from its empty lists.
+            "read_ok": not read_errors,
+            "read_errors": read_errors,
         }
         out["candidates"].extend(cands)
         out["stuck_bound"].extend(stuck)

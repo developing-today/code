@@ -6,9 +6,9 @@ import { describe, expect, test } from "bun:test";
 import { generateKeyPairSync } from "node:crypto";
 import type { AttachTargetInfo } from "../src/server.ts";
 
-// src/server.ts loads config at import; loadConfig requires SUPABASE_URL
+// src/server.ts loads config at import; the broker token file fixture keeps the queue unconfigured.
 // (#5120), so pin a fixture project before the dynamic import below.
-process.env.SUPABASE_URL ??= "https://fixture.supabase.co";
+process.env.QUEUE_BROKER_TOKEN_FILE ??= "/nonexistent-dispatch-test/broker-token";
 const { verifyAttachTarget } = await import("../src/server.ts");
 import { GitHubClient, isNotFoundError } from "../src/github.ts";
 

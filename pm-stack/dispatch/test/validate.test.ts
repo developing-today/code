@@ -421,9 +421,7 @@ describe("#3418 required_budget_minutes parsing", () => {
   });
   test("non-positive, fractional, and non-numeric values are rejected", () => {
     for (const bad of [0, -5, 1.5, "120", true]) {
-      expect(() => parseTaskRequest({ ...base, required_budget_minutes: bad })).toThrow(
-        /required_budget_minutes/,
-      );
+      expect(() => parseTaskRequest({ ...base, required_budget_minutes: bad })).toThrow(/required_budget_minutes/);
     }
   });
 });

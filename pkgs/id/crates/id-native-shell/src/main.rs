@@ -21,9 +21,10 @@ use std::sync::Mutex;
 
 use anyhow::{Context, Result, bail};
 use bevy::prelude::{App, DefaultPlugins, Res, ResMut, Resource, Startup, Update};
-use id_native_shell::render::{PresentedView, ShellRenderPlugin};
+use id_native_shell::render::{PresentedForm, PresentedView, ShellRenderPlugin};
 use id_native_shell::{
-    CONTRACT_NAME, CONTRACT_VERSION, ProviderAdapter, SessionView, run_session_with_providers,
+    CONTRACT_NAME, CONTRACT_VERSION, LocalBounds, ProviderAdapter, SessionView,
+    run_session_with_providers,
 };
 use iroh::endpoint::{RelayMode, presets};
 use iroh::{Endpoint, EndpointAddr, EndpointId, TransportAddr};
@@ -86,11 +87,20 @@ struct SessionBridge {
 }
 
 /// Drain every view the session has published into the presented view.
-fn drain_session_views(mut presented: ResMut<'_, PresentedView>, bridge: Res<'_, SessionBridge>) {
+///
+/// #8938: each drained view is also folded through the form presenter,
+/// so a trusted presented form renders widgets and any other view clears
+/// them.
+fn drain_session_views(
+    mut presented: ResMut<'_, PresentedView>,
+    mut form: ResMut<'_, PresentedForm>,
+    bridge: Res<'_, SessionBridge>,
+) {
     let Ok(mut views) = bridge.views.lock() else {
         return;
     };
     while let Ok(view) = views.try_recv() {
+        form.apply_view(&view);
         presented.0 = Some(view);
     }
 }
@@ -132,6 +142,35 @@ fn spawn_session(args: &SessionArgs) -> Result<SessionBridge> {
                         // opt-in surface; the adapter alone decides
                         // what executes.
                         let mut adapter = ProviderAdapter::new();
+                        // F13.7 step 5: the one local opt-in the
+                        // shipped shell has. Setting
+                        // ID_SHELL_FILE_READ_ROOT to a directory is
+                        // the local user's deliberate grant of
+                        // client.file.read for this session's world,
+                        // under the design's default local bounds —
+                        // and it is simultaneously the durability
+                        // disclosure acknowledgment: bytes read under
+                        // this root and returned to the world become
+                        // journaled world data, visible to the
+                        // host/operator and anyone with journal
+                        // access. Unset (the default), nothing is
+                        // registered, offered, or executed.
+                        if let Ok(root) = std::env::var("ID_SHELL_FILE_READ_ROOT") {
+                            let world_name = world.as_deref().unwrap_or_default();
+                            match adapter.grant_file_read(
+                                world_name,
+                                root,
+                                LocalBounds::DESIGN_DEFAULT,
+                                true,
+                            ) {
+                                Ok(()) => eprintln!(
+                                    "id-native-shell: client.file.read enabled for world {world_name} under ID_SHELL_FILE_READ_ROOT; returned bytes become journaled world data"
+                                ),
+                                Err(code) => eprintln!(
+                                    "id-native-shell: client.file.read opt-in refused: {code}"
+                                ),
+                            }
+                        }
                         let provider_offer =
                             adapter.offer_frame(world.as_deref().unwrap_or_default());
                         let (provider_tx, mut provider_rx) =

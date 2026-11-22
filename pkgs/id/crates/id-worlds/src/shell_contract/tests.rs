@@ -3,7 +3,7 @@ use std::collections::BTreeSet;
 use serde_json::json;
 
 use super::*;
-use crate::world_session::{ClientFrame, InviteResponse, ServerFrame};
+use crate::world_session::{ClientFrame, InviteResponse, ScreenRegion, ServerFrame};
 
 fn contract() -> &'static ShellContract {
     ShellContract::embedded().unwrap()
@@ -59,6 +59,9 @@ fn server_frame_type(frame: &ServerFrame<'_>) -> &'static str {
         ServerFrame::EventHistoryEvent { .. } => "event_history_event",
         ServerFrame::Error { .. } => "error",
         ServerFrame::ProviderRequest { .. } => "provider_request",
+        ServerFrame::InputRefused { .. } => "input_refused",
+        ServerFrame::SemanticDiff { .. } => "semantic_diff",
+        ServerFrame::ScreenSubscription { .. } => "screen_subscription",
     }
 }
 
@@ -95,6 +98,9 @@ const SERVER_FRAME_TYPES: &[&str] = &[
     "event_history_event",
     "error",
     "provider_request",
+    "input_refused",
+    "semantic_diff",
+    "screen_subscription",
 ];
 
 #[test]
@@ -234,6 +240,42 @@ fn every_server_frame_variant_is_in_the_contract_and_nothing_else_is() {
             provider: "client.file.read",
             args: serde_json::json!({"path": "notes.txt"}),
             deadline_ms: 5000,
+        },
+        ServerFrame::SemanticDiff {
+            sequence: 7,
+            view_revision: 3,
+            base_view_revision: Some(2),
+            changes: vec![
+                serde_json::json!({"kind": "chat_posted", "participant_id": 1, "text": "hi"}),
+            ],
+            region: None,
+        },
+        ServerFrame::SemanticDiff {
+            sequence: 8,
+            view_revision: 4,
+            base_view_revision: None,
+            changes: vec![serde_json::json!({"kind": "region_changed", "row": 0, "text": "hi"})],
+            region: Some(ScreenRegion {
+                x: 0,
+                y: 0,
+                width: 10,
+                height: 2,
+            }),
+        },
+        ServerFrame::ScreenSubscription {
+            region: Some(ScreenRegion {
+                x: 0,
+                y: 0,
+                width: 10,
+                height: 2,
+            }),
+            event_classes: Some(vec!["chat_posted".to_owned()]),
+            view_revision: 3,
+        },
+        ServerFrame::ScreenSubscription {
+            region: None,
+            event_classes: None,
+            view_revision: 0,
         },
         ServerFrame::Revoked {
             participant_id: 7,
@@ -556,4 +598,198 @@ fn provider_frames_conform_only_where_the_contract_allows_them() {
     // above pins the exact set both ways).
     assert!(contract.client_frames.contains_key("join"));
     assert!(contract.server_frames.contains_key("view"));
+}
+
+#[test]
+fn pointer_and_hover_frames_conform_to_the_input_event_model() {
+    // Oracle: the #1831 S2 design — activation events are journaled
+    // (class event), hover is ephemeral, refusals name a reason from
+    // the design's table, and scroll deltas are signed cell units.
+    let contract = contract();
+    assert_eq!(contract.revision, 11);
+    assert_eq!(contract.client_frames["pointer"].class, FrameClass::Event);
+    assert_eq!(contract.client_frames["hover"].class, FrameClass::Ephemeral);
+    assert_eq!(
+        contract.server_frames["input_refused"].class,
+        FrameClass::Reply
+    );
+
+    let scroll = json!({
+        "type": "pointer",
+        "event": "scroll",
+        "environment": "android",
+        "pointer_id": 0,
+        "x": 3,
+        "y": 4,
+        "dx": -2,
+        "dy": 5
+    });
+    assert_eq!(
+        contract.check_client_frame(&scroll, Phase::Joined).unwrap(),
+        "pointer"
+    );
+    let parsed: ClientFrame = serde_json::from_value(scroll.clone()).unwrap();
+    assert!(matches!(parsed, ClientFrame::Pointer { .. }));
+
+    // A non-integer scroll delta is not a signed integer.
+    let mut bad_scroll = scroll.clone();
+    bad_scroll["dx"] = json!(1.5);
+    assert!(
+        contract
+            .check_client_frame(&bad_scroll, Phase::Joined)
+            .is_err()
+    );
+
+    // An event the model does not name is refused by the contract check.
+    let mut mystery = scroll.clone();
+    mystery["event"] = json!("pinch");
+    assert!(
+        contract
+            .check_client_frame(&mystery, Phase::Joined)
+            .is_err()
+    );
+    assert!(serde_json::from_value::<ClientFrame>(mystery).is_err());
+
+    let hover = json!({
+        "type": "hover",
+        "event": "hover_move",
+        "environment": "web",
+        "pointer_id": 0,
+        "x": 1,
+        "y": 2
+    });
+    assert_eq!(
+        contract.check_client_frame(&hover, Phase::Joined).unwrap(),
+        "hover"
+    );
+    let parsed: ClientFrame = serde_json::from_value(hover).unwrap();
+    assert!(matches!(parsed, ClientFrame::Hover { .. }));
+
+    // The refusal answer: every reason in the design's table conforms,
+    // and a reason outside the table does not.
+    for reason in [
+        "no_timing_source",
+        "hover_unsupported",
+        "context_menu_not_claimed",
+        "reserved_by_browser",
+        "no_secondary_button",
+        "not_reported_by_terminal",
+        "button_identity_unavailable",
+        "no_tracking_mode",
+        "gesture_not_in_subset",
+        "multi_touch_deferred",
+        "not_declared_by_app",
+        "unknown_or_unsupported_event",
+    ] {
+        let refusal = json!({
+            "type": "input_refused",
+            "event": "hover_enter",
+            "environment": "android",
+            "reason": reason
+        });
+        assert_eq!(
+            contract.check_server_frame(&refusal).unwrap(),
+            "input_refused",
+            "{reason}"
+        );
+    }
+    let refusal = json!({
+        "type": "input_refused",
+        "event": "hover_enter",
+        "reason": "not_a_reason"
+    });
+    assert!(contract.check_server_frame(&refusal).is_err());
+
+    let frame = ServerFrame::InputRefused {
+        event: "secondary_press",
+        environment: Some(crate::world_session::InputEnvironment::Web),
+        reason: crate::world_session::InputRefusalReason::ContextMenuNotClaimed,
+    };
+    let value = serde_json::to_value(&frame).unwrap();
+    assert_eq!(value["type"], "input_refused");
+    contract.check_server_frame(&value).unwrap();
+}
+
+#[test]
+fn agent_profile_frames_conform_and_are_additive() {
+    // Oracle: the #6300 design (doc/2026-11-09_design_id6300_agents_in_worlds_v1.md)
+    // sections 4.2, 4.3, 8, 9.1 — the agent profile is an additive
+    // revision: a capability flag on join, region subscriptions and
+    // semantic-diff server frames for the agent profile, and the
+    // stale-decision token on agent input frames. Human shells, which
+    // never set the flag or send the new frames, are unaffected.
+    let contract = contract();
+    assert_eq!(contract.revision, 11);
+    assert_eq!(
+        contract.client_frames["screen_subscribe"].class,
+        FrameClass::Ephemeral
+    );
+    assert_eq!(
+        contract.server_frames["semantic_diff"].class,
+        FrameClass::Ephemeral
+    );
+    assert_eq!(
+        contract.server_frames["screen_subscription"].class,
+        FrameClass::Reply
+    );
+    let flag = &contract.client_frames["join"].fields["agent_profile"];
+    assert!(flag.optional && !flag.nullable, "join.agent_profile");
+    for kind in ["input", "chat", "paste", "form_result", "pointer"] {
+        let token = &contract.client_frames[kind].fields["screen_revision"];
+        assert!(
+            token.optional,
+            "{kind}.screen_revision is the optional stale-decision token"
+        );
+    }
+
+    // A full agent-profile session transcript conforms end to end.
+    let transcript = [
+        json!({"from": "client", "frame": {"type": "join", "capability": "cap", "after": null, "agent_profile": true}}),
+        json!({"from": "server", "frame": {"type": "snapshot", "snapshot": {"sequence": 0}}}),
+        json!({"from": "server", "frame": {"type": "view", "sequence": 0, "data": "hello", "view_revision": 0}}),
+        json!({"from": "client", "frame": {"type": "screen_subscribe", "region": {"x": 0, "y": 0, "width": 10, "height": 2}, "event_classes": ["chat_posted"]}}),
+        json!({"from": "server", "frame": {"type": "screen_subscription", "region": {"x": 0, "y": 0, "width": 10, "height": 2}, "event_classes": ["chat_posted"], "view_revision": 0}}),
+        json!({"from": "server", "frame": {"type": "semantic_diff", "sequence": 1, "view_revision": 0, "changes": [{"kind": "chat_posted", "participant_id": 2, "text": "hi"}]}}),
+        json!({"from": "client", "frame": {"type": "input", "data_hex": "6c", "screen_revision": 0}}),
+        json!({"from": "server", "frame": {"type": "semantic_diff", "sequence": 1, "view_revision": 1, "base_view_revision": 0, "changes": [{"kind": "region_changed", "row": 0, "text": "hello agent"}], "region": {"x": 0, "y": 0, "width": 10, "height": 2}}}),
+    ]
+    .iter()
+    .map(serde_json::Value::to_string)
+    .collect::<Vec<_>>()
+    .join("\n");
+    let violations = check_transcript(contract, &transcript).unwrap();
+    assert!(violations.is_empty(), "{violations:#?}\n{transcript}");
+
+    // A subscription is a joined-phase frame: in the opening phase it is
+    // a violation, like every other joined-only frame.
+    let early = json!({"type": "screen_subscribe", "event_classes": []});
+    assert!(contract.check_client_frame(&early, Phase::Opening).is_err());
+    assert_eq!(
+        contract.check_client_frame(&early, Phase::Joined).unwrap(),
+        "screen_subscribe"
+    );
+    let parsed: ClientFrame = serde_json::from_value(early).unwrap();
+    assert!(matches!(parsed, ClientFrame::ScreenSubscribe { .. }));
+
+    // The projection rule binds diffs too: a semantic diff may not leak
+    // a program seed past the client projection.
+    let leaking = json!({"type": "semantic_diff", "sequence": 1, "view_revision": 0, "changes": [{"kind": "program_changed", "seed": 42}]});
+    assert!(contract.check_server_frame(&leaking).is_err());
+}
+
+#[test]
+fn a_duplicated_key_is_refused_in_the_contract_and_the_transcript() {
+    // A lenient parse would ignore the unknown key and keep the last
+    // "from", so both would pass without the refusal (#8794).
+    let duplicated = SHELL_CONTRACT_JSON.replacen('{', r#"{"x":1,"x":2,"#, 1);
+    assert!(ShellContract::parse(SHELL_CONTRACT_JSON).is_ok());
+    assert!(
+        ShellContract::parse(&duplicated)
+            .unwrap_err()
+            .contains("duplicate JSON object key")
+    );
+    let line =
+        r#"{"from": "server", "from": "client", "frame": {"type": "info", "capability": "c"}}"#;
+    assert!(check_transcript(contract(), &line.replacen(r#""from": "server", "#, "", 1)).is_ok());
+    assert!(check_transcript(contract(), line).is_err());
 }

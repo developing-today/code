@@ -70,17 +70,17 @@ items the research deferred are decided in §10:
 
 A world announcement is a signed object with exactly these fields:
 
-| Field | Type | Notes |
-|---|---|---|
-| `world_id` | public key (ed25519) | The world's identity; also its pkarr key |
-| `name` | string ≤ 64 chars | Display only; names are claims, not IDs |
-| `description` | string ≤ 200 chars | One line; longer text lives behind the endpoint |
-| `endpoint` | iroh node id + relay hint | Never a raw IP/port |
-| `occupancy` | enum: `has_room` \| `near_full` \| `full` | Coarse by design (Q1); exact counts are a privacy leak and the runtime does not track them |
-| `tags` | list of ≤ 8 short strings | Discovery hints, unsigned semantics (registries may filter on them; clients must not trust them) |
-| `visibility` | enum: `unlisted` \| `listed` | `private` worlds publish nothing at all (§6) |
-| `issued_at` / `expires_at` | timestamps | Lifetime ≤ 7 days; expired announcements are void, not stale |
-| `seq` | uint64, monotone per world key | The BEP44 sequence; a lower-or-equal seq never replaces a higher one |
+| Field                      | Type                                      | Notes                                                                                            |
+| -------------------------- | ----------------------------------------- | ------------------------------------------------------------------------------------------------ |
+| `world_id`                 | public key (ed25519)                      | The world's identity; also its pkarr key                                                         |
+| `name`                     | string ≤ 64 chars                         | Display only; names are claims, not IDs                                                          |
+| `description`              | string ≤ 200 chars                        | One line; longer text lives behind the endpoint                                                  |
+| `endpoint`                 | iroh node id + relay hint                 | Never a raw IP/port                                                                              |
+| `occupancy`                | enum: `has_room` \| `near_full` \| `full` | Coarse by design (Q1); exact counts are a privacy leak and the runtime does not track them       |
+| `tags`                     | list of ≤ 8 short strings                 | Discovery hints, unsigned semantics (registries may filter on them; clients must not trust them) |
+| `visibility`               | enum: `unlisted` \| `listed`              | `private` worlds publish nothing at all (§6)                                                     |
+| `issued_at` / `expires_at` | timestamps                                | Lifetime ≤ 7 days; expired announcements are void, not stale                                     |
+| `seq`                      | uint64, monotone per world key            | The BEP44 sequence; a lower-or-equal seq never replaces a higher one                             |
 
 The whole object, CBOR-encoded, must fit the pkarr budget: the
 field caps above keep the signed packet under ~800 bytes, leaving
@@ -113,13 +113,13 @@ registry is the worked shape lesson) containing:
 
 - the registry's own key and inclusion policy statement;
 - entries: `{ announcement (verbatim, self-signed), included_at,
-  registry_seq }`;
+registry_seq }`;
 - tombstones: `{ world_id, removed_at, reason }` — delisting
   propagates as a tombstone-with-reason (decided, §10), so a mirror
   can distinguish "delisted" from "never seen".
 
 **Mirroring** copies announcements (which remain valid — they are
-self-signed) and the mirror's *own* inclusion decisions are its own:
+self-signed) and the mirror's _own_ inclusion decisions are its own:
 a mirror that imports another registry's list re-signs the subset
 it chooses to include. Two registries disagreeing about a world is
 the expected state, not a conflict. A client's trust question is
@@ -136,7 +136,7 @@ curated registry; a fresh self-host subscribes to none.
   can find it by key) but never submitted to registries. Anyone who
   learns the `world_id` can find the endpoint; nobody can browse
   to it.
-- **listed** — the announcement is published to pkarr *and*
+- **listed** — the announcement is published to pkarr _and_
   submitted to the registries the operator chooses.
 
 **Resolver order (decided):** invite link (exact, zero-trust-needed)
@@ -161,15 +161,15 @@ is a fallback for the one before; no layer can override a fresher
 
 ## 8. Dependencies — named, not assumed (fresh states, 2026-11-16)
 
-| Dependency | State | Bearing on v1 |
-|---|---|---|
-| #812 world directory feed | CLOSED (not built) | The announcement is the primitive (§2 Q1) |
-| #1061 F12.4 provider registry | CLOSED | Manifest/capability pattern is a closed input |
-| #1067 F12.10 fair scheduling | OPEN | Hosted-operation concern; discovery semantics do not depend on it. Named, not assumed |
-| #1068 F12.14 portals | OPEN | Portals model cross-world trust as mutual grant; a registry's inclusion opinion must never override a portal grant (§5). Federation *messaging* is #1068's step, not this one |
-| #1069 F12.17 trust & provenance | CLOSED | Signature-vs-admin-trust-list pattern generalized per-registry (§3, §5) |
-| #6283 hosted worlds v1 | CLOSED (PR #10692) | Predecessor step; worlds this design discovers are the worlds that step hosts |
-| `pkgs/pkarr-worker` | operational | The publishing path §4 builds on |
+| Dependency                      | State              | Bearing on v1                                                                                                                                                                 |
+| ------------------------------- | ------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| #812 world directory feed       | CLOSED (not built) | The announcement is the primitive (§2 Q1)                                                                                                                                     |
+| #1061 F12.4 provider registry   | CLOSED             | Manifest/capability pattern is a closed input                                                                                                                                 |
+| #1067 F12.10 fair scheduling    | OPEN               | Hosted-operation concern; discovery semantics do not depend on it. Named, not assumed                                                                                         |
+| #1068 F12.14 portals            | OPEN               | Portals model cross-world trust as mutual grant; a registry's inclusion opinion must never override a portal grant (§5). Federation _messaging_ is #1068's step, not this one |
+| #1069 F12.17 trust & provenance | CLOSED             | Signature-vs-admin-trust-list pattern generalized per-registry (§3, §5)                                                                                                       |
+| #6283 hosted worlds v1          | CLOSED (PR #10692) | Predecessor step; worlds this design discovers are the worlds that step hosts                                                                                                 |
+| `pkgs/pkarr-worker`             | operational        | The publishing path §4 builds on                                                                                                                                              |
 
 ## 9. What breaks first — and the v1 mitigation for each
 
@@ -196,16 +196,16 @@ is a fallback for the one before; no layer can override a fresher
 
 ## 10. Open choices — decided here with defaults
 
-| Choice (deferred by research) | v1 decision |
-|---|---|
-| Exact announcement schema | §3 (field caps sized to the pkarr budget) |
-| Registry list format | Signed list file with entries + tombstones (§5) |
-| Delisting propagation | Tombstone-with-reason (§5) |
-| Heartbeat interval | Republish at half the record's effective lifetime (§4) |
-| Resolver fallback order | Invite link → pkarr → subscribed registries (§6) |
-| Program announcements | Same schema, content hash in place of endpoint (§3) |
-| Relay-required default | Per-client setting; not a per-world or global default (§7) |
-| Curated-list default | Default only on our hosted instance; self-hosts default to no registry (§5) |
+| Choice (deferred by research) | v1 decision                                                                 |
+| ----------------------------- | --------------------------------------------------------------------------- |
+| Exact announcement schema     | §3 (field caps sized to the pkarr budget)                                   |
+| Registry list format          | Signed list file with entries + tombstones (§5)                             |
+| Delisting propagation         | Tombstone-with-reason (§5)                                                  |
+| Heartbeat interval            | Republish at half the record's effective lifetime (§4)                      |
+| Resolver fallback order       | Invite link → pkarr → subscribed registries (§6)                            |
+| Program announcements         | Same schema, content hash in place of endpoint (§3)                         |
+| Relay-required default        | Per-client setting; not a per-world or global default (§7)                  |
+| Curated-list default          | Default only on our hosted instance; self-hosts default to no registry (§5) |
 
 ## 11. Implementation breakdown
 
@@ -226,7 +226,7 @@ Filed from this record (each is its own issue, linked from #6287):
 
 ## 12. Out of scope (explicit)
 
-- Federation *messaging* between worlds (portals, #1068's step).
+- Federation _messaging_ between worlds (portals, #1068's step).
 - Hosted-instance operations (relay limits, abuse response) —
   the hosted step's record, not this protocol's.
 - Key recovery / identity handover (named in §9.3 as accepted v1

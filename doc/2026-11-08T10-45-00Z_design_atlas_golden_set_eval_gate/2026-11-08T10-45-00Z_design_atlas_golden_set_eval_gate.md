@@ -15,6 +15,7 @@ Atlas combines multiple retrieval signals (dense embeddings, FTS5/BM25, SPLADE, 
 Per the repository testing doctrine, every automated verification requires a decidable oracle. For retrieval quality, the oracle cannot be a static unit-test assertion; it is a **versioned golden evaluation set** coupled with **decision procedures over quantitative retrieval metrics** (nDCG@10, Recall@100, MRR@10).
 
 This document specifies:
+
 1. **Golden-set schema and versioning:** The data format feeding the landed `atlas-eval/v1` harness (#5741 / PR #6262).
 2. **Promotion flow:** How negative user feedback (thumbs-down) and sampled live queries from parent issue #6027 are promoted into verified eval entries through human or agent confirmation.
 3. **Eval-gate contract:** Which change classes must execute the eval gate, which metrics are evaluated, and the exact regression deltas that block a change from merging.
@@ -25,15 +26,19 @@ This document specifies:
 ## 2. Consuming Harness and Test Oracle Contract
 
 ### 2.1 The Consuming Harness (`atlas_core::eval`)
+
 Issue #5741 built and landed the offline evaluation engine in `pkgs/atlas-search/crates/atlas-core/src/eval.rs` (PR #6262, commit `c26e0585add36770e90d7b24480b9bb5b3564c5e`), executed via the CLI binary `atlas-eval <eval.json> <dev|test>`.
 
 The golden-set builder does **not** create a separate or parallel evaluation harness. It produces input documents adhering directly to the landed `atlas-eval/v1` format:
+
 - `queries`: Array of `{ "id": string, "class": string, "split": "dev" | "test", "text": string }`.
 - `qrels`: Array of `{ "query": string, "doc": string, "grade": u32 }` where grade $\in [0, 30]$ and relevant $\ge 1$.
 - `runs`: Evaluated signal candidate rankings `{ "signal": string, "results": { [query_id]: [doc_id, ...] } }`.
 
 ### 2.2 The Oracle Decision Procedure
+
 Under the testing doctrine:
+
 - **Oracle:** The versioned golden set (`queries` + ground-truth `qrels`) represents the ground truth of user intent.
 - **Decision Procedure:** Comparing the candidate run ($R_{\text{cand}}$) against the baseline run ($R_{\text{base}}$) using metric delta thresholds $\Delta = M(R_{\text{cand}}) - M(R_{\text{base}})$. A change is rejected if $\Delta$ violates the gate contract (§5).
 
@@ -42,6 +47,7 @@ Under the testing doctrine:
 ## 3. Golden-Set Schema and Versioning
 
 ### 3.1 Metadata-Enriched Schema
+
 While the runner consumes `atlas-eval/v1`, the golden-set source repository maintains rich provenance metadata to enable auditability, freshness tracking, and confirmation attribution.
 
 The master golden set is stored at `pkgs/atlas-search/eval/golden/atlas-golden-set.json` with the following schema:
@@ -92,15 +98,19 @@ The master golden set is stored at `pkgs/atlas-search/eval/golden/atlas-golden-s
 ```
 
 ### 3.2 Compilation to `atlas-eval/v1`
+
 A simple compilation step (`atlas-eval-compile`) strips internal provenance and emits the exact `atlas-eval/v1` JSON structure for evaluation runs:
+
 - `doc_id` is passed as `doc` in `qrels`.
 - Query `id`, `class`, `split`, and `query_text` (as `text`) populate `queries`.
 - `runs` are **not** compiled from the master schema — the master set versions ground truth (`queries` + `qrels`) only, and the harness scores supplied rankings without executing retrieval (`EvalData.runs` is required input, §2.1). Rankings enter compilation as separate, freshly generated run files (§3.2.1); compilation merges them in (§3.2.2) and rejects stale or unpaired ones (§3.2.3).
 
 #### 3.2.1 Run generation — where `runs` come from
+
 A run-generation step (`atlas-eval-run`) executes every golden query against a pinned corpus/index snapshot and saves the resulting rankings, one file per run, in the exact `Run` shape the harness consumes: `{ "signal": string, "results": { [query_id]: [doc_id, ...] } }`, with up to the top-1000 doc_ids per query (the depth `Recall@1000` is scored at) in the same `doc_id` namespace as the qrels. The harness itself never runs retrieval, so a ranking that was not generated and saved by this step does not exist as far as the gate is concerned.
 
 For a gated change, two runs are generated per signal under test:
+
 - **Baseline run** — produced by the pre-change retrieval stack (main-branch code and configuration) and named `<signal>@base`.
 - **Candidate run** — produced by the change's retrieval stack (the PR's code and configuration) and named `<signal>@cand`.
 
@@ -109,14 +119,17 @@ Both runs execute against the **same raw corpus snapshot**: the content the mast
 **Qrel mapping under re-chunking.** Judgments are recorded against source spans: a qrel `doc_id` carries `file_path` + `span` (§3.1), and the grade belongs to that span, not to one chunker's boundaries. When baseline and candidate chunkings are identical, scoring uses exact doc-ID lookup as `atlas_core::eval` does today. When the candidate re-chunks, a candidate chunk is relevant to a query iff its `(file_path, span)` overlaps a judged span for that query, and it inherits that span's grade; run generation therefore emits candidate rankings already mapped into judged-span identities (one entry per judged span hit, best grade when several candidate chunks overlap one span), so the harness's exact-ID scoring compares like with like. A chunking candidate whose rankings were emitted in raw candidate chunk ids, unmapped, is invalid (§3.2.3).
 
 #### 3.2.2 Compilation inputs and outputs
+
 `atlas-eval-compile` takes the master golden set plus one or more run files and emits a single `atlas-eval/v1` document whose `runs` array is exactly the supplied runs (signal names preserved, including the `@base`/`@cand` suffixes the §5.3 delta procedure pairs on). Compilation performs no retrieval and invents no rankings: with no run files it refuses to emit a gate document at all, because the result would fail `EvalData` validation for missing `runs` — a queries/qrels-only document is a set-definition artifact, not an evaluation input.
 
 #### 3.2.3 Freshness and pairing rules
+
 - **Runs are generated per gate invocation, never versioned as ground truth.** Only `queries` + `qrels` are committed in the master set; run files are build/CI artifacts retained with the gate report for reproducibility. A saved ranking from an earlier change is never reused as a baseline or candidate — it was produced by a different stack or corpus and would score the gate against stale rankings.
 - **Stale-ranking rejection:** compilation fails if any run file's manifest `corpus_commit` differs from the master schema's `corpus_commit`, or if a run names a query id absent from the master set, repeats a doc within one ranking, or duplicates another run's signal name (mirroring `EvalData::validate`).
 - **Pairing completeness:** in gate mode, compilation fails unless every signal present as `<signal>@cand` also has its `<signal>@base` counterpart (and vice versa), so the §2.2/§5.3 deltas always compare a candidate against its own freshly generated baseline.
 
 ### 3.3 Set Size and Split Distribution
+
 - **Target Size:** Kept between **50 and 200 real queries**. A corpus smaller than 50 lacks statistical variance across query classes; a set larger than 200 introduces maintenance drag and evaluation latency.
 - **Split Ratio:**
   - **70% Dev split:** Available for iterative experimentation, parameter tuning, and ablation studies.
@@ -134,7 +147,9 @@ Both runs execute against the **same raw corpus snapshot**: the content the mast
 The fuel for the golden set is user dissatisfaction (negative feedback) and real session queries.
 
 ### 4.1 Assumptions on Parent Issue #6027 (Telemetry and Traces)
+
 The builder assumes issue #6027 implements query-trace and feedback logging with at least:
+
 1. `trace_id`: Unique identifier for each query execution.
 2. `query_text`: Literal query string issued by user or agent.
 3. `results_returned`: Ordered list of `doc_id`s presented in top-k results.
@@ -197,16 +212,17 @@ The eval gate runs on CI or local pre-merge verification before any retrieval-im
 
 ### 5.1 Gated Change Classes
 
-| Change Class | Examples / Surface | Primary Risk | Eval Requirement |
-|---|---|---|---|
-| **Rescore Weights** | #5774 parameter surface (`dense_weight`, `bm25_weight`, `splade_weight`, `jaccard_bonus`, fusion exponent) | Overfitting to one query type; degrading code retrieval for docs | Full dev + test run on static embeddings |
-| **Chunking Policy** | Span length (e.g. 512 vs 1024 bytes), syntax-directed split points, header prepending | Boundary fragmentation; loss of context precision | Requires re-chunking golden docs; full dev + test run |
-| **Embedding Model** | Upgrading dense encoder (e.g., nomic to bge), dimension changes, fine-tuned weights | Latent space drift; rank inversion | Full re-indexing of test corpus chunks; full dev + test run |
-| **Fan-Out Limits** | Candidate retrieval limits (top-k dense pool, top-k sparse pool before reciprocal rank fusion) | Latency vs recall tradeoff; truncation of relevant chunks | Fast dev run over multi-signal fusion |
+| Change Class        | Examples / Surface                                                                                         | Primary Risk                                                     | Eval Requirement                                            |
+| ------------------- | ---------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------- | ----------------------------------------------------------- |
+| **Rescore Weights** | #5774 parameter surface (`dense_weight`, `bm25_weight`, `splade_weight`, `jaccard_bonus`, fusion exponent) | Overfitting to one query type; degrading code retrieval for docs | Full dev + test run on static embeddings                    |
+| **Chunking Policy** | Span length (e.g. 512 vs 1024 bytes), syntax-directed split points, header prepending                      | Boundary fragmentation; loss of context precision                | Requires re-chunking golden docs; full dev + test run       |
+| **Embedding Model** | Upgrading dense encoder (e.g., nomic to bge), dimension changes, fine-tuned weights                        | Latent space drift; rank inversion                               | Full re-indexing of test corpus chunks; full dev + test run |
+| **Fan-Out Limits**  | Candidate retrieval limits (top-k dense pool, top-k sparse pool before reciprocal rank fusion)             | Latency vs recall tradeoff; truncation of relevant chunks        | Fast dev run over multi-signal fusion                       |
 
 ### 5.2 Metrics and Evaluation Criteria
 
 Metrics are evaluated using `atlas_core::eval`:
+
 - **nDCG@10:** Primary ranking quality metric (graded gains $2^{\text{grade}} - 1$, $\log_2$ discount).
 - **Recall@100:** Candidate pool completeness (fraction of relevant docs found in top 100).
 - **Recall@1000:** Extreme candidate pool ceiling.
@@ -236,12 +252,16 @@ Let $\Delta M = M_{\text{candidate}} - M_{\text{baseline}}$ on the evaluation se
 A static golden set degrades as code is refactored, renamed, or deleted ("corpus drift"). Without maintenance, the eval gate will fossilize or fail due to ghost chunk references.
 
 ### 6.1 Staleness Audit Trigger
+
 The staleness audit executes:
+
 1. Whenever the repository undergoes major refactor PRs affecting paths referenced in `qrels`.
 2. As a weekly automated queue task (`repo-health-code-pilot`).
 
 ### 6.2 Detection Mechanics
+
 For each entry in `atlas-golden-set.json`:
+
 1. Check if `file_path` exists on `origin/main`.
 2. If `file_path` exists, compute current BLAKE3 hash of `span`.
 3. If hash matches `content_hash`, entry is **FRESH**.
@@ -281,6 +301,7 @@ For each entry in `atlas-golden-set.json`:
 ## 7. Implementation Boundaries & Follow-ups
 
 This design explicitly separates concerns:
+
 - **In Scope (Settled by this record):**
   - Contract and schema for `atlas-golden-set.json`.
   - Format compilation into `atlas-eval/v1` consumable by `atlas_core::eval`.

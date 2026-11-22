@@ -6,12 +6,10 @@ name: opencode-config-normalize-test
 # its regression suite (incl. the #2364 data-loss mirror) must run
 # automatically on changes to the package or the service definition.
 on:
-  push:
-    branches: [main]
-    paths:
-      - "pkgs/opencode-config-normalize/**"
-      - "home/common/default.nix"
-      - ".github/workflows/opencode-config-normalize-test.yml"
+  schedule:
+    # Nightly instead of on every push to main (Drew, 2026-11-16; see
+    # .github/ci-policy.md "Nightly main CI").
+    - cron: "17 7 * * *"
   workflow_dispatch:
 
 permissions:

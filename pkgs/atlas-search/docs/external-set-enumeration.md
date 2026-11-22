@@ -68,4 +68,3 @@ those are the our-repos estate, extracted by the
 ## Dependency manifests (1)
 
 - `rust-lang/crates.io-index`
-

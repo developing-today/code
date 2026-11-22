@@ -417,12 +417,25 @@ Logs written to `~/.local/state/opencode-claimant/fires.jsonl`:
 {
   "timestamp": "2026-11-06T23:35:00Z",
   "mode": "shadow",
+  "mode_source": {
+    "path": "/home/user/.local/state/opencode-claimant/mode",
+    "state": "missing",
+    "file_mtime": null,
+    "dir_mtime": "2026-11-14T14:45:12+00:00",
+    "pid": 41234
+  },
   "candidates_seen": [...],
   "sessions_launched": [...],
   "cap_room": 36,
   "skips": [...]
 }
 ```
+
+`mode_source` (#10332) says where the fire's mode came from. `state` is
+`ok`, `missing`, `unreadable` or `invalid`; every state but `ok` means the
+fire fell back to shadow. A deletion changes the state directory's mtime,
+so for a `missing` read `dir_mtime` bounds when the file went, and a
+live-to-shadow flip can be dated from the log alone.
 
 ## Constants
 
@@ -468,3 +481,26 @@ Slice 3+: Additional features and optimizations (future work)
 - Defect: #5857 - Session creation request shape
 - Migration: 0021 - bind_repo_task_lane_session
 - Migration: 0022 - Atomic recovery operations
+
+### Broker Unix transport (#11980)
+
+The read-only poll uses the same configured broker and token resolution for
+both transports: `REPO_QUEUE_BROKER_URL` or
+`~/.config/repo-queue/broker-url`, and `REPO_QUEUE_TOKEN_FILE` or
+`~/.config/queue-broker/token`. An explicit
+`unix:///absolute/path/to/queue-broker.sock` sends HTTP `POST /list`
+over that literal filesystem socket with the usual `X-Agent-Token` header.
+It does not append the API path to the socket filename, probe TCP, or
+redirect to another broker. HTTP(S) URLs retain the existing urllib path.
+Both paths use the existing 30-second socket timeout. Transport, HTTP,
+JSON and broker application errors remain failed reads, not successful
+empty queues; no configuration changes or claimant launches are implied.
+
+Run the ordinary no-network suite unchanged:
+`python3 -I pm-stack/opencode-claimant/run_hermetic_tests.py`.
+
+Run the separate bounded local transport fixtures:
+`python3 -I pm-stack/opencode-claimant/test_poll_transport.py`.
+They serve only `/list` on a temporary Unix socket, use a dummy token,
+guard connections to that fixture path, and mock the TCP regression seam.
+They never run the live poll entry point, claim work, or launch sessions.

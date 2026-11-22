@@ -12,7 +12,7 @@
 
 Per Drew's architecture direction recorded on #5681 (2026-11-04/05), the storage answer is
 **both, with roles**: Turso is the definite preference and endpoints read from embedded
-replicas; very large corpora place shards per-shard across Turso *and* D1 by size, heat and
+replicas; very large corpora place shards per-shard across Turso _and_ D1 by size, heat and
 access pattern; cold tiers sink to the home lab. This record therefore assumes a
 **multi-backend, multi-shard** substrate and does not pick a winner.
 
@@ -26,7 +26,7 @@ Two consequences follow directly, and are the reason this ticket exists separate
 
 ## Vendor ceiling facts used as evidence
 
-Recorded from vendor documentation read on 2026-11-08. Treat every number as *configuration*,
+Recorded from vendor documentation read on 2026-11-08. Treat every number as _configuration_,
 not as a constant (see the "why the numbers are configuration" section).
 
 **Cloudflare D1** — [pricing](https://developers.cloudflare.com/d1/platform/pricing/),
@@ -34,18 +34,18 @@ not as a constant (see the "why the numbers are configuration" section).
 [Workers pricing](https://developers.cloudflare.com/workers/platform/pricing/),
 [free-tier enforcement changelog](https://developers.cloudflare.com/changelog/post/2026-09-01-d1-free-tier-limit-enforcement).
 
-| Dimension | Workers Free | Workers Paid |
-| --- | --- | --- |
-| Rows read | 5 million / day | first 25 billion / month, + $0.001 / million |
-| Rows written | 100,000 / day | first 50 million / month, + $1.00 / million |
-| Storage | 5 GB total | first 5 GB included, + $0.75 / GB-month |
-| Databases | 10 | 100,000 included, + $0.10 / database / month |
-| Max database size | 500 MB | 10 GB (cannot be raised) |
-| Max account storage | 5 GB | 1 TB (raisable) |
-| Max row / BLOB size | 2 MB | 2 MB |
-| Max query result | 50 MB (effective 2026-11-04) | 50 MB |
-| Queries per Worker invocation | 50 | 1,000 |
-| PITR (Time Travel) | 7 days | 30 days |
+| Dimension                     | Workers Free                 | Workers Paid                                 |
+| ----------------------------- | ---------------------------- | -------------------------------------------- |
+| Rows read                     | 5 million / day              | first 25 billion / month, + $0.001 / million |
+| Rows written                  | 100,000 / day                | first 50 million / month, + $1.00 / million  |
+| Storage                       | 5 GB total                   | first 5 GB included, + $0.75 / GB-month      |
+| Databases                     | 10                           | 100,000 included, + $0.10 / database / month |
+| Max database size             | 500 MB                       | 10 GB (cannot be raised)                     |
+| Max account storage           | 5 GB                         | 1 TB (raisable)                              |
+| Max row / BLOB size           | 2 MB                         | 2 MB                                         |
+| Max query result              | 50 MB (effective 2026-11-04) | 50 MB                                        |
+| Queries per Worker invocation | 50                           | 1,000                                        |
+| PITR (Time Travel)            | 7 days                       | 30 days                                      |
 
 Three properties matter for guardrails:
 
@@ -57,21 +57,21 @@ Three properties matter for guardrails:
   invoice, not an outage.
 - **Throughput is per database, not per account.** Each D1 database is single-threaded;
   a 100 ms average query caps it at ~10 queries/second, and a full queue returns an
-  "overloaded" error. Saturation is therefore a *per-shard* limit event that looks nothing
+  "overloaded" error. Saturation is therefore a _per-shard_ limit event that looks nothing
   like a quota error and must not be reported as one.
 
 **Turso** — [pricing](https://turso.tech/pricing),
 [usage & billing](https://docs.turso.tech/help/usage-and-billing),
 [limits](https://docs.turso.tech/cloud/limitations).
 
-| Dimension | Free | Developer ($4.99/mo) | Scaler ($24.92/mo) |
-| --- | --- | --- | --- |
-| Databases | 100 | unlimited | unlimited |
-| Storage | 5 GB | 9 GB, + $0.75/GB | 24 GB, + $0.50/GB |
-| Rows read / month | 500 M | 2.5 B, + $1/B | 100 B, + $0.80/B |
-| Rows written / month | 10 M | 25 M, + $1/M | 100 M, + $0.80/M |
-| Embedded syncs | 3 GB | 10 GB | 24 GB |
-| PITR | 1 day | 10 days | 30 days |
+| Dimension            | Free  | Developer ($4.99/mo) | Scaler ($24.92/mo) |
+| -------------------- | ----- | -------------------- | ------------------ |
+| Databases            | 100   | unlimited            | unlimited          |
+| Storage              | 5 GB  | 9 GB, + $0.75/GB     | 24 GB, + $0.50/GB  |
+| Rows read / month    | 500 M | 2.5 B, + $1/B        | 100 B, + $0.80/B   |
+| Rows written / month | 10 M  | 25 M, + $1/M         | 100 M, + $0.80/M   |
+| Embedded syncs       | 3 GB  | 10 GB                | 24 GB              |
+| PITR                 | 1 day | 10 days              | 30 days            |
 
 The Turso pricing page currently displays Developer at $4.99/month and Scaler at
 $24.92/month with "save" amounts, i.e. annual-billing equivalents; monthly-billing
@@ -83,8 +83,8 @@ Supabase, so these are not long-term price guarantees.
 Three properties matter here:
 
 - **Turso's hard failure mode is a typed error.** A query that exceeds a plan quota returns
-  the `BLOCKED` error code. That is better than a silent truncation, but it arrives *at the
-  call site*, which for us can be the middle of a journal append.
+  the `BLOCKED` error code. That is better than a silent truncation, but it arrives _at the
+  call site_, which for us can be the middle of a journal append.
 - **Billable overages are opt-in.** Overages can be enabled or disabled per plan. The
   guardrail must know which posture a deployment is in, because it changes whether "near the
   ceiling" means "slow down and keep working" or "you are about to stop".
@@ -108,7 +108,7 @@ Concretely:
    sync bytes — plus its plan/ceiling. The account meter aggregates every world/shard on that
    backend because D1 and Turso quotas are shared by account. Each world also receives an
    explicit allocation of that account budget; it is gated by whichever is reached first,
-   its allocation or the account ceiling. The meter is *derived*: advanced from per-query
+   its allocation or the account ceiling. The meter is _derived_: advanced from per-query
    counters the backend already returns (`meta.rows_read` / `meta.rows_written` on D1;
    `rows_read` / `rows_written` on Turso's SQL-over-HTTP result) and a cheap periodic storage
    sample, never from aggregate scans over the journal.
@@ -132,7 +132,7 @@ Concretely:
    costs a dashboard refresh.
 5. **Refusal is typed, not incidental.** Every refusal is a structured error naming the
    world, the shard, the backend, the dimension that ran out, the threshold crossed, and the
-   operator action that clears it. A vendor `BLOCKED` or D1 limit error is *mapped into* the
+   operator action that clears it. A vendor `BLOCKED` or D1 limit error is _mapped into_ the
    same type rather than escaping as a raw storage error.
 6. **Operator-visible state is a first-class surface.** The world's status carries its
    guardrail state, the shard responsible, and time-to-reset; approaching a ceiling is
@@ -183,11 +183,11 @@ sizing discipline, and D's simplicity at the accounting layer — with per-world
 Assumptions are stated per row so the numbers can be re-derived if plans change. "Rows" means
 scanned rows for reads and affected rows for writes, per both vendors' definitions.
 
-| Scale | Shape assumed | Read volume / month | Write volume / month | Storage | Cheapest honest plan |
-| --- | --- | --- | --- | --- | --- |
-| Single user | one person, a few worlds, occasional replay; endpoint replica does most reads | ~30 M | ~200 k | < 100 MB; < 1 GB sync | Turso Free (500 M / 10 M / 5 GB / 3 GB sync) or D1 Workers Free if reads stay under ~5 M/day |
-| Small community | tens of active members, daily traffic, periodic backfill | ~300 M | ~3 M | 1–3 GB; ~6 GB sync | Turso Developer ($4.99 annual equivalent) or D1 Workers Paid ($5 minimum) |
-| Large public world | ~10,000 members, continuous ingestion, sharded | ~5 B | ~60 M | ~30 GB; ~40 GB sync | Turso Scaler ($24.92 annual equivalent) with approved overages, or D1 Workers Paid with overage |
+| Scale              | Shape assumed                                                                 | Read volume / month | Write volume / month | Storage               | Cheapest honest plan                                                                            |
+| ------------------ | ----------------------------------------------------------------------------- | ------------------- | -------------------- | --------------------- | ----------------------------------------------------------------------------------------------- |
+| Single user        | one person, a few worlds, occasional replay; endpoint replica does most reads | ~30 M               | ~200 k               | < 100 MB; < 1 GB sync | Turso Free (500 M / 10 M / 5 GB / 3 GB sync) or D1 Workers Free if reads stay under ~5 M/day    |
+| Small community    | tens of active members, daily traffic, periodic backfill                      | ~300 M              | ~3 M                 | 1–3 GB; ~6 GB sync    | Turso Developer ($4.99 annual equivalent) or D1 Workers Paid ($5 minimum)                       |
+| Large public world | ~10,000 members, continuous ingestion, sharded                                | ~5 B                | ~60 M                | ~30 GB; ~40 GB sync   | Turso Scaler ($24.92 annual equivalent) with approved overages, or D1 Workers Paid with overage |
 
 Illustrative cost arithmetic for the large-world row: Turso Scaler is within its read/write
 allowances; 30 GB storage is 6 GB over the included 24 GB and 40 GB sync is 16 GB over 24 GB,
@@ -215,7 +215,7 @@ index build or `ALTER TABLE` over a 10 M-row table bills ~10 M reads on either p
 Turso Free that is 2% of the monthly read allowance; on Turso Developer, 0.4% — and roughly
 $0.01 of overage. A repair sweep that does that across 200 shards is 2 B reads: 80% of the
 Developer allowance, but 2% of Scaler's. Guardrails exist to make that multiplication visible
-*before* it completes.
+_before_ it completes.
 
 ## Invariants implementation must hold
 
@@ -228,7 +228,7 @@ Developer allowance, but 2% of Scaler's. Guardrails exist to make that multiplic
    storage sample; `count(*)` over event rows is forbidden on the budget path.
 4. **Degrade order is fixed and tested.** Advisory reads shed before journal writes, always;
    the order is a property test, not a comment.
-5. **Hysteresis.** State transitions require crossing the threshold *and* staying across it;
+5. **Hysteresis.** State transitions require crossing the threshold _and_ staying across it;
    a test drives a shard across a threshold repeatedly and asserts no flapping.
 6. **Placement-agnostic accounting.** A world spread across N shards on M backends reports
    one budget with per-shard detail; moving a shard moves its accumulated usage rather than
@@ -245,13 +245,13 @@ Developer allowance, but 2% of Scaler's. Guardrails exist to make that multiplic
 ## Evidence that changes or constrains a parent decision (flagged, not forked)
 
 1. **D1's uncapped paid overage is a live cost risk in the parent's "both" answer.** The
-   parent treats D1's Workers-gating as "not a real cost". That is right about *architecture*
-   and wrong about *billing*: placement-by-heat puts bulk cold-ish scan traffic on D1, which
+   parent treats D1's Workers-gating as "not a real cost". That is right about _architecture_
+   and wrong about _billing_: placement-by-heat puts bulk cold-ish scan traffic on D1, which
    is exactly the traffic shape that multiplies rows read. If the atlas does place large
    shards on D1, the parent should record billing ceilings as part of the placement policy,
    not only latency and size. **This does not overturn "both"; it narrows how D1 is used.**
 2. **Turso's `BLOCKED` semantics conflict with a mid-append refusal.** The parent should
-   confirm that a world whose Turso shard hits a quota is allowed to *degrade* rather than
+   confirm that a world whose Turso shard hits a quota is allowed to _degrade_ rather than
    fail, because the alternative — a hard fail at the vendor — can interrupt a journal append
    with no guardrail able to intervene in time. Interim answer recorded here: decision 3's
    reserve keeps the journal writable through 90–100% of the write budget, and any residual
@@ -263,12 +263,12 @@ Developer allowance, but 2% of Scaler's. Guardrails exist to make that multiplic
    the parent should note that a plan change is an operator-visible event, not a code change.
 4. **D1's per-database 10 GB hard cap** interacts with the parent's per-shard placement: a
    shard cannot simply grow. If a hot shard approaches 10 GB the answer is a split, which
-   means the guardrail must be able to warn on *bytes-to-cap*, not only on rows — recorded
+   means the guardrail must be able to warn on _bytes-to-cap_, not only on rows — recorded
    here as a requirement on the split path (#5867 owns the split mechanics).
 5. **Read replication adds no D1 charge but also no write capacity.** Cloudflare documents
    that read replicas are not billed separately; it does not document any increase in write
    throughput, and each database (primary or replica) remains single-threaded. A placement
-   policy that puts a hot *writer* on D1 expecting replicates to absorb it will be wrong.
+   policy that puts a hot _writer_ on D1 expecting replicates to absorb it will be wrong.
    This constrains #5867's placement rule, not the "both" answer.
 
 ## What this record does not decide

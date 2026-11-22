@@ -26,7 +26,6 @@ async function sourceWithAttention(attention: unknown[]): Promise<ReturnType<typ
     PM_AGG_SOURCE: "live",
     PM_AGG_FEED_FILE: feedFile,
     PM_AGG_QUOTA_VIEW: join(dir, "no-quota-view.md"),
-    PM_AGG_SUPABASE_EXPORT: join(dir, "no-supabase-export.json"),
     PM_AGG_CLOUDFLARE_EXPORT: join(dir, "no-cloudflare-export.json"),
     PM_AGG_REGISTRY_FILE: join(dir, "registry.json"),
     PM_AGG_COMMENTS_FILE: join(dir, "comments.json"),

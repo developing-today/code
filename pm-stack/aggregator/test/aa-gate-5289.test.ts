@@ -51,7 +51,7 @@ describe("isAaSection snapshotDate validity (#5289)", () => {
   });
 
   test("accepts collector-built test runs (testRunsFromSheetRows output)", () => {
-    // aaSectionFromSupabase builds its testRuns with
+    // aaSectionFromPayload builds its testRuns with
     // testRunsFromSheetRows: a real sheet date stays a date-only
     // string and an empty snapshot_date cell becomes null.
     const rows = [

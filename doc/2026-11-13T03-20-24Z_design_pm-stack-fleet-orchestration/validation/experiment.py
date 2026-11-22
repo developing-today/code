@@ -422,9 +422,13 @@ def load_fixtures(raw: bytes) -> dict:
         for field in ("canonical_id", "peer_rank"):
             value = item.get(field)
             if not isinstance(value, str) or not value.isascii() or not value.isdigit():
-                raise ValueError(f"{field} must be an ASCII decimal string, got {value!r}")
+                raise ValueError(
+                    f"{field} must be an ASCII decimal string, got {value!r}"
+                )
     graph = fixtures["graph"]
-    if not isinstance(graph.get("nodes"), list) or not isinstance(graph.get("edges"), list):
+    if not isinstance(graph.get("nodes"), list) or not isinstance(
+        graph.get("edges"), list
+    ):
         raise ValueError("graph section must carry nodes and edges lists")
     return fixtures
 

@@ -1,8 +1,6 @@
 //! queue-broker — the repo-health queue as a resident laptop service
-//! (code#5362). Server-side port of repo-queue.py's HTTP layer: the
-//! Supabase service-role key lives only here, fetched from the
-//! secrets broker; all queue semantics stay in the Postgres RPCs.
-//! Sandbox clients reach it only through the session proxy.
+//! (code#5362). Sandbox clients reach it only through the session
+//! proxy.
 //!
 //! Protocol: POST /<command> with a JSON args object; response is a
 //! JSON envelope {ok:true, ...} or {ok:false, exit, error} where exit
@@ -17,86 +15,29 @@
 //!      or unix://<path> for the secrets broker's socket, #6218),
 //!      QUEUE_BROKER_SECRETS_TOKEN_FILE (default ~/.config/secrets-broker/token).
 //!
-//! Backend (#6741): QUEUE_BROKER_BACKEND=postgres (default; the
-//! Supabase PostgREST path above) or =turso — the queue core on the
-//! dedicated Turso DB `fleet-queue` (crate::turso_queue), selected by
-//! QUEUE_BROKER_TURSO_URL / QUEUE_BROKER_TURSO_TOKEN_FILE. The
-//! production default does not flip with the code; cutover is
-//! doc/fleet/queue-turso-cutover.md.
+//! Backend: the queue core on the dedicated Turso DB `fleet-queue`
+//! (crate::turso_queue), at QUEUE_BROKER_TURSO_URL with the token
+//! from QUEUE_BROKER_TURSO_TOKEN_FILE or the secrets broker. Turso is
+//! the only backend: QUEUE_BROKER_BACKEND may be unset or `turso`;
+//! any other value is a startup config error (exit 3).
 
-use std::sync::{Arc, Mutex, RwLock};
-use std::time::{Duration, Instant};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use fleet_secrets::{Resolver, SecretError, SecretSource, SecretValue};
 use serde_json::{Value, json};
 use tiny_http::{Header, Response, Server, StatusCode};
 
-const PILOT_REPO: &str = "developing-today/code";
-
-/// #6450 posture (Drew ruling 2026-11-06): broker-side health cache
-/// TTL — inside the recorded 10-15 s band. Simultaneous lane gate
-/// calls collapse to one `repo_queue_health` view read per TTL
-/// window instead of one read per lane.
-const HEALTH_CACHE_TTL: Duration = Duration::from_secs(12);
-
-/// #6450 posture: enqueue pacing token bucket — a burst allowance,
-/// then a sustained refill rate. A producer burst of N tasks now
-/// spreads over ~(N - burst) / refill seconds against agent.tasks
-/// instead of landing inside a single second while claims are in
-/// flight (the 12:22Z burst that preceded the 12:23Z window).
-/// Single enqueues are unaffected while the bucket holds tokens.
-const ENQUEUE_BURST: f64 = 20.0;
-const ENQUEUE_REFILL_PER_SEC: f64 = 20.0;
-
-#[derive(Clone)]
-struct Creds {
-    key: String,
-    base: String, // project URL, no trailing slash
-}
-
-/// One cached `/health` read: the rows of the `repo_queue_health`
-/// view for one queue filter (the key), and when they were fetched.
-struct HealthCacheEntry {
-    key: String,
-    at: Instant,
-    rows: Value,
-}
-
-/// Token-bucket state for enqueue pacing (see ENQUEUE_BURST).
-struct EnqueueGate {
-    tokens: f64,
-    last: Instant,
-}
-
-impl EnqueueGate {
-    fn new() -> Self {
-        Self {
-            tokens: ENQUEUE_BURST,
-            last: Instant::now(),
-        }
-    }
-}
-
 struct State {
     secrets_url: String,
     secrets_token: String,
-    creds: RwLock<Option<Creds>>,
     agent: ureq::Agent,
-    health_cache: RwLock<Option<HealthCacheEntry>>,
-    enqueue_gate: Mutex<EnqueueGate>,
-    failure_events_path: Option<std::path::PathBuf>,
-    /// #6741: Some when QUEUE_BROKER_BACKEND=turso; dispatch routes
-    /// every verb except /validate + /healthz to the Turso backend.
-    turso: Option<crate::turso_queue::TursoBackend>,
-}
-
-struct BErr {
-    exit: i32,
-    msg: String,
-}
-
-fn err4(msg: String) -> BErr {
-    BErr { exit: 4, msg }
+    /// Filled by the startup thread once the Turso token resolves and
+    /// the schema is ensured (#12247); until then queue verbs answer
+    /// exit 3 with `turso_pending`.
+    turso: std::sync::OnceLock<crate::turso_queue::TursoBackend>,
+    /// Why the backend is not ready yet: the latest startup failure.
+    turso_pending: Mutex<String>,
 }
 
 /// The queue broker's secrets-by-name source: a direct HTTP call to
@@ -239,304 +180,8 @@ fn default_secrets_url(explicit: Option<String>) -> String {
     }
 }
 
-impl State {
-    fn fetch_creds(&self) -> Result<Creds, BErr> {
-        // Secrets resolve by name through the platform crate
-        // (fleet-secrets, design §1): the one-off HTTP exchange with
-        // the colocated secrets broker is a SecretSource, and the
-        // names flow through validate_name / SecretValue / the chain
-        // error shape like every other fleet consumer.
-        let resolver = Resolver::new(vec![Box::new(DirectSecrets {
-            url: self.secrets_url.clone(),
-            token: self.secrets_token.clone(),
-            agent: self.agent.clone(),
-        })]);
-        let get_secret = |name: &str| -> Result<String, BErr> {
-            resolver
-                .resolve(name)
-                .map(|v| v.expose().to_string())
-                .map_err(|e| BErr {
-                    exit: 3,
-                    msg: e.to_string(),
-                })
-        };
-        // Startup race: the secrets broker may still be doing its first
-        // vault load; retry 503s for up to ~60 s.
-        let mut last_err = None;
-        for _ in 0..20 {
-            match (
-                get_secret("supabase.muse-dev2.service-role-key"),
-                get_secret("supabase.muse-dev2.project-url"),
-            ) {
-                (Ok(key), Ok(url)) => {
-                    let creds = Creds {
-                        key,
-                        base: url.trim_end_matches('/').to_string(),
-                    };
-                    *self.creds.write().unwrap() = Some(creds.clone());
-                    return Ok(creds);
-                }
-                (Err(e), _) | (_, Err(e)) => {
-                    let retryable = e.msg.contains("503");
-                    last_err = Some(e);
-                    if !retryable {
-                        break;
-                    }
-                    std::thread::sleep(Duration::from_secs(3));
-                }
-            }
-        }
-        Err(last_err.unwrap_or(BErr {
-            exit: 3,
-            msg: "credential fetch failed".into(),
-        }))
-    }
-
-    fn creds(&self) -> Result<Creds, BErr> {
-        if let Some(c) = self.creds.read().unwrap().clone() {
-            return Ok(c);
-        }
-        self.fetch_creds()
-    }
-
-    /// One PostgREST request (a single credential-refresh cycle).
-    /// Returns (parsed body, content-range). The retry posture lives
-    /// in the `postgrest` wrapper below.
-    fn postgrest_once(
-        &self,
-        method: &str,
-        path: &str,
-        body: Option<&Value>,
-        count_exact: bool,
-    ) -> Result<(Value, Option<String>), BErr> {
-        for attempt in 0..2 {
-            let creds = self.creds()?;
-            let url = format!("{}/rest/v1/{}", creds.base, path);
-            let bearer = format!("Bearer {}", creds.key);
-            let mut headers: Vec<(&str, &str)> = vec![
-                ("apikey", &creds.key),
-                ("Authorization", &bearer),
-                ("Accept-Profile", "agent"),
-            ];
-            if method != "GET" {
-                headers.push(("Content-Profile", "agent"));
-                headers.push(("Content-Type", "application/json"));
-            }
-            if count_exact {
-                headers.push(("Prefer", "count=exact"));
-            }
-            // ureq's builders are typestated (WithBody vs WithoutBody),
-            // so each arm applies the same header set itself.
-            let sent = match (method, body) {
-                ("GET", _) => {
-                    let mut r = self.agent.get(&url);
-                    for (k, v) in &headers {
-                        r = r.header(*k, *v);
-                    }
-                    r.call()
-                }
-                (_, Some(b)) => {
-                    let mut r = self.agent.post(&url);
-                    for (k, v) in &headers {
-                        r = r.header(*k, *v);
-                    }
-                    r.send_json(b.clone())
-                }
-                (_, None) => {
-                    let mut r = self.agent.post(&url);
-                    for (k, v) in &headers {
-                        r = r.header(*k, *v);
-                    }
-                    r.send("")
-                }
-            };
-            let mut resp = sent.map_err(|e| err4(format!("PostgREST request failed: {e}")))?;
-            let status = resp.status().as_u16();
-            let content_range = resp
-                .headers()
-                .get("content-range")
-                .and_then(|v| v.to_str().ok())
-                .map(|s| s.to_string());
-            let text = resp.body_mut().read_to_string().unwrap_or_default();
-            if status == 401 && attempt == 0 {
-                // Key may have rotated: refetch from the secrets broker.
-                *self.creds.write().unwrap() = None;
-                continue;
-            }
-            if status >= 300 {
-                return Err(err4(format!(
-                    "HTTP {status} from PostgREST: {}",
-                    trim(text.trim(), 500)
-                )));
-            }
-            let parsed = if text.trim().is_empty() {
-                Value::Null
-            } else {
-                serde_json::from_str(&text)
-                    .map_err(|e| err4(format!("PostgREST returned non-JSON: {e}")))?
-            };
-            return Ok((parsed, content_range));
-        }
-        Err(err4(
-            "PostgREST request failed after credential refresh".into(),
-        ))
-    }
-
-    /// PostgREST with the #6450 posture backoff (crate::backoff):
-    /// 57014 / PGRST002-class failures retry under the shared
-    /// policy. A final failure of that class is also the standing
-    /// capture's trigger: it is appended to the failure-events file
-    /// for the capture job to mine (arm (a) of the #6450 ruling).
-    fn postgrest(
-        &self,
-        method: &str,
-        path: &str,
-        body: Option<&Value>,
-        count_exact: bool,
-    ) -> Result<(Value, Option<String>), BErr> {
-        let mut attempt: u32 = 0;
-        loop {
-            match self.postgrest_once(method, path, body, count_exact) {
-                Ok(v) => return Ok(v),
-                Err(e) => {
-                    if !crate::backoff::is_retryable(&e.msg) {
-                        return Err(e);
-                    }
-                    if attempt + 1 >= crate::backoff::MAX_ATTEMPTS {
-                        self.record_failure_event(path, &e.msg, attempt + 1);
-                        return Err(e);
-                    }
-                    let slept = crate::backoff::sleep_after_failure(attempt);
-                    crate::log::info(
-                        "queue-broker",
-                        &format!(
-                            "postgrest {path} 57014-class failure (attempt {}): {}; backing off {}ms",
-                            attempt + 1,
-                            trim(&e.msg, 160),
-                            slept.as_millis()
-                        ),
-                    );
-                    attempt += 1;
-                }
-            }
-        }
-    }
-
-    /// Append one failure-window record for the standing capture.
-    /// Best-effort: a logging failure never fails a request.
-    fn record_failure_event(&self, path: &str, msg: &str, attempts: u32) {
-        crate::log::info(
-            "queue-broker",
-            &format!(
-                "failure window: postgrest {path} exhausted backoff after {attempts} attempts: {}",
-                trim(msg, 200)
-            ),
-        );
-        let Some(file) = &self.failure_events_path else {
-            return;
-        };
-        let ts_epoch = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
-        let health_age_ms = self
-            .health_cache
-            .read()
-            .unwrap()
-            .as_ref()
-            .map(|e| e.at.elapsed().as_millis() as u64);
-        let line = json!({
-            "ts_epoch": ts_epoch,
-            "path": path,
-            "attempts": attempts,
-            "error": trim(msg, 300),
-            "health_cache_age_ms": health_age_ms,
-        });
-        if let Ok(mut f) = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(file)
-        {
-            use std::io::Write;
-            let _ = writeln!(f, "{line}");
-        }
-    }
-
-    /// The cached health rows for `key` when fresher than the TTL,
-    /// with their age in milliseconds.
-    fn health_cache_get(&self, key: &str) -> Option<(Value, u64)> {
-        let guard = self.health_cache.read().unwrap();
-        let entry = guard.as_ref()?;
-        if entry.key != key {
-            return None;
-        }
-        let age = entry.at.elapsed();
-        if age > HEALTH_CACHE_TTL {
-            return None;
-        }
-        Some((entry.rows.clone(), age.as_millis() as u64))
-    }
-
-    fn health_cache_put(&self, key: &str, rows: Value) {
-        *self.health_cache.write().unwrap() = Some(HealthCacheEntry {
-            key: key.to_string(),
-            at: Instant::now(),
-            rows,
-        });
-    }
-
-    /// #6450 posture: pace the enqueue RPC through the token bucket
-    /// (burst ENQUEUE_BURST, refilled at ENQUEUE_REFILL_PER_SEC).
-    fn pace_enqueue(&self) {
-        loop {
-            let wait = {
-                let mut g = self.enqueue_gate.lock().unwrap();
-                let now = Instant::now();
-                let elapsed = now.duration_since(g.last).as_secs_f64();
-                g.tokens = (g.tokens + elapsed * ENQUEUE_REFILL_PER_SEC).min(ENQUEUE_BURST);
-                g.last = now;
-                if g.tokens >= 1.0 {
-                    g.tokens -= 1.0;
-                    return;
-                }
-                Duration::from_secs_f64((1.0 - g.tokens) / ENQUEUE_REFILL_PER_SEC)
-            };
-            std::thread::sleep(wait.min(Duration::from_millis(100)));
-        }
-    }
-
-    fn rpc(&self, fn_name: &str, args: Value) -> Result<Value, BErr> {
-        let (v, _) = self.postgrest("POST", &format!("rpc/{fn_name}"), Some(&args), false)?;
-        Ok(v)
-    }
-}
-
 fn trim(s: &str, n: usize) -> String {
     s.chars().take(n).collect()
-}
-
-/// Percent-encode like Python urllib quote(s, safe).
-fn quote(s: &str, safe: &str) -> String {
-    let mut out = String::new();
-    for b in s.bytes() {
-        let c = b as char;
-        if c.is_ascii_alphanumeric() || "-._~".contains(c) || safe.contains(c) {
-            out.push(c);
-        } else {
-            out.push_str(&format!("%{b:02X}"));
-        }
-    }
-    out
-}
-
-/// The `/list` limit, validated before it is interpolated into the
-/// PostgREST path (#6419): an out-of-range value from any client is
-/// rejected with the same usage error the client itself raises
-/// (design #6448 Phase 3: reject, not clamp). Absent means the
-/// existing default of 20.
-fn list_limit(req: &Value) -> Result<i64, String> {
-    let raw = req.get("limit").and_then(|l| l.as_i64());
-    crate::client::list_limit_or_default(raw)
 }
 
 /// One duration field of a request, validated before the RPC
@@ -595,11 +240,8 @@ fn delay_seconds(req: &Value) -> Result<Option<i64>, String> {
 }
 
 /// The duration guard for one request path (#6420), run at the top
-/// of `dispatch` BEFORE backend selection: the Turso backend
-/// dispatches verbatim, so validating only inside the PostgREST
-/// handlers would leave the trust boundary open on that backend
-/// (Codex finding on PR #8425). The PostgREST handlers keep their
-/// own checks as defense in depth.
+/// of `dispatch`: the broker is the trust boundary for non-CLI
+/// callers, and the Turso backend dispatches verbatim.
 fn validate_durations(path: &str, req: &Value) -> Result<(), String> {
     match path {
         "/claim" | "/claim-flow" => lease_seconds(req).map(|_| ()),
@@ -611,13 +253,15 @@ fn validate_durations(path: &str, req: &Value) -> Result<(), String> {
 
 /// The not_before gate (#6426): /park and /revive carry a raw
 /// not_before that dispatch forwards to the RPC (or the turso
-/// backend) — validate it BEFORE either, with the same rule the
+/// backend), and /list carries one as a filter (#9027 — unvalidated,
+/// a garbage value silently narrowed the Turso listing) — validate
+/// it BEFORE either, with the same rule the
 /// packet validator applies on /enqueue (validate_packet runs
 /// inside both /enqueue handlers ahead of their RPC call). An
 /// absent or null not_before is untouched; a present one must be a
 /// non-empty RFC 3339 timestamp no more than 366 days out.
 fn validate_request_not_before(path: &str, req: &Value) -> Result<(), String> {
-    if !matches!(path, "/park" | "/revive") {
+    if !matches!(path, "/park" | "/revive" | "/list") {
         return Ok(());
     }
     match req.get("not_before").filter(|v| !v.is_null()) {
@@ -638,47 +282,6 @@ fn ok(fields: Value) -> Value {
 
 fn fail(exit: i32, msg: impl Into<String>) -> Value {
     json!({"ok": false, "exit": exit, "error": msg.into()})
-}
-
-fn record_execution(st: &State, req: &Value, row: &Value) -> Result<Option<Value>, BErr> {
-    let Some(ex) = req.get("execution").filter(|e| e.is_object()) else {
-        return Ok(None);
-    };
-    let ledger = st.rpc(
-        "record_repo_task_lane_execution",
-        json!({
-            "p_task_id": req.get("task_id"),
-            "p_worker": req.get("worker"),
-            "p_executed_lane": ex.get("lane"),
-            "p_fallback_reason": ex.get("fallback_reason"),
-            "p_session_id": ex.get("session_id"),
-        }),
-    )?;
-    let _ = row;
-    Ok(Some(ledger))
-}
-
-/// Verbs whose RPC takes the args object nearly verbatim.
-fn simple_rpc(st: &State, fn_name: &str, args: Value) -> Value {
-    match st.rpc(fn_name, args) {
-        Ok(row) => ok(json!({"row": row})),
-        Err(e) => fail(e.exit, e.msg),
-    }
-}
-
-fn verb_with_execution(st: &State, fn_name: &str, args: Value, req: &Value) -> Value {
-    let row = match st.rpc(fn_name, args) {
-        Ok(r) => r,
-        Err(e) => return fail(e.exit, e.msg),
-    };
-    if row.is_null() {
-        return ok(json!({"row": Value::Null}));
-    }
-    match record_execution(st, req, &row) {
-        Ok(Some(ledger)) => ok(json!({"row": row, "lane_ledger": ledger})),
-        Ok(None) => ok(json!({"row": row})),
-        Err(e) => fail(e.exit, e.msg),
-    }
 }
 
 /// The GitHub token the dep rechecker authenticates with,
@@ -728,12 +331,25 @@ impl GhDepProbe {
     }
 
     fn get_json(&self, path: &str) -> Result<Value, crate::turso_queue::DepObs> {
+        self.get_json_within(path, None)
+    }
+
+    /// get_json with an optional per-request timeout (#10626: the
+    /// claim-time staleness lookup must never queue a claim behind
+    /// a slow GitHub).
+    fn get_json_within(
+        &self,
+        path: &str,
+        timeout: Option<std::time::Duration>,
+    ) -> Result<Value, crate::turso_queue::DepObs> {
         use crate::turso_queue::DepObs;
         let tok = self.token().map_err(DepObs::Failed)?;
         let url = format!("https://api.github.com{path}");
-        let mut resp = match self
-            .agent
-            .get(&url)
+        let mut req = self.agent.get(&url);
+        if let Some(limit) = timeout {
+            req = req.config().timeout_global(Some(limit)).build();
+        }
+        let mut resp = match req
             .header("Authorization", &format!("Bearer {tok}"))
             .header("Accept", "application/vnd.github+json")
             .header("User-Agent", "fleet-queue-broker")
@@ -800,6 +416,25 @@ impl crate::turso_queue::DepProbe for GhDepProbe {
         }
     }
 
+    fn probe_landing(
+        &self,
+        kind: crate::turso_queue::LinkKind,
+        repo: &str,
+        number: i64,
+    ) -> crate::turso_queue::Landing {
+        use crate::turso_queue::{Landing, LinkKind};
+        let path = match kind {
+            LinkKind::Issue => format!("/repos/{repo}/issues/{number}"),
+            LinkKind::Pr => format!("/repos/{repo}/pulls/{number}"),
+        };
+        let v =
+            match self.get_json_within(&path, Some(crate::turso_queue::STALENESS_LOOKUP_TIMEOUT)) {
+                Ok(v) => v,
+                Err(o) => return Landing::Unknown(format!("{o:?}")),
+            };
+        landing_from_json(kind, &v)
+    }
+
     fn probe_ci(&self, repo: &str, run_id: i64) -> crate::turso_queue::DepObs {
         use crate::turso_queue::DepObs;
         match self.get_json(&format!("/repos/{repo}/actions/runs/{run_id}")) {
@@ -817,6 +452,44 @@ impl crate::turso_queue::DepProbe for GhDepProbe {
             }
             Err(o) => o,
         }
+    }
+}
+
+/// #10626: a GitHub issue or pull JSON as a staleness landing. An
+/// issue landed when it closed (any reason: no work remains); a PR
+/// landed only when it merged — a PR closed unmerged leaves the work
+/// open. A terminal state without its timestamp infers nothing.
+pub(crate) fn landing_from_json(
+    kind: crate::turso_queue::LinkKind,
+    v: &Value,
+) -> crate::turso_queue::Landing {
+    use crate::turso_queue::{Landing, LinkKind};
+    let field = |k: &str| v.get(k).and_then(|s| s.as_str()).unwrap_or("").to_string();
+    match kind {
+        LinkKind::Issue => match field("state").as_str() {
+            "closed" => match field("closed_at") {
+                at if at.is_empty() => {
+                    Landing::Unknown("closed issue with no closed_at".to_string())
+                }
+                at => Landing::Landed {
+                    state: match field("state_reason") {
+                        r if r.is_empty() => "closed".to_string(),
+                        r => format!("closed ({r})"),
+                    },
+                    at,
+                },
+            },
+            "open" => Landing::Open,
+            other => Landing::Unknown(format!("issue state {other:?}")),
+        },
+        LinkKind::Pr => match field("merged_at") {
+            at if !at.is_empty() => Landing::Landed {
+                state: "merged".to_string(),
+                at,
+            },
+            _ if matches!(field("state").as_str(), "open" | "closed") => Landing::Open,
+            _ => Landing::Unknown(format!("pr state {:?}", field("state"))),
+        },
     }
 }
 
@@ -878,437 +551,30 @@ fn dispatch(st: &State, path: &str, req: &Value) -> Value {
     if let Err(e) = validate_request_not_before(path, req) {
         return fail(2, e);
     }
-    if let Some(t) = &st.turso {
-        if path != "/validate" && path != "/healthz" {
-            let resp = crate::turso_queue::dispatch(t, path, req);
-            // #8568: the Turso backend answers /block before the
-            // Postgres match below, so the broker-side needs-drew
-            // raise hooks here too — same condition, same helper.
-            if path == "/block" {
-                maybe_raise_needs_drew(st, req, &resp);
-            }
-            return resp;
-        }
-    }
     match path {
         "/validate" => {
             let packet = req.get("packet").cloned().unwrap_or(Value::Null);
             let (errors, warnings) = crate::validate::validate_packet(&packet);
             ok(json!({"errors": errors, "warnings": warnings}))
         }
-        "/enqueue" => {
-            let packet = req.get("packet").cloned().unwrap_or(Value::Null);
-            let (errors, warnings) = crate::validate::validate_packet(&packet);
-            if !errors.is_empty() {
-                return json!({
-                    "ok": false, "exit": 2,
-                    "error": format!("packet validation failed ({} error(s))", errors.len()),
-                    "errors": errors, "warnings": warnings,
-                });
-            }
-            let queue = req
-                .get("queue")
-                .and_then(|q| q.as_str())
-                .unwrap_or("")
-                .to_string();
-            let task = crate::validate::task_from_packet(&packet, &queue);
-            if req
-                .get("dry_run")
-                .and_then(|d| d.as_bool())
-                .unwrap_or(false)
-            {
-                return ok(json!({"dry_run": true, "task": task, "warnings": warnings}));
-            }
-            let repo = packet
-                .get("payload")
-                .and_then(|p| p.get("repo"))
-                .and_then(|r| r.as_str())
-                .map(|s| s.to_string());
-            let rpc_name = match repo.as_deref() {
-                None | Some(PILOT_REPO) => "enqueue_repo_task",
-                _ => "enqueue_repo_task_fleet",
+        "/healthz" => ok(json!({"service": "queue-broker"})),
+        _ => {
+            let Some(turso) = st.turso.get() else {
+                let why = st
+                    .turso_pending
+                    .lock()
+                    .map(|g| g.clone())
+                    .unwrap_or_default();
+                return fail(3, format!("queue backend not ready: {why}"));
             };
-            let args = json!({
-                "p_queue": task.get("queue"),
-                "p_title": task.get("title"),
-                "p_body": task.get("body"),
-                "p_payload": task.get("payload"),
-                "p_dedupe_key": task.get("dedupe_key"),
-                "p_priority": task.get("priority"),
-                "p_not_before": task.get("not_before"),
-                "p_max_attempts": task.get("max_attempts"),
-            });
-            st.pace_enqueue();
-            match st.rpc(rpc_name, args) {
-                Ok(row) if !row.is_null() => {
-                    ok(json!({"row": row, "rpc": rpc_name, "warnings": warnings}))
-                }
-                Ok(_) => fail(5, format!("{rpc_name} returned no row")),
-                Err(e) => fail(e.exit, e.msg),
+            let resp = crate::turso_queue::dispatch(turso, path, req);
+            // #8568: the broker-side needs-drew raise for an
+            // escalated block (fire-and-forget).
+            if path == "/block" {
+                maybe_raise_needs_drew(st, req, &resp);
             }
-        }
-        "/claim" => {
-            let lease = match lease_seconds(req) {
-                Ok(v) => v,
-                Err(e) => return fail(2, e),
-            };
-            let mut args = json!({
-                "p_worker": req.get("worker"),
-                "p_queue": req.get("queue"),
-                "p_lease_seconds": lease,
-            });
-            if let Some(lane) = req.get("lane").filter(|l| !l.is_null()) {
-                args["p_lane_id"] = lane.clone();
-            }
-            simple_rpc(st, "claim_repo_task", args)
-        }
-        "/claim-flow" => {
-            // #5757-A: claim + lane-assign + session-bind in one
-            // broker round trip. Each step is the corresponding
-            // single-verb RPC with the same arguments the three
-            // verbs pass. A claim-step failure — or an empty claim —
-            // returns that step's answer verbatim and later steps
-            // are not attempted (the three-verb flow's semantics,
-            // one trip). A LANE/BIND failure is different: the claim
-            // RPC has already COMMITTED, so it answers as a partial
-            // success (ok envelope + claimed row +
-            // `claim_flow_partial`), never as an error — a retryable
-            // error here (57014 / PGRST002) would make the client's
-            // call_result replay the WHOLE flow and claim a second
-            // task, leaking this one (Codex P1 on PR #8493). The
-            // caller finishes the failed step with the single-verb
-            // /lane or /bind call for this task id. The answer
-            // carries every step's row:
-            // `row` is the claimed task row (the shape /claim
-            // answers and the client's claim_output consumes);
-            // `lane_row` / `bind_row` are what /lane and /bind
-            // answer in the three-verb flow.
-            let lease = match lease_seconds(req) {
-                Ok(v) => v,
-                Err(e) => return fail(2, e),
-            };
-            if let Err(e) = crate::client::claim_flow_precheck(req) {
-                return fail(2, e);
-            }
-            let mut args = json!({
-                "p_worker": req.get("worker"),
-                "p_queue": req.get("queue"),
-                "p_lease_seconds": lease,
-            });
-            if let Some(lane) = req.get("lane").filter(|l| !l.is_null()) {
-                args["p_lane_id"] = lane.clone();
-            }
-            let row = match st.rpc("claim_repo_task", args) {
-                Ok(row) => row,
-                Err(e) => return fail(e.exit, e.msg),
-            };
-            if row.is_null() {
-                return ok(json!({"row": row}));
-            }
-            let task_id = row.get("id").cloned().unwrap_or(Value::Null);
-            let lane_row = match st.rpc(
-                "assign_repo_task_lane",
-                json!({
-                    "p_task_id": task_id,
-                    "p_worker": req.get("worker"),
-                    "p_exclusion_reason": req.get("exclusion_reason"),
-                }),
-            ) {
-                Ok(r) => r,
-                Err(e) => {
-                    return ok(json!({
-                        "row": row,
-                        "claim_flow_partial": {
-                            "step": "lane",
-                            "exit": e.exit,
-                            "error": e.msg,
-                        },
-                    }));
-                }
-            };
-            let bind_row = match st.rpc(
-                "bind_repo_task_lane_session",
-                json!({
-                    "p_task_id": task_id,
-                    "p_worker": req.get("worker"),
-                    "p_session_id": req.get("session_id"),
-                    "p_launched_by": req.get("launched_by"),
-                }),
-            ) {
-                Ok(r) => r,
-                Err(e) => {
-                    return ok(json!({
-                        "row": row,
-                        "lane_row": lane_row,
-                        "claim_flow_partial": {
-                            "step": "bind",
-                            "exit": e.exit,
-                            "error": e.msg,
-                        },
-                    }));
-                }
-            };
-            ok(json!({"row": row, "lane_row": lane_row, "bind_row": bind_row}))
-        }
-        "/lane" => simple_rpc(
-            st,
-            "assign_repo_task_lane",
-            json!({
-                "p_task_id": req.get("task_id"),
-                "p_worker": req.get("worker"),
-                "p_exclusion_reason": req.get("exclusion_reason"),
-            }),
-        ),
-        "/bind" => simple_rpc(
-            st,
-            "bind_repo_task_lane_session",
-            json!({
-                "p_task_id": req.get("task_id"),
-                "p_worker": req.get("worker"),
-                "p_session_id": req.get("session_id"),
-                "p_launched_by": req.get("launched_by"),
-            }),
-        ),
-        "/heartbeat" => {
-            let extend = match extend_seconds(req) {
-                Ok(v) => v,
-                Err(e) => return fail(2, e),
-            };
-            simple_rpc(
-                st,
-                "heartbeat_task",
-                json!({
-                    "p_task_id": req.get("task_id"),
-                    "p_worker": req.get("worker"),
-                    "p_extend_seconds": extend,
-                    "p_progress": req.get("progress"),
-                }),
-            )
-        }
-        "/checkpoint" => simple_rpc(
-            st,
-            "checkpoint_task",
-            json!({
-                "p_task_id": req.get("task_id"),
-                "p_worker": req.get("worker"),
-                "p_stage": req.get("stage"),
-                "p_progress": req.get("progress").cloned().unwrap_or(json!({})),
-            }),
-        ),
-        "/park" => {
-            let delay = match delay_seconds(req) {
-                Ok(v) => v,
-                Err(e) => return fail(2, e),
-            };
-            let mut args = json!({
-                "p_task_id": req.get("task_id"),
-                "p_worker": req.get("worker"),
-                "p_reason": req.get("reason"),
-                "p_progress": req.get("progress").cloned().unwrap_or(json!({})),
-            });
-            if let Some(nb) = req.get("not_before").filter(|v| !v.is_null()) {
-                args["p_not_before"] = nb.clone();
-            } else if let Some(d) = delay {
-                args["p_delay_seconds"] = json!(d);
-            }
-            if let Some(rc) = req.get("ready_condition").filter(|v| !v.is_null()) {
-                args["p_ready_condition"] = rc.clone();
-            }
-            verb_with_execution(st, "park_task", args, req)
-        }
-        "/block" => {
-            let resp = simple_rpc(
-                st,
-                "block_task",
-                json!({
-                    "p_task_id": req.get("task_id"),
-                    "p_worker": req.get("worker"),
-                    "p_reason_class": req.get("reason_class"),
-                    "p_blocker": req.get("blocker"),
-                    "p_progress": req.get("progress").cloned().unwrap_or(json!({})),
-                }),
-            );
-            // #8568: broker-side needs-drew raise, fire-and-forget
-            // (see maybe_raise_needs_drew). NOTE: this arm is the
-            // Postgres backend's route — dispatch() hands /block
-            // to the Turso backend before reaching here when
-            // QUEUE_BROKER_BACKEND=turso.
-            maybe_raise_needs_drew(st, req, &resp);
             resp
         }
-        "/cancel" => simple_rpc(
-            st,
-            "cancel_repo_task",
-            json!({
-                "p_task_id": req.get("task_id"),
-                "p_worker": req.get("worker"),
-                "p_reason": req.get("reason"),
-            }),
-        ),
-        "/fail" => verb_with_execution(
-            st,
-            "fail_repo_task",
-            json!({
-                "p_task_id": req.get("task_id"),
-                "p_worker": req.get("worker"),
-                "p_error": req.get("error"),
-                "p_reason_class": req.get("reason_class"),
-            }),
-            req,
-        ),
-        "/complete" => verb_with_execution(
-            st,
-            "complete_task",
-            json!({
-                "p_task_id": req.get("task_id"),
-                "p_worker": req.get("worker"),
-                "p_result": req.get("result").cloned().unwrap_or(json!({})),
-            }),
-            req,
-        ),
-        "/list" => {
-            let queue = req.get("queue").and_then(|q| q.as_str()).unwrap_or("");
-            let limit = match list_limit(req) {
-                Ok(limit) => limit,
-                Err(e) => return fail(2, e),
-            };
-            // `rich` adds the claim/binding fields the on-laptop
-            // opencode claimant's poll.py needs (it reads through the
-            // broker since the binary-direct migration retired the
-            // Python helper it used to import).
-            let select = if req.get("rich").and_then(|r| r.as_bool()).unwrap_or(false) {
-                "id,queue,title,priority,status,dedupe_key,created_at,not_before,worker_id,lease_until,lane_id,attempts,max_attempts,progress,payload"
-            } else {
-                "id,queue,title,priority,status,dedupe_key,created_at,not_before"
-            };
-            let offset =
-                crate::client::list_offset_or_default(req.get("offset").and_then(|o| o.as_i64()));
-            // #9420 parity with the Turso verb_list: omit the queue
-            // predicate when no queue is named (queue=eq. with an
-            // empty value matches nothing and breaks exact readback).
-            let queue_pred = if queue.is_empty() {
-                String::new()
-            } else {
-                format!("&queue=eq.{}", quote(queue, ""))
-            };
-            let mut path = format!(
-                "tasks?select={select}{queue_pred}&order=priority.asc,created_at.asc,id.asc&limit={limit}&offset={offset}"
-            );
-            // #7871: --task narrows to one task id, so a worker can
-            // verify a single recent completion from list output
-            // regardless of the done list's size or ordering.
-            if let Some(t) = req.get("task").and_then(|t| t.as_i64()) {
-                path += &format!("&id=eq.{t}");
-            }
-            if let Some(s) = req.get("status").and_then(|s| s.as_str()) {
-                path += &format!("&status=eq.{}", quote(s, ""));
-            }
-            // #9420: dedupe_key narrows to the task carrying that key.
-            if let Some(d) = req.get("dedupe_key").and_then(|d| d.as_str()) {
-                path += &format!("&dedupe_key=eq.{}", quote(d, ""));
-            }
-            if let Some(nb) = req.get("not_before").and_then(|s| s.as_str()) {
-                path += &format!("&or=(not_before.is.null,not_before.lte.{})", quote(nb, ":"));
-            }
-            // #5444: --lane/--worker list filters, PostgREST side
-            // (the Turso verb_list applies the same filters).
-            if let Some(l) = req.get("lane").and_then(|s| s.as_str()) {
-                path += &format!("&lane_id=eq.{}", quote(l, ""));
-            }
-            if let Some(w) = req.get("worker").and_then(|s| s.as_str()) {
-                path += &format!("&worker_id=eq.{}", quote(w, ""));
-            }
-            // #10376: request the exact count so the reply can
-            // name its total — without count=exact the
-            // Content-Range total is `*` and a limited listing
-            // reads as complete.
-            match st.postgrest("GET", &path, None, true) {
-                Ok((rows, content_range)) => {
-                    let total = content_range
-                        .as_deref()
-                        .and_then(crate::client::content_range_total);
-                    ok(crate::client::list_envelope(rows, total, offset))
-                }
-                Err(e) => fail(e.exit, e.msg),
-            }
-        }
-        "/health" => {
-            let creds = match st.creds() {
-                Ok(c) => c,
-                Err(e) => return fail(e.exit, e.msg),
-            };
-            let netloc = creds
-                .base
-                .split("://")
-                .nth(1)
-                .unwrap_or(&creds.base)
-                .split('/')
-                .next()
-                .unwrap_or("")
-                .to_string();
-            let mut path = "repo_queue_health?select=*".to_string();
-            if let Some(q) = req.get("queue").and_then(|q| q.as_str()) {
-                path += &format!("&queue=eq.{}", quote(q, ""));
-            }
-            let cache_key = req
-                .get("queue")
-                .and_then(|q| q.as_str())
-                .unwrap_or("*")
-                .to_string();
-            if let Some((rows, age_ms)) = st.health_cache_get(&cache_key) {
-                return ok(json!({
-                    "project_netloc": netloc,
-                    "project_source": "bitwarden",
-                    "rows": rows,
-                    "cache": {"hit": true, "age_ms": age_ms, "ttl_ms": HEALTH_CACHE_TTL.as_millis() as u64},
-                }));
-            }
-            match st.postgrest("GET", &path, None, false) {
-                Ok((rows, _)) => {
-                    st.health_cache_put(&cache_key, rows.clone());
-                    ok(json!({
-                        "project_netloc": netloc,
-                        "project_source": "bitwarden",
-                        "rows": rows,
-                        "cache": {"hit": false, "ttl_ms": HEALTH_CACHE_TTL.as_millis() as u64},
-                    }))
-                }
-                Err(e) => fail(e.exit, e.msg),
-            }
-        }
-        "/signal-count" => {
-            let queue = req.get("queue").and_then(|q| q.as_str()).unwrap_or("");
-            let path = format!(
-                "tasks?select=id,created_at&queue=eq.{}&status=eq.queued&order=created_at.asc&limit=1",
-                quote(queue, "")
-            );
-            match st.postgrest("GET", &path, None, true) {
-                Ok((rows, content_range)) => {
-                    let arr = rows.as_array().cloned().unwrap_or_default();
-                    let mut count = arr.len() as i64;
-                    if let Some(cr) = content_range {
-                        if let Some(total) = cr.rsplit('/').next() {
-                            if let Ok(n) = total.parse::<i64>() {
-                                count = n;
-                            }
-                        }
-                    }
-                    let oldest = arr
-                        .first()
-                        .and_then(|r| r.get("created_at"))
-                        .cloned()
-                        .unwrap_or(Value::Null);
-                    ok(json!({"queued_count": count, "oldest_queued_at": oldest}))
-                }
-                Err(e) => fail(e.exit, e.msg),
-            }
-        }
-        "/stack-record" | "/stack-list" | "/stack-restack" => fail(
-            2,
-            "merge-intent stack verbs require the turso queue backend (#8582)".to_string(),
-        ),
-        "/healthz" => ok(json!({"service": "queue-broker"})),
-        _ => json!({"ok": false, "exit": 2, "error": format!("unknown command {path}")}),
     }
 }
 
@@ -1427,93 +693,41 @@ pub fn run() -> i32 {
         .timeout_global(Some(Duration::from_secs(90)))
         .build()
         .into();
-    let failure_events_path = std::env::var("QUEUE_BROKER_FAILURE_EVENTS")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|_| {
-            std::path::PathBuf::from(format!(
-                "{home}/.local/state/queue-broker/failure-events.jsonl"
-            ))
-        });
-    if let Some(dir) = failure_events_path.parent() {
-        let _ = std::fs::create_dir_all(dir);
-    }
-
-    // #6741 backend selection: Postgres stays the default; the
-    // Turso backend is opt-in per broker process until the cutover
-    // runbook flips the unit env.
-    let turso = if std::env::var("QUEUE_BROKER_BACKEND")
-        .map(|v| v.eq_ignore_ascii_case("turso"))
-        .unwrap_or(false)
-    {
-        let url = std::env::var("QUEUE_BROKER_TURSO_URL")
-            .unwrap_or_else(|_| crate::turso_queue::DEFAULT_TURSO_URL.to_string());
-        let token = match std::env::var("QUEUE_BROKER_TURSO_TOKEN_FILE") {
-            Ok(f) => match crate::token_file::load_token_file(&f) {
-                Ok(v) => v,
-                Err(e) => {
-                    crate::log::info("queue-broker", &e);
-                    return 3;
-                }
-            },
-            Err(_) => {
-                let resolver = Resolver::new(vec![Box::new(DirectSecrets {
-                    url: secrets_url.clone(),
-                    token: secrets_token.clone(),
-                    agent: agent.clone(),
-                })]);
-                match resolve_with_startup_retry(
-                    &resolver,
-                    crate::turso_queue::TURSO_TOKEN_SECRET_NAME,
-                    Duration::from_secs(30),
-                ) {
-                    Ok(v) => v.expose().to_string(),
-                    Err(e) => {
-                        crate::log::info(
-                            "queue-broker",
-                            &format!(
-                                "turso backend token resolve failed after 30s of retries: {e}"
-                            ),
-                        );
-                        return 3;
-                    }
-                }
-            }
-        };
-        let mut backend = crate::turso_queue::TursoBackend::new(url, token, agent.clone());
-        // #8276: the dep rechecker's GitHub window, authenticated
-        // by name through the same secrets Resolver as the Turso
-        // token above.
-        backend.set_gh_probe(Arc::new(GhDepProbe {
-            secrets_url: secrets_url.clone(),
-            secrets_token: secrets_token.clone(),
-            agent: agent.clone(),
-            token: Mutex::new(None),
-        }));
-        if let Err(e) = backend.ensure_schema() {
+    // Turso is the only queue backend: QUEUE_BROKER_BACKEND unset
+    // (or empty) means turso; any other value is a config error.
+    if let Ok(v) = std::env::var("QUEUE_BROKER_BACKEND") {
+        let v = v.trim();
+        if !v.is_empty() && !v.eq_ignore_ascii_case("turso") {
             crate::log::info(
                 "queue-broker",
-                &format!("turso backend schema ensure failed: {e}"),
+                &format!(
+                    "QUEUE_BROKER_BACKEND={v} is not supported; turso is the only queue backend"
+                ),
             );
             return 3;
         }
-        crate::log::info(
-            "queue-broker",
-            &format!("queue backend: turso ({})", backend.url()),
-        );
-        Some(backend)
-    } else {
-        None
+    }
+    // A Turso token file, when named, is a local config read: a
+    // missing or unreadable file stays a startup config error.
+    let turso_url = std::env::var("QUEUE_BROKER_TURSO_URL")
+        .unwrap_or_else(|_| crate::turso_queue::DEFAULT_TURSO_URL.to_string());
+    let turso_token_from_file = match std::env::var("QUEUE_BROKER_TURSO_TOKEN_FILE") {
+        Ok(f) => match crate::token_file::load_token_file(&f) {
+            Ok(v) => Some(v),
+            Err(e) => {
+                crate::log::info("queue-broker", &e);
+                return 3;
+            }
+        },
+        Err(_) => None,
     };
 
     let state = Arc::new(State {
         secrets_url,
         secrets_token,
-        creds: RwLock::new(None),
         agent,
-        health_cache: RwLock::new(None),
-        enqueue_gate: Mutex::new(EnqueueGate::new()),
-        failure_events_path: Some(failure_events_path),
-        turso,
+        turso: std::sync::OnceLock::new(),
+        turso_pending: Mutex::new("starting".to_string()),
     });
 
     let server = match Server::http(&bind) {
@@ -1524,6 +738,31 @@ pub fn run() -> i32 {
         }
     };
     crate::log::info("queue-broker", &format!("listening on {bind}"));
+
+    // #12247: bind first, then bring the Turso backend up on a
+    // startup thread, so /healthz and /validate answer at once and
+    // queue verbs answer exit 3 with the latest startup error until
+    // the backend is ready. A backend that cannot come up within the
+    // retry budget still exits the broker with 3, so a supervisor
+    // restarts it exactly as when the backend came up before bind.
+    {
+        let st = Arc::clone(&state);
+        std::thread::spawn(move || {
+            match start_turso_backend(&st, turso_url, turso_token_from_file) {
+                Ok(backend) => {
+                    crate::log::info(
+                        "queue-broker",
+                        &format!("queue backend: turso ({})", backend.url()),
+                    );
+                    let _ = st.turso.set(backend);
+                }
+                Err(e) => {
+                    crate::log::info("queue-broker", &e);
+                    std::process::exit(3);
+                }
+            }
+        });
+    }
 
     // Dual-bind (#6216): the same handler over a Unix socket. A bind
     // failure or a live owner degrades to TCP only, never to exit:
@@ -1652,44 +891,44 @@ mod tests {
     use super::*;
 
     #[test]
-    fn claim_flow_post_commit_failures_are_partial_not_errors_5757() {
-        // #5757-A Codex P1 oracle (PR #8493): in the PostgREST
-        // broker's /claim-flow handler, the lane and bind RPC
-        // failures answer with claim_flow_partial inside an ok
-        // envelope — never `return fail(...)`, whose retryable
-        // error text the client would replay into a second claim
-        // after the first claim already committed.
-        let src = include_str!("queue_broker.rs");
-        let start = src
-            .find("\"/claim-flow\" => {")
-            .expect("claim-flow handler");
-        let end = src[start..]
-            .find("\"/lane\" =>")
-            .expect("lane handler follows")
-            + start;
-        let flow = &src[start..end];
+    fn landing_from_json_10626() {
+        use crate::turso_queue::{Landing, LinkKind};
+        let closed = json!({"state": "closed", "closed_at": "2026-10-25T00:00:00Z", "state_reason": "completed"});
         assert_eq!(
-            flow.matches("\"claim_flow_partial\"").count(),
-            2,
-            "lane and bind failures both carry claim_flow_partial"
+            landing_from_json(LinkKind::Issue, &closed),
+            Landing::Landed {
+                state: "closed (completed)".into(),
+                at: "2026-10-25T00:00:00Z".into()
+            }
         );
-        assert!(
-            flow.contains("\"step\": \"lane\""),
-            "lane partial names its step"
+        assert_eq!(
+            landing_from_json(LinkKind::Issue, &json!({"state": "open"})),
+            Landing::Open
         );
-        assert!(
-            flow.contains("\"step\": \"bind\""),
-            "bind partial names its step"
+        assert!(matches!(
+            landing_from_json(LinkKind::Issue, &json!({"state": "closed"})),
+            Landing::Unknown(_)
+        ));
+        assert!(matches!(
+            landing_from_json(LinkKind::Issue, &json!({})),
+            Landing::Unknown(_)
+        ));
+        let merged = json!({"state": "closed", "merged_at": "2026-11-01T00:00:00Z"});
+        assert_eq!(
+            landing_from_json(LinkKind::Pr, &merged),
+            Landing::Landed {
+                state: "merged".into(),
+                at: "2026-11-01T00:00:00Z".into()
+            }
         );
-        // The claim RPC's own `return fail(...)` is pre-commit and
-        // legitimate; the invariant binds everything from the lane
-        // RPC onward (post-commit).
-        let lane_at = flow
-            .find("assign_repo_task_lane")
-            .expect("lane RPC present");
-        assert!(
-            !flow[lane_at..].contains("return fail(e.exit, e.msg)"),
-            "no post-claim step returns the raw retryable error"
+        // Closed unmerged leaves the work open.
+        assert_eq!(
+            landing_from_json(LinkKind::Pr, &json!({"state": "closed", "merged_at": null})),
+            Landing::Open
+        );
+        assert_eq!(
+            landing_from_json(LinkKind::Pr, &json!({"state": "open"})),
+            Landing::Open
         );
     }
 
@@ -1699,7 +938,7 @@ mod tests {
         // RPC unchecked. The dispatch gate rejects garbage and
         // far-future values; absent/null and valid values pass, and
         // other verbs are untouched by the gate.
-        for path in ["/park", "/revive"] {
+        for path in ["/park", "/revive", "/list"] {
             for bad in [
                 json!("banana"),
                 json!(""),
@@ -1836,23 +1075,6 @@ mod tests {
     }
 
     #[test]
-    fn list_limit_rejects_out_of_range_before_the_postgrest_path() {
-        // #6419: the broker interpolated the limit unchecked, so a
-        // client that skipped validation (or a raw caller) could send
-        // 0, negatives, or an unbounded value straight to PostgREST.
-        for bad in [0, -1, 501, i64::MAX] {
-            let err = list_limit(&json!({"limit": bad}))
-                .err()
-                .expect("out-of-range limit must be rejected");
-            assert!(err.contains("--limit"), "error names the flag: {err}");
-        }
-        assert_eq!(list_limit(&json!({"limit": 1})), Ok(1));
-        assert_eq!(list_limit(&json!({"limit": 500})), Ok(500));
-        // Absent limit keeps the existing default of 20.
-        assert_eq!(list_limit(&json!({})), Ok(20));
-    }
-
-    #[test]
     fn duration_fields_reject_out_of_range_before_the_rpc() {
         // #6420: a raw caller could send a born-expired lease, a
         // self-lapsing heartbeat extend, or a park delay in the past
@@ -1926,9 +1148,9 @@ mod tests {
                 "error names the flag: {err}"
             );
         }
-        // The dispatch-level guard covers both backends: it fires
-        // per path before backend selection (Codex finding on
-        // PR #8425), and leaves unrelated paths alone.
+        // The dispatch-level guard fires per path before the Turso
+        // dispatch (Codex finding on PR #8425), and leaves
+        // unrelated paths alone.
         assert!(validate_durations("/claim", &json!({"lease_seconds": 0})).is_err());
         assert!(validate_durations("/heartbeat", &json!({"extend_seconds": -1})).is_err());
         assert!(validate_durations("/park", &json!({"delay_seconds": 604_801})).is_err());
@@ -1944,6 +1166,71 @@ mod tests {
     }
 }
 
+/// The Turso backend's startup (#12247), run after bind: the token
+/// (from the named file, or by name from the secrets broker within
+/// the startup retry budget), the dep probe (#8276) and the schema.
+/// Each failure is recorded in `turso_pending`, so a queue verb that
+/// arrives first reports why the backend is not ready.
+fn start_turso_backend(
+    st: &State,
+    url: String,
+    token_from_file: Option<String>,
+) -> Result<crate::turso_queue::TursoBackend, String> {
+    let note = |why: String| {
+        if let Ok(mut pending) = st.turso_pending.lock() {
+            *pending = why;
+        }
+    };
+    let token = match token_from_file {
+        Some(token) => token,
+        None => {
+            let resolver = Resolver::new(vec![Box::new(DirectSecrets {
+                url: st.secrets_url.clone(),
+                token: st.secrets_token.clone(),
+                agent: st.agent.clone(),
+            })]);
+            match resolve_with_startup_retry_observed(
+                &resolver,
+                crate::turso_queue::TURSO_TOKEN_SECRET_NAME,
+                Duration::from_secs(30),
+                |e| note(format!("turso backend token resolve: {e}")),
+            ) {
+                Ok(v) => v.expose().to_string(),
+                Err(e) => {
+                    let msg =
+                        format!("turso backend token resolve failed after 30s of retries: {e}");
+                    note(msg.clone());
+                    return Err(msg);
+                }
+            }
+        }
+    };
+    let mut backend = crate::turso_queue::TursoBackend::new(url, token, st.agent.clone());
+    // #8276: the dep rechecker's GitHub window, authenticated by name
+    // through the same secrets broker as the Turso token above.
+    backend.set_gh_probe(Arc::new(GhDepProbe {
+        secrets_url: st.secrets_url.clone(),
+        secrets_token: st.secrets_token.clone(),
+        agent: st.agent.clone(),
+        token: Mutex::new(None),
+    }));
+    if let Err(e) = backend.ensure_schema() {
+        let msg = format!("turso backend schema ensure failed: {e}");
+        note(msg.clone());
+        return Err(msg);
+    }
+    Ok(backend)
+}
+
+#[cfg(test)]
+fn resolve_with_startup_retry(
+    resolver: &Resolver,
+    name: &str,
+    budget: Duration,
+) -> Result<SecretValue, SecretError> {
+    resolve_with_startup_retry_observed(resolver, name, budget, |_| {})
+}
+
 /// Resolve `name` through `resolver`, retrying until `budget`
 /// elapses. Startup only: a co-hosted or freshly started
 /// secrets-broker binds before its first vault refresh completes
@@ -1951,16 +1238,20 @@ mod tests {
 /// races its readiness and the whole serve list exits (#8394
 /// Codex P2). Bounded: once the budget is spent the last error is
 /// returned and the caller fails exactly as the one-shot did.
-fn resolve_with_startup_retry(
+/// Each failed attempt is passed to `observe` (#12247), so the
+/// broker can say why its backend is not ready yet.
+fn resolve_with_startup_retry_observed(
     resolver: &Resolver,
     name: &str,
     budget: Duration,
+    observe: impl Fn(&SecretError),
 ) -> Result<SecretValue, SecretError> {
     let deadline = std::time::Instant::now() + budget;
     loop {
         match resolver.resolve(name) {
             Ok(v) => return Ok(v),
             Err(e) => {
+                observe(&e);
                 if std::time::Instant::now() >= deadline {
                     return Err(e);
                 }

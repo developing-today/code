@@ -1,10 +1,12 @@
 // The one interface every data source implements. The views never know
 // whether they are looking at fixtures or live readers — swapping one for
 // the other is a config change (PM_AGG_SOURCE), not a code change.
+import type { BoardSnapshot } from "./design-boards.ts";
 import type { SectionDiagnosis } from "./feed.ts";
 import type { QueueSnapshot } from "./queue.ts";
 import type { Phase12Snapshot } from "./phase12.ts";
 import type { PhaseMappingSnapshot } from "./phase-mapping.ts";
+import type { ProjectDocSnapshot, ProjectDocTarget } from "./project-doc.ts";
 import type { BuildHealthSnapshot } from "./build-health.ts";
 import type { F12PrRef } from "./f12-readiness.ts";
 import type { NeedsDrewCensus } from "./needs-drew.ts";
@@ -71,6 +73,8 @@ export interface Source {
   projects(): Promise<ProjectPoolItem[]>;
   /** Scheduled Project #4 audit snapshot; null when unavailable or malformed. */
   projectAudit?(): Promise<ProjectAudit | null>;
+  /** Cached Designs/Roadmaps/Ideas, never a per-page GitHub request. */
+  designBoards?(): Promise<BoardSnapshot[]>;
   /** The collector's per-repo backlog census (#1220), when the source
    * carries one; null = not collected. Optional so fixtures and test
    * doubles keep working — the coverage panel degrades honestly. */
@@ -97,6 +101,13 @@ export interface Source {
    * read the checkout omit it and the panel withholds mapped
    * progress instead of inventing it. */
   phaseMapping?(): Promise<PhaseMappingSnapshot | null>;
+  /** The project description + latest-status snapshot (#1108
+   * remainder), derived from the project's roadmap file and the
+   * newest doc/ status record in the code checkout; null = the
+   * checkout could not be read. Optional like phaseMapping:
+   * sources that cannot read the checkout omit it and the project
+   * page falls back to the registry text. */
+  projectDoc?(target: ProjectDocTarget): Promise<ProjectDocSnapshot | null>;
   /** The Actions-API build-health snapshot for the id section's
    * Build health panel (#9924); null = not collected / unavailable.
    * Optional like phase12: sources that cannot read the Actions API

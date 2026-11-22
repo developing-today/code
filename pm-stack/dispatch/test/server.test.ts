@@ -69,10 +69,10 @@ function signOidc(repository: string): string {
   return `${header}.${payload}.${b64url(signer.sign(privateKey))}`;
 }
 
-// src/server.ts loads config at import; loadConfig requires SUPABASE_URL
+// src/server.ts loads config at import; the broker token file fixture keeps the queue unconfigured.
 // (#5120), so the suite pins a fixture project (no service-role key: the
 // queue stays disabled, as these tests intend).
-process.env.SUPABASE_URL ??= "https://fixture.supabase.co";
+process.env.QUEUE_BROKER_TOKEN_FILE ??= "/nonexistent-dispatch-test/broker-token";
 const { handler, taskStatusView, sessionStatusView } = await import("../src/server.ts");
 
 function sessionsRequest(token: string, body: Record<string, unknown>): Request {
@@ -106,7 +106,7 @@ describe("POST /v1/sessions directory scoping (issue #2903)", () => {
   });
 
   test("OIDC + omitted directory passes validation (fails later at the unconfigured queue)", async () => {
-    // No SUPABASE_SERVICE_ROLE_KEY in test env, so a request that clears
+    // No broker token in test env, so a request that clears
     // validation reaches requireQueue() and maps to 502 — proving the
     // directory gate let it through. Any network beyond JWKS throws.
     const token = signOidc("developing-today/code");

@@ -54,10 +54,22 @@ UNLOCK_BIN="${UNLOCK_BIN:-/run/current-system/sw/bin/keyring-auto-unlock}"
 TEST_KEY="keyring-auto-unlock-test-v1"
 TEST_PW="correct horse battery staple $(date +%s)"
 
-command -v dbus-run-session >/dev/null || { echo "need dbus-run-session"; exit 2; }
-command -v keyctl >/dev/null || { echo "need keyctl (keyutils)"; exit 2; }
-[ -x "${STASH_BIN}" ] || { echo "missing ${STASH_BIN} (switch first?)"; exit 2; }
-[ -x "${UNLOCK_BIN}" ] || { echo "missing ${UNLOCK_BIN} (switch first?)"; exit 2; }
+command -v dbus-run-session >/dev/null || {
+  echo "need dbus-run-session"
+  exit 2
+}
+command -v keyctl >/dev/null || {
+  echo "need keyctl (keyutils)"
+  exit 2
+}
+[ -x "${STASH_BIN}" ] || {
+  echo "missing ${STASH_BIN} (switch first?)"
+  exit 2
+}
+[ -x "${UNLOCK_BIN}" ] || {
+  echo "missing ${UNLOCK_BIN} (switch first?)"
+  exit 2
+}
 
 export KEYRING_CACHE_KEY="${TEST_KEY}"
 export KEYRING_UNLOCK_ATTEMPTS=3

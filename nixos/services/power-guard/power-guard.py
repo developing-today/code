@@ -22,13 +22,15 @@ missing confirmation step:
 Runs as root in production (systemd unit from the NixOS flake).
 Test hooks (env): POWER_GUARD_SYSFS (fake sysfs root),
 POWER_GUARD_NO_INHIBIT=1 (log inhibitor actions instead of taking a
-real lock), POWER_GUARD_SLEEP_CMD (default "systemctl hybrid-sleep").
+real lock), POWER_GUARD_SLEEP_CMD (default "systemctl hybrid-sleep";
+split into argv with shlex and run without a shell, #9602).
 Threshold/timing overrides: POWER_GUARD_POLL, POWER_GUARD_CONFIRM,
 POWER_GUARD_EDGE_CONFIRM.
 """
 
 import math
 import os
+import shlex
 import subprocess
 import sys
 import threading
@@ -92,7 +94,38 @@ CRITICAL_TTE = 300  # seconds-to-empty treated as critical
 CONFIRM = timing_from_env("POWER_GUARD_CONFIRM", "300")
 EDGE_CONFIRM = timing_from_env("POWER_GUARD_EDGE_CONFIRM", "60")
 NO_INHIBIT = os.environ.get("POWER_GUARD_NO_INHIBIT") == "1"
-SLEEP_CMD = os.environ.get("POWER_GUARD_SLEEP_CMD", "systemctl hybrid-sleep")
+DEFAULT_SLEEP_CMD = "systemctl hybrid-sleep"
+
+
+def parse_sleep_cmd(raw):
+    """Split a sleep command into argv, refusing empty or malformed input.
+
+    #9602: the daemon runs as root, so the command is never handed to a
+    shell. Quoting follows POSIX shell rules (shlex), but metacharacters
+    such as ; | && $( ) are passed through as literal arguments.
+    """
+    try:
+        argv = shlex.split(raw)
+    except ValueError as exc:
+        raise ValueError(
+            f"POWER_GUARD_SLEEP_CMD={raw!r} cannot be parsed: {exc}"
+        ) from None
+    if not argv:
+        raise ValueError(f"POWER_GUARD_SLEEP_CMD={raw!r} must name a command")
+    return argv
+
+
+def sleep_argv_from_env():
+    """Read the sleep command once at startup, failing closed like the timings."""
+    raw = os.environ.get("POWER_GUARD_SLEEP_CMD", DEFAULT_SLEEP_CMD)
+    try:
+        return parse_sleep_cmd(raw)
+    except ValueError as exc:
+        print(f"power-guard: error: {exc}", file=sys.stderr, flush=True)
+        raise SystemExit(2) from None
+
+
+SLEEP_ARGV = sleep_argv_from_env()
 # #8183: how long release() may wait inline for a terminated child
 # before the reap moves to a background thread. The full reap used
 # to block the sampling loop for up to ~10s (wait 5s, kill, wait 5s).
@@ -408,7 +441,7 @@ def main():
                 inh.release()
             if sleep_pending is not None and inh.reap_settled():
                 log(f"CONFIRMED: {sleep_pending}; inhibitor release settled; sleeping")
-                subprocess.run(SLEEP_CMD, shell=True)
+                subprocess.run(SLEEP_ARGV)
                 log("sleep command issued; cooling down")
                 critical_since = edge_since = None
                 sleep_pending = None

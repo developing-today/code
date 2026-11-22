@@ -1,0 +1,19 @@
+[package]
+name = "id-benchmarks"
+version = "0.1.0"
+edition = "2021"
+description = "Benchmark schema, synthetic workload fixture and reference oracle for the #9133 benchmark contract (C9133-01)"
+license = "MIT OR Apache-2.0"
+
+# Standalone crate: deliberately not a member of the pkgs/id workspace
+# (the slice owns only this crate; the workspace root is a shared file
+# this slice does not edit). Run via:
+#   cargo test --manifest-path pkgs/id/benchmarks/Cargo.toml --test workload_oracle
+[workspace]
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+sha2 = "0.11"
+hex = "0.4"
+redb = "=4.6.0"

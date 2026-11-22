@@ -17,6 +17,7 @@
 import { trimSilence, pcmSeconds } from "./vad";
 import { matchIntent, buildAnswer } from "./intent";
 import { TursoClient } from "./ledger";
+import { parseControlFrame } from "./control";
 
 export interface Env {
   AI: Ai;
@@ -101,11 +102,9 @@ export class VoiceSession {
       this.chunks.push(new Uint8Array(message));
       return;
     }
-    let control: { type?: string };
-    try {
-      control = JSON.parse(message);
-    } catch {
-      this.send(ws, { type: "error", error: "control frame must be JSON" });
+    const control = parseControlFrame(message);
+    if (!control.ok) {
+      this.send(ws, { type: "error", error: control.error });
       return;
     }
     if (control.type === "start") {

@@ -18,6 +18,26 @@
 //!   and the `name`/`file` identity tags are refreshed to the new name.
 //! - [`FileOps::delete`] is a *hard* delete: the name, its metadata and its
 //!   archive tags are removed. The blob bytes stay until garbage collected.
+//!
+//! # Name and archive contract
+//!
+//! - **One canonical name.** Every entry point resolves names through
+//!   [`FileOps::validate_name`] / [`FileOps::validate_target`]. A stored name
+//!   is never padded: leading or trailing whitespace is refused with
+//!   [`FileOpError::InvalidName`], never trimmed at the store. Surfaces that
+//!   want to be forgiving trim before calling in.
+//! - **The archive namespace is reserved at the writer.** A name for which
+//!   `is_archive_tag_name` holds (`{stem}.archive.{digits}`, unsigned ASCII
+//!   digits that fit in u64, the [`archive_tag_timestamp`] rule readers share)
+//!   is refused with [`FileOpError::ReservedArchiveName`]. Non-numeric or
+//!   overflowing lookalikes such as `a.archive.notes` remain valid user files.
+//! - **Archive references are ownership.** `archive.rename` and
+//!   `archive.replace` on a live file name the archives it owns; `archive.owner`
+//!   on an archive names the file it belongs to. These stay on the live name
+//!   when its metadata moves onto an archive, move with the name on
+//!   [`FileOps::rename`] (the source name ceases to exist), and are never copied
+//!   by [`FileOps::copy`], which sets only the `archive.replace` it creates
+//!   itself for a file it replaces.
 
 use std::collections::BTreeSet;
 use std::time::{Duration, Instant};
@@ -161,12 +181,21 @@ async fn free_archive_name(store: &Store, name: &str, ts: u64) -> Result<String>
     }
 }
 
+/// The archive timestamp of `name` when it has the archive tag shape used by
+/// FileOps: `{stem}.archive.{ts}` with a non-empty stem and an unsigned
+/// decimal `ts` that fits in u64. Readers that classify archives must use this
+/// same rule so writer and reader never disagree on a name.
+pub fn archive_tag_timestamp(name: &str) -> Option<u64> {
+    let (file_name, suffix) = name.rsplit_once(".archive.")?;
+    if file_name.is_empty() || suffix.is_empty() || !suffix.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    suffix.parse::<u64>().ok()
+}
+
 /// Whether `name` has the archive tag shape used by FileOps.
 fn is_archive_tag_name(name: &str) -> bool {
-    let Some((file_name, suffix)) = name.rsplit_once(".archive.") else {
-        return false;
-    };
-    !file_name.is_empty() && !suffix.is_empty() && suffix.bytes().all(|b| b.is_ascii_digit())
+    archive_tag_timestamp(name).is_some()
 }
 
 /// Resolve a free archive name for `name` at `ts` and claim it for
@@ -553,7 +582,20 @@ impl<'a> FileOps<'a> {
                 let Some(archive_name) = tag.value.as_ref().and_then(|value| value.as_str()) else {
                     continue;
                 };
-                let current_owner = archive_owner(self.tags, archive_name).await.ok().flatten();
+                let current_owner = match read_archive_owner(self.tags, archive_name).await {
+                    Ok(OwnerRead::Owner(owner)) => Some(owner),
+                    Ok(OwnerRead::Absent) => None,
+                    Ok(OwnerRead::Undecodable) => {
+                        tracing::warn!(
+                            "archive.owner on {archive_name} is undecodable; left unchanged"
+                        );
+                        continue;
+                    }
+                    Err(e) => {
+                        tracing::warn!("failed to read archive.owner on {archive_name}: {e:#}");
+                        continue;
+                    }
+                };
                 let created_here = archived_original.as_deref() == Some(archive_name)
                     || archived_replaced.as_deref() == Some(archive_name);
                 let follows_from = current_owner.as_deref() == Some(from);
@@ -603,7 +645,7 @@ impl<'a> FileOps<'a> {
                 ns,
                 from.as_bytes(),
                 to.as_bytes(),
-                &[b"archive.rename", b"archive.replace"],
+                &[b"archive.rename", b"archive.replace", b"archive.owner"],
             )
             .await
         {
@@ -742,16 +784,53 @@ impl<'a> FileOps<'a> {
 /// archive and maintains across renames (#8815). Peers cannot forge the
 /// back-reference: the key is reserved at the protocol layer.
 async fn archive_owner(tags: &TagStore, archive_name: &str) -> Result<Option<String>> {
-    let mut owner = None;
+    Ok(match read_archive_owner(tags, archive_name).await? {
+        OwnerRead::Owner(owner) => Some(owner),
+        OwnerRead::Absent | OwnerRead::Undecodable => None,
+    })
+}
+
+/// What an `archive.owner` lookup proved. A failed lookup is an `Err`, and
+/// an undecodable value is kept apart from absence: neither may be treated
+/// as proof that the archive has no owner.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum OwnerRead {
+    Absent,
+    Owner(String),
+    Undecodable,
+}
+
+#[cfg(test)]
+thread_local! {
+    static FAIL_OWNER_READS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+#[cfg(test)]
+fn injected_owner_read_failure() -> Result<()> {
+    if FAIL_OWNER_READS.with(std::cell::Cell::get) {
+        anyhow::bail!("injected archive.owner read failure");
+    }
+    Ok(())
+}
+
+#[cfg(not(test))]
+fn injected_owner_read_failure() -> Result<()> {
+    Ok(())
+}
+
+async fn read_archive_owner(tags: &TagStore, archive_name: &str) -> Result<OwnerRead> {
+    injected_owner_read_failure()?;
+    let mut read = OwnerRead::Absent;
     for tag in tags
         .get_by_key(&tags.global, archive_name.as_bytes(), b"archive.owner")
         .await?
     {
-        if let Some(value) = tag.value.as_ref().and_then(|value| value.as_str()) {
-            owner = Some(value.to_owned());
-        }
+        read = match tag.value.as_ref().and_then(|value| value.as_str()) {
+            Some(value) if read != OwnerRead::Undecodable => OwnerRead::Owner(value.to_owned()),
+            _ => OwnerRead::Undecodable,
+        };
     }
-    Ok(owner)
+    Ok(read)
 }
 
 /// Stamp the `archive.owner` back-reference on an archive (best-effort
@@ -779,6 +858,27 @@ fn is_owned_archive_tag_name(name: &str, archive_name: &str) -> bool {
 }
 
 #[cfg(test)]
+mod archive_tag_shape_tests {
+    use super::archive_tag_timestamp;
+
+    #[test]
+    fn archive_tag_timestamp_matches_writer_and_reader_rule() {
+        assert_eq!(archive_tag_timestamp("x.archive.5"), Some(5));
+        assert_eq!(
+            archive_tag_timestamp("x.archive.18446744073709551615"),
+            Some(u64::MAX)
+        );
+        assert_eq!(archive_tag_timestamp(".archive.5"), None);
+        assert_eq!(
+            archive_tag_timestamp("x.archive.18446744073709551616"),
+            None
+        );
+        assert_eq!(archive_tag_timestamp("x.archive.+5"), None);
+        assert_eq!(archive_tag_timestamp("x.archive.notes"), None);
+    }
+}
+
+#[cfg(test)]
 mod archive_reference_tests {
     use super::is_owned_archive_tag_name;
 
@@ -798,6 +898,118 @@ mod archive_reference_tests {
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod archive_owner_read_tests {
+    use iroh::endpoint::{Endpoint, RelayMode, presets};
+    use iroh_blobs::{Hash, api::Store, store::mem::MemStore};
+    use iroh_docs::protocol::Docs;
+    use iroh_gossip::net::Gossip;
+
+    use super::*;
+
+    const ARCHIVE: &str = "a.archive.123";
+
+    struct Env {
+        store: Store,
+        tags: TagStore,
+        _dir: tempfile::TempDir,
+        _endpoint: Endpoint,
+        _docs: Docs,
+    }
+
+    /// File `a` is renamed to `b`; `b` carries a rename reference to the
+    /// archive `a` left behind, which is the case legacy inference covers.
+    async fn env_with_archive_reference() -> Env {
+        let endpoint = Endpoint::builder(presets::Minimal)
+            .relay_mode(RelayMode::Disabled)
+            .bind()
+            .await
+            .unwrap();
+        let store: Store = MemStore::new().into();
+        let gossip = Gossip::builder().spawn(endpoint.clone());
+        let docs = Docs::memory()
+            .spawn(endpoint.clone(), store.clone(), gossip)
+            .await
+            .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let tags = TagStore::init_in(&docs, "archive-owner-read-test", dir.path().join("meta"))
+            .await
+            .unwrap();
+        store.tags().set("a", Hash::from([1; 32])).await.unwrap();
+        tags.set_tag(
+            &tags.global,
+            b"b",
+            b"archive.rename",
+            Some(ARCHIVE.as_bytes()),
+            b"",
+        )
+        .await
+        .unwrap();
+        Env {
+            store,
+            tags,
+            _dir: dir,
+            _endpoint: endpoint,
+            _docs: docs,
+        }
+    }
+
+    async fn owner_values(tags: &TagStore, archive: &str) -> Vec<Vec<u8>> {
+        tags.get_by_key(&tags.global, archive.as_bytes(), b"archive.owner")
+            .await
+            .unwrap()
+            .into_iter()
+            .filter_map(|tag| tag.value.map(TagValue::into_bytes))
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn absent_owner_with_successful_lookup_still_infers_legacy_owner() {
+        let env = env_with_archive_reference().await;
+        FileOps::new(&env.store, &env.tags)
+            .rename("a", "b", false)
+            .await
+            .unwrap();
+        assert_eq!(owner_values(&env.tags, ARCHIVE).await, vec![b"b".to_vec()]);
+    }
+
+    #[tokio::test]
+    async fn failed_owner_read_leaves_owner_unchanged_and_skips_inference() {
+        let env = env_with_archive_reference().await;
+        FAIL_OWNER_READS.with(|fail| fail.set(true));
+        let result = FileOps::new(&env.store, &env.tags)
+            .rename("a", "b", false)
+            .await;
+        FAIL_OWNER_READS.with(|fail| fail.set(false));
+        result.unwrap();
+        assert!(owner_values(&env.tags, ARCHIVE).await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn undecodable_owner_is_not_absence_and_is_not_rewritten() {
+        let env = env_with_archive_reference().await;
+        env.tags
+            .set_tag(
+                &env.tags.global,
+                ARCHIVE.as_bytes(),
+                b"archive.owner",
+                Some(&[0xff_u8, 0xfe][..]),
+                b"",
+            )
+            .await
+            .unwrap();
+        FileOps::new(&env.store, &env.tags)
+            .rename("a", "b", false)
+            .await
+            .unwrap();
+        assert_eq!(
+            owner_values(&env.tags, ARCHIVE).await,
+            vec![vec![0xff_u8, 0xfe]]
+        );
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod archive_name_tests {
     use iroh_blobs::{Hash, store::mem::MemStore};
 
@@ -812,7 +1024,7 @@ mod archive_name_tests {
         for name in [
             "report.archive.0",
             "report.archive.1700000000",
-            "report.archive.18446744073709551616",
+            "report.archive.18446744073709551615",
         ] {
             assert!(matches!(
                 FileOps::validate_name(name),
@@ -820,7 +1032,14 @@ mod archive_name_tests {
             ));
         }
 
-        for name in ["a.archive.notes", "a.archive.+1", "a.archive.١"] {
+        // A digit suffix past u64::MAX is not archive-shaped (#11790: one
+        // rule for writer and reader), so it stays a valid user file name.
+        for name in [
+            "a.archive.notes",
+            "a.archive.+1",
+            "a.archive.١",
+            "a.archive.18446744073709551616",
+        ] {
             assert!(FileOps::validate_name(name).is_ok(), "{name:?}");
         }
     }

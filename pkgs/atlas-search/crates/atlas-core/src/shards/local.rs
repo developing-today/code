@@ -106,7 +106,7 @@ impl PipelineTransport for LocalShardTransport {
             let mut q = con
                 .prepare(&s.sql)
                 .map_err(|e| Error::fatal(format!("local shard: SQL error: {e}")))?;
-            let names: Vec<String> = q.column_names().iter().map(|n| n.to_string()).collect();
+            let names: Vec<String> = q.column_names().map(|n| n.to_string()).collect();
             let params: Vec<RValue> = s
                 .args
                 .iter()

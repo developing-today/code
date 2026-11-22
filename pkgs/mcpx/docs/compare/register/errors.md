@@ -19,26 +19,26 @@ unknown notifications with an error is in the notifications register.
 
 Status column: **mcpx @ 05c78b2**. Legend and citation conventions: [../README.md](../README.md).
 
-| ID | Difference | Labels | Where it exists | mcpx @ 05c78b2 | Value | Effort | Risk |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| ERR-01 | `-32700` Parse error | `2024-11-05 has` | `24-11 ✓ · 25-03 ✓ · 25-06 ✓ · 25-11 ✓ · 26-07 ✓ (typed)` | ✓ — sent without id; HTTP 400 | + low | S | low |
-| ERR-02 | `-32600` Invalid Request | `2024-11-05 has` | `24-11 ✓ · 25-03 ✓ · 25-06 ✓ · 25-11 ✓ · 26-07 ✓ (typed)` | partial — stdio checks `jsonrpc`; HTTP never does | + low | S | low |
-| ERR-03 | `-32601` Method not found, and what it now covers | `2024-11-05 has` `2026-07-28 has` | `24-11 ✓ · 25-03 ✓ · 25-06 ✓ · 25-11 ✓ · 26-07 ✓ + 404` | partial — used for unknown methods; always HTTP 200 | + med | S | low |
-| ERR-04 | `-32602` Invalid params, meanings widening | `2024-11-05 has` `2026-07-28 has` `mcpx missing` | `24-11 ✓ · 25-03 ✓ · 25-06 ✓ · 25-11 ✓ · 26-07 ✓ (wider)` | partial — also used for internal failures (#202) | + med | S | med |
-| ERR-05 | `-32603` Internal error | `2024-11-05 has` `2026-07-28 has` `mcpx missing` | `24-11 ✓ · 25-03 ✓ · 25-06 ✓ · 25-11 ✓ · 26-07 ✓` | partial — MRTR path uses it; resources and prompts use `-32602` (#202) | + med | S | low |
-| ERR-06 | `-32002` Resource not found → `-32602` | `2024-11-05 has` `2026-07-28 removes` `mcpx missing` `2026-07-28 has` | `24-11 ✓ · 25-03 ✓ · 25-06 ✓ · 25-11 ✓ · 26-07 MUST NOT emit` | partial — `-32602` to every era; legacy expects `-32002` (#202) | + low | S | low |
-| ERR-07 | `-32020` HeaderMismatch | `2026-07-28 has` `mcpx missing` | `26-07 ✓` (HTTP 400) | ✗ — plain-JSON 400 for one case; others unchecked (#199) | + high | S | high |
-| ERR-08 | `-32021` MissingRequiredClientCapability | `2026-07-28 has` | `26-07 ✓` (HTTP 400) | ✗ — never used; the broker answers instead | + low | S | low |
-| ERR-09 | `-32022` UnsupportedProtocolVersion | `2026-07-28 has` `mcpx missing` | `26-07 ✓` (HTTP 400) | partial — right shape; `requested` empty; HTTP 200 (#199) | + med | S | med |
-| ERR-10 | Code for refusing a legacy `initialize`: `-32602` vs `-32022` | `2024-11-05 has` `specs conflict` `mcpx missing` | `24-11..25-11` example `-32602` · `26-07` `-32022` | ✗ — 2026-only `-32022` sent to legacy peers (#202) | + med | S | med |
-| ERR-11 | Draft codes `-32001` / `-32003` / `-32004` | `2026-07-28 has` | pre-release 2026 drafts only | n/a — never used by mcpx | + low | S | low |
-| ERR-12 | Error-code allocation policy (2026) | `2026-07-28 has` `specs conflict` | `26-07 ✓` | ✓ — standard codes plus `-32022` only | + low | S | low |
-| ERR-13 | HTTP status for modern JSON-RPC errors (400 / 404) | `2026-07-28 has` `mcpx missing` | `26-07 ✓` | ✗ — every error goes out as 200 (#199) | + med | S | med |
-| ERR-14 | Check order for a malformed 2026 HTTP request | `2026-07-28 has` `specs conflict` | `26-07` (unspecified) | partial — header-vs-`_meta` first; missing fields never rejected | + low | S | low |
-| ERR-15 | Error response `id` optional | `2025-11-25 has` | `24-11 — · 25-03 — · 25-06 — · 25-11 ✓ · 26-07 ✓` | partial — sends id-less parse errors; client drops id-less errors | + low | S | low |
-| ERR-16 | Local errors versus peer errors through a proxy | `2026-07-28 has` `mcpx missing` | `26-07` guidance | partial — upstream code and data survive only as text (#202) | + med | M | med |
-| ERR-17 | Tool input validation: protocol error → `isError` | `2025-11-25 has` | `24-11..25-06` protocol error · `25-11 ✓ · 26-07 ✓` `isError` | ✓ — tool failures are `isError` results | + med | S | low |
-| ERR-18 | 2026 schema still shows `-32602` for bad tool arguments | `2026-07-28 has` `specs conflict` | `26-07` prose vs schema | ✓ — mcpx follows the prose | + low | S | low |
+| ID     | Difference                                                    | Labels                                                                | Where it exists                                               | mcpx @ 05c78b2                                                         | Value  | Effort | Risk |
+| ------ | ------------------------------------------------------------- | --------------------------------------------------------------------- | ------------------------------------------------------------- | ---------------------------------------------------------------------- | ------ | ------ | ---- |
+| ERR-01 | `-32700` Parse error                                          | `2024-11-05 has`                                                      | `24-11 ✓ · 25-03 ✓ · 25-06 ✓ · 25-11 ✓ · 26-07 ✓ (typed)`     | ✓ — sent without id; HTTP 400                                          | + low  | S      | low  |
+| ERR-02 | `-32600` Invalid Request                                      | `2024-11-05 has`                                                      | `24-11 ✓ · 25-03 ✓ · 25-06 ✓ · 25-11 ✓ · 26-07 ✓ (typed)`     | partial — stdio checks `jsonrpc`; HTTP never does                      | + low  | S      | low  |
+| ERR-03 | `-32601` Method not found, and what it now covers             | `2024-11-05 has` `2026-07-28 has`                                     | `24-11 ✓ · 25-03 ✓ · 25-06 ✓ · 25-11 ✓ · 26-07 ✓ + 404`       | partial — used for unknown methods; always HTTP 200                    | + med  | S      | low  |
+| ERR-04 | `-32602` Invalid params, meanings widening                    | `2024-11-05 has` `2026-07-28 has` `mcpx missing`                      | `24-11 ✓ · 25-03 ✓ · 25-06 ✓ · 25-11 ✓ · 26-07 ✓ (wider)`     | partial — also used for internal failures (#202)                       | + med  | S      | med  |
+| ERR-05 | `-32603` Internal error                                       | `2024-11-05 has` `2026-07-28 has` `mcpx missing`                      | `24-11 ✓ · 25-03 ✓ · 25-06 ✓ · 25-11 ✓ · 26-07 ✓`             | partial — MRTR path uses it; resources and prompts use `-32602` (#202) | + med  | S      | low  |
+| ERR-06 | `-32002` Resource not found → `-32602`                        | `2024-11-05 has` `2026-07-28 removes` `mcpx missing` `2026-07-28 has` | `24-11 ✓ · 25-03 ✓ · 25-06 ✓ · 25-11 ✓ · 26-07 MUST NOT emit` | partial — `-32602` to every era; legacy expects `-32002` (#202)        | + low  | S      | low  |
+| ERR-07 | `-32020` HeaderMismatch                                       | `2026-07-28 has` `mcpx missing`                                       | `26-07 ✓` (HTTP 400)                                          | ✗ — plain-JSON 400 for one case; others unchecked (#199)               | + high | S      | high |
+| ERR-08 | `-32021` MissingRequiredClientCapability                      | `2026-07-28 has`                                                      | `26-07 ✓` (HTTP 400)                                          | partial — broker if an answerer exists; `-32021` + `requiredCapabilities` when a capability is required and none can answer (#2438) | + low  | S      | low  |
+| ERR-09 | `-32022` UnsupportedProtocolVersion                           | `2026-07-28 has` `mcpx missing`                                       | `26-07 ✓` (HTTP 400)                                          | partial — right shape; `requested` empty; HTTP 200 (#199)              | + med  | S      | med  |
+| ERR-10 | Code for refusing a legacy `initialize`: `-32602` vs `-32022` | `2024-11-05 has` `specs conflict` `mcpx missing`                      | `24-11..25-11` example `-32602` · `26-07` `-32022`            | ✗ — 2026-only `-32022` sent to legacy peers (#202)                     | + med  | S      | med  |
+| ERR-11 | Draft codes `-32001` / `-32003` / `-32004`                    | `2026-07-28 has`                                                      | pre-release 2026 drafts only                                  | n/a — never used by mcpx                                               | + low  | S      | low  |
+| ERR-12 | Error-code allocation policy (2026)                           | `2026-07-28 has` `specs conflict`                                     | `26-07 ✓`                                                     | ✓ — standard codes plus `-32022` only                                  | + low  | S      | low  |
+| ERR-13 | HTTP status for modern JSON-RPC errors (400 / 404)            | `2026-07-28 has` `mcpx missing`                                       | `26-07 ✓`                                                     | ✗ — every error goes out as 200 (#199)                                 | + med  | S      | med  |
+| ERR-14 | Check order for a malformed 2026 HTTP request                 | `2026-07-28 has` `specs conflict`                                     | `26-07` (unspecified)                                         | partial — header-vs-`_meta` first; missing fields never rejected       | + low  | S      | low  |
+| ERR-15 | Error response `id` optional                                  | `2025-11-25 has`                                                      | `24-11 — · 25-03 — · 25-06 — · 25-11 ✓ · 26-07 ✓`             | partial — sends id-less parse errors; client drops id-less errors      | + low  | S      | low  |
+| ERR-16 | Local errors versus peer errors through a proxy               | `2026-07-28 has` `mcpx missing`                                       | `26-07` guidance                                              | partial — upstream code and data survive only as text (#202)           | + med  | M      | med  |
+| ERR-17 | Tool input validation: protocol error → `isError`             | `2025-11-25 has`                                                      | `24-11..25-06` protocol error · `25-11 ✓ · 26-07 ✓` `isError` | ✓ — tool failures are `isError` results                                | + med  | S      | low  |
+| ERR-18 | 2026 schema still shows `-32602` for bad tool arguments       | `2026-07-28 has` `specs conflict`                                     | `26-07` prose vs schema                                       | ✓ — mcpx follows the prose                                             | + low  | S      | low  |
 
 ## ERR-01 `-32700` Parse error
 
@@ -76,7 +76,7 @@ Status column: **mcpx @ 05c78b2**. Legend and citation conventions: [../README.m
 
 - **What.** Unknown method, in every revision. It accumulates meanings: from 2025-03-26 the completion page uses it for
   `completion/complete` without the capability; 2025-11-25 for a `taskSupport: "required"` tool called without a task;
-  the 2026 schema for any method "gated behind a server capability the server did not advertise" (a missing *client*
+  the 2026 schema for any method "gated behind a server capability the server did not advertise" (a missing _client_
   capability is `-32021` instead); and 2026 HTTP pairs it with status 404. The tasks extension also requires it for
   the removed `tasks/result`.
 - **Where.** Every revision; 404 pairing in 2026-07-28.
@@ -106,7 +106,7 @@ Status column: **mcpx @ 05c78b2**. Legend and citation conventions: [../README.m
 - **Effort.** S.
 - **Risk.** Clients retry with "fixed" parameters against a broken server.
 - **Detail.** In 2026 an invalid per-request `logLevel` SHOULD reject the whole request with `-32602`; see the logging
-  register. The elicitation and sampling cases are errors a *client* returns, and in 2026 a client answers those
+  register. The elicitation and sampling cases are errors a _client_ returns, and in 2026 a client answers those
   requests only inside MRTR, where `InputResponse` has no error variant, so the documented `-32602` has no channel
   (MRTR register).
 - **Also recorded from the resources register.** JSON-RPC semantics generally. A daemon or upstream failure (process
@@ -191,9 +191,10 @@ Status column: **mcpx @ 05c78b2**. Legend and citation conventions: [../README.m
 - **What.** If processing needs a capability absent from this request's `clientCapabilities`, the server MUST return
   `-32021` with `data.requiredCapabilities`, a full `ClientCapabilities` object; HTTP 400.
 - **Where.** 2026-07-28 (numbered `-32003` in the pre-release draft).
-- **mcpx @ 05c78b2.** Never used, and no constant exists. When a 2026 client did not declare elicitation, `canAsk` is
-  false and the question goes to mcpx's broker, where another audience can answer it
-  (`internal/mcpserver/ask.go:66-76`; `internal/mcpserver/server.go:649-657`).
+- **mcpx @ 05c78b2.** The gateway returns `-32021` with `requiredCapabilities` when an input request has no answerer;
+  when an answerer is present, it keeps the question open for the broker instead. The ask seam's `noAudience`
+  (`internal/daemon/hooks.go`) and answerer-presence tests pin this distinction (#2438). Pass-through mode relays an
+  upstream `-32021` unchanged (`internal/mcpserver/relay_test.go`).
 - **Value to mcpx.** + low: a host that could re-send with the capability never learns it was needed; the broker is a
   deliberate alternative.
 - **Effort.** S.
@@ -201,13 +202,11 @@ Status column: **mcpx @ 05c78b2**. Legend and citation conventions: [../README.m
 - **Detail.** MRTR forbids input requests for undeclared capabilities, so when input is truly required this is the
   only compliant answer (MRTR register). The tasks extension uses it for clients that did not declare the extension
   (tasks register).
-- **Also recorded from the elicitation register.** 2026-07-28 only (earlier drafts numbered it `-32003`). Never
-  emitted, and no constant exists. A 2026 host that did not declare elicitation gets the direct path: `canAsk` is
-  false (`internal/mcpserver/ask.go:66-76`) and the question waits in the broker for another audience. The findings
-  disagree on the label: the base-protocol axis calls `-32021` the only compliant answer when input is truly required;
-  the mcpx axis calls the broker fallback a design choice. Both hold: mcpx never *requires* the capability, because a
-  broker audience can answer. `data.requiredCapabilities` is a full `ClientCapabilities` object. The rule that mcpx
-  never puts an undeclared kind of question into `inputRequests` is in [mrtr.md](mrtr.md).
+- **Also recorded from the elicitation register.** 2026-07-28 only (earlier drafts numbered it `-32003`). The gateway
+  does not fail merely because the originating client omitted elicitation: it brokers the question if another answerer
+  is present, and returns `-32021` only when no answerer can serve it (#2438; `internal/daemon/hooks.go`).
+  `data.requiredCapabilities` is a full `ClientCapabilities` object. The rule that mcpx never puts an undeclared kind
+  of question into `inputRequests` is in [mrtr.md](mrtr.md). Pass-through relay preserves a peer's `-32021` and data.
 - **Sources.** `schema/2026-07-28/schema.ts:442` "export const MISSING_REQUIRED_CLIENT_CAPABILITY = -32021;";
   `schema/2026-07-28/schema.ts:523` "requiredCapabilities: ClientCapabilities;"; `2026-07-28/basic/index.mdx:387`;
   `internal/mcpserver/ask.go:67`.; `schema/2026-07-28/examples/MissingRequiredClientCapabilityError/missing-elicitation-capability.json:6`
@@ -235,7 +234,7 @@ Status column: **mcpx @ 05c78b2**. Legend and citation conventions: [../README.m
 ## ERR-10 Code for refusing a legacy `initialize`: `-32602` vs `-32022`
 
 - **What.** Every legacy lifecycle page shows an "initialization error" example: `-32602 "Unsupported protocol
-  version"` with `data.supported` and `data.requested`, the same data shape 2026 standardises under `-32022`. mcpx
+version"` with `data.supported` and `data.requested`, the same data shape 2026 standardises under `-32022`. mcpx
   answers legacy `initialize` refusals with `-32022`, a code no legacy revision defines.
 - **Where.** Example in 2024-11-05..2025-11-25; `-32022` in 2026-07-28 only.
 - **mcpx @ 05c78b2.** `codeUnsupportedVersion = -32022` (`internal/mcpserver/server.go:230`) is used for every
@@ -303,7 +302,7 @@ Status column: **mcpx @ 05c78b2**. Legend and citation conventions: [../README.m
 - **Risk.** A dual-era client probing mcpx with a 2026 request gets a 200 error and may misclassify it.
 - **Detail.** None.
 - **Sources.** `2026-07-28/basic/transports/streamable-http.mdx:265` "not to support), it **MUST** respond with `400 Bad
-  Request` and an"; `2026-07-28/basic/transports/streamable-http.mdx:271` "If the server does not implement the
+Request` and an"; `2026-07-28/basic/transports/streamable-http.mdx:271` "If the server does not implement the
   requested RPC method, it **MUST** respond"; `2026-07-28/basic/index.mdx:381`; `internal/mcpserver/server.go:1192`
   "writeJSON(w, http.StatusOK, resp)"; wire W12.
 
@@ -382,7 +381,7 @@ Status column: **mcpx @ 05c78b2**. Legend and citation conventions: [../README.m
 - **What.** 2026 prose makes input-validation failures (a date in the wrong format, a value out of range) `isError`
   results. The 2026 schema's `InvalidParamsError` doc lists "Tools: Unknown tool name or invalid tool arguments" and
   ships an example `invalid-tool-arguments.json`: `-32602 "Invalid arguments for tool calculate: Missing required
-  property 'expression'"`.
+property 'expression'"`.
 - **Where.** 2026-07-28, prose against schema.
 - **mcpx @ 05c78b2.** Follows the prose: tool failures are `isError` (`internal/mcpserver/server.go:666-674`).
 - **Value to mcpx.** + low: clients, mcpx included, must accept both forms from upstreams.

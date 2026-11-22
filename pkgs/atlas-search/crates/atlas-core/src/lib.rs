@@ -38,14 +38,17 @@ pub mod feedback;
 pub mod feedback_normalise;
 pub mod filters;
 pub mod fusion;
+pub mod gate;
 pub mod github_comments;
 pub mod join;
 pub mod local;
 pub mod manifest;
+pub mod owner_inventory;
 pub mod search;
 pub mod shards;
 pub mod shingles;
 pub mod stage;
+pub mod sweep;
 pub mod trace;
 pub mod trace_ingest;
 pub mod trace_stats;
@@ -59,8 +62,9 @@ pub const MAX_EXPAND_NEIGHBORS: usize = 100;
 pub use aggregate::{PromoteReport, embed_unit_into_shard, tier_sensitivity_name};
 pub use backend::SearchBackend;
 pub use detect::{
-    DETECTION_LEDGER_SCHEMA, DetectionLedger, DetectionPass, LandedState, Mechanism, PathVerdict,
-    SourceLedger, Verdict, VerdictCounts, default_ledger_path, git_tree_detection, resolve_commit,
+    DETECTION_LEDGER_SCHEMA, DetectionLedger, DetectionPass, FileStat, LandedState, Mechanism,
+    PathVerdict, PlainTreeOptions, SourceLedger, Verdict, VerdictCounts, default_ledger_path,
+    git_tree_detection, plain_tree_detection, resolve_commit,
 };
 pub use embed::{
     AtlasEmbedder, DocEmbedder, FixedDocEmbedder, FixedEmbedder, QUERY_PROMPT, QueryEmbedder,
@@ -94,6 +98,9 @@ pub use local::LocalBackend;
 pub use manifest::{
     LoadedManifest, Manifest, ManifestRow, ManifestSource, builtin_manifest, load_manifest,
     parse_manifest_rows,
+};
+pub use owner_inventory::{
+    INVENTORY_FORMAT, OwnerInventory, OwnerInventoryFinding, PatternClass, SECRET_REFERENCE_ENV,
 };
 pub use search::{
     BackendBranchExecutor, BranchPoolExecutor, SearchMode, SearchOptions, TraceJob, run_get_chunk,

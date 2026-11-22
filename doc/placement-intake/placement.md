@@ -312,3 +312,39 @@ the org-run surface is `active` in the registry and the Blacksmith
 variant exists there too — a `fleet-org-blacksmith`-style registry
 entry on the code host is all that remains if Blacksmith legs are
 ever wanted on org-run itself.
+
+---
+
+## 2026-11-21T11-50-00Z Update: surfaces may dispatch as the user
+
+The statement above that there is no user-token dispatch path no longer
+holds. A surface entry may say `"dispatch_as": "user"`; that surface then
+uses the fleet's own GitHub user token for eligibility, dispatch, status and
+load reads. A surface without the field is App-only, as before. Reasons and
+the decision record:
+[`doc/2026-11-21T11-30-00Z_design_fleet-agent-front-door/`](../2026-11-21T11-30-00Z_design_fleet-agent-front-door/2026-11-21T11-30-00Z_design_fleet-agent-front-door.md)
+and [FDR-0013](../decisions/FDR-0013-no-owner-decision-gates.md).
+
+Status on 2026-11-21, each proven by a real run:
+
+| Surface                | Status | Dispatches as | Proof                                                       |
+| ---------------------- | ------ | ------------- | ----------------------------------------------------------- |
+| `fleet-personal`       | active | the App       | unchanged                                                   |
+| `org-run`              | active | the App       | unchanged                                                   |
+| `fleet-org`            | active | the user      | run 44900088840, success                                    |
+| `fleet-org-blacksmith` | active | the user      | run 44900255411, success on a Blacksmith runner             |
+| `fleet-forks`          | active | the user      | run 44900259404, success after a sync to upstream `72049ac` |
+| `codespace-overflow`   | waits  |               | the `gh` login lacks the `codespace` scope                  |
+
+Two facts in the earlier text are out of date. The org copy has its repo
+secrets. The forks copy needs no checkout secret for public targets, which
+are the only targets its entry lists.
+
+Adding a location is now: copy the repo, register the entry, and either
+install the App on the copy or set `dispatch_as` to `user` where the fleet's
+GitHub user can start workflows there.
+
+The org copy's `fleet-run.yml` still differs from upstream in both
+directions, so its daily sync fails on a merge conflict. Until the copies
+converge, that entry declares no `dispatch_id` input and its runs are matched
+by the snapshot fallback.

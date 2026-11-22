@@ -6,8 +6,10 @@
 //! new, or gone — since the last landed ingest of this source?_ It
 //! never embeds, never re-tags, and writes nothing except the ledger
 //! entry recording its verdicts. This module implements the git
-//! source mechanism (§2.1: tree diff, never working-tree reads) and
-//! the persisted ledger that makes every pass auditable (§2.4).
+//! source mechanism (§2.1: tree diff, never working-tree reads), the
+//! plain-tree mechanism (§2.2: stat pass, then a BLAKE3 hash pass over
+//! suspects only; issue #9980) and the persisted ledger that makes
+//! every pass auditable (§2.4).
 //!
 //! Git sources are detected by commit, not by reading the working
 //! tree: a re-ingest at commit `C` with last-landed commit `L` is the
@@ -46,12 +48,16 @@ pub const DETECTION_LEDGER_SCHEMA: &str = "atlas-detection-ledger/v1";
 pub enum Mechanism {
     /// Commit-level tree diff over a git source (§2.1).
     GitTreeDiff,
+    /// Stat pre-filter, then a BLAKE3 hash walk of the suspects, over a
+    /// plain directory tree (§2.2).
+    PlainTreeHashWalk,
 }
 
 impl Mechanism {
     pub fn as_str(self) -> &'static str {
         match self {
             Mechanism::GitTreeDiff => "git_tree_diff",
+            Mechanism::PlainTreeHashWalk => "plain_tree_hash_walk",
         }
     }
 }
@@ -111,11 +117,68 @@ impl VerdictCounts {
 /// at, plus the path→blob map the next pass consults (§2.4).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LandedState {
+    /// The git commit for a git source. For a plain tree, the tree
+    /// digest (`blake3:<hex>` over the sorted path/hash pairs), which
+    /// stays the same across passes that change nothing.
     pub commit: String,
-    /// Landed blobs by path. These are git object ids, so recording
-    /// them costs no content read.
+    /// Landed blobs by path. These are git object ids for a git source
+    /// (recording them costs no content read) and BLAKE3 content
+    /// hashes for a plain tree.
     #[serde(default)]
     pub objects: BTreeMap<String, String>,
+    /// Plain trees only: the `(size, mtime)` each landed file had when
+    /// last hashed, which the next pass's stat pre-filter compares
+    /// against (§2.2 stage 1). Empty for git sources.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub stats: BTreeMap<String, FileStat>,
+}
+
+/// The metadata the §2.2 stat pass compares: a file whose size and
+/// mtime equal its landed entry is presumed unchanged and not opened.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FileStat {
+    pub size: u64,
+    /// Modification time in nanoseconds since the Unix epoch. `None`
+    /// when the platform reports none, which makes the file a suspect
+    /// on every pass rather than a stat hit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mtime_ns: Option<i64>,
+}
+
+/// Operator policy for a plain-tree pass (§2.2 stage 3).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlainTreeOptions {
+    /// Whether mtimes can be trusted at all. `false` skips the stat
+    /// pass for every file, e.g. for a tree restored from backup where
+    /// every mtime is new but the content is old: detection then
+    /// hashes everything, and still re-embeds nothing that is equal.
+    pub trust_mtime: bool,
+    /// Path prefixes (relative, `/`-separated) whose mtimes are
+    /// untrusted even when `trust_mtime` is set. A prefix matches a
+    /// path equal to it or below it as a directory.
+    pub untrusted_prefixes: Vec<String>,
+}
+
+impl Default for PlainTreeOptions {
+    fn default() -> Self {
+        Self {
+            trust_mtime: true,
+            untrusted_prefixes: Vec::new(),
+        }
+    }
+}
+
+impl PlainTreeOptions {
+    fn trusts(&self, path: &str) -> bool {
+        self.trust_mtime
+            && !self.untrusted_prefixes.iter().any(|prefix| {
+                let prefix = prefix.trim_end_matches('/');
+                path == prefix
+                    || path
+                        .strip_prefix(prefix)
+                        .is_some_and(|rest| rest.starts_with('/'))
+            })
+    }
 }
 
 /// One detection pass, appended to the ledger per source (§2.4).
@@ -191,9 +254,8 @@ impl DetectionLedger {
                 )));
             }
         };
-        let ledger: DetectionLedger = serde_json::from_str(&text).map_err(|e| {
-            Error::backend(format!("detection ledger {}: {e}", path.display()))
-        })?;
+        let ledger: DetectionLedger = serde_json::from_str(&text)
+            .map_err(|e| Error::backend(format!("detection ledger {}: {e}", path.display())))?;
         if ledger.schema != DETECTION_LEDGER_SCHEMA {
             return Err(Error::backend(format!(
                 "detection ledger {}: unsupported schema {:?}",
@@ -213,9 +275,8 @@ impl DetectionLedger {
         }
         let text = serde_json::to_string_pretty(self)
             .map_err(|e| Error::backend(format!("detection ledger: {e}")))?;
-        std::fs::write(path, format!("{text}\n")).map_err(|e| {
-            Error::backend(format!("detection ledger {}: {e}", path.display()))
-        })
+        std::fs::write(path, format!("{text}\n"))
+            .map_err(|e| Error::backend(format!("detection ledger {}: {e}", path.display())))
     }
 
     pub fn source(&self, source: &str) -> Option<&SourceLedger> {
@@ -248,13 +309,8 @@ impl DetectionLedger {
         let from = previous.as_ref().map(|l| l.commit.clone());
         let started = Instant::now();
 
-        let mut pass = git_tree_detection(
-            repo,
-            &source,
-            from.as_deref(),
-            target,
-            previous.as_ref(),
-        )?;
+        let mut pass =
+            git_tree_detection(repo, &source, from.as_deref(), target, previous.as_ref())?;
         pass.elapsed_ms = started.elapsed().as_millis() as u64;
 
         // Merge the verdicts into the landed map. An unchanged path is
@@ -283,9 +339,234 @@ impl DetectionLedger {
         section.landed = Some(LandedState {
             commit: target.to_string(),
             objects,
+            stats: BTreeMap::new(),
         });
         Ok(pass)
     }
+
+    /// Detect changes for a plain directory tree at `root` and record
+    /// the pass (§2.2).
+    ///
+    /// The landed state is taken from the ledger; a source with none
+    /// is a first ingest (every file is hashed and `New`). The pass
+    /// appends to the ledger and replaces the landed state with what
+    /// the walk saw. A file whose stat differs but whose hash is equal
+    /// gets its new stat recorded in the ledger only; it gets no
+    /// verdict, so the ingest path writes nothing for it.
+    ///
+    /// A source whose last pass used another mechanism is refused: its
+    /// landed object ids are not BLAKE3 content hashes, so every file
+    /// would read as changed.
+    pub fn detect_plain_tree(
+        &mut self,
+        root: &Path,
+        source: impl Into<String>,
+        options: &PlainTreeOptions,
+    ) -> Result<DetectionPass> {
+        let source = source.into();
+        let section = self.sources.get(&source);
+        if let Some(last) = section.and_then(|s| s.passes.last())
+            && last.mechanism != Mechanism::PlainTreeHashWalk
+        {
+            return Err(Error::backend(format!(
+                "detection ledger: source {source:?} was last detected with {}, not {}",
+                last.mechanism.as_str(),
+                Mechanism::PlainTreeHashWalk.as_str()
+            )));
+        }
+        let previous = section.and_then(|s| s.landed.as_ref());
+        let (pass, landed) = plain_tree_detection(root, &source, previous, options)?;
+
+        let section = self.sources.entry(source).or_default();
+        section.passes.push(pass.clone());
+        section.landed = Some(landed);
+        Ok(pass)
+    }
+}
+
+/// Run the §2.2 plain-tree pass for one source without recording it.
+///
+/// Returns the pass and the landed state it leaves behind. Each file is
+/// opened at most once: stat hits are not opened at all, and suspects
+/// are streamed through BLAKE3 a single time. Symlinks and special
+/// files are skipped and never followed, so the walk stays inside
+/// `root`. A file name that is not UTF-8 is an error rather than a
+/// silent skip, because a skipped file would read as gone.
+pub fn plain_tree_detection(
+    root: &Path,
+    source: &str,
+    landed: Option<&LandedState>,
+    options: &PlainTreeOptions,
+) -> Result<(DetectionPass, LandedState)> {
+    let started = Instant::now();
+    let mut files = BTreeMap::new();
+    walk_plain_tree(root, root, &mut files)?;
+
+    let mut objects = BTreeMap::new();
+    let mut stats = BTreeMap::new();
+    let mut verdicts = Vec::new();
+    let mut counts = VerdictCounts::default();
+    let mut stat_hits = 0u64;
+    let mut bytes_read = 0u64;
+
+    for (path, (full, stat)) in &files {
+        let landed_hash = landed.and_then(|l| l.objects.get(path));
+        let landed_stat = landed.and_then(|l| l.stats.get(path));
+        let presumed = landed_hash.is_some()
+            && options.trusts(path)
+            && stat.mtime_ns.is_some()
+            && landed_stat == Some(stat);
+        let hash = if presumed {
+            stat_hits += 1;
+            landed_hash.cloned().unwrap_or_default()
+        } else {
+            let (hash, read) = hash_file(full)?;
+            bytes_read += read;
+            hash
+        };
+        match landed_hash {
+            Some(old) if *old == hash => counts.add(Verdict::Unchanged),
+            Some(old) => verdicts.push(PathVerdict {
+                path: path.clone(),
+                previous_path: None,
+                verdict: Verdict::Changed,
+                blob: Some(hash.clone()),
+                previous_blob: Some(old.clone()),
+            }),
+            None => verdicts.push(PathVerdict {
+                path: path.clone(),
+                previous_path: None,
+                verdict: Verdict::New,
+                blob: Some(hash.clone()),
+                previous_blob: None,
+            }),
+        }
+        objects.insert(path.clone(), hash);
+        stats.insert(path.clone(), *stat);
+    }
+    if let Some(landed) = landed {
+        for (path, hash) in &landed.objects {
+            if !files.contains_key(path) {
+                verdicts.push(PathVerdict {
+                    path: path.clone(),
+                    previous_path: None,
+                    verdict: Verdict::Gone,
+                    blob: None,
+                    previous_blob: Some(hash.clone()),
+                });
+            }
+        }
+    }
+    apply_rename_second_pass(&mut verdicts);
+    for verdict in &verdicts {
+        counts.add(verdict.verdict);
+    }
+
+    let stat_presumption_rate = landed.and_then(|l| {
+        let total = l.objects.len()
+            + verdicts
+                .iter()
+                .filter(|v| v.verdict == Verdict::New)
+                .count();
+        (total > 0).then(|| stat_hits as f64 / total as f64)
+    });
+    let to = tree_digest(&objects);
+    let pass = DetectionPass {
+        source: source.to_string(),
+        mechanism: Mechanism::PlainTreeHashWalk,
+        from: landed.map(|l| l.commit.clone()),
+        to: to.clone(),
+        counts,
+        stat_presumption_rate,
+        bytes_read,
+        elapsed_ms: started.elapsed().as_millis() as u64,
+        verdicts,
+    };
+    let landed = LandedState {
+        commit: to,
+        objects,
+        stats,
+    };
+    Ok((pass, landed))
+}
+
+/// Stage 1: readdir + lstat only, no content reads. Collects regular
+/// files by `/`-separated path relative to `root`.
+fn walk_plain_tree(
+    root: &Path,
+    dir: &Path,
+    files: &mut BTreeMap<String, (PathBuf, FileStat)>,
+) -> Result<()> {
+    let entries = std::fs::read_dir(dir)
+        .map_err(|e| Error::backend(format!("plain tree {}: {e}", dir.display())))?;
+    for entry in entries {
+        let entry =
+            entry.map_err(|e| Error::backend(format!("plain tree {}: {e}", dir.display())))?;
+        let full = entry.path();
+        let file_type = entry
+            .file_type()
+            .map_err(|e| Error::backend(format!("plain tree {}: {e}", full.display())))?;
+        if file_type.is_dir() {
+            walk_plain_tree(root, &full, files)?;
+            continue;
+        }
+        if !file_type.is_file() {
+            continue;
+        }
+        let relative = full
+            .strip_prefix(root)
+            .map_err(|e| Error::backend(format!("plain tree {}: {e}", full.display())))?;
+        let mut parts = Vec::new();
+        for part in relative.components() {
+            let part = part.as_os_str().to_str().ok_or_else(|| {
+                Error::backend(format!("plain tree {}: path is not UTF-8", full.display()))
+            })?;
+            parts.push(part);
+        }
+        let metadata = entry
+            .metadata()
+            .map_err(|e| Error::backend(format!("plain tree {}: {e}", full.display())))?;
+        let stat = FileStat {
+            size: metadata.len(),
+            mtime_ns: metadata.modified().ok().and_then(system_time_ns),
+        };
+        files.insert(parts.join("/"), (full, stat));
+    }
+    Ok(())
+}
+
+fn system_time_ns(time: std::time::SystemTime) -> Option<i64> {
+    match time.duration_since(std::time::UNIX_EPOCH) {
+        Ok(after) => i64::try_from(after.as_nanos()).ok(),
+        Err(before) => i64::try_from(before.duration().as_nanos())
+            .ok()
+            .map(|ns| -ns),
+    }
+}
+
+/// Stage 2: one streaming BLAKE3 read of a suspect. Returns the hex
+/// hash and the bytes read.
+fn hash_file(path: &Path) -> Result<(String, u64)> {
+    let mut file = std::fs::File::open(path)
+        .map_err(|e| Error::backend(format!("plain tree {}: {e}", path.display())))?;
+    let mut hasher = blake3::Hasher::new();
+    let read = std::io::copy(&mut file, &mut hasher)
+        .map_err(|e| Error::backend(format!("plain tree {}: {e}", path.display())))?;
+    Ok((hasher.finalize().to_hex().to_string(), read))
+}
+
+/// The plain-tree analogue of a commit id: BLAKE3 over every landed
+/// `path NUL hash LF`, in path order. Computed from hashes the pass
+/// already holds, so it costs no reads.
+fn tree_digest(objects: &BTreeMap<String, String>) -> String {
+    let mut hasher = blake3::Hasher::new();
+    for (path, hash) in objects {
+        hasher.update(path.as_bytes());
+        hasher.update(b"\0");
+        hasher.update(hash.as_bytes());
+        hasher.update(b"\n");
+    }
+    format!("blake3:{}", hasher.finalize().to_hex())
 }
 
 /// Run the git tree diff for one source without recording it.
@@ -316,10 +597,7 @@ pub fn git_tree_detection(
     if let Some(landed) = landed {
         let touched: std::collections::BTreeSet<&str> = verdicts
             .iter()
-            .flat_map(|v| {
-                std::iter::once(v.path.as_str())
-                    .chain(v.previous_path.as_deref())
-            })
+            .flat_map(|v| std::iter::once(v.path.as_str()).chain(v.previous_path.as_deref()))
             .collect();
         counts.unchanged = landed
             .objects
@@ -328,7 +606,11 @@ pub fn git_tree_detection(
             .count() as u64;
     }
     let stat_presumption_rate = landed.and_then(|l| {
-        let total = l.objects.len() + verdicts.iter().filter(|v| v.verdict == Verdict::New).count();
+        let total = l.objects.len()
+            + verdicts
+                .iter()
+                .filter(|v| v.verdict == Verdict::New)
+                .count();
         (total > 0).then(|| counts.unchanged as f64 / total as f64)
     });
 
@@ -470,7 +752,10 @@ fn apply_rename_second_pass(verdicts: &mut Vec<PathVerdict>) {
 /// Resolve a commit-ish to a full object id, so the ledger stores what
 /// it can verify later.
 pub fn resolve_commit(repo: &Path, rev: &str) -> Result<String> {
-    let out = git(repo, &["rev-parse", "--verify", &format!("{rev}^{{commit}}")])?;
+    let out = git(
+        repo,
+        &["rev-parse", "--verify", &format!("{rev}^{{commit}}")],
+    )?;
     Ok(out.trim().to_string())
 }
 

@@ -97,7 +97,9 @@ class ReplayAndContractTest(unittest.TestCase):
                 "pmo-offline-fixtures/v1", "pmo-offline-fixtures/v2", 1
             ).encode(),
             "lossy_numeric_id": text.replace(
-                '"canonical_id": "9007199254741001"', '"canonical_id": 9007199254741001', 1
+                '"canonical_id": "9007199254741001"',
+                '"canonical_id": 9007199254741001',
+                1,
             ).encode(),
             "invalid_utf8": b'{"fixture_schema": "pmo-offline-fixtures/v1", "x": "\xff"}',
             "missing_graph_section": json.dumps(
@@ -107,14 +109,18 @@ class ReplayAndContractTest(unittest.TestCase):
         for name, blob in mutations.items():
             with self.subTest(mutation=name):
                 self.assertNotEqual(
-                    blob, _fixture_bytes(), f"mutation {name} did not change the fixture"
+                    blob,
+                    _fixture_bytes(),
+                    f"mutation {name} did not change the fixture",
                 )
                 with tempfile.TemporaryDirectory() as tmp:
                     workdir = Path(tmp)
                     shutil.copy(EXPERIMENT, workdir / "experiment.py")
                     (workdir / "fixtures.json").write_bytes(blob)
                     proc = _run_cli(workdir / "experiment.py", *args)
-                self.assertEqual(proc.returncode, 1, proc.stdout.decode("utf-8", "replace"))
+                self.assertEqual(
+                    proc.returncode, 1, proc.stdout.decode("utf-8", "replace")
+                )
                 verdict = json.loads(proc.stdout)
                 self.assertEqual(verdict["result"], "fail")
                 self.assertEqual(verdict["schema"], "pmo-offline-experiment/v1")
@@ -123,7 +129,9 @@ class ReplayAndContractTest(unittest.TestCase):
 class EligibilityGateTest(unittest.TestCase):
     @staticmethod
     def _reference_gate(task: dict, claimer: dict, explicit_filter) -> bool:
-        requirements = all(claimer.get(k) == v for k, v in task.get("requires", {}).items())
+        requirements = all(
+            claimer.get(k) == v for k, v in task.get("requires", {}).items()
+        )
         predicate = (
             True
             if explicit_filter is None
@@ -135,8 +143,12 @@ class EligibilityGateTest(unittest.TestCase):
         cases = _fixtures()["priority_and_eligibility"]["eligibility"]
         self.assertGreaterEqual(len(cases), 3)
         for case in cases:
-            expected = self._reference_gate(case["task"], case["claimer"], case.get("filter"))
-            self.assertEqual(expected, case["expected"], "golden case disagrees with reference gate")
+            expected = self._reference_gate(
+                case["task"], case["claimer"], case.get("filter")
+            )
+            self.assertEqual(
+                expected, case["expected"], "golden case disagrees with reference gate"
+            )
             self.assertEqual(
                 runner.task_eligible(case["task"], case["claimer"], case.get("filter")),
                 case["expected"],
@@ -144,9 +156,19 @@ class EligibilityGateTest(unittest.TestCase):
         # Each gate alone can veto: requirement mismatch with a passing
         # filter, and filter mismatch with passing requirements.
         task = {"repo": "code", "requires": {"platform": "linux"}}
-        self.assertFalse(runner.task_eligible(task, {"repo": "code", "platform": "windows"}, {"repo": "code"}))
-        self.assertFalse(runner.task_eligible(task, {"repo": "code", "platform": "linux"}, {"repo": "opencode"}))
-        self.assertTrue(runner.task_eligible(task, {"repo": "code", "platform": "linux"}, None))
+        self.assertFalse(
+            runner.task_eligible(
+                task, {"repo": "code", "platform": "windows"}, {"repo": "code"}
+            )
+        )
+        self.assertFalse(
+            runner.task_eligible(
+                task, {"repo": "code", "platform": "linux"}, {"repo": "opencode"}
+            )
+        )
+        self.assertTrue(
+            runner.task_eligible(task, {"repo": "code", "platform": "linux"}, None)
+        )
         self.assertTrue(runner.task_eligible({"repo": "code"}, {"repo": "code"}, {}))
 
 
@@ -165,14 +187,18 @@ class PriorityOrderingTest(unittest.TestCase):
                 x["canonical_id"].encode("utf-8"),
             ),
         )
-        self.assertEqual([x["canonical_id"] for x in reference], golden["expected_order"])
+        self.assertEqual(
+            [x["canonical_id"] for x in reference], golden["expected_order"]
+        )
         ordered_ranks = [x["peer_rank"] for x in reference]
         self.assertLess(ordered_ranks.index("9"), ordered_ranks.index("10"))
         # Decimal-string IDs above 2**53 survive exactly; a float would not.
         for item in items:
             self.assertEqual(str(int(item["canonical_id"])), item["canonical_id"])
         self.assertGreater(int(items[0]["canonical_id"]), 1 << 53)
-        self.assertNotEqual(int(float(items[0]["canonical_id"])), int(items[0]["canonical_id"]))
+        self.assertNotEqual(
+            int(float(items[0]["canonical_id"])), int(items[0]["canonical_id"])
+        )
 
 
 class DigestVectorTest(unittest.TestCase):
@@ -213,7 +239,13 @@ class CycleRaceTest(unittest.TestCase):
     def test_cycle_race_insertion_rule(self):
         chain = [{1}, {2}, set()]
         # Inserting u->v cycles iff u == v or v already reaches u.
-        candidates = {(2, 0): True, (0, 2): False, (1, 1): True, (2, 1): True, (0, 1): False}
+        candidates = {
+            (2, 0): True,
+            (0, 2): False,
+            (1, 1): True,
+            (2, 1): True,
+            (0, 1): False,
+        }
         for (u, v), expected in candidates.items():
             with self.subTest(edge=(u, v)):
                 rule = u == v or _bfs_reachable(chain, v, u)
@@ -247,7 +279,9 @@ class CompletionModelTest(unittest.TestCase):
             return runner.CompletionModel.reload(m.serialize())
 
         self.assertTrue(
-            model.prepare("worker-A", 1, authorized=True, deps_clear=True, operation="op-1")
+            model.prepare(
+                "worker-A", 1, authorized=True, deps_clear=True, operation="op-1"
+            )
         )
         model = cut(model)
         self.assertTrue(model.send("worker-A", 1))
@@ -266,19 +300,27 @@ class CompletionModelTest(unittest.TestCase):
         model = runner.CompletionModel()
         # Negative preconditions reject without mutation.
         self.assertFalse(
-            model.prepare("worker-B", 1, authorized=True, deps_clear=True, operation="op-1")
+            model.prepare(
+                "worker-B", 1, authorized=True, deps_clear=True, operation="op-1"
+            )
         )
         self.assertFalse(
-            model.prepare("worker-A", 1, authorized=False, deps_clear=True, operation="op-1")
+            model.prepare(
+                "worker-A", 1, authorized=False, deps_clear=True, operation="op-1"
+            )
         )
         self.assertFalse(
-            model.prepare("worker-A", 1, authorized=True, deps_clear=False, operation="op-1")
+            model.prepare(
+                "worker-A", 1, authorized=True, deps_clear=False, operation="op-1"
+            )
         )
         self.assertIsNone(model.op)
         self.assertEqual(model.state, "claimed")
 
         self.assertTrue(
-            model.prepare("worker-A", 1, authorized=True, deps_clear=True, operation="op-1")
+            model.prepare(
+                "worker-A", 1, authorized=True, deps_clear=True, operation="op-1"
+            )
         )
         self.assertTrue(model.send("worker-A", 1))  # response lost: outcome unknown
         self.assertFalse(model.send("worker-A", 1))  # no blind resend while unknown
@@ -296,10 +338,14 @@ class CompletionModelTest(unittest.TestCase):
         fenced.takeover()
         self.assertFalse(fenced.mutate_local("worker-A", 1, "claimed"))
         self.assertFalse(
-            fenced.prepare("worker-A", 1, authorized=True, deps_clear=True, operation="op-2")
+            fenced.prepare(
+                "worker-A", 1, authorized=True, deps_clear=True, operation="op-2"
+            )
         )
         self.assertTrue(
-            fenced.prepare("worker-B", 2, authorized=True, deps_clear=True, operation="op-2")
+            fenced.prepare(
+                "worker-B", 2, authorized=True, deps_clear=True, operation="op-2"
+            )
         )
 
 
@@ -307,7 +353,11 @@ class SamplerTest(unittest.TestCase):
     def test_seeded_sampler_probabilities(self):
         # The SHA-256 counter stream is seed-deterministic and portable.
         stream_a = [runner.CounterRng(9196).u53() for _ in range(1)]
-        rng_a, rng_b, rng_c = runner.CounterRng(9196), runner.CounterRng(9196), runner.CounterRng(9197)
+        rng_a, rng_b, rng_c = (
+            runner.CounterRng(9196),
+            runner.CounterRng(9196),
+            runner.CounterRng(9197),
+        )
         seq_a = [rng_a.u53() for _ in range(50)]
         self.assertEqual(seq_a, [rng_b.u53() for _ in range(50)])
         self.assertNotEqual(seq_a, [rng_c.u53() for _ in range(50)])
@@ -322,7 +372,11 @@ class SamplerTest(unittest.TestCase):
         self.assertEqual(len(set(drawn)), 2)
         self.assertLessEqual(set(drawn), {"a", "b", "c"})
         self.assertEqual(
-            sorted(runner.draw_without_replacement(["a", "b", "c"], [0.5, 0.3, 0.2], 99, runner.CounterRng(7))),
+            sorted(
+                runner.draw_without_replacement(
+                    ["a", "b", "c"], [0.5, 0.3, 0.2], 99, runner.CounterRng(7)
+                )
+            ),
             ["a", "b", "c"],
         )
 
@@ -348,7 +402,9 @@ class SamplerTest(unittest.TestCase):
         self.assertGreater(first[1], first[2])
         self.assertGreater(first[2], first[0])
         uniform = runner.decimal_first_draw([30, 10, 20], [100, 100, 100], "1")
-        self.assertTrue(all(abs(p - DECIMAL(1) / 3) < DECIMAL("1e-50") for p in uniform))
+        self.assertTrue(
+            all(abs(p - DECIMAL(1) / 3) < DECIMAL("1e-50") for p in uniform)
+        )
 
 
 class CliContractTest(unittest.TestCase):
@@ -357,7 +413,9 @@ class CliContractTest(unittest.TestCase):
             with self.subTest(argv=argv):
                 proc = _run_cli(EXPERIMENT, *argv)
                 self.assertEqual(proc.returncode, 2)
-                self.assertEqual(proc.stdout, b"", "no report may be emitted on a usage error")
+                self.assertEqual(
+                    proc.stdout, b"", "no report may be emitted on a usage error"
+                )
         # Parse precedes fixture access: even with a broken fixture in
         # place, an unknown argument is a usage error (exit 2), not a
         # fixture failure (exit 1).

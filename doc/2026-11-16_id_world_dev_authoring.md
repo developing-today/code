@@ -132,7 +132,7 @@ Recorded run (this document's landing):
   is still running — fix forward with the next save.
 - **The same failing snapshot is not retried forever.** A snapshot
   that fails any stage is marked known at its attempt; the loop
-  waits for the *next* change (invariant 7). Save again (even a
+  waits for the _next_ change (invariant 7). Save again (even a
   trivial edit) to retry after fixing the cause.
 - **Fuzz found a failure.** Re-run with the printed seed and case
   budget to reproduce; the first failing input sequence in the

@@ -48,22 +48,13 @@ export const WORK_ACTION_STATES = [
 export type WorkActionState = (typeof WORK_ACTION_STATES)[number];
 
 /** Declared edges. Anything absent here is a programming error, not a runtime outcome. */
-export const WORK_ACTION_EDGES: Readonly<
-  Record<WorkActionState, readonly WorkActionState[]>
-> = {
+export const WORK_ACTION_EDGES: Readonly<Record<WorkActionState, readonly WorkActionState[]>> = {
   // Preview, accept and apply each re-read the authoritative version, so
   // each can end in `conflict` (it moved) or `uncertain` (unreadable).
   draft: ["previewed", "rejected", "conflict", "uncertain"],
   previewed: ["accepted", "rejected", "conflict", "uncertain"],
   accepted: ["running", "rejected", "conflict", "uncertain"],
-  running: [
-    "pending_sync",
-    "partial",
-    "conflict",
-    "uncertain",
-    "rejected",
-    "verified_complete",
-  ],
+  running: ["pending_sync", "partial", "conflict", "uncertain", "rejected", "verified_complete"],
   pending_sync: ["verified_complete", "partial", "uncertain"],
   partial: ["verified_complete", "conflict"],
   conflict: [],
@@ -76,10 +67,7 @@ export function isTerminalState(state: WorkActionState): boolean {
   return WORK_ACTION_EDGES[state].length === 0;
 }
 
-export function canTransition(
-  from: WorkActionState,
-  to: WorkActionState,
-): boolean {
+export function canTransition(from: WorkActionState, to: WorkActionState): boolean {
   return WORK_ACTION_EDGES[from].includes(to);
 }
 
@@ -126,13 +114,7 @@ export interface WorkActionTransition {
 
 export interface WorkActionReceipt {
   operationKey: string;
-  outcome:
-    | "verified_complete"
-    | "rejected"
-    | "conflict"
-    | "uncertain"
-    | "partial"
-    | "pending_sync";
+  outcome: "verified_complete" | "rejected" | "conflict" | "uncertain" | "partial" | "pending_sync";
   workVersion: string | null;
   note: string;
 }
@@ -153,9 +135,7 @@ export interface WorkActionAuthority {
    * "one effect per operation key" hold across envelopes, not just across
    * replays of one envelope object.
    */
-  claimOperation(
-    operationKey: string,
-  ): { claimed: true } | { claimed: false; receipt: WorkActionReceipt | null };
+  claimOperation(operationKey: string): { claimed: true } | { claimed: false; receipt: WorkActionReceipt | null };
   /** Record the receipt for a claimed key so later claims can return it. */
   recordReceipt(receipt: WorkActionReceipt): void;
 }
@@ -199,11 +179,8 @@ function invalid(envelope: WorkActionEnvelope, reason: string): never {
 }
 
 /** Create the draft envelope. Validation is structural only; authorization is preview's job. */
-export function createWorkAction(
-  request: WorkActionRequest,
-): WorkActionEnvelope {
-  if (!request.operationKey.trim())
-    throw new Error("work-action-contract: operation key is required");
+export function createWorkAction(request: WorkActionRequest): WorkActionEnvelope {
+  if (!request.operationKey.trim()) throw new Error("work-action-contract: operation key is required");
   if (!request.expectedWorkVersion.trim()) {
     throw new Error("work-action-contract: expected work version is required");
   }
@@ -230,20 +207,11 @@ export function previewWorkAction(
   actor: WorkActionActor,
   authority: WorkActionAuthority,
 ): WorkActionEnvelope {
-  if (envelope.state !== "draft")
-    invalid(envelope, "preview requires a draft envelope");
+  if (envelope.state !== "draft") invalid(envelope, "preview requires a draft envelope");
 
   const roles = authority.readRoles(actor.id);
-  if (
-    !roles.includes("work-action/preview") ||
-    !actor.roles.includes("work-action/preview")
-  ) {
-    return refuse(
-      envelope,
-      "rejected",
-      "work-action/authorized-actor",
-      "actor lacks the preview role",
-    );
+  if (!roles.includes("work-action/preview") || !actor.roles.includes("work-action/preview")) {
+    return refuse(envelope, "rejected", "work-action/authorized-actor", "actor lacks the preview role");
   }
 
   const version = authority.readWorkVersion(envelope.request.objectRef);
@@ -297,20 +265,11 @@ export function acceptWorkAction(
   actor: WorkActionActor,
   authority: WorkActionAuthority,
 ): WorkActionEnvelope {
-  if (envelope.state !== "previewed")
-    invalid(envelope, "accept requires a previewed envelope");
+  if (envelope.state !== "previewed") invalid(envelope, "accept requires a previewed envelope");
 
   const roles = authority.readRoles(actor.id);
-  if (
-    !roles.includes("work-action/accept") ||
-    !actor.roles.includes("work-action/accept")
-  ) {
-    return refuse(
-      envelope,
-      "rejected",
-      "work-action/authorized-actor",
-      "actor lacks the accept role",
-    );
+  if (!roles.includes("work-action/accept") || !actor.roles.includes("work-action/accept")) {
+    return refuse(envelope, "rejected", "work-action/authorized-actor", "actor lacks the accept role");
   }
   const version = authority.readWorkVersion(envelope.request.objectRef);
   if (version === null) {
@@ -376,29 +335,18 @@ export function applyWorkAction(
   actor: WorkActionActor,
   authority: WorkActionAuthority,
   report: {
-    outcome:
-      | "verified_complete"
-      | "partial"
-      | "pending_sync"
-      | "conflict"
-      | "uncertain";
+    outcome: "verified_complete" | "partial" | "pending_sync" | "conflict" | "uncertain";
     note?: string;
   },
 ): WorkActionEnvelope {
   if (envelope.effectIssued) return envelope;
-  if (envelope.state !== "accepted")
-    invalid(envelope, "apply requires an accepted envelope");
+  if (envelope.state !== "accepted") invalid(envelope, "apply requires an accepted envelope");
 
   // Authorization is re-read at the apply gate: a role revoked between
   // accept and apply must fail before any consumer effect.
   const roles = authority.readRoles(actor.id);
   if (!roles.includes("work-action/apply")) {
-    return refuse(
-      envelope,
-      "rejected",
-      "work-action/authorized-actor",
-      "actor lost the apply role before apply",
-    );
+    return refuse(envelope, "rejected", "work-action/authorized-actor", "actor lost the apply role before apply");
   }
 
   const current = authority.readWorkVersion(envelope.request.objectRef);
@@ -444,16 +392,12 @@ export function applyWorkAction(
     ...envelope,
     state: "running",
     effectIssued: true,
-    transitions: [
-      ...envelope.transitions,
-      { from: "accepted", to: "running", oracle: "work-action/effect-issued" },
-    ],
+    transitions: [...envelope.transitions, { from: "accepted", to: "running", oracle: "work-action/effect-issued" }],
   };
 
   const workVersion = authority.readWorkVersion(envelope.request.objectRef);
   const target = report.outcome;
-  if (!canTransition("running", target))
-    invalid({ ...running, state: "running" }, `downstream reported ${target}`);
+  if (!canTransition("running", target)) invalid({ ...running, state: "running" }, `downstream reported ${target}`);
 
   const receipt: WorkActionReceipt = {
     operationKey: envelope.request.operationKey,
@@ -466,10 +410,7 @@ export function applyWorkAction(
     ...running,
     state: target,
     receipt,
-    transitions: [
-      ...running.transitions,
-      { from: "running", to: target, oracle: "work-action/downstream-outcome" },
-    ],
+    transitions: [...running.transitions, { from: "running", to: target, oracle: "work-action/downstream-outcome" }],
   };
 }
 
@@ -478,8 +419,6 @@ export function applyWorkAction(
  * operation key the request carried and no second effect was issued. Used by
  * the replay test and by callers that dedupe on the operation key.
  */
-export function receiptFor(
-  envelope: WorkActionEnvelope,
-): WorkActionReceipt | null {
+export function receiptFor(envelope: WorkActionEnvelope): WorkActionReceipt | null {
   return envelope.receipt;
 }

@@ -102,8 +102,7 @@ in
     ".openclaw/acpx/bin/codex-acp.mjs".source =
       "${acpxPlugin}/node_modules/@agentclientprotocol/codex-acp/dist/index.js";
     ".openclaw/acpx/managed-codex-acp-wrapper.mjs".source = ./acpx/codex-acp-wrapper.mjs;
-    ".openclaw/acpx/managed-muse-agent-acp-wrapper.mjs".source =
-      ./acpx/muse-agent-acp-wrapper.mjs;
+    ".openclaw/acpx/managed-muse-agent-acp-wrapper.mjs".source = ./acpx/muse-agent-acp-wrapper.mjs;
   };
   home.file.".acpx/config.json".text = builtins.toJSON {
     agents = {
@@ -524,7 +523,15 @@ in
       # underlying pools are reached exclusively through OpenCode
       # routes (see QUOTAS.md).
       models = {
-        mode = "merge";
+        # Part A remainder of #9551 (Drew order 2026-11-13): use only
+        # the explicitly configured OpenCode route provider below. In
+        # `merge`, OpenClaw retains built-in picker providers (including
+        # Claude CLI and Copilot); `replace` removes those catalogue
+        # entries and their provider groups. Restore Claude CLI by
+        # changing this to "merge". To restore Copilot too, also restore
+        # its runtimePlugins entry above and set plugins.entries.copilot
+        # enabled below (both restore steps are documented there).
+        mode = "replace";
         providers = {
           # The OpenCode server facade fronts the route pools
           # (#2518): each model id is an opencode-route pool. The

@@ -47,7 +47,8 @@ the systemctl scope; user scope exists so the laptop E2E acceptance
 can deploy a harmless service without root.
 
 The validation below is the oracle for "well-formed definition": a
-definition is valid iff it carries exactly the §3 fields (plus ),
+definition is valid iff it carries exactly the §3 fields (plus
+the optional healthTimeoutSeconds),
 each of the right type and in range. Any violation is reported by field
 and makes  exit non-zero — a registry that cannot be validated
 must never be enumerated as if it were trustworthy.
@@ -90,6 +91,13 @@ FIELDS = {
     "targets",
     "class",
 }
+# Optional fields: absent means the default below. healthTimeoutSeconds is
+# how long activation keeps probing the healthCheck before it calls the
+# deploy failed (#11170).
+OPTIONAL_FIELDS = {"healthTimeoutSeconds"}
+DEFAULT_HEALTH_TIMEOUT_SECONDS = 120
+MAX_HEALTH_TIMEOUT_SECONDS = 3600
+HEALTH_PROBE_INTERVAL_SECONDS = 0.5
 NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
 
 # Design §4.1: each systemd target owns a per-service nix profile under
@@ -114,7 +122,7 @@ def validate(registry):
             errors.append(f"{where}: definition must be an object")
             continue
         missing = FIELDS - defn.keys()
-        extra = defn.keys() - FIELDS
+        extra = defn.keys() - FIELDS - OPTIONAL_FIELDS
         if missing:
             errors.append(f"{where}: missing field(s): {', '.join(sorted(missing))}")
         if extra:
@@ -195,6 +203,17 @@ def validate(registry):
             if not valid_url:
                 errors.append(
                     f"{where}: healthCheck must be an http(s) URL with a host or null"
+                )
+        if "healthTimeoutSeconds" in defn:
+            ht = defn["healthTimeoutSeconds"]
+            if not (
+                isinstance(ht, int)
+                and not isinstance(ht, bool)
+                and 1 <= ht <= MAX_HEALTH_TIMEOUT_SECONDS
+            ):
+                errors.append(
+                    f"{where}: healthTimeoutSeconds must be an integer in "
+                    f"1..{MAX_HEALTH_TIMEOUT_SECONDS}"
                 )
         if "targets" in defn and not (
             isinstance(defn["targets"], list)
@@ -450,9 +469,17 @@ def current_previous(entries):
 # --- Plans, status, rollback logic (slice 2) ------------------------------
 
 
+def health_timeout(defn):
+    """Seconds activation keeps probing before it fails the deploy."""
+    return defn.get("healthTimeoutSeconds", DEFAULT_HEALTH_TIMEOUT_SECONDS)
+
+
 def _health_step(defn):
     if defn["healthCheck"]:
-        return f"run the health check: {defn['healthCheck']}"
+        return (
+            f"run the health check: {defn['healthCheck']} "
+            f"(retried for up to {health_timeout(defn)}s)"
+        )
     return "no health check defined for this target; skip the health step"
 
 
@@ -683,16 +710,33 @@ def repoint_profile(name, artifact, generation, base=None):
     return install_generation(name, artifact, generation, base)
 
 
-def wait_health(url, attempts=10, interval=0.5):
-    """Probe the health check until it passes or attempts run out."""
-    detail = "not probed"
-    for attempt in range(attempts):
+# The clock and sleep wait_health uses; tests replace them so a long
+# health window costs no real time.
+_monotonic = time.monotonic
+_sleep = time.sleep
+
+
+def wait_health(
+    url,
+    timeout_seconds=DEFAULT_HEALTH_TIMEOUT_SECONDS,
+    interval=HEALTH_PROBE_INTERVAL_SECONDS,
+):
+    """Probe the health check until it passes or the window closes.
+
+    Every failure is retried until the deadline: an endpoint answering
+    not-ready (a 503 while a broker's first refresh runs) and an
+    endpoint not listening yet are both a service still starting. A
+    service that is truly broken fails once the window closes (#11170).
+    """
+    deadline = _monotonic() + timeout_seconds
+    while True:
         ok, detail = probe_health(url)
         if ok:
             return True, detail
-        if attempt + 1 < attempts:
-            time.sleep(interval)
-    return False, detail
+        remaining = deadline - _monotonic()
+        if remaining <= 0:
+            return False, f"{detail} (still failing after {timeout_seconds}s)"
+        _sleep(min(interval, remaining))
 
 
 def _activate(
@@ -712,7 +756,7 @@ def _activate(
         f"restart of {unit_name(name)}",
     )
     if defn["healthCheck"] is not None:
-        ok, detail = wait_health(defn["healthCheck"])
+        ok, detail = wait_health(defn["healthCheck"], health_timeout(defn))
         if not ok:
             raise ActivationError(f"health check failed: {detail}")
 

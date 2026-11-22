@@ -53,17 +53,6 @@ name: mcpx
 # (#297).
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - "pkgs/mcpx/**"
-      # The seed store is data the collector bot files (#1953): its
-      # commits must never re-trigger this workflow (the collector
-      # also marks its commits [skip ci] — both addendum fixes).
-      - "!pkgs/mcpx/testdata/seeds/**"
-      - ".opencode/plugin/**"
-      # Keep the workflow self-tested, including this trigger restoration.
-      - ".github/workflows/mcpx.yml"
   schedule:
     # Nightly full-suite stress (#1973). Odd minute, off the hour.
     - cron: "23 3 * * *"
@@ -165,7 +154,7 @@ jobs:
     name: "basic: test"
     # Original coverage was push-only; the pull_request/schedule
     # triggers above exist for the flake-policy jobs (#1973).
-    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     needs: seed
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -243,7 +232,7 @@ jobs:
           MCPX_TEST_SEED: ${{ needs.seed.outputs.seed }}
           VARS: ${{ toJSON(vars) }}
           GH_TOKEN: ${{ secrets.MCPX_CONFORMANCE_VARS_TOKEN }}
-          ON_MAIN: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+          ON_MAIN: ${{ (github.event_name == 'push' || github.event_name == 'schedule') && github.ref == 'refs/heads/main' }}
           RUN: ${{ github.run_id }}/${{ github.run_attempt }}
           MCPX_FEATURE_COVERAGE_LEDGER: ${{ runner.temp }}/mcpx-feature-coverage.jsonl
         run: |
@@ -581,8 +570,13 @@ jobs:
           fi
           if [ -n "$e2e" ]; then
             echo "e2e package (-count=3): $e2e"
+            # One e2e pass is about five minutes of real-time waits, and
+            # -count=3 runs every pass inside one test binary, so go
+            # test's default 10m timeout cannot hold it (#10489). The
+            # explicit timeout sits under the job's 30m, so a hang still
+            # panics with goroutine dumps instead of a runner kill.
             # shellcheck disable=SC2086
-            go test $e2e -race -shuffle=$seed -count=3
+            go test $e2e -race -shuffle=$seed -count=3 -timeout 25m
           fi
 
       - name: Upload runtime feature coverage ledger
@@ -643,8 +637,13 @@ jobs:
           seed=$(python3 -c 'import hashlib, os; root = hashlib.sha256(b"mcpx-test-seed/v1\x00" + os.environ["MCPX_TEST_SEED"].encode()).digest(); print(int.from_bytes(hashlib.sha256(root + b"shuffle").digest()[:8], "big") & (2**63 - 1))')
           echo "SHUFFLE_SEED=$seed" >> "$GITHUB_ENV"
           echo "shuffle seed: $seed (run seed: $MCPX_TEST_SEED; reproduce with: MCPX_TEST_SEED=$MCPX_TEST_SEED pkgs/mcpx/scripts/test.sh ./... -race -count=3)"
+          # -timeout: the e2e package's three passes run in one test
+          # binary and take well over go test's default 10m under
+          # -race (#10489). 50m stays under the job's 60m, so a real
+          # hang still panics with goroutine dumps before the runner
+          # kills the job.
           # shellcheck disable=SC2086
-          go test ./... -race -shuffle=$seed -count=3
+          go test ./... -race -shuffle=$seed -count=3 -timeout 50m
 
       - name: Open or update the nightly failure issue
         if: failure() && github.event_name == 'schedule'
@@ -655,7 +654,7 @@ jobs:
           body="The nightly flake-policy stress run failed on ${{ matrix.os }} (shuffle seed: $SHUFFLE_SEED).
 
           Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID
-          Reproduce: \`go test ./... -race -shuffle=$SHUFFLE_SEED -count=3\` in pkgs/mcpx.
+          Reproduce: \`go test ./... -race -shuffle=$SHUFFLE_SEED -count=3 -timeout 50m\` in pkgs/mcpx.
 
           Policy: #1973 — fix the flake; quarantine only via testsupport.Quarantine with an issue link and an expiry."
           existing=$(gh issue list --repo "$GITHUB_REPOSITORY" --search "$title in:title" --state open --json number --jq '.[0].number // empty')

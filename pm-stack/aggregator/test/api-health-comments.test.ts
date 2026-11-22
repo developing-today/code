@@ -30,6 +30,9 @@ const comment = (over: Record<string, unknown>) => ({
   ...over,
 });
 
+// #10467: starting the aggregator subprocess can take longer than bun's
+// default 5 s hook budget on a loaded machine; give the hook room to
+// reach its own readiness deadline and fail with that message instead.
 beforeAll(async () => {
   const dir = await mkdtemp(join(tmpdir(), "pm-api-health-comments-"));
   const now = new Date().toISOString();
@@ -112,7 +115,7 @@ beforeAll(async () => {
     if (!health) await Bun.sleep(150);
   }
   expect(health).toBeDefined();
-});
+}, 60_000);
 
 afterAll(() => {
   proc?.kill();

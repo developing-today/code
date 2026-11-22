@@ -1,4 +1,5 @@
-const idOK = x => typeof x === 'string' && x.length > 0 && x.length <= 200 && !/[\p{Cc}\p{Cf}]/u.test(x);
+import {isIdentifier} from './text.mjs';
+const idOK = isIdentifier;
 const familyIds = x => [...new Set([...(x.variantFamilyIds || []), x.variantFamilyId].filter(Boolean))];
 export function validateVariantGraph(items) {
  if (!Array.isArray(items)) throw Error('Items must be an array');

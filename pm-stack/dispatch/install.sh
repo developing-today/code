@@ -10,15 +10,12 @@
 # deployed.
 #
 # Secrets layout:
-# - From the sops file: github_app_id, github_private_key_base64,
-#   supabase_url, supabase_service_role_key (rendered into
-#   ~/pm-stack/dispatch/.env, mode 600). Fleet Supabase is muse-dev2;
-#   the key's source of truth is Bitwarden
-#   `supabase.muse-dev2.service-role-key`. (The un-namespaced trio
-#   was flipped to muse-dev2 values at the 2026-10-30 cutover and
-#   renamed on 2026-11-04 to `supabase.legacy-muse-dev.*`; the
-#   DELETED legacy project's preserved key is
-#   `supabase.muse-dev.service-role-key` — never use it; see code#5120.)
+# - From the sops file: github_app_id, github_private_key_base64
+#   (rendered into ~/pm-stack/dispatch/.env, mode 600).
+# - Queue access (#9028) needs NO secret in the rendered env: dispatch
+#   talks to the fleet queue broker (QUEUE_BROKER_URL, rendered below
+#   as a plain URL) with the broker token, which stays in its own
+#   file ~/.config/queue-broker/token.
 # - NOT in sops: DISPATCH_API_TOKEN lives in ~/secrets/dispatch.env
 #   (mode 600, laptop-only), which the unit also reads. Its by-name
 #   vault home is Bitwarden `pm-dispatch.api-token` (issue #5555) —
@@ -33,11 +30,7 @@
 #   401s) until the vault and the clients are updated to match.
 #   This script
 #   ensures that file exists and carries a generated
-#   DISPATCH_API_TOKEN when one is absent. SUPABASE_URL /
-#   SUPABASE_SERVICE_ROLE_KEY lines left in that file are stale: the
-#   unit reads it AFTER the rendered file, so they would override the
-#   sops-managed values — this script warns about them below, and the
-#   operator copies should be deleted.
+#   DISPATCH_API_TOKEN when one is absent.
 #
 # Usage (on the laptop, from the repo checkout):  bash install.sh
 set -euo pipefail
@@ -72,9 +65,6 @@ if ! grep -q '^DISPATCH_API_TOKEN=' "$SECRETS_ENV"; then
   printf 'DISPATCH_API_TOKEN=%s\n' "$(openssl rand -hex 32)" >>"$SECRETS_ENV"
   chmod 600 "$SECRETS_ENV"
   echo "generated a DISPATCH_API_TOKEN into $SECRETS_ENV (value not printed)"
-fi
-if grep -q '^SUPABASE_URL=\|^SUPABASE_SERVICE_ROLE_KEY=' "$SECRETS_ENV"; then
-  echo "WARNING: $SECRETS_ENV still carries SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY lines — Supabase config is sops-managed now (rendered into $DST/.env from $SOPS), and because the unit reads $SECRETS_ENV after the rendered file, those lines override the managed values. Delete them from $SECRETS_ENV." >&2
 fi
 
 # --- Change detection + build marker ------------------------------------
@@ -127,8 +117,8 @@ if [ "$CHANGED" -eq 1 ]; then
   cp -r "$SRC/test" "$DST/test"
   cp -r "$SRC/examples" "$DST/examples"
 
-  # Service env: non-secret config + the GitHub App material and the
-  # Supabase config from sops.
+  # Service env: non-secret config + the GitHub App material from
+  # sops + the queue broker URL (the broker token stays in its file).
   umask 077
   ENV_FILE="$DST/.env"
   {
@@ -141,12 +131,7 @@ if [ "$CHANGED" -eq 1 ]; then
     else
       echo "WARNING: github app keys not readable from $SOPS — issue creation will use the gh CLI fallback" >&2
     fi
-    if [ -f "$SOPS" ] && sops -d --extract '["supabase_url"]' "$SOPS" >/dev/null 2>&1 && sops -d --extract '["supabase_service_role_key"]' "$SOPS" >/dev/null 2>&1; then
-      echo "SUPABASE_URL=$(sops -d --extract '["supabase_url"]' "$SOPS")"
-      echo "SUPABASE_SERVICE_ROLE_KEY=$(sops -d --extract '["supabase_service_role_key"]' "$SOPS")"
-    else
-      echo "WARNING: supabase_url / supabase_service_role_key not readable from $SOPS — the rendered env will lack SUPABASE_URL and pm-dispatch will refuse to start (config fails loudly, code#5120)" >&2
-    fi
+    echo "QUEUE_BROKER_URL=http://${TAILNET_IP}:4801"
   } >"$ENV_FILE"
   chmod 600 "$ENV_FILE"
 

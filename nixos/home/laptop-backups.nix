@@ -12,7 +12,8 @@
 # Jobs:
 # - pm-dashboard-backup (daily ~04:30): the PM dashboard / orchestration
 #   state set as a dated tar.zst with a sha256 manifest to the local
-#   backup dir, Cloudflare R2 (supabase-backups) and Google Drive
+#   backup dir, Cloudflare R2 (bucket supabase-backups, a legacy R2
+#   bucket name) and Google Drive
 #   (Cloud/cold-store/db-backups/pm-aggregator/<date>/), every copy
 #   sha256-verified, 30-day retention. Runs the code#1514 DB-dump script
 #   first when it exists at ~/tools/pm-stack-db-backup.sh, and its dumps
@@ -30,6 +31,14 @@
 #   Drive), same password key as repo-archive, independent
 #   retention/listing. Script: ./laptop-state-backup.sh (vendored here;
 #   same Bitwarden-at-runtime credential pattern).
+# - opencode-db-backup (daily ~06:05): the OpenCode session database
+#   (~/.local/share/opencode/opencode.db, ~25G and the fleet's working
+#   memory; code#10297) snapshotted with a consistent sqlite snapshot (VACUUM INTO; .backup restarts indefinitely on this write-hot DB)
+#   against the running server), integrity-checked, then restic-backed
+#   up to local + R2 + Drive (restic-opencode-db repositories),
+#   keep-last 7 / keep-daily 7 / keep-weekly 4 / keep-monthly 12.
+#   Script: ./opencode-db-backup.sh (vendored here; same
+#   Bitwarden-at-runtime credential pattern).
 # - openclaw-backup (daily ~04:05): the OpenClaw state dir (~/.openclaw,
 #   minus the tmp/ and cache/ scratch trees) as a dated tar.zst with a
 #   sha256 manifest to the local backup dir, R2 (supabase-backups,
@@ -38,12 +47,6 @@
 #   The agent state DB is snapshotted with sqlite3 .backup so the
 #   archived copy is transaction-consistent. Script:
 #   ./openclaw-backup.sh (vendored here; same credential pattern).
-# - supabase-backup (twice daily 04:42 + 16:42): pg_dump of the muse-dev
-#   Supabase project to R2 (supabase-backups), content-hashed names.
-#   Migrated from the sandbox 2026-10-28 (developing-today/code#1723);
-#   the unit is declared here per Drew's all-services-in-nix rule the
-#   same day. Script: ~/tools/supabase-backup.sh (wrapper; the dump
-#   program + config live in ~/tools/supabase-backup/).
 # - atlas-backup (daily ~04:47): the canonical local atlas.db
 #   (~/atlas/turso-atlas/data/atlas.db) snapshotted with sqlite3
 #   .backup, gzipped deterministically, and filed to the local backup
@@ -55,7 +58,7 @@
 #   (code#1515). Script: ./atlas-backup.sh (vendored here; credentials
 #   from Bitwarden by name at runtime, never in the store).
 # - cold-store-nightly (daily 03:12): the cold-store reaper's nightly
-#   backup set (D1 exports, Supabase filing, Turso exports) to Google
+#   backup set (D1 exports, Turso exports) to Google
 #   Drive. Migrated from the sandbox 2026-10-28 (code#1723). Script:
 #   ~/tools/cold-store-nightly.sh (wrapper; the job script itself lives
 #   in developing-today/code, pkgs/cold-store-reaper).
@@ -71,7 +74,12 @@
 #   must be complete and fresher than services.laptop-backups.
 #   watchdog.maxAgeHours, and both backup timers must have triggered
 #   within the same threshold; any violation exits non-zero naming
-#   the job/timer. repo-archive-backup is covered via its timer's
+#   the job/timer. laptop-state-backup is covered via its timer's
+#   last-trigger time AND its success marker
+#   (~/backups/restic/.laptop-state-last-success-epoch, written only
+#   after all three backends succeed) — code#10294: its 12-day stall
+#   was silent because the watchdog did not name this job.
+#   repo-archive-backup is covered via its timer's
 #   last-trigger time ONLY: its script (~/tools/repo-archive-
 #   backup.sh) and its restic credentials live outside this repo, so
 #   no run record is required of it.
@@ -88,6 +96,7 @@
 let
   cfg = config.services.laptop-backups;
   home = config.home.homeDirectory;
+  pmAggregator = pkgs.callPackage ../../pkgs/pm-aggregator/package.nix { };
   dashboardPkg = pkgs.writeShellScriptBin "pm-dashboard-backup" (
     builtins.readFile ./pm-dashboard-backup.sh
   );
@@ -95,6 +104,9 @@ let
   atlasPkg = pkgs.writeShellScriptBin "atlas-backup" (builtins.readFile ./atlas-backup.sh);
   statePkg = pkgs.writeShellScriptBin "laptop-state-backup" (
     builtins.readFile ./laptop-state-backup.sh
+  );
+  opencodeDbPkg = pkgs.writeShellScriptBin "opencode-db-backup" (
+    builtins.readFile ./opencode-db-backup.sh
   );
   watchdogPkg = pkgs.writeShellScriptBin "laptop-backups-watchdog" (
     builtins.readFile ./laptop-backups-watchdog.sh
@@ -105,6 +117,9 @@ let
   watchdogJobs = lib.concatStringsSep "," (
     (lib.optional cfg.dashboard.enable "dashboard")
     ++ (lib.optional cfg.repoArchive.enable "repo-archive")
+    ++ (lib.optional cfg.state.enable "state")
+    ++ (lib.optional cfg.opencodeDb.enable "opencode-db")
+    ++ (lib.optional cfg.coldStoreNightly.enable "cold-store")
   );
   watchdogWanted = cfg.watchdog.enable && watchdogJobs != "";
   servicePath = lib.makeBinPath [
@@ -121,7 +136,7 @@ let
 in
 {
   options.services.laptop-backups = {
-    enable = lib.mkEnableOption "the laptop backup jobs (dashboard, repo archive, openclaw, supabase, cold-store, atlas)";
+    enable = lib.mkEnableOption "the laptop backup jobs (dashboard, repo archive, openclaw, cold-store, atlas)";
 
     dashboard = {
       enable = lib.mkOption {
@@ -167,27 +182,6 @@ in
       };
     };
 
-    supabase = {
-      enable = lib.mkOption {
-        type = lib.types.bool;
-        default = true;
-        description = "Twice-daily pg_dump backup of the muse-dev Supabase project to R2 (code#1723).";
-      };
-      onCalendar = lib.mkOption {
-        type = lib.types.listOf lib.types.str;
-        default = [
-          "04:42"
-          "16:42"
-        ];
-        description = "Daily run times (local) for the Supabase backup.";
-      };
-      script = lib.mkOption {
-        type = lib.types.str;
-        default = "${home}/tools/supabase-backup.sh";
-        description = "Path of the Supabase backup wrapper script to run.";
-      };
-    };
-
     atlas = {
       enable = lib.mkOption {
         type = lib.types.bool;
@@ -211,6 +205,19 @@ in
         type = lib.types.str;
         default = "05:40";
         description = "Daily run time (local) for the laptop-state backup.";
+      };
+    };
+
+    opencodeDb = {
+      enable = lib.mkOption {
+        type = lib.types.bool;
+        default = true;
+        description = "Daily restic backup of the OpenCode session database (sqlite VACUUM INTO snapshot, local + R2 + Drive) (code#10297).";
+      };
+      onCalendar = lib.mkOption {
+        type = lib.types.str;
+        default = "06:05";
+        description = "Daily run time (local) for the opencode-db backup.";
       };
     };
 
@@ -277,7 +284,11 @@ in
           Service = {
             Type = "oneshot";
             ExecStart = "${dashboardPkg}/bin/pm-dashboard-backup";
-            Environment = "PATH=${servicePath}:${home}/tools/bin:/run/current-system/sw/bin";
+            Environment = [
+              "PATH=${servicePath}:${home}/tools/bin:/run/current-system/sw/bin"
+              "PM_AGG_STORE_BACKEND=turso"
+              "PM_AGG_TURSO_EXPORT_BIN=${pmAggregator}/bin/pm-aggregator-export-turso-stores"
+            ];
           };
         };
       })
@@ -297,16 +308,6 @@ in
             Type = "oneshot";
             ExecStart = "${openclawPkg}/bin/openclaw-backup";
             Environment = "PATH=${servicePath}:${home}/tools/bin:/run/current-system/sw/bin";
-          };
-        };
-      })
-      (lib.mkIf cfg.supabase.enable {
-        supabase-backup = {
-          Unit.Description = "Twice-daily Supabase muse-dev pg_dump backup to R2 (code#1723)";
-          Service = {
-            Type = "oneshot";
-            ExecStart = cfg.supabase.script;
-            TimeoutStartSec = "30m";
           };
         };
       })
@@ -332,17 +333,35 @@ in
           };
         };
       })
+      (lib.mkIf cfg.opencodeDb.enable {
+        opencode-db-backup = {
+          Unit.Description = "Daily OpenCode session DB backup - sqlite snapshot + restic local + R2 + Drive (code#10297)";
+          Service = {
+            Type = "oneshot";
+            ExecStart = "${opencodeDbPkg}/bin/opencode-db-backup";
+            Environment = "PATH=${servicePath}:${home}/tools/bin:/run/current-system/sw/bin";
+            # 240m: the snapshot alone copies ~25G, then integrity_check
+            # plus three restic legs each run backup + check + prune.
+            TimeoutStartSec = "240m";
+          };
+        };
+      })
       (lib.mkIf cfg.coldStoreNightly.enable {
         cold-store-nightly = {
-          Unit.Description = "Cold-store nightly backup set (D1 + Supabase + Turso exports to Drive) (code#1723)";
+          Unit.Description = "Cold-store nightly backup set (D1 + Turso exports to Drive) (code#1723)";
           Service = {
             Type = "oneshot";
             ExecStart = cfg.coldStoreNightly.script;
-            # 120m, not 30m: the Turso export leg alone ran past
-            # 30m on 2026-11-08/09/10, and systemd's timeout kill
-            # leaked its scratch directory each night
+            # 360m, not 120m: on 2026-11-20 the atlas Turso dump
+            # (past 10 GB) was still downloading when the 120m
+            # timeout killed the run, and nothing after it was
+            # filed. export-turso.sh now keeps itself inside a 3h
+            # budget (TURSO_EXPORT_DEADLINE_SECONDS) and exports
+            # atlas last; this leaves room for that plus the D1
+            # backup, prune, manifest sync and status steps.
+            # Earlier: 30m -> 120m after 2026-11-08/09/10
             # (darwin-nix#373).
-            TimeoutStartSec = "120m";
+            TimeoutStartSec = "360m";
           };
         };
       })
@@ -408,17 +427,6 @@ in
           Install.WantedBy = [ "timers.target" ];
         };
       })
-      (lib.mkIf cfg.supabase.enable {
-        supabase-backup = {
-          Unit.Description = "Run the Supabase muse-dev backup twice daily";
-          Timer = {
-            OnCalendar = cfg.supabase.onCalendar;
-            Persistent = true;
-            RandomizedDelaySec = "15m";
-          };
-          Install.WantedBy = [ "timers.target" ];
-        };
-      })
       (lib.mkIf cfg.atlas.enable {
         atlas-backup = {
           Unit.Description = "Run the atlas backup daily (code#1515)";
@@ -435,6 +443,17 @@ in
           Unit.Description = "Run the laptop-state backup daily (code#1849)";
           Timer = {
             OnCalendar = cfg.state.onCalendar;
+            Persistent = true;
+            RandomizedDelaySec = "15m";
+          };
+          Install.WantedBy = [ "timers.target" ];
+        };
+      })
+      (lib.mkIf cfg.opencodeDb.enable {
+        opencode-db-backup = {
+          Unit.Description = "Run the OpenCode session DB backup daily (code#10297)";
+          Timer = {
+            OnCalendar = cfg.opencodeDb.onCalendar;
             Persistent = true;
             RandomizedDelaySec = "15m";
           };

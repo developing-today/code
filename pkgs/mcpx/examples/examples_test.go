@@ -239,12 +239,25 @@ func mustGetwd(t *testing.T) string {
 // terminate (kill its child and exit). A supervisor refuses while a
 // daemon is attached; `stop --all` above detaches asynchronously, so
 // retry briefly before giving up and logging.
+//
+// The glob alone is not enough: when the state path is long (a nix
+// build's deeply nested TMPDIR), SupervisorSocketPath falls back to a
+// hashed socket under os.TempDir()/mcpx-sup instead of stateDir, so a
+// supervisor bound there is invisible to the glob and leaks past the
+// suite with its fixture server (#9351). Ask the product's own path
+// function where this suite's one configured server ("demo", see
+// configTemplate) would put its socket and terminate that too.
 func terminateSupervisors(t *testing.T, stateDir string) {
 	t.Helper()
-	socks, err := filepath.Glob(filepath.Join(stateDir, "sup-*.sock"))
+	socks, err := filepath.Glob(filepath.Join(mcpclient.SupervisorSocketDir(stateDir), "sup-*.sock"))
 	if err != nil {
 		t.Logf("cleanup: glob supervisor sockets: %v", err)
 		return
+	}
+	if sock := mcpclient.SupervisorSocketPath(stateDir, "demo"); !slices.Contains(socks, sock) {
+		if _, err := os.Stat(sock); err == nil {
+			socks = append(socks, sock)
+		}
 	}
 	for _, sock := range socks {
 		var err error

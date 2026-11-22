@@ -202,6 +202,17 @@ let
           doCheck = true;
           checkPhaseCargoCommand = "cargoWithProfile test --locked";
 
+          # The atlas-search server tests (#9973) write trace and
+          # feedback records under $HOME/.local/state/atlas-search;
+          # the build sandbox's HOME (/homeless-shelter) is not
+          # writable, which failed every variant's check phase in
+          # any sandboxed build. Point HOME at a build temp dir for
+          # the check phase (#6400).
+          preCheck = ''
+            export HOME="$TMPDIR/fleet-check-home"
+            mkdir -p "$HOME"
+          '';
+
           inherit postInstall postFixup;
           meta = metaAttrs;
         }
@@ -216,6 +227,12 @@ let
 
         nativeCheckInputs = [ python3 ];
         cargoBuildFlags = cargoFlags;
+
+        # Same check-phase HOME fix as the crane path above (#6400).
+        preCheck = ''
+          export HOME="$TMPDIR/fleet-check-home"
+          mkdir -p "$HOME"
+        '';
 
         env = envAttrs;
 

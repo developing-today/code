@@ -145,5 +145,6 @@ and read by name for that reason.
 | `MCPX_SESSION_DEPTH` | the opencode plugin | plugin.env=full | how many parents the session has | the command |
 | `MCPX_SESSION_CREATED` | the opencode plugin | plugin.env=full, when known | when the session was created, ISO 8601 | the command |
 | `MCPX_SESSION_AGE_MS` | the opencode plugin | plugin.env=full, when known | the session's age when the command started, in milliseconds | the command |
+| `MCPX_SUPERVISOR_OWNER_PID` | the client pool, arming the supervisor owner watch | a test suite arms the watch via EnableSupervisorOwnerWatch (internal/testsupport); production daemons never set it | the PID of the process a supervisor belongs to; when that process dies, the supervisor terminates its child and exits instead of leaking (#10774) | `mcpx` run inside the script or shell, which arms the supervisors it spawns (internal/mcpclient owner watch) |
 
 <!-- END GENERATED -->
