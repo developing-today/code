@@ -340,6 +340,140 @@ pub(super) fn cmd_list(rest: &[String]) -> i32 {
     0
 }
 
+/// Show one task's rich current broker row and the tail of its audit
+/// timeline. The broker's rich /list row is the source of truth for
+/// mutable state; events are intentionally limited only after the
+/// same normalization and ordering used by `timeline`.
+pub(super) fn cmd_show(rest: &[String]) -> i32 {
+    let args = parse_verb_args("show", rest, &["limit"], &["json"]);
+    reject_extra_pos("show", &args, 1);
+    let task_id = args.pos_i64(0, "task_id");
+    let limit = match list_limit_or_default(args.get_i64("limit").or(Some(10))) {
+        Ok(limit) => limit as usize,
+        Err(e) => die(2, &e),
+    };
+    let resp = unwrap_ok(call(
+        "/list",
+        &json!({"rich": true, "task": task_id, "limit": 1}),
+    ));
+    let rows = match list_rows(&resp) {
+        Ok(rows) => rows,
+        Err(e) => die(3, &e),
+    };
+    let Some(task) = rows
+        .into_iter()
+        .find(|r| r.get("id").and_then(Value::as_i64) == Some(task_id))
+    else {
+        eprint(&format!("repo-queue show: task {task_id} not found\n"));
+        return 1;
+    };
+    let mut events = Vec::new();
+    for kind in [
+        "claimed",
+        "session_bound",
+        "lane_session_bound",
+        "model_stamp",
+        "session_unbound",
+        "session_binding_cleared",
+        "completed",
+        "lease_expired",
+        "lease_expired_at_cap",
+        "claim_refused",
+        "released",
+        "parked",
+        "failed",
+        "cancelled",
+    ] {
+        let response = call(
+            "/events-list",
+            &json!({"task_id": task_id, "kind": kind, "limit": 1000}),
+        );
+        if response.get("ok").and_then(Value::as_bool) != Some(true) {
+            eprint("repo-queue show: broker does not serve /events-list yet\n");
+            return 3;
+        }
+        if let Some(rows) = response
+            .get("row")
+            .and_then(|r| r.get("rows"))
+            .and_then(Value::as_array)
+        {
+            events.extend(rows.iter().filter_map(timeline_event));
+        }
+    }
+    events.sort_by_key(|event| event.id);
+    let events = collapse_timeline(events);
+    let start = events.len().saturating_sub(limit);
+    let history = &events[start..];
+    if args.has("json") {
+        print_json(&json!({
+            "task": task,
+            "history": history.iter().map(|ev| json!({
+                "id": ev.id, "kind": ev.kind, "created_at": ev.created_at,
+                "session_id": ev.session_id, "provider": ev.provider,
+                "model": ev.model, "variant": ev.variant, "trigger": ev.trigger,
+            })).collect::<Vec<_>>(),
+        }));
+        return 0;
+    }
+    println!("task {task_id}");
+    for key in [
+        "title",
+        "status",
+        "kind",
+        "queue",
+        "pool",
+        "attempts",
+        "max_attempts",
+        "worker_id",
+        "lease_until",
+        "park_kind",
+        "wait_kind",
+        "ready_condition",
+        "not_before",
+        "blocker",
+        "last_error",
+        "lane_id",
+        "lane_reason",
+        "platform",
+        "claim_provider",
+        "claim_model",
+        "claim_variant",
+        "claim_session_id",
+        "issue",
+        "pr",
+        "progress",
+    ] {
+        let payload = task.get("payload");
+        let progress = task.get("progress");
+        let value = task.get(key).or_else(|| match key {
+            "kind" => payload.and_then(|p| p.get("kind")),
+            "issue" | "pr" => payload.and_then(|p| p.get(key)),
+            "blocker" | "lane_reason" | "wait_kind" | "ready_condition" => {
+                progress.and_then(|p| p.get(key))
+            }
+            _ => None,
+        });
+        if let Some(value) = value {
+            println!("{key}: {}", value);
+        }
+    }
+    if let Some(checkpoint) = task.get("progress").and_then(|p| p.get("last_checkpoint")) {
+        println!("latest_checkpoint: {checkpoint}");
+    }
+    if let Some(note) = task.get("progress").and_then(|p| {
+        p.get("last_checkpoint")
+            .and_then(|c| c.get("note"))
+            .or_else(|| p.get("note"))
+    }) {
+        println!("latest_checkpoint_note: {note}");
+    }
+    println!("history ({} most recent events):", history.len());
+    for event in history {
+        println!("{}", format_timeline_event(event));
+    }
+    0
+}
+
 /// The /claim-flow request invariants (#5757-A), checked before
 /// any step runs, on both broker backends (the broker is the
 /// trust boundary; the client mirrors the same rules in
@@ -735,6 +869,25 @@ pub(super) fn collapse_timeline(events: Vec<TimelineEvent>) -> Vec<TimelineEvent
     out
 }
 
+/// Keep the human event representation identical between `history`
+/// and the bounded history shown by `show`.
+pub(super) fn format_timeline_event(ev: &TimelineEvent) -> String {
+    let mut line = format!("{}  {}", ev.created_at, ev.kind);
+    if let Some(sid) = &ev.session_id {
+        line += &format!("  session={sid}");
+    }
+    if let Some(provider) = &ev.provider {
+        line += &format!("  {provider}/{}", ev.model.as_deref().unwrap_or("?"));
+        if let Some(variant) = &ev.variant {
+            line += &format!("#{variant}");
+        }
+    }
+    if let Some(trigger) = &ev.trigger {
+        line += &format!("  ({trigger})");
+    }
+    line
+}
+
 /// #9046 oracle: pair session_bound -> session_unbound per
 /// session into windows (session, start, end-or-None), in the
 /// order the windows close (open bindings last) — the windows
@@ -879,20 +1032,7 @@ pub(super) fn cmd_timeline(verb: &str, rest: &[String]) -> i32 {
         return 0;
     }
     for ev in &events {
-        let mut line = format!("{}  {}", ev.created_at, ev.kind);
-        if let Some(sid) = &ev.session_id {
-            line += &format!("  session={sid}");
-        }
-        if let Some(p) = &ev.provider {
-            line += &format!("  {p}/{}", ev.model.as_deref().unwrap_or("?"));
-            if let Some(v) = &ev.variant {
-                line += &format!("#{v}");
-            }
-        }
-        if let Some(t) = &ev.trigger {
-            line += &format!("  ({t})");
-        }
-        println!("{line}");
+        println!("{}", format_timeline_event(ev));
     }
     // The join: exact resolved models per binding window, from
     // the session's raw route_attempt rows (laptop-local,
