@@ -647,7 +647,9 @@ def main(argv: list[str] | None = None) -> int:
             return 3
         row, lease_id, warm = got
         try:
-            clean_workspace_artifacts(row.path, workspace_cleanup_cwd(args.workspace_cwd))
+            clean_workspace_artifacts(
+                row.path, workspace_cleanup_cwd(args.workspace_cwd)
+            )
         except RuntimeError as exc:
             with broker:
                 broker.checkin(lease_id, None)
