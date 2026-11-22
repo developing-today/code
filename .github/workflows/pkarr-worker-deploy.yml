@@ -79,6 +79,7 @@ jobs:
         run: |
           sha="$GITHUB_SHA"
           tag="git-${sha:0:12}"
+          ./node_modules/.bin/cf -q workers versions create --worker pkarr --tag "$tag" --message "deploy $sha via GitHub Actions" --dry-run
           ./node_modules/.bin/cf -q workers versions create --worker pkarr --tag "$tag" --message "deploy $sha via GitHub Actions"
           response="$(curl --fail --silent --show-error \
             -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
