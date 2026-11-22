@@ -212,7 +212,7 @@ async function main(): Promise<void> {
       });
     },
     recordHistoricalParent: async (ref, parent) => {
-      await writeHistoricalParent(ref, parent, true);
+      return writeHistoricalParent(ref, parent, true);
     },
     removeHistoricalParent: async (ref, parent) => {
       await writeHistoricalParent(ref, parent, false);
@@ -227,10 +227,10 @@ async function main(): Promise<void> {
       });
     },
   };
-  async function writeHistoricalParent(ref: RefKey, parent: RefKey, present: boolean): Promise<void> {
+  async function writeHistoricalParent(ref: RefKey, parent: RefKey, present: boolean): Promise<boolean> {
     const issue = await fetchIssue(ref, true);
     const body = setHistoricalParentMetadata(issue.body, parent, present);
-    if (body === issue.body) return;
+    if (body === issue.body) return false;
     const location = splitRef(ref);
     await request(`https://api.github.com/repos/${location.owner}/${location.name}/issues/${location.number}`, {
       method: "PATCH",
@@ -238,6 +238,7 @@ async function main(): Promise<void> {
       body: JSON.stringify({ body }),
       signal: AbortSignal.timeout(20_000),
     });
+    return present;
   }
   await applyEpicReparent(plan, args.closingEpic, gateway);
 }

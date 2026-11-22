@@ -126,6 +126,21 @@ describe("re-parent destination selection", () => {
     });
   });
 
+  test("never selects a descendant epic that would create a native-parent cycle", () => {
+    const child = issue({ ref: "developing-today/code#10", primaryParentChain: ["developing-today/code#1"] });
+    const descendant = epic(20, {
+      labels: ["epic/id-platform"],
+      primaryParentChain: ["developing-today/code#10", "developing-today/code#1"],
+    });
+    const fallback = epic(30, { labels: ["epic/id-maintenance"], maintenance: true });
+    expect(selectReparentDestination(child, [descendant, fallback])).toMatchObject({
+      kind: "selected",
+      epic: { ref: fallback.ref },
+      reason: "maintenance_fallback",
+    });
+    expect(() => planEpicReparent(child, descendant)).toThrow("descendant");
+  });
+
   test("plans a parent and primary-parent label change while retaining every other label", () => {
     const result = planEpicReparent(issue(), epic(55, { labels: ["epic/id-platform"] }));
     expect(result).toEqual({
@@ -153,7 +168,7 @@ describe("re-parent destination selection", () => {
       replaceLabels: async (child, labels) => {
         calls.push(`labels:${child}:${labels.join(",")}`);
       },
-      recordHistoricalParent: async (child, parent) => { calls.push(`history:${child}:${parent}`); },
+      recordHistoricalParent: async (child, parent) => { calls.push(`history:${child}:${parent}`); return true; },
       removeHistoricalParent: async (child, parent) => { calls.push(`remove-history:${child}:${parent}`); },
       addComment: async (ref) => {
         calls.push(`comment:${ref}`);
@@ -198,7 +213,7 @@ describe("re-parent destination selection", () => {
         labelWrites += 1;
         if (labelWrites === 1) throw new Error("label update failed");
       },
-      recordHistoricalParent: async () => { calls.push("history"); },
+      recordHistoricalParent: async () => { calls.push("history"); return true; },
       removeHistoricalParent: async () => { calls.push("remove-history"); },
       addComment: async () => { calls.push("comment"); },
     };
@@ -207,7 +222,6 @@ describe("re-parent destination selection", () => {
     expect(calls).toEqual([
       "parent:developing-today/code#1->developing-today/code#55",
       "labels:new",
-      "remove-history",
       "labels:old",
       "parent:developing-today/code#55->developing-today/code#1",
     ]);
@@ -221,7 +235,47 @@ describe("re-parent destination selection", () => {
     expect(withHistory).toContain('"reason": "reparent-on-close"');
     expect(withHistory).toContain('"until": "2026-11-22"');
     expect(withHistory).toContain('"number": 7');
+    expect(setHistoricalParentMetadata(withHistory, parent, true, "2027-01-01")).toBe(withHistory);
     expect(setHistoricalParentMetadata(withHistory, parent, false)).not.toContain('"status": "historical"');
+  });
+
+  test("round-trips generated metadata while preserving unrelated fields, links, and body text", () => {
+    const parent = "developing-today/code#12" as const;
+    const strings = ["plain", "$&", "$'", "$`", "${value}", "emoji 🐙", "line\nbreak"];
+    for (const value of strings) {
+      const metadata = { pm_meta: 1, extra: value, links: [{ relation: "blockedBy", target: { repo: "x/y", number: 7 }, note: value }] };
+      const original = `prefix ${value}\n\n<!-- pm-metadata:start -->\n\`\`\`json\n${JSON.stringify(metadata)}\n\`\`\`\n<!-- pm-metadata:end -->\n\nsuffix ${value}`;
+      const added = setHistoricalParentMetadata(original, parent, true, "2026-11-22");
+      const json = /\`\`\`json\s*([\s\S]*?)\`\`\`/.exec(added)?.[1];
+      expect(JSON.parse(json!)).toMatchObject({ ...metadata, links: [...metadata.links, { relation: "parent", status: "historical", until: "2026-11-22", reason: "reparent-on-close", target: { repo: "developing-today/code", number: 12 } }] });
+      expect(added).toContain(`prefix ${value}`);
+      expect(added).toContain(`suffix ${value}`);
+      const removed = setHistoricalParentMetadata(added, parent, false);
+      const removedJson = /\`\`\`json\s*([\s\S]*?)\`\`\`/.exec(removed)?.[1];
+      expect(JSON.parse(removedJson!)).toEqual(metadata);
+      expect(removed).toContain(`suffix ${value}`);
+    }
+  });
+
+  test("preserves a pre-existing historical-parent record when compensation runs", async () => {
+    const calls: string[] = [];
+    let labelWrites = 0;
+    const gateway: ReparentGateway = {
+      readChildLive: async () => issue(),
+      isOpenEpicLive: async () => true,
+      replaceNativeParent: async () => { calls.push("parent"); },
+      removeNativeParent: async () => { calls.push("remove-parent"); },
+      replaceLabels: async () => {
+        labelWrites += 1;
+        if (labelWrites === 1) throw new Error("labels failed");
+      },
+      recordHistoricalParent: async () => false,
+      removeHistoricalParent: async () => { calls.push("remove-history"); },
+      addComment: async () => { calls.push("comment"); },
+    };
+    const plan = planEpicReparent(issue(), epic(55, { labels: ["epic/id-platform"] }));
+    await expect(applyEpicReparent(plan, "developing-today/code#99", gateway)).rejects.toThrow("labels failed");
+    expect(calls).not.toContain("remove-history");
   });
 
   test("removes a new native edge and restores labels when a parentless child's label update fails", async () => {
@@ -238,7 +292,7 @@ describe("re-parent destination selection", () => {
         labelWrites += 1;
         if (labelWrites === 1) throw new Error("label update failed");
       },
-      recordHistoricalParent: async () => { calls.push("history"); },
+      recordHistoricalParent: async () => { calls.push("history"); return true; },
       removeHistoricalParent: async () => { calls.push("remove-history"); },
       addComment: async () => { calls.push("comment"); },
     };
