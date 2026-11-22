@@ -10,7 +10,11 @@
 //!      token *file* named in the request (the session broker reads it
 //!      per request and sends `X-Agent-Token`; fleet never opens it);
 //!   2. the **`bws` CLI fallback** — `bws secret list` + `get`, the
-//!      same shape the secrets broker itself uses to fill its cache.
+//!      same shape the secrets broker itself uses to fill its cache;
+//!   3. the **`op` CLI**, only where a vault is named
+//!      (`FLEET_OP_VAULT`): `op read op://<vault>/<name>/<field>`.
+//!      A seat that keeps its secrets in 1Password resolves the same
+//!      names without a broker or a Bitwarden token ([`OpSource`]).
 //!
 //! Discipline, enforced by the types below:
 //!   * a resolved value lives in [`SecretValue`], whose `Debug` is
@@ -307,6 +311,9 @@ impl Resolver {
                 .with_retry_policy(broker_retry),
         ));
         sources.push(Box::new(BwsSource::new()));
+        if let Some(op) = OpSource::from_environment() {
+            sources.push(Box::new(op));
+        }
         Resolver::new(sources)
     }
 
@@ -999,6 +1006,96 @@ impl SecretSource for BwsSource {
             ));
         }
         Ok(SecretValue(value.to_string()))
+    }
+}
+
+/// Source 3, opt-in: the 1Password CLI. One read per name:
+/// `op read --no-newline op://<vault>/<name>/<field>`, so the item
+/// title in the vault is the fleet secret name. It joins the default
+/// chain only where a vault is named, so a seat without 1Password
+/// keeps the historical chain exactly.
+///
+/// Every `op` failure is `Unavailable`, never `NotFound`: the CLI
+/// exits non-zero the same way for a missing item, a locked vault
+/// and a signed-out session, and this crate does not read a child's
+/// stderr (it could quote vault material) — so absence cannot be
+/// told apart from a broken read here.
+pub struct OpSource {
+    vault: String,
+    field: String,
+    runner: Box<dyn CommandRunner>,
+}
+
+impl OpSource {
+    /// Names the vault; setting it is what turns the source on.
+    pub const VAULT_ENV: &'static str = "FLEET_OP_VAULT";
+    /// Names the item field that holds the value.
+    pub const FIELD_ENV: &'static str = "FLEET_OP_FIELD";
+    /// 1Password's own default field for an API-credential item.
+    pub const DEFAULT_FIELD: &'static str = "credential";
+
+    /// The source for a vault and an optional field, or None where
+    /// no usable vault is named. A vault or field that could not be
+    /// one path segment of a secret reference turns the source off
+    /// rather than reading from somewhere unintended.
+    pub fn from_values(
+        vault: Option<&str>,
+        field: Option<&str>,
+        runner: Box<dyn CommandRunner>,
+    ) -> Option<OpSource> {
+        let vault = vault.map(str::trim).filter(|v| Self::is_segment(v))?;
+        let field = match field.map(str::trim).filter(|f| !f.is_empty()) {
+            Some(f) if Self::is_segment(f) => f,
+            Some(_) => return None,
+            None => Self::DEFAULT_FIELD,
+        };
+        Some(OpSource {
+            vault: vault.to_string(),
+            field: field.to_string(),
+            runner,
+        })
+    }
+
+    pub fn from_environment() -> Option<OpSource> {
+        let vault = std::env::var(Self::VAULT_ENV).ok();
+        let field = std::env::var(Self::FIELD_ENV).ok();
+        Self::from_values(vault.as_deref(), field.as_deref(), Box::new(ProcessRunner))
+    }
+
+    fn is_segment(s: &str) -> bool {
+        !s.is_empty()
+            && !s
+                .chars()
+                .any(|c| c == '/' || c == '?' || c == '#' || c.is_control())
+    }
+
+    /// The secret reference `op read` is given for a name.
+    pub fn reference(&self, name: &str) -> String {
+        format!("op://{}/{}/{}", self.vault, name, self.field)
+    }
+}
+
+impl SecretSource for OpSource {
+    fn source_name(&self) -> &'static str {
+        "op"
+    }
+
+    fn resolve(&self, name: &str) -> Result<SecretValue, SecretError> {
+        validate_name(name)?;
+        let unavailable = |detail: String| SecretError::Unavailable {
+            source: "op",
+            name: name.to_string(),
+            detail,
+        };
+        let reference = self.reference(name);
+        let value = self
+            .runner
+            .run("op", &["read", "--no-newline", &reference])
+            .map_err(|d| unavailable(format!("op read: {d}")))?;
+        if value.is_empty() {
+            return Err(unavailable("op read: empty value".to_string()));
+        }
+        Ok(SecretValue(value))
     }
 }
 
@@ -1870,5 +1967,121 @@ mod tests {
             "set"
         );
         assert_eq!(probe(&BwsTokenRunner::with_token(None)), "unset");
+    }
+
+    // ---- op (1Password) source ----
+    //
+    // Oracle: the 1Password secret-reference shape
+    // `op://<vault>/<item>/<field>` and this crate's own rules
+    // (an empty value and a failed child are source failures).
+
+    struct OpRunner {
+        answer: Result<String, String>,
+        seen: std::rc::Rc<std::cell::RefCell<Vec<Vec<String>>>>,
+    }
+
+    impl CommandRunner for OpRunner {
+        fn run(&self, program: &str, args: &[&str]) -> Result<String, String> {
+            assert_eq!(program, "op");
+            self.seen
+                .borrow_mut()
+                .push(args.iter().map(|a| a.to_string()).collect());
+            self.answer.clone()
+        }
+    }
+
+    fn op_source(
+        vault: Option<&str>,
+        field: Option<&str>,
+        answer: Result<String, String>,
+    ) -> (
+        Option<OpSource>,
+        std::rc::Rc<std::cell::RefCell<Vec<Vec<String>>>>,
+    ) {
+        let seen = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let runner = OpRunner {
+            answer,
+            seen: seen.clone(),
+        };
+        (OpSource::from_values(vault, field, Box::new(runner)), seen)
+    }
+
+    #[test]
+    fn op_reads_one_reference_built_from_vault_name_and_field() {
+        let (source, seen) = op_source(
+            Some("fleet"),
+            None,
+            Ok("fixture-value-not-a-secret".to_string()),
+        );
+        let source = source.expect("a named vault turns the source on");
+        let v = source.resolve("message-bridge.fleet-token").unwrap();
+        assert_eq!(v.expose(), "fixture-value-not-a-secret");
+        assert_eq!(
+            seen.borrow().as_slice(),
+            [vec![
+                "read".to_string(),
+                "--no-newline".to_string(),
+                "op://fleet/message-bridge.fleet-token/credential".to_string(),
+            ]]
+        );
+        // A named field replaces the default one.
+        let (source, _) = op_source(Some("fleet"), Some("password"), Ok("x".to_string()));
+        assert_eq!(source.unwrap().reference("a.b"), "op://fleet/a.b/password");
+    }
+
+    #[test]
+    fn op_is_off_unless_a_usable_vault_is_named() {
+        for vault in [None, Some(""), Some("   "), Some("a/b"), Some("a?b")] {
+            let (source, _) = op_source(vault, None, Ok("x".to_string()));
+            assert!(source.is_none(), "vault {vault:?} must leave op off");
+        }
+        // A field that is not one path segment turns it off too,
+        // rather than reading some other field.
+        let (source, _) = op_source(Some("fleet"), Some("a/b"), Ok("x".to_string()));
+        assert!(source.is_none());
+        // Positive control: surrounding whitespace is not a reason.
+        let (source, _) = op_source(Some(" fleet "), Some(" "), Ok("x".to_string()));
+        assert_eq!(source.unwrap().reference("n"), "op://fleet/n/credential");
+    }
+
+    #[test]
+    fn op_failures_and_empty_values_are_unavailable_and_carry_no_value() {
+        let (source, _) = op_source(Some("fleet"), None, Err("exit status 1".to_string()));
+        match source.unwrap().resolve("wanted.name") {
+            Err(SecretError::Unavailable { source, detail, .. }) => {
+                assert_eq!(source, "op");
+                assert_eq!(detail, "op read: exit status 1");
+            }
+            other => panic!("expected Unavailable, got {other:?}"),
+        }
+        let (source, _) = op_source(Some("fleet"), None, Ok(String::new()));
+        match source.unwrap().resolve("wanted.name") {
+            Err(SecretError::Unavailable { source, .. }) => assert_eq!(source, "op"),
+            other => panic!("expected Unavailable, got {other:?}"),
+        }
+        // A name that is not a valid secret name never reaches op.
+        let (source, seen) = op_source(Some("fleet"), None, Ok("x".to_string()));
+        assert!(matches!(
+            source.unwrap().resolve("bad/name"),
+            Err(SecretError::InvalidName(_))
+        ));
+        assert!(seen.borrow().is_empty());
+    }
+
+    #[test]
+    fn op_answers_when_the_sources_before_it_cannot() {
+        let (op, _) = op_source(Some("fleet"), None, Ok("from-op".to_string()));
+        let resolver = Resolver::new(vec![
+            Box::new(FakeSource {
+                name: "bws",
+                result: Err(SecretError::Unavailable {
+                    source: "bws",
+                    name: "wanted.name".to_string(),
+                    detail: "bws secret list: spawn failed: NotFound".to_string(),
+                }),
+            }),
+            Box::new(op.unwrap()),
+        ]);
+        assert_eq!(resolver.resolve("wanted.name").unwrap().expose(), "from-op");
     }
 }

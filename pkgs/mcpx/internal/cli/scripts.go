@@ -308,6 +308,7 @@ func scriptExtension(name string) string {
 var generatedClientNames = map[string]bool{
 	runner.ClientFileName:     true,
 	codegen.Python.ClientFile: true,
+	codegen.Roc.ClientFile:    true,
 }
 
 // ScriptEntry is one discoverable script.

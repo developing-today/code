@@ -50,6 +50,7 @@ test-utils = []
 
 [dependencies]
 anyhow = "1"
+base64 = "0.23"
 blake3 = "1"
 ed25519-dalek = { version = "3", features = ["rand_core"] }
 futures-lite = "2"
@@ -71,6 +72,15 @@ libc = "0.2"
 p2panda-core = { git = "https://github.com/p2panda/p2panda", rev = "da80c05b95269926bf58121cf6a2d3dd5ca41dfc" }
 postcard = { version = "1", features = ["alloc"] }
 rand = "0.10"
+# The `http.fetch` provider's client (#1062): blocking API only,
+# on a dedicated thread per fetch; rustls for TLS; default
+# features off so no system proxy is consulted — a fetch goes to
+# the allowlisted host directly. Already in the workspace lock as
+# iroh's dependency.
+reqwest = { version = "0.13", default-features = false, features = [
+  "blocking",
+  "rustls",
+] }
 russh = { version = "=0.65.1", optional = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

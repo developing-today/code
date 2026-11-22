@@ -612,14 +612,43 @@ def block(text: str, name: str) -> str:
     return match.group(1)
 
 
+def table_cells(markdown: str) -> list[list[str]]:
+    """The cells of a Markdown table, row by row, without its layout.
+
+    The repository's formatter pads cells, widens the rule row and adds
+    blank lines around a block. None of that changes what the table says,
+    so the comparison is on cell text: the rule row is dropped and each
+    cell is stripped. A row that is not a table row is kept as one cell,
+    so stray text in the block still makes the comparison fail.
+    """
+    rows: list[list[str]] = []
+    for line in markdown.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        if not (line.startswith("|") and line.endswith("|") and len(line) > 1):
+            rows.append([line])
+            continue
+        cells = [cell.strip() for cell in line[1:-1].split("|")]
+        if all(re.fullmatch(r":?-+:?", cell) for cell in cells):
+            continue
+        rows.append(cells)
+    return rows
+
+
+def list_items(markdown: str) -> list[str]:
+    """The non-blank lines of a block, each stripped."""
+    return [line.strip() for line in markdown.splitlines() if line.strip()]
+
+
 def check_report(results: dict) -> None:
     text = REPORT.read_text(encoding="utf-8")
     need(
-        block(text, "table") == render_table(results),
+        table_cells(block(text, "table")) == table_cells(render_table(results)),
         "report: table differs from the committed results",
     )
     need(
-        block(text, "leaders") == render_leaders(results),
+        list_items(block(text, "leaders")) == list_items(render_leaders(results)),
         "report: leaders differ from the committed results",
     )
     need(results["fixture"]["sha256"] in text, "report: must name the fixture SHA-256")

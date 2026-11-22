@@ -484,6 +484,9 @@ def launch(queue_name, task_id):
 
     cap_room = claimant.cap_step()
     if cap_room == -1:
+        claimant.fire_opencode_working_hook(
+            "lane-launch", f"launch_one {queue_name}:{task_id} could not read OpenCode sessions"
+        )
         return {
             "task": task_id,
             "queue": queue_name,
