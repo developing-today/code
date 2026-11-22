@@ -3248,6 +3248,124 @@ mod tests {
         }
     }
 
+    // -- /coverage PR half (#12280): a ready PR is covered iff a LIVE
+    // -- task's dedupe key names it. The parser decides which keys name
+    // -- a PR; the live-status rule is the same SQL filter as issues.
+
+    #[test]
+    fn pr_number_parses_warden_and_merge_watch_keys() {
+        let repo = "developing-today/code";
+        // The stale-PR warden's shepherd key.
+        assert_eq!(
+            pr_number_from_dedupe("repo-health:v1:pr:developing-today/code:pr:12206", repo),
+            Some(12206)
+        );
+        // The coverage reconciliation's merge-watch key (#4951) — a live
+        // merge-watch is a live pr_shepherd naming the PR, so it must
+        // count as coverage or the fallback would double-file.
+        assert_eq!(
+            pr_number_from_dedupe(
+                "repo-health:v1:merge-watch:developing-today/code:pr:12206",
+                repo
+            ),
+            Some(12206)
+        );
+        // Dispatch-suffixed variants parse like the issue classes do.
+        assert_eq!(
+            pr_number_from_dedupe(
+                "repo-health:v1:pr:developing-today/code:pr:12206:dispatch:abc123",
+                repo
+            ),
+            Some(12206)
+        );
+    }
+
+    #[test]
+    fn pr_number_rejects_other_repos_and_non_pr_keys() {
+        let repo = "developing-today/code";
+        // A different repo's PR is not coverage for this one.
+        assert_eq!(
+            pr_number_from_dedupe(
+                "repo-health:v1:pr:developing-today-forks/opencode:pr:2496",
+                repo
+            ),
+            None
+        );
+        // An issue key never reads as PR coverage: triage for issue 5
+        // does not name PR 5.
+        assert_eq!(
+            pr_number_from_dedupe("repo-health:v1:triage:developing-today/code:issue:5", repo),
+            None
+        );
+        // And a PR key never reads as issue coverage.
+        assert_eq!(
+            issue_number_from_dedupe("repo-health:v1:pr:developing-today/code:pr:5", repo),
+            None
+        );
+        // No number at all, and the malformed-tail rule.
+        assert_eq!(
+            pr_number_from_dedupe("repo-health:v1:pr:developing-today/code:pr:", repo),
+            None
+        );
+        assert_eq!(
+            pr_number_from_dedupe("repo-health:v1:pr:developing-today/code:pr:12abc", repo),
+            None
+        );
+    }
+
+    #[test]
+    fn pr_number_matches_legacy_repo_aliases() {
+        // A shepherd filed under the pre-rename repo name is coverage
+        // when the caller names the current one, and vice versa.
+        assert_eq!(
+            pr_number_for_repo(
+                "repo-health:v1:pr:developing-today/opencode:pr:2496",
+                "developing-today-forks/opencode"
+            ),
+            Some(2496)
+        );
+        assert_eq!(
+            pr_number_for_repo(
+                "repo-health:v1:merge-watch:developing-today-forks/openchamber:pr:81",
+                "developing-today/openchamber"
+            ),
+            Some(81)
+        );
+        // Aliases never cross into a different repo.
+        assert_eq!(
+            pr_number_for_repo(
+                "repo-health:v1:pr:developing-today/opencode:pr:1",
+                "developing-today/code"
+            ),
+            None
+        );
+    }
+
+    proptest! {
+        /// Canonical PR keys round-trip for both PR-naming classes,
+        /// with or without a dispatch suffix.
+        #[test]
+        fn prop_pr_number_round_trips(
+            n in 1i64..10_000_000i64,
+            class in prop::sample::select(vec!["pr", "merge-watch"]),
+            suffix in prop::option::of("[a-z0-9]{1,12}"),
+        ) {
+            let repo = "developing-today/code";
+            let mut key = format!("repo-health:v1:{class}:{repo}:pr:{n}");
+            if let Some(s) = &suffix {
+                key.push_str(&format!(":dispatch:{s}"));
+            }
+            prop_assert_eq!(pr_number_from_dedupe(&key, repo), Some(n));
+        }
+
+        /// A PR key for a different repo never matches.
+        #[test]
+        fn prop_pr_other_repo_never_matches(n in 1i64..10_000_000i64) {
+            let key = format!("repo-health:v1:pr:developing-today-forks/opencode:pr:{n}");
+            prop_assert_eq!(pr_number_from_dedupe(&key, "developing-today/code"), None);
+        }
+    }
+
     // ---- #8217: batch claim, platform limitation in the pick,
     // ---- and the release verb ----
 
