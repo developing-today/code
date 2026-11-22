@@ -127,7 +127,10 @@ if [ "$1" = "cargo" ] && [ -z "$target_dir" ]; then
       repo=$(printf '%s\n' "$workspace" | sed -n 's#^.*/pkgs/\([^/]*\).*#\1#p')
       if [ -z "$repo" ]; then repo=$(basename -- "$workspace"); fi
     else
-      repo=$(basename -- "$PWD")
+      # Cargo install <crate> is valid outside a workspace. Broker cleanup
+      # requires metadata, so leave these commands on Cargo's own target
+      # selection instead of turning a valid install into a failure.
+      repo=""
       workspace_real=""
       cwd_real=$(pwd -P)
     fi
