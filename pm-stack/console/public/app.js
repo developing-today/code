@@ -5,7 +5,8 @@
 // The page draws from three documents the server keeps ready (core,
 // questions, ops), so moving between sections never waits on a fetch.
 const API = "/console/api/";
-const $ = (id) => document.getElementById(id);
+// Without a page (the tests import the small functions) nothing is found.
+const $ = (id) => (typeof document === "undefined" ? null : document.getElementById(id));
 const view = $("view");
 const tabsEl = $("tabs");
 const toastEl = $("toast");
@@ -40,16 +41,17 @@ function icon(d) {
   return s;
 }
 
-/** "12 min", "3 h", "2 d" since an ISO time (times without a zone are UTC). */
+/** "just now", "12 min ago", "3 h ago", "2 d ago" since an ISO time
+ * (times without a zone are UTC). */
 export function ago(iso, now = Date.now()) {
   if (!iso) return "";
   const t = Date.parse(/[zZ]$|[+-]\d\d:?\d\d$/.test(iso) ? iso : `${iso}Z`);
   if (Number.isNaN(t)) return "";
   const s = Math.max(0, (now - t) / 1000);
   if (s < 90) return "just now";
-  if (s < 5400) return `${Math.round(s / 60)} min`;
-  if (s < 129600) return `${Math.round(s / 3600)} h`;
-  return `${Math.round(s / 86400)} d`;
+  if (s < 5400) return `${Math.round(s / 60)} min ago`;
+  if (s < 129600) return `${Math.round(s / 3600)} h ago`;
+  return `${Math.round(s / 86400)} d ago`;
 }
 
 /** The queue's priority bands, in words. */
@@ -181,7 +183,7 @@ async function act(kind, args, done, button) {
 
 function taskCard(t, extra) {
   const who = [t.worker, t.lane, t.model].filter(Boolean).join(" · ");
-  const when = t.claimed ? `claimed ${ago(t.claimed)} ago` : `queued ${ago(t.created)} ago`;
+  const when = t.claimed ? `claimed ${ago(t.claimed)}` : `queued ${ago(t.created)}`;
   return card(
     h(
       "div",
@@ -240,7 +242,7 @@ function viewNow() {
           h(
             "p",
             { class: "meta" },
-            [m.agent, m.model, m.where, m.last ? `active ${ago(m.last)} ago` : "", m.tools ? `${m.tools} tool calls running` : ""]
+            [m.agent, m.model, m.where, m.last ? `active ${ago(m.last)}` : "", m.tools ? `${m.tools} tool calls running` : ""]
               .filter(Boolean)
               .join(" · "),
           ),
@@ -265,7 +267,7 @@ function viewNow() {
           h(
             "p",
             { class: "meta" },
-            `${ago(a.at)} ago · ${a.kind} · `,
+            `${ago(a.at)} · ${a.kind} · `,
             h("span", { class: a.status === "failed" ? "bad" : "" }, a.status + (a.note ? `: ${a.note}` : "")),
           ),
         ),
@@ -585,7 +587,7 @@ function needCard(i, kind) {
     i.action ? h("h3", {}, i.action) : h("h3", {}, i.title),
     i.action ? h("p", { class: "meta" }, i.title) : null,
     i.why ? h("p", { class: "meta" }, i.why) : null,
-    i.updated ? h("p", { class: "meta" }, `updated ${ago(i.updated)} ago`) : null,
+    i.updated ? h("p", { class: "meta" }, `updated ${ago(i.updated)}`) : null,
     i.ref && /#\d+$/.test(i.ref)
       ? h(
           "div",
@@ -658,7 +660,17 @@ const STATUS = {
 };
 let draft = "";
 
-function viewAsk() {
+function viewAsk(sub) {
+  // Words handed over by the Android app (shared or selected text, or
+  // dictation) arrive after the "#", which never leaves the phone.
+  if (sub?.startsWith("say=")) {
+    try {
+      draft = decodeURIComponent(sub.slice(4));
+    } catch {
+      // not valid text: leave the box as it was
+    }
+    history.replaceState(null, "", "#ask");
+  }
   const box = h("textarea", {
     rows: 3,
     placeholder: "Say what you want, in your own words. An agent picks it up, does it, and reports back here.",
@@ -723,9 +735,9 @@ function viewAsk() {
       ? asks.map((a) => {
           const [label, tone] = STATUS[a.status] || [a.status, ""];
           return card(
-            h("div", { class: "row" }, chip(label, tone), ext(a.url, `#${a.issue}`), h("span", { class: "meta" }, `${ago(a.updated)} ago`), a.worker ? h("span", { class: "meta" }, `· ${a.worker}`) : null),
+            h("div", { class: "row" }, chip(label, tone), ext(a.url, `#${a.issue}`), h("span", { class: "meta" }, `${ago(a.updated)}`), a.worker ? h("span", { class: "meta" }, `· ${a.worker}`) : null),
             h("div", { class: "bubble you" }, h("b", {}, "You"), a.text),
-            ...a.replies.map((r) => h("div", { class: `bubble${r.you ? " you" : ""}` }, h("b", {}, `${r.you ? "You" : "Fleet"} · ${ago(r.at)} ago`), r.text)),
+            ...a.replies.map((r) => h("div", { class: `bubble${r.you ? " you" : ""}` }, h("b", {}, `${r.you ? "You" : "Fleet"} · ${ago(r.at)}`), r.text)),
             h(
               "div",
               { class: "row end" },
@@ -767,6 +779,7 @@ function viewMore() {
       tile("more/agents", "Agents", ops.agents ? `${ops.agents.length} registered` : "message one or all"),
       tile("more/services", "Services", ops.services ? `${ops.services.filter((u) => u.active === "failed").length} failed of ${ops.services.length}` : "start, stop, logs"),
       tile("more/notify", "Notifications", "choose what reaches this device"),
+      tile("more/phone", "Phones", "the Android app and its home-screen widget"),
     ),
   ];
   for (const g of ops.more || []) {
@@ -787,6 +800,12 @@ const NOTICE = {
   questions: "New questions for you",
   trouble: "A unit failed",
 };
+
+/** What the browser says it runs on: "Linux; Android 10; K", "Windows NT 10.0; Win64; x64". */
+export function deviceLabel(agent = navigator.userAgent) {
+  const m = /\(([^)]*)\)/.exec(agent);
+  return (m ? m[1] : agent).trim().slice(0, 60);
+}
 
 function keyBytes(b64) {
   const text = atob((b64 + "=".repeat((4 - (b64.length % 4)) % 4)).replace(/-/g, "+").replace(/_/g, "/"));
@@ -810,7 +829,7 @@ async function viewNotify() {
       const r = await navigator.serviceWorker.register("/console/sw.js", { scope: "/console/" });
       await navigator.serviceWorker.ready;
       const s = await r.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: keyBytes(status.key) });
-      await act("push.on", { subscription: s.toJSON(), label: navigator.userAgent.replace(/^.*\((.*?)\).*$/, "$1").slice(0, 60) }, "Notifications are on for this device");
+      await act("push.on", { subscription: s.toJSON(), label: deviceLabel() }, "Notifications are on for this device");
     } catch (error) {
       toast(error.message, true);
       e.target.disabled = false;
@@ -846,6 +865,120 @@ async function viewNotify() {
       ),
     ),
   ];
+}
+
+// ---- phones ------------------------------------------------------------
+
+/** A request from the Android app on this phone to be linked, until it is answered. */
+let linkRequest = null;
+/** How many phones were linked when the request was approved, or null before that. */
+let linkApprovedAt = null;
+
+/** The address that tells the Android app to collect its token. It carries nothing. */
+function collectUrl() {
+  const back = encodeURIComponent(`${location.origin}/console/#more/phone`);
+  return `intent://finish#Intent;scheme=pmconsole;package=${me.androidPackage || "today.developing.pmconsole"};S.browser_fallback_url=${back};end`;
+}
+
+async function viewPhone(sub) {
+  if (sub?.startsWith("link=")) {
+    const request = sub.slice(5);
+    linkRequest = /^[A-Za-z0-9_-]{43}$/.test(request) ? request : null;
+    linkApprovedAt = null;
+    history.replaceState(null, "", "#more/phone");
+  }
+  const devices = await api("devices");
+  // The phone has collected its token: the request is finished.
+  if (linkApprovedAt !== null && devices.length > linkApprovedAt) {
+    linkRequest = null;
+    linkApprovedAt = null;
+  }
+  const approve = async (e) => {
+    const done = await act("device.approve", { challenge: linkRequest }, "Approved", e.target);
+    if (!done) return;
+    linkApprovedAt = devices.length;
+    draw();
+    // Hand back to the app, which collects its token and fills the widget.
+    location.href = collectUrl();
+  };
+  const out = [];
+  if (linkRequest && linkApprovedAt === null) {
+    out.push(
+      card(
+        h("h3", {}, "Link this phone?"),
+        h(
+          "p",
+          { class: "meta" },
+          "The app's home-screen widget asked to be linked. It will be able to read three counts (in progress, queued, needs you) and the titles at the top of each list, and nothing else. It cannot change anything, and you can remove it here at any time.",
+        ),
+        h("p", { class: "why" }, "Approve only if you just tapped the PM widget on this phone. If this appeared after following a link from somewhere else, choose Not now."),
+        h(
+          "div",
+          { class: "row end" },
+          h(
+            "button",
+            {
+              class: "small ghost",
+              onclick: () => {
+                linkRequest = null;
+                draw();
+              },
+            },
+            "Not now",
+          ),
+          h("button", { onclick: approve }, "Link this phone"),
+        ),
+      ),
+    );
+  } else if (linkRequest) {
+    out.push(
+      card(
+        h("h3", {}, "Approved"),
+        h("p", { class: "meta" }, "The widget fills in a moment. If it does not, tap below, or tap the widget."),
+        h("div", { class: "row end" }, h("a", { class: "button", href: collectUrl() }, "Finish on this phone")),
+      ),
+    );
+  }
+  out.push(
+    h("h2", {}, `Linked phones (${devices.length})`),
+    ...(devices.length
+      ? devices.map((d) =>
+          card(
+            h("h3", {}, d.name),
+            h("p", { class: "meta" }, `Linked ${ago(d.createdAt)} · ${d.seenAt ? `last read ${ago(d.seenAt)}` : "has not read yet"}`),
+            h(
+              "div",
+              { class: "row end" },
+              h(
+                "button",
+                {
+                  class: "small ghost",
+                  onclick: async (e) => {
+                    const sure = await ask({ title: "Remove this phone?", text: `${d.name} will stop showing the counts on its home screen.`, okLabel: "Remove", danger: true });
+                    if (sure !== null) act("device.remove", { id: d.id }, "Removed", e.target);
+                  },
+                },
+                "Remove",
+              ),
+            ),
+          ),
+        )
+      : [empty("No phone is linked. On a phone with the app, add the PM widget to the home screen and tap it.")]),
+    h("h2", {}, "The Android app"),
+    card(
+      h(
+        "ul",
+        { class: "plain" },
+        h("li", {}, h("b", {}, "Home-screen widget. "), "In progress, queued next and needs you, with the task being worked on. Each number opens its screen."),
+        h("li", {}, h("b", {}, "Say it. "), "Long-press the icon and choose Dictate, or add the “Ask the fleet” tile to quick settings: speak, check the words, send."),
+        h("li", {}, h("b", {}, "Share or select. "), "Share text from any app to PM Console, or select text anywhere and choose “Ask the fleet”: it lands in the Ask box."),
+        h("li", {}, h("b", {}, "Shortcuts. "), "Long-press the icon for Ask, Needs me and Now."),
+        h("li", {}, h("b", {}, "Notifications. "), "Turn them on under Notifications; they arrive as the app's own."),
+      ),
+      me.androidApp ? h("div", { class: "row end" }, h("a", { class: "button", href: "/console/pm-console.apk" }, "Download the app")) : null,
+    ),
+  );
+  return out;
 }
 
 const QUEUE_STATES = ["blocked", "queued", "claimed", "parked"];
@@ -924,7 +1057,7 @@ function viewPrs() {
     const detail = h("div", {});
     return card(
       h("h3", {}, ext(p.url, `#${p.number}`), ` ${p.title}`),
-      h("p", { class: "meta" }, `${p.draft ? "draft · " : ""}${p.author} · ${p.branch} · opened ${ago(p.created)} ago`),
+      h("p", { class: "meta" }, `${p.draft ? "draft · " : ""}${p.author} · ${p.branch} · opened ${ago(p.created)}`),
       detail,
       h(
         "div",
@@ -1015,11 +1148,11 @@ async function viewAgents() {
     compose,
     h("h2", {}, `Agents (${agents.length})`),
     ...agents.map((a) =>
-      card(h("h3", {}, a.name), h("p", { class: "meta" }, `${(a.groups || []).join(", ")} · seen ${ago(a.last_seen) || "never"} ago · ${a.unread_commands ?? 0} commands and ${a.unread_messages ?? 0} messages unread`)),
+      card(h("h3", {}, a.name), h("p", { class: "meta" }, `${(a.groups || []).join(", ")} · seen ${ago(a.last_seen) || "never"} · ${a.unread_commands ?? 0} commands and ${a.unread_messages ?? 0} messages unread`)),
     ),
     h("h2", {}, "Recent messages"),
     ...(recent.length
-      ? recent.map((m) => card(h("p", { class: "meta" }, `${ago(m.ts)} ago · ${m.direction} · ${m.agent} · ${m.kind}`), h("p", {}, String(m.body ?? "").slice(0, 600))))
+      ? recent.map((m) => card(h("p", { class: "meta" }, `${ago(m.ts)} · ${m.direction} · ${m.agent} · ${m.kind}`), h("p", {}, String(m.body ?? "").slice(0, 600))))
       : [empty("No messages.")]),
   ];
 }
@@ -1098,6 +1231,7 @@ const VIEWS = {
   "more/agents": ["Agents", viewAgents, "ops"],
   "more/services": ["Services", viewServices, "ops"],
   "more/notify": ["Notifications", viewNotify],
+  "more/phone": ["Phones", viewPhone],
 };
 let route = "now";
 let drawSeq = 0;
@@ -1105,6 +1239,8 @@ let drawSeq = 0;
 function parse(hash) {
   const r = hash.replace(/^#/, "");
   if (VIEWS[r]) return [r, undefined];
+  // The Android app asking for its phone to be linked: #more/link=<request>.
+  if (r.startsWith("more/link=")) return ["more/phone", r.slice(5)];
   const [top, sub] = r.split("/");
   return VIEWS[top] ? [top, sub] : ["now", undefined];
 }
@@ -1135,7 +1271,7 @@ function drawFresh() {
   const t = asOf.core;
   const age = t ? (Date.now() - t) / 1000 : null;
   freshEl.className = `fresh${signedOut ? " down" : age !== null && age > 180 ? " stale" : ""}`;
-  freshEl.textContent = signedOut ? "signed out" : age === null ? "" : age < 45 ? "live" : `as of ${ago(new Date(t).toISOString())} ago`;
+  freshEl.textContent = signedOut ? "signed out" : age === null ? "" : age < 45 ? "live" : `as of ${ago(new Date(t).toISOString())}`;
 }
 
 /** Draw the current section from what is already loaded. Only the latest
@@ -1191,7 +1327,11 @@ if (typeof document !== "undefined" && view) {
   });
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "hidden") flushPending();
-    else refresh(false);
+    else {
+      refresh(false);
+      // Back from the Android app after linking: show the phone it added.
+      if (route === "more/phone") draw();
+    }
   });
   addEventListener("pagehide", flushPending);
   setInterval(() => document.visibilityState === "visible" && refresh(false), 20_000);

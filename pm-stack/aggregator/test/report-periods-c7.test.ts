@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { dailyReportPeriod } from "../src/report-periods.ts";
+import { annualReportPeriod, dailyReportPeriod, monthlyReportPeriod, quarterlyReportPeriod, weeklyReportPeriod } from "../src/report-periods.ts";
 
 describe("C7 daily report periods", () => {
   test("uses explicit Chicago calendar dates and a stable period identity", () => {
@@ -63,5 +63,40 @@ describe("C7 daily report periods", () => {
     expect(() => dailyReportPeriod("2026-02-30")).toThrow(/valid YYYY-MM-DD/);
     expect(() => dailyReportPeriod("2026-2-03")).toThrow(/valid YYYY-MM-DD/);
     expect(dailyReportPeriod("2024-02-29").periodEnd).toBe("2024-03-01T06:00:00.000Z");
+  });
+});
+
+describe("C7 higher-grain report periods", () => {
+  test("uses explicit calendar identities and CT boundaries", () => {
+    expect(weeklyReportPeriod("2026-11-16")).toEqual({
+      id: "weekly:2026-11-16:America/Chicago",
+      kind: "weekly",
+      timezone: "America/Chicago",
+      periodStart: "2026-11-16T06:00:00.000Z",
+      periodEnd: "2026-11-23T06:00:00.000Z",
+      softCloseAt: "2026-11-25T06:00:00.000Z",
+    });
+    expect(monthlyReportPeriod("2026-11").id).toBe("monthly:2026-11:America/Chicago");
+    expect(monthlyReportPeriod("2026-11").periodEnd).toBe("2026-12-01T06:00:00.000Z");
+    expect(monthlyReportPeriod("2026-11").softCloseAt).toBe("2026-12-08T06:00:00.000Z");
+    expect(quarterlyReportPeriod("2026-Q4")).toMatchObject({
+      id: "quarterly:2026-Q4:America/Chicago",
+      periodStart: "2026-10-01T05:00:00.000Z",
+      periodEnd: "2027-01-01T06:00:00.000Z",
+      softCloseAt: "2027-01-08T06:00:00.000Z",
+    });
+    expect(annualReportPeriod("2026")).toMatchObject({
+      id: "annual:2026:America/Chicago",
+      periodStart: "2026-01-01T06:00:00.000Z",
+      periodEnd: "2027-01-01T06:00:00.000Z",
+      softCloseAt: "2027-01-08T06:00:00.000Z",
+    });
+  });
+
+  test("rejects ambiguous or malformed period identities", () => {
+    expect(() => weeklyReportPeriod("2026-11-17")).toThrow(/Monday/);
+    expect(() => monthlyReportPeriod("2026-13")).toThrow(/YYYY-MM/);
+    expect(() => quarterlyReportPeriod("2026-05")).toThrow(/YYYY-QN/);
+    expect(() => annualReportPeriod("this-year")).toThrow(/YYYY/);
   });
 });

@@ -1,7 +1,11 @@
-// The PM console for Android: a Trusted Web Activity. The app is the
-// site itself, shown by Chrome without browser chrome, so sign-in is
-// Chrome's and nothing is reimplemented here. There is no code in this
-// module: the launcher activity comes from androidbrowserhelper.
+// The PM console for Android. The screens are the site itself, shown by
+// Chrome without browser chrome (a Trusted Web Activity), so sign-in is
+// Chrome's and the app never falls behind the site. Around that, the
+// app uses what only an installed app has: it receives shared and
+// selected text, starts dictation with the phone's own recogniser from
+// a shortcut or a quick-settings tile, offers its main screens on a long
+// press of the icon, shows the site's notifications as its own, and puts
+// a widget on the home screen that reads a short summary by itself.
 plugins {
     id 'com.android.application'
 }
@@ -15,13 +19,15 @@ android {
 
     defaultConfig {
         applicationId 'today.developing.pmconsole'
-        minSdk 23
+        minSdk 24
         targetSdk 34
-        versionCode 1
-        versionName '0.1.0'
+        versionCode 3
+        versionName '0.3.0'
         manifestPlaceholders = [hostName: 'pm.security.cab', defaultUrl: "${site}/console/"]
         // The app's half of the link to the site. The site's half is
         // /.well-known/assetlinks.json, served by pm-console.
+        resValue 'string', 'console_url', "${site}/console/"
+        resValue 'string', 'site_url', "${site}"
         resValue 'string', 'asset_statements', "[{\\\"relation\\\": [\\\"delegate_permission/common.handle_all_urls\\\"], \\\"target\\\": {\\\"namespace\\\": \\\"web\\\", \\\"site\\\": \\\"${site}\\\"}}]"
     }
 
@@ -31,7 +37,7 @@ android {
         main {
             manifest.srcFile 'src/twa/AndroidManifest.xml'
             res.srcDirs = ['src/twa/res']
-            java.srcDirs = []
+            java.srcDirs = ['src/twa/java']
         }
     }
 

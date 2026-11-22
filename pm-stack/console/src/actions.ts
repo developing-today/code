@@ -4,6 +4,7 @@
 // changes, so the documents are read again before the answer goes back,
 // and what it leaves in the audit log, which never includes the text the
 // owner typed.
+import type { Devices } from "./devices.ts";
 import type { Docs } from "./docs.ts";
 import { OpError, type Ops } from "./ops.ts";
 import type { Push } from "./push.ts";
@@ -29,7 +30,14 @@ const asked = async <T>(p: Promise<T>): Promise<T> =>
     throw error instanceof OpError ? error : new OpError(400, error.message);
   });
 
-export function actions(ops: Ops, work: Work, push?: Push): Record<string, Action> {
+export function actions(ops: Ops, work: Work, push?: Push, devices?: Devices): Record<string, Action> {
+  // A phone linked to read the summary its home-screen widget shows.
+  const phones: Record<string, Action> = devices
+    ? {
+        "device.approve": { run: (a) => devices.approve(a), touch: [], audit: ids("name") },
+        "device.remove": { run: (a) => devices.remove(a), touch: [], audit: ids("id") },
+      }
+    : {};
   const notify: Record<string, Action> = push
     ? {
         "push.on": { run: (a) => asked(push.subscribe(a.subscription, a.label)), touch: [], audit: () => ({}) },
@@ -50,6 +58,7 @@ export function actions(ops: Ops, work: Work, push?: Push): Record<string, Actio
     : {};
   return {
     ...notify,
+    ...phones,
     "ask.send": { run: (a) => work.ask(a), touch: ["asks", "board"], audit: () => ({}) },
     "ask.reply": { run: (a) => work.askReply(a), touch: ["asks", "board"], audit: ids("issue") },
     "ask.close": { run: (a) => work.askClose(a), touch: ["asks"], audit: ids("issue") },

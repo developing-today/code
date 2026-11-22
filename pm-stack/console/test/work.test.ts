@@ -556,25 +556,49 @@ describe("what the owner asks for in his own words", () => {
       [5, "waiting", null, "words 5", []],
     ]);
     expect(asks[3].replies[1].text).toBe("and I say");
-    // A long thread is read from its last page, and a bot that only links
-    // the issue somewhere else is not the fleet answering.
+    // A long thread is read from its last page backwards until six replies
+    // are in hand, and a bot that only links the issue somewhere else is
+    // not the fleet answering.
+    const real = (n: number) => ({ body: `reply ${n}`, created_at: "2026-11-22T02:00:00Z", user: { type: "User" } });
+    const bot = {
+      body: "[CODE-1](https://kaneo.example/task/1)",
+      created_at: "2026-11-22T02:01:00Z",
+      user: { type: "Bot" },
+    };
+    const pages: Record<string, unknown[]> = {
+      // 250 comments: the last page holds one answer and a bot's link, the page before it the rest.
+      "7:3": [real(201), bot],
+      "7:2": [real(101), real(102), real(103), real(104), real(105), real(106), real(107)],
+      "7:1": [real(1)],
+      // 101 comments: the answer is the last comment of page 1, and page 2 is only the bot.
+      "8:2": [bot],
+      "8:1": [real(99), real(100)],
+    };
     const long = world({
-      commands: (argv) =>
-        argv[3].includes("/issues?labels=")
-          ? JSON.stringify([found(7, "open", 250)])
-          : JSON.stringify([
-              { body: "the real answer", created_at: "2026-11-22T02:00:00Z", user: { type: "User" } },
-              {
-                body: "[CODE-1](https://kaneo.example/task/1)",
-                created_at: "2026-11-22T02:01:00Z",
-                user: { type: "Bot" },
-              },
-            ]),
+      commands: (argv) => {
+        if (argv[3].includes("/issues?labels=")) return JSON.stringify([found(7, "open", 250), found(8, "open", 101)]);
+        const m = /issues\/(\d+)\/comments\?per_page=100&page=(\d+)$/.exec(argv[3]);
+        return JSON.stringify(m ? (pages[`${m[1]}:${m[2]}`] ?? []) : []);
+      },
     });
-    const [thread] = await new Work(long.ops).asks();
-    expect(long.gh()[1]).toEqual([`repos/${REPO}/issues/7/comments?per_page=100&page=3`]);
-    expect(thread.replies.map((r) => r.text)).toEqual(["the real answer"]);
-    expect(thread.status).toBe("answered");
+    const [deep, boundary] = await new Work(long.ops).asks();
+    expect(long.gh().slice(1)).toEqual([
+      [`repos/${REPO}/issues/7/comments?per_page=100&page=3`],
+      [`repos/${REPO}/issues/7/comments?per_page=100&page=2`],
+      [`repos/${REPO}/issues/8/comments?per_page=100&page=2`],
+      [`repos/${REPO}/issues/8/comments?per_page=100&page=1`],
+    ]);
+    // Six replies, oldest first, across the page boundary; the bot's link is not one of them.
+    expect(deep.replies.map((r) => r.text)).toEqual([
+      "reply 103",
+      "reply 104",
+      "reply 105",
+      "reply 106",
+      "reply 107",
+      "reply 201",
+    ]);
+    expect(boundary.replies.map((r) => r.text)).toEqual(["reply 99", "reply 100"]);
+    expect([deep.status, boundary.status]).toEqual(["answered", "answered"]);
     // Threads are read again only when the issue has changed.
     await work.asks();
     expect(commentReads).toBe(3);

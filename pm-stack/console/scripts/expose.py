@@ -14,10 +14,12 @@ so, and prints what it did:
    the owner's address. Sign-in methods are the one-time PIN, plus Google
    when the secrets `google.access-sso.client-id` and
    `google.access-sso.client-secret` exist.
-2. Three public paths bypass sign-in at the edge, because a phone
-   fetches them before anyone has signed in: the asset-links file, the
-   install manifest and its icons. The console serves exactly those
-   files to an unsigned caller and nothing else.
+2. Four paths bypass sign-in at the edge. Three are files a phone
+   fetches before anyone has signed in: the asset-links file, the
+   install manifest and its icons. The fourth, /console/device, is where
+   the Android app's home-screen widget presents a token of its own to
+   read a short summary. The console serves exactly those files to an
+   unsigned caller, checks that token itself, and answers nothing else.
 3. The console's environment file names the Access issuer and the owner,
    and the console is running with it.
 4. The tunnel routes the hostname to the console.
@@ -57,7 +59,12 @@ APP_SETTINGS = {
     "http_only_cookie_attribute": True,
     "session_duration": "720h",
 }
-PUBLIC_PATHS = ("/.well-known/assetlinks.json", "/manifest.webmanifest", "/icons")
+PUBLIC_PATHS = (
+    "/.well-known/assetlinks.json",
+    "/manifest.webmanifest",
+    "/icons",
+    "/console/device",
+)
 GOOGLE_ID = "google.access-sso.client-id"
 GOOGLE_SECRET = "google.access-sso.client-secret"
 
