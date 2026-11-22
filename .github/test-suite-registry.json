@@ -112,6 +112,20 @@
       "status": "mapped"
     },
     {
+      "id": "id.rust.substrate-path",
+      "paths": ["pkgs/id/crates/id-core/tests/substrate_path.rs"],
+      "invocation": "nix flake check ./pkgs/id (check test-sandbox runs cargo nextest --all-features for default workspace members)",
+      "venue": {
+        "workflow": ".github/workflows/id-check.yml",
+        "job_step": "full-flake-check / Run full nix flake check",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped",
+      "related_issues": [12232, 9106],
+      "notes": "First step of the #9106 walking skeleton (#12232): the only substrate suite that imports from id_core instead of including modules by path, so it also fails to compile when a substrate module stops being part of the crate. Direct run: cargo test --manifest-path pkgs/id/Cargo.toml -p id-core --test substrate_path."
+    },
+    {
       "id": "id.rust.planted-bug-check",
       "paths": ["pkgs/id/tests/planted-bug-check.sh", "pkgs/id/tests/planted/*.patch"],
       "invocation": "bash pkgs/id/tests/planted-bug-check.sh (the planted-bug-check flake check stages a throwaway git repo around pkgs/id and runs the script there; also run by pkgs/id/check-all in non-quick mode)",
