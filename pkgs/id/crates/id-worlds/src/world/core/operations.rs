@@ -95,6 +95,52 @@ impl WorldCore {
         self.check_schedule_inner(id, at_ms, interval_ms, count, target, now_ms, false)
     }
 
+    /// The `kv` store's total charge, in bytes: key bytes plus value
+    /// bytes (the stored JSON encoding's length) per entry (#1062).
+    pub(crate) fn kv_bytes(&self) -> usize {
+        self.kv
+            .iter()
+            .map(|(key, value)| key.len() + value.len())
+            .sum()
+    }
+
+    /// Whether a `kv.set` of `key` to a value of `value_len` serialized
+    /// bytes may be stored. The error says why; the program sees only
+    /// `bad_args`. A set of an existing key is a replacement: it is
+    /// validated against the store as it will be after the write, so
+    /// it consumes neither a second entry slot nor a second byte
+    /// charge.
+    ///
+    /// # Errors
+    ///
+    /// A malformed key, an oversized value, a full store, or a store
+    /// whose total byte budget the write would exceed.
+    pub(crate) fn check_kv_set(&self, key: &str, value_len: usize) -> Result<()> {
+        crate::world_caps::validate_kv_key(key)?;
+        ensure!(
+            value_len <= crate::world_caps::MAX_KV_VALUE_BYTES,
+            "kv value exceeds {} bytes",
+            crate::world_caps::MAX_KV_VALUE_BYTES
+        );
+        let replaced = self.kv.get(key);
+        ensure!(
+            replaced.is_some() || self.kv.len() < crate::world_caps::MAX_KV_ENTRIES,
+            "world already has {} kv entries",
+            crate::world_caps::MAX_KV_ENTRIES
+        );
+        let replaced_charge = replaced.map_or(0, |value| key.len() + value.len());
+        let total = self
+            .kv_bytes()
+            .saturating_sub(replaced_charge)
+            .saturating_add(key.len() + value_len);
+        ensure!(
+            total <= crate::world_caps::MAX_KV_TOTAL_BYTES,
+            "kv store would exceed {} total bytes",
+            crate::world_caps::MAX_KV_TOTAL_BYTES
+        );
+        Ok(())
+    }
+
     /// Apply one fire of a pending schedule: re-arm it in place while
     /// fires remain (fixed-rate: the next due time advances by the
     /// interval from the planned time, never from now), or consume it.
