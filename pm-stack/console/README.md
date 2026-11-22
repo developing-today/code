@@ -14,9 +14,19 @@ fleet; the console acts on it, from a phone or a browser, at
 | Pull requests | Open pull requests; check one; merge it                                             | `fleet gh`                              |
 
 Every operation is an argument vector, never a shell line, and text you
-type travels on stdin or as one argument. Each write is appended to
-`~/.local/state/pm-console/audit.jsonl` (who, what, when, result; message
-text is not copied).
+type travels on stdin or as one argument.
+
+Each write leaves two lines in `~/.local/state/pm-console/audit.jsonl`
+(who, what, when; message text is not copied): one before the action
+runs, one with how it went. If the first cannot be written the action is
+not taken. If the second cannot be written the action's own result still
+comes back, so a merge that happened is never reported as failed.
+
+Work filed from Priorities is created as an issue and enqueued as a
+triage task in the same pass, so a worker picks it up without waiting for
+the coverage reconciliation. The rank sets the task's place in the queue.
+If the enqueue fails, the issue still exists and the page says it is not
+queued.
 
 ## Sign-in
 
@@ -41,9 +51,12 @@ the owner (`PM_CONSOLE_OWNER_EMAILS`).
   mTLS; the token then carries the certificate's common name, and names
   listed in `PM_CONSOLE_CERT_NAMES` are the owner.
 
-A request that crossed no proxy (loopback host, no forwarding headers) is
-a process on the host and is treated as the owner. Everything else needs
-a token. Two paths answer without one: `/console/health` and
+A request is local, and treated as the owner, only when the connection
+itself comes from this machine and it crossed no proxy (loopback Host, no
+forwarding headers). The connection's address is the test, since headers
+are the caller's to write; for the same reason the console only listens
+on loopback and refuses to start on any other address. Everything else
+needs a token. Two paths answer without one: `/console/health` and
 `/.well-known/assetlinks.json` (the Android app's link to this origin).
 
 ## Run
@@ -56,13 +69,15 @@ cd pm-stack/console && bun test
 ```
 
 `expose.py` is safe to run again: it changes only what is not already so
-and refuses to touch DNS records or Access policies it did not write.
+and refuses to touch DNS records or Access policies it did not write. It
+puts the sign-in gate in place first and the route last, and stops before
+the route if the console does not come up with its sign-in settings.
 
 ## Configuration
 
 | Variable                                                  | Default                                           | Meaning                                            |
 | --------------------------------------------------------- | ------------------------------------------------- | -------------------------------------------------- |
-| `PM_CONSOLE_PORT`, `PM_CONSOLE_BIND`                      | `4872`, `127.0.0.1`                               | Listener                                           |
+| `PM_CONSOLE_PORT`, `PM_CONSOLE_BIND`                      | `4872`, `127.0.0.1`                               | Listener; the address must be loopback             |
 | `PM_CONSOLE_OWNER_EMAILS`                                 | none (nobody)                                     | Comma-separated owner addresses                    |
 | `PM_CONSOLE_ACCESS_TEAM_DOMAIN`, `PM_CONSOLE_ACCESS_AUD`  | unset                                             | The Access issuer; set together                    |
 | `PM_CONSOLE_ISSUERS_FILE`                                 | unset                                             | JSON list of further issuers                       |
@@ -71,11 +86,12 @@ and refuses to touch DNS records or Access policies it did not write.
 | `PM_CONSOLE_ANDROID_PACKAGE`, `PM_CONSOLE_ANDROID_SHA256` | `today.developing.pmconsole`, none                | The Android app's identity in the asset-links file |
 | `PM_CONSOLE_REPO`, `PM_CONSOLE_QUEUE`                     | `developing-today/code`, `repo-health-code-pilot` | What it operates on                                |
 
-A malformed port or issuer stops the process at boot and names the
-variable.
+A malformed port, a listen address that is not loopback, or a malformed
+issuer stops the process at boot and names the variable.
 
 ## Android
 
 `pm-stack/console/android/` is a Trusted Web Activity: the same site in
 Chrome without browser chrome, so sign-in is Chrome's own and nothing is
-reimplemented. See its README.
+reimplemented. The signed APK is built by the `pm-console-android`
+workflow and attached to the release of the same name. See its README.

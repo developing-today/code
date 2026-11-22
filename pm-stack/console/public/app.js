@@ -57,17 +57,19 @@ function ask({ title, text, label, okLabel, danger, required }) {
   ok.className = danger ? "danger" : "";
   return new Promise((resolve) => {
     dialog.addEventListener("close", () => resolve(dialog.returnValue === "ok" ? input.value.trim() : null), { once: true });
+    dialog.returnValue = "";
     dialog.showModal();
     if (label) input.focus();
   });
 }
 
-/** Run one action from a button: disable it, report, then redraw. */
+/** Run one action from a button: disable it, report, then redraw.
+ * `done` is the message, or a function from the result to the message. */
 async function act(button, path, body, done) {
   button.disabled = true;
   try {
-    await api(path, body);
-    toast(done);
+    const { result } = await api(path, body);
+    toast(typeof done === "function" ? done(result) : done);
     await show(current);
   } catch (error) {
     toast(error.message, true);
@@ -121,12 +123,12 @@ async function queue() {
 
 const RANKS = ["expedite", "priority/critical", "now", "priority/high", "next", "none"];
 async function priorities() {
-  const list = await api("priorities");
+  const { issues: list, truncated } = await api("priorities");
   const title = h("input", { placeholder: "A new idea or piece of work", "aria-label": "Title" });
   const body = h("textarea", { rows: 3, placeholder: "What you want, in your words (optional)", "aria-label": "Details" });
   const rank = h("select", { class: "narrow", "aria-label": "Rank" }, RANKS.map((r) => h("option", { value: r, selected: r === "next" }, r)));
   const file = card(h("h2", {}, "File work"), title, body, h("div", { class: "row end" }, rank,
-    h("button", { onclick: (e) => title.value.trim() ? act(e.target, "ideas", { title: title.value, body: body.value, rank: rank.value }, "Filed") : toast("Give it a title", true) }, "File issue")));
+    h("button", { onclick: (e) => title.value.trim() ? act(e.target, "ideas", { title: title.value, body: body.value, rank: rank.value }, (r) => (r.queued ? `Filed #${r.issue} and queued it` : `Filed #${r.issue}. ${r.note || "It is not queued yet."}`)) : toast("Give it a title", true) }, "File issue")));
   const rows = list.map((i) => card(
     h("h3", {}, h("a", { href: i.url, target: "_blank", rel: "noopener" }, `#${i.number}`), ` ${i.title}`),
     h("p", { class: "meta" }, `updated ${i.updated} · ${i.comments} comments · ${i.labels.filter((l) => !RANKS.includes(l)).slice(0, 6).join(", ")}`),
@@ -137,7 +139,8 @@ async function priorities() {
         const text = await ask({ title: `Comment on #${i.number}`, text: i.title, label: "Comment", okLabel: "Post", required: true });
         if (text) act(e.target, `issues/${i.number}/comment`, { body: text }, "Comment posted");
       } }, "Comment"))));
-  return [file, ...(rows.length ? rows : [empty("No ranked issues.")])];
+  const more = truncated ? [empty("There are more ranked issues than this list reads. The most urgent may not all be here.")] : [];
+  return [file, ...more, ...(rows.length ? rows : [empty("No ranked issues.")])];
 }
 
 async function agents() {
@@ -207,8 +210,12 @@ async function prs() {
 
 const VIEWS = { overview: ["Overview", overview], queue: ["Queue", queue], priorities: ["Priorities", priorities], agents: ["Agents", agents], services: ["Services", services], prs: ["Pull requests", prs] };
 let current = "overview";
+let showSeq = 0;
 
 async function show(name) {
+  // Views load at different speeds. Only the latest call may draw, or a
+  // slow earlier view would land on top of the one now selected.
+  const seq = ++showSeq;
   current = VIEWS[name] ? name : "overview";
   history.replaceState(null, "", `#${current}`);
   for (const b of tabs.children) b.toggleAttribute("aria-current", false);
@@ -216,8 +223,10 @@ async function show(name) {
   if (active) active.setAttribute("aria-current", "page");
   view.replaceChildren(empty("Loading…"));
   try {
-    view.replaceChildren(...(await VIEWS[current][1]()));
+    const drawn = await VIEWS[current][1]();
+    if (seq === showSeq) view.replaceChildren(...drawn);
   } catch (error) {
+    if (seq !== showSeq) return;
     view.replaceChildren(card(h("h3", {}, "This section could not load"), h("p", { class: "why" }, error.message), h("div", { class: "row end" }, h("button", { onclick: () => show(current) }, "Try again"))));
   }
 }

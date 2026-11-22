@@ -144,9 +144,16 @@ export function readConfig(
     }
   }
 
+  // Loopback only. A request with no token is trusted when it comes from
+  // this machine, so the listener must not be reachable from another one.
+  const bind = env.PM_CONSOLE_BIND ?? "127.0.0.1";
+  if (bind !== "127.0.0.1" && bind !== "::1" && bind !== "localhost") {
+    throw new ConfigError(`PM_CONSOLE_BIND: only a loopback address is supported, not ${JSON.stringify(bind)}`);
+  }
+
   return {
     port: port(env, "PM_CONSOLE_PORT", 4872),
-    bind: env.PM_CONSOLE_BIND ?? "127.0.0.1",
+    bind,
     owners: list(env, "PM_CONSOLE_OWNER_EMAILS").map((e) => e.toLowerCase()),
     certNames: list(env, "PM_CONSOLE_CERT_NAMES"),
     issuers,

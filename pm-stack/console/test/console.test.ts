@@ -7,11 +7,21 @@
 // machine is compared as an exact argument vector; and seeded generators
 // drive the properties (any changed token byte is refused; no generated
 // unit name outside the allowlist reaches systemctl; the unit parser
-// reads back what a formatter wrote).
+// reads back what a formatter wrote). A request is local only by the
+// connection's own address, which the tests pass in as the server does.
 import { beforeEach, describe, expect, test } from "bun:test";
-import { AuthError, authorize, cameThroughEdge, clearJwksCache, identify, verifyJwt } from "../src/auth.ts";
+import { readFileSync } from "node:fs";
+import {
+  AuthError,
+  authorize,
+  cameThroughEdge,
+  clearJwksCache,
+  identify,
+  isLoopbackAddress,
+  verifyJwt,
+} from "../src/auth.ts";
 import { type Config, ConfigError, type Issuer, readConfig } from "../src/config.ts";
-import { manageable, OpError, Ops, parseUnits, type Run } from "../src/ops.ts";
+import { manageable, OpError, Ops, parseUnitFiles, parseUnits, type Run, triagePacket } from "../src/ops.ts";
 import { assetLinks, type Deps, handle } from "../src/server.ts";
 
 const NOW = 1_800_000_000_000;
@@ -66,13 +76,16 @@ async function signer(alg: "RS256" | "ES256", kid: string): Promise<Signer> {
   };
 }
 
-function keyServer(sets: Record<string, JsonWebKey[]>) {
+function keyServer(sets: Record<string, JsonWebKey[]>, gate?: Promise<void>) {
   const calls: string[] = [];
-  const fetchImpl = async (url: string) => {
+  const signals: (AbortSignal | undefined)[] = [];
+  const fetchImpl = async (url: string, init?: { signal?: AbortSignal }) => {
     calls.push(url);
+    signals.push(init?.signal);
+    await gate;
     return { ok: url in sets, status: url in sets ? 200 : 404, json: async () => ({ keys: sets[url] ?? [] }) };
   };
-  return { fetchImpl, calls };
+  return { fetchImpl, calls, signals };
 }
 
 const good = (issuer: Issuer, extra: Record<string, unknown> = {}) => ({
@@ -152,16 +165,46 @@ describe("token verification", () => {
     }
   });
 
-  test("fetches a rotated key once, and caches the key set otherwise", async () => {
+  test("caches the key set, and fetches a rotated key at most once per cooldown", async () => {
     const rotated = await signer("RS256", "k9");
     const sets: Record<string, JsonWebKey[]> = { [ACCESS.jwksUri]: [rsa.jwk] };
     const keys = keyServer(sets);
     await verifyJwt(await rsa.sign(good(ACCESS)), ACCESS, keys.fetchImpl, NOW);
     await verifyJwt(await rsa.sign(good(ACCESS)), ACCESS, keys.fetchImpl, NOW + 1000);
     expect(keys.calls.length).toBe(1);
+    expect(keys.signals[0]).toBeInstanceOf(AbortSignal); // the fetch has a deadline
     sets[ACCESS.jwksUri] = [rsa.jwk, rotated.jwk];
-    await verifyJwt(await rotated.sign(good(ACCESS)), ACCESS, keys.fetchImpl, NOW + 2000);
+    // Tokens naming an unknown key cost nothing while the last fetch is
+    // fresh: anyone can send them, so they must not each reach the issuer.
+    const unknown = await rotated.sign(good(ACCESS));
+    for (let i = 0; i < 20; i++) {
+      await expect(verifyJwt(unknown, ACCESS, keys.fetchImpl, NOW + 2000 + i)).rejects.toThrow(/no key matches/);
+    }
+    expect(keys.calls.length).toBe(1);
+    // Once the cooldown has passed, the rotated key is picked up.
+    await verifyJwt(unknown, ACCESS, keys.fetchImpl, NOW + 31_000);
     expect(keys.calls.length).toBe(2);
+    await verifyJwt(unknown, ACCESS, keys.fetchImpl, NOW + 32_000);
+    expect(keys.calls.length).toBe(2);
+  });
+
+  test("requests arriving together share one key fetch", async () => {
+    let open = () => {};
+    const gate = new Promise<void>((resolve) => {
+      open = resolve;
+    });
+    const keys = keyServer({ [ACCESS.jwksUri]: [rsa.jwk] }, gate);
+    const token = await rsa.sign(good(ACCESS));
+    const all = Promise.all(Array.from({ length: 25 }, () => verifyJwt(token, ACCESS, keys.fetchImpl, NOW)));
+    await new Promise((resolve) => setTimeout(resolve, 20)); // let every verification reach the key lookup
+    open();
+    expect((await all).length).toBe(25);
+    expect(keys.calls.length).toBe(1);
+    // A failed fetch is not remembered: the next request tries again.
+    clearJwksCache();
+    const down = keyServer({});
+    await expect(verifyJwt(token, ACCESS, down.fetchImpl, NOW)).rejects.toThrow(/key set/);
+    await verifyJwt(token, ACCESS, keys.fetchImpl, NOW);
   });
 });
 
@@ -171,29 +214,36 @@ describe("who is the owner", () => {
     new Request("https://pm.security.cab/console/api/me", {
       headers: { host: "pm.security.cab", "cf-ray": "1", ...headers },
     });
+  // The tunnel connects from this machine, so an edge request's peer is loopback too.
+  const at = (keys: { fetchImpl: ReturnType<typeof keyServer>["fetchImpl"] }) => ({
+    fetchImpl: keys.fetchImpl,
+    now: NOW,
+    peer: "127.0.0.1",
+  });
 
   test("the owner's verified address gets in through either issuer", async () => {
     const keys = keyServer({ [ACCESS.jwksUri]: [rsa.jwk], [CENTRAL.jwksUri]: [ec.jwk] });
-    expect(
-      await identify(edge({ "cf-access-jwt-assertion": await rsa.sign(good(ACCESS)) }), cfg, keys.fetchImpl, NOW),
-    ).toEqual({ via: "cloudflare-access", email: OWNER, sub: "user-1" });
+    expect(await identify(edge({ "cf-access-jwt-assertion": await rsa.sign(good(ACCESS)) }), cfg, at(keys))).toEqual({
+      via: "cloudflare-access",
+      email: OWNER,
+      sub: "user-1",
+    });
     expect(
       await identify(
         edge({ cookie: `x=1; CF_Authorization=${await rsa.sign(good(ACCESS, { email: "DrewryPope@Gmail.com" }))}` }),
         cfg,
-        keys.fetchImpl,
-        NOW,
+        at(keys),
       ),
     ).toMatchObject({ email: OWNER });
     expect(
-      await identify(edge({ authorization: `Bearer ${await ec.sign(good(CENTRAL))}` }), cfg, keys.fetchImpl, NOW),
+      await identify(edge({ authorization: `Bearer ${await ec.sign(good(CENTRAL))}` }), cfg, at(keys)),
     ).toMatchObject({ via: "central", email: OWNER });
   });
 
   test("anyone else is refused, by status", async () => {
     const keys = keyServer({ [ACCESS.jwksUri]: [rsa.jwk], [CENTRAL.jwksUri]: [ec.jwk] });
     const status = async (req: Request) =>
-      identify(req, cfg, keys.fetchImpl, NOW).then(
+      identify(req, cfg, at(keys)).then(
         () => 200,
         (e: AuthError) => e.status,
       );
@@ -211,7 +261,7 @@ describe("who is the owner", () => {
     // With no owners configured, a valid token still opens nothing.
     const closed = { ...cfg, owners: [], certNames: [] };
     await expect(
-      identify(edge({ "cf-access-jwt-assertion": await rsa.sign(good(ACCESS)) }), closed, keys.fetchImpl, NOW),
+      identify(edge({ "cf-access-jwt-assertion": await rsa.sign(good(ACCESS)) }), closed, at(keys)),
     ).rejects.toThrow(AuthError);
   });
 
@@ -224,10 +274,33 @@ describe("who is the owner", () => {
     expect(() => authorize({ common_name: "other.devices.central" }, "cloudflare-access", cfg)).toThrow(AuthError);
   });
 
-  test("only a request that crossed no proxy is local", async () => {
+  test("only a connection from this machine that crossed no proxy is local", async () => {
     const local = (headers: Record<string, string>) => new Request("http://127.0.0.1:4872/console/api/me", { headers });
-    expect(await identify(local({ host: "127.0.0.1:4872" }), cfg)).toEqual({ via: "loopback", email: "local" });
+    const here = { peer: "127.0.0.1" };
+    for (const peer of ["127.0.0.1", "127.8.9.10", "::1", "::ffff:127.0.0.1"]) {
+      expect(await identify(local({ host: "127.0.0.1:4872" }), cfg, { peer })).toEqual({
+        via: "loopback",
+        email: "local",
+      });
+    }
     expect(cameThroughEdge(local({ host: "localhost:4872" }))).toBe(false);
+    // The Host header is the caller's to write. A connection from another
+    // machine that names loopback in it is not local, whatever it says.
+    for (const peer of ["100.99.113.103", "203.0.113.9", "::ffff:203.0.113.9", "fe80::1", "", null, undefined]) {
+      await expect(identify(local({ host: "127.0.0.1:4872" }), cfg, { peer })).rejects.toThrow(/sign-in required/);
+    }
+    await expect(identify(local({ host: "127.0.0.1:4872" }), cfg)).rejects.toThrow(/sign-in required/);
+    for (const address of [
+      "127.0.0.1.evil.example",
+      "1127.0.0.1",
+      "127.0.0.1:80",
+      "localhost",
+      "0.0.0.0",
+      "::",
+      "::ffff:",
+    ]) {
+      expect(isLoopbackAddress(address)).toBe(false);
+    }
     for (const headers of [
       { host: "pm.security.cab" },
       { host: "evil.example:4872" }, // a rebound name resolving to loopback
@@ -235,7 +308,7 @@ describe("who is the owner", () => {
       { host: "127.0.0.1:4872", "x-forwarded-for": "203.0.113.9" },
       { host: "127.0.0.1:4872", "cdn-loop": "cloudflare" },
     ]) {
-      await expect(identify(local(headers), cfg)).rejects.toThrow(/sign-in required/);
+      await expect(identify(local(headers), cfg, here)).rejects.toThrow(/sign-in required/);
     }
   });
 });
@@ -270,6 +343,11 @@ describe("configuration", () => {
       [{ PM_CONSOLE_ACCESS_AUD: "x" }, /set together/],
       [{ PM_CONSOLE_ACCESS_TEAM_DOMAIN: "evil.example", PM_CONSOLE_ACCESS_AUD: "x" }, /team domain/],
       [{ PM_CONSOLE_ANDROID_SHA256: "AB:CD" }, /fingerprint/],
+      // A request with no token is trusted when it comes from this
+      // machine, so the listener must not be reachable from another.
+      [{ PM_CONSOLE_BIND: "0.0.0.0" }, /PM_CONSOLE_BIND/],
+      [{ PM_CONSOLE_BIND: "100.99.113.103" }, /PM_CONSOLE_BIND/],
+      [{ PM_CONSOLE_BIND: "::" }, /PM_CONSOLE_BIND/],
     ] as const) {
       expect(() => readConfig(env)).toThrow(why);
     }
@@ -280,6 +358,9 @@ describe("configuration", () => {
       ),
     ).toThrow(/https/);
     expect(() => readConfig({ PM_CONSOLE_ISSUERS_FILE: "/x" }, () => "{}")).toThrow(ConfigError);
+    for (const bind of ["127.0.0.1", "::1", "localhost"]) {
+      expect(readConfig({ PM_CONSOLE_BIND: bind }).bind).toBe(bind);
+    }
   });
 });
 
@@ -368,6 +449,34 @@ describe("operations", () => {
     await expect(ops.queueList("done", "", "")).rejects.toThrow(/status/);
   });
 
+  test("a rotated queue token is fetched again, once", async () => {
+    let issued = 0;
+    const r = recorder(() => `token-${++issued}\n`);
+    const seen: string[] = [];
+    const answer = (status: number) => ({
+      ok: status === 200,
+      status,
+      json: async () => ({
+        results: [{ type: "ok", response: { result: { cols: [{ name: "status" }, { name: "n" }], rows: [] } } }],
+      }),
+    });
+    let valid = "token-2";
+    const ops = new Ops(CFG, r.run, async (_url, init) => {
+      seen.push(init.headers.Authorization);
+      return answer(init.headers.Authorization === `Bearer ${valid}` ? 200 : 401);
+    });
+    await ops.queueCounts(); // token-1 is refused, token-2 works
+    expect(seen).toEqual(["Bearer token-1", "Bearer token-2"]);
+    await ops.queueCounts();
+    expect(seen.length).toBe(3);
+    expect(issued).toBe(2);
+    // A store that keeps refusing gets one retry, not a loop.
+    valid = "none";
+    await expect(ops.queueCounts()).rejects.toThrow(/http 401/);
+    expect(seen.length).toBe(5);
+    expect(issued).toBe(3);
+  });
+
   test("a message's text travels on stdin and targets are checked", async () => {
     const r = recorder();
     const ops = new Ops(CFG, r.run);
@@ -385,7 +494,7 @@ describe("operations", () => {
     expect(r.calls.length).toBe(2);
   });
 
-  test("ranking an issue removes the other ranks and adds the new one", async () => {
+  test("ranking an issue adds the new rank before it removes the others", async () => {
     const r = recorder((argv) =>
       argv.includes("repos/developing-today/code/issues/12279")
         ? JSON.stringify({ labels: [{ name: "now" }, { name: "app/id" }, { name: "priority/high" }] })
@@ -395,11 +504,26 @@ describe("operations", () => {
     await ops.setRank("12279", "next");
     expect(r.calls.map((c) => c.argv.slice(3))).toEqual([
       ["repos/developing-today/code/issues/12279"],
+      ["-X", "POST", "repos/developing-today/code/issues/12279/labels", "--input", "-"],
       ["-X", "DELETE", "repos/developing-today/code/issues/12279/labels/now"],
       ["-X", "DELETE", "repos/developing-today/code/issues/12279/labels/priority%2Fhigh"],
-      ["-X", "POST", "repos/developing-today/code/issues/12279/labels", "--input", "-"],
     ]);
-    expect(r.calls[3].stdin).toBe('{"labels":["next"]}');
+    expect(r.calls[1].stdin).toBe('{"labels":["next"]}');
+    // If removing fails part way, the issue still carries the new rank.
+    const failing = recorder((argv) =>
+      argv.includes("DELETE")
+        ? { code: 1, stderr: "gh: Server Error (HTTP 502)" }
+        : JSON.stringify({ labels: [{ name: "now" }] }),
+    );
+    await expect(new Ops(CFG, failing.run).setRank("12279", "next")).rejects.toThrow(/502/);
+    expect(failing.calls.map((c) => c.argv[4])).toEqual([undefined, "POST", "DELETE"]);
+    // A rank the issue already has is not added again; "none" only removes.
+    const same = recorder(() => JSON.stringify({ labels: [{ name: "now" }, { name: "next" }] }));
+    await new Ops(CFG, same.run).setRank("12279", "now");
+    expect(same.calls.map((c) => c.argv[4])).toEqual([undefined, "DELETE"]);
+    const none = recorder(() => JSON.stringify({ labels: [{ name: "now" }] }));
+    await new Ops(CFG, none.run).setRank("12279", "none");
+    expect(none.calls.map((c) => c.argv[4])).toEqual([undefined, "DELETE"]);
     await expect(ops.setRank("12279", "urgent")).rejects.toThrow(/rank/);
     await expect(ops.setRank("12279/labels", "now")).rejects.toThrow(OpError);
   });
@@ -424,13 +548,141 @@ describe("operations", () => {
         ],
       }),
     );
-    expect((await new Ops(CFG, r.run).priorities()).map((i) => [i.number, i.rank])).toEqual([
+    const listed = await new Ops(CFG, r.run).priorities();
+    expect(listed.truncated).toBe(false);
+    expect(listed.issues.map((i) => [i.number, i.rank])).toEqual([
       [7, "expedite"],
       [1, "now"],
       [9, "now"],
       [2, "priority/high"],
       [5, "next"],
     ]);
+    expect(r.calls.length).toBe(1);
+
+    // Search order is not rank order: the one expedite issue can be on any
+    // page, so every page is read before sorting.
+    const pageOf = (argv: string[]) => Number(argv.find((a) => a.startsWith("page="))?.slice(5));
+    const paged = (pages: number) =>
+      recorder((argv) => {
+        const page = pageOf(argv);
+        const full = page < pages;
+        return JSON.stringify({
+          items: Array.from({ length: full ? 100 : 3 }, (_, n) =>
+            item(page * 1000 + n, !full && n === 2 ? "expedite" : "next"),
+          ),
+        });
+      });
+    const three = paged(3);
+    const all = await new Ops(CFG, three.run).priorities();
+    expect(three.calls.map((c) => pageOf(c.argv))).toEqual([1, 2, 3]);
+    expect(all.issues.length).toBe(203);
+    expect(all.issues[0]).toMatchObject({ number: 3002, rank: "expedite" });
+    expect(all.truncated).toBe(false);
+    // Past the cap the list says it is incomplete instead of looking whole.
+    const endless = paged(Number.POSITIVE_INFINITY);
+    const capped = await new Ops(CFG, endless.run).priorities();
+    expect(endless.calls.length).toBe(10);
+    expect(capped.issues.length).toBe(1000);
+    expect(capped.truncated).toBe(true);
+    // Exactly one full page: the second, empty page ends the read.
+    const exact = recorder((argv) =>
+      JSON.stringify({ items: pageOf(argv) === 1 ? Array.from({ length: 100 }, (_, n) => item(n + 1, "next")) : [] }),
+    );
+    expect(await new Ops(CFG, exact.run).priorities()).toMatchObject({ truncated: false });
+    expect(exact.calls.length).toBe(2);
+  });
+
+  test("an idea is filed and queued in the same pass", async () => {
+    const packets: unknown[] = [];
+    const answers = (enqueue: string | { code: number; stderr: string }) => (argv: string[]) => {
+      if (argv[1] === "gh")
+        return JSON.stringify({ number: 12400, html_url: "https://x/12400", title: "Join at admission" });
+      packets.push(JSON.parse(readFileSync(argv[3], "utf8")));
+      return enqueue;
+    };
+    const r = recorder(answers("{}"));
+    const ops = new Ops(CFG, r.run);
+    expect(await ops.fileIdea("  Join at admission ", "details", "now")).toEqual({
+      issue: 12400,
+      url: "https://x/12400",
+      queued: true,
+    });
+    expect(r.calls[0].argv.slice(3)).toEqual(["-X", "POST", "repos/developing-today/code/issues", "--input", "-"]);
+    expect(JSON.parse(r.calls[0].stdin!)).toEqual({ title: "Join at admission", body: "details", labels: ["now"] });
+    expect(r.calls[1].argv.slice(0, 3)).toEqual(["fleet", "queue", "enqueue"]);
+    expect(r.calls[1].argv.slice(4)).toEqual(["--queue", "repo-health-code-pilot"]);
+    expect(() => readFileSync(r.calls[1].argv[3])).toThrow(); // the packet file does not outlive the call
+    expect(packets[0]).toMatchObject({
+      title: "Triage developing-today/code#12400: Join at admission",
+      priority: 20,
+      dedupe_key: "repo-health:v1:triage:developing-today/code:issue:12400",
+      payload: {
+        schema: "repo-task/v1",
+        kind: "triage",
+        repo: "developing-today/code",
+        queue: "repo-health-code-pilot",
+        issue: { number: 12400, url: "https://github.com/developing-today/code/issues/12400" },
+        max_attempts: 1000,
+      },
+    });
+    // The queue only takes priorities on its scale, and a more urgent
+    // rank never gets a later place than a less urgent one.
+    const scale = [10, 20, 30, 40, 50, 70, 90];
+    const order = (["expedite", "priority/critical", "now", "priority/high", "next", "none"] as const).map(
+      (rank) => triagePacket("o/r", "q", 1, "t", rank, "2026-11-22T00:00:00Z").priority,
+    );
+    expect(order.every((p) => scale.includes(p))).toBe(true);
+    expect(order).toEqual([...order].sort((a, b) => a - b));
+    expect(triagePacket("o/r", "q", 1, "x".repeat(400), "none", "t").title.length).toBe(180);
+
+    // The issue exists either way: a failed enqueue is reported, not hidden and not thrown.
+    const failing = recorder(answers({ code: 1, stderr: "error: store unreachable\nrepo-queue: enqueue failed" }));
+    expect(await new Ops(CFG, failing.run).fileIdea("t", "", "none")).toEqual({
+      issue: 12400,
+      url: "https://x/12400",
+      queued: false,
+      note: "filed, not queued: repo-queue: enqueue failed",
+    });
+    expect(JSON.parse(failing.calls[0].stdin!).labels).toEqual([]);
+    const refused = recorder();
+    await expect(new Ops(CFG, refused.run).fileIdea("t", "", "urgent")).rejects.toThrow(/rank/);
+    await expect(new Ops(CFG, refused.run).fileIdea("  ", "", "none")).rejects.toThrow(OpError);
+    expect(refused.calls.length).toBe(0);
+  });
+
+  test("a stopped unit that systemd has unloaded is still listed", async () => {
+    const r = recorder((argv) =>
+      argv[2] === "list-units"
+        ? "  pm-aggregator.service loaded active running PM dashboard\n● pm-old.service not-found inactive dead pm-old.service\n"
+        : [
+            "pm-aggregator.service enabled enabled",
+            "pm-console.service    disabled enabled",
+            "pm-git-sync.timer     enabled  enabled",
+            "fleet-worker@.service static   -",
+            "sshd.service          enabled  enabled",
+            "",
+            "5 unit files listed.",
+          ].join("\n"),
+    );
+    const units = await new Ops(CFG, r.run).services();
+    expect(units.map((u) => [u.unit, u.active, u.load])).toEqual([
+      ["pm-aggregator.service", "active", "loaded"],
+      ["pm-console.service", "inactive", "not-loaded"],
+      ["pm-git-sync.timer", "inactive", "not-loaded"],
+      ["pm-old.service", "inactive", "not-found"],
+    ]);
+    expect(r.calls.map((c) => c.argv.slice(0, 3))).toEqual([
+      ["systemctl", "--user", "list-units"],
+      ["systemctl", "--user", "list-unit-files"],
+    ]);
+    expect(parseUnitFiles("a b\n\nx.service\n pm-a.service  masked\n")).toEqual([
+      { unit: "pm-a.service", state: "masked" },
+    ]);
+    // The loaded list is the one that must work; the file list only adds to it.
+    const partial = recorder((argv) =>
+      argv[2] === "list-units" ? "pm-a.service loaded active running A\n" : { code: 1, stderr: "failed" },
+    );
+    expect((await new Ops(CFG, partial.run).services()).map((u) => u.unit)).toEqual(["pm-a.service"]);
   });
 
   test("services: only allowlisted units, and the interface's own units cannot be stopped", async () => {
@@ -567,7 +819,9 @@ describe("HTTP surface", () => {
         if (who === "owner") return { via: "cloudflare-access", email: OWNER };
         throw new AuthError(who, who === 401 ? "sign-in required" : "this identity is not the owner");
       },
-      audit: (e) => audited.push(e),
+      audit: async (e) => {
+        audited.push(e);
+      },
       audited,
     };
   }
@@ -614,6 +868,12 @@ describe("HTTP surface", () => {
     expect((await handle(get("/console"), d)).status).toBe(308);
     expect((await handle(get("/console/../src/server.ts"), d)).status).toBe(404);
     expect((await handle(get("/console/config.ts"), d)).status).toBe(404);
+    // Names every object has are not files, and a path that does not decode is a bad request.
+    for (const name of ["constructor", "__proto__", "toString", "hasOwnProperty"]) {
+      expect((await handle(get(`/console/${name}`), d)).status).toBe(404);
+    }
+    expect((await handle(get("/console/api/prs/%E0%A4%A"), d)).status).toBe(400);
+    expect((await handle(post("/console/api/queue/%ZZ/unblock", { reason: "x" }), d)).status).toBe(400);
     expect(await (await handle(get("/console/api/me"), d)).json()).toMatchObject({
       email: OWNER,
       via: "cloudflare-access",
@@ -652,9 +912,12 @@ describe("HTTP surface", () => {
       d,
     );
     expect(bad.status).toBe(400);
-    expect(d.audited.map((e) => [e.action, e.ok, e.who])).toEqual([
-      ["service.restart", true, OWNER],
-      ["service.stop", false, OWNER],
+    // Each action is recorded before it runs and again with its outcome.
+    expect(d.audited.map((e) => [e.action, e.phase, e.ok, e.who])).toEqual([
+      ["service.restart", "start", undefined, OWNER],
+      ["service.restart", "done", true, OWNER],
+      ["service.stop", "start", undefined, OWNER],
+      ["service.stop", "done", false, OWNER],
     ]);
     expect(
       (
@@ -667,6 +930,55 @@ describe("HTTP surface", () => {
         )
       ).status,
     ).toBe(405);
+  });
+
+  test("an action that cannot be recorded is not taken; one already taken is reported as it went", async () => {
+    const r = recorder();
+    const order: string[] = [];
+    const d = deps("owner", r);
+    const run = r.run;
+    d.ops = new Ops(CFG, async (argv, opts) => {
+      order.push("run");
+      return run(argv, opts);
+    });
+    d.audit = async (e) => {
+      order.push(`audit:${e.phase}`);
+    };
+    expect((await handle(post("/console/api/services/pm-aggregator.service/restart", {}), d)).status).toBe(200);
+    expect(order).toEqual(["audit:start", "run", "audit:done"]);
+
+    // The record cannot be written: nothing runs.
+    d.audit = async () => {
+      throw new Error("disk full");
+    };
+    const refused = await handle(post("/console/api/prs/12240/merge", {}), d);
+    expect(refused.status).toBe(502);
+    expect((await refused.json()).error).toContain("not taken");
+    expect(r.calls.length).toBe(1);
+
+    // The record of the outcome cannot be written: the merge happened, and
+    // the answer says so, or the owner would press Merge again.
+    let writes = 0;
+    d.audit = async () => {
+      if (++writes > 1) throw new Error("disk full");
+    };
+    d.ops = new Ops(CFG, async () => ({ code: 0, stdout: JSON.stringify({ merged: true, sha: "abc" }), stderr: "" }));
+    const merged = await handle(post("/console/api/prs/12240/merge", {}), d);
+    expect(merged.status).toBe(200);
+    expect(await merged.json()).toEqual({ ok: true, result: { number: 12240, merged: true, sha: "abc" } });
+    expect(writes).toBe(2);
+  });
+
+  test("the server hands the connection's address to sign-in", async () => {
+    const d = deps("owner");
+    const seen: (string | null)[] = [];
+    d.identify = async (_req, peer) => {
+      seen.push(peer);
+      return { via: "loopback", email: "local" };
+    };
+    await handle(get("/console/api/me"), d, "203.0.113.9");
+    await handle(get("/console/api/me"), d);
+    expect(seen).toEqual(["203.0.113.9", null]);
   });
 
   test("each write route reaches its operation", async () => {
@@ -684,6 +996,7 @@ describe("HTTP surface", () => {
     expect(await run("/console/api/prs/12240/merge", {})).toBe(200);
     expect(await run("/console/api/queue/20306/claim", { reason: "x" })).toBe(400);
     expect(await run("/console/api/nothing", {})).toBe(404);
+    expect(d.audited.filter((e) => e.phase === "start").length).toBe(8); // the refused queue action was recorded too
     expect(d.audited.filter((e) => e.ok).map((e) => e.action)).toEqual([
       "queue.unblock",
       "queue.cancel",

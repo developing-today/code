@@ -12,13 +12,15 @@ is not already so, and prints what it did:
 2. Three public paths bypass sign-in, because a phone fetches them before
    anyone has signed in: the asset-links file, the install manifest and
    its icons. None of them says anything about the fleet.
-3. The console's environment file names the Access issuer and the owner.
+3. The console's environment file names the Access issuer and the owner,
+   and the console is running with it.
 4. The tunnel routes the hostname: /console and the Android asset-links
    file to the console, every other path to the dashboard.
 5. DNS points the hostname at the tunnel.
 
 The gate comes first and the route last, so the origin is never
-reachable without sign-in in front of it.
+reachable without sign-in in front of it. If the console does not come
+up with its sign-in settings, the run stops before the route.
 
 Every secret is read by name through `fleet secrets get` and stays in
 memory. Nothing printed is a secret.
@@ -34,12 +36,14 @@ import json
 import pathlib
 import subprocess
 import sys
+import time
 import urllib.error
 import urllib.request
 
 API = "https://api.cloudflare.com/client/v4"
 TUNNEL = "amd-6-pm-stack"
 CONSOLE = "http://localhost:4872"
+UNIT = "pm-console.service"
 DASHBOARD = "http://localhost:4870"
 CONSOLE_PATHS = r"^/(console($|/)|\.well-known/assetlinks\.json$)"
 PUBLIC_PATHS = ("/.well-known/assetlinks.json", "/manifest.webmanifest", "/icons")
@@ -102,41 +106,55 @@ def find_tunnel(cf: Cloudflare, account: str) -> tuple[str, dict]:
 
 
 def ensure_routes(
-    cf: Cloudflare, account: str, host: str, tunnel: str, config: dict
+    cf: Cloudflare, account: str, host: str, tunnel: str, config: dict, console: str
 ) -> None:
     ingress = config.get("ingress") or []
     wanted = [
-        {"hostname": host, "path": CONSOLE_PATHS, "service": CONSOLE},
+        # A rule with a path must come before the same hostname's rule without one.
+        {"hostname": host, "path": CONSOLE_PATHS, "service": console},
         {"hostname": host, "service": DASHBOARD},
     ]
-    mine = [
-        {k: r[k] for k in ("hostname", "path", "service") if k in r}
-        for r in ingress
-        if r.get("hostname") == host
-    ]
-    if mine != wanted:
-        others = [r for r in ingress if r.get("hostname") not in (host, None)]
-        catch_all = [r for r in ingress if r.get("hostname") is None] or [
-            {"service": "http_status:404"}
-        ]
-        # A rule with a path must come before the same hostname's rule without one.
-        config["ingress"] = others + wanted + catch_all
-        cf.change(
-            f"tunnel {TUNNEL}: route {host} (/console -> console, the rest -> dashboard)",
-            "PUT",
-            f"/accounts/{account}/cfd_tunnel/{tunnel}/configurations",
-            {"config": config},
-        )
+
+    def plain(rule: dict) -> dict:
+        return {k: rule[k] for k in ("hostname", "path", "service") if k in rule}
+
+    # cloudflared takes the first rule that matches. This host's rules go
+    # ahead of every other rule, so a wildcard such as *.security.cab can
+    # never take the host's traffic and send it somewhere with no /console.
+    if [plain(r) for r in ingress[:2]] == wanted and all(
+        r.get("hostname") != host for r in ingress[2:]
+    ):
+        return
+    rest = [r for r in ingress if r.get("hostname") != host]
+    if not rest or rest[-1].get("hostname") or rest[-1].get("path"):
+        rest.append({"service": "http_status:404"})
+    config["ingress"] = wanted + rest
+    cf.change(
+        f"tunnel {TUNNEL}: route {host} (/console -> console, the rest -> dashboard)",
+        "PUT",
+        f"/accounts/{account}/cfd_tunnel/{tunnel}/configurations",
+        {"config": config},
+    )
+
+
+def find_zone(cf: Cloudflare, host: str) -> str:
+    """The zone that holds the host: the longest suffix of the name that
+    is a zone in this account. The last two labels are not always it
+    (example.co.uk, or a delegated dev.example.com)."""
+    labels = host.split(".")
+    for start in range(len(labels) - 1):
+        name = ".".join(labels[start:])
+        zones = cf.get(f"/zones?name={name}")
+        if len(zones) == 1:
+            return zones[0]["id"]
+    raise SystemExit(f"dns: no zone in this account holds {host}")
 
 
 def dns_plan(cf: Cloudflare, host: str, tunnel: str) -> tuple[str, bool]:
     """Read DNS for the host. Returns the zone and whether a record is
     needed; refuses if the host already points anywhere else."""
-    zone_name = ".".join(host.split(".")[-2:])
-    zones = cf.get(f"/zones?name={zone_name}")
-    if len(zones) != 1:
-        raise SystemExit(f"zone {zone_name} not found")
-    records = cf.get(f"/zones/{zones[0]['id']}/dns_records?name={host}")
+    zone = find_zone(cf, host)
+    records = cf.get(f"/zones/{zone}/dns_records?name={host}")
     target = f"{tunnel}.cfargotunnel.com"
     if records and (
         len(records) != 1
@@ -147,7 +165,7 @@ def dns_plan(cf: Cloudflare, host: str, tunnel: str) -> tuple[str, bool]:
         raise SystemExit(
             f"dns: {host} already has records that are not this tunnel; not touching them"
         )
-    return zones[0]["id"], not records
+    return zone, not records
 
 
 def ensure_dns(cf: Cloudflare, host: str, tunnel: str, zone: str, needed: bool) -> None:
@@ -249,10 +267,15 @@ def ensure_app(
             app,
         )
     policies = cf.get(f"/accounts/{account}/access/apps/{app['id']}/policies")
+    # Exclude and require rules change who a policy lets in, so a policy
+    # carrying either is not the one this script writes.
     mine = [
         p
         for p in policies
-        if p.get("decision") == decision and p.get("include") == include
+        if p.get("decision") == decision
+        and p.get("include") == include
+        and not p.get("exclude")
+        and not p.get("require")
     ]
     if len(mine) != len(policies):
         raise SystemExit(
@@ -273,27 +296,91 @@ def ensure_app(
     return app.get("aud")
 
 
-def ensure_env(
-    path: pathlib.Path, wanted: dict[str, str], check: bool, changes: list[str]
+def env_values(path: pathlib.Path) -> dict[str, str]:
+    """Read a systemd EnvironmentFile: KEY=value lines, comments, and one
+    optional pair of quotes around a value."""
+    values: dict[str, str] = {}
+    if not path.exists():
+        return values
+    for raw in path.read_text().splitlines():
+        line = raw.strip()
+        if not line or line[0] in "#;" or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+            value = value[1:-1]
+        values[key.strip()] = value
+    return values
+
+
+def console_origin(env: pathlib.Path) -> str:
+    """Where the console listens, from its own environment file, so the
+    tunnel never routes to a port the console is not on."""
+    port = env_values(env).get("PM_CONSOLE_PORT") or CONSOLE.rsplit(":", 1)[1]
+    if not port.isdigit() or not 0 < int(port) < 65536:
+        raise SystemExit(f"{env}: PM_CONSOLE_PORT is not a port: {port!r}")
+    return f"http://localhost:{port}"
+
+
+def console_up(origin: str, seconds: int = 20) -> bool:
+    """True once the console answers its health check."""
+    for _ in range(seconds):
+        try:
+            with urllib.request.urlopen(f"{origin}/console/health", timeout=3) as res:
+                if res.status == 200:
+                    return True
+        except OSError:
+            pass
+        time.sleep(1)
+    return False
+
+
+def ensure_console(
+    path: pathlib.Path,
+    wanted: dict[str, str],
+    origin: str,
+    check: bool,
+    changes: list[str],
 ) -> None:
-    lines = path.read_text().splitlines() if path.exists() else []
-    have = dict(
-        line.split("=", 1) for line in lines if "=" in line and not line.startswith("#")
+    """The console runs with the sign-in settings. Raises, so nothing is
+    routed, if it cannot be brought up with them."""
+    have = env_values(path)
+    stale = [k for k, v in wanted.items() if have.get(k) != v]
+    if stale:
+        changes.append(f"console environment: {', '.join(stale)}")
+    running = (
+        subprocess.run(
+            ["systemctl", "--user", "is-active", "--quiet", UNIT], check=False
+        ).returncode
+        == 0
     )
-    if all(have.get(k) == v for k, v in wanted.items()):
+    if not stale and not running:
+        changes.append(f"console service: {UNIT} is not running, start it")
+    if check or (not stale and running):
         return
-    changes.append(
-        f"console environment: {', '.join(k for k, v in wanted.items() if have.get(k) != v)}"
+    if stale:
+        lines = path.read_text().splitlines() if path.exists() else []
+        kept = [line for line in lines if line.split("=", 1)[0].strip() not in wanted]
+        path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        path.write_text(
+            "\n".join(kept + [f"{k}={v}" for k, v in wanted.items()]) + "\n"
+        )
+        path.chmod(0o600)
+    done = subprocess.run(
+        ["systemctl", "--user", "restart", UNIT],
+        check=False,
+        capture_output=True,
+        text=True,
     )
-    if check:
-        return
-    kept = [line for line in lines if line.split("=", 1)[0] not in wanted]
-    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    path.write_text("\n".join(kept + [f"{k}={v}" for k, v in wanted.items()]) + "\n")
-    path.chmod(0o600)
-    subprocess.run(
-        ["systemctl", "--user", "restart", "pm-console.service"], check=False
-    )
+    if done.returncode != 0:
+        raise SystemExit(
+            f"{UNIT} did not restart ({(done.stderr or '').strip()[:200]}); the hostname is not routed"
+        )
+    if not console_up(origin):
+        raise SystemExit(
+            f"{UNIT} restarted but does not answer at {origin}/console/health; the hostname is not routed"
+        )
 
 
 def main() -> int:
@@ -319,6 +406,8 @@ def main() -> int:
     # somewhere else stops the run with nothing written.
     tunnel, tunnel_config = find_tunnel(cf, account)
     zone, dns_needed = dns_plan(cf, args.host, tunnel)
+    env = pathlib.Path.home() / ".local/state/pm-console/.env"
+    console = console_origin(env)
 
     # Order matters. The sign-in gate is put in place first and the route
     # last, so the origin is never reachable without the gate in front.
@@ -346,19 +435,19 @@ def main() -> int:
         idps,
     )
     if aud:
-        env = pathlib.Path.home() / ".local/state/pm-console/.env"
-        ensure_env(
+        ensure_console(
             env,
             {
                 "PM_CONSOLE_ACCESS_TEAM_DOMAIN": team,
                 "PM_CONSOLE_ACCESS_AUD": aud,
                 "PM_CONSOLE_OWNER_EMAILS": args.owner,
             },
+            console,
             args.check,
             cf.changes,
         )
     if aud or args.check:
-        ensure_routes(cf, account, args.host, tunnel, tunnel_config)
+        ensure_routes(cf, account, args.host, tunnel, tunnel_config, console)
         ensure_dns(cf, args.host, tunnel, zone, dns_needed)
     else:
         raise SystemExit(

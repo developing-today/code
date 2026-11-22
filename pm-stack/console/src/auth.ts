@@ -34,26 +34,49 @@ export class AuthError extends Error {
 }
 
 type Jwk = JsonWebKey & { kid?: string };
-type FetchLike = (url: string) => Promise<{ ok: boolean; status: number; json(): Promise<unknown> }>;
+type FetchLike = (
+  url: string,
+  init?: { signal?: AbortSignal },
+) => Promise<{ ok: boolean; status: number; json(): Promise<unknown> }>;
 
 const JWKS_TTL_MS = 10 * 60_000;
+const JWKS_REFRESH_COOLDOWN_MS = 30_000;
+const JWKS_FETCH_TIMEOUT_MS = 5_000;
 const SKEW_MS = 60_000;
 const jwksCache = new Map<string, { at: number; keys: Jwk[] }>();
+const jwksInFlight = new Map<string, Promise<Jwk[]>>();
 
 export function clearJwksCache(): void {
   jwksCache.clear();
+  jwksInFlight.clear();
 }
 
+/**
+ * The issuer's keys. `force` asks for a fresh copy because a token named
+ * a key the cache does not hold. Anyone can send such a token, so a
+ * forced refresh happens at most once per cooldown, concurrent callers
+ * share one request, and the request has a deadline.
+ */
 async function jwks(uri: string, fetchImpl: FetchLike, now: number, force = false): Promise<Jwk[]> {
   const hit = jwksCache.get(uri);
-  if (!force && hit && now - hit.at < JWKS_TTL_MS) return hit.keys;
-  const res = await fetchImpl(uri);
-  if (!res.ok) throw new Error(`key set fetch failed: http ${res.status}`);
-  const body = (await res.json()) as { keys?: unknown };
-  if (!Array.isArray(body.keys)) throw new Error("key set has no keys");
-  const keys = body.keys as Jwk[];
-  jwksCache.set(uri, { at: now, keys });
-  return keys;
+  if (hit && now - hit.at < (force ? JWKS_REFRESH_COOLDOWN_MS : JWKS_TTL_MS)) return hit.keys;
+  const pending = jwksInFlight.get(uri);
+  if (pending) return pending;
+  const request = (async () => {
+    const res = await fetchImpl(uri, { signal: AbortSignal.timeout(JWKS_FETCH_TIMEOUT_MS) });
+    if (!res.ok) throw new Error(`key set fetch failed: http ${res.status}`);
+    const body = (await res.json()) as { keys?: unknown };
+    if (!Array.isArray(body.keys)) throw new Error("key set has no keys");
+    const keys = body.keys as Jwk[];
+    jwksCache.set(uri, { at: now, keys });
+    return keys;
+  })();
+  jwksInFlight.set(uri, request);
+  try {
+    return await request;
+  } finally {
+    jwksInFlight.delete(uri);
+  }
 }
 
 function b64url(text: string): Uint8Array {
@@ -178,13 +201,28 @@ export function authorize(
   throw new AuthError(403, "this identity is not the owner");
 }
 
+/** True for an address on this machine's loopback interface. */
+export function isLoopbackAddress(address: string | null | undefined): boolean {
+  if (!address) return false;
+  const a = address.toLowerCase().replace(/^::ffff:/, "");
+  return a === "::1" || /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(a);
+}
+
+export interface IdentifyOptions {
+  /** The connection's remote address, from the server, never from a header. */
+  peer?: string | null;
+  fetchImpl?: FetchLike;
+  now?: number;
+}
+
 /** Identify the caller of a request, or throw AuthError. */
 export async function identify(
   req: Request,
   cfg: Pick<Config, "owners" | "certNames" | "issuers">,
-  fetchImpl: FetchLike = fetch as unknown as FetchLike,
-  now: number = Date.now(),
+  opts: IdentifyOptions = {},
 ): Promise<Identity> {
+  const fetchImpl = opts.fetchImpl ?? (fetch as unknown as FetchLike);
+  const now = opts.now ?? Date.now();
   let sawToken = false;
   for (const issuer of cfg.issuers) {
     const token = presented(req, issuer.source);
@@ -199,6 +237,9 @@ export async function identify(
     return authorize(claims, issuer.name, cfg);
   }
   if (sawToken) throw new AuthError(401, "the presented token was not accepted");
-  if (cameThroughEdge(req)) throw new AuthError(401, "sign-in required");
+  // Local means the connection itself came from this machine. The Host
+  // and forwarding headers are the caller's to write, so they can only
+  // take the local identity away, never grant it.
+  if (!isLoopbackAddress(opts.peer) || cameThroughEdge(req)) throw new AuthError(401, "sign-in required");
   return { via: "loopback", email: "local" };
 }

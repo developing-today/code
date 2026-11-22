@@ -4,25 +4,30 @@
 // Everything lives under /console so one public hostname can carry both:
 // the tunnel sends /console and the Android asset-links file here and
 // every other path to the dashboard.
-import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
+import { mkdirSync, readFileSync } from "node:fs";
+import { appendFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { AuthError, identify, type Identity } from "./auth.ts";
+import { AuthError, type Identity, identify } from "./auth.ts";
 import { type Config, readConfig } from "./config.ts";
 import { OpError, Ops } from "./ops.ts";
 
 const BASE = "/console";
 const PUBLIC_DIR = join(import.meta.dir, "..", "public");
-const STATIC: Record<string, string> = {
-  "app.js": "text/javascript; charset=utf-8",
-  "app.css": "text/css; charset=utf-8",
-  "icon.svg": "image/svg+xml",
-};
+const STATIC = new Map([
+  ["app.js", "text/javascript; charset=utf-8"],
+  ["app.css", "text/css; charset=utf-8"],
+  ["icon.svg", "image/svg+xml"],
+]);
 const SECURITY = {
   "Content-Security-Policy":
     "default-src 'self'; img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
   "X-Content-Type-Options": "nosniff",
   "Referrer-Policy": "same-origin",
 };
+/** Longest a request may run with nothing written: above the longest
+ * operation (a 60 second systemctl call), or the connection would drop
+ * while the action carried on. Bun's limit is 255. */
+const IDLE_TIMEOUT_SECONDS = 120;
 
 function json(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -31,10 +36,16 @@ function json(body: unknown, status = 200): Response {
   });
 }
 
+// The page's four files, read once: nothing on the request path touches
+// the disk synchronously after the first hit.
+const fileCache = new Map<string, Uint8Array>();
 function file(name: string, type: string): Response {
-  return new Response(readFileSync(join(PUBLIC_DIR, name)), {
-    headers: { "Content-Type": type, "Cache-Control": "no-cache", ...SECURITY },
-  });
+  let bytes = fileCache.get(name);
+  if (!bytes) {
+    bytes = readFileSync(join(PUBLIC_DIR, name));
+    fileCache.set(name, bytes);
+  }
+  return new Response(bytes, { headers: { "Content-Type": type, "Cache-Control": "no-cache", ...SECURITY } });
 }
 
 /** The Digital Asset Links statement that lets the Android app open
@@ -56,8 +67,9 @@ export function assetLinks(cfg: Pick<Config, "androidPackage" | "androidFingerpr
 export interface Deps {
   cfg: Config;
   ops: Ops;
-  identify: (req: Request) => Promise<Identity>;
-  audit: (entry: Record<string, unknown>) => void;
+  /** `peer` is the connection's remote address as the server saw it. */
+  identify: (req: Request, peer: string | null) => Promise<Identity>;
+  audit: (entry: Record<string, unknown>) => Promise<void>;
 }
 
 /** A state-changing request must be one this page made: a custom header
@@ -73,7 +85,7 @@ function sameSiteWrite(req: Request): boolean {
   }
 }
 
-export async function handle(req: Request, deps: Deps): Promise<Response> {
+export async function handle(req: Request, deps: Deps, peer: string | null = null): Promise<Response> {
   const url = new URL(req.url);
   const path = url.pathname;
   const method = req.method;
@@ -85,7 +97,7 @@ export async function handle(req: Request, deps: Deps): Promise<Response> {
 
   let who: Identity;
   try {
-    who = await deps.identify(req);
+    who = await deps.identify(req, peer);
   } catch (error) {
     if (error instanceof AuthError) return json({ error: error.message }, error.status);
     throw error;
@@ -96,10 +108,16 @@ export async function handle(req: Request, deps: Deps): Promise<Response> {
     if (path === BASE) return Response.redirect(`${BASE}/`, 308);
     return file("index.html", "text/html; charset=utf-8");
   }
-  if (method === "GET" && STATIC[rest]) return file(rest, STATIC[rest]);
+  const type = method === "GET" ? STATIC.get(rest) : undefined;
+  if (type !== undefined) return file(rest, type);
   if (!rest.startsWith("api/")) return json({ error: "not found" }, 404);
 
-  const seg = rest.slice(4).split("/").map(decodeURIComponent);
+  let seg: string[];
+  try {
+    seg = rest.slice(4).split("/").map(decodeURIComponent);
+  } catch {
+    return json({ error: "bad path" }, 400);
+  }
   const ops = deps.ops;
   const query = url.searchParams;
   try {
@@ -128,8 +146,9 @@ export async function handle(req: Request, deps: Deps): Promise<Response> {
         }
       }
       if (seg.length === 2 && seg[0] === "prs") return json(await ops.pr(seg[1]));
-      if (seg.length === 3 && seg[0] === "services" && seg[2] === "logs")
+      if (seg.length === 3 && seg[0] === "services" && seg[2] === "logs") {
         return json(await ops.serviceLogs(seg[1], query.get("lines")));
+      }
       return json({ error: "not found" }, 404);
     }
 
@@ -144,6 +163,12 @@ export async function handle(req: Request, deps: Deps): Promise<Response> {
       return json({ error: "body: expected a JSON object" }, 400);
     }
 
+    // Two audit records per action. The first is written before anything
+    // runs and must succeed: an action that cannot be recorded is not
+    // taken, and one that kills this process (restarting the console) is
+    // still on record. The second records the outcome; if it cannot be
+    // written the action's own result still goes back to the caller, so a
+    // finished merge is never reported as failed and tried again.
     const act = async (
       name: string,
       args: Record<string, unknown>,
@@ -157,35 +182,52 @@ export async function handle(req: Request, deps: Deps): Promise<Response> {
         args,
       };
       try {
+        await deps.audit({ ...base, phase: "start" });
+      } catch (error) {
+        console.error(`pm-console: audit: ${(error as Error).message}`);
+        return json({ error: "the action could not be recorded, so it was not taken" }, 502);
+      }
+      const done = (entry: Record<string, unknown>) =>
+        deps
+          .audit({ ...base, phase: "done", ...entry })
+          .catch((error) => console.error(`pm-console: audit: ${(error as Error).message}`));
+      try {
         const result = await work();
-        deps.audit({ ...base, ok: true });
+        await done({ ok: true });
         return json({ ok: true, result });
       } catch (error) {
-        deps.audit({ ...base, ok: false, error: (error as Error).message });
+        await done({ ok: false, error: (error as Error).message });
         throw error;
       }
     };
 
-    if (seg.length === 3 && seg[0] === "queue")
+    if (seg.length === 3 && seg[0] === "queue") {
       return await act(`queue.${seg[2]}`, { task: seg[1], reason: body.reason }, () =>
         ops.queueAct(seg[2], seg[1], body.reason),
       );
-    if (seg.length === 3 && seg[0] === "priorities" && seg[2] === "rank")
+    }
+    if (seg.length === 3 && seg[0] === "priorities" && seg[2] === "rank") {
       return await act("priority.rank", { issue: seg[1], rank: body.rank }, () => ops.setRank(seg[1], body.rank));
-    if (seg.length === 3 && seg[0] === "issues" && seg[2] === "comment")
+    }
+    if (seg.length === 3 && seg[0] === "issues" && seg[2] === "comment") {
       return await act("issue.comment", { issue: seg[1] }, () => ops.comment(seg[1], body.body));
-    if (seg.length === 1 && seg[0] === "ideas")
+    }
+    if (seg.length === 1 && seg[0] === "ideas") {
       return await act("idea.file", { title: body.title, rank: body.rank }, () =>
         ops.fileIdea(body.title, body.body, body.rank ?? "none"),
       );
-    if (seg.length === 1 && seg[0] === "messages")
+    }
+    if (seg.length === 1 && seg[0] === "messages") {
       return await act("message.send", { to: body.to, command: body.command === true }, () =>
         ops.send(body.to, body.text, body.command),
       );
-    if (seg.length === 3 && seg[0] === "services")
+    }
+    if (seg.length === 3 && seg[0] === "services") {
       return await act(`service.${seg[2]}`, { unit: seg[1] }, () => ops.serviceAct(seg[1], seg[2]));
-    if (seg.length === 3 && seg[0] === "prs" && seg[2] === "merge")
+    }
+    if (seg.length === 3 && seg[0] === "prs" && seg[2] === "merge") {
       return await act("pr.merge", { pr: seg[1] }, () => ops.mergePr(seg[1]));
+    }
     return json({ error: "not found" }, 404);
   } catch (error) {
     if (error instanceof OpError) return json({ error: error.message }, error.status);
@@ -201,10 +243,15 @@ if (import.meta.main) {
   const deps: Deps = {
     cfg,
     ops,
-    identify: (req) => identify(req, cfg),
-    audit: (entry) => appendFileSync(cfg.auditFile, JSON.stringify(entry) + "\n", { mode: 0o600 }),
+    identify: (req, peer) => identify(req, cfg, { peer }),
+    audit: (entry) => appendFile(cfg.auditFile, `${JSON.stringify(entry)}\n`, { mode: 0o600 }),
   };
-  const server = Bun.serve({ hostname: cfg.bind, port: cfg.port, fetch: (req) => handle(req, deps) });
+  const server = Bun.serve({
+    hostname: cfg.bind,
+    port: cfg.port,
+    idleTimeout: IDLE_TIMEOUT_SECONDS,
+    fetch: (req, srv) => handle(req, deps, srv.requestIP(req)?.address ?? null),
+  });
   console.log(
     `pm-console listening on http://${server.hostname}:${server.port}${BASE}/ — owners: ${cfg.owners.length}, issuers: ${cfg.issuers.map((i) => i.name).join(", ") || "none (edge requests are refused)"}`,
   );

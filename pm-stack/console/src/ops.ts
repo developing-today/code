@@ -4,6 +4,9 @@
 // services through `systemctl --user`. Nothing here builds a shell
 // command line: each call is an argument vector, and text a person
 // typed travels on stdin or as a single argument.
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { Config } from "./config.ts";
 
 export interface RunResult {
@@ -48,6 +51,8 @@ export const realRun: Run = async (argv, opts = {}) => {
 /** Rank labels, most urgent first: the order the intake ladder reads. */
 export const RANKS = ["expedite", "priority/critical", "now", "priority/high", "next"] as const;
 export type Rank = (typeof RANKS)[number] | "none";
+/** Pages of ranked issues read before giving up (100 issues a page). */
+const PRIORITY_PAGES = 10;
 export const QUEUE_STATUSES = ["queued", "claimed", "blocked", "parked"] as const;
 const UNIT_NAME = /^[A-Za-z0-9@._-]+\.(service|timer)$/;
 const UNIT_ACTIONS = ["start", "stop", "restart"] as const;
@@ -79,6 +84,73 @@ export function parseUnits(text: string): Unit[] {
     units.push({ unit: m[1], load: m[2], active: m[3], sub: m[4], description: m[5].trim() });
   }
   return units;
+}
+
+/** Queue priority for owner-filed work, on the queue's design scale
+ * (10, 20, 30, ...): lower is sooner and 30 is the bulk band. */
+const RANK_PRIORITY: Record<Rank, number> = {
+  expedite: 10,
+  "priority/critical": 10,
+  now: 20,
+  "priority/high": 20,
+  next: 30,
+  none: 30,
+};
+
+/** The triage task for an issue the owner filed from the console. Same
+ * shape as the coverage reconciliation's, so the two never disagree. */
+export function triagePacket(
+  repo: string,
+  queue: string,
+  number: number,
+  title: string,
+  rank: Rank,
+  checkedAt: string,
+) {
+  const url = `https://github.com/${repo}/issues/${number}`;
+  return {
+    title: `Triage ${repo}#${number}: ${title}`.slice(0, 180),
+    body: `Filed by the owner from the PM console: ${url}`,
+    priority: RANK_PRIORITY[rank],
+    dedupe_key: `repo-health:v1:triage:${repo}:issue:${number}`,
+    payload: {
+      schema: "repo-task/v1",
+      kind: "triage",
+      repo,
+      queue,
+      issue: { number, url, title, state_checked_at: checkedAt },
+      problem:
+        "The owner filed this from the PM console. It is new work with no task yet: triage it and either do it or return it to the queue sized for real work.",
+      evidence: [`Filed from the PM console at ${checkedAt}, rank ${rank}`, url],
+      acceptance: [
+        "Issue triaged per the standing triage doctrine: annotate, validate, and either fix it in a small edit (merge with a closing keyword) or return it to the queue for real work",
+      ],
+      tests: ["Triage verdict recorded on the issue; if a small fix, the merged PR carries a closing keyword"],
+      scope: { include: [`Triage of ${repo}#${number}`], exclude: ["Secrets, credentials or purchases"] },
+      risk: { level: "low", flags: ["owner-filed"] },
+      priority_reason: `Owner-filed from the console with rank ${rank}: priority ${RANK_PRIORITY[rank]}.`,
+      timebox_minutes: 45,
+      max_attempts: 1000,
+      context_refs: [url],
+      dedupe: {
+        checked_at: checkedAt,
+        basis: "The issue was created in the same pass as this task, so no other task can hold it.",
+      },
+    },
+  };
+}
+
+/** Parse `systemctl list-unit-files --plain --no-legend` output:
+ * unit, state, and sometimes a preset. Templates (name@.service) are
+ * skipped: they cannot be started without an instance name. */
+export function parseUnitFiles(text: string): { unit: string; state: string }[] {
+  const files: { unit: string; state: string }[] = [];
+  for (const line of text.split("\n")) {
+    const m = /^\s*(\S+)\s+(\S+)/.exec(line);
+    if (!m || !UNIT_NAME.test(m[1]) || m[1].includes("@.")) continue;
+    files.push({ unit: m[1], state: m[2] });
+  }
+  return files;
 }
 
 function text(value: unknown, name: string, max: number, min = 1): string {
@@ -126,9 +198,6 @@ export class Ops {
 
   private async sql(statement: string, args: (string | number)[]): Promise<Record<string, string | number | null>[]> {
     if (!/^\s*select\b/i.test(statement)) throw new Error("the console only reads the queue store");
-    if (this.queueToken === null) {
-      this.queueToken = (await this.must([this.cfg.fleetBin, "secrets", "get", this.cfg.queueTokenName])).trim();
-    }
     const body = {
       requests: [
         {
@@ -143,11 +212,22 @@ export class Ops {
         { type: "close" },
       ],
     };
-    const res = await this.fetchImpl(`${this.cfg.queueDbUrl}/v2/pipeline`, {
-      method: "POST",
-      headers: { Authorization: `Bearer ${this.queueToken}`, "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    });
+    const ask = async () => {
+      if (this.queueToken === null) {
+        this.queueToken = (await this.must([this.cfg.fleetBin, "secrets", "get", this.cfg.queueTokenName])).trim();
+      }
+      return this.fetchImpl(`${this.cfg.queueDbUrl}/v2/pipeline`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${this.queueToken}`, "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+    };
+    let res = await ask();
+    if (res.status === 401 || res.status === 403) {
+      // The token was rotated: fetch it again, once.
+      this.queueToken = null;
+      res = await ask();
+    }
     if (!res.ok) throw new OpError(502, `queue store answered http ${res.status}`);
     const first = (
       (await res.json()) as {
@@ -194,17 +274,37 @@ export class Ops {
 
   async priorities() {
     const q = `repo:${this.cfg.repo} is:issue is:open label:${RANKS.map((r) => `"${r}"`).join(",")}`;
-    const found = (await this.gh(["-X", "GET", "search/issues", "-f", `q=${q}`, "-f", "per_page=100"])) as {
-      items: {
-        number: number;
-        title: string;
-        html_url: string;
-        updated_at: string;
-        comments: number;
-        labels: { name: string }[];
-      }[];
+    type Item = {
+      number: number;
+      title: string;
+      html_url: string;
+      updated_at: string;
+      comments: number;
+      labels: { name: string }[];
     };
-    return found.items
+    const items: Item[] = [];
+    let truncated = false;
+    // Search order is not rank order, so every page is read before sorting.
+    for (let page = 1; ; page++) {
+      const found = (await this.gh([
+        "-X",
+        "GET",
+        "search/issues",
+        "-f",
+        `q=${q}`,
+        "-f",
+        "per_page=100",
+        "-f",
+        `page=${page}`,
+      ])) as { items: Item[] };
+      items.push(...found.items);
+      if (found.items.length < 100) break;
+      if (page === PRIORITY_PAGES) {
+        truncated = true;
+        break;
+      }
+    }
+    const issues = items
       .map((i) => {
         const labels = i.labels.map((l) => l.name);
         const rank = RANKS.findIndex((r) => labels.includes(r));
@@ -220,22 +320,26 @@ export class Ops {
         };
       })
       .sort((a, b) => a.order - b.order || a.number - b.number);
+    return { issues, truncated };
   }
 
   async setRank(issue: unknown, rank: unknown) {
     const n = id(issue, "issue");
-    if (rank !== "none" && !RANKS.includes(rank as (typeof RANKS)[number]))
+    if (rank !== "none" && !RANKS.includes(rank as (typeof RANKS)[number])) {
       throw new OpError(400, `rank: one of ${RANKS.join(", ")}, none`);
+    }
     const current = (
       (await this.gh([`repos/${this.cfg.repo}/issues/${n}`])) as { labels: { name: string }[] }
     ).labels.map((l) => l.name);
+    // Add first: if a later call fails the issue keeps a rank, and stays
+    // on the list it would otherwise vanish from.
+    if (rank !== "none" && !current.includes(rank as string)) {
+      await this.gh(["-X", "POST", `repos/${this.cfg.repo}/issues/${n}/labels`], { labels: [rank] });
+    }
     for (const label of RANKS) {
       if (label !== rank && current.includes(label)) {
         await this.gh(["-X", "DELETE", `repos/${this.cfg.repo}/issues/${n}/labels/${encodeURIComponent(label)}`]);
       }
-    }
-    if (rank !== "none" && !current.includes(rank as string)) {
-      await this.gh(["-X", "POST", `repos/${this.cfg.repo}/issues/${n}/labels`], { labels: [rank] });
     }
     return { issue: n, rank };
   }
@@ -248,16 +352,48 @@ export class Ops {
     return { issue: n, url: made.html_url };
   }
 
-  /** File an idea as an issue, ranked so the intake ladder reaches it. */
+  /**
+   * File an idea as an issue and enqueue its triage task in the same
+   * pass (doc/agents/one-queue-claiming-work.md): an issue with no queue
+   * task is invisible to every worker. If the enqueue fails the issue
+   * still exists, the result says it is not queued, and the coverage
+   * reconciliation picks it up.
+   */
   async fileIdea(title: unknown, body: unknown, rank: unknown) {
-    if (rank !== "none" && !RANKS.includes(rank as (typeof RANKS)[number]))
+    if (rank !== "none" && !RANKS.includes(rank as (typeof RANKS)[number])) {
       throw new OpError(400, `rank: one of ${RANKS.join(", ")}, none`);
+    }
     const made = (await this.gh(["-X", "POST", `repos/${this.cfg.repo}/issues`], {
       title: text(title, "title", 200),
       body: typeof body === "string" ? body.slice(0, 60_000) : "",
       labels: rank === "none" ? [] : [rank],
-    })) as { number: number; html_url: string };
-    return { issue: made.number, url: made.html_url };
+    })) as { number: number; html_url: string; title: string };
+    const packet = triagePacket(
+      this.cfg.repo,
+      this.cfg.queue,
+      made.number,
+      made.title,
+      rank as Rank,
+      new Date().toISOString(),
+    );
+    // `fleet queue enqueue` reads a packet file, not stdin.
+    const dir = mkdtempSync(join(tmpdir(), "pm-console-"));
+    const file = join(dir, "packet.json");
+    let queued: RunResult;
+    try {
+      writeFileSync(file, JSON.stringify(packet), { mode: 0o600 });
+      queued = await this.run([this.cfg.fleetBin, "queue", "enqueue", file, "--queue", this.cfg.queue]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+    return {
+      issue: made.number,
+      url: made.html_url,
+      queued: queued.code === 0,
+      ...(queued.code === 0
+        ? {}
+        : { note: `filed, not queued: ${(queued.stderr || queued.stdout).trim().split("\n").pop()?.slice(0, 200)}` }),
+    };
   }
 
   // ---- agents ------------------------------------------------------------
@@ -294,18 +430,26 @@ export class Ops {
   // ---- services ----------------------------------------------------------
 
   async services(): Promise<Unit[]> {
-    const out = await this.must([
-      "systemctl",
-      "--user",
-      "list-units",
-      "--all",
-      "--plain",
-      "--no-legend",
-      "--type=service",
-      "--type=timer",
-      ...this.cfg.unitPatterns,
+    const select = ["--plain", "--no-legend", "--type=service", "--type=timer", ...this.cfg.unitPatterns];
+    const [loaded, files] = await Promise.all([
+      this.must(["systemctl", "--user", "list-units", "--all", ...select]),
+      // A stopped unit nothing refers to leaves memory and drops off
+      // list-units; without this it could never be started from here.
+      this.run(["systemctl", "--user", "list-unit-files", ...select]),
     ]);
-    return parseUnits(out).filter((u) => manageable(u.unit, this.cfg.unitPatterns));
+    const units = parseUnits(loaded);
+    const seen = new Set(units.map((u) => u.unit));
+    for (const f of files.code === 0 ? parseUnitFiles(files.stdout) : []) {
+      if (!seen.has(f.unit))
+        units.push({
+          unit: f.unit,
+          load: "not-loaded",
+          active: "inactive",
+          sub: "dead",
+          description: `not loaded (${f.state})`,
+        });
+    }
+    return units.filter((u) => manageable(u.unit, this.cfg.unitPatterns)).sort((a, b) => a.unit.localeCompare(b.unit));
   }
 
   async serviceAct(unit: unknown, action: unknown) {

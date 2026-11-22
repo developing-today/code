@@ -6,6 +6,11 @@
 # Usage: bash install.sh
 set -euo pipefail
 
+if [ "$#" -ne 0 ]; then
+  echo "usage: bash install.sh   (it takes no arguments)" >&2
+  exit 2
+fi
+
 cd "$(dirname "$0")"
 SRC="$PWD"
 EXPECTED="$HOME/git/code/pm-stack/console"
@@ -30,8 +35,18 @@ systemctl --user daemon-reload
 systemctl --user enable pm-console.service >/dev/null
 systemctl --user restart pm-console.service
 
-PORT="$(sed -n 's/^PM_CONSOLE_PORT=//p' "$STATE/.env" | tail -1)"
+# systemd strips one pair of quotes from an EnvironmentFile value, so
+# PM_CONSOLE_PORT="4872" is a valid line: read it the same way.
+PORT="$(sed -n 's/^[[:space:]]*PM_CONSOLE_PORT=//p' "$STATE/.env" | tail -1 | tr -d '[:space:]')"
+PORT="${PORT#[\"\']}"
+PORT="${PORT%[\"\']}"
 PORT="${PORT:-4872}"
+case "$PORT" in
+  *[!0-9]*)
+    echo "install.sh: PM_CONSOLE_PORT in $STATE/.env is not a number: $PORT" >&2
+    exit 1
+    ;;
+esac
 for _ in 1 2 3 4 5 6 7 8 9 10; do
   if curl -fsS "http://127.0.0.1:$PORT/console/health" >/dev/null 2>&1; then
     echo "pm-console: running on http://127.0.0.1:$PORT/console/"

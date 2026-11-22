@@ -2,10 +2,14 @@
 """expose.py against a model of the Cloudflare account.
 
 The model holds what the real account holds (sign-in methods, Access
-applications and policies, tunnel routes, DNS records) and applies each
-change the script makes. Checked: the sign-in gate exists before the
-route does, a second run changes nothing, --check changes nothing, and
-records or policies the script did not write are left alone.
+applications and policies, tunnel routes, zones and DNS records) and
+applies each change the script makes; a second model stands in for the
+machine's console service. Checked: the sign-in gate exists before the
+route does, a second run changes nothing, --check changes nothing,
+records or policies the script did not write are left alone, a console
+that does not come up stops the run before the route, the host's rules
+sit ahead of any wildcard, and the DNS record goes in the zone that
+really holds the name.
 """
 
 import copy
@@ -32,10 +36,11 @@ class Account(expose.Cloudflare):
             {"service": "http_status:404"},
         ]
         self.dns = []
+        self.zones = {"security.cab": "zone"}
         self.order = []
 
     def call(self, method, path, body=None):
-        path = path.partition("?")[0]
+        path, _, query = path.partition("?")
         if method != "GET":
             self.order.append(f"{method} {path}")
         if path == "/accounts":
@@ -74,18 +79,44 @@ class Account(expose.Cloudflare):
                 }
             }
         elif path == "/zones":
-            result = [{"id": "zone"}]
+            name = query.partition("name=")[2]
+            result = [{"id": self.zones[name]}] if name in self.zones else []
         elif path.endswith("/dns_records"):
             if method == "POST":
-                self.dns.append(body)
-            result = [r for r in self.dns if r["name"] == HOST]
+                self.dns.append({**body, "zone": path.split("/")[2]})
+            name = query.partition("name=")[2]
+            result = [r for r in self.dns if r["name"] == name]
         else:
             raise AssertionError(f"unexpected call {method} {path}")
         return {"success": True, "result": result}
 
 
-def run(account, home, *args):
+class Machine:
+    """The console's user unit: systemctl and the health check."""
+
+    def __init__(self, running=True, restarts=True, comes_up=True):
+        self.running = running
+        self.restarts = restarts
+        self.comes_up = comes_up
+        self.commands = []
+
+    def systemctl(self, argv, **_):
+        self.commands.append(argv[2])
+        code = 0
+        if argv[2] == "is-active":
+            code = 0 if self.running else 3
+        elif argv[2] == "restart":
+            self.running = self.restarts and self.comes_up
+            code = 0 if self.restarts else 1
+        return mock.Mock(returncode=code, stdout="", stderr="unit failed")
+
+    def up(self, origin, seconds=20):
+        return self.running
+
+
+def run(account, home, *args, machine=None):
     argv = ["expose.py", *args]
+    machine = machine or Machine()
     with (
         mock.patch.object(expose, "Cloudflare", lambda token, check: account),
         mock.patch.object(
@@ -94,7 +125,8 @@ def run(account, home, *args):
             lambda name: "token" if name.startswith("cloudflare.") else "",
         ),
         mock.patch.object(expose.pathlib.Path, "home", lambda: pathlib.Path(home)),
-        mock.patch.object(expose.subprocess, "run"),
+        mock.patch.object(expose.subprocess, "run", machine.systemctl),
+        mock.patch.object(expose, "console_up", machine.up),
         mock.patch.object(sys, "argv", argv),
         mock.patch("builtins.print"),
     ):
@@ -133,13 +165,13 @@ class Expose(unittest.TestCase):
             self.assertEqual(
                 [p["decision"] for p in account.policies[app["id"]]], ["bypass"]
             )
-        # /console before the catch-all for the host; other hosts and the final rule kept.
+        # /console before the rest of the host; other hosts and the final rule kept.
         self.assertEqual(
             [(r.get("hostname"), r.get("path"), r["service"]) for r in account.ingress],
             [
-                ("kaneo.security.cab", None, "http://localhost:5173"),
                 (HOST, expose.CONSOLE_PATHS, expose.CONSOLE),
                 (HOST, None, expose.DASHBOARD),
+                ("kaneo.security.cab", None, "http://localhost:5173"),
                 (None, None, "http_status:404"),
             ],
         )
@@ -152,6 +184,7 @@ class Expose(unittest.TestCase):
                     "content": "tun.cfargotunnel.com",
                     "proxied": True,
                     "comment": f"pm stack via tunnel {expose.TUNNEL}",
+                    "zone": "zone",
                 }
             ],
         )
@@ -220,6 +253,110 @@ class Expose(unittest.TestCase):
         # Nothing was routed, and no policy added, while the gate was in doubt.
         self.assertNotIn(HOST, [r.get("hostname") for r in account.ingress])
         self.assertEqual(len(account.policies["app-x"]), 1)
+
+        # The owner's own rule with a condition added is not this script's rule.
+        owner = [{"email": {"email": "drewrypope@gmail.com"}}]
+        for extra in (
+            {"exclude": owner},
+            {"require": [{"geo": {"country_code": "XX"}}]},
+        ):
+            account = Account()
+            run(account, self.home)
+            main = next(a for a in account.apps if a["domain"] == HOST)
+            account.policies[main["id"]][0].update(extra)
+            with self.assertRaisesRegex(SystemExit, "did not write"):
+                run(account, self.home)
+        # Empty lists, as the API returns them, are still this script's rule.
+        account = Account()
+        run(account, self.home)
+        main = next(a for a in account.apps if a["domain"] == HOST)
+        account.policies[main["id"]][0].update({"exclude": [], "require": []})
+        self.assertEqual(run(account, self.home), 0)
+        self.assertEqual(account.changes, [])
+
+    def test_a_console_that_does_not_come_up_stops_the_run_before_the_route(self):
+        for machine, why in (
+            (Machine(restarts=False), "did not restart"),
+            (Machine(comes_up=False), "does not answer"),
+        ):
+            account = Account()
+            with self.assertRaisesRegex(SystemExit, why):
+                run(account, self.home, machine=machine)
+            self.assertNotIn(HOST, [r.get("hostname") for r in account.ingress])
+            self.assertEqual(account.dns, [])
+            pathlib.Path(self.home, ".local/state/pm-console/.env").unlink()
+
+        # Settings already right but the service down: it is started, and
+        # --check says so instead of calling the setup complete.
+        account = Account()
+        run(account, self.home)
+        down = Machine(running=False)
+        self.assertEqual(run(account, self.home, "--check", machine=down), 1)
+        self.assertEqual(down.commands, ["is-active"])
+        self.assertEqual(run(account, self.home, machine=down), 0)
+        self.assertEqual(down.commands, ["is-active", "is-active", "restart"])
+        self.assertTrue(down.running)
+        up = Machine()
+        self.assertEqual(run(account, self.home, machine=up), 0)
+        self.assertEqual(up.commands, ["is-active"])
+
+    def test_the_route_follows_the_console_port_and_sits_ahead_of_wildcards(self):
+        env = pathlib.Path(self.home, ".local/state/pm-console/.env")
+        env.parent.mkdir(parents=True)
+        env.write_text('# settings\nPM_CONSOLE_PORT="4999"\nOTHER=kept\n')
+        account = Account()
+        wildcard = {"hostname": "*.security.cab", "service": "http://localhost:1"}
+        account.ingress.insert(0, wildcard)
+        self.assertEqual(run(account, self.home), 0)
+        self.assertEqual(
+            [(r.get("hostname"), r["service"]) for r in account.ingress],
+            [
+                (HOST, "http://localhost:4999"),
+                (HOST, expose.DASHBOARD),
+                ("*.security.cab", "http://localhost:1"),
+                ("kaneo.security.cab", "http://localhost:5173"),
+                (None, "http_status:404"),
+            ],
+        )
+        self.assertIn("OTHER=kept", env.read_text())
+        self.assertIn('PM_CONSOLE_PORT="4999"', env.read_text())
+        # The host's rules behind a wildcard are moved ahead of it, once.
+        account.ingress = [wildcard] + [
+            r for r in account.ingress if r is not wildcard and r != wildcard
+        ]
+        self.assertEqual(run(account, self.home), 0)
+        self.assertEqual(account.ingress[0]["hostname"], HOST)
+        self.assertEqual(len(account.changes), 1)
+        self.assertEqual(run(account, self.home), 0)
+        self.assertEqual(account.changes, [])
+        # A tunnel whose last rule is not a catch-all gets one.
+        account.ingress = [{"hostname": "kaneo.security.cab", "service": "x"}]
+        run(account, self.home)
+        self.assertEqual(account.ingress[-1], {"service": "http_status:404"})
+
+        env.write_text("PM_CONSOLE_PORT=console\n")
+        account = Account()
+        with self.assertRaisesRegex(SystemExit, "PM_CONSOLE_PORT"):
+            run(account, self.home)
+        self.assertEqual(account.order, [])  # refused before anything was written
+
+    def test_the_record_goes_in_the_zone_that_holds_the_name(self):
+        host = "pm.dev.example.co.uk"
+        account = Account()
+        account.zones = {"example.co.uk": "outer", "dev.example.co.uk": "inner"}
+        self.assertEqual(run(account, self.home, "--host", host), 0)
+        self.assertEqual(
+            [(r["name"], r["zone"]) for r in account.dns], [(host, "inner")]
+        )
+        account = Account()
+        account.zones = {"example.co.uk": "outer"}
+        self.assertEqual(run(account, self.home, "--host", host), 0)
+        self.assertEqual([r["zone"] for r in account.dns], ["outer"])
+        account = Account()
+        account.zones = {"co.uk.example": "wrong"}
+        with self.assertRaisesRegex(SystemExit, "no zone"):
+            run(account, self.home, "--host", host)
+        self.assertEqual(account.order, [])
 
 
 if __name__ == "__main__":
