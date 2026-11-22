@@ -33,9 +33,16 @@
 //! `produce` or `receive` is persisted in that call; a version
 //! admitted during an exchange is persisted at the exchange's end,
 //! from the exchange's own outcomes; every new or changed report is
-//! persisted at the same points. A crash between an admission and
-//! its write loses that admission — and nothing else: anti-entropy
-//! is idempotent, so a peer re-sends what the restarted node lacks.
+//! persisted at the same points. Each write-through point publishes
+//! the version and the reports it changed in one index update, so a
+//! crash leaves the old index (the admission is lost, and
+//! anti-entropy re-sends it) or the new one — never a version
+//! without its reports. A crash between an admission and its write
+//! loses that admission — and nothing else: anti-entropy is
+//! idempotent, so a peer re-sends what the restarted node lacks. A
+//! persist failure inside a call rolls the admission back instead
+//! (see [`StoredReplica::produce`]), so a failed version is neither
+//! kept live nor left half-logged.
 //!
 //! # Opening is replay
 //!
@@ -45,11 +52,14 @@
 //! store exactly: versions, heads, held versions, reports and their
 //! statuses are all derived from the admissions, and a `Replica`'s
 //! reports change only through admissions. Persisted report records
-//! are then checked against the rebuilt reports (id, canonical
-//! bytes, status). A record missing because the process died
-//! between the version write and the report write is re-written;
-//! any other divergence is [`RecordStoreError::ReportDiverged`],
-//! never a silent heal.
+//! are then checked against the rebuilt reports. A report id is the
+//! hash of the report's canonical bytes, so a record under an id
+//! the replay rebuilt can only be stale in its status: it predates
+//! an admission the version log already holds, and is re-written
+//! from the replay. A record missing because the process died
+//! between the version write and the report write is re-written
+//! too. A persisted report id the replay never rebuilt is
+//! [`RecordStoreError::ReportDiverged`], never a silent heal.
 //!
 //! # Scope limits
 //!
@@ -535,7 +545,7 @@ fn decode_version_ref(cursor: &mut Cursor<'_>) -> Result<VersionRef, RecordStore
 }
 
 /// The index file's contents: which records the node holds.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 struct Index {
     /// Version records, in admission order.
     versions: Vec<ContentId>,
@@ -628,6 +638,10 @@ impl<B: BlobBackend + Sync> NodeStore<B> {
     }
 
     fn flush_index(&self) -> Result<(), RecordStoreError> {
+        // Commit the staged index entries: one write-then-rename
+        // publishes a write-through point's version and report
+        // records together, so the index on disk never names a
+        // version without the reports its admission changed.
         let tmp_path = self.index_path.with_extension("tmp");
         let mut file = fs::File::create(&tmp_path)?;
         use std::io::Write as _;
@@ -638,35 +652,47 @@ impl<B: BlobBackend + Sync> NodeStore<B> {
         Ok(())
     }
 
-    /// Ingest a version record and name it in the index, in
-    /// admission order.
+    /// Snapshot the staged index entries, so a failed write-through
+    /// point can roll the index back to what is on disk.
+    fn checkpoint(&self) -> Index {
+        self.index.clone()
+    }
+
+    /// Restore an index snapshot taken by [`NodeStore::checkpoint`].
+    fn restore(&mut self, checkpoint: Index) {
+        self.index = checkpoint;
+    }
+
+    /// Ingest a version record and stage its index entry, in
+    /// admission order. The entry reaches disk only when the caller
+    /// commits the write-through point with [`NodeStore::flush_index`];
+    /// staging without committing leaves the on-disk index unchanged.
     ///
     /// # Errors
     ///
-    /// On a content-store or index-write failure.
+    /// On a content-store failure.
     pub async fn append_version(
         &mut self,
         record: &VersionRecord,
     ) -> Result<ContentId, RecordStoreError> {
         let id = self.put(&record.encode()).await?;
         self.index.versions.push(id);
-        self.flush_index()?;
         Ok(id)
     }
 
-    /// Ingest a report record and name it in the index as the
-    /// latest record for its report.
+    /// Ingest a report record and stage it as the latest record for
+    /// its report. Like [`NodeStore::append_version`], the entry
+    /// reaches disk only at the caller's [`NodeStore::flush_index`].
     ///
     /// # Errors
     ///
-    /// On a content-store or index-write failure.
+    /// On a content-store failure.
     pub async fn put_report(
         &mut self,
         stored: &StoredReport,
     ) -> Result<ContentId, RecordStoreError> {
         let id = self.put(&encode_stored_report(stored)).await?;
         self.index.reports.insert(stored.report.report_id(), id);
-        self.flush_index()?;
         Ok(id)
     }
 
@@ -743,13 +769,14 @@ impl<B: BlobBackend + Sync> StoredReplica<B> {
     /// Open a node: replay the version records `node` names into
     /// `replica` (fresh, with the node's signer table and policy),
     /// then check the persisted report records against the reports
-    /// the replay rebuilt.
+    /// the replay rebuilt. A report record whose status predates
+    /// the version log is re-written from the replay, not refused.
     ///
     /// # Errors
     ///
     /// On a store failure, a version refused on replay
-    /// ([`RecordStoreError::ReplayRefused`]), or a report record
-    /// that does not match the rebuilt report
+    /// ([`RecordStoreError::ReplayRefused`]), or a persisted report
+    /// id the replay never rebuilt
     /// ([`RecordStoreError::ReportDiverged`]).
     pub async fn open(node: NodeStore<B>, mut replica: Replica) -> Result<Self, RecordStoreError> {
         let (versions, reports) = node.load().await?;
@@ -774,12 +801,23 @@ impl<B: BlobBackend + Sync> StoredReplica<B> {
             .map(|(id, report)| (*id, report.clone()))
             .collect();
         let mut recorded: BTreeSet<ReportId> = BTreeSet::new();
+        let mut healed = false;
         for report in &reports {
             let report_id = report.report.report_id();
             recorded.insert(report_id);
             match rebuilt.get(&report_id) {
                 Some(rebuilt_report) if rebuilt_report == report => {}
-                _ => return Err(RecordStoreError::ReportDiverged(report_id)),
+                Some(rebuilt_report) => {
+                    // The same id names the same canonical bytes, so
+                    // only the status can differ: this record predates
+                    // an admission the version log already holds (the
+                    // process died between the version write and the
+                    // report write). The log is authoritative; rewrite
+                    // the record from the replay.
+                    stored.node.put_report(rebuilt_report).await?;
+                    healed = true;
+                }
+                None => return Err(RecordStoreError::ReportDiverged(report_id)),
             }
         }
         // A report the replay rebuilt but no record names: the
@@ -788,7 +826,11 @@ impl<B: BlobBackend + Sync> StoredReplica<B> {
         for (report_id, report) in &rebuilt {
             if !recorded.contains(report_id) {
                 stored.node.put_report(report).await?;
+                healed = true;
             }
+        }
+        if healed {
+            stored.node.flush_index()?;
         }
         Ok(stored)
     }
@@ -809,6 +851,14 @@ impl<B: BlobBackend + Sync> StoredReplica<B> {
     }
 
     /// Admit a version a local producer signed, and persist it.
+    /// When persisting fails, the admission is rolled back — the
+    /// version leaves the replica and the index — so the envelope
+    /// can be retried instead of being rejected as a replay, no
+    /// child can be admitted on a version that was never logged,
+    /// and peers never see an unpersisted version in the inventory.
+    /// Rolling back clones the replica, so each admission costs a
+    /// copy of the store; that is the price of the rollback, chosen
+    /// over leaving the node unusable until it is reopened.
     ///
     /// # Errors
     ///
@@ -821,17 +871,27 @@ impl<B: BlobBackend + Sync> StoredReplica<B> {
         now: LogicalTime,
     ) -> Result<IngestOutcome, StoredError> {
         let before = self.report_snapshot();
+        let replica = self.replica.clone();
+        let index = self.node.checkpoint();
         let source = self.replica.name().to_owned();
         let outcome = self
             .replica
             .produce(envelope, now)
             .map_err(StoredError::Ingest)?;
-        self.persist_admission(envelope, IngressPath::Local, &source, now, &before)
-            .await?;
+        if let Err(error) = self
+            .persist_admission(envelope, IngressPath::Local, &source, now, &before)
+            .await
+        {
+            self.replica = replica;
+            self.node.restore(index);
+            return Err(error);
+        }
         Ok(outcome)
     }
 
-    /// Admit one envelope from a peer, and persist it.
+    /// Admit one envelope from a peer, and persist it. As
+    /// [`StoredReplica::produce`], a persist failure rolls the
+    /// admission back.
     ///
     /// # Errors
     ///
@@ -844,18 +904,30 @@ impl<B: BlobBackend + Sync> StoredReplica<B> {
         now: LogicalTime,
     ) -> Result<IngestOutcome, StoredError> {
         let before = self.report_snapshot();
+        let replica = self.replica.clone();
+        let index = self.node.checkpoint();
         let outcome = self
             .replica
             .receive(path, envelope, source, now)
             .map_err(StoredError::Ingest)?;
-        self.persist_admission(envelope, path, source, now, &before)
-            .await?;
+        if let Err(error) = self
+            .persist_admission(envelope, path, source, now, &before)
+            .await
+        {
+            self.replica = replica;
+            self.node.restore(index);
+            return Err(error);
+        }
         Ok(outcome)
     }
 
     /// Reconcile with another stored replica over one link, then
     /// persist what each side admitted during the exchange (from
     /// the exchange's own outcomes) and every report that changed.
+    /// When persisting fails, the exchange is rolled back on both
+    /// sides — replicas and indexes return to what they had, and
+    /// the exchange can run again — so a half-persisted exchange
+    /// never leaves one side holding a version the other lost.
     ///
     /// # Errors
     ///
@@ -868,24 +940,41 @@ impl<B: BlobBackend + Sync> StoredReplica<B> {
     ) -> Result<Exchange, RecordStoreError> {
         let self_before = self.report_snapshot();
         let other_before = other.report_snapshot();
+        let self_replica = self.replica.clone();
+        let other_replica = other.replica.clone();
+        let self_index = self.node.checkpoint();
+        let other_index = other.node.checkpoint();
         let self_name = self.replica.name().to_owned();
         let other_name = other.replica.name().to_owned();
         let exchange = reconcile(&mut self.replica, &mut other.replica, config, now);
-        for (event_id, outcome) in &exchange.forward.outcomes {
-            if outcome.is_ok() {
-                other
-                    .persist_exchange_admission(event_id, &self_name, now)
-                    .await?;
+        let persisted = async {
+            for (event_id, outcome) in &exchange.forward.outcomes {
+                if outcome.is_ok() {
+                    other
+                        .persist_exchange_admission(event_id, &self_name, now)
+                        .await?;
+                }
             }
-        }
-        for (event_id, outcome) in &exchange.backward.outcomes {
-            if outcome.is_ok() {
-                self.persist_exchange_admission(event_id, &other_name, now)
-                    .await?;
+            for (event_id, outcome) in &exchange.backward.outcomes {
+                if outcome.is_ok() {
+                    self.persist_exchange_admission(event_id, &other_name, now)
+                        .await?;
+                }
             }
+            self.persist_reports_since(&self_before).await?;
+            other.persist_reports_since(&other_before).await?;
+            self.node.flush_index()?;
+            other.node.flush_index()?;
+            Ok::<(), RecordStoreError>(())
         }
-        self.persist_reports_since(&self_before).await?;
-        other.persist_reports_since(&other_before).await?;
+        .await;
+        if let Err(error) = persisted {
+            self.replica = self_replica;
+            other.replica = other_replica;
+            self.node.restore(self_index);
+            other.node.restore(other_index);
+            return Err(error);
+        }
         Ok(exchange)
     }
 
@@ -929,6 +1018,11 @@ impl<B: BlobBackend + Sync> StoredReplica<B> {
         self.persist_reports_since(reports_before)
             .await
             .map_err(StoredError::Store)?;
+        // One index update publishes the version and the reports it
+        // changed together: a crash leaves the old index (the
+        // admission is lost and re-sent) or the new one, never a
+        // version without its reports.
+        self.node.flush_index().map_err(StoredError::Store)?;
         Ok(())
     }
 
@@ -980,9 +1074,26 @@ impl DiskReplica {
             blobs: api.blobs().clone(),
             api,
         };
-        let content = ContentStore::new(backend, ContentStoreConfig::default());
-        let node = NodeStore::new(content, dir.join(INDEX_FILE))?;
-        Self::open(node, replica).await
+        // Keep a handle to the backend: the node below owns a clone
+        // of it, and on an init failure that clone is dropped with
+        // the node — dropping without shutting down leaves the
+        // database locked, so the retained handle shuts it down
+        // before the error returns and the directory can be retried.
+        let content = ContentStore::new(backend.clone(), ContentStoreConfig::default());
+        let node = match NodeStore::new(content, dir.join(INDEX_FILE)) {
+            Ok(node) => node,
+            Err(error) => {
+                let _ = backend.shutdown().await;
+                return Err(error);
+            }
+        };
+        match Self::open(node, replica).await {
+            Ok(stored) => Ok(stored),
+            Err(error) => {
+                let _ = backend.shutdown().await;
+                Err(error)
+            }
+        }
     }
 
     /// Shut the node's blob store down, releasing its database so
