@@ -461,21 +461,30 @@ fn test_first_app_poc_two_identities_exchange_and_a_third_partys_claims_are_excl
     assert_eq!(uncounted[0].author, c.author());
     assert_eq!(uncounted[0].record.id, c_record.id);
 
-    // The counted view's verdict: two of the three daily walks count, so
-    // the expectation is still due — C's walk did not satisfy it.
+    // The counted view's verdict for the window containing `now`: two of
+    // the three daily walks count, so the expectation is still due —
+    // C's walk did not satisfy it. (The evaluator also reports completed
+    // windows; the oracle is the live one.)
     let now = chicago(2026, 11, 22, 12, 0);
     let expectation_back = expectation_from(&store_a);
     let verdicts = evaluate(&[expectation_back.clone()], &counted_records, now).unwrap();
-    assert_eq!(verdicts.len(), 1);
-    assert_eq!(verdicts[0].count, 2);
-    assert_eq!(verdicts[0].state, VerdictState::Due);
+    let verdict = verdicts
+        .iter()
+        .find(|v| v.window_start <= now && now < v.window_end)
+        .expect("a verdict covers now");
+    assert_eq!(verdict.count, 2);
+    assert_eq!(verdict.state, VerdictState::Due);
 
     // Control: had C's record been counted, the same expectation would be
     // satisfied. The exclusion above is what kept the view at two.
     let all_records: Vec<Record> = rows.iter().map(|r| r.record.clone()).collect();
     let control = evaluate(&[expectation_back], &all_records, now).unwrap();
-    assert_eq!(control[0].count, 3);
-    assert_eq!(control[0].state, VerdictState::Satisfied);
+    let control = control
+        .iter()
+        .find(|v| v.window_start <= now && now < v.window_end)
+        .expect("a verdict covers now");
+    assert_eq!(control.count, 3);
+    assert_eq!(control.state, VerdictState::Satisfied);
 
     // Retrievable on demand, durably: after a restart of A's store, C's
     // record body is still there, byte-exact, decoding to C's claim.
