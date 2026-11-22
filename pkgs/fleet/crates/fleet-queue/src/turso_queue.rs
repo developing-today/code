@@ -2331,6 +2331,20 @@ mod tests {
     }
 
     #[test]
+    fn health_entry_defaults_failed_events_to_zero() {
+        // #1233 criterion 1 ("zero dead-in-queue over a rolling 7
+        // days") is unmeasured today: health lumps failed terminal
+        // events into terminal_events_24h/7d together with completed
+        // ones, so a queue can show 2846 terminal events in 7d with
+        // no way to tell whether any were failures. The failed-only
+        // counters default to zero here and are filled by the
+        // terminal-events fold.
+        let e = health_entry("repo-health-code-pilot");
+        assert_eq!(e.get("failed_events_24h"), Some(&json!(0)));
+        assert_eq!(e.get("failed_events_7d"), Some(&json!(0)));
+    }
+
+    #[test]
     fn at_cap_fold_covers_zero_claimable_and_partial_queues() {
         // Fixture for #6528 criterion 3: queue-dead has queued > 0
         // with EVERY queued task at cap (zero claimable); queue-live
