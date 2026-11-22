@@ -1275,8 +1275,7 @@ fn run_with_provider<P: TokenProvider>(
                     match class {
                         FailureClass::RateLimit => "rate limit",
                         FailureClass::Permission => "permission/scope refusal",
-                        FailureClass::NodeResolution =>
-                            "node-resolution error on a read-only call",
+                        FailureClass::NodeResolution => "node-resolution error on a read-only call",
                         FailureClass::Other => "error on a read-only call",
                     }
                 );
