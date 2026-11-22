@@ -239,6 +239,8 @@ import { ItemHistoryStore } from "./item-history.ts";
 import { SloJournal, groupSamplesByFacet } from "./slo-journal.ts";
 import { sampleSloFacets } from "./slo-sampler.ts";
 import { SLO_DEFINITIONS, summarizeSloFacet, type SloFacetSummary } from "./slo.ts";
+import { watchdogHeartbeatLine } from "./watchdog-heartbeat.ts";
+import { createWatchdogHeartbeatRecorder, finishWatchdogGapSync } from "./watchdog-runner.ts";
 import { computeFlowAnalytics } from "./flow-analytics.ts";
 import { fireOpenCodeWorkingHook } from "./health-hook-fire.ts";
 import {
@@ -1644,17 +1646,34 @@ async function searchContext(query: string) {
 // createWatchdogGapSyncQueue in activity.ts for why the bare
 // fire-and-forget sync interleaved.
 const enqueueWatchdogGapSync = createWatchdogGapSyncQueue();
+const watchdogHeartbeatRecorder = createWatchdogHeartbeatRecorder(async (nowMs) => {
+  await sloJournal.append([watchdogHeartbeatLine(nowMs)]);
+});
+
+/** Record liveness only after a watchdog derivation completes. A timer here
+ * would stay green even if the watchdog work itself stopped making progress. */
+async function recordWatchdogHeartbeat(nowMs: number, scheduled = false): Promise<void> {
+  try {
+    await (scheduled ? watchdogHeartbeatRecorder.scheduled(nowMs) : watchdogHeartbeatRecorder.request(nowMs));
+  } catch (error) {
+    console.error(`[watchdog] WARNING: heartbeat append failed: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
 
 // #1148: the watchdog derives NEEDS ORCHESTRATOR items from the
 // current diagnoses (feed age + probes via the health assembly —
 // its probe cache keeps this cheap — plus the orchestration
 // diagnosis and registry facet age). Live mode only: fixtures mode
-// has no real inputs to watch. Derived per request, never stored,
-// so recovery clears the cards on the next render. The health
+// has no real inputs to watch. Derived on attention reads and on the
+// server-owned watchdog tick below, so it does not depend on dashboard
+// traffic. Recovery clears the cards on the next derivation. The health
 // assembly here is deliberately UNPRIMED (see healthContext): the
 // watchdog needs only the feed file, the cached probes, and the
 // registry age from the source's already-loaded feed.
-async function deriveWatchdogItems(diagnosis?: ReturnType<NonNullable<Source["diagnostics"]>>["orchestration"]) {
+async function deriveWatchdogItems(
+  diagnosis?: ReturnType<NonNullable<Source["diagnostics"]>>["orchestration"],
+  mode: "request" | "scheduled" = "request",
+) {
   if (cfg.source !== "live") return [];
   const [health, projectAudit, hostHealth] = await Promise.all([
     healthContext(false),
@@ -1690,8 +1709,14 @@ async function deriveWatchdogItems(diagnosis?: ReturnType<NonNullable<Source["di
   // breach clears), so one continuous outage is one delivery.
   const stableItems = watchdogEpisodes.stabilize(items);
   void recordActivity(watchdogDeliveries(stableItems));
-  void enqueueWatchdogGapSync(activityStore, stableItems).catch((err) => {
-    console.error(`[activity] WARNING: watchdog gap sync failed: ${err instanceof Error ? err.message : String(err)}`);
+  await finishWatchdogGapSync({
+    items,
+    sync: enqueueWatchdogGapSync(activityStore, stableItems),
+    mode,
+    recordHeartbeat: () => recordWatchdogHeartbeat(Date.now(), mode === "scheduled"),
+    onError: (err) => {
+      console.error(`[activity] WARNING: watchdog gap sync failed: ${err instanceof Error ? err.message : String(err)}`);
+    },
   });
   return items;
 }
@@ -4912,6 +4937,34 @@ if (cfg.source !== "fixtures") {
   };
   void sampleSlo();
   const timer = setInterval(() => void sampleSlo(), SLO_SAMPLE_INTERVAL_MS);
+  timer.unref?.();
+
+}
+
+// Watchdog derivation must not depend on dashboard traffic or push
+// subscriptions. Its heartbeat is written only after deriveWatchdogItems
+// completes health/audit reads and gap sync. Keep this timer independent
+// of the alert engine and attention routes: their availability is not
+// evidence that the watchdog itself ran.
+const WATCHDOG_RUN_INTERVAL_MS = 5 * 60_000;
+if (cfg.source === "live") {
+  let watchdogRunInProgress = false;
+  const runWatchdog = async (): Promise<void> => {
+    if (watchdogRunInProgress) return;
+    watchdogRunInProgress = true;
+    try {
+      // Refresh the live orchestration diagnosis before deriving cards.
+      // A source failure is not a successful watchdog pass.
+      await source.orchestration();
+      await deriveWatchdogItems(source.diagnostics?.().orchestration, "scheduled");
+    } catch (error) {
+      console.error(`[watchdog] WARNING: scheduled derivation failed: ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      watchdogRunInProgress = false;
+    }
+  };
+  void runWatchdog();
+  const timer = setInterval(() => void runWatchdog(), WATCHDOG_RUN_INTERVAL_MS);
   timer.unref?.();
 }
 
