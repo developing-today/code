@@ -4,12 +4,12 @@ on:
   workflow_dispatch:
     inputs:
       action:
-        description: Upload a new version or promote an existing version
+        description: Upload a code-only version or promote an uploaded version
         required: true
         type: choice
         options: [upload, promote]
-      version_id:
-        description: Upload workflow run ID that produced the version handoff artifact
+      upload_run_id:
+        description: Successful upload workflow run ID for promotion
         required: false
         type: string
 
@@ -28,33 +28,75 @@ jobs:
     timeout-minutes: 20
     environment: cloudflare-queue-transport-alert
     steps:
-      - uses: actions/checkout@v7
+      - name: Validate dispatch inputs
+        env:
+          ACTION: ${{ inputs.action }}
+          RUN_ID: ${{ inputs.upload_run_id }}
+        run: |
+          if [[ "$ACTION" == promote ]]; then
+            [[ "$RUN_ID" =~ ^[0-9]{1,20}$ ]] || { echo 'promote requires upload_run_id' >&2; exit 2; }
+          elif [[ -n "$RUN_ID" ]]; then
+            echo 'upload_run_id is only valid for promote' >&2; exit 2
+          fi
+      - name: Download handoff from exact upload run
+        if: inputs.action == 'promote'
+        uses: actions/download-artifact@v4
+        with:
+          name: qta-version-${{ inputs.upload_run_id }}
+          run-id: ${{ inputs.upload_run_id }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/qta-handoff
+      - name: Verify upload provenance and baseline receipt
+        if: inputs.action == 'promote'
+        id: handoff
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ inputs.upload_run_id }}
+          HANDOFF: ${{ runner.temp }}/qta-handoff/qta-version.json
+        run: |
+          set -euo pipefail
+          run=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}")
+          source_sha=$(jq -r .source_sha "$HANDOFF")
+          [[ "$source_sha" =~ ^[0-9a-f]{40}$ ]]
+          test "$(jq -r .worker "$HANDOFF")" = queue-transport-alert
+          test "$(jq -r .upload_run_id "$HANDOFF")" = "$RUN_ID"
+          test "$(jq -r .upload_run_attempt "$HANDOFF")" = "$(jq -r .run_attempt <<<"$run")"
+          test "$(jq -r .upload_event "$HANDOFF")" = workflow_dispatch
+          test "$(jq -r .upload_ref "$HANDOFF")" = refs/heads/main
+          test "$(jq -r .upload_workflow_path "$HANDOFF")" = .github/workflows/queue-transport-alert-deploy.yml
+          test "$(jq -r .path <<<"$run")" = .github/workflows/queue-transport-alert-deploy.yml
+          test "$(jq -r .event <<<"$run")" = workflow_dispatch
+          test "$(jq -r .head_branch <<<"$run")" = main
+          test "$(jq -r .head_sha <<<"$run")" = "$source_sha"
+          test "$(jq -r .status <<<"$run")" = completed
+          test "$(jq -r .conclusion <<<"$run")" = success
+          test "$(jq -r .worker "$HANDOFF")" = queue-transport-alert
+          echo "source_sha=$source_sha" >> "$GITHUB_OUTPUT"
+      - name: Check out exact uploaded source
+        if: inputs.action == 'promote'
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ steps.handoff.outputs.source_sha }}
+      - name: Check out trusted dispatch source
+        if: inputs.action == 'upload'
+        uses: actions/checkout@v7
         with:
           ref: main
       - uses: DeterminateSystems/nix-installer-action@v21
-      - name: Build pinned deploy application
+      - name: Build pinned deploy application from verified source
         run: nix build .#queue-transport-alert-deploy
-      - name: Validate inputs
-        env:
-          ACTION: ${{ inputs.action }}
-          VERSION_ID: ${{ inputs.version_id }}
-        run: |
-          if [[ "$ACTION" == promote ]]; then
-            [[ "$VERSION_ID" =~ ^[A-Za-z0-9_-]{8,128}$ ]] || { echo 'promote requires a valid version_id' >&2; exit 2; }
-          elif [[ -n "$VERSION_ID" ]]; then
-            echo 'version_id is only valid for promote' >&2; exit 2
-          fi
-      - name: Upload a new version (does not promote)
+      - name: Upload code-only Worker version
         if: inputs.action == 'upload'
         env:
           QTA_GHA: '1'
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          ACCESS_CLIENT_ID: ${{ secrets.ACCESS_CLIENT_ID }}
-          ACCESS_CLIENT_SECRET: ${{ secrets.ACCESS_CLIENT_SECRET }}
-          GITHUB_TOKEN: ${{ secrets.WORKER_GITHUB_TOKEN }}
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          BROKER_AGENT_TOKEN: ${{ secrets.BROKER_AGENT_TOKEN }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+          GITHUB_RUN_ATTEMPT: ${{ github.run_attempt }}
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
+          GITHUB_REF: ${{ github.ref }}
+          GITHUB_WORKFLOW_REF: ${{ github.workflow_ref }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
           QTA_HANDOFF_FILE: ${{ runner.temp }}/qta-version.json
         run: ./result/bin/queue-transport-alert-deploy
       - name: Save version handoff
@@ -65,34 +107,7 @@ jobs:
           path: ${{ runner.temp }}/qta-version.json
           if-no-files-found: error
           retention-days: 14
-      - name: Download handoff from exact successful upload run
-        if: inputs.action == 'promote'
-        uses: actions/download-artifact@v4
-        with:
-          name: qta-version-${{ inputs.version_id }}
-          run-id: ${{ inputs.version_id }}
-          github-token: ${{ github.token }}
-          path: ${{ runner.temp }}/qta-handoff
-      - name: Check out uploaded source commit
-        if: inputs.action == 'promote'
-        uses: actions/checkout@v7
-        with:
-          ref: main
-      - name: Validate handoff source is still trusted main history
-        if: inputs.action == 'promote'
-        id: handoff
-        env:
-          RUN_ID: ${{ inputs.version_id }}
-          HANDOFF: ${{ runner.temp }}/qta-handoff/qta-version.json
-        run: |
-          source_sha=$(jq -r .source_sha "$HANDOFF")
-          [[ "$source_sha" =~ ^[0-9a-f]{40}$ ]]
-          test "$(jq -r .worker "$HANDOFF")" = queue-transport-alert
-          test "$(jq -r .upload_run_id "$HANDOFF")" = "$RUN_ID"
-          git fetch origin "$source_sha"
-          git merge-base --is-ancestor "$source_sha" origin/main
-          echo "source_sha=$source_sha" >> "$GITHUB_OUTPUT"
-      - name: Promote explicit existing version
+      - name: Promote verified version only
         if: inputs.action == 'promote'
         env:
           QTA_GHA: '1'
@@ -100,8 +115,9 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           QTA_HANDOFF_FILE: ${{ runner.temp }}/qta-handoff/qta-version.json
           QTA_SOURCE_SHA: ${{ steps.handoff.outputs.source_sha }}
-          QTA_UPLOAD_RUN_ID: ${{ inputs.version_id }}
+          QTA_UPLOAD_RUN_ID: ${{ inputs.upload_run_id }}
         run: |
-          test "$(jq -r .upload_run_id "$QTA_HANDOFF_FILE")" = "$QTA_UPLOAD_RUN_ID"
+          set -euo pipefail
           version_id=$(jq -r .version_id "$QTA_HANDOFF_FILE")
+          [[ "$version_id" =~ ^[A-Za-z0-9_-]{8,128}$ ]]
           ./result/bin/queue-transport-alert-deploy --deploy-version "$version_id"

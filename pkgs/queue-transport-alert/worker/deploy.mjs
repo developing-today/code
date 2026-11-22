@@ -38,7 +38,7 @@ import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { listItems, newestWithTag, parseArgs, parseJsonOutput, servingCheck } from "./deploy-lib.mjs";
+import { listItems, newestWithTag, parseArgs, parseJsonOutput, servingCheck, singleServingVersion } from "./deploy-lib.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const WORKER = "queue-transport-alert";
@@ -157,14 +157,15 @@ async function verify(versionId) {
 }
 
 if (gha && deployVersion === null) {
-  const required = ["ACCESS_CLIENT_ID", "ACCESS_CLIENT_SECRET", "GITHUB_TOKEN", "TELEGRAM_BOT_TOKEN"];
-  for (const key of required) if (!process.env[key]) throw new Error(`${key} is required in GHA mode`);
-  const workerSecrets = Object.fromEntries(required.map((key) => [key, process.env[key]]));
-  if (process.env.BROKER_AGENT_TOKEN) workerSecrets.BROKER_AGENT_TOKEN = process.env.BROKER_AGENT_TOKEN;
+  const currentDeployments = listItems(parseJsonOutput(runCf(["workers", "deployments", "list", "--worker", WORKER], { capture: true })), "deployments");
+  const baselineVersion = singleServingVersion(currentDeployments);
+  if (!baselineVersion) {
+    throw new Error("cannot upload code-only version: no single 100% serving baseline version to inherit runtime bindings from");
+  }
   const sha = execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim();
   const tag = `git-${sha.slice(0, 12)}`;
   const message = `deploy ${sha} via GitHub Actions`;
-  runCfWithSecrets(["workers", "versions", "create", "--worker", WORKER, "--tag", tag, "--message", message], workerSecrets);
+  runCf(["workers", "versions", "create", "--worker", WORKER, "--tag", tag, "--message", message]);
   const versions = listItems(parseJsonOutput(runCf(["workers", "versions", "list", "--worker-id", WORKER], { capture: true })), "versions");
   const version = newestWithTag(versions, tag);
   if (!version) throw new Error(`uploaded version with tag ${tag} not found in the versions list`);
@@ -175,6 +176,10 @@ if (gha && deployVersion === null) {
     version_id: version.id,
     upload_run_id: process.env.GITHUB_RUN_ID,
     upload_run_attempt: process.env.GITHUB_RUN_ATTEMPT,
+    upload_event: process.env.GITHUB_EVENT_NAME,
+    upload_ref: process.env.GITHUB_REF,
+    upload_workflow_path: process.env.GITHUB_WORKFLOW_REF?.split("@")[0]?.replace(`${process.env.GITHUB_REPOSITORY}/`, ""),
+    baseline_version_id: baselineVersion,
   };
   if (!handoff.upload_run_id || !handoff.upload_run_attempt || !process.env.QTA_HANDOFF_FILE) {
     throw new Error("GHA upload requires GITHUB_RUN_ID, GITHUB_RUN_ATTEMPT and QTA_HANDOFF_FILE");
@@ -195,13 +200,16 @@ if (deployVersion !== null) {
     const match = versions.find((v) => v.id === deployVersion &&
       (v.annotations?.["workers/tag"] ?? v.metadata?.annotations?.["workers/tag"]) === handoff.tag);
     if (!match) throw new Error("requested Worker version is absent or is not associated with the handoff tag");
+    const deployments = listItems(parseJsonOutput(runCf(["workers", "deployments", "list", "--worker", WORKER], { capture: true })), "deployments");
+    if (singleServingVersion(deployments) !== handoff.baseline_version_id) {
+      throw new Error("serving baseline changed since code-only upload; refusing promotion because inherited runtime bindings cannot be established");
+    }
   }
   if (dryRun) {
     console.log(`dry run: would deploy ${WORKER} at existing version ${deployVersion} (100%); nothing created`);
     process.exit(0);
   }
   createDeployment(deployVersion);
-  if (gha) runCf(["workers", "triggers", "deploy", "--worker", WORKER]);
   await verify(deployVersion);
   console.log(`live: ${WORKER_URL} at version ${deployVersion}`);
   process.exit(0);

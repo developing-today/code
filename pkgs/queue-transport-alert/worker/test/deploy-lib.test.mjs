@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { listItems, newestWithTag, parseArgs, parseJsonOutput, servingCheck } from "../deploy-lib.mjs";
+import { listItems, newestWithTag, parseArgs, parseJsonOutput, servingCheck, singleServingVersion } from "../deploy-lib.mjs";
 
 test("parseArgs accepts the three shapes", () => {
   assert.deepEqual(parseArgs([]), { dryRun: false, deployVersion: null });
@@ -57,4 +57,11 @@ test("servingCheck requires the latest deployment to serve the version at 100%",
   assert.equal(servingCheck(deployments, "v1").ok, false);
   const split = [{ created_on: "2026-11-19T03:00:00Z", versions: [{ version_id: "v2", percentage: 50 }, { version_id: "v3", percentage: 50 }] }];
   assert.match(servingCheck(split, "v2").serving, /v2@50%, v3@50%/);
+});
+
+test("code-only upload inheritance requires one serving baseline at 100%", () => {
+  assert.equal(singleServingVersion([{ created_on: "2026-11-19T01:00:00Z", versions: [{ version_id: "base", percentage: 100 }] }]), "base");
+  assert.equal(singleServingVersion([]), null);
+  assert.equal(singleServingVersion([{ versions: [{ version_id: "a", percentage: 50 }, { version_id: "b", percentage: 50 }] }]), null);
+  assert.equal(singleServingVersion([{ versions: [{ version_id: "a", percentage: 0 }] }]), null);
 });

@@ -80,6 +80,15 @@ export function servingCheck(deployments, versionId) {
   return { ok: false, serving };
 }
 
+// Return one unambiguous 100% serving version for code-only upload inheritance.
+export function singleServingVersion(deployments) {
+  const latest = [...deployments].sort((a, b) => createdOn(b) - createdOn(a))[0];
+  const active = (latest?.versions ?? []).filter((v) => Number(v.percentage) > 0);
+  return active.length === 1 && Number(active[0].percentage) === 100 && active[0].version_id
+    ? active[0].version_id
+    : null;
+}
+
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   try {
     parseArgs(process.argv.slice(2));
