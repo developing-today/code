@@ -48,6 +48,8 @@ export interface LinkOptions {
   config: () => Promise<EdgeConfig>;
   /** Run one held action; throws if it could not be done. */
   run: (held: Held) => Promise<void>;
+  /** The commit this console is running, if it could be found. */
+  version?: string;
   fetchImpl?: typeof fetch;
   now?: () => number;
   log?: (line: string) => void;
@@ -186,6 +188,7 @@ export class EdgeLink {
       const message: SyncRequest & { acts: unknown } = {
         v: 1,
         at,
+        ...(this.o.version ? { version: this.o.version } : {}),
         config: await this.o.config(),
         sections,
         have: Object.fromEntries(snapshot.map((s) => [s.name, { hash: s.hash, at: s.at, error: s.error }])),

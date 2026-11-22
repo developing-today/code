@@ -170,6 +170,7 @@ export class Edge {
   private confirmed: Record<string, { hash: string; at: number; error: string | null }> = {};
   private sure = 0;
   private unsure = 0;
+  private hostVersion: string | null = null;
   private syncRefused: KeyedLimiter;
   readonly docs: Docs;
   readonly push: Push;
@@ -324,11 +325,17 @@ export class Edge {
     if (this.ownActs === null) await this.showActs();
     if (this.hostSeen === null) {
       const host = (await this.kv.get("host")) as
-        | { seen: number; seq: number; confirmed?: Record<string, { hash: string; at: number; error: string | null }> }
+        | {
+            seen: number;
+            seq: number;
+            confirmed?: Record<string, { hash: string; at: number; error: string | null }>;
+            version?: string | null;
+          }
         | undefined;
       this.hostSeen = host?.seen ?? 0;
       this.hostSeq = host?.seq ?? 0;
       this.confirmed = host?.confirmed ?? {};
+      this.hostVersion = host?.version ?? null;
     }
   }
 
@@ -639,7 +646,8 @@ export class Edge {
     // current it says each section is.
     this.hostSeen = now;
     this.hostSeq = msg.at;
-    await this.kv.put("host", { seen: now, seq: msg.at, confirmed: this.confirmed });
+    this.hostVersion = typeof msg.version === "string" && /^[0-9a-f]{7,40}$/.test(msg.version) ? msg.version : null;
+    await this.kv.put("host", { seen: now, seq: msg.at, confirmed: this.confirmed, version: this.hostVersion });
     if (wasSilent) {
       try {
         const delivery = await this.push.send("trouble", {
@@ -731,6 +739,8 @@ export class Edge {
         directReady: this.directCapable() && this.directConfigReady(cfg),
         selfCheck: this.selfCheckResult,
         hostSeen: this.hostSeen || null,
+        // The commit the host's console is running, as it last said.
+        hostVersion: this.hostVersion,
         // Since this object last started: requests it answered as the
         // owner's, and requests it left to the host to judge.
         answered: this.sure,

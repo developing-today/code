@@ -543,6 +543,22 @@ export function marked(res: Response): Response {
   return new Response(res.body, { status: res.status, statusText: res.statusText, headers });
 }
 
+/** The commit this console was started from, or nothing if it cannot
+ * be told (not a checkout, no git). The service is restarted when a
+ * merge is put into service, so this is the code that is running. */
+async function runningCommit(): Promise<string | undefined> {
+  try {
+    const git = Bun.spawn(["git", "-C", import.meta.dir, "rev-parse", "--short=12", "HEAD"], {
+      stdout: "pipe",
+      stderr: "ignore",
+    });
+    const said = (await new Response(git.stdout).text()).trim();
+    return (await git.exited) === 0 && /^[0-9a-f]{12}$/.test(said) ? said : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 if (import.meta.main) {
   // `--check` builds everything this service needs and stops before
   // listening: what a redeploy runs to learn that new code starts.
@@ -571,6 +587,7 @@ if (import.meta.main) {
   const link = cfg.edgeUrl
     ? new EdgeLink({
         url: cfg.edgeUrl,
+        version: await runningCommit(),
         keys: fileStore(cfg.edgeKeyFile),
         done: fileStore(cfg.edgeDoneFile),
         docs,

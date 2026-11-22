@@ -605,6 +605,7 @@ async function setup(options: { direct?: boolean } = {}) {
   const done = memoryStore();
   const makeLink = () =>
     new EdgeLink({
+      version: "0123abcd4567",
       url: `https://${HOST}`,
       keys,
       done,
@@ -736,6 +737,7 @@ describe("before the host's first report", () => {
       directReady: false,
       selfCheck: null,
       hostSeen: null,
+      hostVersion: null,
       answered: 0,
       deferred: 0,
       version: "test",
@@ -748,6 +750,47 @@ describe("before the host's first report", () => {
     // And the host still refuses a stranger itself.
     expect((await w.browse("/console/api/me", { token: null })).status).toBe(401);
     expect(w.hostSaw).toEqual(["GET /console/api/me", "GET /console/api/me"]);
+  });
+
+  test("the edge says which commit the host is running, as the host last reported it", async () => {
+    const w = await setup();
+    const health = async () =>
+      (await (await w.browse("/console/health", { token: null })).json()) as Record<string, unknown>;
+    expect((await health()).hostVersion).toBeNull();
+    await w.hostReads();
+    await w.link.now.once();
+    expect((await health()).hostVersion).toBe("0123abcd4567");
+    // It is remembered across the edge's own restarts.
+    w.edge.now = w.makeEdge();
+    expect((await health()).hostVersion).toBe("0123abcd4567");
+    // Anything that is not a commit's name is not repeated to the public.
+    const kept = JSON.parse(w.keys.text() as string) as { privateJwk: JsonWebKey };
+    w.now.t += 1_000;
+    const body = new TextEncoder().encode(
+      JSON.stringify({
+        v: 1,
+        at: w.now.t,
+        version: "<b>not a commit</b>",
+        config: w.edgeConfig,
+        sections: [],
+        have: {},
+        acks: [],
+      }),
+    );
+    const res = await route(
+      new Request(`https://${HOST}/console/edge/sync`, {
+        method: "POST",
+        body,
+        headers: {
+          "x-pm-key": await keyId(await w.link.now.publicKey()),
+          "x-pm-signature": await sign(kept.privateJwk, body),
+          "cf-ray": "1",
+        },
+      }),
+      w.io,
+    );
+    expect(res.status).toBe(200);
+    expect((await health()).hostVersion).toBeNull();
   });
 
   test("the first report teaches the edge the host's key and who the owner is", async () => {
