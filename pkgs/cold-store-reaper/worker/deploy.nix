@@ -1,21 +1,25 @@
 {
   writeShellApplication,
+  bws,
   git,
   nodejs,
   cf,
   wrangler,
+  sops,
   coldStoreRehydratorBundle,
 }:
 # Carries the flake-built Worker bundle and the repository-pinned cf and
-# Wrangler build bridge. Upload and promotion are separate; upload creates
-# a preview version only, and the promotion command targets an explicit id.
+# Wrangler build bridge. Upload creates an immutable version only; promotion
+# requires private staging evidence and the exact serving baseline.
 writeShellApplication {
   name = "cold-store-rehydrator-deploy";
   runtimeInputs = [
     git
+    bws
     nodejs
     cf
     wrangler
+    sops
   ];
   text = ''
     export COLD_STORE_REHYDRATOR_BUNDLE="${coldStoreRehydratorBundle}/worker.js"

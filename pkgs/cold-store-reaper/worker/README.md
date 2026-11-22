@@ -66,36 +66,52 @@ Commit `package.json`, `package-lock.json`, and `src/` together. The
 committed `dist/` is a convenience copy for local inspection only —
 deploys upload the flake-built bundle, never the committed one.
 
-## Deploy (GitHub Actions, staged first)
+## Deploy (GitHub Actions, staging gate required)
 
 The `cold-store-rehydrator-upload` workflow builds the lockfile-pinned
-bundle, uploads a git-SHA-tagged version using the repository-pinned `cf`
-binary, assigns a unique preview alias, and checks the preview endpoints.
-It does not create a production deployment or change the existing route.
-Review the successful upload run's preview URL and confirm `/health` is
-healthy and unauthenticated `/fetch/<sha>` still returns `401` before
-running `cold-store-rehydrator-promote`.
+bundle and uploads a git-SHA-tagged immutable version with the pinned `cf`
+binary. It captures the currently serving deployment before upload and
+checks that it is unchanged afterward. Uploading a version does not change
+traffic.
 
-Promotion is a separate, manually dispatched workflow. It downloads the
-version record from a successful upload run and deploys that version at
-100% only after the operator attests that staged parity was reviewed. The
-script also refuses versions missing the existing secret binding names;
-secret values are never read by the workflow. The D1 and Durable Object
-bindings, the existing SQLite `BundleFlight` class, and the original
-`workers.dev` route are retained in `cloudflare.config.ts`; a local test
-checks the binding/migration fields against `wrangler.toml`.
+Cloudflare does not generate Version URLs for Workers with Durable Objects.
+This Worker uses `BUNDLE_FLIGHT`, so the upload workflow does not assign a
+preview alias, send requests to a purported preview URL, enable public
+preview access, or use production refresh secrets for test traffic. No
+independent isolated private staging workflow exists yet. As a result,
+`cold-store-rehydrator-promote` fails closed unless given a successful trusted
+run of `.github/workflows/cold-store-rehydrator-private-staging.yml` with an
+`cold-store-rehydrator-private-staging-evidence` artifact. That evidence must
+identify the exact upload run, version ID, and source SHA, report
+`result: "passed"`, and assert isolated private staging with no production
+secrets or production-resource access. Do not add such a workflow until its
+isolation and runtime bindings can be independently verified. Until then,
+production promotion is unavailable through Actions.
 
-Both workflows require the protected GitHub environment
-`cold-store-rehydrator-production`, with environment secrets
-`CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`. The token should be
-scoped to this Worker and only the Workers Scripts read/edit permissions
-needed for versions and deployments. Configure required reviewers on the
-environment before enabling the workflow. Jobs are limited to `main`, use
-`contents: read` (and `actions: read` only to fetch the successful upload
-artifact), and have no pull-request trigger. A direct local invocation
-with no arguments also uploads/stages only and requires
-`CLOUDFLARE_API_TOKEN` plus `CLOUDFLARE_ACCOUNT_ID` in the environment;
-`--deploy-version <id>` is the explicit promotion/rollback operation.
+If private staging is later implemented, promotion also compares the current
+serving deployment fingerprint with the exact baseline captured by the
+successful upload run. It refuses a stale or malformed artifact and refuses
+to promote a version missing any existing secret binding names. Runtime
+secret values are never fetched or copied by these workflows; the Worker
+continues to use its existing Cloudflare secret bindings. The D1 and Durable
+Object bindings, the existing SQLite `BundleFlight` class, the original
+`workers.dev` route, and storage are retained unchanged.
+
+Actions require the protected GitHub environment
+`cold-store-rehydrator-production`, a required reviewer, the dedicated
+Worker-scoped environment secret `COLD_STORE_REHYDRATOR_CF_API_TOKEN`, and
+the environment variable `COLD_STORE_REHYDRATOR_CF_ACCOUNT_ID`. The token
+needs only Workers Scripts read/edit permissions for this Worker’s version
+upload, inspection, and deployment. The secret is available only to the
+trusted `main` dispatch job step; no PR workflow has access to it.
+
+For local operator use, `deploy.sh` keeps the existing SOPS account-ID and
+Bitwarden token lookup (`cloudflare.api-token-day-to-day`, overridable with
+`CSR_CF_TOKEN_SECRET`), or accepts explicit `CLOUDFLARE_ACCOUNT_ID` and
+`CLOUDFLARE_API_TOKEN` environment values. Runtime API and Google refresh
+secrets are not fetched or copied. Upload is the no-argument operation;
+`--deploy-version <id> --expected-baseline <sha256>` is the guarded
+promotion/rollback operation and requires the exact current serving baseline.
 
 Until `sync-manifest` has run at least once against a manifest containing
 verified bundles, every `/fetch/<sha>` is a well-formed 404.
