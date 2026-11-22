@@ -232,8 +232,13 @@ function localClockFormatter(timeZone: string): Intl.DateTimeFormat {
   let fmt = LOCAL_CLOCK_FORMATTERS.get(timeZone);
   if (!fmt) {
     fmt = new Intl.DateTimeFormat("en-US", {
-      timeZone, year: "numeric", month: "2-digit", day: "2-digit",
-      hour: "2-digit", minute: "2-digit", hourCycle: "h23",
+      timeZone,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      hourCycle: "h23",
     });
     LOCAL_CLOCK_FORMATTERS.set(timeZone, fmt);
   }

@@ -240,7 +240,9 @@ describe("dispatch worktree cleanup (#12217)", () => {
     const unknownResult = await cleanupDispatchWorktree({
       record: unknown,
       registry,
-      getSession: async () => { throw new Error("server unavailable"); },
+      getSession: async () => {
+        throw new Error("server unavailable");
+      },
       listSessions: emptyList,
       isOccupied: unoccupied,
     });
@@ -256,8 +258,14 @@ describe("dispatch worktree cleanup (#12217)", () => {
     const result = await cleanupDispatchWorktree({
       record,
       registry,
-      getSession: async () => { queried = true; return null; },
-      listSessions: async () => { queried = true; return []; },
+      getSession: async () => {
+        queried = true;
+        return null;
+      },
+      listSessions: async () => {
+        queried = true;
+        return [];
+      },
       isOccupied: unoccupied,
     });
     expect(result.removed).toBe(false);
@@ -290,8 +298,14 @@ describe("dispatch worktree cleanup (#12217)", () => {
     const { sweepDispatchWorktrees } = await import("../src/worktree_cleanup.ts");
     const results = await sweepDispatchWorktrees({
       registry: brokenRegistry,
-      getSession: async () => { queried = true; return null; },
-      listSessions: async () => { queried = true; return []; },
+      getSession: async () => {
+        queried = true;
+        return null;
+      },
+      listSessions: async () => {
+        queried = true;
+        return [];
+      },
     });
     expect(results).toHaveLength(1);
     expect(results[0].removed).toBe(false);
@@ -347,14 +361,22 @@ describe("dispatch worktree cleanup (#12217)", () => {
   test("only one concurrent cleanup can remove a registered tree", async () => {
     const record = await registeredTree();
     let unblock!: () => void;
-    const paused = new Promise<void>((resolve) => { unblock = resolve; });
+    const paused = new Promise<void>((resolve) => {
+      unblock = resolve;
+    });
     let entered!: () => void;
-    const inList = new Promise<void>((resolve) => { entered = resolve; });
+    const inList = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
     const first = cleanupDispatchWorktree({
       record,
       registry,
       getSession: goneSession,
-      listSessions: async () => { entered(); await paused; return []; },
+      listSessions: async () => {
+        entered();
+        await paused;
+        return [];
+      },
       isOccupied: unoccupied,
     });
     await inList;
@@ -438,9 +460,10 @@ describe("dispatch worktree cleanup (#12217)", () => {
       getSession: goneSession,
       listSessions: emptyList,
       isOccupied: unoccupied,
-      git: async (args) => args.includes("remove")
-        ? { code: 1, stdout: "", stderr: "injected removal failure" }
-        : await (await import("../src/worktree.ts")).runGit(args),
+      git: async (args) =>
+        args.includes("remove")
+          ? { code: 1, stdout: "", stderr: "injected removal failure" }
+          : await (await import("../src/worktree.ts")).runGit(args),
     });
     expect(failed.removed).toBe(false);
     expect(failed.reason).toContain("injected removal failure");

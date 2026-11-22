@@ -149,8 +149,7 @@ def session_pool(session):
     return provider or model_id, provider or model_id
 
 
-def classify_session(session, *, binding, active_ids, pools, prior_entry,
-                     now_ms):
+def classify_session(session, *, binding, active_ids, pools, prior_entry, now_ms):
     """One session's verdict entry, or None when the session cannot
     be classified on readable evidence (the caller names it in the
     round's unclassified list).
@@ -202,9 +201,7 @@ def classify_session(session, *, binding, active_ids, pools, prior_entry,
             entry["verdict"] = "done-unreported"
             entry["reason"] = "finished; bound task still open"
             pr_merged = binding.get("pr_merged")
-            entry["harvest_ready"] = (
-                pr_merged if isinstance(pr_merged, bool) else None
-            )
+            entry["harvest_ready"] = pr_merged if isinstance(pr_merged, bool) else None
         else:
             entry["verdict"] = "idle"
             entry["reason"] = "finished; nothing bound"
@@ -262,8 +259,7 @@ def classify_session(session, *, binding, active_ids, pools, prior_entry,
     return entry
 
 
-def run_round(sessions, *, bindings, active_ids, pools, prior_state,
-              now_ms):
+def run_round(sessions, *, bindings, active_ids, pools, prior_state, now_ms):
     """One round over the session list. Pure: inputs in, (record,
     new_state) out - no I/O, so the rule's truth table is testable
     without a server.
@@ -304,9 +300,7 @@ def run_round(sessions, *, bindings, active_ids, pools, prior_state,
             now_ms=now_ms,
         )
         if entry is None:
-            unclassified.append(
-                {"session_id": sid, "reason": "timing unreadable"}
-            )
+            unclassified.append({"session_id": sid, "reason": "timing unreadable"})
             continue
         verdicts[sid] = entry
         timing = poll._session_timing(s)
@@ -325,8 +319,7 @@ def run_round(sessions, *, bindings, active_ids, pools, prior_state,
         prior = prior_sessions.get(sid)
         if prior is None:
             changes.append(
-                {"session_id": sid, "change": "new",
-                 "verdict": entry["verdict"]}
+                {"session_id": sid, "change": "new", "verdict": entry["verdict"]}
             )
         elif (
             prior.get("verdict") != entry["verdict"]
@@ -335,15 +328,18 @@ def run_round(sessions, *, bindings, active_ids, pools, prior_state,
             or prior.get("pool") != entry["pool"]
         ):
             changes.append(
-                {"session_id": sid, "change": "verdict",
-                 "from": prior.get("verdict"), "verdict": entry["verdict"]}
+                {
+                    "session_id": sid,
+                    "change": "verdict",
+                    "from": prior.get("verdict"),
+                    "verdict": entry["verdict"],
+                }
             )
     unclassified_ids = {u["session_id"] for u in unclassified}
     for sid, prior in prior_sessions.items():
         if sid not in verdicts and sid not in unclassified_ids:
             changes.append(
-                {"session_id": sid, "change": "gone",
-                 "from": prior.get("verdict")}
+                {"session_id": sid, "change": "gone", "from": prior.get("verdict")}
             )
 
     pool_summary = {}
@@ -357,8 +353,8 @@ def run_round(sessions, *, bindings, active_ids, pools, prior_state,
         if entry["pool"]:
             provider = entry["pool"].split("/", 1)[0]
             slot = pool_summary.setdefault(
-                provider, {"walled": entry["pool_walled"],
-                           "percent": None, "sessions": 0}
+                provider,
+                {"walled": entry["pool_walled"], "percent": None, "sessions": 0},
             )
             slot["sessions"] += 1
 
@@ -440,9 +436,16 @@ def _load_state(state_dir):
 _UNSET = object()
 
 
-def babysitter_step(mode, *, now_ms=None, sessions=_UNSET,
-                    active_ids=_UNSET, bindings=None, pools=None,
-                    state_dir=None):
+def babysitter_step(
+    mode,
+    *,
+    now_ms=None,
+    sessions=_UNSET,
+    active_ids=_UNSET,
+    bindings=None,
+    pools=None,
+    state_dir=None,
+):
     """Run one round for a claimant fire and return its record.
 
     Live mode persists the round state and appends the record to
@@ -458,8 +461,12 @@ def babysitter_step(mode, *, now_ms=None, sessions=_UNSET,
     if sessions is _UNSET:
         sessions = poll.fetch_sessions()
     if sessions is None:
-        return {"error": "sessions_unreadable", "verdicts": {},
-                "changes": [], "mode": mode}
+        return {
+            "error": "sessions_unreadable",
+            "verdicts": {},
+            "changes": [],
+            "mode": mode,
+        }
     if active_ids is _UNSET:
         active_ids = poll.fetch_active_ids()
     if bindings is None:

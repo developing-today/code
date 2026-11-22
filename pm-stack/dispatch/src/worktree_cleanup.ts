@@ -25,7 +25,20 @@
 //     its record) and every cleanup failure is reported as an outcome,
 //     never thrown past the caller, so it can never mask a
 //     dispatch/session result.
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, readlinkSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import {
+  closeSync,
+  existsSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  readdirSync,
+  readlinkSync,
+  realpathSync,
+  renameSync,
+  statSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { runGit, type GitRunner } from "./worktree.ts";
 
@@ -364,15 +377,22 @@ function isLocked(primary: string, worktree: string): boolean {
   let selected = false;
   let found = false;
   let target = worktree;
-  try { target = realpathSync(worktree); } catch { /* compare literal path */ }
+  try {
+    target = realpathSync(worktree);
+  } catch {
+    /* compare literal path */
+  }
   for (const line of lines) {
     if (line.startsWith("worktree ")) {
       let listed = line.slice(9);
-      try { listed = realpathSync(listed); } catch { /* compare literal path */ }
+      try {
+        listed = realpathSync(listed);
+      } catch {
+        /* compare literal path */
+      }
       selected = listed === target;
       found ||= selected;
-    }
-    else if (selected && line === "locked") return true;
+    } else if (selected && line === "locked") return true;
   }
   return !found; // not registered with this primary: fail closed
 }
@@ -427,7 +447,10 @@ export async function cleanupDispatchWorktree(args: {
     const git = args.git ?? runGit;
     const headPathResult = await git(["-C", record.worktree, "rev-parse", "--git-path", "HEAD"]);
     if (headPathResult.code !== 0 || !headPathResult.stdout.trim()) {
-      return finish(false, `cannot locate worktree HEAD for locking: ${headPathResult.stderr.trim() || "unavailable"}; retained`);
+      return finish(
+        false,
+        `cannot locate worktree HEAD for locking: ${headPathResult.stderr.trim() || "unavailable"}; retained`,
+      );
     }
     const headPath = resolve(record.worktree, headPathResult.stdout.trim());
     const candidateLockPath = `${headPath}.lock`;
@@ -448,16 +471,28 @@ export async function cleanupDispatchWorktree(args: {
     if (status.stdout.trim()) return finish(false, `worktree has uncommitted or untracked work; retained`);
 
     const remove = await git(["-C", record.primary, "worktree", "remove", record.worktree]);
-    if (remove.code !== 0) return finish(false, `git worktree remove failed: ${remove.stderr.trim().slice(0, 300)}; retained`);
-    return finish(true, "session ended and worktree was clean, unoccupied, unlocked, and at its recorded base commit; removed");
+    if (remove.code !== 0)
+      return finish(false, `git worktree remove failed: ${remove.stderr.trim().slice(0, 300)}; retained`);
+    return finish(
+      true,
+      "session ended and worktree was clean, unoccupied, unlocked, and at its recorded base commit; removed",
+    );
   } catch (e) {
     return finish(false, `cleanup check failed: ${msg(e)} — retained`);
   } finally {
     if (headLockFd !== null) {
-      try { closeSync(headLockFd); } catch { /* best effort; do not replace the cleanup outcome */ }
+      try {
+        closeSync(headLockFd);
+      } catch {
+        /* best effort; do not replace the cleanup outcome */
+      }
     }
     if (headLockPath !== null) {
-      try { unlinkSync(headLockPath); } catch { /* worktree removal may already have removed its administrative directory */ }
+      try {
+        unlinkSync(headLockPath);
+      } catch {
+        /* worktree removal may already have removed its administrative directory */
+      }
     }
     cleanupClaims.delete(record.worktree);
   }

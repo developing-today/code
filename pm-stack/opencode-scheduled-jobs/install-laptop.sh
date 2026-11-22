@@ -7,17 +7,26 @@ MODE=install-disabled
 seen=0
 while (($#)); do
   case "$1" in
-    --dry-run)
-      ((seen == 0)) || { echo "usage: $0 [--dry-run|--enable]" >&2; exit 2; }
-      MODE=dry-run
-      seen=1
-      ;;
-    --enable)
-      ((seen == 0)) || { echo "usage: $0 [--dry-run|--enable]" >&2; exit 2; }
-      MODE=enable
-      seen=1
-      ;;
-    *) echo "usage: $0 [--dry-run|--enable]" >&2; exit 2 ;;
+  --dry-run)
+    ((seen == 0)) || {
+      echo "usage: $0 [--dry-run|--enable]" >&2
+      exit 2
+    }
+    MODE=dry-run
+    seen=1
+    ;;
+  --enable)
+    ((seen == 0)) || {
+      echo "usage: $0 [--dry-run|--enable]" >&2
+      exit 2
+    }
+    MODE=enable
+    seen=1
+    ;;
+  *)
+    echo "usage: $0 [--dry-run|--enable]" >&2
+    exit 2
+    ;;
   esac
   shift
 done
@@ -29,12 +38,12 @@ UNIT_DIR="$HOME/.config/systemd/user"
 OPENCODE_BIN="$(command -v opencode || true)"
 PYTHON_BIN="$(command -v python3 || true)"
 
-if [[ -z "$OPENCODE_BIN" || -z "$PYTHON_BIN" ]]; then
+if [[ -z $OPENCODE_BIN || -z $PYTHON_BIN ]]; then
   echo "install: opencode and python3 must be available on PATH" >&2
   exit 1
 fi
 
-if [[ "$MODE" == dry-run ]]; then
+if [[ $MODE == dry-run ]]; then
   printf 'would install job files to %s and units to %s; timer state unchanged\n' "$DEST" "$UNIT_DIR"
   exit 0
 fi
@@ -50,7 +59,7 @@ sed -e "s|@OPENCODE_BIN@|$OPENCODE_BIN|g" \
 install -m 0644 "$SRC_DIR/systemd/user/opencode-quota-freshness-summary.timer" "$UNIT_DIR/opencode-quota-freshness-summary.timer"
 
 systemctl --user daemon-reload
-if [[ "$MODE" == enable ]]; then
+if [[ $MODE == enable ]]; then
   systemctl --user enable --now opencode-quota-freshness-summary.timer
   echo "install: timer enabled; inspect with systemctl --user list-timers opencode-quota-freshness-summary.timer"
 else

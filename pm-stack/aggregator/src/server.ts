@@ -2139,13 +2139,15 @@ async function handler(req: Request): Promise<Response> {
           })),
         });
       }
-      return html(renderReportReview(
-        reportBlockReviews(records, current),
-        records.length,
-        new Date(),
-        current,
-        new Set(snapshots.map((snapshot) => snapshot.record.period.id)),
-      ));
+      return html(
+        renderReportReview(
+          reportBlockReviews(records, current),
+          records.length,
+          new Date(),
+          current,
+          new Set(snapshots.map((snapshot) => snapshot.record.period.id)),
+        ),
+      );
     } catch {
       if (path === "/api/reports.json") return json({ error: "report records unavailable" }, 503);
       return html(`<h1>Report review unavailable</h1><p>Could not read retained report records.</p>`, 503);
@@ -2160,7 +2162,8 @@ async function handler(req: Request): Promise<Response> {
     let body: Record<string, unknown>;
     try {
       const parsed = await readJsonBody(req);
-      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return json({ error: "invalid resolution body" }, 400);
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
+        return json({ error: "invalid resolution body" }, 400);
       body = parsed as Record<string, unknown>;
     } catch {
       return json({ error: "invalid resolution body" }, 400);
@@ -2169,7 +2172,13 @@ async function handler(req: Request): Promise<Response> {
     const renderedRecordId = typeof body.renderedRecordId === "string" ? body.renderedRecordId : "";
     const blockId = typeof body.blockId === "string" ? body.blockId : "";
     const strategy = body.strategy;
-    if (!storedRecordId || !renderedRecordId || !blockId || typeof strategy !== "string" || !["stored", "rendered", "edited", "combined"].includes(strategy)) {
+    if (
+      !storedRecordId ||
+      !renderedRecordId ||
+      !blockId ||
+      typeof strategy !== "string" ||
+      !["stored", "rendered", "edited", "combined"].includes(strategy)
+    ) {
       return json({ error: "storedRecordId, renderedRecordId, blockId and a valid strategy are required" }, 400);
     }
     if (body.resolvedText !== undefined && typeof body.resolvedText !== "string") {
@@ -2184,7 +2193,10 @@ async function handler(req: Request): Promise<Response> {
     const storedRecord = records.find((record) => record.id === storedRecordId);
     const renderedRecord = records.find((record) => record.id === renderedRecordId);
     if (!storedRecord || !renderedRecord) return json({ error: "unknown report record" }, 404);
-    if (storedRecord.period.id !== renderedRecord.period.id || storedRecord.templateVersion !== renderedRecord.templateVersion) {
+    if (
+      storedRecord.period.id !== renderedRecord.period.id ||
+      storedRecord.templateVersion !== renderedRecord.templateVersion
+    ) {
       return json({ error: "compared records must have the same period and template" }, 400);
     }
     const storedBlock = storedRecord.blocks.find((block) => block.id === blockId);
@@ -2192,15 +2204,24 @@ async function handler(req: Request): Promise<Response> {
     if (!storedBlock || !renderedBlock) return json({ error: "compared block is missing" }, 400);
     const comparison = compareReportBlock(storedBlock.text, renderedBlock.text);
     if (!comparison.conflict) return json({ error: "report block has no substantive conflict" }, 400);
-    const selectedPair = reportBlockReviews(records, selectCurrentReportRecords(records)).some((review) =>
-      review.blockId === blockId && review.storedRecord.id === storedRecordId && review.renderedRecord.id === renderedRecordId);
-    const selectedText = strategy === "stored" ? storedBlock.text
-      : strategy === "rendered" ? renderedBlock.text : body.resolvedText;
-    const exactRetry = records.some((candidate) => candidate.blocks.some((block) =>
-      block.id === blockId && block.text === selectedText &&
-      block.resolution?.sourceRecordId === storedRecordId &&
-      block.resolution.comparedRecordId === renderedRecordId &&
-      block.resolution.strategy === strategy));
+    const selectedPair = reportBlockReviews(records, selectCurrentReportRecords(records)).some(
+      (review) =>
+        review.blockId === blockId &&
+        review.storedRecord.id === storedRecordId &&
+        review.renderedRecord.id === renderedRecordId,
+    );
+    const selectedText =
+      strategy === "stored" ? storedBlock.text : strategy === "rendered" ? renderedBlock.text : body.resolvedText;
+    const exactRetry = records.some((candidate) =>
+      candidate.blocks.some(
+        (block) =>
+          block.id === blockId &&
+          block.text === selectedText &&
+          block.resolution?.sourceRecordId === storedRecordId &&
+          block.resolution.comparedRecordId === renderedRecordId &&
+          block.resolution.strategy === strategy,
+      ),
+    );
     if (!selectedPair && !exactRetry) {
       return json({ error: "compared records are not the current review selection" }, 409);
     }
@@ -2218,11 +2239,14 @@ async function handler(req: Request): Promise<Response> {
       return json({ inserted: result.inserted, record: result.record });
     } catch (error) {
       const message = error instanceof Error ? error.message : "report resolution failed";
-      const status = error instanceof ReportRecordConflictError || message.startsWith("stale report block comparison:")
-        ? 409
-        : /^(report block comparison|compared report record|resolvedAt must be later|report operation |(?:stored|rendered|edited|combined) report block resolution)/.test(message)
-          ? 400
-          : 500;
+      const status =
+        error instanceof ReportRecordConflictError || message.startsWith("stale report block comparison:")
+          ? 409
+          : /^(report block comparison|compared report record|resolvedAt must be later|report operation |(?:stored|rendered|edited|combined) report block resolution)/.test(
+                message,
+              )
+            ? 400
+            : 500;
       return json({ error: message }, status);
     }
   }
@@ -2235,7 +2259,8 @@ async function handler(req: Request): Promise<Response> {
     let body: Record<string, unknown>;
     try {
       const parsed = await readJsonBody(req);
-      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return json({ error: "invalid late update body" }, 400);
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
+        return json({ error: "invalid late update body" }, 400);
       body = parsed as Record<string, unknown>;
     } catch {
       return json({ error: "invalid late update body" }, 400);
@@ -2246,14 +2271,26 @@ async function handler(req: Request): Promise<Response> {
     const text = typeof body.text === "string" ? body.text : "";
     const relatedAt = typeof body.relatedAt === "string" ? body.relatedAt : "";
     const lateOperations = ["quote", "append", "banner", "event-log", "feedback"];
-    if (!reportRecordId || !blockId || !text.trim() || !relatedAt || typeof operation !== "string" || !lateOperations.includes(operation)) {
+    if (
+      !reportRecordId ||
+      !blockId ||
+      !text.trim() ||
+      !relatedAt ||
+      typeof operation !== "string" ||
+      !lateOperations.includes(operation)
+    ) {
       return json({ error: "reportRecordId, a permitted operation, blockId, text and relatedAt are required" }, 400);
     }
     let source: ReportRecordSource | undefined;
     if (body.source !== undefined) {
-      if (!body.source || typeof body.source !== "object" || Array.isArray(body.source)) return json({ error: "invalid late update source" }, 400);
+      if (!body.source || typeof body.source !== "object" || Array.isArray(body.source))
+        return json({ error: "invalid late update source" }, 400);
       const candidate = body.source as Record<string, unknown>;
-      if (typeof candidate.id !== "string" || typeof candidate.uri !== "string" || typeof candidate.observedAt !== "string") {
+      if (
+        typeof candidate.id !== "string" ||
+        typeof candidate.uri !== "string" ||
+        typeof candidate.observedAt !== "string"
+      ) {
         return json({ error: "late update source requires id, uri and observedAt" }, 400);
       }
       source = { id: candidate.id, uri: candidate.uri, observedAt: candidate.observedAt };
@@ -2278,11 +2315,14 @@ async function handler(req: Request): Promise<Response> {
       return json({ inserted: result.inserted, record: result.record });
     } catch (error) {
       const message = error instanceof Error ? error.message : "late report update failed";
-      const status = error instanceof ReportRecordConflictError || message.startsWith("stale report block comparison:")
-        ? 409
-        : /^(report operation |quote report update|feedback report update|each late report update|block relatedAt|source observedAt|late update source|duplicate report block)/.test(message)
-          ? 400
-          : 500;
+      const status =
+        error instanceof ReportRecordConflictError || message.startsWith("stale report block comparison:")
+          ? 409
+          : /^(report operation |quote report update|feedback report update|each late report update|block relatedAt|source observedAt|late update source|duplicate report block)/.test(
+                message,
+              )
+            ? 400
+            : 500;
       return json({ error: message }, status);
     }
   }
@@ -3947,7 +3987,9 @@ async function handler(req: Request): Promise<Response> {
             try {
               await eventsStore.record(auditEvent);
             } catch (err) {
-              console.error(`alerts intake: health-hook audit append failed (${err instanceof Error ? err.message : "error"})`);
+              console.error(
+                `alerts intake: health-hook audit append failed (${err instanceof Error ? err.message : "error"})`,
+              );
             }
           }
           if (v.value.state === "up") {

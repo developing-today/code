@@ -17,7 +17,13 @@ beforeAll(async () => {
   proc = spawn({
     cmd: ["bun", "run", "src/server.ts"],
     cwd: import.meta.dir + "/..",
-    env: { ...Bun.env, PM_AGG_PORT: String(port), PM_AGG_SOURCE: "fixtures", PM_AGG_STORE_BACKEND: "file", PM_AGG_REPORT_RECORDS_FILE: reportRecordsFile },
+    env: {
+      ...Bun.env,
+      PM_AGG_PORT: String(port),
+      PM_AGG_SOURCE: "fixtures",
+      PM_AGG_STORE_BACKEND: "file",
+      PM_AGG_REPORT_RECORDS_FILE: reportRecordsFile,
+    },
     stdout: "pipe",
     stderr: "inherit",
   });

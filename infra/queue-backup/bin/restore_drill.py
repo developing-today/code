@@ -68,8 +68,9 @@ def _check_schema(conn, expected_sha, label):
         raise DrillError(f"{label} schema fingerprint differs from the manifest")
 
 
-def drill(dump_path, manifest_path, out_path, worker="restore-drill",
-          allow_empty=False):
+def drill(
+    dump_path, manifest_path, out_path, worker="restore-drill", allow_empty=False
+):
     if os.path.exists(out_path):
         raise DrillError(f"refusing to overwrite existing drill target: {out_path}")
     try:
@@ -142,8 +143,7 @@ def _claim_check(conn, worker, allow_empty):
     if row != ("claimed", worker, attempts_before + 1, lease_until):
         raise DrillError(f"claimed row reads back wrong: {row}")
     again = conn.execute(
-        CLAIM_SQL, ("other-worker", now, lease_until, "other-worker", now,
-                    task_id, now)
+        CLAIM_SQL, ("other-worker", now, lease_until, "other-worker", now, task_id, now)
     )
     if again.rowcount != 0:
         raise DrillError("second claim on the same task matched a row")
@@ -159,7 +159,8 @@ def _parser():
     )
     parser.add_argument("--worker", default="restore-drill", help="drill worker id")
     parser.add_argument(
-        "--allow-empty", action="store_true",
+        "--allow-empty",
+        action="store_true",
         help="pass when the store holds no claimable task",
     )
     return parser
@@ -169,8 +170,11 @@ def main(argv=None):
     args = _parser().parse_args(argv)
     try:
         report = drill(
-            args.dump, args.manifest, args.out,
-            worker=args.worker, allow_empty=args.allow_empty,
+            args.dump,
+            args.manifest,
+            args.out,
+            worker=args.worker,
+            allow_empty=args.allow_empty,
         )
     except (DrillError, OSError) as exc:
         print(f"queue-backup: drill: {exc}", file=sys.stderr)

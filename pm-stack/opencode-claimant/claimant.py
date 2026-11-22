@@ -769,7 +769,9 @@ def cap_step() -> int:
     return cap_room
 
 
-OPENCODE_WORKING_HOOK = Path(__file__).resolve().parent.parent / "health-hooks" / "opencode-working.sh"
+OPENCODE_WORKING_HOOK = (
+    Path(__file__).resolve().parent.parent / "health-hooks" / "opencode-working.sh"
+)
 
 
 def fire_opencode_working_hook(caller: str, detail: str) -> None:
@@ -1160,7 +1162,9 @@ def _post_handback_agent_note(task_id, candidate) -> bool:
     the park - the caller records it in the hand-back record.
     Returns True iff the post is confirmed by the gh CLI's exit
     code."""
-    packet = candidate.get("packet") if isinstance(candidate.get("packet"), dict) else {}
+    packet = (
+        candidate.get("packet") if isinstance(candidate.get("packet"), dict) else {}
+    )
     repo = packet.get("repo") or ""
     issue_no = candidate.get("issue_number")
     if issue_no is None and isinstance(packet.get("issue"), dict):
@@ -1740,7 +1744,15 @@ def _fire(mode: str):
 
     if has_candidates is None:
         print("Gate check failed: candidate discovery unknown. Exiting.")
-        log_fire(mode, None, [], None, [{"reason": "gate_unknown"}], health=fire_health, babysitter=babysitter_record)
+        log_fire(
+            mode,
+            None,
+            [],
+            None,
+            [{"reason": "gate_unknown"}],
+            health=fire_health,
+            babysitter=babysitter_record,
+        )
         return 1
 
     if not has_candidates:
@@ -1762,7 +1774,9 @@ def _fire(mode: str):
 
     if cap_room == -1:
         print("Warning: Could not determine cap room. Exiting.")
-        fire_opencode_working_hook("lane-launch", "claimant cap step could not read OpenCode sessions")
+        fire_opencode_working_hook(
+            "lane-launch", "claimant cap step could not read OpenCode sessions"
+        )
         log_fire(
             mode,
             fire_candidates,

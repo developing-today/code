@@ -351,22 +351,17 @@ export function resolveSpawnRollups(items: ProjectPoolItem[]): ProjectPoolItem[]
   }
   return items.map((item) => {
     const isDesign =
-      item.labels?.some(
-        (label) => label === "design" || label.startsWith("design/") || label === "kind/design",
-      ) || item.kind?.toLowerCase() === "design";
+      item.labels?.some((label) => label === "design" || label.startsWith("design/") || label === "kind/design") ||
+      item.kind?.toLowerCase() === "design";
     const summary = item.subIssuesSummary;
     if (!isDesign || !summary) {
       const { spawnRollup: _stale, ...unchanged } = item;
       return unchanged;
     }
     const children = childrenByParent.get(item.ref) ?? [];
-    const directChildRefs = new Set(
-      children.filter((child) => child.state === "open").map((child) => child.ref),
-    );
+    const directChildRefs = new Set(children.filter((child) => child.state === "open").map((child) => child.ref));
     const inProgressRefs = new Set(
-      children
-        .filter((child) => child.status?.toLowerCase() === "in progress")
-        .map((child) => child.ref),
+      children.filter((child) => child.status?.toLowerCase() === "in progress").map((child) => child.ref),
     );
     return {
       ...item,

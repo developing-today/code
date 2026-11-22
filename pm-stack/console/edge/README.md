@@ -7,17 +7,17 @@ runs the fleet's tools can be reached.
 
 ## What runs where
 
-| Thing                                                    | Where                          | When the laptop cannot be reached                                           |
-| -------------------------------------------------------- | ------------------------------ | --------------------------------------------------------------------------- |
-| The app's page, script and icons                         | edge                           | unchanged                                                                   |
-| Checking who is calling                                  | edge, and again on the laptop  | the edge still answers the owner; anyone it is unsure of gets nothing       |
-| State (in progress, next, needs me, prompts, pull…)      | edge, from the laptop's report | the board, pull requests, ranked issues and prompts refresh from GitHub and the queue store after one minute of silence; the rest stays as of the last report |
-| Notifications: keys, subscriptions, sending              | edge                           | unchanged; and one says the laptop has gone quiet                           |
-| Linked phones and the widget's summary                   | edge                           | unchanged                                                                   |
-| Actions safe to do late (prompts, answers, comments, …)  | laptop, relayed at once        | held at the edge, run once when it is back, dropped after a day and said so |
+| Thing                                                                            | Where                                             | When the laptop cannot be reached                                                                                                                                                            |
+| -------------------------------------------------------------------------------- | ------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| The app's page, script and icons                                                 | edge                                              | unchanged                                                                                                                                                                                    |
+| Checking who is calling                                                          | edge, and again on the laptop                     | the edge still answers the owner; anyone it is unsure of gets nothing                                                                                                                        |
+| State (in progress, next, needs me, prompts, pull…)                              | edge, from the laptop's report                    | the board, pull requests, ranked issues and prompts refresh from GitHub and the queue store after one minute of silence; the rest stays as of the last report                                |
+| Notifications: keys, subscriptions, sending                                      | edge                                              | unchanged; and one says the laptop has gone quiet                                                                                                                                            |
+| Linked phones and the widget's summary                                           | edge                                              | unchanged                                                                                                                                                                                    |
+| Actions safe to do late (prompts, answers, comments, …)                          | laptop, relayed at once                           | held at the edge, run once when it is back, dropped after a day and said so                                                                                                                  |
 | Direct actions (reply to or close a prompt, comment, rank an issue, move a task) | edge, once the laptop has been quiet for a minute | run at the edge through the laptop's own classes, and never sent to the laptop, so they are not done twice; a new prompt is filed at the edge and only its queue task is held for the laptop |
-| Actions not safe to do late (merge, units, unblock, …)   | laptop, relayed at once        | refused, saying why                                                         |
-| The dashboard's own pages, logs, one pull request's page | laptop                         | a plain notice with a link to the app                                       |
+| Actions not safe to do late (merge, units, unblock, …)                           | laptop, relayed at once                           | refused, saying why                                                                                                                                                                          |
+| The dashboard's own pages, logs, one pull request's page                         | laptop                                            | a plain notice with a link to the app                                                                                                                                                        |
 
 The list of actions that may be done late is `HOLDABLE` in
 `../src/edge-proto.ts`.

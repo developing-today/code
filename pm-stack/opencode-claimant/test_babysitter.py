@@ -57,8 +57,17 @@ NOW = 1_700_000_000_000  # fixed round clock (ms)
 MIN = 60 * 1000
 
 
-def session(sid, *, updated=None, created=None, idle=None, outcome=None,
-            parent=None, provider="opencode-route", model="workhorse"):
+def session(
+    sid,
+    *,
+    updated=None,
+    created=None,
+    idle=None,
+    outcome=None,
+    parent=None,
+    provider="opencode-route",
+    model="workhorse",
+):
     s = {"id": sid}
     if parent:
         s["parentID"] = parent
@@ -79,9 +88,14 @@ def session(sid, *, updated=None, created=None, idle=None, outcome=None,
 
 
 def binding(task_id=101, **kw):
-    b = {"task_id": task_id, "queue": "repo-health-code-pilot",
-         "issue_number": 4242, "ci_live": None, "pr_merged": None,
-         "blocked_reason": None}
+    b = {
+        "task_id": task_id,
+        "queue": "repo-health-code-pilot",
+        "issue_number": 4242,
+        "ci_live": None,
+        "pr_merged": None,
+        "blocked_reason": None,
+    }
     b.update(kw)
     return b
 
@@ -138,25 +152,19 @@ class TestVerdicts(unittest.TestCase):
 
     def test_live_ci_on_bound_pr_vetoes_stall(self):
         s = session("ses_a", updated=NOW - 25 * MIN)
-        record, _ = round_of(
-            [s], bindings={"ses_a": binding(ci_live=True)}
-        )
+        record, _ = round_of([s], bindings={"ses_a": binding(ci_live=True)})
         self.assertEqual(record["verdicts"]["ses_a"]["verdict"], "progressing")
 
     def test_unknown_ci_never_proves_a_stall(self):
         s = session("ses_a", updated=NOW - 25 * MIN)
-        record, _ = round_of(
-            [s], bindings={"ses_a": binding(ci_live=None)}
-        )
+        record, _ = round_of([s], bindings={"ses_a": binding(ci_live=None)})
         v = record["verdicts"]["ses_a"]
         self.assertEqual(v["verdict"], "idle")
         self.assertIn("ci", v["reason"])
 
     def test_no_live_ci_bound_session_stalls(self):
         s = session("ses_a", updated=NOW - 25 * MIN)
-        record, _ = round_of(
-            [s], bindings={"ses_a": binding(ci_live=False)}
-        )
+        record, _ = round_of([s], bindings={"ses_a": binding(ci_live=False)})
         v = record["verdicts"]["ses_a"]
         self.assertEqual(v["verdict"], "stalled")
         self.assertEqual(v["task_id"], 101)
@@ -171,8 +179,7 @@ class TestVerdicts(unittest.TestCase):
 
     def test_walled_pool_explains_silence(self):
         s = session("ses_a", updated=NOW - 25 * MIN, provider="opencode-go")
-        pools = {"opencode-go": {"walled": True, "percent": 100.0,
-                                 "state": "ok"}}
+        pools = {"opencode-go": {"walled": True, "percent": 100.0, "state": "ok"}}
         record, _ = round_of([s], pools=pools)
         v = record["verdicts"]["ses_a"]
         self.assertEqual(v["verdict"], "walled")
@@ -181,8 +188,7 @@ class TestVerdicts(unittest.TestCase):
 
     def test_progressing_session_on_walled_pool_is_flagged_not_walled(self):
         s = session("ses_a", updated=NOW - 1 * MIN, provider="opencode-go")
-        pools = {"opencode-go": {"walled": True, "percent": 100.0,
-                                 "state": "ok"}}
+        pools = {"opencode-go": {"walled": True, "percent": 100.0, "state": "ok"}}
         record, _ = round_of([s], active_ids={"ses_a"}, pools=pools)
         v = record["verdicts"]["ses_a"]
         self.assertEqual(v["verdict"], "progressing")
@@ -190,9 +196,7 @@ class TestVerdicts(unittest.TestCase):
 
     def test_finished_bound_session_is_done_unreported(self):
         s = session("ses_a", updated=NOW - 30 * MIN, idle=NOW - 30 * MIN)
-        record, _ = round_of(
-            [s], bindings={"ses_a": binding(pr_merged=True)}
-        )
+        record, _ = round_of([s], bindings={"ses_a": binding(pr_merged=True)})
         v = record["verdicts"]["ses_a"]
         self.assertEqual(v["verdict"], "done-unreported")
         self.assertTrue(v["harvest_ready"])
@@ -210,13 +214,14 @@ class TestVerdicts(unittest.TestCase):
         self.assertEqual(record["verdicts"]["ses_a"]["verdict"], "progressing")
 
     def test_unreadable_timing_is_named_not_verdicted(self):
-        s = {"id": "ses_a", "time": {"updated": "soon"},
-             "model": {"providerID": "opencode-route", "id": "workhorse"}}
+        s = {
+            "id": "ses_a",
+            "time": {"updated": "soon"},
+            "model": {"providerID": "opencode-route", "id": "workhorse"},
+        }
         record, _ = round_of([s])
         self.assertNotIn("ses_a", record["verdicts"])
-        self.assertEqual(
-            [u["session_id"] for u in record["unclassified"]], ["ses_a"]
-        )
+        self.assertEqual([u["session_id"] for u in record["unclassified"]], ["ses_a"])
 
     def test_child_sessions_are_counted_not_verdicted(self):
         root = session("ses_root", updated=NOW - 1 * MIN)
@@ -229,8 +234,10 @@ class TestVerdicts(unittest.TestCase):
     def test_timeless_session_fails_closed_to_confirmed_stall(self):
         # No readable activity stamp and not in the active set: the
         # fleet's zombie rule - indistinguishable from expired.
-        s = {"id": "ses_a", "model": {"providerID": "opencode-route",
-                                      "id": "workhorse"}}
+        s = {
+            "id": "ses_a",
+            "model": {"providerID": "opencode-route", "id": "workhorse"},
+        }
         record, _ = round_of([s])
         v = record["verdicts"]["ses_a"]
         self.assertEqual(v["verdict"], "stalled")
@@ -246,18 +253,24 @@ class TestRoundDelta(unittest.TestCase):
         # c is new, and the round no longer sees a fourth session.
         b2 = session("ses_b", updated=NOW - 1 * MIN)
         c = session("ses_c", updated=NOW - 1 * MIN)
-        gone_state = {"round": state1["round"],
-                      "sessions": dict(state1["sessions"])}
+        gone_state = {"round": state1["round"], "sessions": dict(state1["sessions"])}
         gone_state["sessions"]["ses_gone"] = {
-            "verdict": "idle", "confirmed": False,
-            "updated_ms": NOW - 1 * MIN, "pool": None}
-        r2, _ = round_of([a, b2, c], active_ids={"ses_a", "ses_c"},
-                         prior_state=gone_state, now_ms=NOW + 25 * MIN)
+            "verdict": "idle",
+            "confirmed": False,
+            "updated_ms": NOW - 1 * MIN,
+            "pool": None,
+        }
+        r2, _ = round_of(
+            [a, b2, c],
+            active_ids={"ses_a", "ses_c"},
+            prior_state=gone_state,
+            now_ms=NOW + 25 * MIN,
+        )
         changed = {ch["session_id"]: ch for ch in r2["changes"]}
         self.assertNotIn("ses_a", changed)
-        self.assertIn("ses_b", changed)      # progressing -> stalled
-        self.assertIn("ses_c", changed)      # new
-        self.assertIn("ses_gone", changed)   # gone
+        self.assertIn("ses_b", changed)  # progressing -> stalled
+        self.assertIn("ses_c", changed)  # new
+        self.assertIn("ses_gone", changed)  # gone
         self.assertEqual(changed["ses_gone"]["change"], "gone")
 
 
@@ -265,7 +278,9 @@ class TestBabysitterStep(unittest.TestCase):
     def _inputs(self):
         s = session("ses_a", updated=NOW - 25 * MIN)
         return dict(
-            sessions=[s], active_ids=set(), bindings={},
+            sessions=[s],
+            active_ids=set(),
+            bindings={},
             now_ms=NOW,
         )
 
@@ -285,9 +300,7 @@ class TestBabysitterStep(unittest.TestCase):
             # confirms the stall - persistence is the mechanism.
             inputs = self._inputs()
             inputs["now_ms"] = NOW + 20 * MIN
-            rec2 = babysitter.babysitter_step(
-                "live", state_dir=state_dir, **inputs
-            )
+            rec2 = babysitter.babysitter_step("live", state_dir=state_dir, **inputs)
             self.assertTrue(rec2["verdicts"]["ses_a"]["confirmed"])
             self.assertEqual(len(log.read_text().splitlines()), 2)
 
@@ -305,8 +318,13 @@ class TestBabysitterStep(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             state_dir = Path(tmp)
             rec = babysitter.babysitter_step(
-                "live", sessions=None, active_ids=None, bindings={},
-                pools={}, state_dir=state_dir, now_ms=NOW,
+                "live",
+                sessions=None,
+                active_ids=None,
+                bindings={},
+                pools={},
+                state_dir=state_dir,
+                now_ms=NOW,
             )
             self.assertEqual(rec["error"], "sessions_unreadable")
             self.assertFalse((state_dir / "babysitter-rounds.jsonl").exists())
@@ -319,20 +337,31 @@ class TestBabysitterStep(unittest.TestCase):
                 "shadow", state_dir=state_dir, **self._inputs()
             )
             self.assertEqual(rec["pool_state"], "unread")
-            (state_dir / "pool-state.json").write_text(json.dumps({
-                "pools": {"opencode-route": {"walled": True,
-                                             "percent": 100.0,
-                                             "state": "ok"}}
-            }))
+            (state_dir / "pool-state.json").write_text(
+                json.dumps(
+                    {
+                        "pools": {
+                            "opencode-route": {
+                                "walled": True,
+                                "percent": 100.0,
+                                "state": "ok",
+                            }
+                        }
+                    }
+                )
+            )
             s = session("ses_a", updated=NOW - 25 * MIN)
             rec2 = babysitter.babysitter_step(
-                "shadow", sessions=[s], active_ids=set(), bindings={},
-                pools=None, state_dir=state_dir, now_ms=NOW,
+                "shadow",
+                sessions=[s],
+                active_ids=set(),
+                bindings={},
+                pools=None,
+                state_dir=state_dir,
+                now_ms=NOW,
             )
             self.assertEqual(rec2["pool_state"], "read")
-            self.assertEqual(
-                rec2["verdicts"]["ses_a"]["verdict"], "walled"
-            )
+            self.assertEqual(rec2["verdicts"]["ses_a"]["verdict"], "walled")
 
 
 class TestFireWiring(unittest.TestCase):
@@ -353,25 +382,23 @@ class TestFireWiring(unittest.TestCase):
             fires = state_dir / "fires.jsonl"
             with (
                 patch.object(claimant, "read_mode", return_value="shadow"),
-                patch.object(claimant, "run_poll",
-                             return_value={"candidates": []}),
-                patch.object(claimant, "run_queue_health",
-                             return_value="health-test-line"),
-                patch.object(claimant, "_load_babysitter_module",
-                             return_value=FakeBabysitter),
+                patch.object(claimant, "run_poll", return_value={"candidates": []}),
+                patch.object(
+                    claimant, "run_queue_health", return_value="health-test-line"
+                ),
+                patch.object(
+                    claimant, "_load_babysitter_module", return_value=FakeBabysitter
+                ),
                 patch.object(claimant, "STATE_DIR", state_dir),
                 patch.object(claimant, "FIRES_FILE", fires),
             ):
                 rc = claimant.main()
             self.assertEqual(rc, 0)
             entries = [
-                json.loads(line)
-                for line in fires.read_text().splitlines() if line
+                json.loads(line) for line in fires.read_text().splitlines() if line
             ]
         self.assertEqual(len(entries), 1)
-        self.assertEqual(
-            entries[0]["babysitter"], dict(sentinel, mode="shadow")
-        )
+        self.assertEqual(entries[0]["babysitter"], dict(sentinel, mode="shadow"))
 
 
 if __name__ == "__main__":

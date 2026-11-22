@@ -107,7 +107,10 @@ def sync_mirror(source, destination):
         default_branch = _gh([f"repos/{repository}", "--jq", ".default_branch"])
     if default_branch and f"refs/heads/{default_branch}" not in expected:
         source_default = _git(["--git-dir", source, "symbolic-ref", "HEAD"])
-        if not source_default.startswith("refs/heads/") or source_default not in expected:
+        if (
+            not source_default.startswith("refs/heads/")
+            or source_default not in expected
+        ):
             raise RuntimeError(
                 "source default branch is unavailable; refusing to prune the "
                 "destination default branch"
@@ -180,14 +183,20 @@ def mirror_repo(repo, root):
 
 def _parser():
     parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
-    parser.add_argument("--repo", required=True, help="planned repository as OWNER/REPO")
-    parser.add_argument("--root", help="backup tree root (defaults to configured backup_root)")
+    parser.add_argument(
+        "--repo", required=True, help="planned repository as OWNER/REPO"
+    )
+    parser.add_argument(
+        "--root", help="backup tree root (defaults to configured backup_root)"
+    )
     return parser
 
 
 def main(argv=None):
     args = _parser().parse_args(argv)
-    root = os.path.abspath(os.path.expanduser(args.root)) if args.root else backup_root()
+    root = (
+        os.path.abspath(os.path.expanduser(args.root)) if args.root else backup_root()
+    )
     try:
         result = mirror_repo(args.repo, root)
     except (OSError, RuntimeError, ValueError) as exc:

@@ -126,7 +126,9 @@ class LibsqlClient:
         data = http_json("POST", f"{self.base}/v2/pipeline", self.token, body)
         results = data.get("results") or []
         if not results or results[0].get("type") != "ok":
-            raise RuntimeError(f"libsql execute failed for {sql[:80]!r}: {str(data)[:300]}")
+            raise RuntimeError(
+                f"libsql execute failed for {sql[:80]!r}: {str(data)[:300]}"
+            )
         result = results[0]["response"]["result"]
         cols = [c["name"] for c in result.get("cols", [])]
         rows = [
@@ -194,9 +196,7 @@ def read_table_quoted(client, table, ncols):
     """
     colnames, _probe = client.execute(f'SELECT * FROM "{table}" LIMIT 0')
     if len(colnames) != ncols:
-        raise RuntimeError(
-            f"{table}: expected {ncols} columns, found {len(colnames)}"
-        )
+        raise RuntimeError(f"{table}: expected {ncols} columns, found {len(colnames)}")
     quoted = ", ".join(f'quote("{c}")' for c in colnames)
     offset = 0
     for _page in range(MAX_PAGES):
@@ -245,9 +245,7 @@ def build_dump(client, exported_at):
         _c, _probe = client.execute(f'SELECT * FROM "{name}" LIMIT 0')
         ncols = len(_c)
         for row in read_table_quoted(client, name, ncols):
-            lines.append(
-                f'INSERT INTO "{name}" VALUES (' + ", ".join(row) + ");"
-            )
+            lines.append(f'INSERT INTO "{name}" VALUES (' + ", ".join(row) + ");")
     for kind, _name, _t, sql in schema:
         if kind in ("index", "view", "trigger"):
             lines.append(sql.rstrip().rstrip(";") + ";")
@@ -284,9 +282,7 @@ class D1Client:
         return data.get("result")
 
     def find_database(self, name):
-        result = self._call(
-            "GET", f"/accounts/{self.account}/d1/database?name={name}"
-        )
+        result = self._call("GET", f"/accounts/{self.account}/d1/database?name={name}")
         for db in result or []:
             if db.get("name") == name:
                 return db
@@ -316,9 +312,7 @@ class D1Client:
             {"action": "init", "etag": digest},
         )
         upload_url, filename = init["upload_url"], init["filename"]
-        req = urllib.request.Request(
-            upload_url, data=sql_text.encode(), method="PUT"
-        )
+        req = urllib.request.Request(upload_url, data=sql_text.encode(), method="PUT")
         try:
             with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT_SECONDS) as resp:
                 etag = resp.headers.get("etag", "").strip('"')

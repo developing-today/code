@@ -1,1 +1,12 @@
-{"seed":"01a1d466-01a5-75a8-9c41-3ff2b6fc7951","commit":"b022e30e8fea4d0552952512f0fc0eff9ab059da","ref":"refs/heads/queue/9174-5276-prompt-advise-hooks","event":"pull_request","run":"https://github.com/developing-today/code/actions/runs/43377547853","attempt":1,"result":"failure","derivation":"v1","generators":"","date":"2026-11-13"}
+{
+  "seed": "01a1d466-01a5-75a8-9c41-3ff2b6fc7951",
+  "commit": "b022e30e8fea4d0552952512f0fc0eff9ab059da",
+  "ref": "refs/heads/queue/9174-5276-prompt-advise-hooks",
+  "event": "pull_request",
+  "run": "https://github.com/developing-today/code/actions/runs/43377547853",
+  "attempt": 1,
+  "result": "failure",
+  "derivation": "v1",
+  "generators": "",
+  "date": "2026-11-13"
+}

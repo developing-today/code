@@ -44,18 +44,27 @@ function harness() {
 describe("the edge's run: GitHub through REST", () => {
   test("a GET with -f pairs becomes a query string, with the token on it", async () => {
     const h = harness();
-    const out = await h.run(["fleet", "gh", "api", "search/issues", "-f", "q=repo:x is:open", "-f", "per_page=100", "-f", "page=2"]);
+    const out = await h.run([
+      "fleet",
+      "gh",
+      "api",
+      "search/issues",
+      "-f",
+      "q=repo:x is:open",
+      "-f",
+      "per_page=100",
+      "-f",
+      "page=2",
+    ]);
     expect(h.calls).toHaveLength(1);
-    expect(h.calls[0].url).toBe(
-      "https://api.github.com/search/issues?q=repo%3Ax+is%3Aopen&per_page=100&page=2",
-    );
+    expect(h.calls[0].url).toBe("https://api.github.com/search/issues?q=repo%3Ax+is%3Aopen&per_page=100&page=2");
     expect(h.calls[0].init.method).toBe("GET");
     expect(h.calls[0].init.headers.authorization).toBe("Bearer gh-test");
     expect(h.calls[0].init.headers["x-github-api-version"]).toBe("2022-11-28");
     // The Workers runtime supplies no User-Agent of its own, and GitHub
     // requires one: the call must carry this program's.
     expect(h.calls[0].init.headers["user-agent"]).toBe("pm-console-edge");
-    expect(out).toEqual({ code: 0, stdout: "[{\"number\":1}]", stderr: "" });
+    expect(out).toEqual({ code: 0, stdout: '[{"number":1}]', stderr: "" });
   });
 
   test("a path that already carries a query keeps it, and -f pairs join it", async () => {
@@ -104,11 +113,7 @@ describe("the edge's run: GitHub through REST", () => {
 
   test("without a GitHub token the call is refused before it is made", async () => {
     const h = harness();
-    const noToken = edgeRun(
-      directConfig(edgeConfig),
-      { queueToken: "queue-test" },
-      h.fetchImpl,
-    );
+    const noToken = edgeRun(directConfig(edgeConfig), { queueToken: "queue-test" }, h.fetchImpl);
     await expect(noToken(["fleet", "gh", "api", "repos/x/pulls"])).rejects.toThrow(/no GitHub token/);
     expect(h.calls).toHaveLength(0);
   });
@@ -154,7 +159,10 @@ describe("the direct classes", () => {
 
   test("each direct section is read by the class that reads it on the laptop, and nothing else is", async () => {
     const seen: string[] = [];
-    const ops = { prs: async () => (seen.push("prs"), [] as unknown[]), priorities: async () => (seen.push("priorities"), {}) };
+    const ops = {
+      prs: async () => (seen.push("prs"), [] as unknown[]),
+      priorities: async () => (seen.push("priorities"), {}),
+    };
     const work = { board: async () => (seen.push("board"), {}), asks: async () => (seen.push("asks"), []) };
     for (const section of ["board", "prs", "priorities", "asks"]) {
       await directRead(section, ops as never, work as never);
@@ -170,7 +178,9 @@ describe("the direct classes", () => {
       queueToken: "queue-test",
       fetchImpl: h.fetchImpl,
     });
-    h.answer.body = { results: [{ type: "ok", response: { result: { cols: [{ name: "n" }], rows: [[{ value: 3 }]] } } }] };
+    h.answer.body = {
+      results: [{ type: "ok", response: { result: { cols: [{ name: "n" }], rows: [[{ value: 3 }]] } } }],
+    };
     const rows = await ops.sql("SELECT count(*) AS n FROM tasks WHERE queue = ?", ["repo-health-code-pilot"]);
     expect(rows).toEqual([{ n: 3 }]);
     expect(h.calls[0].url).toBe(`${cfg.queueDbUrl}/v2/pipeline`);

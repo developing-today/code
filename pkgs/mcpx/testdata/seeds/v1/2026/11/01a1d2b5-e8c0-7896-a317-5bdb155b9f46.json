@@ -1,1 +1,12 @@
-{"seed":"01a1d2b5-e8c0-7896-a317-5bdb155b9f46","commit":"cf7a74ed59881f319db7e19f8b367f7aeb7d63ad","ref":"refs/heads/queue/15313-1962-adapter-import","event":"pull_request","run":"https://github.com/developing-today/code/actions/runs/43333778244","attempt":1,"result":"failure","derivation":"v1","generators":"","date":"2026-11-13"}
+{
+  "seed": "01a1d2b5-e8c0-7896-a317-5bdb155b9f46",
+  "commit": "cf7a74ed59881f319db7e19f8b367f7aeb7d63ad",
+  "ref": "refs/heads/queue/15313-1962-adapter-import",
+  "event": "pull_request",
+  "run": "https://github.com/developing-today/code/actions/runs/43333778244",
+  "attempt": 1,
+  "result": "failure",
+  "derivation": "v1",
+  "generators": "",
+  "date": "2026-11-13"
+}

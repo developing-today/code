@@ -86,9 +86,7 @@ export function actions(ops: Ops, work: Work, push?: Push, devices?: Devices): R
         // runs late, so nobody is listening for the answer, and a
         // `queued: false` would be recorded done and the held prompt
         // acknowledged as sent with no queue task behind it.
-        const queued = await ops.enqueue(
-          promptPacket(ops.cfg.repo, ops.cfg.queue, issue, a.text, a.at),
-        );
+        const queued = await ops.enqueue(promptPacket(ops.cfg.repo, ops.cfg.queue, issue, a.text, a.at));
         if (queued.code !== 0) {
           throw new OpError(
             502,

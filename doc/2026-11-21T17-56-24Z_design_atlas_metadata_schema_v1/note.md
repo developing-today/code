@@ -23,7 +23,7 @@ The artifact identity is external to the bytes whose digest it names, avoiding a
 MetadataArtifactId = "sha256:" + lowercase_hex(SHA-256(exact_metadata_file_bytes))
 ```
 
-For a PM record, which is embedded in an issue or PR body rather than stored as a file, `exact_metadata_file_bytes` is the JSON object text inside the block: take the bytes between the `<!-- pm-metadata:start -->` and `<!-- pm-metadata:end -->` markers as the body is returned by the source API, remove one opening code-fence line (```` ``` ```` or ```` ```json ````) and its closing fence line if present, then trim leading and trailing ASCII whitespace (space, tab, CR, LF). The remaining bytes, from the object's opening `{` to its closing `}`, are hashed unchanged. The markers, the fence, and the surrounding body are never part of the digest.
+For a PM record, which is embedded in an issue or PR body rather than stored as a file, `exact_metadata_file_bytes` is the JSON object text inside the block: take the bytes between the `<!-- pm-metadata:start -->` and `<!-- pm-metadata:end -->` markers as the body is returned by the source API, remove one opening code-fence line (` ``` ` or ` ```json `) and its closing fence line if present, then trim leading and trailing ASCII whitespace (space, tab, CR, LF). The remaining bytes, from the object's opening `{` to its closing `}`, are hashed unchanged. The markers, the fence, and the surrounding body are never part of the digest.
 
 The main-store record/reference carries this ID for signed and unsigned artifacts alike. Do not hash a parsed-and-reserialized value, normalize line endings, or include a signature companion in the metadata-file digest. A signature is a companion assertion over the exact data bytes. The `.json.signature` companion contains the detached signature and its verification profile; `.cert` carries certificate material/reference. A `.json.signed` container may package the original data and its asserted primary signature, but does not change the data artifact ID. **V1 convention: sign the data bytes**, not the signature companion; an envelope may attest to both as an explicit higher-level statement, but the detached data signature is the primary proof. This is reversible by a new explicit signature profile, never by changing old bytes or guessing from filenames.
 
@@ -44,7 +44,7 @@ For PM bodies, `pm_meta` replaces `schema_version`; the outer JSON dictionary is
   "pm_meta": 1,
   "direct_parent": null,
   "links": [],
-  "lineage": {"design": null, "roadmap_item": null, "priority": null},
+  "lineage": { "design": null, "roadmap_item": null, "priority": null },
   "provenance": {},
   "extras": {}
 }

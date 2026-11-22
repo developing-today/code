@@ -11,9 +11,9 @@ state directory for the latest log and append-only run history.
 in [`doc/fleet-schedule-registry.md`](../../doc/fleet-schedule-registry.md);
 update it in the same change as any deployed schedule.
 
-| Job | Route | Cadence | State |
-| --- | --- | --- | --- |
-| `quota-freshness-summary` | `opencode-route/workhorse` | hourly | enabled 2026-11-21 after explicit pilot decision; first hourly firing observed exit 0 |
+| Job                       | Route                      | Cadence | State                                                                                 |
+| ------------------------- | -------------------------- | ------- | ------------------------------------------------------------------------------------- |
+| `quota-freshness-summary` | `opencode-route/workhorse` | hourly  | enabled 2026-11-21 after explicit pilot decision; first hourly firing observed exit 0 |
 
 The pilot reads `~/.local/state/pm-aggregator/quota-current.json`, but
 `summarize.py` passes only provider names, status, timestamps, and window

@@ -82,7 +82,16 @@ async function setup(options: { direct?: boolean } = {}) {
   const queueCalls: { sql: string; args: (string | number)[] }[] = [];
   const ghIssues: Record<
     number,
-    { number: number; title: string; body: string; html_url: string; state: string; created_at: string; updated_at: string; comments: number }
+    {
+      number: number;
+      title: string;
+      body: string;
+      html_url: string;
+      state: string;
+      created_at: string;
+      updated_at: string;
+      comments: number;
+    }
   > = {
     201: {
       number: 201,
@@ -205,7 +214,24 @@ async function setup(options: { direct?: boolean } = {}) {
       goal: null,
     },
   ];
-  const TASK_COLS = ["id", "title", "priority", "status", "attempts", "claimed", "lease", "created", "worker", "lane", "model", "kind", "issue", "pr", "step", "goal"];
+  const TASK_COLS = [
+    "id",
+    "title",
+    "priority",
+    "status",
+    "attempts",
+    "claimed",
+    "lease",
+    "created",
+    "worker",
+    "lane",
+    "model",
+    "kind",
+    "issue",
+    "pr",
+    "step",
+    "goal",
+  ];
   const taskRow = (t: (typeof queueTasks)[number]) =>
     TASK_COLS.map((c) => ({ value: (t as Record<string, string | number | null>)[c] ?? null }));
   const queueAnswer = (sql: string, args: (string | number)[]) => {
@@ -238,7 +264,9 @@ async function setup(options: { direct?: boolean } = {}) {
     if (sql.includes("status = 'blocked'")) {
       return {
         cols: cols(["why", "n"]),
-        rows: rows([[{ value: "waiting on the owner" }, { value: queueTasks.filter((t) => t.status === "blocked").length }]]),
+        rows: rows([
+          [{ value: "waiting on the owner" }, { value: queueTasks.filter((t) => t.status === "blocked").length }],
+        ]),
       };
     }
     if (sql.includes("dedupe_key IN")) {
@@ -264,7 +292,8 @@ async function setup(options: { direct?: boolean } = {}) {
     const ok = (data: unknown, status = 200) => ({ ok: true, status, json: async () => data });
     const fail = (status: number, data: unknown) => ({ ok: false, status, json: async () => data });
     if (method === "GET" && path === "pulls") return ok(ghPrs);
-    if (method === "GET" && u.pathname === "/search/issues") return ok({ items: ghSearch, total_count: ghSearch.length });
+    if (method === "GET" && u.pathname === "/search/issues")
+      return ok({ items: ghSearch, total_count: ghSearch.length });
     if (method === "GET" && path === "issues") {
       return ok(
         Object.values(ghIssues)
@@ -275,7 +304,11 @@ async function setup(options: { direct?: boolean } = {}) {
     const issueMatch = /^issues\/(\d+)$/.exec(path);
     if (method === "GET" && issueMatch) {
       const n = Number(issueMatch[1]);
-      return ok({ number: n, state: ghIssues[n]?.state ?? "open", labels: (ghLabels[n] ?? []).map((name) => ({ name })) });
+      return ok({
+        number: n,
+        state: ghIssues[n]?.state ?? "open",
+        labels: (ghLabels[n] ?? []).map((name) => ({ name })),
+      });
     }
     const commentsMatch = /^issues\/(\d+)\/comments$/.exec(path);
     if (method === "GET" && commentsMatch) return ok(ghComments[Number(commentsMatch[1])] ?? []);
@@ -321,7 +354,10 @@ async function setup(options: { direct?: boolean } = {}) {
       const n = Number(labelsMatch[1]);
       const parsed = JSON.parse(body ?? "{}") as { labels?: string[] };
       for (const label of parsed.labels ?? []) if (!ghLabels[n].includes(label)) ghLabels[n].push(label);
-      return ok(ghLabels[n].map((name) => ({ name })), 201);
+      return ok(
+        ghLabels[n].map((name) => ({ name })),
+        201,
+      );
     }
     const labelMatch = /^issues\/(\d+)\/labels\/(.+)$/.exec(path);
     if (method === "DELETE" && labelMatch) {
@@ -332,7 +368,10 @@ async function setup(options: { direct?: boolean } = {}) {
     if (method === "POST" && path === "labels") {
       const parsed = JSON.parse(body ?? "{}") as { name?: string };
       if (parsed.name && ghLabelNames.has(parsed.name)) {
-        return fail(422, { message: "Validation Failed", errors: [{ resource: "Label", code: "already_exists", field: "name" }] });
+        return fail(422, {
+          message: "Validation Failed",
+          errors: [{ resource: "Label", code: "already_exists", field: "name" }],
+        });
       }
       if (parsed.name) ghLabelNames.add(parsed.name);
       return ok({ name: parsed.name }, 201);
@@ -1641,7 +1680,11 @@ describe("direct reads and writes while the host is away", () => {
     const asked = doc.asks.find((a: { issue: number }) => a.issue === 201) as {
       replies: { you: boolean; text: string }[];
     };
-    expect(asked.replies[asked.replies.length - 1]).toEqual({ you: true, at: "2026-11-22T12:01:00", text: "Thanks — noted." });
+    expect(asked.replies[asked.replies.length - 1]).toEqual({
+      you: true,
+      at: "2026-11-22T12:01:00",
+      text: "Thanks — noted.",
+    });
     // Only the queue task waits for the laptop.
     expect((w.stored.get("held") as { kind: string }[]).map((h) => h.kind)).toEqual(["prompt.enqueue"]);
     // The laptop returns: it runs the held enqueue once, and the reply is not posted again.
@@ -1801,9 +1844,7 @@ describe("direct reads and writes while the host is away", () => {
     const asked = doc.asks.find((a: { issue: number }) => a.issue === 201) as {
       replies: { you: boolean; at: string; text: string }[];
     };
-    expect(asked.replies).toEqual([
-      { you: false, at: "2026-11-22T12:31:00", text: "Done: the docs are updated." },
-    ]);
+    expect(asked.replies).toEqual([{ you: false, at: "2026-11-22T12:31:00", text: "Done: the docs are updated." }]);
     // The notifier saw that fresh reply, not the mirror's empty asks.
     expect(w.pushes).toHaveLength(1);
     expect(JSON.parse(await phone.open(w.pushes[0].body)).title).toBe("The fleet replied on #201");

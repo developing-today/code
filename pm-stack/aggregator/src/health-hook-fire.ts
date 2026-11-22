@@ -17,9 +17,7 @@ export function fireOpenCodeWorkingHook(caller: string, detail: string): boolean
     });
     return true;
   } catch (err) {
-    console.error(
-      `health-hook: failed to spawn opencode-working: ${err instanceof Error ? err.message : err}`,
-    );
+    console.error(`health-hook: failed to spawn opencode-working: ${err instanceof Error ? err.message : err}`);
     return false;
   }
 }

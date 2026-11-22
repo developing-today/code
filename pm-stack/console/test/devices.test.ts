@@ -199,7 +199,10 @@ describe("linking a phone", () => {
   test("malformed link snapshots are ignored", async () => {
     const s = store();
     try {
-      await s.devices.mergeLinks({ devices: [{ id: "bad", hash: "raw-token", name: "x", createdAt: "y", seenAt: null }], removed: "bad" });
+      await s.devices.mergeLinks({
+        devices: [{ id: "bad", hash: "raw-token", name: "x", createdAt: "y", seenAt: null }],
+        removed: "bad",
+      });
       expect(await s.devices.links()).toEqual({ devices: [], removed: [] });
     } finally {
       s.done();

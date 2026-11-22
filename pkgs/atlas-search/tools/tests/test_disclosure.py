@@ -53,7 +53,9 @@ class DisclosureClassificationTests(unittest.TestCase):
         )
         for label in (None, "", "internal", "Shareable"):
             with self.subTest(label=label):
-                self.assertFalse(atlas_search.disclosure_allows(label, "secret-bearing"))
+                self.assertFalse(
+                    atlas_search.disclosure_allows(label, "secret-bearing")
+                )
         self.assertFalse(
             atlas_search.disclosure_allows("excluded_personal_life", "secret-bearing")
         )
@@ -61,9 +63,12 @@ class DisclosureClassificationTests(unittest.TestCase):
     def test_context_intersection_matches_exhaustive_reference_model(self):
         # Oracle: an independent rank-based model of the design's four
         # destination ceilings, caller intersection, and fail-closed labels.
-        ranks = {label: rank for rank, label in enumerate(
-            ("shareable", "personal", "local-only", "secret-bearing")
-        )}
+        ranks = {
+            label: rank
+            for rank, label in enumerate(
+                ("shareable", "personal", "local-only", "secret-bearing")
+            )
+        }
         contexts = {
             "fleet-internal": "local-only",
             "hosted-per-user": "personal",
@@ -192,12 +197,8 @@ class DisclosureOutputTests(unittest.TestCase):
         self.assertEqual(filters.allowed_sens, ["shareable", "personal"])
 
     def test_full_message_is_returned_when_every_chunk_is_allowed(self):
-        self.backend.execute(
-            "UPDATE v_chunk_sens SET sensitivity='shareable'", []
-        )
-        self.backend.execute(
-            "INSERT INTO v_chunk_sens VALUES (5, 'shareable')", []
-        )
+        self.backend.execute("UPDATE v_chunk_sens SET sensitivity='shareable'", [])
+        self.backend.execute("INSERT INTO v_chunk_sens VALUES (5, 'shareable')", [])
         details = atlas_search.fetch_details(self.backend, [2])[2]
         self.assertEqual(
             atlas_search.message_obj(self.backend, details, "shareable")["text"],

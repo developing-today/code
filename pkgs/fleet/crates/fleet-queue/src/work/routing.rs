@@ -357,7 +357,7 @@ mod tests {
 
     use super::{
         CoordinationReplica, DbRoute, DoubleClaim, LegAvailability, MemoryReplica, Mode,
-        ReconcileReport, ReplicaClaim, ReplicaError, ROUTE_ORDER, mode_line, route_for,
+        ROUTE_ORDER, ReconcileReport, ReplicaClaim, ReplicaError, mode_line, route_for,
     };
     use proptest::{prop_assert, prop_assert_eq, proptest};
 
@@ -402,10 +402,7 @@ mod tests {
             github_write: false,
             github_read: false,
         };
-        assert_eq!(
-            route_for(legs),
-            (Mode::DbDegraded, DbRoute::LocalReplica)
-        );
+        assert_eq!(route_for(legs), (Mode::DbDegraded, DbRoute::LocalReplica));
     }
 
     #[test]
@@ -416,10 +413,7 @@ mod tests {
             github_write: true,
             github_read: true,
         };
-        assert_eq!(
-            route_for(legs),
-            (Mode::DbDegraded, DbRoute::GitHubMarkers)
-        );
+        assert_eq!(route_for(legs), (Mode::DbDegraded, DbRoute::GitHubMarkers));
     }
 
     #[test]

@@ -84,7 +84,9 @@ export interface LaunchFailureContext {
  * failure was established. Returns the cleanup outcome for the note,
  * or null when there is nothing to retire. Never throws: a worktree
  * outcome must not mask the launch failure being reported. */
-export type RetireWorktree = (sessionId?: string | null) => Promise<{ worktree: string; removed: boolean; reason: string } | null>;
+export type RetireWorktree = (
+  sessionId?: string | null,
+) => Promise<{ worktree: string; removed: boolean; reason: string } | null>;
 export type ReportRetirement = (outcome: { worktree: string; removed: boolean; reason: string }) => void;
 
 /**
@@ -120,7 +122,9 @@ export async function handleLaunchFailure(
   const msg = e instanceof Error ? e.message : String(e);
   // #12217: best-effort worktree retirement, reported, never thrown —
   // and never attempted while the session may still be live.
-  const retireSafely = async (retiredSessionId: string | null = sessionId): Promise<{ worktree: string; removed: boolean; reason: string } | null> => {
+  const retireSafely = async (
+    retiredSessionId: string | null = sessionId,
+  ): Promise<{ worktree: string; removed: boolean; reason: string } | null> => {
     if (!retireWorktree) return null;
     try {
       const outcome = await retireWorktree(retiredSessionId);
@@ -171,11 +175,11 @@ export async function handleLaunchFailure(
     // accepted the request. The session may still come up later, so the
     // tree cannot be retired on an empty session-list snapshot.
     const outcome = retireWorktree
-      ? await retireSafely(null) ?? {
+      ? ((await retireSafely(null)) ?? {
           worktree: "unknown",
           removed: false,
           reason: "session creation outcome is unknown; a session may still be live",
-        }
+        })
       : null;
     if (outcome) {
       worktreeNote = outcome.removed

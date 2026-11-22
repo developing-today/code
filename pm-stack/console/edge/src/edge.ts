@@ -407,7 +407,9 @@ export class Edge {
     const direct = this.directClasses(cfg);
     if (!direct) return;
     const now = this.now();
-    const stored = (await this.kv.get("selfcheck")) as { at: number; kinds: Record<string, { ok: boolean; error?: string }> } | undefined;
+    const stored = (await this.kv.get("selfcheck")) as
+      | { at: number; kinds: Record<string, { ok: boolean; error?: string }> }
+      | undefined;
     if (stored && now - stored.at < SELF_CHECK_EVERY_MS) {
       this.selfCheckResult = stored;
       return;
@@ -434,9 +436,7 @@ export class Edge {
     by: string,
   ): (packet: unknown) => Promise<{ code: number; stdout: string; stderr: string }> {
     return async (packet) => {
-      const issue = Number(
-        (packet as { payload?: { issue?: { number?: unknown } } })?.payload?.issue?.number,
-      );
+      const issue = Number((packet as { payload?: { issue?: { number?: unknown } } })?.payload?.issue?.number);
       if (!Number.isSafeInteger(issue) || issue <= 0) {
         throw new Error("the prompt's issue could not be read from its packet");
       }

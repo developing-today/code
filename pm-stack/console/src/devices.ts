@@ -99,7 +99,11 @@ export class Devices {
     try {
       const parsed = JSON.parse((await this.kept.read()) ?? "");
       if (parsed && Array.isArray(parsed.devices) && Array.isArray(parsed.pending)) {
-        store = { devices: parsed.devices, pending: parsed.pending, removed: Array.isArray(parsed.removed) ? parsed.removed : [] };
+        store = {
+          devices: parsed.devices,
+          pending: parsed.pending,
+          removed: Array.isArray(parsed.removed) ? parsed.removed : [],
+        };
       }
     } catch {
       // nothing kept yet, or something that cannot be read: start with no devices
@@ -186,7 +190,10 @@ export class Devices {
     const device = store.devices.find((d) => d.id === id);
     if (!device) throw new OpError(404, "that phone is not linked");
     store.devices = store.devices.filter((d) => d !== device);
-    store.removed = [...store.removed.filter((r) => r.hash !== device.hash), { hash: device.hash, at: new Date(this.now()).toISOString() }];
+    store.removed = [
+      ...store.removed.filter((r) => r.hash !== device.hash),
+      { hash: device.hash, at: new Date(this.now()).toISOString() },
+    ];
     await this.save();
     return { removed: device.name };
   }
@@ -219,17 +226,29 @@ export class Devices {
     }
     for (const raw of incoming.devices) {
       if (
-        !raw || typeof raw.id !== "string" || raw.id.length > 32 || typeof raw.name !== "string" || raw.name.length > 60 ||
-        typeof raw.hash !== "string" || !/^[0-9a-f]{64}$/.test(raw.hash) || !validDate(raw.createdAt) ||
+        !raw ||
+        typeof raw.id !== "string" ||
+        raw.id.length > 32 ||
+        typeof raw.name !== "string" ||
+        raw.name.length > 60 ||
+        typeof raw.hash !== "string" ||
+        !/^[0-9a-f]{64}$/.test(raw.hash) ||
+        !validDate(raw.createdAt) ||
         (raw.seenAt !== null && !validDate(raw.seenAt))
-      ) continue;
+      )
+        continue;
       const removed = store.removed.find((r) => r.hash === raw.hash);
       if (removed) continue;
       const current = store.devices.find((d) => d.hash === raw.hash);
       if (!current) store.devices.push({ ...raw });
       else {
-        current.seenAt = !current.seenAt ? raw.seenAt : !raw.seenAt ? current.seenAt :
-          Date.parse(raw.seenAt) > Date.parse(current.seenAt) ? raw.seenAt : current.seenAt;
+        current.seenAt = !current.seenAt
+          ? raw.seenAt
+          : !raw.seenAt
+            ? current.seenAt
+            : Date.parse(raw.seenAt) > Date.parse(current.seenAt)
+              ? raw.seenAt
+              : current.seenAt;
       }
     }
     store.devices = store.devices.filter((d) => !store.removed.some((r) => r.hash === d.hash));

@@ -116,7 +116,9 @@ describe("handleLaunchFailure", () => {
       9,
       error,
       "ses-failed",
-      async () => { events.push("delete"); },
+      async () => {
+        events.push("delete");
+      },
       async () => {
         events.push("retire");
         throw new Error("git worktree remove failed");
@@ -139,7 +141,9 @@ describe("handleLaunchFailure", () => {
       9,
       new Error("prompt failed"),
       "ses-failed",
-      async () => { events.push("delete"); },
+      async () => {
+        events.push("delete");
+      },
       async () => {
         events.push("retire");
         return { worktree: "/trees/task-7", removed: false, reason: "worktree is dirty" };
@@ -162,7 +166,9 @@ describe("handleLaunchFailure", () => {
       9,
       new Error("prompt failed"),
       "ses-live",
-      async () => { throw new Error("delete unavailable"); },
+      async () => {
+        throw new Error("delete unavailable");
+      },
       async (sessionId) => {
         expect(sessionId).toBe("ses-live");
         return { worktree: "/trees/task-7", removed: false, reason: "session still exists" };

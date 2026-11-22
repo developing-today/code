@@ -54,7 +54,10 @@ export function defaultReportRecordsFile(env: Record<string, string | undefined>
 
 const REPORT_UPDATE_OPERATIONS = ["edit", "replace", "quote", "append", "banner", "event-log", "feedback"] as const;
 export type ReportUpdateOperation = (typeof REPORT_UPDATE_OPERATIONS)[number];
-export type ReportLateUpdateOperation = Extract<ReportUpdateOperation, "quote" | "append" | "banner" | "event-log" | "feedback">;
+export type ReportLateUpdateOperation = Extract<
+  ReportUpdateOperation,
+  "quote" | "append" | "banner" | "event-log" | "feedback"
+>;
 const REPORT_PERIOD_KINDS = ["daily", "weekly", "monthly", "quarterly", "annual"] as const;
 const REPORT_CLASSIFICATIONS = ["implemented", "cancelled", "duplicate", "in-progress", "blocked", "queued"] as const;
 
@@ -169,12 +172,18 @@ export function makeReportRecord(input: ReportRecordInput, generatedAt = new Dat
       throw new Error(`report block ${block.id} has an invalid late update operation`);
     }
     if (block.resolution) {
-      if (!block.resolution.sourceRecordId.trim() || !["stored", "rendered", "edited", "combined"].includes(block.resolution.strategy)) {
+      if (
+        !block.resolution.sourceRecordId.trim() ||
+        !["stored", "rendered", "edited", "combined"].includes(block.resolution.strategy)
+      ) {
         throw new Error(`report block ${block.id} has invalid conflict resolution metadata`);
       }
       requireIsoDate(block.resolution.resolvedAt, "block resolution resolvedAt");
     }
-    if (block.links && (!Array.isArray(block.links) || block.links.some((link) => typeof link !== "string" || !link.trim()))) {
+    if (
+      block.links &&
+      (!Array.isArray(block.links) || block.links.some((link) => typeof link !== "string" || !link.trim()))
+    ) {
       throw new Error(`report block ${block.id} has invalid links`);
     }
   }
@@ -390,8 +399,12 @@ async function readResolutionSourceClaim(
   if (typeof location !== "string") {
     const stored = await location.load(key);
     if (!stored) return null;
-    if (!isObject(stored.document) || stored.document.sourceRecordId !== sourceRecordId ||
-        !isObject(stored.document.resolvedRecord) || typeof stored.document.resolvedRecord.id !== "string") {
+    if (
+      !isObject(stored.document) ||
+      stored.document.sourceRecordId !== sourceRecordId ||
+      !isObject(stored.document.resolvedRecord) ||
+      typeof stored.document.resolvedRecord.id !== "string"
+    ) {
       throw new Error(`permanent report resolution claim is malformed: ${sourceRecordId}`);
     }
     return stored.document.resolvedRecord as unknown as ReportRecord;
@@ -405,8 +418,12 @@ async function readResolutionSourceClaim(
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
     throw new Error(`local report resolution claim is malformed: ${sourceRecordId}`);
   }
-  if (!isObject(stored) || stored.sourceRecordId !== sourceRecordId ||
-      !isObject(stored.resolvedRecord) || typeof stored.resolvedRecord.id !== "string") {
+  if (
+    !isObject(stored) ||
+    stored.sourceRecordId !== sourceRecordId ||
+    !isObject(stored.resolvedRecord) ||
+    typeof stored.resolvedRecord.id !== "string"
+  ) {
     throw new Error(`local report resolution claim is malformed: ${sourceRecordId}`);
   }
   return stored.resolvedRecord as unknown as ReportRecord;
@@ -426,9 +443,14 @@ async function claimCurrentReportTransition(
   const digest = createHash("sha256").update(identity).digest("hex");
   const claim = { periodId, templateVersion, previousRecordId, record: candidate };
   const assertWinner = async (stored: unknown): Promise<ReportRecord> => {
-    if (!isObject(stored) || stored.periodId !== periodId || stored.templateVersion !== templateVersion ||
-        stored.previousRecordId !== previousRecordId || !isObject(stored.record) ||
-        typeof stored.record.id !== "string") {
+    if (
+      !isObject(stored) ||
+      stored.periodId !== periodId ||
+      stored.templateVersion !== templateVersion ||
+      stored.previousRecordId !== previousRecordId ||
+      !isObject(stored.record) ||
+      typeof stored.record.id !== "string"
+    ) {
       throw new Error(`report current-head claim is malformed: ${periodId}/${templateVersion}`);
     }
     const winner = stored.record as unknown as ReportRecord;
@@ -538,7 +560,10 @@ const remoteAppendChains = new WeakMap<object, Promise<unknown>>();
 function serializeRemoteAppend<T>(location: AppendOnlyDocumentRemote, fn: () => Promise<T>): Promise<T> {
   const previous = remoteAppendChains.get(location as object) ?? Promise.resolve();
   const run = previous.then(fn, fn);
-  remoteAppendChains.set(location as object, run.catch(() => {}));
+  remoteAppendChains.set(
+    location as object,
+    run.catch(() => {}),
+  );
   return run;
 }
 
@@ -622,14 +647,22 @@ async function appendReportRecordUnlocked(
 
 function currentReportRecord(events: ReportRecordEvent[], candidate: ReportRecord): ReportRecord | undefined {
   return events
-    .filter((event) => event.type === "report.generated" && event.record &&
-      event.record.period.id === candidate.period.id && event.record.templateVersion === candidate.templateVersion)
+    .filter(
+      (event) =>
+        event.type === "report.generated" &&
+        event.record &&
+        event.record.period.id === candidate.period.id &&
+        event.record.templateVersion === candidate.templateVersion,
+    )
     .map((event) => event.record!)
     .sort((left, right) => left.generatedAt.localeCompare(right.generatedAt) || left.id.localeCompare(right.id))
     .at(-1);
 }
 
-export async function appendReportRecord(location: ReportRecordLocation, record: ReportRecord): Promise<AppendReportRecordResult> {
+export async function appendReportRecord(
+  location: ReportRecordLocation,
+  record: ReportRecord,
+): Promise<AppendReportRecordResult> {
   return serializeLocationAppend(location, () => appendReportRecordUnlocked(location, record));
 }
 
@@ -651,7 +684,11 @@ export async function appendReportLateUpdate(
   if (operation === "quote" && !source) throw new Error("quote report update requires a source and date");
   if (operation === "feedback") {
     const events = await readLocationEvents(location);
-    if (!events.some((event) => event.type === "report.snapshot" && event.snapshot?.record.period.id === current.period.id)) {
+    if (
+      !events.some(
+        (event) => event.type === "report.snapshot" && event.snapshot?.record.period.id === current.period.id,
+      )
+    ) {
       throw new Error("feedback report update requires a finalized snapshot");
     }
   }
@@ -665,7 +702,9 @@ export async function appendReportLateUpdate(
   if (operation === "banner") {
     blocks.unshift(updateBlock);
   } else if (operation === "event-log") {
-    const nextEvent = blocks.findIndex((item) => item.updateOperation === "event-log" && item.relatedAt > updateBlock.relatedAt);
+    const nextEvent = blocks.findIndex(
+      (item) => item.updateOperation === "event-log" && item.relatedAt > updateBlock.relatedAt,
+    );
     if (nextEvent < 0) blocks.push(updateBlock);
     else blocks.splice(nextEvent, 0, updateBlock);
   } else {
@@ -679,15 +718,20 @@ export async function appendReportLateUpdate(
   }
   const intent = canonicalJson({ operation, block: updateBlock, source: source ?? null });
   const sourceCursor = `late:${current.id}:${createHash("sha256").update(intent).digest("hex")}`;
-  const candidate = makeReportRecord({
-    period: current.period,
-    asOf: current.asOf,
-    templateVersion: current.templateVersion,
-    sourceCursor,
-    sources,
-    blocks,
-  }, at);
-  return serializeLocationAppend(location, () => appendReportRecordUnlocked(location, candidate, current.id, operation));
+  const candidate = makeReportRecord(
+    {
+      period: current.period,
+      asOf: current.asOf,
+      templateVersion: current.templateVersion,
+      sourceCursor,
+      sources,
+      blocks,
+    },
+    at,
+  );
+  return serializeLocationAppend(location, () =>
+    appendReportRecordUnlocked(location, candidate, current.id, operation),
+  );
 }
 
 /** Read the latest record per stable ID in append order (currently one per key). */
@@ -912,7 +956,8 @@ export async function appendReportBlockConflictResolution(
     if ((strategy === "stored" || strategy === "rendered") && resolvedText !== undefined) {
       throw new Error(`${strategy} report block resolution does not accept resolved text`);
     }
-    const text = strategy === "stored" ? comparison.storedText : strategy === "rendered" ? comparison.renderedText : resolvedText!;
+    const text =
+      strategy === "stored" ? comparison.storedText : strategy === "rendered" ? comparison.renderedText : resolvedText!;
     const blockIndex = record.blocks.findIndex((block) => block.id === blockId);
     if (blockIndex < 0 || record.blocks[blockIndex].text !== comparison.storedText) {
       throw new Error("stale report block comparison: stored block has changed");
@@ -925,15 +970,20 @@ export async function appendReportBlockConflictResolution(
       text,
       resolution: { sourceRecordId: record.id, comparedRecordId, strategy, resolvedAt },
     };
-    const resolvedRecord = makeReportRecord({
-      period: record.period,
-      asOf: record.asOf,
-      templateVersion: record.templateVersion,
-      sourceCursor: cursor,
-      sources: record.sources,
-      blocks,
-    }, resolvedAt);
-    const previousResolution = (await readReportRecords(location)).find((candidate) => candidate.id === resolvedRecord.id);
+    const resolvedRecord = makeReportRecord(
+      {
+        period: record.period,
+        asOf: record.asOf,
+        templateVersion: record.templateVersion,
+        sourceCursor: cursor,
+        sources: record.sources,
+        blocks,
+      },
+      resolvedAt,
+    );
+    const previousResolution = (await readReportRecords(location)).find(
+      (candidate) => candidate.id === resolvedRecord.id,
+    );
     if (previousResolution) {
       if (!sameResolutionIntent(previousResolution, resolvedRecord, blockId)) {
         throw new ReportRecordConflictError(resolvedRecord.id);
@@ -957,7 +1007,8 @@ export async function appendReportBlockConflictResolution(
     const latest = (await readCurrentReportRecords(location)).find(
       (candidate) => candidate.period.id === record.period.id && candidate.templateVersion === record.templateVersion,
     );
-    if (!latest || latest.id !== record.id) throw new Error("stale report block comparison: report record is no longer current");
+    if (!latest || latest.id !== record.id)
+      throw new Error("stale report block comparison: report record is no longer current");
     const claimedRecord = await claimResolutionSource(location, record.id, resolvedRecord);
     if (!sameResolutionIntent(claimedRecord, resolvedRecord, blockId)) {
       throw new Error("stale report block comparison: another resolution already won");
@@ -969,10 +1020,13 @@ export async function appendReportBlockConflictResolution(
 function sameResolutionIntent(left: ReportRecord, right: ReportRecord, blockId: string): boolean {
   const leftBlock = left.blocks.find((block) => block.id === blockId);
   const rightBlock = right.blocks.find((block) => block.id === blockId);
-  return left.id === right.id && leftBlock?.text === rightBlock?.text &&
+  return (
+    left.id === right.id &&
+    leftBlock?.text === rightBlock?.text &&
     leftBlock?.resolution?.sourceRecordId === rightBlock?.resolution?.sourceRecordId &&
     leftBlock?.resolution?.comparedRecordId === rightBlock?.resolution?.comparedRecordId &&
-    leftBlock?.resolution?.strategy === rightBlock?.resolution?.strategy;
+    leftBlock?.resolution?.strategy === rightBlock?.resolution?.strategy
+  );
 }
 
 function assertRecordIdContent(events: ReportRecordEvent[], candidate: ReportRecord): void {
@@ -1044,7 +1098,12 @@ export function compareReportBlock(storedText: string, renderedText: string): Re
   // Keep review work bounded for unusually large prose blocks. A single hunk
   // remains truthful when a full line-level alignment would be too expensive.
   if ((left.length + 1) * (right.length + 1) > 200_000) {
-    return { conflict: true, storedText, renderedText, hunks: [{ before: storedText, after: renderedText, beforeLines: left, afterLines: right }] };
+    return {
+      conflict: true,
+      storedText,
+      renderedText,
+      hunks: [{ before: storedText, after: renderedText, beforeLines: left, afterLines: right }],
+    };
   }
   const rows = left.length + 1;
   const cols = right.length + 1;
@@ -1059,7 +1118,12 @@ export function compareReportBlock(storedText: string, renderedText: string): Re
   let after: string[] = [];
   const flush = () => {
     if (before.length || after.length) {
-      hunks.push({ before: before.join("\n"), after: after.join("\n"), beforeLines: [...before], afterLines: [...after] });
+      hunks.push({
+        before: before.join("\n"),
+        after: after.join("\n"),
+        beforeLines: [...before],
+        afterLines: [...after],
+      });
     }
     before = [];
     after = [];

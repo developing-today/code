@@ -563,13 +563,17 @@ const CONFIGS_SELECT = (events: string, batch: string | null, current = false) =
       'intelligence', value_num, 'costPerTaskUsd', cost_per_task_usd, 'speedTps', output_tps
     ) order by model_name, effort)
     from ${events} br
-    where ${current ? "1=1" : `br.ingest_batch_id = (select me.ingest_batch_id from ainventory_measurement_events me
+    where ${
+      current
+        ? "1=1"
+        : `br.ingest_batch_id = (select me.ingest_batch_id from ainventory_measurement_events me
       where me.source_kind = 'workbook-import'
         and me.ingest_batch_id in (select s.import_batch from ainventory_sources s
           where s.kind = 'drive-workbook'
             and s.imported_at <= (select max(s2.imported_at) from ainventory_sources s2
               where s2.import_batch = ${batchExpression(batch)} and s2.kind = 'drive-workbook'))
-      order by me.ingested_at desc limit 1)`}
+      order by me.ingested_at desc limit 1)`
+    }
       and br.benchmark like 'AA Intelligence Index%'
       and br.metric = 'intelligence_index'
       and br.benchmark_version is null`;
@@ -588,13 +592,17 @@ const CAI_SELECT = (events: string, batch: string | null, current = false) => `
       'snapshotDate', nullif(raw->>'snapshot_date', ''), 'sourceUrl', nullif(raw->>'source_url', '')
     ) order by value_num desc nulls last, model_name)
     from ${events} br
-    where ${current ? "1=1" : `br.ingest_batch_id = (select me.ingest_batch_id from ainventory_measurement_events me
+    where ${
+      current
+        ? "1=1"
+        : `br.ingest_batch_id = (select me.ingest_batch_id from ainventory_measurement_events me
       where me.source_kind = 'workbook-import'
         and me.ingest_batch_id in (select s.import_batch from ainventory_sources s
           where s.kind = 'drive-workbook'
             and s.imported_at <= (select max(s2.imported_at) from ainventory_sources s2
               where s2.import_batch = ${batchExpression(batch)} and s2.kind = 'drive-workbook'))
-      order by me.ingested_at desc limit 1)`}
+      order by me.ingested_at desc limit 1)`
+    }
       and br.benchmark like 'Artificial Analysis Coding Agent Index%'
       and br.metric = 'cai_index_score'
       and br.raw->>'benchmark_version' is not null`;

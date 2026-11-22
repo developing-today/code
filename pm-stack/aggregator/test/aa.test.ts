@@ -448,11 +448,7 @@ describe("explorer points (charts + perspectives)", () => {
         { family: "lower-y", score: 50, cost: 3, time: 2 },
       ]),
     );
-    expect(pts.filter((p) => p.frontierCostTime).map((p) => p.family)).toEqual([
-      "same-x-min",
-      "duplicate",
-      "lower-y",
-    ]);
+    expect(pts.filter((p) => p.frontierCostTime).map((p) => p.family)).toEqual(["same-x-min", "duplicate", "lower-y"]);
   });
 
   test("AA and CAI Pareto flags match the all-pairs dominance oracle under generated inputs", () => {
@@ -462,9 +458,7 @@ describe("explorer points (charts + perspectives)", () => {
     const nonDominated = (pairs: Pair[], i: number): boolean => {
       const [x, y] = pairs[i];
       if (x === null || y === null) return false;
-      return !pairs.some(
-        ([a, b]) => a !== null && b !== null && a <= x && b <= y && (a < x || b < y),
-      );
+      return !pairs.some(([a, b]) => a !== null && b !== null && a <= x && b <= y && (a < x || b < y));
     };
 
     let state = 0x50415245; // fixed seed; a failure names its generated case
@@ -507,27 +501,35 @@ describe("explorer points (charts + perspectives)", () => {
         if (i % 3 === 0) aa.rankings[i].timeTaskSec = null;
       }
 
-      const cai = rows.map((r): AaCaiRow => ({
-        modelName: r.family,
-        family: r.family,
-        creator: "Test",
-        effort: null,
-        version: "v1.5",
-        score: r.score,
-        cost: r.cost,
-        wallSec: r.time,
-        tokensPerTask: null,
-        harness: null,
-        deepSwe: null,
-        terminalBench: null,
-        sweAtlas: null,
-        snapshotDate: null,
-        sourceUrl: null,
-      }));
+      const cai = rows.map(
+        (r): AaCaiRow => ({
+          modelName: r.family,
+          family: r.family,
+          creator: "Test",
+          effort: null,
+          version: "v1.5",
+          score: r.score,
+          cost: r.cost,
+          wallSec: r.time,
+          tokensPerTask: null,
+          harness: null,
+          deepSwe: null,
+          terminalBench: null,
+          sweAtlas: null,
+          snapshotDate: null,
+          sourceUrl: null,
+        }),
+      );
 
-      for (const [source, points] of [["AA", aaPoints(aa)], ["CAI", aaCaiPoints(cai)]] as const) {
+      for (const [source, points] of [
+        ["AA", aaPoints(aa)],
+        ["CAI", aaCaiPoints(cai)],
+      ] as const) {
         const flags = points.map(({ family, frontierCost, frontierTime, frontierCostTime }) => ({
-          family, frontierCost, frontierTime, frontierCostTime,
+          family,
+          frontierCost,
+          frontierTime,
+          frontierCostTime,
         }));
         expect(flags, `${source} generated case ${sample}`).toEqual(expected);
       }

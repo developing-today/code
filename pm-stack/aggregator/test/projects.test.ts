@@ -776,10 +776,40 @@ describe("collector graph edges (#2399 contract)", () => {
       blockedBy: ["developing-today/code#3003", "developing-today/code#3004"],
     };
     const children = [
-      { ...base, id: "done", ref: "developing-today/code#3001", number: 3001, parentRef: parent.ref, state: "closed" as const, status: "Done" },
-      { ...base, id: "active", ref: "developing-today/code#3002", number: 3002, parentRef: parent.ref, status: "In Progress" },
-      { ...base, id: "blocking", ref: "developing-today/code#3003", number: 3003, parentRef: parent.ref, status: "Todo" },
-      { ...base, id: "resolved-blocker", ref: "developing-today/code#3004", number: 3004, parentRef: parent.ref, state: "closed" as const, status: "Done" },
+      {
+        ...base,
+        id: "done",
+        ref: "developing-today/code#3001",
+        number: 3001,
+        parentRef: parent.ref,
+        state: "closed" as const,
+        status: "Done",
+      },
+      {
+        ...base,
+        id: "active",
+        ref: "developing-today/code#3002",
+        number: 3002,
+        parentRef: parent.ref,
+        status: "In Progress",
+      },
+      {
+        ...base,
+        id: "blocking",
+        ref: "developing-today/code#3003",
+        number: 3003,
+        parentRef: parent.ref,
+        status: "Todo",
+      },
+      {
+        ...base,
+        id: "resolved-blocker",
+        ref: "developing-today/code#3004",
+        number: 3004,
+        parentRef: parent.ref,
+        state: "closed" as const,
+        status: "Done",
+      },
     ];
 
     const resolved = resolveSpawnRollups([parent, ...children]);

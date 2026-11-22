@@ -135,10 +135,10 @@ def disclosure_allows(classification, ceiling):
     """Return whether a raw classification may cross this disclosure boundary."""
     if classification == EXCLUDED_DISPOSITION or classification not in SENS_ORDER:
         return False
-    return (
-        ceiling in SENS_ORDER
-        and SENS_ORDER.index(classification) <= SENS_ORDER.index(ceiling)
-    )
+    return ceiling in SENS_ORDER and SENS_ORDER.index(
+        classification
+    ) <= SENS_ORDER.index(ceiling)
+
 
 for _k in ("NO_PROXY", "no_proxy"):
     if "[" in os.environ.get(_k, ""):
@@ -1231,9 +1231,7 @@ def message_obj(be, d, ceiling="secret-bearing"):
     # A full message is indivisible: withhold it if any chunk in it is
     # excluded or cannot be proven to fit the same output boundary.
     classifications = be.execute(
-        "SELECT "
-        + be.sens_expr
-        + " AS sensitivity FROM chunks c "
+        "SELECT " + be.sens_expr + " AS sensitivity FROM chunks c "
         "JOIN messages m ON m.id = c.message_id "
         "JOIN sessions s ON s.id = m.session_id "
         + f"LEFT JOIN {be.labels_table} l ON l.session_id = s.id "
@@ -1242,8 +1240,7 @@ def message_obj(be, d, ceiling="secret-bearing"):
         [d["message_id"]],
     )
     if not classifications or any(
-        not disclosure_allows(r.get("sensitivity"), ceiling)
-        for r in classifications
+        not disclosure_allows(r.get("sensitivity"), ceiling) for r in classifications
     ):
         return None
     rows = be.execute(
@@ -1284,9 +1281,7 @@ def run_get_chunk(be, args):
         "session_id": d["session_id"],
     }
     if args.neighbors:
-        out["context"] = neighbor_map(
-            be, d, args.neighbors, filters.effective_ceiling
-        )
+        out["context"] = neighbor_map(be, d, args.neighbors, filters.effective_ceiling)
     notes = list(getattr(be, "notes", []))
     if notes:
         out["notes"] = notes

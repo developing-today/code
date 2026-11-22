@@ -144,7 +144,16 @@ class Machine:
         return self.running
 
 
-def run(account, home, *args, machine=None, owner=OWNER, stdin=None, secrets=None, wrangler_path=None):
+def run(
+    account,
+    home,
+    *args,
+    machine=None,
+    owner=OWNER,
+    stdin=None,
+    secrets=None,
+    wrangler_path=None,
+):
     """One run of the script. What it printed is left in account.printed."""
     argv = ["expose.py", *(["--owner", owner] if owner else []), *args]
     machine = machine or Machine()
@@ -172,7 +181,9 @@ def run(account, home, *args, machine=None, owner=OWNER, stdin=None, secrets=Non
         mock.patch.object(
             expose.shutil,
             "which",
-            lambda cmd, *a, **k: wrangler_path if wrangler_path is not None else real_which(cmd, *a, **k),
+            lambda cmd, *a, **k: (
+                wrangler_path if wrangler_path is not None else real_which(cmd, *a, **k)
+            ),
         ),
         mock.patch.object(expose.pathlib.Path, "home", lambda: pathlib.Path(home)),
         mock.patch.object(expose.subprocess, "run", machine.systemctl),

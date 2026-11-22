@@ -284,69 +284,106 @@ describe("C7 canonical report records", () => {
 
   test("applies each permitted late operation as an append-only report version", async () => {
     const file = await storePath();
-    const record = makeReportRecord({
-      period: {
-        id: "daily:2026-11-21:America/Chicago",
-        kind: "daily",
-        timezone: "America/Chicago",
-        periodStart: "2026-11-21T06:00:00.000Z",
-        periodEnd: "2026-11-22T06:00:00.000Z",
-        softCloseAt: "2026-11-22T14:00:00.000Z",
+    const record = makeReportRecord(
+      {
+        period: {
+          id: "daily:2026-11-21:America/Chicago",
+          kind: "daily",
+          timezone: "America/Chicago",
+          periodStart: "2026-11-21T06:00:00.000Z",
+          periodEnd: "2026-11-22T06:00:00.000Z",
+          softCloseAt: "2026-11-22T14:00:00.000Z",
+        },
+        asOf: "2026-11-22T05:45:00.000Z",
+        templateVersion: "daily-v1",
+        sourceCursor: "closed-report",
+        sources: [],
+        blocks: [{ id: "summary", text: "Frozen report prose.", relatedAt: "2026-11-22T05:40:00.000Z" }],
       },
-      asOf: "2026-11-22T05:45:00.000Z",
-      templateVersion: "daily-v1",
-      sourceCursor: "closed-report",
-      sources: [],
-      blocks: [{ id: "summary", text: "Frozen report prose.", relatedAt: "2026-11-22T05:40:00.000Z" }],
-    }, "2026-11-22T13:59:00.000Z");
+      "2026-11-22T13:59:00.000Z",
+    );
     await appendReportRecord(file, record);
-    await expect(appendReportLateUpdate(file, record, "feedback", {
-      id: "premature-feedback",
-      text: "Feedback before finalization.",
-      relatedAt: "2026-11-22T14:00:00.000Z",
-    }, "2026-11-22T14:00:01.000Z")).rejects.toThrow(/requires a finalized snapshot/);
+    await expect(
+      appendReportLateUpdate(
+        file,
+        record,
+        "feedback",
+        {
+          id: "premature-feedback",
+          text: "Feedback before finalization.",
+          relatedAt: "2026-11-22T14:00:00.000Z",
+        },
+        "2026-11-22T14:00:01.000Z",
+      ),
+    ).rejects.toThrow(/requires a finalized snapshot/);
     await appendReportSnapshot(file, record, "2026-11-22T14:00:00.000Z");
 
     const operations = ["quote", "append", "banner", "event-log", "feedback"] as const;
     let current = record;
     for (const [index, operation] of operations.entries()) {
-      const result = await appendReportLateUpdate(file, current, operation, {
-        id: `late-${operation}`,
-        text: `${operation} added after close`,
-        relatedAt: `2026-11-22T14:0${index}:00.000Z`,
-      }, `2026-11-22T14:0${index}:01.000Z`, operation === "quote" ? {
-        id: "late-source",
-        uri: "gh:issue/12350",
-        observedAt: "2026-11-22T14:00:00.000Z",
-      } : undefined);
+      const result = await appendReportLateUpdate(
+        file,
+        current,
+        operation,
+        {
+          id: `late-${operation}`,
+          text: `${operation} added after close`,
+          relatedAt: `2026-11-22T14:0${index}:00.000Z`,
+        },
+        `2026-11-22T14:0${index}:01.000Z`,
+        operation === "quote"
+          ? {
+              id: "late-source",
+              uri: "gh:issue/12350",
+              observedAt: "2026-11-22T14:00:00.000Z",
+            }
+          : undefined,
+      );
       expect(result.inserted).toBe(true);
-      expect(result.record.blocks.some((block) => block.id === `late-${operation}` && block.updateOperation === operation)).toBe(true);
+      expect(
+        result.record.blocks.some((block) => block.id === `late-${operation}` && block.updateOperation === operation),
+      ).toBe(true);
       current = result.record;
     }
 
     expect(current.blocks[0]?.id).toBe("late-banner");
-    expect((await readReportRecords(file))).toHaveLength(operations.length + 1);
+    expect(await readReportRecords(file)).toHaveLength(operations.length + 1);
     expect((await readCurrentReportRecords(file))[0]).toEqual(current);
     expect((await readReportRecords(file))[0]?.blocks[0]?.text).toBe("Frozen report prose.");
 
-    const retry = await appendReportLateUpdate(file, record, "quote", {
-      id: "late-quote",
-      text: "quote added after close",
-      relatedAt: "2026-11-22T14:00:00.000Z",
-    }, "2026-11-22T14:10:00.000Z", {
-      id: "late-source",
-      uri: "gh:issue/12350",
-      observedAt: "2026-11-22T14:00:00.000Z",
-    });
+    const retry = await appendReportLateUpdate(
+      file,
+      record,
+      "quote",
+      {
+        id: "late-quote",
+        text: "quote added after close",
+        relatedAt: "2026-11-22T14:00:00.000Z",
+      },
+      "2026-11-22T14:10:00.000Z",
+      {
+        id: "late-source",
+        uri: "gh:issue/12350",
+        observedAt: "2026-11-22T14:00:00.000Z",
+      },
+    );
     expect(retry.inserted).toBe(false);
     expect(retry.record.generatedAt).toBe("2026-11-22T14:00:01.000Z");
 
-    const earlierEvent = await appendReportLateUpdate(file, current, "event-log", {
-      id: "late-event-earlier",
-      text: "Earlier chronological event.",
-      relatedAt: "2026-11-22T14:02:30.000Z",
-    }, "2026-11-22T14:11:00.000Z");
-    const eventIds = earlierEvent.record.blocks.filter((block) => block.updateOperation === "event-log").map((block) => block.id);
+    const earlierEvent = await appendReportLateUpdate(
+      file,
+      current,
+      "event-log",
+      {
+        id: "late-event-earlier",
+        text: "Earlier chronological event.",
+        relatedAt: "2026-11-22T14:02:30.000Z",
+      },
+      "2026-11-22T14:11:00.000Z",
+    );
+    const eventIds = earlierEvent.record.blocks
+      .filter((block) => block.updateOperation === "event-log")
+      .map((block) => block.id);
     expect(eventIds).toEqual(["late-event-earlier", "late-event-log"]);
   });
 
@@ -360,20 +397,26 @@ describe("C7 canonical report records", () => {
       periodEnd: "2026-11-22T06:00:00.000Z",
       softCloseAt: "2026-11-22T14:00:00.000Z",
     };
-    const first = makeReportRecord({
-      period,
-      asOf: "2026-11-22T05:45:00.000Z",
-      templateVersion: "daily-v1",
-      sourceCursor: "first-after-close",
-      sources: [],
-      blocks: [{ id: "summary", text: "Initial report.", relatedAt: "2026-11-22T05:40:00.000Z" }],
-    }, "2026-11-22T14:00:01.000Z");
+    const first = makeReportRecord(
+      {
+        period,
+        asOf: "2026-11-22T05:45:00.000Z",
+        templateVersion: "daily-v1",
+        sourceCursor: "first-after-close",
+        sources: [],
+        blocks: [{ id: "summary", text: "Initial report.", relatedAt: "2026-11-22T05:40:00.000Z" }],
+      },
+      "2026-11-22T14:00:01.000Z",
+    );
     await appendReportRecord(file, first);
-    const rewrite = makeReportRecord({
-      ...first,
-      sourceCursor: "rewrite-after-close",
-      blocks: [{ id: "summary", text: "Rewritten closed prose.", relatedAt: "2026-11-22T05:40:00.000Z" }],
-    }, "2026-11-22T14:01:00.000Z");
+    const rewrite = makeReportRecord(
+      {
+        ...first,
+        sourceCursor: "rewrite-after-close",
+        blocks: [{ id: "summary", text: "Rewritten closed prose.", relatedAt: "2026-11-22T05:40:00.000Z" }],
+      },
+      "2026-11-22T14:01:00.000Z",
+    );
 
     await expect(appendReportRecord(file, rewrite)).rejects.toThrow(/not allowed after soft close/);
     expect(await readCurrentReportRecords(file)).toEqual([first]);
@@ -422,7 +465,9 @@ describe("C7 canonical report records", () => {
   test("compares conflicting prose as line-level hunks while preserving both originals", () => {
     const comparison = compareReportBlock("Opening\nold detail\nClosing", "Opening\nnew detail\nClosing");
     expect(comparison.conflict).toBe(true);
-    expect(comparison.hunks).toEqual([{ before: "old detail", after: "new detail", beforeLines: ["old detail"], afterLines: ["new detail"] }]);
+    expect(comparison.hunks).toEqual([
+      { before: "old detail", after: "new detail", beforeLines: ["old detail"], afterLines: ["new detail"] },
+    ]);
     expect(comparison.storedText).toBe("Opening\nold detail\nClosing");
     expect(comparison.renderedText).toBe("Opening\nnew detail\nClosing");
     expect(compareReportBlock("a\nold one\nb\nold two\nc", "a\nnew one\nb\nnew two\nc").hunks).toEqual([
@@ -445,7 +490,8 @@ describe("C7 canonical report records", () => {
       const table = Array.from({ length: left.length + 1 }, () => new Uint16Array(right.length + 1));
       for (let i = left.length - 1; i >= 0; i--) {
         for (let j = right.length - 1; j >= 0; j--) {
-          table[i]![j] = left[i] === right[j] ? table[i + 1]![j + 1]! + 1 : Math.max(table[i + 1]![j]!, table[i]![j + 1]!);
+          table[i]![j] =
+            left[i] === right[j] ? table[i + 1]![j + 1]! + 1 : Math.max(table[i + 1]![j]!, table[i]![j + 1]!);
         }
       }
       return table[0]![0]!;
@@ -458,8 +504,13 @@ describe("C7 canonical report records", () => {
       const rendered = right.join("\n");
       const comparison = compareReportBlock(stored, rendered);
       if (stored.replace(/\s+/g, " ").trim() === rendered.replace(/\s+/g, " ").trim()) continue;
-      const changedLines = comparison.hunks.reduce((count, hunk) =>
-        count + (hunk.before === "" ? 0 : hunk.before.split("\n").length) + (hunk.after === "" ? 0 : hunk.after.split("\n").length), 0);
+      const changedLines = comparison.hunks.reduce(
+        (count, hunk) =>
+          count +
+          (hunk.before === "" ? 0 : hunk.before.split("\n").length) +
+          (hunk.after === "" ? 0 : hunk.after.split("\n").length),
+        0,
+      );
       // Oracle: for line sequences, a shortest edit script has n+m-2*LCS edits.
       expect(comparison.conflict).toBe(true);
       expect(comparison.storedText).toBe(stored);
@@ -472,7 +523,9 @@ describe("C7 canonical report records", () => {
     const stored = Array.from({ length: 450 }, (_, index) => `stored-${index}`).join("\n");
     const rendered = Array.from({ length: 450 }, (_, index) => `rendered-${index}`).join("\n");
     const comparison = compareReportBlock(stored, rendered);
-    expect(comparison.hunks).toEqual([{ before: stored, after: rendered, beforeLines: stored.split("\n"), afterLines: rendered.split("\n") }]);
+    expect(comparison.hunks).toEqual([
+      { before: stored, after: rendered, beforeLines: stored.split("\n"), afterLines: rendered.split("\n") },
+    ]);
   });
 
   test("diff hunks distinguish a blank line from an absent side", () => {
@@ -482,21 +535,24 @@ describe("C7 canonical report records", () => {
 
   test("resolves either side by appending a version and leaves the frozen snapshot unchanged", async () => {
     const file = await storePath();
-    const record = makeReportRecord({
-      period: {
-        id: "daily:2026-11-21:America/Chicago",
-        kind: "daily",
-        timezone: "America/Chicago",
-        periodStart: "2026-11-21T06:00:00.000Z",
-        periodEnd: "2026-11-22T06:00:00.000Z",
-        softCloseAt: "2026-11-22T14:00:00.000Z",
+    const record = makeReportRecord(
+      {
+        period: {
+          id: "daily:2026-11-21:America/Chicago",
+          kind: "daily",
+          timezone: "America/Chicago",
+          periodStart: "2026-11-21T06:00:00.000Z",
+          periodEnd: "2026-11-22T06:00:00.000Z",
+          softCloseAt: "2026-11-22T14:00:00.000Z",
+        },
+        asOf: "2026-11-22T05:45:00.000Z",
+        templateVersion: "daily-v1",
+        sourceCursor: "cursor-before-resolution",
+        sources: [{ id: "event-1", uri: "gh:issue/12350", observedAt: "2026-11-22T05:40:00.000Z" }],
+        blocks: [{ id: "change-1", text: "Human-edited wording.", relatedAt: "2026-11-22T05:40:00.000Z" }],
       },
-      asOf: "2026-11-22T05:45:00.000Z",
-      templateVersion: "daily-v1",
-      sourceCursor: "cursor-before-resolution",
-      sources: [{ id: "event-1", uri: "gh:issue/12350", observedAt: "2026-11-22T05:40:00.000Z" }],
-      blocks: [{ id: "change-1", text: "Human-edited wording.", relatedAt: "2026-11-22T05:40:00.000Z" }],
-    }, "2026-11-22T05:45:01.000Z");
+      "2026-11-22T05:45:01.000Z",
+    );
     await appendReportRecord(file, record);
     await appendReportSnapshot(file, record, "2026-11-22T14:00:00.000Z");
 
@@ -543,90 +599,106 @@ describe("C7 canonical report records", () => {
 
   test("rejects a same-ID predecessor with changed content and preserves retry timestamps", async () => {
     const file = await storePath();
-    const canonical = makeReportRecord({
-      period: {
-        id: "daily:2026-11-21:America/Chicago",
-        kind: "daily",
-        timezone: "America/Chicago",
-        periodStart: "2026-11-21T06:00:00.000Z",
-        periodEnd: "2026-11-22T06:00:00.000Z",
-        softCloseAt: "2026-11-22T14:00:00.000Z",
+    const canonical = makeReportRecord(
+      {
+        period: {
+          id: "daily:2026-11-21:America/Chicago",
+          kind: "daily",
+          timezone: "America/Chicago",
+          periodStart: "2026-11-21T06:00:00.000Z",
+          periodEnd: "2026-11-22T06:00:00.000Z",
+          softCloseAt: "2026-11-22T14:00:00.000Z",
+        },
+        asOf: "2026-11-22T05:45:00.000Z",
+        templateVersion: "daily-v1",
+        sourceCursor: "cursor-predecessor-content",
+        sources: [],
+        blocks: [
+          { id: "change-1", text: "Target wording.", relatedAt: "2026-11-22T05:40:00.000Z" },
+          { id: "change-2", text: "Other canonical wording.", relatedAt: "2026-11-22T05:40:00.000Z" },
+        ],
       },
-      asOf: "2026-11-22T05:45:00.000Z",
-      templateVersion: "daily-v1",
-      sourceCursor: "cursor-predecessor-content",
-      sources: [],
-      blocks: [
-        { id: "change-1", text: "Target wording.", relatedAt: "2026-11-22T05:40:00.000Z" },
-        { id: "change-2", text: "Other canonical wording.", relatedAt: "2026-11-22T05:40:00.000Z" },
-      ],
-    }, "2026-11-22T05:45:01.000Z");
+      "2026-11-22T05:45:01.000Z",
+    );
     await appendReportRecord(file, canonical);
-    const altered = makeReportRecord({
-      ...canonical,
-      blocks: [canonical.blocks[0]!, { ...canonical.blocks[1]!, text: "Tampered unrelated wording." }],
-    }, canonical.generatedAt);
+    const altered = makeReportRecord(
+      {
+        ...canonical,
+        blocks: [canonical.blocks[0]!, { ...canonical.blocks[1]!, text: "Tampered unrelated wording." }],
+      },
+      canonical.generatedAt,
+    );
 
-    await expect(appendReportBlockConflictResolution(
-      file,
-      altered,
-      "change-1",
-      compareReportBlock("Target wording.", "Rendered wording."),
-      "rendered",
-      "2026-11-22T13:00:00.000Z",
-    )).rejects.toThrow(/supplied source differs/);
+    await expect(
+      appendReportBlockConflictResolution(
+        file,
+        altered,
+        "change-1",
+        compareReportBlock("Target wording.", "Rendered wording."),
+        "rendered",
+        "2026-11-22T13:00:00.000Z",
+      ),
+    ).rejects.toThrow(/supplied source differs/);
     expect(await readReportRecords(file)).toEqual([canonical]);
   });
 
   test("requires resolution event time to follow its predecessor", async () => {
     const file = await storePath();
-    const record = makeReportRecord({
-      period: {
-        id: "daily:2026-11-21:America/Chicago",
-        kind: "daily",
-        timezone: "America/Chicago",
-        periodStart: "2026-11-21T06:00:00.000Z",
-        periodEnd: "2026-11-22T06:00:00.000Z",
-        softCloseAt: "2026-11-22T14:00:00.000Z",
+    const record = makeReportRecord(
+      {
+        period: {
+          id: "daily:2026-11-21:America/Chicago",
+          kind: "daily",
+          timezone: "America/Chicago",
+          periodStart: "2026-11-21T06:00:00.000Z",
+          periodEnd: "2026-11-22T06:00:00.000Z",
+          softCloseAt: "2026-11-22T14:00:00.000Z",
+        },
+        asOf: "2026-11-22T05:45:00.000Z",
+        templateVersion: "daily-v1",
+        sourceCursor: "cursor-resolution-order",
+        sources: [],
+        blocks: [{ id: "change-1", text: "Stored.", relatedAt: "2026-11-22T05:40:00.000Z" }],
       },
-      asOf: "2026-11-22T05:45:00.000Z",
-      templateVersion: "daily-v1",
-      sourceCursor: "cursor-resolution-order",
-      sources: [],
-      blocks: [{ id: "change-1", text: "Stored.", relatedAt: "2026-11-22T05:40:00.000Z" }],
-    }, "2026-11-22T05:45:01.000Z");
+      "2026-11-22T05:45:01.000Z",
+    );
     await appendReportRecord(file, record);
     const backdatedCopy = { ...record, generatedAt: "2026-11-22T05:44:00.000Z" };
-    await expect(appendReportBlockConflictResolution(
-      file,
-      backdatedCopy,
-      "change-1",
-      compareReportBlock("Stored.", "Rendered."),
-      "rendered",
-      "2026-11-22T05:44:30.000Z",
-    )).rejects.toThrow(/later than the persisted source record/);
+    await expect(
+      appendReportBlockConflictResolution(
+        file,
+        backdatedCopy,
+        "change-1",
+        compareReportBlock("Stored.", "Rendered."),
+        "rendered",
+        "2026-11-22T05:44:30.000Z",
+      ),
+    ).rejects.toThrow(/later than the persisted source record/);
   });
 
   test("accepts an edited or reviewer-combined block as an append-only resolution", async () => {
     const file = await storePath();
-    const record = makeReportRecord({
-      period: {
-        id: "daily:2026-11-21:America/Chicago",
-        kind: "daily",
-        timezone: "America/Chicago",
-        periodStart: "2026-11-21T06:00:00.000Z",
-        periodEnd: "2026-11-22T06:00:00.000Z",
-        softCloseAt: "2026-11-22T14:00:00.000Z",
+    const record = makeReportRecord(
+      {
+        period: {
+          id: "daily:2026-11-21:America/Chicago",
+          kind: "daily",
+          timezone: "America/Chicago",
+          periodStart: "2026-11-21T06:00:00.000Z",
+          periodEnd: "2026-11-22T06:00:00.000Z",
+          softCloseAt: "2026-11-22T14:00:00.000Z",
+        },
+        asOf: "2026-11-22T05:45:00.000Z",
+        templateVersion: "daily-v1",
+        sourceCursor: "cursor-edit-each-combine",
+        sources: [{ id: "event-1", uri: "gh:issue/12350", observedAt: "2026-11-22T05:40:00.000Z" }],
+        blocks: [
+          { id: "change-1", text: "Stored opening.\nStored close.", relatedAt: "2026-11-22T05:40:00.000Z" },
+          { id: "change-2", text: "Second stored block.", relatedAt: "2026-11-22T05:40:00.000Z" },
+        ],
       },
-      asOf: "2026-11-22T05:45:00.000Z",
-      templateVersion: "daily-v1",
-      sourceCursor: "cursor-edit-each-combine",
-      sources: [{ id: "event-1", uri: "gh:issue/12350", observedAt: "2026-11-22T05:40:00.000Z" }],
-      blocks: [
-        { id: "change-1", text: "Stored opening.\nStored close.", relatedAt: "2026-11-22T05:40:00.000Z" },
-        { id: "change-2", text: "Second stored block.", relatedAt: "2026-11-22T05:40:00.000Z" },
-      ],
-    }, "2026-11-22T05:45:01.000Z");
+      "2026-11-22T05:45:01.000Z",
+    );
     await appendReportRecord(file, record);
 
     const edited = await appendReportBlockConflictResolution(
@@ -656,74 +728,102 @@ describe("C7 canonical report records", () => {
       text: "Reviewer-combined block.",
       resolution: { sourceRecordId: edited.record.id, strategy: "combined", resolvedAt: "2026-11-22T13:30:00.000Z" },
     });
-    expect((await readReportRecords(file)).map((item) => item.id)).toEqual([record.id, edited.record.id, combined.record.id]);
+    expect((await readReportRecords(file)).map((item) => item.id)).toEqual([
+      record.id,
+      edited.record.id,
+      combined.record.id,
+    ]);
   });
 
   test("rejects stale or post-soft-close conflict resolutions", async () => {
     const file = await storePath();
-    const record = makeReportRecord({
-      period: {
-        id: "daily:2026-11-21:America/Chicago",
-        kind: "daily",
-        timezone: "America/Chicago",
-        periodStart: "2026-11-21T06:00:00.000Z",
-        periodEnd: "2026-11-22T06:00:00.000Z",
-        softCloseAt: "2026-11-22T14:00:00.000Z",
+    const record = makeReportRecord(
+      {
+        period: {
+          id: "daily:2026-11-21:America/Chicago",
+          kind: "daily",
+          timezone: "America/Chicago",
+          periodStart: "2026-11-21T06:00:00.000Z",
+          periodEnd: "2026-11-22T06:00:00.000Z",
+          softCloseAt: "2026-11-22T14:00:00.000Z",
+        },
+        asOf: "2026-11-22T05:45:00.000Z",
+        templateVersion: "daily-v1",
+        sourceCursor: "cursor-stale-resolution",
+        sources: [{ id: "event-1", uri: "gh:issue/12350", observedAt: "2026-11-22T05:40:00.000Z" }],
+        blocks: [{ id: "change-1", text: "Current stored wording.", relatedAt: "2026-11-22T05:40:00.000Z" }],
       },
-      asOf: "2026-11-22T05:45:00.000Z",
-      templateVersion: "daily-v1",
-      sourceCursor: "cursor-stale-resolution",
-      sources: [{ id: "event-1", uri: "gh:issue/12350", observedAt: "2026-11-22T05:40:00.000Z" }],
-      blocks: [{ id: "change-1", text: "Current stored wording.", relatedAt: "2026-11-22T05:40:00.000Z" }],
-    }, "2026-11-22T05:45:01.000Z");
+      "2026-11-22T05:45:01.000Z",
+    );
     await appendReportRecord(file, record);
     const staleComparison = compareReportBlock("Older stored wording.", "Generated wording.");
 
-    await expect(appendReportBlockConflictResolution(
-      file,
-      record,
-      "change-1",
-      staleComparison,
-      "rendered",
-      "2026-11-22T13:00:00.000Z",
-    )).rejects.toThrow(/stored block has changed/);
+    await expect(
+      appendReportBlockConflictResolution(
+        file,
+        record,
+        "change-1",
+        staleComparison,
+        "rendered",
+        "2026-11-22T13:00:00.000Z",
+      ),
+    ).rejects.toThrow(/stored block has changed/);
     const currentComparison = compareReportBlock("Current stored wording.", "Generated wording.");
-    await expect(appendReportBlockConflictResolution(
-      file,
-      record,
-      "change-1",
-      currentComparison,
-      "rendered",
-      "2026-11-22T14:00:00.000Z",
-    )).rejects.toThrow(/not allowed after soft close/);
+    await expect(
+      appendReportBlockConflictResolution(
+        file,
+        record,
+        "change-1",
+        currentComparison,
+        "rendered",
+        "2026-11-22T14:00:00.000Z",
+      ),
+    ).rejects.toThrow(/not allowed after soft close/);
     expect((await readReportRecords(file)).map((item) => item.id)).toEqual([record.id]);
   });
 
   test("allows only one resolution to win from a report version", async () => {
     const file = await storePath();
-    const record = makeReportRecord({
-      period: {
-        id: "daily:2026-11-21:America/Chicago",
-        kind: "daily",
-        timezone: "America/Chicago",
-        periodStart: "2026-11-21T06:00:00.000Z",
-        periodEnd: "2026-11-22T06:00:00.000Z",
-        softCloseAt: "2026-11-22T14:00:00.000Z",
+    const record = makeReportRecord(
+      {
+        period: {
+          id: "daily:2026-11-21:America/Chicago",
+          kind: "daily",
+          timezone: "America/Chicago",
+          periodStart: "2026-11-21T06:00:00.000Z",
+          periodEnd: "2026-11-22T06:00:00.000Z",
+          softCloseAt: "2026-11-22T14:00:00.000Z",
+        },
+        asOf: "2026-11-22T05:45:00.000Z",
+        templateVersion: "daily-v1",
+        sourceCursor: "cursor-concurrent-resolutions",
+        sources: [{ id: "event-1", uri: "gh:issue/12350", observedAt: "2026-11-22T05:40:00.000Z" }],
+        blocks: [
+          { id: "change-1", text: "Stored one.", relatedAt: "2026-11-22T05:40:00.000Z" },
+          { id: "change-2", text: "Stored two.", relatedAt: "2026-11-22T05:40:00.000Z" },
+        ],
       },
-      asOf: "2026-11-22T05:45:00.000Z",
-      templateVersion: "daily-v1",
-      sourceCursor: "cursor-concurrent-resolutions",
-      sources: [{ id: "event-1", uri: "gh:issue/12350", observedAt: "2026-11-22T05:40:00.000Z" }],
-      blocks: [
-        { id: "change-1", text: "Stored one.", relatedAt: "2026-11-22T05:40:00.000Z" },
-        { id: "change-2", text: "Stored two.", relatedAt: "2026-11-22T05:40:00.000Z" },
-      ],
-    }, "2026-11-22T05:45:01.000Z");
+      "2026-11-22T05:45:01.000Z",
+    );
     await appendReportRecord(file, record);
 
     const outcomes = await Promise.allSettled([
-      appendReportBlockConflictResolution(file, record, "change-1", compareReportBlock("Stored one.", "Rendered one."), "rendered", "2026-11-22T13:00:00.000Z"),
-      appendReportBlockConflictResolution(file, record, "change-2", compareReportBlock("Stored two.", "Rendered two."), "rendered", "2026-11-22T13:00:01.000Z"),
+      appendReportBlockConflictResolution(
+        file,
+        record,
+        "change-1",
+        compareReportBlock("Stored one.", "Rendered one."),
+        "rendered",
+        "2026-11-22T13:00:00.000Z",
+      ),
+      appendReportBlockConflictResolution(
+        file,
+        record,
+        "change-2",
+        compareReportBlock("Stored two.", "Rendered two."),
+        "rendered",
+        "2026-11-22T13:00:01.000Z",
+      ),
     ]);
     expect(outcomes.filter((outcome) => outcome.status === "fulfilled")).toHaveLength(1);
     expect(outcomes.filter((outcome) => outcome.status === "rejected")).toHaveLength(1);
@@ -749,29 +849,46 @@ describe("C7 canonical report records", () => {
     });
     const firstClient = remote();
     const secondClient = remote();
-    const record = makeReportRecord({
-      period: {
-        id: "daily:2026-11-21:America/Chicago",
-        kind: "daily",
-        timezone: "America/Chicago",
-        periodStart: "2026-11-21T06:00:00.000Z",
-        periodEnd: "2026-11-22T06:00:00.000Z",
-        softCloseAt: "2026-11-22T14:00:00.000Z",
+    const record = makeReportRecord(
+      {
+        period: {
+          id: "daily:2026-11-21:America/Chicago",
+          kind: "daily",
+          timezone: "America/Chicago",
+          periodStart: "2026-11-21T06:00:00.000Z",
+          periodEnd: "2026-11-22T06:00:00.000Z",
+          softCloseAt: "2026-11-22T14:00:00.000Z",
+        },
+        asOf: "2026-11-22T05:45:00.000Z",
+        templateVersion: "daily-v1",
+        sourceCursor: "cursor-independent-resolution-clients",
+        sources: [],
+        blocks: [
+          { id: "change-1", text: "Stored one.", relatedAt: "2026-11-22T05:40:00.000Z" },
+          { id: "change-2", text: "Stored two.", relatedAt: "2026-11-22T05:40:00.000Z" },
+        ],
       },
-      asOf: "2026-11-22T05:45:00.000Z",
-      templateVersion: "daily-v1",
-      sourceCursor: "cursor-independent-resolution-clients",
-      sources: [],
-      blocks: [
-        { id: "change-1", text: "Stored one.", relatedAt: "2026-11-22T05:40:00.000Z" },
-        { id: "change-2", text: "Stored two.", relatedAt: "2026-11-22T05:40:00.000Z" },
-      ],
-    }, "2026-11-22T05:45:01.000Z");
+      "2026-11-22T05:45:01.000Z",
+    );
     await appendReportRecord(firstClient, record);
 
     const outcomes = await Promise.allSettled([
-      appendReportBlockConflictResolution(firstClient, record, "change-1", compareReportBlock("Stored one.", "Rendered one."), "rendered", "2026-11-22T13:00:00.000Z"),
-      appendReportBlockConflictResolution(secondClient, record, "change-2", compareReportBlock("Stored two.", "Rendered two."), "rendered", "2026-11-22T13:00:01.000Z"),
+      appendReportBlockConflictResolution(
+        firstClient,
+        record,
+        "change-1",
+        compareReportBlock("Stored one.", "Rendered one."),
+        "rendered",
+        "2026-11-22T13:00:00.000Z",
+      ),
+      appendReportBlockConflictResolution(
+        secondClient,
+        record,
+        "change-2",
+        compareReportBlock("Stored two.", "Rendered two."),
+        "rendered",
+        "2026-11-22T13:00:01.000Z",
+      ),
     ]);
     expect(outcomes.filter((outcome) => outcome.status === "fulfilled")).toHaveLength(1);
     expect(outcomes.filter((outcome) => outcome.status === "rejected")).toHaveLength(1);
@@ -815,8 +932,14 @@ describe("C7 canonical report records", () => {
     await appendReportRecord(firstClient, original);
 
     const outcomes = await Promise.allSettled([
-      appendReportRecord(firstClient, makeReportRecord({ ...input, sourceCursor: "generation-a" }, "2026-11-22T05:46:01.000Z")),
-      appendReportRecord(secondClient, makeReportRecord({ ...input, sourceCursor: "generation-b" }, "2026-11-22T05:46:02.000Z")),
+      appendReportRecord(
+        firstClient,
+        makeReportRecord({ ...input, sourceCursor: "generation-a" }, "2026-11-22T05:46:01.000Z"),
+      ),
+      appendReportRecord(
+        secondClient,
+        makeReportRecord({ ...input, sourceCursor: "generation-b" }, "2026-11-22T05:46:02.000Z"),
+      ),
     ]);
     expect(outcomes.filter((outcome) => outcome.status === "fulfilled")).toHaveLength(1);
     expect(outcomes.filter((outcome) => outcome.status === "rejected")).toHaveLength(1);
@@ -832,8 +955,11 @@ describe("C7 canonical report records", () => {
       },
       async insertIfAbsent(store, _version, document) {
         const eventRecord = (document as { record?: { sourceCursor?: string } }).record;
-        if (store.startsWith("c7-report:v1:report.generated:") &&
-            eventRecord?.sourceCursor === "generation-a" && failNextGenerationEvent) {
+        if (
+          store.startsWith("c7-report:v1:report.generated:") &&
+          eventRecord?.sourceCursor === "generation-a" &&
+          failNextGenerationEvent
+        ) {
           failNextGenerationEvent = false;
           throw new Error("simulated event-store interruption");
         }
@@ -894,7 +1020,7 @@ describe("C7 canonical report records", () => {
     };
     const generated = Array.from({ length: 48 }, (_, i) => ({
       label: `case-${i}-${Math.floor(random() * 0x1_0000).toString(16)}`,
-      strategy: random() < 0.5 ? "rendered" as const : "edited" as const,
+      strategy: random() < 0.5 ? ("rendered" as const) : ("edited" as const),
       text: `generated wording ${Math.floor(random() * 0x1_0000)}`,
       failAppend: random() < 0.35,
     }));
@@ -908,8 +1034,7 @@ describe("C7 canonical report records", () => {
         },
         async insertIfAbsent(store, _version, document) {
           const eventRecord = (document as { record?: { sourceCursor?: string } }).record;
-          if (store.startsWith("c7-report:v1:report.generated:") &&
-              eventRecord?.sourceCursor === failSourceCursor) {
+          if (store.startsWith("c7-report:v1:report.generated:") && eventRecord?.sourceCursor === failSourceCursor) {
             failSourceCursor = null;
             throw new Error("generated event interruption");
           }
@@ -937,13 +1062,18 @@ describe("C7 canonical report records", () => {
         sources: [],
         blocks: [{ id: "block", text: `stored ${item.label}`, relatedAt: "2026-11-22T05:40:00.000Z" }],
       };
-      const model: { current: ReturnType<typeof makeReportRecord>; records: Map<string, ReturnType<typeof makeReportRecord>> } = {
+      const model: {
+        current: ReturnType<typeof makeReportRecord>;
+        records: Map<string, ReturnType<typeof makeReportRecord>>;
+      } = {
         current: makeReportRecord({ ...input, sourceCursor: `base-${item.label}` }, "2026-11-22T05:45:01.000Z"),
         records: new Map(),
       };
       const assertMatchesModel = async () => {
         expect((await readCurrentReportRecords(remote)).map((record) => record.id)).toEqual([model.current.id]);
-        expect((await readReportRecords(remote)).map((record) => record.id).sort()).toEqual([...model.records.keys()].sort());
+        expect((await readReportRecords(remote)).map((record) => record.id).sort()).toEqual(
+          [...model.records.keys()].sort(),
+        );
       };
 
       await appendReportRecord(remote, model.current);
@@ -982,11 +1112,14 @@ describe("C7 canonical report records", () => {
       await assertMatchesModel();
 
       const sourceCursor = `next-${item.label}`;
-      const next = makeReportRecord({
-        ...input,
-        sourceCursor,
-        blocks: [{ id: "block", text: `next wording ${item.label}`, relatedAt: "2026-11-22T05:41:00.000Z" }],
-      }, "2026-11-22T13:01:00.000Z");
+      const next = makeReportRecord(
+        {
+          ...input,
+          sourceCursor,
+          blocks: [{ id: "block", text: `next wording ${item.label}`, relatedAt: "2026-11-22T05:41:00.000Z" }],
+        },
+        "2026-11-22T13:01:00.000Z",
+      );
       if (item.failAppend) {
         failSourceCursor = sourceCursor;
         await expect(appendReportRecord(remote, next)).rejects.toThrow("generated event interruption");
@@ -1000,7 +1133,9 @@ describe("C7 canonical report records", () => {
 
       // Retrying an older committed generation is idempotent and cannot
       // regress the reference model's current head.
-      await expect(appendReportRecord(remote, [...model.records.values()][0]!)).resolves.toMatchObject({ inserted: false });
+      await expect(appendReportRecord(remote, [...model.records.values()][0]!)).resolves.toMatchObject({
+        inserted: false,
+      });
       await assertMatchesModel();
     }
   });
@@ -1050,10 +1185,13 @@ describe("C7 canonical report records", () => {
         "rendered",
         "2026-11-22T13:00:00.000Z",
       ),
-      appendReportRecord(secondClient, makeReportRecord(
-        { ...input, sourceCursor: "new-generation", blocks: [{ ...input.blocks[0]!, text: "new generation" }] },
-        "2026-11-22T13:00:01.000Z",
-      )),
+      appendReportRecord(
+        secondClient,
+        makeReportRecord(
+          { ...input, sourceCursor: "new-generation", blocks: [{ ...input.blocks[0]!, text: "new generation" }] },
+          "2026-11-22T13:00:01.000Z",
+        ),
+      ),
     ]);
     expect(outcomes.filter((outcome) => outcome.status === "fulfilled")).toHaveLength(1);
     expect(outcomes.filter((outcome) => outcome.status === "rejected")).toHaveLength(1);
@@ -1069,8 +1207,11 @@ describe("C7 canonical report records", () => {
       },
       async insertIfAbsent(store, _version, document) {
         const eventRecord = (document as { record?: { blocks?: { resolution?: unknown }[] } }).record;
-        if (store.startsWith("c7-report:v1:report.generated:") &&
-            eventRecord?.blocks?.some((block) => block.resolution) && failResolutionEventOnce) {
+        if (
+          store.startsWith("c7-report:v1:report.generated:") &&
+          eventRecord?.blocks?.some((block) => block.resolution) &&
+          failResolutionEventOnce
+        ) {
           failResolutionEventOnce = false;
           throw new Error("simulated event-store interruption");
         }
@@ -1084,31 +1225,36 @@ describe("C7 canonical report records", () => {
           .map(([store, document]) => ({ store, version: 1, document: structuredClone(document) }));
       },
     };
-    const record = makeReportRecord({
-      period: {
-        id: "daily:2026-11-21:America/Chicago",
-        kind: "daily",
-        timezone: "America/Chicago",
-        periodStart: "2026-11-21T06:00:00.000Z",
-        periodEnd: "2026-11-22T06:00:00.000Z",
-        softCloseAt: "2026-11-22T14:00:00.000Z",
+    const record = makeReportRecord(
+      {
+        period: {
+          id: "daily:2026-11-21:America/Chicago",
+          kind: "daily",
+          timezone: "America/Chicago",
+          periodStart: "2026-11-21T06:00:00.000Z",
+          periodEnd: "2026-11-22T06:00:00.000Z",
+          softCloseAt: "2026-11-22T14:00:00.000Z",
+        },
+        asOf: "2026-11-22T05:45:00.000Z",
+        templateVersion: "daily-v1",
+        sourceCursor: "cursor-interrupted-resolution-append",
+        sources: [],
+        blocks: [{ id: "change-1", text: "Stored wording.", relatedAt: "2026-11-22T05:40:00.000Z" }],
       },
-      asOf: "2026-11-22T05:45:00.000Z",
-      templateVersion: "daily-v1",
-      sourceCursor: "cursor-interrupted-resolution-append",
-      sources: [],
-      blocks: [{ id: "change-1", text: "Stored wording.", relatedAt: "2026-11-22T05:40:00.000Z" }],
-    }, "2026-11-22T05:45:01.000Z");
+      "2026-11-22T05:45:01.000Z",
+    );
     await appendReportRecord(remote, record);
     const comparison = compareReportBlock("Stored wording.", "Rendered wording.");
-    await expect(appendReportBlockConflictResolution(
-      remote,
-      record,
-      "change-1",
-      comparison,
-      "rendered",
-      "2026-11-22T13:59:59.000Z",
-    )).rejects.toThrow("simulated event-store interruption");
+    await expect(
+      appendReportBlockConflictResolution(
+        remote,
+        record,
+        "change-1",
+        comparison,
+        "rendered",
+        "2026-11-22T13:59:59.000Z",
+      ),
+    ).rejects.toThrow("simulated event-store interruption");
 
     const retry = await appendReportBlockConflictResolution(
       remote,

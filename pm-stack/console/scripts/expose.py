@@ -276,19 +276,27 @@ def ensure_edge_direct(
     if wanted == current:
         return
     if wanted:
-        what = "edge direct: upload the GitHub and queue tokens and turn direct actions on"
+        what = (
+            "edge direct: upload the GitHub and queue tokens and turn direct actions on"
+        )
     else:
         what = "edge direct: turn direct actions off"
     cf.changes.append(what)
     if check:
         return
     edge_dir = pathlib.Path(__file__).resolve().parent.parent / "edge"
-    wrangler = shutil.which("wrangler") or str(edge_dir / "node_modules" / ".bin" / "wrangler")
+    wrangler = shutil.which("wrangler") or str(
+        edge_dir / "node_modules" / ".bin" / "wrangler"
+    )
     if not wrangler or not pathlib.Path(wrangler).exists():
         raise SystemExit(
             "wrangler is not installed here; run `npm ci` in pm-stack/console/edge, then rerun"
         )
-    envs = {**os.environ, "CLOUDFLARE_API_TOKEN": cf.token, "CLOUDFLARE_ACCOUNT_ID": account}
+    envs = {
+        **os.environ,
+        "CLOUDFLARE_API_TOKEN": cf.token,
+        "CLOUDFLARE_ACCOUNT_ID": account,
+    }
 
     def put(name: str, value: str) -> None:
         done = subprocess.run(
@@ -308,7 +316,9 @@ def ensure_edge_direct(
 
     if wanted:
         github = secret(GITHUB_TOKEN_SECRET)
-        queue_name = env_values(env).get("PM_CONSOLE_QUEUE_TOKEN_NAME") or QUEUE_TOKEN_DEFAULT
+        queue_name = (
+            env_values(env).get("PM_CONSOLE_QUEUE_TOKEN_NAME") or QUEUE_TOKEN_DEFAULT
+        )
         queue = secret(queue_name)
         if not github:
             raise SystemExit(f"secret {GITHUB_TOKEN_SECRET} is not readable here")

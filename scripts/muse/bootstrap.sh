@@ -443,7 +443,10 @@ elif want tailnet; then
       if [ -z "$kernel_up" ]; then
         say "tailnet: the kernel TUN daemon did not come up (see $TS_STATE/tailscaled.log.prev); falling back to userspace networking"
         $SUDO pkill -f -- "--state=$TS_STATE/tailscaled.state" 2>/dev/null || true
-        for _ in 1 2 3 4 5; do ts_alive || break; sleep 1; done
+        for _ in 1 2 3 4 5; do
+          ts_alive || break
+          sleep 1
+        done
         MODE=userspace
         ts_start_userspace
       fi

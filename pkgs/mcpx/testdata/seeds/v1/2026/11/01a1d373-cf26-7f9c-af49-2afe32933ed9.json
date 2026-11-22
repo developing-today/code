@@ -1,1 +1,12 @@
-{"seed":"01a1d373-cf26-7f9c-af49-2afe32933ed9","commit":"8f43cec8eaa5dfad61ed1a23ce746c8f2e011a65","ref":"refs/heads/queue/8673-2716-settings-desync","event":"pull_request","run":"https://github.com/developing-today/code/actions/runs/43358287224","attempt":1,"result":"failure","derivation":"v1","generators":"","date":"2026-11-13"}
+{
+  "seed": "01a1d373-cf26-7f9c-af49-2afe32933ed9",
+  "commit": "8f43cec8eaa5dfad61ed1a23ce746c8f2e011a65",
+  "ref": "refs/heads/queue/8673-2716-settings-desync",
+  "event": "pull_request",
+  "run": "https://github.com/developing-today/code/actions/runs/43358287224",
+  "attempt": 1,
+  "result": "failure",
+  "derivation": "v1",
+  "generators": "",
+  "date": "2026-11-13"
+}

@@ -579,9 +579,7 @@ export class Work {
     if (current.state === "closed") {
       await this.ops.gh(["-X", "PATCH", `repos/${this.repo}/issues/${issue}`], { state: "open" });
     }
-    const queued = await enqueue(
-      promptPacket(this.repo, this.ops.cfg.queue, issue, text, this.clock().toISOString()),
-    );
+    const queued = await enqueue(promptPacket(this.repo, this.ops.cfg.queue, issue, text, this.clock().toISOString()));
     return { issue, queued: queued.code === 0 };
   }
 

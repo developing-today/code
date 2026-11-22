@@ -2,7 +2,10 @@
 # Contract: run.sh takes no arguments; reject extras before filesystem or subprocess effects.
 set -Eeuo pipefail
 umask 077
-if (($#)); then echo "usage: $0" >&2; exit 2; fi
+if (($#)); then
+  echo "usage: $0" >&2
+  exit 2
+fi
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 JOB_ID="quota-freshness-summary"

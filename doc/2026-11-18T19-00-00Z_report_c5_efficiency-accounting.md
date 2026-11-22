@@ -158,24 +158,24 @@ them with the tables below.
 
 ### 2.1 Window totals
 
-| Metric | Count |
-|---|---:|
-| `model_stamp` events | 4,750 |
-| Unique tasks with a stamp | 3,691 |
-| `completed` events | 5,079 |
-| Unique completed tasks | 5,079 |
-| Merged PRs | 1,127 |
-| Merged PRs on `queue/<id>-...` branches | 661 |
-| Merged PRs whose branch task has a stamp | 490 |
-| Completed tasks whose task has a stamp | 3,270 |
+| Metric                                   | Count |
+| ---------------------------------------- | ----: |
+| `model_stamp` events                     | 4,750 |
+| Unique tasks with a stamp                | 3,691 |
+| `completed` events                       | 5,079 |
+| Unique completed tasks                   | 5,079 |
+| Merged PRs                               | 1,127 |
+| Merged PRs on `queue/<id>-...` branches  |   661 |
+| Merged PRs whose branch task has a stamp |   490 |
+| Completed tasks whose task has a stamp   | 3,270 |
 
 ### 2.2 Output by stamped provider/model
 
-| Stamped provider/model | Completed tasks | Merged PRs | Merged PRs / completed tasks |
-|---|---:|---:|---:|
-| `muse-lane` / `muse-lane` | 3,268 | 489 | 0.1497 |
-| `opencode-route` / `workhorse` | 2 | 1 | 0.5000 |
-| `opencode-route` / `summit` | 0 | 0 | n/a |
+| Stamped provider/model         | Completed tasks | Merged PRs | Merged PRs / completed tasks |
+| ------------------------------ | --------------: | ---------: | ---------------------------: |
+| `muse-lane` / `muse-lane`      |           3,268 |        489 |                       0.1497 |
+| `opencode-route` / `workhorse` |               2 |          1 |                       0.5000 |
+| `opencode-route` / `summit`    |               0 |          0 |                          n/a |
 
 Interpretation: in the stamped population, `muse-lane` is the only provider/model that both runs queue tasks and produces merged PRs at scale. `opencode-route` stamps exist (17 stamps: 11 `workhorse`, 6 `summit`) but only 2 completed-task records and 1 merged PR carry that stamp, so the opencode-route cell is **not yet measurable** as an efficiency ratio. This is a data-attribution limit, not a performance claim.
 
@@ -187,41 +187,41 @@ Interpretation: in the stamped population, `muse-lane` is the only provider/mode
 
 Source: `route_usage` for the 168 hours ending 2026-11-19T01:09Z (the nearest available 7-day window; it overlaps the report window).
 
-| Aggregate | Value |
-|---|---:|
+| Aggregate                       |                                  Value |
+| ------------------------------- | -------------------------------------: |
 | Provider/model targets reported | 87 (of 212 targets in the full window) |
-| Requests | 257,244 |
-| Metered tokens | 4,809,830,210 |
-| Direct metered cost | $51.12 |
-| Cache read tokens | (per target; see below) |
+| Requests                        |                                257,244 |
+| Metered tokens                  |                          4,809,830,210 |
+| Direct metered cost             |                                 $51.12 |
+| Cache read tokens               |                (per target; see below) |
 
 Top consumers by metered tokens:
 
-| Provider/model target | Requests | Failed | Metered tokens | Cost |
-|---|---:|---:|---:|---:|
-| `_openai.main/gpt-6-luna` | 97,967 | 228 | 2,360,407,290 | $0.00 |
-| `_claude/claude-haiku-5-5` | 34,963 | 16,740 | 1,218,151,922 | $0.00 |
-| `_openai.alt/gpt-6-luna` | 16,780 | 307 | 199,451,249 | $0.00 |
-| `_muse/muse-spark-1.3-contributor` | 18,928 | 731 | 162,882,353 | $0.00 |
-| `opencode-go.developing-today-0/deepseek-v4.1-flash` | 14,148 | 321 | 121,210,398 | $18.39 |
-| `_claude/claude-sonnet-5-5` | 3,836 | 3,335 | 84,871,785 | $0.00 |
-| `opendesign/deepseek-v4.1-flash` | 8,432 | 104 | 79,256,408 | $0.00 |
-| `cline-pass/deepseek-v4.1-flash` | 7,132 | 1,829 | 55,167,460 | $7.94 |
-| `exaone/k-exaone_v2.5` | 3,194 | 422 | 45,103,072 | $0.00 |
-| `_claude/claude-fable-5-2` | 4,339 | 4,074 | 44,314,275 | $0.00 |
+| Provider/model target                                | Requests | Failed | Metered tokens |   Cost |
+| ---------------------------------------------------- | -------: | -----: | -------------: | -----: |
+| `_openai.main/gpt-6-luna`                            |   97,967 |    228 |  2,360,407,290 |  $0.00 |
+| `_claude/claude-haiku-5-5`                           |   34,963 | 16,740 |  1,218,151,922 |  $0.00 |
+| `_openai.alt/gpt-6-luna`                             |   16,780 |    307 |    199,451,249 |  $0.00 |
+| `_muse/muse-spark-1.3-contributor`                   |   18,928 |    731 |    162,882,353 |  $0.00 |
+| `opencode-go.developing-today-0/deepseek-v4.1-flash` |   14,148 |    321 |    121,210,398 | $18.39 |
+| `_claude/claude-sonnet-5-5`                          |    3,836 |  3,335 |     84,871,785 |  $0.00 |
+| `opendesign/deepseek-v4.1-flash`                     |    8,432 |    104 |     79,256,408 |  $0.00 |
+| `cline-pass/deepseek-v4.1-flash`                     |    7,132 |  1,829 |     55,167,460 |  $7.94 |
+| `exaone/k-exaone_v2.5`                               |    3,194 |    422 |     45,103,072 |  $0.00 |
+| `_claude/claude-fable-5-2`                           |    4,339 |  4,074 |     44,314,275 |  $0.00 |
 
 Pool-level offer/choice counts from the same window:
 
-| Pool | Offered | Chosen |
-|---|---:|---:|
-| `workhorse-weighted` | 192,163 | 148,220 |
-| `workhorse` | 68,074 | (not separately reported) |
-| `scout` | 229,325 | 93,376 |
-| `speed` | 7,415 | 4,047 |
-| `workhorse-last-resort` | 66,279 | 18,751 |
-| `workhorse-ordered` | 29,890 | 29,890 |
-| `fable-plan` | 324 | 324 |
-| `spark-plan` | 3,483 | 2,944 |
+| Pool                    | Offered |                    Chosen |
+| ----------------------- | ------: | ------------------------: |
+| `workhorse-weighted`    | 192,163 |                   148,220 |
+| `workhorse`             |  68,074 | (not separately reported) |
+| `scout`                 | 229,325 |                    93,376 |
+| `speed`                 |   7,415 |                     4,047 |
+| `workhorse-last-resort` |  66,279 |                    18,751 |
+| `workhorse-ordered`     |  29,890 |                    29,890 |
+| `fable-plan`            |     324 |                       324 |
+| `spark-plan`            |   3,483 |                     2,944 |
 
 ### 3.1 Join between consumption and output
 
@@ -235,8 +235,7 @@ token-to-PR attribution requires a consumption-to-task or
 consumption-to-session link, such as session-level attribution in
 `route_usage` joined to `session_bound`/`lane_session_bound`. Stamping the LLM
 provider/model on each completed task identifies that task's model; it does
-not allocate that model's tokens to the task. Both are recommended in section
-6.
+not allocate that model's tokens to the task. Both are recommended in section 6.
 
 ## 4. Worse-efficiency period
 
@@ -244,15 +243,15 @@ not allocate that model's tokens to the task. Both are recommended in section
 
 Merged PRs by day (UTC) in the window:
 
-| Date | Merged PRs | Completed tasks | Model stamps |
-|---|---:|---:|---:|
-| 2026-11-12 | 16 | 17 | 29 |
-| 2026-11-13 | 114 | 794 | 638 |
-| 2026-11-14 | 252 | 1,091 | 1,243 |
-| 2026-11-15 | 55 | 67 | 130 |
-| 2026-11-16 | 224 | 468 | 504 |
-| 2026-11-17 | 289 | 2,318 | 2,206 |
-| 2026-11-18 | 177 | 324 | 0 |
+| Date       | Merged PRs | Completed tasks | Model stamps |
+| ---------- | ---------: | --------------: | -----------: |
+| 2026-11-12 |         16 |              17 |           29 |
+| 2026-11-13 |        114 |             794 |          638 |
+| 2026-11-14 |        252 |           1,091 |        1,243 |
+| 2026-11-15 |         55 |              67 |          130 |
+| 2026-11-16 |        224 |             468 |          504 |
+| 2026-11-17 |        289 |           2,318 |        2,206 |
+| 2026-11-18 |        177 |             324 |            0 |
 
 **2026-11-15 appears to be an output trough, not a measured efficiency decline.**
 The corrected daily rows sum to the fixed-window totals in section 2.1:

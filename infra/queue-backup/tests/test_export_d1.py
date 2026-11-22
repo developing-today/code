@@ -123,8 +123,7 @@ def make_fixture(path):
             " 'repo-health-code-pilot', 1)"
         )
         conn.execute(
-            "INSERT INTO workers VALUES ('seed-worker', 'lane', 'Seed',"
-            " 'idle', ?, ?)",
+            "INSERT INTO workers VALUES ('seed-worker', 'lane', 'Seed', 'idle', ?, ?)",
             (TS, TS),
         )
         tasks = [
@@ -140,8 +139,17 @@ def make_fixture(path):
                 "INSERT INTO tasks (id, queue, title, priority, status,"
                 " not_before, attempts, max_attempts, created_at, updated_at)"
                 " VALUES (?, 'repo-health-code-pilot', ?, ?, ?, ?, ?, ?, ?, ?)",
-                (task_id, f"task {task_id}", priority, status, not_before,
-                 attempts, max_attempts, TS, TS),
+                (
+                    task_id,
+                    f"task {task_id}",
+                    priority,
+                    status,
+                    not_before,
+                    attempts,
+                    max_attempts,
+                    TS,
+                    TS,
+                ),
             )
         conn.execute(
             "INSERT INTO events (worker_id, task_id, kind, created_at)"
@@ -149,8 +157,7 @@ def make_fixture(path):
             (TS,),
         )
         conn.execute(
-            "INSERT INTO checkpoints VALUES ('seed-worker', 'cursor',"
-            " '{\"n\": 1}', ?)",
+            "INSERT INTO checkpoints VALUES ('seed-worker', 'cursor', '{\"n\": 1}', ?)",
             (TS,),
         )
         conn.execute(
@@ -161,8 +168,7 @@ def make_fixture(path):
             (TS, TS),
         )
         conn.execute(
-            "INSERT INTO creation_outbox_circuit (id, updated_at)"
-            " VALUES (1, ?)",
+            "INSERT INTO creation_outbox_circuit (id, updated_at) VALUES (1, ?)",
             (TS,),
         )
         conn.execute(
@@ -213,9 +219,7 @@ class ExportD1Tests(unittest.TestCase):
         self.assertNotIn("PRAGMA", dump.upper())
         with open(self.out, "rb") as handle:
             raw = handle.read()
-        self.assertEqual(
-            manifest["dump_sha256"], hashlib.sha256(raw).hexdigest()
-        )
+        self.assertEqual(manifest["dump_sha256"], hashlib.sha256(raw).hexdigest())
         self.assertEqual(manifest["dump_bytes"], len(raw))
         with open(self.manifest_path, "r", encoding="utf-8") as handle:
             on_disk = json.load(handle)
@@ -226,13 +230,26 @@ class ExportD1Tests(unittest.TestCase):
         with self.assertRaises(FileExistsError):
             export_d1.export(self.source, self.out, self.manifest_path)
         rc = export_d1.main(
-            ["--source", self.source, "--out", self.out,
-             "--manifest", self.manifest_path]
+            [
+                "--source",
+                self.source,
+                "--out",
+                self.out,
+                "--manifest",
+                self.manifest_path,
+            ]
         )
         self.assertEqual(rc, 1)
         rc = export_d1.main(
-            ["--source", self.source, "--out", self.out,
-             "--manifest", self.manifest_path, "--force"]
+            [
+                "--source",
+                self.source,
+                "--out",
+                self.out,
+                "--manifest",
+                self.manifest_path,
+                "--force",
+            ]
         )
         self.assertEqual(rc, 0)
 
@@ -241,8 +258,7 @@ class ExportD1Tests(unittest.TestCase):
         with open(bogus, "w", encoding="utf-8") as handle:
             handle.write("this is not a sqlite database")
         rc = export_d1.main(
-            ["--source", bogus, "--out", self.out,
-             "--manifest", self.manifest_path]
+            ["--source", bogus, "--out", self.out, "--manifest", self.manifest_path]
         )
         self.assertEqual(rc, 1)
         self.assertFalse(os.path.exists(self.out))

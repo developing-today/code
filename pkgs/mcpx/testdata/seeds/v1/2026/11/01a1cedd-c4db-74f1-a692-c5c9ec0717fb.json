@@ -1,1 +1,12 @@
-{"seed":"01a1cedd-c4db-74f1-a692-c5c9ec0717fb","commit":"cb7cb683546e043fe7adfec8717f2823503b550c","ref":"refs/heads/queue/8147-1960-mcpx-fuzz-policy","event":"pull_request","run":"https://github.com/developing-today/code/actions/runs/42941613060","attempt":1,"result":"cancelled","derivation":"v1","generators":"","date":"2026-11-12"}
+{
+  "seed": "01a1cedd-c4db-74f1-a692-c5c9ec0717fb",
+  "commit": "cb7cb683546e043fe7adfec8717f2823503b550c",
+  "ref": "refs/heads/queue/8147-1960-mcpx-fuzz-policy",
+  "event": "pull_request",
+  "run": "https://github.com/developing-today/code/actions/runs/42941613060",
+  "attempt": 1,
+  "result": "cancelled",
+  "derivation": "v1",
+  "generators": "",
+  "date": "2026-11-12"
+}

@@ -484,9 +484,7 @@ class ReadyPrShepherdTest(unittest.TestCase):
         # Exactly one packet: the merge-watch, keyed merge-watch.
         self.assertEqual(len(calls), 1)
         self.assertTrue(
-            calls[0]["packet"]["dedupe_key"].startswith(
-                "repo-health:v1:merge-watch:"
-            )
+            calls[0]["packet"]["dedupe_key"].startswith("repo-health:v1:merge-watch:")
         )
 
     def test_observe_mode_reports_candidates_and_enqueues_nothing(self):

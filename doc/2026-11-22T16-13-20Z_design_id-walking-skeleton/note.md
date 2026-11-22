@@ -33,20 +33,20 @@ named rows. "Realized as" is the module on `main` and the test that
 exercises it on the path; a row whose module is merged but which the
 path does not execute is not listed.
 
-| # | Row | Component | What the path takes from it | Realized as |
-|---|-----|-----------|-----------------------------|-------------|
-| 1 | `9110-02` | #9110 | Versioned port contracts and the federation slice registry the path's modules hang from | `pkgs/id/crates/id-sync/src/federation/mod.rs`, `federation/slices/mod.rs`; module reach enforced by `.github/scripts/check-rust-module-reach.sh` (#12268, decision D13) |
-| 2 | `A9120-content-id` | #9120 | The raw-blake3-256 digest that names a record in its address and as a version's event id | `id_core::id_shape::ContentId` (`crates/id-core/src/content_id.rs`) |
-| 3 | `A9113-profile-dispatch` | #9113 | Hash-profile dispatch: verify bytes against the digest an address names | `id_core::hash_profile::ProfileDispatch` (`crates/id-core/src/hash_profile.rs`) |
-| 4 | `A-GRAPH-9125-01` | #9125 | Typed triples and the canonical signed graph record a writer signs | `id_core::graph::{term, record}` (`crates/id-core/src/graph/`) |
-| 5 | `A9114-envelope-identities` | #9114 | Payload / body / signature / signed-envelope identity separation for the record envelope | `id_core::signed_envelope` (`crates/id-core/src/signed_envelope.rs`) |
-| 6 | `A9117-uri-parser` | #9117 | Strict parser for the `id://` address (authority, namespace, content target) | `id_core::id_uri_parse::IdUriV1` (`crates/id-core/src/id_uri_parse.rs`) |
-| 7 | `A9117-uri-format` | #9117 | Canonical formatter and the caller-local resolver-hint check a reader applies | `id_core::id_uri_format` (`crates/id-core/src/id_uri_format.rs`) |
-| 8 | `B32` | #9141 | The mandatory universal signed-and-validated acceptance gate every write and every received version passes | `id_sync::federation::slices::b32_ingest_gate` (`crates/id-sync/src/federation/slices/b32_ingest_gate.rs`) |
-| 9 | `B07` | #9142 | The store a node keeps versions in, and the first-class conflict-report artifact (steps 2 and 5) | `id_sync::federation::slices::b07_conflict_report::{ConflictStore, ConflictReport}` |
-| 10 | `A9120-content-store` | #9120 | The durable form of step 2: versions and reports kept as verified content on disk | `id_store::content_store` (`crates/id-store/src/content_store.rs`), via `id_sync::federation::record_store` — slice B2(b), #12492 / PR #12497 |
-| 11 | `B08` | #9142 | Sync scope: the scope / trust-domain / retention bounds a version must satisfy to cross a link | `id_sync::federation::slices::b08_sync_scope::SyncScopeConfig` |
-| 12 | `B09` | #9142 | Divergence detection and anti-entropy: inventories compared digest-first, missing signed versions moved, never merged | `id_sync::federation::slices::b09_anti_entropy::{Replica, reconcile, divergence}` |
+| #   | Row                         | Component | What the path takes from it                                                                                           | Realized as                                                                                                                                                              |
+| --- | --------------------------- | --------- | --------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 1   | `9110-02`                   | #9110     | Versioned port contracts and the federation slice registry the path's modules hang from                               | `pkgs/id/crates/id-sync/src/federation/mod.rs`, `federation/slices/mod.rs`; module reach enforced by `.github/scripts/check-rust-module-reach.sh` (#12268, decision D13) |
+| 2   | `A9120-content-id`          | #9120     | The raw-blake3-256 digest that names a record in its address and as a version's event id                              | `id_core::id_shape::ContentId` (`crates/id-core/src/content_id.rs`)                                                                                                      |
+| 3   | `A9113-profile-dispatch`    | #9113     | Hash-profile dispatch: verify bytes against the digest an address names                                               | `id_core::hash_profile::ProfileDispatch` (`crates/id-core/src/hash_profile.rs`)                                                                                          |
+| 4   | `A-GRAPH-9125-01`           | #9125     | Typed triples and the canonical signed graph record a writer signs                                                    | `id_core::graph::{term, record}` (`crates/id-core/src/graph/`)                                                                                                           |
+| 5   | `A9114-envelope-identities` | #9114     | Payload / body / signature / signed-envelope identity separation for the record envelope                              | `id_core::signed_envelope` (`crates/id-core/src/signed_envelope.rs`)                                                                                                     |
+| 6   | `A9117-uri-parser`          | #9117     | Strict parser for the `id://` address (authority, namespace, content target)                                          | `id_core::id_uri_parse::IdUriV1` (`crates/id-core/src/id_uri_parse.rs`)                                                                                                  |
+| 7   | `A9117-uri-format`          | #9117     | Canonical formatter and the caller-local resolver-hint check a reader applies                                         | `id_core::id_uri_format` (`crates/id-core/src/id_uri_format.rs`)                                                                                                         |
+| 8   | `B32`                       | #9141     | The mandatory universal signed-and-validated acceptance gate every write and every received version passes            | `id_sync::federation::slices::b32_ingest_gate` (`crates/id-sync/src/federation/slices/b32_ingest_gate.rs`)                                                               |
+| 9   | `B07`                       | #9142     | The store a node keeps versions in, and the first-class conflict-report artifact (steps 2 and 5)                      | `id_sync::federation::slices::b07_conflict_report::{ConflictStore, ConflictReport}`                                                                                      |
+| 10  | `A9120-content-store`       | #9120     | The durable form of step 2: versions and reports kept as verified content on disk                                     | `id_store::content_store` (`crates/id-store/src/content_store.rs`), via `id_sync::federation::record_store` — slice B2(b), #12492 / PR #12497                            |
+| 11  | `B08`                       | #9142     | Sync scope: the scope / trust-domain / retention bounds a version must satisfy to cross a link                        | `id_sync::federation::slices::b08_sync_scope::SyncScopeConfig`                                                                                                           |
+| 12  | `B09`                       | #9142     | Divergence detection and anti-entropy: inventories compared digest-first, missing signed versions moved, never merged | `id_sync::federation::slices::b09_anti_entropy::{Replica, reconcile, divergence}`                                                                                        |
 
 Two pieces of the path are not mapped rows and are recorded here so
 the map is complete:
@@ -70,15 +70,15 @@ are two heads, which is exactly the conflict B07 reports in step 5.
 
 ## Shared interfaces and their single owners
 
-| Interface | Owner row(s) | Surface |
-|-----------|--------------|---------|
-| `id://` address | `A9117-uri-parser`, `A9117-uri-format` | `IdUriV1::parse` / `IdUriV1::format`, `resolve_context` |
-| Signed record | `A-GRAPH-9125-01`, `A9114-envelope-identities` | `GraphRecord::sign`, `signed_envelope::Envelope`, `graph::record::open` |
-| Address ↔ version join | #12232 (D14) | event id = envelope digest = address digest; object = logical graph |
-| Admission gate | `B32` | `b32_ingest_gate::{Envelope, sign_envelope, SignerAuthorization}` checked by `ConflictStore::ingest` |
-| Store + conflict report | `B07` | `ConflictStore::{ingest, heads, open_report, report}` |
-| Durable store | `A9120-content-store` | `id_store::content_store` behind `federation::record_store` |
-| Scoped exchange | `B08`, `B09` | `SyncScopeConfig`; `Replica::{produce, receive, inventory}`, `reconcile`, `divergence` |
+| Interface               | Owner row(s)                                   | Surface                                                                                              |
+| ----------------------- | ---------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| `id://` address         | `A9117-uri-parser`, `A9117-uri-format`         | `IdUriV1::parse` / `IdUriV1::format`, `resolve_context`                                              |
+| Signed record           | `A-GRAPH-9125-01`, `A9114-envelope-identities` | `GraphRecord::sign`, `signed_envelope::Envelope`, `graph::record::open`                              |
+| Address ↔ version join  | #12232 (D14)                                   | event id = envelope digest = address digest; object = logical graph                                  |
+| Admission gate          | `B32`                                          | `b32_ingest_gate::{Envelope, sign_envelope, SignerAuthorization}` checked by `ConflictStore::ingest` |
+| Store + conflict report | `B07`                                          | `ConflictStore::{ingest, heads, open_report, report}`                                                |
+| Durable store           | `A9120-content-store`                          | `id_store::content_store` behind `federation::record_store`                                          |
+| Scoped exchange         | `B08`, `B09`                                   | `SyncScopeConfig`; `Replica::{produce, receive, inventory}`, `reconcile`, `divergence`               |
 
 ## One clarification, recorded rather than silently absorbed
 

@@ -28,7 +28,14 @@ describe("C7 report review UI", () => {
 
     expect(reviews).toHaveLength(1);
     const html = renderReportReview(reviews, 2, new Date("2026-11-21T13:59:00.000Z"));
-    for (const phrase of ["Human wording &lt;kept&gt;.", "Generated wording.", "Keep stored wording", "Use rendered wording", "Use my edited wording", "Combine the two"]) {
+    for (const phrase of [
+      "Human wording &lt;kept&gt;.",
+      "Generated wording.",
+      "Keep stored wording",
+      "Use rendered wording",
+      "Use my edited wording",
+      "Combine the two",
+    ]) {
       expect(html).toContain(phrase);
     }
     expect(html).toContain('name="strategy-0" value="stored" required');
@@ -39,7 +46,11 @@ describe("C7 report review UI", () => {
   test("keeps comparison visible but removes resolution controls at soft close", () => {
     const stored = record("stored", "Human wording.", "2026-11-21T13:00:00.000Z");
     const rendered = record("rendered", "Generated wording.", "2026-11-21T14:00:00.000Z");
-    const html = renderReportReview(reportBlockReviews([stored, rendered], [stored]), 2, new Date("2026-11-21T14:00:00.000Z"));
+    const html = renderReportReview(
+      reportBlockReviews([stored, rendered], [stored]),
+      2,
+      new Date("2026-11-21T14:00:00.000Z"),
+    );
 
     expect(html).toContain("Human wording.");
     expect(html).toContain("Generated wording.");
@@ -62,7 +73,13 @@ describe("C7 report review UI", () => {
     expect(afterClose).toContain("/api/reports/late-update");
     expect(afterClose).toContain("Append late update");
 
-    const finalized = renderReportReview([], 1, new Date("2026-11-21T14:00:00.000Z"), [closed], new Set([closed.period.id]));
+    const finalized = renderReportReview(
+      [],
+      1,
+      new Date("2026-11-21T14:00:00.000Z"),
+      [closed],
+      new Set([closed.period.id]),
+    );
     expect(finalized).toContain('value="feedback"');
   });
 
@@ -109,11 +126,17 @@ describe("C7 report review UI", () => {
     expect(reportBlockReviews([stored, rendered, resolved], [resolved])).toHaveLength(0);
 
     const postResolution = record("post-resolution", "New wording.", "2026-11-21T16:00:00.000Z");
-    expect(reportBlockReviews([stored, rendered, resolved, postResolution], [postResolution]).map((review) => review.renderedRecord.id))
-      .toEqual(["resolved"]);
+    expect(
+      reportBlockReviews([stored, rendered, resolved, postResolution], [postResolution]).map(
+        (review) => review.renderedRecord.id,
+      ),
+    ).toEqual(["resolved"]);
     const latest = record("latest", "Latest wording.", "2026-11-21T17:00:00.000Z");
-    expect(reportBlockReviews([stored, rendered, resolved, postResolution, latest], [latest]).map((review) => review.renderedRecord.id))
-      .toEqual(["post-resolution"]);
+    expect(
+      reportBlockReviews([stored, rendered, resolved, postResolution, latest], [latest]).map(
+        (review) => review.renderedRecord.id,
+      ),
+    ).toEqual(["post-resolution"]);
 
     const resolvedAgain = record("resolved-again", "New wording.", "2026-11-21T18:00:00.000Z");
     resolvedAgain.blocks[0].resolution = {
@@ -122,6 +145,8 @@ describe("C7 report review UI", () => {
       strategy: "stored",
       resolvedAt: resolvedAgain.generatedAt,
     };
-    expect(reportBlockReviews([stored, rendered, resolved, postResolution, latest, resolvedAgain], [resolvedAgain])).toHaveLength(0);
+    expect(
+      reportBlockReviews([stored, rendered, resolved, postResolution, latest, resolvedAgain], [resolvedAgain]),
+    ).toHaveLength(0);
   });
 });

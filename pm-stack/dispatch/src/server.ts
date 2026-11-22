@@ -80,7 +80,9 @@ async function sweepWorktrees(): Promise<void> {
     listSessions: () => opencode.listSessions(),
   });
   for (const outcome of outcomes) {
-    console.info(`[dispatch-worktree] ${outcome.removed ? "removed" : "retained"} ${outcome.worktree}: ${outcome.reason}`);
+    console.info(
+      `[dispatch-worktree] ${outcome.removed ? "removed" : "retained"} ${outcome.worktree}: ${outcome.reason}`,
+    );
   }
 }
 
@@ -258,7 +260,9 @@ async function launchSession(
         createdAt: new Date().toISOString(),
       });
     } catch (e) {
-      warnings.push(`dispatch worktree registry write failed; cleanup will retain this tree: ${e instanceof Error ? e.message : String(e)}`);
+      warnings.push(
+        `dispatch worktree registry write failed; cleanup will retain this tree: ${e instanceof Error ? e.message : String(e)}`,
+      );
     }
   }
   const session = await opencode.createSession({
@@ -270,7 +274,9 @@ async function launchSession(
     try {
       await worktreeRegistry.setSessionId(createdWorktree.worktree, session.id);
     } catch (e) {
-      warnings.push(`dispatch worktree session binding failed; cleanup will retain this tree: ${e instanceof Error ? e.message : String(e)}`);
+      warnings.push(
+        `dispatch worktree session binding failed; cleanup will retain this tree: ${e instanceof Error ? e.message : String(e)}`,
+      );
     }
   }
   const prefix = `[dispatch] Queue task #${task.id} · Issue ${issue ? issue.url : "none"} · Repo ${req.repo}${notice}`;

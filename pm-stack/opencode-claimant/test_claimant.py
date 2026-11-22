@@ -1514,9 +1514,7 @@ class TestHandBackStep(unittest.TestCase):
         calls = empty_calls()
         bound = dict(HANDBACK_CANDIDATE, id=890, session_id="ses_busy")
         second = dict(HANDBACK_CANDIDATE, id=889, issue="#1188")
-        with patch.object(
-            claimant.subprocess, "run", make_handback_run(calls)
-        ):
+        with patch.object(claimant.subprocess, "run", make_handback_run(calls)):
             record = claimant.hand_back_step(
                 "live",
                 [dict(HANDBACK_CANDIDATE), bound, second],
@@ -1530,9 +1528,7 @@ class TestHandBackStep(unittest.TestCase):
     def test_no_launchable_candidate_no_handback(self):
         calls = empty_calls()
         bound = dict(HANDBACK_CANDIDATE, session_id="ses_busy")
-        with patch.object(
-            claimant.subprocess, "run", make_handback_run(calls)
-        ):
+        with patch.object(claimant.subprocess, "run", make_handback_run(calls)):
             record = claimant.hand_back_step("live", [bound])
         self.assertIsNone(record)
         self.assertEqual(calls, empty_calls())

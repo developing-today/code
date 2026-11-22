@@ -29,7 +29,7 @@ printf '%s\n' '/nix/store/opencode-same-build' >"$state"
 "$repo_root/home/common/opencode-deploy.sh" \
   '/nix/store/opencode-same-build' "$state" "$systemctl" "$proc_root"
 
-if [[ -e "$log" ]]; then
+if [[ -e $log ]]; then
   echo "FAIL: unchanged OpenCode build called systemctl:" >&2
   cat "$log" >&2
   exit 1

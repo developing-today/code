@@ -11,7 +11,7 @@ if [[ $# -ne 0 ]]; then
 fi
 set -euo pipefail
 FQ_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-if [[ -z "${BWS_ACCESS_TOKEN-}" && -f ~/.config/bitwarden/access-token ]]; then
+if [[ -z ${BWS_ACCESS_TOKEN-} && -f ~/.config/bitwarden/access-token ]]; then
   BWS_ACCESS_TOKEN="$(cat ~/.config/bitwarden/access-token)"
   export BWS_ACCESS_TOKEN
 fi

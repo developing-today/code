@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 # Contract: test.sh (no arguments). Uses only a temporary directory and a fake OpenCode executable.
 set -Eeuo pipefail
-if (($#)); then echo "usage: $0" >&2; exit 2; fi
+if (($#)); then
+  echo "usage: $0" >&2
+  exit 2
+fi
 
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 TMP="$(mktemp -d)"

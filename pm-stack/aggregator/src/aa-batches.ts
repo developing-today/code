@@ -221,7 +221,9 @@ export function isAaBatchCacheEntry(v: unknown): v is AaBatchCacheEntry {
     typeof e.configFingerprint === "string" &&
     typeof e.fingerprint === "string" &&
     (e.pricesFingerprint === undefined || e.pricesFingerprint === null || typeof e.pricesFingerprint === "string") &&
-    (e.measurementsFingerprint === undefined || e.measurementsFingerprint === null || typeof e.measurementsFingerprint === "string") &&
+    (e.measurementsFingerprint === undefined ||
+      e.measurementsFingerprint === null ||
+      typeof e.measurementsFingerprint === "string") &&
     (e.measurementsScope === undefined || e.measurementsScope === "current" || e.measurementsScope === "as-of") &&
     (e.sqlRevision === undefined || typeof e.sqlRevision === "number") &&
     typeof e.builtAt === "string" &&

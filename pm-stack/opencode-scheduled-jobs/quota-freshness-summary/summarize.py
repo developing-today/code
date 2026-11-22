@@ -52,7 +52,9 @@ def build_report(
     heartbeat = (
         standalone
         if standalone is not None
-        and (embedded is None or standalone["_parsedTickAt"] > embedded["_parsedTickAt"])
+        and (
+            embedded is None or standalone["_parsedTickAt"] > embedded["_parsedTickAt"]
+        )
         else embedded
     ) or {}
     heartbeat_at = heartbeat.get("_parsedTickAt")
@@ -114,7 +116,8 @@ def build_report(
         "snapshotFresh": 0 <= age_seconds <= MAX_AGE_SECONDS,
         "gathererHeartbeatAt": heartbeat.get("tickAt"),
         "gathererHeartbeatAgeSeconds": heartbeat_age,
-        "gathererHeartbeatFresh": heartbeat_age is not None and 0 <= heartbeat_age <= 20 * 60,
+        "gathererHeartbeatFresh": heartbeat_age is not None
+        and 0 <= heartbeat_age <= 20 * 60,
         "gathererHealthy": heartbeat.get("ok") is True and not heartbeat.get("error"),
         "gathererError": bool(heartbeat.get("error")),
         "providerCounts": {
@@ -147,7 +150,9 @@ def main() -> int:
         if not isinstance(source, dict) or source.get("version") != 1:
             raise ValueError("unsupported quota-current document")
         try:
-            standalone_heartbeat = json.loads(heartbeat_path.read_text(encoding="utf-8"))
+            standalone_heartbeat = json.loads(
+                heartbeat_path.read_text(encoding="utf-8")
+            )
         except (OSError, json.JSONDecodeError):
             standalone_heartbeat = None
         report = build_report(source, datetime.now(timezone.utc), standalone_heartbeat)

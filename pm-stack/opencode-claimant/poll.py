@@ -602,12 +602,8 @@ def fetch_sessions():
         if cursor:
             query["cursor"] = cursor
         path = "/api/session?" + urllib.parse.urlencode(query)
-        response = _server_get(
-            path, include_envelope=True, raise_http_errors=True
-        )
-        if not isinstance(response, dict) or not isinstance(
-            response.get("data"), list
-        ):
+        response = _server_get(path, include_envelope=True, raise_http_errors=True)
+        if not isinstance(response, dict) or not isinstance(response.get("data"), list):
             return None
         sessions.extend(response["data"])
         page_cursor = response.get("cursor")

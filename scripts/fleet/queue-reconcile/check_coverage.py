@@ -456,8 +456,7 @@ def shepherd_packet(repo: str, pr: dict, checked_at: str) -> dict:
                 "number": pr_number,
                 "url": pr_url,
                 "title": title,
-                "branch": pr.get("branch")
-                or ((pr.get("head") or {}).get("ref") or ""),
+                "branch": pr.get("branch") or ((pr.get("head") or {}).get("ref") or ""),
                 "state_checked_at": checked_at,
             },
             "problem": (
@@ -483,7 +482,9 @@ def shepherd_packet(repo: str, pr: dict, checked_at: str) -> dict:
                 "Merge / mergeable verdict recorded on the task; if merged, the PR's closing-keyword disposition of its issue is verified",
             ],
             "scope": {
-                "include": [f"Shepherd existing PR {repo}#{pr_number} to merged or closed-with-reason"],
+                "include": [
+                    f"Shepherd existing PR {repo}#{pr_number} to merged or closed-with-reason"
+                ],
                 "exclude": [
                     "Re-implementing the PR's change",
                     "Unrelated issues, pull requests, or repositories",
@@ -665,9 +666,7 @@ def render_report(
         for r, i in uncovered_any:
             lines.append(f"- {r['repo']}#{i['number']} — {i.get('title', '')}")
         lines.append("")
-    shepherd_any = [
-        (r, p) for r in results for p in r.get("shepherd_candidates", [])
-    ]
+    shepherd_any = [(r, p) for r in results for p in r.get("shepherd_candidates", [])]
     if shepherd_any:
         lines += [
             "## Ready PRs with no live task — shepherd candidates (#12280)",

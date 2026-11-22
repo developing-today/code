@@ -39,12 +39,22 @@ class RestoreDrillTests(unittest.TestCase):
         self.restored = os.path.join(self.tmp.name, "restored.db")
 
     def run_drill(self, *extra):
-        return restore_drill.drill(
-            self.dump, self.manifest, self.restored,
-            worker="drill-worker", allow_empty=False,
-        ) if not extra else restore_drill.drill(
-            self.dump, self.manifest, self.restored,
-            worker="drill-worker", allow_empty=True,
+        return (
+            restore_drill.drill(
+                self.dump,
+                self.manifest,
+                self.restored,
+                worker="drill-worker",
+                allow_empty=False,
+            )
+            if not extra
+            else restore_drill.drill(
+                self.dump,
+                self.manifest,
+                self.restored,
+                worker="drill-worker",
+                allow_empty=True,
+            )
         )
 
     def test_round_trip_counts_schema_and_claim(self):
@@ -62,8 +72,7 @@ class RestoreDrillTests(unittest.TestCase):
             self.assertEqual(row[2], 1)
             self.assertIsNotNone(row[3])
             untouched = conn.execute(
-                "SELECT status, attempts FROM tasks WHERE id IN (2, 3, 5)"
-                " ORDER BY id"
+                "SELECT status, attempts FROM tasks WHERE id IN (2, 3, 5) ORDER BY id"
             ).fetchall()
             self.assertEqual(
                 untouched,
@@ -83,9 +92,7 @@ class RestoreDrillTests(unittest.TestCase):
 
     def test_drill_rejects_a_tampered_dump(self):
         with open(self.dump, "a", encoding="utf-8") as handle:
-            handle.write(
-                "INSERT INTO lanes VALUES ('evil', 'w', 'q', 1);\n"
-            )
+            handle.write("INSERT INTO lanes VALUES ('evil', 'w', 'q', 1);\n")
         with self.assertRaises(restore_drill.DrillError):
             self.run_drill()
 

@@ -53,7 +53,7 @@ def make_source():
     )
     rows = [
         (1, "plain", "line one\nline two", b"\x00\xff\x10", 1.5, None),
-        (2, "it's a 'quoted' title", 'semi;colon -- comment', b"", -0.25, 1),
+        (2, "it's a 'quoted' title", "semi;colon -- comment", b"", -0.25, 1),
         (3, "ünïcode ✓", "", None, 0.0, 1),
     ]
     conn.executemany("INSERT INTO tasks VALUES (?,?,?,?,?,?)", rows)
@@ -100,9 +100,7 @@ class TestBuildDump(unittest.TestCase):
         rebuilt = sqlite3.connect(":memory:")
         rebuilt.executescript(dump)
         rebuilt.executescript(dump)
-        self.assertEqual(
-            rebuilt.execute("SELECT count(*) FROM tasks").fetchone()[0], 3
-        )
+        self.assertEqual(rebuilt.execute("SELECT count(*) FROM tasks").fetchone()[0], 3)
 
 
 class TestPagination(unittest.TestCase):
@@ -114,9 +112,7 @@ class TestPagination(unittest.TestCase):
             [(i, f"row-{i}") for i in range(2 * fq_common.PAGE_ROWS + 7)],
         )
         conn.commit()
-        seen = list(
-            fq_common.read_table_quoted(SqliteLibsqlAdapter(conn), "big", 2)
-        )
+        seen = list(fq_common.read_table_quoted(SqliteLibsqlAdapter(conn), "big", 2))
         self.assertEqual(len(seen), 2 * fq_common.PAGE_ROWS + 7)
         self.assertEqual(seen[0], ("0", "'row-0'"))
 
@@ -125,12 +121,12 @@ class TestHranaValues(unittest.TestCase):
     def test_round_trip(self):
         corpus = [None, 0, -42, 2**62, 1.25, -0.5, "", "text ✓", b"\x00\x01\xfe"]
         for value in corpus:
-            self.assertEqual(fq_common.python_value(fq_common.hrana_value(value)), value)
+            self.assertEqual(
+                fq_common.python_value(fq_common.hrana_value(value)), value
+            )
 
     def test_bool_is_integer(self):
-        self.assertEqual(
-            fq_common.hrana_value(True), {"type": "integer", "value": "1"}
-        )
+        self.assertEqual(fq_common.hrana_value(True), {"type": "integer", "value": "1"})
 
 
 if __name__ == "__main__":

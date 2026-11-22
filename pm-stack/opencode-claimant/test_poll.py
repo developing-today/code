@@ -774,10 +774,7 @@ class TestFetchSessions(unittest.TestCase):
             query = urllib.parse.parse_qs(path.partition("?")[2])
             limit = int(query["limit"][0])
             start = int(query.get("cursor", ["0"])[0])
-            page = [
-                {"id": f"ses_{i}"}
-                for i in range(start, min(start + limit, total))
-            ]
+            page = [{"id": f"ses_{i}"} for i in range(start, min(start + limit, total))]
             next_cursor = str(start + limit) if start + limit < total else None
             return {"data": page, "cursor": {"next": next_cursor}}
 
@@ -800,9 +797,7 @@ class TestFetchSessions(unittest.TestCase):
     def test_more_than_200_sessions_follow_cursor_to_completion(self):
         sessions, calls = self.run_fetch(450)
         self.assertEqual(len(sessions), 450)
-        self.assertEqual(
-            [s["id"] for s in sessions], [f"ses_{i}" for i in range(450)]
-        )
+        self.assertEqual([s["id"] for s in sessions], [f"ses_{i}" for i in range(450)])
         self.assertEqual(len(calls), 3)
         for path in calls:
             query = urllib.parse.parse_qs(path.partition("?")[2])

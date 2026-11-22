@@ -6,7 +6,7 @@ Builds on §11 (and the address profile in §10, invariants in §13) of `doc/202
 
 ## Decision summary
 
-1. **Three distinct operations.** *Delegation* grants a narrow scope to another key and leaves the original controller in place. *Transfer* replaces the controlling key of a space. *Identity equivalence* is a data assertion that two keys are linked; it grants nothing by itself. Each has its own signed record and its own ceremony.
+1. **Three distinct operations.** _Delegation_ grants a narrow scope to another key and leaves the original controller in place. _Transfer_ replaces the controlling key of a space. _Identity equivalence_ is a data assertion that two keys are linked; it grants nothing by itself. Each has its own signed record and its own ceremony.
 2. **Delegation is published, not claimed.** A grant takes effect only when it is listed in the space's well-known delegation location and the verifier checks the grantor's signature. A grantee cannot make itself a delegate by asserting it.
 3. **Transfer needs both controllers.** The old controller signs an offer; the new controller signs an acceptance over the same bytes. Neither signature alone moves control.
 4. **Identity triples need both sides.** A `sameAs`-style triple is honoured as a link only when both keys sign the same challenge bytes. A unilateral triple is stored as `pending` and grants nothing.
@@ -73,31 +73,31 @@ Transfer is distinct from adding a delegate: adding a delegate never moves contr
 
 ## 5. Pending and unverified claims
 
-| Property | Rule |
-|---|---|
-| What a pending claim may do | Be displayed, with its source and signature state, and be counted in review queues. |
-| What it may not do | Authorize reads, writes, delegation, transfer, or identity merging. It is never treated as a grant. |
-| Expiry | Every pending claim carries `expires`. After expiry plus 300 s it is discarded from active views but its bytes remain in audit. |
-| Withdrawal | The issuer may publish a signed withdrawal referencing the claim ID. A withdrawn claim is shown as withdrawn, never silently removed. |
-| Promotion | A pending claim becomes a link only by the counterparty's signature over the same challenge bytes before expiry. Nothing else promotes it. |
-| Verifier checks before honouring a delegation | Signature, authority at frontier, time window, nonce uniqueness, chain depth, no revocation (§2 step 3). |
-| Verifier checks before honouring an identity equivalence | Both signatures over identical challenge bytes, unexpired, purpose and scope match the request. |
+| Property                                                 | Rule                                                                                                                                       |
+| -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| What a pending claim may do                              | Be displayed, with its source and signature state, and be counted in review queues.                                                        |
+| What it may not do                                       | Authorize reads, writes, delegation, transfer, or identity merging. It is never treated as a grant.                                        |
+| Expiry                                                   | Every pending claim carries `expires`. After expiry plus 300 s it is discarded from active views but its bytes remain in audit.            |
+| Withdrawal                                               | The issuer may publish a signed withdrawal referencing the claim ID. A withdrawn claim is shown as withdrawn, never silently removed.      |
+| Promotion                                                | A pending claim becomes a link only by the counterparty's signature over the same challenge bytes before expiry. Nothing else promotes it. |
+| Verifier checks before honouring a delegation            | Signature, authority at frontier, time window, nonce uniqueness, chain depth, no revocation (§2 step 3).                                   |
+| Verifier checks before honouring an identity equivalence | Both signatures over identical challenge bytes, unexpired, purpose and scope match the request.                                            |
 
 ## 6. Open questions and chosen defaults
 
 Every question below is decided here. None is left operative as TBD.
 
-| # | Question | Chosen default |
-|---|---|---|
-| Q1 | Should delegations be listed in the space's well-known location or pushed to grantees? | **Listed in the well-known location.** Verification must not depend on delivery to the grantee. |
-| Q2 | Can a delegation be revoked by someone other than its grantor or the root controller? | **No.** Only the grantor or the current root controller revokes. After a transfer the new controller is the current root controller, so it can revoke inherited grants by ID directly, without re-granting them first. |
-| Q3 | Does transfer revoke the old controller's delegations? | **No, not automatically.** They are re-verified against the new frontier; the new controller revokes what it does not want. This avoids silently changing access on transfer. |
-| Q4 | Is grantee acceptance required for a delegation to take effect? | **No for `read` and `append`; yes-as-acknowledgement for `moderate` and `edit`.** The ack is recorded but does not gate validity, so an unreachable grantee cannot block a grant. |
-| Q5 | Recovery when the old controller key is lost. | **Explicit recovery policy in the signed space profile if the owner set one; otherwise not inferred.** The space is preserved as unresolved, and a new space is created to move on. |
-| Q6 | Maximum delegation chain depth. | **16 as the operator default**, not a protocol limit. Over budget fails closed. |
-| Q7 | Revocation staleness for delegated writes. | **24 hours**, operator may lower. Beyond that, delegated writes fail closed. |
-| Q8 | Lifetime of an unpaired identity claim. | **Explicit `expires`; default 30 days** if the issuer sets none. Withdrawal is always available. |
-| Q9 | Does a cross-signed link ever imply shared privileges? | **No.** Authorization comes only from delegations and transfers. |
+| #   | Question                                                                               | Chosen default                                                                                                                                                                                                         |
+| --- | -------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Q1  | Should delegations be listed in the space's well-known location or pushed to grantees? | **Listed in the well-known location.** Verification must not depend on delivery to the grantee.                                                                                                                        |
+| Q2  | Can a delegation be revoked by someone other than its grantor or the root controller?  | **No.** Only the grantor or the current root controller revokes. After a transfer the new controller is the current root controller, so it can revoke inherited grants by ID directly, without re-granting them first. |
+| Q3  | Does transfer revoke the old controller's delegations?                                 | **No, not automatically.** They are re-verified against the new frontier; the new controller revokes what it does not want. This avoids silently changing access on transfer.                                          |
+| Q4  | Is grantee acceptance required for a delegation to take effect?                        | **No for `read` and `append`; yes-as-acknowledgement for `moderate` and `edit`.** The ack is recorded but does not gate validity, so an unreachable grantee cannot block a grant.                                      |
+| Q5  | Recovery when the old controller key is lost.                                          | **Explicit recovery policy in the signed space profile if the owner set one; otherwise not inferred.** The space is preserved as unresolved, and a new space is created to move on.                                    |
+| Q6  | Maximum delegation chain depth.                                                        | **16 as the operator default**, not a protocol limit. Over budget fails closed.                                                                                                                                        |
+| Q7  | Revocation staleness for delegated writes.                                             | **24 hours**, operator may lower. Beyond that, delegated writes fail closed.                                                                                                                                           |
+| Q8  | Lifetime of an unpaired identity claim.                                                | **Explicit `expires`; default 30 days** if the issuer sets none. Withdrawal is always available.                                                                                                                       |
+| Q9  | Does a cross-signed link ever imply shared privileges?                                 | **No.** Authorization comes only from delegations and transfers.                                                                                                                                                       |
 
 ## 7. Implementation issues
 

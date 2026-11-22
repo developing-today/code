@@ -214,7 +214,8 @@ export function edgeConfig(value: unknown): EdgeConfig | null {
   if (typeof v.repo !== "string" || typeof v.queue !== "string" || typeof v.androidPackage !== "string") return null;
   // The direct fields: present ones must be well-formed, absent ones
   // are a config from before direct mode, which still validates.
-  if (v.queueDbUrl !== undefined && (typeof v.queueDbUrl !== "string" || !/^https:\/\//.test(v.queueDbUrl))) return null;
+  if (v.queueDbUrl !== undefined && (typeof v.queueDbUrl !== "string" || !/^https:\/\//.test(v.queueDbUrl)))
+    return null;
   if (v.queueTokenName !== undefined && typeof v.queueTokenName !== "string") return null;
   if (v.promptLabel !== undefined && typeof v.promptLabel !== "string") return null;
   if (v.needsRepos !== undefined && !strings(v.needsRepos)) return null;

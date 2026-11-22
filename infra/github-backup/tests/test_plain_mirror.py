@@ -53,9 +53,7 @@ class PlainMirrorTests(unittest.TestCase):
             git("--git-dir", source_path, "update-ref", "refs/heads/stale", head)
             git("--git-dir", source_path, "update-ref", "refs/tags/stale-tag", head)
 
-            result = plain_mirror.sync_mirror(
-                source_path, destination
-            )
+            result = plain_mirror.sync_mirror(source_path, destination)
 
             source_refs = ref_map(
                 git(
@@ -119,7 +117,13 @@ class PlainMirrorTests(unittest.TestCase):
             git("-C", work, "push", "--all", "destination")
             for index in range(len(commits)):
                 git("--git-dir", source, "update-ref", "-d", f"refs/heads/seed-{index}")
-                git("--git-dir", destination, "update-ref", "-d", f"refs/heads/seed-{index}")
+                git(
+                    "--git-dir",
+                    destination,
+                    "update-ref",
+                    "-d",
+                    f"refs/heads/seed-{index}",
+                )
 
             source_refs = {"refs/heads/main": commits[0], "refs/tags/v0": commits[0]}
             destination_refs = {
@@ -217,7 +221,9 @@ class PlainMirrorTests(unittest.TestCase):
             calls.mock_calls,
             [
                 mock.call.refs("/source.git"),
-                mock.call.gh(["repos/developing-today/code-mirror", "--jq", ".default_branch"]),
+                mock.call.gh(
+                    ["repos/developing-today/code-mirror", "--jq", ".default_branch"]
+                ),
                 mock.call.git(["--git-dir", "/source.git", "symbolic-ref", "HEAD"]),
                 mock.call.git(
                     [
@@ -249,7 +255,9 @@ class PlainMirrorTests(unittest.TestCase):
                         "+refs/tags/*:refs/tags/*",
                     ]
                 ),
-                mock.call.refs("https://github.com/developing-today/code-mirror.git", remote=True),
+                mock.call.refs(
+                    "https://github.com/developing-today/code-mirror.git", remote=True
+                ),
             ],
         )
 

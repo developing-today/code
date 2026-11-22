@@ -429,7 +429,7 @@ function paretoKeys(rows: MetricRow[], pick: (r: MetricRow) => [number, number] 
   pts.sort((a, b) => compare(a.xy[0], b.xy[0]) || compare(a.xy[1], b.xy[1]));
   let bestY = Number.POSITIVE_INFINITY;
   let hasPreviousX = false;
-  for (let start = 0; start < pts.length;) {
+  for (let start = 0; start < pts.length; ) {
     let end = start + 1;
     const x = pts[start].xy[0];
     while (end < pts.length && pts[end].xy[0] === x) end++;
