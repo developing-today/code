@@ -50,6 +50,9 @@ export class ImageNodeView implements NodeView {
     const figure = document.createElement("figure");
     figure.className = "pm-image-view";
     figure.contentEditable = "false";
+    figure.setAttribute("role", "button");
+    figure.setAttribute("aria-label", "Edit image alt text");
+    figure.tabIndex = 0;
 
     const img = document.createElement("img");
     img.src = node.attrs.src || "";
@@ -66,6 +69,17 @@ export class ImageNodeView implements NodeView {
 
     // Click to show popover
     figure.addEventListener("click", (e) => {
+      e.stopPropagation();
+      this.showPopover();
+    });
+    figure.addEventListener("keydown", (e) => {
+      if (e.key !== "Enter" && e.key !== " ") return;
+      e.preventDefault();
+      e.stopPropagation();
+      if (e.key === "Enter") this.showPopover();
+    });
+    figure.addEventListener("keyup", (e) => {
+      if (e.key !== " ") return;
       e.stopPropagation();
       this.showPopover();
     });
