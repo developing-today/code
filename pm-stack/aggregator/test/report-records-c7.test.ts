@@ -328,6 +328,58 @@ describe("C7 canonical report records", () => {
     expect(await readReportRecords(file)).toEqual([record, resolved.record]);
   });
 
+  test("accepts an edited or reviewer-combined block as an append-only resolution", async () => {
+    const file = await storePath();
+    const record = makeReportRecord({
+      period: {
+        id: "daily:2026-11-21:America/Chicago",
+        kind: "daily",
+        timezone: "America/Chicago",
+        periodStart: "2026-11-21T06:00:00.000Z",
+        periodEnd: "2026-11-22T06:00:00.000Z",
+        softCloseAt: "2026-11-22T14:00:00.000Z",
+      },
+      asOf: "2026-11-22T05:45:00.000Z",
+      templateVersion: "daily-v1",
+      sourceCursor: "cursor-edit-each-combine",
+      sources: [{ id: "event-1", uri: "gh:issue/12350", observedAt: "2026-11-22T05:40:00.000Z" }],
+      blocks: [
+        { id: "change-1", text: "Stored opening.\nStored close.", relatedAt: "2026-11-22T05:40:00.000Z" },
+        { id: "change-2", text: "Second stored block.", relatedAt: "2026-11-22T05:40:00.000Z" },
+      ],
+    }, "2026-11-22T05:45:01.000Z");
+    await appendReportRecord(file, record);
+
+    const edited = await appendReportBlockConflictResolution(
+      file,
+      record,
+      "change-1",
+      compareReportBlock("Stored opening.\nStored close.", "Generated opening.\nGenerated close."),
+      "edited",
+      "2026-11-22T13:00:00.000Z",
+      "Edited opening.\nEdited close.",
+    );
+    expect(edited.record.blocks[0]).toMatchObject({
+      text: "Edited opening.\nEdited close.",
+      resolution: { sourceRecordId: record.id, strategy: "edited", resolvedAt: "2026-11-22T13:00:00.000Z" },
+    });
+
+    const combined = await appendReportBlockConflictResolution(
+      file,
+      edited.record,
+      "change-2",
+      compareReportBlock("Second stored block.", "Second generated block."),
+      "combined",
+      "2026-11-22T13:30:00.000Z",
+      "Reviewer-combined block.",
+    );
+    expect(combined.record.blocks[1]).toMatchObject({
+      text: "Reviewer-combined block.",
+      resolution: { sourceRecordId: edited.record.id, strategy: "combined", resolvedAt: "2026-11-22T13:30:00.000Z" },
+    });
+    expect((await readReportRecords(file)).map((item) => item.id)).toEqual([record.id, edited.record.id, combined.record.id]);
+  });
+
   test("rejects stale or post-soft-close conflict resolutions", async () => {
     const file = await storePath();
     const record = makeReportRecord({
@@ -365,6 +417,37 @@ describe("C7 canonical report records", () => {
       "2026-11-22T14:00:00.000Z",
     )).rejects.toThrow(/not allowed after soft close/);
     expect(await readReportRecords(file)).toEqual([]);
+  });
+
+  test("allows only one resolution to win from a report version", async () => {
+    const file = await storePath();
+    const record = makeReportRecord({
+      period: {
+        id: "daily:2026-11-21:America/Chicago",
+        kind: "daily",
+        timezone: "America/Chicago",
+        periodStart: "2026-11-21T06:00:00.000Z",
+        periodEnd: "2026-11-22T06:00:00.000Z",
+        softCloseAt: "2026-11-22T14:00:00.000Z",
+      },
+      asOf: "2026-11-22T05:45:00.000Z",
+      templateVersion: "daily-v1",
+      sourceCursor: "cursor-concurrent-resolutions",
+      sources: [{ id: "event-1", uri: "gh:issue/12350", observedAt: "2026-11-22T05:40:00.000Z" }],
+      blocks: [
+        { id: "change-1", text: "Stored one.", relatedAt: "2026-11-22T05:40:00.000Z" },
+        { id: "change-2", text: "Stored two.", relatedAt: "2026-11-22T05:40:00.000Z" },
+      ],
+    }, "2026-11-22T05:45:01.000Z");
+    await appendReportRecord(file, record);
+
+    const outcomes = await Promise.allSettled([
+      appendReportBlockConflictResolution(file, record, "change-1", compareReportBlock("Stored one.", "Rendered one."), "rendered", "2026-11-22T13:00:00.000Z"),
+      appendReportBlockConflictResolution(file, record, "change-2", compareReportBlock("Stored two.", "Rendered two."), "rendered", "2026-11-22T13:00:01.000Z"),
+    ]);
+    expect(outcomes.filter((outcome) => outcome.status === "fulfilled")).toHaveLength(1);
+    expect(outcomes.filter((outcome) => outcome.status === "rejected")).toHaveLength(1);
+    expect(await readReportRecords(file)).toHaveLength(2);
   });
 
   test("uses append-only permanent document keys for report history and snapshots", async () => {

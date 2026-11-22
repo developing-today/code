@@ -23,7 +23,7 @@ export interface ReportRecordBlock {
   classification?: "implemented" | "cancelled" | "duplicate" | "in-progress" | "blocked" | "queued";
   resolution?: {
     sourceRecordId: string;
-    strategy: "stored" | "rendered";
+    strategy: "stored" | "rendered" | "edited" | "combined";
     resolvedAt: string;
   };
 }
@@ -135,7 +135,7 @@ export function makeReportRecord(input: ReportRecordInput, generatedAt = new Dat
       throw new Error(`classified activity block ${block.id} must link its members`);
     }
     if (block.resolution) {
-      if (!block.resolution.sourceRecordId.trim() || !["stored", "rendered"].includes(block.resolution.strategy)) {
+      if (!block.resolution.sourceRecordId.trim() || !["stored", "rendered", "edited", "combined"].includes(block.resolution.strategy)) {
         throw new Error(`report block ${block.id} has invalid conflict resolution metadata`);
       }
       requireIsoDate(block.resolution.resolvedAt, "block resolution resolvedAt");
@@ -275,6 +275,18 @@ function serializeAppend<T>(file: string, fn: () => Promise<T>): Promise<T> {
   return run;
 }
 
+const remoteAppendChains = new WeakMap<object, Promise<unknown>>();
+function serializeRemoteAppend<T>(location: AppendOnlyDocumentRemote, fn: () => Promise<T>): Promise<T> {
+  const previous = remoteAppendChains.get(location as object) ?? Promise.resolve();
+  const run = previous.then(fn, fn);
+  remoteAppendChains.set(location as object, run.catch(() => {}));
+  return run;
+}
+
+function serializeLocationAppend<T>(location: ReportRecordLocation, fn: () => Promise<T>): Promise<T> {
+  return typeof location === "string" ? serializeAppend(location, fn) : serializeRemoteAppend(location, fn);
+}
+
 export interface AppendReportRecordResult {
   inserted: boolean;
   record: ReportRecord;
@@ -284,7 +296,7 @@ export interface AppendReportRecordResult {
  * Append once by stable record ID. A content-equivalent rerun is a no-op; the
  * same id with changed content is a conflict and is never silently replaced.
  */
-export async function appendReportRecord(location: ReportRecordLocation, record: ReportRecord): Promise<AppendReportRecordResult> {
+async function appendReportRecordUnlocked(location: ReportRecordLocation, record: ReportRecord): Promise<AppendReportRecordResult> {
   assertCanonicalRecord(record);
   const event: ReportRecordEvent = {
     eventId: record.id,
@@ -299,19 +311,21 @@ export async function appendReportRecord(location: ReportRecordLocation, record:
     if (result.event.type !== "report.generated" || !result.event.record) throw new Error("permanent report record has an invalid event type");
     return { inserted: result.inserted, record: result.event.record };
   }
-  return serializeAppend(location, async () => {
-    const events = await readEvents(location);
-    assertRecordIdContent(events, record);
-    const existing = events.find((item) => item.type === "report.generated" && item.record?.id === record.id)?.record;
-    if (existing) {
-      if (!sameRecordContent(existing, record)) throw new ReportRecordConflictError(record.id);
-      return { inserted: false, record: existing };
-    }
-    await mkdir(dirname(location), { recursive: true });
-    await terminateTornTail(location);
-    await appendFile(location, `${JSON.stringify(event)}\n`, "utf8");
-    return { inserted: true, record };
-  });
+  const events = await readEvents(location);
+  assertRecordIdContent(events, record);
+  const existing = events.find((item) => item.type === "report.generated" && item.record?.id === record.id)?.record;
+  if (existing) {
+    if (!sameRecordContent(existing, record)) throw new ReportRecordConflictError(record.id);
+    return { inserted: false, record: existing };
+  }
+  await mkdir(dirname(location), { recursive: true });
+  await terminateTornTail(location);
+  await appendFile(location, `${JSON.stringify(event)}\n`, "utf8");
+  return { inserted: true, record };
+}
+
+export async function appendReportRecord(location: ReportRecordLocation, record: ReportRecord): Promise<AppendReportRecordResult> {
+  return serializeLocationAppend(location, () => appendReportRecordUnlocked(location, record));
 }
 
 /** Read the latest record per stable ID in append order (currently one per key). */
@@ -473,48 +487,58 @@ export async function appendReportBlockConflictResolution(
   record: ReportRecord,
   blockId: string,
   comparison: ReportBlockComparison,
-  strategy: "stored" | "rendered",
+  strategy: "stored" | "rendered" | "edited" | "combined",
   resolvedAt: string,
+  resolvedText?: string,
 ): Promise<AppendReportRecordResult> {
-  assertCanonicalRecord(record);
-  requireIsoDate(resolvedAt, "resolvedAt");
-  assertReportUpdateAllowed(record.period, "edit", resolvedAt);
-  if (!comparison.conflict || !reportBlockConflict(comparison.storedText, comparison.renderedText)) {
-    throw new Error("report block comparison does not contain a conflict");
-  }
+  return serializeLocationAppend(location, async () => {
+    assertCanonicalRecord(record);
+    requireIsoDate(resolvedAt, "resolvedAt");
+    assertReportUpdateAllowed(record.period, "edit", resolvedAt);
+    if (!comparison.conflict || !reportBlockConflict(comparison.storedText, comparison.renderedText)) {
+      throw new Error("report block comparison does not contain a conflict");
+    }
 
-  const canonicalComparison = compareReportBlock(comparison.storedText, comparison.renderedText);
-  if (canonicalJson(canonicalComparison) !== canonicalJson(comparison)) {
-    throw new Error("invalid report block comparison");
-  }
-  const blockIndex = record.blocks.findIndex((block) => block.id === blockId);
-  if (blockIndex < 0 || record.blocks[blockIndex].text !== comparison.storedText) {
-    throw new Error("stale report block comparison: stored block has changed");
-  }
+    const canonicalComparison = compareReportBlock(comparison.storedText, comparison.renderedText);
+    if (canonicalJson(canonicalComparison) !== canonicalJson(comparison)) {
+      throw new Error("invalid report block comparison");
+    }
+    if ((strategy === "edited" || strategy === "combined") && !resolvedText?.trim()) {
+      throw new Error(`${strategy} report block resolution requires non-empty resolved text`);
+    }
+    if ((strategy === "stored" || strategy === "rendered") && resolvedText !== undefined) {
+      throw new Error(`${strategy} report block resolution does not accept resolved text`);
+    }
+    const text = strategy === "stored" ? comparison.storedText : strategy === "rendered" ? comparison.renderedText : resolvedText!;
+    const blockIndex = record.blocks.findIndex((block) => block.id === blockId);
+    if (blockIndex < 0 || record.blocks[blockIndex].text !== comparison.storedText) {
+      throw new Error("stale report block comparison: stored block has changed");
+    }
 
-  const cursor = `resolution:${record.id}:${blockId}:${strategy}:${createHash("sha256").update(comparison.renderedText).digest("hex")}`;
-  const blocks = structuredClone(record.blocks);
-  blocks[blockIndex] = {
-    ...blocks[blockIndex],
-    text: strategy === "stored" ? comparison.storedText : comparison.renderedText,
-    resolution: { sourceRecordId: record.id, strategy, resolvedAt },
-  };
-  const resolvedRecord = makeReportRecord({
-    period: record.period,
-    asOf: record.asOf,
-    templateVersion: record.templateVersion,
-    sourceCursor: cursor,
-    sources: record.sources,
-    blocks,
-  }, resolvedAt);
-  const previousResolution = (await readReportRecords(location)).find((candidate) => candidate.id === resolvedRecord.id);
-  if (previousResolution) return appendReportRecord(location, resolvedRecord);
+    const cursor = `resolution:${record.id}:${blockId}:${strategy}:${createHash("sha256").update(text).digest("hex")}`;
+    const blocks = structuredClone(record.blocks);
+    blocks[blockIndex] = {
+      ...blocks[blockIndex],
+      text,
+      resolution: { sourceRecordId: record.id, strategy, resolvedAt },
+    };
+    const resolvedRecord = makeReportRecord({
+      period: record.period,
+      asOf: record.asOf,
+      templateVersion: record.templateVersion,
+      sourceCursor: cursor,
+      sources: record.sources,
+      blocks,
+    }, resolvedAt);
+    const previousResolution = (await readReportRecords(location)).find((candidate) => candidate.id === resolvedRecord.id);
+    if (previousResolution) return appendReportRecordUnlocked(location, resolvedRecord);
 
-  const latest = (await readCurrentReportRecords(location)).find(
-    (candidate) => candidate.period.id === record.period.id && candidate.templateVersion === record.templateVersion,
-  );
-  if (!latest || latest.id !== record.id) throw new Error("stale report block comparison: report record is no longer current");
-  return appendReportRecord(location, resolvedRecord);
+    const latest = (await readCurrentReportRecords(location)).find(
+      (candidate) => candidate.period.id === record.period.id && candidate.templateVersion === record.templateVersion,
+    );
+    if (!latest || latest.id !== record.id) throw new Error("stale report block comparison: report record is no longer current");
+    return appendReportRecordUnlocked(location, resolvedRecord);
+  });
 }
 
 function assertRecordIdContent(events: ReportRecordEvent[], candidate: ReportRecord): void {
