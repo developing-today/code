@@ -185,6 +185,18 @@ def _delete_session(session_id: str) -> bool:
 # Concurrency cap
 CONCURRENCY_CAP = 36
 
+# Saturated-fire hand-back (#1187 criterion 2): the next candidate is
+# parked as a capacity wait, not a bare timer. A {"kind": "capacity"}
+# ready-condition is a caller-named real wait, so the park lands as a
+# genuine 'parked' wait instead of sinking back into the handoff sink
+# (#8234) — and a lane can still claim the task sooner through the
+# capacity bypass by declaring enough remaining budget (#3418). The
+# broker floors capacity waits to 1h (#8184), so the delay is stated
+# as that floor: the task returns to eligibility within the hour, and
+# a saturated fire hands back at most one task per fire.
+HAND_BACK_DELAY_SECONDS = 3600
+HAND_BACK_READY_CONDITION_JSON = '{"kind": "capacity"}'
+
 # Recovery launched_by values
 LAUNCHED_BY_RECOVERY_ZERO_MESSAGE = "opencode-claimant-recovery:zero-message-deleted"
 LAUNCHED_BY_RECOVERY_GONE_SESSION = "opencode-claimant-recovery:gone-session"
@@ -995,14 +1007,12 @@ def _prompt_safe_packet(packet):
     return packet
 
 
-def _post_launch_agent_note(task_id, session_id, candidate, packet) -> bool:
-    """Step 4e (#8038): post the agent-note:v1 handed-off note on the
-    task's issue naming the task id + session id, after a successful
-    bind. The note text is a fixed template carrying only the two
-    ids - no packet content enters it. A failed note never unbinds
-    or fails the launch (the binding stands; supervision owns the
-    session) - the caller flags the launch entry instead. Returns
-    True iff the post is confirmed by the gh CLI's exit code."""
+def _resolve_note_target(candidate, packet):
+    """(repo, issue_number) for an agent note on a candidate's issue,
+    or (None, None) when the candidate carries no usable reference.
+    Shared by the launch and hand-back notes: repo from the packet,
+    issue number from the candidate, the packet's issue object, or
+    the digits of the candidate's issue field, in that order."""
     _packet = packet if isinstance(packet, dict) else {}
     repo = _packet.get("repo") or ""
     issue_no = candidate.get("issue_number")
@@ -1013,15 +1023,13 @@ def _post_launch_agent_note(task_id, session_id, candidate, packet) -> bool:
         digits = "".join(ch for ch in str(raw_issue) if ch.isdigit())
         issue_no = digits or None
     if not repo or not issue_no:
-        return False
-    note = (
-        "<!-- agent-note:v1 agent=opencode-claimant state=handed off "
-        f"task={task_id} session={session_id} -->\n\n"
-        f"Agent note - handed off: queue task {task_id} is bound to "
-        f"opencode session {session_id}, launched by the claimant "
-        f"(step 4e). The session works the task under its bound "
-        f"claim; terminal state is recorded by the worker session."
-    )
+        return None, None
+    return str(repo), issue_no
+
+
+def _post_gh_issue_comment(repo: str, issue_no, note: str) -> bool:
+    """Post `note` on an issue via the gh CLI. Returns True iff the
+    post is confirmed by the gh CLI's exit code; never raises."""
     try:
         result = subprocess.run(
             [
@@ -1041,6 +1049,221 @@ def _post_launch_agent_note(task_id, session_id, candidate, packet) -> bool:
     except Exception:
         return False
     return result.returncode == 0
+
+
+def _post_launch_agent_note(task_id, session_id, candidate, packet) -> bool:
+    """Step 4e (#8038): post the agent-note:v1 handed-off note on the
+    task's issue naming the task id + session id, after a successful
+    bind. The note text is a fixed template carrying only the two
+    ids - no packet content enters it. A failed note never unbinds
+    or fails the launch (the binding stands; supervision owns the
+    session) - the caller flags the launch entry instead. Returns
+    True iff the post is confirmed by the gh CLI's exit code."""
+    repo, issue_no = _resolve_note_target(candidate, packet)
+    if repo is None:
+        return False
+    note = (
+        "<!-- agent-note:v1 agent=opencode-claimant state=handed off "
+        f"task={task_id} session={session_id} -->\n\n"
+        f"Agent note - handed off: queue task {task_id} is bound to "
+        f"opencode session {session_id}, launched by the claimant "
+        f"(step 4e). The session works the task under its bound "
+        f"claim; terminal state is recorded by the worker session."
+    )
+    return _post_gh_issue_comment(repo, issue_no, note)
+
+
+def _post_hand_back_note(task_id, candidate, packet, cap_room: int) -> bool:
+    """#1187 criterion 2: post the agent-note:v1 handed-back note on
+    the task's issue naming the task id + the measured capacity, after
+    the park. Fixed template, no packet content enters it. A failed
+    note never un-parks the task (the park stands; the fire log
+    records note_posted False) — the caller flags the skip entry
+    instead. Returns True iff the post is confirmed."""
+    repo, issue_no = _resolve_note_target(candidate, packet)
+    if repo is None:
+        return False
+    active = CONCURRENCY_CAP - cap_room
+    note = (
+        "<!-- agent-note:v1 agent=opencode-claimant state=handed-back "
+        f"task={task_id} reason=executor-saturated -->\n\n"
+        f"Agent note - handed back (executor-saturated): queue task {task_id} was the "
+        f"next opencode candidate when the claimant fire found the location at capacity "
+        f"({active}/{CONCURRENCY_CAP} claimant roots). Parked with reason executor-saturated "
+        "as a capacity wait (re-eligible in 1h; a lane can still claim it sooner with "
+        "enough remaining budget). No session was created. (#1187)"
+    )
+    return _post_gh_issue_comment(repo, issue_no, note)
+
+
+def _first_error_line(result) -> str:
+    """First non-empty line of a failed subprocess result's stderr
+    (else stdout), truncated — the verb's precondition texts carry
+    no credentials. Mirrors the bind_failed recording in launch_step."""
+    for stream in (getattr(result, "stderr", "") or "", getattr(result, "stdout", "") or ""):
+        for line in stream.splitlines():
+            if line.strip():
+                return line.strip()[:200]
+    return ""
+
+
+def _is_hand_back_shape(candidate) -> bool:
+    """A candidate the hand-back may take ownership of: the same
+    launch-safety shape launch_step requires — lane opencode, no
+    session bound, recorded yield (handed_off / launch_failed). A
+    lane mid-work (any other stage) is never taken over."""
+    return (
+        candidate.get("lane") == "opencode"
+        and not candidate.get("session_id")
+        and candidate.get("stage") in ("handed_off", "launch_failed")
+    )
+
+
+def hand_back_next_candidate(
+    mode: str,
+    candidates,
+    cap_room: int,
+    exclude_task_ids=None,
+) -> List[Dict]:
+    """Saturated-fire hand-back (#1187 criterion 2): with the location
+    at capacity, the next candidate is handed back — claimed as the
+    claimant, parked with reason executor-saturated as a capacity
+    wait, and noted on its issue — within one round, instead of the
+    fire logging cap_saturated and exiting with the candidate still
+    queued and nothing recorded anywhere but the fire log.
+
+    Park requires a live claim by the parking worker (claimed_by), so
+    the hand-back first takes the candidate with the by-id claim verb
+    (claim --task: a sink row or a queued row — a row still claimed by
+    another lane refuses, and the next candidate is tried). One
+    hand-back per fire: after the first success the remaining
+    candidates are recorded as cap_saturated skips. A park failure
+    stops the pass — further parks would strand further claims — and
+    the held claim is left to lapse (lease expiry returns the row to
+    the handoff sink at +0 attempts, #8234), recorded as
+    hand_back_park_failed with claim_held True.
+
+    Shadow fires observe only (#7366): the first candidate is
+    recorded as shadow_would_hand_back and nothing is claimed,
+    parked, or noted. Returns the fire-log skip records.
+    """
+    excluded = set(exclude_task_ids or ())
+    skips: List[Dict] = []
+    handed_back = False
+    stopped = False
+    for candidate in candidates or []:
+        if not _is_hand_back_shape(candidate):
+            continue
+        task_id = candidate.get("id")
+        if task_id in excluded:
+            # Recovered by this fire's supervision: eligible next
+            # fire, not this one (#8038 item 7) — recorded like
+            # launch_step records it, never handed back this fire.
+            skips.append(
+                {"task_id": task_id, "reason": "recovered_this_fire_next_fire_only"}
+            )
+            continue
+        if handed_back or stopped:
+            skips.append({"task_id": task_id, "reason": "cap_saturated"})
+            continue
+        if mode != "live":
+            skips.append({"task_id": task_id, "reason": "shadow_would_hand_back"})
+            handed_back = True
+            continue
+        # Live: claim first — park requires the claimant to hold the
+        # claim — then park as a capacity wait, then note the issue.
+        try:
+            claim_result = subprocess.run(
+                [
+                    str(REPO_QUEUE_CMD),
+                    "claim",
+                    "--task",
+                    str(task_id),
+                    "--worker",
+                    CLAIMANT_WORKER,
+                    "--platform",
+                    "openchamber",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=15,
+            )
+            claim_data = (
+                json.loads(claim_result.stdout)
+                if claim_result.stdout.strip()
+                else None
+            )
+        except Exception as e:
+            claim_result = None
+            claim_data = None
+            claim_error = str(e)[:200]
+        else:
+            claim_error = _first_error_line(claim_result)
+        claimed_id = (
+            claim_data.get("id") if isinstance(claim_data, dict) else None
+        )
+        if claim_result is None or claim_result.returncode != 0 or claimed_id != task_id:
+            skips.append(
+                {
+                    "task_id": task_id,
+                    "reason": "hand_back_claim_failed",
+                    "error": claim_error,
+                }
+            )
+            continue
+        park_reason = (
+            f"executor-saturated: claimant cap {CONCURRENCY_CAP} reached "
+            f"({CONCURRENCY_CAP - cap_room} claimant roots); handed back by "
+            "the claimant, re-eligible in 1h"
+        )
+        try:
+            park_result = subprocess.run(
+                [
+                    str(REPO_QUEUE_CMD),
+                    "park",
+                    str(task_id),
+                    "--worker",
+                    CLAIMANT_WORKER,
+                    "--reason",
+                    park_reason,
+                    "--delay-seconds",
+                    str(HAND_BACK_DELAY_SECONDS),
+                    "--ready-condition",
+                    HAND_BACK_READY_CONDITION_JSON,
+                ],
+                capture_output=True,
+                text=True,
+                timeout=15,
+            )
+        except Exception as e:
+            park_result = None
+            park_error = str(e)[:200]
+        else:
+            park_error = _first_error_line(park_result)
+        if park_result is None or park_result.returncode != 0:
+            skips.append(
+                {
+                    "task_id": task_id,
+                    "reason": "hand_back_park_failed",
+                    "claim_held": True,
+                    "error": park_error,
+                }
+            )
+            stopped = True
+            continue
+        packet = candidate.get("packet", {})
+        note_posted = _post_hand_back_note(task_id, candidate, packet, cap_room)
+        skips.append(
+            {
+                "task_id": task_id,
+                "reason": "handed_back_executor_saturated",
+                "note_posted": note_posted,
+            }
+        )
+        handed_back = True
+    if not skips:
+        return [{"reason": "cap_saturated"}]
+    return skips
 
 
 def launch_step(
@@ -1544,12 +1767,19 @@ def _fire(mode: str):
 
     if cap_room <= 0:
         print(f"Cap saturated ({CONCURRENCY_CAP} active sessions). Exiting.")
+        # #1187 criterion 2: a saturated fire hands back the next
+        # candidate (parked, executor-saturated, issue noted) instead
+        # of exiting with the queue still holding it and nothing
+        # recorded but the fire log.
+        skips = hand_back_next_candidate(
+            mode, fire_candidates, cap_room, exclude_task_ids=recovered_ids
+        )
         log_fire(
             mode,
             fire_candidates,
             [],
             cap_room,
-            [{"reason": "cap_saturated"}],
+            skips,
             health=fire_health,
         )
         return 0

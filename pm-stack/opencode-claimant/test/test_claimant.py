@@ -335,5 +335,164 @@ class ReadModeLoudDefaultTests(unittest.TestCase):
         self.assertEqual(entry["mode_source"]["path"], str(tmp / "mode"))
 
 
+def make_hand_back_run(events, *, claim_fail_ids=frozenset(), park_rc=0, note_rc=0):
+    """subprocess.run stub for the saturated-fire hand-back (#1187):
+    repo-queue claim --task / park, and gh issue comment. Records an
+    ordered event log: ("claim", argv) / ("park", argv) / ("note", argv).
+    A claim answers the claimed row ({"id": <task>}); a refused claim
+    answers rc 1, mirroring the CLI's no-claimable-task path."""
+
+    def fake_run(cmd, **kwargs):
+        argv = [str(part) for part in cmd]
+        if "repo-queue" in argv[0] and len(argv) > 1 and argv[1] == "claim":
+            task_id = int(argv[argv.index("--task") + 1])
+            events.append(("claim", argv))
+            if task_id in claim_fail_ids:
+                return Result(1, "", "no claimable task")
+            return Result(0, json.dumps({"id": task_id}))
+        if "repo-queue" in argv[0] and len(argv) > 1 and argv[1] == "park":
+            events.append(("park", argv))
+            if park_rc != 0:
+                return Result(park_rc, "", "park refused")
+            return Result(0, "{}")
+        if argv[0] == "gh" and argv[1:3] == ["issue", "comment"]:
+            events.append(("note", argv))
+            return Result(note_rc, "", "")
+        return Result(0, "")
+
+    return fake_run
+
+
+def second_candidate():
+    c = copy.deepcopy(CANDIDATE)
+    c["id"] = 73002
+    c["issue"] = 3027
+    c["issue_number"] = 3027
+    c["packet"] = copy.deepcopy(CANDIDATE["packet"])
+    c["packet"]["issue"] = {"number": 3027}
+    c["title"] = "Queue task 73002"
+    return c
+
+
+def run_hand_back(events, candidates, cap_room=0, mode="live", **stub_kwargs):
+    with patch.object(
+        claimant.subprocess, "run", make_hand_back_run(events, **stub_kwargs)
+    ):
+        return claimant.hand_back_next_candidate(mode, candidates, cap_room)
+
+
+class TestHandBack(unittest.TestCase):
+    """#1187 criterion 2: a saturated claimant fire hands back the
+    next candidate (parked, executor-saturated, issue noted) within
+    one round, instead of logging cap_saturated and exiting."""
+
+    def test_live_fire_hands_back_first_candidate(self):
+        events = []
+        cands = [copy.deepcopy(CANDIDATE), second_candidate()]
+        skips = run_hand_back(events, cands)
+        kinds = [e[0] for e in events]
+        self.assertEqual(kinds, ["claim", "park", "note"])
+        claim_argv = next(e[1] for e in events if e[0] == "claim")
+        self.assertIn("73001", claim_argv)
+        self.assertIn("--task", claim_argv)
+        self.assertIn(claimant.CLAIMANT_WORKER, claim_argv)
+        self.assertIn("openchamber", claim_argv)
+        park_argv = next(e[1] for e in events if e[0] == "park")
+        self.assertIn("73001", park_argv)
+        reason = park_argv[park_argv.index("--reason") + 1]
+        self.assertTrue(reason.startswith("executor-saturated"))
+        self.assertIn("36", reason)
+        self.assertEqual(
+            park_argv[park_argv.index("--delay-seconds") + 1],
+            str(claimant.HAND_BACK_DELAY_SECONDS),
+        )
+        self.assertEqual(
+            json.loads(park_argv[park_argv.index("--ready-condition") + 1]),
+            {"kind": "capacity"},
+        )
+        note_argv = next(e[1] for e in events if e[0] == "note")
+        self.assertEqual(note_argv[1:5], ["issue", "comment", "3026", "--repo"])
+        self.assertIn("developing-today/code", note_argv)
+        body = note_argv[note_argv.index("--body") + 1]
+        self.assertIn("executor-saturated", body)
+        self.assertIn("73001", body)
+        self.assertIn("36/36", body)
+        self.assertEqual(len(skips), 2)
+        self.assertEqual(skips[0]["task_id"], 73001)
+        self.assertEqual(skips[0]["reason"], "handed_back_executor_saturated")
+        self.assertTrue(skips[0]["note_posted"])
+        self.assertEqual(skips[1], {"task_id": 73002, "reason": "cap_saturated"})
+
+    def test_claim_failure_tries_next_candidate(self):
+        events = []
+        cands = [copy.deepcopy(CANDIDATE), second_candidate()]
+        skips = run_hand_back(events, cands, claim_fail_ids={73001})
+        kinds = [e[0] for e in events]
+        self.assertEqual(kinds, ["claim", "claim", "park", "note"])
+        self.assertEqual(skips[0]["task_id"], 73001)
+        self.assertEqual(skips[0]["reason"], "hand_back_claim_failed")
+        self.assertEqual(skips[1]["task_id"], 73002)
+        self.assertEqual(skips[1]["reason"], "handed_back_executor_saturated")
+
+    def test_shadow_fire_mutates_nothing(self):
+        events = []
+        cands = [copy.deepcopy(CANDIDATE), second_candidate()]
+        skips = run_hand_back(events, cands, mode="shadow")
+        self.assertEqual(events, [])
+        self.assertEqual(skips[0]["reason"], "shadow_would_hand_back")
+        self.assertEqual(skips[0]["task_id"], 73001)
+        self.assertEqual(skips[1], {"task_id": 73002, "reason": "cap_saturated"})
+
+    def test_park_failure_stops_and_names_the_stranded_claim(self):
+        events = []
+        cands = [copy.deepcopy(CANDIDATE), second_candidate()]
+        skips = run_hand_back(events, cands, park_rc=1)
+        self.assertEqual([e[0] for e in events], ["claim", "park"])
+        self.assertEqual(skips[0]["reason"], "hand_back_park_failed")
+        self.assertTrue(skips[0]["claim_held"])
+        self.assertEqual(skips[1], {"task_id": 73002, "reason": "cap_saturated"})
+
+    def test_note_failure_still_hands_back(self):
+        events = []
+        cands = [copy.deepcopy(CANDIDATE)]
+        skips = run_hand_back(events, cands, note_rc=1)
+        self.assertEqual([e[0] for e in events], ["claim", "park", "note"])
+        self.assertEqual(skips[0]["reason"], "handed_back_executor_saturated")
+        self.assertFalse(skips[0]["note_posted"])
+
+    def test_no_candidates_logs_plain_saturation(self):
+        events = []
+        skips = run_hand_back(events, [])
+        self.assertEqual(events, [])
+        self.assertEqual(skips, [{"reason": "cap_saturated"}])
+
+    def test_recovered_candidate_is_not_handed_back(self):
+        events = []
+        cands = [copy.deepcopy(CANDIDATE), second_candidate()]
+        with patch.object(
+            claimant.subprocess, "run", make_hand_back_run(events)
+        ):
+            skips = claimant.hand_back_next_candidate(
+                "live", cands, 0, exclude_task_ids=[73001]
+            )
+        self.assertEqual(
+            skips[0],
+            {"task_id": 73001, "reason": "recovered_this_fire_next_fire_only"},
+        )
+        self.assertEqual(skips[1]["reason"], "handed_back_executor_saturated")
+        self.assertNotIn("73001", [str(e[1]) for e in events if e[0] == "claim"])
+
+    def test_mid_work_candidate_is_never_taken(self):
+        events = []
+        mid_work = copy.deepcopy(CANDIDATE)
+        mid_work["stage"] = "claimed"
+        skips = run_hand_back(events, [mid_work, second_candidate()])
+        self.assertEqual([e[0] for e in events], ["claim", "park", "note"])
+        claim_argv = next(e[1] for e in events if e[0] == "claim")
+        self.assertIn("73002", claim_argv)
+        self.assertEqual(len(skips), 1)
+        self.assertEqual(skips[0]["reason"], "handed_back_executor_saturated")
+
+
 if __name__ == "__main__":
     unittest.main()

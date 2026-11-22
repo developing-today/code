@@ -1227,6 +1227,17 @@ class TestClaimant8038(unittest.TestCase):
         self.assertEqual(claimant._fire_candidates, [dict(CANDIDATE)])
 
     def test_cap_exit_fire_log_carries_candidates_and_health(self):
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            argv = [str(part) for part in cmd]
+            calls.append(argv)
+            if "repo-queue" in argv[0] and "claim" in argv:
+                return Result(0, json.dumps({"id": 777}))
+            if "repo-queue" in argv[0] and "park" in argv:
+                return Result(0, "{}")
+            return Result(0, "")
+
         with tempfile.TemporaryDirectory() as tmp:
             state_dir = Path(tmp)
             fires = state_dir / "fires.jsonl"
@@ -1246,6 +1257,7 @@ class TestClaimant8038(unittest.TestCase):
                 ),
                 patch.object(claimant, "STATE_DIR", state_dir),
                 patch.object(claimant, "FIRES_FILE", fires),
+                patch.object(claimant.subprocess, "run", fake_run),
             ):
                 self.assertEqual(claimant.main(), 0)
             entries = [
@@ -1254,7 +1266,28 @@ class TestClaimant8038(unittest.TestCase):
         self.assertEqual(len(entries), 1)
         self.assertEqual(entries[0]["candidates_seen"], [dict(CANDIDATE)])
         self.assertEqual(entries[0]["queue_health"], "health-test-line")
-        self.assertEqual(entries[0]["skips"], [{"reason": "cap_saturated"}])
+        # #1187 criterion 2: the saturated fire hands back the next
+        # candidate instead of logging a bare cap_saturated skip. This
+        # fixture's packet carries no repo, so no issue note is
+        # postable and note_posted is False — the park still stands.
+        self.assertEqual(
+            entries[0]["skips"],
+            [
+                {
+                    "task_id": 777,
+                    "reason": "handed_back_executor_saturated",
+                    "note_posted": False,
+                }
+            ],
+        )
+        claim_argv = next(a for a in calls if "claim" in a)
+        self.assertIn("777", claim_argv)
+        park_argv = next(a for a in calls if "park" in a)
+        self.assertTrue(
+            park_argv[park_argv.index("--reason") + 1].startswith(
+                "executor-saturated"
+            )
+        )
 
     def test_recovered_this_fire_is_excluded_from_launch(self):
         with patch.object(
