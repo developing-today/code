@@ -217,9 +217,16 @@ python3 ~/git/code/infra/github-backup/bin/plain_mirror.py \
 The command pushes all branches and tags from the valid local mirror, prunes
 branches/tags removed from the source, then compares remote ref names and
 object IDs with the local source. GitHub's reserved `refs/pull/*` namespace is
-not pushed. It never creates or deletes a GitHub repository. The sync command
-is not scheduled yet; target creation and recurring scheduling remain separate
-work.
+not pushed. It never creates or deletes a GitHub repository. The daily
+`github-backup-mirror.timer` runs the four-repository synchronizer and fails
+if any destination cannot be synced and verified. Install it with
+`systemd/install-units.sh`; inspect or run it with:
+
+```sh
+systemctl --user list-timers github-backup-mirror.timer --no-pager
+systemctl --user start github-backup-mirror.service
+systemctl --user status github-backup-mirror.service --no-pager
+```
 
 ## 10. Disaster recovery (tree lost, GitHub intact)
 
