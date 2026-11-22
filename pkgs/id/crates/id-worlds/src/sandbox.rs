@@ -418,6 +418,28 @@ fn fuel_spent(store: &Store<StoreLimits>, limit: u64) -> u64 {
     limit.saturating_sub(store.get_fuel().unwrap_or(limit))
 }
 
+/// Run one guest call without parking a shared Tokio worker for its
+/// duration: on a multi-thread runtime the call runs under
+/// `block_in_place`, so the runtime hands this worker's other tasks to
+/// a replacement thread while the guest executes. Everywhere else
+/// (plain threads, `spawn_blocking`, current-thread test runtimes) the
+/// call is direct. A guest call may burn its whole fuel budget — the
+/// default is 10,000,000 — in one synchronous execution; without this,
+/// one spinning world monopolizes a hub worker for that whole span and
+/// every other world's actor sharing the runtime waits behind it
+/// (#1067, F12.10). Same guard as `world_store::recv_writer_reply`
+/// (#557). Fuel, ordering, and poisoning semantics are unchanged: the
+/// same call runs, just in blocking context.
+fn run_guest_call<T>(call: impl FnOnce() -> T) -> T {
+    if tokio::runtime::Handle::try_current()
+        .is_ok_and(|handle| handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread)
+    {
+        tokio::task::block_in_place(call)
+    } else {
+        call()
+    }
+}
+
 impl WorldInstance {
     /// Fuel statistics per guest call kind since this instance was created.
     /// In-memory only: never journaled, sent on the wire, or snapshotted.
@@ -451,7 +473,7 @@ impl WorldInstance {
         // The world's participant limit keeps IDs far below i32::MAX; clamp
         // defensively so a hostile caller can never wrap the guest argument.
         let participant = i32::try_from(participant).unwrap_or(i32::MAX);
-        let result = self.update_inner(participant, event);
+        let result = run_guest_call(|| self.update_inner(participant, event));
         self.settle(GuestCall::Update);
         if result.is_err() {
             self.poisoned = true;
@@ -492,7 +514,7 @@ impl WorldInstance {
             !self.poisoned,
             "world guest is poisoned after a previous failure"
         );
-        let result = self.view_inner();
+        let result = run_guest_call(|| self.view_inner());
         self.settle(GuestCall::View);
         // A trapped view does not poison the instance: rendering never changes
         // the model, so the next event retries against intact state (F11.17).
@@ -527,7 +549,7 @@ impl WorldInstance {
         let Some(layout) = self.layout.clone() else {
             return self.view();
         };
-        let result = self.layout_inner(&layout, width, height);
+        let result = run_guest_call(|| self.layout_inner(&layout, width, height));
         self.settle(GuestCall::Layout);
         // As with `view`, a trapped layout does not poison the instance.
         result
@@ -568,7 +590,7 @@ impl WorldInstance {
         let Some(records) = self.records.clone() else {
             return Ok(None);
         };
-        let result = self.records_inner(&records);
+        let result = run_guest_call(|| self.records_inner(&records));
         self.settle(GuestCall::Records);
         if result.is_err() {
             self.poisoned = true;
@@ -598,7 +620,7 @@ impl WorldInstance {
         let Some(wants) = self.wants.clone() else {
             return Ok(None);
         };
-        let result = self.wants_inner(&wants);
+        let result = run_guest_call(|| self.wants_inner(&wants));
         self.settle(GuestCall::Wants);
         if result.is_err() {
             self.poisoned = true;
@@ -629,7 +651,7 @@ impl WorldInstance {
         let Some(snapshot) = self.snapshot.clone() else {
             return Ok(None);
         };
-        let result = self.snapshot_inner(&snapshot);
+        let result = run_guest_call(|| self.snapshot_inner(&snapshot));
         self.settle(GuestCall::Snapshot);
         if result.is_err() {
             self.poisoned = true;
@@ -663,7 +685,7 @@ impl WorldInstance {
             anyhow::bail!("guest exports no `plaza_restore`");
         };
         self.check_message_size(snapshot)?;
-        let result = self.restore_inner(&restore, snapshot);
+        let result = run_guest_call(|| self.restore_inner(&restore, snapshot));
         self.settle(GuestCall::Restore);
         if result.is_err() {
             self.poisoned = true;
@@ -922,9 +944,109 @@ mod tests {
           (func (export "plaza_out_len") (result i32) (i32.const 5)))
     "#;
 
+    /// A guest whose update never returns: only fuel exhaustion ends
+    /// the call. Same fixture shape as the `fuel_spin_isolation`
+    /// benchmark in `pkgs/id/benches/world_bench.rs`.
+    const SPIN: &str = r#"
+        (module
+          (memory (export "memory") 1 1)
+          (func (export "plaza_alloc") (param i32) (result i32) (i32.const 0))
+          (func (export "plaza_free") (param i32 i32))
+          (func (export "plaza_init") (param i64) (result i32) (i32.const 0))
+          (func (export "plaza_update") (param i32 i32 i32 i32) (result i32)
+            (i32.const 0)
+            (loop $again (br $again)))
+          (func (export "plaza_view") (param i32) (result i32) (i32.const 0))
+          (func (export "plaza_out_len") (result i32) (i32.const 0)))
+    "#;
+
     fn compile(wat: &str, limits: SandboxLimits) -> Result<Sandbox> {
         let wasm = wat::parse_str(wat)?;
         Sandbox::compile(&wasm, limits)
+    }
+
+    #[test]
+    fn spinning_guest_does_not_monopolize_a_runtime_worker() {
+        // Oracle (#1067, F12.10): guest calls execute inside world
+        // actors that share one Tokio runtime. On a one-worker
+        // multi-thread runtime, a guest call burning a large fuel
+        // budget must not stop another world's guest call from
+        // completing first: the call runs in blocking context, so the
+        // runtime hands the worker to a replacement thread for the
+        // call's duration. Without that, the victim call below can
+        // only run after the spin has exhausted its whole budget, and
+        // the `spin_done` assertion fails.
+        const SPIN_FUEL: u64 = 4_000_000_000;
+        let spin_runner = compile(
+            SPIN,
+            SandboxLimits {
+                fuel: SPIN_FUEL,
+                ..SandboxLimits::default()
+            },
+        )
+        .unwrap();
+        let mut spin_world = spin_runner.instantiate(1).unwrap();
+        let echo_runner = compile(ECHO, SandboxLimits::default()).unwrap();
+        let mut echo_world = echo_runner.instantiate(2).unwrap();
+
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_all()
+            .build()
+            .unwrap();
+        let spin_done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let spin_flag = spin_done.clone();
+        runtime.block_on(async move {
+            let spin = tokio::spawn(async move {
+                let result = spin_world.update(1, b"spin until fuel is gone");
+                spin_flag.store(true, std::sync::atomic::Ordering::SeqCst);
+                result
+            });
+            // Let the spin task enter its guest call before contending
+            // with it. The sleep itself can only complete once a worker
+            // is free to poll this task again, which is part of what
+            // the oracle measures.
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            echo_world.update(1, b"event").unwrap();
+            assert_eq!(echo_world.view().unwrap(), b"hello");
+            assert!(
+                !spin_done.load(std::sync::atomic::Ordering::SeqCst),
+                "victim guest call waited for the spinning guest's whole fuel budget"
+            );
+            let result = spin.await.unwrap();
+            let message = format!("{:#}", result.unwrap_err());
+            assert!(
+                message.contains("fuel exhausted"),
+                "spin ended without fuel exhaustion: {message}"
+            );
+        });
+    }
+
+    #[test]
+    fn guest_calls_under_a_runtime_match_plain_thread_results_and_fuel() {
+        // The blocking-context wrap (#1067) must not change what a call
+        // does: same result and same fuel accounting on a multi-thread
+        // runtime as on a plain thread.
+        let runner = compile(ECHO, SandboxLimits::default()).unwrap();
+        let mut plain = runner.instantiate(7).unwrap();
+        plain.update(1, b"event").unwrap();
+        let plain_view = plain.view().unwrap();
+        let plain_fuel = plain.last_fuel(GuestCall::Update);
+
+        let mut on_runtime = runner.instantiate(7).unwrap();
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .unwrap();
+        let (runtime_view, runtime_fuel) = runtime.block_on(async move {
+            on_runtime.update(1, b"event").unwrap();
+            let view = on_runtime.view().unwrap();
+            (view, on_runtime.last_fuel(GuestCall::Update))
+        });
+        assert_eq!(runtime_view, plain_view);
+        assert_eq!(runtime_fuel, plain_fuel);
+        assert!(runtime_fuel > 0);
     }
 
     #[test]
