@@ -97,16 +97,24 @@ if [ "$1" = "cargo" ] && [ -z "$target_dir" ]; then
     esac
 
     manifest_arg=""
+    install_path_arg=""
     need_manifest=false
+    need_install_path=false
     for arg in "$@"; do
       [ "$arg" = "--" ] && break
       if [ "$need_manifest" = true ]; then
         manifest_arg=$arg
         break
       fi
+      if [ "$need_install_path" = true ]; then
+        install_path_arg=$arg
+        break
+      fi
       case "$arg" in
         --manifest-path) need_manifest=true ;;
         --manifest-path=*) manifest_arg=${arg#--manifest-path=} ; break ;;
+        --path) need_install_path=true ;;
+        --path=*) install_path_arg=${arg#--path=} ; break ;;
       esac
     done
 
@@ -114,6 +122,16 @@ if [ "$1" = "cargo" ] && [ -z "$target_dir" ]; then
       case "$manifest_arg" in
         /*) manifest_path=$manifest_arg ;;
         *) manifest_path="$PWD/$manifest_arg" ;;
+      esac
+      manifest=$(cargo locate-project --workspace --message-format plain --manifest-path "$manifest_path" 2>/dev/null || true)
+    elif [ -n "$install_path_arg" ]; then
+      case "$install_path_arg" in
+        /*) install_path=$install_path_arg ;;
+        *) install_path="$PWD/$install_path_arg" ;;
+      esac
+      case "$install_path" in
+        */Cargo.toml) manifest_path=$install_path ;;
+        *) manifest_path="$install_path/Cargo.toml" ;;
       esac
       manifest=$(cargo locate-project --workspace --message-format plain --manifest-path "$manifest_path" 2>/dev/null || true)
     else
