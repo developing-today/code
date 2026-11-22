@@ -188,12 +188,94 @@ fn acquire_journal_lock(path: &Path) -> Result<File> {
     }
 }
 
+/// Queueing counters for one journal writer thread (#557 Slice 2,
+/// Phase 1). Group commit at the writer can only batch appends that
+/// actually queue behind an in-flight write+sync, so the writer loop
+/// samples two depths per append: how many appends were already waiting
+/// when a sync started, and how many arrived while it ran. The oracle
+/// is the journal's durability contract: if both stay at zero under the
+/// many_worlds load, no append ever waits on another append's sync and
+/// writer-level group commit has nothing to coalesce.
+#[derive(Debug, Default)]
+struct JournalWriterStats {
+    appends: u64,
+    appends_with_queued_behind: u64,
+    max_queued_behind: u64,
+    syncs_with_waiting_appends: u64,
+    max_waiting_after_sync: u64,
+    sum_waiting_after_sync: u64,
+}
+
+impl JournalWriterStats {
+    fn observe_queued_behind(&mut self, queued_behind: u64) {
+        self.appends += 1;
+        if queued_behind > 0 {
+            self.appends_with_queued_behind += 1;
+        }
+        self.max_queued_behind = self.max_queued_behind.max(queued_behind);
+    }
+
+    fn observe_waiting_after_sync(&mut self, waiting: u64) {
+        if waiting > 0 {
+            self.syncs_with_waiting_appends += 1;
+        }
+        self.max_waiting_after_sync = self.max_waiting_after_sync.max(waiting);
+        self.sum_waiting_after_sync += waiting;
+    }
+
+    fn report(&self) {
+        if std::env::var_os("ID_JOURNAL_WRITER_STATS")
+            .is_some_and(|value| !value.is_empty() && value != "0")
+        {
+            eprintln!(
+                "journal_writer_stats appends={} appends_with_queued_behind={} max_queued_behind={} syncs_with_waiting_appends={} max_waiting_after_sync={} sum_waiting_after_sync={}",
+                self.appends,
+                self.appends_with_queued_behind,
+                self.max_queued_behind,
+                self.syncs_with_waiting_appends,
+                self.max_waiting_after_sync,
+                self.sum_waiting_after_sync,
+            );
+        }
+    }
+}
+
 fn journal_writer_loop(mut file: File, receiver: Receiver<JournalWriterRequest>) {
-    while let Ok(request) = receiver.recv() {
+    // Requests are drained into a local queue so the loop can sample how
+    // many appends are waiting at each sync. Order is preserved and every
+    // request is still handled exactly as before — one write+sync+reply
+    // per append — so the drain changes nothing observable.
+    let mut pending: std::collections::VecDeque<JournalWriterRequest> =
+        std::collections::VecDeque::new();
+    let mut stats = JournalWriterStats::default();
+    loop {
+        let request = match pending.pop_front() {
+            Some(request) => request,
+            None => match receiver.recv() {
+                Ok(request) => request,
+                Err(_) => break,
+            },
+        };
+        while let Ok(extra) = receiver.try_recv() {
+            pending.push_back(extra);
+        }
         match request {
             JournalWriterRequest::Append { line, reply } => {
+                let queued_behind = pending
+                    .iter()
+                    .filter(|queued| matches!(queued, JournalWriterRequest::Append { .. }))
+                    .count() as u64;
+                stats.observe_queued_behind(queued_behind);
                 let result = file.write_all(&line).and_then(|()| file.sync_data());
                 let _ = reply.send(result);
+                while let Ok(extra) = receiver.try_recv() {
+                    pending.push_back(extra);
+                }
+                let waiting = pending
+                    .iter()
+                    .filter(|queued| matches!(queued, JournalWriterRequest::Append { .. }))
+                    .count() as u64;
+                stats.observe_waiting_after_sync(waiting);
             }
             JournalWriterRequest::Replace {
                 file: replacement,
@@ -204,6 +286,7 @@ fn journal_writer_loop(mut file: File, receiver: Receiver<JournalWriterRequest>)
             }
         }
     }
+    stats.report();
 }
 
 impl FileJournal {
