@@ -16,6 +16,7 @@ leptos_axum = { version = "=0.4.10", optional = true }
 leptos_meta = "=0.4.10"
 leptos_router = "=0.4.10"
 start-axum-error = { path = "../start-axum-error" }
+start-axum-ui = { path = "../start-axum-ui" }
 log = "0.4"
 simple_logger = "4"
 tokio = { version = "1.38.2", optional = true }
@@ -34,6 +35,7 @@ leptos_query = "0.2.3"
 [features]
 hydrate = [
   "start-axum-error/hydrate",
+  "start-axum-ui/hydrate",
   "dep:tracing",
   "leptos/hydrate",
   "leptos_meta/hydrate",
@@ -42,6 +44,7 @@ hydrate = [
 ]
 ssr = [
   "start-axum-error/ssr",
+  "start-axum-ui/ssr",
   "dep:axum",
   "dep:tokio",
   "dep:tower",
