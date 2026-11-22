@@ -1742,7 +1742,11 @@ let
         {
           imports = [ module ];
           services.mcpx.package = lib.mkDefault (
-            pkgs.callPackage ../pkgs/mcpx/package.nix { }
+            pkgs.callPackage ../pkgs/mcpx/package.nix {
+              # Keep the runtime module lean; the standalone package output
+              # still runs this Go check phase.
+              doCheck = false;
+            }
           );
         };
     in
