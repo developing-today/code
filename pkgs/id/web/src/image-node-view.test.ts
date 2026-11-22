@@ -186,6 +186,25 @@ describe("image alt-text editor accessibility", () => {
     expect(nv.dom.querySelector(".pm-image-popover-input")).not.toBeNull();
   });
 
+  it.each(["Enter", " "])("leaves %s typed in the alt-text input to the input", (key) => {
+    const { nv } = setup();
+    nv.dom.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+    const input = nv.dom.querySelector(".pm-image-popover-input") as HTMLInputElement;
+    expect(input).not.toBeNull();
+
+    const down = new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true });
+    input.dispatchEvent(down);
+    input.dispatchEvent(new KeyboardEvent("keyup", { key, bubbles: true }));
+
+    if (key === " ") {
+      expect(down.defaultPrevented).toBe(false);
+      expect(nv.dom.querySelector(".pm-image-popover-input")).toBe(input);
+    } else {
+      // Enter commits and closes the editor; the figure must not reopen it.
+      expect(nv.dom.querySelector(".pm-image-popover")).toBeNull();
+    }
+  });
+
   it("does not open the alt-text editor for other keys", () => {
     const { nv } = setup();
     nv.dom.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));

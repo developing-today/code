@@ -72,13 +72,17 @@ export class ImageNodeView implements NodeView {
       e.stopPropagation();
       this.showPopover();
     });
+    // Only keys aimed at the figure itself activate it: keys typed in
+    // the alt-text input bubble up through the figure too.
     figure.addEventListener("keydown", (e) => {
+      if (e.target !== figure) return;
       if (e.key !== "Enter" && e.key !== " ") return;
       e.preventDefault();
       e.stopPropagation();
       if (e.key === "Enter") this.showPopover();
     });
     figure.addEventListener("keyup", (e) => {
+      if (e.target !== figure) return;
       if (e.key !== " ") return;
       e.stopPropagation();
       this.showPopover();
