@@ -2007,6 +2007,132 @@ mod tests {
     }
 
     #[test]
+    fn scene_surface_parses_projects_and_round_trips() {
+        // Oracle: #12657 slice 1a — a versioned scene document is accepted
+        // by host validation, projects deterministically to text (the
+        // old-shell fallback), and round-trips through serialization.
+        let document = serde_json::json!({
+            "kind": "scene", "version": 1, "title": "Harbor",
+            "nodes": [
+                {"id": "boat", "label": "Boat", "shape": "box",
+                 "position": [0, 0.5, -2], "size": [2, 1, 1]},
+                {"id": "sun", "label": "Sun", "shape": "sphere",
+                 "position": [10, 8, -20], "size": [3, 3, 3]}
+            ]
+        });
+        let parsed = parse_surface(&document.to_string()).unwrap().unwrap();
+        assert_eq!(
+            parsed.text_projection(),
+            "Harbor\n1. Boat (box at 0, 0.5, -2; size 2, 1, 1)\n2. Sun (sphere at 10, 8, -20; size 3, 3, 3)"
+        );
+        let serialized = serde_json::to_string(&parsed).unwrap();
+        assert_eq!(parse_surface(&serialized).unwrap(), Some(parsed));
+
+        // Without a title the projection still names what the view is.
+        let untitled = parse_surface(
+            r#"{"kind":"scene","version":1,"nodes":[{"id":"a","label":"A","shape":"point","position":[1,2,3],"size":[1,1,1]}]}"#,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            untitled.text_projection(),
+            "Scene\n1. A (point at 1, 2, 3; size 1, 1, 1)"
+        );
+    }
+
+    #[test]
+    fn scene_surface_rejects_unsafe_or_oversize_documents() {
+        // Oracle: #12657 criterion — malformed or oversized rich surfaces
+        // are refused by host validation (an Err from parse_surface, which
+        // the host turns into an error frame), never silently dropped to
+        // the legacy text path and never accepted.
+        let node = |id: &str| {
+            serde_json::json!({"id": id, "label": "A", "shape": "box",
+                "position": [0, 0, 0], "size": [1, 1, 1]})
+        };
+        let scene = |nodes: serde_json::Value| {
+            serde_json::json!({"kind": "scene", "version": 1, "nodes": nodes}).to_string()
+        };
+        // Bad versions.
+        assert!(parse_surface(
+            &serde_json::json!({"kind": "scene", "version": 2, "nodes": [node("a")]})
+                .to_string()
+        )
+        .is_err());
+        assert!(parse_surface(
+            &serde_json::json!({"kind": "scene", "version": 0, "nodes": [node("a")]})
+                .to_string()
+        )
+        .is_err());
+        // Unknown fields, top level and per node (deny_unknown_fields).
+        assert!(parse_surface(
+            &serde_json::json!({"kind": "scene", "version": 1, "html": "<b>x</b>", "nodes": [node("a")]})
+                .to_string()
+        )
+        .is_err());
+        assert!(parse_surface(&scene(serde_json::json!([
+            {"id": "a", "label": "A", "shape": "box", "position": [0, 0, 0],
+             "size": [1, 1, 1], "onclick": "run()"}
+        ])))
+        .is_err());
+        // Unknown shape: the shape set is closed.
+        assert!(parse_surface(&scene(serde_json::json!([
+            {"id": "a", "label": "A", "shape": "mesh", "position": [0, 0, 0], "size": [1, 1, 1]}
+        ])))
+        .is_err());
+        // Empty and duplicate-id node sets.
+        assert!(parse_surface(&scene(serde_json::json!([]))).is_err());
+        assert!(parse_surface(&scene(serde_json::json!([node("a"), node("a")]))).is_err());
+        // Too many nodes: the bound is 256 (MAX_SCENE_NODES).
+        let many: Vec<serde_json::Value> = (0..257)
+            .map(|index| node(&format!("n{index}")))
+            .collect();
+        assert!(parse_surface(&scene(serde_json::Value::Array(many))).is_err());
+        // Unsafe label text (a JSON-escaped ESC).
+        assert!(parse_surface(&scene(serde_json::json!([
+            {"id": "a", "label": "A\u{001b}[2J", "shape": "box", "position": [0, 0, 0], "size": [1, 1, 1]}
+        ])))
+        .is_err());
+        // Geometry bounds: size must be positive, position and size
+        // components stay within 1_000_000 (MAX_SCENE_EXTENT).
+        assert!(parse_surface(&scene(serde_json::json!([
+            {"id": "a", "label": "A", "shape": "box", "position": [0, 0, 0], "size": [0, 1, 1]}
+        ])))
+        .is_err());
+        assert!(parse_surface(&scene(serde_json::json!([
+            {"id": "a", "label": "A", "shape": "box", "position": [0, 0, 0], "size": [-1, 1, 1]}
+        ])))
+        .is_err());
+        assert!(parse_surface(&scene(serde_json::json!([
+            {"id": "a", "label": "A", "shape": "box", "position": [1000001, 0, 0], "size": [1, 1, 1]}
+        ])))
+        .is_err());
+        // Oversize document: the serialized cap is 65536 bytes
+        // (MAX_SCENE_BYTES); a single huge label trips it.
+        assert!(parse_surface(&scene(serde_json::json!([
+            {"id": "a", "label": "x".repeat(70_000), "shape": "box", "position": [0, 0, 0], "size": [1, 1, 1]}
+        ])))
+        .is_err());
+    }
+
+    #[test]
+    fn unknown_rich_surface_kinds_stay_on_the_legacy_path() {
+        // Forward-compat seam (#12657 triage): a rich kind this host does
+        // not know is not an error — the document drops to the legacy
+        // plain-text path, so a new-kind document is safe on an old host.
+        // (Audio and widget kinds land in slices 1b/1c; today both are
+        // unknown here.)
+        assert_eq!(
+            parse_surface(r#"{"kind":"audio","version":1,"title":"Song"}"#).unwrap(),
+            None
+        );
+        assert_eq!(
+            parse_surface(r#"{"kind":"widget","version":1}"#).unwrap(),
+            None
+        );
+    }
+
+    #[test]
     fn form_date_bounds_are_canonical_and_cancel_skips_required_fields() {
         let invalid_bound = serde_json::json!({
             "kind": "form", "version": 1, "form_id": "date-1", "title": "Date",
@@ -2169,6 +2295,10 @@ mod tests {
             r#"{"kind":"text","version":1,"lines":["\u001b[31mred"],"lines":["clean"]}"#,
             // Duplicate rows: an over-wide row hidden behind a fitting one.
             r#"{"kind":"screen","version":1,"width":2,"height":1,"rows":["toolong"],"rows":["hi"]}"#,
+            // Duplicate version, scene: unsupported version first.
+            r#"{"kind":"scene","version":99,"version":1,"nodes":[]}"#,
+            // Duplicate kind naming scene: dispatch must not be last-wins.
+            r#"{"kind":"scene","kind":"text","version":1,"lines":["hi"]}"#,
             // Duplicate kind: the dispatch itself must not be last-wins.
             r#"{"kind":"screen","kind":"text","version":1,"lines":["hi"]}"#,
             // Duplicate kind whose survivor is NOT a surface kind, with
