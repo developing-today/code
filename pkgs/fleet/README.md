@@ -139,17 +139,25 @@ smoke.sh                    per-variant smoke suite (post-build)
 `fleet session bind [--session-id ID]` is the explicit, validated boundary for
 binding an identity. It resolves the explicit value, then `FLEET_SESSION_ID`,
 then `OPENCODE_SESSION_ID`, then the worktree's plain-text `.fleet-session-id`.
-Supplied identities are persisted at the Git worktree root (not the common Git
-directory), so linked worktrees can track different sessions. A recovered
-marker is accepted only when the local OpenCode server returns a matching,
-non-archived session record; an ended or unverifiable marker fails closed.
-Help, malformed commands and other Fleet domains do not inspect or modify the
-marker. A successfully completed Fleet-owned `gh issue|pr close|reopen` also
-resolves the session identity for its closure record, so a live marker is
-effective there even when the parent environment did not carry the id. Other
-Fleet operations are not automatically bound. Automatic launcher integration
-and create-path `provenance.session_id` (tracked separately by #9073) are not
-provided; they require a validated launcher or create-command boundary.
+The OpenCode session plugin exports its session ID as `FLEET_SESSION_ID` to
+shell commands. `fleet init` and supported Fleet domain invocations bind that
+identity before starting work, persist it at the current worktree root, and
+pass it to Fleet child processes through the inherited environment.
+Every source must match the `ses_` plus ASCII alphanumeric format. Supplied
+identities are persisted at the Git worktree root (not the common Git
+directory), so linked worktrees can track different sessions; Git ignores this
+runtime marker. A recovered marker is accepted only when the local OpenCode
+server returns a matching, non-archived session record; an ended or
+unverifiable marker fails closed.
+Dispatcher-handled help, dispatcher argument-shape errors, and unavailable
+domains return before session resolution. Supported invocations resolve
+identity before entering their domain handlers; domain-specific help and usage
+errors can therefore be reported after marker resolution. A successfully
+completed Fleet-owned `gh issue|pr close|reopen` also resolves the session
+identity for its closure record, so a live marker is effective there even when
+the parent environment did not carry the id. Create-path
+`provenance.session_id` (tracked separately by #9073) remains outside this
+checkpoint.
 
 ## Versioning — derived per-app versions (#8566; policy #5790)
 

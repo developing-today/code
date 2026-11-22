@@ -74,20 +74,29 @@ pub fn resolve(
     marker_is_live: impl FnOnce(&str) -> bool,
 ) -> Result<Resolution, String> {
     if let Some(id) = nonempty(explicit) {
-        return Ok(Resolution::Session(id.to_owned()));
+        return Ok(Resolution::Session(checked_identity(id)?));
     }
     if let Some(id) = nonempty(fleet_env).or_else(|| nonempty(opencode_env)) {
-        return Ok(Resolution::Session(id.to_owned()));
+        return Ok(Resolution::Session(checked_identity(id)?));
     }
     let Some(id) = nonempty(marker) else {
         return Ok(Resolution::None);
     };
-    if marker_is_live(id) {
-        Ok(Resolution::Session(id.to_owned()))
+    let id = checked_identity(id)?;
+    if marker_is_live(&id) {
+        Ok(Resolution::Session(id))
     } else {
         Err(format!(
             "stale {PWD_FILE} refers to ended or unverifiable session {id}; remove it or start a new Fleet session"
         ))
+    }
+}
+
+fn checked_identity(id: &str) -> Result<String, String> {
+    if valid_session_id(id) {
+        Ok(id.to_owned())
+    } else {
+        Err("session ID must be ses_ followed by ASCII letters or digits".into())
     }
 }
 
@@ -279,6 +288,20 @@ mod tests {
             resolve(None, Some("  "), None, None, |_| false),
             Ok(Resolution::None)
         );
+    }
+
+    #[test]
+    fn invalid_environment_and_marker_ids_fail_closed() {
+        assert!(resolve(None, Some("not-a-session"), None, None, |_| true).is_err());
+        assert!(resolve(None, None, None, Some("ses_bad-id"), |_| true).is_err());
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn session_id_format_accepts_only_nonempty_ascii_alphanumeric_suffix(suffix in ".*") {
+            let expected = !suffix.is_empty() && suffix.bytes().all(|byte| byte.is_ascii_alphanumeric());
+            proptest::prop_assert_eq!(valid_session_id(&format!("ses_{suffix}")), expected);
+        }
     }
 
     #[test]

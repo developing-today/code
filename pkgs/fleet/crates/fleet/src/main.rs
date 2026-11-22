@@ -736,6 +736,16 @@ fn run_serve_list(surface: &Surface, roles: &[ServeRole], invoked_as: &str) -> i
 
 /// Run one domain invocation (also the argv0-alias landing pad).
 fn run_domain(surface: &Surface, d: &Domain, args: &[String], invoked_as: &str) -> i32 {
+    run_domain_with_initializer(surface, d, args, invoked_as, session_state::initialize)
+}
+
+fn run_domain_with_initializer(
+    surface: &Surface,
+    d: &Domain,
+    args: &[String],
+    invoked_as: &str,
+    initialize: impl FnOnce(Option<&str>) -> Result<Option<String>, String>,
+) -> i32 {
     // The search role takes real flags, so its own usage answers
     // `--help` wherever the role is actually usable; elsewhere the
     // flag falls through to the registry's domain help below.
@@ -772,19 +782,42 @@ fn run_domain(surface: &Surface, d: &Domain, args: &[String], invoked_as: &str) 
         Ok(c) => c,
         Err(code) => return code,
     };
+    // These dispatcher-owned forms are validated before session resolution:
+    // malformed invocations must not inspect (or update) the worktree marker.
+    let serve_list = if d.name == "serve" {
+        match parse_serve_list(args) {
+            Some(Ok(roles)) => Some(roles),
+            Some(Err(message)) => return usage_error(&message),
+            None => None,
+        }
+    } else {
+        None
+    };
+    #[cfg(feature = "queue")]
+    if d.name == "queue"
+        && matches!(
+            args.first().map(|s| s.as_str()),
+            Some("--version") | Some("-V")
+        )
+        && let Some(extra) = args.get(1)
+    {
+        return usage_error(&format!(
+            "unexpected argument '{extra}' for 'fleet queue {}'",
+            args.first().map(|s| s.as_str()).unwrap_or("--version")
+        ));
+    }
     match surface.cap_state(cap, d.name) {
         CapState::Available => {
+            if let Err(error) = initialize(None) {
+                eprintln!("fleet {}: {error}", d.name);
+                return EXIT_USAGE;
+            }
             // #6264 (design #5698 option (i)): a multi-role serve
             // list runs every listed role in this one process. The
             // parse returns None for single-role invocations, which
             // keep the paths below unchanged.
-            if d.name == "serve" {
-                if let Some(list) = parse_serve_list(args) {
-                    match list {
-                        Ok(roles) => return run_serve_list(surface, &roles, invoked_as),
-                        Err(message) => return usage_error(&message),
-                    }
-                }
+            if let Some(roles) = serve_list {
+                return run_serve_list(surface, &roles, invoked_as);
             }
             // Step 2 (#5430): the queue domain runs for real — the
             // repo-queue client surface and the two broker roles.
@@ -800,12 +833,6 @@ fn run_domain(surface: &Surface, d: &Domain, args: &[String], invoked_as: &str) 
                     // like the root built-ins (#5572), a trailing argument
                     // is a usage error naming it, not silently discarded
                     // success (#5603).
-                    if let Some(extra) = args.get(1) {
-                        return usage_error(&format!(
-                            "unexpected argument '{extra}' for 'fleet queue {}'",
-                            args.first().map(|s| s.as_str()).unwrap_or("--version")
-                        ));
-                    }
                     println!(
                         "{} {VERSION}",
                         if invoked_as == "repo-queue" {
@@ -1304,6 +1331,10 @@ fn run_proxy_ssh(tail: &[String], config: &fleet_config::Config) -> i32 {
 }
 
 fn run_init_call(surface: &Surface, argv: &[String]) -> i32 {
+    if let Err(error) = session_state::initialize(None) {
+        eprintln!("fleet init: {error}");
+        return EXIT_USAGE;
+    }
     let client = format!("fleet {} ({})", VERSION, build_name(&surface.compiled));
     let capabilities = fleet_proxy_proto::capability_ids(&surface.usable());
     match fleet_proxy::client::run_init(argv, &surface.config, &client, &capabilities) {
@@ -1893,6 +1924,28 @@ mod tests {
     }
 
     #[test]
+    fn malformed_serve_list_does_not_resolve_session_state() {
+        let surface = Surface::new(None, fleet_config::Config::default());
+        let serve = domain("serve").expect("serve domain exists");
+        let initialized = std::cell::Cell::new(false);
+        let code = run_domain_with_initializer(
+            &surface,
+            serve,
+            &args(&["queue-broker", "queue-broker"]),
+            "fleet",
+            |_| {
+                initialized.set(true);
+                Ok(None)
+            },
+        );
+        assert_eq!(code, EXIT_USAGE);
+        assert!(
+            !initialized.get(),
+            "invalid argv must not inspect the marker"
+        );
+    }
+
+    #[test]
     fn serve_list_leaves_single_role_invocations_alone() {
         // One role: not a list.
         assert!(parse_serve_list(&args(&["queue-broker"])).is_none());
@@ -1928,10 +1981,24 @@ mod tests {
         let surface = Surface::new(None, fleet_config::Config::default());
         let queue = domain("queue").expect("queue domain exists");
         for flag in ["--version", "-V"] {
+            let initialized = std::cell::Cell::new(false);
             assert_eq!(
-                run_domain(&surface, queue, &args(&[flag, "--bogus"]), "fleet"),
+                run_domain_with_initializer(
+                    &surface,
+                    queue,
+                    &args(&[flag, "--bogus"]),
+                    "fleet",
+                    |_| {
+                        initialized.set(true);
+                        Ok(None)
+                    },
+                ),
                 EXIT_USAGE,
                 "{flag} must reject a trailing argument"
+            );
+            assert!(
+                !initialized.get(),
+                "malformed {flag} must not inspect marker"
             );
             assert_eq!(
                 run_domain(&surface, queue, &args(&[flag]), "fleet"),
