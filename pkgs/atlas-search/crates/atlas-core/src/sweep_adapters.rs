@@ -688,7 +688,7 @@ mod tests {
     use crate::stage::provision_staging_db;
     use crate::sweep::{
         EnvelopeLine, FilterOutcome, Measurements, ReasonCode, RunRequest, SourceClass,
-        filter_candidate, load_state,
+        cycle_report, filter_candidate, load_state,
     };
     use rusqlite::Connection;
     use std::collections::HashSet;
@@ -957,6 +957,142 @@ mod tests {
             )
             .expect("staged item count");
         assert_eq!(count, 1, "accepted report lands exactly once");
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&state_dir);
+        let _ = std::fs::remove_file(&db);
+    }
+
+    /// Oracle: each source-class adapter feeds the same run-once/staging
+    /// contract; one fixture candidate per class produces a report and
+    /// manifest record and lands once in the shared staging database.
+    #[test]
+    fn all_source_adapters_run_through_fixture_staging() {
+        let root = std::env::temp_dir().join(format!("atlas-all-adapters-{}", std::process::id()));
+        let db = root.with_extension("db");
+        let state_dir = root.with_extension("state");
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&state_dir);
+        let _ = std::fs::remove_file(&db);
+        std::fs::create_dir_all(&root).expect("fixture root");
+        provision_staging_db(&db).expect("provision fixture staging DB");
+        let conn = Connection::open(&db).expect("open fixture staging DB");
+
+        let boot_root = root.join("boots");
+        std::fs::create_dir_all(&boot_root).expect("boot fixture dir");
+        std::fs::write(
+            boot_root.join("init.jsonl"),
+            "{\"boot_id\":\"boot-1\",\"state\":\"success\"}\n",
+        )
+        .expect("boot fixture");
+
+        let session_root = root.join("sessions");
+        std::fs::create_dir_all(&session_root).expect("session fixture dir");
+        std::fs::write(
+            session_root.join("session.session.json"),
+            r#"{"state":"completed","messages":[{"role":"user","text":"question"},{"role":"assistant","text":"answer","synthetic":false}]}"#,
+        )
+        .expect("session fixture");
+
+        let chat_root = root.join("chat");
+        let channel = chat_root.join("announcements");
+        std::fs::create_dir_all(&channel).expect("chat fixture dir");
+        std::fs::write(
+            channel.join("export.jsonl"),
+            "{\"text\":\"deployment approved\",\"bot\":false}\n",
+        )
+        .expect("chat fixture");
+
+        let statistics_root = root.join("statistics");
+        std::fs::create_dir_all(&statistics_root).expect("statistics fixture dir");
+        std::fs::write(
+            statistics_root.join("atlas-statistics-report-2026-11-21.jsonl"),
+            serde_json::json!({
+                "schema": crate::trace_stats::REPORT_SCHEMA,
+                "report_day": "2026-11-21",
+                "detail": "fixture"
+            })
+            .to_string(),
+        )
+        .expect("statistics fixture");
+
+        let reports_root = root.join("reports");
+        std::fs::create_dir_all(&reports_root).expect("reports fixture dir");
+        std::fs::write(reports_root.join("final.md"), "finished report").expect("report fixture");
+
+        let allowlist = HashSet::from(["announcements".to_owned()]);
+        let sources = [
+            (
+                SourceClass::BootRecords,
+                discover_boot_records(&boot_root, |_| Tier::Internal).expect("discover boots"),
+            ),
+            (
+                SourceClass::SessionLogs,
+                discover_session_logs(&session_root, |_| Tier::Internal)
+                    .expect("discover sessions"),
+            ),
+            (
+                SourceClass::ChatLogs,
+                discover_chat_exports(&chat_root, &allowlist, |_| Tier::Internal)
+                    .expect("discover chats"),
+            ),
+            (
+                SourceClass::Statistics,
+                discover_statistics_reports(&statistics_root, |_| Tier::Internal)
+                    .expect("discover statistics"),
+            ),
+            (
+                SourceClass::Reports,
+                discover_reports(&reports_root, |_| Tier::Internal).expect("discover reports"),
+            ),
+        ];
+        let mut total_staged = 0;
+        for (index, (source_class, items)) in sources.iter().enumerate() {
+            assert_eq!(items.len(), 1, "one fixture candidate for {source_class:?}");
+            let req = RunRequest {
+                run_id: format!("run-{index}"),
+                batch_id: "batch-all-adapters".to_owned(),
+                source_class: *source_class,
+                host: "fixture-host".to_owned(),
+                at: format!("2026-11-21T00:0{index}:00Z"),
+                now_unix: index as u64,
+                candidates: items.iter().map(|item| item.facts.clone()).collect(),
+                item_failures: Vec::new(),
+                measurements: Measurements {
+                    src_free_bytes: 20 * 1024 * 1024 * 1024,
+                    src_volume_bytes: 20 * 1024 * 1024 * 1024,
+                    stg_free_bytes: 20 * 1024 * 1024 * 1024,
+                    ..Measurements::default()
+                },
+                envelope: Vec::<EnvelopeLine>::new(),
+                embed_usd: 0.0,
+                embedding_ledger_ref: None,
+                embedding_ledger: None,
+                embed_usd_median: None,
+            };
+            let outcome =
+                run_once_with_staging(&state_dir, &req, items, &conn, "unit-all-adapters")
+                    .unwrap_or_else(|error| panic!("run {source_class:?}: {error}"));
+            assert_eq!(
+                outcome.report.expect("report row").items_accepted,
+                1,
+                "one accepted fixture for {source_class:?}"
+            );
+            assert_eq!(
+                load_state(&state_dir).expect("state").manifest.len(),
+                index + 1
+            );
+            total_staged += 1;
+        }
+
+        assert_eq!(cycle_report(&state_dir).expect("cycle report").len(), 5);
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM items WHERE unit_id = 'unit-all-adapters'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("staged item count");
+        assert_eq!(count, total_staged as i64);
         let _ = std::fs::remove_dir_all(&root);
         let _ = std::fs::remove_dir_all(&state_dir);
         let _ = std::fs::remove_file(&db);
