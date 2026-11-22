@@ -9,12 +9,12 @@ Design record (issue #12229, "What to build" step 2):
 - **What runs.** One command per batch: ``cargo check --workspace``
   for pkgs/id, then ``cargo test`` for the union of the crates the
   batch's PRs affect (per ``affected-crates.py``). Commands run on
-  the fleet build host through ``fleet shell --build``; this module
-  only plans them and records their results, it never runs them.
+  the fleet build host through ``fleet shell --build``.
 - **Red batch.** Bisected by halving (``find_culprits``): a subset
   that stays red is split until each red PR is isolated. Green
   sub-batches merge; a red PR leaves the batch and goes back to its
-  author with the failing command from the log.
+  author with the failing command from the log. Green PRs use GitHub's
+  ``--merge`` strategy to preserve PR ancestry.
 - **Switching it off.** ``ID_GATE_OFF=1`` in the environment, or
   ``enabled=False`` / ``--off`` here, plans no batches. Nightly CI
   is unchanged either way (issue decision D2's undo path).
@@ -26,6 +26,7 @@ Design record (issue #12229, "What to build" step 2):
 Usage:
   python3 scripts/id/gate.py plan --prs 101,102,103 [--batch-size 5] [--off]
   python3 scripts/id/gate.py bisect --batch 101,102,103 --red 102
+  python3 scripts/id/gate.py run --batch 1 --prs 12470
   python3 scripts/id/gate.py log --file gate-log.jsonl --batch 1 \
       --prs 101,102 --command "cargo check --workspace" --result green
 """
@@ -34,7 +35,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import shlex
 import subprocess
 import sys
 import tempfile
@@ -145,12 +145,15 @@ def _run_gh(args: list[str], *, cwd: Path | None = None, **_: object) -> str:
 
 
 def _run_fleet(command: str, *, cwd: Path | None = None, **_: object) -> int:
-    result = subprocess.run(["fleet", "shell", "--build", "--", command], cwd=cwd)
+    argv = ["fleet", "shell", "--build"]
+    if cwd is not None:
+        argv.extend(["--cwd", str(cwd)])
+    result = subprocess.run([*argv, "--", command], cwd=cwd)
     return result.returncode
 
 
 def run_batch(
-    prs: Sequence[int], batch: int, *, affected: Mapping[int, Iterable[str]],
+    prs: Sequence[int], batch: int, *, affected: Mapping[int, Iterable[str]] | None = None,
     log_path: Path = DEFAULT_LOG_PATH, repo: Path = REPO_ROOT,
     git: Callable[..., str] = _run_git,
     shell: Callable[..., int] = _run_fleet,
@@ -161,7 +164,8 @@ def run_batch(
         return "off"
     if not prs:
         raise ValueError("a batch must contain at least one PR")
-    command = batch_command(prs, affected)
+    git(["fetch", "origin", "main"], cwd=repo)
+    affected_by_pr: dict[int, Iterable[str]] = dict(affected or {})
 
     def evaluate(subset: list[int], number: int) -> bool:
         # Each verdict is assembled from current main, never from a prior probe.
@@ -172,8 +176,18 @@ def run_batch(
                 for pr in subset:
                     data = json.loads(gh(["pr", "view", str(pr), "--json", "headRefOid"], cwd=repo))
                     oid = data["headRefOid"]
-                    git(["fetch", "origin", oid], cwd=candidate)
+                    git(["fetch", "origin", f"refs/pull/{pr}/head"], cwd=candidate)
                     git(["merge", "--no-ff", "--no-edit", "FETCH_HEAD"], cwd=candidate)
+                    if pr not in affected_by_pr:
+                        paths = git(["diff", "--name-only", f"origin/main...{oid}"], cwd=repo)
+                        selector = candidate / "scripts/id/affected-crates.py"
+                        selected = subprocess.run(
+                            [sys.executable, str(selector), "-"], cwd=candidate,
+                            input=paths, text=True, check=True,
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                        ).stdout.splitlines()
+                        affected_by_pr[pr] = selected
+                command = batch_command(subset, affected_by_pr)
                 result = shell(command, cwd=candidate, prs=subset)
                 verdict = result == 0
                 append_log(log_path, log_record(number, subset, command,
@@ -182,12 +196,21 @@ def run_batch(
             finally:
                 git(["worktree", "remove", "--force", str(candidate)], cwd=repo)
 
-    if evaluate(list(prs), batch):
-        green = list(prs)
-        red: list[int] = []
-    else:
-        red = find_culprits(prs, lambda subset: not evaluate(subset, batch))
-        green = [pr for pr in prs if pr not in set(red)]
+    root_red = False
+
+    def is_red(subset: list[int]) -> bool:
+        nonlocal root_red
+        verdict = not evaluate(subset, batch)
+        if subset == list(prs):
+            root_red = verdict
+        return verdict
+
+    red = find_culprits(prs, is_red)
+    # Preserve safety if a failure only appears from an interaction between
+    # PRs and every proper subset happens to pass: leave the whole set open.
+    if root_red and not red:
+        red = list(prs)
+    green = [pr for pr in prs if pr not in set(red)]
 
     # `gh pr merge --merge` creates the durable merge commit and marks each
     # source PR merged; each accepted PR is applied in the same order tested.
@@ -220,9 +243,17 @@ def main(argv: list[str] | None = None) -> int:
     log.add_argument("--command", required=True)
     log.add_argument("--result", required=True, choices=("green", "red"))
 
+    run = sub.add_parser("run", help="assemble, test, and merge one planned batch")
+    run.add_argument("--batch", type=int, required=True)
+    run.add_argument("--prs", required=True, help="comma-separated PR numbers, in merge order")
+    run.add_argument("--log", default=str(DEFAULT_LOG_PATH), help="JSONL batch log path")
+
     args = parser.parse_args(argv)
 
-    if args.command == "plan":
+    if args.command == "run":
+        result = run_batch(_prs(args.prs), args.batch, log_path=Path(args.log))
+        print(json.dumps({"batch": args.batch, "prs": _prs(args.prs), "result": result}))
+    elif args.command == "plan":
         batches = plan_batches(
             _prs(args.prs), batch_size=args.batch_size, enabled=not args.off
         )

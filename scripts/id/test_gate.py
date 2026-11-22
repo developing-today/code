@@ -175,7 +175,7 @@ class RunBatchTests(unittest.TestCase):
                 gh_calls.append(args)
                 return '{"headRefOid":"deadbeef"}' if args[:2] == ["pr", "view"] else ""
 
-            def verdict(prs: list[int], command: str, repo: Path) -> int:
+            def verdict(command: str, *, prs: list[int], **kwargs: object) -> int:
                 return int(2 in prs)
 
             result = gate.run_batch(
@@ -199,6 +199,28 @@ class RunBatchTests(unittest.TestCase):
                 gh=lambda *a, **k: self.fail("gh ran"),
             )
         self.assertEqual(result, "off")
+
+    def test_red_only_when_combined_leaves_all_prs_open(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            merges: list[list[str]] = []
+
+            def shell(command: str, *, prs: list[int], **kwargs: object) -> int:
+                return int(prs == [1, 2])
+
+            def gh(args: list[str], **kwargs: object) -> str:
+                if args[:2] == ["pr", "view"]:
+                    return '{"headRefOid":"deadbeef"}'
+                merges.append(args)
+                return ""
+
+            result = gate.run_batch(
+                [1, 2], 8, affected={1: [], 2: []},
+                log_path=Path(tmp) / "gate.jsonl", repo=Path(tmp),
+                git=lambda *args, **kwargs: "", shell=shell, gh=gh,
+            )
+            self.assertEqual(result, "red")
+            self.assertEqual(merges, [])
+            self.assertEqual(len(gate.read_log(Path(tmp) / "gate.jsonl")), 3)
 
 
 if __name__ == "__main__":
