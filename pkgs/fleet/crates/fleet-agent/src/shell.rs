@@ -210,12 +210,43 @@ pub struct Options {
     pub detach: bool,
 }
 
-/// Commands that may launch Cargo use the target broker. "just" and "make"
-/// are included because they commonly hide Cargo invocations in recipes.
+/// Commands that compile through Cargo use the target broker. "just" and
+/// "make" stay conservative because their recipes can hide Cargo builds.
 fn may_invoke_cargo(command: &str) -> bool {
-    command
-        .split(|ch: char| !(ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-')))
-        .any(|word| matches!(word, "cargo" | "just" | "make"))
+    const COMPILE_ACTIONS: &[&str] = &[
+        "build", "check", "test", "bench", "clippy", "run", "install", "doc",
+        "rustc", "nextest", "fix", "package", "publish",
+    ];
+    const CARGO_FLAGS: &[&str] = &[
+        "--locked", "--offline", "--frozen", "--quiet", "--verbose", "-q", "-v",
+    ];
+    let words: Vec<_> = command
+        .split(|ch: char| !(ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '+')))
+        .filter(|word| !word.is_empty())
+        .collect();
+
+    for (index, word) in words.iter().enumerate() {
+        if matches!(*word, "just" | "make") {
+            return true;
+        }
+        if *word != "cargo" {
+            continue;
+        }
+
+        let mut next = index + 1;
+        while let Some(arg) = words.get(next).copied() {
+            if arg.starts_with('+') || CARGO_FLAGS.contains(&arg) || arg.starts_with("--config=") || arg.starts_with("--color=") {
+                next += 1;
+                continue;
+            }
+            if matches!(arg, "--config" | "--color" | "-Z") {
+                next += 2;
+                continue;
+            }
+            return COMPILE_ACTIONS.contains(&arg);
+        }
+    }
+    false
 }
 
 /// Keep the whole shell command under one build-lock slot while leasing a
