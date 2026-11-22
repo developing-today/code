@@ -195,44 +195,153 @@ impl SqliteReplica {
 impl CoordinationReplica for SqliteReplica {
     fn claim(
         &mut self,
-        _task_id: i64,
-        _worker: &str,
-        _lane: &str,
-        _lease_seconds: i64,
+        task_id: i64,
+        worker: &str,
+        lane: &str,
+        lease_seconds: i64,
     ) -> Result<ReplicaClaim, ReplicaError> {
-        Err(ReplicaError::Unavailable(
-            "sqlite replica not implemented yet".to_string(),
-        ))
+        if let Some(claim) = self.live_claim(task_id)? {
+            return Err(ReplicaError::NotClaimable(format!(
+                "task {task_id} already held by {}",
+                claim.worker
+            )));
+        }
+        self.conn
+            .execute(
+                "INSERT INTO replica_claims (task_id, worker, lane, lease_seconds, expiry_unix)
+                 VALUES (?1, ?2, ?3, ?4, ?5)
+                 ON CONFLICT(task_id) DO UPDATE SET worker = excluded.worker,
+                     lane = excluded.lane, lease_seconds = excluded.lease_seconds,
+                     expiry_unix = excluded.expiry_unix",
+                params![task_id, worker, lane, lease_seconds, self.now_unix + lease_seconds],
+            )
+            .map_err(|e| unavailable("record local claim", e))?;
+        Ok(ReplicaClaim {
+            task_id,
+            worker: worker.to_string(),
+            lane: lane.to_string(),
+            lease_seconds,
+        })
     }
 
     fn heartbeat(
         &mut self,
-        _task_id: i64,
-        _worker: &str,
-        _lane: &str,
-        _lease_seconds: i64,
+        task_id: i64,
+        worker: &str,
+        lane: &str,
+        lease_seconds: i64,
     ) -> Result<(), ReplicaError> {
-        Err(ReplicaError::Unavailable(
-            "sqlite replica not implemented yet".to_string(),
-        ))
+        self.require_held(task_id, worker, lane)?;
+        self.conn
+            .execute(
+                "UPDATE replica_claims SET lease_seconds = ?2, expiry_unix = ?3
+                 WHERE task_id = ?1",
+                params![task_id, lease_seconds, self.now_unix + lease_seconds],
+            )
+            .map_err(|e| unavailable("extend local lease", e))?;
+        Ok(())
     }
 
     fn checkpoint(
         &mut self,
-        _task_id: i64,
-        _worker: &str,
-        _lane: &str,
-        _progress: &str,
+        task_id: i64,
+        worker: &str,
+        lane: &str,
+        progress: &str,
     ) -> Result<(), ReplicaError> {
-        Err(ReplicaError::Unavailable(
-            "sqlite replica not implemented yet".to_string(),
-        ))
+        self.require_held(task_id, worker, lane)?;
+        self.conn
+            .execute(
+                "INSERT INTO replica_checkpoints (task_id, progress) VALUES (?1, ?2)
+                 ON CONFLICT(task_id) DO UPDATE SET progress = excluded.progress",
+                params![task_id, progress],
+            )
+            .map_err(|e| unavailable("record checkpoint", e))?;
+        Ok(())
     }
 
     fn sync_up(&mut self) -> Result<ReconcileReport, ReplicaError> {
-        Err(ReplicaError::Unavailable(
-            "sqlite replica not implemented yet".to_string(),
-        ))
+        let cloud = self
+            .cloud
+            .as_ref()
+            .ok_or_else(|| ReplicaError::Unavailable("no cloud store attached".to_string()))?;
+        // The injected cloud view: what the cloud side held when the
+        // partition healed. Consumed by this sync, as MemoryReplica
+        // consumes its injected view.
+        let view: Vec<(i64, String, String)> = {
+            let mut stmt = cloud
+                .prepare("SELECT task_id, worker, lane FROM cloud_view ORDER BY task_id")
+                .map_err(|e| unavailable("read cloud view", e))?;
+            let rows = stmt
+                .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+                .map_err(|e| unavailable("read cloud view", e))?;
+            let mut view = Vec::new();
+            for row in rows {
+                view.push(row.map_err(|e| unavailable("read cloud view", e))?);
+            }
+            view
+        };
+        let view: std::collections::HashMap<i64, (String, String)> =
+            view.into_iter().map(|(id, w, l)| (id, (w, l))).collect();
+        // Every recorded local claim, live or expired, reconciles —
+        // the same set MemoryReplica reports.
+        let local: Vec<ReplicaClaim> = {
+            let mut stmt = self
+                .conn
+                .prepare(
+                    "SELECT task_id, worker, lane, lease_seconds FROM replica_claims
+                     ORDER BY task_id",
+                )
+                .map_err(|e| unavailable("read local claims", e))?;
+            let rows = stmt
+                .query_map([], |row| {
+                    Ok(ReplicaClaim {
+                        task_id: row.get(0)?,
+                        worker: row.get(1)?,
+                        lane: row.get(2)?,
+                        lease_seconds: row.get(3)?,
+                    })
+                })
+                .map_err(|e| unavailable("read local claims", e))?;
+            let mut local = Vec::new();
+            for row in rows {
+                local.push(row.map_err(|e| unavailable("read local claims", e))?);
+            }
+            local
+        };
+        let mut report = ReconcileReport::default();
+        for claim in &local {
+            match view.get(&claim.task_id) {
+                Some((cloud_worker, cloud_lane))
+                    if cloud_worker != &claim.worker || cloud_lane != &claim.lane =>
+                {
+                    report.double_claims.push(DoubleClaim {
+                        task_id: claim.task_id,
+                        local_worker: claim.worker.clone(),
+                        local_lane: claim.lane.clone(),
+                        cloud_worker: cloud_worker.clone(),
+                        cloud_lane: cloud_lane.clone(),
+                    });
+                }
+                _ => {
+                    // Honored locally, now honored globally: apply the
+                    // claim to the cloud store.
+                    cloud
+                        .execute(
+                            "INSERT INTO cloud_claims (task_id, worker, lane) VALUES (?1, ?2, ?3)
+                             ON CONFLICT(task_id) DO UPDATE SET worker = excluded.worker,
+                                 lane = excluded.lane",
+                            params![claim.task_id, claim.worker, claim.lane],
+                        )
+                        .map_err(|e| unavailable("apply claim to cloud store", e))?;
+                    report.synced_claims.push(claim.task_id);
+                }
+            }
+        }
+        cloud
+            .execute_batch("DELETE FROM cloud_view")
+            .map_err(|e| unavailable("consume cloud view", e))?;
+        Ok(report)
     }
 }
 
