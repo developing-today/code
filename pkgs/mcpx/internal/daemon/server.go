@@ -99,8 +99,9 @@ type Server struct {
 	httpServing sync.WaitGroup
 	// tcpLn and unixLn are *connListener once Listen has run. They are the
 	// daemon's only accept path, so a handover can see every connection.
-	tcpLn  net.Listener
-	unixLn net.Listener
+	tcpLn              net.Listener
+	tcpSocketActivated bool
+	unixLn             net.Listener
 	// tsnetLn is set only when daemon.tsnet.hostname names a tailnet
 	// identity for this daemon (#1967); nil on every daemon that did not
 	// ask for one.
@@ -399,13 +400,14 @@ func (s *Server) Listen(tcpPort int) error {
 	if host == "" {
 		host = s.set.String("daemon.address")
 	}
-	tcpLn, err := tcpTransport{address: net.JoinHostPort(host, strconv.Itoa(tcpPort))}.Listen()
+	tcpLn, socketActivated, err := tcpTransport{address: net.JoinHostPort(host, strconv.Itoa(tcpPort))}.listen()
 	if err != nil {
 		_ = unixLn.Close()
 		return err
 	}
 	s.unixLn = newConnListener(unixLn, &s.conns, nil)
 	s.tcpLn = newConnListener(tcpLn, &s.conns, nil)
+	s.tcpSocketActivated = socketActivated
 	// An identity listener, when one is named: the same API on the
 	// daemon's tailnet, reachable by name from another network. A
 	// failure here is fatal to Listen — a daemon that was asked for a
@@ -1638,6 +1640,12 @@ var signalSelf = func(sig os.Signal) error {
 }
 
 func (s *Server) handleDaemonRestart(w http.ResponseWriter, _ *http.Request) {
+	// In-place exec cannot request the listening descriptor again. Reject
+	// before draining so the daemon stays up; systemd owns this lifecycle.
+	if s.tcpSocketActivated {
+		writeJSON(w, http.StatusConflict, map[string]any{"error": "socket-activated daemon must be restarted through systemd"})
+		return
+	}
 	writeJSON(w, 200, map[string]any{"status": "restarting"})
 	go func() {
 		time.Sleep(defaults.DaemonRestartSettle)
