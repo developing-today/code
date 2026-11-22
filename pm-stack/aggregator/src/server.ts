@@ -242,8 +242,9 @@ import {
   appendReportBlockConflictResolution,
   compareReportBlock,
   defaultReportRecordsFile,
-  readCurrentReportRecords,
+  ReportRecordConflictError,
   readReportRecords,
+  selectCurrentReportRecords,
 } from "./report-records.ts";
 import { renderReportReview, reportBlockReviews } from "./report-review.ts";
 import {
@@ -2113,10 +2114,8 @@ async function handler(req: Request): Promise<Response> {
 
   if (req.method === "GET" && (path === "/reports" || path === "/api/reports.json")) {
     try {
-      const [records, current] = await Promise.all([
-        readReportRecords(reportRecordsLocation),
-        readCurrentReportRecords(reportRecordsLocation),
-      ]);
+      const records = await readReportRecords(reportRecordsLocation);
+      const current = selectCurrentReportRecords(records);
       if (path === "/api/reports.json") {
         return json({
           records: current,
@@ -2138,8 +2137,9 @@ async function handler(req: Request): Promise<Response> {
 
   if (req.method === "POST" && path === "/api/reports/resolve") {
     const access = await enforceAccessAuthor(req, { kind: "drew", id: "drew", label: "Drew" });
-    if (!access.ok) return json({ error: access.error }, access.status);
-    if (access.verified && access.author.kind !== "drew") return json({ error: "verified Access owner required" }, 403);
+    if (!access.ok || !access.verified || access.author.kind !== "drew") {
+      return json({ error: "verified Access owner required" }, 403);
+    }
     let body: Record<string, unknown>;
     try {
       const parsed = await readJsonBody(req);
@@ -2152,25 +2152,42 @@ async function handler(req: Request): Promise<Response> {
     const renderedRecordId = typeof body.renderedRecordId === "string" ? body.renderedRecordId : "";
     const blockId = typeof body.blockId === "string" ? body.blockId : "";
     const strategy = body.strategy;
-    if (!storedRecordId || !renderedRecordId || !blockId || !["stored", "rendered", "edited", "combined"].includes(String(strategy))) {
+    if (!storedRecordId || !renderedRecordId || !blockId || typeof strategy !== "string" || !["stored", "rendered", "edited", "combined"].includes(strategy)) {
       return json({ error: "storedRecordId, renderedRecordId, blockId and a valid strategy are required" }, 400);
     }
     if (body.resolvedText !== undefined && typeof body.resolvedText !== "string") {
       return json({ error: "resolvedText must be text" }, 400);
     }
+    let records;
     try {
-      const records = await readReportRecords(reportRecordsLocation);
-      const storedRecord = records.find((record) => record.id === storedRecordId);
-      const renderedRecord = records.find((record) => record.id === renderedRecordId);
-      if (!storedRecord || !renderedRecord) return json({ error: "unknown report record" }, 404);
-      if (storedRecord.period.id !== renderedRecord.period.id || storedRecord.templateVersion !== renderedRecord.templateVersion) {
-        return json({ error: "compared records must have the same period and template" }, 400);
-      }
-      const storedBlock = storedRecord.blocks.find((block) => block.id === blockId);
-      const renderedBlock = renderedRecord.blocks.find((block) => block.id === blockId);
-      if (!storedBlock || !renderedBlock) return json({ error: "compared block is missing" }, 400);
-      const comparison = compareReportBlock(storedBlock.text, renderedBlock.text);
-      if (!comparison.conflict) return json({ error: "report block has no substantive conflict" }, 400);
+      records = await readReportRecords(reportRecordsLocation);
+    } catch {
+      return json({ error: "report records unavailable" }, 503);
+    }
+    const storedRecord = records.find((record) => record.id === storedRecordId);
+    const renderedRecord = records.find((record) => record.id === renderedRecordId);
+    if (!storedRecord || !renderedRecord) return json({ error: "unknown report record" }, 404);
+    if (storedRecord.period.id !== renderedRecord.period.id || storedRecord.templateVersion !== renderedRecord.templateVersion) {
+      return json({ error: "compared records must have the same period and template" }, 400);
+    }
+    const storedBlock = storedRecord.blocks.find((block) => block.id === blockId);
+    const renderedBlock = renderedRecord.blocks.find((block) => block.id === blockId);
+    if (!storedBlock || !renderedBlock) return json({ error: "compared block is missing" }, 400);
+    const comparison = compareReportBlock(storedBlock.text, renderedBlock.text);
+    if (!comparison.conflict) return json({ error: "report block has no substantive conflict" }, 400);
+    const selectedPair = reportBlockReviews(records, selectCurrentReportRecords(records)).some((review) =>
+      review.blockId === blockId && review.storedRecord.id === storedRecordId && review.renderedRecord.id === renderedRecordId);
+    const selectedText = strategy === "stored" ? storedBlock.text
+      : strategy === "rendered" ? renderedBlock.text : body.resolvedText;
+    const exactRetry = records.some((candidate) => candidate.blocks.some((block) =>
+      block.id === blockId && block.text === selectedText &&
+      block.resolution?.sourceRecordId === storedRecordId &&
+      block.resolution.comparedRecordId === renderedRecordId &&
+      block.resolution.strategy === strategy));
+    if (!selectedPair && !exactRetry) {
+      return json({ error: "compared records are not the current review selection" }, 409);
+    }
+    try {
       const result = await appendReportBlockConflictResolution(
         reportRecordsLocation,
         storedRecord,
@@ -2183,7 +2200,13 @@ async function handler(req: Request): Promise<Response> {
       );
       return json({ inserted: result.inserted, record: result.record });
     } catch (error) {
-      return json({ error: error instanceof Error ? error.message : "report resolution failed" }, 400);
+      const message = error instanceof Error ? error.message : "report resolution failed";
+      const status = error instanceof ReportRecordConflictError || message.startsWith("stale report block comparison:")
+        ? 409
+        : /^(report block comparison|compared report record|resolvedAt must be later|report operation |(?:stored|rendered|edited|combined) report block resolution)/.test(message)
+          ? 400
+          : 500;
+      return json({ error: message }, status);
     }
   }
 

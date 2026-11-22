@@ -1,4 +1,4 @@
-import { compareReportBlock, type ReportRecord, type ReportBlockComparison } from "./report-records.ts";
+import { compareReportBlock, reportBlockConflict, type ReportRecord, type ReportBlockComparison } from "./report-records.ts";
 
 export interface ReportBlockReview {
   periodId: string;
@@ -16,22 +16,23 @@ export function reportBlockReviews(records: ReportRecord[], current: ReportRecor
     for (const storedBlock of storedRecord.blocks) {
       const relatedRecords = records.filter((record) =>
         record.period.id === storedRecord.period.id && record.templateVersion === storedRecord.templateVersion);
-      const resolvedAt = relatedRecords
+      const latestResolution = relatedRecords
         .flatMap((record) => record.blocks
           .filter((block) => block.id === storedBlock.id && block.resolution)
-          .map((block) => block.resolution!.resolvedAt))
-        .sort()
+          .map((block) => ({ record, resolvedAt: block.resolution!.resolvedAt })))
+        .sort((a, b) => a.resolvedAt.localeCompare(b.resolvedAt) || a.record.id.localeCompare(b.record.id))
         .at(-1);
       const candidates = records
         .filter((record) => record.period.id === storedRecord.period.id && record.templateVersion === storedRecord.templateVersion &&
-          record.id !== storedRecord.id && (!resolvedAt || record.generatedAt > resolvedAt ||
-            record.blocks.some((block) => block.id === storedBlock.id && block.resolution)))
+          record.id !== storedRecord.id && (!latestResolution ||
+            (storedRecord.id !== latestResolution.record.id &&
+              (record.id === latestResolution.record.id || record.generatedAt > latestResolution.resolvedAt))))
         .sort((a, b) => b.generatedAt.localeCompare(a.generatedAt) || b.id.localeCompare(a.id));
       // A whitespace-only version is not a conflict and must not hide an older
       // substantive alternative. Search until the newest substantive match.
       const renderedRecord = candidates.find((record) => {
         const block = record.blocks.find((candidate) => candidate.id === storedBlock.id);
-        return block !== undefined && compareReportBlock(storedBlock.text, block.text).conflict;
+        return block !== undefined && reportBlockConflict(storedBlock.text, block.text);
       });
       const renderedBlock = renderedRecord?.blocks.find((block) => block.id === storedBlock.id);
       if (!renderedRecord || !renderedBlock) continue;
@@ -46,21 +47,26 @@ const esc = (value: unknown): string => String(value ?? "")
   .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
   .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
 
-export function renderReportReview(reviews: ReportBlockReview[], recordCount: number): string {
+export function renderReportReview(reviews: ReportBlockReview[], recordCount: number, now = new Date()): string {
   const blocks = reviews.map(({ periodId, blockId, storedRecord, renderedRecord, comparison }, index) => {
     const hunks = comparison.hunks.length
-      ? `<details class="diff"><summary>Show indexed change${comparison.hunks.length === 1 ? "" : "s"} (${comparison.hunks.length})</summary>${comparison.hunks.map((hunk, i) => `<div class="hunk"><h4>Change ${i + 1}</h4><div class="columns"><pre><strong>Stored</strong>\n${esc(hunk.before || "(empty)")}</pre><pre><strong>Rendered</strong>\n${esc(hunk.after || "(empty)")}</pre></div></div>`).join("")}</details>`
+      ? `<details class="diff"><summary>Show indexed change${comparison.hunks.length === 1 ? "" : "s"} (${comparison.hunks.length})</summary>${comparison.hunks.map((hunk, i) => `<div class="hunk"><h4>Change ${i + 1}</h4><div class="columns"><pre><strong>Stored</strong>\n${esc(hunk.beforeLines.length ? hunk.before : "(empty)")}</pre><pre><strong>Rendered</strong>\n${esc(hunk.afterLines.length ? hunk.after : "(empty)")}</pre></div></div>`).join("")}</details>`
       : "";
+    const softCloseAt = storedRecord.period.softCloseAt;
+    const closed = softCloseAt !== undefined && now.getTime() >= Date.parse(softCloseAt);
+    const controls = closed
+      ? `<p class="muted" role="status">This report is closed for edits. Comparison remains available; wording choices are read-only.</p>`
+      : `<form data-report-resolution data-stored="${esc(storedRecord.id)}" data-rendered="${esc(renderedRecord.id)}" data-block="${esc(blockId)}">
+ <fieldset><legend>Choose what to keep</legend>
+ <label><input type="radio" name="strategy-${index}" value="stored" required> Keep stored wording</label>
+ <label><input type="radio" name="strategy-${index}" value="rendered"> Use rendered wording</label>
+ <label><input type="radio" name="strategy-${index}" value="edited"> Use my edited wording</label>
+ <label><input type="radio" name="strategy-${index}" value="combined"> Combine the two (write the result below)</label></fieldset>
+ <label>Edited or combined wording<textarea name="resolvedText" rows="5" placeholder="Required for edited or combined choices"></textarea></label>
+ <button type="submit">Record resolution</button><span class="status" role="status"></span></form>`;
     return `<article class="review" data-review="${index}"><p class="meta">${esc(periodId)} · ${esc(blockId)}</p>
 <div class="columns"><section><h3>Stored wording</h3><pre>${esc(comparison.storedText)}</pre></section><section><h3>Rendered wording</h3><pre>${esc(comparison.renderedText)}</pre></section></div>${hunks}
-<form data-report-resolution data-stored="${esc(storedRecord.id)}" data-rendered="${esc(renderedRecord.id)}" data-block="${esc(blockId)}">
-<fieldset><legend>Choose what to keep</legend>
-<label><input type="radio" name="strategy-${index}" value="stored" required> Keep stored wording</label>
-<label><input type="radio" name="strategy-${index}" value="rendered"> Use rendered wording</label>
-<label><input type="radio" name="strategy-${index}" value="edited"> Use my edited wording</label>
-<label><input type="radio" name="strategy-${index}" value="combined"> Combine the two (write the result below)</label></fieldset>
-<label>Edited or combined wording<textarea name="resolvedText" rows="5" placeholder="Required for edited or combined choices"></textarea></label>
-<button type="submit">Record resolution</button><span class="status" role="status"></span></form></article>`;
+${controls}</article>`;
   }).join("");
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Report review</title><style>
 body{font:16px system-ui,sans-serif;max-width:70rem;margin:2rem auto;padding:0 1rem;background:#0e1117;color:#e6edf3}a{color:#58a6ff}.muted,.meta{color:#9da7b1}.review{border:1px solid #30363d;border-radius:.6rem;padding:1rem;margin:1rem 0;background:#11161d}.columns{display:grid;grid-template-columns:repeat(auto-fit,minmax(16rem,1fr));gap:.8rem}pre,textarea{white-space:pre-wrap;overflow-wrap:anywhere;box-sizing:border-box;width:100%;background:#0d1117;color:#e6edf3;border:1px solid #30363d;border-radius:.4rem;padding:.7rem;min-height:5rem}fieldset{display:flex;gap:.7rem;flex-wrap:wrap;border:1px solid #30363d;border-radius:.4rem;margin:1rem 0;padding:.8rem}fieldset label{display:block}textarea{min-height:7rem}button{padding:.65rem 1rem;background:#1f6feb;color:white;border:0;border-radius:.4rem;cursor:pointer}.status{margin-left:.7rem;color:#3fb950}.hunk{border-top:1px solid #30363d}

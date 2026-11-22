@@ -324,12 +324,12 @@ describe("C7 canonical report records", () => {
   test("compares conflicting prose as line-level hunks while preserving both originals", () => {
     const comparison = compareReportBlock("Opening\nold detail\nClosing", "Opening\nnew detail\nClosing");
     expect(comparison.conflict).toBe(true);
-    expect(comparison.hunks).toEqual([{ before: "old detail", after: "new detail" }]);
+    expect(comparison.hunks).toEqual([{ before: "old detail", after: "new detail", beforeLines: ["old detail"], afterLines: ["new detail"] }]);
     expect(comparison.storedText).toBe("Opening\nold detail\nClosing");
     expect(comparison.renderedText).toBe("Opening\nnew detail\nClosing");
     expect(compareReportBlock("a\nold one\nb\nold two\nc", "a\nnew one\nb\nnew two\nc").hunks).toEqual([
-      { before: "old one", after: "new one" },
-      { before: "old two", after: "new two" },
+      { before: "old one", after: "new one", beforeLines: ["old one"], afterLines: ["new one"] },
+      { before: "old two", after: "new two", beforeLines: ["old two"], afterLines: ["new two"] },
     ]);
     expect(compareReportBlock("same  prose", "same\nprose").conflict).toBe(false);
   });
@@ -374,7 +374,12 @@ describe("C7 canonical report records", () => {
     const stored = Array.from({ length: 450 }, (_, index) => `stored-${index}`).join("\n");
     const rendered = Array.from({ length: 450 }, (_, index) => `rendered-${index}`).join("\n");
     const comparison = compareReportBlock(stored, rendered);
-    expect(comparison.hunks).toEqual([{ before: stored, after: rendered }]);
+    expect(comparison.hunks).toEqual([{ before: stored, after: rendered, beforeLines: stored.split("\n"), afterLines: rendered.split("\n") }]);
+  });
+
+  test("diff hunks distinguish a blank line from an absent side", () => {
+    const comparison = compareReportBlock("a\n\nb\nold", "a\nb\nnew");
+    expect(comparison.hunks[0]).toEqual({ before: "", after: "", beforeLines: [""], afterLines: [] });
   });
 
   test("resolves either side by appending a version and leaves the frozen snapshot unchanged", async () => {
@@ -430,7 +435,7 @@ describe("C7 canonical report records", () => {
       "change-1",
       comparison,
       "rendered",
-      "2026-11-22T13:59:58.000Z",
+      "2026-11-22T14:00:01.000Z",
       undefined,
       "rendered-record",
     );
@@ -493,14 +498,15 @@ describe("C7 canonical report records", () => {
       blocks: [{ id: "change-1", text: "Stored.", relatedAt: "2026-11-22T05:40:00.000Z" }],
     }, "2026-11-22T05:45:01.000Z");
     await appendReportRecord(file, record);
+    const backdatedCopy = { ...record, generatedAt: "2026-11-22T05:44:00.000Z" };
     await expect(appendReportBlockConflictResolution(
       file,
-      record,
+      backdatedCopy,
       "change-1",
       compareReportBlock("Stored.", "Rendered."),
       "rendered",
-      record.generatedAt,
-    )).rejects.toThrow(/later than the source record/);
+      "2026-11-22T05:44:30.000Z",
+    )).rejects.toThrow(/later than the persisted source record/);
   });
 
   test("accepts an edited or reviewer-combined block as an append-only resolution", async () => {
@@ -572,6 +578,7 @@ describe("C7 canonical report records", () => {
       sources: [{ id: "event-1", uri: "gh:issue/12350", observedAt: "2026-11-22T05:40:00.000Z" }],
       blocks: [{ id: "change-1", text: "Current stored wording.", relatedAt: "2026-11-22T05:40:00.000Z" }],
     }, "2026-11-22T05:45:01.000Z");
+    await appendReportRecord(file, record);
     const staleComparison = compareReportBlock("Older stored wording.", "Generated wording.");
 
     await expect(appendReportBlockConflictResolution(
@@ -581,7 +588,7 @@ describe("C7 canonical report records", () => {
       staleComparison,
       "rendered",
       "2026-11-22T13:00:00.000Z",
-    )).rejects.toThrow(/stale report block comparison/);
+    )).rejects.toThrow(/stored block has changed/);
     const currentComparison = compareReportBlock("Current stored wording.", "Generated wording.");
     await expect(appendReportBlockConflictResolution(
       file,
@@ -591,7 +598,7 @@ describe("C7 canonical report records", () => {
       "rendered",
       "2026-11-22T14:00:00.000Z",
     )).rejects.toThrow(/not allowed after soft close/);
-    expect(await readReportRecords(file)).toEqual([]);
+    expect((await readReportRecords(file)).map((item) => item.id)).toEqual([record.id]);
   });
 
   test("allows only one resolution to win from a report version", async () => {
@@ -673,6 +680,168 @@ describe("C7 canonical report records", () => {
     expect((await readReportRecords(firstClient)).filter((candidate) => candidate.id !== record.id)).toHaveLength(1);
   });
 
+  test("remote current-head claim selects one competing generation across independent clients", async () => {
+    const documents = new Map<string, unknown>();
+    const remote = (): AppendOnlyDocumentRemote => ({
+      async load(store) {
+        return documents.has(store) ? { version: 1, document: structuredClone(documents.get(store)) } : null;
+      },
+      async insertIfAbsent(store, _version, document) {
+        if (documents.has(store)) return false;
+        documents.set(store, structuredClone(document));
+        return true;
+      },
+      async listPrefix(prefix) {
+        return [...documents.entries()]
+          .filter(([store]) => store.startsWith(prefix))
+          .map(([store, document]) => ({ store, version: 1, document: structuredClone(document) }));
+      },
+    });
+    const firstClient = remote();
+    const secondClient = remote();
+    const input = {
+      period: {
+        id: "daily:2026-11-21:America/Chicago",
+        kind: "daily" as const,
+        timezone: "America/Chicago" as const,
+        periodStart: "2026-11-21T06:00:00.000Z",
+        periodEnd: "2026-11-22T06:00:00.000Z",
+        softCloseAt: "2026-11-22T14:00:00.000Z",
+      },
+      asOf: "2026-11-22T05:45:00.000Z",
+      templateVersion: "daily-v1",
+      sources: [],
+      blocks: [{ id: "block", text: "generation", relatedAt: "2026-11-22T05:40:00.000Z" }],
+    };
+    const original = makeReportRecord({ ...input, sourceCursor: "original" }, "2026-11-22T05:45:01.000Z");
+    await appendReportRecord(firstClient, original);
+
+    const outcomes = await Promise.allSettled([
+      appendReportRecord(firstClient, makeReportRecord({ ...input, sourceCursor: "generation-a" }, "2026-11-22T05:46:01.000Z")),
+      appendReportRecord(secondClient, makeReportRecord({ ...input, sourceCursor: "generation-b" }, "2026-11-22T05:46:02.000Z")),
+    ]);
+    expect(outcomes.filter((outcome) => outcome.status === "fulfilled")).toHaveLength(1);
+    expect(outcomes.filter((outcome) => outcome.status === "rejected")).toHaveLength(1);
+    expect(await readCurrentReportRecords(firstClient)).toHaveLength(1);
+  });
+
+  test("remote current-head claim arbitrates a generation against a resolution", async () => {
+    const documents = new Map<string, unknown>();
+    const remote = (): AppendOnlyDocumentRemote => ({
+      async load(store) {
+        return documents.has(store) ? { version: 1, document: structuredClone(documents.get(store)) } : null;
+      },
+      async insertIfAbsent(store, _version, document) {
+        if (documents.has(store)) return false;
+        documents.set(store, structuredClone(document));
+        return true;
+      },
+      async listPrefix(prefix) {
+        return [...documents.entries()]
+          .filter(([store]) => store.startsWith(prefix))
+          .map(([store, document]) => ({ store, version: 1, document: structuredClone(document) }));
+      },
+    });
+    const firstClient = remote();
+    const secondClient = remote();
+    const input = {
+      period: {
+        id: "daily:2026-11-21:America/Chicago",
+        kind: "daily" as const,
+        timezone: "America/Chicago" as const,
+        periodStart: "2026-11-21T06:00:00.000Z",
+        periodEnd: "2026-11-22T06:00:00.000Z",
+        softCloseAt: "2026-11-22T14:00:00.000Z",
+      },
+      asOf: "2026-11-22T05:45:00.000Z",
+      templateVersion: "daily-v1",
+      sources: [],
+      blocks: [{ id: "block", text: "stored", relatedAt: "2026-11-22T05:40:00.000Z" }],
+    };
+    const original = makeReportRecord({ ...input, sourceCursor: "original" }, "2026-11-22T05:45:01.000Z");
+    await appendReportRecord(firstClient, original);
+
+    const outcomes = await Promise.allSettled([
+      appendReportBlockConflictResolution(
+        firstClient,
+        original,
+        "block",
+        compareReportBlock("stored", "rendered"),
+        "rendered",
+        "2026-11-22T13:00:00.000Z",
+      ),
+      appendReportRecord(secondClient, makeReportRecord(
+        { ...input, sourceCursor: "new-generation", blocks: [{ ...input.blocks[0]!, text: "new generation" }] },
+        "2026-11-22T13:00:01.000Z",
+      )),
+    ]);
+    expect(outcomes.filter((outcome) => outcome.status === "fulfilled")).toHaveLength(1);
+    expect(outcomes.filter((outcome) => outcome.status === "rejected")).toHaveLength(1);
+    expect(await readCurrentReportRecords(firstClient)).toHaveLength(1);
+  });
+
+  test("remote retry reuses the winning resolution timestamp after an interrupted event append", async () => {
+    const documents = new Map<string, unknown>();
+    let failResolutionEventOnce = true;
+    const remote: AppendOnlyDocumentRemote = {
+      async load(store) {
+        return documents.has(store) ? { version: 1, document: structuredClone(documents.get(store)) } : null;
+      },
+      async insertIfAbsent(store, _version, document) {
+        const eventRecord = (document as { record?: { blocks?: { resolution?: unknown }[] } }).record;
+        if (store.startsWith("c7-report:v1:report.generated:") &&
+            eventRecord?.blocks?.some((block) => block.resolution) && failResolutionEventOnce) {
+          failResolutionEventOnce = false;
+          throw new Error("simulated event-store interruption");
+        }
+        if (documents.has(store)) return false;
+        documents.set(store, structuredClone(document));
+        return true;
+      },
+      async listPrefix(prefix) {
+        return [...documents.entries()]
+          .filter(([store]) => store.startsWith(prefix))
+          .map(([store, document]) => ({ store, version: 1, document: structuredClone(document) }));
+      },
+    };
+    const record = makeReportRecord({
+      period: {
+        id: "daily:2026-11-21:America/Chicago",
+        kind: "daily",
+        timezone: "America/Chicago",
+        periodStart: "2026-11-21T06:00:00.000Z",
+        periodEnd: "2026-11-22T06:00:00.000Z",
+        softCloseAt: "2026-11-22T14:00:00.000Z",
+      },
+      asOf: "2026-11-22T05:45:00.000Z",
+      templateVersion: "daily-v1",
+      sourceCursor: "cursor-interrupted-resolution-append",
+      sources: [],
+      blocks: [{ id: "change-1", text: "Stored wording.", relatedAt: "2026-11-22T05:40:00.000Z" }],
+    }, "2026-11-22T05:45:01.000Z");
+    await appendReportRecord(remote, record);
+    const comparison = compareReportBlock("Stored wording.", "Rendered wording.");
+    await expect(appendReportBlockConflictResolution(
+      remote,
+      record,
+      "change-1",
+      comparison,
+      "rendered",
+      "2026-11-22T13:59:59.000Z",
+    )).rejects.toThrow("simulated event-store interruption");
+
+    const retry = await appendReportBlockConflictResolution(
+      remote,
+      record,
+      "change-1",
+      comparison,
+      "rendered",
+      "2026-11-22T14:00:01.000Z",
+    );
+    expect(retry.record.blocks[0]?.resolution?.resolvedAt).toBe("2026-11-22T13:59:59.000Z");
+    expect(await readCurrentReportRecords(remote)).toEqual([retry.record]);
+  });
+
   test("uses append-only permanent document keys for report history and snapshots", async () => {
     const documents = new Map<string, unknown>();
     const remote: AppendOnlyDocumentRemote = {
@@ -726,7 +895,7 @@ describe("C7 canonical report records", () => {
     expect(snapshotRerun.snapshot.snapshotAt).toBe("2026-11-22T14:00:00.000Z");
     expect(await readReportRecords(remote)).toEqual([record]);
     expect(await readReportSnapshots(remote)).toEqual([snapshot.snapshot]);
-    expect(documents.size).toBe(3); // generation, snapshot, and atomic record-ID claim
+    expect(documents.size).toBe(4); // generation, snapshot, record-ID claim, and current-head claim
   });
 
   test("remote generation and snapshot conflict checks are atomic across event types", async () => {
