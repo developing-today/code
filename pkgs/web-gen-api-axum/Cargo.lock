@@ -2756,13 +2756,25 @@ dependencies = [
  "once_cell",
  "serde",
  "simple_logger",
- "thiserror",
+ "start-axum-error",
  "tokio",
  "tower",
  "tower-http",
  "tracing",
  "wasm-bindgen",
  "web-sys",
+]
+
+[[package]]
+name = "start-axum-error"
+version = "0.1.0"
+dependencies = [
+ "cfg-if",
+ "http",
+ "leptos",
+ "leptos_axum",
+ "thiserror",
+ "tracing",
 ]
 
 [[package]]
