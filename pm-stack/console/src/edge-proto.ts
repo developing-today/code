@@ -68,6 +68,13 @@ export interface SyncRequest {
   have: Record<string, { hash: string; at: number; error?: string | null }>;
   /** What became of the held actions the host was given. */
   acks: { id: string; ok: boolean; error?: string }[];
+  /** Linked-phone hashes and metadata only; never phone tokens. */
+  phones: PhoneLinks;
+}
+
+export interface PhoneLinks {
+  devices: { id: string; name: string; hash: string; createdAt: string; seenAt: string | null }[];
+  removed: { hash: string; at: string }[];
 }
 
 /** An action the owner took while the host could not be reached. */
@@ -90,6 +97,8 @@ export interface SyncResponse {
   /** Sections the edge lacks and wants sent whole. */
   want: string[];
   commands: Held[];
+  /** The edge's merged phone-link state, containing hashes only. */
+  phones: PhoneLinks;
 }
 
 /** Actions that may be done late, when the host is back. The rest act on

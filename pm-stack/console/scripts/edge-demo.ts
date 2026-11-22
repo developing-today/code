@@ -91,6 +91,7 @@ const link = new EdgeLink({
   keys: memoryStore(),
   done: memoryStore(),
   docs: demoDocs,
+  phones: demoDeps.phones!.devices,
   config: async () => ({
     owners: [OWNER],
     certNames: [],

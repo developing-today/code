@@ -552,6 +552,7 @@ export class Edge {
       this.confirmed[name] = { hash: theirs.hash, at: Math.min(theirs.at, now), error };
     }
     const changed = await this.take(msg.sections);
+    await this.phones.devices.mergeLinks(msg.phones);
     // A section that has not changed is not sent again: the copy here is
     // as current as the host says, and as healthy.
     const fresher: string[] = [];
@@ -642,6 +643,7 @@ export class Edge {
       notify: (await this.push.status()).devices > 0 || (await this.phones.devices.list()).length > 0,
       want,
       commands: held,
+      phones: await this.phones.devices.links(),
     };
     return json(answer);
   }

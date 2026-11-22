@@ -17,6 +17,7 @@ import {
   keyId,
   newKeyPair,
   type PublicKey,
+  type PhoneLinks,
   publicKey,
   type SyncRequest,
   type SyncResponse,
@@ -43,6 +44,7 @@ export interface LinkOptions {
   /** What became of each held action, so none is run twice. */
   done: Store;
   docs: Docs;
+  phones: { links(): Promise<PhoneLinks>; mergeLinks(value: unknown): Promise<void> };
   config: () => Promise<EdgeConfig>;
   /** Run one held action; throws if it could not be done. */
   run: (held: Held) => Promise<void>;
@@ -188,6 +190,7 @@ export class EdgeLink {
         sections,
         have: Object.fromEntries(snapshot.map((s) => [s.name, { hash: s.hash, at: s.at, error: s.error }])),
         acks,
+        phones: await this.o.phones.links(),
         acts: this.o.docs.recentActs(),
       };
       const body = new TextEncoder().encode(JSON.stringify(message));
@@ -224,6 +227,7 @@ export class EdgeLink {
       this.acks = this.acks.filter((a) => !acks.includes(a));
       this.want = new Set(answer.want ?? []);
       this.last = answer;
+      await this.o.phones.mergeLinks(answer.phones);
       for (const held of answer.commands ?? []) await this.take(held);
       return answer;
     } finally {

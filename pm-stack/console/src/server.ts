@@ -574,6 +574,7 @@ if (import.meta.main) {
         keys: fileStore(cfg.edgeKeyFile),
         done: fileStore(cfg.edgeDoneFile),
         docs,
+        phones: devices,
         config: async () => ({
           owners: cfg.owners,
           certNames: cfg.certNames,
