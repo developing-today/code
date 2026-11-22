@@ -527,6 +527,16 @@ pub struct SearchRequest {
     /// page size on each results request.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub page_limit: Option<usize>,
+    /// The disclosure context of the destination surface the
+    /// results are bound for (#12404, #9096 design section 4):
+    /// one of `fleet-internal`, `hosted-per-user`,
+    /// `public-surface`, `local-owner`. The context ceiling
+    /// intersects the (clamped) caller ceiling at the output
+    /// boundary. Additive and optional: an absent or unknown
+    /// value fails closed per the receiving surface's rule —
+    /// atlas-core's default is `public-surface`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context: Option<String>,
 }
 
 impl Default for SearchRequest {
@@ -547,6 +557,7 @@ impl Default for SearchRequest {
             trunc: 0,
             vector_backend: VectorBackend::default(),
             page_limit: None,
+            context: None,
         }
     }
 }
