@@ -254,23 +254,44 @@ if [ -z "$CARGO_TARGET_DIR" ]; then
           if [ -n "$target" ] && [ -n "$lease_id" ]; then
             export CARGO_TARGET_DIR="$target"
             worker_pid=""
+            lane_interrupted=false
             tmp_root="$TMPDIR"
             if [ -z "$tmp_root" ]; then tmp_root=/tmp; fi
             group_file=$(mktemp "$tmp_root/fleet-cargo-group.XXXXXX" 2>/dev/null) || group_file=""
             cleanup_lane() {
               status=$?
               trap - EXIT HUP INT TERM
-              if [ -n "$worker_pid" ]; then
-                wait "$worker_pid" >/dev/null 2>&1 || :
+              if [ "$lane_interrupted" = true ] && [ -n "$group_file" ] && [ ! -s "$group_file" ]; then
+                attempts=0
+                while [ "$attempts" -lt 10 ] && [ ! -s "$group_file" ]; do
+                  sleep 0.05
+                  attempts=$((attempts + 1))
+                done
               fi
               if [ -n "$group_file" ] && [ -s "$group_file" ]; then
                 worker_pgid=$(cat "$group_file" 2>/dev/null || :)
                 case "$worker_pgid" in
                   ''|*[!0-9]*) ;;
                   *)
+                    if [ "$lane_interrupted" = true ]; then
+                      grace=0
+                      while kill -0 -- "-$worker_pgid" 2>/dev/null && [ "$grace" -lt 50 ]; do
+                        sleep 0.1
+                        grace=$((grace + 1))
+                      done
+                      if kill -0 -- "-$worker_pgid" 2>/dev/null; then
+                        echo "fleet shell: terminating unresponsive build process group" >&2
+                        kill -KILL -- "-$worker_pgid" 2>/dev/null || :
+                      fi
+                    fi
+                    if [ -n "$worker_pid" ]; then
+                      wait "$worker_pid" >/dev/null 2>&1 || :
+                    fi
                     while kill -0 -- "-$worker_pgid" 2>/dev/null; do sleep 0.05; done
                     ;;
                 esac
+              elif [ -n "$worker_pid" ]; then
+                wait "$worker_pid" >/dev/null 2>&1 || :
               fi
               if [ -n "$group_file" ]; then rm -f "$group_file"; fi
               "$broker" checkin --lease "$lease_id" >/dev/null 2>&1 || :
@@ -279,6 +300,14 @@ if [ -z "$CARGO_TARGET_DIR" ]; then
             interrupt_lane() {
               signal=$1
               code=$2
+              lane_interrupted=true
+              if [ -n "$group_file" ] && [ ! -s "$group_file" ]; then
+                attempts=0
+                while [ "$attempts" -lt 10 ] && [ ! -s "$group_file" ]; do
+                  sleep 0.05
+                  attempts=$((attempts + 1))
+                done
+              fi
               if [ -n "$group_file" ] && [ -s "$group_file" ]; then
                 worker_pgid=$(cat "$group_file" 2>/dev/null || :)
                 case "$worker_pgid" in
@@ -294,15 +323,18 @@ if [ -z "$CARGO_TARGET_DIR" ]; then
             trap 'interrupt_lane HUP 129' HUP
             trap 'interrupt_lane INT 130' INT
             trap 'interrupt_lane TERM 143' TERM
+            # Preserve the caller's input for noninteractive shells, which
+            # otherwise give background jobs /dev/null on stdin.
+            exec 9<&0
             if command -v setsid >/dev/null 2>&1 && [ -n "$group_file" ]; then
-              # A private process group lets the parent hold the lane even
-              # if the command uses exec after starting background Cargo.
-              setsid sh -c 'printf "%s\n" "$$" > "$1"; eval "$2"' sh "$group_file" "$command_text" &
+              # A private process group lets the parent hold the lane until
+              # descendants exit, even if the command ends with exec.
+              setsid sh -c 'printf "%s\n" "$" > "$1"; eval "$2"' sh "$group_file" "$command_text" <&9 &
               worker_pid=$!
             else
               # Keep the shell's normal background-job wait behavior where
               # setsid is unavailable; supported Fleet build hosts ship it.
-              sh -c 'trap '\''rc=$?; trap - EXIT; wait || :; exit "$rc"'\'' EXIT; eval "$1"' sh "$command_text" &
+              sh -c 'trap '\''rc=$?; trap - EXIT; wait || :; exit "$rc"'\'' EXIT; eval "$1"' sh "$command_text" <&9 &
               worker_pid=$!
             fi
             wait "$worker_pid"
