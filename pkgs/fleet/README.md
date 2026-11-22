@@ -80,7 +80,9 @@ crates/fleet-queue/         the queue domain (step 2): the repo-queue
                             Its src/bin/ builds the standalone
                             repo-queue / queue-broker / secrets-broker
                             artifacts (the `fleet-brokers` package):
-                            the migration's rollback inventory.
+                            the migration's rollback inventory. Remote
+                            build/test dispatch runbook:
+                            doc/agents/remote-build-and-test.md.
 crates/fleet-search/        the search domain (step 5): the
                             atlas-search CLIENT surface over the
                             live Atlas service's job protocol —
@@ -267,19 +269,9 @@ build forgot. The registered domains are `fleet queue`, `fleet serve`,
 built-ins `fleet init`, `fleet version`, `fleet capabilities` and
 `fleet help`.
 
-One staleness, stated honestly: the registry's per-domain
-`subcommands` arrays are descriptive, and for the `queue` domain they
-run behind the real dispatch — the code is the source of truth for
-verbs. The full queue verb surface (validate, list, enqueue, claim,
-release, lane, bind, heartbeat, checkpoint, park, wake, block,
-unblock, dep-recheck, quarantine-recheck, cancel, revive, fail,
-complete, verify-disposition, timeline, history, models, health,
-signal, fallback, dispatch, session, surfaces, outbox, stack) is
-contracted in [`docs/verbs.md`](docs/verbs.md); confirm an unfamiliar
-verb against the dispatch in
-[`crates/fleet-queue/src/client.rs`](crates/fleet-queue/src/client.rs)
-before scripting it.
+The per-domain `subcommands` arrays are the top-level command inventory rendered by `fleet <domain> --help`. The argument grammar and nested leaves live in the domain handlers and are documented in [`docs/verbs.md`](docs/verbs.md). That reference covers all shipped Fleet domains, top-level verbs, nested queue and agent commands, and where to ask a leaf for exact usage.
 
+The queue client dispatches 32 top-level verbs, including `show`; grouped surfaces (`fallback`, `dispatch`, `session`, `surfaces`, `outbox`, and `stack`) document their nested commands and flags in the same reference. Before scripting an unfamiliar command, check `fleet capabilities` and the leaf's `--help`.
 Shipped examples — every verb below is dispatchable today:
 
 ```sh
@@ -373,12 +365,13 @@ never in place):
 
 ### Contributor contract
 
-One registry: a new domain or verb updates
+Keep the command contract together: update
 [`crates/fleet-registry/src/lib.rs`](crates/fleet-registry/src/lib.rs)
-— and [`docs/verbs.md`](docs/verbs.md) when the real dispatch surface
-moves — in the same change; never keep a second hand-maintained
-list. Docs must not present a designed spelling as shipped: the
-registry, not a design doc, is what a binary can run. And a change
+when a top-level help inventory changes, and update
+[`docs/verbs.md`](docs/verbs.md) for every changed or added command,
+including nested leaves and examples, in the same change. Docs must
+not present a designed spelling as shipped: the runtime dispatch is
+the authority on what a binary can run. And a change
 to any settled semantic this section records (claim/park/resume,
 supervision and stop authority, cap policy, attribution/logging)
 requires a decision record in the same body of work — see

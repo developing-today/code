@@ -33,7 +33,7 @@
   };
 
   outputs =
-    {
+    args@{
       self,
       nixpkgs,
       rust-overlay,
@@ -42,6 +42,11 @@
       # TODO: consider use systems here?
       ...
     }:
+    let
+      # Root runtime packages can skip duplicate tests; named flake checks
+      # keep the same coverage. Standalone builds remain checked by default.
+      checkRuntimePackages = args.checkRuntimePackages or true;
+    in
     flake-utils.lib.eachDefaultSystem (
       system:
       let
@@ -62,6 +67,7 @@
           fmtBins
           rocCompiler
           buildWasmHost
+          testSslCertFile
           ;
         inherit (nixCommon) nativeBuildInputs;
 
@@ -191,6 +197,11 @@
             # Fake-compiler probe tests need a real interpreter for their
             # shebang in the sandbox, where /bin/sh does not exist (#5926).
             ID_TEST_FAKE_SH = "${pkgs.stdenv.shell}";
+            # The sandbox has no system CA store, so a reqwest client
+            # constructed by a test loads zero root certificates and
+            # the http_fetch schedule tests panic (#12608);
+            # rustls-native-certs honours SSL_CERT_FILE.
+            SSL_CERT_FILE = testSslCertFile;
             src = ./.;
             inherit buildInputs;
             nativeBuildInputs =
@@ -889,7 +900,7 @@
               ${buildWasmHost}
             '';
 
-            doCheck = true;
+            doCheck = checkRuntimePackages;
             # Test phase under the ci-check profile (#3195), not release.
             checkType = "ci-check";
             # serve_tests require networking (bind/listen), unavailable in nix sandbox
@@ -899,6 +910,12 @@
             ];
             preCheck = ''
               export ID_TEST_FAKE_SH="${pkgs.stdenv.shell}"
+              # CA bundle for the check phase (#12608): the sandbox
+              # has no system CA store, so the reqwest client the
+              # http_fetch schedule tests construct loads zero root
+              # certificates and panics; rustls-native-certs honours
+              # SSL_CERT_FILE.
+              export SSL_CERT_FILE="${testSslCertFile}"
             '';
 
             meta = commonMeta // {
@@ -941,7 +958,7 @@
 
             preBuild = buildWasmHost;
 
-            doCheck = true;
+            doCheck = checkRuntimePackages;
             # Test phase under the ci-check profile (#3195), not release.
             checkType = "ci-check";
             # serve_tests require networking (bind/listen), unavailable in nix sandbox
@@ -951,6 +968,12 @@
             ];
             preCheck = ''
               export ID_TEST_FAKE_SH="${pkgs.stdenv.shell}"
+              # CA bundle for the check phase (#12608): the sandbox
+              # has no system CA store, so the reqwest client the
+              # http_fetch schedule tests construct loads zero root
+              # certificates and panics; rustls-native-certs honours
+              # SSL_CERT_FILE.
+              export SSL_CERT_FILE="${testSslCertFile}"
             '';
 
             meta = commonMeta // {

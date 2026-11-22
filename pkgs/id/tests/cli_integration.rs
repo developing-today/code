@@ -399,6 +399,54 @@ mod cli_tests {
         assert!(stdout.contains("id"));
     }
 
+    /// Item 9-7 of the #796 verification-debt inventory: `--world-source-only`
+    /// startup must refuse when no Roc compiler is configured.
+    ///
+    /// Oracle: the startup contract in `cmd_serve`
+    /// (`crates/id-cli/src/commands/serve.rs`) — a source-only world can only
+    /// ever be compiled from source, so with no compiler the serve could
+    /// never build its world; startup must fail fast with the guard message
+    /// instead of serving a world that can never exist. The service-level
+    /// source-only policy tests in `id-worlds` do not exercise this CLI
+    /// guard; this test runs the real binary against it.
+    ///
+    /// The child runs in an empty temp dir with `ID_ROC_PLATFORM` /
+    /// `ID_ROC_BIN` removed, so no platform can be found: not from the
+    /// flags, not from the environment, and not from the
+    /// `examples/roc-world` working-directory fallback (neither the temp
+    /// dir nor its parent contains one).
+    #[test]
+    fn serve_source_only_without_a_compiler_refuses_to_start() {
+        let tmp = TempDir::new().unwrap();
+        let data_dir = tmp.path().join("node");
+        let output = Command::new(get_binary_path())
+            .args([
+                "--data-dir",
+                data_dir.to_str().unwrap(),
+                "serve",
+                "--world",
+                "--world-admin-token",
+                "test-admin-token",
+                "--world-source-only",
+            ])
+            .current_dir(tmp.path())
+            .env_remove("ID_ROC_PLATFORM")
+            .env_remove("ID_ROC_BIN")
+            .output_within(std::time::Duration::from_secs(60))
+            .expect("Failed to execute command");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            !output.status.success(),
+            "serve --world-source-only with no compiler must refuse to start; \
+             status: {:?}, stderr: {stderr}",
+            output.status
+        );
+        assert!(
+            stderr.contains("--world-source-only requires a configured Roc compiler"),
+            "the refusal must name the missing compiler; stderr: {stderr}"
+        );
+    }
+
     #[cfg(feature = "sandbox")]
     #[test]
     fn match_audit_cli_exports_verifies_and_rejects_tampered_inputs_and_checkpoints() {
@@ -5159,6 +5207,109 @@ mod serve_tests {
             "Lock file PID should match actual server PID"
         );
 
+        server.stop();
+    }
+
+    // =========================================================================
+    // #796 item 9-7: source-only requires a configured compiler
+    // =========================================================================
+
+    /// The message `cmd_serve` refuses startup with when a source-only
+    /// world has no configured compiler (#796 item 9-7).
+    const SOURCE_ONLY_COMPILER_GUARD: &str =
+        "--world-source-only requires a configured Roc compiler and platform";
+
+    /// Bound for a refused startup to exit. The guard sits in `cmd_serve`
+    /// after the store and endpoint open, so refusal is slower than an
+    /// argument error but lands far inside the file-wide process timeout.
+    const SOURCE_ONLY_REFUSAL_TIMEOUT: Duration = Duration::from_secs(120);
+
+    /// A source-only `serve` invocation with no compiler reachable: the
+    /// `ID_ROC_*` environment is stripped and the working directory is a
+    /// bare temp dir holding no conventional `examples/roc-world`, so the
+    /// startup compiler resolution finds nothing unless flags provide one.
+    fn source_only_command(work_dir: &std::path::Path) -> StdCommand {
+        let mut command = StdCommand::new(get_binary_path());
+        command
+            .args([
+                "serve",
+                "--ephemeral",
+                // Hermetic: no relay, no gossip/DHT, no mDNS (as spawn_inner).
+                "--no-relay",
+                "--no-gossip",
+                "--no-mdns",
+                "--world",
+                "--world-admin-token",
+                "adm",
+                "--world-source-only",
+            ])
+            .current_dir(work_dir)
+            .env_remove("ID_ROC_PLATFORM")
+            .env_remove("ID_ROC_BIN");
+        command
+    }
+
+    /// Oracle (#796 item 9-7): whole startup — the real binary running
+    /// the real `serve` path — refuses a source-only world when no Roc
+    /// compiler is configured. This is deliberately not a parse-level or
+    /// helper-level check: the guard sits deep in `cmd_serve`, after the
+    /// store and endpoint open, and only a startup run substantiates it.
+    #[test]
+    fn test_serve_source_only_without_compiler_is_refused_at_startup() {
+        let work_dir = TempDir::new().unwrap();
+        let mut command = source_only_command(work_dir.path());
+        let output = command.output_within(SOURCE_ONLY_REFUSAL_TIMEOUT).unwrap();
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            !output.status.success(),
+            "source-only serve without a compiler must refuse startup, \
+             but it exited with {}\n--- stderr ---\n{stderr}",
+            output.status
+        );
+        assert!(
+            stderr.contains(SOURCE_ONLY_COMPILER_GUARD),
+            "the refusal must name the missing compiler (the 9-7 guard), \
+             got:\n--- stderr ---\n{stderr}"
+        );
+    }
+
+    /// Control for the 9-7 oracle: with a compiler configured — a minimal
+    /// platform directory is all `Compiler::new` asks for — the same
+    /// startup is not refused and the server comes up. The pair pins the
+    /// refusal on the missing compiler, not on source-only mode itself.
+    #[test]
+    fn test_serve_source_only_with_compiler_configured_starts() {
+        // The smallest directory accepted as a configured platform:
+        // a `platform.roc` file and the wasm32 host artifact.
+        let platform_dir = TempDir::new().unwrap();
+        fs::write(platform_dir.path().join("platform.roc"), "").unwrap();
+        let wasm_dir = platform_dir.path().join("targets").join("wasm32");
+        fs::create_dir_all(&wasm_dir).unwrap();
+        fs::write(wasm_dir.join("host.wasm"), "").unwrap();
+
+        let work_dir = TempDir::new().unwrap();
+        let mut server = ServerHandle::spawn_with_args(
+            work_dir.path(),
+            &[
+                "--world",
+                "--world-admin-token",
+                "adm",
+                "--world-source-only",
+                "--roc-platform",
+                platform_dir.path().to_str().unwrap(),
+                "--roc-bin",
+                "roc",
+            ],
+        );
+        let node = server.wait_ready_within(false, SOURCE_ONLY_REFUSAL_TIMEOUT);
+        assert!(!node.is_empty(), "server should report its node id");
+        assert!(
+            !server
+                .captured_stderr()
+                .contains(SOURCE_ONLY_COMPILER_GUARD),
+            "a configured compiler must not trip the 9-7 guard:\n{}",
+            server.captured_stderr()
+        );
         server.stop();
     }
 }

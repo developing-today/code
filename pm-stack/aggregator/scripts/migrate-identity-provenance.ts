@@ -38,11 +38,15 @@ function parseArgs(argv: string[]): Args {
   }
   const comments = values.get("--comments");
   const registry = values.get("--registry");
-  if (!comments || !registry) throw new Error("usage: migrate-identity-provenance.ts --comments PATH --registry PATH [--name-links PATH] [--apply]");
+  if (!comments || !registry)
+    throw new Error(
+      "usage: migrate-identity-provenance.ts --comments PATH --registry PATH [--name-links PATH] [--apply]",
+    );
   const nameLinks = values.get("--name-links");
   const outputPaths = [comments, registry].map((path) => resolve(path));
   if (outputPaths[0] === outputPaths[1]) throw new Error("comments and registry paths must be different");
-  if (nameLinks && outputPaths.includes(resolve(nameLinks))) throw new Error("name-links input must not be an output path");
+  if (nameLinks && outputPaths.includes(resolve(nameLinks)))
+    throw new Error("name-links input must not be an output path");
   return { comments, registry, nameLinks, apply };
 }
 
@@ -63,11 +67,16 @@ function parseLinks(value: unknown): OwnerConfirmedNameLink[] {
     const { kind, id, label } = item.author;
     const { source, id: identityId } = item.identity;
     if (
-      typeof kind !== "string" || !allowedKinds.has(kind) ||
-      typeof id !== "string" || id.length === 0 ||
-      typeof label !== "string" || label.length === 0 ||
-      typeof source !== "string" || !allowedSources.has(source) ||
-      typeof identityId !== "string" || identityId.length === 0
+      typeof kind !== "string" ||
+      !allowedKinds.has(kind) ||
+      typeof id !== "string" ||
+      id.length === 0 ||
+      typeof label !== "string" ||
+      label.length === 0 ||
+      typeof source !== "string" ||
+      !allowedSources.has(source) ||
+      typeof identityId !== "string" ||
+      identityId.length === 0
     ) {
       throw new Error(`name-links entry ${index} has unsupported or empty fields`);
     }
@@ -103,15 +112,20 @@ async function main(): Promise<void> {
     if (!isRecord(value)) throw new Error(`comment row ${index} is not an object`);
     if (
       !isRecord(value.author) ||
-      typeof value.author.kind !== "string" || !new Set(["drew", "muse", "agent"]).has(value.author.kind) ||
-      typeof value.author.id !== "string" || typeof value.author.label !== "string"
+      typeof value.author.kind !== "string" ||
+      !new Set(["drew", "muse", "agent"]).has(value.author.kind) ||
+      typeof value.author.id !== "string" ||
+      typeof value.author.label !== "string"
     ) {
       throw new Error(`comment row ${index} has no supported author identity`);
     }
     if (value.provenance !== undefined && value.provenance !== "verified" && value.provenance !== "asserted-legacy") {
       throw new Error(`comment row ${index} has unsupported provenance`);
     }
-    return { ...value, ...(value.provenance === undefined ? { provenance: "asserted-legacy" } : {}) } as unknown as DashComment;
+    return {
+      ...value,
+      ...(value.provenance === undefined ? { provenance: "asserted-legacy" } : {}),
+    } as unknown as DashComment;
   });
   const records = registryRaw.map((value, index) => {
     if (!isRecord(value)) throw new Error(`registry row ${index} is not an object`);
@@ -122,14 +136,25 @@ async function main(): Promise<void> {
   });
   const registryMigration = migrateRegistryProvenance(records);
   const nameLinkMigration = applyOwnerConfirmedNameLinks(comments, registryMigration.records, links);
-  const migratedComments = comments.filter((comment, index) => commentsEnvelope.comments[index]?.provenance === undefined).length;
+  const migratedComments = comments.filter(
+    (comment, index) => commentsEnvelope.comments[index]?.provenance === undefined,
+  ).length;
 
-  console.log(JSON.stringify({
-    mode: args.apply ? "apply" : "dry-run",
-    comments: { total: comments.length, provenanceAdded: migratedComments },
-    registry: { total: records.length, provenanceAdded: registryMigration.changed ? records.filter((r) => r.provenance === undefined).length : 0 },
-    ownerConfirmedLinks: { supplied: links.length, applied: nameLinkMigration.linked },
-  }, null, 2));
+  console.log(
+    JSON.stringify(
+      {
+        mode: args.apply ? "apply" : "dry-run",
+        comments: { total: comments.length, provenanceAdded: migratedComments },
+        registry: {
+          total: records.length,
+          provenanceAdded: registryMigration.changed ? records.filter((r) => r.provenance === undefined).length : 0,
+        },
+        ownerConfirmedLinks: { supplied: links.length, applied: nameLinkMigration.linked },
+      },
+      null,
+      2,
+    ),
+  );
   if (!args.apply) return;
 
   await atomicWrite(args.comments, { ...commentsEnvelope, comments: nameLinkMigration.comments });

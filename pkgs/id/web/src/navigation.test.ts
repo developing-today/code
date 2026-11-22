@@ -76,6 +76,17 @@ afterEach(() => {
 });
 
 describe("navigateTo supersession", () => {
+  it("moves focus to the main landmark after navigation", async () => {
+    const navigation = nav.navigateTo("/files");
+    pending.get("/files")!.resolve("<p>files page</p>");
+
+    await navigation;
+
+    const main = document.getElementById("main")!;
+    expect(main.getAttribute("tabindex")).toBe("-1");
+    expect(document.activeElement).toBe(main);
+  });
+
   it("drops a slow earlier navigation that resolves after the newer one", async () => {
     const first = nav.navigateTo("/files");
     const second = nav.navigateTo("/edit/b.md");

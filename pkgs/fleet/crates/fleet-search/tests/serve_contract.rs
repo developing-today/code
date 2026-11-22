@@ -355,11 +355,15 @@ fn the_server_clamps_the_requested_ceiling_to_the_clients_cap() {
     let h = start();
     let addr = h.handle.addr;
     // sandbox-scripts is capped at personal: asking for secret-bearing
-    // is clamped, and the secret chunk stays invisible.
+    // is clamped, and the secret chunk stays invisible. Both jobs
+    // state the local-owner disclosure context (#12404): under the
+    // service's fleet-internal default a secret-bearing chunk is
+    // withheld from every caller, and the variable under test here
+    // is the effective ceiling.
     let (id, jt) = run_job(
         addr,
         PERSONAL_TOKEN,
-        json!({"query": "secret", "ceiling": "secret-bearing"}),
+        json!({"query": "secret", "ceiling": "secret-bearing", "context": "local-owner"}),
     );
     let status = http(
         addr,
@@ -385,7 +389,7 @@ fn the_server_clamps_the_requested_ceiling_to_the_clients_cap() {
     let (id2, jt2) = run_job(
         addr,
         SECRET_TOKEN,
-        json!({"query": "secret", "ceiling": "secret-bearing"}),
+        json!({"query": "secret", "ceiling": "secret-bearing", "context": "local-owner"}),
     );
     let page2 = http(
         addr,

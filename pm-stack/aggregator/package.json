@@ -8,6 +8,7 @@
     "dev": "PM_AGG_DEV=1 bun run src/server.ts",
     "start": "bun run src/server.ts",
     "test": "bun test",
+    "report:generate": "bun run scripts/generate-report.ts",
     "contract:check": "bun run scripts/check-contract-corpus.ts",
     "provenance:check": "bun run scripts/check-provenance-matrix.ts",
     "typecheck": "bunx tsc --noEmit",

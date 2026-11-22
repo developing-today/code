@@ -4,11 +4,19 @@
 config and laptop link come back, and the fleet binary is the current
 static build with the `bridge` verb (see `doc/agents/fleet-command-channel.md`).
 
-## What a person hands over
+## Credentials for a new lane
 
-One secret only: the Bitwarden Secrets Manager access token. Everything
-else (R2 keys, restic passwords, the tailnet auth key, GitHub login, the
-bridge fleet token) is fetched by name from Bitwarden with it.
+For a new Muse lane, use the [one-time handoff](handoff/README.md). The
+generator prompts privately for both the BWS access token and the 1Password
+service-account token, then prints a 15-minute single-use URL. The URL carries
+only an opaque claim code; the credentials are encrypted in the Worker and
+returned once over HTTPS. Never paste the credential values into the agent
+prompt.
+
+The standalone legacy bootstrap still accepts a BWS token by hidden prompt or
+stdin. It also accepts `OP_SERVICE_ACCOUNT_TOKEN`, stores it in
+`~/.config/op/service-account-token` with mode 0600, and restores
+`op` from the existing tool backup.
 
 ## Run it on the fresh box
 
@@ -67,3 +75,11 @@ scripts/muse/publish-fleet.sh            # builds .#fleet-static at origin/main 
 It prints the tag and sha256; update `FLEET_URL`/`FLEET_SHA256` in
 `bootstrap.sh` in the same PR (or pass both as environment variables for
 a one-off run).
+
+## Enrolling another Muse lane
+
+Use [handoff/README.md](handoff/README.md) to deploy the single-use handoff
+Worker and mint a link for the new lane. The copy-ready agent prompt is
+[handoff/PROMPT.md](handoff/PROMPT.md). Report failures and script repairs in
+[feedback/](feedback/README.md), then send the resulting branch or PR and
+non-secret diagnostics back through the fleet bridge.

@@ -16,6 +16,13 @@ export interface DocumentRemote {
   save(store: string, version: number, document: unknown): Promise<void>;
 }
 
+/** Append-only capabilities over the same durable document table. */
+export interface AppendOnlyDocumentRemote {
+  load(store: string): Promise<{ version: number; document: unknown } | null>;
+  insertIfAbsent(store: string, version: number, document: unknown): Promise<boolean>;
+  listPrefix(prefix: string): Promise<Array<{ store: string; version: number; document: unknown }>>;
+}
+
 export class AaLastGoodStore {
   constructor(
     private readonly file: string,
