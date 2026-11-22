@@ -109,17 +109,18 @@ fn import_restored_key(
     key_bytes: &[u8; 32],
     replace: bool,
 ) -> Result<()> {
-    import_restored_key_with_hook(target, marker, key_bytes, replace, || {})
+    import_restored_key_with_hooks(target, marker, key_bytes, replace, || {}, || {})
 }
 
-fn import_restored_key_with_hook(
+fn import_restored_key_with_hooks(
     target: &Path,
     marker: impl AsRef<Path>,
     key_bytes: &[u8; 32],
     replace: bool,
     after_marker_snapshot: impl FnOnce(),
+    on_lock_contended: impl FnOnce(),
 ) -> Result<()> {
-    let _lock = lock_restored_key(marker.as_ref())?;
+    let _lock = lock_restored_key_with_hook(marker.as_ref(), on_lock_contended)?;
     let public = hex_encode(
         &ed25519_dalek::SigningKey::from_bytes(key_bytes)
             .verifying_key()
@@ -179,7 +180,7 @@ fn import_restored_key_with_hook(
 
 /// Locks one identity's restore transaction across processes. The lock file is
 /// intentionally persistent: unlinking it could let waiters lock different inodes.
-fn lock_restored_key(marker: &Path) -> Result<File> {
+fn lock_restored_key_with_hook(marker: &Path, on_contended: impl FnOnce()) -> Result<File> {
     let mut lock_name = marker.file_name().unwrap_or_default().to_os_string();
     lock_name.push(".lock");
     let lock_path = marker.with_file_name(lock_name);
@@ -189,13 +190,27 @@ fn lock_restored_key(marker: &Path) -> Result<File> {
         .write(true)
         .open(&lock_path)
         .with_context(|| format!("could not open restore lock {}", lock_path.display()))?;
+    // First try without blocking so tests can observe actual lock contention
+    // rather than infer it from a scheduling timeout.
     // SAFETY: flock only uses this valid, open file descriptor; the File remains
     // alive for the full duration of the guarded import transaction.
-    let result = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) };
+    let result = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
     if result == -1 {
-        return Err(std::io::Error::last_os_error()).with_context(|| {
-            format!("could not lock restore transaction {}", lock_path.display())
-        });
+        let error = std::io::Error::last_os_error();
+        if error.kind() != std::io::ErrorKind::WouldBlock {
+            return Err(error).with_context(|| {
+                format!("could not lock restore transaction {}", lock_path.display())
+            });
+        }
+        on_contended();
+        // SAFETY: same valid descriptor; this blocks until the transaction
+        // holding the persistent lock file releases it.
+        let result = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) };
+        if result == -1 {
+            return Err(std::io::Error::last_os_error()).with_context(|| {
+                format!("could not lock restore transaction {}", lock_path.display())
+            });
+        }
     }
     Ok(file)
 }
@@ -260,43 +275,50 @@ mod tests {
         let first_target = target.clone();
         let first_marker = marker.clone();
         let first = thread::spawn(move || {
-            import_restored_key_with_hook(&first_target, &first_marker, &first_key, false, || {
-                snapshot_tx.send(()).unwrap();
-                release_rx.recv().unwrap();
-            })
+            import_restored_key_with_hooks(
+                &first_target,
+                &first_marker,
+                &first_key,
+                false,
+                || {
+                    snapshot_tx.send(()).unwrap();
+                    release_rx.recv().unwrap();
+                },
+                || {},
+            )
         });
         snapshot_rx.recv().unwrap();
 
         let (second_started_tx, second_started_rx) = mpsc::channel();
+        let (second_contended_tx, second_contended_rx) = mpsc::channel();
         let (second_snapshot_tx, second_snapshot_rx) = mpsc::channel();
         let second_target = target.clone();
         let second_marker = marker.clone();
         let second_key = keys[1];
         let second = thread::spawn(move || {
             second_started_tx.send(()).unwrap();
-            import_restored_key_with_hook(
+            import_restored_key_with_hooks(
                 &second_target,
                 &second_marker,
                 &second_key,
                 false,
                 || second_snapshot_tx.send(()).unwrap(),
+                || second_contended_tx.send(()).unwrap(),
             )
         });
         second_started_rx.recv().unwrap();
+        second_contended_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("second import never observed lock contention");
+        assert!(second_snapshot_rx.try_recv().is_err());
 
         // The first transaction has snapshotted the absent marker and is held
-        // there. The second must not pass its own snapshot until the first
-        // publishes the marker and installs its key.
-        let second_passed_snapshot = second_snapshot_rx
-            .recv_timeout(Duration::from_millis(100))
-            .is_ok();
+        // there. The second has attempted the OS lock and received WouldBlock,
+        // so it cannot pass its own snapshot until the first installs its key.
         release_tx.send(()).unwrap();
         first.join().unwrap().unwrap();
         assert!(second.join().unwrap().is_err());
-        assert!(
-            !second_passed_snapshot,
-            "second import bypassed the transaction lock"
-        );
+        second_snapshot_rx.try_recv().unwrap();
 
         let installed = std::fs::read(&target).unwrap();
         let installed: [u8; 32] = installed.try_into().unwrap();
