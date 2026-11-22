@@ -8,41 +8,65 @@ are non-cacheable; Worker request logs are disabled.
 
 ## Deployment and link creation
 
-Worker code releases use `.github/workflows/muse-handoff-deploy.yml`.
-Changes merged to `main` upload an immutable Worker Version through the
-pinned `cf` CLI and Cloudflare Workers Versions API; this upload does not
-create a deployment or move production traffic. The workflow intentionally
-has no pull-request trigger, and it passes Cloudflare credentials only to
-jobs running on `main`.
-Configure the repository secrets `MUSE_HANDOFF_CLOUDFLARE_API_TOKEN` and
-`CLOUDFLARE_ACCOUNT_ID` before enabling deployment. Create a dedicated API
-token with `Individual Workers Editor` scoped to this Worker; do not reuse
-an existing shared token until its scope is verified. The workflow needs
-only `contents: read` in GitHub and no OIDC permission.
+Routine Worker releases use two manual, main-only workflows:
+`.github/workflows/muse-handoff-upload.yml` and
+`.github/workflows/muse-handoff-promote.yml`. Upload first builds the exact
+source on the isolated `muse-agent-handoff-staging` Worker, deploys that
+version there, validates the generated settings and bindings, then runs a
+one-use create/claim/replay smoke using disposable fake credentials. The
+staging Worker has its own Durable Object namespace. The workflow then
+uploads the same source as an immutable production Worker Version and saves
+the exact `cf workers versions create` response, source archive, configuration
+evidence, smoke proof, and production traffic snapshot in a run-specific
+artifact. It does not create a production deployment.
 
-Before promotion, inspect the uploaded version and verify it matches the
-currently serving Worker: the `muse-agent-handoff` target, compatibility
-date, workers.dev setting, disabled preview URLs and observability, the
-`HANDOFFS` binding to `Handoff`, SQLite storage and the existing `v1`
-migration, plus the existing `ADMIN_TOKEN` and `HANDOFF_ENCRYPTION_KEY`
-secret bindings. The workflow never reads or changes those secret values.
-The current config disables preview URLs, and Cloudflare does not issue
-Version URLs for Workers that implement Durable Objects. A safe runtime
-parity check therefore needs an isolated staging Worker with its own
-Durable Object namespace; do not test a candidate against the production
-namespace or promote it based only on the workflow checkbox. That staging
-path is a cutover prerequisite and is intentionally not created here. The
-current production deployment stays live until isolated parity is verified.
-After that, dispatch the workflow on `main`, provide the uploaded version
-ID, and confirm the parity review. It then creates a separate 100%
-deployment for that version.
+The separate promotion workflow accepts only the successful upload run ID.
+It verifies the run came from the trusted main upload workflow, the commit is
+still an ancestor of `main`, every artifact digest and the exact source
+archive match, the version ID came from that upload response, and the stage
+proof covers the same source. It also checks production still serves the
+captured deployment and traffic split before creating a separate 100%
+deployment. The workflow verifies Cloudflare's current deployment list serves
+that exact version at 100% afterward. No Boolean input can stand in for
+stage evidence. Production traffic remains unchanged until promotion passes
+those checks and the protected production environment is approved.
+
+Both workflows intentionally have no pull-request trigger. Cloudflare
+credentials are available only through the `muse-handoff-staging` and
+`muse-handoff-production` GitHub environments. Before enabling the flow,
+configure both environments with required reviewers and these environment
+secrets:
+
+- `muse-handoff-staging`: `MUSE_HANDOFF_STAGING_CF_API_TOKEN` and
+  `MUSE_HANDOFF_STAGING_ACCOUNT_ID`.
+- `muse-handoff-production`: `MUSE_HANDOFF_PRODUCTION_CF_API_TOKEN` and
+  `MUSE_HANDOFF_PRODUCTION_ACCOUNT_ID`.
+
+Each token must be a dedicated Cloudflare API token with `Individual Workers
+Editor`, scoped only to its respective Worker. Do not copy the existing
+shared token or put credentials in repository-level secrets. The staging
+Worker must be bootstrapped with the same `Handoff` SQLite class and a
+separate namespace before dispatching upload. These environment protections,
+scoped tokens, and staging Worker are cutover prerequisites; this change
+does not configure repository settings, create secrets, or provision the
+staging Worker. The workflows need only `actions: read` and `contents: read`
+and do not grant OIDC permissions.
+
+The existing production bindings/settings are retained: `muse-agent-handoff`,
+compatibility date `2026-11-21`, workers.dev enabled, preview URLs and
+observability disabled, the `HANDOFFS` binding to SQLite `Handoff`, and the
+`ADMIN_TOKEN` and `HANDOFF_ENCRYPTION_KEY` secret bindings. The source contract
+also guards the existing `v1` SQLite migration. Upload never reads secret
+values. Cloudflare does not issue Version URLs for Workers that implement
+Durable Objects, so staged parity is checked on the isolated Worker before
+the production version can be promoted.
 
 The existing local `deploy.sh` remains the initial Worker bootstrap and
 secret-provisioning path described below; it is not the GitHub Actions
 routine code-release path. It still invokes Wrangler deploy as part of that
 combined local bootstrap/secret-provisioning flow; this change leaves that
-path intact. Do not use it for routine code releases. The Actions workflow
-assumes the Worker already exists.
+path intact. Do not use it for routine code releases. Both Workers must
+already exist before the Actions upload can run.
 
 From a trusted checkout on the laptop, bootstrap the Worker and provision
 its local admin/encryption secrets when needed:
