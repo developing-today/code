@@ -22,12 +22,41 @@ def parse_time(value: Any) -> datetime:
     return parsed.astimezone(timezone.utc)
 
 
-def build_report(source: dict[str, Any], now: datetime) -> dict[str, Any]:
+def _valid_heartbeat(value: Any, now: datetime) -> dict[str, Any] | None:
+    if not isinstance(value, dict) or not isinstance(value.get("ok"), bool):
+        return None
+    try:
+        tick_at = parse_time(value.get("tickAt"))
+        duration = value.get("durationMs")
+        if (
+            (now - tick_at).total_seconds() < -300
+            or isinstance(duration, bool)
+            or not isinstance(duration, (int, float))
+            or duration < 0
+        ):
+            return None
+        if not isinstance(value.get("perProvider"), dict):
+            return None
+        return {**value, "_parsedTickAt": tick_at}
+    except (TypeError, ValueError):
+        return None
+
+
+def build_report(
+    source: dict[str, Any], now: datetime, standalone_heartbeat: Any = None
+) -> dict[str, Any]:
     generated_at = parse_time(source.get("generatedAt"))
     age_seconds = int((now - generated_at).total_seconds())
-    heartbeat = source.get("heartbeat")
-    if not isinstance(heartbeat, dict):
-        heartbeat = {}
+    embedded = _valid_heartbeat(source.get("heartbeat"), now)
+    standalone = _valid_heartbeat(standalone_heartbeat, now)
+    heartbeat = (
+        standalone
+        if standalone is not None
+        and (embedded is None or standalone["_parsedTickAt"] > embedded["_parsedTickAt"])
+        else embedded
+    ) or {}
+    heartbeat_at = heartbeat.get("_parsedTickAt")
+    heartbeat_age = int((now - heartbeat_at).total_seconds()) if heartbeat_at else None
 
     providers = source.get("providers")
     if not isinstance(providers, list):
@@ -65,11 +94,12 @@ def build_report(source: dict[str, Any], now: datetime) -> dict[str, Any]:
                 if isinstance(provider.get("providerName"), str)
                 else "unknown",
                 "state": provider.get("state")
-                if provider.get("state") in ("ok", "error", "unconfigured")
+                if provider.get("state") in ("ok", "error", "lapsed", "unconfigured")
                 else "unknown",
                 "measuredAt": measured_at,
                 "ageSeconds": provider_age,
                 "fresh": provider_fresh,
+                "stale": provider_age is not None and not provider_fresh,
                 "retained": bool(provider.get("retainedFromFailedTick")),
                 "windows": safe_windows,
             }
@@ -82,12 +112,16 @@ def build_report(source: dict[str, Any], now: datetime) -> dict[str, Any]:
         "snapshotGeneratedAt": generated_at.isoformat().replace("+00:00", "Z"),
         "snapshotAgeSeconds": age_seconds,
         "snapshotFresh": 0 <= age_seconds <= MAX_AGE_SECONDS,
+        "gathererHeartbeatAt": heartbeat.get("tickAt"),
+        "gathererHeartbeatAgeSeconds": heartbeat_age,
+        "gathererHeartbeatFresh": heartbeat_age is not None and 0 <= heartbeat_age <= 20 * 60,
         "gathererHealthy": heartbeat.get("ok") is True and not heartbeat.get("error"),
         "gathererError": bool(heartbeat.get("error")),
         "providerCounts": {
             "total": len(rows),
             "ok": states.count("ok"),
             "error": states.count("error"),
+            "lapsed": states.count("lapsed"),
             "unconfigured": states.count("unconfigured"),
             "unknown": states.count("unknown"),
         },
@@ -102,11 +136,21 @@ def main() -> int:
             str(Path.home() / ".local/state/pm-aggregator/quota-current.json"),
         )
     )
+    heartbeat_path = Path(
+        os.environ.get(
+            "QUOTA_HEARTBEAT_PATH",
+            str(path.parent / "quota-gatherer-heartbeat.json"),
+        )
+    )
     try:
         source = json.loads(path.read_text(encoding="utf-8"))
         if not isinstance(source, dict) or source.get("version") != 1:
             raise ValueError("unsupported quota-current document")
-        report = build_report(source, datetime.now(timezone.utc))
+        try:
+            standalone_heartbeat = json.loads(heartbeat_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            standalone_heartbeat = None
+        report = build_report(source, datetime.now(timezone.utc), standalone_heartbeat)
     except (OSError, json.JSONDecodeError, TypeError, ValueError) as error:
         print(f"quota summary input unavailable or invalid: {error}", file=sys.stderr)
         return 2
