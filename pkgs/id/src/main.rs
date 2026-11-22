@@ -474,6 +474,7 @@ async fn main() -> Result<()> {
         #[cfg(not(feature = "world"))]
         Some(Command::World(_)) => anyhow::bail!("this build has no world support"),
         Some(Command::MigrateTags) => cmd_migrate_tags().await,
+        Some(Command::SubstratePath) => id::commands::cmd_substrate_path().await,
         Some(Command::GetHash { hash, output }) => cmd_gethash(&hash, &output).await,
         Some(Command::Put {
             files,

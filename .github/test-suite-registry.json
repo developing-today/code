@@ -97,7 +97,7 @@
         "dispatchable": true
       },
       "status": "mapped",
-      "notes": "PR shards skip serve_tests; the separate test-int flake check runs cargo test --all-features --test cli_integration outside the PR list."
+      "notes": "PR shards skip serve_tests; the separate test-int flake check runs cargo test --all-features --test cli_integration outside the PR list. The nightly .github/workflows/id-e2e-nightly.yml runs the full nix flake check, including test-int, so tests added to pkgs/id/tests/cli_integration.rs (including the substrate-path command scenario) run nightly."
     },
     {
       "id": "id.rust.crash-gate",

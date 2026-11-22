@@ -168,6 +168,25 @@ it is — a valid world capability, minted by the host's admin with
 | `doc`          |                                | Publish documents; list events/frontier/history         |
 | `claim`        |                                | Tag claims on any subject (set, clear, search)          |
 | `writer-sets`  |                                | Writer sets in the event store (show, expand, discover) |
+| `substrate-path` |                              | Run the signed-record, sync, conflict, and restart path |
+
+### Walking-skeleton substrate path
+
+Run the isolated five-step path from the CLI:
+
+```bash
+id substrate-path
+```
+
+The command prints and verifies each step:
+
+1. **Write:** sign a graph record and print its `id://node-a/notes/<digest>` address.
+2. **Store:** write the signed version and report data to node A's on-disk store.
+3. **Sync:** exchange the version with node B over the existing local iroh transport; B reads the record from its own address.
+4. **Conflict:** write distinct successors of the shared base on A and B.
+5. **Report:** exchange the conflict, then reopen both stores and verify their heads, open reports, and signed records still agree.
+
+Both nodes use private temporary directories and fixed demonstration signing keys. The command does not access the normal ID store or external peers. The same command is exercised by the CLI integration suite included in the ID nightly flake check.
 
 ### Tag Subcommands
 

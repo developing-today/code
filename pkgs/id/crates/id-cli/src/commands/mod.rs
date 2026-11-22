@@ -77,6 +77,7 @@ pub mod send;
 pub mod serve;
 #[cfg(feature = "web")]
 pub mod serve_publications;
+pub mod substrate_path;
 pub mod tag;
 pub mod text;
 #[cfg(feature = "world")]
@@ -110,6 +111,7 @@ pub use serve::{
     ServeInfo, ServeOptions, build_access_policy, cmd_serve, create_serve_lock, get_serve_info,
     is_process_alive, remove_serve_lock,
 };
+pub use substrate_path::cmd_substrate_path;
 pub use tag::{cmd_migrate_tags, cmd_tag};
 #[cfg(feature = "world")]
 pub use world::cmd_world;

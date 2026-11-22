@@ -1496,6 +1496,18 @@ pub enum Command {
     /// ```
     #[command(alias = "migrate")]
     MigrateTags,
+    /// Run the five-step signed-record, durable-store, and transport
+    /// walking-skeleton path in isolated temporary storage.
+    ///
+    /// This is a self-contained demonstration and acceptance path. It does
+    /// not touch the normal ID store or contact external peers.
+    ///
+    /// # Example
+    ///
+    /// ```bash
+    /// id substrate-path
+    /// ```
+    SubstratePath,
     /// Print the local node's public ID.
     ///
     /// The node ID is derived from the keypair and is needed for

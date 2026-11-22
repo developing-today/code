@@ -563,10 +563,40 @@ mod cli_tests {
 
         // Test help for each subcommand
         for cmd in [
-            "serve", "put", "get", "list", "find", "search", "repl", "cat", "peers", "id",
+            "serve",
+            "put",
+            "get",
+            "list",
+            "find",
+            "search",
+            "repl",
+            "cat",
+            "peers",
+            "id",
+            "substrate-path",
         ] {
             let output = run_cmd(&[cmd, "--help"], tmp.path());
             assert!(output.status.success(), "Help failed for {cmd}");
+        }
+    }
+
+    #[test]
+    fn test_substrate_path_runs_signed_sync_conflict_and_restart() {
+        let tmp = TempDir::new().unwrap();
+        let output = run_cmd_success_stdout(&["substrate-path"], tmp.path());
+
+        for step in [
+            "1. Signed record on A: id://node-a/notes/",
+            "2. Stored on disk",
+            "3. Synced to B over iroh: id://node-b/notes/",
+            "4. Conflicting edits written",
+            "5. Both nodes report conflict",
+            "after restart",
+        ] {
+            assert!(
+                output.contains(step),
+                "missing {step:?} in output:\n{output}"
+            );
         }
     }
 
