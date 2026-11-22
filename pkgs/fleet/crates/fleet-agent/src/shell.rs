@@ -293,7 +293,14 @@ fn broker_aware_shell(command: &str) -> String {
     } else if command
         .split_ascii_whitespace()
         .any(|word| word == "--release")
+        || (command
+            .split(|ch: char| !(ch.is_ascii_alphanumeric() || ch == '-'))
+            .any(|word| word == "install")
+            && !command
+                .split_ascii_whitespace()
+                .any(|word| word == "--debug"))
     {
+        // cargo install uses the release profile by default.
         "release"
     } else {
         "dev"
