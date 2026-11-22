@@ -311,6 +311,12 @@ impl ProtocolHandler for ControlProtocol {
             send.finish().map_err(accept_error)?;
             if stop {
                 self.shutdown.notify_one();
+                // Do not return yet: a returning handler lets the
+                // router tear the connection down, which can discard
+                // the reply still in flight (the artifact handlers
+                // wait the same way). The parent closes its side once
+                // it has the reply, and that releases this wait.
+                conn.closed().await;
                 return Ok(());
             }
         }
@@ -703,6 +709,7 @@ async fn the_five_steps_run_between_two_processes_over_the_transport() {
     let ControlReply::Bye = b.control(Control::Shutdown).await else {
         panic!("shutdown answered with a different reply");
     };
+    b.conn.close(iroh::endpoint::VarInt::from_u32(0), b"shutdown");
     let mut b = b;
     let status = tokio::task::spawn_blocking(move || {
         for _ in 0..100 {
