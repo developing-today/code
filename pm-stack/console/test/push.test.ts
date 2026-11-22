@@ -11,7 +11,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Docs } from "../src/docs.ts";
 import { fileStore } from "../src/file-store.ts";
-import { changes, NOTHING_SEEN, Notifier, type Seen } from "../src/notify.ts";
+import { changes, NOTHING_SEEN, Notifier, type Seen, SUSTAINED_MS } from "../src/notify.ts";
 import { contact, encrypt, endpointMark, Push, validSubscription } from "../src/push.ts";
 import { b64u, browser, raw } from "./support.ts";
 
@@ -192,7 +192,7 @@ describe("when a notification is owed", () => {
   });
 
   test("turning notifications on takes stock and says nothing", () => {
-    const first = changes(NOTHING_SEEN, state());
+    const first = changes(NOTHING_SEEN, state(), 1_800_000_000_000);
     expect(first.messages).toEqual([]);
     expect(first.seen).toEqual({
       primed: true,
@@ -200,6 +200,8 @@ describe("when a notification is owed", () => {
       hands: ["o/r#1"],
       questions: 360,
       failed: ["b.service"],
+      // Already failed when notifications were turned on: counted as told.
+      failing: { "b.service": { since: 1_800_000_000_000, told: true } },
     });
     expect(changes(first.seen, state()).messages).toEqual([]); // and nothing is said twice
   });
@@ -288,4 +290,82 @@ describe("when a notification is owed", () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+});
+
+test("a unit on a timer is reported once it keeps failing, not for one bad run, and again when it mends", () => {
+  const T0 = 1_800_000_000_000;
+  const primed: Seen = { ...NOTHING_SEEN, primed: true };
+  const sync = (active: string) => ({
+    services: [
+      { unit: "pm-git-sync.service", active, description: "pm-git-sync — keep ~/git/code on clean main" },
+      { unit: "pm-git-sync.timer", active: "active" },
+      { unit: "pm-console.service", active: "active" },
+    ],
+  });
+  // One failed run: nothing is said.
+  let step = changes(primed, sync("failed"), T0);
+  expect(step.messages).toEqual([]);
+  // The next run mends it: forgotten, and still nothing said.
+  step = changes(step.seen, sync("inactive"), T0 + 60_000);
+  expect(step.messages).toEqual([]);
+  expect(step.seen.failing).toEqual({});
+  // Now it fails run after run. Being caught in the middle of a run is not a recovery.
+  step = changes(step.seen, sync("failed"), T0 + 120_000);
+  step = changes(step.seen, sync("activating"), T0 + 180_000);
+  expect(step.messages).toEqual([]);
+  step = changes(step.seen, sync("failed"), T0 + 120_000 + SUSTAINED_MS - 1);
+  expect(step.messages).toEqual([]);
+  step = changes(step.seen, sync("failed"), T0 + 120_000 + SUSTAINED_MS);
+  expect(step.messages.map((m) => [m.cls, m.title, m.body, m.url, m.tag])).toEqual([
+    [
+      "trouble",
+      "A unit keeps failing",
+      "pm-git-sync.service, every run for 5 minutes. pm-git-sync — keep ~/git/code on clean main",
+      "/console/#more/services",
+      "unit-pm-git-sync.service",
+    ],
+  ]);
+  // Said once, however long it goes on.
+  for (const active of ["failed", "activating", "failed"]) {
+    step = changes(step.seen, sync(active), T0 + 20 * 60_000);
+    expect(step.messages).toEqual([]);
+  }
+  // Mended: that is said once too.
+  step = changes(step.seen, sync("inactive"), T0 + 21 * 60_000);
+  expect(step.messages.map((m) => `${m.title}: ${m.body}`)).toEqual(["A unit is working again: pm-git-sync.service"]);
+  expect(changes(step.seen, sync("inactive"), T0 + 22 * 60_000).messages).toEqual([]);
+  // And if it starts failing again later, the count starts again.
+  step = changes(step.seen, sync("failed"), T0 + 30 * 60_000);
+  expect(step.messages).toEqual([]);
+  expect(changes(step.seen, sync("failed"), T0 + 30 * 60_000 + SUSTAINED_MS).messages).toHaveLength(1);
+
+  // A service with no timer is still reported the moment it is seen failed, and its recovery is not news.
+  const console_ = (active: string) => ({ services: [{ unit: "pm-console.service", active }] });
+  step = changes(primed, console_("failed"), T0);
+  expect(step.messages.map((m) => [m.title, m.body])).toEqual([["A unit failed", "pm-console.service"]]);
+  expect(changes(step.seen, console_("failed"), T0 + SUSTAINED_MS * 3).messages).toEqual([]);
+  expect(changes(step.seen, console_("active"), T0 + 1_000).messages).toEqual([]);
+  // A timer by another name does not make a service periodic.
+  const other = {
+    services: [
+      { unit: "pm-console.service", active: "failed" },
+      { unit: "pm-console-expose.timer", active: "active" },
+    ],
+  };
+  expect(changes(primed, other, T0).messages.map((m) => m.title)).toEqual(["A unit failed"]);
+
+  // A state kept from before units on timers were told apart: what was reported is not reported again.
+  const older: Seen = { ...NOTHING_SEEN, primed: true, failed: ["pm-git-sync.service"] };
+  step = changes(older, sync("failed"), T0);
+  expect(step.messages).toEqual([]);
+  expect(changes(step.seen, sync("failed"), T0 + SUSTAINED_MS * 2).messages).toEqual([]);
+  // A unit that is no longer listed is forgotten, not remembered as failing.
+  step = changes(primed, sync("failed"), T0);
+  step = changes(step.seen, { services: [{ unit: "pm-console.service", active: "active" }] }, T0 + 1_000);
+  expect(step.seen.failing).toEqual({});
+  // The services could not be read: nothing changes and nothing is said.
+  step = changes(primed, sync("failed"), T0);
+  const blind = changes(step.seen, { services: null }, T0 + SUSTAINED_MS * 2);
+  expect(blind.messages).toEqual([]);
+  expect(blind.seen.failing).toEqual(step.seen.failing);
 });

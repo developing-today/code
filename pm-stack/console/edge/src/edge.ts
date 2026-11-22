@@ -215,7 +215,7 @@ export class Edge {
       link: new Limiter(30, 60_000, this.now),
       refused: new Limiter(60, 60_000, this.now),
     };
-    this.notifier = new Notifier(this.docs, this.push, kvStore(this.kv, "seen"));
+    this.notifier = new Notifier(this.docs, this.push, kvStore(this.kv, "seen"), this.now);
     this.table = ownActions(this.push, devices);
   }
 

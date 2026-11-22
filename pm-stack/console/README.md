@@ -49,6 +49,14 @@ subscribes under More, Notifications, and chooses what reaches it: a
 reply to something asked, something new that needs the owner, new
 questions, a failed unit. The Android app shows them as its own.
 
+A unit that runs on a timer (a service with a timer of the same name,
+such as `pm-git-sync`) is treated differently from one that stays up.
+Between runs it shows as failed whenever its last run failed, so one bad
+run that the next run mends says nothing; five minutes of failing run
+after run is reported once ("A unit keeps failing", with what the unit
+is for), and so is its mending. That is what tells the owner when the
+laptop's checkout has stopped following `main`.
+
 ### Phones
 
 The Android app's home-screen widget reads a short summary (three counts

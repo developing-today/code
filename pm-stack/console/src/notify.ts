@@ -16,8 +16,16 @@ export interface Seen {
   hands: string[];
   questions: number;
   failed: string[];
+  /** Units seen failed and not seen well since: when it was first seen,
+   * and whether the owner has been told. Absent in a state written
+   * before units that run on a timer were told apart. */
+  failing?: Record<string, { since: number; told: boolean }>;
 }
 export const NOTHING_SEEN: Seen = { primed: false, asks: {}, hands: [], questions: 0, failed: [] };
+
+/** A unit that runs on a timer is only worth a message once it has kept
+ * failing this long: one bad run that the next run mends is not. */
+export const SUSTAINED_MS = 5 * 60_000;
 
 export interface Message {
   cls: Class;
@@ -32,20 +40,21 @@ interface State {
   census?: { hands: { ref: string; title: string; action?: string }[] } | null;
   sessions?: { waiting: { id: string; title: string }[] } | null;
   questionCount?: { total: number } | null;
-  services?: { unit: string; active: string }[] | null;
+  services?: { unit: string; active: string; description?: string }[] | null;
 }
 
 const clip = (s: string, n: number) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
 
 /** The messages owed for `now`, and what will have been seen once they
  * are sent. A section that could not be read (null) changes nothing. */
-export function changes(seen: Seen, now: State): { messages: Message[]; seen: Seen } {
+export function changes(seen: Seen, now: State, at: number = Date.now()): { messages: Message[]; seen: Seen } {
   const next: Seen = {
     primed: true,
     asks: { ...seen.asks },
     hands: seen.hands,
     questions: seen.questions,
     failed: seen.failed,
+    ...(seen.failing ? { failing: seen.failing } : {}),
   };
   const messages: Message[] = [];
   for (const ask of now.asks ?? []) {
@@ -92,18 +101,68 @@ export function changes(seen: Seen, now: State): { messages: Message[]; seen: Se
     next.questions = total;
   }
   if (now.services) {
-    const failed = now.services.filter((u) => u.active === "failed").map((u) => u.unit);
-    for (const unit of failed) {
-      if (seen.failed.includes(unit)) continue;
-      messages.push({
-        cls: "trouble",
-        title: "A unit failed",
-        body: unit,
-        url: "/console/#more/services",
-        tag: `unit-${unit}`,
-      });
+    // A service with a timer of the same name runs now and then: between
+    // runs it shows as failed if its last run failed, and for a moment
+    // during a run it shows as starting. Neither moment alone says much.
+    const timers = new Set(
+      now.services.filter((u) => u.unit.endsWith(".timer")).map((u) => u.unit.slice(0, -".timer".length)),
+    );
+    const onTimer = (unit: string) => unit.endsWith(".service") && timers.has(unit.slice(0, -".service".length));
+    // Units the owner was told of before this was kept are not told again.
+    const failing: Record<string, { since: number; told: boolean }> = {
+      ...(seen.failing ?? Object.fromEntries(seen.failed.map((unit) => [unit, { since: at, told: true }]))),
+    };
+    const listed = new Set<string>();
+    for (const u of now.services) {
+      listed.add(u.unit);
+      const before = failing[u.unit];
+      if (u.active === "failed") {
+        const entry = { ...(before ?? { since: at, told: false }) };
+        const sustained = at - entry.since >= SUSTAINED_MS;
+        if (!entry.told && (!onTimer(u.unit) || sustained)) {
+          entry.told = true;
+          messages.push(
+            onTimer(u.unit)
+              ? {
+                  cls: "trouble",
+                  title: "A unit keeps failing",
+                  body: clip(
+                    `${u.unit}, every run for ${Math.round((at - entry.since) / 60_000)} minutes${u.description ? `. ${u.description}` : ""}`,
+                    180,
+                  ),
+                  url: "/console/#more/services",
+                  tag: `unit-${u.unit}`,
+                }
+              : {
+                  cls: "trouble",
+                  title: "A unit failed",
+                  body: u.unit,
+                  url: "/console/#more/services",
+                  tag: `unit-${u.unit}`,
+                },
+          );
+        }
+        failing[u.unit] = entry;
+      } else if (u.active === "activating" || u.active === "deactivating" || u.active === "reloading") {
+        // In the middle of a run: not failed, and not yet well either.
+      } else if (before) {
+        // Seen well again. One that was reported as failing run after
+        // run gets its ending said too.
+        if (before.told && onTimer(u.unit)) {
+          messages.push({
+            cls: "trouble",
+            title: "A unit is working again",
+            body: u.unit,
+            url: "/console/#more/services",
+            tag: `unit-${u.unit}`,
+          });
+        }
+        delete failing[u.unit];
+      }
     }
-    next.failed = failed;
+    for (const unit of Object.keys(failing)) if (!listed.has(unit)) delete failing[unit];
+    next.failing = failing;
+    next.failed = Object.keys(failing);
   }
   return { messages: seen.primed ? messages : [], seen: next };
 }
@@ -120,6 +179,7 @@ export class Notifier {
     private docs: Docs,
     private push: Push,
     private store: Store,
+    private now: () => number = Date.now,
   ) {}
 
   private async load(): Promise<Seen> {
@@ -142,7 +202,7 @@ export class Notifier {
       if ((await this.push.status()).devices === 0) return 0;
       await this.docs.touch(WATCHED.filter((n) => !skip.includes(n)));
       const now = Object.fromEntries(WATCHED.map((n) => [n, this.docs.good(n)])) as State;
-      const { messages, seen } = changes(await this.load(), now);
+      const { messages, seen } = changes(await this.load(), now, this.now());
       for (const m of messages) await this.push.send(m.cls, m);
       // Written down only when it differs: most passes find nothing new.
       const before = JSON.stringify(this.seen);
