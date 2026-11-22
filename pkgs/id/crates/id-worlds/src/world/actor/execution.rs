@@ -138,6 +138,7 @@ impl WorldActor {
             JoinCapability,
             Vec<u8>,
             Option<SessionId>,
+            Option<serde_json::Value>,
             oneshot::Sender<Result<WorldEvent>>,
         );
         let mut items: std::collections::VecDeque<InputParts> = batch
@@ -147,16 +148,17 @@ impl WorldActor {
                     token,
                     input,
                     session_id,
+                    device_input,
                     signed_move: None,
                     reply,
-                } => Some((token, input, session_id, reply)),
+                } => Some((token, input, session_id, device_input, reply)),
                 // The run loop only drains unsigned Inputs into a batch.
                 _ => None,
             })
             .collect();
         if let Err(error) = self.check_writable() {
             let message = format!("{error:#}");
-            for (_, _, _, reply) in items {
+            for (_, _, _, _, reply) in items {
                 let _ = reply.send(Err(anyhow::anyhow!(message.clone())));
             }
             return;
@@ -169,7 +171,7 @@ impl WorldActor {
         let mut staged: Vec<Staged> = Vec::new();
         let mut staged_spends: HashMap<u64, u32> = HashMap::new();
         let mut failed: Option<(oneshot::Sender<Result<WorldEvent>>, anyhow::Error)> = None;
-        while let Some((token, input, session_id, reply)) = items.pop_front() {
+        while let Some((token, input, session_id, device_input, reply)) = items.pop_front() {
             let sequence = self.core.sequence + staged.len() as u64 + 1;
             let candidate =
                 match self
@@ -198,6 +200,7 @@ impl WorldActor {
             }
             self.acting = Some(candidate.participant_id);
             self.acting_session = session_id;
+            self.acting_device_input = device_input;
             match self
                 .program
                 .update(&candidate)
@@ -264,11 +267,12 @@ impl WorldActor {
         }
         // Whatever the batch did not stage goes through the single-command
         // path, in order, with its semantics untouched.
-        for (token, input, session_id, reply) in items {
+        for (token, input, session_id, device_input, reply) in items {
             self.handle(WorldCommand::Input {
                 token,
                 input,
                 session_id,
+                device_input,
                 signed_move: None,
                 reply,
             })
@@ -1398,13 +1402,18 @@ impl WorldActor {
         if args_size > crate::world_caps::MAX_ARGS_BYTES {
             return Err(CapError::bad_args_with("args_too_large"));
         }
-        if let Some(manifest) = &self.device_manifest
-            && manifest
-                .display
-                .get("kind")
-                .and_then(serde_json::Value::as_str)
-                != Some("headless")
-            && let Err(error) = form.validate_device_input(&manifest.input)
+        let presenter_input = self.acting_device_input.as_ref().or_else(|| {
+            self.device_manifest.as_ref().and_then(|manifest| {
+                (manifest
+                    .display
+                    .get("kind")
+                    .and_then(serde_json::Value::as_str)
+                    != Some("headless"))
+                .then_some(&manifest.input)
+            })
+        });
+        if let Some(input) = presenter_input
+            && let Err(error) = form.validate_device_input(input)
         {
             let reason = if format!("{error:#}").contains("text entry unavailable") {
                 "text_entry_unavailable"

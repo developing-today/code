@@ -22,6 +22,7 @@ pub(crate) async fn run_world_session<I: SessionIo>(
             screen_patches,
             resume_token,
             agent_profile,
+            device_input,
         } => {
             if capability.len() > MAX_CAPABILITY_BYTES {
                 let _ = send_error(service.frame_meter(), io, "invalid join capability").await;
@@ -36,6 +37,7 @@ pub(crate) async fn run_world_session<I: SessionIo>(
                 screen_patches,
                 resume_token,
                 agent_profile,
+                device_input,
                 documents_store,
             )
             .await;
@@ -514,6 +516,7 @@ async fn query_session<I: SessionIo>(
                 screen_patches,
                 resume_token,
                 agent_profile,
+                device_input,
             } => {
                 if capability.len() > MAX_CAPABILITY_BYTES {
                     let _ = send_error(service.frame_meter(), io, "invalid join capability").await;
@@ -528,6 +531,7 @@ async fn query_session<I: SessionIo>(
                     screen_patches,
                     resume_token,
                     agent_profile,
+                    device_input,
                     documents_store.clone(),
                 )
                 .await;

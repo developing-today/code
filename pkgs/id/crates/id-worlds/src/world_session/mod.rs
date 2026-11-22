@@ -1124,6 +1124,7 @@ async fn joined<I: SessionIo>(
     screen_patches: bool,
     resume_token: Option<String>,
     agent_profile: bool,
+    device_input: Option<serde_json::Value>,
     documents_store: Option<Store>,
 ) {
     let world = service.world();
@@ -1273,6 +1274,7 @@ async fn joined<I: SessionIo>(
                         &mut viewport,
                         cursor,
                         session_id,
+                        device_input.as_ref(),
                         &mut view_state,
                         screen_patches,
                         &mut pending_view_deadline,
@@ -1501,6 +1503,7 @@ async fn handle_client_frame<I: SessionIo>(
     viewport: &mut Option<Viewport>,
     sequence: u64,
     session_id: SessionId,
+    device_input: Option<&serde_json::Value>,
     view_state: &mut ViewRevisionState,
     screen_patches: bool,
     pending_view_deadline: &mut Option<tokio::time::Instant>,
@@ -1820,13 +1823,13 @@ async fn handle_client_frame<I: SessionIo>(
                 .await;
             };
             world
-                .input_from_session(token.clone(), bytes, session_id)
+                .input_from_session(token.clone(), bytes, session_id, device_input.cloned())
                 .await
         }
         ClientFrame::Input { data_hex, .. } => match decode_hex(&data_hex) {
             Some(data) => {
                 world
-                    .input_from_session(token.clone(), data, session_id)
+                    .input_from_session(token.clone(), data, session_id, device_input.cloned())
                     .await
             }
             None => {
@@ -1897,7 +1900,7 @@ async fn handle_client_frame<I: SessionIo>(
             match serde_json::to_vec(&encoded) {
                 Ok(bytes) => {
                     world
-                        .input_from_session(token.clone(), bytes, session_id)
+                        .input_from_session(token.clone(), bytes, session_id, device_input.cloned())
                         .await
                 }
                 Err(_) => {
