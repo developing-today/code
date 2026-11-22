@@ -277,6 +277,55 @@ fn an_empty_mailbox_falls_to_a_queue_claim() {
 }
 
 #[test]
+fn a_queue_claim_carries_a_lease_that_outlives_a_shift_12618() {
+    // Oracle: #12618 (epic #1233). A claim taken by `agent next`
+    // must carry an explicit lease sized for agent work: the
+    // broker's default claim lease is 2700s, and when it lapses
+    // mid-work the task returns to the queue and `complete`
+    // refuses the worker who did the work. The claim argv names
+    // the lease, a caller can override it, and the hand-out names
+    // the deadline the lease sets.
+    let fake = Fake::new();
+    fake.on(INBOX, vec![empty_inbox()]).on(
+        CLAIM,
+        vec![ok(
+            json!({"id": 10813, "queue": "fleet", "status": "claimed", "title": "Long task",
+                       "lease_until": "2026-11-22T23:59:00Z"}),
+        )],
+    );
+    let (out, code) = run(&fake, &["next", "--agent", "shed"]);
+    assert_eq!(code, EXIT_OK);
+    assert_eq!(out["rung"], "queue");
+    assert!(fake.called(
+        "fleet queue claim --worker shed --lane any-shed --lease-seconds 14400"
+    ));
+    // The hand-out names the lease deadline from the claimed row.
+    assert!(
+        out["task"]["instructions"]
+            .as_str()
+            .unwrap()
+            .contains("2026-11-22T23:59:00Z"),
+        "instructions name the lease deadline: {}",
+        out["task"]["instructions"]
+    );
+
+    // A caller's own --lease-seconds wins over the default.
+    let fake = Fake::new();
+    fake.on(INBOX, vec![empty_inbox()]).on(
+        CLAIM,
+        vec![ok(
+            json!({"id": 10814, "queue": "fleet", "status": "claimed", "title": "Short task"}),
+        )],
+    );
+    let (out, code) = run(&fake, &["next", "--agent", "shed", "--lease-seconds", "600"]);
+    assert_eq!(code, EXIT_OK);
+    assert_eq!(out["rung"], "queue");
+    assert!(fake.called(
+        "fleet queue claim --worker shed --lane any-shed --lease-seconds 600"
+    ));
+}
+
+#[test]
 fn standalone_agent_gets_a_queue_compatible_unfiltered_default_lane() {
     let fake = Fake::new();
     fake.on(INBOX, vec![empty_inbox()]).on(
