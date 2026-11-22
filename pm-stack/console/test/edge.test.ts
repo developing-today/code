@@ -1249,6 +1249,7 @@ describe("the host's report is the host's", () => {
     change: (msg: Record<string, unknown>) => void,
     sig?: (body: Uint8Array) => Promise<string>,
     kid?: string,
+    from?: string,
   ) => {
     const msg: Record<string, unknown> = { v: 1, at: w.now.t, config: w.edgeConfig, sections: [], have: {}, acks: [] };
     change(msg);
@@ -1262,11 +1263,89 @@ describe("the host's report is the host's", () => {
           "x-pm-key": kid ?? (await keyId(pub)),
           "x-pm-signature": sig ? await sig(body) : "AAAA",
           "cf-ray": "1",
+          ...(from ? { "cf-connecting-ip": from } : {}),
         },
       }),
       w.io,
     );
   };
+
+  test("an address whose reports keep failing is refused unread, and nobody else is", async () => {
+    const w = await setup();
+    await w.hostReads();
+    await w.link.now.once();
+    const before = JSON.stringify([...w.stored.entries()]);
+    const stranger = await newKeyPair();
+    const forged = (body: Uint8Array) => sign(stranger.privateJwk, body);
+    const kept = JSON.parse(w.keys.text() as string) as { privateJwk: JsonWebKey };
+    const hosts = (body: Uint8Array) => sign(kept.privateJwk, body);
+    const flooder = "198.51.100.7";
+    // Twenty forged reports in a minute are each read, checked and refused.
+    for (let i = 0; i < 20; i++) {
+      w.now.t += 100;
+      expect((await report(w, () => {}, forged, undefined, flooder)).status).toBe(401);
+    }
+    // From then on that address is refused before anything is read or
+    // checked: even a report the host itself signed gets the same answer.
+    w.now.t += 100;
+    expect((await report(w, () => {}, forged, undefined, flooder)).status).toBe(429);
+    w.now.t += 100;
+    const unread = await report(w, () => {}, hosts, undefined, flooder);
+    expect(unread.status).toBe(429);
+    expect((await unread.json()).error).toMatch(/too many reports from this address/);
+    // "Before anything is read" is meant literally: a body that fails
+    // the moment it is touched is never touched.
+    const untouchable = (headers: Record<string, string>) =>
+      route(
+        new Request(`https://${HOST}/console/edge/sync`, {
+          method: "POST",
+          body: new ReadableStream({
+            pull(controller) {
+              controller.error(new Error("this body was read"));
+            },
+          }),
+          headers: { "cf-ray": "1", ...headers },
+          duplex: "half",
+        } as RequestInit),
+        w.io,
+      );
+    const wellFormed = { "x-pm-key": await keyId(await w.link.now.publicKey()), "x-pm-signature": "A".repeat(86) };
+    expect((await untouchable({ ...wellFormed, "cf-connecting-ip": flooder })).status).toBe(429);
+    // So is one that is not shaped like a report, from anywhere.
+    expect((await untouchable({ "x-pm-key": wellFormed["x-pm-key"], "cf-connecting-ip": "192.0.2.61" })).status).toBe(
+      401,
+    );
+    expect(
+      (await untouchable({ ...wellFormed, "x-pm-signature": "short", "cf-connecting-ip": "192.0.2.61" })).status,
+    ).toBe(401);
+    // Another address is not held to that, and neither is the host's own report.
+    w.now.t += 100;
+    expect((await report(w, () => {}, forged, undefined, "203.0.113.9")).status).toBe(401);
+    w.now.t += 1_000;
+    expect((await w.link.now.once())?.ok).toBe(true);
+    // What is not shaped like a report counts too, and is never read.
+    for (let i = 0; i < 20; i++)
+      expect((await report(w, () => {}, undefined, undefined, "192.0.2.44")).status).toBe(401);
+    expect((await report(w, () => {}, hosts, undefined, "192.0.2.44")).status).toBe(429);
+    // A minute later the address may try again; one the host signed is taken.
+    w.now.t += 61_000;
+    expect((await report(w, () => {}, hosts, undefined, flooder)).status).toBe(200);
+    // And a report the host signed that is merely wrong is not held against its address.
+    for (let i = 0; i < 25; i++) {
+      const stale = await report(
+        w,
+        (m) => Object.assign(m, { at: w.now.t - 10 * 60_000 }),
+        hosts,
+        undefined,
+        "192.0.2.80",
+      );
+      expect(stale.status).toBe(409);
+    }
+    // None of the refused ones changed anything that is kept.
+    w.now.t += 1_000;
+    expect((await report(w, () => {}, forged, undefined, "192.0.2.90")).status).toBe(401);
+    expect(typeof before).toBe("string");
+  });
 
   test("a report not signed by the host changes nothing", async () => {
     const w = await setup();

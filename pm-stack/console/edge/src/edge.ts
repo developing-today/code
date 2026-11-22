@@ -20,7 +20,7 @@
 import { actions, type Action, ownActions } from "../../src/actions.ts";
 import { AuthError, type Identity, identify } from "../../src/auth.ts";
 import { DIRECT_ACTIONS, DIRECT_READ_SECTIONS, directClasses, directRead } from "./direct.ts";
-import { Devices, Limiter } from "../../src/devices.ts";
+import { Devices, KeyedLimiter, Limiter } from "../../src/devices.ts";
 import { type Act, DOC_NAMES, type DocName, Docs, Stamped } from "../../src/docs.ts";
 import {
   type EdgeConfig,
@@ -80,6 +80,11 @@ const WATCHED = ["board", "asks", "census", "sessions", "questionCount", "servic
 /** One stored value holds at most this many characters of a section. */
 const CHUNK = 600_000;
 const SYNC_LIMIT = 8 * 1024 * 1024;
+/** A report's signature: 64 bytes, as unpadded base64url. */
+const SIGNATURE = /^[A-Za-z0-9_-]{86}$/;
+/** Reports from one address that may fail their checks in a minute
+ * before that address is refused unread. The host's own never fail. */
+const SYNC_REFUSALS = 20;
 const ACT_LIMIT = 256 * 1024;
 const HELD_MAX = 100;
 const ACTS_KEPT = 30;
@@ -165,6 +170,7 @@ export class Edge {
   private confirmed: Record<string, { hash: string; at: number; error: string | null }> = {};
   private sure = 0;
   private unsure = 0;
+  private syncRefused: KeyedLimiter;
   readonly docs: Docs;
   readonly push: Push;
   readonly phones: Phones;
@@ -177,6 +183,7 @@ export class Edge {
     this.fetchImpl = options.fetchImpl ?? fetch;
     this.direct = options.direct;
     this.setAlarm = options.setAlarm ?? (async () => {});
+    this.syncRefused = new KeyedLimiter(SYNC_REFUSALS, 60_000, this.now);
     this.docs = new Docs(
       Object.fromEntries(
         Object.entries(SECTIONS).map(([name, ttlMs]) => [
@@ -506,24 +513,43 @@ export class Edge {
   }
 
   private async sync(req: Request): Promise<Response> {
-    if (Number(req.headers.get("content-length") ?? "0") > SYNC_LIMIT) return json({ error: "too large" }, 413);
-    const body = new Uint8Array(await req.arrayBuffer());
-    if (body.byteLength > SYNC_LIMIT) return json({ error: "too large" }, 413);
+    // The laptop cannot sign in, so this path is open to anyone, and a
+    // report may be megabytes. Every report that fails a check below
+    // counts against the address it came from, and an address with too
+    // many is refused here, before its body is read.
+    const from = req.headers.get("cf-connecting-ip") ?? "unknown";
+    if (this.syncRefused.blocked(from)) {
+      return json({ error: "too many reports from this address were not the host's; try again in a minute" }, 429);
+    }
+    const refuse = (body: unknown, status: number) => {
+      this.syncRefused.count(from);
+      return json(body, status);
+    };
+    // Too large by its own account, or not shaped like a report: refused unread.
+    if (Number(req.headers.get("content-length") ?? "0") > SYNC_LIMIT) return refuse({ error: "too large" }, 413);
     const kid = req.headers.get("x-pm-key") ?? "";
+    const signature = req.headers.get("x-pm-signature") ?? "";
+    if (kid === "" || !SIGNATURE.test(signature)) {
+      return refuse({ error: "this is not signed with the host's key" }, 401);
+    }
     const key = (await this.kv.get("key")) as { kid: string; jwk: PublicKey } | undefined;
     const now = this.now();
     if (!key || key.kid !== kid) {
       // A key this side has not seen: ask the host for its key, but not
-      // on every stranger's request.
+      // on every stranger's request. Nothing has been read yet.
       if (req.headers.get("x-pm-key-fetched") === "1" || now - this.lastKeyFetch < KEY_FETCH_EVERY_MS) {
-        return json({ error: "this is not signed with the host's key" }, 401);
+        return refuse({ error: "this is not signed with the host's key" }, 401);
       }
       this.lastKeyFetch = now;
       return next("key", {});
     }
-    if (!(await verify(key.jwk, body, req.headers.get("x-pm-signature") ?? ""))) {
-      return json({ error: "this is not signed with the host's key" }, 401);
+    const body = new Uint8Array(await req.arrayBuffer());
+    if (body.byteLength > SYNC_LIMIT) return refuse({ error: "too large" }, 413);
+    if (!(await verify(key.jwk, body, signature))) {
+      return refuse({ error: "this is not signed with the host's key" }, 401);
     }
+    // Signed by the host from here on: what is wrong with it is the
+    // host's to hear about, and is not held against the address.
     let msg: SyncRequest;
     try {
       msg = JSON.parse(new TextDecoder().decode(body)) as SyncRequest;

@@ -14,7 +14,7 @@ import { join } from "node:path";
 import { actions, perform } from "../src/actions.ts";
 import { AuthError } from "../src/auth.ts";
 import { readConfig } from "../src/config.ts";
-import { challengeOf, Devices, Limiter, summary } from "../src/devices.ts";
+import { challengeOf, Devices, KeyedLimiter, Limiter, summary } from "../src/devices.ts";
 import { Docs } from "../src/docs.ts";
 import { fileStore } from "../src/file-store.ts";
 import { OpError, Ops } from "../src/ops.ts";
@@ -587,4 +587,38 @@ describe("over HTTP, without the sign-in", () => {
       w.done();
     }
   });
+});
+
+test("a limit kept apart for each sender forgets old senders and never grows past its table", () => {
+  const now = { t: 1_000_000 };
+  const limit = new KeyedLimiter(3, 60_000, () => now.t, 4);
+  // Under the allowance: not blocked. At it: blocked, for that key only.
+  limit.count("a");
+  limit.count("a");
+  expect(limit.blocked("a")).toBe(false);
+  limit.count("a");
+  expect(limit.blocked("a")).toBe(true);
+  expect(limit.blocked("b")).toBe(false);
+  // The window is the key's own, from its first count.
+  now.t += 59_999;
+  expect(limit.blocked("a")).toBe(true);
+  now.t += 1;
+  expect(limit.blocked("a")).toBe(false);
+  limit.count("a");
+  expect(limit.blocked("a")).toBe(false);
+  // A full table makes room: what has run out goes first, then the oldest.
+  for (const key of ["b", "c", "d"]) {
+    limit.count(key);
+    limit.count(key);
+    limit.count(key);
+  }
+  expect(["a", "b", "c", "d"].map((key) => limit.blocked(key))).toEqual([false, true, true, true]);
+  limit.count("e");
+  limit.count("f");
+  // "a" and "b" were the oldest: forgotten, so no longer blocked; the newest are counted.
+  expect(limit.blocked("b")).toBe(false);
+  expect(limit.blocked("d")).toBe(true);
+  limit.count("f");
+  limit.count("f");
+  expect(limit.blocked("f")).toBe(true);
 });
