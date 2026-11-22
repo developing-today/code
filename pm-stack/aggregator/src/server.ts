@@ -280,7 +280,6 @@ const cfg = loadConfig();
 // #10383: the bounded routes' last-good survives a restart on disk, so
 // the first request after a deploy serves it instead of a 503.
 const dashboardResponseWithinDeadline = createDashboardResponseDeadline({ persistDir: cfg.lastGoodDir });
-const commentsStore = new CommentsStore(cfg.commentsFile);
 const promptsStore = new PromptsStore(cfg.promptsFile);
 const roadmapAnnotationsStore = new RoadmapAnnotationsStore(cfg.roadmapAnnotationsFile);
 const coverageStore = new CoverageSnapshotStore(cfg.coverageSnapshotFile);
@@ -375,6 +374,9 @@ async function coverageSnapshot(
 // "file" (the default) no remote exists and no database call is made.
 const storeRemotes = cfg.storeBackend === "turso" ? createTursoRemotes(getTursoStoreClient) : null;
 const actionsStore = new ActionsStore(cfg.actionsFile, undefined, storeRemotes?.actions);
+// #1744 (Move 1, step 2): dashboard comments join the same switch —
+// canonical in public.shared_comments under the turso backend.
+const commentsStore = new CommentsStore(cfg.commentsFile, undefined, storeRemotes?.comments);
 const viewsStore = new ViewsStore(cfg.viewsFile);
 const eventsStore = new EventsStore(cfg.eventsFile);
 const reportRecordsLocation = storeRemotes?.aaLastGood ?? defaultReportRecordsFile();
@@ -1656,7 +1658,9 @@ async function recordWatchdogHeartbeat(nowMs: number, scheduled = false): Promis
   try {
     await (scheduled ? watchdogHeartbeatRecorder.scheduled(nowMs) : watchdogHeartbeatRecorder.request(nowMs));
   } catch (error) {
-    console.error(`[watchdog] WARNING: heartbeat append failed: ${error instanceof Error ? error.message : String(error)}`);
+    console.error(
+      `[watchdog] WARNING: heartbeat append failed: ${error instanceof Error ? error.message : String(error)}`,
+    );
   }
 }
 
@@ -1715,7 +1719,9 @@ async function deriveWatchdogItems(
     mode,
     recordHeartbeat: () => recordWatchdogHeartbeat(Date.now(), mode === "scheduled"),
     onError: (err) => {
-      console.error(`[activity] WARNING: watchdog gap sync failed: ${err instanceof Error ? err.message : String(err)}`);
+      console.error(
+        `[activity] WARNING: watchdog gap sync failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
     },
   });
   return items;
@@ -4938,7 +4944,6 @@ if (cfg.source !== "fixtures") {
   void sampleSlo();
   const timer = setInterval(() => void sampleSlo(), SLO_SAMPLE_INTERVAL_MS);
   timer.unref?.();
-
 }
 
 // Watchdog derivation must not depend on dashboard traffic or push
@@ -4958,7 +4963,9 @@ if (cfg.source === "live") {
       await source.orchestration();
       await deriveWatchdogItems(source.diagnostics?.().orchestration, "scheduled");
     } catch (error) {
-      console.error(`[watchdog] WARNING: scheduled derivation failed: ${error instanceof Error ? error.message : String(error)}`);
+      console.error(
+        `[watchdog] WARNING: scheduled derivation failed: ${error instanceof Error ? error.message : String(error)}`,
+      );
     } finally {
       watchdogRunInProgress = false;
     }

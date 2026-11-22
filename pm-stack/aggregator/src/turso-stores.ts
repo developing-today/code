@@ -37,7 +37,7 @@ export function storeStatement(input: string): { sql: string; args: StoreArg[] }
     sql += `?${args.length}`;
   }
   sql = sql
-    .replace(/\bpublic\.(agg_[a-z_]+|orch_runs)\b/g, "$1")
+    .replace(/\bpublic\.(agg_[a-z_]+|shared_[a-z_]+|orch_runs)\b/g, "$1")
     .replace(/\balerts\.(incidents|incident_events|push_subscriptions|notification_sends)\b/g, "alerts_$1")
     .replace(/\bpush_subscriptions\.classes\b/g, "alerts_push_subscriptions.classes")
     .replace(/array\[([^\]]*)\]::text\[\]/gi, "json_array($1)")
@@ -77,6 +77,7 @@ const JSON_COLUMNS = new Set([
   "detail",
   "payload",
   "author",
+  "linked_identity",
   "checkpoint",
   "seen_ids",
   "source_status",
