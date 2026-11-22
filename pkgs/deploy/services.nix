@@ -19,7 +19,7 @@
   pkarrDeploy,
   developingTodayBackupDeploy,
   coldStoreRehydratorDeploy,
-  labOpsHubDeploy,
+  labOpsHubImagePush,
   cfContainerHelloDeploy,
   queueTransportAlertDeploy,
   messageBridgeDeploy,
@@ -193,9 +193,11 @@
     class = "cloudflare";
   };
 
-  lab-ops-hub = {
-    package = labOpsHubDeploy;
-    entryPoint = "bin/lab-ops-hub-deploy";
+  # Keep the crawler image publisher as a separate operator action. The
+  # Worker's cf Version upload and promotion live in GitHub Actions.
+  lab-ops-hub-image = {
+    package = labOpsHubImagePush;
+    entryPoint = "bin/lab-ops-hub-image-push";
     args = [ ];
     environment = { };
     secrets = [ ]; # resolved by the deploy app itself at deploy time

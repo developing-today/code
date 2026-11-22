@@ -12,7 +12,6 @@
   "scripts": {
     "db:init": "wrangler d1 execute labops-db --remote --file=./schema.sql",
     "db:init:local": "wrangler d1 execute labops-db --local --file=./schema.sql",
-    "deploy": "wrangler deploy",
     "dev": "wrangler dev",
     "test": "npm run test:ts && npm run test:py",
     "test:py": "python3 -m unittest discover -s test -p \"test_*.py\"",

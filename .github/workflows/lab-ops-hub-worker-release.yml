@@ -1,0 +1,78 @@
+name: Lab Ops Hub Worker version upload
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm_migration_tag_v2:
+        description: "Confirm Cloudflare reports v2 as the active Durable Object migration tag"
+        required: true
+        default: false
+        type: boolean
+      confirm_container_image_v5_available:
+        description: "Confirm the pinned crawler container image :v5 is already published"
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  upload:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    concurrency:
+      group: lab-ops-hub-worker-version-upload
+      cancel-in-progress: false
+    env:
+      CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Set up Node 24.22.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: 24.22.0
+
+      - name: Install pinned cf and Wrangler toolchain
+        working-directory: pkgs/lab-ops-hub
+        run: |
+          npm ci --prefix release-tools
+          ln -s release-tools/node_modules node_modules
+
+      - name: Build Build Output v1
+        working-directory: pkgs/lab-ops-hub
+        run: ./node_modules/.bin/cf build
+
+      - name: Verify Wrangler-to-cf binding and migration parity
+        working-directory: pkgs/lab-ops-hub
+        run: node release-tools/verify-build.mjs
+
+      - name: Dry-run Worker Version upload
+        working-directory: pkgs/lab-ops-hub
+        run: >-
+          ./node_modules/.bin/cf workers versions create
+          --prebuilt
+          --worker lab-ops-hub
+          --tag "git-${GITHUB_SHA::12}"
+          --message "git ${GITHUB_SHA}"
+          --dry-run
+
+      - name: Keep upload held until cutover checks are confirmed
+        if: ${{ !inputs.confirm_migration_tag_v2 || !inputs.confirm_container_image_v5_available }}
+        run: |
+          echo "::notice::Worker Version upload held. Confirm active migration tag v2 and published image :v5, then dispatch again."
+
+      - name: Upload Worker Version without promoting it
+        if: ${{ inputs.confirm_migration_tag_v2 && inputs.confirm_container_image_v5_available }}
+        working-directory: pkgs/lab-ops-hub
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: >-
+          ./node_modules/.bin/cf workers versions create
+          --prebuilt
+          --worker lab-ops-hub
+          --tag "git-${GITHUB_SHA::12}"
+          --message "git ${GITHUB_SHA}"

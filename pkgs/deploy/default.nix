@@ -39,7 +39,7 @@ let
     coldStoreRehydratorDeploy = callPackage ../../pkgs/cold-store-reaper/worker/deploy.nix {
       coldStoreRehydratorBundle = callPackage ../../pkgs/cold-store-reaper/worker/package.nix { };
     };
-    labOpsHubDeploy = callPackage ../../pkgs/lab-ops-hub/deploy.nix {
+    labOpsHubImagePush = callPackage ../../pkgs/lab-ops-hub/image-push.nix {
       labOpsHub = callPackage ../../pkgs/lab-ops-hub/package.nix { };
     };
     cfContainerHelloDeploy = callPackage ../../pkgs/cf-container-hello/deploy.nix {

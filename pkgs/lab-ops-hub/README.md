@@ -79,7 +79,7 @@ needs `npm install`. CI installs that Python dependency and runs the same
 test command on every pull request touching
 `pkgs/lab-ops-hub/**` (`.github/workflows/lab-ops-hub.yml`).
 
-## Develop / deploy
+## Develop / release
 
 ```bash
 npm install
@@ -89,29 +89,44 @@ wrangler r2 bucket create labops-files
 wrangler kv namespace create CACHE
 wrangler queues create labops-jobs
 npm run db:init        # remote D1 schema
-npm run deploy         # deploys the Worker; build/push the Nix image below first
 npm run dev            # local dev (containers run via workerd locally too)
 ```
 
-**Preferred (issue #5767 phase 2):** `nix run .#lab-ops-hub-deploy`
-does the whole deploy as one command — builds + pushes the Nix
-container image below, then deploys the Worker from the flake package
-(`package.nix`, lockfile-pinned deps incl. the pinned wrangler; no
-deploy-time `npm install`). It is registered as the `lab-ops-hub`
-target of the `deploy` CLI. `-- --dry-run` validates the Worker
-config only. The manual sequence below remains the reference for how
-the image push works (registry credentials need the account-wide
-token — see the known-behaviour notes).
+Worker releases use the two manually dispatched workflows from `main`:
 
-Deploy auth: set `CLOUDFLARE_API_TOKEN` (scoped day-to-day token from
-Bitwarden) or use the repo-standard wrapper — never commit a token.
-Runtime API auth is separate: the `API_TOKEN` Worker secret above gates
-the deployed API itself.
+- `lab-ops-hub-worker-release.yml` builds Build Output v1, checks the
+  mapped config against `wrangler.jsonc`, and uploads a tagged Worker
+  Version with `cf workers versions create`. It does not route traffic.
+- `lab-ops-hub-promote.yml` takes an uploaded version UUID and a separate
+  confirmation, then explicitly deploys that version at 100% with
+  `cf workers deployments create`.
+
+Both workflows use Node `24.22.0`, `cf@1.0.0-rc.1`, and Wrangler
+`4.163.0`. The upload workflow keeps a default hold: dispatch it from
+`main`, review the offline build and dry run, then affirm both that the
+existing Worker reports migration tag `v2` and that the pinned crawler
+image is available. It needs the repository variable
+`CLOUDFLARE_ACCOUNT_ID` and secret `CLOUDFLARE_API_TOKEN`; scope the token
+to Cloudflare `Workers Scripts Write`. The secret is present only on the
+version-upload step, never on pull-request workflows. The promotion
+workflow requires the exact version UUID and its own explicit confirmation.
+
+Cutover prerequisites: the `lab-ops-hub` Worker must already exist,
+Cloudflare must report migration tag `v2` as current, and the pinned
+`lab-ops-hub-crawlercontainer:v5` image must already be present in the
+configured registry. `cf workers versions create` refuses a pending
+Durable Object migration and cannot create a Worker that does not exist.
+The existing `v1` and `v2` migration records stay in `wrangler.jsonc`;
+this release path does not apply them. If any prerequisite is unknown or
+false, keep the upload held and resolve it before promotion.
+
+Runtime API auth is separate: the existing `API_TOKEN` Worker secret
+gates the deployed API itself.
 
 ## Container image without a Docker daemon (what this sandbox does)
 
-The Wrangler target references the pre-pushed registry image, so deployment
-does not build a Dockerfile. Build and push the image daemon-less:
+The Worker config references a pre-pushed registry image; the Worker release
+does not build or publish a container. Build and push the image separately:
 
 ```bash
 # 1. Build the OCI image with Nix (dockerTools) — pinned nixpkgs in container-image.nix
@@ -124,14 +139,16 @@ wrangler containers registries credentials --push   # prints a JWT
 #    (docker config auth entry for registry.cloudflare.com)
 nix run nixpkgs#crane -- push <image.tar> \
   registry.cloudflare.com/<account-id>/lab-ops-hub-crawlercontainer:v5
-# 4. wrangler.jsonc references the registry image (not ./Dockerfile),
-#    so `wrangler deploy` needs no Docker at all.
+# 4. wrangler.jsonc references the registry image (not ./Dockerfile);
+#    the separate GHA Worker release then uploads code referencing this pin.
 ```
 
 The Nix-built `container-image.nix` artifact is the only image build path.
 `wrangler.jsonc` points `CrawlerContainerV2` at the matching `:v5` registry
-image; `npm run deploy` deploys the Worker configuration but does not build or
-push that image.
+image. The operator app `nix run .#lab-ops-hub-image-push` builds and pushes
+only that image (use `-- --dry-run` to build without pushing). It does not
+upload or promote a Worker Version. `wrangler.jsonc` and the Build Output
+mapping both pin `CrawlerContainerV2` to the matching `:v5` image.
 
 ### Known behaviour (observed 2026-10-20, D1-verified)
 

@@ -2,7 +2,7 @@
 # nixpkgs is pinned to the same rev as dezren39/nix's flake.lock.
 # Build:  nix build -f container-image.nix  -> store path is a docker-archive tar
 # Push:   crane push <tar> registry.cloudflare.com/<account>/lab-ops-hub-crawlercontainer:v5
-# (or load it anywhere with docker/podman and `wrangler deploy` from there)
+# (the Worker release workflow separately uploads code referencing this pin)
 #
 # Image shape matters (learned 2026-10-25): the v3 shape — relative Cmd
 # ("python3 app.py"), no PATH env, no shell — stopped starting after
