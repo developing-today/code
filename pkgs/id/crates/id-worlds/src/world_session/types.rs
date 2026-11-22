@@ -204,6 +204,10 @@ pub(crate) enum ClientFrame {
         /// it and serves full views at reduced fidelity, same authority.
         #[serde(default)]
         agent_profile: bool,
+        /// Input affordances of this presenter. This is descriptive session
+        /// metadata, not an authority grant; omitted by older clients.
+        #[serde(default)]
+        device_input: Option<serde_json::Value>,
     },
     Info {
         capability: String,

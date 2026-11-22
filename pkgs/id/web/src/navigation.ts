@@ -113,6 +113,9 @@ export function createNavigation(deps: NavigationDeps): Navigation {
         }
         pageGeneration++;
         main.innerHTML = html;
+        // Move keyboard and screen-reader users into the newly loaded page.
+        main.setAttribute("tabindex", "-1");
+        main.focus();
         if (pushUrl) {
           window.history.pushState(null, "", url);
         }

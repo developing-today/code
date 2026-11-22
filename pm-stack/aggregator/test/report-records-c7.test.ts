@@ -47,8 +47,12 @@ describe("C7 canonical report records", () => {
       asOf: "2026-11-22T05:45:00.000Z",
       templateVersion: "daily-v1",
       sourceCursor: "source-event-42",
-      sources: [{ id: "source-event-42", uri: "gh:developing-today/code/issues/12349", observedAt: "2026-11-22T05:40:00.000Z" }],
-      blocks: [{ id: "change-12349", text: "Added the period boundary foundation.", relatedAt: "2026-11-22T05:40:00.000Z" }],
+      sources: [
+        { id: "source-event-42", uri: "gh:developing-today/code/issues/12349", observedAt: "2026-11-22T05:40:00.000Z" },
+      ],
+      blocks: [
+        { id: "change-12349", text: "Added the period boundary foundation.", relatedAt: "2026-11-22T05:40:00.000Z" },
+      ],
     };
 
     const record = makeReportRecord(input, "2026-11-22T05:45:01.000Z");
@@ -67,26 +71,31 @@ describe("C7 canonical report records", () => {
 
   test("rejects a forged record ID at the persistence boundary", async () => {
     const file = await storePath();
-    const canonical = makeReportRecord({
-      period: {
-        id: "daily:2026-11-21:America/Chicago",
-        kind: "daily",
-        timezone: "America/Chicago",
-        periodStart: "2026-11-21T06:00:00.000Z",
-        periodEnd: "2026-11-22T06:00:00.000Z",
-        softCloseAt: "2026-11-22T14:00:00.000Z",
+    const canonical = makeReportRecord(
+      {
+        period: {
+          id: "daily:2026-11-21:America/Chicago",
+          kind: "daily",
+          timezone: "America/Chicago",
+          periodStart: "2026-11-21T06:00:00.000Z",
+          periodEnd: "2026-11-22T06:00:00.000Z",
+          softCloseAt: "2026-11-22T14:00:00.000Z",
+        },
+        asOf: "2026-11-22T05:45:00.000Z",
+        templateVersion: "daily-v1",
+        sourceCursor: "source-event-42",
+        sources: [{ id: "source-event-42", uri: "gh:issue/12349", observedAt: "2026-11-22T05:40:00.000Z" }],
+        blocks: [{ id: "change-12349", text: "Canonical prose.", relatedAt: "2026-11-22T05:40:00.000Z" }],
       },
-      asOf: "2026-11-22T05:45:00.000Z",
-      templateVersion: "daily-v1",
-      sourceCursor: "source-event-42",
-      sources: [{ id: "source-event-42", uri: "gh:issue/12349", observedAt: "2026-11-22T05:40:00.000Z" }],
-      blocks: [{ id: "change-12349", text: "Canonical prose.", relatedAt: "2026-11-22T05:40:00.000Z" }],
-    }, "2026-11-22T05:45:01.000Z");
+      "2026-11-22T05:45:01.000Z",
+    );
 
-    await expect(appendReportRecord(file, { ...canonical, id: "report:forged" }))
-      .rejects.toThrow(/canonical contents and ID/);
-    await expect(appendReportSnapshot(file, { ...canonical, id: "report:forged" }, "2026-11-22T14:00:00.000Z"))
-      .rejects.toThrow(/canonical contents and ID/);
+    await expect(appendReportRecord(file, { ...canonical, id: "report:forged" })).rejects.toThrow(
+      /canonical contents and ID/,
+    );
+    await expect(
+      appendReportSnapshot(file, { ...canonical, id: "report:forged" }, "2026-11-22T14:00:00.000Z"),
+    ).rejects.toThrow(/canonical contents and ID/);
     expect(await readReportRecords(file)).toEqual([]);
     expect(await readReportSnapshots(file)).toEqual([]);
   });
@@ -105,37 +114,54 @@ describe("C7 canonical report records", () => {
       asOf: "2026-11-22T05:45:00.000Z",
       templateVersion: "daily-v1",
       sourceCursor: "source-event-42",
-      sources: [{ id: "source-event-42", uri: "gh:developing-today/code/issues/12349", observedAt: "2026-11-22T05:40:00.000Z" }],
+      sources: [
+        { id: "source-event-42", uri: "gh:developing-today/code/issues/12349", observedAt: "2026-11-22T05:40:00.000Z" },
+      ],
       blocks: [{ id: "change-12349", text: "Original prose.", relatedAt: "2026-11-22T05:40:00.000Z" }],
     };
     const record = makeReportRecord(input, "2026-11-22T05:45:01.000Z");
     await appendReportRecord(file, record);
 
-    const conflictingRecord = makeReportRecord({
-      ...input,
-      blocks: [{ ...input.blocks[0]!, text: "Silently changed prose." }],
-    }, "2026-11-22T05:46:01.000Z");
+    const conflictingRecord = makeReportRecord(
+      {
+        ...input,
+        blocks: [{ ...input.blocks[0]!, text: "Silently changed prose." }],
+      },
+      "2026-11-22T05:46:01.000Z",
+    );
     await expect(appendReportRecord(file, conflictingRecord)).rejects.toBeInstanceOf(ReportRecordConflictError);
-    await expect(appendReportSnapshot(file, conflictingRecord, "2026-11-22T14:00:00.000Z"))
-      .rejects.toBeInstanceOf(ReportRecordConflictError);
+    await expect(appendReportSnapshot(file, conflictingRecord, "2026-11-22T14:00:00.000Z")).rejects.toBeInstanceOf(
+      ReportRecordConflictError,
+    );
     expect((await readReportRecords(file))[0]?.blocks[0]?.text).toBe("Original prose.");
 
     const snapshot = await appendReportSnapshot(file, record, "2026-11-22T14:00:00.000Z");
     expect(snapshot.inserted).toBe(true);
-    const snapshotRerun = await appendReportSnapshot(file, makeReportRecord(input, "2026-11-22T05:46:01.000Z"), "2026-11-22T14:01:00.000Z");
+    const snapshotRerun = await appendReportSnapshot(
+      file,
+      makeReportRecord(input, "2026-11-22T05:46:01.000Z"),
+      "2026-11-22T14:01:00.000Z",
+    );
     expect(snapshotRerun.inserted).toBe(false);
     expect(snapshotRerun.snapshot.snapshotAt).toBe("2026-11-22T14:00:00.000Z");
-    const mutatedSnapshotSource = makeReportRecord({
-      ...input,
-      blocks: [{ ...input.blocks[0]!, text: "Changed after rollover." }],
-    }, "2026-11-22T05:47:01.000Z");
-    await expect(appendReportSnapshot(file, mutatedSnapshotSource, "2026-11-22T14:00:00.000Z"))
-      .rejects.toBeInstanceOf(ReportRecordConflictError);
+    const mutatedSnapshotSource = makeReportRecord(
+      {
+        ...input,
+        blocks: [{ ...input.blocks[0]!, text: "Changed after rollover." }],
+      },
+      "2026-11-22T05:47:01.000Z",
+    );
+    await expect(appendReportSnapshot(file, mutatedSnapshotSource, "2026-11-22T14:00:00.000Z")).rejects.toBeInstanceOf(
+      ReportRecordConflictError,
+    );
     expect((await readReportSnapshots(file))[0]?.record.blocks[0]?.text).toBe("Original prose.");
-    const conflictingGeneration = makeReportRecord({
-      ...input,
-      blocks: [{ ...input.blocks[0]!, text: "Conflicting after standalone snapshot." }],
-    }, "2026-11-22T05:48:01.000Z");
+    const conflictingGeneration = makeReportRecord(
+      {
+        ...input,
+        blocks: [{ ...input.blocks[0]!, text: "Conflicting after standalone snapshot." }],
+      },
+      "2026-11-22T05:48:01.000Z",
+    );
     await expect(appendReportRecord(file, conflictingGeneration)).rejects.toBeInstanceOf(ReportRecordConflictError);
   });
 
@@ -159,14 +185,27 @@ describe("C7 canonical report records", () => {
     const original = makeReportRecord(input, "2026-11-22T05:45:01.000Z");
     await appendReportRecord(file, original);
     await appendReportSnapshot(file, original, "2026-11-22T14:00:00.000Z");
-    const correction = makeReportRecord({
-      ...input,
-      sourceCursor: "cursor-correction-1",
-      blocks: [{ ...input.blocks[0]!, text: "Corrected snapshot." }],
-    }, "2026-11-22T15:00:00.000Z");
+    const correction = makeReportRecord(
+      {
+        ...input,
+        sourceCursor: "cursor-correction-1",
+        blocks: [{ ...input.blocks[0]!, text: "Corrected snapshot." }],
+      },
+      "2026-11-22T15:00:00.000Z",
+    );
 
-    const first = await appendReportSnapshotCorrection(file, "snapshot:daily:2026-11-21:America/Chicago", correction, "2026-11-22T15:00:00.000Z");
-    const rerun = await appendReportSnapshotCorrection(file, "snapshot:daily:2026-11-21:America/Chicago", correction, "2026-11-22T15:05:00.000Z");
+    const first = await appendReportSnapshotCorrection(
+      file,
+      "snapshot:daily:2026-11-21:America/Chicago",
+      correction,
+      "2026-11-22T15:00:00.000Z",
+    );
+    const rerun = await appendReportSnapshotCorrection(
+      file,
+      "snapshot:daily:2026-11-21:America/Chicago",
+      correction,
+      "2026-11-22T15:05:00.000Z",
+    );
     expect(first.inserted).toBe(true);
     expect(rerun.inserted).toBe(false);
     expect(first.correction.snapshotId).toBe("snapshot:daily:2026-11-21:America/Chicago");
@@ -174,33 +213,46 @@ describe("C7 canonical report records", () => {
     expect(first.correction.record.id).toBe(correction.id);
     expect((await readReportSnapshots(file))[0]?.record.blocks[0]?.text).toBe("Original snapshot.");
     expect((await readReportSnapshotCorrections(file)).map((item) => item.record.id)).toEqual([correction.id]);
-    const conflictingOriginal = makeReportRecord({
-      ...input,
-      blocks: [{ ...input.blocks[0]!, text: "Contradictory original record." }],
-    }, "2026-11-22T15:06:00.000Z");
-    await expect(appendReportSnapshotCorrection(file, "snapshot:daily:2026-11-21:America/Chicago", conflictingOriginal, "2026-11-22T15:06:01.000Z"))
-      .rejects.toBeInstanceOf(ReportRecordConflictError);
-    await expect(appendReportSnapshotCorrection(file, "snapshot:missing", correction, "2026-11-22T15:00:00.000Z"))
-      .rejects.toThrow(/snapshot does not exist/);
+    const conflictingOriginal = makeReportRecord(
+      {
+        ...input,
+        blocks: [{ ...input.blocks[0]!, text: "Contradictory original record." }],
+      },
+      "2026-11-22T15:06:00.000Z",
+    );
+    await expect(
+      appendReportSnapshotCorrection(
+        file,
+        "snapshot:daily:2026-11-21:America/Chicago",
+        conflictingOriginal,
+        "2026-11-22T15:06:01.000Z",
+      ),
+    ).rejects.toBeInstanceOf(ReportRecordConflictError);
+    await expect(
+      appendReportSnapshotCorrection(file, "snapshot:missing", correction, "2026-11-22T15:00:00.000Z"),
+    ).rejects.toThrow(/snapshot does not exist/);
   });
 
   test("keeps later appends readable after a torn trailing JSONL fragment", async () => {
     const file = await storePath();
-    const record = makeReportRecord({
-      period: {
-        id: "daily:2026-11-21:America/Chicago",
-        kind: "daily",
-        timezone: "America/Chicago",
-        periodStart: "2026-11-21T06:00:00.000Z",
-        periodEnd: "2026-11-22T06:00:00.000Z",
-        softCloseAt: "2026-11-22T14:00:00.000Z",
+    const record = makeReportRecord(
+      {
+        period: {
+          id: "daily:2026-11-21:America/Chicago",
+          kind: "daily",
+          timezone: "America/Chicago",
+          periodStart: "2026-11-21T06:00:00.000Z",
+          periodEnd: "2026-11-22T06:00:00.000Z",
+          softCloseAt: "2026-11-22T14:00:00.000Z",
+        },
+        asOf: "2026-11-22T05:45:00.000Z",
+        templateVersion: "daily-v1",
+        sourceCursor: "source-event-42",
+        sources: [{ id: "source-event-42", uri: "gh:issue/12349", observedAt: "2026-11-22T05:40:00.000Z" }],
+        blocks: [{ id: "change-12349", text: "Recovered append.", relatedAt: "2026-11-22T05:40:00.000Z" }],
       },
-      asOf: "2026-11-22T05:45:00.000Z",
-      templateVersion: "daily-v1",
-      sourceCursor: "source-event-42",
-      sources: [{ id: "source-event-42", uri: "gh:issue/12349", observedAt: "2026-11-22T05:40:00.000Z" }],
-      blocks: [{ id: "change-12349", text: "Recovered append.", relatedAt: "2026-11-22T05:40:00.000Z" }],
-    }, "2026-11-22T05:45:01.000Z");
+      "2026-11-22T05:45:01.000Z",
+    );
 
     await Bun.write(file, '{"eventId":"interrupted"');
     expect((await appendReportRecord(file, record)).inserted).toBe(true);
@@ -222,8 +274,9 @@ describe("C7 canonical report records", () => {
       softCloseAt: "2026-11-22T14:00:00.000Z",
     };
     expect(() => assertReportUpdateAllowed(period, "replace", "2026-11-22T13:59:59.000Z")).not.toThrow();
-    expect(() => assertReportUpdateAllowed(period, "replace", "2026-11-22T14:00:00.000Z"))
-      .toThrow(/not allowed after soft close/);
+    expect(() => assertReportUpdateAllowed(period, "replace", "2026-11-22T14:00:00.000Z")).toThrow(
+      /not allowed after soft close/,
+    );
     expect(() => assertReportUpdateAllowed(period, "append", "2026-11-22T14:00:00.000Z")).not.toThrow();
     expect(() => assertReportUpdateAllowed(period, "event-log", "2026-11-23T00:00:00.000Z")).not.toThrow();
   });
@@ -246,7 +299,10 @@ describe("C7 canonical report records", () => {
       blocks: [{ id: "change-1", text: "Stored paragraph.", relatedAt: "2026-11-22T05:40:00.000Z" }],
     };
     const first = makeReportRecord(base, "2026-11-22T05:45:01.000Z");
-    const second = makeReportRecord({ ...base, sourceCursor: "cursor-2", asOf: "2026-11-22T05:50:00.000Z" }, "2026-11-22T05:50:01.000Z");
+    const second = makeReportRecord(
+      { ...base, sourceCursor: "cursor-2", asOf: "2026-11-22T05:50:00.000Z" },
+      "2026-11-22T05:50:01.000Z",
+    );
     await appendReportRecord(file, first);
     await appendReportRecord(file, second);
 
@@ -254,8 +310,14 @@ describe("C7 canonical report records", () => {
     expect((await readCurrentReportRecords(file)).map((record) => record.sourceCursor)).toEqual(["cursor-2"]);
     expect(reportBlockConflict("Stored  paragraph.\n", "Stored paragraph.")).toBe(false);
     expect(reportBlockConflict("Stored paragraph.", "Human changed paragraph.")).toBe(true);
-    const identityFirst = makeReportRecord({ ...base, templateVersion: "daily-v1\nsource", sourceCursor: "cursor" }, "2026-11-22T05:45:01.000Z");
-    const identitySecond = makeReportRecord({ ...base, templateVersion: "daily-v1", sourceCursor: "source\ncursor" }, "2026-11-22T05:45:01.000Z");
+    const identityFirst = makeReportRecord(
+      { ...base, templateVersion: "daily-v1\nsource", sourceCursor: "cursor" },
+      "2026-11-22T05:45:01.000Z",
+    );
+    const identitySecond = makeReportRecord(
+      { ...base, templateVersion: "daily-v1", sourceCursor: "source\ncursor" },
+      "2026-11-22T05:45:01.000Z",
+    );
     expect(identityFirst.id).not.toBe(identitySecond.id);
   });
 
@@ -570,14 +632,23 @@ describe("C7 canonical report records", () => {
         return true;
       },
       async listPrefix(prefix) {
-        return [...documents.entries()].filter(([store]) => store.startsWith(prefix))
+        return [...documents.entries()]
+          .filter(([store]) => store.startsWith(prefix))
           .map(([store, document]) => ({ store, version: 1, document: structuredClone(document) }));
       },
     };
     const base = {
-      period: { id: "daily:2026-11-21:America/Chicago", kind: "daily" as const, timezone: "America/Chicago" as const,
-        periodStart: "2026-11-21T06:00:00.000Z", periodEnd: "2026-11-22T06:00:00.000Z", softCloseAt: "2026-11-22T14:00:00.000Z" },
-      asOf: "2026-11-22T05:45:00.000Z", templateVersion: "daily-v1", sourceCursor: "cursor-1",
+      period: {
+        id: "daily:2026-11-21:America/Chicago",
+        kind: "daily" as const,
+        timezone: "America/Chicago" as const,
+        periodStart: "2026-11-21T06:00:00.000Z",
+        periodEnd: "2026-11-22T06:00:00.000Z",
+        softCloseAt: "2026-11-22T14:00:00.000Z",
+      },
+      asOf: "2026-11-22T05:45:00.000Z",
+      templateVersion: "daily-v1",
+      sourceCursor: "cursor-1",
       sources: [{ id: "event-1", uri: "gh:issue/12349", observedAt: "2026-11-22T05:40:00.000Z" }],
       blocks: [{ id: "change-1", text: "Original report.", relatedAt: "2026-11-22T05:40:00.000Z" }],
     };
@@ -586,9 +657,15 @@ describe("C7 canonical report records", () => {
     const rerun = await appendReportRecord(remote, makeReportRecord(base, "2026-11-22T05:46:01.000Z"));
     expect(rerun.inserted).toBe(false);
     expect(rerun.record.generatedAt).toBe(record.generatedAt);
-    await expect(appendReportRecord(remote, makeReportRecord({ ...base,
-      blocks: [{ ...base.blocks[0]!, text: "Conflicting content." }],
-    }, "2026-11-22T05:47:01.000Z"))).rejects.toBeInstanceOf(ReportRecordConflictError);
+    await expect(
+      appendReportRecord(
+        remote,
+        makeReportRecord(
+          { ...base, blocks: [{ ...base.blocks[0]!, text: "Conflicting content." }] },
+          "2026-11-22T05:47:01.000Z",
+        ),
+      ),
+    ).rejects.toBeInstanceOf(ReportRecordConflictError);
     const snapshot = await appendReportSnapshot(remote, record, "2026-11-22T14:00:00.000Z");
     const snapshotRerun = await appendReportSnapshot(remote, record, "2026-11-22T14:05:00.000Z");
     expect(snapshot.inserted).toBe(true);
@@ -602,25 +679,40 @@ describe("C7 canonical report records", () => {
   test("remote generation and snapshot conflict checks are atomic across event types", async () => {
     const documents = new Map<string, unknown>();
     const remote: AppendOnlyDocumentRemote = {
-      async load(store) { return documents.has(store) ? { version: 1, document: structuredClone(documents.get(store)) } : null; },
+      async load(store) {
+        return documents.has(store) ? { version: 1, document: structuredClone(documents.get(store)) } : null;
+      },
       async insertIfAbsent(store, _version, document) {
         if (documents.has(store)) return false;
         documents.set(store, structuredClone(document));
         return true;
       },
       async listPrefix(prefix) {
-        return [...documents.entries()].filter(([store]) => store.startsWith(prefix))
+        return [...documents.entries()]
+          .filter(([store]) => store.startsWith(prefix))
           .map(([store, document]) => ({ store, version: 1, document: structuredClone(document) }));
       },
     };
     const base = {
-      period: { id: "daily:2026-11-21:America/Chicago", kind: "daily" as const, timezone: "America/Chicago" as const,
-        periodStart: "2026-11-21T06:00:00.000Z", periodEnd: "2026-11-22T06:00:00.000Z", softCloseAt: "2026-11-22T14:00:00.000Z" },
-      asOf: "2026-11-22T05:45:00.000Z", templateVersion: "daily-v1", sourceCursor: "concurrent-cursor",
-      sources: [], blocks: [{ id: "block", text: "original", relatedAt: "2026-11-22T05:40:00.000Z" }],
+      period: {
+        id: "daily:2026-11-21:America/Chicago",
+        kind: "daily" as const,
+        timezone: "America/Chicago" as const,
+        periodStart: "2026-11-21T06:00:00.000Z",
+        periodEnd: "2026-11-22T06:00:00.000Z",
+        softCloseAt: "2026-11-22T14:00:00.000Z",
+      },
+      asOf: "2026-11-22T05:45:00.000Z",
+      templateVersion: "daily-v1",
+      sourceCursor: "concurrent-cursor",
+      sources: [],
+      blocks: [{ id: "block", text: "original", relatedAt: "2026-11-22T05:40:00.000Z" }],
     };
     const generated = makeReportRecord(base, "2026-11-22T05:45:01.000Z");
-    const conflicting = makeReportRecord({ ...base, blocks: [{ ...base.blocks[0]!, text: "different" }] }, "2026-11-22T05:45:02.000Z");
+    const conflicting = makeReportRecord(
+      { ...base, blocks: [{ ...base.blocks[0]!, text: "different" }] },
+      "2026-11-22T05:45:02.000Z",
+    );
     const results = await Promise.allSettled([
       appendReportRecord(remote, generated),
       appendReportSnapshot(remote, conflicting, "2026-11-22T14:00:00.000Z"),
@@ -668,7 +760,8 @@ describe("C7 canonical report records", () => {
   });
 
   test("allows a persistent store path override without a second datastore", () => {
-    expect(defaultReportRecordsFile({ PM_AGG_REPORT_RECORDS_FILE: "/var/lib/pm/report-records.jsonl" }))
-      .toBe("/var/lib/pm/report-records.jsonl");
+    expect(defaultReportRecordsFile({ PM_AGG_REPORT_RECORDS_FILE: "/var/lib/pm/report-records.jsonl" })).toBe(
+      "/var/lib/pm/report-records.jsonl",
+    );
   });
 });

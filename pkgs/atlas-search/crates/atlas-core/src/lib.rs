@@ -29,7 +29,11 @@
 
 pub mod aggregate;
 pub mod backend;
+pub mod boundary;
+pub mod classification;
+pub mod classify;
 pub mod detect;
+pub mod disclosure;
 pub mod embed;
 pub mod embed_cache;
 pub mod error;
@@ -66,6 +70,7 @@ pub use detect::{
     PathVerdict, PlainTreeOptions, SourceLedger, Verdict, VerdictCounts, default_ledger_path,
     git_tree_detection, plain_tree_detection, resolve_commit,
 };
+pub use disclosure::{DisclosureContext, chunk_classification};
 pub use embed::{
     AtlasEmbedder, DocEmbedder, FixedDocEmbedder, FixedEmbedder, QUERY_PROMPT, QueryEmbedder,
 };
@@ -104,7 +109,8 @@ pub use owner_inventory::{
 };
 pub use search::{
     BackendBranchExecutor, BranchPoolExecutor, SearchMode, SearchOptions, TraceJob, run_get_chunk,
-    run_search, run_search_traced, run_search_with_executor, run_search_with_executor_traced,
+    run_get_chunk_with_context, run_search, run_search_traced, run_search_with_executor,
+    run_search_with_executor_traced,
 };
 pub use stage::{
     REGISTRY_V1_DDL, Registry, STAGE_SCHEMA_VERSION, STAGE_V1_DDL, STAGE_V1_TABLES, StagingUnit,

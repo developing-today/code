@@ -776,6 +776,23 @@ impl<T: PipelineTransport> SearchBackend for TursoBackend<T> {
             .collect())
     }
 
+    fn message_chunks(&self, message_id: &str) -> Result<Vec<NeighborRow>> {
+        let rows = self.execute(&Stmt::new(
+            crate::filters::MESSAGE_CHUNKS_SQL,
+            vec![Value::text(message_id)],
+        ))?;
+        Ok(rows
+            .iter()
+            .filter_map(|r| {
+                Some(NeighborRow {
+                    chunk_id: r.get_i64("id")?,
+                    chunk_idx: r.get_i64("chunk_idx")?,
+                    text: r.get_text("text")?.to_string(),
+                })
+            })
+            .collect())
+    }
+
     fn message(&self, message_id: &str) -> Result<Option<MessageRow>> {
         let rows = self.execute(&Stmt::new(
             crate::filters::MESSAGE_SQL,

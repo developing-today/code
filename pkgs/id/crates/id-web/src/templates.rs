@@ -576,7 +576,7 @@ pub fn render_editor(doc_id: &str, name: &str, content: &str, hash: &str) -> Str
     html.push_str("        <span class=\"flex items-center gap-1\" id=\"tag-add-inline\">\n");
     html.push_str("            <input type=\"text\" id=\"tag-add-key\" aria-label=\"Tag key\" class=\"input input-bordered input-xs w-20 bg-base-100\" placeholder=\"key\" />\n");
     html.push_str("            <input type=\"text\" id=\"tag-add-value\" aria-label=\"Tag value\" class=\"input input-bordered input-xs w-20 bg-base-100\" placeholder=\"value\" />\n");
-    html.push_str("            <button class=\"btn btn-ghost btn-xs font-mono\" aria-label=\"Add tag\" onclick=\"window.idApp?.addTagInline?.()\">+</button>\n");
+    html.push_str("            <button class=\"btn btn-ghost btn-xs font-mono\" title=\"Add tag\" aria-label=\"Add tag\" onclick=\"window.idApp?.addTagInline?.()\">+</button>\n");
     html.push_str("        </span>\n");
     html.push_str("    </div>\n");
 
