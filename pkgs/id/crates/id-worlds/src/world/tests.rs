@@ -1702,9 +1702,10 @@ mod tests {
         // version 8 for recurring schedules (#1355); the lease entries
         // still require exactly 7.
         // Version 12 (#11960) records join and revoke times, version
-        // 13 the kv store entries and version 14 the blob store
-        // entries (both #1062).
-        assert_eq!(MAX_JOURNAL_VERSION, JOURNAL_VERSION_BLOB);
+        // 13 the kv store entries, version 14 the blob store entries,
+        // and version 15 the notify provider's `Notification` events
+        // (all #1062).
+        assert_eq!(MAX_JOURNAL_VERSION, JOURNAL_VERSION_NOTIFY);
         // A checkpoint carrying a non-bootstrap lease also requires
         // version 7; one without a lease keeps its existing version.
         let mut lease = WriteLease::bootstrap();
@@ -2865,7 +2866,9 @@ mod tests {
                     self.asks += 1;
                 }
                 WorldEventKind::System { event } => self.received.push(event.clone()),
-                WorldEventKind::Chat(_) | WorldEventKind::ProgramInstalled { .. } => {}
+                WorldEventKind::Chat(_)
+                | WorldEventKind::ProgramInstalled { .. }
+                | WorldEventKind::Notification { .. } => {}
             }
             Ok(())
         }
@@ -7708,7 +7711,9 @@ mod tests {
                             self.read_key = key.to_owned();
                         }
                     }
-                    WorldEventKind::Chat(_) | WorldEventKind::ProgramInstalled { .. } => {}
+                    WorldEventKind::Chat(_)
+                    | WorldEventKind::ProgramInstalled { .. }
+                    | WorldEventKind::Notification { .. } => {}
                 }
                 Ok(())
             }
@@ -9630,7 +9635,9 @@ mod schedule_tests {
                         _ => {}
                     }
                 }
-                WorldEventKind::Chat(_) | WorldEventKind::ProgramInstalled { .. } => {}
+                WorldEventKind::Chat(_)
+                | WorldEventKind::ProgramInstalled { .. }
+                | WorldEventKind::Notification { .. } => {}
             }
             Ok(())
         }
@@ -11272,6 +11279,306 @@ mod schedule_tests {
         let restored = WorldCore::restore("fetch-replay", WorldLimits::default(), after).unwrap();
         assert_eq!(restored.core.kv["a"], "1");
         assert!(restored.core.blobs.is_empty());
+    }
+
+    /// An actor for `notify` tests, on `http_fetch_actor`'s
+    /// pattern. `enabled` performs the operator's two ceiling
+    /// acts — naming the provider in the server caps and in the
+    /// world's own ceiling; without them the provider stays off
+    /// by default however it is granted.
+    fn notify_actor(
+        id: &str,
+        grants: &[&str],
+        enabled: bool,
+    ) -> (WorldActor, Arc<ManualClock>, JoinCapability, Recorded) {
+        let journal = Recorded::for_world(id);
+        let clock: Arc<ManualClock> = Arc::new(ManualClock::new(EPOCH_MS));
+        let mut limits = WorldLimits::default();
+        if enabled {
+            limits.server_caps.insert("notify".to_owned());
+        }
+        let mut core = WorldCore::new_with_clock(id, limits, clock.clone()).unwrap();
+        if enabled {
+            core.caps_ceiling.insert("notify".to_owned());
+            core.sync_ledger_ceiling();
+        }
+        core.ledger
+            .set_granted(grants.iter().map(|grant| (*grant).to_owned()).collect());
+        let (ann, token) = core
+            .issue_capability("ann", WorldScopes::GUEST, CapabilityBounds::default())
+            .unwrap();
+        let issued = core.issued_entry(ann.id).unwrap();
+        super::tests::push_bumped(&mut journal.0.lock().unwrap(), &issued);
+        let program = Scheduler::default();
+        let actor = WorldActor::for_test(core, Box::new(program), Some(Box::new(journal.clone())));
+        (actor, clock, token, journal)
+    }
+
+    #[test]
+    fn notify_checks_refuse_each_violation_with_a_reason() {
+        let clock: Arc<ManualClock> = Arc::new(ManualClock::new(EPOCH_MS));
+        let mut core =
+            WorldCore::new_with_clock("w", WorldLimits::default(), clock.clone()).unwrap();
+
+        core.check_notify("the match has ended").unwrap();
+        // Oversized: past the world's chat byte limit — the bound
+        // a notification shares with the host's own chat lines.
+        let big = "x".repeat(core.limits.chat_bytes + 1);
+        let error = core.check_notify(&big).unwrap_err();
+        assert!(error.to_string().contains("exceeds"), "{error}");
+        // Empty, and empty once the sanitizer strips it.
+        let error = core.check_notify("").unwrap_err();
+        assert!(error.to_string().contains("empty"), "{error}");
+        let error = core.check_notify("\u{1}\u{2}").unwrap_err();
+        assert!(error.to_string().contains("empty"), "{error}");
+
+        // The rate bound: a full window of attempts refuses the
+        // next check, and the window admits again once it passes.
+        for _ in 0..crate::world_caps::MAX_NOTIFY_BURST {
+            core.check_notify("again").unwrap();
+            core.note_notify_attempt();
+        }
+        let error = core.check_notify("again").unwrap_err();
+        assert!(error.to_string().contains("rate"), "{error}");
+        clock.advance(crate::world_caps::NOTIFY_RATE_WINDOW_MS + 1);
+        assert!(core.check_notify("again").is_ok());
+    }
+
+    #[tokio::test]
+    async fn notify_is_off_by_default() {
+        // Granted — but the operator never named the provider in a
+        // ceiling, so the default ceiling refuses it before any
+        // provider code runs, and nothing is committed.
+        let (mut actor, _clock, token, _journal) =
+            notify_actor("notify-default-off", &["notify"], false);
+        ask(
+            &mut actor,
+            &token,
+            serde_json::json!({"requests": [
+                {"id": "n1", "cap": "notify", "args": {"text": "hello"}},
+            ]}),
+        )
+        .await;
+        assert_eq!(
+            schedule_result(&actor, "n1").unwrap()["error"],
+            "outside_ceiling"
+        );
+        assert!(
+            actor
+                .core
+                .events
+                .iter()
+                .all(|event| !matches!(event.kind, WorldEventKind::Notification { .. })),
+            "a refused notify commits no event"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_ungranted_notify_is_refused_and_counted() {
+        let (mut actor, _clock, token, _journal) = notify_actor("notify-ungranted", &[], true);
+        ask(
+            &mut actor,
+            &token,
+            serde_json::json!({"requests": [
+                {"id": "n1", "cap": "notify", "args": {"text": "hello"}},
+            ]}),
+        )
+        .await;
+        assert_eq!(
+            schedule_result(&actor, "n1").unwrap()["error"],
+            "cap_denied"
+        );
+        assert!(
+            actor.core.ledger.usage()["notify"].denied > 0,
+            "{:?}",
+            actor.core.ledger.usage()
+        );
+        assert!(
+            actor
+                .core
+                .events
+                .iter()
+                .all(|event| !matches!(event.kind, WorldEventKind::Notification { .. })),
+            "a refused notify commits no event"
+        );
+    }
+
+    #[tokio::test]
+    async fn notify_round_trip_through_the_actor() {
+        let (mut actor, _clock, token, _journal) =
+            notify_actor("notify-round-trip", &["notify"], true);
+        let mut broadcast = actor.event_sender.subscribe();
+        ask(
+            &mut actor,
+            &token,
+            serde_json::json!({"requests": [
+                {"id": "n1", "cap": "notify", "args": {"text": "the match has ended\u{7}"}},
+            ]}),
+        )
+        .await;
+        let sent = schedule_result(&actor, "n1").unwrap();
+        assert_eq!(sent["ok"], true, "{sent}");
+        let sequence = sent["value"]["sequence"].as_u64().unwrap();
+        // The committed event is in the world's log, host-authored,
+        // carrying the sanitized text (the bell is stripped).
+        let event = actor
+            .core
+            .events
+            .iter()
+            .find(|event| event.sequence == sequence)
+            .expect("the notification is in the event log");
+        assert_eq!(event.participant_id, 0);
+        match &event.kind {
+            WorldEventKind::Notification { text } => {
+                assert_eq!(text, "the match has ended");
+            }
+            other => panic!("expected a notification event, got {other:?}"),
+        }
+        // And it went out on the broadcast channel the sessions
+        // read (the ask's own input event may precede it there).
+        let mut aired = None;
+        while let Ok(event) = broadcast.try_recv() {
+            if matches!(event.kind, WorldEventKind::Notification { .. }) {
+                aired = Some(event);
+            }
+        }
+        let aired = aired.expect("the notification was broadcast");
+        assert_eq!(aired.sequence, sequence);
+    }
+
+    #[tokio::test]
+    async fn notify_refuses_past_the_rate_bound() {
+        let (mut actor, _clock, token, _journal) = notify_actor("notify-rate", &["notify"], true);
+        // One wants document, burst + 1 requests: the window
+        // admits the burst and refuses the next in the same change.
+        let requests: Vec<serde_json::Value> = (1..=crate::world_caps::MAX_NOTIFY_BURST + 1)
+            .map(|index| {
+                serde_json::json!({"id": format!("n{index}"), "cap": "notify", "args": {"text": "ping"}})
+            })
+            .collect();
+        ask(
+            &mut actor,
+            &token,
+            serde_json::json!({"requests": requests}),
+        )
+        .await;
+        for index in 1..=crate::world_caps::MAX_NOTIFY_BURST {
+            assert_eq!(
+                schedule_result(&actor, &format!("n{index}")).unwrap()["ok"],
+                true,
+                "attempt {index} is inside the burst"
+            );
+        }
+        let refused = schedule_result(
+            &actor,
+            &format!("n{}", crate::world_caps::MAX_NOTIFY_BURST + 1),
+        )
+        .unwrap();
+        assert_eq!(refused["error"], "bad_args", "{refused}");
+        assert!(
+            refused["reason"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("rate"),
+            "{refused}"
+        );
+    }
+
+    #[tokio::test]
+    async fn notify_journals_a_committed_event_and_replay_restores_it() {
+        let (mut actor, _clock, token, journal) = notify_actor("notify-replay", &["notify"], true);
+        let before = journal.entries();
+        ask(
+            &mut actor,
+            &token,
+            serde_json::json!({"requests": [
+                {"id": "n1", "cap": "notify", "args": {"text": "server restarting soon"}},
+            ]}),
+        )
+        .await;
+        assert_eq!(schedule_result(&actor, "n1").unwrap()["ok"], true);
+        // The notify ask adds the entries every request adds (the
+        // input's committed event, the result's system event) plus
+        // exactly one of its own: the committed notification.
+        let after = journal.entries();
+        let added = &after[before.len()..];
+        let notifications: Vec<&JournalEntry> = added
+            .iter()
+            .filter(|entry| {
+                matches!(
+                    entry,
+                    JournalEntry::Committed { event }
+                        if matches!(event.kind, WorldEventKind::Notification { .. })
+                )
+            })
+            .collect();
+        assert_eq!(notifications.len(), 1, "{added:?}");
+        assert!(
+            added.iter().all(|entry| matches!(
+                entry,
+                JournalEntry::Committed { .. } | JournalEntry::System { .. }
+            )),
+            "a notify journals no state of its own beyond its event: {added:?}"
+        );
+        // The notification entry is a version-15 entry: a journal
+        // carrying one is refused by older binaries at the header
+        // check, never failed mid-replay.
+        assert_eq!(
+            journal_version_required_by(notifications[0]),
+            JOURNAL_VERSION_NOTIFY
+        );
+        // Restoring from the journal rebuilds the event log with
+        // the notification intact at its sequence.
+        let restored = WorldCore::restore("notify-replay", WorldLimits::default(), after).unwrap();
+        assert!(
+            restored.core.events.iter().any(|event| matches!(
+                &event.kind,
+                WorldEventKind::Notification { text } if text == "server restarting soon"
+            )),
+            "{:?}",
+            restored.core.events
+        );
+    }
+
+    #[test]
+    fn notify_events_require_journal_version_15() {
+        let event = WorldEvent {
+            sequence: 1,
+            participant_id: 0,
+            kind: WorldEventKind::Notification {
+                text: "hi".to_owned(),
+            },
+        };
+        assert_eq!(
+            journal_version_required_by(&JournalEntry::Committed {
+                event: event.clone()
+            }),
+            JOURNAL_VERSION_NOTIFY
+        );
+        // A checkpoint retaining one requires it too, and it is
+        // the newest version this binary reads.
+        let checkpoint = JournalEntry::Checkpoint {
+            sequence: 1,
+            module_hash: "h".to_owned(),
+            seed: 1,
+            provenance: None,
+            execution_profile: None,
+            caps_ceiling: None,
+            schedules: None,
+            kv: None,
+            blobs: None,
+            transfers: None,
+            lease: None,
+            snapshot: "s".to_owned(),
+            events: vec![event],
+            open_presence: None,
+            admin_history: None,
+        };
+        assert_eq!(
+            journal_version_required_by(&checkpoint),
+            JOURNAL_VERSION_NOTIFY
+        );
+        assert_eq!(MAX_JOURNAL_VERSION, JOURNAL_VERSION_NOTIFY);
     }
 
     #[tokio::test]

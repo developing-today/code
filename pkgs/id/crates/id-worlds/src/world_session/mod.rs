@@ -1489,6 +1489,10 @@ fn semantic_event_change(
             "program_changed",
             serde_json::json!({"kind": "program_changed", "participant_id": participant_id, "module_hash": module_hash}),
         )),
+        WorldEventKind::Notification { text } => Some((
+            "notification",
+            serde_json::json!({"kind": "notification", "participant_id": participant_id, "text": text}),
+        )),
     }
 }
 
