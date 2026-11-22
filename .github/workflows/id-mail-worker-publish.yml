@@ -1,0 +1,47 @@
+name: id-mail worker publish
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "nixos/services/id-mail/worker/**"
+      - ".github/workflows/id-mail-worker-publish.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: id-mail-worker-publish
+  cancel-in-progress: false
+
+jobs:
+  publish-version:
+    name: Upload id-mail Worker Version
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: 24.22.0
+          cache: npm
+          cache-dependency-path: nixos/services/id-mail/worker/package-lock.json
+      - name: Install pinned cf CLI
+        working-directory: nixos/services/id-mail/worker
+        run: npm ci --no-audit --no-fund
+      - name: Run Worker tests
+        working-directory: nixos/services/id-mail/worker
+        run: npm test
+      - name: Validate Worker build without credentials
+        working-directory: nixos/services/id-mail/worker
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          GITHUB_SHA: ${{ github.sha }}
+        run: node deploy.mjs --dry-run
+      - name: Upload Worker Version
+        working-directory: nixos/services/id-mail/worker
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          GITHUB_SHA: ${{ github.sha }}
+        run: node deploy.mjs

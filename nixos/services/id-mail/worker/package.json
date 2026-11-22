@@ -2,6 +2,10 @@
   "name": "mail",
   "private": true,
   "type": "module",
+  "devDependencies": {
+    "cf": "1.0.0-beta.20",
+    "wrangler": "4.152.0"
+  },
   "scripts": {
     "test": "node --test deploy.test.mjs runtime.test.mjs"
   }
