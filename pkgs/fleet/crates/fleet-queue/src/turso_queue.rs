@@ -2382,6 +2382,39 @@ mod tests {
     }
 
     #[test]
+    fn health_failed_events_count_terminal_failures_only() {
+        // Codex review on #12682 (discussion 4660035001): the
+        // failed-only sums counted every 'failed' event, so a
+        // transient requeue or a block read as a dead-in-queue
+        // failure, while a terminal lease expiry at cap read as
+        // zero. The terminal-events query must distinguish
+        // dispositions: requeued and blocked 'failed' events are
+        // live retries, lease_expired_at_cap is a terminal failure.
+        let src = &test_source();
+        let seg = seg8217(src, "fn verb_health(", "Merge-intent stack storage");
+        assert!(
+            seg.contains("'lease_expired_at_cap'"),
+            "the kind filter includes terminal lease-expiry events"
+        );
+        assert!(
+            seg.contains("json_extract(e.detail, '$.requeued')"),
+            "the failed sums read the requeued disposition from the event detail"
+        );
+        assert!(
+            seg.contains("json_extract(e.detail, '$.reason_class')"),
+            "the failed sums read the reason_class disposition from the event detail"
+        );
+        assert!(
+            seg.contains("'blocked'"),
+            "blocked failures are excluded from the terminal failed sums"
+        );
+        assert!(
+            !seg.contains("e.kind = 'failed' THEN 1"),
+            "the failed sums no longer count every 'failed' event"
+        );
+    }
+
+    #[test]
     fn at_cap_fold_covers_zero_claimable_and_partial_queues() {
         // Fixture for #6528 criterion 3: queue-dead has queued > 0
         // with EVERY queued task at cap (zero claimable); queue-live

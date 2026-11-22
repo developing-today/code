@@ -1417,7 +1417,11 @@ pub(crate) fn apply_dep_blocked(by_queue: &mut Map<String, Value>, rows: &[Value
 /// "zero dead-in-queue over a rolling 7 days" criterion stayed
 /// unmeasured. The failed-only sums (f24/f7) name the dead-in-queue
 /// count for each window; queues with no failed events keep the zero
-/// default from health_entry. Rows arrive as {queue, n24, n7, f24, f7}.
+/// default from health_entry. The failed sums count terminal
+/// failures only: a requeued or blocked 'failed' event is a live
+/// retry, not a death, and lease expiry at cap counts as a failure
+/// (see the terminal predicate in verb_health's query). Rows arrive
+/// as {queue, n24, n7, f24, f7}.
 pub(crate) fn apply_terminal_events(by_queue: &mut Map<String, Value>, rows: &[Value]) {
     for r in rows {
         let q = r.get("queue").and_then(|v| v.as_str()).unwrap_or("");
@@ -1568,15 +1572,29 @@ pub(crate) fn verb_health(t: &TursoBackend, req: &Value) -> Value {
         // only sums (f24/f7, #1233) split dead-in-queue out of the
         // completed+failed totals, so the epic's "zero dead-in-
         // queue over a rolling 7 days" criterion reads off health.
+        // A 'failed' event is terminal only when the task actually
+        // died: verb_fail stamps detail.requeued=true on a transient
+        // retry and detail.reason_class='blocked' on a block, and
+        // both still emit kind='failed' — counting every 'failed'
+        // event would count live retries as dead-in-queue (#12682
+        // Codex review). Lease expiry at cap is the other terminal
+        // failure, but it emits kind='lease_expired_at_cap', so it
+        // belongs in the filter set and in the failed sums. A
+        // 'failed' event with no disposition in its detail
+        // (externally appended) counts as terminal: an explicit
+        // failure with nothing recorded is a death, not a retry.
         // Placeholder order: n24's 24h cutoff, f24's 24h cutoff,
         // the 7d window floor, then the optional queue filter.
-        let mut tsql = "SELECT t.queue AS queue, COUNT(*) AS n7, \
+        let failed_terminal = "(e.kind = 'lease_expired_at_cap' OR \
+             (e.kind = 'failed' \
+              AND COALESCE(json_extract(e.detail, '$.requeued'), 0) = 0 \
+              AND COALESCE(json_extract(e.detail, '$.reason_class'), '') <> 'blocked'))";
+        let mut tsql = format!("SELECT t.queue AS queue, COUNT(*) AS n7, \
                SUM(CASE WHEN e.created_at > ? THEN 1 ELSE 0 END) AS n24, \
-               SUM(CASE WHEN e.kind = 'failed' THEN 1 ELSE 0 END) AS f7, \
-               SUM(CASE WHEN e.kind = 'failed' AND e.created_at > ? THEN 1 ELSE 0 END) AS f24 \
+               SUM(CASE WHEN {failed_terminal} THEN 1 ELSE 0 END) AS f7, \
+               SUM(CASE WHEN {failed_terminal} AND e.created_at > ? THEN 1 ELSE 0 END) AS f24 \
              FROM events e JOIN tasks t ON t.id = e.task_id \
-             WHERE e.kind IN ('completed', 'failed') AND e.created_at > ?"
-            .to_string();
+             WHERE e.kind IN ('completed', 'failed', 'lease_expired_at_cap') AND e.created_at > ?");
         let mut targs: Vec<Arg> = vec![
             Arg::Text(iso(now_unix() - 86_400)),
             Arg::Text(iso(now_unix() - 86_400)),
