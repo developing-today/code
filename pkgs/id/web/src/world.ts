@@ -138,6 +138,7 @@ function initWorld(): void {
   let resumeToken: string | null = null;
   let renderedSurface: ScreenSurface | null = null;
   let renderedViewRevision: number | null = null;
+  let sentViewport: { width: number; height: number } | null = null;
   let records: Record<string, unknown> = {};
   let recordsAfter: string | null = null;
   let recordsPending = false;
@@ -250,7 +251,7 @@ function initWorld(): void {
       parsed = decodeBinaryViewPatch(raw);
       if (parsed === null) {
         rejectFrame();
-        sendViewport();
+        sendViewport(true);
         return;
       }
     }
@@ -329,8 +330,8 @@ function initWorld(): void {
             }
           }
           // A gap or invalid patch means the browser no longer has the exact
-          // base. A same-size resize asks the server to reset with a full view.
-          sendViewport();
+          // base. Force a same-size resize to request a fresh full view.
+          sendViewport(true);
           break;
         }
         if (frame.surface && frame.surface.kind === "form") {
@@ -501,14 +502,30 @@ function initWorld(): void {
     }
   });
 
-  const sendViewport = () => {
+  const hasResumableScreen = () =>
+    useBinaryWorldV2 &&
+    resumeToken !== null &&
+    renderedSurface !== null &&
+    renderedViewRevision !== null;
+  const sendViewport = (force = false) => {
     if (hostMode || socket?.readyState !== WebSocket.OPEN) return;
     const fontSize = Number.parseFloat(getComputedStyle(view).fontSize) || 16;
     const width = Math.max(1, Math.min(500, Math.floor(view.clientWidth / (fontSize * 0.6))));
     const height = Math.max(1, Math.min(200, Math.floor(view.clientHeight / fontSize)));
+    const sameAsLast = sentViewport?.width === width && sentViewport.height === height;
+    // A same-size resize resets the server's retained screen baseline. Keep
+    // it out of an unchanged v2 reconnect so the resume token can catch up.
+    if (!force && sameAsLast) return;
+    // A forced resync or a real viewport change invalidates the local base too.
+    if (force || sentViewport !== null) {
+      renderedSurface = null;
+      renderedViewRevision = null;
+      resumeToken = null;
+    }
     socket.send(JSON.stringify({ type: "resize", width, height }));
+    sentViewport = { width, height };
   };
-  const viewportObserver = new ResizeObserver(sendViewport);
+  const viewportObserver = new ResizeObserver(() => sendViewport());
   viewportObserver.observe(view);
 
   recordsRefresh.addEventListener("click", requestRecords);
@@ -616,8 +633,6 @@ function initWorld(): void {
     // (block) this connection's first fetch.
     recordsPending = false;
     recordsRefetch = false;
-    renderedSurface = null;
-    renderedViewRevision = null;
     const scheme = location.protocol === "https:" ? "wss:" : "ws:";
     let opened = false;
     // #1461: every handler captures THIS connection's socket (`ws`) and
@@ -645,7 +660,9 @@ function initWorld(): void {
           resume_token: useBinaryWorldV2 ? resumeToken : undefined,
         }),
       );
-      sendViewport();
+      // New sessions and v1 fallbacks need an initial resize. A v2 resume
+      // keeps the already-established viewport unless it actually changed.
+      sendViewport(!hasResumableScreen());
     });
     ws.addEventListener("message", (event) => {
       if (ws !== socket) return;

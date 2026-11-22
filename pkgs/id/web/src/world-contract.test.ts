@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { Packr } from "msgpackr";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   Conformance,
@@ -456,12 +457,17 @@ describe("web shell conformance", () => {
       type: "snapshot",
       snapshot: { world_id: "lobby", current_sequence: 3, participants: [] },
     });
-    v2Attempt.deliver({ type: "view", sequence: 3, data: "resume base", view_revision: 1, resume_token: "resume-1" });
-    const resizeCount = v2Attempt.sent("resize").length;
-    v2Attempt.deliverBinary(new Uint8Array([0xc1]));
-    expect(v2Attempt.sent("resize")).toHaveLength(resizeCount + 1);
+    const screenA = {
+      kind: "screen",
+      version: 1,
+      width: 1,
+      height: 1,
+      cells: [{ symbol: "A", fg: 7, bg: 0, bold: false, columns: 1 }],
+    };
+    v2Attempt.deliver({ type: "view", sequence: 3, data: "", surface: screenA, view_revision: 1, resume_token: "resume-1" });
 
-    // Rejoin keeps the v2 route and resumes from the latest applied view.
+    // Rejoin keeps the exact applied screen baseline, so the server can send
+    // a patch without a same-size resize resetting its retained baseline.
     q<HTMLButtonElement>("[data-world-join]").click();
     const v2Reconnect = FakeSocket.all.at(-1) as FakeSocket;
     v2Reconnect.open();
@@ -469,6 +475,36 @@ describe("web shell conformance", () => {
       binary_view_patches: true,
       resume_token: "resume-1",
     });
+    expect(v2Reconnect.sent("resize")).toHaveLength(0);
+    v2Reconnect.deliverBinary(
+      new Uint8Array(
+        new Packr({ useRecords: false }).pack({
+          version: 1,
+          type: "view",
+          sequence: 3,
+          base_view_revision: 1,
+          view_revision: 2,
+          patch: {
+            version: 1,
+            width: 1,
+            height: 1,
+            runs: [{ start: 0, cells: [{ symbol: "B", fg: 7, bg: 0, bold: false, columns: 1 }] }],
+          },
+          resume_token: "resume-2",
+        }),
+      ),
+    );
+    expect(q("[data-world-view]").textContent).toContain("B");
+    const screenPane = q<HTMLElement>("[data-world-view]");
+    Object.defineProperty(screenPane, "clientWidth", { configurable: true, value: 96 });
+    Object.defineProperty(screenPane, "clientHeight", { configurable: true, value: 32 });
+    const beforeViewportChange = v2Reconnect.sent("resize").length;
+    for (const observer of FakeResizeObserver.all) observer.fire();
+    expect(v2Reconnect.sent("resize")).toHaveLength(beforeViewportChange + 1);
+    expect(v2Reconnect.sent("resize").at(-1)).toMatchObject({ width: 10, height: 2 });
+    const resizeCount = v2Reconnect.sent("resize").length;
+    v2Reconnect.deliverBinary(new Uint8Array([0xc1]));
+    expect(v2Reconnect.sent("resize")).toHaveLength(resizeCount + 1);
 
     // A host without the v2 route refuses an upgrade before opening it;
     // the browser retries the unchanged JSON session on the v1 path.
