@@ -16,8 +16,8 @@ fleet agent next                                   # each time you want work
 - `<name>` is the agent's stable worker identity: lowercase letters,
   digits, `.`, `_`, `-`. The queue uses that name as the worker. Unless
   `--lane` is supplied, a queue-compatible lane name stays as-is; other
-  names get an unfiltered `any-<letters-only-name>` lane. Pass `--lane`
-  explicitly for a designated filtered lane.
+  names get an unfiltered `any-<letters-only-name>` lane. For a designated
+  filtered lane, pass both its `--lane` and its assigned `--filter` expression.
 - Enrolment registers your mailbox, tells you which intake rungs work from
   your seat, and saves a profile so later verbs know who is asking.
 - `fleet agent next` returns one task and the commands to run when it is
