@@ -59,6 +59,8 @@ describe("C7 report review UI", () => {
     expect(reportBlockReviews([stored, rendered, resolved], [resolved])).toHaveLength(0);
 
     const postResolution = record("post-resolution", "New wording.", "2026-11-21T16:00:00.000Z");
+    expect(reportBlockReviews([stored, rendered, resolved, postResolution], [postResolution]).map((review) => review.renderedRecord.id))
+      .toEqual(["resolved"]);
     const latest = record("latest", "Latest wording.", "2026-11-21T17:00:00.000Z");
     expect(reportBlockReviews([stored, rendered, resolved, postResolution, latest], [latest]).map((review) => review.renderedRecord.id))
       .toEqual(["post-resolution"]);

@@ -2,7 +2,7 @@
 // supports development/rollback; the durable adapter appends immutable event
 // documents to the existing aggregator document store.
 import { createHash } from "node:crypto";
-import { appendFile, mkdir, readFile } from "node:fs/promises";
+import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import type { AppendOnlyDocumentRemote } from "./aa-last-good.ts";
@@ -231,6 +231,7 @@ async function readEvents(file: string): Promise<ReportRecordEvent[]> {
 export type ReportRecordLocation = string | AppendOnlyDocumentRemote;
 const REPORT_DOCUMENT_PREFIX = "c7-report:v1:";
 const REPORT_RECORD_CLAIM_PREFIX = "c7-report-record:v1:";
+const REPORT_RESOLUTION_CLAIM_PREFIX = "c7-report-resolution-source:v1:";
 
 function reportDocumentKey(event: ReportRecordEvent): string {
   return `${REPORT_DOCUMENT_PREFIX}${event.type}:${createHash("sha256").update(event.eventId).digest("hex")}`;
@@ -298,6 +299,49 @@ async function claimRemoteRecord(location: AppendOnlyDocumentRemote, record: Rep
   }
   if (!sameRecordContent(stored.document as unknown as ReportRecord, record))
     throw new ReportRecordConflictError(record.id);
+}
+
+/** A source record may have only one winning resolution append. The durable
+ * claim is shared across processes; same-resolution retries may finish an
+ * interrupted append, while a different choice from the same source is stale. */
+async function claimResolutionSource(
+  location: ReportRecordLocation,
+  sourceRecordId: string,
+  resolvedRecord: ReportRecord,
+): Promise<void> {
+  const claim = { sourceRecordId, resolvedRecordId: resolvedRecord.id };
+  const key = `${REPORT_RESOLUTION_CLAIM_PREFIX}${createHash("sha256").update(sourceRecordId).digest("hex")}`;
+  if (typeof location !== "string") {
+    if (await location.insertIfAbsent(key, 1, claim)) return;
+    const stored = await location.load(key);
+    if (!stored || !isObject(stored.document) || stored.document.sourceRecordId !== sourceRecordId) {
+      throw new Error(`permanent report resolution claim is malformed: ${sourceRecordId}`);
+    }
+    if (stored.document.resolvedRecordId !== resolvedRecord.id) {
+      throw new Error("stale report block comparison: another resolution already won");
+    }
+    return;
+  }
+
+  const claimsFile = `${location}.resolution-claims/${createHash("sha256").update(sourceRecordId).digest("hex")}.json`;
+  await mkdir(dirname(claimsFile), { recursive: true });
+  try {
+    await writeFile(claimsFile, JSON.stringify(claim), { encoding: "utf8", flag: "wx" });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+    let stored: unknown;
+    try {
+      stored = JSON.parse(await readFile(claimsFile, "utf8")) as unknown;
+    } catch {
+      throw new Error(`local report resolution claim is malformed: ${sourceRecordId}`);
+    }
+    if (!isObject(stored) || stored.sourceRecordId !== sourceRecordId) {
+      throw new Error(`local report resolution claim is malformed: ${sourceRecordId}`);
+    }
+    if (stored.resolvedRecordId !== resolvedRecord.id) {
+      throw new Error("stale report block comparison: another resolution already won");
+    }
+  }
 }
 
 async function appendDocumentEvent(
@@ -654,6 +698,7 @@ export async function appendReportBlockConflictResolution(
       (candidate) => candidate.period.id === record.period.id && candidate.templateVersion === record.templateVersion,
     );
     if (!latest || latest.id !== record.id) throw new Error("stale report block comparison: report record is no longer current");
+    await claimResolutionSource(location, record.id, resolvedRecord);
     return appendReportRecordUnlocked(location, resolvedRecord);
   });
 }

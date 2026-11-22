@@ -625,6 +625,54 @@ describe("C7 canonical report records", () => {
     expect(await readReportRecords(file)).toHaveLength(2);
   });
 
+  test("remote resolution claim selects one winner across independent store clients", async () => {
+    const documents = new Map<string, unknown>();
+    const remote = (): AppendOnlyDocumentRemote => ({
+      async load(store) {
+        return documents.has(store) ? { version: 1, document: structuredClone(documents.get(store)) } : null;
+      },
+      async insertIfAbsent(store, _version, document) {
+        if (documents.has(store)) return false;
+        documents.set(store, structuredClone(document));
+        return true;
+      },
+      async listPrefix(prefix) {
+        return [...documents.entries()]
+          .filter(([store]) => store.startsWith(prefix))
+          .map(([store, document]) => ({ store, version: 1, document: structuredClone(document) }));
+      },
+    });
+    const firstClient = remote();
+    const secondClient = remote();
+    const record = makeReportRecord({
+      period: {
+        id: "daily:2026-11-21:America/Chicago",
+        kind: "daily",
+        timezone: "America/Chicago",
+        periodStart: "2026-11-21T06:00:00.000Z",
+        periodEnd: "2026-11-22T06:00:00.000Z",
+        softCloseAt: "2026-11-22T14:00:00.000Z",
+      },
+      asOf: "2026-11-22T05:45:00.000Z",
+      templateVersion: "daily-v1",
+      sourceCursor: "cursor-independent-resolution-clients",
+      sources: [],
+      blocks: [
+        { id: "change-1", text: "Stored one.", relatedAt: "2026-11-22T05:40:00.000Z" },
+        { id: "change-2", text: "Stored two.", relatedAt: "2026-11-22T05:40:00.000Z" },
+      ],
+    }, "2026-11-22T05:45:01.000Z");
+    await appendReportRecord(firstClient, record);
+
+    const outcomes = await Promise.allSettled([
+      appendReportBlockConflictResolution(firstClient, record, "change-1", compareReportBlock("Stored one.", "Rendered one."), "rendered", "2026-11-22T13:00:00.000Z"),
+      appendReportBlockConflictResolution(secondClient, record, "change-2", compareReportBlock("Stored two.", "Rendered two."), "rendered", "2026-11-22T13:00:01.000Z"),
+    ]);
+    expect(outcomes.filter((outcome) => outcome.status === "fulfilled")).toHaveLength(1);
+    expect(outcomes.filter((outcome) => outcome.status === "rejected")).toHaveLength(1);
+    expect((await readReportRecords(firstClient)).filter((candidate) => candidate.id !== record.id)).toHaveLength(1);
+  });
+
   test("uses append-only permanent document keys for report history and snapshots", async () => {
     const documents = new Map<string, unknown>();
     const remote: AppendOnlyDocumentRemote = {

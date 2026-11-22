@@ -24,7 +24,8 @@ export function reportBlockReviews(records: ReportRecord[], current: ReportRecor
         .at(-1);
       const candidates = records
         .filter((record) => record.period.id === storedRecord.period.id && record.templateVersion === storedRecord.templateVersion &&
-          record.id !== storedRecord.id && (!resolvedAt || record.generatedAt > resolvedAt))
+          record.id !== storedRecord.id && (!resolvedAt || record.generatedAt > resolvedAt ||
+            record.blocks.some((block) => block.id === storedBlock.id && block.resolution)))
         .sort((a, b) => b.generatedAt.localeCompare(a.generatedAt) || b.id.localeCompare(a.id));
       // A whitespace-only version is not a conflict and must not hide an older
       // substantive alternative. Search until the newest substantive match.
