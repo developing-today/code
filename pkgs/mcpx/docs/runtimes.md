@@ -81,7 +81,8 @@ be updated in the same change.
 | Bare package resolution from `node_modules`                                           | yes                | yes                               | yes                               |
 | Static type checking before run                                                       | yes (`deno check`) | no — types are stripped unchecked | no — types are stripped unchecked |
 | Permission enforcement (profiles below)                                               | full model         | none (`all` only)                 | partial (`--permission`)          |
-| Python runtime ([#1917](https://github.com/developing-today/code/issues/1917))        | pending            | pending                           | pending                           |
+| Python scripts ([#1917](https://github.com/developing-today/code/issues/1917))        | independent Python interpreter; does not use this runtime | independent Python interpreter; does not use this runtime | independent Python interpreter; does not use this runtime |
+| Roc scripts ([#1964](https://github.com/developing-today/code/issues/1964))           | independent `roc run`; basic-cli platform required | independent `roc run`; basic-cli platform required | independent `roc run`; basic-cli platform required |
 | Flake environments ([#1921](https://github.com/developing-today/code/issues/1921))    | pending            | pending                           | pending                           |
 | Dependency management ([#1913](https://github.com/developing-today/code/issues/1913)) | pending            | pending                           | pending                           |
 
