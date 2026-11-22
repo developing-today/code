@@ -154,6 +154,8 @@ async function loadDoc(name) {
     throw new Error(signedOut ? "Your sign-in may have run out. Reload to sign in again." : "You are offline.");
   }
   if (res.headers.get("x-as-of")) asOf[name] = Number(res.headers.get("x-as-of"));
+  // Served from the edge: when the laptop behind it last reported.
+  if (res.headers.get("x-host-seen")) hostSeen = Number(res.headers.get("x-host-seen")) || null;
   if (res.status === 304) return false;
   if (!res.ok) {
     if (res.status === 401 || res.status === 403) signedOut = true;
@@ -161,17 +163,43 @@ async function loadDoc(name) {
   }
   docs[name] = await res.json();
   etags[name] = res.headers.get("etag");
+  if (name === "questions") withoutAnswered(docs[name]);
   return true;
 }
+
+/** Questions answered on this device that the list may still show for a
+ * while: the answer is on its way, or held until the laptop is back. */
+const answeredHere = new Set();
+const questionKey = (q) => `${q.set}|${q.ledger}|${q.qid}`;
+
+function withoutAnswered(doc) {
+  const q = doc?.questions;
+  if (!q?.open) return;
+  const present = new Set(q.open.map(questionKey));
+  // Gone from the list: the answer arrived, and there is nothing to hide.
+  for (const key of answeredHere) if (!present.has(key)) answeredHere.delete(key);
+  if (answeredHere.size === 0) return;
+  q.open = q.open.filter((x) => !answeredHere.has(questionKey(x)));
+  q.total = q.open.length;
+}
+
+/** When the laptop behind the edge last reported, or null when the app
+ * is not served from an edge. */
+let hostSeen = null;
+/** How far behind the laptop may be before the app says so. */
+const HOST_QUIET_MS = 3 * 60_000;
+const HELD_NOTE = "Held: the laptop cannot be reached. It will be sent when it is back.";
 
 /** Run one action, say how it went, and draw what changed. */
 async function act(kind, args, done, button) {
   if (button) button.disabled = true;
   try {
-    const { result } = await api("act", { kind, args });
-    toast(typeof done === "function" ? done(result) : done);
+    const { result, held } = await api("act", { kind, args });
+    // Held is not done: the caller is told nothing happened yet, and the
+    // owner is told where it is waiting.
+    toast(held ? HELD_NOTE : typeof done === "function" ? done(result) : done);
     await refresh(true);
-    return result;
+    return held ? null : result;
   } catch (error) {
     toast(error.message, true);
     if (button) button.disabled = false;
@@ -203,6 +231,28 @@ function taskCard(t, extra) {
 
 function notices(doc) {
   const out = [];
+  // Served from the edge with the laptop out of reach: say how old this
+  // is, and that working on is fine.
+  if (doc === docs.core && hostSeen && Date.now() - hostSeen > HOST_QUIET_MS) {
+    out.push(
+      h(
+        "div",
+        { class: "card flag" },
+        h("h3", {}, "The laptop is out of reach"),
+        h(
+          "p",
+          { class: "meta" },
+          `It last reported ${ago(new Date(hostSeen).toISOString())}; this is the state as of then. You can keep working: what is safe to do late is held and sent when it is back.`,
+        ),
+      ),
+    );
+  }
+  if (doc === docs.core && doc?.edge?.held > 0) {
+    const n = doc.edge.held;
+    out.push(
+      h("div", { class: "card flag" }, h("p", { class: "meta" }, `${n} ${n === 1 ? "thing" : "things"} you did ${n === 1 ? "is" : "are"} waiting for the laptop. See “What you did” below.`)),
+    );
+  }
   for (const [name, s] of Object.entries(doc?.health || {})) {
     if (!s.ok && s.error) {
       out.push(
@@ -400,8 +450,12 @@ function flushPending() {
 
 async function sendAnswer(kind, args, key) {
   try {
-    const { result } = await api("act", { kind, args });
+    const { result, held } = await api("act", { kind, args });
     if (result?.refused?.length) toast(`Not recorded: ${result.refused[0].why}`, true);
+    else {
+      answeredHere.add(key);
+      if (held) toast(HELD_NOTE);
+    }
     picks.delete(key);
     if (docs.questions?.questions) {
       const open = docs.questions.questions.open.filter((q) => `${q.set}|${q.ledger}|${q.qid}` !== key);
@@ -1274,6 +1328,9 @@ function drawFresh() {
   freshEl.textContent = signedOut ? "signed out" : age === null ? "" : age < 45 ? "live" : `as of ${ago(new Date(t).toISOString())}`;
 }
 
+/** How many quick looks have been taken since the state was last fresh. */
+let catchUp = 0;
+
 /** Draw the current section from what is already loaded. Only the latest
  * call may draw, so a slow section never lands on top of a newer one. */
 async function draw() {
@@ -1306,6 +1363,15 @@ async function refresh(force) {
   try {
     changed = await loadDoc("core");
     if (extra) changed = (await loadDoc(extra)) || changed;
+    // An old copy means the laptop has just been told someone is
+    // looking: look again shortly, a few times, instead of waiting out
+    // the full interval.
+    const old = asOf.core && Date.now() - asOf.core > 60_000;
+    if (!old) catchUp = 0;
+    else if (catchUp < 4) {
+      catchUp++;
+      setTimeout(() => document.visibilityState === "visible" && refresh(false), 4_000);
+    }
   } catch (error) {
     if (!docs.core) view.replaceChildren(card(h("h3", {}, "Could not load"), h("p", { class: "why" }, error.message), h("div", { class: "row end" }, h("button", { onclick: () => location.reload() }, "Reload"))));
   }

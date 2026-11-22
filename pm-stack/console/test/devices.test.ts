@@ -16,6 +16,7 @@ import { AuthError } from "../src/auth.ts";
 import { readConfig } from "../src/config.ts";
 import { challengeOf, Devices, Limiter, summary } from "../src/devices.ts";
 import { Docs } from "../src/docs.ts";
+import { fileStore } from "../src/file-store.ts";
 import { OpError, Ops } from "../src/ops.ts";
 import { type Deps, handle } from "../src/server.ts";
 import { Work } from "../src/work.ts";
@@ -31,8 +32,8 @@ function store(now = { t: 1_800_000_000_000 }) {
   return {
     now,
     file,
-    devices: new Devices(file, () => now.t),
-    again: () => new Devices(file, () => now.t),
+    devices: new Devices(fileStore(file), () => now.t),
+    again: () => new Devices(fileStore(file), () => now.t),
     bytes: () => readFileSync(file, "utf8"),
     done: () => rmSync(dir, { recursive: true, force: true }),
   };

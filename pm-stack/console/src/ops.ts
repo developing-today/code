@@ -8,6 +8,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Config } from "./config.ts";
+import { OpError } from "./errors.ts";
 
 export interface RunResult {
   code: number;
@@ -23,14 +24,7 @@ export type Row = Record<string, string | number | null>;
 /** Queue priorities, most urgent first (the queue's design scale). */
 export const PRIORITY_SCALE = [10, 20, 30, 40, 50, 70, 90] as const;
 
-export class OpError extends Error {
-  constructor(
-    public status: 400 | 404 | 409 | 502,
-    message: string,
-  ) {
-    super(message);
-  }
-}
+export { OpError };
 
 export const realRun: Run = async (argv, opts = {}) => {
   const proc = Bun.spawn(argv, {

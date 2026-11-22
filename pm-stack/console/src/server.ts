@@ -13,16 +13,31 @@ import { mkdirSync, readFileSync } from "node:fs";
 import { appendFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { actions, perform } from "./actions.ts";
+import { HOLDABLE, type Held } from "./edge-proto.ts";
 import { AuthError, type Identity, identify } from "./auth.ts";
 import { type Config, readConfig } from "./config.ts";
-import { Devices, Limiter, summary } from "./devices.ts";
+import { Devices, Limiter } from "./devices.ts";
 import { DOC_NAMES, type DocName, Docs } from "./docs.ts";
+import { fileStore } from "./file-store.ts";
+import {
+  assetLinks,
+  BASE,
+  crossSiteWrite,
+  deviceLink,
+  deviceSummary,
+  docResponse,
+  json,
+  manifest,
+  type Phones,
+  SECURITY,
+  sameSiteWrite,
+} from "./http.ts";
 import { Notifier } from "./notify.ts";
 import { OpError, Ops } from "./ops.ts";
 import { Push } from "./push.ts";
+import { EdgeLink } from "./sync.ts";
 import { Work } from "./work.ts";
 
-const BASE = "/console";
 const PUBLIC_DIR = join(import.meta.dir, "..", "public");
 const STATIC = new Map([
   ["app.js", "text/javascript; charset=utf-8"],
@@ -31,36 +46,7 @@ const STATIC = new Map([
   ["sw.js", "text/javascript; charset=utf-8"],
 ]);
 
-/** The install manifest of the app at this origin. The home-screen icon
- * opens the app, and a long press offers its four primary screens. */
-const MANIFEST = {
-  name: "PM",
-  short_name: "PM",
-  description: "What the fleet is doing, what is next, what needs you, and a place to say what you want.",
-  start_url: "/console/",
-  scope: "/",
-  display: "standalone",
-  background_color: "#0b0f14",
-  theme_color: "#11161d",
-  icons: [
-    { src: "/icons/icon-192.png", sizes: "192x192", type: "image/png", purpose: "any" },
-    { src: "/icons/icon-512.png", sizes: "512x512", type: "image/png", purpose: "any" },
-    { src: "/icons/icon-maskable-512.png", sizes: "512x512", type: "image/png", purpose: "maskable" },
-  ],
-  shortcuts: [
-    { name: "Ask the fleet", short_name: "Ask", url: "/console/#ask" },
-    { name: "Needs me", short_name: "Needs me", url: "/console/#needs" },
-    { name: "In progress", short_name: "Now", url: "/console/#now" },
-    { name: "Queued next", short_name: "Next", url: "/console/#next" },
-  ],
-};
 const APK_NAME = "pm-console.apk";
-const SECURITY = {
-  "Content-Security-Policy":
-    "default-src 'self'; img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
-  "X-Content-Type-Options": "nosniff",
-  "Referrer-Policy": "same-origin",
-};
 /** The dashboard's files that are public, matched against the parsed
  * path in full. They say nothing about the fleet. */
 const PUBLIC_DASHBOARD = /^\/icons\/(icon-192|icon-512|icon-maskable-512|apple-touch-icon)\.png$/;
@@ -84,13 +70,6 @@ const UPSTREAM_BODY_LIMIT = 16 * 1024 * 1024;
  * while the action carried on. Bun's limit is 255. */
 const IDLE_TIMEOUT_SECONDS = 120;
 
-function json(body: unknown, status = 200): Response {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store", ...SECURITY },
-  });
-}
-
 // The page's four files, read once: nothing on the request path touches
 // the disk synchronously after the first hit.
 const fileCache = new Map<string, Uint8Array>();
@@ -103,21 +82,7 @@ function file(name: string, type: string): Response {
   return new Response(bytes, { headers: { "Content-Type": type, "Cache-Control": "no-cache", ...SECURITY } });
 }
 
-/** The Digital Asset Links statement that lets the Android app open
- * this origin full screen. Public by design: Android fetches it. */
-export function assetLinks(cfg: Pick<Config, "androidPackage" | "androidFingerprints">): unknown[] {
-  if (cfg.androidFingerprints.length === 0) return [];
-  return [
-    {
-      relation: ["delegate_permission/common.handle_all_urls"],
-      target: {
-        namespace: "android_app",
-        package_name: cfg.androidPackage,
-        sha256_cert_fingerprints: cfg.androidFingerprints,
-      },
-    },
-  ];
-}
+export { assetLinks, type Phones };
 
 export interface Deps {
   cfg: Config;
@@ -136,65 +101,8 @@ export interface Deps {
    * paths they use: those paths are reachable without sign-in, so they
    * exist only when their limits do. */
   phones?: Phones;
-}
-
-export interface Phones {
-  devices: Devices;
-  /** Tries at linking, and reads refused for a wrong token. */
-  link: Limiter;
-  refused: Limiter;
-}
-
-/** Sections the summary is built from, and how long a phone waits for
- * them to be read again. */
-const SUMMARY_SECTIONS = ["board", "sessions", "census", "asks", "questionCount"];
-/** Under the five seconds the phone gives a read. */
-const SUMMARY_WAIT_MS = 3_500;
-const DEVICE_BODY_LIMIT = 1024;
-
-/** A phone presents the verifier for a link the owner approved. */
-async function deviceLink(req: Request, deps: Deps, phones: Phones): Promise<Response> {
-  if (!phones.link.allow()) return json({ error: "too many tries: wait a minute" }, 429);
-  if (Number(req.headers.get("content-length") ?? "0") > DEVICE_BODY_LIMIT) return json({ error: "too large" }, 413);
-  let verifier: unknown;
-  try {
-    const text = await req.text();
-    if (text.length > DEVICE_BODY_LIMIT) return json({ error: "too large" }, 413);
-    verifier = (JSON.parse(text) as { verifier?: unknown } | null)?.verifier;
-  } catch {
-    return json({ error: "body: expected a JSON object" }, 400);
-  }
-  const linked = await phones.devices.link(verifier);
-  if (!linked) return json({ error: "not approved" }, 404);
-  await deps
-    .audit({
-      at: new Date().toISOString(),
-      who: `device:${linked.id}`,
-      via: "device",
-      action: "device.link",
-      phase: "done",
-      ok: true,
-    })
-    .catch((error) => console.error(`pm-console: audit: ${(error as Error).message}`));
-  return json(linked);
-}
-
-/** A linked phone reads the counts and the top line of each list. */
-async function deviceSummary(req: Request, docs: Docs, phones: Phones): Promise<Response> {
-  const header = req.headers.get("authorization") ?? "";
-  const device = header.startsWith("Bearer ") ? await phones.devices.check(header.slice(7)) : null;
-  if (!device) {
-    // Wrong tokens are counted; a linked phone is never slowed by them.
-    if (!phones.refused.allow()) return json({ error: "too many tries: wait a minute" }, 429);
-    // `unlinked` tells the app to forget its token; a refusal from
-    // anything else in front of this service does not carry it.
-    return json({ error: "this phone is not linked", unlinked: true }, 401);
-  }
-  const { data, at, missing } = await docs.current(SUMMARY_SECTIONS, SUMMARY_WAIT_MS);
-  // Before the queue has been read once there is nothing true to show:
-  // the phone keeps what it has and asks again.
-  if (missing.includes("board")) return json({ error: "not ready yet" }, 503);
-  return json(summary(data, at));
+  /** This host's link to the edge, when the app is served from one. */
+  link?: Pick<EdgeLink, "publicKey">;
 }
 
 /** Text that shrinks well. The dashboard's fragments run to a megabyte
@@ -211,21 +119,6 @@ function gzipped(req: Request, bytes: Uint8Array, headers: Headers): Response | 
   headers.set("content-encoding", "gzip");
   headers.append("vary", "accept-encoding");
   return new Response(Bun.gzipSync(bytes), { headers });
-}
-
-/** A write must come from this site. A browser sends Origin on every
- * cross-site write and Sec-Fetch-Site on every request, and the sign-in
- * cookie alone must not be enough for another site to act as the owner. */
-function crossSiteWrite(req: Request): boolean {
-  if (req.method === "GET" || req.method === "HEAD") return false;
-  if (req.headers.get("sec-fetch-site") === "cross-site") return true;
-  const origin = req.headers.get("origin");
-  if (origin === null) return false;
-  try {
-    return new URL(origin).host !== (req.headers.get("host") ?? "");
-  } catch {
-    return true;
-  }
 }
 
 /** Pass one request to the dashboard and its answer back. `open` is for
@@ -283,19 +176,6 @@ async function toDashboard(req: Request, url: URL, deps: Deps, open: boolean): P
   return new Response(req.method === "HEAD" ? null : res.body, { status: res.status, headers: out });
 }
 
-/** A state-changing request must be one this page made: a custom header
- * a cross-site form cannot set, and an Origin that is this host. */
-function sameSiteWrite(req: Request): boolean {
-  if (req.headers.get("x-pm-console") !== "1") return false;
-  const origin = req.headers.get("origin");
-  if (origin === null) return true;
-  try {
-    return new URL(origin).host === (req.headers.get("host") ?? "");
-  } catch {
-    return false;
-  }
-}
-
 export async function handle(req: Request, deps: Deps, peer: string | null = null): Promise<Response> {
   const url = new URL(req.url);
   const path = url.pathname;
@@ -304,16 +184,15 @@ export async function handle(req: Request, deps: Deps, peer: string | null = nul
   // Public, unauthenticated: nothing here says anything about the fleet.
   if (path === "/.well-known/assetlinks.json" && method === "GET") return json(assetLinks(deps.cfg));
   if (path === `${BASE}/health` && method === "GET") return json({ ok: true });
-  if (path === "/manifest.webmanifest" && method === "GET") {
-    return new Response(JSON.stringify(MANIFEST), {
-      headers: { "Content-Type": "application/manifest+json; charset=utf-8", "Cache-Control": "no-cache", ...SECURITY },
-    });
-  }
+  if (path === "/manifest.webmanifest" && method === "GET") return manifest();
   // Not behind the sign-in, and checked here instead: a linked phone.
   if (deps.phones && deps.docs) {
-    if (path === `${BASE}/device/link` && method === "POST") return deviceLink(req, deps, deps.phones);
+    if (path === `${BASE}/device/link` && method === "POST") return deviceLink(req, deps.phones, deps.audit);
     if (path === `${BASE}/device/summary` && method === "GET") return deviceSummary(req, deps.docs, deps.phones);
   }
+  // The public half of this host's key: the edge asks for it through the
+  // tunnel to check that a report really is from this host.
+  if (deps.link && path === `${BASE}/edge/key` && method === "GET") return json({ key: await deps.link.publicKey() });
   const ours = path === BASE || path.startsWith(`${BASE}/`);
   if (!ours) {
     if (deps.cfg.dashboardUrl === null) return json({ error: "not found" }, 404);
@@ -399,16 +278,7 @@ export async function handle(req: Request, deps: Deps, peer: string | null = nul
         }
       }
       if (seg.length === 2 && seg[0] === "doc" && deps.docs && DOC_NAMES.includes(seg[1] as DocName)) {
-        const doc = await deps.docs.doc(seg[1] as DocName);
-        const headers = new Headers({
-          "Content-Type": "application/json; charset=utf-8",
-          "Cache-Control": "no-cache",
-          ETag: doc.etag,
-          "X-As-Of": String(doc.asOf),
-          ...SECURITY,
-        });
-        if (req.headers.get("if-none-match") === doc.etag) return new Response(null, { status: 304, headers });
-        return gzipped(req, new TextEncoder().encode(doc.body), headers) ?? new Response(doc.body, { headers });
+        return docResponse(req, await deps.docs.doc(seg[1] as DocName), gzipped);
       }
       if (seg.length === 1 && seg[0] === "push" && deps.push) return json(await deps.push.status());
       if (seg.length === 1 && seg[0] === "devices" && deps.phones) return json(await deps.phones.devices.list());
@@ -443,6 +313,8 @@ export async function handle(req: Request, deps: Deps, peer: string | null = nul
       name: string,
       args: Record<string, unknown>,
       work: () => Promise<unknown>,
+      /** More to say in the answer when the action worked. */
+      extra?: () => Record<string, unknown>,
     ): Promise<Response> => {
       const base = {
         at: new Date().toISOString(),
@@ -464,7 +336,7 @@ export async function handle(req: Request, deps: Deps, peer: string | null = nul
       try {
         const result = await work();
         await done({ ok: true });
-        return json({ ok: true, result });
+        return json({ ok: true, result, ...extra?.() });
       } catch (error) {
         await done({ ok: false, error: (error as Error).message });
         throw error;
@@ -486,17 +358,32 @@ export async function handle(req: Request, deps: Deps, peer: string | null = nul
         by: who.email ?? who.certName ?? who.sub ?? who.via,
         note: "",
       };
-      return await act(kind || "unknown", kept, async () => {
-        docs.logAct({ ...entry, status: "running" });
-        try {
-          const result = await perform(table, docs, kind, args);
-          docs.logAct({ ...entry, status: "done" });
-          return result;
-        } catch (error) {
-          docs.logAct({ ...entry, status: "failed", note: (error as Error).message.slice(0, 200) });
-          throw error;
-        }
-      });
+      // Relayed by the edge: the answer also carries the sections this
+      // action read again and the record of what was done, so the edge's
+      // copy shows the change without waiting for the next report.
+      const forEdge =
+        req.headers.get("x-pm-edge") === "1" && Object.hasOwn(table, kind)
+          ? () => ({
+              sections: docs.snapshot().filter((s) => table[kind].touch.includes(s.name)),
+              acts: docs.recentActs(),
+            })
+          : undefined;
+      return await act(
+        kind || "unknown",
+        kept,
+        async () => {
+          docs.logAct({ ...entry, status: "running" });
+          try {
+            const result = await perform(table, docs, kind, args);
+            docs.logAct({ ...entry, status: "done" });
+            return result;
+          } catch (error) {
+            docs.logAct({ ...entry, status: "failed", note: (error as Error).message.slice(0, 200) });
+            throw error;
+          }
+        },
+        forEdge,
+      );
     }
     if (seg.length === 3 && seg[0] === "queue") {
       return await act(`queue.${seg[2]}`, { task: seg[1], reason: body.reason }, () =>
@@ -585,17 +472,65 @@ export async function morePages(): Promise<
   }
 }
 
+/** Runs an action the edge held while this host could not be reached,
+ * recorded like any other. Only the actions that may be done late. */
+export function heldRunner(deps: Pick<Deps, "docs" | "actions" | "audit">): (held: Held) => Promise<void> {
+  return async (held) => {
+    const { docs, actions: table } = deps;
+    if (!docs || !table) throw new Error("this host takes no actions");
+    if (!HOLDABLE.has(held.kind) || !Object.hasOwn(table, held.kind)) {
+      throw new Error("this is not an action that may be done late");
+    }
+    const base = {
+      at: new Date().toISOString(),
+      who: held.who,
+      via: "edge-held",
+      action: held.kind,
+      args: table[held.kind].audit(held.args),
+      held: { id: held.id, at: held.at },
+    };
+    // As with any action: one that cannot be recorded is not taken.
+    await deps.audit({ ...base, phase: "start" });
+    const entry = { id: held.id, kind: held.kind, at: held.at, by: held.who };
+    const done = (more: Record<string, unknown>) =>
+      deps
+        .audit({ ...base, phase: "done", ...more })
+        .catch((error) => console.error(`pm-console: audit: ${(error as Error).message}`));
+    try {
+      await perform(table, docs, held.kind, held.args);
+      docs.logAct({ ...entry, status: "done", note: "Sent late: held while the laptop could not be reached." });
+      await done({ ok: true });
+    } catch (error) {
+      const message = (error as Error).message;
+      docs.logAct({ ...entry, status: "failed", note: `Sent late, and it failed: ${message.slice(0, 160)}` });
+      await done({ ok: false, error: message });
+      throw error;
+    }
+  };
+}
+
+/** Every response this service writes is marked, so the edge in front
+ * can tell "the host answered, with an error" from "the host could not
+ * be reached". */
+export function marked(res: Response): Response {
+  const headers = new Headers(res.headers);
+  headers.set("X-PM-Console", "1");
+  return new Response(res.body, { status: res.status, statusText: res.statusText, headers });
+}
+
 if (import.meta.main) {
+  // `--check` builds everything this service needs and stops before
+  // listening: what a redeploy runs to learn that new code starts.
+  const check = process.argv.includes("--check");
   const cfg = readConfig();
   const ops = new Ops(cfg);
   mkdirSync(dirname(cfg.auditFile), { recursive: true, mode: 0o700 });
   const work = new Work(ops);
   const docs = new Docs(loaders(ops, work, await morePages()));
-  docs.start();
   const state = dirname(cfg.auditFile);
-  const push = new Push(join(state, "push.json"), `mailto:${cfg.owners[0] ?? "owner@invalid.example"}`);
-  new Notifier(docs, push, join(state, "notified.json")).start();
-  const devices = new Devices(cfg.devicesFile);
+  const push = new Push(fileStore(join(state, "push.json")), `mailto:${cfg.owners[0] ?? "owner@invalid.example"}`);
+  const notifier = new Notifier(docs, push, fileStore(join(state, "notified.json")));
+  const devices = new Devices(fileStore(cfg.devicesFile));
   const deps: Deps = {
     cfg,
     ops,
@@ -607,13 +542,43 @@ if (import.meta.main) {
     identify: (req, peer) => identify(req, cfg, { peer }),
     audit: (entry) => appendFile(cfg.auditFile, `${JSON.stringify(entry)}\n`, { mode: 0o600 }),
   };
+  // Behind an edge: report to it, and run what it held for this host.
+  const link = cfg.edgeUrl
+    ? new EdgeLink({
+        url: cfg.edgeUrl,
+        keys: fileStore(cfg.edgeKeyFile),
+        done: fileStore(cfg.edgeDoneFile),
+        docs,
+        config: async () => ({
+          owners: cfg.owners,
+          certNames: cfg.certNames,
+          issuers: cfg.issuers,
+          repo: cfg.repo,
+          queue: cfg.queue,
+          androidPackage: cfg.androidPackage,
+          androidFingerprints: cfg.androidFingerprints,
+          androidApp: await Bun.file(cfg.androidApk).exists(),
+        }),
+        run: heldRunner(deps),
+      })
+    : null;
+  if (link) deps.link = link;
+  if (check) {
+    const health = await handle(new Request(`http://127.0.0.1:${cfg.port}${BASE}/health`), deps, "127.0.0.1");
+    if (health.status !== 200) throw new Error(`self-check: health answered ${health.status}`);
+    console.log("pm-console: check passed");
+    process.exit(0);
+  }
+  docs.start();
+  notifier.start();
+  link?.start();
   const server = Bun.serve({
     hostname: cfg.bind,
     port: cfg.port,
     idleTimeout: IDLE_TIMEOUT_SECONDS,
-    fetch: (req, srv) => handle(req, deps, srv.requestIP(req)?.address ?? null),
+    fetch: async (req, srv) => marked(await handle(req, deps, srv.requestIP(req)?.address ?? null)),
   });
   console.log(
-    `pm-console listening on http://${server.hostname}:${server.port}${BASE}/ — owners: ${cfg.owners.length}, issuers: ${cfg.issuers.map((i) => i.name).join(", ") || "none (edge requests are refused)"}, dashboard: ${cfg.dashboardUrl ?? "not fronted"}`,
+    `pm-console listening on http://${server.hostname}:${server.port}${BASE}/ — owners: ${cfg.owners.length}, issuers: ${cfg.issuers.map((i) => i.name).join(", ") || "none (edge requests are refused)"}, dashboard: ${cfg.dashboardUrl ?? "not fronted"}, edge: ${cfg.edgeUrl ?? "none"}`,
   );
 }

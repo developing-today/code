@@ -31,6 +31,15 @@ interface Section {
   loading: Promise<void> | null;
 }
 
+/** Data that carries the time it was really read: a copy of a section
+ * that somewhere else read (the host reporting to the edge). */
+export class Stamped {
+  constructor(
+    public data: unknown,
+    public at: number,
+  ) {}
+}
+
 export interface Act {
   id: string;
   kind: string;
@@ -55,6 +64,8 @@ export class Docs {
   private sections = new Map<string, Section>();
   private asked = 0;
   private acts: Act[] = [];
+  /** Small values that travel in the core document beside its sections. */
+  private extras: Record<string, unknown> = {};
   private timer: ReturnType<typeof setInterval> | null = null;
 
   constructor(
@@ -79,10 +90,13 @@ export class Docs {
     if (s.loading) return s.loading;
     s.loading = (async () => {
       try {
-        s.data = await s.load();
+        const loaded = await s.load();
+        const now = this.now();
+        // A copy read elsewhere is as old as that read, never newer than now.
+        s.data = loaded instanceof Stamped ? loaded.data : loaded;
+        s.goodAt = loaded instanceof Stamped ? Math.min(now, loaded.at) : now;
         s.ok = true;
         s.error = null;
-        s.goodAt = this.now();
       } catch (error) {
         s.ok = false;
         s.error = (error as Error).message.slice(0, 300);
@@ -162,6 +176,45 @@ export class Docs {
     this.acts = [act, ...this.acts.filter((a) => a.id !== act.id)].slice(0, ACTS_KEPT);
   }
 
+  /** What the owner did lately, newest first; and a way to put it back
+   * after a restart of whatever holds this. */
+  recentActs(): Act[] {
+    return this.acts;
+  }
+
+  restoreActs(acts: Act[]): void {
+    this.acts = acts.slice(0, ACTS_KEPT);
+  }
+
+  /** Set, or with undefined remove, a value carried in the core document. */
+  extra(name: string, value: unknown): void {
+    if (value === undefined) delete this.extras[name];
+    else this.extras[name] = value;
+  }
+
+  /** Someone is looking, though not through this process: keep reading. */
+  keepAlive(): void {
+    this.asked = this.now();
+  }
+
+  /** Whether anyone has asked for a document lately. */
+  watched(): boolean {
+    return this.now() - this.asked <= WATCH_MS;
+  }
+
+  /** Every section that has been read, with when and a fingerprint of
+   * its content: what is reported to the edge, and how it tells that a
+   * section has not changed. */
+  snapshot(): { name: string; at: number; hash: string; data: unknown }[] {
+    const out: { name: string; at: number; hash: string; data: unknown }[] = [];
+    for (const [name, s] of this.sections) {
+      if (s.goodAt === 0) continue;
+      const hash = createHash("sha1").update(JSON.stringify(s.data)).digest("base64url");
+      out.push({ name, at: s.goodAt, hash, data: s.data });
+    }
+    return out;
+  }
+
   /** The document, at once. Only a section that has never been read is
    * waited for, and only so long. `asOf` is now when every section has
    * been read within its own interval, and earlier by however far the
@@ -190,7 +243,7 @@ export class Docs {
       health[n] = { ok: s.ok, error: s.error };
     }
     out.health = health;
-    if (name === "core") out.acts = this.acts;
+    if (name === "core") Object.assign(out, this.extras, { acts: this.acts });
     // The tag covers the content and not the times it was read, so a
     // document that has not changed costs the phone nothing. The read
     // times travel beside it.

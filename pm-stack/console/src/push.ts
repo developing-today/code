@@ -5,9 +5,8 @@
 // (RFC 8291, aes128gcm), and the request is signed with this server's
 // own key pair so the push service knows who is sending (RFC 8292,
 // VAPID). The key pair is made here on first use and kept in this
-// service's state directory; nobody ever handles it.
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
-import { dirname } from "node:path";
+// service's own store; nobody ever handles it.
+import type { Store } from "./store.ts";
 
 const enc = new TextEncoder();
 const b64u = (bytes: Uint8Array | ArrayBuffer) => Buffer.from(bytes as ArrayBuffer).toString("base64url");
@@ -109,8 +108,10 @@ export class Push {
   private signer: CryptoKey | null = null;
 
   constructor(
-    private file: string,
-    private subject: string,
+    private store: Store,
+    /** The contact a push service is given; a function when it is only
+     * known later. */
+    private subject: string | (() => string),
     private post: Poster = (url, init) => fetch(url, init as RequestInit),
     private now: () => number = Date.now,
   ) {}
@@ -118,7 +119,7 @@ export class Push {
   private async load(): Promise<PushFile> {
     if (this.state) return this.state;
     try {
-      this.state = JSON.parse(await readFile(this.file, "utf8")) as PushFile;
+      this.state = JSON.parse((await this.store.read()) ?? "") as PushFile;
     } catch {
       this.state = { vapid: null, subscriptions: [], off: [] };
     }
@@ -138,10 +139,7 @@ export class Push {
 
   private async save(): Promise<void> {
     if (!this.state) return;
-    await mkdir(dirname(this.file), { recursive: true, mode: 0o700 });
-    const tmp = `${this.file}.tmp-${process.pid}`;
-    await writeFile(tmp, JSON.stringify(this.state), { mode: 0o600 });
-    await rename(tmp, this.file);
+    await this.store.write(JSON.stringify(this.state));
   }
 
   /** What the page needs to subscribe, and what is switched on. */
@@ -195,7 +193,7 @@ export class Push {
         JSON.stringify({
           aud: new URL(endpoint).origin,
           exp: Math.floor(this.now() / 1000) + 12 * 3600,
-          sub: this.subject,
+          sub: typeof this.subject === "function" ? this.subject() : this.subject,
         }),
       ),
     );

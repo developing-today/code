@@ -10,64 +10,10 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Docs } from "../src/docs.ts";
+import { fileStore } from "../src/file-store.ts";
 import { changes, NOTHING_SEEN, Notifier, type Seen } from "../src/notify.ts";
 import { encrypt, Push, validSubscription } from "../src/push.ts";
-
-const b64u = (b: ArrayBuffer | Uint8Array) => Buffer.from(b as ArrayBuffer).toString("base64url");
-const raw = (s: string) => new Uint8Array(Buffer.from(s, "base64url"));
-
-async function browser(host = "fcm.googleapis.com") {
-  const pair = (await crypto.subtle.generateKey({ name: "ECDH", namedCurve: "P-256" }, true, [
-    "deriveBits",
-  ])) as CryptoKeyPair;
-  const auth = crypto.getRandomValues(new Uint8Array(16));
-  const p256dh = new Uint8Array(await crypto.subtle.exportKey("raw", pair.publicKey));
-  const hkdf = async (salt: Uint8Array, ikm: Uint8Array, info: Uint8Array, n: number) =>
-    new Uint8Array(
-      await crypto.subtle.deriveBits(
-        { name: "HKDF", hash: "SHA-256", salt, info },
-        await crypto.subtle.importKey("raw", ikm, "HKDF", false, ["deriveBits"]),
-        n * 8,
-      ),
-    );
-  const cat = (...p: Uint8Array[]) => new Uint8Array(p.flatMap((x) => [...x]));
-  const t = new TextEncoder();
-  return {
-    subscription: { endpoint: `https://${host}/fcm/send/abc123`, keys: { p256dh: b64u(p256dh), auth: b64u(auth) } },
-    /** RFC 8291 section 3.4 and RFC 8188: what a user agent does with the body. */
-    async open(body: Uint8Array): Promise<string> {
-      const salt = body.slice(0, 16);
-      const rs = new DataView(body.buffer, body.byteOffset).getUint32(16);
-      const idlen = body[20];
-      const sender = body.slice(21, 21 + idlen);
-      const sealed = body.slice(21 + idlen);
-      expect(rs).toBe(4096);
-      expect(idlen).toBe(65);
-      const shared = new Uint8Array(
-        await crypto.subtle.deriveBits(
-          {
-            name: "ECDH",
-            public: await crypto.subtle.importKey("raw", sender, { name: "ECDH", namedCurve: "P-256" }, false, []),
-          },
-          pair.privateKey,
-          256,
-        ),
-      );
-      const ikm = await hkdf(auth, shared, cat(t.encode("WebPush: info\0"), p256dh, sender), 32);
-      const cek = await hkdf(salt, ikm, t.encode("Content-Encoding: aes128gcm\0"), 16);
-      const nonce = await hkdf(salt, ikm, t.encode("Content-Encoding: nonce\0"), 12);
-      const plain = new Uint8Array(
-        await crypto.subtle.decrypt(
-          { name: "AES-GCM", iv: nonce },
-          await crypto.subtle.importKey("raw", cek, "AES-GCM", false, ["decrypt"]),
-          sealed,
-        ),
-      );
-      expect(plain[plain.length - 1]).toBe(2); // the last-record delimiter
-      return new TextDecoder().decode(plain.slice(0, -1));
-    },
-  };
-}
+import { b64u, browser, raw } from "./support.ts";
 
 describe("the message a phone receives", () => {
   test("only the subscribed browser can read it, and each one is sealed afresh", async () => {
@@ -93,7 +39,7 @@ describe("the message a phone receives", () => {
       const posts: { url: string; headers: Record<string, string>; body: Uint8Array }[] = [];
       const NOW = 1_800_000_000_000;
       const push = new Push(
-        join(dir, "push.json"),
+        fileStore(join(dir, "push.json")),
         "mailto:owner@example.com",
         async (url, init) => (posts.push({ url, headers: init.headers, body: init.body }), { status: 201 }),
         () => NOW,
@@ -142,7 +88,9 @@ describe("the message a phone receives", () => {
         ).toBe(true);
       }
       // The key pair and the devices survive a restart; the file is private.
-      const again = new Push(join(dir, "push.json"), "mailto:owner@example.com", async () => ({ status: 201 }));
+      const again = new Push(fileStore(join(dir, "push.json")), "mailto:owner@example.com", async () => ({
+        status: 201,
+      }));
       expect(await again.status()).toEqual(status.devices === 0 ? { ...status, devices: 2 } : status);
       expect((await again.status()).key).toBe(status.key);
       expect(JSON.parse(readFileSync(join(dir, "push.json"), "utf8")).vapid.privateJwk.d.length).toBeGreaterThan(20);
@@ -159,7 +107,7 @@ describe("the message a phone receives", () => {
       let answer = (url: string) => (url === a.subscription.endpoint ? 410 : 201);
       let posts = 0;
       const push = new Push(
-        join(dir, "push.json"),
+        fileStore(join(dir, "push.json")),
         "mailto:o@example.com",
         async (url) => (posts++, { status: answer(url) }),
       );
@@ -209,7 +157,7 @@ describe("the message a phone receives", () => {
     const dir = mkdtempSync(join(tmpdir(), "pm-push-"));
     try {
       await expect(
-        new Push(join(dir, "p.json"), "mailto:o@example.com").subscribe(
+        new Push(fileStore(join(dir, "p.json")), "mailto:o@example.com").subscribe(
           { ...good, endpoint: "https://127.0.0.1/x" },
           "",
         ),
@@ -316,18 +264,18 @@ describe("when a notification is owed", () => {
       const sent: string[] = [];
       const b = await browser();
       const push = new Push(
-        join(dir, "push.json"),
+        fileStore(join(dir, "push.json")),
         "mailto:o@example.com",
         async (_u, init) => (sent.push(JSON.parse(await b.open(init.body)).title), { status: 201 }),
       );
-      const notifier = new Notifier(docs, push, join(dir, "notified.json"));
+      const notifier = new Notifier(docs, push, fileStore(join(dir, "notified.json")));
       expect(await notifier.tick()).toBe(0); // no device: nothing is read, nothing is sent
       await push.subscribe(b.subscription, "phone");
       expect(await notifier.tick()).toBe(0); // first pass: take stock
       now = state({ questionCount: { total: 361 } });
       expect(await notifier.tick()).toBe(1);
       expect(sent).toEqual(["1 new question for you"]);
-      const restarted = new Notifier(docs, push, join(dir, "notified.json"));
+      const restarted = new Notifier(docs, push, fileStore(join(dir, "notified.json")));
       expect(await restarted.tick()).toBe(0);
       expect(sent.length).toBe(1);
     } finally {
