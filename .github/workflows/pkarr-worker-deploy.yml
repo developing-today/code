@@ -1,0 +1,82 @@
+name: pkarr-worker-deploy
+
+# Protected operator workflow. Upload and promotion are separate dispatches:
+# upload prints a version ID; promotion requires an explicit version ID.
+on:
+  workflow_dispatch:
+    inputs:
+      operation:
+        description: Upload a candidate version or promote an existing version
+        type: choice
+        required: true
+        options:
+          - upload
+          - promote
+      version_id:
+        description: Required for promote; version ID from a successful upload
+        type: string
+        required: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pkarr-worker-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: github.ref == 'refs/heads/main'
+    environment: pkarr-worker-production
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24.22.0
+      - name: Validate requested operation
+        env:
+          OPERATION: ${{ inputs.operation }}
+          VERSION_ID: ${{ inputs.version_id }}
+        run: |
+          if [[ "$OPERATION" == promote && -z "$VERSION_ID" ]]; then
+            echo 'version_id is required for promotion' >&2
+            exit 2
+          fi
+          if [[ "$OPERATION" == upload && -n "$VERSION_ID" ]]; then
+            echo 'version_id must be empty for upload' >&2
+            exit 2
+          fi
+      - name: Install locked dependencies
+        working-directory: pkgs/pkarr-worker
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Verify pinned cf CLI
+        working-directory: pkgs/pkarr-worker
+        run: test "$(./node_modules/.bin/cf --version)" = "cf 1.0.0-beta.32"
+      - name: Upload candidate version
+        if: inputs.operation == 'upload'
+        working-directory: pkgs/pkarr-worker
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          sha="$GITHUB_SHA"
+          tag="git-${sha:0:12}"
+          ./node_modules/.bin/cf -q workers versions create --worker pkarr --tag "$tag" --message "deploy $sha via GitHub Actions"
+      - name: Promote existing version
+        if: inputs.operation == 'promote'
+        working-directory: pkgs/pkarr-worker
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          VERSION_ID: ${{ inputs.version_id }}
+        run: |
+          response="$(curl --fail --silent --show-error \
+            -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+            "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/scripts/pkarr/versions?deployable=true")"
+          echo "$response" | jq -e --arg id "$VERSION_ID" '(.result.items // .result // []) | any(.id == $id)' >/dev/null
+          versions="$(jq -cn --arg id "$VERSION_ID" '[{version_id:$id,percentage:100}]')"
+          ./node_modules/.bin/cf -q workers deployments create --worker pkarr --strategy percentage --versions "$versions"
