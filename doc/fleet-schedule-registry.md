@@ -106,6 +106,22 @@ Both are Muse-cron jobs created after the 2026-11-03 full count, so
 the Surface 1 header count is stale until the next full recount —
 the two rows below are the amendment, not a recount.
 
+Surface 1 amended 2026-11-22 by Felix (Muse sandbox seat) for issue
+#2138: the `issue-sweep-rotating` row was removed. The job was
+converted to the Make-role triage feeder on 2026-10-30 per the #2138
+CONVERT decision (implementation #2156), ran feeder-only until its
+last run on 2026-11-08 21:44 CST, was found disabled on 2026-11-16
+(queue task 18201), and was absent from the full 140-job cron read on
+2026-11-17 (queue task 19715) — it no longer exists on the surface,
+so per the maintenance rule its row is removed rather than left
+asserting `enabled`. The feeder role is covered by the hourly
+`triage-step` job implemented under #2152 (per the 2026-11-17
+verification on #2156); that job has no row yet — a defect for the
+next full recount, which owns adding it from live surface reads.
+Whether the sweep's removal is its permanent retirement or a pause
+is the endgame decision still open on #2138. The Surface 1 header
+count is stale until that recount, as above.
+
 ## Surface 1 — Muse cron (131 jobs at 2026-11-03 full count; +2 rows since — see Verification)
 
 | id                                        | title                                                                                             | cadence                       | state    | owner / scope                                                              | prompt/brief pointer                                                                                                                                                               | budget       | kill criteria | created      | last review |
@@ -173,7 +189,6 @@ the two rows below are the amendment, not a recount.
 | `id-design-session-monitor`               | Monitor the 40 ID design sessions to completion                                                   | `interval@20m`                | enabled  | goal:keep-the-four-repos-healthy                                           | `/home/hatch/workspace/goals/keep-the-four-repos-healthy/crons/minutely/id-design-session-monitor__interval@20m.md`                                                                | not recorded | not recorded  | not recorded | 2026-11-03  |
 | `id-horizons-resurface`                   | Resurface id next-horizons discussion (#1240) to Drew on triggers                                 | `interval@72h`                | enabled  | goal:resurface-id-next-horizons-discussion-1240-to-drew-on-triggers        | `/home/hatch/workspace/goals/resurface-id-next-horizons-discussion-1240-to-drew-on-triggers/crons/hourly/id-horizons-resurface__interval@72h.md`                                   | not recorded | not recorded  | not recorded | 2026-11-03  |
 | `issue-sweep-devtoday-code`               | Issue sweep: developing-today/code — up to 5 items per run                                        | `interval@2h`                 | disabled | goal:keep-the-four-repos-healthy                                           | `/home/hatch/workspace/goals/keep-the-four-repos-healthy/crons/hourly/issue-sweep-devtoday-code__interval@2h.md`                                                                   | not recorded | not recorded  | not recorded | 2026-11-03  |
-| `issue-sweep-rotating`                    | Issue sweep: rotating (opencode / openchamber / nix) — up to 5 items, one repo per run            | `interval@1h`                 | enabled  | goal:keep-the-four-repos-healthy                                           | `/home/hatch/workspace/goals/keep-the-four-repos-healthy/crons/hourly/issue-sweep-rotating__interval@1h.md`                                                                        | not recorded | not recorded  | not recorded | 2026-11-03  |
 | `late-night-shift-priorities`             | Late night shift: pick tonight's priorities                                                       | `daily@17:12:00`              | enabled  | goal:late-night-shift-priorities                                           | `/home/hatch/workspace/goals/late-night-shift-priorities/crons/daily/late-night-shift-priorities__daily@17:12:00_user_current.md`                                                  | not recorded | not recorded  | not recorded | 2026-11-03  |
 | `main-ci-failure-fix-trigger`             | Main-CI failure → fix session trigger — four repos (10m)                                          | `interval@10m`                | enabled  | goal:keep-the-four-repos-healthy                                           | `/home/hatch/workspace/goals/keep-the-four-repos-healthy/crons/minutely/main-ci-failure-fix-trigger__interval@10m.md`                                                              | not recorded | not recorded  | not recorded | 2026-11-03  |
 | `memory-curation-review`                  | Memory curation — daily size pass, weekly full practice                                           | `daily@20:12:00`              | enabled  | —                                                                          | `/home/hatch/workspace/cron.d/daily/memory-curation-review__daily@20:12:00_user_current.md`                                                                                        | not recorded | not recorded  | not recorded | 2026-11-03  |
