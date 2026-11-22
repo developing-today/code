@@ -8,11 +8,11 @@
     "check:staging": "WRANGLER_SEND_METRICS=false wrangler deploy --dry-run --config wrangler.staging.jsonc --outdir .wrangler/staging-dry-run"
   },
   "engines": {
-    "node": ">=24"
+    "node": ">=24.22.0"
   },
   "devDependencies": {
     "miniflare": "4.20260730.0",
     "wrangler": "4.166.0",
-    "cf": "1.0.0-beta.20"
+    "cf": "1.0.0-rc.1"
   }
 }

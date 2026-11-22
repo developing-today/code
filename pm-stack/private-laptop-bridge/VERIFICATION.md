@@ -104,3 +104,26 @@ The final commit is tested again after committing; exact SHA and command results
 are recorded in the draft PR checkpoint to avoid a self-referential commit hash.
 Read-only discovery and the unapproved, metadata-blocked ten-minute smoke packet
 are in DISCOVERY.md. Proxy routing readiness is not private-host reachability.
+
+
+## cf release-candidate toolchain follow-up
+
+Offline verification used Node 24.22.0, `cf@1.0.0-rc.1`,
+`@cloudflare/build-output-utils@1.0.0-rc.1`, and Wrangler 4.166.0. Commands
+ran in `pm-stack/private-laptop-bridge` with a writable XDG config directory:
+
+```sh
+cf build
+cf workers versions create --worker private-laptop-bridge-smoke --tag offline-smoke --message offline-smoke --prebuilt --dry-run
+cf build --mode bridge
+cf workers versions create --worker private-laptop-bridge-staging --tag offline-bridge --message offline-bridge --mode bridge --prebuilt --dry-run
+node --test deployment-config.test.mjs smoke.test.mjs gateway.test.mjs
+```
+
+Both Builds completed and both prebuilt Version API dry-runs exited without
+credentials or upload. The bridge dry-run displayed only the `BRIDGE`
+`PrivateLaptopBridge` Durable Object binding and default-disabled placeholder
+vars; bundle was 17.84 KiB (5.31 KiB gzip). Smoke was 1.96 KiB (0.98 KiB gzip).
+Nine targeted tests passed (3 binding/release config, 3 Gateway RPC, 3 smoke).
+The workflow YAML and all embedded shell blocks passed local parsing. This is
+not evidence of target existence or a live Cloudflare deployment.

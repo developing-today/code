@@ -257,4 +257,4 @@ signing, Worker/SQLite execution, the laptop client, and bounded JSON output. No
 Aster connector or runner access is installed by this package.
 
 
-The separate stateless smoke Worker has a manual, protected GitHub Actions deployment using the pinned `cf` Versions API flow. It uploads immutable versions first and requires a second explicit exact-UUID promotion. It does not deploy the bridge Worker or change Gateway policies; see [DISCOVERY.md](DISCOVERY.md).
+The stateless smoke Worker and private Durable Object bridge have separate protected GitHub Actions targets using the pinned `cf` Build Output v1 and Versions API flow. Uploads create immutable versions; a separate exact-UUID promotion performs a 100% deployment. Each environment token must be scoped to its one pre-existing Worker. The workflow refuses bootstrap and never changes Gateway policies. See [DISCOVERY.md](DISCOVERY.md) for exact staging prerequisites and recovery.
