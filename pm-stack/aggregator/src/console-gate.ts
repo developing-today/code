@@ -13,7 +13,9 @@ export async function addConsoleShortcut(response: Response, request: Request, p
   if (path === "/manifest.webmanifest" && type.includes("application/manifest+json")) {
     const manifest = JSON.parse(await response.text()) as Record<string, unknown>;
     const shortcuts = Array.isArray(manifest.shortcuts) ? manifest.shortcuts : [];
-    if (!shortcuts.some((item) => item && typeof item === "object" && (item as { url?: unknown }).url === "/console/")) {
+    if (
+      !shortcuts.some((item) => item && typeof item === "object" && (item as { url?: unknown }).url === "/console/")
+    ) {
       manifest.shortcuts = [...shortcuts, { name: "Console", short_name: "Console", url: "/console/" }];
     }
     body = JSON.stringify(manifest, null, 2);

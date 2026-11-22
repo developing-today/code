@@ -51,23 +51,28 @@ class BundleR2Tests(unittest.TestCase):
             mirror = make_mirror(root)
             calls = []
             readbacks = []
-            with patch.object(bundle_r2, "load_plan", return_value=([{"repo": "owner/repo"}], [])):
-                with patch.object(bundle_r2, "_run_rclone", side_effect=self._local_rclone(root, calls, readbacks)):
-                    result = bundle_r2.upload_repo("owner/repo", root, "supabase-backups")
+            with patch.object(
+                bundle_r2, "load_plan", return_value=([{"repo": "owner/repo"}], [])
+            ):
+                with patch.object(
+                    bundle_r2,
+                    "_run_rclone",
+                    side_effect=self._local_rclone(root, calls, readbacks),
+                ):
+                    result = bundle_r2.upload_repo(
+                        "owner/repo", root, "supabase-backups"
+                    )
             expected_head = git("--git-dir", mirror, "rev-parse", "HEAD").stdout.strip()
-            with open(result["bundle"], "rb") as artifact:
-                local_sha256 = hashlib.sha256(artifact.read()).hexdigest()
+            self.assertFalse(
+                os.path.exists(calls[0][1]), "verified local staging bundle is removed"
+            )
 
         self.assertEqual(result["status"], "ok")
         self.assertEqual(len(calls), 2)
         self.assertEqual([call[0] for call in calls], ["copyto", "copyto"])
-        self.assertEqual(calls[0][1], result["bundle"])
         self.assertEqual(calls[1][1], result["remote"])
-        self.assertNotEqual(calls[1][2], result["bundle"])
-        self.assertEqual(
-            result["head"], expected_head
-        )
-        self.assertEqual(result["sha256"], local_sha256)
+        self.assertNotEqual(calls[1][2], calls[0][1])
+        self.assertEqual(result["head"], expected_head)
         self.assertEqual(readbacks, [result["sha256"]])
         self.assertIn(result["head"] + "-" + result["sha256"], result["remote"])
 
@@ -76,24 +81,61 @@ class BundleR2Tests(unittest.TestCase):
             make_mirror(root)
             calls = []
             readbacks = []
-            with patch.object(bundle_r2, "load_plan", return_value=([{"repo": "owner/repo"}], [])):
+            with patch.object(
+                bundle_r2, "load_plan", return_value=([{"repo": "owner/repo"}], [])
+            ):
                 with patch.object(
                     bundle_r2,
                     "_run_rclone",
-                    side_effect=self._local_rclone(root, calls, readbacks, corrupt_readback=True),
+                    side_effect=self._local_rclone(
+                        root, calls, readbacks, corrupt_readback=True
+                    ),
                 ):
-                    with self.assertRaisesRegex(RuntimeError, "downloaded R2 bundle SHA-256"):
+                    with self.assertRaisesRegex(
+                        RuntimeError, "downloaded R2 bundle SHA-256"
+                    ):
                         bundle_r2.upload_repo("owner/repo", root, "supabase-backups")
 
             self.assertEqual([call[0] for call in calls], ["copyto", "copyto"])
+            self.assertFalse(
+                os.path.exists(calls[0][1]),
+                "failed verification removes local staging bundle",
+            )
+
+    def test_upload_failure_removes_local_staging_bundle(self):
+        with tempfile.TemporaryDirectory() as root:
+            make_mirror(root)
+            source = []
+
+            def failed_upload(args):
+                source.append(args[1])
+                raise RuntimeError("upload unavailable")
+
+            with patch.object(
+                bundle_r2, "load_plan", return_value=([{"repo": "owner/repo"}], [])
+            ):
+                with patch.object(bundle_r2, "_run_rclone", side_effect=failed_upload):
+                    with self.assertRaisesRegex(RuntimeError, "upload unavailable"):
+                        bundle_r2.upload_repo("owner/repo", root, "supabase-backups")
+
+            self.assertEqual(len(source), 1)
+            self.assertFalse(
+                os.path.exists(source[0]), "failed upload removes local staging bundle"
+            )
 
     def test_each_upload_uses_a_distinct_bundle_snapshot(self):
         with tempfile.TemporaryDirectory() as root:
             make_mirror(root)
             calls = []
             readbacks = []
-            with patch.object(bundle_r2, "load_plan", return_value=([{"repo": "owner/repo"}], [])):
-                with patch.object(bundle_r2, "_run_rclone", side_effect=self._local_rclone(root, calls, readbacks)):
+            with patch.object(
+                bundle_r2, "load_plan", return_value=([{"repo": "owner/repo"}], [])
+            ):
+                with patch.object(
+                    bundle_r2,
+                    "_run_rclone",
+                    side_effect=self._local_rclone(root, calls, readbacks),
+                ):
                     bundle_r2.upload_repo("owner/repo", root, "supabase-backups")
                     bundle_r2.upload_repo("owner/repo", root, "supabase-backups")
 
@@ -112,7 +154,9 @@ class BundleR2Tests(unittest.TestCase):
                 raise AssertionError(f"expected file-compatible copyto, got {command}")
 
             if source.startswith("r2bak:"):
-                remote_path = os.path.join(remote_root, source.removeprefix("r2bak:").replace("/", os.sep))
+                remote_path = os.path.join(
+                    remote_root, source.removeprefix("r2bak:").replace("/", os.sep)
+                )
                 shutil.copyfile(remote_path, destination)
                 if corrupt_readback:
                     with open(destination, "ab") as downloaded:
@@ -121,7 +165,9 @@ class BundleR2Tests(unittest.TestCase):
                     readbacks.append(hashlib.sha256(downloaded.read()).hexdigest())
                 return
 
-            remote_path = os.path.join(remote_root, destination.removeprefix("r2bak:").replace("/", os.sep))
+            remote_path = os.path.join(
+                remote_root, destination.removeprefix("r2bak:").replace("/", os.sep)
+            )
             os.makedirs(os.path.dirname(remote_path), exist_ok=True)
             shutil.copyfile(source, remote_path)
 

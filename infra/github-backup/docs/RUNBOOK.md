@@ -187,8 +187,12 @@ remote object with a second `rclone copyto`, and compares its SHA-256 against
 the local bundle. The content-addressed key is under
 `github-backup/cold-bundles/<owner>/<repo>/<head>-<sha256>.bundle`, so a newer
 artifact does not replace an earlier one. A non-zero upload or read-back check
-is a failed run. This command handles one repository only;
-recurring scheduling and an all-repository status record are separate work.
+is a failed run. This command handles one repository only; the daily
+`github-backup-r2.timer` runs the four-fleet-repository uploader through the
+existing runtime-only Bitwarden/R2 credential path. A failed fleet repository makes
+the scheduled run fail; disable the timer until the cause is fixed and a full
+run succeeds. This does not provide a freshness/lag status record or automatic
+issue filing.
 
 ```sh
 # normal repo:

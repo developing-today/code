@@ -6,4 +6,3 @@ Wants=network-online.target
 [Service]
 Type=oneshot
 ExecStart=__GB_DIR__/systemd/drain-wrapper.sh
-WorkingDirectory=%h/backups/github

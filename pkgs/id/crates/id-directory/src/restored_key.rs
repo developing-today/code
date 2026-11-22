@@ -52,11 +52,8 @@ pub enum RestoreStatus {
 pub fn mark_restored(marker: impl AsRef<Path>, public_key: &str) -> Result<()> {
     let marker = marker.as_ref();
     let tmp = marker_tmp(marker);
-    let result = id_core::durable_write::write_durable(
-        marker,
-        &tmp,
-        format!("{public_key}\n").as_bytes(),
-    );
+    let result =
+        id_core::durable_write::write_durable(marker, &tmp, format!("{public_key}\n").as_bytes());
     if let Err(error) = &result {
         if error.stage() == id_core::durable_write::WriteStage::BeforeRename {
             let _ = std::fs::remove_file(&tmp);

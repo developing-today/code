@@ -573,13 +573,15 @@ def post_to_throat(record, deadline=None):
         "severity": record["severity"],
         "title": record["title"],
         "body": record["body"],
-        "stackHealth": {
-            "serviceId": record["target"],
-            "name": TARGETS[record["target"]],
-            "state": "down" if record["state"] == "down" else "up",
-            "since": record["firedAt"],
-            "detail": record["body"],
-        },
+        # The record's own stackHealth member, built once in main —
+        # never rebuilt here, so the JSONL record, this POST body, and
+        # the ledger-bound extension below share one shape (#12603).
+        "stackHealth": record["stackHealth"],
+        # The full incident record as the healthHook extension: the
+        # aggregator stores it in the alerts ledger as the C3 record of
+        # detail (#12599 decision b). Best-effort like the rest of this
+        # post — a rejection never changes the verdict or the record.
+        "healthHook": record,
     }
     try:
         data = json.dumps(body).encode()
@@ -686,11 +688,18 @@ def main(argv):
     intake_key = (open_incident or {}).get(
         "key"
     ) or f"health-hook:{target}:{incident_id}"
+    # A recovery reads "recovered", not "is up" (#12603); dedupe is by
+    # key, never title, so the wording change cannot split an incident.
+    title = (
+        f"Health hook: {TARGETS[target]} recovered"
+        if state == "up" and recovery_of
+        else f"Health hook: {TARGETS[target]} is {state}"
+    )
     record = {
         "source": "health-hook",
         "key": intake_key,
         "severity": severity,
-        "title": f"Health hook: {TARGETS[target]} is {state}",
+        "title": title,
         "body": summary,
         "target": target,
         "state": state,
@@ -700,6 +709,16 @@ def main(argv):
         "incidentId": incident_id,
         "recoveryOf": recovery_of,
         "evidence": evidence,
+        # Built once, here: the JSONL record, the throat POST body, and
+        # the ledger-bound healthHook extension all carry this member
+        # (#12603, one record shape).
+        "stackHealth": {
+            "serviceId": target,
+            "name": TARGETS[target],
+            "state": "down" if state == "down" else "up",
+            "since": fired_at,
+            "detail": summary,
+        },
     }
 
     # Only record incidents for down/transient? Record all for audit, but

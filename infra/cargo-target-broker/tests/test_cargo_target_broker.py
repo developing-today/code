@@ -7,12 +7,15 @@ row goes and the eviction is counted.
 
 from __future__ import annotations
 
+import contextlib
 import importlib.util
+import io
 import shutil
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 HERE = Path(__file__).resolve().parent
@@ -114,6 +117,71 @@ class EvictionTest(unittest.TestCase):
 
 
 class WorkspaceArtifactCleanupTest(unittest.TestCase):
+    def test_checkout_option_cleans_selected_workspace_but_keeps_caller_cwd(
+        self,
+    ) -> None:
+        workspace = Path(tempfile.mkdtemp(prefix="ctb-selected-workspace-"))
+        self.addCleanup(shutil.rmtree, workspace, ignore_errors=True)
+        target = workspace.parent / "leased-target"
+        target.mkdir()
+        self.addCleanup(shutil.rmtree, target, ignore_errors=True)
+        seen: dict[str, tuple[str, str, int]] = {}
+
+        class StubBroker:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def checkout(self, key, holder, wait):
+                seen["checkout"] = (key, holder, wait)
+                return SimpleNamespace(path=target), "lease-1", True
+
+        stdout = io.StringIO()
+        with (
+            mock.patch.object(broker_mod, "build_broker", return_value=StubBroker()),
+            mock.patch.object(broker_mod, "make_key", return_value="id-test"),
+            mock.patch.object(broker_mod, "default_holder", return_value="tester"),
+            mock.patch.object(broker_mod, "clean_workspace_artifacts") as clean,
+            contextlib.redirect_stdout(stdout),
+        ):
+            status = broker_mod.main(
+                [
+                    "--pool-root",
+                    str(workspace.parent / "pool"),
+                    "--state-dir",
+                    str(workspace.parent / "state"),
+                    "checkout",
+                    "--repo",
+                    "id",
+                    "--workspace-cwd",
+                    str(workspace),
+                    "--wait",
+                    "7",
+                    "--json",
+                ]
+            )
+
+        self.assertEqual(status, 0)
+        self.assertEqual(seen["checkout"], ("id-test", "tester", 7))
+        clean.assert_called_once_with(target, workspace.resolve())
+        self.assertEqual(broker_mod.json.loads(stdout.getvalue())["path"], str(target))
+
+    def test_workspace_override_is_resolved_without_changing_caller_cwd(self) -> None:
+        workspace = Path(tempfile.mkdtemp(prefix="ctb-workspace-"))
+        try:
+            self.assertEqual(
+                broker_mod.workspace_cleanup_cwd(str(workspace)),
+                workspace.resolve(),
+            )
+            self.assertEqual(
+                broker_mod.workspace_cleanup_cwd(None),
+                Path.cwd(),
+            )
+        finally:
+            shutil.rmtree(workspace, ignore_errors=True)
+
     def test_lease_cleanup_removes_workspace_packages_but_keeps_deps(self) -> None:
         target = Path("/pool/code-test")
         metadata = {
@@ -128,11 +196,17 @@ class WorkspaceArtifactCleanupTest(unittest.TestCase):
                 {"id": "registry+https://example.invalid#dep@1.0.0", "name": "dep"},
             ],
         }
-        with mock.patch.object(
-            broker_mod.subprocess,
-            "run",
-            side_effect=[mock.Mock(stdout=broker_mod.json.dumps(metadata)), mock.Mock()],
-        ) as run, mock.patch.object(Path, "is_file", return_value=True):
+        with (
+            mock.patch.object(
+                broker_mod.subprocess,
+                "run",
+                side_effect=[
+                    mock.Mock(stdout=broker_mod.json.dumps(metadata)),
+                    mock.Mock(),
+                ],
+            ) as run,
+            mock.patch.object(Path, "is_file", return_value=True),
+        ):
             broker_mod.clean_workspace_artifacts(target, cwd=Path("/worktree"))
 
         metadata_call, clean_call = run.call_args_list

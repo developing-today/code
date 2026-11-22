@@ -14,9 +14,18 @@ if [ ! -s "$BWS_FILE" ] && [ -s "$CONFIG_HOME/bws/access-token" ]; then
 fi
 mkdir -p "$STATE"
 chmod 700 "$STATE"
-[ -s "$BWS_FILE" ] || { echo "handoff deploy: missing BWS token file at $BWS_FILE" >&2; exit 1; }
-command -v bws >/dev/null || { echo "handoff deploy: bws is not on PATH" >&2; exit 1; }
-command -v wrangler >/dev/null || { echo "handoff deploy: wrangler is not on PATH" >&2; exit 1; }
+[ -s "$BWS_FILE" ] || {
+  echo "handoff deploy: missing BWS token file at $BWS_FILE" >&2
+  exit 1
+}
+command -v bws >/dev/null || {
+  echo "handoff deploy: bws is not on PATH" >&2
+  exit 1
+}
+command -v wrangler >/dev/null || {
+  echo "handoff deploy: wrangler is not on PATH" >&2
+  exit 1
+}
 
 umask 077
 [ -s "$STATE/admin-token" ] || python3 -c 'import secrets; print(secrets.token_urlsafe(48))' >"$STATE/admin-token"
@@ -34,7 +43,10 @@ for item in items:
         break
 ')"
 unset BWS_ACCESS_TOKEN
-[ -n "$CF_TOKEN" ] || { echo "handoff deploy: BWS could not resolve cloudflare.api-token-day-to-day" >&2; exit 1; }
+[ -n "$CF_TOKEN" ] || {
+  echo "handoff deploy: BWS could not resolve cloudflare.api-token-day-to-day" >&2
+  exit 1
+}
 export CLOUDFLARE_API_TOKEN="$CF_TOKEN"
 unset CF_TOKEN
 
@@ -42,7 +54,10 @@ DEPLOY_LOG="$(mktemp)"
 trap 'rm -f "$DEPLOY_LOG"' EXIT
 wrangler deploy 2>&1 | tee "$DEPLOY_LOG"
 ORIGIN="$(grep -Eo 'https://muse-agent-handoff\.[[:alnum:].-]+\.workers\.dev' "$DEPLOY_LOG" | tail -n 1 || true)"
-[ -n "$ORIGIN" ] || { echo "handoff deploy: Worker deployed but its workers.dev URL was not detected; copy the URL from wrangler output and save it to $STATE/origin" >&2; exit 1; }
+[ -n "$ORIGIN" ] || {
+  echo "handoff deploy: Worker deployed but its workers.dev URL was not detected; copy the URL from wrangler output and save it to $STATE/origin" >&2
+  exit 1
+}
 
 wrangler secret put ADMIN_TOKEN <"$STATE/admin-token"
 wrangler secret put HANDOFF_ENCRYPTION_KEY <"$STATE/encryption-key"

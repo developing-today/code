@@ -45,6 +45,7 @@ use id_core::id_shape::{ContentId, HashProfile};
 use id_core::id_uri_format::resolve_context;
 use id_core::id_uri_parse::{IdUriV1, UriTarget};
 use id_core::signed_envelope::{Envelope as RecordEnvelope, LogicalGraphId};
+use id_sync::federation::record_join::JoinRefusal;
 use id_sync::federation::slices::b07_conflict_report::{
     ConflictStore, IngestError, IngestOutcome, ObjectId, RetentionPolicy, VersionHeader,
     conflict_key,
@@ -52,7 +53,8 @@ use id_sync::federation::slices::b07_conflict_report::{
 use id_sync::federation::slices::b08_sync_scope::SyncScopeConfig;
 use id_sync::federation::slices::b09_anti_entropy::{Replica, reconcile};
 use id_sync::federation::slices::b32_ingest_gate::{
-    EventId, FreshnessWindow, RejectReason, SignerAuthorization, sign_envelope,
+    Envelope, EventId, FreshnessWindow, IngressPath, RejectReason, SignerAuthorization,
+    sign_envelope,
 };
 
 const START: u64 = 10_000;
@@ -376,13 +378,42 @@ fn a_record_from_a_writer_the_node_does_not_know_is_not_admitted() {
     assert!(heads(&a).is_empty());
 }
 
+/// A broken join is refused the same way however it arrives: at
+/// `produce` on its writer's own node and at `receive` from a peer,
+/// with its class, and it leaves no trace in either node's
+/// inventory, so a peer that somehow holds one cannot pass it on
+/// and no reader is ever served it.
+fn assert_refused(version: &Envelope, class: JoinRefusal, event: &EventId) {
+    let mut a = node("node-a");
+    assert_eq!(
+        a.produce(version, START),
+        Err(IngestError::JoinRefused(class)),
+        "produce"
+    );
+    assert!(!a.inventory().contains(event), "produce: inventoried");
+    assert_eq!(
+        read(&a, &address_of(event, "node-a")),
+        Err(Unreadable::NotHeld)
+    );
+
+    let mut b = node("node-b");
+    assert_eq!(
+        b.receive(IngressPath::Internal, version, "node-a", START),
+        Err(IngestError::JoinRefused(class)),
+        "receive"
+    );
+    assert!(!b.inventory().contains(event), "receive: inventoried");
+    assert!(b.refused().contains_key(event), "receive: not recorded");
+}
+
 #[test]
-fn a_version_whose_body_breaks_the_join_is_never_served_as_a_record() {
-    // The gate checks the version's own signature and never opens the
-    // body, so an authorized writer can get a version admitted whose
-    // body is not the record its event id promises. Each such version
-    // must be refused on the way out. (Refusing them at admission is the
-    // next slice's job; this pins that no reader is fooled meanwhile.)
+fn a_version_whose_body_breaks_the_join_is_refused_at_admission() {
+    // The gate checks the version's own signature and never opens
+    // the body, so without the admission check (#12279) an authorized
+    // writer could get a version admitted whose body is not the
+    // record its event id promises, and it would be refused only on
+    // the way out. Each case below is refused on the way in instead,
+    // with the class that names how the join breaks.
     let wrap = |writer: usize, event: EventId, object: ObjectId, body: Vec<u8>| {
         let header = VersionHeader {
             object_id: object,
@@ -402,7 +433,6 @@ fn a_version_whose_body_breaks_the_join_is_never_served_as_a_record() {
     let digest = |bytes: &[u8]| -> EventId { *blake3::hash(bytes).as_bytes() };
 
     // 1. A record whose signature was changed, re-addressed to match.
-    let mut a = node("node-a");
     let honest = note(b"alice wrote this")
         .sign(CONTEXT, "alice", &key(ALICE))
         .unwrap();
@@ -410,71 +440,37 @@ fn a_version_whose_body_breaks_the_join_is_never_served_as_a_record() {
     forged.signature[0] ^= 0x01;
     let forged_bytes = forged.canonical_bytes().unwrap();
     let event = digest(&forged_bytes);
-    assert_eq!(
-        a.produce(&wrap(ALICE, event, GRAPH, forged_bytes), START),
-        Ok(IngestOutcome::Applied),
-        "the gate does not read bodies"
-    );
-    assert_eq!(
-        read(&a, &address_of(&event, "node-a")),
-        Err(Unreadable::NotASignedRecord)
-    );
+    let version = wrap(ALICE, event, GRAPH, forged_bytes);
+    assert_refused(&version, JoinRefusal::BodyNotValidRecord, &event);
 
     // 2. Alice's valid record, republished by Bob under his own key.
-    let mut a = node("node-a");
     let bytes = honest.envelope.canonical_bytes().unwrap();
     let event = digest(&bytes);
     assert_eq!(event, *honest.id.content_id().digest());
-    assert_eq!(
-        a.produce(&wrap(BOB, event, GRAPH, bytes.clone()), START),
-        Ok(IngestOutcome::Applied)
-    );
-    assert_eq!(
-        read(&a, &address_of(&event, "node-a")),
-        Err(Unreadable::JoinBroken("signer"))
-    );
+    let version = wrap(BOB, event, GRAPH, bytes.clone());
+    assert_refused(&version, JoinRefusal::SignerMismatch, &event);
 
     // 3. A valid record filed under another object.
-    let mut a = node("node-a");
-    assert_eq!(
-        a.produce(&wrap(ALICE, event, [0x22; 32], bytes.clone()), START),
-        Ok(IngestOutcome::Applied)
-    );
-    assert_eq!(
-        read(&a, &address_of(&event, "node-a")),
-        Err(Unreadable::JoinBroken("object"))
-    );
+    let version = wrap(ALICE, event, [0x22; 32], bytes.clone());
+    assert_refused(&version, JoinRefusal::ObjectMismatch, &event);
 
-    // 4. A valid record under an event id that is not its digest: the
-    // record's own address finds nothing, and the id it was filed under
-    // names bytes the body is not.
-    let mut a = node("node-a");
+    // 4. A valid record under an event id that is not its digest:
+    // neither the record's own address nor the id it was filed
+    // under finds anything, because it was never admitted.
     let elsewhere: EventId = [0x33; 32];
-    assert_eq!(
-        a.produce(&wrap(ALICE, elsewhere, GRAPH, bytes.clone()), START),
-        Ok(IngestOutcome::Applied)
-    );
+    let version = wrap(ALICE, elsewhere, GRAPH, bytes.clone());
+    assert_refused(&version, JoinRefusal::EventIdMismatch, &elsewhere);
+    let a = node("node-a");
     assert_eq!(
         read(&a, &address_of(&event, "node-a")),
         Err(Unreadable::NotHeld)
     );
-    assert_eq!(
-        read(&a, &address_of(&elsewhere, "node-a")),
-        Err(Unreadable::BodyIsNotTheNamedBytes)
-    );
 
     // 5. Bytes that are no envelope at all, correctly addressed.
-    let mut a = node("node-a");
     let junk = b"not an envelope".to_vec();
     let event = digest(&junk);
-    assert_eq!(
-        a.produce(&wrap(ALICE, event, GRAPH, junk), START),
-        Ok(IngestOutcome::Applied)
-    );
-    assert_eq!(
-        read(&a, &address_of(&event, "node-a")),
-        Err(Unreadable::NotASignedRecord)
-    );
+    let version = wrap(ALICE, event, GRAPH, junk);
+    assert_refused(&version, JoinRefusal::BodyNotEnvelope, &event);
 
     // Control: the same wrapper with nothing broken is served.
     let mut a = node("node-a");

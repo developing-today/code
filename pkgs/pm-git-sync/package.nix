@@ -16,7 +16,7 @@
 }:
 stdenv.mkDerivation {
   pname = "pm-git-sync";
-  version = "0.2.0";
+  version = "0.3.0";
 
   src = lib.fileset.toSource {
     root = ../../pm-stack/scripts;

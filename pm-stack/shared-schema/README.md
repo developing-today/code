@@ -98,12 +98,12 @@ creates `agg_actions` and `shared_events` with their constraints, indexes, and
 grants. `migrations/20261116_0001_aggregator_remote_stores.up.sql` (#6815)
 adds, in dependency order after it:
 
-| Table                           | Holds                                                                     |
-| ------------------------------- | ------------------------------------------------------------------------- |
-| `public.agg_activity_ingestion` | per-source checkpoints, dedupe seen ids, source status                    |
-| `public.agg_activity_gaps`      | the activity gap ledger (gaps resolve in place)                           |
-| `public.agg_usage_snapshots`    | append-only usage observations, dedupe key `service\|metric\|ts\|value`   |
-| `public.agg_store_documents`    | aggregator-owned JSON documents without a typed contract (`aa-last-good`) |
+| Table                           | Holds                                                                                                           |
+| ------------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| `public.agg_activity_ingestion` | per-source checkpoints, dedupe seen ids, source status                                                          |
+| `public.agg_activity_gaps`      | the activity gap ledger (gaps resolve in place)                                                                 |
+| `public.agg_usage_snapshots`    | append-only usage observations, dedupe key `service\|metric\|ts\|value`                                         |
+| `public.agg_store_documents`    | aggregator-owned JSON documents (`aa-last-good`; namespaced C7 report events use an append-only typed contract) |
 
 Each paired `.down.sql` refuses to drop a non-empty table; the #6815 down
 migration drops its tables in reverse dependency order. The refusal is
