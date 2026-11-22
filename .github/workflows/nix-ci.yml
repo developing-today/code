@@ -54,6 +54,8 @@ jobs:
         run: .github/scripts/check-openclaw-unit-wants.sh
       - name: Self-test the openclaw unit Wants guard
         run: .github/scripts/check-openclaw-unit-wants.test.sh
+      - name: Test OpenCode unchanged-build deployment
+        run: bash home/common/opencode-deploy.test.sh
       - name: Test the OpenClaw comment-loop pre-filter
         run: home/openclaw/comment-loop/pilot-loop-prefilter.test.sh
 
