@@ -20,6 +20,132 @@ pub struct DiscoveredItem {
     pub sensitivity: Tier,
 }
 
+/// Discover boot segments from JSONL init event files. Each event needs
+/// a stable `boot_id` and `state`; only `success`, `failed`, or
+/// `complete` closes a segment. Temporary files are emitted as held
+/// candidates without reading their contents.
+pub fn discover_boot_records(
+    root: &Path,
+    mut classify_sensitivity: impl FnMut(&Path) -> Tier,
+) -> Result<Vec<DiscoveredItem>> {
+    let root = std::fs::canonicalize(root).map_err(|e| {
+        Error::backend(format!(
+            "sweep boot: resolving root {}: {e}",
+            root.display()
+        ))
+    })?;
+    let mut files = Vec::new();
+    collect_report_files(&root, &mut files)?;
+    files.retain(|path| {
+        path.file_name().is_some_and(|name| {
+            name.to_string_lossy() == "init.jsonl" || name.to_string_lossy() == "init.jsonl.tmp"
+        })
+    });
+    files.sort();
+
+    let mut items = Vec::new();
+    for path in files {
+        let metadata = std::fs::symlink_metadata(&path)
+            .map_err(|e| Error::backend(format!("sweep boot: stat {}: {e}", path.display())))?;
+        if !metadata.is_file() || metadata.file_type().is_symlink() {
+            continue;
+        }
+        let sensitivity = classify_sensitivity(&path);
+        let partial = path.extension().is_some_and(|ext| ext == "tmp");
+        let mut bytes = metadata.len();
+        if sensitivity == Tier::Secret || partial || bytes > OVERSIZE_BYTES {
+            items.push(DiscoveredItem {
+                facts: CandidateFacts {
+                    source_ref: path.to_string_lossy().into_owned(),
+                    bytes,
+                    secret_tier: sensitivity == Tier::Secret,
+                    ..CandidateFacts::default()
+                },
+                text: String::new(),
+                sensitivity,
+            });
+            continue;
+        }
+        let file = open_report_file(&path, &root)?;
+        let mut bounded = file.take(OVERSIZE_BYTES + 1);
+        let mut contents = Vec::with_capacity(bytes as usize);
+        bounded
+            .read_to_end(&mut contents)
+            .map_err(|e| Error::backend(format!("sweep boot: reading {}: {e}", path.display())))?;
+        bytes = contents.len() as u64;
+        if bytes > OVERSIZE_BYTES {
+            items.push(DiscoveredItem {
+                facts: CandidateFacts {
+                    source_ref: path.to_string_lossy().into_owned(),
+                    bytes,
+                    ..CandidateFacts::default()
+                },
+                text: String::new(),
+                sensitivity,
+            });
+            continue;
+        }
+        let text = String::from_utf8(contents).map_err(|e| {
+            Error::backend(format!(
+                "sweep boot: decoding {} as UTF-8: {e}",
+                path.display()
+            ))
+        })?;
+        let mut segments = std::collections::BTreeMap::<String, (Vec<String>, bool, u64)>::new();
+        for (line_no, line) in text.lines().enumerate() {
+            if line.trim().is_empty() {
+                continue;
+            }
+            let event: serde_json::Value = serde_json::from_str(line).map_err(|e| {
+                Error::backend(format!(
+                    "sweep boot: parsing {} line {}: {e}",
+                    path.display(),
+                    line_no + 1
+                ))
+            })?;
+            let boot_id = event
+                .get("boot_id")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .ok_or_else(|| {
+                    Error::fatal(format!(
+                        "sweep boot: {} line {} has no boot_id",
+                        path.display(),
+                        line_no + 1
+                    ))
+                })?;
+            let state = event.get("state").and_then(|v| v.as_str()).ok_or_else(|| {
+                Error::fatal(format!(
+                    "sweep boot: {} line {} has no state",
+                    path.display(),
+                    line_no + 1
+                ))
+            })?;
+            let (events, terminal, segment_bytes) = segments.entry(boot_id.to_owned()).or_default();
+            events.push(line.to_owned());
+            *terminal |= matches!(state, "success" | "failed" | "complete");
+            *segment_bytes += line.len() as u64 + 1;
+        }
+        for (boot_id, (events, terminal, segment_bytes)) in segments {
+            let segment = events.join("\n");
+            let address = blake3::hash(segment.as_bytes()).to_hex().to_string();
+            items.push(DiscoveredItem {
+                facts: CandidateFacts {
+                    source_ref: format!("{}#boot_id={boot_id}", path.display()),
+                    bytes: segment_bytes.min(bytes),
+                    content_address: Some(address),
+                    terminal,
+                    has_substance: !events.is_empty(),
+                    ..CandidateFacts::default()
+                },
+                text: segment,
+                sensitivity,
+            });
+        }
+    }
+    Ok(items)
+}
+
 /// Discover final and in-flight report files beneath a watched root.
 /// Traversal is deterministic, never follows symlinks, and delegates
 /// sensitivity classification to the caller (there is no implicit
@@ -245,6 +371,214 @@ pub fn discover_statistics_reports(
     Ok(items)
 }
 
+/// Discover finalized session snapshots (`*.session.json`) below a
+/// watched root. The normalized snapshot format has `state` (one of
+/// `closed`, `completed`, or `failed`) and a `messages` array. A message
+/// is substantive only when its role is `user` or `assistant`, it is
+/// not marked `synthetic`, and it has non-whitespace text. Secret and
+/// oversized snapshots are never read.
+pub fn discover_session_logs(
+    root: &Path,
+    mut classify_sensitivity: impl FnMut(&Path) -> Tier,
+) -> Result<Vec<DiscoveredItem>> {
+    let root = std::fs::canonicalize(root).map_err(|e| {
+        Error::backend(format!(
+            "sweep sessions: resolving root {}: {e}",
+            root.display()
+        ))
+    })?;
+    let mut files = Vec::new();
+    collect_report_files(&root, &mut files)?;
+    files.retain(|path| {
+        path.file_name()
+            .is_some_and(|name| name.to_string_lossy().ends_with(".session.json"))
+    });
+    files.sort();
+
+    let mut items = Vec::with_capacity(files.len());
+    for path in files {
+        let metadata = std::fs::symlink_metadata(&path)
+            .map_err(|e| Error::backend(format!("sweep sessions: stat {}: {e}", path.display())))?;
+        if !metadata.is_file() || metadata.file_type().is_symlink() {
+            continue;
+        }
+        let sensitivity = classify_sensitivity(&path);
+        let mut bytes = metadata.len();
+        let (text, content_address, terminal, has_substance) = if sensitivity == Tier::Secret
+            || bytes > OVERSIZE_BYTES
+        {
+            (String::new(), None, false, false)
+        } else {
+            let file = open_report_file(&path, &root)?;
+            let mut bounded = file.take(OVERSIZE_BYTES + 1);
+            let mut contents = Vec::with_capacity(bytes as usize);
+            bounded.read_to_end(&mut contents).map_err(|e| {
+                Error::backend(format!("sweep sessions: reading {}: {e}", path.display()))
+            })?;
+            bytes = contents.len() as u64;
+            if bytes > OVERSIZE_BYTES {
+                (String::new(), None, false, false)
+            } else {
+                let text = String::from_utf8(contents).map_err(|e| {
+                    Error::backend(format!(
+                        "sweep sessions: decoding {} as UTF-8: {e}",
+                        path.display()
+                    ))
+                })?;
+                let snapshot: serde_json::Value = serde_json::from_str(&text).map_err(|e| {
+                    Error::backend(format!("sweep sessions: parsing {}: {e}", path.display()))
+                })?;
+                let terminal = matches!(
+                    snapshot.get("state").and_then(|v| v.as_str()),
+                    Some("closed" | "completed" | "failed")
+                );
+                let has_substance = snapshot
+                    .get("messages")
+                    .and_then(|v| v.as_array())
+                    .is_some_and(|messages| {
+                        messages.iter().any(|message| {
+                            matches!(
+                                message.get("role").and_then(|v| v.as_str()),
+                                Some("user" | "assistant")
+                            ) && message.get("synthetic").and_then(|v| v.as_bool()) != Some(true)
+                                && message
+                                    .get("text")
+                                    .and_then(|v| v.as_str())
+                                    .is_some_and(|s| !s.trim().is_empty())
+                        })
+                    });
+                let content_address = blake3::hash(text.as_bytes()).to_hex().to_string();
+                (text, Some(content_address), terminal, has_substance)
+            }
+        };
+        items.push(DiscoveredItem {
+            facts: CandidateFacts {
+                source_ref: path.to_string_lossy().into_owned(),
+                bytes,
+                content_address,
+                secret_tier: sensitivity == Tier::Secret,
+                terminal,
+                has_substance,
+                ..CandidateFacts::default()
+            },
+            text,
+            sensitivity,
+        });
+    }
+    Ok(items)
+}
+
+/// Discover one message per JSONL line from allowlisted channel folders
+/// (`root/<channel>/.../*.jsonl`). The directory name is checked before
+/// opening a file, so off-allowlist exports are not read at all. Each
+/// message object uses `text`, `bot`, and `heartbeat` fields; source
+/// adapters deliberately accept an explicit allowlist from the caller.
+pub fn discover_chat_exports(
+    root: &Path,
+    allowlisted_channels: &std::collections::HashSet<String>,
+    mut classify_sensitivity: impl FnMut(&Path) -> Tier,
+) -> Result<Vec<DiscoveredItem>> {
+    let root = std::fs::canonicalize(root).map_err(|e| {
+        Error::backend(format!(
+            "sweep chat: resolving root {}: {e}",
+            root.display()
+        ))
+    })?;
+    let mut files = Vec::new();
+    collect_report_files(&root, &mut files)?;
+    files.retain(|path| path.extension().is_some_and(|ext| ext == "jsonl"));
+    files.sort();
+
+    let mut items = Vec::new();
+    for path in files {
+        let Ok(relative) = path.strip_prefix(&root) else {
+            continue;
+        };
+        let Some(channel) = relative
+            .components()
+            .next()
+            .and_then(|part| part.as_os_str().to_str())
+        else {
+            continue;
+        };
+        if !allowlisted_channels.contains(channel) {
+            continue;
+        }
+        let sensitivity = classify_sensitivity(&path);
+        let metadata = std::fs::symlink_metadata(&path)
+            .map_err(|e| Error::backend(format!("sweep chat: stat {}: {e}", path.display())))?;
+        if !metadata.is_file() || metadata.file_type().is_symlink() {
+            continue;
+        }
+        if sensitivity == Tier::Secret || metadata.len() > OVERSIZE_BYTES {
+            items.push(DiscoveredItem {
+                facts: CandidateFacts {
+                    source_ref: path.to_string_lossy().into_owned(),
+                    bytes: metadata.len(),
+                    secret_tier: sensitivity == Tier::Secret,
+                    ..CandidateFacts::default()
+                },
+                text: String::new(),
+                sensitivity,
+            });
+            continue;
+        }
+        let file = open_report_file(&path, &root)?;
+        let mut bounded = file.take(OVERSIZE_BYTES + 1);
+        let mut contents = Vec::with_capacity(metadata.len() as usize);
+        bounded
+            .read_to_end(&mut contents)
+            .map_err(|e| Error::backend(format!("sweep chat: reading {}: {e}", path.display())))?;
+        if contents.len() as u64 > OVERSIZE_BYTES {
+            items.push(DiscoveredItem {
+                facts: CandidateFacts {
+                    source_ref: path.to_string_lossy().into_owned(),
+                    bytes: contents.len() as u64,
+                    ..CandidateFacts::default()
+                },
+                text: String::new(),
+                sensitivity,
+            });
+            continue;
+        }
+        let text = String::from_utf8(contents).map_err(|e| {
+            Error::backend(format!(
+                "sweep chat: decoding {} as UTF-8: {e}",
+                path.display()
+            ))
+        })?;
+        for (line_no, line) in text.lines().enumerate() {
+            if line.trim().is_empty() {
+                continue;
+            }
+            let message: serde_json::Value = serde_json::from_str(line).map_err(|e| {
+                Error::backend(format!(
+                    "sweep chat: parsing {} line {}: {e}",
+                    path.display(),
+                    line_no + 1
+                ))
+            })?;
+            let body = line.to_owned();
+            let address = blake3::hash(body.as_bytes()).to_hex().to_string();
+            let bot_or_heartbeat = message.get("bot").and_then(|v| v.as_bool()) == Some(true)
+                || message.get("heartbeat").and_then(|v| v.as_bool()) == Some(true);
+            items.push(DiscoveredItem {
+                facts: CandidateFacts {
+                    source_ref: format!("{}#line={}", path.display(), line_no + 1),
+                    bytes: body.len() as u64,
+                    content_address: Some(address),
+                    bot_or_heartbeat,
+                    allowlisted: true,
+                    ..CandidateFacts::default()
+                },
+                text: body,
+                sensitivity,
+            });
+        }
+    }
+    Ok(items)
+}
+
 fn open_report_file(path: &Path, root: &Path) -> Result<std::fs::File> {
     use std::os::unix::fs::OpenOptionsExt;
     let file = std::fs::OpenOptions::new()
@@ -376,6 +710,52 @@ mod tests {
         );
         let _ = std::fs::remove_dir_all(&root);
         let _ = std::fs::remove_file(&outside);
+    }
+
+    /// Oracle: boot events group by id; terminal states accept while
+    /// open and temporary segments remain held (without reading temp data).
+    #[test]
+    fn boot_discovery_groups_events_and_holds_open_segments() {
+        let root = std::env::temp_dir().join(format!("atlas-boot-adapter-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("fixture dir");
+        std::fs::write(
+            root.join("init.jsonl"),
+            "{\"boot_id\":\"b1\",\"state\":\"started\"}\n{\"boot_id\":\"b1\",\"state\":\"failed\"}\n{\"boot_id\":\"b2\",\"state\":\"started\"}\n",
+        )
+        .expect("boot events");
+        std::fs::write(root.join("init.jsonl.tmp"), "not-json partial").expect("partial boot");
+
+        let items = discover_boot_records(&root, |_| Tier::Internal).expect("discover boots");
+        assert_eq!(items.len(), 3);
+        let completed = items
+            .iter()
+            .find(|item| item.facts.source_ref.ends_with("#boot_id=b1"))
+            .expect("terminal boot");
+        assert!(completed.facts.terminal);
+        assert_eq!(
+            filter_candidate(SourceClass::BootRecords, &completed.facts, &HashSet::new()),
+            FilterOutcome::Accept
+        );
+        let open = items
+            .iter()
+            .find(|item| item.facts.source_ref.ends_with("#boot_id=b2"))
+            .expect("open boot");
+        assert!(!open.facts.terminal);
+        assert_eq!(
+            filter_candidate(SourceClass::BootRecords, &open.facts, &HashSet::new()),
+            FilterOutcome::Hold(None)
+        );
+        let partial = items
+            .iter()
+            .find(|item| item.facts.source_ref.ends_with("init.jsonl.tmp"))
+            .expect("partial boot");
+        assert!(partial.text.is_empty(), "partial segment was not read");
+        assert_eq!(
+            filter_candidate(SourceClass::BootRecords, &partial.facts, &HashSet::new()),
+            FilterOutcome::Hold(None)
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// Oracle: the newest complete statistics artifact per report period
@@ -514,5 +894,92 @@ mod tests {
         assert_eq!(count, 1);
         let _ = std::fs::remove_dir_all(&root);
         let _ = std::fs::remove_file(&db);
+    }
+
+    /// Oracle: only a terminal session with a real exchange passes §2;
+    /// synthetic-only sessions are rejected and open sessions are held.
+    #[test]
+    fn session_discovery_classifies_terminality_and_real_exchanges() {
+        let root =
+            std::env::temp_dir().join(format!("atlas-session-adapter-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("fixture dir");
+        std::fs::write(
+            root.join("real.session.json"),
+            r#"{"state":"completed","messages":[{"role":"user","text":"review this change"},{"role":"assistant","text":"the test passes","synthetic":false}]}"#,
+        )
+        .expect("real session");
+        std::fs::write(
+            root.join("synthetic.session.json"),
+            r#"{"state":"closed","messages":[{"role":"assistant","text":"generated summary","synthetic":true}]}"#,
+        )
+        .expect("synthetic session");
+        std::fs::write(
+            root.join("open.session.json"),
+            r#"{"state":"running","messages":[{"role":"user","text":"in progress"}]}"#,
+        )
+        .expect("open session");
+
+        let items = discover_session_logs(&root, |_| Tier::Internal).expect("discover sessions");
+        assert_eq!(items.len(), 3);
+        let by_name = |name: &str| {
+            items
+                .iter()
+                .find(|item| item.facts.source_ref.ends_with(name))
+                .expect("session candidate")
+        };
+        let real = by_name("real.session.json");
+        assert!(real.facts.terminal && real.facts.has_substance);
+        assert_eq!(
+            filter_candidate(SourceClass::SessionLogs, &real.facts, &HashSet::new()),
+            FilterOutcome::Accept
+        );
+        let synthetic = by_name("synthetic.session.json");
+        assert!(synthetic.facts.terminal && !synthetic.facts.has_substance);
+        assert_eq!(
+            filter_candidate(SourceClass::SessionLogs, &synthetic.facts, &HashSet::new()),
+            FilterOutcome::Reject(ReasonCode::NoQuestion)
+        );
+        let open = by_name("open.session.json");
+        assert!(!open.facts.terminal && open.facts.has_substance);
+        assert_eq!(
+            filter_candidate(SourceClass::SessionLogs, &open.facts, &HashSet::new()),
+            FilterOutcome::Hold(None)
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Oracle: off-allowlist exports are absent without parsing; the
+    /// allowlisted channel yields per-message candidates and bot posts
+    /// are rejected by the sweep filter.
+    #[test]
+    fn chat_discovery_checks_allowlist_before_read_and_splits_messages() {
+        let root = std::env::temp_dir().join(format!("atlas-chat-adapter-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("fleet-announcements")).expect("allowlisted dir");
+        std::fs::create_dir_all(root.join("private-support")).expect("private dir");
+        std::fs::write(
+            root.join("fleet-announcements/export.jsonl"),
+            "{\"text\":\"deployment approved\",\"bot\":false}\n{\"text\":\"heartbeat\",\"bot\":true,\"heartbeat\":true}\n",
+        )
+        .expect("allowlisted export");
+        // Invalid JSON proves this channel is not opened or parsed.
+        std::fs::write(root.join("private-support/export.jsonl"), "not-json")
+            .expect("private export");
+        let allowlist = HashSet::from(["fleet-announcements".to_owned()]);
+        let items = discover_chat_exports(&root, &allowlist, |_| Tier::Internal)
+            .expect("discover allowlisted chat");
+        assert_eq!(items.len(), 2);
+        assert!(items.iter().all(|item| item.facts.allowlisted));
+        assert_eq!(
+            filter_candidate(SourceClass::ChatLogs, &items[0].facts, &HashSet::new()),
+            FilterOutcome::Accept
+        );
+        assert!(items[1].facts.bot_or_heartbeat);
+        assert_eq!(
+            filter_candidate(SourceClass::ChatLogs, &items[1].facts, &HashSet::new()),
+            FilterOutcome::Reject(ReasonCode::NoQuestion)
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 }
