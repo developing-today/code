@@ -132,21 +132,29 @@ export interface Deps {
   actions?: ReturnType<typeof actions>;
   work?: Work;
   push?: Push;
-  /** Phones linked to read the summary, and the limits on the two paths
-   * they use, which are reachable without sign-in. */
-  devices?: Devices;
-  deviceLimits?: { link: Limiter; refused: Limiter };
+  /** Phones linked to read the summary, with the limits on the two
+   * paths they use: those paths are reachable without sign-in, so they
+   * exist only when their limits do. */
+  phones?: Phones;
+}
+
+export interface Phones {
+  devices: Devices;
+  /** Tries at linking, and reads refused for a wrong token. */
+  link: Limiter;
+  refused: Limiter;
 }
 
 /** Sections the summary is built from, and how long a phone waits for
  * them to be read again. */
 const SUMMARY_SECTIONS = ["board", "sessions", "census", "asks", "questionCount"];
-const SUMMARY_WAIT_MS = 8_000;
+/** Under the five seconds the phone gives a read. */
+const SUMMARY_WAIT_MS = 3_500;
 const DEVICE_BODY_LIMIT = 1024;
 
 /** A phone presents the verifier for a link the owner approved. */
-async function deviceLink(req: Request, deps: Deps): Promise<Response> {
-  if (!deps.deviceLimits?.link.allow()) return json({ error: "too many tries: wait a minute" }, 429);
+async function deviceLink(req: Request, deps: Deps, phones: Phones): Promise<Response> {
+  if (!phones.link.allow()) return json({ error: "too many tries: wait a minute" }, 429);
   if (Number(req.headers.get("content-length") ?? "0") > DEVICE_BODY_LIMIT) return json({ error: "too large" }, 413);
   let verifier: unknown;
   try {
@@ -156,7 +164,7 @@ async function deviceLink(req: Request, deps: Deps): Promise<Response> {
   } catch {
     return json({ error: "body: expected a JSON object" }, 400);
   }
-  const linked = await (deps.devices as Devices).link(verifier);
+  const linked = await phones.devices.link(verifier);
   if (!linked) return json({ error: "not approved" }, 404);
   await deps
     .audit({
@@ -172,18 +180,20 @@ async function deviceLink(req: Request, deps: Deps): Promise<Response> {
 }
 
 /** A linked phone reads the counts and the top line of each list. */
-async function deviceSummary(req: Request, deps: Deps): Promise<Response> {
-  const limits = deps.deviceLimits;
+async function deviceSummary(req: Request, docs: Docs, phones: Phones): Promise<Response> {
   const header = req.headers.get("authorization") ?? "";
-  const device = header.startsWith("Bearer ") ? await (deps.devices as Devices).check(header.slice(7)) : null;
+  const device = header.startsWith("Bearer ") ? await phones.devices.check(header.slice(7)) : null;
   if (!device) {
     // Wrong tokens are counted; a linked phone is never slowed by them.
-    if (!limits?.refused.allow()) return json({ error: "too many tries: wait a minute" }, 429);
+    if (!phones.refused.allow()) return json({ error: "too many tries: wait a minute" }, 429);
     // `unlinked` tells the app to forget its token; a refusal from
     // anything else in front of this service does not carry it.
     return json({ error: "this phone is not linked", unlinked: true }, 401);
   }
-  const { data, at } = await (deps.docs as Docs).current(SUMMARY_SECTIONS, SUMMARY_WAIT_MS);
+  const { data, at, missing } = await docs.current(SUMMARY_SECTIONS, SUMMARY_WAIT_MS);
+  // Before the queue has been read once there is nothing true to show:
+  // the phone keeps what it has and asks again.
+  if (missing.includes("board")) return json({ error: "not ready yet" }, 503);
   return json(summary(data, at));
 }
 
@@ -300,9 +310,9 @@ export async function handle(req: Request, deps: Deps, peer: string | null = nul
     });
   }
   // Not behind the sign-in, and checked here instead: a linked phone.
-  if (deps.devices && deps.docs) {
-    if (path === `${BASE}/device/link` && method === "POST") return deviceLink(req, deps);
-    if (path === `${BASE}/device/summary` && method === "GET") return deviceSummary(req, deps);
+  if (deps.phones && deps.docs) {
+    if (path === `${BASE}/device/link` && method === "POST") return deviceLink(req, deps, deps.phones);
+    if (path === `${BASE}/device/summary` && method === "GET") return deviceSummary(req, deps.docs, deps.phones);
   }
   const ours = path === BASE || path.startsWith(`${BASE}/`);
   if (!ours) {
@@ -367,6 +377,7 @@ export async function handle(req: Request, deps: Deps, peer: string | null = nul
               repo: deps.cfg.repo,
               queue: deps.cfg.queue,
               androidApp: await Bun.file(deps.cfg.androidApk).exists(),
+              androidPackage: deps.cfg.androidPackage,
             });
           case "overview":
             return json(await ops.overview());
@@ -400,7 +411,7 @@ export async function handle(req: Request, deps: Deps, peer: string | null = nul
         return gzipped(req, new TextEncoder().encode(doc.body), headers) ?? new Response(doc.body, { headers });
       }
       if (seg.length === 1 && seg[0] === "push" && deps.push) return json(await deps.push.status());
-      if (seg.length === 1 && seg[0] === "devices" && deps.devices) return json(await deps.devices.list());
+      if (seg.length === 1 && seg[0] === "devices" && deps.phones) return json(await deps.phones.devices.list());
       if (seg.length === 1 && seg[0] === "question" && deps.work) {
         return json(await deps.work.question(query.get("set"), query.get("ledger"), query.get("qid")));
       }
@@ -591,8 +602,7 @@ if (import.meta.main) {
     docs,
     work,
     push,
-    devices,
-    deviceLimits: { link: new Limiter(30, 60_000), refused: new Limiter(60, 60_000) },
+    phones: { devices, link: new Limiter(30, 60_000), refused: new Limiter(60, 60_000) },
     actions: actions(ops, work, push, devices),
     identify: (req, peer) => identify(req, cfg, { peer }),
     audit: (entry) => appendFile(cfg.auditFile, `${JSON.stringify(entry)}\n`, { mode: 0o600 }),

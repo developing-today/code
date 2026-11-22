@@ -211,7 +211,7 @@ describe("the summary", () => {
 });
 
 describe("over HTTP, without the sign-in", () => {
-  function setup() {
+  function setup(failing: string[] = []) {
     const s = store();
     const reads: string[] = [];
     const docs = new Docs(
@@ -234,6 +234,7 @@ describe("over HTTP, without the sign-in", () => {
             ttlMs: 10_000,
             load: async () => {
               reads.push(name);
+              if (failing.includes(name)) throw new Error(`${name} is down`);
               return name === "board"
                 ? { counts: { claimed: 2, queued: 1 }, now: [{ title: "T" }], next: [] }
                 : name === "questionCount"
@@ -251,8 +252,11 @@ describe("over HTTP, without the sign-in", () => {
       cfg: CFG,
       ops,
       docs,
-      devices: s.devices,
-      deviceLimits: { link: new Limiter(3, 60_000, () => s.now.t), refused: new Limiter(2, 60_000, () => s.now.t) },
+      phones: {
+        devices: s.devices,
+        link: new Limiter(3, 60_000, () => s.now.t),
+        refused: new Limiter(2, 60_000, () => s.now.t),
+      },
       actions: actions(ops, new Work(ops), undefined, s.devices),
       // Sign-in always refuses: whatever answers below answered without it.
       identify: async () => {
@@ -398,6 +402,66 @@ describe("over HTTP, without the sign-in", () => {
         w.deps,
       );
       expect(junk.status).toBe(400);
+    } finally {
+      w.done();
+    }
+  });
+
+  test("before the queue has been read there is nothing to show; a missing side list does not stop the rest", async () => {
+    const down = setup(["board"]);
+    try {
+      await perform(down.deps.actions as NonNullable<Deps["actions"]>, down.docs, "device.approve", {
+        challenge: hashOf(VERIFIER),
+      });
+      const { token } = (await (await down.link(VERIFIER)).json()) as { token: string };
+      const res = await down.read(token);
+      expect(res.status).toBe(503);
+      expect(await res.json()).toEqual({ error: "not ready yet" });
+    } finally {
+      down.done();
+    }
+    const partial = setup(["census", "asks"]);
+    try {
+      await perform(partial.deps.actions as NonNullable<Deps["actions"]>, partial.docs, "device.approve", {
+        challenge: hashOf(VERIFIER),
+      });
+      const { token } = (await (await partial.link(VERIFIER)).json()) as { token: string };
+      const res = await partial.read(token);
+      expect(res.status).toBe(200);
+      expect(await res.json()).toMatchObject({
+        at: new Date(partial.now.t).toISOString(),
+        now: { count: 2 },
+        needs: { total: 3, questions: 3, hands: 0 },
+      });
+      expect(await partial.docs.current(["board", "census", "asks", "nope"], 10)).toMatchObject({
+        at: partial.now.t,
+        missing: ["census", "asks", "nope"],
+      });
+    } finally {
+      partial.done();
+    }
+  });
+
+  test("with no limits set there are no open paths at all", async () => {
+    const w = setup();
+    try {
+      const bare = { ...w.deps, phones: undefined };
+      const link = await handle(
+        new Request("https://pm.security.cab/console/device/link", {
+          method: "POST",
+          body: JSON.stringify({ verifier: VERIFIER }),
+          headers: { host: "pm.security.cab" },
+        }),
+        bare,
+      );
+      expect(await link.json()).toEqual({ error: "sign-in required" });
+      const read = await handle(
+        new Request("https://pm.security.cab/console/device/summary", {
+          headers: { host: "pm.security.cab", authorization: `Bearer ${"x".repeat(43)}` },
+        }),
+        bare,
+      );
+      expect(await read.json()).toEqual({ error: "sign-in required" });
     } finally {
       w.done();
     }

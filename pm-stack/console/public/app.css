@@ -323,6 +323,30 @@ button {
   font-weight: 600;
   cursor: pointer;
 }
+/* A link that is the main thing to do on its card. */
+a.button {
+  display: inline-flex;
+  align-items: center;
+  min-height: 42px;
+  padding: 8px 14px;
+  border-radius: 10px;
+  background: var(--accent);
+  color: var(--accent-ink);
+  font-weight: 600;
+  text-decoration: none;
+}
+ul.plain {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+ul.plain li {
+  padding: 6px 0;
+  color: var(--quiet);
+}
+ul.plain li b {
+  color: var(--text);
+}
 button.ghost {
   background: transparent;
   color: var(--text);

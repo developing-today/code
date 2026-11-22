@@ -129,10 +129,12 @@ export class Docs {
   /** Sections brought up to date for a caller that asks rarely (a
    * phone's widget): stale ones are read again and waited for, up to
    * `waitMs`. It does not count as someone looking, so it does not keep
-   * the background loop running. `at` is the oldest good read among
-   * them, or 0 when one has never been read. */
-  async current(names: string[], waitMs: number): Promise<{ data: Record<string, unknown>; at: number }> {
-    const known = names.map((n) => this.sections.get(n)).filter((s): s is Section => s !== undefined);
+   * the background loop running. `missing` names the sections that have
+   * never been read; `at` is the oldest good read among the rest. */
+  async current(
+    names: string[],
+    waitMs: number,
+  ): Promise<{ data: Record<string, unknown>; at: number; missing: string[] }> {
     const stale = names.filter((n) => {
       const s = this.sections.get(n);
       return s !== undefined && this.stale(s);
@@ -147,9 +149,12 @@ export class Docs {
       ]);
       clearTimeout(timer);
     }
+    const read = names.map((n) => this.sections.get(n)?.goodAt ?? 0);
+    const good = read.filter((t) => t > 0);
     return {
       data: Object.fromEntries(names.map((n) => [n, this.good(n)])),
-      at: known.length === names.length ? Math.min(...known.map((s) => s.goodAt)) : 0,
+      at: good.length > 0 ? Math.min(...good) : 0,
+      missing: names.filter((_, i) => read[i] === 0),
     };
   }
 
