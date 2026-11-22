@@ -1279,6 +1279,7 @@ mod tests {
     fn run_once_references_supplied_embedding_ledger_row() {
         let dir = temp_state_dir("run-once-ledger");
         let mut req = request(SourceClass::CodeRepo, Vec::new());
+        req.embed_usd_median = Some(0.000005);
         req.embedding_ledger = Some(EmbeddingLedgerRow {
             batch_id: req.batch_id.clone(),
             recorded_at: "2026-11-21T20:00:00Z".to_owned(),
@@ -1303,6 +1304,12 @@ mod tests {
             Some("text-embedding-3-small")
         );
         assert_eq!(report.embed_usd, 0.00002);
+        assert!(
+            first
+                .alerts
+                .iter()
+                .any(|alert| alert == "plan/spend-anomaly")
+        );
         let state = load_state(&dir).expect("state");
         assert_eq!(state.last_reports.len(), 1);
         assert_eq!(
