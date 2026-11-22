@@ -1046,6 +1046,8 @@ impl WorldCore {
                         "journal holds more than {} kv entries",
                         crate::world_caps::MAX_KV_ENTRIES
                     );
+                    id_core::json_unique::parse_json_without_duplicate_keys(&value)
+                        .context("invalid kv value in journal")?;
                     core.kv.insert(key, value);
                     ensure!(
                         core.kv_bytes() <= crate::world_caps::MAX_KV_TOTAL_BYTES,

@@ -10466,6 +10466,15 @@ mod schedule_tests {
             },
         ];
         assert!(WorldCore::restore("w", WorldLimits::default(), bad_key).is_err());
+        // A journal value must contain the JSON encoding promised by KvSet.
+        let malformed_json = [
+            header(),
+            JournalEntry::KvSet {
+                key: "a".to_owned(),
+                value: "{\"x\":".to_owned(),
+            },
+        ];
+        assert!(WorldCore::restore("w", WorldLimits::default(), malformed_json).is_err());
         // A value past the serialized cap.
         let big_value = [
             header(),
