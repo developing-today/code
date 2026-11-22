@@ -14,9 +14,10 @@ pinned `cf` CLI and Cloudflare Workers Versions API; this upload does not
 create a deployment or move production traffic. The workflow intentionally
 has no pull-request trigger, and it passes Cloudflare credentials only to
 jobs running on `main`.
-Configure the repository secrets `CLOUDFLARE_API_TOKEN` and
-`CLOUDFLARE_ACCOUNT_ID` before enabling deployment. The API token should
-use `Individual Workers Editor` scoped to this Worker; the workflow needs
+Configure the repository secrets `MUSE_HANDOFF_CLOUDFLARE_API_TOKEN` and
+`CLOUDFLARE_ACCOUNT_ID` before enabling deployment. Create a dedicated API
+token with `Individual Workers Editor` scoped to this Worker; do not reuse
+an existing shared token until its scope is verified. The workflow needs
 only `contents: read` in GitHub and no OIDC permission.
 
 Before promotion, inspect the uploaded version and verify it matches the
@@ -38,7 +39,10 @@ deployment for that version.
 
 The existing local `deploy.sh` remains the initial Worker bootstrap and
 secret-provisioning path described below; it is not the GitHub Actions
-routine code-release path. The workflow assumes the Worker already exists.
+routine code-release path. It still invokes Wrangler deploy as part of that
+combined local bootstrap/secret-provisioning flow; this change leaves that
+path intact. Do not use it for routine code releases. The Actions workflow
+assumes the Worker already exists.
 
 From a trusted checkout on the laptop, bootstrap the Worker and provision
 its local admin/encryption secrets when needed:

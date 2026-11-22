@@ -70,11 +70,11 @@ jobs:
 
       - name: Check Cloudflare credentials are configured
         env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.MUSE_HANDOFF_CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: |
           if [ -z "$CLOUDFLARE_API_TOKEN" ] || [ -z "$CLOUDFLARE_ACCOUNT_ID" ]; then
-            echo "Set CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID before enabling this deployment." >&2
+            echo "Set the handoff-specific MUSE_HANDOFF_CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID secrets before enabling this deployment." >&2
             exit 1
           fi
 
@@ -82,7 +82,7 @@ jobs:
         id: upload
         if: github.event_name == 'push'
         env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.MUSE_HANDOFF_CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           GIT_SHA: ${{ github.sha }}
         run: |
@@ -138,7 +138,7 @@ jobs:
       - name: Promote reviewed Worker Version to 100% traffic
         if: github.event_name == 'workflow_dispatch'
         env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.MUSE_HANDOFF_CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           VERSION_ID: ${{ inputs.version_id }}
         run: |
