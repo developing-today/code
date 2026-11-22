@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { afterAll, describe, expect, test } from "bun:test";
 import { mkdtempSync, mkdirSync, realpathSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -440,6 +440,11 @@ describe("session directory symlink confinement (issue #3999)", () => {
   const inner = join(clone, "inner");
   const outside = join(base, "outside");
   const outsideSub = join(outside, "sub");
+
+  afterAll(() => {
+    rmSync(base, { recursive: true, force: true });
+  });
+
   mkdirSync(inner, { recursive: true });
   mkdirSync(outsideSub, { recursive: true });
   symlinkSync(outside, join(clone, "worktrees"), "dir");
@@ -511,10 +516,5 @@ describe("session directory symlink confinement (issue #3999)", () => {
     symlinkSync(clone, alias, "dir");
     expect(resolveSessionDirectory("oidc", code, alias, repoDirs)).toBe(clone);
     expect(resolveSessionDirectory("oidc", code, join(alias, "inner"), repoDirs)).toBe(inner);
-  });
-
-  test("fixture cleanup", () => {
-    rmSync(base, { recursive: true, force: true });
-    expect(true).toBe(true);
   });
 });
