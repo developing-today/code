@@ -119,8 +119,10 @@ class EvictionTest(unittest.TestCase):
 class WorkspaceArtifactCleanupTest(unittest.TestCase):
     def test_checkout_option_cleans_selected_workspace_but_keeps_caller_cwd(self) -> None:
         workspace = Path(tempfile.mkdtemp(prefix="ctb-selected-workspace-"))
+        self.addCleanup(shutil.rmtree, workspace, ignore_errors=True)
         target = workspace.parent / "leased-target"
         target.mkdir()
+        self.addCleanup(shutil.rmtree, target, ignore_errors=True)
         seen: dict[str, tuple[str, str, int]] = {}
 
         class StubBroker:
@@ -163,8 +165,6 @@ class WorkspaceArtifactCleanupTest(unittest.TestCase):
         self.assertEqual(seen["checkout"], ("id-test", "tester", 7))
         clean.assert_called_once_with(target, workspace.resolve())
         self.assertEqual(broker_mod.json.loads(stdout.getvalue())["path"], str(target))
-        shutil.rmtree(workspace, ignore_errors=True)
-        shutil.rmtree(target, ignore_errors=True)
 
     def test_workspace_override_is_resolved_without_changing_caller_cwd(self) -> None:
         workspace = Path(tempfile.mkdtemp(prefix="ctb-workspace-"))
