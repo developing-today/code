@@ -791,6 +791,50 @@ describe("collector graph edges (#2399 contract)", () => {
     expect(resolved[1]?.spawnRollup).toBeUndefined();
   });
 
+  test("resolveSpawnRollups deduplicates children across boards and recognizes existing design markers", () => {
+    const base = parseProjectItems(GQL)[0]!;
+    const parent = {
+      ...base,
+      id: "design-parent",
+      ref: "developing-today/code#3100",
+      number: 3100,
+      labels: ["kind/design"],
+      kind: "Task",
+      subIssuesSummary: { total: 1, completed: 0 },
+    };
+    const child = {
+      ...base,
+      id: "active-board-a",
+      ref: "developing-today/code#3101",
+      number: 3101,
+      parentRef: parent.ref,
+      status: "In Progress",
+    };
+    const duplicate = { ...child, id: "active-board-b", boardId: "another-board" };
+
+    expect(resolveSpawnRollups([parent, child, duplicate])[0]?.spawnRollup).toEqual({
+      total: 1,
+      done: 0,
+      inProgress: 1,
+      blocking: [],
+    });
+
+    const projectKindDesign = {
+      ...parent,
+      id: "project-kind-design",
+      ref: "developing-today/code#3102",
+      number: 3102,
+      labels: [],
+      kind: "Design",
+    };
+    expect(resolveSpawnRollups([projectKindDesign])[0]?.spawnRollup).toEqual({
+      total: 1,
+      done: 0,
+      inProgress: 0,
+      blocking: [],
+    });
+  });
+
   test("PROJECT_QUERY and parser carry GitHub sub-issue summary without fabricating missing counts", () => {
     expect(PROJECT_QUERY).toContain("subIssuesSummary { total completed }");
     const response = structuredClone(GQL) as unknown as {
