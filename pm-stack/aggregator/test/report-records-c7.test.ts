@@ -782,6 +782,131 @@ describe("C7 canonical report records", () => {
     expect((await readCurrentReportRecords(remote))[0]?.id).toBe(generationBAfterRecovery.id);
   });
 
+  test("generated transition/retry sequences match the single-head reference model", async () => {
+    // PBT: seeded generated generation/resolution/retry sequences exercise the
+    // durable transition state machine and injected event-append interruptions.
+    // ORACLE: this independent model stores one current record per period and
+    // template; every accepted transition replaces that head, while retries
+    // return the committed record without moving the head. The model never
+    // calls the production selectors or claim helpers.
+    let seed = 0xc7_2026;
+    const random = () => {
+      seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+      return seed / 0x1_0000_0000;
+    };
+    const generated = Array.from({ length: 48 }, (_, i) => ({
+      label: `case-${i}-${Math.floor(random() * 0x1_0000).toString(16)}`,
+      strategy: random() < 0.5 ? "rendered" as const : "edited" as const,
+      text: `generated wording ${Math.floor(random() * 0x1_0000)}`,
+      failAppend: random() < 0.35,
+    }));
+
+    for (const [caseIndex, item] of generated.entries()) {
+      const documents = new Map<string, unknown>();
+      let failSourceCursor: string | null = null;
+      const remote: AppendOnlyDocumentRemote = {
+        async load(store) {
+          return documents.has(store) ? { version: 1, document: structuredClone(documents.get(store)) } : null;
+        },
+        async insertIfAbsent(store, _version, document) {
+          const eventRecord = (document as { record?: { sourceCursor?: string } }).record;
+          if (store.startsWith("c7-report:v1:report.generated:") &&
+              eventRecord?.sourceCursor === failSourceCursor) {
+            failSourceCursor = null;
+            throw new Error("generated event interruption");
+          }
+          if (documents.has(store)) return false;
+          documents.set(store, structuredClone(document));
+          return true;
+        },
+        async listPrefix(prefix) {
+          return [...documents.entries()]
+            .filter(([store]) => store.startsWith(prefix))
+            .map(([store, document]) => ({ store, version: 1, document: structuredClone(document) }));
+        },
+      };
+      const input = {
+        period: {
+          id: "daily:2026-11-21:America/Chicago",
+          kind: "daily" as const,
+          timezone: "America/Chicago" as const,
+          periodStart: "2026-11-21T06:00:00.000Z",
+          periodEnd: "2026-11-22T06:00:00.000Z",
+          softCloseAt: "2026-11-22T14:00:00.000Z",
+        },
+        asOf: "2026-11-22T05:45:00.000Z",
+        templateVersion: "daily-v1",
+        sources: [],
+        blocks: [{ id: "block", text: `stored ${item.label}`, relatedAt: "2026-11-22T05:40:00.000Z" }],
+      };
+      const model: { current: ReturnType<typeof makeReportRecord>; records: Map<string, ReturnType<typeof makeReportRecord>> } = {
+        current: makeReportRecord({ ...input, sourceCursor: `base-${item.label}` }, "2026-11-22T05:45:01.000Z"),
+        records: new Map(),
+      };
+      const assertMatchesModel = async () => {
+        expect((await readCurrentReportRecords(remote)).map((record) => record.id)).toEqual([model.current.id]);
+        expect((await readReportRecords(remote)).map((record) => record.id).sort()).toEqual([...model.records.keys()].sort());
+      };
+
+      await appendReportRecord(remote, model.current);
+      model.records.set(model.current.id, model.current);
+      await assertMatchesModel();
+
+      const base = model.current;
+      const resolvedAt = "2026-11-22T13:00:00.000Z";
+      const resolution = await appendReportBlockConflictResolution(
+        remote,
+        base,
+        "block",
+        compareReportBlock(model.current.blocks[0]!.text, item.text),
+        item.strategy,
+        resolvedAt,
+        item.strategy === "edited" ? item.text : undefined,
+        `comparison-${item.label}`,
+      );
+      model.current = resolution.record;
+      model.records.set(model.current.id, model.current);
+      await assertMatchesModel();
+
+      // Same resolution intent at a changed request time must recover the
+      // canonical timestamp/payload, not create or select a second head.
+      const resolutionRetry = await appendReportBlockConflictResolution(
+        remote,
+        base,
+        "block",
+        compareReportBlock(`stored ${item.label}`, item.text),
+        item.strategy,
+        "2026-11-22T13:00:30.000Z",
+        item.strategy === "edited" ? item.text : undefined,
+        `comparison-${item.label}`,
+      );
+      expect(resolutionRetry.record).toEqual(model.current);
+      await assertMatchesModel();
+
+      const sourceCursor = `next-${item.label}`;
+      const next = makeReportRecord({
+        ...input,
+        sourceCursor,
+        blocks: [{ id: "block", text: `next wording ${item.label}`, relatedAt: "2026-11-22T05:41:00.000Z" }],
+      }, "2026-11-22T13:01:00.000Z");
+      if (item.failAppend) {
+        failSourceCursor = sourceCursor;
+        await expect(appendReportRecord(remote, next)).rejects.toThrow("generated event interruption");
+        await expect(appendReportRecord(remote, next)).resolves.toMatchObject({ record: next });
+      } else {
+        await appendReportRecord(remote, next);
+      }
+      model.current = next;
+      model.records.set(next.id, next);
+      await assertMatchesModel();
+
+      // Retrying an older committed generation is idempotent and cannot
+      // regress the reference model's current head.
+      await expect(appendReportRecord(remote, [...model.records.values()][0]!)).resolves.toMatchObject({ inserted: false });
+      await assertMatchesModel();
+    }
+  });
+
   test("remote current-head claim arbitrates a generation against a resolution", async () => {
     const documents = new Map<string, unknown>();
     const remote = (): AppendOnlyDocumentRemote => ({
