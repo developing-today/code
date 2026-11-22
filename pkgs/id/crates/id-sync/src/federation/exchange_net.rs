@@ -727,7 +727,7 @@ impl ExchangeProtocol {
         // summary, its ids for the objects that diverged from this
         // replica's hello-time inventory, and that inventory for the
         // objects that agreed. It describes the initiator whatever
-        // this replica admitted from other sessions meanwhile.
+        // this replica admitted from elsewhere meanwhile.
         let remote_inventory =
             assemble_inventory(&own_inventory, &own_summary, &hello_summary, &transfer.ids);
         let server = {
@@ -736,7 +736,22 @@ impl ExchangeProtocol {
             // versions are admitted, in the same critical section, so
             // nothing this session receives can change what it offers —
             // the rule that keeps the two offers independent.
-            let offer = replica.offer(&remote_inventory, &hello_refused, &config, hello.now);
+            let mut offer = replica.offer(&remote_inventory, &hello_refused, &config, hello.now);
+            // Only versions this replica held at the hello are offered,
+            // as when the lock covered the whole session. A version
+            // admitted from elsewhere during the peer wait can be newer
+            // than the session's logical time; sent now, the initiator
+            // would refuse it for timing and remember the refusal, so it
+            // waits for a later exchange instead.
+            offer
+                .send
+                .retain(|event_id| own_inventory.contains(event_id));
+            offer
+                .withheld
+                .retain(|(event_id, _)| own_inventory.contains(event_id));
+            offer
+                .refused_by_remote
+                .retain(|event_id| own_inventory.contains(event_id));
             let mut outcomes = Vec::new();
             for wire in transfer.versions {
                 let envelope: Envelope = wire.into();
