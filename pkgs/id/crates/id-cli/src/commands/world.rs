@@ -2605,11 +2605,12 @@ mod tests {
             r#"{"from": "client", "frame": {"type": "join", "capability": "c"}}"#,
             r#"{"from": "server", "frame": {"type": "snapshot", "snapshot": {}}}"#,
             r#"{"from": "client", "frame": {"type": "resize", "width": 80, "height": 24}}"#,
+            r#"{"from": "server", "frame": {"type": "view", "sequence": 1, "data": "Harbor", "view_revision": 1, "surface": {"kind": "scene", "version": 1, "title": "Harbor", "nodes": [{"id": "boat", "label": "Boat", "shape": "box", "position": [0, 0.5, -2], "size": [2, 1, 1]}]}}}"#,
         ]
         .join("\n");
         assert_eq!(
             check_contract(&good).unwrap(),
-            "3 frames conform to shell contract v1.11"
+            "4 frames conform to shell contract v1.13"
         );
         let bad = [
             r#"{"from": "client", "frame": {"type": "chat", "text": "too early"}}"#,
