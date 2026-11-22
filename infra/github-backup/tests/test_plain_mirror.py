@@ -33,9 +33,9 @@ class PlainMirrorTests(unittest.TestCase):
             source = os.path.join(root, "source.git")
             destination = os.path.join(root, "destination.git")
             work = os.path.join(root, "work")
-            git("init", "--bare", source)
-            git("init", "--bare", destination)
-            git("init", work)
+            git("init", "-b", "main", "--bare", source)
+            git("init", "-b", "main", "--bare", destination)
+            git("init", "-b", "main", work)
             git("-C", work, "config", "user.name", "Test")
             git("-C", work, "config", "user.email", "test@example.invalid")
             with open(os.path.join(work, "README.md"), "w", encoding="utf-8") as f:
@@ -98,9 +98,9 @@ class PlainMirrorTests(unittest.TestCase):
             source = os.path.join(root, "source.git")
             destination = os.path.join(root, "destination.git")
             work = os.path.join(root, "work")
-            git("init", "--bare", source)
-            git("init", "--bare", destination)
-            git("init", work)
+            git("init", "-b", "main", "--bare", source)
+            git("init", "-b", "main", "--bare", destination)
+            git("init", "-b", "main", work)
             git("-C", work, "config", "user.name", "Test")
             git("-C", work, "config", "user.email", "test@example.invalid")
             commits = []
@@ -256,7 +256,7 @@ class PlainMirrorTests(unittest.TestCase):
     def test_rejects_non_bare_source_before_push(self):
         with tempfile.TemporaryDirectory() as root:
             destination = os.path.join(root, "destination.git")
-            git("init", "--bare", destination)
+            git("init", "-b", "main", "--bare", destination)
             with self.assertRaisesRegex(ValueError, "not a valid mirror"):
                 plain_mirror.sync_mirror(root, destination)
 
