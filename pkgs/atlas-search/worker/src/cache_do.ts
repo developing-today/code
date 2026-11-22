@@ -85,6 +85,11 @@ export class QueryCache {
       if (req.method === "GET" && url.pathname === "/inspect") {
         return Response.json(this.inspect());
       }
+      if (req.method === "POST" && url.pathname === "/purge") {
+        const existed = this.row() !== undefined;
+        this.state.storage.sql.exec("DELETE FROM entry WHERE id = 1");
+        return Response.json({ purged: existed });
+      }
       return Response.json({ error: { code: "not_found", message: "no route" } }, { status: 404 });
     } catch (e) {
       const status = (e as { status?: number }).status ?? 500;
