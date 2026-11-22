@@ -57,6 +57,7 @@ with tempfile.TemporaryDirectory(prefix="claimant-offline-") as tmp:
     for name, path in (
         ("offline_claimant", ROOT / "test_claimant.py"),
         ("offline_babysitter", ROOT / "test_babysitter.py"),
+        ("offline_nudges", ROOT / "test_nudges.py"),
         ("offline_poll", ROOT / "test_poll.py"),
         ("offline_mode", ROOT / "test" / "test_claimant.py"),
         ("offline_prompt_constants", ROOT / "test_prompt_constants.py"),

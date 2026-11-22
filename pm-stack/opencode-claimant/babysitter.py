@@ -391,10 +391,19 @@ def build_bindings(poll):
                 continue
             ci_live = prog.get("ci_live")
             pr_merged = prog.get("pr_merged")
+            # The packet rides the row (normalize_row lifts the
+            # payload column to `packet`); its repo addresses the
+            # escalation note in nudges.py. Absent stays None -
+            # an unaddressed escalation is recorded, never guessed.
+            packet = row.get("packet")
+            repo = packet.get("repo") if isinstance(packet, dict) else None
+            if not (isinstance(repo, str) and repo):
+                repo = row.get("repo")
             bindings[sid] = {
                 "task_id": row.get("id"),
                 "queue": queue,
                 "issue_number": prog.get("issue_number") or prog.get("issue"),
+                "repo": repo if isinstance(repo, str) and repo else None,
                 "ci_live": ci_live if isinstance(ci_live, bool) else None,
                 "pr_merged": pr_merged if isinstance(pr_merged, bool) else None,
                 "blocked_reason": prog.get("blocked_reason") or None,
