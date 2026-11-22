@@ -60,6 +60,21 @@ TRANSITION_PARKED = (
     "lane: oc-code-07 task: 20028 summary: Fresh verification"
 )
 PR_OPENED = "agent-note:v1\nstate: pr_opened\ntask: 20028\nlane: oc-code-04\n\nOpened PR #12100."
+# Triage verdict notes (#12233 F2a): the same verdict recorded by two
+# different queue tasks, in the HTML and YAML shapes.
+HTML_TRIAGED = (
+    "<!-- agent-note:v1 state=triaged task=11111 verdict=still_blocked -->\n"
+    "Triaged: still blocked on F12.4 (#1061)."
+)
+YAML_TRIAGED = (
+    "agent-note:v1\nstate: triaged\ntask: 22222\nverdict: still_blocked\n\n"
+    "Verdict: still blocked on F12.4 (#1061)."
+)
+TRIAGED_NO_VERDICT = "agent-note:v1\nstate: triaged\ntask: 22222\n\nStill live."
+
+
+def at(minutes_ago):
+    return (NOW - timedelta(minutes=minutes_ago)).isoformat().replace("+00:00", "Z")
 
 
 class HoldVerdict(unittest.TestCase):
@@ -155,6 +170,22 @@ class ParseNote(unittest.TestCase):
             {"state": "parked", "task": "20028"},
         )
 
+    def test_verdict_field_is_parsed_and_normalised(self):
+        body = "agent-note:v1\nstate: triaged\ntask: 22222\nverdict: Still Blocked!\n"
+        self.assertEqual(
+            lg.parse_note(body),
+            {"state": "triaged", "task": "22222", "verdict": "still_blocked"},
+        )
+
+    def test_canonical_header_with_verdict_round_trips(self):
+        self.assertEqual(
+            lg.parse_note(
+                lg.note_header("20028", "triaged", verdict="still blocked")
+                + "\nTriaged."
+            ),
+            {"state": "triaged", "task": "20028", "verdict": "still_blocked"},
+        )
+
     def test_plain_comment_is_not_a_note(self):
         self.assertIsNone(lg.parse_note("Looks good, ship it."))
         self.assertIsNone(lg.parse_note(None))
@@ -230,6 +261,117 @@ class NoteVerdict(unittest.TestCase):
         self.assertEqual(len(posted), 1)
 
 
+class VerdictNote(unittest.TestCase):
+    """#12233 F2a: a triage verdict is posted once per verdict per
+    unchanged issue, across task ids."""
+
+    def verdict(self, cs, task="99999", verdict="still_blocked", changes=()):
+        return lg.note_verdict(
+            cs, task, "triaged", now=NOW, verdict=verdict, changes=changes
+        )
+
+    def test_same_verdict_other_task_unchanged_issue_is_skipped(self):
+        # The F2a done-test: two tasks, one unchanged issue — the
+        # second task's identical verdict note is skipped.
+        for body in (HTML_TRIAGED, YAML_TRIAGED):
+            with self.subTest(body=body[:30]):
+                v = self.verdict([comment(body, 40)])
+                self.assertFalse(v["post"])
+                self.assertIn("duplicate verdict", v["reason"])
+
+    def test_verdict_spelling_is_normalised(self):
+        v = self.verdict([comment(HTML_TRIAGED, 40)], verdict="Still blocked!")
+        self.assertFalse(v["post"])
+
+    def test_new_commit_after_verdict_posts(self):
+        # The other half of the F2a done-test: a third note, after a
+        # new commit lands on the issue, is posted.
+        changes = [{"kind": "commit", "at": at(10)}]
+        v = self.verdict([comment(HTML_TRIAGED, 40)], changes=changes)
+        self.assertTrue(v["post"])
+        self.assertIn("commit", v["reason"])
+
+    def test_label_and_body_changes_after_verdict_post(self):
+        for kind in ("label", "body"):
+            with self.subTest(kind=kind):
+                changes = [{"kind": kind, "at": at(10)}]
+                v = self.verdict([comment(HTML_TRIAGED, 40)], changes=changes)
+                self.assertTrue(v["post"])
+                self.assertIn(kind, v["reason"])
+
+    def test_change_before_the_verdict_does_not_reopen_it(self):
+        changes = [{"kind": "commit", "at": at(50)}]
+        v = self.verdict([comment(HTML_TRIAGED, 40)], changes=changes)
+        self.assertFalse(v["post"])
+
+    def test_different_verdict_posts(self):
+        v = self.verdict([comment(HTML_TRIAGED, 40)], verdict="needs_slice")
+        self.assertTrue(v["post"])
+        self.assertIn("needs_slice", v["reason"])
+
+    def test_verdict_has_no_dedupe_window(self):
+        # A verdict stands until the issue changes: three days on,
+        # the repeat is still skipped (park notes expire in 24h).
+        v = self.verdict([comment(HTML_TRIAGED, 3 * 24 * 60)])
+        self.assertFalse(v["post"])
+
+    def test_human_comment_after_verdict_posts(self):
+        cs = [comment(HTML_TRIAGED, 40), comment("Drew: take another look.", 10)]
+        self.assertTrue(self.verdict(cs)["post"])
+
+    def test_bot_comment_after_verdict_still_skips(self):
+        cs = [comment(HTML_TRIAGED, 40), comment("CI summary", 10, user_type="Bot")]
+        self.assertFalse(self.verdict(cs)["post"])
+
+    def test_newest_note_not_a_verdict_posts(self):
+        v = self.verdict([comment(YAML_PARKED, 10)])
+        self.assertTrue(v["post"])
+        self.assertIn("not a triage verdict", v["reason"])
+
+    def test_state_only_verdicts_match_across_tasks(self):
+        # Notes recorded before --verdict existed carry only the
+        # state; two of those still dedupe.
+        v = lg.note_verdict(
+            [comment(TRIAGED_NO_VERDICT, 40)], "99999", "triaged", now=NOW
+        )
+        self.assertFalse(v["post"])
+
+    def test_recorded_verdict_does_not_match_unrecorded(self):
+        v = lg.note_verdict(
+            [comment(HTML_TRIAGED, 40)], "99999", "triaged", now=NOW
+        )
+        self.assertTrue(v["post"])
+
+    def test_first_verdict_posts(self):
+        self.assertTrue(self.verdict([])["post"])
+
+
+class ChangesFromTimeline(unittest.TestCase):
+    def test_maps_change_events(self):
+        events = [
+            {"event": "labeled", "created_at": at(50)},
+            {"event": "commented", "created_at": at(45)},
+            {"event": "referenced", "commit_id": "abc123", "created_at": at(40)},
+            {"event": "referenced", "created_at": at(35)},  # cross-ref, no commit
+            {"event": "edited", "created_at": at(30)},
+            {"event": "unlabeled", "created_at": at(25)},
+            {"event": "assigned", "created_at": at(20)},
+        ]
+        self.assertEqual(
+            lg.changes_from_timeline(events),
+            [
+                {"kind": "label", "at": at(50)},
+                {"kind": "commit", "at": at(40)},
+                {"kind": "body", "at": at(30)},
+                {"kind": "label", "at": at(25)},
+            ],
+        )
+
+    def test_junk_events_are_ignored(self):
+        self.assertEqual(lg.changes_from_timeline([]), [])
+        self.assertEqual(lg.changes_from_timeline([None, {}, {"event": "labeled"}]), [])
+
+
 class Cli(unittest.TestCase):
     def run_cli(self, argv, gh, now=NOW):
         buf = io.StringIO()
@@ -278,6 +420,73 @@ class Cli(unittest.TestCase):
         self.assertEqual(
             out["header"], "<!-- agent-note:v1 state=parked task=20028 -->"
         )
+
+    def test_note_cli_verdict_fetches_timeline_and_skips_duplicate(self):
+        seen = []
+
+        def gh(path):
+            seen.append(path)
+            if "timeline" in path:
+                return []
+            return [comment(HTML_TRIAGED, 5)]
+
+        code, out = self.run_cli(
+            [
+                "note",
+                "--repo",
+                "o/r",
+                "--issue",
+                "1062",
+                "--task",
+                "20028",
+                "--state",
+                "triaged",
+                "--verdict",
+                "still_blocked",
+            ],
+            gh=gh,
+        )
+        self.assertEqual(
+            seen,
+            [
+                "repos/o/r/issues/1062/comments?per_page=100",
+                "repos/o/r/issues/1062/timeline?per_page=100",
+            ],
+        )
+        self.assertEqual(code, lg.EXIT_STOP)
+        self.assertFalse(out["post"])
+        self.assertEqual(
+            out["header"],
+            "<!-- agent-note:v1 state=triaged task=20028 verdict=still_blocked -->",
+        )
+
+    def test_note_cli_verdict_posts_after_a_commit(self):
+        def gh(path):
+            if "timeline" in path:
+                return [
+                    {"event": "referenced", "commit_id": "abc123", "created_at": at(1)}
+                ]
+            return [comment(HTML_TRIAGED, 5)]
+
+        code, out = self.run_cli(
+            [
+                "note",
+                "--repo",
+                "o/r",
+                "--issue",
+                "1062",
+                "--task",
+                "20028",
+                "--state",
+                "triaged",
+                "--verdict",
+                "still_blocked",
+            ],
+            gh=gh,
+        )
+        self.assertEqual(code, lg.EXIT_GO)
+        self.assertTrue(out["post"])
+        self.assertIn("commit", out["reason"])
 
     def test_gh_failure_is_exit_2(self):
         def boom(path):

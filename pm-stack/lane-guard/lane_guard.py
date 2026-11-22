@@ -27,12 +27,23 @@ offline, plus a thin `gh` CLI wrapper for lanes to call:
             DEDUPE_WINDOW ago, with no human comment since. Progress
             notes (pr_opened, blocked, completed, ...) always post.
 
+            A triage verdict (state `triaged`, ideally with a recorded
+            `--verdict` token) is skipped when the newest agent note on
+            the item already records the same verdict — across task
+            ids, with no time window — and nothing has changed since:
+            no human comment, and no commit, label or body change on
+            the issue (read from its timeline). A verdict stands until
+            the issue changes; re-posting it is the repeat-triage churn
+            #12233 removes (#1062 collected four identical verdicts).
+
 Usage (exit 0 = go ahead, 3 = held / skip the note, 2 = usage or I/O
 error; JSON verdict on stdout either way):
 
   lane_guard.py hold --repo developing-today/code --issue 7616
   lane_guard.py note --repo developing-today/code --issue 7616 \
       --task 20028 --state parked
+  lane_guard.py note --repo developing-today/code --issue 1062 \
+      --task 2334 --state triaged --verdict still_blocked
 """
 
 from __future__ import annotations
@@ -56,6 +67,10 @@ NOT_A_HOLD_LABELS = frozenset({"work/assigned"})
 # Note states that carry no progress: re-posting them every cycle is
 # the churn this guard removes.
 QUIET_STATES = frozenset({"parked", "picked_up", "picked-up"})
+
+# States that record a triage verdict. A verdict note is deduped by its
+# verdict, not by task or age: see note_verdict's verdict path.
+VERDICT_STATES = frozenset({"triaged"})
 
 DEDUPE_WINDOW = timedelta(hours=24)
 
@@ -123,6 +138,10 @@ _FIELD_RE = re.compile(
     re.IGNORECASE | re.MULTILINE,
 )
 _TASK_RE = re.compile(r"\btask(?:_id)?\s*[:=]?\s*#?(\d{3,})", re.IGNORECASE)
+# The recorded verdict of a triage note: `verdict: still_blocked` /
+# `verdict=still_blocked` in the header area. A short token, so two
+# lanes recording the same outcome produce the same key.
+_VERDICT_RE = re.compile(r"\bverdict\s*[:=]\s*([A-Za-z0-9][\w -]*)", re.IGNORECASE)
 # Lanes write notes free-form; these map the words they use to states.
 _STATE_WORDS = (
     (
@@ -148,6 +167,12 @@ def _norm_state(raw: str) -> str:
     return word.group(0).lower().replace("-", "_") if word else ""
 
 
+def _norm_verdict(raw: str) -> str:
+    """Canonical verdict key: `Still blocked!` and `still_blocked` are
+    the same verdict."""
+    return re.sub(r"[^a-z0-9]+", "_", str(raw).lower()).strip("_")
+
+
 def parse_note(body: str) -> dict | None:
     """{"state", "task"} for an agent note body, None for other comments.
 
@@ -157,6 +182,8 @@ def parse_note(body: str) -> dict | None:
     (`transition: picked-up -> parked`), and free-form first lines
     (`**Pickup — queue task 20028**`). State is None when nothing
     recognisable is present; such a note never counts as a duplicate.
+    A triage note that records a `verdict:`/`verdict=` field also
+    carries a normalised "verdict" key.
     """
     if not isinstance(body, str) or not _MARKER.search(body):
         return None
@@ -175,13 +202,23 @@ def parse_note(body: str) -> dict | None:
         first = lines[0] if lines else ""
         state = next((s for s, pat in _HEAD_WORDS if pat.search(first)), None)
     m_task = _TASK_RE.search(head)
-    return {"state": state or None, "task": m_task.group(1) if m_task else None}
+    note = {"state": state or None, "task": m_task.group(1) if m_task else None}
+    m_verdict = _VERDICT_RE.search(head)
+    if m_verdict:
+        verdict = _norm_verdict(m_verdict.group(1))
+        if verdict:
+            note["verdict"] = verdict
+    return note
 
 
-def note_header(task: str, state: str) -> str:
+def note_header(task: str, state: str, verdict: str | None = None) -> str:
     """Canonical first line for a lane's agent note, so later dedupe
-    checks parse it exactly."""
-    return f"<!-- agent-note:v1 state={state} task={str(task).lstrip('#')} -->"
+    checks parse it exactly. A triage note passes its verdict so the
+    next lane's check can match it."""
+    header = f"<!-- agent-note:v1 state={state} task={str(task).lstrip('#')}"
+    if verdict:
+        header += f" verdict={_norm_verdict(verdict)}"
+    return header + " -->"
 
 
 def _ts(value):
@@ -190,14 +227,119 @@ def _ts(value):
     return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
 
 
-def note_verdict(comments: list, task: str, state: str, now=None) -> dict:
+# Timeline event -> the kind of issue change it proves, for verdict
+# freshness. `commented` is deliberately absent: comments are judged
+# from the comment list itself, where human vs bot is visible.
+_TIMELINE_CHANGES = {"labeled": "label", "unlabeled": "label", "edited": "body"}
+
+
+def changes_from_timeline(events: list) -> list:
+    """[{"kind", "at"}] for the issue changes a verdict must not
+    outlive: a commit referenced on the issue, a label change, a body
+    edit. Input is REST timeline JSON (oldest first); a `referenced`
+    event only counts as a commit when it carries a commit_id (a
+    cross-reference from another issue is not one).
+    """
+    out = []
+    for e in events or []:
+        if not isinstance(e, dict):
+            continue
+        kind = _TIMELINE_CHANGES.get(e.get("event"))
+        if e.get("event") == "referenced" and e.get("commit_id"):
+            kind = "commit"
+        if kind and e.get("created_at"):
+            out.append({"kind": kind, "at": e["created_at"]})
+    return out
+
+
+def _verdict_key(state, verdict) -> str:
+    """The comparable key of a verdict: the recorded verdict token
+    when there is one, else the state it was recorded under. A note
+    with a recorded verdict never matches one without (or vice
+    versa): the recorded form is what later checks — and coverage —
+    read."""
+    if verdict:
+        return f"verdict:{verdict}"
+    return f"state:{state}"
+
+
+def _is_verdict_request(state, verdict) -> bool:
+    if verdict:
+        return True
+    state = str(state).lower().replace("-", "_")
+    return state in VERDICT_STATES or _norm_state(state) in VERDICT_STATES
+
+
+def _verdict_note_verdict(comments, state, verdict, changes, now) -> dict:
+    """The verdict path of note_verdict (#12233 F2a): a triage verdict
+    is skipped when the newest agent note already records the same
+    verdict — for any task id, however long ago — and nothing has
+    changed since: no human comment, and no commit, label or body
+    change (from `changes`, see changes_from_timeline) after it.
+    """
+    want = _verdict_key(state, verdict)
+    for c in reversed(comments or []):
+        note = parse_note(c.get("body"))
+        if note is None:
+            user = c.get("user") or {}
+            if user.get("type") == "Bot":
+                continue  # bots (CI, sweepers) are not news
+            return {
+                "post": True,
+                "reason": "a non-agent comment arrived since the last agent note",
+            }
+        if note["state"] not in VERDICT_STATES and not note.get("verdict"):
+            return {
+                "post": True,
+                "reason": f"newest agent note is not a triage verdict (it was {note['state']})",
+            }
+        have = _verdict_key(note["state"], note.get("verdict"))
+        if have != want:
+            return {
+                "post": True,
+                "reason": f"newest recorded verdict is {have}, this is {want}",
+            }
+        since = _ts(c.get("created_at"))
+        for ch in changes or ():
+            if _ts(ch["at"]) > since:
+                return {
+                    "post": True,
+                    "reason": (
+                        f"the issue changed since the verdict: a {ch['kind']} "
+                        f"change at {ch['at']}"
+                    ),
+                }
+        age = now - since
+        return {
+            "post": False,
+            "reason": (
+                f"duplicate verdict: newest agent note already records {want} "
+                f"for this issue (task {note['task']}, "
+                f"{int(age.total_seconds() // 60)} min ago) and no commit, "
+                "label, body or human comment has changed since; record "
+                "the outcome on the queue task instead of re-triaging"
+            ),
+        }
+    return {"post": True, "reason": "no earlier agent note"}
+
+
+def note_verdict(
+    comments: list, task: str, state: str, now=None, verdict=None, changes=()
+) -> dict:
     """Should a note of `state` for queue `task` be posted, given the
     item's comments (oldest first, REST shape: body, created_at,
     user.type)?
+
+    A triage verdict (state `triaged`, or any note with a `verdict`)
+    takes the verdict path: `changes` is the issue's change list from
+    changes_from_timeline. Everything else takes the park path.
     """
     now = _ts(now) if now is not None else datetime.now(timezone.utc)
     state = str(state).lower().replace("-", "_")
     task = str(task).lstrip("#")
+    verdict = _norm_verdict(verdict) if verdict else None
+    if _is_verdict_request(state, verdict):
+        return _verdict_note_verdict(comments, state, verdict, changes, now)
     if state not in {s.replace("-", "_") for s in QUIET_STATES}:
         return {"post": True, "reason": f"progress state {state} always posts"}
 
@@ -262,6 +404,13 @@ def main(argv=None, gh=_gh_json, now=None) -> int:
     n.add_argument("--issue", required=True, type=int)
     n.add_argument("--task", required=True)
     n.add_argument("--state", required=True)
+    n.add_argument(
+        "--verdict",
+        default=None,
+        help="the triage verdict this note records (state triaged); "
+        "an unchanged issue with the same verdict already recorded "
+        "skips the note",
+    )
     args = ap.parse_args(argv)
 
     try:
@@ -273,8 +422,23 @@ def main(argv=None, gh=_gh_json, now=None) -> int:
             comments = gh(
                 f"repos/{args.repo}/issues/{args.issue}/comments?per_page=100"
             )
-            verdict = note_verdict(comments, args.task, args.state, now=now)
-            verdict["header"] = note_header(args.task, args.state)
+            changes = ()
+            if _is_verdict_request(args.state, args.verdict):
+                timeline = gh(
+                    f"repos/{args.repo}/issues/{args.issue}/timeline?per_page=100"
+                )
+                changes = changes_from_timeline(timeline)
+            verdict = note_verdict(
+                comments,
+                args.task,
+                args.state,
+                now=now,
+                verdict=args.verdict,
+                changes=changes,
+            )
+            verdict["header"] = note_header(
+                args.task, args.state, verdict=args.verdict
+            )
             code = EXIT_GO if verdict["post"] else EXIT_STOP
     except (
         OSError,
