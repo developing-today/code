@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Fleet-sync oracle: each planned repo is attempted and failures are reported."""
 
+import io
 import os
 import sys
 import unittest
@@ -12,9 +13,12 @@ import plain_mirror_all
 
 class PlainMirrorAllTests(unittest.TestCase):
     def test_rejects_unaccounted_arguments_before_syncing(self):
-        with mock.patch.object(plain_mirror_all, "mirror_repo") as sync:
+        with mock.patch.object(plain_mirror_all, "mirror_repo") as sync, mock.patch(
+            "sys.stderr", new_callable=io.StringIO
+        ) as stderr:
             self.assertEqual(plain_mirror_all.main(["--unexpected"]), 2)
             sync.assert_not_called()
+        self.assertIn("unexpected argument: '--unexpected'", stderr.getvalue())
 
     def test_attempts_every_repo_and_returns_failure_if_one_sync_fails(self):
         repos = plain_mirror_all.FLEET_REPOS

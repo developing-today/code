@@ -15,6 +15,7 @@ from plain_mirror import FLEET_REPOS, mirror_repo
 def main(argv=None):
     argv = sys.argv[1:] if argv is None else argv
     if argv:
+        print(f"plain_mirror_all.py: unexpected argument: {argv[0]!r}", file=sys.stderr)
         print("Usage: plain_mirror_all.py (no arguments)", file=sys.stderr)
         return 2
 
