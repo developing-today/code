@@ -220,6 +220,8 @@ impl WorldCore {
             crate::world_caps::NOTIFY_RATE_WINDOW_MS
         );
         Ok(())
+    }
+
     /// Whether an `http.fetch` of `url` may be attempted (#1062),
     /// and the normalized host it would connect to. The error says
     /// why; the program sees only `bad_args`. Three refusals, in
