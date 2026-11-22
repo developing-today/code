@@ -40,13 +40,16 @@
 //! them (recheck 300..=3600, TTL 60..=604800) because they tune
 //! its own waits, not a producer's stated intent.
 //!
-//! Four rows diverge from design #6448's original table
-//! (max_attempts ceiling, delay ceiling, the lease/extend floor,
-//! and the creation-outbox retry_after ceiling): the values
-//! above are the implemented, live contract, and reconciling
-//! the two statements is tracked on #9029. The inventory that
-//! dispositioned every forwarded field, client flag, and broker
-//! verb parameter against this contract is recorded on #6449.
+//! Bounds reconciliation (#9029): max_attempts remains 1..=1000 per
+//! #8973/#10648 (the packet/row copy is authoritative); delay remains
+//! 1..=604800 to match the #8276 seven-day dependency TTL; lease and
+//! extension remain positive (minimum 1) so short leases are supported;
+//! creation-outbox retry_after is capped at 3600, matching its computed
+//! backoff cap. The referenced #6448 table is maintained outside this
+//! checkout; the reconciliation decisions and rationales are recorded
+//! on #9029. The inventory that dispositioned every forwarded field,
+//! client flag, and broker verb parameter against this contract is
+//! recorded on #6449.
 
 use serde_json::{Value, json};
 use std::time::{SystemTime, UNIX_EPOCH};
