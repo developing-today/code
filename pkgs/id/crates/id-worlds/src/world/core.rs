@@ -107,6 +107,12 @@ pub struct WorldCore {
     /// its result is delivered, and replay rebuilds the set from the
     /// journal, verifying each blob against its address.
     pub(crate) blobs: BTreeMap<String, Vec<u8>>,
+    /// `http.fetch` attempt timestamps (#1062), world-clock
+    /// milliseconds, oldest first: the rolling rate window
+    /// (`MAX_HTTP_FETCH_BURST` per `HTTP_FETCH_RATE_WINDOW_MS`).
+    /// Ephemeral by design — the rate window is not journaled,
+    /// and a restart resets it.
+    pub(crate) http_fetch_attempts: VecDeque<u64>,
     /// Schedule-delivery consent by peer world (#1355 part 2): this
     /// world's half of the reciprocal F12.14 grant pair.
     pub(crate) schedule_grants: BTreeMap<String, ScheduleGrant>,
@@ -396,6 +402,7 @@ impl WorldCore {
             schedules: BTreeMap::new(),
             kv: BTreeMap::new(),
             blobs: BTreeMap::new(),
+            http_fetch_attempts: VecDeque::new(),
             schedule_grants: BTreeMap::new(),
             portal_grants: id_caps::portal::PortalGrants::new(),
             schedule_receipts: BTreeSet::new(),

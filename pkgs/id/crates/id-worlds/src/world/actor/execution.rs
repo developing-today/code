@@ -1272,6 +1272,7 @@ impl WorldActor {
             "blob.put" => self.execute_blob_put(&request.args),
             "blob.get" => self.execute_blob_get(&request.args),
             "blob.delete" => self.execute_blob_delete(&request.args),
+            "http.fetch" => self.execute_http_fetch(&request.args),
             "schedule.at" => self.execute_schedule_at(&request.args),
             "schedule.cancel" => self.execute_schedule_cancel(&request.args),
             _ => Err(CapError::unknown()),
@@ -1878,6 +1879,40 @@ impl WorldActor {
         }
         self.core.blobs.remove(hash);
         Ok(serde_json::json!({"hash": hash, "deleted": true}))
+    }
+
+    /// `http.fetch` (#1062): a GET of an allowlisted URL. The core
+    /// check refuses a malformed URL, a host outside the admin
+    /// allowlist, and an exhausted rate window before any
+    /// connection is made; the attempt is then recorded (failed
+    /// fetches spend the budget too) and the fetch runs on its own
+    /// thread. No fetch state is journaled: a fetch is an effect
+    /// against the live network, not world state, so replay
+    /// applies nothing for one.
+    pub(super) fn execute_http_fetch(
+        &mut self,
+        args: &serde_json::Value,
+    ) -> Result<serde_json::Value, CapError> {
+        let url = args
+            .get("url")
+            .and_then(serde_json::Value::as_str)
+            .ok_or(CapError::bad_args())?;
+        if let Err(error) = self.core.check_http_fetch(url) {
+            tracing::debug!(
+                "world {}: http fetch refused: {error:#}",
+                self.core.world_id
+            );
+            return Err(CapError::bad_args_with(format!("{error:#}")));
+        }
+        self.core.note_http_fetch_attempt();
+        let allowed_hosts = self.core.limits.http_fetch_hosts.clone();
+        let outcome = super::super::http_fetch::fetch(url, &allowed_hosts)?;
+        Ok(serde_json::json!({
+            "url": outcome.url,
+            "status": outcome.status,
+            "body": super::super::blob_encode(&outcome.body),
+            "body_bytes": outcome.body.len(),
+        }))
     }
 
     /// `chat.say` commits a host chat line; its result is the new sequence.

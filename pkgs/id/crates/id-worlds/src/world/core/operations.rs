@@ -181,6 +181,65 @@ impl WorldCore {
         Ok(())
     }
 
+    /// Whether an `http.fetch` of `url` may be attempted (#1062),
+    /// and the normalized host it would connect to. The error says
+    /// why; the program sees only `bad_args`. Three refusals, in
+    /// order: the URL's form (the `id-caps` rule), the admin
+    /// allowlist (`limits.http_fetch_hosts`, exact match on the
+    /// normalized host — no wildcards, no implied subdomains), and
+    /// the rolling rate window. Checking spends nothing: the
+    /// executor records the attempt with
+    /// [`note_http_fetch_attempt`](Self::note_http_fetch_attempt)
+    /// once the check passes, so a refused fetch costs no budget
+    /// and an attempted one always does.
+    ///
+    /// # Errors
+    ///
+    /// A malformed URL, a host outside the allowlist, or a rate
+    /// window already holding `MAX_HTTP_FETCH_BURST` attempts.
+    pub(crate) fn check_http_fetch(&self, url: &str) -> Result<String> {
+        let host = crate::world_caps::validate_http_fetch_url(url)?;
+        ensure!(
+            self.limits
+                .http_fetch_hosts
+                .iter()
+                .any(|listed| crate::world_caps::normalize_http_fetch_host(listed) == host),
+            "http fetch host {host} is not in the allowlist"
+        );
+        let now = self.clock.now_ms();
+        let window_start = now.saturating_sub(crate::world_caps::HTTP_FETCH_RATE_WINDOW_MS);
+        let recent = self
+            .http_fetch_attempts
+            .iter()
+            .filter(|attempt| **attempt > window_start)
+            .count();
+        ensure!(
+            recent < crate::world_caps::MAX_HTTP_FETCH_BURST,
+            "http fetch rate exceeds {} attempts per {} ms",
+            crate::world_caps::MAX_HTTP_FETCH_BURST,
+            crate::world_caps::HTTP_FETCH_RATE_WINDOW_MS
+        );
+        Ok(host)
+    }
+
+    /// Record one `http.fetch` attempt against the rate window,
+    /// pruning attempts the window has aged out. Called by the
+    /// executor after [`check_http_fetch`](Self::check_http_fetch)
+    /// passes and before any connection is made, so failed fetches
+    /// spend the budget too.
+    pub(crate) fn note_http_fetch_attempt(&mut self) {
+        let now = self.clock.now_ms();
+        let window_start = now.saturating_sub(crate::world_caps::HTTP_FETCH_RATE_WINDOW_MS);
+        while self
+            .http_fetch_attempts
+            .front()
+            .is_some_and(|attempt| *attempt <= window_start)
+        {
+            self.http_fetch_attempts.pop_front();
+        }
+        self.http_fetch_attempts.push_back(now);
+    }
+
     /// Apply one fire of a pending schedule: re-arm it in place while
     /// fires remain (fixed-rate: the next due time advances by the
     /// interval from the planned time, never from now), or consume it.
