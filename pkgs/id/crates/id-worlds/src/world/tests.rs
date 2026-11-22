@@ -10961,15 +10961,16 @@ mod schedule_tests {
     #[tokio::test]
     async fn an_ungranted_notify_send_is_refused_and_counted() {
         let (mut actor, _clock, token, journal) = scheduling_actor("notify-refused", &[], false);
-        let (reply, response) = tokio::sync::oneshot::channel();
+        // Admit the provider on both ceilings — the server's limit
+        // and the world's own ceiling — so only the missing grant
+        // refuses the send.
         actor
-            .handle(WorldCommand::SetCapsCeiling {
-                ceiling: vec!["notify.send".to_owned()],
-                reply,
-            })
-            .await;
-        let _ = response.await.unwrap().unwrap();
-        actor.after_change().await;
+            .core
+            .limits
+            .server_caps
+            .insert("notify.send".to_owned());
+        actor.core.caps_ceiling.insert("notify.send".to_owned());
+        actor.core.sync_ledger_ceiling();
         ask(
             &mut actor,
             &token,
@@ -11001,15 +11002,15 @@ mod schedule_tests {
     async fn notify_send_round_trip_through_the_actor() {
         let (mut actor, clock, token, journal) =
             scheduling_actor("notify-round-trip", &["notify.send"], false);
-        let (reply, response) = tokio::sync::oneshot::channel();
+        // Admit the provider on both ceilings — the server's limit
+        // and the world's own ceiling; the grant is already in place.
         actor
-            .handle(WorldCommand::SetCapsCeiling {
-                ceiling: vec!["notify.send".to_owned()],
-                reply,
-            })
-            .await;
-        let _ = response.await.unwrap().unwrap();
-        actor.after_change().await;
+            .core
+            .limits
+            .server_caps
+            .insert("notify.send".to_owned());
+        actor.core.caps_ceiling.insert("notify.send".to_owned());
+        actor.core.sync_ledger_ceiling();
         ask(
             &mut actor,
             &token,
