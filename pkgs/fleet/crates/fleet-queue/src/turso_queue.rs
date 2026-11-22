@@ -628,8 +628,11 @@ mod tests {
 
     #[test]
     fn lane_family_of_accepts_known_families_and_rejects_garbage() {
-        // The claim-time wildcard (Drew, 2026-11-16): known
-        // family + nonempty lowercase alphabetic suffix.
+        // The family rule (Drew, 2026-11-16), kept for
+        // execution_lane_fields' mode derivation (#7598): known
+        // family + nonempty lowercase alphabetic suffix. Claims no
+        // longer consult it (#12544): any lane name auto-registers
+        // on first claim, whatever family it parses to (or none).
         for (id, family) in [
             ("code-a", "code"),
             ("code-z", "code"),
@@ -664,21 +667,65 @@ mod tests {
     }
 
     #[test]
-    fn a_bare_family_lane_id_is_refused_with_the_shape_to_pass() {
-        // #6853 recurrence: scheduled lanes passed `--lane not-code`
-        // for not-code-d. The refusal keeps the unknown-lane verdict
-        // but says what to pass, so the caller can correct itself.
-        let bare = unknown_lane_error("not-code");
-        assert!(
-            bare.starts_with("claim_repo_task: unknown lane_id not-code"),
-            "{bare}"
-        );
-        assert!(bare.contains("lane family"), "{bare}");
-        assert!(bare.contains("not-code-<suffix>"), "{bare}");
-        // Ids that are not a family keep the plain refusal.
+    fn lane_provision_sql_registers_enabled_unbound_for_the_claimer_12544() {
+        // #12544 oracle (auto-register): the statement
+        // claim_preamble runs for a lane with no registry row
+        // registers exactly the canonical row shape -- the
+        // claiming worker as owner (the second bound parameter),
+        // the one-queue binding "*", enabled = 1 -- and INSERT OR
+        // IGNORE means an existing row (in particular one
+        // disabled by hand) is never overwritten by a registration
+        // attempt. After this insert the preamble re-reads the
+        // row, so a claim under a never-seen name ("archer",
+        // "banana-1", a bare "not-code") proceeds with the lane
+        // present and enabled in the registry.
         assert_eq!(
-            unknown_lane_error("banana-1"),
-            "claim_repo_task: unknown lane_id banana-1"
+            lane_provision_sql(),
+            "INSERT OR IGNORE INTO lanes (lane_id, worker_id, queue, enabled) \
+             VALUES (?, ?, '*', 1)"
+        );
+    }
+
+    #[test]
+    fn claim_preamble_auto_registers_instead_of_refusing_unknown_lanes_12544() {
+        // #12544 oracle (unknown-lane errors are gone; the
+        // existing-row refusals stay): the claim preamble
+        // provisions a missing lane via lane_provision_sql and
+        // never refuses a name as unknown -- the unknown-lane
+        // verdict function is deleted outright -- while the
+        // checks an EXISTING row carries keep their refusals in
+        // the same preamble: worker ownership (a lane disabled or
+        // owned is an explicit recorded state, not an unknown
+        // name) and the disabled flag both still refuse, and the
+        // stream-binding check stays.
+        let src = &test_source();
+        let preamble = seg8217(src, "fn claim_preamble(", "\nfn claim_pick_once(");
+        assert!(
+            preamble.contains("lane_provision_sql()"),
+            "preamble auto-registers a missing lane"
+        );
+        assert!(
+            !preamble.contains("unknown_lane_error"),
+            "preamble never refuses a lane as unknown"
+        );
+        // The banned needle is built with format! so this test
+        // file does not itself contain the literal it bans.
+        let verdict_fn = format!("fn unknown_lane_{}", "error");
+        assert!(
+            !src.contains(&verdict_fn),
+            "the unknown-lane verdict is gone from the backend"
+        );
+        assert!(
+            preamble.contains("belongs to worker"),
+            "an existing row's owner still binds the lane"
+        );
+        assert!(
+            preamble.contains("is disabled"),
+            "a lane disabled by hand still refuses"
+        );
+        assert!(
+            preamble.contains("lane_queue_binds("),
+            "preamble honors the unbound registration marker"
         );
     }
 
