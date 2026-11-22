@@ -1271,6 +1271,76 @@ fn home_with_a_recording_lock() -> PathBuf {
     home
 }
 
+#[test]
+fn fleet_build_lock_routes_direct_cargo_through_the_target_broker() {
+    let home = std::env::temp_dir().join(format!(
+        "fleet-agent-direct-lock-{}-{}",
+        std::process::id(),
+        NEXT_DIR.fetch_add(1, Ordering::SeqCst)
+    ));
+    let tools = home.join("tools");
+    let workspace = home.join("code/pkgs/id");
+    std::fs::create_dir_all(&tools).unwrap();
+    std::fs::create_dir_all(&workspace).unwrap();
+    std::fs::write(workspace.join("Cargo.toml"), "[workspace]\nmembers = []\n").unwrap();
+
+    let cargo = tools.join("cargo");
+    std::fs::write(
+        &cargo,
+        "#!/bin/sh\nif [ \"$1\" = locate-project ]; then printf '%s/Cargo.toml\\n' \"$PWD\"; exit 0; fi\nprintf '%s|%s|%s\\n' \"$CARGO_TARGET_DIR\" \"$CARGO_BUILD_JOBS\" \"$*\" > \"$HOME/cargo.log\"\n",
+    )
+    .unwrap();
+    let broker = tools.join("cargo-target-broker");
+    std::fs::write(
+        &broker,
+        "#!/bin/sh\nprintf '%s\\n' \"$*\" > \"$HOME/broker.log\"\nshift\nwhile [ \"$#\" -gt 0 ] && [ \"$1\" != -- ]; do shift; done\n[ \"$#\" -gt 0 ] && shift\nCARGO_TARGET_DIR=\"$HOME/leased-target\"\nexport CARGO_TARGET_DIR\nexec \"$@\"\n",
+    )
+    .unwrap();
+    let flock = tools.join("flock");
+    std::fs::write(&flock, "#!/bin/sh\nexit 0\n").unwrap();
+    let nproc = tools.join("nproc");
+    std::fs::write(&nproc, "#!/bin/sh\nprintf '4\\n'\n").unwrap();
+
+    use std::os::unix::fs::PermissionsExt;
+    for path in [&cargo, &broker, &flock, &nproc] {
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    let lock_script =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fleet-build-lock");
+    let output = std::process::Command::new("/bin/bash")
+        .arg(lock_script)
+        .args(["cargo", "test", "-p", "id-core"])
+        .env("HOME", &home)
+        .env(
+            "PATH",
+            format!(
+                "{}:{}",
+                tools.display(),
+                std::env::var("PATH").unwrap_or_default()
+            ),
+        )
+        .env_remove("CARGO_TARGET_DIR")
+        .current_dir(&workspace)
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        std::fs::read_to_string(home.join("broker.log")).unwrap(),
+        "exec --repo id --profile test --wait 900 -- cargo test -p id-core\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(home.join("cargo.log")).unwrap(),
+        format!("{}|2|test -p id-core\n", home.join("leased-target").display())
+    );
+    let _ = std::fs::remove_dir_all(&home);
+}
+
 fn run_local_plan(home: &std::path::Path, plan: &shell::Plan) -> std::process::Output {
     assert_eq!(plan.program, "sh");
     assert_eq!(plan.args[0], "-lc");
