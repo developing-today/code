@@ -93,7 +93,9 @@ export async function route(request: Request, io: Io): Promise<Response> {
   }
   if (url.pathname === "/console/health" && request.method === "GET") {
     const body = (await (await io.state(request)).json()) as Record<string, unknown>;
-    return new Response(JSON.stringify({ ...body, version: io.version }), {
+    // The hostname it is built for is said too: the host's setup script
+    // will not put any other hostname behind this Worker.
+    return new Response(JSON.stringify({ ...body, version: io.version, host: io.publicHost }), {
       headers: { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store", ...SECURITY },
     });
   }
@@ -142,7 +144,11 @@ export async function route(request: Request, io: Io): Promise<Response> {
   if (!routed) return offline("this address has no host behind it");
 
   if (detail.mode === "act") {
-    const answer = await io.host(withHeader(forHost, "x-pm-edge", "1"), ACT_MS);
+    // The host is told the action's name with the action. No answer may
+    // mean the host never got it, or did it and the answer was lost: it
+    // is held under that name, and the host sorts out which.
+    const named = withHeader(withHeader(forHost, "x-pm-edge", "1"), "x-pm-act", String(detail.id ?? ""));
+    const answer = await io.host(named, ACT_MS);
     if (answer === null) return tell("/internal/hold", detail);
     // The host's answer says what it read again; keep that here, and
     // send the owner the rest.

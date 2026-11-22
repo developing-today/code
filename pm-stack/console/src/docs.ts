@@ -37,6 +37,9 @@ export class Stamped {
   constructor(
     public data: unknown,
     public at: number,
+    /** Why the place that read it could not read it again, if it could
+     * not: the data is then its last good copy. */
+    public error: string | null = null,
   ) {}
 }
 
@@ -95,8 +98,8 @@ export class Docs {
         // A copy read elsewhere is as old as that read, never newer than now.
         s.data = loaded instanceof Stamped ? loaded.data : loaded;
         s.goodAt = loaded instanceof Stamped ? Math.min(now, loaded.at) : now;
-        s.ok = true;
-        s.error = null;
+        s.error = loaded instanceof Stamped ? loaded.error : null;
+        s.ok = s.error === null;
       } catch (error) {
         s.ok = false;
         s.error = (error as Error).message.slice(0, 300);
@@ -205,12 +208,13 @@ export class Docs {
   /** Every section that has been read, with when and a fingerprint of
    * its content: what is reported to the edge, and how it tells that a
    * section has not changed. */
-  snapshot(): { name: string; at: number; hash: string; data: unknown }[] {
-    const out: { name: string; at: number; hash: string; data: unknown }[] = [];
+  snapshot(): { name: string; at: number; hash: string; data: unknown; error: string | null }[] {
+    const out: { name: string; at: number; hash: string; data: unknown; error: string | null }[] = [];
     for (const [name, s] of this.sections) {
       if (s.goodAt === 0) continue;
       const hash = createHash("sha1").update(JSON.stringify(s.data)).digest("base64url");
-      out.push({ name, at: s.goodAt, hash, data: s.data });
+      // The data is the last good copy; `error` says the latest read failed.
+      out.push({ name, at: s.goodAt, hash, data: s.data, error: s.ok ? null : s.error });
     }
     return out;
   }

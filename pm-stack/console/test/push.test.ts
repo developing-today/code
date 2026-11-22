@@ -12,7 +12,7 @@ import { join } from "node:path";
 import { Docs } from "../src/docs.ts";
 import { fileStore } from "../src/file-store.ts";
 import { changes, NOTHING_SEEN, Notifier, type Seen } from "../src/notify.ts";
-import { encrypt, Push, validSubscription } from "../src/push.ts";
+import { contact, encrypt, endpointMark, Push, validSubscription } from "../src/push.ts";
 import { b64u, browser, raw } from "./support.ts";
 
 describe("the message a phone receives", () => {
@@ -91,7 +91,13 @@ describe("the message a phone receives", () => {
       const again = new Push(fileStore(join(dir, "push.json")), "mailto:owner@example.com", async () => ({
         status: 201,
       }));
-      expect(await again.status()).toEqual(status.devices === 0 ? { ...status, devices: 2 } : status);
+      // It still holds both devices, each known by its mark and not by its address.
+      const marks = [await endpointMark(a.subscription.endpoint), await endpointMark(m.subscription.endpoint)];
+      expect(await again.status()).toEqual({ ...status, devices: 2, known: marks });
+      expect(status.known).toEqual([]);
+      expect(marks[0]).toMatch(/^[A-Za-z0-9_-]{16}$/);
+      expect(marks[0]).not.toBe(marks[1]);
+      expect(JSON.stringify(await again.status())).not.toContain("fcm.googleapis.com");
       expect((await again.status()).key).toBe(status.key);
       expect(JSON.parse(readFileSync(join(dir, "push.json"), "utf8")).vapid.privateJwk.d.length).toBeGreaterThan(20);
     } finally {

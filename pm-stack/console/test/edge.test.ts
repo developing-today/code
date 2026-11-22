@@ -55,12 +55,12 @@ async function setup() {
   const now = { t: START };
   const clock = () => now.t;
   const access = await signer("k1");
-  const pushes: { url: string; body: Uint8Array }[] = [];
-  const outward = async (url: string | URL | Request, init?: { body?: unknown }) => {
+  const pushes: { url: string; body: Uint8Array; authorization: string }[] = [];
+  const outward = async (url: string | URL | Request, init?: { body?: unknown; headers?: Record<string, string> }) => {
     const u = String(url);
     if (u === ISSUER.jwksUri) return { ok: true, status: 200, json: async () => ({ keys: [access.jwk] }) };
     if (u.startsWith("https://fcm.googleapis.com/")) {
-      pushes.push({ url: u, body: init?.body as Uint8Array });
+      pushes.push({ url: u, body: init?.body as Uint8Array, authorization: init?.headers?.Authorization ?? "" });
       return { status: 201 };
     }
     throw new Error(`unexpected fetch ${u}`);
@@ -110,10 +110,23 @@ async function setup() {
   };
   const hostDocs = new Docs(
     Object.fromEntries(
-      SECTION_NAMES.map((name) => [name, { ttlMs: 10_000, load: async () => structuredClone(data[name]) }]),
+      SECTION_NAMES.map((name) => [
+        name,
+        {
+          ttlMs: 10_000,
+          load: async () => {
+            if (failing.has(name)) throw new Error(`${name}: the source is down`);
+            return structuredClone(data[name]);
+          },
+        },
+      ]),
     ),
     clock,
   );
+  /** Sections whose source cannot be read just now. */
+  const failing = new Set<string>();
+  /** Held open by a test to keep an action running. */
+  const gate: { wait: Promise<void> | null } = { wait: null };
   const ran: { kind: string; args: Record<string, unknown> }[] = [];
   const table: Record<string, Action> = {
     "ask.send": {
@@ -149,6 +162,26 @@ async function setup() {
       touch: ["prs"],
       audit: (a) => ({ pr: a.pr }),
     },
+    // An answer the dashboard may refuse without anything being thrown.
+    "question.answer": {
+      run: async (a) => {
+        ran.push({ kind: "question.answer", args: a });
+        return a.qid === "settled"
+          ? { applied: 0, refused: [{ qid: a.qid, why: "already-resolved" }] }
+          : { applied: 1, refused: [] };
+      },
+      touch: [],
+      audit: (a) => ({ qid: a.qid }),
+    },
+    "need.comment": {
+      run: async (a) => {
+        ran.push({ kind: "need.comment", args: a });
+        await gate.wait;
+        return { commented: a.ref };
+      },
+      touch: [],
+      audit: (a) => ({ ref: a.ref }),
+    },
   };
   const audited: Record<string, unknown>[] = [];
   const hostDeps: Deps = {
@@ -162,7 +195,9 @@ async function setup() {
       audited.push(entry);
     },
   };
-  const net = { hostUp: true, edgeUp: true };
+  const net = { hostUp: true, edgeUp: true, loseAnswer: false, giveUpEarly: false };
+  /** Requests to the host still running after the edge stopped waiting. */
+  const stillRunning: Promise<unknown>[] = [];
   const hostSaw: string[] = [];
   const edgeConfig: EdgeConfig = {
     owners: [OWNER],
@@ -189,7 +224,18 @@ async function setup() {
       if (!net.hostUp) return null;
       hostSaw.push(`${r.method} ${new URL(r.url).pathname}`);
       // Through the tunnel: the connection is local, the headers are the edge's.
-      return marked(await handle(r, hostDeps, "127.0.0.1"));
+      const answer = handle(r, hostDeps, "127.0.0.1").then(marked);
+      // The edge stops waiting while the host is still at it.
+      if (net.giveUpEarly) {
+        stillRunning.push(answer);
+        return null;
+      }
+      // The host does the work and its answer is lost on the way back.
+      if (net.loseAnswer) {
+        await answer;
+        return null;
+      }
+      return answer;
     },
     publicHost: HOST,
     version: "test",
@@ -217,7 +263,11 @@ async function setup() {
       log: () => {},
     });
   const link = { now: makeLink() };
-  hostDeps.link = { publicKey: () => link.now.publicKey() };
+  hostDeps.link = {
+    publicKey: () => link.now.publicKey(),
+    begin: (id) => link.now.begin(id),
+    end: (id, fate) => link.now.end(id, fate),
+  };
 
   const token = (claims: Record<string, unknown> = {}) =>
     access.sign({
@@ -288,6 +338,9 @@ async function setup() {
     act,
     core,
     hostReads,
+    failing,
+    gate,
+    stillRunning,
     table,
     access,
     edgeConfig,
@@ -311,6 +364,7 @@ describe("before the host's first report", () => {
       answered: 0,
       deferred: 0,
       version: "test",
+      host: HOST,
     });
     // The owner's page is the host's own, reached through the edge.
     const page = await w.browse("/console/api/me");
@@ -470,6 +524,33 @@ describe("the owner, at the edge", () => {
     expect(Number(res.headers.get("x-host-seen"))).toBe(last);
   });
 
+  test("when the host cannot read a source, the edge says so, and stops saying so when it can", async () => {
+    const w = await setup();
+    await w.hostReads();
+    await w.link.now.once();
+    expect((await w.core()).doc.health.census).toEqual({ ok: true, error: null });
+    // The source goes down. The host keeps its last good copy, so the
+    // data does not change, and neither does its fingerprint.
+    w.failing.add("census");
+    w.now.t += 11_000;
+    await w.hostReads();
+    await w.link.now.once();
+    let { doc } = await w.core();
+    expect(doc.health.census).toEqual({ ok: false, error: "census: the source is down" });
+    expect(doc.census).toEqual(w.data.census);
+    expect(doc.health.board).toEqual({ ok: true, error: null });
+    // The edge restarts: it still knows.
+    w.edge.now = w.makeEdge();
+    expect((await w.core()).doc.health.census.ok).toBe(false);
+    // The source comes back with the same data.
+    w.failing.delete("census");
+    w.now.t += 11_000;
+    await w.hostReads();
+    await w.link.now.once();
+    ({ doc } = await w.core());
+    expect(doc.health.census).toEqual({ ok: true, error: null });
+  });
+
   test("a large section is kept in pieces and read back whole after a restart", async () => {
     const w = await setup();
     const big = { open: Array.from({ length: 4000 }, (_, i) => ({ qid: `q${i}`, question: "é".repeat(400) })) };
@@ -550,7 +631,9 @@ describe("actions", () => {
     // A merge acts on what the owner saw; it is never done late.
     const merge = await w.act("pr.merge", { pr: 7 });
     expect(merge.status).toBe(503);
-    expect(((await merge.json()) as { error: string }).error).toMatch(/not safe to do late/);
+    expect(((await merge.json()) as { error: string }).error).toMatch(
+      /not something to do late, so it is not kept\. Check whether it happened/,
+    );
     expect(w.ran).toEqual([]);
     // The app says what is waiting.
     let { doc } = await w.core();
@@ -649,6 +732,84 @@ describe("actions", () => {
     expect(notes).toHaveLength(2);
     expect(notes.join(" | ")).toMatch(/no such issue/);
     expect(notes.join(" | ")).toMatch(/restarted while doing this/);
+  });
+
+  test("an action the host did, whose answer was lost on the way back, is not done again", async () => {
+    const w = await setup();
+    await w.hostReads();
+    await w.link.now.once();
+    w.net.loseAnswer = true;
+    const res = await w.act("ask.send", { text: "only once" });
+    w.net.loseAnswer = false;
+    // The edge cannot tell "never arrived" from "done, answer lost": it holds it.
+    expect(await res.json()).toEqual({ ok: true, held: true, result: null });
+    expect(w.ran).toHaveLength(1);
+    // The host is offered it under the name it was relayed with, knows
+    // it did it, and says so instead of doing it again.
+    w.now.t += 1_000;
+    const offered = await w.link.now.once();
+    expect(offered?.commands.map((c) => c.kind)).toEqual(["ask.send"]);
+    expect(w.ran).toHaveLength(1);
+    w.now.t += 1_000;
+    expect((await w.link.now.once())?.commands).toEqual([]);
+    const { doc } = await w.core();
+    expect(doc.edge).toEqual({ held: 0 });
+    expect(doc.asks.map((a: { text: string }) => a.text)).toEqual(["only once"]);
+    expect(
+      doc.acts.filter((a: { kind: string }) => a.kind === "ask.send").map((a: { status: string }) => a.status),
+    ).toEqual(["done"]);
+  });
+
+  test("an action the host is still doing when the edge stops waiting is neither repeated nor reported early", async () => {
+    const w = await setup();
+    await w.hostReads();
+    await w.link.now.once();
+    let open = () => {};
+    w.gate.wait = new Promise<void>((resolve) => {
+      open = resolve;
+    });
+    w.net.giveUpEarly = true;
+    const res = await w.act("need.comment", { ref: "code#1", text: "slow" });
+    w.net.giveUpEarly = false;
+    expect(await res.json()).toEqual({ ok: true, held: true, result: null });
+    // Offered again while still running: not run a second time, and not answered for yet.
+    w.now.t += 1_000;
+    const during = await w.link.now.once();
+    expect(during?.commands.map((c) => c.kind)).toEqual(["need.comment"]);
+    w.now.t += 1_000;
+    expect((await w.link.now.once())?.commands).toHaveLength(1);
+    expect(w.ran).toHaveLength(1);
+    // It finishes. Now the host answers for it, once.
+    open();
+    await Promise.all(w.stillRunning);
+    w.now.t += 1_000;
+    await w.link.now.once();
+    w.now.t += 1_000;
+    expect((await w.link.now.once())?.commands).toEqual([]);
+    expect(w.ran).toHaveLength(1);
+    expect((await w.core()).doc.edge).toEqual({ held: 0 });
+  });
+
+  test("an answer sent late that the dashboard no longer takes is reported as not recorded", async () => {
+    const w = await setup();
+    await w.hostReads();
+    await w.link.now.once();
+    w.net.hostUp = false;
+    await w.act("question.answer", { set: "s", ledger: "l", qid: "settled", optionId: "a" });
+    await w.act("question.answer", { set: "s", ledger: "l", qid: "open", optionId: "a" });
+    w.net.hostUp = true;
+    w.now.t += 1_000;
+    await w.link.now.once();
+    w.now.t += 1_000;
+    await w.link.now.once();
+    expect(w.ran.map((r) => r.args.qid)).toEqual(["settled", "open"]);
+    const { doc } = await w.core();
+    expect(doc.edge).toEqual({ held: 0 });
+    const answers = doc.acts.filter((a: { kind: string }) => a.kind === "question.answer");
+    expect(answers.map((a: { status: string }) => a.status).sort()).toEqual(["done", "failed"]);
+    expect(answers.find((a: { status: string }) => a.status === "failed").note).toMatch(
+      /not recorded: already-resolved/,
+    );
   });
 
   test("a held action is dropped after a day, and said to have been", async () => {
@@ -931,6 +1092,12 @@ describe("notifications and phones, from the edge", () => {
     await w.link.now.once();
     expect(w.pushes).toHaveLength(1);
     expect(JSON.parse(await phone.open(w.pushes[0].body))).toMatchObject({ url: "/console/#ask" });
+    // The push service is given the project's page as the contact, and nobody's address.
+    const claims = JSON.parse(
+      Buffer.from((/^vapid t=[^.]+\.([^.]+)\./.exec(w.pushes[0].authorization) ?? [])[1] ?? "", "base64url").toString(),
+    );
+    expect(claims.sub).toBe("https://github.com/developing-today/code");
+    expect(w.pushes[0].authorization).not.toContain("mailto");
 
     // The host stops reporting. The alarm set at its last report finds it quiet, once.
     expect(w.alarm.at).toBe(w.now.t + SILENT_MS + 1000);

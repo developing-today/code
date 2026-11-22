@@ -10,6 +10,21 @@ import type { Store } from "./store.ts";
 
 const enc = new TextEncoder();
 const b64u = (bytes: Uint8Array | ArrayBuffer) => Buffer.from(bytes as ArrayBuffer).toString("base64url");
+
+/** The contact a push service is given with every message (the "sub" a
+ * sender must name): the project's page. It is not a person's address:
+ * it goes to Google, Mozilla or Apple each time, and nothing about
+ * delivery depends on whose it is. */
+export const contact = (repo: string): string => `https://github.com/${repo}`;
+
+/** A short mark for a push address. The app compares its own with the
+ * marks of the addresses held here, and so can tell that this sender has
+ * lost it, without any address being sent back. The app computes the
+ * same (public/app.js, endpointMark). */
+export async function endpointMark(endpoint: string): Promise<string> {
+  const hash = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(endpoint));
+  return b64u(hash).slice(0, 16);
+}
 const unb64u = (text: string) => new Uint8Array(Buffer.from(text, "base64url"));
 const concat = (...parts: Uint8Array[]) => {
   const out = new Uint8Array(parts.reduce((n, p) => n + p.length, 0));
@@ -148,6 +163,7 @@ export class Push {
     return {
       key: s.vapid?.publicKey ?? "",
       devices: s.subscriptions.length,
+      known: await Promise.all(s.subscriptions.map((x) => endpointMark(x.endpoint))),
       classes: Object.fromEntries(CLASSES.map((c) => [c, !s.off.includes(c)])),
     };
   }

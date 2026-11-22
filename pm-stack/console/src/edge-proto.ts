@@ -49,11 +49,12 @@ export interface SyncRequest {
   config: EdgeConfig;
   /** Sections that changed since the edge last had them. */
   sections: SyncSection[];
-  /** Every section the host has: its fingerprint and when the host last
-   * read it. A section that has not changed is not sent again, and this
-   * is how the edge knows its copy is still current as of that read, and
-   * how it asks for one it has lost. */
-  have: Record<string, { hash: string; at: number }>;
+  /** Every section the host has: its fingerprint, when the host last
+   * read it, and why its latest read failed if it did. A section that
+   * has not changed is not sent again, and this is how the edge knows
+   * its copy is still current as of that read, shows the same "could
+   * not read" notice the host would, and asks for a copy it has lost. */
+  have: Record<string, { hash: string; at: number; error?: string | null }>;
   /** What became of the held actions the host was given. */
   acks: { id: string; ok: boolean; error?: string }[];
 }

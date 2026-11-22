@@ -41,6 +41,10 @@ class Account(expose.Cloudflare):
         # Workers routes on the zone, and whether the edge Worker answers.
         self.routes = []
         self.worker_up = True
+        # The hostname the Worker says it is built for, and how many of
+        # its next health checks get no answer.
+        self.worker_host = HOST
+        self.health_misses = 0
 
     def call(self, method, path, body=None):
         path, _, query = path.partition("?")
@@ -132,6 +136,18 @@ class Machine:
 def run(account, home, *args, machine=None):
     argv = ["expose.py", *args]
     machine = machine or Machine()
+
+    def health(url):
+        if account.health_misses > 0:
+            account.health_misses -= 1
+            return None
+        if (
+            not account.worker_up
+            or url != f"https://{expose.WORKER}.acct.workers.dev/console/health"
+        ):
+            return None
+        return {"ok": True, "edge": True, "host": account.worker_host}
+
     with (
         mock.patch.object(expose, "Cloudflare", lambda token, check: account),
         mock.patch.object(
@@ -142,16 +158,8 @@ def run(account, home, *args, machine=None):
         mock.patch.object(expose.pathlib.Path, "home", lambda: pathlib.Path(home)),
         mock.patch.object(expose.subprocess, "run", machine.systemctl),
         mock.patch.object(expose, "console_up", machine.up),
-        mock.patch.object(
-            expose,
-            "fetch_json",
-            lambda url: (
-                {"ok": True, "edge": True}
-                if account.worker_up
-                and url == f"https://{expose.WORKER}.acct.workers.dev/console/health"
-                else None
-            ),
-        ),
+        mock.patch.object(expose, "fetch_json", health),
+        mock.patch.object(expose.time, "sleep", lambda seconds: None),
         mock.patch.object(sys, "argv", argv),
         mock.patch("builtins.print"),
     ):
@@ -501,14 +509,102 @@ class Expose(unittest.TestCase):
         self.assertEqual(run(account, self.home), 0)
         self.assertEqual(len(account.routes), 2)
 
-    def test_check_never_records_an_edge_choice(self):
+    def test_check_previews_an_edge_choice_and_keeps_nothing(self):
         account = Account()
         run(account, self.home)
-        self.assertEqual(run(account, self.home, "--check", "--edge", "off"), 0)
+        # Asked what turning the edge off would change: both things, and exit 1.
+        self.assertEqual(run(account, self.home, "--check", "--edge", "off"), 1)
+        self.assertEqual(
+            account.changes,
+            [
+                "console environment: PM_CONSOLE_EDGE_URL",
+                f"workers: take {HOST}/* off {expose.WORKER}",
+            ],
+        )
+        # Nothing was done and nothing was remembered.
         self.assertFalse(
             (pathlib.Path(self.home) / ".local/state/pm-console/edge").exists()
         )
         self.assertEqual(len(account.routes), 1)
+        self.assertEqual(self.env()["PM_CONSOLE_EDGE_URL"], f"https://{HOST}")
+        self.assertEqual(run(account, self.home, "--check"), 0)
+        # And the other way: off for real, then asked what on would change.
+        self.assertEqual(run(account, self.home, "--edge", "off"), 0)
+        self.assertEqual(run(account, self.home, "--check", "--edge", "on"), 1)
+        self.assertEqual(len(account.changes), 2)
+        self.assertEqual(account.routes, [])
+        self.assertEqual(run(account, self.home, "--check"), 0)
+
+    def test_a_worker_built_for_another_hostname_is_not_routed(self):
+        account = Account()
+        account.worker_host = "pm.other.example"
+        self.assertEqual(run(account, self.home), 0)
+        self.assertEqual(account.routes, [])
+        self.assertNotIn("PM_CONSOLE_EDGE_URL", self.env())
+        # A Worker from before it said which hostname it is built for.
+        with mock.patch.object(expose, "HEALTH_TRIES", 1):
+            account.worker_host = None
+            self.assertEqual(run(account, self.home), 0)
+        self.assertEqual(account.routes, [])
+
+    def test_one_unanswered_health_check_does_not_take_the_hostname_off_the_edge(self):
+        account = Account()
+        run(account, self.home)
+        self.assertEqual(len(account.routes), 1)
+        # Two checks in a row get no answer; the third does.
+        account.health_misses = expose.HEALTH_TRIES - 1
+        self.assertEqual(run(account, self.home), 0)
+        self.assertEqual(account.changes, [])
+        self.assertEqual(len(account.routes), 1)
+        # None of them does: the hostname goes back to this host, which is
+        # what keeps it reachable when the Worker is what is broken.
+        account.health_misses = expose.HEALTH_TRIES
+        self.assertEqual(run(account, self.home), 0)
+        self.assertEqual(
+            account.changes,
+            [
+                "console environment: PM_CONSOLE_EDGE_URL",
+                f"workers: take {HOST}/* off {expose.WORKER}",
+            ],
+        )
+        self.assertEqual(account.routes, [])
+        # And returns by itself once the Worker answers again.
+        self.assertEqual(run(account, self.home), 0)
+        self.assertEqual(len(account.routes), 1)
+
+    def test_the_health_check_names_itself(self):
+        # Found live: the edge's health check answered 403 to Python's
+        # default client name, so the Worker looked undeployed.
+        seen = []
+
+        class Answer:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_):
+                return False
+
+            def read(self, *_):
+                return b'{"ok": true, "edge": true}'
+
+        def urlopen(request, timeout):
+            seen.append((request.full_url, request.get_header("User-agent"), timeout))
+            return Answer()
+
+        with mock.patch.object(expose.urllib.request, "urlopen", urlopen):
+            self.assertEqual(
+                expose.fetch_json("https://w.example/console/health"),
+                {"ok": True, "edge": True},
+            )
+        self.assertEqual(len(seen), 1)
+        self.assertEqual(seen[0][0], "https://w.example/console/health")
+        # The program's name and nothing more: no address, no contact.
+        self.assertEqual(seen[0][1], "pm-console-expose")
+        # Anything that is not a JSON object, or cannot be had, is "no answer".
+        with mock.patch.object(
+            expose.urllib.request, "urlopen", mock.Mock(side_effect=OSError("403"))
+        ):
+            self.assertIsNone(expose.fetch_json("https://w.example/x"))
 
 
 if __name__ == "__main__":

@@ -861,6 +861,52 @@ export function deviceLabel(agent = navigator.userAgent) {
   return (m ? m[1] : agent).trim().slice(0, 60);
 }
 
+/** A short mark for a push address: how this device tells whether the
+ * sender of notifications still has it, without the address going
+ * anywhere. The same as endpointMark in src/push.ts. */
+export async function endpointMark(endpoint) {
+  const hash = new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(endpoint)));
+  return b64url(hash).slice(0, 16);
+}
+
+function b64url(bytes) {
+  return btoa(String.fromCharCode(...bytes))
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/, "");
+}
+
+/** What this device's notification subscription needs, given what the
+ * sender says of itself: "keep" it, hand it over "again" (the sender
+ * has lost it), or "renew" it (it was made for a key the sender does not
+ * use, as when the app moved from the laptop to the edge). `madeFor` is
+ * the key it was made for, or "" where the browser does not say. */
+export function subscriptionState(madeFor, mark, status) {
+  if (!status || !status.key) return "keep";
+  if (madeFor && madeFor !== status.key) return "renew";
+  return (status.known || []).includes(mark) ? "keep" : "again";
+}
+
+/** Notifications that are on for this device stay on: nothing is asked,
+ * because the owner already said yes on this device. A device where
+ * they are off is left alone. */
+async function keepSubscribed() {
+  if (!("serviceWorker" in navigator) || !("PushManager" in window) || !("Notification" in window)) return;
+  if (Notification.permission !== "granted") return;
+  const reg = await navigator.serviceWorker.getRegistration("/console/");
+  let sub = reg ? await reg.pushManager.getSubscription() : null;
+  if (!sub) return;
+  const status = await api("push");
+  const key = sub.options?.applicationServerKey;
+  const state = subscriptionState(key ? b64url(new Uint8Array(key)) : "", await endpointMark(sub.endpoint), status);
+  if (state === "keep") return;
+  if (state === "renew") {
+    await sub.unsubscribe();
+    sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: keyBytes(status.key) });
+  }
+  await api("act", { kind: "push.on", args: { subscription: sub.toJSON(), label: deviceLabel() } });
+}
+
 function keyBytes(b64) {
   const text = atob((b64 + "=".repeat((4 - (b64.length % 4)) % 4)).replace(/-/g, "+").replace(/_/g, "/"));
   return Uint8Array.from(text, (c) => c.charCodeAt(0));
@@ -1409,6 +1455,9 @@ if (typeof document !== "undefined" && view) {
     .catch(() => {});
   // The worker shows notifications and opens the right screen when one is tapped.
   if ("serviceWorker" in navigator) navigator.serviceWorker.register("/console/sw.js", { scope: "/console/" }).catch(() => {});
+  // And a device that has notifications on keeps getting them when the
+  // sender changed or lost track of it.
+  keepSubscribed().catch(() => {});
   draw();
   refresh(true);
 }

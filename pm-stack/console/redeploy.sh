@@ -45,13 +45,23 @@ if [ "$want" = "$(cat "$STATE/deploy-failed" 2>/dev/null || true)" ]; then
 fi
 
 mkdir -p "$STATE"
-# The service's own settings, one KEY=value a line, passed as they are.
+# The service's own settings, read the way systemd reads them: one
+# KEY=value a line, and one pair of quotes around a value is not part of
+# the value (install.sh reads PM_CONSOLE_PORT="4872" the same way).
 settings=()
 if [ -f "$STATE/.env" ]; then
   while IFS= read -r line || [ -n "$line" ]; do
     case "$line" in
     '' | '#'* | ';'*) continue ;;
-    *=*) settings+=("$line") ;;
+    *=*)
+      key="${line%%=*}"
+      value="${line#*=}"
+      case "$value" in
+      \"*\") value="${value#\"}" && value="${value%\"}" ;;
+      \'*\') value="${value#\'}" && value="${value%\'}" ;;
+      esac
+      settings+=("$key=$value")
+      ;;
     esac
   done <"$STATE/.env"
 fi
