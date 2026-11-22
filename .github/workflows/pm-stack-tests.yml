@@ -92,6 +92,12 @@ jobs:
       - name: Test pm-git-sync quarantine
         run: bash pm-stack/scripts/pm-git-sync-quarantine.test.sh
 
+      # pm-git-sync and local commits (2026-11-22): empty rebuild marker
+      # commits that block the pull are kept under tags and main follows
+      # origin; a local commit that changes a file still refuses.
+      - name: Test pm-git-sync rebuild markers
+        run: bash pm-stack/scripts/pm-git-sync-markers.test.sh
+
       # Script suite for #5993: pm-stack/scripts/
       # tailnet-bindings.test.sh (the #781 regression pin for the
       # Pad/Grist tailnet bindings) was run by no workflow. The
