@@ -2791,6 +2791,7 @@ dependencies = [
  "libsql",
  "log",
  "once_cell",
+ "serde",
  "start-axum-error",
  "wasm-bindgen",
  "web-sys",
