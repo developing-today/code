@@ -107,9 +107,38 @@ QUERY_PREFIX = "Represent this sentence for searching relevant passages: "
 VEC_TABLE = "vec_snowflake_m_v2_768_f32"
 RRF_K = 10
 SENS_ORDER = ["shareable", "personal", "local-only", "secret-bearing"]
+DISCLOSURE_CONTEXT_CEILINGS = {
+    "fleet-internal": "local-only",
+    "hosted-per-user": "personal",
+    "public-surface": "shareable",
+    "local-owner": "secret-bearing",
+}
+EXCLUDED_DISPOSITION = "excluded_personal_life"
 BWS_TOKEN_NAMES = ["turso.atlas-ro-token", "turso.atlas-read-only-token", "atlas-ro"]
 TOKEN_CACHE = os.path.expanduser("~/.cache/atlas-search/turso-token.json")
 MESSAGE_TEXT_CAP = 50000
+
+
+def effective_sensitivity_ceiling(context, caller_ceiling):
+    """Intersect the caller grant with the destination context.
+
+    Unknown contexts fail closed to the public-surface ceiling, matching
+    atlas-core's outbound default.
+    """
+    context_ceiling = DISCLOSURE_CONTEXT_CEILINGS.get(context, "shareable")
+    if caller_ceiling not in SENS_ORDER:
+        return "shareable"
+    return min((context_ceiling, caller_ceiling), key=SENS_ORDER.index)
+
+
+def disclosure_allows(classification, ceiling):
+    """Return whether a raw classification may cross this disclosure boundary."""
+    if classification == EXCLUDED_DISPOSITION or classification not in SENS_ORDER:
+        return False
+    return (
+        ceiling in SENS_ORDER
+        and SENS_ORDER.index(classification) <= SENS_ORDER.index(ceiling)
+    )
 
 for _k in ("NO_PROXY", "no_proxy"):
     if "[" in os.environ.get(_k, ""):
@@ -592,30 +621,36 @@ class LocalBackend:
 # ------------------------------------------------------------ filters -----
 class Filters:
     def __init__(self, args):
-        self.kinds = split_csv(args.kind)
-        self.topics = split_csv(args.topic)
-        self.projects = split_csv(args.project)
-        self.clients = split_csv(args.client)
-        if args.max_sensitivity not in SENS_ORDER:
+        self.kinds = split_csv(getattr(args, "kind", None))
+        self.topics = split_csv(getattr(args, "topic", None))
+        self.projects = split_csv(getattr(args, "project", None))
+        self.clients = split_csv(getattr(args, "client", None))
+        self.context = getattr(args, "context", "local-owner")
+        caller_ceiling = getattr(args, "max_sensitivity", "secret-bearing")
+        if caller_ceiling not in SENS_ORDER:
             die(f"--max-sensitivity must be one of {SENS_ORDER}")
-        self.max_sensitivity = args.max_sensitivity
-        self.allowed_sens = SENS_ORDER[: SENS_ORDER.index(args.max_sensitivity) + 1]
-        self.since = args.since
+        self.max_sensitivity = caller_ceiling
+        self.effective_ceiling = effective_sensitivity_ceiling(
+            self.context, caller_ceiling
+        )
+        self.allowed_sens = SENS_ORDER[: SENS_ORDER.index(self.effective_ceiling) + 1]
+        self.since = getattr(args, "since", None)
         self.until = None
-        if args.until:
+        until = getattr(args, "until", None)
+        if until:
             try:
-                d = date.fromisoformat(args.until)
+                d = date.fromisoformat(until)
             except ValueError:
-                die(f"--until must be YYYY-MM-DD, got {args.until}")
+                die(f"--until must be YYYY-MM-DD, got {until}")
             self.until_exclusive = (d + timedelta(days=1)).isoformat()
-            self.until = args.until
+            self.until = until
         else:
             self.until_exclusive = None
-        if args.since:
+        if self.since:
             try:
-                date.fromisoformat(args.since)
+                date.fromisoformat(self.since)
             except ValueError:
-                die(f"--since must be YYYY-MM-DD, got {args.since}")
+                die(f"--since must be YYYY-MM-DD, got {self.since}")
 
     def where(self, be):
         """SQL fragment + params, assuming aliases c/m/s/l and the
@@ -1021,10 +1056,14 @@ def result_entry(be, args, fused_entry, d, vec_dist):
     }
     if cid in vec_dist and vec_dist[cid] is not None:
         entry["vector_distance"] = round(vec_dist[cid], 6)
+    ceiling = effective_sensitivity_ceiling(
+        getattr(args, "context", "local-owner"),
+        getattr(args, "max_sensitivity", "secret-bearing"),
+    )
     if args.expand:
-        entry["context"] = neighbor_map(be, d, args.expand)
+        entry["context"] = neighbor_map(be, d, args.expand, ceiling)
     if args.with_message:
-        entry["message"] = message_obj(be, d)
+        entry["message"] = message_obj(be, d, ceiling)
     return entry
 
 
@@ -1090,9 +1129,17 @@ def grouped_output(be, args, filters, ranked, vec_dist, notes):
             if e["chunk_id"] in vec_dist and vec_dist[e["chunk_id"]] is not None:
                 ce["vector_distance"] = round(vec_dist[e["chunk_id"]], 6)
             if args.expand:
-                ce["context"] = neighbor_map(be, d, args.expand)
+                ceiling = effective_sensitivity_ceiling(
+                    getattr(args, "context", "local-owner"),
+                    getattr(args, "max_sensitivity", "secret-bearing"),
+                )
+                ce["context"] = neighbor_map(be, d, args.expand, ceiling)
             if args.with_message:
-                ce["message"] = message_obj(be, d)
+                ceiling = effective_sensitivity_ceiling(
+                    getattr(args, "context", "local-owner"),
+                    getattr(args, "max_sensitivity", "secret-bearing"),
+                )
+                ce["message"] = message_obj(be, d, ceiling)
             chunks.append(ce)
         results.append(
             {
@@ -1143,31 +1190,59 @@ def fetch_details(be, chunk_ids):
     rows = be.execute(sql, list(chunk_ids))
     out = {}
     for r in rows:
-        r["eff_sensitivity"] = r.get("chunk_sensitivity") or r.get("l_sensitivity")
+        chunk_sensitivity = r.get("chunk_sensitivity")
+        r["eff_sensitivity"] = (
+            r.get("l_sensitivity") if chunk_sensitivity is None else chunk_sensitivity
+        )
         out[r["chunk_id"]] = r
     return out
 
 
-def neighbor_map(be, d, n):
+def neighbor_map(be, d, n, ceiling="secret-bearing"):
     rows = be.execute(
         "SELECT id, chunk_idx, text FROM chunks WHERE message_id = ? "
         "AND chunk_idx BETWEEN ? AND ? ORDER BY chunk_idx",
         [d["message_id"], d["chunk_idx"] - n, d["chunk_idx"] + n],
     )
+    details = fetch_details(be, [r["id"] for r in rows])
+    allowed = {
+        r["id"]
+        for r in rows
+        if (detail := details.get(r["id"]))
+        and disclosure_allows(detail.get("eff_sensitivity"), ceiling)
+    }
     before = [
         {"chunk_id": r["id"], "text": r["text"]}
         for r in rows
-        if r["chunk_idx"] < d["chunk_idx"]
+        if r["chunk_idx"] < d["chunk_idx"] and r["id"] in allowed
     ]
     after = [
         {"chunk_id": r["id"], "text": r["text"]}
         for r in rows
-        if r["chunk_idx"] > d["chunk_idx"]
+        if r["chunk_idx"] > d["chunk_idx"] and r["id"] in allowed
     ]
     return {"before": before, "after": after}
 
 
-def message_obj(be, d):
+def message_obj(be, d, ceiling="secret-bearing"):
+    # A full message is indivisible: withhold it if any chunk in it is
+    # excluded or cannot be proven to fit the same output boundary.
+    classifications = be.execute(
+        "SELECT "
+        + be.sens_expr
+        + " AS sensitivity FROM chunks c "
+        "JOIN messages m ON m.id = c.message_id "
+        "JOIN sessions s ON s.id = m.session_id "
+        + f"LEFT JOIN {be.labels_table} l ON l.session_id = s.id "
+        + be.sens_join
+        + " WHERE c.message_id = ?",
+        [d["message_id"]],
+    )
+    if not classifications or any(
+        not disclosure_allows(r.get("sensitivity"), ceiling)
+        for r in classifications
+    ):
+        return None
     rows = be.execute(
         "SELECT id, role, text FROM messages WHERE id = ?", [d["message_id"]]
     )
@@ -1186,9 +1261,12 @@ def message_obj(be, d):
 
 # ------------------------------------------------------------ get-chunk ---
 def run_get_chunk(be, args):
+    filters = Filters(args)
     details = fetch_details(be, [args.chunk_id])
     d = details.get(args.chunk_id)
-    if d is None:
+    if d is None or not disclosure_allows(
+        d.get("eff_sensitivity"), filters.effective_ceiling
+    ):
         die(f"chunk {args.chunk_id} not found", code=1)
     out = {
         "chunk_id": d["chunk_id"],
@@ -1203,7 +1281,9 @@ def run_get_chunk(be, args):
         "session_id": d["session_id"],
     }
     if args.neighbors:
-        out["context"] = neighbor_map(be, d, args.neighbors)
+        out["context"] = neighbor_map(
+            be, d, args.neighbors, filters.effective_ceiling
+        )
     notes = list(getattr(be, "notes", []))
     if notes:
         out["notes"] = notes
@@ -1320,6 +1400,20 @@ def add_backend_args(p):
     )
 
 
+def add_disclosure_args(p, max_sensitivity_default):
+    p.add_argument(
+        "--context",
+        default="local-owner",
+        help="destination disclosure context (default local-owner; unknown values fail closed)",
+    )
+    p.add_argument(
+        "--max-sensitivity",
+        choices=SENS_ORDER,
+        default=max_sensitivity_default,
+        help=f"caller clearance ceiling in {'<'.join(SENS_ORDER)} (default {max_sensitivity_default})",
+    )
+
+
 def add_vector_args(p):
     p.add_argument(
         "--model",
@@ -1377,12 +1471,7 @@ def main():
     ps.add_argument("--client")
     ps.add_argument("--since", help="YYYY-MM-DD, on sessions.created_at (inclusive)")
     ps.add_argument("--until", help="YYYY-MM-DD, on sessions.created_at (inclusive)")
-    ps.add_argument(
-        "--max-sensitivity",
-        default="personal",
-        help="ceiling in shareable<personal<local-only<secret-bearing "
-        "(default personal; secret-bearing must be spelled out)",
-    )
+    add_disclosure_args(ps, "personal")
     ps.add_argument(
         "--group-by-session",
         action="store_true",
@@ -1409,6 +1498,7 @@ def main():
     pg.add_argument("chunk_id", type=int)
     pg.add_argument("--neighbors", type=int, default=0)
     pg.add_argument("--text", action="store_true")
+    add_disclosure_args(pg, "secret-bearing")
     add_backend_args(pg)
 
     args = ap.parse_args()
