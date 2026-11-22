@@ -3,7 +3,7 @@
 //! A world directory holds:
 //!
 //! ```text
-//! <dir>/journal.jsonl            one JournalEntry per line, fsynced per append
+//! <dir>/journal.jsonl            one JournalEntry per line, durable before its append returns
 //! <dir>/modules/<blake3>.wasm    every module the world has installed
 //! ```
 //!
@@ -21,11 +21,14 @@
 //!
 //! The journal records capability digests, never the bearer secrets.
 
+use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, Sender, SyncSender};
+use std::sync::{Arc, Condvar, Mutex, OnceLock, Weak};
 use std::thread::{self, JoinHandle};
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail, ensure};
 
@@ -50,7 +53,8 @@ use crate::world_session::{WorldService, module_hash};
 /// is back under the cap.
 pub const MAX_JOURNAL_BYTES: u64 = 64 * 1024 * 1024;
 
-/// Append-only, fsynced JSON-lines journal.
+/// Append-only JSON-lines journal; an append returns only once its
+/// entry is durable (shared sync gate, #557).
 #[derive(Debug)]
 pub struct FileJournal {
     writer: JournalWriter,
@@ -72,6 +76,235 @@ pub struct FileJournal {
     _lock: File,
 }
 
+/// Cross-journal sync gate: group commit at the filesystem level (#557).
+///
+/// Durability-before-ack used to cost one `sync_data` per journal
+/// append. At the F12.12 target load (100 active worlds x 20 inputs/s)
+/// that is 2,000 syncs/s, and concurrent fdatasync across many files on
+/// one filesystem serializes well below that rate, so queueing in the
+/// sync layer — not service time — set the many-worlds p99. The gate
+/// replaces the per-append sync with a shared epoch protocol: a writer
+/// writes its bytes, registers the next epoch, and waits until a
+/// filesystem-wide sync (`syncfs`) that STARTED after its registration
+/// has completed. One sync therefore makes durable every append written
+/// before it, across all journals on the filesystem, and under load the
+/// syncs run back-to-back instead of once per append.
+///
+/// The invariant a waiter relies on: registration happens after its
+/// `write_all` returned, and the sync that settles its epoch starts
+/// after that registration, so the sync necessarily covers its bytes.
+/// A failed or unavailable sync settles the epoch as failed and the
+/// waiter falls back to a per-file `sync_data`, which decides the
+/// append's result exactly as it did before this gate existed.
+struct SyncGate {
+    state: Mutex<SyncGateState>,
+    settled: Condvar,
+    sync: Arc<dyn Fn() -> std::io::Result<()> + Send + Sync>,
+}
+
+#[derive(Default)]
+struct SyncGateState {
+    /// Epochs handed out to waiters, in registration order.
+    requested: u64,
+    /// Highest epoch a completed sync covers.
+    durable: u64,
+    /// Highest epoch whose covering sync failed; those waiters fall back.
+    failed: u64,
+    /// Filesystem syncs performed (tests and diagnostics).
+    syncs: u64,
+    /// The sync thread is gone (or never started); waiters fall back.
+    retired: bool,
+}
+
+impl std::fmt::Debug for SyncGate {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SyncGate")
+            .field("syncs", &self.sync_count())
+            .finish_non_exhaustive()
+    }
+}
+
+fn lock_gate(state: &Mutex<SyncGateState>) -> std::sync::MutexGuard<'_, SyncGateState> {
+    state
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+impl SyncGate {
+    fn new<F>(sync: F) -> Arc<Self>
+    where
+        F: Fn() -> std::io::Result<()> + Send + Sync + 'static,
+    {
+        let gate = Arc::new(Self {
+            state: Mutex::new(SyncGateState::default()),
+            settled: Condvar::new(),
+            sync: Arc::new(sync),
+        });
+        let weak = Arc::downgrade(&gate);
+        let spawned = thread::Builder::new()
+            .name("world-journal-sync".to_owned())
+            .spawn(move || sync_gate_loop(weak));
+        if spawned.is_err() {
+            // No sync thread: every waiter falls back to its own sync.
+            lock_gate(&gate.state).retired = true;
+        }
+        gate
+    }
+
+    /// Wait until a sync that started after this call has completed.
+    /// The caller must have finished writing the bytes this wait covers
+    /// BEFORE calling: that ordering is what makes the covering sync a
+    /// proof of durability. An `Err` means the gate could not prove
+    /// durability (the sync failed, the gate retired, or the wait
+    /// overran its safety bound) and the caller must fall back to
+    /// syncing its own file.
+    fn wait_durable(&self) -> std::io::Result<()> {
+        let mut state = lock_gate(&self.state);
+        if state.retired {
+            return Err(std::io::Error::other("journal sync gate is retired"));
+        }
+        state.requested += 1;
+        let mine = state.requested;
+        self.settled.notify_all();
+        // The bound is a safety valve against a wedged sync thread,
+        // not an expected path: a healthy gate settles an epoch within
+        // a filesystem sync or two.
+        let deadline = Instant::now() + Duration::from_secs(60);
+        loop {
+            if state.durable >= mine {
+                return Ok(());
+            }
+            if state.failed >= mine || state.retired {
+                return Err(std::io::Error::other(
+                    "shared journal sync failed; caller falls back",
+                ));
+            }
+            let now = Instant::now();
+            if now >= deadline {
+                return Err(std::io::Error::other(
+                    "shared journal sync did not settle in time; caller falls back",
+                ));
+            }
+            let (guard, _) = self
+                .settled
+                .wait_timeout(state, deadline - now)
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            state = guard;
+        }
+    }
+
+    fn sync_count(&self) -> u64 {
+        lock_gate(&self.state).syncs
+    }
+}
+
+fn sync_gate_loop(weak: Weak<SyncGate>) {
+    loop {
+        let Some(gate) = weak.upgrade() else {
+            return;
+        };
+        // Wait until some epoch is unsettled; retire when every
+        // journal that held this gate is gone.
+        let target = {
+            let mut state = lock_gate(&gate.state);
+            loop {
+                let settled = state.durable.max(state.failed);
+                if state.requested > settled {
+                    break state.requested;
+                }
+                if weak.strong_count() <= 1 {
+                    // Only this loop's own Arc remains, so no writer
+                    // can be waiting; a future journal reaches the
+                    // gate only through the registry, which checks
+                    // `retired` before reusing it.
+                    state.retired = true;
+                    gate.settled.notify_all();
+                    return;
+                }
+                let (guard, _) = gate
+                    .settled
+                    .wait_timeout(state, Duration::from_millis(50))
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                state = guard;
+            }
+        };
+        lock_gate(&gate.state).syncs += 1;
+        let result = (gate.sync)();
+        let mut state = lock_gate(&gate.state);
+        match result {
+            Ok(()) => state.durable = state.durable.max(target),
+            Err(_) => state.failed = state.failed.max(target),
+        }
+        gate.settled.notify_all();
+    }
+}
+
+/// One sync gate per filesystem (by device id), shared by every
+/// journal opened on it in this process.
+fn sync_gates() -> &'static Mutex<HashMap<u64, Weak<SyncGate>>> {
+    static GATES: OnceLock<Mutex<HashMap<u64, Weak<SyncGate>>>> = OnceLock::new();
+    GATES.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// The sync gate for the filesystem holding `file`, or `None` where
+/// the shared sync is unavailable (non-Linux, unstatable file): the
+/// writer then keeps the per-append `sync_data` behaviour.
+fn sync_gate_for(file: &File, journal_path: &Path) -> Option<Arc<SyncGate>> {
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let dev = file.metadata().ok()?.dev();
+        let mut gates = sync_gates()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(gate) = gates.get(&dev).and_then(Weak::upgrade) {
+            if !lock_gate(&gate.state).retired {
+                return Some(gate);
+            }
+        }
+        // syncfs needs any fd on the filesystem; a journal's parent
+        // directory is by construction on the same one.
+        let dir = File::open(journal_path.parent()?).ok()?;
+        let gate = SyncGate::new(move || sync_filesystem(&dir));
+        gates.insert(dev, Arc::downgrade(&gate));
+        Some(gate)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (file, journal_path);
+        None
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[allow(unsafe_code)] // Required for libc::syncfs
+fn sync_filesystem(dir: &File) -> std::io::Result<()> {
+    use std::os::fd::AsRawFd;
+    // SAFETY: syncfs takes a plain fd and reports its result in the
+    // return value; `dir` outlives the call, and durability is only
+    // trusted when the call reports success.
+    let rc = unsafe { libc::syncfs(dir.as_raw_fd()) };
+    if rc == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+/// Make an append durable: through the shared sync gate when one is
+/// attached (one filesystem sync covers this append together with
+/// every other journal's pending appends), falling back to this
+/// file's own `sync_data` whenever the gate cannot prove durability.
+fn sync_after_write(gate: &Option<Arc<SyncGate>>, file: &File) -> std::io::Result<()> {
+    match gate {
+        Some(gate) => match gate.wait_durable() {
+            Ok(()) => Ok(()),
+            Err(_) => file.sync_data(),
+        },
+        None => file.sync_data(),
+    }
+}
+
 #[derive(Debug)]
 struct JournalWriter {
     sender: Option<Sender<JournalWriterRequest>>,
@@ -91,11 +324,11 @@ enum JournalWriterRequest {
 }
 
 impl JournalWriter {
-    fn new(file: File) -> Result<Self> {
+    fn new(file: File, gate: Option<Arc<SyncGate>>) -> Result<Self> {
         let (sender, receiver) = mpsc::channel();
         let thread = thread::Builder::new()
             .name("world-journal-writer".to_owned())
-            .spawn(move || journal_writer_loop(file, receiver))
+            .spawn(move || journal_writer_loop(file, receiver, gate))
             .context("spawn world journal writer")?;
         Ok(Self {
             sender: Some(sender),
@@ -171,11 +404,17 @@ fn acquire_journal_lock(path: &Path) -> Result<File> {
     }
 }
 
-fn journal_writer_loop(mut file: File, receiver: Receiver<JournalWriterRequest>) {
+fn journal_writer_loop(
+    mut file: File,
+    receiver: Receiver<JournalWriterRequest>,
+    gate: Option<Arc<SyncGate>>,
+) {
     while let Ok(request) = receiver.recv() {
         match request {
             JournalWriterRequest::Append { line, reply } => {
-                let result = file.write_all(&line).and_then(|()| file.sync_data());
+                let result = file
+                    .write_all(&line)
+                    .and_then(|()| sync_after_write(&gate, &file));
                 let _ = reply.send(result);
             }
             JournalWriterRequest::Replace {
@@ -245,8 +484,9 @@ impl FileJournal {
             Some(JournalEntry::Created { version, .. }) => *version,
             _ => JOURNAL_VERSION,
         };
+        let gate = sync_gate_for(&file, path);
         let mut journal = Self {
-            writer: JournalWriter::new(file)?,
+            writer: JournalWriter::new(file, gate)?,
             path: path.to_owned(),
             broken: false,
             version,
@@ -448,8 +688,10 @@ impl WorldJournal for FileJournal {
             self.path.display(),
             self.max_bytes
         );
-        // JournalWriter::append is one write_all + one sync_data, so the
-        // concatenated batch is durable after a single sync.
+        // JournalWriter::append is one write_all plus one durability
+        // wait (a shared filesystem sync through the sync gate, or the
+        // file's own sync_data), so the concatenated batch is durable
+        // after a single sync.
         self.writer.append(batch)?;
         self.bytes = new_bytes;
         Ok(())
@@ -1347,6 +1589,98 @@ mod tests {
             let (mut journal, entries) = FileJournal::open(&path, "w").unwrap();
             assert_eq!(entries.len(), 1, "a fresh journal holds only its header");
             journal.append_batch(&batch).unwrap();
+        }
+        let entries = journal_entries(dir.path());
+        assert_eq!(entries.len(), 1 + batch.len(), "{entries:?}");
+        assert_eq!(&entries[1..], batch.as_slice());
+    }
+
+    // #557 sync gate: a waiter is released only by a sync that starts
+    // after it registered (which is after its write completed) — the
+    // durability-before-ack oracle. The sync is a latch the test
+    // controls, so a waiter returning early is directly observable.
+    #[test]
+    fn sync_gate_waiter_waits_for_the_covering_sync() {
+        let (started_tx, started_rx) = std::sync::mpsc::channel::<()>();
+        let (release_tx, release_rx) = std::sync::mpsc::sync_channel::<()>(0);
+        let release_rx = std::sync::Mutex::new(release_rx);
+        let gate = SyncGate::new(move || {
+            let _ = started_tx.send(());
+            let _ = release_rx.lock().unwrap().recv();
+            Ok(())
+        });
+        let waiter_gate = gate.clone();
+        let waiter = std::thread::spawn(move || waiter_gate.wait_durable());
+        // The covering sync has started; the waiter must still wait.
+        started_rx.recv().unwrap();
+        assert!(
+            !waiter.is_finished(),
+            "waiter returned before its covering sync completed"
+        );
+        release_tx.send(()).unwrap();
+        waiter.join().unwrap().unwrap();
+        assert_eq!(gate.sync_count(), 1);
+    }
+
+    // #557 sync gate: concurrent waiters share syncs. Oracle: with a
+    // 25 ms sync, 32 threads x 8 waits each settle with far fewer
+    // syncs than waits — one sync covers every epoch registered
+    // before it started.
+    #[test]
+    fn sync_gate_coalesces_concurrent_waiters() {
+        let gate = SyncGate::new(|| {
+            std::thread::sleep(Duration::from_millis(25));
+            Ok(())
+        });
+        let mut waiters = Vec::new();
+        for _ in 0..32 {
+            let gate = gate.clone();
+            waiters.push(std::thread::spawn(move || {
+                for _ in 0..8 {
+                    gate.wait_durable().unwrap();
+                }
+            }));
+        }
+        for waiter in waiters {
+            waiter.join().unwrap();
+        }
+        let syncs = gate.sync_count();
+        assert!(syncs >= 1, "no sync ran");
+        assert!(
+            syncs <= 32,
+            "256 waits should settle in a handful of shared syncs, got {syncs}"
+        );
+    }
+
+    // #557 sync gate: a failed sync never proves durability — the
+    // waiter gets an error so the journal writer falls back to its
+    // own sync_data.
+    #[test]
+    fn sync_gate_failure_releases_the_waiter_with_an_error() {
+        let gate = SyncGate::new(|| Err(std::io::Error::other("sync failed in test")));
+        let error = gate
+            .wait_durable()
+            .expect_err("a failed sync must not read as durable");
+        assert!(error.to_string().contains("falls back"), "{error}");
+    }
+
+    // #557: appends through the gated writer land exactly, in order —
+    // the gate changes how durability is proven, never what lands.
+    #[test]
+    fn journal_appends_through_the_sync_gate_land_in_order() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("journal.jsonl");
+        let batch: Vec<JournalEntry> = ["a", "b", "c"]
+            .iter()
+            .map(|name| JournalEntry::CapsGranted {
+                granted: vec![(*name).to_owned()],
+            })
+            .collect();
+        {
+            let (mut journal, entries) = FileJournal::open(&path, "w").unwrap();
+            assert_eq!(entries.len(), 1, "a fresh journal holds only its header");
+            journal.append(&batch[0]).unwrap();
+            journal.append_batch(&batch[1..]).unwrap();
         }
         let entries = journal_entries(dir.path());
         assert_eq!(entries.len(), 1 + batch.len(), "{entries:?}");
