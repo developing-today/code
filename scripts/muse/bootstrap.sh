@@ -455,7 +455,7 @@ PY
     python3 -c 'import json,sys; print(json.load(sys.stdin).get("Self",{}).get("HostName",""))' 2>/dev/null || true)
   [ -n "$EFFECTIVE_HOSTNAME" ] || EFFECTIVE_HOSTNAME=$TS_HOSTNAME
   if [ "$MODE" = userspace ]; then
-    say "tailnet: up as $EFFECTIVE_HOSTNAME (userspace mode; HTTP CONNECT works, direct Iroh/Tailscale UDP is unavailable)"
+    say "tailnet: up as $EFFECTIVE_HOSTNAME (userspace mode; HTTP CONNECT works; direct Tailscale UDP is unavailable (Iroh public UDP may still work))"
   else
     say "tailnet: up as $EFFECTIVE_HOSTNAME (kernel mode; direct UDP paths are available when NAT/firewall permit)"
   fi

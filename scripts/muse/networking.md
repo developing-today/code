@@ -28,6 +28,8 @@ For each new agent, confirm its tailscale status --json self hostname is the
 expected muse-<agent> name, then confirm the laptop peer probe reports a
 direct route. Finally perform an Iroh operation between the laptop and the
 agent and between two agents; record whether the connection used direct UDP
-or an Iroh relay. If the agent is in userspace mode, direct Iroh over the
-tailnet is unavailable until the sandbox has kernel TUN access. Keep the
-Cloudflare HTTPS route available as the application fallback in either case.
+or an Iroh relay. If the agent is in userspace mode, direct Iroh over the Tailscale network is
+unavailable until the sandbox has kernel TUN access. Iroh may still establish
+a direct public-UDP path or use its relay; test which path a real session
+selected. Keep the Cloudflare HTTPS route available as the application
+fallback in either case.
