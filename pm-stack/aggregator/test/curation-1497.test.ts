@@ -8,6 +8,7 @@ import { PAGES, SUBROUTE_PARENTS, manifestRouteFor, pageByRoute, primaryGroupedP
 import { buildProgramData } from "../src/program.ts";
 import { navLinks, pageDropdown, renderPages, renderProgram } from "../src/render.ts";
 import { STANDING_IDENTITIES } from "../src/registry.ts";
+import { addConsoleShortcut } from "../src/console-gate.ts";
 
 const PROV: Provenance = {
   board: "x",
@@ -103,6 +104,22 @@ describe("the #1497 decision table is applied to the manifest", () => {
         .map((p) => p.id)
         .sort(),
     );
+  });
+});
+
+describe("console-gated install shortcut (#12416)", () => {
+  test("the web manifest gains /console/ only on the public Host", async () => {
+    const manifest = { name: "PM Aggregator", start_url: "/attention" };
+    const response = (host: string) =>
+      addConsoleShortcut(
+        new Response(JSON.stringify(manifest), { headers: { "content-type": "application/manifest+json" } }),
+        new Request("http://aggregator/manifest.webmanifest", { headers: { host } }),
+        "pm.security.cab",
+      );
+    const gated = JSON.parse(await (await response("pm.security.cab")).text());
+    expect(gated.shortcuts).toContainEqual({ name: "Console", short_name: "Console", url: "/console/" });
+    const direct = JSON.parse(await (await response("localhost")).text());
+    expect(direct.shortcuts).toBeUndefined();
   });
 });
 
