@@ -5090,8 +5090,26 @@ func TestDaemonAddressIsReachableFromTheEnvironment(t *testing.T) {
 // fails and names "disabled by daemon.autostart" and no socket
 // appears; at the default, `ls` succeeds and leaves a socket.
 func TestDaemonAutostartIsReachableFromTheEnvironment(t *testing.T) {
+	// A socket in the state directory, or the one a daemon's info record
+	// says it bound. A long state path moves the socket to a private
+	// runtime directory (daemon.socketPath), which is every nix sandbox
+	// build: globbing the state directory alone found nothing there and
+	// failed the aarch64-darwin build although the daemon was up.
 	socketsIn := func(e *env) []string {
 		socks, _ := filepath.Glob(filepath.Join(e.dir, "state", "*.sock"))
+		infos, _ := filepath.Glob(filepath.Join(e.dir, "state", "daemon*.json"))
+		for _, info := range infos {
+			var rec struct {
+				Socket string `json:"socket"`
+			}
+			b, err := os.ReadFile(info)
+			if err != nil || json.Unmarshal(b, &rec) != nil || rec.Socket == "" {
+				continue
+			}
+			if fi, err := os.Stat(rec.Socket); err == nil && fi.Mode()&os.ModeSocket != 0 {
+				socks = append(socks, rec.Socket)
+			}
+		}
 		return socks
 	}
 
