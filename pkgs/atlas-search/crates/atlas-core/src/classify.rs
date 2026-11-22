@@ -1170,7 +1170,7 @@ pub fn run_classification(db_path: &Path, commit: bool, config: &RunConfig) -> R
         "sha256:{}",
         sha256_hex(
             format!(
-                "{RUN_FORMAT}\n{}\n{}\n{}\n",
+                "{RUN_FORMAT}\n{}\n{}\n{}\n{}\n",
                 db_path.display(),
                 config.now,
                 config_version,
