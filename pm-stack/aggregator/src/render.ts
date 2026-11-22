@@ -707,9 +707,10 @@ export function authorBadge(a: DashAuthor, linkedIdentity?: { source: string; id
 }
 
 export function dashCommentHtml(c: DashComment, showObject = false): string {
-  const verificationChip = c.provenance === "verified"
-    ? `<span class="badge">verified identity</span>`
-    : `<span class="badge">asserted-legacy — author is a claim</span>`;
+  const verificationChip =
+    c.provenance === "verified"
+      ? `<span class="badge">verified identity</span>`
+      : `<span class="badge">asserted-legacy — author is a claim</span>`;
   const kindChip =
     c.kind === "message"
       ? `<span class="badge msg">✉ message to Muse</span> <span class="muted">${c.triageState === "triaged" ? "triaged by the orchestrator" : "awaiting triage"}</span>`
@@ -2266,9 +2267,10 @@ export function sessionRecordLine(
   const badges = actionBadgesHtml(act?.actions);
   const controls =
     act?.identities && sessionRecordIsLive(r) ? sessionActionsHtml(r.id, r.source, { identities: act.identities }) : "";
-  const provenance = r.provenance === "verified"
-    ? `<span class="badge">verified identity</span>`
-    : `<span class="badge">asserted-legacy — identity is a claim</span>`;
+  const provenance =
+    r.provenance === "verified"
+      ? `<span class="badge">verified identity</span>`
+      : `<span class="badge">asserted-legacy — identity is a claim</span>`;
   return `<div class="card session-record-line" id="${esc(r.id)}"><strong>${esc(r.label)}</strong> <span class="badge src">${esc(r.source)}</span> <span class="badge agent">${esc(r.agentLabel)}</span> ${provenance}${badges}<br><span class="muted session-record-meta">${esc(r.id)} · ${esc(r.status)}${r.model ? ` · ${esc(r.model)}` : ""} · started ${fmtDate(r.startedAt)} · last seen ${fmtDate(r.lastSeenAt)}${tokens}${parent}${refs}</span>${controls}</div>`;
 }
 

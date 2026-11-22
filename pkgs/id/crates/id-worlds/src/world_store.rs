@@ -3317,6 +3317,7 @@ mod tests {
             execution_profile: None,
             caps_ceiling: None,
             schedules: None,
+            kv: None,
             transfers: None,
             lease: None,
             snapshot: "s".to_owned(),

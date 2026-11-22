@@ -1259,6 +1259,13 @@ func TestExecOutputShapesTheResultFromTheEnvironment(t *testing.T) {
 		t.Helper()
 		e := newEnv(t, oneServer)
 		e.setenv(env...)
+		// Warm the schema cache first: in a cold environment (a fresh
+		// nix build sandbox) the first exec prints a one-time
+		// "reading tool schemas for the first time..." progress notice
+		// to stderr, and the harness captures stderr together with
+		// stdout. The notice is not part of the output shape under
+		// test, so absorb it in a throwaway run.
+		_ = e.run("exec", `console.log("warmup")`)
 		return e.run("exec", `console.log("shaped")`)
 	}
 

@@ -135,7 +135,13 @@ def clean_workspace_artifacts(target_dir: Path, cwd: Path) -> None:
         env = dict(os.environ)
         env["CARGO_TARGET_DIR"] = str(target_dir)
         subprocess.run(command, cwd=workspace_root, env=env, check=True)
-    except (OSError, subprocess.CalledProcessError, KeyError, TypeError, ValueError) as exc:
+    except (
+        OSError,
+        subprocess.CalledProcessError,
+        KeyError,
+        TypeError,
+        ValueError,
+    ) as exc:
         message = f"could not safely clean pooled workspace artifacts: {exc}"
         raise RuntimeError(message) from exc
 

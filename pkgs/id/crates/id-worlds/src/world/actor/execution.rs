@@ -1266,6 +1266,9 @@ impl WorldActor {
                 }))
             }
             "records.read" => self.execute_records_read(&request.args),
+            "kv.get" => self.execute_kv_get(&request.args),
+            "kv.set" => self.execute_kv_set(&request.args),
+            "kv.delete" => self.execute_kv_delete(&request.args),
             "schedule.at" => self.execute_schedule_at(&request.args),
             "schedule.cancel" => self.execute_schedule_cancel(&request.args),
             _ => Err(CapError::unknown()),
@@ -1704,6 +1707,91 @@ impl WorldActor {
             "records": page,
             "next_after": more.then_some(last_included).flatten(),
         }))
+    }
+
+    /// `kv.get` (#1062): the value stored under the key, or `null`
+    /// when the key is absent. The store keeps each value's JSON
+    /// encoding; a stored encoding that no longer parses means the
+    /// journal is corrupt, so it fails rather than answering `null`.
+    pub(super) fn execute_kv_get(
+        &self,
+        args: &serde_json::Value,
+    ) -> Result<serde_json::Value, CapError> {
+        let key = args
+            .get("key")
+            .and_then(serde_json::Value::as_str)
+            .ok_or(CapError::bad_args())?;
+        if crate::world_caps::validate_kv_key(key).is_err() {
+            return Err(CapError::bad_args());
+        }
+        let value = match self.core.kv.get(key) {
+            None => serde_json::Value::Null,
+            Some(stored) => {
+                serde_json::from_str(stored).map_err(|_| CapError::failed_with("kv_corrupt"))?
+            }
+        };
+        Ok(serde_json::json!({"key": key, "value": value}))
+    }
+
+    /// `kv.set` (#1062): store a JSON value under a key, replacing any
+    /// value already there. The write is journaled before the result
+    /// is delivered, and bounds are checked against the store as it
+    /// will be after the write.
+    pub(super) fn execute_kv_set(
+        &mut self,
+        args: &serde_json::Value,
+    ) -> Result<serde_json::Value, CapError> {
+        let key = args
+            .get("key")
+            .and_then(serde_json::Value::as_str)
+            .ok_or(CapError::bad_args())?;
+        let value = args.get("value").ok_or(CapError::bad_args())?;
+        let encoded = serde_json::to_string(value).map_err(|_| CapError::failed())?;
+        if let Err(error) = self.core.check_kv_set(key, encoded.len()) {
+            tracing::debug!("world {}: kv set refused: {error:#}", self.core.world_id);
+            return Err(CapError::bad_args_with(format!("{error:#}")));
+        }
+        let value_bytes = encoded.len();
+        if self
+            .persist(JournalEntry::KvSet {
+                key: key.to_owned(),
+                value: encoded.clone(),
+            })
+            .is_err()
+        {
+            return Err(CapError::failed());
+        }
+        self.core.kv.insert(key.to_owned(), encoded);
+        Ok(serde_json::json!({"key": key, "value_bytes": value_bytes}))
+    }
+
+    /// `kv.delete` (#1062): remove the entry under a key. `deleted` is
+    /// false when nothing was stored under it, and nothing is
+    /// journaled in that case.
+    pub(super) fn execute_kv_delete(
+        &mut self,
+        args: &serde_json::Value,
+    ) -> Result<serde_json::Value, CapError> {
+        let key = args
+            .get("key")
+            .and_then(serde_json::Value::as_str)
+            .ok_or(CapError::bad_args())?;
+        if crate::world_caps::validate_kv_key(key).is_err() {
+            return Err(CapError::bad_args());
+        }
+        if !self.core.kv.contains_key(key) {
+            return Ok(serde_json::json!({"key": key, "deleted": false}));
+        }
+        if self
+            .persist(JournalEntry::KvDeleted {
+                key: key.to_owned(),
+            })
+            .is_err()
+        {
+            return Err(CapError::failed());
+        }
+        self.core.kv.remove(key);
+        Ok(serde_json::json!({"key": key, "deleted": true}))
     }
 
     /// `chat.say` commits a host chat line; its result is the new sequence.
