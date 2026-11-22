@@ -700,6 +700,18 @@ impl<'a, L: LedgerBackend> RegistrationService<'a, L> {
             .void_pending_transfer(grant.transfer_id, grant.void_transfer_id)
         {
             Ok(()) | Err(TransferError::Exists) => {}
+            // The ledger's timeout is authoritative: no value was posted,
+            // and a matching adverse event means this grant must not be
+            // re-issued by the timeout-recovery path.
+            Err(TransferError::PendingTransferExpired) => {
+                self.store
+                    .transition(grant_id, GrantState::Revoked)
+                    .map_err(|_| LifecycleError::WrongState { state: grant.state })?;
+                if let Some(record) = self.store.grants.get_mut(grant_id) {
+                    record.voided_by_attestation = Some(event.attestation_id);
+                }
+                return Ok(LifecycleOutcome::Voided);
+            }
             Err(error) => return Err(LifecycleError::Ledger(error)),
         }
         self.store
@@ -1492,6 +1504,43 @@ mod tests {
             Some(crate::currency_poc::ledger::PendingTransferState::Voided {
                 resolution_id: void_transfer_id_for_grant("grant-void")
             })
+        );
+    }
+
+    #[test]
+    fn adverse_event_after_ledger_timeout_revokes_without_reissuing_value() {
+        let v = verifier();
+        let adverse = no_adverse();
+        let mut svc = service(&v, &adverse);
+        svc.register(&request("grant-expired-refund", "AAAAA-11111-BBBBB", 1_000))
+            .unwrap();
+        *adverse.event.borrow_mut() = Some(AdverseEvent {
+            kind: "refund_executed".to_string(),
+            attestation_id: "attestation-expired".to_string(),
+            grant_ids: vec!["grant-expired-refund".to_string()],
+            fingerprints: Vec::new(),
+        });
+        assert!(
+            svc.ledger
+                .mark_pending_expired(transfer_id_for_grant("grant-expired-refund"))
+        );
+
+        let report = svc.sweep_pending_holds(u64::MAX);
+
+        assert_eq!(report.voided, 1);
+        assert_eq!(report.retry_later, 0);
+        let grant = svc.store().grant("grant-expired-refund").unwrap();
+        assert_eq!(grant.state, GrantState::Revoked);
+        assert_eq!(
+            grant.voided_by_attestation.as_deref(),
+            Some("attestation-expired")
+        );
+        assert_eq!(grant.reissued_transfer_id, None);
+        assert_eq!(
+            svc.ledger()
+                .try_pending_transfer_state(transfer_id_for_grant("grant-expired-refund"))
+                .unwrap(),
+            Some(crate::currency_poc::ledger::PendingTransferState::Expired)
         );
     }
 
