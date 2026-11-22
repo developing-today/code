@@ -1262,6 +1262,9 @@ export interface DashAuthor {
 /** How a comment's author was established (#1253 §5). */
 export type CommentProvenance = "verified" | "asserted-legacy";
 
+/** How a registry record's author identity was established (#1253 §5). */
+export type RegistryProvenance = "verified" | "asserted-legacy";
+
 export interface DashComment {
   id: string;
   /** The object ref the thread hangs on (see above). */
@@ -1278,6 +1281,8 @@ export interface DashComment {
    * on old records; read it through commentProvenance().
    */
   provenance?: CommentProvenance;
+  /** Owner-confirmed display link only; never changes author or provenance. */
+  linkedIdentity?: { source: RegistrySource; id: string };
   body: string;
   createdAt: string;
   /** kind "message": the orchestrator's triage state. */
@@ -1320,6 +1325,8 @@ export interface SessionRecord {
   agentId: string;
   /** Display name for the agent identity. */
   agentLabel: string;
+  /** Missing on pre-migration rows; those remain asserted-legacy. */
+  provenance?: RegistryProvenance;
   /** Parent session id for sub-sessions, else null. */
   parentId: string | null;
   startedAt?: string;
