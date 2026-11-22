@@ -11278,6 +11278,378 @@ mod schedule_tests {
         assert!(WorldCore::restore("w", WorldLimits::default(), entries).is_err());
     }
 
+    // ---- F12.5 http.fetch provider (#1062) ----
+
+    /// A hermetic HTTP/1.1 server on a loopback port: one canned
+    /// response per path, `Connection: close` on every reply, and
+    /// a hit count so refusal tests can prove no request arrived.
+    /// No test in this section touches the live internet.
+    struct FetchServer {
+        port: u16,
+        hits: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl FetchServer {
+        fn hits(&self) -> usize {
+            self.hits.load(std::sync::atomic::Ordering::SeqCst)
+        }
+
+        fn url(&self, path: &str) -> String {
+            format!("http://127.0.0.1:{}{path}", self.port)
+        }
+    }
+
+    fn fetch_server() -> FetchServer {
+        use std::io::{Read as _, Write as _};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let hits = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counted = hits.clone();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { continue };
+                counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let mut request = Vec::new();
+                let mut buffer = [0u8; 1024];
+                loop {
+                    match stream.read(&mut buffer) {
+                        Ok(0) | Err(_) => break,
+                        Ok(read) => {
+                            request.extend_from_slice(&buffer[..read]);
+                            if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                                break;
+                            }
+                        }
+                    }
+                }
+                let text = String::from_utf8_lossy(&request);
+                let path = text.split_whitespace().nth(1).unwrap_or("/").to_owned();
+                let (status, headers, body): (&str, String, Vec<u8>) = match path.as_str() {
+                    "/hello" => ("200 OK", String::new(), b"hello fetch".to_vec()),
+                    "/hop" => ("302 Found", "Location: /hello\r\n".to_owned(), Vec::new()),
+                    "/away" => (
+                        "302 Found",
+                        format!("Location: http://localhost:{port}/hello\r\n"),
+                        Vec::new(),
+                    ),
+                    "/loop" => ("302 Found", "Location: /loop\r\n".to_owned(), Vec::new()),
+                    "/big" => (
+                        "200 OK",
+                        String::new(),
+                        vec![b'x'; crate::world_caps::MAX_HTTP_FETCH_RESPONSE_BYTES + 1],
+                    ),
+                    _ => ("404 Not Found", String::new(), b"nope".to_vec()),
+                };
+                let head = format!(
+                    "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n{headers}\r\n",
+                    body.len()
+                );
+                let _ = stream.write_all(head.as_bytes());
+                let _ = stream.write_all(&body);
+                let _ = stream.flush();
+            }
+        });
+        FetchServer { port, hits }
+    }
+
+    /// An actor for `http.fetch` tests, on `scheduling_actor`'s
+    /// pattern. `enabled` performs the operator's two ceiling
+    /// acts — naming the provider in the server caps and in the
+    /// world's own ceiling; without them the provider stays off
+    /// by default however it is granted.
+    fn http_fetch_actor(
+        id: &str,
+        grants: &[&str],
+        hosts: &[&str],
+        enabled: bool,
+    ) -> (WorldActor, Arc<ManualClock>, JoinCapability, Recorded) {
+        let journal = Recorded::for_world(id);
+        let clock: Arc<ManualClock> = Arc::new(ManualClock::new(EPOCH_MS));
+        let mut limits = WorldLimits::default();
+        if enabled {
+            limits.server_caps.insert("http.fetch".to_owned());
+        }
+        limits.http_fetch_hosts = hosts.iter().map(|host| (*host).to_owned()).collect();
+        let mut core = WorldCore::new_with_clock(id, limits, clock.clone()).unwrap();
+        if enabled {
+            core.caps_ceiling.insert("http.fetch".to_owned());
+            core.sync_ledger_ceiling();
+        }
+        core.ledger
+            .set_granted(grants.iter().map(|grant| (*grant).to_owned()).collect());
+        let (ann, token) = core
+            .issue_capability("ann", WorldScopes::GUEST, CapabilityBounds::default())
+            .unwrap();
+        let issued = core.issued_entry(ann.id).unwrap();
+        super::tests::push_bumped(&mut journal.0.lock().unwrap(), &issued);
+        let program = Scheduler::default();
+        let actor = WorldActor::for_test(core, Box::new(program), Some(Box::new(journal.clone())));
+        (actor, clock, token, journal)
+    }
+
+    #[test]
+    fn http_fetch_checks_refuse_each_violation_with_a_reason() {
+        let clock: Arc<ManualClock> = Arc::new(ManualClock::new(EPOCH_MS));
+        let mut limits = WorldLimits::default();
+        // An unnormalized entry still matches: entries and URL
+        // hosts pass through the same normalization.
+        limits.http_fetch_hosts = ["EXAMPLE.com."].into_iter().map(str::to_owned).collect();
+        let mut core = WorldCore::new_with_clock("w", limits, clock.clone()).unwrap();
+
+        let host = core.check_http_fetch("https://example.com/a?b=1").unwrap();
+        assert_eq!(host, "example.com");
+        let error = core.check_http_fetch("not a url").unwrap_err();
+        assert!(error.to_string().contains("malformed"), "{error}");
+        let error = core.check_http_fetch("ftp://example.com/").unwrap_err();
+        assert!(error.to_string().contains("scheme"), "{error}");
+        let error = core
+            .check_http_fetch("https://user@example.com/")
+            .unwrap_err();
+        assert!(error.to_string().contains("credentials"), "{error}");
+        let error = core.check_http_fetch("https://other.example/").unwrap_err();
+        assert!(
+            error.to_string().contains("not in the allowlist"),
+            "{error}"
+        );
+        // Subdomains are not implied by listing the parent.
+        let error = core
+            .check_http_fetch("https://api.example.com/")
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("not in the allowlist"),
+            "{error}"
+        );
+
+        // The rate bound: a full window of attempts refuses the
+        // next check, and the window admits again once it passes.
+        for _ in 0..crate::world_caps::MAX_HTTP_FETCH_BURST {
+            core.check_http_fetch("https://example.com/").unwrap();
+            core.note_http_fetch_attempt();
+        }
+        let error = core.check_http_fetch("https://example.com/").unwrap_err();
+        assert!(error.to_string().contains("rate"), "{error}");
+        clock.advance(crate::world_caps::HTTP_FETCH_RATE_WINDOW_MS + 1);
+        assert!(core.check_http_fetch("https://example.com/").is_ok());
+    }
+
+    #[tokio::test]
+    async fn http_fetch_is_off_by_default() {
+        let server = fetch_server();
+        // Granted, and the host allowlisted — but the operator
+        // never named the provider in a ceiling, so the default
+        // ceiling refuses it before any provider code runs.
+        let (mut actor, _clock, token, _journal) =
+            http_fetch_actor("fetch-default-off", &["http.fetch"], &["127.0.0.1"], false);
+        ask(
+            &mut actor,
+            &token,
+            serde_json::json!({"requests": [
+                {"id": "f1", "cap": "http.fetch", "args": {"url": server.url("/hello")}},
+            ]}),
+        )
+        .await;
+        assert_eq!(
+            schedule_result(&actor, "f1").unwrap()["error"],
+            "outside_ceiling"
+        );
+        assert_eq!(server.hits(), 0, "a refused fetch connects nowhere");
+    }
+
+    #[tokio::test]
+    async fn an_ungranted_http_fetch_is_refused_and_counted() {
+        let server = fetch_server();
+        let (mut actor, _clock, token, _journal) =
+            http_fetch_actor("fetch-ungranted", &[], &["127.0.0.1"], true);
+        ask(
+            &mut actor,
+            &token,
+            serde_json::json!({"requests": [
+                {"id": "f1", "cap": "http.fetch", "args": {"url": server.url("/hello")}},
+            ]}),
+        )
+        .await;
+        assert_eq!(
+            schedule_result(&actor, "f1").unwrap()["error"],
+            "cap_denied"
+        );
+        assert!(
+            actor.core.ledger.usage()["http.fetch"].denied > 0,
+            "{:?}",
+            actor.core.ledger.usage()
+        );
+        assert_eq!(server.hits(), 0, "a refused fetch connects nowhere");
+    }
+
+    #[tokio::test]
+    async fn an_unlisted_host_is_refused() {
+        let server = fetch_server();
+        // Enabled and granted, but the allowlist names another
+        // host: the fetch is refused before any connection.
+        let (mut actor, _clock, token, _journal) =
+            http_fetch_actor("fetch-unlisted", &["http.fetch"], &["example.org"], true);
+        ask(
+            &mut actor,
+            &token,
+            serde_json::json!({"requests": [
+                {"id": "f1", "cap": "http.fetch", "args": {"url": server.url("/hello")}},
+            ]}),
+        )
+        .await;
+        let refused = schedule_result(&actor, "f1").unwrap();
+        assert_eq!(refused["error"], "bad_args", "{refused}");
+        assert!(
+            refused["reason"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("not in the allowlist"),
+            "{refused}"
+        );
+        assert_eq!(server.hits(), 0, "an unlisted host is never contacted");
+    }
+
+    #[tokio::test]
+    async fn http_fetch_round_trip_through_the_actor() {
+        let server = fetch_server();
+        let (mut actor, _clock, token, _journal) =
+            http_fetch_actor("fetch-round-trip", &["http.fetch"], &["127.0.0.1"], true);
+        ask(
+            &mut actor,
+            &token,
+            serde_json::json!({"requests": [
+                {"id": "f1", "cap": "http.fetch", "args": {"url": server.url("/hello")}},
+                {"id": "f2", "cap": "http.fetch", "args": {"url": server.url("/hop")}},
+                {"id": "f3", "cap": "http.fetch", "args": {"url": server.url("/missing")}},
+            ]}),
+        )
+        .await;
+        let fetched = schedule_result(&actor, "f1").unwrap();
+        assert_eq!(fetched["ok"], true, "{fetched}");
+        assert_eq!(fetched["value"]["status"], 200, "{fetched}");
+        assert_eq!(fetched["value"]["url"], server.url("/hello"), "{fetched}");
+        assert_eq!(
+            fetched["value"]["body"],
+            blob_encode(b"hello fetch"),
+            "{fetched}"
+        );
+        assert_eq!(fetched["value"]["body_bytes"], 11, "{fetched}");
+        // An on-list redirect is followed to its target.
+        let hopped = schedule_result(&actor, "f2").unwrap();
+        assert_eq!(hopped["ok"], true, "{hopped}");
+        assert_eq!(hopped["value"]["status"], 200, "{hopped}");
+        assert_eq!(hopped["value"]["url"], server.url("/hello"), "{hopped}");
+        assert_eq!(hopped["value"]["body"], blob_encode(b"hello fetch"));
+        // A status is a result, not a refusal: only policy and
+        // transport failures refuse a fetch.
+        let missing = schedule_result(&actor, "f3").unwrap();
+        assert_eq!(missing["ok"], true, "{missing}");
+        assert_eq!(missing["value"]["status"], 404, "{missing}");
+    }
+
+    #[tokio::test]
+    async fn http_fetch_refuses_redirects_off_the_list_and_past_the_hop_cap() {
+        let server = fetch_server();
+        let (mut actor, _clock, token, _journal) =
+            http_fetch_actor("fetch-redirects", &["http.fetch"], &["127.0.0.1"], true);
+        ask(
+            &mut actor,
+            &token,
+            serde_json::json!({"requests": [
+                {"id": "f1", "cap": "http.fetch", "args": {"url": server.url("/away")}},
+                {"id": "f2", "cap": "http.fetch", "args": {"url": server.url("/loop")}},
+                {"id": "f3", "cap": "http.fetch", "args": {"url": server.url("/big")}},
+            ]}),
+        )
+        .await;
+        // /away redirects to localhost, which is not allowlisted:
+        // refused before the second connection is made.
+        let away = schedule_result(&actor, "f1").unwrap();
+        assert_eq!(away["error"], "bad_args", "{away}");
+        assert!(
+            away["reason"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("host_not_allowed"),
+            "{away}"
+        );
+        let looping = schedule_result(&actor, "f2").unwrap();
+        assert_eq!(looping["error"], "failed", "{looping}");
+        assert!(
+            looping["reason"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("too_many_redirects"),
+            "{looping}"
+        );
+        let big = schedule_result(&actor, "f3").unwrap();
+        assert_eq!(big["error"], "failed", "{big}");
+        assert!(
+            big["reason"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("response_too_large"),
+            "{big}"
+        );
+        // Exactly the requests made: /away once (the redirect was
+        // not followed), /loop for the initial fetch plus the hop
+        // cap of follows, /big once.
+        assert_eq!(
+            server.hits(),
+            1 + (1 + crate::world_caps::MAX_HTTP_FETCH_REDIRECTS) + 1
+        );
+    }
+
+    #[tokio::test]
+    async fn http_fetches_journal_nothing_and_replay_is_unaffected() {
+        let server = fetch_server();
+        let (mut actor, _clock, token, journal) = http_fetch_actor(
+            "fetch-replay",
+            &["kv.set", "http.fetch"],
+            &["127.0.0.1"],
+            true,
+        );
+        ask(
+            &mut actor,
+            &token,
+            serde_json::json!({"requests": [
+                {"id": "k1", "cap": "kv.set", "args": {"key": "a", "value": 1}},
+            ]}),
+        )
+        .await;
+        let before = journal.entries();
+        ask(
+            &mut actor,
+            &token,
+            serde_json::json!({"requests": [
+                {"id": "f1", "cap": "http.fetch", "args": {"url": server.url("/hello")}},
+            ]}),
+        )
+        .await;
+        assert_eq!(
+            schedule_result(&actor, "f1").unwrap()["ok"],
+            true,
+            "the fetch itself succeeded"
+        );
+        // The fetch ask adds only the entries every request adds:
+        // the input's committed event and the result's system
+        // event (the delivery replay feeds the program, as for a
+        // `kv.get`). No entry describes the fetch as state for
+        // replay to apply — there is no fetch entry kind at all.
+        let after = journal.entries();
+        let added = &after[before.len()..];
+        assert!(
+            added.iter().all(|entry| matches!(
+                entry,
+                JournalEntry::Committed { .. } | JournalEntry::System { .. }
+            )),
+            "a fetch journals no state of its own: {added:?}"
+        );
+        // And the journal — written across the fetch — restores
+        // exactly the state the journaled writes describe.
+        let restored = WorldCore::restore("fetch-replay", WorldLimits::default(), after).unwrap();
+        assert_eq!(restored.core.kv["a"], "1");
+        assert!(restored.core.blobs.is_empty());
+    }
+
     #[tokio::test]
     async fn a_due_schedule_fires_once_and_the_program_receives_it() {
         let (mut actor, clock, token, journal) =
