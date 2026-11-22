@@ -340,6 +340,35 @@ fn tried(list: &mut Vec<Value>, rung: &str, result: &str, why: impl Into<String>
     list.push(json!({"rung": rung, "result": result, "why": why.into()}));
 }
 
+/// The queue validates lane IDs as a known family plus a lowercase
+/// alphabetic suffix. Preserve a full lane ID supplied as the agent
+/// name; otherwise give a standalone agent an unfiltered `any-*` lane.
+pub(super) fn default_lane(agent: &str) -> String {
+    let families = [
+        "code",
+        "any",
+        "not-code",
+        "opencode",
+        "openchamber",
+        "nix",
+        "darwin-nix",
+    ];
+    let is_lane = agent.rsplit_once('-').is_some_and(|(family, suffix)| {
+        families.contains(&family)
+            && !suffix.is_empty()
+            && suffix.bytes().all(|b| b.is_ascii_lowercase())
+    });
+    if is_lane {
+        return agent.to_string();
+    }
+    let suffix: String = agent
+        .chars()
+        .filter(|c| c.is_ascii_lowercase())
+        .take(55)
+        .collect();
+    format!("any-{}", if suffix.is_empty() { "agent" } else { &suffix })
+}
+
 /// How many listed entries in a row may turn out stale in one run
 /// before the shortlist rung gives way to the priority rung.
 const MAX_STALE_ENTRIES: usize = 5;
@@ -384,7 +413,7 @@ pub fn next(world: &dyn World, args: &[String]) -> R<(Value, i32)> {
     let agent = check_name("--agent", &agent)?;
     let lane = match a.last("--lane") {
         Some(l) => check_name("--lane", &l)?,
-        None => agent.clone(),
+        None => default_lane(&agent),
     };
     let repo = check_repo(&a.last("--repo").unwrap_or_else(|| DEFAULT_REPO.to_string()))?;
     let low_water = a
@@ -399,7 +428,7 @@ pub fn next(world: &dyn World, args: &[String]) -> R<(Value, i32)> {
             carried.push_str(&format!(" {flag} {}", crate::shell::sh_quote(&value)));
         }
     }
-    let again = format!("fleet agent next --agent {agent}{carried}");
+    let again = format!("fleet agent next --agent {agent} --lane {lane}{carried}");
     let mut log: Vec<Value> = Vec::new();
     let answer = |rung: &str, task: Value, then: Vec<String>, log: Vec<Value>| {
         (
