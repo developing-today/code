@@ -261,9 +261,7 @@ fn percentile(samples: &[Duration], fraction: f64) -> f64 {
 /// directly; percentiles read back off the merged buckets are bucket
 /// upper bounds (the same approximation `HistogramSnapshot::p95_us`
 /// documents), while means from `sum_us / count` are exact.
-fn merge_histograms(
-    snapshots: &[id::world::HistogramSnapshot],
-) -> id::world::HistogramSnapshot {
+fn merge_histograms(snapshots: &[id::world::HistogramSnapshot]) -> id::world::HistogramSnapshot {
     let mut merged = id::world::HistogramSnapshot {
         bucket_bounds_us: snapshots
             .first()
@@ -740,8 +738,7 @@ fn spawn_guest_world(
 /// guests on the process-wide shared default, the production
 /// shape. Read once per process.
 fn bench_burn_budget() -> Option<Arc<GuestBurnBudget>> {
-    static BUDGET: std::sync::OnceLock<Option<Arc<GuestBurnBudget>>> =
-        std::sync::OnceLock::new();
+    static BUDGET: std::sync::OnceLock<Option<Arc<GuestBurnBudget>>> = std::sync::OnceLock::new();
     BUDGET
         .get_or_init(|| {
             std::env::var("ID_BENCH_GUEST_BURN_CONCURRENCY")

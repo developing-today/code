@@ -136,12 +136,7 @@ mod tests {
             .expect("canonical bytes work");
         assert!(is_joined_record(&[0x33; 32], &bytes));
         assert_eq!(
-            check_join(
-                &[0x33; 32],
-                &key.verifying_key().to_bytes(),
-                &GRAPH,
-                &bytes
-            ),
+            check_join(&[0x33; 32], &key.verifying_key().to_bytes(), &GRAPH, &bytes),
             Err(JoinRefusal::EventIdMismatch)
         );
     }

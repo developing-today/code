@@ -96,8 +96,7 @@ impl KeyCharge {
             return self.attained;
         };
         let elapsed = now.saturating_duration_since(at).as_secs_f64();
-        self.attained
-            * 0.5_f64.powf(elapsed / ATTAINED_HALF_LIFE.as_secs_f64())
+        self.attained * 0.5_f64.powf(elapsed / ATTAINED_HALF_LIFE.as_secs_f64())
     }
 
     /// Fold a settled spend into attained service.

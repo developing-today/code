@@ -10,8 +10,8 @@ mod tests {
     use crate::directory::{Actor, Level, Member};
     use crate::directory_auth::sign_request;
     use crate::world::{
-        Participant, WorldCore, WorldEvent, WorldEventKind, WorldHandle, WorldLimits,
-        WorldScopes, hex_encode, unix_ms,
+        Participant, WorldCore, WorldEvent, WorldEventKind, WorldHandle, WorldLimits, WorldScopes,
+        hex_encode, unix_ms,
     };
     use crate::world_compile::Compiler;
     use crate::world_hub::WorldHub;
