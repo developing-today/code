@@ -398,6 +398,20 @@ function applyEntry(pool: QuotaPool, entry: QuotaCurrentEntry, state: FreshState
       pool.state = poolState(pool);
       return false;
     }
+    // #9358: meta's base quota-view row can be a fallback transcription
+    // rather than the retained quota-current read. When its provider leg
+    // failed, keep the retained read's windows (including a zero window)
+    // instead of letting that older transcription mask them. Freshness
+    // remains stale under #1268; this does not turn a failed tick into ok.
+    if (pool.id === "meta" && legError && entry.retainedFromFailedTick) {
+      const windows = pctWindows(entry);
+      if (windows.length > 0) {
+        pool.windows = windows;
+        delete pool.note;
+      }
+      pool.state = "stale";
+      return false;
+    }
     // #6942: a retained entry whose gatherer leg errored is that
     // read error surfacing, not mere staleness — but only a pool
     // with no dated windows of its own changes rendering for it.

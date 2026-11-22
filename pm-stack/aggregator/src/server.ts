@@ -50,6 +50,7 @@ import { GithubHotListConsumer, unconfiguredGithubStatus } from "./github-hot-li
 import { RoadmapAnnotationsStore, validateNewRoadmapAnnotation } from "./roadmap-annotations.ts";
 import { createAccessAuthorEnforcer, enforceAccessAuthor } from "./access-identity.ts";
 import { IdentityRegistryStore, identityMappingAuditEvent, validateIdentityMapping } from "./identity-registry.ts";
+import { healthHookAuditEvent } from "./health-hook-audit-event.ts";
 import {
   computeCoverage,
   CoverageSnapshotStore,
@@ -223,6 +224,7 @@ import {
 } from "./notifications.ts";
 import { readJsonBody } from "./request-body.ts";
 import { parseRegistryQuery, queryRegistry } from "./registry-view.ts";
+import { addConsoleShortcut } from "./console-gate.ts";
 import { searchWork } from "./search-view.ts";
 import type { Source } from "./source.ts";
 import { fixtureSource } from "./sources/fixtures.ts";
@@ -237,6 +239,7 @@ import { SloJournal, groupSamplesByFacet } from "./slo-journal.ts";
 import { sampleSloFacets } from "./slo-sampler.ts";
 import { SLO_DEFINITIONS, summarizeSloFacet, type SloFacetSummary } from "./slo.ts";
 import { computeFlowAnalytics } from "./flow-analytics.ts";
+import { fireOpenCodeWorkingHook } from "./health-hook-fire.ts";
 import {
   FORECAST_CONTRACT_VERSION,
   quotaForecastContract,
@@ -483,6 +486,9 @@ function pickSource(): Source {
         onSourceGap: recordSourceGap,
         seenActivityIds: (source) => activityStore.seenIds(source),
         snapshotRemote: storeRemotes?.usage,
+        onLaptopUnreachable: (detail) => {
+          fireOpenCodeWorkingHook("aggregator-tick", detail);
+        },
       })
     : fixtureSource();
 }
@@ -3731,6 +3737,18 @@ async function handler(req: Request): Promise<Response> {
         if (!v.ok) return json({ error: v.error }, 400);
         try {
           await setStackHealth(cfg.stackHealthFile, v.value);
+          const auditEvent = healthHookAuditEvent({
+            title: parsed.value.title,
+            source: parsed.value.source,
+            stackHealth: v.value,
+          });
+          if (auditEvent) {
+            try {
+              await eventsStore.record(auditEvent);
+            } catch (err) {
+              console.error(`alerts intake: health-hook audit append failed (${err instanceof Error ? err.message : "error"})`);
+            }
+          }
           if (v.value.state === "up") {
             await store.closeOpenIncidentByKey(parsed.value.source, parsed.value.key);
           }
@@ -4480,7 +4498,8 @@ async function fetchHandler(req: Request): Promise<Response> {
       recordRender(route, res.status < 400);
     }
   }
-  return res;
+  const publicHost = process.env.PM_AGG_CONSOLE_HOST?.trim() || "pm.security.cab";
+  return addConsoleShortcut(res, req, publicHost);
 }
 
 // One server per bind address (PM_AGG_HOSTS). Deployment on the

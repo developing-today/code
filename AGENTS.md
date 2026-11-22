@@ -33,13 +33,10 @@ discipline (target broker, narrowest Rust verification).
 
 ## Testing doctrine
 
-Three tools, used where they fit:
-
-- **PBT (property-based testing):** state invariants that must always hold, then let a generator hammer the code with thousands of random inputs to find counterexamples. Where code has meaningful invariants — parsers, serializers, state machines, replication, ID/crypto formats — state the invariants and cover them with property tests. In Rust here that is `proptest` (already a dev-dependency of `pkgs/id`).
-- **MBT (model-based testing):** where a system's behavior has a spec or design model, build the model and generate tests — and their expected results — from it, instead of hand-writing cases only.
-- **Oracles:** the decision procedure that tells you whether actual output matches expected — the hard part of automated testing. Every automated test names its oracle: a reference implementation, the model, an invariant check, or a golden corpus. A test with no decidable oracle is a smell to fix, not ship.
-
-Example-based tests remain fine for smoke and acceptance coverage; they do not replace PBT/MBT where those fit.
+Full text: [`doc/agents/testing-doctrine.md`](doc/agents/testing-doctrine.md).
+In short: property tests (PBT, `proptest`) where code has invariants;
+model-based tests (MBT) where a spec or model exists; every automated
+test names its oracle. Example tests stay fine for smoke and acceptance.
 
 ## Operator script argument contract (#3352)
 
@@ -53,6 +50,10 @@ from a covered sibling and state the contract in their header comment.
 ## Worker Git preflight
 
 At the start of each task, before relying on Git names such as `origin/main`, run `bash "$(git rev-parse --show-toplevel)/scripts/worker-preflight.sh"`. If it reports `refs/heads/origin/main`, stop and escalate; do not delete the branch or alter refs as part of task work. That local branch shadows the remote-tracking ref.
+
+## Fleet commands
+
+Use `.agents/skills/fleet-operations/SKILL.md`; reference: `pkgs/fleet/docs/verbs.md`.
 
 ## Fleet schedules
 
@@ -92,6 +93,20 @@ are not holds; workers own tasks by atomic claim. Check holds before parking
 for ownership; check notes before posting a park/pickup note. Always post
 progress notes. Land or checkpoint a reviewable slice before parking for size.
 There is no ownership handoff: never park awaiting one.
+
+## Nothing waits on the owner
+
+Full text: [FDR-0013](doc/decisions/FDR-0013-no-owner-decision-gates.md); how: `.agents/skills/decide-and-proceed`.
+Never park, block or label work as waiting on the owner for a choice,
+review or approval: decide, record it on the issue, continue. Only a
+hands item (one action only a person's hands can do) may wait.
+
+## Finishing work
+
+A PR that completes an issue says `Closes #N`. After a merge, run the
+issue's done check and close it, or note what is left and clear
+`status:in-review`: open issues with merged work block their waiters.
+Out of work: `fleet agent next` ([onboarding](doc/agents/onboarding-an-agent.md)).
 
 ## Research, design and delivery workflow
 

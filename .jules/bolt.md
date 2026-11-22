@@ -37,3 +37,7 @@
 
 **Learning:** The dispatch laptop checkout hosts concurrent lanes: `pkgs/id/web/src/image-browser.*` modifications and a `.Jules/palette.md` edit appeared in `git status` mid-run from another lane, after the run started clean.
 **Action:** Re-check `git status` right before committing and commit exact file paths only — never `git add .`.
+
+## 2026-11-21 - [Bounded replay windows can still have quadratic admission cost]
+**Learning:** `ReplayGuard::accept` scanned its full nonce map both to expire entries and to count one key's entries. The 4,096-entry cap bounded memory but still made filling a window quadratic in accepted requests.
+**Action:** For bounded replay windows with per-key limits, keep expirations ordered and maintain per-key counts so normal admission avoids whole-map scans.

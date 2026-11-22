@@ -158,6 +158,21 @@ in
     PKG_CONFIG_PATH = "${pkgs.openssl.dev}/lib/pkgconfig";
   };
 
+  # CA bundle for test runs inside the nix build sandbox (#12608).
+  #
+  # The sandbox has no system CA store (no /etc/ssl/certs, and nothing
+  # sets SSL_CERT_FILE), so a reqwest client constructed there cannot
+  # load any root certificates: rustls-platform-verifier builds its
+  # root store only from rustls-native-certs and errors out on an
+  # empty store ("No CA certificates were loaded from the system"),
+  # which panics the http_fetch schedule tests and fails the whole
+  # check phase. rustls-native-certs honours SSL_CERT_FILE, so the
+  # sandboxed check environments in flake.nix point it at the nixpkgs
+  # cacert bundle. The tests themselves only fetch plain HTTP from a
+  # local listener; this changes nothing they assert, and nothing
+  # outside the sandbox (dev shells, the deployed binary) sets it.
+  testSslCertFile = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
+
   # Shared shell hook for both nix-shell and nix develop
   shellHook = ''
     export RUST_BACKTRACE=1

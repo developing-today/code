@@ -244,6 +244,14 @@ impl<B: Backend> Cache<B> {
 /// `jwt`, `token` or `status`; `app`/`owner` qualify `jwt`/`token`,
 /// and `name` carries the secret name for the `personal` op (so the
 /// daemon never hardcodes which secret personal means).
+///
+/// Contract asymmetry, load-bearing: `jwt`/`token` responses carry
+/// finished tokens, but a `personal` response carries the resolved
+/// SECRET ITSELF (for the personal source that is the hosts.yml
+/// file) in the `token` field — the daemon is a dumb secret cache
+/// for this op and the client parses the credential out of it.
+/// Treating a `personal` response as a finished token hands gh the
+/// whole hosts.yml as GH_TOKEN (the 2026-11-22 write-path break).
 pub fn request(
     op: &str,
     app: Option<&str>,

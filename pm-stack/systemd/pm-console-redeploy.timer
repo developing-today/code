@@ -1,0 +1,10 @@
+[Unit]
+Description=PM console — look every minute for merged console code to put into service (pm-stack)
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=1min
+AccuracySec=10s
+
+[Install]
+WantedBy=timers.target

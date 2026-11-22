@@ -313,7 +313,7 @@ The project uses Nix flakes for reproducible builds:
 | `lib`   | (none)       | No              | CLI binary   |
 | `web`   | `web`        | `web/dist/`     | CLI + web UI |
 
-The build script (`scripts/build.sh`) tracks the current variant in `target/.build-variant` to detect when a rebuild is needed due to variant change.
+The build script (`scripts/build.sh`) tracks the current variant beside its Cargo artifacts: under `CARGO_TARGET_DIR` when set (including a broker-leased shared target), or under `target/` otherwise.
 
 ## Testing
 

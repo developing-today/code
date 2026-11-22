@@ -38,3 +38,25 @@ func TestExecOptionsSchemaDeclaresDeps(t *testing.T) {
 		}
 	}
 }
+
+func TestExecOptionsSchemaDeclaresRocLanguage(t *testing.T) {
+	o, ok := api.ByName("exec")
+	if !ok {
+		t.Fatal("no exec operation")
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(o.InputSchema(), &doc); err != nil {
+		t.Fatal(err)
+	}
+	props, _ := doc["properties"].(map[string]any)
+	options, _ := props["options"].(map[string]any)
+	optProps, _ := options["properties"].(map[string]any)
+	language, _ := optProps["language"].(map[string]any)
+	enum, _ := language["enum"].([]any)
+	for _, value := range enum {
+		if value == "roc" {
+			return
+		}
+	}
+	t.Fatalf("published exec options schema language enum does not include roc: %v", enum)
+}

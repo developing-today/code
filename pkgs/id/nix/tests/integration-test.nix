@@ -128,8 +128,16 @@
             )
         covered.append((name, hits))
 
-    overlap = sorted({t for _name, hits in covered for t in hits if hits.count(t) > 1})
-    missing = sorted(set(all_tests) - {t for _name, hits in covered for t in hits})
+    # Count matches across groups: a test two groups match would run twice
+    # and silently inflate the suite. Counting within one group's hits can
+    # never exceed one (--list names are unique), so the disjointness half
+    # of the partition has to be computed over all groups at once.
+    match_counts = {}
+    for _name, hits in covered:
+        for t in hits:
+            match_counts[t] = match_counts.get(t, 0) + 1
+    overlap = sorted(t for t, count in match_counts.items() if count > 1)
+    missing = sorted(set(all_tests) - set(match_counts))
     if overlap or missing:
         raise AssertionError(
             "[id-integration] group filters must partition the suite exactly; "
@@ -198,11 +206,6 @@
     if failed_groups:
         raise AssertionError(
             "[id-integration] failed groups: " + ", ".join(failed_groups)
-        )
-        print(
-            f"[id-integration] group '{name}' finished in "
-            f"{time.monotonic() - group_started:.1f}s",
-            flush=True,
         )
   '';
 }

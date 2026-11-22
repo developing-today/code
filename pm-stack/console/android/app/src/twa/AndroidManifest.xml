@@ -1,0 +1,172 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- The home-screen widget reads its summary itself, without the browser. -->
+    <uses-permission android:name="android.permission.INTERNET" />
+
+    <!-- So the phone's speech recogniser can be found for dictation. -->
+    <queries>
+        <intent>
+            <action android:name="android.speech.action.RECOGNIZE_SPEECH" />
+        </intent>
+    </queries>
+
+    <application
+        android:name=".PmApp"
+        android:allowBackup="false"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:supportsRtl="true"
+        android:theme="@android:style/Theme.Translucent.NoTitleBar">
+
+        <meta-data
+            android:name="asset_statements"
+            android:resource="@string/asset_statements" />
+
+        <activity
+            android:name="com.google.androidbrowserhelper.trusted.LauncherActivity"
+            android:alwaysRetainTaskState="true"
+            android:exported="true"
+            android:label="@string/app_name">
+            <meta-data
+                android:name="android.support.customtabs.trusted.DEFAULT_URL"
+                android:value="${defaultUrl}" />
+            <meta-data
+                android:name="android.support.customtabs.trusted.STATUS_BAR_COLOR"
+                android:resource="@color/bar" />
+            <meta-data
+                android:name="android.support.customtabs.trusted.NAVIGATION_BAR_COLOR"
+                android:resource="@color/bar" />
+            <!-- Long-press the icon: Dictate, Ask, Needs me, Now. -->
+            <meta-data
+                android:name="android.app.shortcuts"
+                android:resource="@xml/shortcuts" />
+
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+
+            <intent-filter android:autoVerify="true">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data
+                    android:host="${hostName}"
+                    android:scheme="https" />
+            </intent-filter>
+        </activity>
+
+        <activity android:name="com.google.androidbrowserhelper.trusted.FocusActivity" />
+
+        <!-- Asks for permission to show notifications when the site turns them on (Android 13 and later). -->
+        <activity android:name="com.google.androidbrowserhelper.trusted.NotificationPermissionRequestActivity" />
+
+        <!-- A long press on the icon opens one screen without reloading the app. -->
+        <activity
+            android:name=".OpenActivity"
+            android:excludeFromRecents="true"
+            android:exported="true"
+            android:taskAffinity="">
+            <intent-filter>
+                <action android:name="today.developing.pmconsole.OPEN_ASK" />
+                <action android:name="today.developing.pmconsole.OPEN_NEEDS" />
+                <action android:name="today.developing.pmconsole.OPEN_NOW" />
+                <action android:name="today.developing.pmconsole.OPEN_NEXT" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+        </activity>
+
+        <!-- Text shared from another app, or selected anywhere, lands in the Ask box. -->
+        <activity
+            android:name=".ShareActivity"
+            android:excludeFromRecents="true"
+            android:exported="true"
+            android:label="@string/share_label"
+            android:noHistory="true"
+            android:taskAffinity="">
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="text/plain" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.PROCESS_TEXT" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="text/plain" />
+            </intent-filter>
+        </activity>
+
+        <!-- The phone's own speech recogniser, then Ask with the words in the box. -->
+        <activity
+            android:name=".DictateActivity"
+            android:excludeFromRecents="true"
+            android:exported="true"
+            android:label="@string/sc_dictate_long"
+            android:taskAffinity="">
+            <intent-filter>
+                <action android:name="today.developing.pmconsole.DICTATE" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+        </activity>
+
+        <!-- Links this phone so the widget can read its summary. The address
+             pmconsole://finish carries nothing: it only says "collect now". -->
+        <activity
+            android:name=".LinkActivity"
+            android:excludeFromRecents="true"
+            android:exported="true"
+            android:noHistory="true"
+            android:taskAffinity="">
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data
+                    android:host="finish"
+                    android:scheme="pmconsole" />
+            </intent-filter>
+        </activity>
+
+        <!-- The home-screen widget: in progress, queued, needs me, and the task being worked on. -->
+        <receiver
+            android:name=".StatusWidget"
+            android:exported="false"
+            android:label="@string/widget_label">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/widget_status_info" />
+        </receiver>
+
+        <!-- A quick-settings tile that starts dictation. -->
+        <service
+            android:name=".AskTileService"
+            android:exported="true"
+            android:icon="@drawable/ic_mic"
+            android:label="@string/tile_label"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
+        </service>
+
+        <!-- Lets the site's notifications appear as this app's. -->
+        <service
+            android:name="com.google.androidbrowserhelper.trusted.DelegationService"
+            android:enabled="true"
+            android:exported="true">
+            <!-- The mark shown in the status bar for the app's notifications. -->
+            <meta-data
+                android:name="android.support.customtabs.trusted.SMALL_ICON"
+                android:resource="@drawable/ic_notification" />
+            <intent-filter>
+                <action android:name="android.support.customtabs.trusted.TRUSTED_WEB_ACTIVITY_SERVICE" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+        </service>
+    </application>
+</manifest>

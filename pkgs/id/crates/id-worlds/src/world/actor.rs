@@ -223,6 +223,7 @@ pub(crate) enum WorldCommand {
         token: JoinCapability,
         input: Vec<u8>,
         session_id: Option<SessionId>,
+        device_input: Option<serde_json::Value>,
         /// The player-signed move event bytes for this input (#2814), when
         /// the participant plays signed. `None` is the unsigned path,
         /// which refuses participants with a bound author key.
@@ -650,6 +651,10 @@ pub(crate) struct WorldActor {
     /// device re-enumeration. `None` when the host cannot describe
     /// its device — `device.info` then refuses with `unknown_cap`.
     pub(crate) device_manifest: Option<crate::world_caps::DeviceManifest>,
+    /// Input affordances of the session whose input is currently being
+    /// processed. Unlike `device_manifest`, this describes the presenter,
+    /// not the hosting device, and is only used for this actor turn.
+    pub(crate) acting_device_input: Option<serde_json::Value>,
     /// The host's current location consent (#2341 slice 2): the seam a
     /// host fills from its permission prompt / OS state. The default
     /// host records no consent, so sensor caps refuse
@@ -804,6 +809,7 @@ impl WorldActor {
                 command.as_ref(),
                 Some(WorldCommand::Input {
                     signed_move: None,
+                    device_input: None,
                     ..
                 })
             ) {
@@ -817,6 +823,7 @@ impl WorldActor {
                                 next,
                                 WorldCommand::Input {
                                     signed_move: None,
+                                    device_input: None,
                                     ..
                                 }
                             ) =>
@@ -857,6 +864,7 @@ impl WorldActor {
             self.drain_provider_completions().await;
             self.acting = None;
             self.acting_session = None;
+            self.acting_device_input = None;
         }
     }
 
@@ -1333,6 +1341,7 @@ impl WorldActor {
                 token,
                 input,
                 session_id,
+                device_input,
                 signed_move,
                 reply,
             } => {
@@ -1359,6 +1368,7 @@ impl WorldActor {
                     Ok((candidate, signed)) if self.program_healthy => {
                         self.acting = Some(candidate.participant_id);
                         self.acting_session = session_id;
+                        self.acting_device_input = device_input;
                         match self
                             .program
                             .update(&candidate)
@@ -2554,6 +2564,8 @@ mod replication_feed_tests {
                 execution_profile: None,
                 caps_ceiling: None,
                 schedules: None,
+                kv: None,
+                blobs: None,
                 transfers: None,
                 lease: None,
                 snapshot: "x".repeat(super::super::replication::MAX_REPLICATION_PAYLOAD_BYTES),
@@ -2596,6 +2608,8 @@ mod replication_feed_tests {
             execution_profile: None,
             caps_ceiling: None,
             schedules: None,
+            kv: None,
+            blobs: None,
             transfers: None,
             lease: None,
             snapshot,
@@ -3514,6 +3528,7 @@ mod form_tests {
             audio: serde_json::json!({}),
             network: serde_json::json!({}),
         });
+        actor.acting_device_input = None;
         (actor, events)
     }
 
@@ -3583,6 +3598,9 @@ mod form_tests {
         let (mut actor, _) = form_actor();
         let headless = crate::world::WorldHandle::host_device_manifest();
         actor.device_manifest = Some(headless.clone());
+        actor.acting_device_input = Some(serde_json::json!({
+            "keys": 128, "text_entry": "keyboard", "encoder": false, "pointer": true
+        }));
         let form = form(vec![FormField::Text {
             id: "name".to_owned(),
             label: "Name".to_owned(),
@@ -3596,6 +3614,27 @@ mod form_tests {
                 "keys": 128, "text_entry": "keyboard", "encoder": false, "pointer": false
             }))
             .is_ok()
+        );
+    }
+
+    #[test]
+    fn presenter_without_text_entry_is_refused_even_when_host_can_type() {
+        let (mut actor, _) = form_actor();
+        actor.acting_device_input = Some(serde_json::json!({
+            "keys": 0, "text_entry": "none", "encoder": false, "pointer": false
+        }));
+        let text_form = form(vec![FormField::Text {
+            id: "name".to_owned(),
+            label: "Name".to_owned(),
+            required: true,
+            max_length: 32,
+        }]);
+        assert_eq!(
+            present(&mut actor, &text_form)
+                .unwrap_err()
+                .reason()
+                .map(String::as_str),
+            Some("text_entry_unavailable")
         );
     }
 
@@ -4093,6 +4132,7 @@ impl WorldActor {
             stale_wants_at_open: BTreeSet::new(),
             acting: None,
             acting_session: None,
+            acting_device_input: None,
             device_manifest: None,
             location_consent: crate::world_caps::LocationConsent::ConsentRequired,
             location_fix: None,
