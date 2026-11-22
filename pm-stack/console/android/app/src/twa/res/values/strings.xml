@@ -1,4 +1,15 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">PM Console</string>
+    <string name="share_label">Ask the fleet</string>
+    <string name="tile_label">Ask the fleet</string>
+    <string name="dictate_prompt">Say what you want the fleet to do</string>
+    <string name="sc_dictate">Dictate</string>
+    <string name="sc_dictate_long">Say what you want</string>
+    <string name="sc_ask">Ask</string>
+    <string name="sc_ask_long">Ask the fleet</string>
+    <string name="sc_needs">Needs me</string>
+    <string name="sc_needs_long">What needs me</string>
+    <string name="sc_now">Now</string>
+    <string name="sc_now_long">What is in progress</string>
 </resources>

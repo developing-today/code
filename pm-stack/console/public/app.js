@@ -654,7 +654,17 @@ const STATUS = {
 };
 let draft = "";
 
-function viewAsk() {
+function viewAsk(sub) {
+  // Words handed over by the Android app (shared or selected text, or
+  // dictation) arrive after the "#", which never leaves the phone.
+  if (sub?.startsWith("say=")) {
+    try {
+      draft = decodeURIComponent(sub.slice(4));
+    } catch {
+      // not valid text: leave the box as it was
+    }
+    history.replaceState(null, "", "#ask");
+  }
   const box = h("textarea", {
     rows: 3,
     placeholder: "Say what you want, in your own words. An agent picks it up, does it, and reports back here.",
