@@ -1161,6 +1161,21 @@ async fn joined<I: SessionIo>(
         .then_some(resume_token)
         .flatten()
         .filter(|token| token.len() <= MAX_RESUME_TOKEN_BYTES);
+    // A retained baseline also records the viewport that produced it. Restore
+    // that viewport before the first view consumes the one-shot resume token.
+    if let Some(resume) = view_state.pending_resume.as_deref() {
+        if let Some((width, height)) = service
+            .resume_baselines
+            .lock()
+            .await
+            .viewport_for(resume, participant_id)
+        {
+            viewport = Some(Viewport {
+                width: usize::from(width),
+                height: usize::from(height),
+            });
+        }
+    }
     if let Some(after) = after {
         match world.events_after(token.clone(), after).await {
             Ok(page) if page.needs_snapshot => {

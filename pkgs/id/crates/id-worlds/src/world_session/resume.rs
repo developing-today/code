@@ -143,6 +143,19 @@ impl BaselineCache {
         Some(baseline)
     }
 
+    /// Peek the viewport bound to a live token without consuming its baseline.
+    ///
+    /// Reconnected sessions need this before their first view is rendered;
+    /// `take_matching` still performs the one-shot, shape-checked consume.
+    pub(crate) fn viewport_for(&mut self, token: &str, participant: u64) -> Option<(u16, u16)> {
+        self.evict_expired();
+        let (_, baseline) = self
+            .entries
+            .iter()
+            .find(|(candidate, _)| candidate == token)?;
+        (baseline.participant == participant).then_some((baseline.width, baseline.height))
+    }
+
     fn next_token(&mut self) -> String {
         let mut hasher = blake3::Hasher::new();
         hasher.update(b"developing-today/id-world-resume-token/v1\0");
