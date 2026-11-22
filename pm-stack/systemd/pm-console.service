@@ -3,6 +3,9 @@ Description=PM console — queue, priorities, agents, services and pull requests
 After=network-online.target
 
 [Service]
+# The management plane has to answer while the fleet is compiling: under
+# contention this unit gets nine times the processor share of a default one.
+CPUWeight=900
 Type=simple
 WorkingDirectory=%h/git/code/pm-stack/console
 ExecStart=/run/current-system/sw/bin/bun run src/server.ts

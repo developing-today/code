@@ -165,6 +165,7 @@ class Expose(unittest.TestCase):
         )
         self.assertEqual(main["allowed_idps"], ["idp-onetimepin"])
         self.assertEqual(main["same_site_cookie_attribute"], "lax")
+        self.assertEqual(main["session_duration"], "720h")
         self.assertIs(main["http_only_cookie_attribute"], True)
         for path in expose.PUBLIC_PATHS:
             app = next(a for a in account.apps if a["domain"] == HOST + path)

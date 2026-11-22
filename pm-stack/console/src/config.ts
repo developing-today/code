@@ -52,6 +52,13 @@ export interface Config {
   /** The signed APK the console hands to the signed-in owner, if the
    * file exists. */
   androidApk: string;
+  /** The dashboard's decision-set store: the questions waiting on the
+   * owner, and the per-set tokens that authorise an answer. */
+  decisionsFile: string;
+  /** Label on an issue that is an instruction from the owner. */
+  promptLabel: string;
+  /** Repositories whose issues may be answered from "Needs me". */
+  needsRepos: string[];
 }
 
 export class ConfigError extends Error {}
@@ -211,5 +218,13 @@ export function readConfig(
     androidPackage: env.PM_CONSOLE_ANDROID_PACKAGE ?? "today.developing.pmconsole",
     androidFingerprints: fingerprints,
     androidApk: env.PM_CONSOLE_ANDROID_APK ?? `${home}/.local/state/pm-console/android/pm-console.apk`,
+    decisionsFile: env.PM_CONSOLE_DECISIONS_FILE ?? `${home}/.local/state/pm-aggregator/decisions.json`,
+    promptLabel: env.PM_CONSOLE_PROMPT_LABEL ?? "owner/prompt",
+    needsRepos: list(env, "PM_CONSOLE_NEEDS_REPOS", [
+      "developing-today/code",
+      "developing-today/opencode",
+      "developing-today/openchamber",
+      "dezren39/nix",
+    ]),
   };
 }

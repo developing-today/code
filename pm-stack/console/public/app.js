@@ -1,239 +1,1204 @@
-// Console front end. No framework and no markup strings: every node is
-// built with h(), and text from the fleet only ever becomes text.
+// The PM app: what is in progress, what is next, what needs you, and a
+// place to say what you want in your own words. Everything else is
+// under More.
+//
+// The page draws from three documents the server keeps ready (core,
+// questions, ops), so moving between sections never waits on a fetch.
 const API = "/console/api/";
-const view = document.getElementById("view");
-const tabs = document.getElementById("tabs");
-const toastEl = document.getElementById("toast");
+const $ = (id) => document.getElementById(id);
+const view = $("view");
+const tabsEl = $("tabs");
+const toastEl = $("toast");
+const freshEl = $("fresh");
 
-function h(tag, attrs, ...children) {
+// ---- small helpers -----------------------------------------------------
+
+function h(tag, attrs, ...kids) {
   const el = document.createElement(tag);
   for (const [k, v] of Object.entries(attrs || {})) {
     if (v === false || v === null || v === undefined) continue;
-    if (k === "class") el.className = v;
-    else if (k.startsWith("on")) el.addEventListener(k.slice(2), v);
-    else if (k === "value") el.value = v;
-    else el.setAttribute(k, v === true ? "" : v);
+    if (k.startsWith("on")) el.addEventListener(k.slice(2), v);
+    else if (k === "class") el.className = v;
+    else if (v === true) el.setAttribute(k, "");
+    else el.setAttribute(k, v);
   }
-  for (const c of children.flat()) if (c !== null && c !== undefined && c !== false) el.append(c);
+  for (const kid of kids.flat(Infinity)) {
+    if (kid === null || kid === undefined || kid === false) continue;
+    el.append(kid.nodeType ? kid : document.createTextNode(String(kid)));
+  }
   return el;
 }
 
-async function api(path, body) {
-  const init = body === undefined ? {} : { method: "POST", headers: { "Content-Type": "application/json", "X-PM-Console": "1" }, body: JSON.stringify(body) };
-  const res = await fetch(API + path, init);
-  let data = null;
-  try {
-    data = await res.json();
-  } catch {
-    // A sign-in page instead of JSON means the edge session ended.
-    if (res.redirected || res.status === 401 || res.status === 403) location.reload();
-  }
-  if (!res.ok) throw new Error((data && data.error) || `http ${res.status}`);
-  return data;
+function icon(d) {
+  const NS = "http://www.w3.org/2000/svg";
+  const s = document.createElementNS(NS, "svg");
+  s.setAttribute("viewBox", "0 0 24 24");
+  s.setAttribute("aria-hidden", "true");
+  const p = document.createElementNS(NS, "path");
+  p.setAttribute("d", d);
+  s.append(p);
+  return s;
 }
 
+/** "12 min", "3 h", "2 d" since an ISO time (times without a zone are UTC). */
+export function ago(iso, now = Date.now()) {
+  if (!iso) return "";
+  const t = Date.parse(/[zZ]$|[+-]\d\d:?\d\d$/.test(iso) ? iso : `${iso}Z`);
+  if (Number.isNaN(t)) return "";
+  const s = Math.max(0, (now - t) / 1000);
+  if (s < 90) return "just now";
+  if (s < 5400) return `${Math.round(s / 60)} min`;
+  if (s < 129600) return `${Math.round(s / 3600)} h`;
+  return `${Math.round(s / 86400)} d`;
+}
+
+/** The queue's priority bands, in words. */
+export function band(priority) {
+  const p = Number(priority);
+  if (!priority && priority !== 0) return "Normal";
+  if (p <= 10) return "Top";
+  if (p <= 20) return "High";
+  if (p <= 30) return "Normal";
+  if (p <= 50) return "Low";
+  return "Later";
+}
+
+const card = (...kids) => h("div", { class: "card" }, ...kids);
+const empty = (text) => h("div", { class: "empty" }, text);
+const chip = (text, tone) => h("span", { class: `chip${tone ? ` ${tone}` : ""}` }, text);
+const ext = (href, text) => h("a", { href, target: "_blank", rel: "noopener" }, text);
+
 let toastTimer;
-function toast(message, bad) {
-  toastEl.textContent = message;
+function toast(message, bad, undo) {
+  toastEl.replaceChildren(message);
+  if (undo) toastEl.append(" ", h("button", { class: "small ghost", onclick: undo }, "Undo"));
   toastEl.className = bad ? "toast bad" : "toast";
   toastEl.hidden = false;
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => (toastEl.hidden = true), bad ? 7000 : 3500);
+  toastTimer = setTimeout(() => {
+    toastEl.hidden = true;
+  }, bad ? 8000 : undo ? 5000 : 3500);
 }
 
 /** Ask before acting. Resolves to the typed text ("" when none is asked
  * for), or null when the person backs out. */
-function ask({ title, text, label, okLabel, danger, required }) {
-  const dialog = document.getElementById("ask");
-  const input = document.getElementById("ask-input");
-  const ok = document.getElementById("ask-ok");
-  document.getElementById("ask-title").textContent = title;
-  document.getElementById("ask-text").textContent = text || "";
-  document.getElementById("ask-label").textContent = label || "";
+function ask({ title, text, label, okLabel, danger, required, value }) {
+  const dialog = $("ask");
+  const input = $("ask-input");
+  const ok = $("ask-ok");
+  $("ask-title").textContent = title;
+  $("ask-text").textContent = text || "";
+  $("ask-label").textContent = label || "";
   input.hidden = !label;
-  input.value = "";
+  input.value = value || "";
   input.required = Boolean(required);
   ok.textContent = okLabel || "Confirm";
   ok.className = danger ? "danger" : "";
   return new Promise((resolve) => {
-    dialog.addEventListener("close", () => resolve(dialog.returnValue === "ok" ? input.value.trim() : null), { once: true });
+    dialog.addEventListener("close", () => resolve(dialog.returnValue === "ok" ? input.value.trim() : null), {
+      once: true,
+    });
+    // A dialog keeps its last return value: clear it, or Escape after an
+    // earlier confirmation would confirm again.
     dialog.returnValue = "";
     dialog.showModal();
     if (label) input.focus();
   });
 }
 
-/** Run one action from a button: disable it, report, then redraw.
- * `done` is the message, or a function from the result to the message. */
-async function act(button, path, body, done) {
-  button.disabled = true;
+// ---- state -------------------------------------------------------------
+
+const docs = { core: null, questions: null, ops: null };
+const etags = {};
+const asOf = {};
+let me = {};
+let signedOut = false;
+
+async function api(path, body) {
+  const init =
+    body === undefined
+      ? {}
+      : {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "X-PM-Console": "1" },
+          body: JSON.stringify(body),
+        };
+  let res;
   try {
-    const { result } = await api(path, body);
+    res = await fetch(API + path, init);
+  } catch {
+    // A sign-in that has run out answers with a redirect to another site,
+    // which a fetch may not follow.
+    signedOut = navigator.onLine !== false;
+    throw new Error(signedOut ? "Your sign-in may have run out. Reload to sign in again." : "You are offline.");
+  }
+  let data = null;
+  try {
+    data = await res.json();
+  } catch {
+    if (res.status === 401 || res.status === 403) signedOut = true;
+  }
+  if (!res.ok) throw new Error((data && data.error) || `http ${res.status}`);
+  return data;
+}
+
+/** Fetch one document if it changed. Returns true when it did. */
+async function loadDoc(name) {
+  let res;
+  try {
+    res = await fetch(`${API}doc/${name}`, { headers: etags[name] ? { "If-None-Match": etags[name] } : {} });
+  } catch {
+    signedOut = navigator.onLine !== false;
+    throw new Error(signedOut ? "Your sign-in may have run out. Reload to sign in again." : "You are offline.");
+  }
+  if (res.headers.get("x-as-of")) asOf[name] = Number(res.headers.get("x-as-of"));
+  if (res.status === 304) return false;
+  if (!res.ok) {
+    if (res.status === 401 || res.status === 403) signedOut = true;
+    throw new Error(`could not load (${res.status})`);
+  }
+  docs[name] = await res.json();
+  etags[name] = res.headers.get("etag");
+  return true;
+}
+
+/** Run one action, say how it went, and draw what changed. */
+async function act(kind, args, done, button) {
+  if (button) button.disabled = true;
+  try {
+    const { result } = await api("act", { kind, args });
     toast(typeof done === "function" ? done(result) : done);
-    await show(current);
+    await refresh(true);
+    return result;
   } catch (error) {
     toast(error.message, true);
-    button.disabled = false;
+    if (button) button.disabled = false;
+    return null;
   }
 }
 
-const badge = (text, kind) => h("span", { class: `badge ${kind || ""}` }, text);
-const empty = (text) => h("p", { class: "empty" }, text);
-const card = (...children) => h("section", { class: "card" }, ...children);
+// ---- now ---------------------------------------------------------------
 
-// ---- views ---------------------------------------------------------------
+function taskCard(t, extra) {
+  const who = [t.worker, t.lane, t.model].filter(Boolean).join(" · ");
+  const when = t.claimed ? `claimed ${ago(t.claimed)} ago` : `queued ${ago(t.created)} ago`;
+  return card(
+    h(
+      "div",
+      { class: "row" },
+      t.kind ? chip(String(t.kind).replace(/_/g, " ")) : null,
+      t.issue && t.url ? ext(t.url, `#${t.issue}`) : null,
+      Number(t.attempts) > 1 ? chip(`attempt ${t.attempts}`, "warn") : null,
+    ),
+    h("h3", {}, t.title),
+    h("p", { class: "meta" }, [who, when].filter(Boolean).join(" · ")),
+    t.step || t.goal
+      ? h("div", { class: "step" }, h("b", {}, t.step ? "Next step" : "Goal"), t.step || t.goal)
+      : null,
+    extra,
+  );
+}
 
-async function overview() {
-  const o = await api("overview");
-  const stat = (label, value, tab) => h("button", { class: "card stat ghost", onclick: () => show(tab) }, h("b", {}, String(value)), h("span", { class: "meta" }, label));
-  const q = o.queue.error ? {} : o.queue;
-  const out = [
-    h("div", { class: "grid" },
-      stat("queued", q.queued ?? "–", "queue"), stat("claimed", q.claimed ?? "–", "queue"), stat("blocked", q.blocked ?? "–", "queue"), stat("parked", q.parked ?? "–", "queue"),
-      stat("PRs ready", o.prs.error ? "–" : o.prs.ready, "prs"), stat("agents", o.agents.error ? "–" : o.agents.registered, "agents"),
-      stat("units failed", o.services.error ? "–" : o.services.failed.length, "services")),
-  ];
-  for (const [name, part] of Object.entries(o)) if (part.error) out.push(card(h("h3", {}, `${name}: unavailable`), h("p", { class: "why" }, part.error)));
-  if (!o.services.error && o.services.failed.length) out.push(card(h("h3", {}, "Failed units"), h("p", { class: "why" }, o.services.failed.join(", "))));
+function notices(doc) {
+  const out = [];
+  for (const [name, s] of Object.entries(doc?.health || {})) {
+    if (!s.ok && s.error) {
+      out.push(
+        h("div", { class: "card flag" }, h("p", { class: "meta" }, `Could not read ${name} just now: ${s.error}. Showing the last good copy.`)),
+      );
+    }
+  }
   return out;
 }
 
-let queueStatus = "blocked";
-let queueSearch = "";
-async function queue() {
-  const data = await api(`queue?status=${queueStatus}&limit=100&q=${encodeURIComponent(queueSearch)}`);
-  const pick = h("select", { class: "narrow", "aria-label": "Status", onchange: (e) => { queueStatus = e.target.value; show("queue"); } },
-    ["queued", "claimed", "blocked", "parked"].map((s) => h("option", { value: s, selected: s === queueStatus }, `${s} (${data.counts[s] ?? 0})`)));
-  const search = h("input", { type: "search", placeholder: "Filter by title", value: queueSearch, "aria-label": "Filter by title", onchange: (e) => { queueSearch = e.target.value; show("queue"); } });
-  const rows = data.tasks.map((t) => card(
-    h("h3", {}, `${t.id} · ${t.title}`),
-    h("p", { class: "meta" }, `priority ${t.priority ?? "–"} · updated ${t.updated ?? "–"} · ${t.dedupe_key ?? ""}`),
-    t.why ? h("p", { class: "why" }, t.why) : null,
-    h("div", { class: "row end" },
-      t.status === "blocked" ? h("button", { onclick: async (e) => {
-        const reason = await ask({ title: `Unblock task ${t.id}`, text: t.title, label: "Why it can proceed", okLabel: "Unblock", required: true });
-        if (reason) act(e.target, `queue/${t.id}/unblock`, { reason }, `Task ${t.id} unblocked`);
-      } }, "Unblock") : null,
-      h("button", { class: "ghost", onclick: async (e) => {
-        const reason = await ask({ title: `Cancel task ${t.id}`, text: t.title, label: "Why it is cancelled", okLabel: "Cancel task", danger: true, required: true });
-        if (reason) act(e.target, `queue/${t.id}/cancel`, { reason }, `Task ${t.id} cancelled`);
-      } }, "Cancel"))));
-  return [card(h("div", { class: "row" }, pick, h("span", { class: "grow" }), search)), ...(rows.length ? rows : [empty("No tasks in this state.")])];
+function viewNow() {
+  const c = docs.core;
+  const b = c.board || { counts: {}, now: [], next: [], blockedWhy: [] };
+  const s = c.sessions || { moving: [], waiting: [] };
+  const needs = needCounts();
+  const stat = (value, label, to) =>
+    h("button", { class: "stat", onclick: () => go(to) }, h("b", {}, String(value ?? "–")), h("span", {}, label));
+  const out = [
+    h(
+      "div",
+      { class: "stats" },
+      stat(b.counts.claimed ?? 0, "in progress", "now"),
+      stat(b.counts.queued ?? 0, "queued", "next"),
+      stat(needs.total, "need you", "needs"),
+      stat(b.counts.blocked ?? 0, "blocked", "more/queue"),
+    ),
+    ...notices(c),
+    h("h2", {}, "In progress"),
+    ...(b.now.length ? b.now.map((t) => taskCard(t)) : [empty("No task is claimed right now.")]),
+  ];
+  if (s.moving.length) {
+    out.push(
+      h("h2", {}, "Agent sessions moving"),
+      ...s.moving.map((m) =>
+        card(
+          h("h3", {}, m.title || "(untitled session)"),
+          h(
+            "p",
+            { class: "meta" },
+            [m.agent, m.model, m.where, m.last ? `active ${ago(m.last)} ago` : "", m.tools ? `${m.tools} tool calls running` : ""]
+              .filter(Boolean)
+              .join(" · "),
+          ),
+        ),
+      ),
+    );
+  }
+  if ((b.counts.blocked ?? 0) > 0 && b.blockedWhy?.length) {
+    out.push(
+      h("h2", {}, `Why ${b.counts.blocked} tasks are blocked`),
+      card(
+        ...b.blockedWhy.map((w) => h("p", {}, h("b", {}, `${w.n} `), h("span", { class: "meta" }, String(w.why)))),
+        h("div", { class: "row end" }, h("button", { class: "ghost small", onclick: () => go("more/queue") }, "Open blocked tasks")),
+      ),
+    );
+  }
+  if (c.acts?.length) {
+    out.push(
+      h("h2", {}, "What you did"),
+      card(
+        ...c.acts.slice(0, 6).map((a) =>
+          h(
+            "p",
+            { class: "meta" },
+            `${ago(a.at)} ago · ${a.kind} · `,
+            h("span", { class: a.status === "failed" ? "bad" : "" }, a.status + (a.note ? `: ${a.note}` : "")),
+          ),
+        ),
+      ),
+    );
+  }
+  return out;
+}
+
+// ---- next --------------------------------------------------------------
+
+function viewNext() {
+  const b = docs.core.board || { counts: {}, next: [] };
+  const out = [...notices(docs.core), h("h2", {}, "Queued next, in the order it will be picked up")];
+  if (!b.next.length) out.push(empty("Nothing is queued. Blocked and parked tasks are under More, Queue."));
+  b.next.forEach((t, i) => {
+    const moves = h(
+      "div",
+      { class: "row end" },
+      chip(band(t.priority), Number(t.priority) <= 10 ? "accent" : ""),
+      h("span", { class: "grow" }),
+      Number(t.priority) > 10
+        ? h("button", { class: "small", onclick: (e) => act("task.move", { task: t.id, to: "first" }, "Moved to the top band", e.target) }, "Do first")
+        : null,
+      h("button", { class: "small ghost", onclick: (e) => act("task.move", { task: t.id, to: "sooner" }, "Moved sooner", e.target) }, "Sooner"),
+      h("button", { class: "small ghost", onclick: (e) => act("task.move", { task: t.id, to: "later" }, "Moved later", e.target) }, "Later"),
+      h(
+        "button",
+        {
+          class: "small ghost",
+          onclick: async (e) => {
+            const why = await ask({ title: "Cancel this task?", text: t.title, label: "Why", okLabel: "Cancel task", danger: true, required: true });
+            if (why) act("task.cancel", { task: t.id, reason: why }, "Cancelled", e.target);
+          },
+        },
+        "Cancel",
+      ),
+    );
+    out.push(h("div", { class: "lead" }, h("span", { class: "num" }, String(i + 1)), h("div", {}, taskCard(t, moves))));
+  });
+  const ranked = docs.ops?.priorities?.issues;
+  out.push(h("h2", {}, "Ranked issues"));
+  if (!ranked) out.push(empty("Loading…"));
+  else {
+    out.push(...ranked.slice(0, 12).map(issueCard));
+    if (ranked.length > 12) out.push(h("button", { class: "ghost", onclick: () => go("more/issues") }, `All ${ranked.length} ranked issues`));
+  }
+  return out;
 }
 
 const RANKS = ["expedite", "priority/critical", "now", "priority/high", "next", "none"];
-async function priorities() {
-  const { issues: list, truncated } = await api("priorities");
-  const title = h("input", { placeholder: "A new idea or piece of work", "aria-label": "Title" });
-  const body = h("textarea", { rows: 3, placeholder: "What you want, in your words (optional)", "aria-label": "Details" });
-  const rank = h("select", { class: "narrow", "aria-label": "Rank" }, RANKS.map((r) => h("option", { value: r, selected: r === "next" }, r)));
-  const file = card(h("h2", {}, "File work"), title, body, h("div", { class: "row end" }, rank,
-    h("button", { onclick: (e) => title.value.trim() ? act(e.target, "ideas", { title: title.value, body: body.value, rank: rank.value }, (r) => (r.queued ? `Filed #${r.issue} and queued it` : `Filed #${r.issue}. ${r.note || "It is not queued yet."}`)) : toast("Give it a title", true) }, "File issue")));
-  const rows = list.map((i) => card(
-    h("h3", {}, h("a", { href: i.url, target: "_blank", rel: "noopener" }, `#${i.number}`), ` ${i.title}`),
-    h("p", { class: "meta" }, `updated ${i.updated} · ${i.comments} comments · ${i.labels.filter((l) => !RANKS.includes(l)).slice(0, 6).join(", ")}`),
-    h("div", { class: "row end" },
-      h("select", { class: "narrow", "aria-label": `Rank for #${i.number}`, onchange: (e) => act(e.target, `priorities/${i.number}/rank`, { rank: e.target.value }, `#${i.number} is now ${e.target.value}`) },
-        RANKS.map((r) => h("option", { value: r, selected: r === i.rank }, r))),
-      h("button", { class: "ghost", onclick: async (e) => {
-        const text = await ask({ title: `Comment on #${i.number}`, text: i.title, label: "Comment", okLabel: "Post", required: true });
-        if (text) act(e.target, `issues/${i.number}/comment`, { body: text }, "Comment posted");
-      } }, "Comment"))));
-  const more = truncated ? [empty("There are more ranked issues than this list reads. The most urgent may not all be here.")] : [];
-  return [file, ...more, ...(rows.length ? rows : [empty("No ranked issues.")])];
+function issueCard(i) {
+  return card(
+    h("h3", {}, ext(i.url, `#${i.number}`), ` ${i.title}`),
+    h("p", { class: "meta" }, `updated ${i.updated?.replace("T", " ")} · ${i.comments} comments`),
+    h(
+      "div",
+      { class: "row end" },
+      h(
+        "select",
+        {
+          class: "narrow",
+          "aria-label": `Rank for #${i.number}`,
+          onchange: (e) => act("issue.rank", { issue: i.number, rank: e.target.value }, `#${i.number} is now ${e.target.value}`, e.target),
+        },
+        RANKS.map((r) => h("option", { value: r, selected: r === i.rank }, r)),
+      ),
+      h(
+        "button",
+        {
+          class: "small ghost",
+          onclick: async (e) => {
+            const text = await ask({ title: `Comment on #${i.number}`, text: i.title, label: "Comment", okLabel: "Post", required: true });
+            if (text) act("issue.comment", { issue: i.number, text }, "Comment posted", e.target);
+          },
+        },
+        "Comment",
+      ),
+    ),
+  );
 }
 
-async function agents() {
-  const [list, log] = await Promise.all([api("agents"), api("messages?limit=20")]);
-  const groups = [...new Set(list.flatMap((a) => a.groups || []))].sort();
-  const target = h("select", { "aria-label": "Send to" },
-    h("option", { value: "all" }, "everyone"),
-    groups.map((g) => h("option", { value: `group:${g}` }, `group: ${g}`)),
-    list.map((a) => h("option", { value: `agent:${a.name}` }, a.name)));
-  const kind = h("select", { class: "narrow", "aria-label": "Kind" }, h("option", { value: "message" }, "idea / message"), h("option", { value: "command" }, "command"));
-  const body = h("textarea", { rows: 4, placeholder: "The idea, in your words", "aria-label": "Text" });
-  const send = card(h("h2", {}, "Send to agents"), target, body, h("div", { class: "row end" }, kind,
-    h("button", { onclick: (e) => body.value.trim() ? act(e.target, "messages", { to: [target.value], text: body.value, command: kind.value === "command" }, "Sent") : toast("Write something to send", true) }, "Send")));
-  const roster = card(h("h2", {}, `Agents (${list.length})`), ...list.map((a) => h("div", { class: "row" },
-    h("strong", {}, a.name), h("span", { class: "meta" }, (a.groups || []).join(", ")), h("span", { class: "grow" }),
-    a.unread_commands ? badge(`${a.unread_commands} unread commands`, "warn") : null, a.unread_messages ? badge(`${a.unread_messages} unread`, "warn") : null,
-    h("span", { class: "meta" }, (a.last_seen || "").slice(0, 16)))));
-  const recent = card(h("h2", {}, "Recent messages"), ...(log.length ? log.map((m) => h("div", {},
-    h("p", { class: "meta" }, `${(m.ts || "").slice(0, 16)} · ${m.direction} · ${m.agent} · ${m.kind}`), h("p", { class: "why" }, (m.body || "").slice(0, 400)))) : [empty("Nothing sent yet.")]));
-  return [send, roster, recent];
+// ---- needs me ----------------------------------------------------------
+
+function needCounts() {
+  const c = docs.core || {};
+  const census = c.census || { hands: [], reviews: [], other: [] };
+  const waiting = c.sessions?.waiting || [];
+  const questions = docs.questions ? docs.questions.questions?.total : c.questionCount?.total;
+  const counts = {
+    questions: questions ?? 0,
+    hands: census.hands.length + waiting.length,
+    reviews: census.reviews.length,
+    other: census.other.length,
+  };
+  // What needs the owner is what only he can do or answer; the
+  // escalated-with-no-action list is the fleet's to decide.
+  counts.total = counts.questions + counts.hands + counts.reviews;
+  return counts;
 }
 
-async function services() {
-  const list = await api("services");
-  const state = (u) => badge(`${u.active} · ${u.sub}`, u.active === "failed" ? "bad" : u.active === "active" ? "good" : "warn");
-  return list.map((u) => {
-    const logs = h("pre", { hidden: true });
-    const run = (action, danger) => h("button", { class: danger ? "danger" : "ghost", onclick: async (e) => {
-      const yes = await ask({ title: `${action} ${u.unit}`, text: u.description, okLabel: action, danger });
-      if (yes !== null) act(e.target, `services/${encodeURIComponent(u.unit)}/${action}`, {}, `${u.unit}: ${action} requested`);
-    } }, action);
-    return card(h("div", { class: "row" }, h("h3", {}, u.unit), h("span", { class: "grow" }), state(u)), h("p", { class: "meta" }, u.description),
-      h("div", { class: "row end" },
-        h("button", { class: "ghost", onclick: async () => {
-          if (!logs.hidden) return (logs.hidden = true);
-          try { logs.textContent = (await api(`services/${encodeURIComponent(u.unit)}/logs?lines=120`)).log || "(no output)"; logs.hidden = false; } catch (error) { toast(error.message, true); }
-        } }, "Logs"),
-        run("restart"), u.active === "active" ? run("stop", true) : run("start")), logs);
+let shown = 12;
+const pending = new Map();
+
+/** Answer after a short pause, so a slip of the thumb can be undone. */
+function later(key, label, send) {
+  const timer = setTimeout(() => {
+    pending.delete(key);
+    send();
+  }, 4500);
+  pending.set(key, { timer, send });
+  draw();
+  toast(label, false, () => {
+    clearTimeout(timer);
+    pending.delete(key);
+    toastEl.hidden = true;
+    draw();
   });
 }
 
-async function prs() {
-  const list = await api("prs");
-  if (!list.length) return [empty("No open pull requests.")];
-  return list.map((p) => {
-    const detail = h("div", { class: "meta" });
-    const merge = h("button", { disabled: true, onclick: async (e) => {
-      const yes = await ask({ title: `Merge #${p.number}`, text: p.title, okLabel: "Merge" });
-      if (yes !== null) act(e.target, `prs/${p.number}/merge`, {}, `#${p.number} merged`);
-    } }, "Merge");
-    const check = h("button", { class: "ghost", onclick: async (e) => {
-      e.target.disabled = true;
-      try {
-        const d = await api(`prs/${p.number}`);
-        detail.textContent = `+${d.additions} −${d.deletions} in ${d.changed_files} files · ${d.review_comments} review comments · ${d.mergeable === true ? "mergeable" : d.mergeable === false ? "conflicts" : "mergeability pending"} (${d.mergeable_state})`;
-        merge.disabled = d.mergeable !== true || d.draft;
-      } catch (error) { toast(error.message, true); }
-      e.target.disabled = false;
-    } }, "Check");
-    return card(h("h3", {}, h("a", { href: p.url, target: "_blank", rel: "noopener" }, `#${p.number}`), ` ${p.title}`),
-      h("p", { class: "meta" }, `${p.author} · ${p.branch} · opened ${p.created}`), detail,
-      h("div", { class: "row end" }, p.draft ? badge("draft", "warn") : null, check, merge));
-  });
-}
-
-// ---- shell -----------------------------------------------------------------
-
-const VIEWS = { overview: ["Overview", overview], queue: ["Queue", queue], priorities: ["Priorities", priorities], agents: ["Agents", agents], services: ["Services", services], prs: ["Pull requests", prs] };
-let current = "overview";
-let showSeq = 0;
-
-async function show(name) {
-  // Views load at different speeds. Only the latest call may draw, or a
-  // slow earlier view would land on top of the one now selected.
-  const seq = ++showSeq;
-  current = VIEWS[name] ? name : "overview";
-  history.replaceState(null, "", `#${current}`);
-  for (const b of tabs.children) b.toggleAttribute("aria-current", false);
-  const active = tabs.querySelector(`[data-view="${current}"]`);
-  if (active) active.setAttribute("aria-current", "page");
-  view.replaceChildren(empty("Loading…"));
-  try {
-    const drawn = await VIEWS[current][1]();
-    if (seq === showSeq) view.replaceChildren(...drawn);
-  } catch (error) {
-    if (seq !== showSeq) return;
-    view.replaceChildren(card(h("h3", {}, "This section could not load"), h("p", { class: "why" }, error.message), h("div", { class: "row end" }, h("button", { onclick: () => show(current) }, "Try again"))));
+function flushPending() {
+  for (const [key, p] of pending) {
+    clearTimeout(p.timer);
+    pending.delete(key);
+    p.send();
   }
 }
 
-for (const [name, [label]] of Object.entries(VIEWS)) tabs.append(h("button", { "data-view": name, onclick: () => show(name) }, label));
-api("me").then((me) => {
-  document.getElementById("who").textContent = me.email || me.certName || me.via;
-  document.getElementById("apk").hidden = !me.androidApp;
-}).catch(() => {});
-show(location.hash.slice(1));
+async function sendAnswer(kind, args, key) {
+  try {
+    const { result } = await api("act", { kind, args });
+    if (result?.refused?.length) toast(`Not recorded: ${result.refused[0].why}`, true);
+    if (docs.questions?.questions) {
+      const open = docs.questions.questions.open.filter((q) => `${q.set}|${q.ledger}|${q.qid}` !== key);
+      docs.questions.questions.total = open.length;
+      docs.questions.questions.open = open;
+    }
+  } catch (error) {
+    toast(error.message, true);
+  }
+  // The list above is already right; only the counts need reading again.
+  await loadDoc("core").catch(() => {});
+  draw();
+}
+
+/** A line of background, and the rest of it when the question is opened. */
+function background(q) {
+  const body = h("div", {}, q.context ? h("p", {}, q.context) : null);
+  let asked = false;
+  return h(
+    "details",
+    {
+      ontoggle: async (e) => {
+        if (!e.target.open || asked || !q.more) return;
+        asked = true;
+        try {
+          const full = await api(`question?set=${encodeURIComponent(q.set)}&ledger=${encodeURIComponent(q.ledger)}&qid=${encodeURIComponent(q.qid)}`);
+          body.replaceChildren(full.context ? h("p", {}, full.context) : null, full.detail ? h("p", { class: "meta" }, full.detail) : null);
+        } catch {
+          asked = false;
+        }
+      },
+    },
+    h("summary", {}, "Background"),
+    body,
+  );
+}
+
+function questionCard(q) {
+  const key = `${q.set}|${q.ledger}|${q.qid}`;
+  if (pending.has(key)) return null;
+  const id = { set: q.set, ledger: q.ledger, qid: q.qid };
+  const picked = new Set();
+  const choose = (o) => later(key, `Answered: ${o.label.slice(0, 60)}`, () => sendAnswer("question.answer", { ...id, option: o.id }, key));
+  const options = q.options.map((o) => {
+    const rec = q.recommended.includes(o.id);
+    return h(
+      "button",
+      {
+        class: `option${rec ? " rec" : ""}`,
+        "aria-pressed": q.multi ? "false" : null,
+        onclick: (e) => {
+          if (!q.multi) return choose(o);
+          const b = e.currentTarget;
+          const on = b.getAttribute("aria-pressed") !== "true";
+          b.setAttribute("aria-pressed", String(on));
+          b.classList.toggle("hot", on);
+          if (on) picked.add(o.id);
+          else picked.delete(o.id);
+        },
+      },
+      rec ? h("small", {}, "Recommended") : null,
+      o.label,
+      o.tags?.filter((t) => t !== "recommended").length ? h("span", { class: "meta" }, ` · ${o.tags.filter((t) => t !== "recommended").join(", ")}`) : null,
+    );
+  });
+  return card(
+    h("p", { class: "meta" }, q.item, ...q.links.slice(0, 2).map((l) => [" · ", ext(l, `#${l.split("/").pop()}`)])),
+    h("h3", {}, q.q),
+    q.context || q.more ? background(q) : null,
+    h("div", { class: "options" }, options),
+    h(
+      "div",
+      { class: "row end" },
+      q.multi
+        ? h(
+            "button",
+            {
+              class: "small",
+              onclick: () =>
+                picked.size
+                  ? later(key, `Answered with ${picked.size} choices`, () => sendAnswer("question.answer", { ...id, options: [...picked] }, key))
+                  : toast("Choose at least one option", true),
+            },
+            "Submit choices",
+          )
+        : null,
+      h(
+        "button",
+        {
+          class: "small ghost",
+          onclick: async () => {
+            const text = await ask({ title: "Your own answer", text: q.q, label: "Answer", okLabel: "Send", required: true });
+            if (text) sendAnswer("question.answer", { ...id, text }, key);
+          },
+        },
+        "Write an answer",
+      ),
+      h(
+        "button",
+        { class: "small ghost", onclick: () => later(key, "Handed back: decide for me", () => sendAnswer("question.defer", { ...id, lean: "approve" }, key)) },
+        "Decide for me",
+      ),
+    ),
+  );
+}
+
+function viewQuestions() {
+  const doc = docs.questions;
+  if (!doc) return [empty("Loading the questions…")];
+  const all = doc.questions?.open || [];
+  const out = [...notices(doc)];
+  if (!all.length) return [...out, empty("No open questions.")];
+  let lastSet = null;
+  for (const q of all.slice(0, shown)) {
+    if (q.set !== lastSet) {
+      lastSet = q.set;
+      const inSet = all.filter((x) => x.set === q.set);
+      const withRec = inSet.filter((x) => x.recommended.length).length;
+      out.push(
+        h(
+          "div",
+          { class: "set" },
+          h("h2", {}, `${q.setTitle} · ${inSet.length} open`),
+          withRec
+            ? h(
+                "button",
+                {
+                  class: "small",
+                  onclick: async (e) => {
+                    const yes = await ask({
+                      title: `Accept ${withRec} recommended answers?`,
+                      text: `${q.setTitle}: every open question that has a recommendation gets the recommended option.`,
+                      okLabel: "Accept all",
+                    });
+                    if (yes !== null) {
+                      await act("questions.accept", { set: q.set }, (r) => `${r.applied} answered`, e.target);
+                      await loadDoc("questions").catch(() => {});
+                      draw();
+                    }
+                  },
+                },
+                `Accept ${withRec} recommended`,
+              )
+            : null,
+        ),
+      );
+    }
+    out.push(questionCard(q));
+  }
+  if (all.length > shown) {
+    out.push(
+      h(
+        "button",
+        {
+          class: "ghost",
+          onclick: () => {
+            shown += 20;
+            draw();
+          },
+        },
+        `Show more (${all.length - shown} left)`,
+      ),
+    );
+  }
+  return out;
+}
+
+function needCard(i, kind) {
+  const reply = h(
+    "button",
+    {
+      class: "small ghost",
+      onclick: async (e) => {
+        const text = await ask({ title: `Reply on ${i.ref}`, text: i.title, label: "Reply", okLabel: "Post", required: true });
+        if (text) act("need.comment", { ref: i.ref, text }, "Reply posted", e.target);
+      },
+    },
+    "Reply",
+  );
+  return card(
+    h("div", { class: "row" }, kind ? chip(kind.replace("-", " "), "warn") : null, i.url ? ext(i.url, i.ref) : h("span", { class: "meta" }, i.ref || "")),
+    i.action ? h("h3", {}, i.action) : h("h3", {}, i.title),
+    i.action ? h("p", { class: "meta" }, i.title) : null,
+    i.why ? h("p", { class: "meta" }, i.why) : null,
+    i.updated ? h("p", { class: "meta" }, `updated ${ago(i.updated)} ago`) : null,
+    i.ref && /#\d+$/.test(i.ref)
+      ? h(
+          "div",
+          { class: "row end" },
+          reply,
+          kind
+            ? h(
+                "button",
+                {
+                  class: "small",
+                  onclick: async (e) => {
+                    const note = await ask({
+                      title: "Mark this as done?",
+                      text: i.action || i.title,
+                      label: "Anything the agents should know (optional)",
+                      okLabel: "I did it",
+                    });
+                    if (note !== null) act("hands.done", { ref: i.ref, note }, "Marked done; the fleet carries on", e.target);
+                  },
+                },
+                "I did it",
+              )
+            : null,
+        )
+      : null,
+  );
+}
+
+function viewNeeds(sub) {
+  const counts = needCounts();
+  const census = docs.core.census || { hands: [], reviews: [], other: [] };
+  const waiting = (docs.core.sessions?.waiting || []).map((w) => ({ ref: w.ref.replace(/^gh:/, ""), title: w.title, why: w.why, action: w.title, url: null }));
+  const which = sub || (counts.questions ? "questions" : counts.hands ? "hands" : counts.reviews ? "reviews" : "questions");
+  const seg = (name, label, n) =>
+    h("button", { "aria-pressed": String(which === name), onclick: () => go(`needs/${name}`) }, `${label} ${n}`);
+  const out = [
+    h(
+      "div",
+      { class: "seg" },
+      seg("questions", "Questions", counts.questions),
+      seg("hands", "Only you can do", counts.hands),
+      seg("reviews", "Reviews", counts.reviews),
+      seg("other", "Escalated", counts.other),
+    ),
+    ...notices(docs.core).slice(0, 2),
+  ];
+  if (which === "questions") out.push(...viewQuestions());
+  else if (which === "hands") {
+    const items = [...census.hands.map((i) => needCard(i, i.kind)), ...waiting.map((i) => needCard(i, "by hand"))];
+    out.push(...(items.length ? items : [empty("Nothing needs your hands.")]));
+  } else if (which === "reviews") {
+    out.push(...(census.reviews.length ? census.reviews.map((i) => needCard(i)) : [empty("Nothing is waiting for your review.")]));
+  } else {
+    out.push(
+      h("p", { class: "meta" }, "Escalated without a stated action. These are the fleet's to decide; they are listed so nothing is hidden."),
+      ...(census.other.length ? census.other.map((i) => needCard(i)) : [empty("Nothing here.")]),
+    );
+  }
+  return out;
+}
+
+// ---- ask ---------------------------------------------------------------
+
+const STATUS = {
+  queued: ["Queued", ""],
+  waiting: ["Waiting for a worker", "warn"],
+  working: ["Being worked on", "accent"],
+  answered: ["Answered", "good"],
+  done: ["Done", "good"],
+};
+let draft = "";
+
+function viewAsk() {
+  const box = h("textarea", {
+    rows: 3,
+    placeholder: "Say what you want, in your own words. An agent picks it up, does it, and reports back here.",
+    "aria-label": "Your instruction",
+    oninput: (e) => {
+      draft = e.target.value;
+    },
+  });
+  box.value = draft;
+  const Speech = window.SpeechRecognition || window.webkitSpeechRecognition;
+  let listening = null;
+  const mic = Speech
+    ? h(
+        "button",
+        {
+          class: "ghost",
+          "aria-label": "Dictate",
+          onclick: (e) => {
+            const b = e.currentTarget;
+            if (listening) return listening.stop();
+            listening = new Speech();
+            listening.interimResults = false;
+            listening.onresult = (ev) => {
+              const said = Array.from(ev.results, (r) => r[0].transcript).join(" ");
+              box.value = `${box.value} ${said}`.trim();
+              draft = box.value;
+            };
+            listening.onend = () => {
+              listening = null;
+              b.classList.remove("listening");
+              b.textContent = "Dictate";
+            };
+            b.classList.add("listening");
+            b.textContent = "Listening…";
+            listening.start();
+          },
+        },
+        "Dictate",
+      )
+    : null;
+  const send = h(
+    "button",
+    {
+      onclick: async (e) => {
+        const text = box.value.trim();
+        if (!text) return toast("Write what you want first", true);
+        const r = await act("ask.send", { text }, (x) => (x.queued ? `Sent as #${x.issue}; first in the queue` : `Filed as #${x.issue}. ${x.note || ""}`), e.target);
+        if (r) {
+          draft = "";
+          draw();
+        }
+      },
+    },
+    "Send",
+  );
+  const asks = docs.core.asks || [];
+  return [
+    h("div", { class: "card composer" }, box, h("div", { class: "row end" }, mic, send)),
+    ...notices(docs.core).slice(0, 1),
+    h("h2", {}, "What you have asked"),
+    ...(asks.length
+      ? asks.map((a) => {
+          const [label, tone] = STATUS[a.status] || [a.status, ""];
+          return card(
+            h("div", { class: "row" }, chip(label, tone), ext(a.url, `#${a.issue}`), h("span", { class: "meta" }, `${ago(a.updated)} ago`), a.worker ? h("span", { class: "meta" }, `· ${a.worker}`) : null),
+            h("div", { class: "bubble you" }, h("b", {}, "You"), a.text),
+            ...a.replies.map((r) => h("div", { class: `bubble${r.you ? " you" : ""}` }, h("b", {}, `${r.you ? "You" : "Fleet"} · ${ago(r.at)} ago`), r.text)),
+            h(
+              "div",
+              { class: "row end" },
+              a.status !== "done"
+                ? h("button", { class: "small ghost", onclick: (e) => act("ask.close", { issue: a.issue }, "Closed", e.target) }, "Mark done")
+                : null,
+              h(
+                "button",
+                {
+                  class: "small",
+                  onclick: async (e) => {
+                    const text = await ask({ title: `Reply on #${a.issue}`, label: "Reply", okLabel: "Send", required: true });
+                    if (text) act("ask.reply", { issue: a.issue, text }, "Sent; the fleet is woken for it", e.target);
+                  },
+                },
+                "Reply",
+              ),
+            ),
+          );
+        })
+      : [empty("Nothing yet. Anything you send here becomes the first thing in the queue.")]),
+  ];
+}
+
+// ---- more --------------------------------------------------------------
+
+function viewMore() {
+  const ops = docs.ops || {};
+  const b = docs.core.board || { counts: {} };
+  const tile = (to, title, sub) => h("button", { class: "tile", onclick: () => go(to) }, title, h("span", {}, sub));
+  const out = [
+    h("h2", {}, "Operations"),
+    h(
+      "div",
+      { class: "tiles" },
+      tile("more/queue", "Queue", `${b.counts.blocked ?? "–"} blocked · ${b.counts.parked ?? "–"} parked`),
+      tile("more/prs", "Pull requests", ops.prs ? `${ops.prs.filter((p) => !p.draft).length} ready of ${ops.prs.length}` : "open and ready to merge"),
+      tile("more/issues", "Ranked issues", ops.priorities ? `${ops.priorities.issues.length} ranked` : "change what matters most"),
+      tile("more/agents", "Agents", ops.agents ? `${ops.agents.length} registered` : "message one or all"),
+      tile("more/services", "Services", ops.services ? `${ops.services.filter((u) => u.active === "failed").length} failed of ${ops.services.length}` : "start, stop, logs"),
+      tile("more/notify", "Notifications", "choose what reaches this device"),
+    ),
+  ];
+  for (const g of ops.more || []) {
+    out.push(h("h2", {}, `Dashboard: ${g.group}`), ...g.pages.map((p) => h("a", { class: "link", href: p.route }, p.title, h("span", {}, p.blurb))));
+  }
+  out.push(
+    h("h2", {}, "This app"),
+    h("p", { class: "meta" }, `Signed in as ${me.email || me.certName || me.via || "…"}`),
+    me.androidApp ? h("a", { class: "link", href: "/console/pm-console.apk" }, "Android app", h("span", {}, "Download the signed build for this phone")) : null,
+    h("a", { class: "link", href: "/cdn-cgi/access/logout" }, "Sign out"),
+  );
+  return out;
+}
+
+const NOTICE = {
+  replies: "The fleet replied to something you asked",
+  needs: "Something new needs you",
+  questions: "New questions for you",
+  trouble: "A unit failed",
+};
+
+function keyBytes(b64) {
+  const text = atob((b64 + "=".repeat((4 - (b64.length % 4)) % 4)).replace(/-/g, "+").replace(/_/g, "/"));
+  return Uint8Array.from(text, (c) => c.charCodeAt(0));
+}
+
+async function viewNotify() {
+  if (!("serviceWorker" in navigator) || !("PushManager" in window) || !("Notification" in window)) {
+    return [empty("This browser cannot receive notifications. On Android, use Chrome or the app.")];
+  }
+  const status = await api("push");
+  const reg = await navigator.serviceWorker.getRegistration("/console/");
+  const sub = reg ? await reg.pushManager.getSubscription() : null;
+  const on = Boolean(sub) && Notification.permission === "granted";
+  const turnOn = async (e) => {
+    e.target.disabled = true;
+    try {
+      if ((await Notification.requestPermission()) !== "granted") {
+        throw new Error("Notifications are blocked for this site. Allow them in the browser's site settings, then try again.");
+      }
+      const r = await navigator.serviceWorker.register("/console/sw.js", { scope: "/console/" });
+      await navigator.serviceWorker.ready;
+      const s = await r.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: keyBytes(status.key) });
+      await act("push.on", { subscription: s.toJSON(), label: navigator.userAgent.replace(/^.*\((.*?)\).*$/, "$1").slice(0, 60) }, "Notifications are on for this device");
+    } catch (error) {
+      toast(error.message, true);
+      e.target.disabled = false;
+    }
+  };
+  const turnOff = async (e) => {
+    const endpoint = sub.endpoint;
+    await sub.unsubscribe().catch(() => {});
+    act("push.off", { endpoint }, "Turned off for this device", e.target);
+  };
+  return [
+    card(
+      h("h3", {}, on ? "On for this device" : "Off for this device"),
+      h("p", { class: "meta" }, `${status.devices} device${status.devices === 1 ? "" : "s"} subscribed in all.`),
+      Notification.permission === "denied" ? h("p", { class: "why" }, "This browser is set to block notifications from this site.") : null,
+      h(
+        "div",
+        { class: "row end" },
+        on ? h("button", { class: "small ghost", onclick: turnOff }, "Turn off") : null,
+        on ? h("button", { class: "small ghost", onclick: (e) => act("push.test", {}, (r) => (r.sent ? `Test sent to ${r.sent} device${r.sent === 1 ? "" : "s"}` : "No device took the test"), e.target) }, "Send a test") : null,
+        on ? null : h("button", { onclick: turnOn }, "Turn on for this device"),
+      ),
+    ),
+    h("h2", {}, "Tell me when"),
+    card(
+      ...Object.entries(NOTICE).map(([cls, label]) =>
+        h(
+          "label",
+          { class: "row check" },
+          h("input", { type: "checkbox", checked: status.classes[cls], onchange: (e) => act("push.class", { class: cls, on: e.target.checked }, e.target.checked ? "On" : "Off") }),
+          label,
+        ),
+      ),
+    ),
+  ];
+}
+
+const QUEUE_STATES = ["blocked", "queued", "claimed", "parked"];
+let queueState = { status: "blocked", q: "" };
+async function viewQueue() {
+  const data = await api(`queue?status=${queueState.status}&q=${encodeURIComponent(queueState.q)}`);
+  const pick = h(
+    "select",
+    {
+      class: "narrow",
+      "aria-label": "State",
+      onchange: (e) => {
+        queueState.status = e.target.value;
+        draw();
+      },
+    },
+    QUEUE_STATES.map((s) => h("option", { value: s, selected: s === queueState.status }, `${s} (${data.counts[s] ?? 0})`)),
+  );
+  const search = h("input", {
+    type: "search",
+    placeholder: "Filter by title",
+    "aria-label": "Filter by title",
+    value: queueState.q,
+    onchange: (e) => {
+      queueState.q = e.target.value;
+      draw();
+    },
+  });
+  const reason = async (t, verb, danger) => ask({ title: `${verb} this task?`, text: t.title, label: "Why", okLabel: verb, danger, required: true });
+  return [
+    card(h("div", { class: "row" }, pick, h("span", { class: "grow" }), search)),
+    ...(data.tasks.length
+      ? data.tasks.map((t) =>
+          card(
+            h("h3", {}, t.title),
+            h("p", { class: "meta" }, `${band(t.priority)} · updated ${String(t.updated ?? "").replace("T", " ")}`),
+            t.why ? h("p", { class: "why" }, String(t.why)) : null,
+            h(
+              "div",
+              { class: "row end" },
+              t.status === "blocked"
+                ? h(
+                    "button",
+                    {
+                      class: "small",
+                      onclick: async (e) => {
+                        const why = await reason(t, "Unblock", false);
+                        if (why) act("task.unblock", { task: t.id, reason: why }, "Unblocked", e.target);
+                      },
+                    },
+                    "Unblock",
+                  )
+                : null,
+              h(
+                "button",
+                {
+                  class: "small ghost",
+                  onclick: async (e) => {
+                    const why = await reason(t, "Cancel", true);
+                    if (why) act("task.cancel", { task: t.id, reason: why }, "Cancelled", e.target);
+                  },
+                },
+                "Cancel",
+              ),
+            ),
+          ),
+        )
+      : [empty("No tasks in this state.")]),
+  ];
+}
+
+function viewPrs() {
+  const prs = docs.ops?.prs;
+  if (!prs) return [empty("Loading…")];
+  const row = (p) => {
+    const detail = h("div", {});
+    return card(
+      h("h3", {}, ext(p.url, `#${p.number}`), ` ${p.title}`),
+      h("p", { class: "meta" }, `${p.draft ? "draft · " : ""}${p.author} · ${p.branch} · opened ${ago(p.created)} ago`),
+      detail,
+      h(
+        "div",
+        { class: "row end" },
+        h(
+          "button",
+          {
+            class: "small ghost",
+            onclick: async (e) => {
+              e.target.disabled = true;
+              try {
+                const d = await api(`prs/${p.number}`);
+                detail.replaceChildren(
+                  h("p", { class: d.mergeable ? "meta" : "why" }, `${d.mergeable === null ? "mergeability not known yet" : d.mergeable ? "can merge" : "cannot merge"} (${d.mergeable_state}) · +${d.additions} −${d.deletions} in ${d.changed_files} files · ${d.review_comments} review comments`),
+                );
+              } catch (error) {
+                toast(error.message, true);
+              }
+              e.target.disabled = false;
+            },
+          },
+          "Check",
+        ),
+        p.draft
+          ? null
+          : h(
+              "button",
+              {
+                class: "small",
+                onclick: async (e) => {
+                  const yes = await ask({ title: `Merge #${p.number}?`, text: p.title, okLabel: "Merge" });
+                  if (yes !== null) act("pr.merge", { pr: p.number }, `#${p.number} merged`, e.target);
+                },
+              },
+              "Merge",
+            ),
+      ),
+    );
+  };
+  const ready = prs.filter((p) => !p.draft);
+  const drafts = prs.filter((p) => p.draft);
+  return [
+    h("h2", {}, `Ready (${ready.length})`),
+    ...(ready.length ? ready.map(row) : [empty("No pull request is ready.")]),
+    drafts.length ? h("h2", {}, `Drafts (${drafts.length})`) : null,
+    ...drafts.map(row),
+  ];
+}
+
+function viewIssues() {
+  const list = docs.ops?.priorities;
+  if (!list) return [empty("Loading…")];
+  return [
+    list.truncated ? empty("There are more ranked issues than this list reads. The most urgent may not all be here.") : null,
+    ...(list.issues.length ? list.issues.map(issueCard) : [empty("No ranked issues.")]),
+  ];
+}
+
+async function viewAgents() {
+  const agents = docs.ops?.agents || [];
+  const to = h("select", { "aria-label": "To" }, h("option", { value: "all" }, "Everyone"), agents.map((a) => h("option", { value: `agent:${a.name}` }, a.name)));
+  const text = h("textarea", { rows: 3, placeholder: "A message, or a command to act on", "aria-label": "Message" });
+  const command = h("input", { type: "checkbox", id: "cmd" });
+  const compose = card(
+    to,
+    text,
+    h(
+      "div",
+      { class: "row end" },
+      h("label", { for: "cmd", class: "row meta" }, command, "Send as a command"),
+      h(
+        "button",
+        {
+          onclick: (e) =>
+            text.value.trim() ? act("message.send", { to: [to.value], text: text.value, command: command.checked }, "Sent", e.target) : toast("Write a message first", true),
+        },
+        "Send",
+      ),
+    ),
+  );
+  let recent = [];
+  try {
+    recent = await api("messages?limit=15");
+  } catch {
+    // the roster below is still useful without the log
+  }
+  return [
+    compose,
+    h("h2", {}, `Agents (${agents.length})`),
+    ...agents.map((a) =>
+      card(h("h3", {}, a.name), h("p", { class: "meta" }, `${(a.groups || []).join(", ")} · seen ${ago(a.last_seen) || "never"} ago · ${a.unread_commands ?? 0} commands and ${a.unread_messages ?? 0} messages unread`)),
+    ),
+    h("h2", {}, "Recent messages"),
+    ...(recent.length
+      ? recent.map((m) => card(h("p", { class: "meta" }, `${ago(m.ts)} ago · ${m.direction} · ${m.agent} · ${m.kind}`), h("p", {}, String(m.body ?? "").slice(0, 600))))
+      : [empty("No messages.")]),
+  ];
+}
+
+function viewServices() {
+  const units = docs.ops?.services;
+  if (!units) return [empty("Loading…")];
+  const row = (u) => {
+    const log = h("div", {});
+    const doit = (action, danger) =>
+      h(
+        "button",
+        {
+          class: `small${danger ? " ghost" : ""}`,
+          onclick: async (e) => {
+            const yes = await ask({ title: `${action} ${u.unit}?`, okLabel: action, danger });
+            if (yes !== null) act("unit.act", { unit: u.unit, action }, `${u.unit}: ${action} done`, e.target);
+          },
+        },
+        action,
+      );
+    return h(
+      "div",
+      { class: `card${u.active === "failed" ? " flag" : ""}` },
+      h("div", { class: "row" }, h("h3", {}, u.unit), chip(`${u.active} · ${u.sub}`, u.active === "active" ? "good" : u.active === "failed" ? "warn" : "")),
+      h("p", { class: "meta" }, u.description),
+      log,
+      h(
+        "div",
+        { class: "row end" },
+        h(
+          "button",
+          {
+            class: "small ghost",
+            onclick: async (e) => {
+              e.target.disabled = true;
+              try {
+                const d = await api(`services/${encodeURIComponent(u.unit)}/logs?lines=40`);
+                log.replaceChildren(h("pre", {}, d.log || "(no log lines)"));
+              } catch (error) {
+                toast(error.message, true);
+              }
+              e.target.disabled = false;
+            },
+          },
+          "Logs",
+        ),
+        u.active === "active" ? doit("restart") : doit("start"),
+        u.active === "active" ? doit("stop", true) : null,
+      ),
+    );
+  };
+  const failed = units.filter((u) => u.active === "failed");
+  const rest = units.filter((u) => u.active !== "failed");
+  return [failed.length ? h("h2", {}, `Failed (${failed.length})`) : null, ...failed.map(row), h("h2", {}, `All units (${units.length})`), ...rest.map(row)];
+}
+
+// ---- shell -------------------------------------------------------------
+
+const TABS = [
+  ["now", "Now", "M3 12h4l3-8 4 16 3-8h4"],
+  ["next", "Next", "M8 6h13M8 12h13M8 18h13M3.5 6h.01M3.5 12h.01M3.5 18h.01"],
+  ["needs", "Needs me", "M12 8v5M12 16.5h.01M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18z"],
+  ["ask", "Ask", "M21 15a2 2 0 0 1-2 2H8l-5 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"],
+  ["more", "More", "M4 4h6v6H4zM14 4h6v6h-6zM4 14h6v6H4zM14 14h6v6h-6z"],
+];
+const VIEWS = {
+  now: ["Now", viewNow],
+  next: ["Next", viewNext, "ops"],
+  needs: ["Needs me", viewNeeds, "questions"],
+  ask: ["Ask", viewAsk],
+  more: ["More", viewMore, "ops"],
+  "more/queue": ["Queue", viewQueue],
+  "more/prs": ["Pull requests", viewPrs, "ops"],
+  "more/issues": ["Ranked issues", viewIssues, "ops"],
+  "more/agents": ["Agents", viewAgents, "ops"],
+  "more/services": ["Services", viewServices, "ops"],
+  "more/notify": ["Notifications", viewNotify],
+};
+let route = "now";
+let drawSeq = 0;
+
+function parse(hash) {
+  const r = hash.replace(/^#/, "");
+  if (VIEWS[r]) return [r, undefined];
+  const [top, sub] = r.split("/");
+  return VIEWS[top] ? [top, sub] : ["now", undefined];
+}
+
+function go(to) {
+  if (location.hash === `#${to}`) draw();
+  else location.hash = to;
+}
+
+function drawTabs() {
+  const n = needCounts();
+  const fresh = (docs.core?.asks || []).filter((a) => a.status === "answered").length;
+  tabsEl.replaceChildren(
+    ...TABS.map(([name, label, d]) => {
+      const count = name === "needs" ? n.total : name === "ask" ? fresh : 0;
+      return h(
+        "button",
+        { "aria-current": route.split("/")[0] === name ? "page" : null, onclick: () => go(name) },
+        icon(d),
+        label,
+        count ? h("span", { class: "badge" }, count > 99 ? "99+" : String(count)) : null,
+      );
+    }),
+  );
+}
+
+function drawFresh() {
+  const t = asOf.core;
+  const age = t ? (Date.now() - t) / 1000 : null;
+  freshEl.className = `fresh${signedOut ? " down" : age !== null && age > 180 ? " stale" : ""}`;
+  freshEl.textContent = signedOut ? "signed out" : age === null ? "" : age < 45 ? "live" : `as of ${ago(new Date(t).toISOString())} ago`;
+}
+
+/** Draw the current section from what is already loaded. Only the latest
+ * call may draw, so a slow section never lands on top of a newer one. */
+async function draw() {
+  const seq = ++drawSeq;
+  const [name, sub] = parse(location.hash);
+  route = sub ? `${name}/${sub}` : name;
+  const [title, render, extra] = VIEWS[name];
+  $("title").textContent = title;
+  $("back").hidden = !name.includes("/");
+  drawTabs();
+  drawFresh();
+  if (!docs.core) return view.replaceChildren(empty("Loading…"));
+  if (extra && !docs[extra]) loadDoc(extra).then(() => seq === drawSeq && draw()).catch(() => {});
+  try {
+    const nodes = await render(sub);
+    if (seq === drawSeq) view.replaceChildren(...nodes.filter(Boolean));
+  } catch (error) {
+    if (seq !== drawSeq) return;
+    view.replaceChildren(
+      card(h("h3", {}, "This section could not load"), h("p", { class: "why" }, error.message), h("div", { class: "row end" }, h("button", { onclick: () => (signedOut ? location.reload() : draw()) }, signedOut ? "Reload" : "Try again"))),
+    );
+  }
+}
+
+/** Read the documents again; draw only if something changed, or if asked. */
+async function refresh(force) {
+  const [name] = parse(location.hash);
+  const extra = VIEWS[name][2];
+  let changed = false;
+  try {
+    changed = await loadDoc("core");
+    if (extra) changed = (await loadDoc(extra)) || changed;
+  } catch (error) {
+    if (!docs.core) view.replaceChildren(card(h("h3", {}, "Could not load"), h("p", { class: "why" }, error.message), h("div", { class: "row end" }, h("button", { onclick: () => location.reload() }, "Reload"))));
+  }
+  // An open dialog or a half-typed answer is not redrawn from under the reader.
+  const busy = $("ask").open || pending.size > 0 || (document.activeElement && ["TEXTAREA", "INPUT", "SELECT"].includes(document.activeElement.tagName));
+  if (force || (changed && !busy)) draw();
+  else {
+    drawTabs();
+    drawFresh();
+  }
+}
+
+if (typeof document !== "undefined" && view) {
+  $("refresh").addEventListener("click", () => refresh(true));
+  $("back").addEventListener("click", () => go(route.split("/")[0]));
+  addEventListener("hashchange", () => {
+    shown = 12;
+    draw();
+  });
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "hidden") flushPending();
+    else refresh(false);
+  });
+  addEventListener("pagehide", flushPending);
+  setInterval(() => document.visibilityState === "visible" && refresh(false), 20_000);
+  setInterval(drawFresh, 10_000);
+  api("me")
+    .then((m) => {
+      me = m;
+    })
+    .catch(() => {});
+  // The worker shows notifications and opens the right screen when one is tapped.
+  if ("serviceWorker" in navigator) navigator.serviceWorker.register("/console/sw.js", { scope: "/console/" }).catch(() => {});
+  draw();
+  refresh(true);
+}
