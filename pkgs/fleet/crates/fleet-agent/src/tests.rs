@@ -1358,6 +1358,36 @@ fn a_leased_cargo_run_preserves_the_callers_stdin() {
 }
 
 #[test]
+fn cargo_lane_classifier_preserves_global_arguments_and_scans_compound_commands() {
+    for (command, should_lease) in [
+        ("cargo +1.84.1 test", true),
+        ("cargo --config net.offline=true check", true),
+        ("cargo --color always check", true),
+        ("cargo fmt --check && cargo test", true),
+        ("cargo metadata --format-version 1 && cargo build", true),
+        ("cargo fmt --package test", false),
+        ("cargo help build", false),
+    ] {
+        let plan = shell::plan(
+            Target::Local,
+            "test".into(),
+            &words(&[command]),
+            &Options {
+                build: true,
+                ..opts()
+            },
+        )
+        .unwrap();
+        let line = plan.args.last().unwrap();
+        assert_eq!(
+            line.contains("cargo-target-broker"),
+            should_lease,
+            "unexpected lane classification for {command:?}: {line}"
+        );
+    }
+}
+
+#[test]
 fn a_just_build_command_uses_the_shared_target_lane() {
     let plan = shell::plan(
         Target::Laptop,
@@ -1518,6 +1548,71 @@ printf '%s|%s|%s|%s\n' "$PWD" "$CARGO_TARGET_DIR" "$CARGO_BUILD_JOBS" "$*" > "$H
             manifest
         )
     );
+
+    // A word resembling a compile action after help/fmt is an argument,
+    // not the command. Conversely, global options and toolchain selection
+    // must not make a real compile bypass the broker.
+    let initial_broker_log = std::fs::read_to_string(home.join("broker.log")).unwrap();
+    for args in [
+        vec!["cargo", "help", "build"],
+        vec!["cargo", "fmt", "--package", "test"],
+    ] {
+        let output = std::process::Command::new("/bin/bash")
+            .arg(&lock_script)
+            .args(args)
+            .env("HOME", &home)
+            .env(
+                "PATH",
+                format!(
+                    "{}:{}",
+                    tools.display(),
+                    std::env::var("PATH").unwrap_or_default()
+                ),
+            )
+            .env_remove("CARGO_TARGET_DIR")
+            .current_dir(&caller)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+        assert_eq!(
+            std::fs::read_to_string(home.join("broker.log")).unwrap(),
+            initial_broker_log
+        );
+    }
+
+    for (args, expected_profile) in [
+        (vec!["cargo", "+1.84.1", "test"], "test"),
+        (
+            vec!["cargo", "--config", "net.offline=true", "check"],
+            "dev",
+        ),
+    ] {
+        let output = std::process::Command::new("/bin/bash")
+            .arg(&lock_script)
+            .args(&args)
+            .env("HOME", &home)
+            .env(
+                "PATH",
+                format!(
+                    "{}:{}",
+                    tools.display(),
+                    std::env::var("PATH").unwrap_or_default()
+                ),
+            )
+            .env_remove("CARGO_TARGET_DIR")
+            .current_dir(&caller)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+        let log = std::fs::read_to_string(home.join("broker.log")).unwrap();
+        let cargo_args = args[1..].join(" ");
+        assert_eq!(
+            log,
+            format!(
+                "exec --repo caller --profile {expected_profile} --wait 900 -- cargo {cargo_args}\n"
+            )
+        );
+    }
     let _ = std::fs::remove_dir_all(&home);
 }
 
