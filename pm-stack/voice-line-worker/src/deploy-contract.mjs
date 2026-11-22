@@ -66,7 +66,30 @@ export function deploymentIsFullRollout(deployments, versionId) {
   return version?.version_id === versionId && Number(version.percentage) === 100;
 }
 
-export function parseDeployArgs(argv) {
-  if (argv.length > 0) throw new Error(`unexpected argument: ${argv[0]}`);
-  return {};
+export function currentFullRolloutVersionId(deployments) {
+  const latest = deployments[0];
+  if (!Array.isArray(latest?.versions) || latest.versions.length !== 1) return null;
+  const [version] = latest.versions;
+  return typeof version?.version_id === "string" && Number(version.percentage) === 100
+    ? version.version_id
+    : null;
+}
+
+export function versionMatchesProvenance(version, sha, runId, runAttempt) {
+  const tag = versionTag(version);
+  const message = version.annotations?.["workers/message"]
+    ?? version.metadata?.annotations?.["workers/message"];
+  return tag === `git-${sha}-r${runId}-a${runAttempt}` && message === `git ${sha}`;
+}
+
+export function validatePromotionInputs({ versionId, sourceSha, uploadRunId, uploadRunAttempt, expectedCurrentVersionId }) {
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(versionId)) {
+    throw new Error("version_id must be a Cloudflare Version UUID");
+  }
+  if (!/^[a-f0-9]{40}$/i.test(sourceSha)) throw new Error("source_sha must be a full 40-character commit SHA");
+  if (!/^\d+$/.test(uploadRunId) || Number(uploadRunId) <= 0) throw new Error("upload_run_id must be a positive GitHub Actions run ID");
+  if (!/^\d+$/.test(uploadRunAttempt) || Number(uploadRunAttempt) <= 0) throw new Error("upload_run_attempt must be a positive run attempt");
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(expectedCurrentVersionId)) {
+    throw new Error("expected_current_version_id must be a Cloudflare Version UUID");
+  }
 }

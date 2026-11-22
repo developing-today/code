@@ -5,11 +5,13 @@ import config from "../cloudflare.config.ts";
 import {
   deployableVersionIds,
   deploymentIsFullRollout,
+  currentFullRolloutVersionId,
   parseCfJson,
-  parseDeployArgs,
   parseDeploymentItems,
   parseVersionItems,
   versionForTag,
+  versionMatchesProvenance,
+  validatePromotionInputs,
 } from "../src/deploy-contract.mjs";
 
 test("cf config preserves the deployed Worker bindings and SQLite Durable Object", () => {
@@ -49,6 +51,18 @@ test("finds the newest version matching the commit tag", () => {
   assert.equal(versionForTag(versions, "missing"), null);
 });
 
+test("requires exact version tag and message provenance for promotion", () => {
+  const sha = "deadbeef1234" + "a".repeat(28);
+  assert.equal(versionMatchesProvenance({
+    id: "candidate",
+    annotations: { "workers/tag": `git-${sha}-r12345-a2`, "workers/message": `git ${sha}` },
+  }, sha, "12345", "2"), true);
+  assert.equal(versionMatchesProvenance({
+    id: "spoofed",
+    annotations: { "workers/tag": `git-${sha}-r12345-a1`, "workers/message": `git ${sha}` },
+  }, sha, "12345", "2"), false);
+});
+
 test("accepts API deployable versions and refuses absent versions", () => {
   assert.deepEqual(deployableVersionIds({ result: { items: [{ id: "v1" }] } }), ["v1"]);
   assert.deepEqual(deployableVersionIds({ result: [] }), []);
@@ -62,13 +76,30 @@ test("requires a sole 100 percent rollout of the requested version", () => {
   assert.equal(deploymentIsFullRollout([], "v1"), false);
 });
 
+test("identifies only an unambiguous current 100 percent deployment", () => {
+  assert.equal(currentFullRolloutVersionId([{ versions: [{ version_id: "v1", percentage: 100 }] }]), "v1");
+  assert.equal(currentFullRolloutVersionId([{ versions: [{ version_id: "v1", percentage: 99 }] }]), null);
+  assert.equal(currentFullRolloutVersionId([{ versions: [{ version_id: "v1", percentage: 50 }, { version_id: "v2", percentage: 50 }] }]), null);
+  assert.equal(currentFullRolloutVersionId([]), null);
+});
+
+test("promotion inputs require exact SHA and UUID values", () => {
+  const values = {
+    versionId: "123e4567-e89b-42d3-a456-426614174000",
+    sourceSha: "a".repeat(40),
+    uploadRunId: "12345",
+    uploadRunAttempt: "2",
+    expectedCurrentVersionId: "123e4567-e89b-42d3-a456-426614174001",
+  };
+  assert.doesNotThrow(() => validatePromotionInputs(values));
+  assert.throws(() => validatePromotionInputs({ ...values, versionId: "latest" }), /Version UUID/);
+  assert.throws(() => validatePromotionInputs({ ...values, sourceSha: "deadbeef" }), /full 40-character/);
+  assert.throws(() => validatePromotionInputs({ ...values, uploadRunId: "-1" }), /positive GitHub Actions run ID/);
+  assert.throws(() => validatePromotionInputs({ ...values, expectedCurrentVersionId: "latest" }), /expected_current_version_id/);
+});
+
 test("parses version and deployment list output shapes", () => {
   assert.deepEqual(parseVersionItems('{"result":{"items":[{"id":"v1"}]}}'), [{ id: "v1" }]);
   assert.deepEqual(parseDeploymentItems('{"result":[{"id":"d1"}]}'), [{ id: "d1" }]);
   assert.throws(() => parseVersionItems("{}"), /unexpected versions output/);
-});
-
-test("deploy contract accepts no arguments and rejects all others", () => {
-  assert.deepEqual(parseDeployArgs([]), {});
-  assert.throws(() => parseDeployArgs(["--force"]), /unexpected argument/);
 });

@@ -47,21 +47,56 @@ bunx wrangler dev   # local: AI binding runs remote against the account
 ```
 
 The checked-in `wrangler.toml` remains the local-development configuration.
-Production deployments use the pinned Cloudflare `cf` CLI and its Workers
-Versions API flow. From this directory, on Node.js 24.22+:
+Production changes use the pinned Cloudflare `cf` CLI and separate upload and
+promotion workflows. Uploading creates an immutable Workers Version and does
+not change traffic. Promotion is an explicit, separately approved operation.
+From this directory, on Node.js 24.22+:
 
 ```sh
 npm run cf:build
-npm run deploy
 ```
 
-The deploy command requires `CLOUDFLARE_ACCOUNT_ID` and
-`CLOUDFLARE_API_TOKEN` in the environment. It uploads a version tagged with
-the source commit, checks that version is deployable, sends it 100% of traffic,
-then verifies the deployment and `/health` response. It does not make a voice
-call. GitHub Actions runs the same offline tests and deploys only on pushes to
-`main` that touch this worker or its workflow; manual dispatch is also limited
-to `main`.
+Run uploads through the manual GitHub Actions workflow rather than locally.
+It creates a version tagged with the full source SHA, upload run ID, and
+attempt, with the full source SHA in its message, and reports the resulting
+Version UUID. It does not create a deployment or route traffic.
+
+GitHub Actions uploads only from a manually dispatched run on `main`; it runs
+the offline tests and build first. Promotion is a different manual workflow,
+also limited to `main`, and requires the uploaded Version UUID, its full source
+SHA, upload run ID and attempt, and the expected currently serving Version
+UUID. Before promotion the workflow checks that the source commit is reachable
+from `main`, the candidate
+has the exact SHA and upload-run tag plus the full-SHA message, the referenced
+upload run succeeded from the expected workflow on `main` at that SHA,
+Cloudflare marks it deployable, and the
+currently serving deployment is a single 100% version matching the supplied
+expected ID. It checks the serving version again immediately before promotion
+and verifies 100% read-back afterwards.
+
+Before enabling either workflow, configure these repository environments
+(environment protection and secrets cannot be declared in workflow YAML):
+
+1. `voice-line-worker-upload`: allow deployments from `main` only; require an
+   independent reviewer, prevent self-review, and disallow administrator
+   bypass; add the environment secret
+   `CLOUDFLARE_VOICE_LINE_UPLOAD_TOKEN`.
+2. `voice-line-worker-production`: allow deployments from `main` only; require
+   an independent reviewer, prevent self-review, and disallow administrator
+   bypass; add the environment secret
+   `CLOUDFLARE_VOICE_LINE_PROMOTION_TOKEN`.
+3. Set the non-secret environment variable `CLOUDFLARE_ACCOUNT_ID` in both
+   environments.
+
+Create separate Cloudflare API tokens with the Individual Workers Editor role
+scoped only to the existing `voice-line` Worker. Store them only as the named
+environment secrets above. These workflows do not read generic repository or
+organization token secrets. The upload job receives only its environment
+secret; the promotion job receives only its own secret after the production
+environment approval passes.
+
+No voice call or health request is part of either workflow; promotion verifies
+the Cloudflare deployment read-back only.
 
 Deploy needs (account-side, one time):
 

@@ -1,0 +1,71 @@
+# Promote only a previously uploaded exact version, after environment approval.
+name: Voice line Worker promote
+
+on:
+  workflow_dispatch:
+    inputs:
+      version_id:
+        description: Cloudflare Workers Version UUID printed by the upload run
+        required: true
+        type: string
+      source_sha:
+        description: Full 40-character source commit SHA printed by the upload run
+        required: true
+        type: string
+      upload_run_id:
+        description: GitHub Actions run ID printed by the upload run
+        required: true
+        type: string
+      upload_run_attempt:
+        description: Attempt number printed by the upload run
+        required: true
+        type: string
+      expected_current_version_id:
+        description: Current 100% serving Version UUID (compare-and-check)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: voice-line-worker-promotion
+  cancel-in-progress: false
+
+jobs:
+  promote:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment:
+      name: voice-line-worker-production
+    env:
+      CF_SEND_TELEMETRY: "false"
+      CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+      CANDIDATE_VERSION_ID: ${{ inputs.version_id }}
+      CANDIDATE_SOURCE_SHA: ${{ inputs.source_sha }}
+      CANDIDATE_UPLOAD_RUN_ID: ${{ inputs.upload_run_id }}
+      CANDIDATE_UPLOAD_RUN_ATTEMPT: ${{ inputs.upload_run_attempt }}
+      EXPECTED_CURRENT_VERSION_ID: ${{ inputs.expected_current_version_id }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+
+      - name: Install worker dependencies
+        working-directory: pm-stack/voice-line-worker
+        run: bun install --frozen-lockfile
+
+      - name: Verify exact candidate provenance and serving version, then promote
+        working-directory: pm-stack/voice-line-worker
+        run: npm run promote
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_VOICE_LINE_PROMOTION_TOKEN }}
+          GH_TOKEN: ${{ github.token }}

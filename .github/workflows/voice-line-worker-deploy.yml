@@ -1,29 +1,26 @@
-# Production deploys are push-to-main deployments (not PR CI) per
-# .github/ci-policy.md. PRs never receive Cloudflare credentials.
-name: Voice line Worker deploy
+# Upload an immutable candidate only. Promotion is a separate approved workflow.
+name: Voice line Worker upload
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - pm-stack/voice-line-worker/**
-      - .github/workflows/voice-line-worker-deploy.yml
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: voice-line-worker-production
+  group: voice-line-worker-upload
   cancel-in-progress: false
 
 jobs:
-  deploy:
+  upload:
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    environment:
+      name: voice-line-worker-upload
     env:
       CF_SEND_TELEMETRY: "false"
+      CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
     steps:
       - uses: actions/checkout@v7
 
@@ -48,9 +45,8 @@ jobs:
         working-directory: pm-stack/voice-line-worker
         run: npm run cf:build
 
-      - name: Upload and deploy a Workers Version
+      - name: Upload an immutable Workers Version (no traffic change)
         working-directory: pm-stack/voice-line-worker
-        run: npm run deploy
+        run: npm run upload
         env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_VOICE_LINE_UPLOAD_TOKEN }}

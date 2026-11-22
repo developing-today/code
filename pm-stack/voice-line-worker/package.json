@@ -10,7 +10,8 @@
   "private": true,
   "scripts": {
     "cf:build": "cf build",
-    "deploy": "node scripts/deploy.mjs",
+    "upload": "node scripts/upload-version.mjs",
+    "promote": "node scripts/promote-version.mjs",
     "dev": "wrangler dev",
     "test": "bun test",
     "typecheck": "tsc --noEmit"
