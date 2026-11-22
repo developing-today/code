@@ -6,4 +6,3 @@ Wants=network-online.target
 [Service]
 Type=oneshot
 ExecStart=/usr/bin/env bash __GB_DIR__/systemd/run-r2.sh
-WorkingDirectory=%h/backups/github

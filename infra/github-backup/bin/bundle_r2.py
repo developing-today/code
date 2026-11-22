@@ -52,22 +52,23 @@ def upload_repo(repo, root, bucket):
     fd, bundle = tempfile.mkstemp(prefix=parts[-1] + ".", suffix=".bundle", dir=bundle_dir)
     os.close(fd)
     os.unlink(bundle)
-    result = bundle_cold.create_bundle(mirror, bundle)
-    digest = hashlib.sha256()
-    with open(bundle, "rb") as artifact:
-        for chunk in iter(lambda: artifact.read(1024 * 1024), b""):
-            digest.update(chunk)
-    bundle_sha256 = digest.hexdigest()
-    # Content-addressing avoids replacing an earlier verified backup when
-    # the same repository advances; a repeated identical artifact is safe.
-    remote = (
-        f"r2bak:{bucket}/github-backup/cold-bundles/{parts[0]}/{parts[1]}/"
-        f"{result['head']}-{bundle_sha256}.bundle"
-    )
-    _run_rclone(["copyto", bundle, remote])
-    fd, readback = tempfile.mkstemp(prefix=".r2-readback-", dir=bundle_dir)
-    os.close(fd)
+    readback = None
     try:
+        result = bundle_cold.create_bundle(mirror, bundle)
+        digest = hashlib.sha256()
+        with open(bundle, "rb") as artifact:
+            for chunk in iter(lambda: artifact.read(1024 * 1024), b""):
+                digest.update(chunk)
+        bundle_sha256 = digest.hexdigest()
+        # Content-addressing avoids replacing an earlier verified backup when
+        # the same repository advances; a repeated identical artifact is safe.
+        remote = (
+            f"r2bak:{bucket}/github-backup/cold-bundles/{parts[0]}/{parts[1]}/"
+            f"{result['head']}-{bundle_sha256}.bundle"
+        )
+        _run_rclone(["copyto", bundle, remote])
+        fd, readback = tempfile.mkstemp(prefix=".r2-readback-", dir=bundle_dir)
+        os.close(fd)
         _run_rclone(["copyto", remote, readback])
         downloaded = hashlib.sha256()
         with open(readback, "rb") as artifact:
@@ -75,9 +76,21 @@ def upload_repo(repo, root, bucket):
                 downloaded.update(chunk)
         if downloaded.hexdigest() != bundle_sha256:
             raise RuntimeError(f"downloaded R2 bundle SHA-256 does not match: {remote}")
+        return {
+            "status": result["status"],
+            "head": result["head"],
+            "remote": remote,
+            "sha256": bundle_sha256,
+        }
     finally:
-        os.unlink(readback)
-    return {**result, "remote": remote, "sha256": bundle_sha256}
+        # Remote verified objects are the retained backups; mirrors remain the
+        # source for rebuilding a local staged bundle on the next run.
+        for artifact in (readback, bundle):
+            if artifact is not None:
+                try:
+                    os.unlink(artifact)
+                except FileNotFoundError:
+                    pass
 
 
 def _parser():

@@ -1,6 +1,6 @@
 # github-backup — the GitHub estate mirror system's laptop timers
 # (developing-today/code#3215): drain the Worker webhook queue every
-# 5 minutes, fetch all mirrors daily, reconcile weekly.
+# 5 minutes, fetch all mirrors daily, reconcile weekly, and verify R2 bundles daily.
 #
 # Home-manager module: imported by the amd host config
 # (nixos/hosts/default.nix) with services.github-backup.enable = true.
@@ -32,13 +32,12 @@ let
     Service = {
       Type = "oneshot";
       ExecStart = execStart;
-      WorkingDirectory = "%h/backups/github";
     };
   };
 in
 {
   options.services.github-backup = {
-    enable = lib.mkEnableOption "the github-backup mirror timers (drain, fetch, reconcile)";
+    enable = lib.mkEnableOption "the github-backup mirror timers (drain, fetch, reconcile, R2)";
   };
 
   config = lib.mkIf cfg.enable {
@@ -46,6 +45,7 @@ in
       github-backup-drain = netService "github-backup: drain webhook queue from the Worker and fetch" "${infra}/systemd/drain-wrapper.sh";
       github-backup-fetch = netService "github-backup: daily fetch of all mirrors" "/usr/bin/env python3 ${infra}/bin/fetch_mirrors.py";
       github-backup-reconcile = netService "github-backup: weekly reconciliation sweep" "/usr/bin/env python3 ${infra}/bin/reconcile.py";
+      github-backup-r2 = netService "github-backup: verify and upload all planned cold bundles to R2" "${infra}/systemd/run-r2.sh";
     };
 
     systemd.user.timers = {
@@ -73,6 +73,15 @@ in
           OnCalendar = "weekly";
           Persistent = true;
           RandomizedDelaySec = "2h";
+        };
+        Install.WantedBy = [ "timers.target" ];
+      };
+      github-backup-r2 = {
+        Unit.Description = "github-backup verified R2 bundles (daily)";
+        Timer = {
+          OnCalendar = "*-*-* 01:30:00";
+          Persistent = true;
+          RandomizedDelaySec = "30m";
         };
         Install.WantedBy = [ "timers.target" ];
       };

@@ -9,13 +9,6 @@ if [[ $# -ne 0 ]]; then
 fi
 set -euo pipefail
 GB_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-ATLAS_BACKUP="$HOME/git/code/nixos/home/atlas-backup.sh"
-
-if [[ ! -r "$ATLAS_BACKUP" ]]; then
-  echo "github-backup-r2: cannot read the established R2 runtime credential setup" >&2
-  exit 1
-fi
-
 # Match atlas-backup.sh: fetch secrets at runtime by key name and expose them
 # only to this process tree via rclone's environment-based remote config.
 if [[ -z "${BWS_ACCESS_TOKEN:-}" && -r "$HOME/.config/bws/access-token" ]]; then
