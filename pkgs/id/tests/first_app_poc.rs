@@ -31,19 +31,16 @@ use std::collections::{BTreeMap, BTreeSet};
 use chrono::{NaiveDate, TimeZone};
 use chrono_tz::Tz;
 use id::{
-    chain::{ChainExt, Event, sign},
+    chain::{sign, ChainExt, Event},
     didit::{
-        ActiveWindow, ENTITY_KIND, Entity, Expectation, EXPECTATION_KIND, HoursSpan, Period,
-        RECORD_KIND, Record, VerdictState, Window as DiditWindow, decode_record_body,
-        encode_entity_body, encode_expectation_body, encode_record_body, evaluate,
+        decode_record_body, encode_entity_body, encode_expectation_body, encode_record_body,
+        evaluate, ActiveWindow, Entity, Expectation, HoursSpan, Period, Record, VerdictState,
+        Window as DiditWindow, ENTITY_KIND, EXPECTATION_KIND, RECORD_KIND,
     },
-    documents::{DOCUMENT_KIND, DocumentRef},
+    documents::{DocumentRef, DOCUMENT_KIND},
     event_store::{EventStore, Ingest},
-    idset::{
-        Entry, Excludes, WriterSet,
-        view::expand_set,
-    },
-    tag_claims::{SET_KIND, TagOp},
+    idset::{view::expand_set, Entry, Excludes, WriterSet},
+    tag_claims::{TagOp, SET_KIND},
     waiting::WaitingLimits,
 };
 use p2panda_core::{Hash, SeqNum, SigningKey};
@@ -295,8 +292,8 @@ fn walk_record(id_byte: u8, at: i64) -> Record {
 }
 
 #[test]
-fn test_first_app_poc_two_identities_exchange_and_a_third_partys_claims_are_excluded_but_retrievable()
- {
+fn test_first_app_poc_two_identities_exchange_and_a_third_partys_claims_are_excluded_but_retrievable(
+) {
     let mut a = Writer::new(1);
     let mut b = Writer::new(2);
     let mut c = Writer::new(3);
@@ -306,7 +303,11 @@ fn test_first_app_poc_two_identities_exchange_and_a_third_partys_claims_are_excl
     // (three walks a day), and the first walk.
     let doc_v1 = DocumentRef::for_bytes("text/markdown", NOTE_V1).unwrap();
     let note_v1 = document_event(&mut a, &doc_v1, vec![]);
-    let note_v1_id_tag = tag_event(&mut a, set(note_v1.id, "note.id", "note-1"), vec![note_v1.id]);
+    let note_v1_id_tag = tag_event(
+        &mut a,
+        set(note_v1.id, "note.id", "note-1"),
+        vec![note_v1.id],
+    );
 
     let entity = Entity {
         entity: dog(),
@@ -349,7 +350,11 @@ fn test_first_app_poc_two_identities_exchange_and_a_third_partys_claims_are_excl
     // B: the note's second revision (superseding A's) and the second walk.
     let doc_v2 = DocumentRef::for_bytes("text/markdown", NOTE_V2).unwrap();
     let note_v2 = document_event(&mut b, &doc_v2, vec![note_v1.id]);
-    let note_v2_id_tag = tag_event(&mut b, set(note_v2.id, "note.id", "note-1"), vec![note_v2.id]);
+    let note_v2_id_tag = tag_event(
+        &mut b,
+        set(note_v2.id, "note.id", "note-1"),
+        vec![note_v2.id],
+    );
     let note_v2_supersedes_tag = tag_event(
         &mut b,
         set(note_v2.id, "note.supersedes", &note_v1.id.to_string()),
@@ -398,10 +403,7 @@ fn test_first_app_poc_two_identities_exchange_and_a_third_partys_claims_are_excl
     // The exchange converges: both replicas hold the same documents and
     // the same tag claims.
     assert_eq!(store_a.documents().unwrap(), store_b.documents().unwrap());
-    assert_eq!(
-        store_a.tag_claims().unwrap(),
-        store_b.tag_claims().unwrap()
-    );
+    assert_eq!(store_a.tag_claims().unwrap(), store_b.tag_claims().unwrap());
 
     // The blob bytes a fetch would supply, keyed by the hash each
     // document names.
