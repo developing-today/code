@@ -233,8 +233,8 @@ pub const DOMAINS: &[Domain] = &[
         aliases: &["repo-queue"],
         subcommands: &[
             "validate",
-            "list",
             "enqueue",
+            "list",
             "claim",
             "release",
             "lane",
