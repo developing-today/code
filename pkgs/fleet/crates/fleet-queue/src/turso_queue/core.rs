@@ -477,12 +477,15 @@ pub(crate) fn not_code_lane_owner(lane_id: &str) -> Option<&'static str> {
 /// The family of a lane id shaped `<family>-<suffix>`, when the
 /// family is one the broker knows and the suffix is a nonempty
 /// lowercase alphabetic string ("code-a", "not-code-c",
-/// "darwin-nix-a"). claim_preamble uses this as the wildcard
-/// rule (Drew, 2026-11-16): a claim naming a known-family lane
-/// with no registry row auto-provisions the row instead of
-/// failing with "unknown lane_id". darwin-nix is wildcard-only:
-/// it is deliberately not part of the canonical seed set above,
-/// but a darwin-nix lane claim provisions its row on first use.
+/// "darwin-nix-a"). Since #12544 (Drew, 2026-11-22) claims no
+/// longer consult this: claim_preamble auto-registers ANY lane
+/// name on first claim. The family rule survives for
+/// execution_lane_fields, which derives an execution record's
+/// mode from the family of the lane id it carries (#7598).
+/// darwin-nix remains wildcard-only in the seed sense: it is
+/// deliberately not part of the canonical seed set above, but a
+/// darwin-nix lane claim registers its row on first use, like
+/// any other name.
 pub(crate) fn lane_family_of(lane_id: &str) -> Option<&str> {
     let (family, suffix) = lane_id.rsplit_once('-')?;
     if suffix.is_empty() || !suffix.bytes().all(|b| b.is_ascii_lowercase()) {
@@ -502,31 +505,15 @@ const LANE_FAMILIES: [&str; 7] = [
     "darwin-nix",
 ];
 
-/// The refusal for a claim whose lane id has no registry row and no
-/// known family. It keeps the "unknown lane_id" verdict callers key
-/// on, and when the id is a bare family name ("not-code" for
-/// "not-code-d", #6853's recurrence) it says so and names the shape
-/// to pass instead, so the caller can correct itself rather than
-/// stop.
-pub(crate) fn unknown_lane_error(lane_id: &str) -> String {
-    if LANE_FAMILIES.contains(&lane_id) {
-        format!(
-            "claim_repo_task: unknown lane_id {lane_id}: that is a lane family, not a lane; \
-             pass a lane in it such as {lane_id}-<suffix> (your scheduled lane's full id)"
-        )
-    } else {
-        format!("claim_repo_task: unknown lane_id {lane_id}")
-    }
-}
-
 /// The registry seed statement (#6853): INSERT OR IGNORE, so it
 /// restores a missing registration with its canonical fields and
 /// can never resurrect or re-enable a lane whose row already
 /// exists in any state -- a lane disabled by hand stays disabled
 /// across broker restarts until it is re-enabled by hand. Lanes
-/// outside the canonical set are never seeded at all; the
-/// claim-time wildcard (lane_family_of) provisions known-family
-/// lanes the seed does not name.
+/// outside the canonical set are never seeded at all;
+/// claim_preamble's auto-registration (lane_provision_sql,
+/// #12544) registers any lane the seed does not name, on first
+/// claim.
 pub(crate) fn lane_seed_sql() -> String {
     let values: Vec<String> = canonical_lanes()
         .iter()
@@ -536,6 +523,19 @@ pub(crate) fn lane_seed_sql() -> String {
         "INSERT OR IGNORE INTO lanes (lane_id, worker_id, queue, enabled) VALUES {}",
         values.join(", ")
     )
+}
+
+/// The claim-time auto-registration statement (#12544, Drew
+/// 2026-11-22): a claim naming a lane with no registry row
+/// registers it on the spot -- the claiming worker as owner, the
+/// one-queue binding ("*"), enabled = 1 -- and the claim
+/// proceeds. INSERT OR IGNORE, so a row that already exists (or
+/// lands concurrently) is never overwritten: an existing row's
+/// owner and enabled flag always win over a registration
+/// attempt. Extracted as a builder so the tests pin its shape
+/// without a live store (the claim_update_sql pattern).
+pub(crate) fn lane_provision_sql() -> &'static str {
+    "INSERT OR IGNORE INTO lanes (lane_id, worker_id, queue, enabled) VALUES (?, ?, '*', 1)"
 }
 
 impl TursoBackend {

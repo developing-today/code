@@ -51,6 +51,10 @@ from a covered sibling and state the contract in their header comment.
 
 At the start of each task, before relying on Git names such as `origin/main`, run `bash "$(git rev-parse --show-toplevel)/scripts/worker-preflight.sh"`. If it reports `refs/heads/origin/main`, stop and escalate; do not delete the branch or alter refs as part of task work. That local branch shadows the remote-tracking ref.
 
+## Fleet commands
+
+Use `.agents/skills/fleet-operations/SKILL.md`; reference: `pkgs/fleet/docs/verbs.md`.
+
 ## Fleet schedules
 
 The unified fleet schedule registry is `doc/fleet-schedule-registry.md`

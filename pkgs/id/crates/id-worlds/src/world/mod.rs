@@ -39,6 +39,7 @@ mod core;
 mod handle;
 mod handoff_operations;
 pub mod hotness;
+mod http_fetch;
 mod journal;
 mod metrics;
 mod provider_broker;
@@ -181,6 +182,12 @@ pub struct WorldLimits {
     /// Capabilities the server allows any world to use. Runtime configuration,
     /// not journaled; a world's own ceiling and grants only narrow it.
     pub server_caps: BTreeSet<String>,
+    /// Hosts the `http.fetch` provider may fetch from (#1062): the
+    /// admin allowlist. Runtime configuration, not journaled; empty
+    /// by default, which refuses every fetch. Entries are matched
+    /// exactly against the URL's normalized host — no wildcards, no
+    /// implied subdomains.
+    pub http_fetch_hosts: BTreeSet<String>,
 }
 
 impl Default for WorldLimits {
@@ -197,6 +204,7 @@ impl Default for WorldLimits {
             min_tick_ms: 1000,
             grant_on_use: false,
             server_caps: crate::world_caps::default_ceiling_names(),
+            http_fetch_hosts: BTreeSet::new(),
         }
     }
 }
