@@ -40,7 +40,7 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use iroh::{
     Endpoint, EndpointAddr,
-    endpoint::Connection,
+    endpoint::{Connection, RecvStream, SendStream},
     protocol::{AcceptError, ProtocolHandler},
 };
 use serde::{Deserialize, Serialize};
@@ -55,11 +55,9 @@ use super::slices::b07_conflict_report::{
 };
 use super::slices::b08_sync_scope::{Exclusion, SyncScopeConfig};
 use super::slices::b09_anti_entropy::{
-    Exchange, Inventory, Offer, Replica, Transfer, divergence, diverged_objects,
+    Exchange, Inventory, Offer, Replica, Transfer, diverged_objects, divergence,
 };
-use super::slices::b32_ingest_gate::{
-    Envelope, EventId, IngressPath, LogicalTime, RejectReason,
-};
+use super::slices::b32_ingest_gate::{Envelope, EventId, IngressPath, LogicalTime, RejectReason};
 
 /// ALPN for the federation exchange. Within version 1 fields may be
 /// added; removing or changing one needs `/id-fed-exchange/2`.
@@ -76,10 +74,7 @@ pub struct WireEnvelope {
     /// The verifying key the envelope claims for its signer.
     pub verifying_key: [u8; 32],
     /// The signature over the envelope's preimage, if any.
-    #[serde(
-        serialize_with = "ser_signature",
-        deserialize_with = "de_signature"
-    )]
+    #[serde(serialize_with = "ser_signature", deserialize_with = "de_signature")]
     pub signature: Option<[u8; 64]>,
     /// The scope the envelope asks to be admitted into.
     pub scope: String,
@@ -328,9 +323,7 @@ impl From<&IngestError> for WireError {
             IngestError::JoinRefused(refusal) => Self::JoinRefused(refusal.into()),
             IngestError::MalformedVersion => Self::MalformedVersion,
             IngestError::ForeignParent(id) => Self::ForeignParent(*id),
-            IngestError::ResolutionRequired { key } => {
-                Self::ResolutionRequired { key: *key }
-            }
+            IngestError::ResolutionRequired { key } => Self::ResolutionRequired { key: *key },
             IngestError::NotAResolution { named } => Self::NotAResolution { named: *named },
             IngestError::RedundantParents => Self::RedundantParents,
         }
@@ -456,11 +449,7 @@ pub type IdList = Vec<(ObjectId, Vec<EventId>)>;
 pub type Summary = Vec<(ObjectId, Digest32)>;
 
 fn summary_of(inventory: &Inventory) -> Summary {
-    inventory
-        .summary()
-        .into_iter()
-        .map(|(object, digest)| (object, digest))
-        .collect()
+    inventory.summary().into_iter().collect()
 }
 
 fn ids_of(inventory: &Inventory, objects: &[ObjectId]) -> IdList {
@@ -488,8 +477,9 @@ fn assemble_inventory(
     remote_summary: &BTreeMap<ObjectId, Digest32>,
     remote_ids: &IdList,
 ) -> Inventory {
-    let diverged: BTreeSet<ObjectId> =
-        diverged_objects(own_summary, remote_summary).into_iter().collect();
+    let diverged: BTreeSet<ObjectId> = diverged_objects(own_summary, remote_summary)
+        .into_iter()
+        .collect();
     let remote: BTreeMap<ObjectId, BTreeSet<EventId>> = remote_ids
         .iter()
         .map(|(object, ids)| (*object, ids.iter().copied().collect()))
@@ -571,16 +561,104 @@ pub struct ServerTransfer {
 /// behind the [`ExchangeProtocol`] at `target` is the responder, and
 /// the returned [`Exchange`] is the one the session produced.
 pub async fn reconcile_remote(
-    _endpoint: &Endpoint,
-    _target: impl Into<EndpointAddr>,
-    _local: &mut Replica,
-    _config: &SyncScopeConfig,
-    _now: LogicalTime,
+    endpoint: &Endpoint,
+    target: impl Into<EndpointAddr>,
+    local: &mut Replica,
+    config: &SyncScopeConfig,
+    now: LogicalTime,
 ) -> Result<Exchange> {
-    // Permissive body for the failing-first test (feature-slice step
-    // 4): the session lands in the next commit; until it does, an
-    // exchange over the wire moves nothing and reports nothing.
-    Ok(Exchange::default())
+    let local_inventory = local.inventory();
+    let local_summary: BTreeMap<ObjectId, Digest32> = local_inventory.summary();
+    let local_refused: BTreeSet<EventId> = local.refused().keys().copied().collect();
+    let hello = Hello {
+        name: local.name().to_owned(),
+        scope: config.scope.clone(),
+        trust_domain: config.trust_domain.clone(),
+        capacity: config.capacity,
+        retention: config.retention,
+        now,
+        summary: summary_of(&local_inventory),
+        refused: local_refused.iter().copied().collect(),
+    };
+
+    // The session's first half: everything it sends is computed from
+    // the inventories as they stand, before anything moves — the
+    // same rule `reconcile` follows.
+    let session = async {
+        let conn = connect(endpoint, target.into(), EXCHANGE_ALPN)
+            .await
+            .context("connecting to the responder")?;
+        let (mut send, mut recv) = conn.open_bi().await.context("opening a stream")?;
+        write_frame(&mut send, &serde_json::to_vec(&hello)?).await?;
+        let frame = read_frame(&mut recv)
+            .await?
+            .context("the responder closed without a hello reply")?;
+        let reply: HelloReply =
+            crate::checked_json::from_slice_unique(&frame).context("malformed hello reply")?;
+
+        let remote_summary: BTreeMap<ObjectId, Digest32> = reply.summary.iter().copied().collect();
+        let remote_refused: BTreeSet<EventId> = reply.refused.iter().copied().collect();
+        let remote_inventory = assemble_inventory(
+            &local_inventory,
+            &local_summary,
+            &remote_summary,
+            &reply.ids,
+        );
+        let diverged = diverged_objects(&local_summary, &remote_summary);
+        let divergence = divergence(&local_inventory, &remote_inventory);
+        let offer = local.offer(&remote_inventory, &remote_refused, config, now);
+        let versions: Vec<WireEnvelope> = offer
+            .send
+            .iter()
+            .filter_map(|event_id| local.envelope(event_id))
+            .map(WireEnvelope::from)
+            .collect();
+        let transfer = ClientTransfer {
+            ids: ids_of(&local_inventory, &diverged),
+            versions,
+        };
+        write_frame(&mut send, &serde_json::to_vec(&transfer)?).await?;
+        send.finish().context("finishing the transfer")?;
+        let frame = read_frame(&mut recv)
+            .await?
+            .context("the responder closed without a transfer reply")?;
+        let server: ServerTransfer =
+            crate::checked_json::from_slice_unique(&frame).context("malformed transfer reply")?;
+        conn.close(0_u32.into(), b"done");
+        Ok::<_, anyhow::Error>((reply.name, divergence, offer, server))
+    };
+    let (remote_name, divergence, offer, server) =
+        tokio::time::timeout(TIMEOUT, session)
+            .await
+            .map_err(|_| anyhow::anyhow!("the exchange timed out after {TIMEOUT:?}"))??;
+
+    // The session's second half: the responder's versions are
+    // admitted through the local gate, in send order, as in
+    // `reconcile`'s backward transfer.
+    let forward = Transfer {
+        offer,
+        outcomes: server
+            .outcomes
+            .into_iter()
+            .map(|(event_id, result)| (event_id, from_wire_outcome(result)))
+            .collect(),
+    };
+    let mut backward_outcomes = Vec::new();
+    for wire in server.versions {
+        let envelope: Envelope = wire.into();
+        let event_id = envelope.event_id;
+        let result = local.receive(IngressPath::Internal, &envelope, &remote_name, now);
+        backward_outcomes.push((event_id, result));
+    }
+    let backward = Transfer {
+        offer: server.offer.into(),
+        outcomes: backward_outcomes,
+    };
+    Ok(Exchange {
+        divergence,
+        forward,
+        backward,
+    })
 }
 
 /// Accepts federation exchanges over iroh. Register with
@@ -600,13 +678,80 @@ impl ExchangeProtocol {
     }
 }
 
+impl ExchangeProtocol {
+    /// Serve one exchange session on an accepted stream pair: the
+    /// mirror image of [`reconcile_remote`]'s first half, then the
+    /// transfers in the order `reconcile` performs them.
+    async fn session(&self, send: &mut SendStream, recv: &mut RecvStream) -> Result<()> {
+        let frame = read_frame(recv)
+            .await?
+            .context("the initiator closed without a hello")?;
+        let hello: Hello =
+            crate::checked_json::from_slice_unique(&frame).context("malformed hello")?;
+        let config = SyncScopeConfig {
+            scope: hello.scope.clone(),
+            trust_domain: hello.trust_domain.clone(),
+            capacity: hello.capacity,
+            retention: hello.retention,
+        };
+        let hello_summary: BTreeMap<ObjectId, Digest32> = hello.summary.iter().copied().collect();
+        let hello_refused: BTreeSet<EventId> = hello.refused.iter().copied().collect();
+
+        let mut replica = self.replica.lock().await;
+        let own_inventory = replica.inventory();
+        let own_summary: BTreeMap<ObjectId, Digest32> = own_inventory.summary();
+        let own_refused: BTreeSet<EventId> = replica.refused().keys().copied().collect();
+        let diverged = diverged_objects(&own_summary, &hello_summary);
+        let reply = HelloReply {
+            name: replica.name().to_owned(),
+            summary: summary_of(&own_inventory),
+            refused: own_refused.iter().copied().collect(),
+            ids: ids_of(&own_inventory, &diverged),
+        };
+        write_frame(send, &serde_json::to_vec(&reply)?).await?;
+
+        let frame = read_frame(recv)
+            .await?
+            .context("the initiator closed without a transfer")?;
+        let transfer: ClientTransfer =
+            crate::checked_json::from_slice_unique(&frame).context("malformed transfer")?;
+
+        // The responder's offer is computed from the pre-exchange
+        // inventories, before the initiator's versions are admitted —
+        // the rule that keeps the two offers independent.
+        let remote_inventory =
+            assemble_inventory(&own_inventory, &own_summary, &hello_summary, &transfer.ids);
+        let offer = replica.offer(&remote_inventory, &hello_refused, &config, hello.now);
+        let mut outcomes = Vec::new();
+        for wire in transfer.versions {
+            let envelope: Envelope = wire.into();
+            let event_id = envelope.event_id;
+            let result = replica.receive(IngressPath::Internal, &envelope, &hello.name, hello.now);
+            outcomes.push((event_id, to_wire_outcome(&result)));
+        }
+        let versions: Vec<WireEnvelope> = offer
+            .send
+            .iter()
+            .filter_map(|event_id| replica.envelope(event_id))
+            .map(WireEnvelope::from)
+            .collect();
+        let server = ServerTransfer {
+            outcomes,
+            offer: WireOffer::from(&offer),
+            versions,
+        };
+        write_frame(send, &serde_json::to_vec(&server)?).await?;
+        send.finish().context("finishing the transfer reply")?;
+        Ok(())
+    }
+}
+
 impl ProtocolHandler for ExchangeProtocol {
-    async fn accept(&self, conn: Connection) -> Result<(), AcceptError> {
-        // Stub for the failing-first test: connections are accepted
-        // and no session is served until the session lands.
-        while let Ok((send, recv)) = conn.accept_bi().await {
-            drop(send);
-            drop(recv);
+    async fn accept(&self, connection: Connection) -> Result<(), AcceptError> {
+        while let Ok((mut send, mut recv)) = connection.accept_bi().await {
+            // One session per stream; a session that fails or stalls
+            // ends that stream, never the endpoint.
+            let _ = tokio::time::timeout(TIMEOUT, self.session(&mut send, &mut recv)).await;
         }
         Ok(())
     }

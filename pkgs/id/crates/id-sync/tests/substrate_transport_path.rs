@@ -31,6 +31,12 @@
 //! harness drives one initiator), and both replicas are in-memory;
 //! the on-disk store (step B2(b), PR #12497) composes with this
 //! transport once both have landed.
+//!
+//! Venue: the session rides QUIC/UDP on loopback, so this test runs
+//! where UDP sends are permitted (the laptop, the CI nightly). The
+//! Muse sandbox refuses UDP sends outright (EPERM), so there the
+//! dial can never complete and the test times out instead of
+//! running; that is an environment limit, not a verdict on the path.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -63,8 +69,7 @@ use id_sync::federation::exchange_net::{
     reconcile_remote, to_wire_outcome,
 };
 use id_sync::federation::slices::b07_conflict_report::{
-    ConflictStore, IngestOutcome, ObjectId, ReportId, RetentionPolicy, VersionHeader,
-    conflict_key,
+    ConflictStore, IngestOutcome, ObjectId, ReportId, RetentionPolicy, VersionHeader, conflict_key,
 };
 use id_sync::federation::slices::b08_sync_scope::SyncScopeConfig;
 use id_sync::federation::slices::b09_anti_entropy::Replica;
@@ -474,12 +479,10 @@ impl RemoteNode {
                 }
             }
         });
-        let hello = tokio::task::spawn_blocking(move || {
-            rx.recv_timeout(Duration::from_secs(60))
-        })
-        .await
-        .unwrap()
-        .expect("node B did not announce itself");
+        let hello = tokio::task::spawn_blocking(move || rx.recv_timeout(Duration::from_secs(60)))
+            .await
+            .unwrap()
+            .expect("node B did not announce itself");
         let mut fields = hello.split_whitespace();
         let id: iroh::EndpointId = fields
             .nth(1)
@@ -592,16 +595,6 @@ impl Drop for RemoteNode {
 }
 
 #[tokio::test]
-async fn probe_spawn_and_state() {
-    let endpoint = endpoint().await;
-    let b = RemoteNode::spawn(endpoint).await;
-    eprintln!("probe: child announced at {:?}", b.addr);
-    let (heads, report) = b.state().await;
-    eprintln!("probe: state heads={heads:?} report={report:?}");
-    b.shutdown().await;
-}
-
-#[tokio::test]
 async fn the_path_runs_between_two_processes_over_the_transport() {
     let mut a = node("node-a");
     let endpoint = endpoint().await;
@@ -613,7 +606,10 @@ async fn the_path_runs_between_two_processes_over_the_transport() {
 
     // Before the exchange, B does not have it: the address resolves
     // to nothing there, and it is not read from anywhere else.
-    assert_eq!(b.read(&base.address("node-b")).await, Err(Unreadable::NotHeld));
+    assert_eq!(
+        b.read(&base.address("node-b")).await,
+        Err(Unreadable::NotHeld)
+    );
 
     // Synced to B over the transport: the exchange names the send,
     // and afterwards B reads exactly what Alice signed on A, from
@@ -681,8 +677,14 @@ async fn the_path_runs_between_two_processes_over_the_transport() {
 
     // Nothing was merged or dropped: both edits, and the record they
     // follow, are each still readable from their address on B.
-    assert_eq!(b.read(&from_a.address("node-b")).await.unwrap(), from_a.signed);
-    assert_eq!(b.read(&from_b.address("node-b")).await.unwrap(), from_b.signed);
+    assert_eq!(
+        b.read(&from_a.address("node-b")).await.unwrap(),
+        from_a.signed
+    );
+    assert_eq!(
+        b.read(&from_b.address("node-b")).await.unwrap(),
+        from_b.signed
+    );
     assert_eq!(b.read(&base.address("node-b")).await.unwrap(), base.signed);
 
     // Another exchange neither clears the report nor invents a merge.
@@ -711,7 +713,10 @@ async fn the_path_runs_between_two_processes_over_the_transport() {
     assert_eq!(b.state().await.0, BTreeSet::from([merged.event]));
     assert!(b.state().await.1.is_none());
     assert_eq!(read(&a, &merged.address("node-a")).unwrap(), merged.signed);
-    assert_eq!(b.read(&merged.address("node-b")).await.unwrap(), merged.signed);
+    assert_eq!(
+        b.read(&merged.address("node-b")).await.unwrap(),
+        merged.signed
+    );
     assert!(b.exchange(&mut a, START + 8).await.is_quiet());
 
     b.shutdown().await;
