@@ -1004,13 +1004,22 @@ impl TokenProvider for FleetTokenProvider {
     fn token_for(&mut self, source: &TokenSource) -> Result<String, String> {
         match source {
             TokenSource::Personal => {
+                // The `personal` op resolves the hosts.yml SECRET,
+                // not a finished token: the daemon is a dumb secret
+                // cache for this op (it never learns which secret
+                // personal means), and the process-local cache
+                // returns the same secret. Parse the token out of
+                // whichever copy answered. Parsing only the local
+                // copy once handed gh the whole hosts.yml as
+                // GH_TOKEN whenever a daemon answered, and gh
+                // refused it client-side: net/http: invalid header
+                // field value for "Authorization" — reads failed
+                // over to an App token and masked it; writes, which
+                // repeat only on pre-execution refusals, surfaced
+                // it (2026-11-22).
                 let req = gh_cache::request("personal", None, None, Some(PERSONAL_SECRET_NAME));
-                self.via(req, |cache| {
-                    let hosts = cache.secret(PERSONAL_SECRET_NAME)?;
-                    parse_hosts_yml_token(&hosts).ok_or_else(|| {
-                        format!("secret '{PERSONAL_SECRET_NAME}' carries no oauth_token")
-                    })
-                })
+                let hosts = self.via(req, |cache| cache.secret(PERSONAL_SECRET_NAME))?;
+                personal_token(&hosts)
             }
             TokenSource::AppInstallation { app, owner } => {
                 let req = gh_cache::request("token", Some(app.slug()), Some(owner), None);
@@ -1018,6 +1027,15 @@ impl TokenProvider for FleetTokenProvider {
             }
         }
     }
+}
+
+/// The personal rotation token inside its hosts.yml secret: the
+/// one place daemon-resolved and locally-resolved copies of the
+/// secret converge, so neither path can skip the parse.
+fn personal_token(hosts_yml: &str) -> Result<String, String> {
+    parse_hosts_yml_token(hosts_yml).ok_or_else(|| {
+        format!("secret '{PERSONAL_SECRET_NAME}' carries no oauth_token")
+    })
 }
 
 /// Extract the `oauth_token` value from gh's hosts.yml content.
@@ -2109,6 +2127,24 @@ mod tests {
         assert_eq!(parse_hosts_yml_token(yml).as_deref(), Some("TOKEN_VALUE"));
         assert_eq!(parse_hosts_yml_token("github.com:\n    user: x\n"), None);
         assert_eq!(parse_hosts_yml_token("oauth_token: \n"), None);
+    }
+
+    // oracle: the 2026-11-22 write-path break — a daemon answering
+    // the `personal` op returns the hosts.yml secret itself, and
+    // the value that reaches GH_TOKEN must be the parsed token:
+    // header-safe (no whitespace or control characters), never the
+    // multi-line file. A secret with no oauth_token is an error
+    // naming the secret, on either resolution path.
+    #[test]
+    fn personal_token_is_the_parsed_token_not_the_secret() {
+        let yml = "github.com:\n    git_protocol: https\n    users:\n        dezren39:\n            oauth_token: gho_0123456789abcdefghijklmnopqrstuv\n    user: dezren39\n";
+        let token = personal_token(yml).expect("token parses");
+        assert_eq!(token, "gho_0123456789abcdefghijklmnopqrstuv");
+        assert!(
+            token.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'),
+            "token must be a valid Authorization header value: {token:?}"
+        );
+        assert!(personal_token("github.com:\n    user: x\n").is_err());
     }
 
     // oracle: RFC 4648 base64url test vectors (padding dropped).
