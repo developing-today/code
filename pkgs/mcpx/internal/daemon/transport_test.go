@@ -1,9 +1,14 @@
 package daemon
 
 import (
+	"bufio"
 	"context"
+	"fmt"
 	"net"
+	"os"
+	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -38,6 +43,171 @@ func TestBuiltinTransportsListen(t *testing.T) {
 			t.Fatalf("%s transport: dial %s: %v", tr.Name(), ln.Addr(), err)
 		}
 		_ = conn.Close()
+	}
+}
+
+// The oracle is net.TCPListener: when systemd gives the daemon its TCP
+// socket, the daemon must serve through that same listener without binding
+// the configured address a second time.
+func TestSystemdTCPTransportUsesPassedListener(t *testing.T) {
+	original, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer original.Close()
+
+	file, err := original.(*net.TCPListener).File()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+
+	ln, err := systemdTCPListenerFromFile(file)
+	if err != nil {
+		t.Fatalf("systemd listener: %v", err)
+	}
+	defer ln.Close()
+
+	if got := ln.Addr().String(); got != original.Addr().String() {
+		t.Fatalf("listener address = %q, want inherited address %q", got, original.Addr())
+	}
+	if ln.Addr().Network() != "tcp" {
+		t.Fatalf("listener network = %q, want tcp", ln.Addr().Network())
+	}
+
+	go func() {
+		conn, err := ln.Accept()
+		if err == nil {
+			_ = conn.Close()
+		}
+	}()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	conn, err := (&net.Dialer{}).DialContext(ctx, "tcp", original.Addr().String())
+	if err != nil {
+		t.Fatalf("dial inherited listener: %v", err)
+	}
+	_ = conn.Close()
+}
+
+func TestSystemdTCPTransportActivationChild(t *testing.T) {
+	if os.Getenv("MCPX_SYSTEMD_ACTIVATION_CHILD") != "1" {
+		return
+	}
+	if err := os.Setenv("LISTEN_PID", strconv.Itoa(os.Getpid())); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Setenv("LISTEN_FDS", "1"); err != nil {
+		t.Fatal(err)
+	}
+	ln, err := (tcpTransport{address: "127.0.0.1:1"}).Listen()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	fmt.Println(ln.Addr().String())
+	conn, err := ln.Accept()
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = conn.Close()
+}
+
+func TestTCPTransportAdoptsSystemdListener(t *testing.T) {
+	original, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer original.Close()
+	file, err := original.(*net.TCPListener).File()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(executable, "-test.run=^TestSystemdTCPTransportActivationChild$")
+	cmd.ExtraFiles = []*os.File{file}
+	cmd.Env = append(os.Environ(), "MCPX_SYSTEMD_ACTIVATION_CHILD=1")
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if cmd.ProcessState == nil {
+			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
+		}
+	}()
+	scanner := bufio.NewScanner(stdout)
+	if !scanner.Scan() {
+		t.Fatalf("activation child did not report listener address: %v", scanner.Err())
+	}
+	got := scanner.Text()
+	if got != original.Addr().String() {
+		t.Fatalf("child listener address = %q, want inherited %q", got, original.Addr())
+	}
+	conn, err := (&net.Dialer{}).Dial("tcp", got)
+	if err != nil {
+		t.Fatalf("dial inherited listener: %v", err)
+	}
+	_ = conn.Close()
+	if err := cmd.Wait(); err != nil {
+		t.Fatalf("activation child: %v", err)
+	}
+}
+
+func TestSystemdActivationRequestedValidation(t *testing.T) {
+	cases := []struct {
+		name    string
+		pid     string
+		pidSet  bool
+		fds     string
+		fdsSet  bool
+		want    bool
+		wantErr bool
+	}{
+		{name: "not activated"},
+		{name: "pid mismatch ignores inherited state", pid: "1", pidSet: true, fds: "bad", fdsSet: true},
+		{name: "missing fd count", pid: "42", pidSet: true, wantErr: true},
+		{name: "malformed pid", pid: "bad", pidSet: true, fds: "1", fdsSet: true, wantErr: true},
+		{name: "zero descriptors", pid: "42", pidSet: true, fds: "0", fdsSet: true, wantErr: true},
+		{name: "multiple descriptors", pid: "42", pidSet: true, fds: "2", fdsSet: true, wantErr: true},
+		{name: "one descriptor", pid: "42", pidSet: true, fds: "1", fdsSet: true, want: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := systemdActivationRequested(tc.pid, tc.pidSet, tc.fds, tc.fdsSet, 42)
+			if got != tc.want || (err != nil) != tc.wantErr {
+				t.Fatalf("systemdActivationRequested() = %v, %v; want %v, error=%v", got, err, tc.want, tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestSystemdTCPTransportRejectsNonTCPListener(t *testing.T) {
+	socketPath := filepath.Join(t.TempDir(), "mcpx.sock")
+	original, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer original.Close()
+
+	file, err := original.(*net.UnixListener).File()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+
+	if ln, err := systemdTCPListenerFromFile(file); err == nil {
+		_ = ln.Close()
+		t.Fatal("systemd TCP listener accepted a Unix socket")
 	}
 }
 
