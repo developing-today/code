@@ -1729,15 +1729,20 @@ func TestEventsReconnectWaitsForTheConfiguredDelay(t *testing.T) {
 	}()
 
 	paths := daemon.PathsAt(t.TempDir(), t.TempDir())
-	sch, err := settings.New(settings.Registry())
-	if err != nil {
+	configPath := filepath.Join(t.TempDir(), ".mcpx.json")
+	if err := os.WriteFile(configPath, []byte("{}"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	set := settings.NewSet(sch)
-	if err := set.SetRuntime("events.reconnect", delay.String()); err != nil {
-		t.Fatal(err)
+	app := &cli.App{ConfigPath: configPath}
+	// The CLI installs its App as the plumbing source before constructing
+	// clients. Use the same settings path here so NewClientAt resolves the
+	// user-supplied environment value instead of receiving an injected set.
+	cli.SetPlumbingSource(app)
+	t.Cleanup(func() { cli.SetPlumbingSource(nil) })
+	if got := app.Settings().Duration("events.reconnect"); got != delay {
+		t.Fatalf("resolved events.reconnect = %s, want environment value %s", got, delay)
 	}
-	c := cli.NewClientAtWithSettings(paths, "", "http://"+ln.Addr().String(), set)
+	c := cli.NewClientAt(paths, configPath, "http://"+ln.Addr().String())
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	eventsSeen := make(chan events.Event, 1)
