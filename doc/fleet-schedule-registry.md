@@ -85,10 +85,13 @@ existing read-only `opencode-quota-freshness-summary.timer` as the
 low-risk OpenCode scheduled-task pilot for issue #2232. The first
 service invocation exposed a missing Python directory in the user unit's
 explicit `PATH`; adding `/etc/profiles/per-user/user/bin` fixed it. A
-manual service start then completed with exit 0 at 2026-11-21 19:05 CST
-and wrote `latest.log` plus `history.jsonl`. The timer remains enabled;
-verification of its next scheduled hourly firing is pending on #2232.
-Surface 2b now has 39 enabled rows.
+manual service start completed with exit 0 at 2026-11-21 19:05 CST. The
+first hourly firing was observed at 2026-11-21 20:00:58 CST and finished
+at 20:01:17 with exit 0; `latest.log` and `history.jsonl` record the
+`opencode-route/workhorse` run (`20261122T020058Z`). The systemd trigger
+used zero Muse tokens; the execution used the selected OpenCode route.
+A numeric before/after Muse-token baseline is unavailable. The timer
+remains enabled. Surface 2b now has 39 enabled rows.
 
 Surface 5 added 2026-11-18 for issue #11805 from `dezren39/darwin-nix`
 main at `6af58a6`: every `StartCalendarInterval` / `StartInterval` in
