@@ -201,9 +201,9 @@ export class Devices {
     };
   }
 
-  /** Merge another endpoint's hash-only state. A removal wins over the
-   * matching link unless that link was created later (a fresh token).
-   * This keeps endpoint switches from resurrecting owner-removed phones. */
+  /** Merge another endpoint's hash-only state. A removal wins for the same
+   * token hash regardless of timestamps: endpoints may have skewed clocks,
+   * and a fresh link always has a different token hash. */
   async mergeLinks(value: unknown): Promise<void> {
     if (!value || typeof value !== "object") return;
     const incoming = value as Partial<DeviceLinks>;
@@ -224,7 +224,7 @@ export class Devices {
         (raw.seenAt !== null && !validDate(raw.seenAt))
       ) continue;
       const removed = store.removed.find((r) => r.hash === raw.hash);
-      if (removed && Date.parse(removed.at) >= Date.parse(raw.createdAt)) continue;
+      if (removed) continue;
       const current = store.devices.find((d) => d.hash === raw.hash);
       if (!current) store.devices.push({ ...raw });
       else {
@@ -232,10 +232,7 @@ export class Devices {
           Date.parse(raw.seenAt) > Date.parse(current.seenAt) ? raw.seenAt : current.seenAt;
       }
     }
-    store.devices = store.devices.filter((d) => {
-      const removed = store.removed.find((r) => r.hash === d.hash);
-      return !removed || Date.parse(removed.at) < Date.parse(d.createdAt);
-    });
+    store.devices = store.devices.filter((d) => !store.removed.some((r) => r.hash === d.hash));
     await this.save();
   }
 }

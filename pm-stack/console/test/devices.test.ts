@@ -39,6 +39,17 @@ function store(now = { t: 1_800_000_000_000 }) {
   };
 }
 
+function memoryDevices(now: () => number) {
+  let contents: string | null = null;
+  const kept = {
+    read: async () => contents,
+    write: async (value: string) => {
+      contents = value;
+    },
+  };
+  return new Devices(kept, now);
+}
+
 describe("linking a phone", () => {
   test("the challenge is the SHA-256 of the verifier", () => {
     expect(challengeOf(VERIFIER)).toBe(hashOf(VERIFIER));
@@ -143,6 +154,45 @@ describe("linking a phone", () => {
     } finally {
       owner.done();
       other.done();
+    }
+  });
+
+  test("property: generated link/remove histories never resurrect a removed token", async () => {
+    // Deterministic LCG: generated independent endpoint clocks and delivery
+    // orders make this reproducible while exploring many replication histories.
+    let seed = 0x12528;
+    const next = () => {
+      seed = (Math.imul(seed, 1_664_525) + 1_013_904_223) >>> 0;
+      return seed;
+    };
+
+    for (let history = 0; history < 250; history++) {
+      const base = 1_800_000_000_000 + history * 10_000;
+      const skew = next() % (2 * 60_000 + 1);
+      const hostNow = { t: base + skew };
+      const edgeNow = { t: base - (120_000 - skew) };
+      const host = memoryDevices(() => hostNow.t);
+      const edge = memoryDevices(() => edgeNow.t);
+      const verifier = String(history).padStart(3, "0").repeat(15).slice(0, 43);
+
+      await host.approve({ challenge: hashOf(verifier), name: "Generated phone" });
+      const linked = await host.link(verifier);
+      expect(linked).not.toBeNull();
+      const staleLink = await host.links();
+      await edge.mergeLinks(staleLink);
+
+      // The edge's removal timestamp can be earlier than the host-created
+      // link timestamp by almost the full supported two-minute sync skew.
+      await edge.remove({ id: (await edge.list())[0].id });
+      const removal = await edge.links();
+      if (next() & 1) await host.mergeLinks(staleLink);
+      await host.mergeLinks(removal);
+      expect((await host.links()).devices.some((device) => device.hash === staleLink.devices[0].hash)).toBe(false);
+
+      // Replaying any previously captured link snapshot cannot restore it.
+      await host.mergeLinks(staleLink);
+      expect((await host.links()).devices.some((device) => device.hash === staleLink.devices[0].hash)).toBe(false);
+      expect(await host.check(linked!.token)).toBeNull();
     }
   });
 
