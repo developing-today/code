@@ -288,6 +288,20 @@ fn needs_shell(command: &str) -> bool {
             | "case"
             | "select"
             | "time"
+            | "command"
+            | "builtin"
+            | "type"
+            | "hash"
+            | "jobs"
+            | "wait"
+            | "fg"
+            | "bg"
+            | "times"
+            | "local"
+            | "declare"
+            | "typeset"
+            | "readonly"
+            | "function"
             | "!"
     )
 }
@@ -336,7 +350,7 @@ if [ -z "$CARGO_TARGET_DIR" ]; then
           if [ -n "$target" ] && [ -n "$lease_id" ]; then
             export CARGO_TARGET_DIR="$target"
             trap '"$broker" checkin --lease "$lease_id" >/dev/null 2>&1 || :' EXIT
-            sh -c "$command_text"
+            sh -c 'trap '\''rc=$?; trap - EXIT; wait || :; exit "$rc"'\'' EXIT; eval "$1"' sh "$command_text"
             status=$?
             "$broker" checkin --lease "$lease_id" >/dev/null 2>&1 || :
             trap - EXIT
@@ -371,9 +385,10 @@ fn under_build_lock(command: &str) -> String {
         .split_ascii_whitespace()
         .next()
         == Some("cargo");
-    if may_invoke_cargo(command) && !direct_cargo {
+    let shell_command = needs_shell(command);
+    if may_invoke_cargo(command) && (!direct_cargo || shell_command) {
         format!("{BUILD_LOCK} {}", broker_aware_shell(command))
-    } else if needs_shell(command) {
+    } else if shell_command {
         format!("{BUILD_LOCK} sh -c {}", sh_quote_always(command))
     } else {
         format!("{BUILD_LOCK} {command}")
