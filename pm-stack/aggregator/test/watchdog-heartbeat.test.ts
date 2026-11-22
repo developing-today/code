@@ -24,16 +24,19 @@ describe("watchdog heartbeat", () => {
         alert: "none",
         missedCycles: 1,
         lastHeartbeatAtMs: startedAt,
+        outageSinceMs: startedAt,
       });
       expect(await checkWatchdogHeartbeatJournal(file, startedAt + 2 * WATCHDOG_HEARTBEAT_INTERVAL_MS, sink)).toEqual({
         alert: "needs-orchestrator",
         missedCycles: 2,
         lastHeartbeatAtMs: startedAt,
+        outageSinceMs: startedAt,
       });
       expect(await checkWatchdogHeartbeatJournal(file, startedAt + 3 * WATCHDOG_HEARTBEAT_INTERVAL_MS, sink)).toEqual({
         alert: "page-drew",
         missedCycles: 3,
         lastHeartbeatAtMs: startedAt,
+        outageSinceMs: startedAt,
       });
       expect(deliveries).toEqual(["needs-orchestrator", "page-drew"]);
     } finally {
@@ -68,12 +71,44 @@ describe("watchdog heartbeat", () => {
         alert: "unknown",
         missedCycles: 0,
         lastHeartbeatAtMs: null,
+        outageSinceMs: null,
       });
       await writeFile(file, '{"facet":"watchdog-heartbeat","atMs":1000000}\n{"facet":"watchdog-heartbeat"', "utf8");
       expect(await checkWatchdogHeartbeatJournal(file, 1_000_000 + 3 * WATCHDOG_HEARTBEAT_INTERVAL_MS)).toEqual({
         alert: "page-drew",
         missedCycles: 3,
         lastHeartbeatAtMs: 1_000_000,
+        outageSinceMs: 1_000_000,
+      });
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("absence before the first heartbeat escalates from journal activity after startup grace", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "watchdog-heartbeat-startup-"));
+    try {
+      const file = join(dir, "slo-journal.jsonl");
+      const activatedAt = 3_000_000;
+      await writeFile(file, `${JSON.stringify({ facet: "feed-age", atMs: activatedAt, bad: false, value: 1 })}\n`);
+
+      expect(await checkWatchdogHeartbeatJournal(file, activatedAt + WATCHDOG_HEARTBEAT_INTERVAL_MS * 2 - 1)).toEqual({
+        alert: "none",
+        missedCycles: 1,
+        lastHeartbeatAtMs: null,
+        outageSinceMs: activatedAt,
+      });
+      expect(await checkWatchdogHeartbeatJournal(file, activatedAt + WATCHDOG_HEARTBEAT_INTERVAL_MS * 2)).toEqual({
+        alert: "needs-orchestrator",
+        missedCycles: 2,
+        lastHeartbeatAtMs: null,
+        outageSinceMs: activatedAt,
+      });
+      expect(await checkWatchdogHeartbeatJournal(file, activatedAt + WATCHDOG_HEARTBEAT_INTERVAL_MS * 3)).toEqual({
+        alert: "page-drew",
+        missedCycles: 3,
+        lastHeartbeatAtMs: null,
+        outageSinceMs: activatedAt,
       });
     } finally {
       await rm(dir, { recursive: true, force: true });
@@ -111,6 +146,7 @@ describe("watchdog heartbeat", () => {
           alert: expectedAlert,
           missedCycles: missed,
           lastHeartbeatAtMs: newest,
+          outageSinceMs: newest,
         });
       }
     } finally {

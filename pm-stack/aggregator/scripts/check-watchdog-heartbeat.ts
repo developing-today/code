@@ -38,15 +38,13 @@ function parseArgs(args: readonly string[]): { journal: string | undefined } {
 }
 
 async function postAlert(check: WatchdogHeartbeatCheck): Promise<void> {
-  if (check.alert !== "needs-orchestrator" && check.alert !== "page-drew") return;
-  const isPage = check.alert === "page-drew";
+  if (check.alert !== "needs-orchestrator") return;
   // Stable for one outage, but distinct after a recovery and later failure.
-  const key = `watchdog-heartbeat-${check.lastHeartbeatAtMs}-${isPage ? "page-drew" : "needs-orchestrator"}`;
-  const title = isPage
-    ? "PM-stack watchdog heartbeat missing — page Drew"
-    : "NEEDS ORCHESTRATOR: PM-stack watchdog missed two heartbeat cycles";
-  const body = `The last valid watchdog heartbeat was ${new Date(check.lastHeartbeatAtMs!).toISOString()}. ` +
-    `${check.missedCycles} five-minute cycles have been missed.`;
+  const key = `watchdog-heartbeat-${check.outageSinceMs}-needs-orchestrator`;
+  const title = "NEEDS ORCHESTRATOR: PM-stack watchdog missed two heartbeat cycles";
+  const body = check.lastHeartbeatAtMs === null
+    ? `No valid watchdog heartbeat has ever been recorded; watchdog journal activity began at ${new Date(check.outageSinceMs!).toISOString()}. ${check.missedCycles} five-minute cycles have elapsed.`
+    : `The last valid watchdog heartbeat was ${new Date(check.lastHeartbeatAtMs).toISOString()}. ${check.missedCycles} five-minute cycles have been missed.`;
   const child = Bun.spawn(
     [
       "bun",
@@ -57,7 +55,7 @@ async function postAlert(check: WatchdogHeartbeatCheck): Promise<void> {
       "--key",
       key,
       "--severity",
-      isPage ? "critical" : "warning",
+      "warning",
       "--title",
       title,
       "--body",
@@ -74,9 +72,23 @@ async function main(): Promise<void> {
   const defaultJournal = join(homedir(), ".local", "state", "pm-aggregator", "slo-journal.jsonl");
   const journal = args.journal ?? process.env.PM_AGG_SLO_JOURNAL_FILE ?? defaultJournal;
   const result = await checkWatchdogHeartbeatJournal(journal, Date.now());
-  if (result.alert === "unknown") throw new Error(`no valid watchdog heartbeat in journal: ${journal}`);
+  if (result.alert === "unknown") {
+    console.log(`unknown: no valid watchdog heartbeat or journal activity in ${journal}`);
+    return;
+  }
+  if (result.alert === "page-drew") {
+    // This script runs under the independent page-health-push job, whose
+    // completed report is delivered to the main chat. Keep the critical page
+    // on that out-of-process channel: post-alert.ts calls back into this
+    // aggregator and therefore cannot deliver when the aggregator is down.
+    const reference = result.lastHeartbeatAtMs === null
+      ? `No watchdog heartbeat has ever been recorded; journal activity began at ${new Date(result.outageSinceMs!).toISOString()}.`
+      : `The last valid watchdog heartbeat was ${new Date(result.lastHeartbeatAtMs).toISOString()}.`;
+    console.log(`PAGE_DREW: PM-stack watchdog heartbeat missing. ${reference} ${result.missedCycles} five-minute cycles have been missed.`);
+    return;
+  }
   await postAlert(result);
-  if (result.alert !== "none" && result.alert !== "unknown") console.log(result.alert);
+  if (result.alert === "needs-orchestrator") console.log(result.alert);
 }
 
 await main();

@@ -11,6 +11,8 @@ export interface WatchdogHeartbeatCheck {
   alert: WatchdogHeartbeatAlert;
   missedCycles: number;
   lastHeartbeatAtMs: number | null;
+  /** First journal activity used to bound an outage before the first beat. */
+  outageSinceMs: number | null;
 }
 
 /** Delivery stays injected so this standalone reader has no watchdog or
@@ -36,6 +38,7 @@ export async function checkWatchdogHeartbeatJournal(
   });
 
   let latest: number | null = null;
+  let earliestJournalActivity: number | null = null;
   for (const line of raw.split("\n")) {
     if (!line) continue;
     try {
@@ -44,26 +47,42 @@ export async function checkWatchdogHeartbeatJournal(
         typeof record === "object" &&
         record !== null &&
         "facet" in record &&
-        record.facet === HEARTBEAT_FACET &&
         "atMs" in record &&
         typeof record.atMs === "number" &&
-        Number.isFinite(record.atMs) &&
-        (latest === null || record.atMs > latest)
+        Number.isFinite(record.atMs)
       ) {
-        latest = record.atMs;
+        earliestJournalActivity = earliestJournalActivity === null
+          ? record.atMs
+          : Math.min(earliestJournalActivity, record.atMs);
+        if (record.facet === HEARTBEAT_FACET && (latest === null || record.atMs > latest)) {
+          latest = record.atMs;
+        }
       }
     } catch {
       // A torn or unrelated journal line cannot suppress the last good beat.
     }
   }
 
-  if (latest === null) return { alert: "unknown", missedCycles: 0, lastHeartbeatAtMs: null };
+  // SLO samples are written independently of watchdog derivation. If
+  // they exist but no heartbeat has ever succeeded, their first timestamp
+  // bounds startup absence rather than leaving it unknown forever. One
+  // full heartbeat interval is the startup grace before the two-cycle
+  // and three-cycle thresholds apply.
+  const referenceAtMs = latest ?? earliestJournalActivity;
+  if (referenceAtMs === null) {
+    return { alert: "unknown", missedCycles: 0, lastHeartbeatAtMs: null, outageSinceMs: null };
+  }
 
-  const elapsedMs = Math.max(0, nowMs - latest);
+  const elapsedMs = Math.max(0, nowMs - referenceAtMs);
   const missedCycles = Math.floor(elapsedMs / HEARTBEAT_INTERVAL_MS);
   const alert: WatchdogHeartbeatAlert =
     missedCycles >= 3 ? "page-drew" : missedCycles >= 2 ? "needs-orchestrator" : "none";
-  const check = { alert, missedCycles, lastHeartbeatAtMs: latest };
+  const check = {
+    alert,
+    missedCycles,
+    lastHeartbeatAtMs: latest,
+    outageSinceMs: latest === null ? earliestJournalActivity : latest,
+  };
   if (alert === "needs-orchestrator") await sink?.needsOrchestrator(check);
   if (alert === "page-drew") await sink?.pageDrew(check);
   return check;

@@ -54,15 +54,16 @@ describe("watchdog heartbeat runner", () => {
       await expect(Bun.file(fake.capture).exists()).resolves.toBe(false);
 
       const missingJournal = await runScript(["--journal", join(dir, "missing.jsonl")], env);
-      expect(missingJournal.code).toBe(1);
-      expect(missingJournal.stderr).toContain("no valid watchdog heartbeat");
+      expect(missingJournal.code).toBe(0);
+      expect(missingJournal.stdout).toContain("unknown: no valid watchdog heartbeat or journal activity");
+      expect(missingJournal.stderr).toBe("");
       await expect(Bun.file(fake.capture).exists()).resolves.toBe(false);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
   });
 
-  test("posts orchestrator and page alerts through the existing alert CLI", async () => {
+  test("posts orchestrator alerts through the alert CLI and emits pages independently", async () => {
     const dir = await mkdtemp(join(tmpdir(), "watchdog-heartbeat-runner-"));
     try {
       const fake = await fakePostAlertCommand(dir);
@@ -82,16 +83,15 @@ describe("watchdog heartbeat runner", () => {
       expect(orchestratorArgs).toContain("watchdog-heartbeat-");
       expect(orchestratorArgs).toContain("-needs-orchestrator");
 
+      await rm(argsFile);
       const pageFile = join(dir, "page-journal.jsonl");
       await new SloJournal(pageFile).append([watchdogHeartbeatLine(Date.now() - 3 * WATCHDOG_HEARTBEAT_INTERVAL_MS)]);
       const page = await runScript(["--journal", pageFile], env);
       expect(page.code).toBe(0);
-      const pageArgs = await Bun.file(argsFile).text();
-      expect(pageArgs).toContain("--severity critical");
-      expect(pageArgs).toContain("watchdog-heartbeat-");
-      expect(pageArgs).toContain("-page-drew");
+      expect(page.stdout).toContain("PAGE_DREW: PM-stack watchdog heartbeat missing");
+      expect(page.stdout).toContain("3 five-minute cycles");
+      await expect(Bun.file(argsFile).exists()).resolves.toBe(false);
       const incidentKey = (args: string) => args.match(/watchdog-heartbeat-[^ ]+/)?.[0];
-      expect(incidentKey(pageArgs)).not.toBe(incidentKey(orchestratorArgs));
 
       const recoveredEpisodeFile = join(dir, "recovered-episode-journal.jsonl");
       await new SloJournal(recoveredEpisodeFile).append([

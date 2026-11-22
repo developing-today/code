@@ -1649,8 +1649,9 @@ async function recordWatchdogHeartbeat(nowMs: number): Promise<void> {
 // current diagnoses (feed age + probes via the health assembly —
 // its probe cache keeps this cheap — plus the orchestration
 // diagnosis and registry facet age). Live mode only: fixtures mode
-// has no real inputs to watch. Derived per request, never stored,
-// so recovery clears the cards on the next render. The health
+// has no real inputs to watch. Derived on attention reads and on the
+// server-owned watchdog tick below, so it does not depend on dashboard
+// traffic. Recovery clears the cards on the next derivation. The health
 // assembly here is deliberately UNPRIMED (see healthContext): the
 // watchdog needs only the feed file, the cached probes, and the
 // registry age from the source's already-loaded feed.
@@ -4656,6 +4657,33 @@ if (cfg.source !== "fixtures") {
   const timer = setInterval(() => void sampleSlo(), SLO_SAMPLE_INTERVAL_MS);
   timer.unref?.();
 
+}
+
+// Watchdog derivation must not depend on dashboard traffic or push
+// subscriptions. Its heartbeat is written only after deriveWatchdogItems
+// completes health/audit reads and gap sync. Keep this timer independent
+// of the alert engine and attention routes: their availability is not
+// evidence that the watchdog itself ran.
+const WATCHDOG_RUN_INTERVAL_MS = 5 * 60_000;
+if (cfg.source === "live") {
+  let watchdogRunInProgress = false;
+  const runWatchdog = async (): Promise<void> => {
+    if (watchdogRunInProgress) return;
+    watchdogRunInProgress = true;
+    try {
+      // Refresh the live orchestration diagnosis before deriving cards.
+      // A source failure is not a successful watchdog pass.
+      await source.orchestration();
+      await deriveWatchdogItems(source.diagnostics?.().orchestration);
+    } catch (error) {
+      console.error(`[watchdog] WARNING: scheduled derivation failed: ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      watchdogRunInProgress = false;
+    }
+  };
+  void runWatchdog();
+  const timer = setInterval(() => void runWatchdog(), WATCHDOG_RUN_INTERVAL_MS);
+  timer.unref?.();
 }
 
 // The alert throat's engine (#3676): the ~60s delivery/escalation
