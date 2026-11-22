@@ -30,11 +30,20 @@ use id_store::store::load_or_create_keypair;
 /// Fails if the identity key or keyset log cannot be read or written,
 /// or the keyset refuses the change.
 pub async fn cmd_keyset(command: KeysetCommand) -> Result<()> {
+    let command = match command {
+        KeysetCommand::Recovery { command } => {
+            return super::keyset_recovery::cmd_recovery(command).await;
+        }
+        other => other,
+    };
     let client = match &command {
+        // Handled above; recovery opens keys and keysets as it needs.
+        KeysetCommand::Recovery { .. } => false,
         KeysetCommand::Show { client }
         | KeysetCommand::Enrol { client, .. }
         | KeysetCommand::Revoke { client, .. }
         | KeysetCommand::Rotate { client, .. }
+        | KeysetCommand::Guardians { client, .. }
         | KeysetCommand::Checkpoint { client } => *client,
     };
     let key_path = if client { CLIENT_KEY_FILE } else { KEY_FILE };
@@ -52,7 +61,6 @@ pub async fn cmd_keyset(command: KeysetCommand) -> Result<()> {
         );
     }
     match command {
-        KeysetCommand::Show { .. } => {}
         KeysetCommand::Enrol {
             device_key_file,
             label,
@@ -97,6 +105,28 @@ pub async fn cmd_keyset(command: KeysetCommand) -> Result<()> {
             )?;
             println!("Rotated the admin key to {new_admin_key}.");
         }
+        KeysetCommand::Guardians {
+            mut guardians,
+            threshold,
+            ..
+        } => {
+            // The record wants them unique and sorted; the user need not.
+            for guardian in &mut guardians {
+                guardian.make_ascii_lowercase();
+            }
+            guardians.sort();
+            guardians.dedup();
+            file.append(
+                &key,
+                KeysetEntry::GuardianSetUpdated {
+                    guardians,
+                    threshold,
+                },
+                None,
+            )?;
+            println!("Updated the guardian set.");
+        }
+        KeysetCommand::Show { .. } | KeysetCommand::Recovery { .. } => {}
         KeysetCommand::Checkpoint { .. } => {
             let head = file.checkpoint(&key)?;
             println!("Checkpointed head {head}; it is final here.");
@@ -155,6 +185,31 @@ pub fn render_state(state: &KeysetState) -> String {
         let status = if device.revoked { "revoked" } else { "active" };
         let _ = writeln!(out, "  {key}  {status}  {}", device.label);
     }
+    match &state.guardian_set {
+        Some(set) => {
+            let _ = writeln!(
+                out,
+                "guardians: {} of {} must approve a recovery",
+                set.threshold,
+                set.guardians.len()
+            );
+            for guardian in &set.guardians {
+                let _ = writeln!(out, "  {guardian}");
+            }
+        }
+        None => out.push_str("guardians: none\n"),
+    }
+    if let Some(pending) = &state.pending_guardian_set {
+        let _ = writeln!(
+            out,
+            "pending guardian change: {} of {}, in force once the recovery delay has passed",
+            pending.set.threshold,
+            pending.set.guardians.len()
+        );
+        for guardian in &pending.set.guardians {
+            let _ = writeln!(out, "  {guardian}");
+        }
+    }
     let _ = writeln!(out, "records: {}", state.records_folded);
     out
 }
@@ -205,7 +260,47 @@ mod tests {
         assert!(text.contains(&format!("  {}  active\n", public_hex(&owner))));
         assert!(text.contains(&format!("  {}  revoked  laptop\n", public_hex(&laptop))));
         assert!(text.contains("original device"));
+        assert!(text.contains("guardians: none\n"));
         assert!(text.ends_with("records: 3\n"));
+    }
+
+    #[test]
+    fn render_shows_guardians_and_a_pending_removal() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(KEYSET_FILE);
+        let owner = SigningKey::from_bytes(&[1; 32]);
+        let mut guardians: Vec<String> = [11u8, 12, 13]
+            .iter()
+            .map(|seed| public_hex(&SigningKey::from_bytes(&[*seed; 32])))
+            .collect();
+        guardians.sort();
+        let (mut file, _) = KeysetFile::open_or_migrate(&path, &owner).unwrap();
+        file.append(
+            &owner,
+            KeysetEntry::GuardianSetUpdated {
+                guardians: guardians.clone(),
+                threshold: 2,
+            },
+            None,
+        )
+        .unwrap();
+        let text = render_state(&file.state().unwrap());
+        assert!(text.contains("guardians: 2 of 3 must approve a recovery\n"));
+        assert!(text.contains(&format!("  {}\n", guardians[0])));
+        assert!(!text.contains("pending guardian change"));
+        // Dropping a guardian waits out the delay: the old set stays.
+        file.append(
+            &owner,
+            KeysetEntry::GuardianSetUpdated {
+                guardians: guardians[1..].to_vec(),
+                threshold: 2,
+            },
+            None,
+        )
+        .unwrap();
+        let text = render_state(&file.state().unwrap());
+        assert!(text.contains("guardians: 2 of 3 must approve a recovery\n"));
+        assert!(text.contains("pending guardian change: 2 of 2"));
     }
 
     #[test]

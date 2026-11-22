@@ -295,7 +295,7 @@ fn validate_import_envelope(event: &WorldEvent, payload_digest: &str) -> Result<
             ));
         }
     };
-    let envelope: serde_json::Value = serde_json::from_str(text)
+    let envelope = id_core::json_unique::parse_json_without_duplicate_keys(text)
         .map_err(|_| anyhow::anyhow!("journal import event is not a transfer envelope"))?;
     ensure!(
         envelope["protocol"] == "world.entity-transfer.v1" && envelope["direction"] == "import",
@@ -623,6 +623,7 @@ impl WorldCore {
                     uses,
                     used,
                     subject,
+                    issued_at,
                 } => {
                     let digest = hex_decode_32(&digest).context("malformed capability digest")?;
                     // #2972: participant 0 is the reserved host/system
@@ -699,6 +700,7 @@ impl WorldCore {
                     }
                     let mut ancestor = parent;
                     let mut revoked_by_ancestor = false;
+                    let mut ancestor_revoked_at = None;
                     while let Some(ancestor_id) = ancestor {
                         let ancestor_record = core
                             .capabilities
@@ -706,6 +708,7 @@ impl WorldCore {
                             .context("delegated capability ancestor disappeared during restore")?;
                         if ancestor_record.revoked {
                             revoked_by_ancestor = true;
+                            ancestor_revoked_at = ancestor_record.revoked_at;
                             break;
                         }
                         ancestor = ancestor_record.parent;
@@ -740,19 +743,34 @@ impl WorldCore {
                             scopes: validated_scopes,
                             parent,
                             revoked: revoked_by_ancestor,
+                            revoked_by: None,
                             bounds: CapabilityBounds { expires_at, uses },
                             used,
                             subject,
+                            issued_at,
+                            revoked_at: ancestor_revoked_at,
                         },
                     );
                     if revoked_by_ancestor {
                         inherited_revocations.insert(issued_participant_id);
                     }
                 }
-                JournalEntry::Revoked { participant_id, .. } => {
-                    if !inherited_revocations.remove(&participant_id) {
+                JournalEntry::Revoked {
+                    participant_id,
+                    by,
+                    revoked_at,
+                } => {
+                    if inherited_revocations.remove(&participant_id) {
+                        // Revoked with an ancestor before this checkpointed
+                        // entry was read: keep the time the entry carries.
+                        if let Some(record) = core.capabilities.get_mut(&participant_id) {
+                            record.revoked_at = revoked_at;
+                        }
+                    } else {
                         ensure!(
-                            !core.revoke_tree(participant_id).is_empty(),
+                            !core
+                                .revoke_tree_at(participant_id, by, revoked_at)
+                                .is_empty(),
                             "journal revokes unknown or revoked participant {participant_id}"
                         );
                     }
@@ -1639,7 +1657,14 @@ impl WorldCore {
             {
                 entries.push(JournalEntry::Revoked {
                     participant_id: id,
-                    by: None,
+                    by: self
+                        .capabilities
+                        .get(&id)
+                        .and_then(|record| record.revoked_by),
+                    revoked_at: self
+                        .capabilities
+                        .get(&id)
+                        .and_then(|record| record.revoked_at),
                 });
             }
         }
@@ -1842,5 +1867,33 @@ impl WorldCore {
             *version = required;
         }
         Ok(entries)
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod duplicate_key_tests {
+    use super::*;
+
+    fn import_event(envelope: String) -> WorldEvent {
+        WorldEvent {
+            sequence: 1,
+            participant_id: 0,
+            kind: WorldEventKind::System { event: envelope },
+        }
+    }
+
+    #[test]
+    fn an_import_envelope_with_a_duplicated_key_is_refused() {
+        let payload = b"entity";
+        let digest = hex_encode(blake3::hash(payload).as_bytes());
+        let body = format!(
+            r#""protocol":"world.entity-transfer.v1","direction":"import","payload_digest":"{digest}","payload_hex":"{}"}}"#,
+            hex_encode(payload)
+        );
+        validate_import_envelope(&import_event(format!("{{{body}")), &digest).unwrap();
+        // A lenient parse keeps the last "direction" and passes the check.
+        let duplicated = format!(r#"{{"direction":"export",{body}"#);
+        assert!(validate_import_envelope(&import_event(duplicated), &digest).is_err());
     }
 }

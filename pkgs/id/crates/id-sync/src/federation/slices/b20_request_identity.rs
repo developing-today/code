@@ -198,6 +198,10 @@ pub enum DedupError {
     /// Completion was reported for an in-flight request whose
     /// binding does not match the registered binding.
     BindingMismatch,
+    /// Completion was reported with an identity whose claimed request
+    /// ID does not derive from its own origin, nonce and binding; the
+    /// ledger entry is left unchanged.
+    InvalidIdentity,
     /// A completed request was completed again with a different
     /// outcome ID; the first deterministic outcome stands.
     OutcomeConflict,
@@ -338,6 +342,9 @@ impl DedupLedger {
         identity: &RequestIdentity,
         outcome: OutcomeId,
     ) -> Result<(), DedupError> {
+        if !identity.binding_is_valid() {
+            return Err(DedupError::InvalidIdentity);
+        }
         let entry = self
             .entries
             .get_mut(&identity.id)

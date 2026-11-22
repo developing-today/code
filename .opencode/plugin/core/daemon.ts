@@ -527,9 +527,7 @@ export class DaemonClient {
    *
    * @op health
    */
-  async health(
-    timeoutMs = TUNING.healthTimeoutMs,
-  ): Promise<
+  async health(timeoutMs = TUNING.healthTimeoutMs): Promise<
     | {
         status: string;
         version?: string;

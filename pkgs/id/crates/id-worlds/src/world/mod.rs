@@ -82,8 +82,8 @@ pub use id_caps::portal::{PortalGrantState, PortalGrants, PortalRefusal};
 pub(crate) use journal::JournalAdminHistory;
 pub use journal::{
     CoordinatorJournalEntry, JOURNAL_VERSION, JOURNAL_VERSION_CHECKPOINT_PARTS,
-    JOURNAL_VERSION_EXECUTION_PROFILE, JOURNAL_VERSION_OPEN_PRESENCE, JOURNAL_VERSION_PORTALS,
-    JOURNAL_VERSION_PROGRAM_BUNDLE, JOURNAL_VERSION_REGION_HANDOFF,
+    JOURNAL_VERSION_EXECUTION_PROFILE, JOURNAL_VERSION_JOIN_TIMES, JOURNAL_VERSION_OPEN_PRESENCE,
+    JOURNAL_VERSION_PORTALS, JOURNAL_VERSION_PROGRAM_BUNDLE, JOURNAL_VERSION_REGION_HANDOFF,
     JOURNAL_VERSION_SCHEDULE_RECURRENCE, JOURNAL_VERSION_SIGNED_PLAY, JOURNAL_VERSION_WORLD_BUDGET,
     JOURNAL_VERSION_WRITE_LEASE, JournalEntry, JournalSignedMove, JournalSnapshot,
     JournalSnapshotSource, MAX_JOURNAL_VERSION, TrustBasis, TrustDecision, WorldJournal,
@@ -1210,7 +1210,7 @@ pub(crate) fn presence_event(participant: u64, name: &str, joined: bool) -> Stri
 }
 
 pub(crate) fn presence_change(text: &str) -> Option<(u64, bool)> {
-    let value: serde_json::Value = serde_json::from_str(text).ok()?;
+    let value = id_core::json_unique::parse_json_without_duplicate_keys(text).ok()?;
     if value.get("cap")?.as_str()? != "players" {
         return None;
     }
@@ -1797,7 +1797,17 @@ pub(crate) struct CapabilityRecord {
     scopes: WorldScopes,
     parent: Option<u64>,
     revoked: bool,
+    /// The moderator participant who revoked this capability directly, so a
+    /// checkpoint keeps the audit actor (#11778). `None` for an admin revoke,
+    /// for one inherited from a revoked ancestor, and while active.
+    revoked_by: Option<u64>,
     bounds: CapabilityBounds,
     used: u32,
     subject: Option<String>,
+    /// When the world issued this capability (#11960); `None` when the
+    /// journal that restored it predates recorded times.
+    issued_at: Option<u64>,
+    /// When this capability was revoked, directly or with an ancestor
+    /// (#11960); `None` while active or when no time was recorded.
+    revoked_at: Option<u64>,
 }

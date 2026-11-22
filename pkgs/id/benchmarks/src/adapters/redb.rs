@@ -24,7 +24,7 @@
 //! - `ever_used`: physical generation key -> marker (never-reuse
 //!   evidence for the captured-key delete).
 
-use id_benchmarks::{content_id, physical_key};
+use crate::{content_id, physical_key};
 use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};

@@ -112,6 +112,23 @@
       "status": "mapped"
     },
     {
+      "id": "id.rust.substrate-path",
+      "paths": [
+        "pkgs/id/crates/id-core/tests/substrate_path.rs",
+        "pkgs/id/crates/id-sync/tests/substrate_sync_path.rs"
+      ],
+      "invocation": "nix flake check ./pkgs/id (check test-sandbox runs cargo nextest --all-features for default workspace members)",
+      "venue": {
+        "workflow": ".github/workflows/id-check.yml",
+        "job_step": "full-flake-check / Run full nix flake check",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped",
+      "related_issues": [12232, 9106],
+      "notes": "The #9106 walking skeleton (#12232), steps 1 and 2: a signed record read back from its id:// address, then written on one in-process node, synced to a second, and a conflicting write reported on both. The only substrate suites that import from id_core and id_sync instead of including modules by path, so they also fail to compile when a substrate module stops being part of its crate. Direct run: cargo test --manifest-path pkgs/id/Cargo.toml -p id-core --test substrate_path && cargo test --manifest-path pkgs/id/Cargo.toml -p id-sync --test substrate_sync_path."
+    },
+    {
       "id": "id.rust.planted-bug-check",
       "paths": ["pkgs/id/tests/planted-bug-check.sh", "pkgs/id/tests/planted/*.patch"],
       "invocation": "bash pkgs/id/tests/planted-bug-check.sh (the planted-bug-check flake check stages a throwaway git repo around pkgs/id and runs the script there; also run by pkgs/id/check-all in non-quick mode)",
@@ -306,6 +323,20 @@
       "phase3_issue": 6187,
       "related_issues": [1619],
       "reason": "The registered id-bench workflow is disabled_manually."
+    },
+    {
+      "id": "id.planted-bug.preflight",
+      "paths": ["pkgs/id/tests/test_planted_bug_preflight.py"],
+      "invocation": "python3 -I -m unittest discover -s pkgs/id/tests -p 'test_planted_bug_preflight.py' -v",
+      "venue": {
+        "workflow": ".github/workflows/id-check.yml",
+        "job_step": "guard / Test planted-bug preflight safety refusals",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped",
+      "related_issues": [12058],
+      "notes": "Runs on the existing nightly/manual guard, before Nix setup. Five refusal tests use synthetic disposable Git fixtures and a fake Cargo sentinel, not the heavy mutation harness. Workflow enablement verified 2026-11-19; configured coverage is not evidence of a hosted run."
     },
     {
       "id": "id.just-recipes.drift-guard",
@@ -615,14 +646,13 @@
       "id": "quota-exporters",
       "paths": [
         "pm-stack/opencode-usage-export/opencode-usage-export.test.mjs",
-        "pm-stack/cloudflare-export/cloudflare-quota-export.test.mjs",
-        "pm-stack/supabase-export/supabase-quota-export.test.mjs"
+        "pm-stack/cloudflare-export/cloudflare-quota-export.test.mjs"
       ],
       "invocation": "Node/Bun tests; exact per-package commands not established",
       "venue": null,
       "status": "uncovered",
       "phase2_issue": 6084,
-      "reason": "Three exporter suites have no venue."
+      "reason": "Two exporter suites have no venue."
     },
     {
       "id": "github-backup.worker",
@@ -777,6 +807,19 @@
       },
       "status": "mapped",
       "related_issues": [9877, 9103]
+    },
+    {
+      "id": "pm-stack.lane-guard",
+      "paths": ["pm-stack/lane-guard/test_lane_guard.py"],
+      "invocation": "cd pm-stack/lane-guard && python3 -m unittest test_lane_guard.py",
+      "venue": {
+        "workflow": ".github/workflows/pm-stack-tests.yml",
+        "job_step": "Test lane guard",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped",
+      "related_issues": [7616, 9991]
     },
     {
       "id": "pm-stack.grist.choice-options",
@@ -1373,29 +1416,44 @@
     {
       "id": "mcpx.scripts.spec-parity",
       "paths": ["pkgs/mcpx/scripts/test_spec_parity.py"],
-      "invocation": "python3 pkgs/mcpx/scripts/test_spec_parity.py (candidate; no venue invocation found)",
-      "venue": null,
-      "status": "uncovered-in-fact",
-      "phase2_issue": 10330,
-      "reason": "Named by no registry entry and no workflow invocation found in the #6188 inventory (2026-11-14). #10330 owns proving or wiring it."
+      "invocation": "python3 -m unittest discover -s pkgs/mcpx/scripts -p 'test_spec_parity.py' -v",
+      "venue": {
+        "workflow": ".github/workflows/mcpx-test.yml",
+        "job_step": "Spec-parity regressions (#10330)",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped",
+      "related_issues": [10330],
+      "reason": "Wired into mcpx-test.yml by #10330. Local run passed (16 tests, OK) at origin/main 82aa1ea6; CI run pending."
     },
     {
       "id": "mcpx.scripts.test-seed",
       "paths": ["pkgs/mcpx/scripts/tests/test_mcpx_test_seed.py"],
-      "invocation": "python3 -m unittest (candidate; the scripts-test.yml discovery steps are pattern-scoped to other suites and do not reach this file)",
-      "venue": null,
-      "status": "uncovered-in-fact",
-      "phase2_issue": 10330,
-      "reason": "Named by no registry entry and no venue invocation found in the #6188 inventory (2026-11-14). #10330 owns proving or wiring it."
+      "invocation": "python3 -m unittest discover -s pkgs/mcpx/scripts/tests -p 'test_mcpx_test_seed.py' -v",
+      "venue": {
+        "workflow": ".github/workflows/mcpx-test.yml",
+        "job_step": "Run-seed wrapper regressions (#1949)",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped",
+      "related_issues": [10330],
+      "reason": "mcpx-test.yml runs this suite (step 'Run-seed wrapper regressions (#1949)'). Row was stale; updated by #10330 triage."
     },
     {
       "id": "mcpx.scripts.e2e-shard-packer-test",
       "paths": ["pkgs/mcpx/scripts/tests/test_e2e_shard_packer.py"],
-      "invocation": "python3 -m unittest (candidate; mcpx-test.yml runs the packer script itself, not this test)",
-      "venue": null,
-      "status": "uncovered-in-fact",
-      "phase2_issue": 10330,
-      "reason": "Named by no registry entry and no venue invocation found in the #6188 inventory (2026-11-14). #10330 owns proving or wiring it."
+      "invocation": "python3 -m unittest discover -s pkgs/mcpx/scripts/tests -p 'test_e2e_shard_packer.py' -v",
+      "venue": {
+        "workflow": ".github/workflows/mcpx-test.yml",
+        "job_step": "Shard-packer discovery regressions (#6906)",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped",
+      "related_issues": [10330],
+      "reason": "mcpx-test.yml runs this suite (step 'Shard-packer discovery regressions (#6906)'). Row was stale; updated by #10330 triage."
     },
     {
       "id": "fleet.queue-reconcile.check-coverage",
@@ -1404,6 +1462,18 @@
       "venue": {
         "workflow": ".github/workflows/scripts-test.yml",
         "job_step": "update-nixpkgs-inputs-contract / Run queue-reconcile coverage contract tests (#8028)",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped"
+    },
+    {
+      "id": "fleet.flow-report",
+      "paths": ["scripts/fleet/flow-report/test_flow_report.py"],
+      "invocation": "python3 -I -m unittest discover -s scripts/fleet/flow-report -p 'test_flow_report.py' -v",
+      "venue": {
+        "workflow": ".github/workflows/scripts-test.yml",
+        "job_step": "update-nixpkgs-inputs-contract / Run flow-report contract tests",
         "state": "active",
         "dispatchable": true
       },

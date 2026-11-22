@@ -1,4 +1,7 @@
 import { describe, expect, it } from "bun:test";
+import { mkdtempSync, readdirSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { BOUNDED_DASHBOARD_PATHS, createDashboardResponseDeadline } from "../src/assembly-deadline.ts";
 
 const routes = [
@@ -209,5 +212,75 @@ describe("dashboard assembly deadline (#5664)", () => {
     );
     expect(other.status).toBe(503);
     expect(JSON.parse(await other.text()).stale).toBe(false);
+  });
+
+  describe("last-good across a restart (#10383)", () => {
+    const stalled = () => new Promise<Response>(() => {});
+
+    it("serves the previous process's last-good, marked stale with its age", async () => {
+      const dir = mkdtempSync(join(tmpdir(), "last-good-"));
+      let clock = 1_000_000;
+      const before = createDashboardResponseDeadline({ timeoutMs: 10, persistDir: dir, now: () => clock });
+      for (const path of ["/program", "/api/program.json"]) {
+        const fresh = await before(new Request(`http://localhost${path}`), async () =>
+          path.startsWith("/api/")
+            ? Response.json({ projects: ["id"] })
+            : new Response("<html><body><h1>Program</h1></body></html>", {
+                headers: { "content-type": "text/html; charset=utf-8" },
+              }),
+        );
+        expect(fresh.status).toBe(200);
+      }
+      expect(readdirSync(dir).filter((f) => f.endsWith(".json"))).toHaveLength(2);
+      expect(readdirSync(dir).some((f) => f.includes(".tmp-"))).toBe(false);
+
+      // A restart 50 minutes later: past the in-memory 30-minute cap,
+      // inside the disk copy's own cap.
+      clock += 50 * 60_000;
+      const after = createDashboardResponseDeadline({ timeoutMs: 10, persistDir: dir, now: () => clock });
+      const page = await after(new Request("http://localhost/program"), stalled);
+      expect(page.status).toBe(200);
+      expect(page.headers.get("x-aggregator-stale")).toBe("true");
+      const html = await page.text();
+      expect(html).toContain("<h1>Program</h1>");
+      expect(html).toContain("saved before the dashboard restarted, 50 min ago");
+
+      const api = await after(new Request("http://localhost/api/program.json"), stalled);
+      expect(api.status).toBe(200);
+      expect(JSON.parse(await api.text())).toMatchObject({ projects: ["id"], stale: true });
+    });
+
+    it("still answers 503 when the disk copy is too old or missing", async () => {
+      const dir = mkdtempSync(join(tmpdir(), "last-good-"));
+      let clock = 1_000_000;
+      const before = createDashboardResponseDeadline({ timeoutMs: 10, persistDir: dir, now: () => clock });
+      await before(new Request("http://localhost/api/program.json"), async () => Response.json({ projects: [] }));
+      clock += 7 * 60 * 60_000;
+      const after = createDashboardResponseDeadline({ timeoutMs: 10, persistDir: dir, now: () => clock });
+      expect((await after(new Request("http://localhost/api/program.json"), stalled)).status).toBe(503);
+      expect((await after(new Request("http://localhost/api/board.json"), stalled)).status).toBe(503);
+    });
+
+    it("ignores an unreadable or mismatched disk copy", async () => {
+      const dir = mkdtempSync(join(tmpdir(), "last-good-"));
+      const before = createDashboardResponseDeadline({ timeoutMs: 10, persistDir: dir });
+      await before(new Request("http://localhost/program"), async () => new Response("<body>ok</body>"));
+      const [file] = readdirSync(dir);
+      writeFileSync(join(dir, file), "{not json");
+      const after = createDashboardResponseDeadline({ timeoutMs: 10, persistDir: dir });
+      expect((await after(new Request("http://localhost/program"), stalled)).status).toBe(503);
+    });
+
+    it("prefers a fresh in-process response over the disk copy", async () => {
+      const dir = mkdtempSync(join(tmpdir(), "last-good-"));
+      const before = createDashboardResponseDeadline({ timeoutMs: 10, persistDir: dir });
+      await before(new Request("http://localhost/api/program.json"), async () => Response.json({ v: "old" }));
+      const after = createDashboardResponseDeadline({ timeoutMs: 10, persistDir: dir });
+      await after(new Request("http://localhost/api/program.json"), async () => Response.json({ v: "new" }));
+      const stale = await after(new Request("http://localhost/api/program.json"), stalled);
+      const body = JSON.parse(await stale.text());
+      expect(body.v).toBe("new");
+      expect(body.staleReason).not.toContain("restarted");
+    });
   });
 });

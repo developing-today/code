@@ -63,9 +63,10 @@ impl RefVerdict {
 }
 
 /// Minimal independent model: revocation intervals per subject, admission
-/// instants per record, and the sticky quarantine/flag transitions (only
-/// `AcceptedValid` records transition; later revocations never escalate
-/// an already-flagged/quarantined/revalidated record).
+/// instants per record, and the sticky quarantine/flag transitions
+/// (`AcceptedValid` records are flagged or quarantined; a later revocation
+/// covering a flagged record's admission escalates it to quarantined;
+/// quarantined and revalidated records never change on a revocation).
 #[derive(Debug, Default)]
 struct RefModel {
     /// key tag -> list of (from, until-or-None) intervals.
@@ -90,10 +91,12 @@ fn ref_peer_tag(peer: &str) -> String {
 }
 
 impl RefModel {
-    fn sweep(&mut self, tag: &str, by_key: bool, from: u64) {
+    fn sweep(&mut self, tag: &str, by_key: bool, from: u64, until: Option<u64>) {
         for (ktag, ptag, admitted_at, verdict) in self.records.values_mut() {
-            let hit = if by_key { ktag == tag } else { ptag == tag };
-            if hit && *verdict == RefVerdict::AcceptedValid {
+            let after_end = until.is_some_and(|u| *admitted_at >= u);
+            let hit = !after_end && if by_key { ktag == tag } else { ptag == tag };
+            let escalate = *verdict == RefVerdict::FlaggedIndeterminate && *admitted_at >= from;
+            if hit && (*verdict == RefVerdict::AcceptedValid || escalate) {
                 *verdict = if *admitted_at >= from {
                     RefVerdict::QuarantinedIndeterminate
                 } else {
@@ -109,7 +112,7 @@ impl RefModel {
             .entry(tag.clone())
             .or_default()
             .push((from, until));
-        self.sweep(&tag, true, from);
+        self.sweep(&tag, true, from, until);
     }
 
     fn revoke_peer(&mut self, peer: &str, from: u64, until: Option<u64>) {
@@ -118,7 +121,7 @@ impl RefModel {
             .entry(tag.clone())
             .or_default()
             .push((from, until));
-        self.sweep(&tag, false, from);
+        self.sweep(&tag, false, from, until);
     }
 
     fn blocked(
@@ -681,6 +684,63 @@ fn bounded_interval_blocks_only_inside_and_quarantine_is_sticky() {
 }
 
 #[test]
+fn late_bounded_revocation_sweeps_only_records_admitted_inside_it() {
+    let (_ska, key_a) = keypair([3u8; 32]);
+    let mut reg = RevocationRegistry::new();
+    admit(&mut reg, "before", key_a, "peer-1", 100, None);
+    admit(&mut reg, "inside", key_a, "peer-1", 250, None);
+    admit(&mut reg, "at-end", key_a, "peer-1", 300, None);
+    admit(&mut reg, "after", key_a, "peer-1", 400, None);
+
+    // The suspension is learned only after every admission.
+    let affected = reg
+        .apply_revocation(RevocationRecord {
+            record_id: "late-suspension".to_string(),
+            subject: RevocationSubject::Key(key_a),
+            effective_from: 200,
+            effective_until: Some(300),
+            reason: RevocationReason::AdministrativeDisable,
+            recorded_at: 500,
+        })
+        .expect("bounded revocation must apply");
+    assert_eq!(affected, vec!["before".to_string(), "inside".to_string()]);
+    assert!(matches!(
+        status_of(&reg, "before"),
+        RecordStatus::Flagged { .. }
+    ));
+    assert!(matches!(
+        status_of(&reg, "inside"),
+        RecordStatus::Quarantined { .. }
+    ));
+    assert_eq!(status_of(&reg, "at-end"), RecordStatus::Accepted);
+    assert_eq!(status_of(&reg, "after"), RecordStatus::Accepted);
+
+    // A later unbounded revocation still reaches the post-interval
+    // records, and the earlier quarantine stays.
+    reg.apply_revocation(RevocationRecord {
+        record_id: "compromise".to_string(),
+        subject: RevocationSubject::Key(key_a),
+        effective_from: 350,
+        effective_until: None,
+        reason: RevocationReason::KeyCompromise,
+        recorded_at: 600,
+    })
+    .expect("unbounded revocation must apply");
+    assert!(matches!(
+        status_of(&reg, "inside"),
+        RecordStatus::Quarantined { .. }
+    ));
+    assert!(matches!(
+        status_of(&reg, "at-end"),
+        RecordStatus::Flagged { .. }
+    ));
+    assert!(matches!(
+        status_of(&reg, "after"),
+        RecordStatus::Quarantined { .. }
+    ));
+}
+
+#[test]
 fn malformed_revocation_and_admission_inputs_are_rejected() {
     let (_ska, key_a) = keypair([3u8; 32]);
     let mut reg = RevocationRegistry::new();
@@ -866,4 +926,37 @@ fn differential_against_reference_model() {
             check_against_reference(&reg, &model, &id_refs, &key_of, &peer_of, probe);
         }
     }
+}
+
+#[test]
+fn a_wider_revocation_escalates_a_flagged_record_to_quarantine() {
+    let (_ska, key_a) = keypair([3u8; 32]);
+    let mut reg = RevocationRegistry::new();
+    admit(&mut reg, "mid", key_a, "peer-1", 150, None);
+
+    // Suspected from 200: the record predates it and is only flagged.
+    reg.apply_revocation(key_revocation("narrow", key_a, 200, 210))
+        .expect("revocation must apply");
+    assert!(matches!(
+        status_of(&reg, "mid"),
+        RecordStatus::Flagged { .. }
+    ));
+
+    // Suspected from 100 after all: the record is now suspect.
+    assert_eq!(
+        reg.apply_revocation(key_revocation("wide", key_a, 100, 220)),
+        Ok(vec!["mid".to_string()])
+    );
+    assert!(matches!(
+        status_of(&reg, "mid"),
+        RecordStatus::Quarantined { .. }
+    ));
+
+    // Nothing de-escalates.
+    reg.apply_revocation(key_revocation("late", key_a, 300, 310))
+        .expect("revocation must apply");
+    assert!(matches!(
+        status_of(&reg, "mid"),
+        RecordStatus::Quarantined { .. }
+    ));
 }

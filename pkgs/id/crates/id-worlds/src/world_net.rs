@@ -1526,7 +1526,8 @@ impl WorldClient {
                     .len()
                     .checked_add(4)
                     .context("frame byte count overflow")?;
-                let frame = serde_json::from_slice(&body).context("decode frame")?;
+                let frame = id_core::json_unique::from_slice_without_duplicate_keys(&body)
+                    .context("decode frame")?;
                 Ok(Some((frame, bytes)))
             }
             None => Ok(None),

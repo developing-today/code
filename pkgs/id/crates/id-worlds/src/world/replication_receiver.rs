@@ -607,7 +607,9 @@ fn validate_directory_payload(payload: &[u8]) -> Result<(), super::replication::
         return Err(ReplicationError::MalformedPayload);
     }
     for line in payload.split_inclusive(|byte| *byte == b'\n') {
-        serde_json::from_slice::<crate::directory::DirectoryEntry>(line)
+        id_core::json_unique::from_slice_without_duplicate_keys::<crate::directory::DirectoryEntry>(
+            line,
+        )
             .map_err(|_| ReplicationError::MalformedPayload)?;
     }
     Ok(())
@@ -663,7 +665,7 @@ fn validate_committed_journal(
     let mut header_version = None;
     let mut cursor = None;
     for line in bytes.split_inclusive(|byte| *byte == b'\n') {
-        let entry: JournalEntry = serde_json::from_slice(line)
+        let entry: JournalEntry = id_core::json_unique::from_slice_without_duplicate_keys(line)
             .map_err(|_| corrupt("a journal line does not decode as a journal entry"))?;
         match (header_version, &entry) {
             (
@@ -720,6 +722,28 @@ mod tests {
 
     fn source_of(key: &SigningKey) -> [u8; 32] {
         *key.verifying_key().as_bytes()
+    }
+
+    /// `line` (one JSON object) with an unknown key given twice in front,
+    /// which a lenient decode would collapse and ignore (#8794).
+    fn with_duplicated_key(line: &[u8]) -> Vec<u8> {
+        let mut out = br#"{"x":1,"x":2,"#.to_vec();
+        out.extend_from_slice(&line[1..]);
+        out
+    }
+
+    #[test]
+    fn a_committed_journal_line_with_a_duplicated_key_is_corrupt() {
+        let source = source_of(&signing_key(1));
+        let journal = journal_payload(1);
+        assert!(validate_committed_journal(&journal, WORLD, &source).is_ok());
+        let mut lines: Vec<&[u8]> = journal.split_inclusive(|byte| *byte == b'\n').collect();
+        let duplicated = with_duplicated_key(lines[1]);
+        lines[1] = &duplicated;
+        assert!(matches!(
+            validate_committed_journal(&lines.concat(), WORLD, &source),
+            Err(ReceiverError::CorruptReplica(_))
+        ));
     }
 
     /// Journal bytes: a `Created` header at `version` plus two entries.

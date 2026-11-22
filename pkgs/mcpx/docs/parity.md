@@ -32,7 +32,7 @@ and costs an agent the ability to restart a server that has wedged. What they
 carry instead is a description that says so and MCP annotations
 (`readOnlyHint`, `destructiveHint`) for a client that wants to scope on them.
 
-## /v1 operations (93)
+## /v1 operations (96)
 
 | Operation | Route | CLI | MCP tool | Plugin | Notes |
 | --- | --- | --- | --- | --- | --- |
@@ -53,6 +53,8 @@ carry instead is a description that says so and MCP annotations
 | `batch` | `POST /v1/batch` | `mcpx batch` | `mcpx_batch` | `ops.batch()` |  |
 | `call` | `POST /v1/call` | `mcpx call` | `mcpx_call` | `ops.call()`, `call()`, `callAsTask()` |  |
 | `call_path` | `POST /v1/call/{server}/{tool}` | `mcpx call` | `mcpx_call` | `ops.callPath()` |  |
+| `call_history` | `GET /v1/calls/{run}` | `mcpx calls get` *generated* | `mcpx_call_history` | `ops.callHistory()` |  |
+| `call_history_begin` | `POST /v1/calls/{run}` | `mcpx calls begin` *generated* | `mcpx_call_history_begin` | `ops.callHistoryBegin()` |  |
 | `catalog` | `GET /v1/catalog` | `mcpx catalog` | `mcpx_catalog` | `ops.catalog()` |  |
 | `catalog_history` | `GET /v1/catalog/history` | `mcpx history` *generated* | `mcpx_catalog_history` | `ops.catalogHistory()` |  |
 | `chat_completions` | `POST /v1/chat/completions` | `mcpx proxy` | `mcpx_chat_completions` | `ops.chatCompletions()` |  |
@@ -90,6 +92,7 @@ carry instead is a description that says so and MCP annotations
 | `prompts` | `GET /v1/prompts` | `mcpx prompts` | `mcpx_prompts` | `ops.prompts()` |  |
 | `protocol` | `GET /v1/protocol` | `mcpx protocol` *generated* | `mcpx_protocol` | `ops.protocol()` |  |
 | `recipes_list` | `GET /v1/recipes` | `mcpx recipes list` | `mcpx_recipes_list` | `ops.recipesList()` |  |
+| `recipe_remove` | `DELETE /v1/recipes/{name}` | `mcpx recipes remove` | `mcpx_recipe_remove` | `ops.recipeRemove()` | Privileged. Destructive. |
 | `recipe_get` | `GET /v1/recipes/{name}` | `mcpx recipes show` | `mcpx_recipe_get` | `ops.recipeGet()` |  |
 | `recipe_save` | `POST /v1/recipes/{name}` | `mcpx recipes save` | `mcpx_recipe_save` | `ops.recipeSave()` |  |
 | `recipe_run` | `POST /v1/recipes/{name}/run` | `mcpx recipes run` | `mcpx_recipe_run` | `ops.recipeRun()` |  |
@@ -130,7 +133,7 @@ carry instead is a description that says so and MCP annotations
 | `types` | `GET /v1/types` | `mcpx types` | `mcpx_types` | `ops.types()`, `types()` |  |
 | `writes_clear` | `POST /v1/writes/{server}/clear` | `mcpx writes clear` *generated* | `mcpx_writes_clear` | `ops.writesClear()` | Privileged. |
 
-## CLI commands (74)
+## CLI commands (75)
 
 Every command the binary dispatches, with the operations it reaches. A command
 that reaches none says why: those are decisions, not gaps.
@@ -145,6 +148,7 @@ that reaches none says why: those are decisions, not gaps.
 | `batch` | `batch` |  |
 | `cache` | – | Reads and prunes the cache directory on this machine; no daemon is involved. |
 | `call` | `call`, `call_path` |  |
+| `calls` | `call_history`, `call_history_begin` | Generated from the operation table. |
 | `catalog` | `catalog` |  |
 | `client` | `client_module` |  |
 | `complete` | `complete` | Generated from the operation table. |
@@ -180,7 +184,7 @@ that reaches none says why: those are decisions, not gaps.
 | `prompts` | `prompt_get`, `prompts` |  |
 | `protocol` | `protocol` | Generated from the operation table. |
 | `proxy` | `chat_completions` |  |
-| `recipes` | `recipes_list`, `recipe_get`, `recipe_save`, `recipe_run` |  |
+| `recipes` | `recipes_list`, `recipe_remove`, `recipe_get`, `recipe_save`, `recipe_run` |  |
 | `refresh` | `refresh` |  |
 | `registry` | `registry_search` |  |
 | `reload` | `reload` |  |

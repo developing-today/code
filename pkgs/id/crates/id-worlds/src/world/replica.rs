@@ -350,7 +350,7 @@ mod tests {
         let entries = vec![
             JournalEntry::Created {
                 world_id: world_id.to_owned(),
-                version: super::super::JOURNAL_VERSION,
+                version: super::super::MAX_JOURNAL_VERSION,
             },
             source.issued_entry(owner.id).unwrap(),
             source.issued_entry(spectator.id).unwrap(),
@@ -470,7 +470,7 @@ mod tests {
         let entries = vec![
             JournalEntry::Created {
                 world_id: world_id.to_owned(),
-                version: super::super::JOURNAL_VERSION,
+                version: super::super::MAX_JOURNAL_VERSION,
             },
             source.issued_entry(owner.id).unwrap(),
             source.issued_entry(present.id).unwrap(),
@@ -834,7 +834,7 @@ mod tests {
         let entries = vec![
             JournalEntry::Created {
                 world_id: world_id.to_owned(),
-                version: super::super::JOURNAL_VERSION,
+                version: super::super::MAX_JOURNAL_VERSION,
             },
             core.issued_entry(ann.id).unwrap(),
         ];
@@ -1075,7 +1075,7 @@ mod tests {
         let entries = vec![
             JournalEntry::Created {
                 world_id: world_id.to_owned(),
-                version: super::super::JOURNAL_VERSION,
+                version: super::super::MAX_JOURNAL_VERSION,
             },
             source.issued_entry(1).unwrap(),
             source.issued_entry(spectator.id).unwrap(),
@@ -1133,7 +1133,7 @@ mod tests {
         let entries = vec![
             JournalEntry::Created {
                 world_id: world_id.to_owned(),
-                version: super::super::JOURNAL_VERSION,
+                version: super::super::MAX_JOURNAL_VERSION,
             },
             core.issued_entry(1).unwrap(),
         ];

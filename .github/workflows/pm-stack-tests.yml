@@ -76,6 +76,12 @@ jobs:
           bash pm-stack/scripts/seed-smoke.test.sh
           bash pm-stack/scripts/deploy-install-smoke.test.sh
 
+      # pm-git-sync's clone hygiene (2026-11-20): untracked files in
+      # ~/git/code are moved aside with content kept, tracked edits and
+      # a non-main branch still refuse.
+      - name: Test pm-git-sync quarantine
+        run: bash pm-stack/scripts/pm-git-sync-quarantine.test.sh
+
       # Script suite for #5993: pm-stack/scripts/
       # tailnet-bindings.test.sh (the #781 regression pin for the
       # Pad/Grist tailnet bindings) was run by no workflow. The
@@ -182,6 +188,18 @@ jobs:
           done
           python3 -m unittest "$@"
 
+      # Lane guard: assignee-is-not-a-hold and park-note dedupe checks
+      # that queue lanes run before parking or commenting (#7616).
+      - name: Test lane guard
+        working-directory: pm-stack/lane-guard
+        run: |
+          set -euo pipefail
+          if [ ! -f test_lane_guard.py ]; then
+            echo "::error::Missing suite file pm-stack/lane-guard/test_lane_guard.py; the lane guard tests did not run."
+            exit 1
+          fi
+          python3 -m unittest test_lane_guard.py
+
       # Bun suite for #6091: pm-stack/opencode-claimant/
       # test/install.test.mjs (13 tests, the #3278 typo'd-flag
       # install guard) was run by no workflow — #5951 wired only
@@ -233,16 +251,6 @@ jobs:
       # cloudflare-export: node --test (35 tests)
       - name: Test cloudflare-export suite
         run: node --test pm-stack/cloudflare-export/cloudflare-quota-export.test.mjs
-
-      # supabase-export: bun test (12 tests)
-      - name: Test supabase-export suite
-        working-directory: pm-stack/supabase-export
-        run: |
-          if [ ! -f supabase-quota-export.test.mjs ]; then
-            echo "::error::Missing suite file pm-stack/supabase-export/supabase-quota-export.test.mjs — the supabase suite was not run."
-            exit 1
-          fi
-          bun test
 
       # meta-exporter: node --test (suite for #6344; the explicit file
       # path is required — the directory form fails on Node 24). The

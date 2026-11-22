@@ -64,6 +64,11 @@ name = "chunked_list"
 path = "tests/chunked_list.rs"
 required-features = ["client"]
 
+[[test]]
+name = "person_wait_cli"
+path = "tests/person_wait_cli.rs"
+required-features = ["client"]
+
 
 [dev-dependencies]
 # Property-based tests for the client parser invariants (#5939),

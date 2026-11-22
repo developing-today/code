@@ -12,7 +12,7 @@ pub(crate) fn verb_block(t: &TursoBackend, req: &Value) -> Value {
     let worker = req_str(req, "worker").unwrap_or("").to_string();
     let reason_class = req_str(req, "reason_class").unwrap_or("").to_string();
     let blocker = req_str(req, "blocker").unwrap_or("").to_string();
-    let row = match claimed_by(t, task_id, &worker, "block_task") {
+    let row = match claimed_by(t, task_id, &worker, "block_task", req) {
         Ok(r) => r,
         Err(v) => return v,
     };
@@ -775,7 +775,7 @@ pub(crate) fn verb_fail(t: &TursoBackend, req: &Value) -> Value {
     let reason_class = req_str(req, "reason_class")
         .unwrap_or("transient")
         .to_string();
-    let row = match claimed_by(t, task_id, &worker, "fail_repo_task") {
+    let row = match claimed_by(t, task_id, &worker, "fail_repo_task", req) {
         Ok(r) => r,
         Err(v) => return v,
     };
@@ -1064,7 +1064,7 @@ pub(crate) fn follow_on_key(triage_key: &str) -> Option<String> {
 pub(crate) fn verb_complete(t: &TursoBackend, req: &Value) -> Value {
     let task_id = req_i64(req, "task_id").unwrap_or(0);
     let worker = req_str(req, "worker").unwrap_or("").to_string();
-    let row = match claimed_by(t, task_id, &worker, "complete_task") {
+    let row = match claimed_by(t, task_id, &worker, "complete_task", req) {
         Ok(r) => r,
         Err(v) => return v,
     };

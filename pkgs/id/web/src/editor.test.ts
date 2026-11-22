@@ -317,17 +317,12 @@ describe("ordered_list start parsing (#2005)", () => {
     expect(parseOrderedListStart(raw)).toBe(expected);
   });
 
-  it.each([
-    "abc",
-    "2.5",
-    "0x10",
-    "1e3",
-    "",
-    "-3",
-    "9007199254740993",
-  ])("falls back to 1 for invalid start=%s", (raw) => {
-    expect(parseOrderedListStart(raw)).toBe(1);
-  });
+  it.each(["abc", "2.5", "0x10", "1e3", "", "-3", "9007199254740993"])(
+    "falls back to 1 for invalid start=%s",
+    (raw) => {
+      expect(parseOrderedListStart(raw)).toBe(1);
+    },
+  );
 
   it("falls back to 1 when the start attribute is absent", () => {
     expect(parseOrderedListStart(null)).toBe(1);
@@ -389,20 +384,15 @@ describe("task_list start parsing (#4100)", () => {
     expect(olGetAttrs()(el)).toEqual({ order: expected });
   });
 
-  it.each([
-    "abc",
-    "2.5",
-    "0x10",
-    "1e3",
-    "",
-    "-3",
-    "9007199254740993",
-  ])("falls back to 1 for invalid start=%s", (raw) => {
-    const el = document.createElement("ol");
-    el.classList.add("contains-task-list");
-    el.setAttribute("start", raw);
-    expect(olGetAttrs()(el)).toEqual({ order: 1 });
-  });
+  it.each(["abc", "2.5", "0x10", "1e3", "", "-3", "9007199254740993"])(
+    "falls back to 1 for invalid start=%s",
+    (raw) => {
+      const el = document.createElement("ol");
+      el.classList.add("contains-task-list");
+      el.setAttribute("start", raw);
+      expect(olGetAttrs()(el)).toEqual({ order: 1 });
+    },
+  );
 
   it("defaults order to 1 without a start attribute", () => {
     const el = document.createElement("ol");
@@ -780,19 +770,12 @@ describe("image dimension parsing (#2010)", () => {
     expect(parseImageDimension(raw)).toBe(expected);
   });
 
-  it.each([
-    "200px",
-    "50%",
-    "2.5",
-    "-5",
-    "abc",
-    "0x10",
-    "1e3",
-    "",
-    "9007199254740993",
-  ])("drops invalid dimension=%s to null", (raw) => {
-    expect(parseImageDimension(raw)).toBeNull();
-  });
+  it.each(["200px", "50%", "2.5", "-5", "abc", "0x10", "1e3", "", "9007199254740993"])(
+    "drops invalid dimension=%s to null",
+    (raw) => {
+      expect(parseImageDimension(raw)).toBeNull();
+    },
+  );
 
   it("drops an absent dimension to null", () => {
     expect(parseImageDimension(null)).toBeNull();

@@ -1298,7 +1298,7 @@ impl SessionIo for SshIo {
             }
             self.previous_screen = None;
         }
-        let Ok(value) = serde_json::from_str::<serde_json::Value>(&frame) else {
+        let Ok(value) = id_core::json_unique::parse_json_without_duplicate_keys(&frame) else {
             return true;
         };
         if value["type"] == "form_result_status" {

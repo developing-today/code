@@ -58,7 +58,7 @@ between, in the pool's selection order.
 
 | Pool | Doors (selection) | Note |
 | --- | --- | --- |
-| deepseek-flash-plan | OpenCode Go (3 workspaces) → ClinePass → OpenDesign → CommandCode → Mistral plan (round-robin) | The fleet's main DeepSeek pool. |
+| deepseek-flash-plan | OpenCode Go (3 workspaces) → ClinePass → OpenDesign Flash Eco → CommandCode → Mistral plan (round-robin) | The fleet's main DeepSeek pool. |
 | deepseek-pro-plan | OpenCode Go → ClinePass → OpenDesign → CommandCode (round-robin) | Pro sibling of the flash pool. |
 | luna-plan | openai-plan → OpenDesign → OpenCode Go (round-robin) | Legs present different contexts (200k vs 1.05M native). |
 | terra-plan | openai-plan only (round-robin over its 2 doors) | Single-plan pool; door failover is openai-plan's. |

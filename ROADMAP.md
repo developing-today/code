@@ -8,7 +8,7 @@ A row here records intent. It does not settle a product question and it is not a
 
 | Project                                                           | Roadmap                                                   | Current focus                                                                                                                                                                                             |
 | ----------------------------------------------------------------- | --------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `id`, the peer-to-peer CLI and worlds platform                    | [id](planning/roadmaps/id.md)                             | Phase 11 foundations: a CI signal that can be trusted, visible costs, one rule for what a client may see                                                                                                  |
+| `id`, the peer-to-peer CLI and worlds platform                    | [id](planning/roadmaps/id.md)                             | Close Phase 12 (four items open) and tag the first release; one end-to-end slice of the #9106 substrate. See the [results-first plan](planning/plans/2026-11-21_results-first.md)                         |
 | `mcpx`, the MCP gateway and Code Mode runner                      | [mcpx](planning/roadmaps/mcpx.md)                         | The only copy of the code; how downstream flakes consume it, and darwin takeover tests                                                                                                                    |
 | The NixOS flake and infra manifests                               | [nixos-and-infra](planning/roadmaps/nixos-and-infra.md)   | Inputs kept current by a daily job. No open work items of its own                                                                                                                                         |
 | Repo-wide CI and automation                                       | [repo-and-ci](planning/roadmaps/repo-and-ci.md)           | The dispatch workflows, the Go build cache, stale PR triage — and the queue fleet program: lanes for every queue, OpenChamber session dispatch (#1233, #1234), pool & routing intelligence (#1343, #1340) |
@@ -17,15 +17,21 @@ A row here records intent. It does not settle a product question and it is not a
 
 ## Now, across the repo
 
-1. `mcpx` robustness: a supervisor for stdio children (#1384), session resume after a cold restart (#1414), JSON Schema validation.
-2. `id` Phase 11 tasks that make the code easier to change: split `world.rs`, injected clock, typed errors, journal format tooling.
+The order, the evidence behind it and the progress log are in the [results-first plan](planning/plans/2026-11-21_results-first.md) (proposed 2026-11-21).
+
+1. Test `id` before it merges, and give the queue a way to build a slice of a feature instead of re-triaging it (#1233, #1187).
+2. `id`: close Phase 12 against its exit table and tag the first release — many worlds per node (#557), fair scheduling (#1067), delta frames (#805), first providers (#1062), verification debt (#796).
+3. `id`: one end-to-end slice of the signed-record substrate, two nodes and a CLI (#9106, #9112).
+4. `mcpx` robustness: a supervisor for stdio children (#1384), session resume after a cold restart (#1414), JSON Schema validation.
 
 ## Next
 
+1. `id` hosted worlds v1 and discovery (#6276, #10695), then the agents-in-worlds spike (#6300).
+2. `id` Phase 13 shells: presentation tiers (#786), kitty keyboard (#787), native shells (#788).
 
 ## Later
 
-1. `id` Phase 12: worlds as data, a provider registry, more guest languages, program upgrades, fair scheduling, delta frames.
+1. `id` product lines held behind a named trigger — currency, jurisdictions, boards and notes, messaging, the serverless edition, importers. The triggers are in the results-first plan's Later table; nothing is dropped.
 2. `mcpx` policy and auth: write policy, argument rules, principals, bearer token.
 
 ## Themes that cross projects

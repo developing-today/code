@@ -130,3 +130,18 @@ func TestLogsAliasQueriesTheLog(t *testing.T) {
 		}
 	}
 }
+
+// TestWantRecordsAndListsACapabilityRequest exercises the want command:
+// a request whose first word is not a verb is recorded as typed, and the
+// list shows it back.
+func TestWantRecordsAndListsACapabilityRequest(t *testing.T) {
+	e := newEnv(t, oneServer)
+	out := e.run("want", "calendar", "mcp")
+	if !strings.Contains(out, `Recorded capability request "calendar mcp"`) {
+		t.Fatalf("want did not record the request:\n%s", out)
+	}
+	out = e.run("want", "list", "--kind", "request")
+	if !strings.Contains(out, "calendar mcp") {
+		t.Fatalf("want list does not show the recorded request:\n%s", out)
+	}
+}

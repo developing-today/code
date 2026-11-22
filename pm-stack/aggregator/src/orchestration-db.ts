@@ -1,8 +1,8 @@
 // Orchestration reader flip (#10504, phase 1 of #3142): the fleet-feed
 // collector's orchestration section is read from the latest
-// public.orch_runs.document on Supabase muse-dev2 — the writer cutover
-// (task 14838, PR #10381) has written every hourly pass there since
-// 2026-11-15 — and orchestration.json, which the writer still
+// orch_runs.document in the Turso store — the writer cutover
+// (task 14838, PR #10381) has written every hourly pass to the
+// remote store since 2026-11-15 — and orchestration.json, which the writer still
 // regenerates every pass, becomes the export + rollback path only.
 //
 // Fallback contract (from #10504): on any DB read failure the reader
@@ -13,9 +13,8 @@
 // which points the reader back at the file and loses nothing.
 //
 // This module is the decision logic only: the collector injects its
-// own Supabase query route (Management API SQL, the same one the AA
-// section uses) and its file read, so the flip is unit-testable
-// without a database.
+// own Turso store query route (the same one the AA section uses) and
+// its file read, so the flip is unit-testable without a database.
 
 /** The latest run's complete document, newest first. generated_at is
  * the document's own generatedAt (writer contract, ORCHESTRATION.md);

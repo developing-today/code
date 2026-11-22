@@ -1,21 +1,10 @@
 //! queue-broker Turso backend — the queue core on libSQL (#6741).
 //!
-//! The Postgres queue core (agent.tasks / leases / lanes / workers /
-//! checkpoints / repo_task_lane_ledger / events in muse-dev2) was the
-//! one piece of the 2026-11-04..06 migration (#5689/#5690 series)
-//! deliberately kept on Postgres for transactional coupling. When
-//! the muse-dev2 data plane went down on 2026-11-06 (#6619, Supabase
-//! platform fault) the queue core had no live home; the GitHub
-//! fallback mode (doc/fleet/queue-fallback-mode.md) carried the work.
-//! This module is the dedicated-Turso replacement Drew ordered the
-//! same evening: a dedicated database (`fleet-queue`, org dezren39,
-//! group great-star-lord; rw token in BWS as
-//! `turso.fleet-queue-rw-token`) behind the SAME broker protocol, so
-//! no client changes: backend selection is the broker's config.
-//!
-//! Selection: `QUEUE_BROKER_BACKEND=turso` (default `postgres` — the
-//! production default does NOT flip with this code; cutover is the
-//! runbook in doc/fleet/queue-turso-cutover.md). URL:
+//! The queue core (tasks / leases / lanes / workers / checkpoints /
+//! repo_task_lane_ledger / events) on a dedicated Turso database
+//! (`fleet-queue`, org dezren39, group great-star-lord; rw token in
+//! BWS as `turso.fleet-queue-rw-token`) behind the broker protocol.
+//! It is the queue broker's only backend. URL:
 //! `QUEUE_BROKER_TURSO_URL` (default the fleet-queue HTTPS URL).
 //! Token: `QUEUE_BROKER_TURSO_TOKEN_FILE`, else the secrets broker
 //! by the name above.
@@ -39,8 +28,7 @@
 //! stream's consumers get broker verbs here: /events-append,
 //! /events-seen (the event_seen ready-condition primitive),
 //! /events-count (observability + health), /events-prune (the
-//! prune_events port). All of it exists only on this backend; the
-//! Postgres dispatch is untouched.
+//! prune_events port).
 //!
 //! Atomicity: libSQL is single-writer. A claim is ONE conditional
 //! UPDATE whose WHERE clause re-checks claimability (status in
@@ -60,12 +48,16 @@ mod claim;
 mod core;
 mod lifecycle;
 mod stacks_outbox;
+mod staleness;
+mod work_identity;
 
 pub use admin::*;
 pub use claim::*;
 pub use core::*;
 pub use lifecycle::*;
 pub use stacks_outbox::*;
+pub use staleness::*;
+pub use work_identity::*;
 
 #[cfg(test)]
 mod tests {
@@ -80,6 +72,8 @@ mod tests {
             include_str!("turso_queue/lifecycle.rs"),
             include_str!("turso_queue/admin.rs"),
             include_str!("turso_queue/stacks_outbox.rs"),
+            include_str!("turso_queue/staleness.rs"),
+            include_str!("turso_queue/work_identity.rs"),
             include_str!("turso_queue.rs"),
         ]
         .concat()
@@ -407,8 +401,7 @@ mod tests {
         // #9420 oracle: exact-task readback works on the Turso
         // verb_list — the task filter, a dedupe_key filter, and a
         // queue predicate that applies only when a queue is named (an
-        // unnamed queue must not degenerate into queue = ''). The
-        // PostgREST /list handler carries the same contract.
+        // unnamed queue must not degenerate into queue = '').
         let src = &test_source();
         let seg = seg8217(src, "fn verb_list(", "\nfn verb_health");
         assert!(
@@ -423,15 +416,6 @@ mod tests {
         assert!(
             seg.contains("if !queue.is_empty()"),
             "queue predicate is conditional on a named queue"
-        );
-        let broker = include_str!("queue_broker.rs");
-        assert!(
-            broker.contains("dedupe_key=eq."),
-            "PostgREST /list applies the dedupe_key filter"
-        );
-        assert!(
-            broker.contains("queue_pred"),
-            "PostgREST /list omits the queue predicate when unnamed"
         );
     }
 
@@ -877,6 +861,56 @@ mod tests {
             seg.contains("live_claim_holder(&row, &now)"),
             "the refusal is keyed on the row's live lease, not the claimer"
         );
+    }
+
+    #[test]
+    fn lifecycle_verbs_refuse_another_lanes_claim_6985() {
+        // #6985 (task 12453, 2026-11-08): lane B's checkpoint and
+        // complete succeeded on lane A's live claim because every
+        // lane is worker repo-worker-code. A verb that names its
+        // lane is refused on a row another lane claimed.
+        let row =
+            json!({"status": "claimed", "worker_id": "repo-worker-code", "lane_id": "code-a"});
+        assert_eq!(
+            foreign_lane_claim(&row, &json!({"lane": "code-b"})),
+            Some(("code-a".to_string(), "code-b".to_string()))
+        );
+        // The holder's own lane passes.
+        assert_eq!(foreign_lane_claim(&row, &json!({"lane": "code-a"})), None);
+        // No caller lane, a null lane, an execution mode, or a row
+        // claimed with no lane keeps the worker-only check.
+        assert_eq!(foreign_lane_claim(&row, &json!({})), None);
+        assert_eq!(foreign_lane_claim(&row, &json!({"lane": null})), None);
+        assert_eq!(foreign_lane_claim(&row, &json!({"lane": "direct"})), None);
+        let laneless =
+            json!({"status": "claimed", "worker_id": "repo-worker-code", "lane_id": null});
+        assert_eq!(
+            foreign_lane_claim(&laneless, &json!({"lane": "code-b"})),
+            None
+        );
+        // Source oracle: every holder-checked verb hands its request
+        // to the guard, and the guard records the refusal.
+        let src = &test_source();
+        for verb in [
+            "heartbeat_task",
+            "checkpoint_task",
+            "park_task",
+            "release_repo_task",
+            "block_task",
+            "fail_repo_task",
+            "complete_task",
+        ] {
+            assert!(
+                src.contains(&format!("claimed_by(t, task_id, &worker, \"{verb}\", req)")),
+                "{verb} passes its request (and lane) to claimed_by"
+            );
+        }
+        let guard = src
+            .split("pub(crate) fn claimed_by(")
+            .nth(1)
+            .and_then(|s| s.split("\npub(crate) fn ").next())
+            .unwrap_or("");
+        assert!(guard.contains("\"claimed_by_another_lane\""));
     }
 
     #[test]
@@ -3590,6 +3624,57 @@ mod tests {
             !filter_matches(&urgent_code, &stream_only_task),
             "priority 3 is not <= 2"
         );
+    }
+
+    #[test]
+    fn implementation_repo_sql_and_budget_matrix() {
+        // Oracle: execute production expressions in isolated SQLite against a model.
+        let output = std::process::Command::new("python3")
+            .arg(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tests/implementation_repo_sql.py"
+            ))
+            .output()
+            .expect("claim SQL tests require Python 3 with stdlib sqlite3");
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[test]
+    fn implementation_repo_filters_work_not_tracking_issue() {
+        // Oracle: issue #10415 lives in code, but its deliverable is in Kaneo.
+        // Tracking/dedupe identity must remain code; claim eligibility must not.
+        let row = json!({"queue":"repo-health-code-pilot", "payload": {
+            "repo":"developing-today/code", "implementation_repo":"developing-today/kaneo",
+            "kind":"small_fix", "issue":{"number":10415}
+        }});
+        assert!(!filter_matches(&parse_filter("repo = code").unwrap(), &row));
+        assert!(filter_matches(&parse_filter("repo = kaneo").unwrap(), &row));
+        assert!(filter_matches(&parse_filter("repo != code").unwrap(), &row));
+        let encoded =
+            json!({"queue":"repo-health-code-pilot", "payload":row["payload"].to_string()});
+        assert!(filter_matches(
+            &parse_filter("repo = kaneo").unwrap(),
+            &encoded
+        ));
+        assert_eq!(task_repo_identity(&row), "developing-today/code");
+        assert_eq!(work_identity(&row).unwrap().repo, "developing-today/code");
+        let unknown = json!({"payload":{"repo":"developing-today/code", "risk":{"flags":["cross-repo-change"]}}});
+        assert!(
+            claim_guard_reason(&unknown)
+                .unwrap()
+                .contains("implementation_repo")
+        );
+        let legacy =
+            json!({"queue":"repo-health-code-pilot", "payload":{"repo":"developing-today/code"}});
+        assert!(filter_matches(
+            &parse_filter("repo = code").unwrap(),
+            &legacy
+        ));
     }
 
     #[test]

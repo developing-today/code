@@ -223,6 +223,37 @@ fn completion_rules() {
 }
 
 #[test]
+fn completion_rejects_an_identity_that_does_not_derive_its_id() {
+    let mut ledger = DedupLedger::new(8, 10);
+    let req = identity(7, 1, binding(6, 0, 1_000));
+    assert_eq!(ledger.observe(&req, 10), Classification::New);
+    let mut other_origin = req.clone();
+    other_origin.origin = [0xEE; 32];
+    let mut other_nonce = req.clone();
+    other_nonce.nonce = [0xDD; 32];
+    for forged in [&other_origin, &other_nonce] {
+        assert_eq!(forged.id, req.id);
+        assert!(!forged.binding_is_valid());
+        assert_eq!(
+            ledger.complete(forged, [3; 32]),
+            Err(DedupError::InvalidIdentity)
+        );
+        assert_eq!(ledger.cached_outcome(&req.id), None);
+    }
+    // The registered request is still in flight and its valid identity
+    // completes as before.
+    assert_eq!(ledger.observe(&req, 11), Classification::DuplicateInFlight);
+    ledger.complete(&req, [1; 32]).unwrap();
+    assert_eq!(ledger.cached_outcome(&req.id), Some([1; 32]));
+    // A forged identity cannot complete an already completed entry
+    // either, even with the stored outcome.
+    assert_eq!(
+        ledger.complete(&other_origin, [1; 32]),
+        Err(DedupError::InvalidIdentity)
+    );
+}
+
+#[test]
 fn prune_keeps_tombstones_through_expiry_plus_grace() {
     let mut ledger = DedupLedger::new(8, 10);
     let req = identity(8, 1, binding(5, 0, 100));

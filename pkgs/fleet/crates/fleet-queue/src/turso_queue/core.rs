@@ -212,6 +212,14 @@ pub trait DepProbe: Send + Sync {
     fn probe_issue(&self, repo: &str, number: i64) -> DepObs;
     fn probe_pr(&self, repo: &str, number: i64) -> DepObs;
     fn probe_ci(&self, repo: &str, run_id: i64) -> DepObs;
+    /// #10626: whether an issue closed / a PR merged, and when, for
+    /// the claim-time staleness check. Implementations bound it by
+    /// STALENESS_LOOKUP_TIMEOUT and map every problem to Unknown.
+    /// The default knows nothing, so a probe without it never
+    /// retires a task.
+    fn probe_landing(&self, _kind: LinkKind, _repo: &str, _number: i64) -> Landing {
+        Landing::Unknown("this probe does not read landing times".to_string())
+    }
 }
 
 /// Stable identity of a dep, used for per-pass probe caching and
@@ -400,6 +408,9 @@ pub struct TursoBackend {
     /// None in tests and embedders: GitHub dep checks then report
     /// Failed, and only a block's max TTL can release it.
     pub(crate) gh_probe: Option<std::sync::Arc<dyn DepProbe>>,
+    /// #10626: the claim-time staleness check's cache and failure
+    /// stand-down (see staleness.rs).
+    pub(crate) staleness: StalenessState,
 }
 
 pub(crate) type TErr = String;
@@ -534,6 +545,7 @@ impl TursoBackend {
             token,
             agent,
             gh_probe: None,
+            staleness: StalenessState::default(),
         }
     }
 

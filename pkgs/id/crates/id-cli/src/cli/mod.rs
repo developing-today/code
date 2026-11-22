@@ -28,9 +28,11 @@
 //!   list       List all stored files
 //!   id         Print node ID
 //!   key        Export or import a local identity key
+//!   keyset     Show or change this identity's keyset (admin key and devices)
 //!   peers      Discover and list known peers
 //!   tag        Manage metadata tags (set, del, list, search) (aliases: label, link)
 //!   world        Mint invites for, and join, multiplayer worlds hosted over Iroh
+//!   gallery      Administer a program gallery directory (removals, appeals, review)
 //!   match-audit Export and verify signed match-audit v0 logs
 //!   group        Groups: create, policy, add, remove, set roles, list, join
 //!   delegate     Grant a delegate a scope in a group
@@ -373,6 +375,9 @@ pub struct ServeArgs {
     /// discover peers. Useful for isolated servers.
     #[arg(long)]
     pub no_gossip: bool,
+    /// Enable gossip peer discovery, overriding a build-time disabled default.
+    #[arg(long, conflicts_with = "no_gossip")]
+    pub gossip: bool,
     /// Start web interface.
     ///
     /// Enables an HTTP server with a browser-based UI for
@@ -405,23 +410,17 @@ pub struct ServeArgs {
     /// Default: "id-public-discovery-v1" (public network).
     #[arg(long)]
     pub topic_secret: Option<String>,
-    /// Skip default bootstrap node IDs from `defaults.conf`.
+    /// Skip default bootstrap node IDs from `defaults.json`.
     ///
     /// Only CLI-provided `--bootstrap` nodes are used.
     #[arg(long)]
     pub no_default_bootstrap: bool,
-    /// Skip default topic and secret from `defaults.conf`.
+    /// Skip default topic and secret from `defaults.json`.
     ///
     /// Falls back to the hardcoded constant values. CLI-provided
     /// `--topic` and `--topic-secret` still take precedence.
     #[arg(long)]
     pub no_default_topic: bool,
-    /// Use only `defaults.conf` values, ignoring hardcoded fallbacks.
-    ///
-    /// Useful when you want to fully control defaults via the
-    /// embedded configuration file at build time.
-    #[arg(long)]
-    pub replace_defaults: bool,
     /// Disable mDNS local peer discovery.
     ///
     /// By default, the server uses mDNS to discover peers on the
@@ -454,7 +453,7 @@ pub struct ServeArgs {
     /// Web listener to bind, as `IP:PORT` (repeatable; #2145).
     ///
     /// Each occurrence adds one listener; the set replaces any
-    /// `[web_bindings]` entries from `defaults.conf` entirely.
+    /// `web_bindings` entries from `defaults.json` entirely.
     /// Combining `--web-listen` with an explicitly-set `--bind` or
     /// `--port` is a startup error naming the conflict. IPv6
     /// addresses use the bracket form, e.g. `[::1]:3001`.
@@ -665,8 +664,6 @@ pub enum Command {
     /// # Skip built-in topic/secret (use hardcoded constants)
     /// id serve --no-default-topic
     ///
-    /// # Use only defaults.conf values (ignore hardcoded fallbacks)
-    /// id serve --replace-defaults
     /// ```
     Serve(ServeArgs),
     /// Publish a program (world) on the RUNNING `id serve` (#2147).
@@ -1608,19 +1605,16 @@ pub enum Command {
         /// Used to encrypt DHT bootstrap records.
         #[arg(long)]
         topic_secret: Option<String>,
-        /// Skip default bootstrap node IDs from `defaults.conf`.
+        /// Skip default bootstrap node IDs from `defaults.json`.
         ///
         /// Only CLI-provided `--bootstrap` nodes are used.
         #[arg(long)]
         no_default_bootstrap: bool,
-        /// Skip default topic and secret from `defaults.conf`.
+        /// Skip default topic and secret from `defaults.json`.
         ///
         /// Falls back to the hardcoded constant values.
         #[arg(long)]
         no_default_topic: bool,
-        /// Use only `defaults.conf` values, ignoring hardcoded fallbacks.
-        #[arg(long)]
-        replace_defaults: bool,
         /// Disable relay servers and use direct connections only.
         #[arg(long)]
         no_relay: bool,
@@ -1740,11 +1734,113 @@ pub enum KeysetCommand {
         #[arg(long)]
         client: bool,
     },
+    /// Name the guardians who can approve a recovery of this identity,
+    /// and how many must approve. Adding guardians or raising the
+    /// threshold takes effect at once; removing one or lowering the
+    /// threshold waits out the recovery delay, so a stolen admin key
+    /// cannot swap in guardians of its own.
+    Guardians {
+        /// Each guardian's identity ID (hex public key).
+        #[arg(required = true)]
+        guardians: Vec<String>,
+        /// How many of the guardians must approve a recovery.
+        #[arg(long)]
+        threshold: u32,
+        /// Change the client identity's keyset instead of the server's.
+        #[arg(long)]
+        client: bool,
+    },
+    /// Guardian recovery of an identity whose keys are all lost. Records
+    /// go through a recovery relay file, which attests when it first saw
+    /// each one; share that file among the devices and guardians taking
+    /// part.
+    Recovery {
+        /// The recovery step.
+        #[command(subcommand)]
+        command: RecoveryCommand,
+    },
     /// Checkpoint the current keyset head with this identity's key, which
     /// must be an active device key. The head becomes final here: a
     /// fork that later arrives can no longer displace it.
     Checkpoint {
         /// Checkpoint the client identity's keyset instead of the server's.
+        #[arg(long)]
+        client: bool,
+    },
+}
+
+/// Subcommands for `id keyset recovery` (#2382). Each signs with this
+/// device's identity key, or the client key with `--client`.
+#[derive(Subcommand, Debug)]
+pub enum RecoveryCommand {
+    /// Copy this identity's keyset records into the relay, so a
+    /// successor can pin its head and its approvals can be checked.
+    /// Owners and guardians both publish.
+    Publish {
+        /// The recovery relay file.
+        #[arg(long)]
+        relay: PathBuf,
+        /// Publish the client identity's keyset instead of the server's.
+        #[arg(long)]
+        client: bool,
+    },
+    /// From a new device, ask the guardians of `identity` to recover it.
+    /// This device's key becomes the identity's admin and device key
+    /// once enough guardians approve and the recovery delay has passed.
+    Request {
+        /// The identity to recover (its hex identity ID).
+        identity: String,
+        /// The recovery relay file.
+        #[arg(long)]
+        relay: PathBuf,
+        /// Why, shown to every device and guardian told of the request.
+        #[arg(long, default_value = "lost every key")]
+        reason: String,
+        /// Sign with the client key instead of the server key.
+        #[arg(long)]
+        client: bool,
+    },
+    /// As a guardian, approve a recovery request. Also publishes this
+    /// guardian identity's keyset, so the approval can be checked.
+    Approve {
+        /// The request ID, as `request` printed it.
+        request: String,
+        /// The recovery relay file.
+        #[arg(long)]
+        relay: PathBuf,
+        /// Approve as the client identity instead of the server's.
+        #[arg(long)]
+        client: bool,
+    },
+    /// Cancel a recovery request with any surviving admin or device key
+    /// of the identity being recovered.
+    Cancel {
+        /// The request ID.
+        request: String,
+        /// The recovery relay file.
+        #[arg(long)]
+        relay: PathBuf,
+        /// Sign with the client key instead of the server key.
+        #[arg(long)]
+        client: bool,
+    },
+    /// Show where a recovery request stands.
+    Status {
+        /// The request ID.
+        request: String,
+        /// The recovery relay file.
+        #[arg(long)]
+        relay: PathBuf,
+    },
+    /// On the requesting device, complete a recovery that is ready by
+    /// relaying the rotation to the successor keys.
+    Complete {
+        /// The request ID.
+        request: String,
+        /// The recovery relay file.
+        #[arg(long)]
+        relay: PathBuf,
+        /// Sign with the client key instead of the server key.
         #[arg(long)]
         client: bool,
     },

@@ -2,6 +2,7 @@ package pool_test
 
 import (
 	"context"
+	"errors"
 	"net"
 	"os"
 	"path/filepath"
@@ -60,19 +61,26 @@ func TestDefaultConfigStdioRunsSupervised(t *testing.T) {
 		t.Fatalf("status instances = %+v, want one with a child pid", st.Instances)
 	}
 	childPID := st.Instances[0].PID
+	// An attached daemon owns this supervisor: a scan during pool shutdown
+	// can legitimately be refused until the transport finishes detaching.
+	outcomes := mcpclient.ScanSupervisorSockets(stateDir, nil, nil)
+	if len(outcomes) != 1 || outcomes[0].Action != "refused" {
+		t.Fatalf("scan while attached = %+v, want one refused supervisor", outcomes)
+	}
 	lease.Release()
 	p.Close()
 	// The child survives the pool (that is the point of supervised);
-	// reap it through the scan so the test leaves nothing behind.
-	// The reap is acknowledged before the supervisor finishes the
-	// kill, so wait for the child to actually exit.
-	mcpclient.ScanSupervisorSockets(stateDir, nil, nil)
-	deadline := time.Now().Add(10 * time.Second)
-	for syscall.Kill(childPID, 0) == nil {
-		if time.Now().After(deadline) {
-			t.Fatalf("supervised child %d still alive after the reap", childPID)
-		}
-		time.Sleep(20 * time.Millisecond)
+	// reap it through the scan so the test leaves nothing behind. Closing
+	// the pool's connection detaches asynchronously; StopSupervisors retries
+	// a refusal while that detach finishes and waits for the child to be
+	// reaped before returning.
+	if err := testsupport.StopSupervisors(stateDir); err != nil {
+		t.Fatalf("stop supervised child: %v", err)
+	}
+	if err := syscall.Kill(childPID, 0); err == nil {
+		t.Fatalf("supervised child %d still alive after the reap", childPID)
+	} else if !errors.Is(err, syscall.ESRCH) {
+		t.Fatalf("check supervised child %d after the reap: %v", childPID, err)
 	}
 }
 

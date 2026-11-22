@@ -436,3 +436,118 @@ func mustJSON(t *testing.T, v any) []byte {
 	}
 	return b
 }
+
+// TestPluginSessionLifecycleOverTheSocket exercises plugin_session_close
+// through the coverage-recording client: open a session, close it, and
+// find it gone. The generated-command test reaches the op only in a
+// subprocess, whose requests the ledger cannot see. (Restored: #8466
+// dropped coverage_ops_test.go, which carried this exercise, and the op
+// lost its ledger row.)
+func TestPluginSessionLifecycleOverTheSocket(t *testing.T) {
+	e := newEnv(t, "{}")
+	e.run("ls") // anything that needs a daemon starts one
+	client := e.socketClient(t)
+
+	resp, err := client.Post("http://mcpx/v1/plugin-sessions", "application/json",
+		strings.NewReader(`{"plugin":"coverage-probe","capabilities":["probe"],"hooks":[]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("open: status %d: %s", resp.StatusCode, body)
+	}
+	var opened struct {
+		Session struct {
+			ID     string `json:"id"`
+			Plugin string `json:"plugin"`
+		} `json:"session"`
+	}
+	if err := json.Unmarshal(body, &opened); err != nil {
+		t.Fatalf("open: %v: %s", err, body)
+	}
+	if opened.Session.ID == "" || opened.Session.Plugin != "coverage-probe" {
+		t.Fatalf("open: unexpected session record: %s", body)
+	}
+	id := opened.Session.ID
+
+	status, closed := deleteOverSocket(t, client, "/v1/plugin-sessions/"+id)
+	if status != http.StatusOK {
+		t.Fatalf("close: status %d: %s", status, closed)
+	}
+	if !strings.Contains(closed, id) {
+		t.Fatalf("close: the answer is not the dropped record: %s", closed)
+	}
+
+	resp, err = client.Get("http://mcpx/v1/plugin-sessions/" + id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("get after close: status %d, want 404", resp.StatusCode)
+	}
+}
+
+// TestAPIsRemoveAnswersOverTheSocket exercises apis_remove through the
+// coverage-recording client: removing a name no configured apis file
+// declares is answered by the remove handler itself (its own 404 naming
+// the declaration), not by the router. The success path is covered in
+// the daemon package (TestAPIRemoveDeletesFromTheDefiningFile).
+// (Restored with the plugin-session exercise above.)
+func TestAPIsRemoveAnswersOverTheSocket(t *testing.T) {
+	e := newEnv(t, "{}")
+	e.run("ls") // anything that needs a daemon starts one
+	client := e.socketClient(t)
+
+	status, body := deleteOverSocket(t, client, "/v1/apis/coverage-probe")
+	if status != http.StatusNotFound {
+		t.Fatalf("remove: status %d: %s", status, body)
+	}
+	if !strings.Contains(body, "no configured apis file declares") || !strings.Contains(body, "coverage-probe") {
+		t.Fatalf("remove: not the handler's answer: %s", body)
+	}
+}
+
+// TestRecipeRemoveDeletesTheRecipeOverTheSocket exercises recipe_remove:
+// a recipe file the daemon can see is deleted by the route, the answer
+// names the file, and a second remove is the handler's own 404.
+func TestRecipeRemoveDeletesTheRecipeOverTheSocket(t *testing.T) {
+	e := newEnv(t, "{}")
+	writeRecipe(t, e, "doomed", "// A recipe that is only ever removed.\nconsole.log(\"never\");\n")
+	path := filepath.Join(e.dir, ".config", "mcpx", "scripts", "doomed.ts")
+	e.run("ls") // anything that needs a daemon starts one
+	client := e.socketClient(t)
+
+	status, body := deleteOverSocket(t, client, "/v1/recipes/doomed")
+	if status != http.StatusOK {
+		t.Fatalf("remove: status %d: %s", status, body)
+	}
+	if !strings.Contains(body, "doomed.ts") {
+		t.Fatalf("remove: the answer does not name the removed file: %s", body)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("remove: %s is still there (stat err %v)", path, err)
+	}
+
+	status, body = deleteOverSocket(t, client, "/v1/recipes/doomed")
+	if status != http.StatusNotFound || !strings.Contains(body, "no recipe named") {
+		t.Fatalf("second remove: status %d, want the handler's 404: %s", status, body)
+	}
+}
+
+func deleteOverSocket(t *testing.T, client *http.Client, path string) (int, string) {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodDelete, "http://mcpx"+path, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	return resp.StatusCode, string(body)
+}

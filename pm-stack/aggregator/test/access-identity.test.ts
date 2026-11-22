@@ -96,7 +96,12 @@ describe("config-gated Access author derivation (#1253)", () => {
       accessEnv(),
       fakeFetch(),
     );
-    expect(result).toEqual({ ok: true, author: { kind: "drew", id: "drew", label: "Drew" }, verified: true });
+    expect(result).toEqual({
+      ok: true,
+      author: { kind: "drew", id: "drew", label: "Drew" },
+      verified: true,
+      identity: { sub: "owner-sub", email: OWNER },
+    });
   });
 
   test("asserted drew by a non-owner is forbidden", () => {

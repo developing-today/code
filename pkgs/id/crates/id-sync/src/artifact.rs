@@ -44,6 +44,16 @@
 //!
 //! Artifacts travel over iroh only: pushed to a home server on
 //! [`PUSH_ALPN`], and pulled by account from the same endpoint on [`PULL_ALPN`].
+//!
+//! Signed-bytes profile (slice 9110-11, #10176; research 9110-R1, #10146):
+//! every artifact is signed under one immutable profile, [`LEGACY_PROFILE`]
+//! — see [`signed_bytes`]. Those bytes are never re-serialized, re-hashed or
+//! re-signed. The corrected record profile of the V2 design (deterministic
+//! CBOR body, detached signature over a domain prefix, envelope identity
+//! outside its own preimage) is a separate, additive format,
+//! `id_core::signed_envelope`, not a new reading of these bytes.
+//! [`record_profile`] tells the two apart and reports anything else rather
+//! than guessing.
 
 use std::collections::{BTreeMap, HashSet};
 use std::fs::{self, OpenOptions};
@@ -137,9 +147,23 @@ struct SignedBody<'a> {
     after: Vec<String>,
 }
 
-/// The canonical bytes an artifact's hash and signature cover: the
-/// author's key, sequence, predecessor, kind, body and `after` frontier,
-/// length-prefixed and domain-separated.
+/// The name of the one signed-bytes profile artifacts use.
+pub const LEGACY_PROFILE: &str = "id-artifact-serde-json/v1";
+
+/// The bytes an artifact's hash and signature cover, under [`LEGACY_PROFILE`].
+///
+/// Compact `serde_json` of the author's key, sequence, predecessor, kind,
+/// body and `after` frontier, in that field order, with `after` omitted when
+/// empty and body object keys sorted.
+///
+/// There is no length prefix and no domain separation. An earlier version of
+/// this comment claimed both; the bytes never had them, and every existing
+/// hash and signature covers exactly these bytes, so they must not change
+/// (`test-vectors/legacy-artifact-signatures.json` pins them).
+///
+/// # Errors
+///
+/// A JSON serialization failure (not expected for this shape).
 pub fn signed_bytes(
     author: &str,
     seq: u64,
@@ -156,6 +180,59 @@ pub fn signed_bytes(
         body,
         after: after.to_vec(),
     })?)
+}
+
+/// The signed-record profile a stored record's bytes are in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RecordProfile {
+    /// A JSON [`SignedArtifact`] under [`LEGACY_PROFILE`].
+    LegacyArtifactJson,
+    /// A deterministic-CBOR signed envelope (`id_core::signed_envelope`).
+    SignedEnvelopeCbor,
+}
+
+/// Why a record's bytes name no known profile.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProfileError {
+    /// No bytes at all.
+    Empty,
+    /// The first byte opens neither profile.
+    Unrecognized(u8),
+}
+
+impl std::fmt::Display for ProfileError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Empty => write!(f, "empty record: no signed-record profile"),
+            Self::Unrecognized(byte) => {
+                write!(f, "first byte 0x{byte:02x} opens no signed-record profile")
+            }
+        }
+    }
+}
+
+impl std::error::Error for ProfileError {}
+
+/// Which signed-record profile `bytes` are in, by their first byte, so a
+/// reader dispatches to one parser instead of trying each in turn.
+///
+/// A JSON artifact opens with `{` (0x7b). A canonical CBOR envelope is a
+/// map, so it opens with a CBOR map head (0xa0 to 0xbb). In CBOR 0x7b is a
+/// text-string head, never a map, so the two ranges cannot overlap and one
+/// profile's bytes are never read as the other's. Anything else, including
+/// JSON with leading whitespace, is reported, not coerced: this only names
+/// the profile, and the chosen parser still checks every byte.
+///
+/// # Errors
+///
+/// [`ProfileError`] when the bytes open neither profile.
+pub const fn record_profile(bytes: &[u8]) -> std::result::Result<RecordProfile, ProfileError> {
+    match bytes.first() {
+        None => Err(ProfileError::Empty),
+        Some(b'{') => Ok(RecordProfile::LegacyArtifactJson),
+        Some(0xa0..=0xbb) => Ok(RecordProfile::SignedEnvelopeCbor),
+        Some(other) => Err(ProfileError::Unrecognized(*other)),
+    }
 }
 
 fn is_hash(text: &str) -> bool {

@@ -1168,12 +1168,17 @@ impl WorldActor {
                     let _ = reply.send(false);
                     return;
                 }
-                let revoked = self.core.revoke_tree(participant_id);
+                let revoked_at = Some(self.core.clock().now_ms());
+                let revoked = self.core.revoke_tree_at(participant_id, by, revoked_at);
                 let was_active = !revoked.is_empty();
                 if was_active {
                     // Fail-closed: surface a persist failure rather than
                     // reporting an audited success (design #835 phase 2).
-                    let persisted = self.persist(JournalEntry::Revoked { participant_id, by });
+                    let persisted = self.persist(JournalEntry::Revoked {
+                        participant_id,
+                        by,
+                        revoked_at,
+                    });
                     for id in revoked {
                         let _ = self.revocation_sender.send(id);
                     }
@@ -1211,7 +1216,10 @@ impl WorldActor {
                             );
                             Ok(false)
                         } else {
-                            let revoked = self.core.revoke_tree(participant_id);
+                            let revoked_at = Some(self.core.clock().now_ms());
+                            let revoked =
+                                self.core
+                                    .revoke_tree_at(participant_id, Some(by), revoked_at);
                             let was_active = !revoked.is_empty();
                             if was_active {
                                 // Fail-closed: the in-memory revocation and
@@ -1222,6 +1230,7 @@ impl WorldActor {
                                 let persisted = self.persist(JournalEntry::Revoked {
                                     participant_id,
                                     by: Some(by),
+                                    revoked_at,
                                 });
                                 for id in revoked {
                                     let _ = self.revocation_sender.send(id);
@@ -2221,7 +2230,10 @@ impl WorldActor {
             }
             WorldCommand::Metrics { reply } => {
                 let sessions = self.presence.values().sum::<usize>() as u64;
-                let metrics = self.metrics.snapshot(sessions);
+                let participants = self.presence.values().filter(|n| **n > 0).count() as u64;
+                let metrics = self
+                    .metrics
+                    .snapshot_with_participants(sessions, participants);
                 // No audit record: metrics are readable by any joined
                 // participant holding a capability (the session layer's
                 // Metrics frame), so recording the read as admin would
@@ -2597,6 +2609,7 @@ mod replication_feed_tests {
         use proptest::prelude::*;
         prop_oneof![
             any::<u64>().prop_map(|participant_id| JournalEntry::Revoked {
+                revoked_at: None,
                 participant_id,
                 by: None,
             }),
@@ -2632,6 +2645,7 @@ mod replication_feed_tests {
         // the journal TOTAL still ranges past it via the entry count.
         prop_oneof![
             any::<u64>().prop_map(|participant_id| JournalEntry::Revoked {
+                revoked_at: None,
                 participant_id,
                 by: None,
             }),

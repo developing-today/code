@@ -17,6 +17,7 @@ assert.match(els['#storebar'].innerHTML,/New store/);
 const evalJSON=s=>JSON.parse(vm.runInContext('JSON.stringify('+s+')',context));
 assert.equal(evalJSON("key('https://www.amazon.com/gp/product/b01ckmp24e/ref=test?tag=foo')"),'asin:B01CKMP24E');
 assert.equal(evalJSON("tidy('日本語\u200d\u0001 Привет')"),'日本語 Привет');
+assert.equal(evalJSON("tidy(' Kids \u{1F468}\u200d\u{1F469}\u200d\u{1F467}\u200b ')"),'Kids \u{1F468}\u200d\u{1F469}\u200d\u{1F467}');
 assert.deepEqual(evalJSON("attr('{\"Ports\":3,\"Fast\":true}')"),[['Ports',3],['Fast',true]]);
 assert.deepEqual(evalJSON("patch(['new'],['old'],['old','historic'],true,'tags')"),['new','old','historic']);
 assert.equal(evalJSON("analyze('a | https://www.amazon.com/dp/B01CKMP24E\\nb | https://www.amazon.com/gp/product/B01CKMP24E')[1].kind"),'duplicate');
