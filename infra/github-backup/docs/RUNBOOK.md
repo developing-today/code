@@ -182,8 +182,9 @@ python3 ~/git/code/infra/github-backup/bin/bundle_r2.py \
 ```
 
 The uploader first completes the local empty-repository verification and
-clone-HEAD comparison, then uses `rclone copyto` and `rclone check --download`
-against a content-addressed key under
+clone-HEAD comparison, then uploads with `rclone copyto`, downloads that exact
+remote object with a second `rclone copyto`, and compares its SHA-256 against
+the local bundle. The content-addressed key is under
 `github-backup/cold-bundles/<owner>/<repo>/<head>-<sha256>.bundle`, so a newer
 artifact does not replace an earlier one. A non-zero upload or read-back check
 is a failed run. This command handles one repository only;
