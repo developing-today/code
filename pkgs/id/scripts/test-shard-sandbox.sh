@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Run one COUNT-th slice of the integration tests (sandbox-safe: excludes
-# serve_tests requiring network). Usage: test-shard-sandbox.sh SHARD COUNT
+# network tests run in the NixOS VM). Usage: test-shard-sandbox.sh SHARD COUNT
 #
 # Test targets are globbed from tests/ at run time and dealt round-robin
 # across shards, so a new test target joins exactly one shard
@@ -86,10 +86,10 @@ if ((${#args[@]} == 0)); then
 fi
 
 echo "test-shard-sandbox $shard/$count targets: ${args[*]}"
-cargo nextest run --all-features "${args[@]}" -E 'not test(serve_tests)'
+cargo nextest run --all-features "${args[@]}" -E 'not test(serve_tests) and not test(test_substrate_path_runs_signed_sync_conflict_and_restart)'
 
 if [ "$shard" -eq 0 ]; then
-  cargo nextest run --all-features --bins -E 'not test(serve_tests)'
+  cargo nextest run --all-features --bins -E 'not test(serve_tests) and not test(test_substrate_path_runs_signed_sync_conflict_and_restart)'
   # nextest does not run doc tests; keep them on cargo test so shard 0
   # still covers exactly what it covered before (#6378).
   cargo test --all-features --doc

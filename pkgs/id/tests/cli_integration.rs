@@ -581,6 +581,8 @@ mod cli_tests {
     }
 
     #[test]
+    // Uses QUIC/UDP loopback; the sandbox shards exclude it and the nightly
+    // NixOS integration VM runs it in the `cli_tests` group.
     fn test_substrate_path_runs_signed_sync_conflict_and_restart() {
         let tmp = TempDir::new().unwrap();
         let output = run_cmd_success_stdout(&["substrate-path"], tmp.path());

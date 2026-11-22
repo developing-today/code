@@ -325,10 +325,10 @@ test-integration:
     cargo nextest run --all-features --test cli_integration
 alias test-int := test-integration
 
-# Run integration tests (sandbox-safe: excludes serve_tests requiring network)
+# Run integration tests (sandbox-safe: excludes network tests run in the NixOS VM)
 [group('test')]
 test-int-sandbox:
-    cargo nextest run --all-features --test cli_integration -E 'not test(serve_tests)'
+    cargo nextest run --all-features --test cli_integration -E 'not test(serve_tests) and not test(test_substrate_path_runs_signed_sync_conflict_and_restart)'
 
 # Run one COUNT-th slice of the integration tests (sandbox-safe:
 # excludes serve_tests requiring network) — see
