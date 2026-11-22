@@ -210,102 +210,6 @@ pub struct Options {
     pub detach: bool,
 }
 
-/// Whether a command string needs shell control flow rather than being
-/// a command plus arguments. Plain Cargo strings must reach the build-lock
-/// wrapper as argv so its target broker can put them in the shared lane.
-fn needs_shell(command: &str) -> bool {
-    let mut quote = None;
-    let mut escaped = false;
-
-    for ch in command.chars() {
-        if escaped {
-            escaped = false;
-            continue;
-        }
-        match quote {
-            Some('\'') => {
-                if ch == '\'' {
-                    quote = None;
-                }
-                continue;
-            }
-            Some('"') => {
-                if ch == '\\' {
-                    escaped = true;
-                } else if ch == '"' {
-                    quote = None;
-                }
-                continue;
-            }
-            _ => {}
-        }
-        if ch == '\\' {
-            escaped = true;
-            continue;
-        }
-        if matches!(ch, '\'' | '"') {
-            quote = Some(ch);
-            continue;
-        }
-        if matches!(
-            ch,
-            ';' | '|' | '&' | '<' | '>' | '\x60' | '(' | ')' | '\n' | '\r'
-        ) {
-            return true;
-        }
-    }
-
-    let first = command
-        .trim_start()
-        .split_ascii_whitespace()
-        .next()
-        .unwrap_or("");
-    if first.contains('=') {
-        return true;
-    }
-    matches!(
-        first,
-        "cd" | "pushd"
-            | "popd"
-            | "export"
-            | "unset"
-            | "source"
-            | "."
-            | "eval"
-            | "exec"
-            | "set"
-            | "umask"
-            | "trap"
-            | "alias"
-            | "read"
-            | "return"
-            | "break"
-            | "continue"
-            | "if"
-            | "for"
-            | "while"
-            | "until"
-            | "case"
-            | "select"
-            | "time"
-            | "command"
-            | "builtin"
-            | "type"
-            | "hash"
-            | "jobs"
-            | "wait"
-            | "fg"
-            | "bg"
-            | "times"
-            | "local"
-            | "declare"
-            | "typeset"
-            | "readonly"
-            | "function"
-            | "!"
-    )
-}
-
 /// Commands that may launch Cargo use the target broker. "just" and "make"
 /// are included because they commonly hide Cargo invocations in recipes.
 fn may_invoke_cargo(command: &str) -> bool {
@@ -349,11 +253,60 @@ if [ -z "$CARGO_TARGET_DIR" ]; then
           lease_id=$(printf '%s' "$lease" | python3 -c 'import json,sys; print(json.load(sys.stdin)["lease"])' 2>/dev/null) || lease_id=""
           if [ -n "$target" ] && [ -n "$lease_id" ]; then
             export CARGO_TARGET_DIR="$target"
-            trap '"$broker" checkin --lease "$lease_id" >/dev/null 2>&1 || :' EXIT
-            sh -c 'trap '\''rc=$?; trap - EXIT; wait || :; exit "$rc"'\'' EXIT; eval "$1"' sh "$command_text"
+            worker_pid=""
+            tmp_root="$TMPDIR"
+            if [ -z "$tmp_root" ]; then tmp_root=/tmp; fi
+            group_file=$(mktemp "$tmp_root/fleet-cargo-group.XXXXXX" 2>/dev/null) || group_file=""
+            cleanup_lane() {
+              status=$?
+              trap - EXIT HUP INT TERM
+              if [ -n "$worker_pid" ]; then
+                wait "$worker_pid" >/dev/null 2>&1 || :
+              fi
+              if [ -n "$group_file" ] && [ -s "$group_file" ]; then
+                worker_pgid=$(cat "$group_file" 2>/dev/null || :)
+                case "$worker_pgid" in
+                  ''|*[!0-9]*) ;;
+                  *)
+                    while kill -0 -- "-$worker_pgid" 2>/dev/null; do sleep 0.05; done
+                    ;;
+                esac
+              fi
+              if [ -n "$group_file" ]; then rm -f "$group_file"; fi
+              "$broker" checkin --lease "$lease_id" >/dev/null 2>&1 || :
+              exit "$status"
+            }
+            interrupt_lane() {
+              signal=$1
+              code=$2
+              if [ -n "$group_file" ] && [ -s "$group_file" ]; then
+                worker_pgid=$(cat "$group_file" 2>/dev/null || :)
+                case "$worker_pgid" in
+                  ''|*[!0-9]*) ;;
+                  *) kill -"$signal" -- "-$worker_pgid" 2>/dev/null || : ;;
+                esac
+              elif [ -n "$worker_pid" ]; then
+                kill -"$signal" "$worker_pid" 2>/dev/null || :
+              fi
+              exit "$code"
+            }
+            trap cleanup_lane EXIT
+            trap 'interrupt_lane HUP 129' HUP
+            trap 'interrupt_lane INT 130' INT
+            trap 'interrupt_lane TERM 143' TERM
+            if command -v setsid >/dev/null 2>&1 && [ -n "$group_file" ]; then
+              # A private process group lets the parent hold the lane even
+              # if the command uses exec after starting background Cargo.
+              setsid sh -c 'printf "%s\n" "$$" > "$1"; eval "$2"' sh "$group_file" "$command_text" &
+              worker_pid=$!
+            else
+              # Keep the shell's normal background-job wait behavior where
+              # setsid is unavailable; supported Fleet build hosts ship it.
+              sh -c 'trap '\''rc=$?; trap - EXIT; wait || :; exit "$rc"'\'' EXIT; eval "$1"' sh "$command_text" &
+              worker_pid=$!
+            fi
+            wait "$worker_pid"
             status=$?
-            "$broker" checkin --lease "$lease_id" >/dev/null 2>&1 || :
-            trap - EXIT
             exit "$status"
           fi
           if [ -n "$lease_id" ]; then
@@ -376,22 +329,15 @@ exec sh -c "$command_text"
     format!("sh -c {}", sh_quote_always(&script))
 }
 
-/// Run direct commands as wrapper argv so the lock's Cargo routing applies.
-/// Compound commands keep one lock slot and lease a broker target for the
-/// duration of the shell, rather than acquiring one slot per command.
+/// Run the command through one build-lock slot. Cargo commands also lease
+/// their workspace target, including when Cargo is the first command.
 fn under_build_lock(command: &str) -> String {
-    let direct_cargo = command
-        .trim_start()
-        .split_ascii_whitespace()
-        .next()
-        == Some("cargo");
-    let shell_command = needs_shell(command);
-    if may_invoke_cargo(command) && (!direct_cargo || shell_command) {
+    if may_invoke_cargo(command) {
         format!("{BUILD_LOCK} {}", broker_aware_shell(command))
-    } else if shell_command {
-        format!("{BUILD_LOCK} sh -c {}", sh_quote_always(command))
     } else {
-        format!("{BUILD_LOCK} {command}")
+        // The command input is shell text, so keep shell built-ins such as
+        // exit, :, and ulimit inside a shell in every target mode.
+        format!("{BUILD_LOCK} sh -c {}", sh_quote_always(command))
     }
 }
 
@@ -404,10 +350,8 @@ fn local_build_line(command: &str, cwd: Option<&str>) -> String {
     let locked = under_build_lock(command);
     let fallback = if may_invoke_cargo(command) {
         broker_aware_shell(command)
-    } else if needs_shell(command) {
-        format!("sh -c {}", sh_quote_always(command))
     } else {
-        command.to_string()
+        format!("sh -c {}", sh_quote_always(command))
     };
     format!(
         "{change_dir}if [ -x {BUILD_LOCK} ]; then exec {locked}; fi; echo 'fleet shell: this host has no build lock; running without one' >&2; exec {fallback}"
@@ -420,17 +364,11 @@ fn codespace_build_line(command: &str, cwd: Option<&str>) -> String {
     let change_dir = cwd
         .map(|dir| format!("cd {} || exit $?; ", sh_quote(dir)))
         .unwrap_or_default();
-    let locked = if may_invoke_cargo(command) {
-        format!("{BUILD_LOCK} {}", broker_aware_shell(command))
-    } else {
-        under_build_lock(command)
-    };
+    let locked = under_build_lock(command);
     let fallback = if may_invoke_cargo(command) {
         broker_aware_shell(command)
-    } else if needs_shell(command) {
-        format!("sh -c {}", sh_quote_always(command))
     } else {
-        command.to_string()
+        format!("sh -c {}", sh_quote_always(command))
     };
     format!(
         "{change_dir}if [ -x {BUILD_LOCK} ]; then exec {locked}; fi; echo 'fleet shell: this host has no build lock; running without one' >&2; exec {fallback}"
