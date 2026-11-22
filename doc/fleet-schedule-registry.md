@@ -80,6 +80,19 @@ marked disabled per the inclusion policy now stated in the Surface
 2b intro, and the section count was corrected to 39 rows
 (38 enabled + 1 disabled) for issue #5661.
 
+Surface 2b re-verified 2026-11-21 by queue task 9170: enabled the
+existing read-only `opencode-quota-freshness-summary.timer` as the
+low-risk OpenCode scheduled-task pilot for issue #2232. The first
+service invocation exposed a missing Python directory in the user unit's
+explicit `PATH`; adding `/etc/profiles/per-user/user/bin` fixed it. A
+manual service start completed with exit 0 at 2026-11-21 19:05 CST. The
+first hourly firing was observed at 2026-11-21 20:00:58 CST and finished
+at 20:01:17 with exit 0; `latest.log` and `history.jsonl` record the
+`opencode-route/workhorse` run (`20261122T020058Z`). The systemd trigger
+used zero Muse tokens; the execution used the selected OpenCode route.
+A numeric before/after Muse-token baseline is unavailable. The timer
+remains enabled. Surface 2b now has 39 enabled rows.
+
 Surface 5 added 2026-11-18 for issue #11805 from `dezren39/darwin-nix`
 main at `6af58a6`: every `StartCalendarInterval` / `StartInterval` in
 the repo's Nix files (three jobs). Read from the Nix definitions, not
@@ -291,7 +304,7 @@ The OS-timer half of surface 2. Cadence is the unit's own `OnCalendar`/`OnUnitAc
 | `openai-cred-watchdog.timer` | `OnCalendar=*-*-* *:00:00` | `openai-cred-watchdog.service` | laptop (user systemd) | not recorded | not recorded | not recorded | 2026-11-04 |
 | `opencode-go-seating-guard.timer` (Nix-configured; not yet loaded) | `OnCalendar=hourly (not live-verified)` | `opencode-go-seating-guard.service` | laptop (user systemd; code#5611) | not recorded | not recorded | 2026-11-08 | 2026-11-08 |
 | `openclaw-backup.timer` | `OnCalendar=*-*-* 04:05:00` | `openclaw-backup.service` | laptop (user systemd) | not recorded | not recorded | not recorded | 2026-11-04 |
-| `opencode-quota-freshness-summary.timer` (disabled) | `OnCalendar=*-*-* *:00:00` | `opencode-quota-freshness-summary.service` | laptop (user systemd) | not recorded | not recorded | not recorded | 2026-11-04 |
+| `opencode-quota-freshness-summary.timer` | `OnCalendar=*-*-* *:00:00` | `opencode-quota-freshness-summary.service` | laptop (user systemd) | not recorded | not recorded | not recorded | 2026-11-21 |
 | `opencode-usage-export.timer` | `OnCalendar=*-*-* *:00/15:00` | `opencode-usage-export.service` | laptop (user systemd) | not recorded | not recorded | not recorded | 2026-11-04 |
 | `pm-apps-health.timer` (Nix-configured system timer; not yet loaded) | `OnUnitActiveSec=1min,OnBootSec=2min` (not live-verified) | `pm-apps-health.service` | laptop (system systemd; NixOS pm-apps readiness probe, code#8940) | not recorded | not recorded | 2026-11-12 | 2026-11-12 |
 | `pm-dashboard-backup.timer` | `OnCalendar=*-*-* 04:30:00` | `pm-dashboard-backup.service` | laptop (user systemd) | not recorded | not recorded | not recorded | 2026-11-04 |
