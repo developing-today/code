@@ -24,6 +24,7 @@ health gate):
 | Tables    | Grist           | `gristlabs/grist-oss:v1.7.21`, pinned by digest                  | `127.0.0.1:8484` + host tailnet address (`PM_STACK_TAILNET_IP`):8484; no tunnel hostname        | `grist/`              |
 | Dashboard | Aggregator      | this repo (Bun app, user unit `pm-aggregator`)                   | `127.0.0.1:4870` + tailnet `amd-6.raptor-pumpkinseed.ts.net:4870`; no public route              | `aggregator/`         |
 | Intake    | pm-dispatch     | this repo (Bun app, user unit `pm-dispatch`)                     | `127.0.0.1:4879` + tailnet; public via tunnel as `dispatch.security.cab`                        | `dispatch/`           |
+| Console   | pm-console      | this repo (Bun app, user unit `pm-console`)                      | `127.0.0.1:4872`; public behind sign-in as `pm.security.cab/console` (dashboard at `/`)         | `console/`            |
 
 ready-for-agent runs as a systemd **user unit** (like `pm-tunnel`)
 because upstream ships only an npm package; Pad and Grist run as

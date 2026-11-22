@@ -98,6 +98,7 @@ never a state that persists by default.
 | Workflow                  | Automatic venue       | Manual |
 | ------------------------- | --------------------- | ------ |
 | workflow-lint             | none                  | yes    |
+| pm-console-android        | none                  | yes    |
 | proxy-port-fallbacks      | none                  | yes    |
 | fleet-search-parity-guard | none                  | yes    |
 | fleet-rust-tests          | nightly schedule      | yes    |
