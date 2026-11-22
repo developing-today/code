@@ -7,12 +7,15 @@ row goes and the eviction is counted.
 
 from __future__ import annotations
 
+import contextlib
 import importlib.util
+import io
 import shutil
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 HERE = Path(__file__).resolve().parent
@@ -114,6 +117,55 @@ class EvictionTest(unittest.TestCase):
 
 
 class WorkspaceArtifactCleanupTest(unittest.TestCase):
+    def test_checkout_option_cleans_selected_workspace_but_keeps_caller_cwd(self) -> None:
+        workspace = Path(tempfile.mkdtemp(prefix="ctb-selected-workspace-"))
+        target = workspace.parent / "leased-target"
+        target.mkdir()
+        seen: dict[str, tuple[str, str, int]] = {}
+
+        class StubBroker:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def checkout(self, key, holder, wait):
+                seen["checkout"] = (key, holder, wait)
+                return SimpleNamespace(path=target), "lease-1", True
+
+        stdout = io.StringIO()
+        with (
+            mock.patch.object(broker_mod, "build_broker", return_value=StubBroker()),
+            mock.patch.object(broker_mod, "make_key", return_value="id-test"),
+            mock.patch.object(broker_mod, "default_holder", return_value="tester"),
+            mock.patch.object(broker_mod, "clean_workspace_artifacts") as clean,
+            contextlib.redirect_stdout(stdout),
+        ):
+            status = broker_mod.main(
+                [
+                    "--pool-root",
+                    str(workspace.parent / "pool"),
+                    "--state-dir",
+                    str(workspace.parent / "state"),
+                    "checkout",
+                    "--repo",
+                    "id",
+                    "--workspace-cwd",
+                    str(workspace),
+                    "--wait",
+                    "7",
+                    "--json",
+                ]
+            )
+
+        self.assertEqual(status, 0)
+        self.assertEqual(seen["checkout"], ("id-test", "tester", 7))
+        clean.assert_called_once_with(target, workspace.resolve())
+        self.assertEqual(broker_mod.json.loads(stdout.getvalue())["path"], str(target))
+        shutil.rmtree(workspace, ignore_errors=True)
+        shutil.rmtree(target, ignore_errors=True)
+
     def test_workspace_override_is_resolved_without_changing_caller_cwd(self) -> None:
         workspace = Path(tempfile.mkdtemp(prefix="ctb-workspace-"))
         try:
