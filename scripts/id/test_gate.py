@@ -8,6 +8,7 @@ input in order. For the log, every record must carry the batch's
 command and result, because issue #12229's second acceptance
 criterion reads them back.
 """
+
 from __future__ import annotations
 
 import importlib.util
@@ -101,8 +102,12 @@ class BatchLogTests(unittest.TestCase):
     def test_log_records_each_batch_command_and_result(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "gate-log.jsonl"
-            gate.append_log(path, gate.log_record(1, [101, 102], "cargo check --workspace", "green"))
-            gate.append_log(path, gate.log_record(2, [103], "cargo check --workspace", "red"))
+            gate.append_log(
+                path, gate.log_record(1, [101, 102], "cargo check --workspace", "green")
+            )
+            gate.append_log(
+                path, gate.log_record(2, [103], "cargo check --workspace", "red")
+            )
             records = gate.read_log(path)
         self.assertEqual(len(records), 2)
         self.assertEqual(records[0]["batch"], 1)

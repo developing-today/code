@@ -29,6 +29,7 @@ Usage:
   python3 scripts/id/gate.py log --file gate-log.jsonl --batch 1 \
       --prs 101,102 --command "cargo check --workspace" --result green
 """
+
 from __future__ import annotations
 
 import argparse
@@ -73,7 +74,9 @@ def batch_command(prs: Sequence[int], affected: Mapping[int, Iterable[str]]) -> 
     return command
 
 
-def find_culprits(batch: Sequence[int], is_red: Callable[[list[int]], bool]) -> list[int]:
+def find_culprits(
+    batch: Sequence[int], is_red: Callable[[list[int]], bool]
+) -> list[int]:
     """Every PR in ``batch`` whose presence makes a run red.
 
     ``is_red(subset)`` evaluates a (sub)batch. The walk halves the

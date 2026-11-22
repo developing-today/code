@@ -48,7 +48,9 @@ class ColdBundleTests(unittest.TestCase):
         # Oracle: only the declared --repo and --root spellings parse.
         with redirect_stderr(StringIO()):
             with self.assertRaises(SystemExit) as raised:
-                bundle_cold._parser().parse_args(["--rep", "owner/repo", "--roo", "/backup"])
+                bundle_cold._parser().parse_args(
+                    ["--rep", "owner/repo", "--roo", "/backup"]
+                )
 
         self.assertEqual(raised.exception.code, 2)
 
@@ -60,7 +62,10 @@ class ColdBundleTests(unittest.TestCase):
             result = bundle_cold.create_bundle(mirror, bundle)
 
             self.assertEqual(result["status"], "ok")
-            self.assertEqual(result["head"], git("--git-dir", mirror, "rev-parse", "HEAD").stdout.strip())
+            self.assertEqual(
+                result["head"],
+                git("--git-dir", mirror, "rev-parse", "HEAD").stdout.strip(),
+            )
             self.assertTrue(os.path.isfile(bundle))
 
     def test_bare_skeleton_is_refused_without_creating_bundle(self):

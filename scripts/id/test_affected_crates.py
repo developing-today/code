@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Unit tests for scripts/id/affected-crates.py using a small Cargo graph."""
+
 from __future__ import annotations
 
 import importlib.util
@@ -14,7 +15,9 @@ affected_crates = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(affected_crates)
 
 
-def package(name: str, relative_manifest: str, dependencies: list[str]) -> dict[str, object]:
+def package(
+    name: str, relative_manifest: str, dependencies: list[str]
+) -> dict[str, object]:
     return {
         "id": f"path+file:///fixture#{name}@0.1.0",
         "name": name,
@@ -31,9 +34,13 @@ class AffectedCratesTests(unittest.TestCase):
             package("id", "pkgs/id/Cargo.toml", []),
             package("id-core", "pkgs/id/crates/id-core/Cargo.toml", []),
             package("id-store", "pkgs/id/crates/id-store/Cargo.toml", ["id-core"]),
-            package("id-sync", "pkgs/id/crates/id-sync/Cargo.toml", ["id-core", "id-store"]),
+            package(
+                "id-sync", "pkgs/id/crates/id-sync/Cargo.toml", ["id-core", "id-store"]
+            ),
             package("id-render", "pkgs/id/crates/id-render/Cargo.toml", ["id-core"]),
-            package("id-cli", "pkgs/id/crates/id-cli/Cargo.toml", ["id-sync", "id-render"]),
+            package(
+                "id-cli", "pkgs/id/crates/id-cli/Cargo.toml", ["id-sync", "id-render"]
+            ),
             package("id-web", "pkgs/id/crates/id-web/Cargo.toml", ["id-cli"]),
         ]
         self.metadata = {
@@ -57,9 +64,7 @@ index 1234567..abcdef0 100644
         )
 
     def test_id_render_diff_selects_only_it_and_its_dependents(self) -> None:
-        paths = affected_crates.diff_paths(
-            "pkgs/id/crates/id-render/src/lib.rs\n"
-        )
+        paths = affected_crates.diff_paths("pkgs/id/crates/id-render/src/lib.rs\n")
         self.assertEqual(
             affected_crates.select_affected(paths, self.metadata),
             ["id-cli", "id-render", "id-web"],
@@ -67,9 +72,7 @@ index 1234567..abcdef0 100644
 
     def test_workspace_manifest_change_selects_every_member(self) -> None:
         self.assertEqual(
-            affected_crates.select_affected(
-                ["pkgs/id/Cargo.toml"], self.metadata
-            ),
+            affected_crates.select_affected(["pkgs/id/Cargo.toml"], self.metadata),
             sorted(p["name"] for p in self.packages),
         )
 
