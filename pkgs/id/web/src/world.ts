@@ -3,6 +3,7 @@
 import { createFormPresenter, type FormPresenter, type FormSurface } from "./world-form";
 import { advanceHostViewCursor, parseWorldHostViewPage, parseWorldInviteResponse } from "./world-http";
 import { terminalBytesForKey } from "./world-keyboard";
+import { decodeViewPatch } from "./screen-codec";
 import { parseWorldSeed } from "./world-seed";
 import { applyScreenPatch, renderWorldSurface, type ScreenPatch, type ScreenSurface } from "./world-surface";
 
@@ -231,6 +232,24 @@ function initWorld(): void {
     capability.value = value;
     sessionStorage.setItem(storageKey, value);
     inviteOutput.hidden = false;
+  };
+
+  const receiveBinary = (bytes: Uint8Array) => {
+    // Negotiated binary screen transport (#12242, Rust half #12655):
+    // a binary message is one versioned MessagePack view patch,
+    // applied exactly like a JSON view frame's patch. Anything
+    // undecodable or inapplicable falls back to asking for a full
+    // view, the same recovery as a JSON patch whose base mismatches.
+    const frame = decodeViewPatch(bytes);
+    if (frame && renderedSurface && renderedViewRevision === frame.base_view_revision) {
+      const patched = applyScreenPatch(renderedSurface, frame.patch);
+      if (patched && renderWorldSurface(view, patched)) {
+        renderedSurface = patched;
+        renderedViewRevision = frame.view_revision;
+        return;
+      }
+    }
+    sendViewport();
   };
 
   const receive = (raw: string) => {
@@ -605,6 +624,7 @@ function initWorld(): void {
     // it) scheduled a duplicate reconnect, and a stale socket's open
     // sent its join frame on the newer socket.
     const ws = new WebSocket(`${scheme}//${location.host}${worldSocketPath}`);
+    ws.binaryType = "arraybuffer";
     socket = ws;
     setStatus("Connecting…");
     ws.addEventListener("open", () => {
@@ -617,6 +637,7 @@ function initWorld(): void {
           after: cursor || null,
           world: selectedWorld(),
           screen_patches: true,
+          screen_msgpack: true,
           device_input: {
             keys: 128,
             encoder: false,
@@ -629,7 +650,8 @@ function initWorld(): void {
     });
     ws.addEventListener("message", (event) => {
       if (ws !== socket) return;
-      receive(String(event.data));
+      if (event.data instanceof ArrayBuffer) receiveBinary(new Uint8Array(event.data));
+      else receive(String(event.data));
     });
     ws.addEventListener("error", () => {
       if (ws !== socket) return;
