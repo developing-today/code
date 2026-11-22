@@ -26,6 +26,7 @@ const ASK_NOTE =
 const SET_ID = /^[A-Za-z0-9._:-]{1,160}$/;
 const REF = /^([A-Za-z0-9._-]+\/[A-Za-z0-9._-]+)#([1-9][0-9]{0,8})$/;
 const LEANS = ["none", "skeptical", "approve"] as const;
+const SUBMIT_BATCH = 200;
 
 function clip(value: unknown, max: number): string {
   const s = typeof value === "string" ? value : "";
@@ -374,7 +375,14 @@ export class Work {
       }
     }
     if (subs.length === 0) throw new OpError(409, "no open question in that set has a recommendation");
-    return this.submit(setId, subs);
+    // The dashboard takes at most 256 answers in one request.
+    const total = { set: String(setId), applied: 0, refused: [] as { qid: string; why: string }[] };
+    for (let at = 0; at < subs.length; at += SUBMIT_BATCH) {
+      const part = await this.submit(setId, subs.slice(at, at + SUBMIT_BATCH));
+      total.applied += part.applied;
+      total.refused.push(...part.refused);
+    }
+    return total;
   }
 
   private ref(value: unknown): { repo: string; number: number } {
@@ -411,26 +419,22 @@ export class Work {
 
   async asks() {
     const label = this.ops.cfg.promptLabel;
-    const found = (await this.ops.gh([
-      "-X",
-      "GET",
-      "search/issues",
-      "-f",
-      `q=repo:${this.repo} is:issue label:"${label}" sort:updated-desc`,
-      "-f",
-      "per_page=20",
+    // The issue list, not the search index: a prompt sent a second ago
+    // must already be here, and the index runs a minute behind.
+    const listed = (await this.ops.gh([
+      `repos/${this.repo}/issues?labels=${encodeURIComponent(label)}&state=all&sort=updated&direction=desc&per_page=20`,
     ])) as {
-      items: {
-        number: number;
-        title: string;
-        body: string | null;
-        html_url: string;
-        state: string;
-        created_at: string;
-        updated_at: string;
-        comments: number;
-      }[];
-    };
+      number: number;
+      title: string;
+      body: string | null;
+      html_url: string;
+      state: string;
+      created_at: string;
+      updated_at: string;
+      comments: number;
+      pull_request?: unknown;
+    }[];
+    const found = { items: listed.filter((i) => !i.pull_request) };
     // The newest task for each prompt's issue, by the key the task was filed under.
     const keys = found.items.map((i) => `repo-health:v1:triage:${this.repo}:issue:${i.number}`);
     const tasks = keys.length
@@ -448,10 +452,16 @@ export class Work {
     for (const i of found.items) {
       let thread = this.replies.get(i.number);
       if (i.comments > 0 && thread?.updated !== i.updated_at) {
-        const comments = (await this.ops.gh([`repos/${this.repo}/issues/${i.number}/comments?per_page=100`])) as {
-          body: string | null;
-          created_at: string;
-        }[];
+        // The newest comments are on the last page. Bots that only link the
+        // issue elsewhere (the board sync) are not the fleet answering.
+        const page = Math.max(1, Math.ceil(i.comments / 100));
+        const comments = (
+          (await this.ops.gh([`repos/${this.repo}/issues/${i.number}/comments?per_page=100&page=${page}`])) as {
+            body: string | null;
+            created_at: string;
+            user?: { type?: string } | null;
+          }[]
+        ).filter((c) => c.user?.type !== "Bot");
         thread = {
           updated: i.updated_at,
           replies: comments.slice(-6).map((c) => ({

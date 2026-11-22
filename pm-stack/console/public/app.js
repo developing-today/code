@@ -369,6 +369,8 @@ function needCounts() {
 
 let shown = 12;
 const pending = new Map();
+/** Choices ticked on a many-answer question, kept across redraws. */
+const picks = new Map();
 
 /** Answer after a short pause, so a slip of the thumb can be undone. */
 function later(key, label, send) {
@@ -398,6 +400,7 @@ async function sendAnswer(kind, args, key) {
   try {
     const { result } = await api("act", { kind, args });
     if (result?.refused?.length) toast(`Not recorded: ${result.refused[0].why}`, true);
+    picks.delete(key);
     if (docs.questions?.questions) {
       const open = docs.questions.questions.open.filter((q) => `${q.set}|${q.ledger}|${q.qid}` !== key);
       docs.questions.questions.total = open.length;
@@ -438,7 +441,8 @@ function questionCard(q) {
   const key = `${q.set}|${q.ledger}|${q.qid}`;
   if (pending.has(key)) return null;
   const id = { set: q.set, ledger: q.ledger, qid: q.qid };
-  const picked = new Set();
+  const picked = picks.get(key) ?? new Set();
+  picks.set(key, picked);
   const choose = (o) => later(key, `Answered: ${o.label.slice(0, 60)}`, () => sendAnswer("question.answer", { ...id, option: o.id }, key));
   const options = q.options.map((o) => {
     const rec = q.recommended.includes(o.id);
@@ -446,7 +450,7 @@ function questionCard(q) {
       "button",
       {
         class: `option${rec ? " rec" : ""}`,
-        "aria-pressed": q.multi ? "false" : null,
+        "aria-pressed": q.multi ? String(picked.has(o.id)) : null,
         onclick: (e) => {
           if (!q.multi) return choose(o);
           const b = e.currentTarget;
