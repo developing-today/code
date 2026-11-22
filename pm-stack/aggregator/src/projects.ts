@@ -360,7 +360,9 @@ export function resolveSpawnRollups(items: ProjectPoolItem[]): ProjectPoolItem[]
       return unchanged;
     }
     const children = childrenByParent.get(item.ref) ?? [];
-    const directChildRefs = new Set(children.map((child) => child.ref));
+    const directChildRefs = new Set(
+      children.filter((child) => child.state === "open").map((child) => child.ref),
+    );
     const inProgressRefs = new Set(
       children
         .filter((child) => child.status?.toLowerCase() === "in progress")
