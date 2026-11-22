@@ -710,6 +710,10 @@ async function collectAaSection(generatedAt: string): Promise<AaFeedSection> {
   // Hash the rendered arrays each tick so cache/last-good reuse cannot hide
   // a newly gathered measurement event.
   let currentMeasurementsFingerprint: string;
+  // The one current-projection read: the latest payload is built from these
+  // arrays and fingerprinted from them, so configs and CAI always come from
+  // the same snapshot as each other and as their fingerprint.
+  let currentMeasurements: { configs: unknown[]; cai: unknown[] };
   try {
     const rows = (await storeQuery(AA_MEASUREMENTS_SQL)) as { configs?: unknown; cai?: unknown }[];
     const jsonArray = (value: unknown): unknown[] => {
@@ -722,10 +726,8 @@ async function collectAaSection(generatedAt: string): Promise<AaFeedSection> {
         return [];
       }
     };
-    currentMeasurementsFingerprint = aaBatchFingerprint({
-      configs: jsonArray(rows?.[0]?.configs),
-      cai: jsonArray(rows?.[0]?.cai),
-    });
+    currentMeasurements = { configs: jsonArray(rows?.[0]?.configs), cai: jsonArray(rows?.[0]?.cai) };
+    currentMeasurementsFingerprint = aaBatchFingerprint(currentMeasurements);
   } catch (err) {
     const msg = err instanceof Error ? err.message : "error";
     return degrade(msg.startsWith("Turso") ? msg : `Turso unreachable (${msg})`);
@@ -782,15 +784,9 @@ async function collectAaSection(generatedAt: string): Promise<AaFeedSection> {
     cacheMeta.set(latestBatch, { fingerprint: lastGood.fingerprint, cached });
   } else if (latestBatch) {
     try {
-      const raw = await fetchAaPayload(latestBatch, true);
-      // Fingerprint the arrays this payload was actually built from: an
-      // ingest between the projection read above and this fetch would
-      // otherwise stamp the cache and last-good with a fingerprint that
-      // does not describe them, forcing a needless rebuild next tick.
-      currentMeasurementsFingerprint = aaBatchFingerprint({
-        configs: Array.isArray(raw.configs) ? raw.configs : [],
-        cai: Array.isArray(raw.cai) ? raw.cai : [],
-      });
+      // Swap in the arrays read above rather than the payload's own separate
+      // configs and CAI reads, which an ingest between them could split.
+      const raw = { ...(await fetchAaPayload(latestBatch, true)), ...currentMeasurements };
       latestSection = await assemble(raw, "current", currentMeasurementsFingerprint);
       if (!latestSection) return degrade("Turso payload failed its structural check");
     } catch (err) {
