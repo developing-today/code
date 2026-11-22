@@ -1066,6 +1066,41 @@ fn a_single_string_cargo_command_uses_the_shared_target_lane() {
 }
 
 #[test]
+fn cargo_formatting_does_not_checkout_and_clean_a_shared_target() {
+    let plan = shell::plan(
+        Target::Laptop,
+        "format".into(),
+        &words(&["cargo fmt --check"]),
+        &Options {
+            build: true,
+            ..opts()
+        },
+    )
+    .unwrap();
+    let command = plan.args.last().unwrap();
+    assert!(command.starts_with("~/tools/fleet-build-lock sh -c "));
+    assert!(!command.contains("cargo-target-broker"));
+    assert!(command.contains("cargo fmt --check"));
+}
+
+#[test]
+fn toolchain_prefixed_cargo_builds_use_the_shared_target_lane() {
+    let plan = shell::plan(
+        Target::Laptop,
+        "build".into(),
+        &words(&["cargo +stable check -p id-core"]),
+        &Options {
+            build: true,
+            ..opts()
+        },
+    )
+    .unwrap();
+    let command = plan.args.last().unwrap();
+    assert!(command.contains("cargo-target-broker"));
+    assert!(command.contains("cargo +stable check -p id-core"));
+}
+
+#[test]
 fn shell_builtins_run_in_a_shell_under_the_build_lock() {
     for command in ["exit 0", ":", "ulimit -n"] {
         let plan = shell::plan(
