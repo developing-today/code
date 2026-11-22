@@ -33,18 +33,20 @@
   };
 
   outputs =
-    {
+    args@{
       self,
       nixpkgs,
       rust-overlay,
       flake-utils,
       bun2nix,
-      # Root runtime packages can skip duplicate tests; named flake checks
-      # keep the same coverage. Standalone builds remain checked by default.
-      checkRuntimePackages ? true,
       # TODO: consider use systems here?
       ...
     }:
+    let
+      # Root runtime packages can skip duplicate tests; named flake checks
+      # keep the same coverage. Standalone builds remain checked by default.
+      checkRuntimePackages = args.checkRuntimePackages or true;
+    in
     flake-utils.lib.eachDefaultSystem (
       system:
       let
