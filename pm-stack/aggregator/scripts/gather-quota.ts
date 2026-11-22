@@ -76,6 +76,10 @@
 //     Wave 3 cutover, code#5690.) Fail-soft: a sink failure is logged
 //     and never fails the tick — quota-current.json is already written
 //     by then.
+//   - pool-state.json in the claimant state dir (POOL_STATE_PATH) —
+//     the babysitter's per-pool wall state (#1338), projected from
+//     this tick's entries by src/pool-state.ts. Fail-soft on the
+//     same terms as the Turso sink.
 //
 // Fail-soft contract: if the subcommand cannot be run or its output
 // cannot be parsed, the tick writes a heartbeat carrying the error
@@ -139,6 +143,7 @@ import { renewOpenDesignSession, type OpenDesignCredentialLike } from "../src/op
 import { ensureLibDependencies } from "../src/lib-deps.ts";
 import { loadOpenChamberLib, resolveLibDir as resolveOpenChamberLib } from "../src/openchamber-lib.ts";
 import { readProviderAuthAlerts } from "../src/provider-auth-alerts.ts";
+import { projectPoolState } from "../src/pool-state.ts";
 import { renewMetaSession } from "../src/meta-renewal.ts";
 import { classEnabled, getAlertsStore } from "../src/alerts.ts";
 import { sendPush, type PushTarget } from "../src/push.ts";
@@ -165,6 +170,11 @@ const heartbeatPath = process.env.QUOTA_HEARTBEAT_PATH ?? join(PKG, "quota-gathe
 const statePath = process.env.QUOTA_GATHERER_STATE_PATH ?? join(PKG, "quota-gatherer-state.json");
 const snapshotsDir = process.env.QUOTA_SNAPSHOTS_DIR ?? join(PKG, "snapshots");
 const outboxPath = process.env.USAGE_SNAPSHOT_OUTBOX_PATH ?? null;
+// #1338: the claimant babysitter's pool-state.json, written into the
+// claimant state dir (claimant.py STATE_DIR) on every tick so the
+// walled verdict runs on live quota. Fail-soft like the Turso write:
+// a failed pool-state write warns and never fails the tick.
+const poolStatePath = process.env.POOL_STATE_PATH ?? join(HOME, ".local/state/opencode-claimant/pool-state.json");
 /** Strict millisecond parse for boot-time env (#2835 env-number contract):
  * digits only, 1..2^31-1, else fail naming the variable and the value
  * instead of coercing NaN/negative/huge values into a fetch deadline. */
@@ -1001,6 +1011,14 @@ async function main(): Promise<number> {
   };
   await writeAtomic(currentPath, JSON.stringify(file, null, 2) + "\n");
   await writeHeartbeat(heartbeat);
+
+  // #1338: project this tick's readings into the babysitter's
+  // pool-state.json (src/pool-state.ts). Fail-soft, after the file:
+  // quota-current.json is already written, and a missing feed reads
+  // as "unread" on the claimant side, never as a false all-clear.
+  await writeAtomic(poolStatePath, JSON.stringify(projectPoolState(file), null, 2) + "\n").catch((err) =>
+    console.error(`quota-gatherer: pool-state write failed (${err}); babysitter pool state stays unread this tick`),
+  );
 
   // Snapshot records: append only what moved, to the aggregator's
   // store directly (or the writers' outbox when explicitly routed).

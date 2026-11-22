@@ -48,9 +48,10 @@ tooling-written file in the mode file's pattern:
 
 A missing or unreadable file reads as pool_state "unread" and no
 pool is walled: unknown never invents a wall, and never hides one
-either - the record says the state was unread. Wiring the quota
-gatherer to write that file is the follow-up slice; this slice is
-the verdict mechanism it feeds.
+either - the record says the state was unread. The quota gatherer
+writes the file on every tick (aggregator src/pool-state.ts,
+projected from quota-current.json), so on a live install the
+walled verdict runs on measured quota.
 
 Fail-closed rules, matching the claimant's house style:
 - a session whose timing cannot be read, that is not in the
