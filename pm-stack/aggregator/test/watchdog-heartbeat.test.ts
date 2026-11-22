@@ -16,8 +16,12 @@ describe("watchdog heartbeat", () => {
       await journal.append([watchdogHeartbeatLine(startedAt)]);
       const deliveries: string[] = [];
       const sink = {
-        needsOrchestrator: () => { deliveries.push("needs-orchestrator"); },
-        pageDrew: () => { deliveries.push("page-drew"); },
+        needsOrchestrator: () => {
+          deliveries.push("needs-orchestrator");
+        },
+        pageDrew: () => {
+          deliveries.push("page-drew");
+        },
       };
 
       expect(await checkWatchdogHeartbeatJournal(file, startedAt + 2 * WATCHDOG_HEARTBEAT_INTERVAL_MS - 1)).toEqual({
@@ -115,6 +119,68 @@ describe("watchdog heartbeat", () => {
     }
   });
 
+  test("startup grace is measured from monitoring activation, not pre-monitoring journal history", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "watchdog-heartbeat-activation-"));
+    try {
+      const file = join(dir, "slo-journal.jsonl");
+      // The journal and its sampler predate heartbeat monitoring by days.
+      const journalStart = 1_000_000;
+      await writeFile(file, `${JSON.stringify({ facet: "feed-age", atMs: journalStart, bad: false, value: 1 })}\n`);
+      const activationAt = journalStart + 3 * 24 * 60 * 60_000;
+
+      // Without an activation timestamp the days-old journal would page
+      // immediately; with one, absence is measured from activation.
+      expect(
+        await checkWatchdogHeartbeatJournal(file, activationAt + WATCHDOG_HEARTBEAT_INTERVAL_MS * 2 - 1, undefined, {
+          activationAtMs: activationAt,
+        }),
+      ).toEqual({
+        alert: "none",
+        missedCycles: 1,
+        lastHeartbeatAtMs: null,
+        outageSinceMs: activationAt,
+      });
+      expect(
+        await checkWatchdogHeartbeatJournal(file, activationAt + WATCHDOG_HEARTBEAT_INTERVAL_MS * 2, undefined, {
+          activationAtMs: activationAt,
+        }),
+      ).toEqual({
+        alert: "needs-orchestrator",
+        missedCycles: 2,
+        lastHeartbeatAtMs: null,
+        outageSinceMs: activationAt,
+      });
+      expect(
+        await checkWatchdogHeartbeatJournal(file, activationAt + WATCHDOG_HEARTBEAT_INTERVAL_MS * 3, undefined, {
+          activationAtMs: activationAt,
+        }),
+      ).toEqual({
+        alert: "page-drew",
+        missedCycles: 3,
+        lastHeartbeatAtMs: null,
+        outageSinceMs: activationAt,
+      });
+      // An activation recorded after the first heartbeat is irrelevant:
+      // the heartbeat itself remains the outage reference.
+      await writeFile(
+        file,
+        `${JSON.stringify({ facet: "feed-age", atMs: journalStart, bad: false, value: 1 })}\n${JSON.stringify(watchdogHeartbeatLine(activationAt))}\n`,
+      );
+      expect(
+        await checkWatchdogHeartbeatJournal(file, activationAt + WATCHDOG_HEARTBEAT_INTERVAL_MS, undefined, {
+          activationAtMs: activationAt + WATCHDOG_HEARTBEAT_INTERVAL_MS * 10,
+        }),
+      ).toEqual({
+        alert: "none",
+        missedCycles: 1,
+        lastHeartbeatAtMs: activationAt,
+        outageSinceMs: activationAt,
+      });
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   test("generated histories select the newest valid beat and obey threshold oracle", async () => {
     const dir = await mkdtemp(join(tmpdir(), "watchdog-heartbeat-property-"));
     try {
@@ -135,7 +201,12 @@ describe("watchdog heartbeat", () => {
           [shuffled[i], shuffled[j]] = [shuffled[j]!, shuffled[i]!];
         }
         const lines = shuffled.map((atMs) => JSON.stringify({ facet: "watchdog-heartbeat", atMs }));
-        lines.splice(Math.floor(random() * (lines.length + 1)), 0, "not-json", JSON.stringify({ facet: "other", atMs: 99_000_000 }));
+        lines.splice(
+          Math.floor(random() * (lines.length + 1)),
+          0,
+          "not-json",
+          JSON.stringify({ facet: "other", atMs: 99_000_000 }),
+        );
         await writeFile(file, `${lines.join("\n")}\n`, "utf8");
 
         const newest = Math.max(...beats);

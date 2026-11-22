@@ -31,6 +31,7 @@ export async function checkWatchdogHeartbeatJournal(
   file: string,
   nowMs: number,
   sink?: WatchdogHeartbeatAlertSink,
+  options?: { activationAtMs?: number | null },
 ): Promise<WatchdogHeartbeatCheck> {
   const raw = await readFile(file, "utf8").catch((error: NodeJS.ErrnoException) => {
     if (error.code === "ENOENT") return "";
@@ -51,9 +52,8 @@ export async function checkWatchdogHeartbeatJournal(
         typeof record.atMs === "number" &&
         Number.isFinite(record.atMs)
       ) {
-        earliestJournalActivity = earliestJournalActivity === null
-          ? record.atMs
-          : Math.min(earliestJournalActivity, record.atMs);
+        earliestJournalActivity =
+          earliestJournalActivity === null ? record.atMs : Math.min(earliestJournalActivity, record.atMs);
         if (record.facet === HEARTBEAT_FACET && (latest === null || record.atMs > latest)) {
           latest = record.atMs;
         }
@@ -68,7 +68,21 @@ export async function checkWatchdogHeartbeatJournal(
   // bounds startup absence rather than leaving it unknown forever. One
   // full heartbeat interval is the startup grace before the two-cycle
   // and three-cycle thresholds apply.
-  const referenceAtMs = latest ?? earliestJournalActivity;
+  //
+  // The journal can predate heartbeat monitoring by days (it existed
+  // before this checker), so journal activity alone cannot say when
+  // monitoring began: the caller persists a monitoring activation /
+  // first-observed-absence timestamp and passes it as activationAtMs,
+  // and the absence is then measured from the later of the two. Without
+  // an activation timestamp the journal bound above applies unchanged.
+  const activationAtMs = options?.activationAtMs;
+  const absenceReferenceAtMs =
+    earliestJournalActivity === null
+      ? null
+      : typeof activationAtMs === "number" && Number.isFinite(activationAtMs)
+        ? Math.max(earliestJournalActivity, activationAtMs)
+        : earliestJournalActivity;
+  const referenceAtMs = latest ?? absenceReferenceAtMs;
   if (referenceAtMs === null) {
     return { alert: "unknown", missedCycles: 0, lastHeartbeatAtMs: null, outageSinceMs: null };
   }
@@ -81,7 +95,7 @@ export async function checkWatchdogHeartbeatJournal(
     alert,
     missedCycles,
     lastHeartbeatAtMs: latest,
-    outageSinceMs: latest === null ? earliestJournalActivity : latest,
+    outageSinceMs: latest === null ? absenceReferenceAtMs : latest,
   };
   if (alert === "needs-orchestrator") await sink?.needsOrchestrator(check);
   if (alert === "page-drew") await sink?.pageDrew(check);
