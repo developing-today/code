@@ -20,8 +20,11 @@ adding a database or writing into the disposable projector.
   `readCurrentReportRecords(file)` projects the latest cursor per
   `(period, templateVersion)`.
 - `appendReportSnapshot(file, record, snapshotAt)` freezes the record once per
-  period. A changed snapshot conflicts; corrections must be separately linked
-  records. `readReportSnapshots(file)` reads the immutable snapshots.
+  period. A changed snapshot conflicts. `appendReportSnapshotCorrection(file,
+  snapshotId, record, correctedAt)` creates a separate linked correction event
+  without mutating the snapshot; correction records must match the snapshot
+  period. `readReportSnapshots(file)` reads immutable snapshots, and
+  `readReportSnapshotCorrections(file)` reads their correction history.
 - `assertReportUpdateAllowed(period, operation, at)` enforces the daily
   08:00 CT soft-close and its quote/append/banner/event-log/feedback allowlist.
   `reportBlockConflict(stored, rendered)` treats whitespace-only differences
