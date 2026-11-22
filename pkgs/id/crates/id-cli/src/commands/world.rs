@@ -1954,8 +1954,9 @@ async fn terminal_probe(
 /// Render one server frame through the TTY tier presenter when it is a
 /// view carrying a screen or text surface (F13.4). Returns `None` for
 /// every other frame — those keep the JSON-lines presentation — and
-/// `Some("")` for a view the presenter renders as no change. Form views
-/// keep the JSON-lines presentation: the pump has no form collector.
+/// `Some("")` for a view the presenter renders as no change. Form and
+/// scene views keep the JSON-lines presentation: the pump has no form
+/// collector and no scene renderer.
 fn render_view_frame(
     presenter: &mut id_worlds::world_terminal::TierPresenter,
     body: &[u8],
@@ -1981,6 +1982,7 @@ fn render_view_frame(
             Some(presenter.render_lines(&lines))
         }
         id_worlds::world_presentation::WorldSurface::Form(_) => None,
+        id_worlds::world_presentation::WorldSurface::Scene(_) => None,
     }
 }
 
@@ -2603,11 +2605,12 @@ mod tests {
             r#"{"from": "client", "frame": {"type": "join", "capability": "c"}}"#,
             r#"{"from": "server", "frame": {"type": "snapshot", "snapshot": {}}}"#,
             r#"{"from": "client", "frame": {"type": "resize", "width": 80, "height": 24}}"#,
+            r#"{"from": "server", "frame": {"type": "view", "sequence": 1, "data": "Harbor", "view_revision": 1, "surface": {"kind": "scene", "version": 1, "title": "Harbor", "nodes": [{"id": "boat", "label": "Boat", "shape": "box", "position": [0, 0.5, -2], "size": [2, 1, 1]}]}}}"#,
         ]
         .join("\n");
         assert_eq!(
             check_contract(&good).unwrap(),
-            "3 frames conform to shell contract v1.11"
+            "4 frames conform to shell contract v1.13"
         );
         let bad = [
             r#"{"from": "client", "frame": {"type": "chat", "text": "too early"}}"#,
