@@ -10882,7 +10882,11 @@ mod schedule_tests {
         let error = core.check_notify_send(None, "", now).unwrap_err();
         assert!(error.to_string().contains("notify text"), "{error}");
         let error = core
-            .check_notify_send(None, &"x".repeat(crate::world_caps::MAX_NOTIFY_TEXT_BYTES + 1), now)
+            .check_notify_send(
+                None,
+                &"x".repeat(crate::world_caps::MAX_NOTIFY_TEXT_BYTES + 1),
+                now,
+            )
             .unwrap_err();
         assert!(error.to_string().contains("notify text"), "{error}");
         assert!(
@@ -10895,10 +10899,16 @@ mod schedule_tests {
             "a text at the cap fits"
         );
         // A control character in the text, and one in the title.
-        let error = core.check_notify_send(None, "bad\u{7}text", now).unwrap_err();
+        let error = core
+            .check_notify_send(None, "bad\u{7}text", now)
+            .unwrap_err();
         assert!(error.to_string().contains("control"), "{error}");
         let error = core
-            .check_notify_send(Some(&"t".repeat(crate::world_caps::MAX_NOTIFY_TITLE_BYTES + 1)), "ok", now)
+            .check_notify_send(
+                Some(&"t".repeat(crate::world_caps::MAX_NOTIFY_TITLE_BYTES + 1)),
+                "ok",
+                now,
+            )
             .unwrap_err();
         assert!(error.to_string().contains("notify title"), "{error}");
         // Rate: the window fills at the cap, the next send is refused,
@@ -10910,13 +10920,17 @@ mod schedule_tests {
                 at_ms: now,
             });
         }
-        assert_eq!(core.notify_in_window(now), crate::world_caps::MAX_NOTIFY_PER_WINDOW);
+        assert_eq!(
+            core.notify_in_window(now),
+            crate::world_caps::MAX_NOTIFY_PER_WINDOW
+        );
         let error = core.check_notify_send(None, "one more", now).unwrap_err();
         assert!(error.to_string().contains("rate limit"), "{error}");
         let later = now + crate::world_caps::NOTIFY_RATE_WINDOW_MS;
         assert_eq!(core.notify_in_window(later), 0);
         assert!(
-            core.check_notify_send(None, "after the window", later).is_ok(),
+            core.check_notify_send(None, "after the window", later)
+                .is_ok(),
             "a send a full window after the burst fits"
         );
     }
@@ -11195,7 +11209,11 @@ mod schedule_tests {
             text: "alpha".to_owned(),
             at_ms: 10,
         };
-        let agreed = [header(), sent("alpha", 10), checkpoint(Some(vec![declared()]))];
+        let agreed = [
+            header(),
+            sent("alpha", 10),
+            checkpoint(Some(vec![declared()])),
+        ];
         assert!(WorldCore::restore("w", WorldLimits::default(), agreed).is_ok());
         let omitted = [header(), sent("alpha", 10), checkpoint(None)];
         assert!(WorldCore::restore("w", WorldLimits::default(), omitted).is_err());

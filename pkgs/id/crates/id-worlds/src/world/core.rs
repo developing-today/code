@@ -1131,11 +1131,8 @@ impl WorldCore {
                     }
                     crate::world_caps::validate_notify_text(&text)
                         .context("invalid notify text in journal")?;
-                    core.notifications.push_back(CheckpointNotifyEntry {
-                        title,
-                        text,
-                        at_ms,
-                    });
+                    core.notifications
+                        .push_back(CheckpointNotifyEntry { title, text, at_ms });
                     while core.notifications.len() > crate::world_caps::MAX_NOTIFICATIONS {
                         core.notifications.pop_front();
                     }

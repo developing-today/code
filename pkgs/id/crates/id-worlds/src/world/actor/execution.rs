@@ -1897,12 +1897,7 @@ impl WorldActor {
             .ok_or(CapError::bad_args())?;
         let title = match args.get("title") {
             None => None,
-            Some(value) => Some(
-                value
-                    .as_str()
-                    .ok_or(CapError::bad_args())?
-                    .to_owned(),
-            ),
+            Some(value) => Some(value.as_str().ok_or(CapError::bad_args())?.to_owned()),
         }
         .filter(|title| !title.is_empty());
         let now_ms = self.core.clock().now_ms();
