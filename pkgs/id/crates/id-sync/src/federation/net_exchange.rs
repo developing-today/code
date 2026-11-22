@@ -72,6 +72,13 @@ pub const FEDERATION_SYNC_ALPN: &[u8] = b"/id-federation-sync/1";
 /// bound.
 const EXCHANGE_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// The protocol's error conversion, as in `crate::artifact`:
+/// `AcceptError` takes a boxed standard error, and this crate's
+/// fallible operations return `anyhow` errors.
+fn accept_error(error: anyhow::Error) -> AcceptError {
+    AcceptError::from_boxed(error.into())
+}
+
 // ---------------------------------------------------------------------
 // Wire forms
 
@@ -366,23 +373,23 @@ impl ProtocolHandler for FederationSyncProtocol {
             };
             let Some(frame) = id_core::frames::read_frame(&mut recv)
                 .await
-                .map_err(AcceptError::from_err)?
+                .map_err(accept_error)?
             else {
                 return Ok(());
             };
             let request: Request = crate::checked_json::from_slice_unique(&frame)
-                .map_err(AcceptError::from_err)?;
+                .map_err(accept_error)?;
             let response = {
                 let mut replica = self.replica.lock().await;
                 let mut link = self.link.lock().await;
                 answer(&mut replica, &self.scope, &mut link, request)
-                    .map_err(AcceptError::from_err)?
+                    .map_err(accept_error)?
             };
-            let json = serde_json::to_vec(&response).map_err(AcceptError::from_err)?;
+            let json = serde_json::to_vec(&response).map_err(accept_error)?;
             id_core::frames::write_frame(&mut send, &json)
                 .await
-                .map_err(AcceptError::from_err)?;
-            send.finish().map_err(AcceptError::from_err)?;
+                .map_err(accept_error)?;
+            send.finish().map_err(accept_error)?;
         }
     }
 }

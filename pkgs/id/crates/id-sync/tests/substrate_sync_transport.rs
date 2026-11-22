@@ -66,6 +66,10 @@ const BOB: usize = 1;
 const CONTROL_ALPN: &[u8] = b"/id-skeleton-control/1";
 const CHILD_ENV: &str = "ID_SKELETON_NODE_B";
 
+fn accept_error(error: anyhow::Error) -> AcceptError {
+    AcceptError::from_boxed(error.into())
+}
+
 // ---------------------------------------------------------------------
 // The scenario, shared by both processes (same code as
 // substrate_sync_path, so the two files read as siblings).
@@ -280,20 +284,20 @@ impl ProtocolHandler for ControlProtocol {
             };
             let Some(frame) = id_core::frames::read_frame(&mut recv)
                 .await
-                .map_err(AcceptError::from_err)?
+                .map_err(accept_error)?
             else {
                 return Ok(());
             };
-            let control: Control = serde_json::from_slice(&frame).map_err(AcceptError::from_err)?;
+            let control: Control = serde_json::from_slice(&frame).map_err(accept_error)?;
             let (reply, stop) = {
                 let mut replica = self.replica.lock().await;
                 answer_control(&mut replica, control)
             };
-            let json = serde_json::to_vec(&reply).map_err(AcceptError::from_err)?;
+            let json = serde_json::to_vec(&reply).map_err(accept_error)?;
             id_core::frames::write_frame(&mut send, &json)
                 .await
-                .map_err(AcceptError::from_err)?;
-            send.finish().map_err(AcceptError::from_err)?;
+                .map_err(accept_error)?;
+            send.finish().map_err(accept_error)?;
             if stop {
                 self.shutdown.notify_one();
                 return Ok(());
