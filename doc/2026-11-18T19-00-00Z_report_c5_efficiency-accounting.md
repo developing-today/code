@@ -29,13 +29,90 @@ All four sources are stored data; no scraping or inference of missing fields.
 
 ### 1.3 Join algorithm
 
-1. Load `model_stamp` rows for the window; build `stamp(task_id) -> (provider, model)` using the **last** stamp in the window for that task.
-2. Load `completed` rows for the window; `completed_tasks = {task_id}`.
-3. Load merged PRs for the window; for each PR parse `task_id` from `queue/<id>-...`; keep PRs whose task ID is present.
-4. Join:
-   - `completed_by_stamp(provider, model) = count of completed task IDs with that stamp`;
-   - `merged_by_stamp(provider, model) = count of merged PRs whose branch task ID has that stamp`.
-5. Consumption is joined by provider/model target from `route_usage`. Where a provider/model has no `route_usage` target (notably `muse-lane`), consumption is reported as **not separately metered in route_usage** rather than estimated.
+The broker responses have the envelope `{"ok": true, "row": {"rows": [...]}}`.
+Each event row has `id`, `task_id`, `kind`, `created_at`, and `detail`;
+`detail` holds the event-specific fields. For `model_stamp`, the provider and
+model are `detail.provider` and `detail.model`; completion attribution uses
+`detail.model_provider` and `detail.model_id`. Filter each source independently
+to the half-open UTC interval `[2026-11-12T22:07:10Z, 2026-11-18T18:32:00Z)`.
+Parse timestamps as UTC; do not use the event-fetch `since` value as the
+upper-bound filter.
+
+1. For each in-window `model_stamp`, read `detail.provider` and `detail.model`;
+   group by integer `task_id` and use the last row ordered by
+   `(created_at, event id)` as that task's stamp.
+2. For `completed`, count unique integer task IDs in the same interval.
+3. For merged PRs, parse the leading integer from `queue/<task_id>-...` and
+   retain merges in the same interval. Count unique PR numbers for PR totals;
+   count PRs by the stamp for the matching task for the stamped join.
+4. Count unique completed tasks by their last stamp. Do not count raw event
+   rows as tasks.
+5. Consumption is joined by provider/model target from `route_usage`. Where a
+   provider/model has no `route_usage` target (notably `muse-lane`), consumption
+   is reported as **not separately metered in route_usage** rather than
+   estimated.
+
+The following Python is the grouping used for the output-side counts. Save the
+three downloaded responses as `model_stamp.json`, `completed.json`, and
+`merged_prs.json` as shown below; it deliberately reports the populations
+separately so a changed filter or incomplete export cannot silently create a
+join.
+
+```python
+import json
+import re
+from collections import Counter
+from datetime import datetime, timezone
+
+START = datetime.fromisoformat("2026-11-12T22:07:10+00:00")
+END = datetime.fromisoformat("2026-11-18T18:32:00+00:00")
+
+def in_window(value):
+    at = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    return START <= at.astimezone(timezone.utc) < END
+
+def rows(path):
+    with open(path, encoding="utf-8") as f:
+        return json.load(f)["row"]["rows"]
+
+stamps = {}
+for row in rows("model_stamp.json"):
+    if not in_window(row["created_at"]):
+        continue
+    task = int(row["task_id"])
+    detail = row["detail"]
+    stamp = (detail.get("provider"), detail.get("model"))
+    order = (row["created_at"], row.get("id", ""))
+    if task not in stamps or order > stamps[task][0]:
+        stamps[task] = (order, stamp)
+
+completed = {
+    int(row["task_id"]) for row in rows("completed.json")
+    if in_window(row["created_at"])
+}
+merged = json.load(open("merged_prs.json", encoding="utf-8"))
+merged = [p for p in merged if in_window(p["mergedAt"])]
+task_re = re.compile(r"^queue/(\d+)-")
+merged_task = []
+for pr in merged:
+    match = task_re.match(pr.get("headRefName", ""))
+    if match:
+        merged_task.append((pr, int(match.group(1))))
+
+completed_by_stamp = Counter(
+    stamps[task][1] for task in completed & stamps.keys()
+)
+merged_by_stamp = Counter(
+    stamps[task][1] for _, task in merged_task if task in stamps
+)
+print({
+    "completed_unique": len(completed),
+    "merged_prs": len(merged),
+    "merged_queue_branch_prs": len(merged_task),
+    "completed_by_stamp": dict(completed_by_stamp),
+    "merged_by_stamp": dict(merged_by_stamp),
+})
+```
 
 ### 1.4 Window selection
 
@@ -44,7 +121,8 @@ The window is bounded below by the first `model_stamp` row available in the brok
 ### 1.5 Reproduction
 
 ```bash
-# 1. model stamps
+# 1. model stamps (the API returns {"ok":true,"row":{"rows":[...]}};
+#    filter END locally)
 curl -sS --unix-socket /run/user/1337/fleet/queue-broker.sock -X POST \
   -H "X-Agent-Token: $(cat ~/.config/queue-broker/token)" \
   -H "Content-Type: application/json" \
@@ -63,11 +141,18 @@ gh pr list --state merged --limit 5000 \
   --json number,mergedAt,headRefName,title > merged_prs.json
 
 # 4. consumption
-# (run route_usage with hours=168 in the OpenCode session; output is the
-#  7-day provider/model target table used in section 3)
+# The section 3 snapshot was obtained with route_usage(hours=168) at
+# 2026-11-19T01:09:00Z, yielding the fixed interval
+# [2026-11-12T01:09:00Z, 2026-11-19T01:09:00Z). The tool accepts a relative
+# duration, not an end timestamp, so rerunning it now would return a different
+# window; the figures below are the captured snapshot (87 of 212 targets).
+# Preserve the complete JSON result alongside future reports.
 ```
 
-The join itself is the Python grouping in section 2.2; no hidden transformation is applied.
+The grouping above filters all three output sources to the same fixed interval.
+The broker export `since` is only a lower-bound optimization; the script also
+applies both bounds itself. Inspect the printed unique counts before comparing
+them with the tables below.
 
 ## 2. Output side of the join
 
@@ -145,7 +230,13 @@ The join is **partial by construction**:
 - `muse-lane` (489 merged PRs / 3,268 completed tasks) has **no** `route_usage` target, so its consumption is not in the table above. The `muse-lane` worker is not metered as a provider/model in route_usage; treating it as zero consumption would be wrong, and estimating it would be unsupported.
 - `opencode-route` (1 merged PR / 2 completed tasks) is metered only through its leaf models (`_openai.main/gpt-6-luna`, `_claude/claude-haiku-5-5`, etc.), and the pool-level table does not attribute tokens to the task that caused them.
 
-Therefore this report publishes the methodology and the partial join, and explicitly records that a full token-to-PR attribution requires either (a) stamping the LLM provider/model on every completed task, or (b) session-level attribution in `route_usage` joined to `session_bound`/`lane_session_bound`. Both are recommended in section 6.
+Therefore this report publishes the methodology and the partial join. Full
+token-to-PR attribution requires a consumption-to-task or
+consumption-to-session link, such as session-level attribution in
+`route_usage` joined to `session_bound`/`lane_session_bound`. Stamping the LLM
+provider/model on each completed task identifies that task's model; it does
+not allocate that model's tokens to the task. Both are recommended in section
+6.
 
 ## 4. Worse-efficiency period
 
@@ -155,21 +246,26 @@ Merged PRs by day (UTC) in the window:
 
 | Date | Merged PRs | Completed tasks | Model stamps |
 |---|---:|---:|---:|
-| 2026-11-12 | 87 | 241 | 29 |
+| 2026-11-12 | 16 | 17 | 29 |
 | 2026-11-13 | 114 | 794 | 638 |
 | 2026-11-14 | 252 | 1,091 | 1,243 |
 | 2026-11-15 | 55 | 67 | 130 |
 | 2026-11-16 | 224 | 468 | 504 |
 | 2026-11-17 | 289 | 2,318 | 2,206 |
-| 2026-11-18 | 274 | 334 | 0 (window cutoff) |
+| 2026-11-18 | 177 | 324 | 0 |
 
-**2026-11-15 is the worse-efficiency day**: merged PRs fell to 55 while only 67 tasks completed and 130 model stamps were written. By comparison, 2026-11-14 had 252 merged PRs / 1,091 completed tasks / 1,243 stamps, and 2026-11-16 recovered to 224 / 468 / 504. The drop is a 78% fall in merged PRs (252 → 55) against a 94% fall in completed tasks (1,091 → 67) and a 90% fall in stamps (1,243 → 130).
+**2026-11-15 appears to be an output trough, not a measured efficiency decline.**
+The corrected daily rows sum to the fixed-window totals in section 2.1:
+1,127 merged PRs, 5,079 completed tasks, and 4,750 model stamps. Nov 12 and
+Nov 18 are partial days because the report window starts and ends mid-day.
+Even within the daily series, PR output fell 78% (252 → 55), less than the
+90% fall in model stamps (1,243 → 130); it does not establish worse efficiency.
 
 ### 4.2 Distribution diagnosis
 
 - The stamped population on 2026-11-15 remained 100% `muse-lane` (130 of 130 stamps). There is **no provider shift in the stamped task population** on the trough day, so the trough is not explained by tasks moving from `muse-lane` to `opencode-route`.
 - Route-level consumption in the surrounding 7 days was dominated by `_openai.main/gpt-6-luna` (2.36B tokens) and `_claude/claude-haiku-5-5` (1.22B tokens), with `workhorse-weighted` offering 192,163 choices and choosing 148,220. These targets are interactive/session-heavy and are not attributable to completed queue tasks.
-- Conclusion: on 2026-11-15, merge output fell further than the stamped task population, while unattributed OpenCode consumption continued. The most plausible diagnosis is that work moved into interactive/non-queue paths (or stalled in review) while the queue's merge-producing path contracted. This is a **worse-efficiency period** under C5's definition; it is documented here rather than smoothed over.
+- Conclusion: the current evidence supports an **output trough** on 2026-11-15, not a measured efficiency change. Merged PR output fell less than model stamps, and the seven-day consumption aggregate cannot show daily consumption on that date; daily consumption data for Nov 14–16 would be needed for a same-day efficiency comparison.
 
 This is a single observed trough, not a trend. C5 requires measured effect after any smoothing change; no change is proposed from one data point.
 
@@ -189,7 +285,7 @@ A second, independent check on the same cell: 3,268 of 3,270 stamped completed t
 
 ## 6. Recommendations (C5 recommends; it does not change configuration)
 
-1. **Stamp coverage.** Only 3,270 of 5,079 completed tasks (64.4%) have a stamp. Require a `model_stamp` at claim time and at completion time, and reject completion events missing `model_provider`/`model_id`. This is the single biggest blocker to a full efficiency join.
+1. **Stamp coverage.** Only 3,270 of 5,079 completed tasks (64.4%) have a stamp. Require a `model_stamp` at claim time and at completion time. For completions accepted before enforcement whose claim has no `model_provider` or `model_id`, exclude them from the stamped join and retain them in the un-attributed completion total; do not reject or fabricate a historical stamp at completion. Enforce the required fields for new claims and completions. This is the single biggest blocker to a full efficiency join.
 2. **Provider/model attribution on completion.** The 3 `opencode-route` completed-task records (tasks 14440, 20001, 20200) are the only ones carrying `opencode-route`/`workhorse`. Either the completion path is not recording the route for most tasks, or most tasks genuinely run on `muse-lane`. Resolve which before any never-serve or routing-mode rule is written.
 3. **Session-to-task attribution.** `route_usage` reports consumption per provider/model target and per pool, but not per task. Join `session_bound`/`lane_session_bound` to task IDs and expose a per-task consumption rollup, or accept that efficiency is measurable only at the worker-population level.
 4. **Do not act on the 2026-11-15 trough yet.** One trough plus a 90% stamp-count drop on the same day is consistent with a scheduling/availability event, not necessarily a policy failure. Collect two more weeks of daily data before proposing smoothing changes; C5 requires measured effect after adoption.
