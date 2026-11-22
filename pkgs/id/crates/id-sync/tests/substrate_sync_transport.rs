@@ -277,17 +277,28 @@ struct ControlProtocol {
 
 impl ProtocolHandler for ControlProtocol {
     async fn accept(&self, conn: Connection) -> Result<(), AcceptError> {
+        eprintln!("node-b: control connection from {}", conn.remote_id());
         loop {
             let (mut send, mut recv) = match conn.accept_bi().await {
                 Ok(streams) => streams,
-                Err(_) => return Ok(()),
+                Err(error) => {
+                    eprintln!("node-b: accept_bi ended the control connection: {error}");
+                    return Ok(());
+                }
             };
-            let Some(frame) = id_core::frames::read_frame(&mut recv)
-                .await
-                .map_err(accept_error)?
-            else {
+            eprintln!("node-b: control stream open");
+            let frame = match id_core::frames::read_frame(&mut recv).await {
+                Ok(frame) => frame,
+                Err(error) => {
+                    eprintln!("node-b: control read_frame failed: {error:?}");
+                    return Err(accept_error(error));
+                }
+            };
+            let Some(frame) = frame else {
+                eprintln!("node-b: control stream closed with no frame");
                 return Ok(());
             };
+            eprintln!("node-b: control frame of {} bytes", frame.len());
             let control: Control = serde_json::from_slice(&frame).map_err(accept_error)?;
             let (reply, stop) = {
                 let mut replica = self.replica.lock().await;
