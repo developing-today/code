@@ -1027,7 +1027,7 @@ fn a_build_takes_a_lock_slot_and_an_hour() {
     )
     .unwrap();
     assert_eq!(
-        plan.args,
+        &plan.args[..8],
         argv(&[
             "laptop-agent",
             "exec",
@@ -1037,9 +1037,13 @@ fn a_build_takes_a_lock_slot_and_an_hour() {
             "3600",
             "--shell",
             "--",
-            "~/tools/fleet-build-lock cargo test -p id-core",
         ])
+        .as_slice()
     );
+    let command = plan.args.last().unwrap();
+    assert!(command.starts_with("~/tools/fleet-build-lock sh -c "));
+    assert!(command.contains("cargo-target-broker"));
+    assert!(command.contains("cargo test -p id-core"));
 }
 
 #[test]
@@ -1054,10 +1058,33 @@ fn a_single_string_cargo_command_uses_the_shared_target_lane() {
         },
     )
     .unwrap();
-    assert_eq!(
-        plan.args.last().unwrap(),
-        "~/tools/fleet-build-lock cargo test -p 'id core'"
-    );
+    let command = plan.args.last().unwrap();
+    assert!(command.starts_with("~/tools/fleet-build-lock sh -c "));
+    assert!(command.contains("cargo-target-broker"));
+    assert!(command.contains("cargo test -p"));
+    assert!(command.contains("id core"));
+}
+
+#[test]
+fn shell_builtins_run_in_a_shell_under_the_build_lock() {
+    for command in ["exit 0", ":", "ulimit -n"] {
+        let plan = shell::plan(
+            Target::Laptop,
+            "test".into(),
+            &words(&[command]),
+            &Options {
+                build: true,
+                ..opts()
+            },
+        )
+        .unwrap();
+        let rendered = plan.args.last().unwrap();
+        assert!(
+            rendered.starts_with("~/tools/fleet-build-lock sh -c "),
+            "{command}: {rendered}"
+        );
+        assert!(rendered.contains(command), "{command}: {rendered}");
+    }
 }
 
 #[test]
@@ -1130,7 +1157,7 @@ fn a_background_cargo_build_holds_its_target_lease_until_exit() {
     let plan = shell::plan(
         Target::Local,
         "test".into(),
-        &words(&["cargo test &"]),
+        &words(&["cargo test & exec true"]),
         &Options {
             cwd: Some("workspace".into()),
             build: true,
@@ -1380,7 +1407,7 @@ fn a_local_direct_build_enters_the_lock_after_selecting_its_workspace() {
     );
     assert_eq!(
         std::fs::read_to_string(home.join("lock.log")).unwrap(),
-        "pwd\n"
+        "sh\n-c\npwd\n"
     );
     let _ = std::fs::remove_dir_all(&home);
 }
@@ -1601,10 +1628,10 @@ fn shell_runs_the_plan_or_prints_it() {
     match printed {
         shell::Done::Printed(plan) => {
             assert_eq!(plan["target"], "laptop");
-            assert_eq!(
-                plan["args"][6],
-                "~/tools/fleet-build-lock cargo check"
-            );
+            let command = plan["args"][6].as_str().unwrap();
+            assert!(command.starts_with("~/tools/fleet-build-lock sh -c "));
+            assert!(command.contains("cargo-target-broker"));
+            assert!(command.contains("cargo check"));
         }
         shell::Done::Ran(_) => panic!("--print must not run"),
     }
