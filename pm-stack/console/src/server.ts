@@ -7,12 +7,15 @@
 // the check happens at this origin and does not rest on how the edge
 // reads a path. Three files a phone fetches before anyone has signed in
 // (the install manifest, its icons, the Android asset links) are public.
+// Two more paths carry their own check instead of the sign-in: a linked
+// phone's widget presents its own token there to read a short summary.
 import { mkdirSync, readFileSync } from "node:fs";
 import { appendFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { actions, perform } from "./actions.ts";
 import { AuthError, type Identity, identify } from "./auth.ts";
 import { type Config, readConfig } from "./config.ts";
+import { Devices, Limiter, summary } from "./devices.ts";
 import { DOC_NAMES, type DocName, Docs } from "./docs.ts";
 import { Notifier } from "./notify.ts";
 import { OpError, Ops } from "./ops.ts";
@@ -129,6 +132,59 @@ export interface Deps {
   actions?: ReturnType<typeof actions>;
   work?: Work;
   push?: Push;
+  /** Phones linked to read the summary, and the limits on the two paths
+   * they use, which are reachable without sign-in. */
+  devices?: Devices;
+  deviceLimits?: { link: Limiter; refused: Limiter };
+}
+
+/** Sections the summary is built from, and how long a phone waits for
+ * them to be read again. */
+const SUMMARY_SECTIONS = ["board", "sessions", "census", "asks", "questionCount"];
+const SUMMARY_WAIT_MS = 8_000;
+const DEVICE_BODY_LIMIT = 1024;
+
+/** A phone presents the verifier for a link the owner approved. */
+async function deviceLink(req: Request, deps: Deps): Promise<Response> {
+  if (!deps.deviceLimits?.link.allow()) return json({ error: "too many tries: wait a minute" }, 429);
+  if (Number(req.headers.get("content-length") ?? "0") > DEVICE_BODY_LIMIT) return json({ error: "too large" }, 413);
+  let verifier: unknown;
+  try {
+    const text = await req.text();
+    if (text.length > DEVICE_BODY_LIMIT) return json({ error: "too large" }, 413);
+    verifier = (JSON.parse(text) as { verifier?: unknown } | null)?.verifier;
+  } catch {
+    return json({ error: "body: expected a JSON object" }, 400);
+  }
+  const linked = await (deps.devices as Devices).link(verifier);
+  if (!linked) return json({ error: "not approved" }, 404);
+  await deps
+    .audit({
+      at: new Date().toISOString(),
+      who: `device:${linked.id}`,
+      via: "device",
+      action: "device.link",
+      phase: "done",
+      ok: true,
+    })
+    .catch((error) => console.error(`pm-console: audit: ${(error as Error).message}`));
+  return json(linked);
+}
+
+/** A linked phone reads the counts and the top line of each list. */
+async function deviceSummary(req: Request, deps: Deps): Promise<Response> {
+  const limits = deps.deviceLimits;
+  const header = req.headers.get("authorization") ?? "";
+  const device = header.startsWith("Bearer ") ? await (deps.devices as Devices).check(header.slice(7)) : null;
+  if (!device) {
+    // Wrong tokens are counted; a linked phone is never slowed by them.
+    if (!limits?.refused.allow()) return json({ error: "too many tries: wait a minute" }, 429);
+    // `unlinked` tells the app to forget its token; a refusal from
+    // anything else in front of this service does not carry it.
+    return json({ error: "this phone is not linked", unlinked: true }, 401);
+  }
+  const { data, at } = await (deps.docs as Docs).current(SUMMARY_SECTIONS, SUMMARY_WAIT_MS);
+  return json(summary(data, at));
 }
 
 /** Text that shrinks well. The dashboard's fragments run to a megabyte
@@ -243,6 +299,11 @@ export async function handle(req: Request, deps: Deps, peer: string | null = nul
       headers: { "Content-Type": "application/manifest+json; charset=utf-8", "Cache-Control": "no-cache", ...SECURITY },
     });
   }
+  // Not behind the sign-in, and checked here instead: a linked phone.
+  if (deps.devices && deps.docs) {
+    if (path === `${BASE}/device/link` && method === "POST") return deviceLink(req, deps);
+    if (path === `${BASE}/device/summary` && method === "GET") return deviceSummary(req, deps);
+  }
   const ours = path === BASE || path.startsWith(`${BASE}/`);
   if (!ours) {
     if (deps.cfg.dashboardUrl === null) return json({ error: "not found" }, 404);
@@ -339,6 +400,7 @@ export async function handle(req: Request, deps: Deps, peer: string | null = nul
         return gzipped(req, new TextEncoder().encode(doc.body), headers) ?? new Response(doc.body, { headers });
       }
       if (seg.length === 1 && seg[0] === "push" && deps.push) return json(await deps.push.status());
+      if (seg.length === 1 && seg[0] === "devices" && deps.devices) return json(await deps.devices.list());
       if (seg.length === 1 && seg[0] === "question" && deps.work) {
         return json(await deps.work.question(query.get("set"), query.get("ledger"), query.get("qid")));
       }
@@ -522,13 +584,16 @@ if (import.meta.main) {
   const state = dirname(cfg.auditFile);
   const push = new Push(join(state, "push.json"), `mailto:${cfg.owners[0] ?? "owner@invalid.example"}`);
   new Notifier(docs, push, join(state, "notified.json")).start();
+  const devices = new Devices(cfg.devicesFile);
   const deps: Deps = {
     cfg,
     ops,
     docs,
     work,
     push,
-    actions: actions(ops, work, push),
+    devices,
+    deviceLimits: { link: new Limiter(30, 60_000), refused: new Limiter(60, 60_000) },
+    actions: actions(ops, work, push, devices),
     identify: (req, peer) => identify(req, cfg, { peer }),
     audit: (entry) => appendFile(cfg.auditFile, `${JSON.stringify(entry)}\n`, { mode: 0o600 }),
   };

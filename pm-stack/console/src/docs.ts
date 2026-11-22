@@ -126,6 +126,33 @@ export class Docs {
     return s && s.goodAt > 0 ? s.data : null;
   }
 
+  /** Sections brought up to date for a caller that asks rarely (a
+   * phone's widget): stale ones are read again and waited for, up to
+   * `waitMs`. It does not count as someone looking, so it does not keep
+   * the background loop running. `at` is the oldest good read among
+   * them, or 0 when one has never been read. */
+  async current(names: string[], waitMs: number): Promise<{ data: Record<string, unknown>; at: number }> {
+    const known = names.map((n) => this.sections.get(n)).filter((s): s is Section => s !== undefined);
+    const stale = names.filter((n) => {
+      const s = this.sections.get(n);
+      return s !== undefined && this.stale(s);
+    });
+    if (stale.length > 0) {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      await Promise.race([
+        Promise.all(stale.map((n) => this.refresh(n))),
+        new Promise((resolve) => {
+          timer = setTimeout(resolve, waitMs);
+        }),
+      ]);
+      clearTimeout(timer);
+    }
+    return {
+      data: Object.fromEntries(names.map((n) => [n, this.good(n)])),
+      at: known.length === names.length ? Math.min(...known.map((s) => s.goodAt)) : 0,
+    };
+  }
+
   logAct(act: Act): void {
     this.acts = [act, ...this.acts.filter((a) => a.id !== act.id)].slice(0, ACTS_KEPT);
   }
