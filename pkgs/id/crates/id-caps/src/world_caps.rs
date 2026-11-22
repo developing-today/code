@@ -60,6 +60,24 @@
 //! [`MAX_BLOBS`], [`MAX_BLOB_TOTAL_BYTES`]); a write past a bound is
 //! refused with `bad_args` and a reason, and stores nothing.
 //!
+//! `http.fetch` (#1062, F12.5) is one request, `{"url":U}`, answered
+//! with `{"url":U2,"status":N,"body":"<base64>","body_bytes":N}`
+//! where `U2` is the URL that produced the response after any
+//! followed redirects and the body travels base64 like `blob`
+//! content. It is the first outward-facing provider and is **off by
+//! default**: it registers [`DefaultCeiling::Excluded`], so no
+//! default ceiling names it, and the executor additionally refuses
+//! any host outside the admin allowlist
+//! (`WorldLimits::http_fetch_hosts` in the worlds crate, empty by
+//! default) before connecting. Redirects are followed manually, at
+//! most [`MAX_HTTP_FETCH_REDIRECTS`] hops, and every hop must pass
+//! the same allowlist check — no redirects off the list. URL,
+//! response, timeout and rate bounds are
+//! [`MAX_HTTP_FETCH_URL_BYTES`], [`MAX_HTTP_FETCH_RESPONSE_BYTES`],
+//! [`MAX_HTTP_FETCH_TIMEOUT_MS`] and [`MAX_HTTP_FETCH_BURST`] per
+//! [`HTTP_FETCH_RATE_WINDOW_MS`]. A fetch is an effect, not world
+//! state: it journals nothing, and replay never sees one.
+//!
 //! The server answers each new request with
 //! `{"cap":"result","id":"r1","ok":true,"value":...}` (or `"ok":false` with an
 //! `"error"`), and each subscription with its own events
@@ -488,6 +506,21 @@ const BLOB_DELETE_BOUNDS: &[ProviderBound] = &[
     ProviderBound::ArgsBytes(MAX_ARGS_BYTES),
     ProviderBound::IdentifierBytes(MAX_BLOB_ID_BYTES),
 ];
+/// Argument schema for `http.fetch`: one required `url`. A fetch
+/// names no method and sends no body — GET only — so the URL is
+/// the whole request.
+const HTTP_FETCH_ARGUMENTS: &[ProviderArgument] = &[ProviderArgument {
+    name: "url",
+    value_type: ArgumentType::String,
+    required: true,
+}];
+/// Bounds for `http.fetch`: argument bytes, the URL cap as the
+/// identifier bound, and the response body cap.
+const HTTP_FETCH_BOUNDS: &[ProviderBound] = &[
+    ProviderBound::ArgsBytes(MAX_ARGS_BYTES),
+    ProviderBound::IdentifierBytes(MAX_HTTP_FETCH_URL_BYTES),
+    ProviderBound::ResponseBytes(MAX_HTTP_FETCH_RESPONSE_BYTES),
+];
 /// Bounds for `schedule.at`: argument bytes, id bytes, pending cap, and horizon.
 const SCHEDULE_AT_BOUNDS: &[ProviderBound] = &[
     ProviderBound::ArgsBytes(MAX_ARGS_BYTES),
@@ -680,6 +713,20 @@ define_provider_registry! {
         bounds: BLOB_DELETE_BOUNDS,
         required_scope: RequiredScope::Join,
         default_ceiling: DefaultCeiling::Included,
+    },
+    // The F12.5 `http.fetch` provider (#1062): an outbound GET
+    // against an admin allowlist. Outward-facing, unlike `kv.*`
+    // and `blob.*`, so it is off by default — excluded from every
+    // default ceiling, and the executor refuses any host outside
+    // the admin allowlist before connecting. Every use still
+    // passes the grant/ceiling decision and its audit entry.
+    "http.fetch" => {
+        version: 1,
+        kind: ProviderKind::Request,
+        argument_schema: ArgumentSchema::JsonObject(HTTP_FETCH_ARGUMENTS),
+        bounds: HTTP_FETCH_BOUNDS,
+        required_scope: RequiredScope::Join,
+        default_ceiling: DefaultCeiling::Excluded,
     },
     "schedule.at" => {
         version: 1,
@@ -1123,6 +1170,41 @@ pub const MAX_BLOBS: usize = 256;
 /// bounded independently of the count and size caps, whose product
 /// would allow 1 MiB.
 pub const MAX_BLOB_TOTAL_BYTES: usize = 256 * 1024;
+
+/// Longest `http.fetch` URL, in bytes: the de-facto interoperable
+/// URL length, and a quarter of [`MAX_ARGS_BYTES`], so a maximal
+/// URL leaves the args document its framing.
+pub const MAX_HTTP_FETCH_URL_BYTES: usize = 2048;
+/// Largest `http.fetch` response body, in bytes. The result
+/// travels in a result event capped by [`MAX_EVENT_BYTES`]; the
+/// body rides base64 (4/3 expansion), so 32 KiB of body is 43,691
+/// characters — inside the event cap alongside the final URL (at
+/// most [`MAX_HTTP_FETCH_URL_BYTES`]), the status and the
+/// envelope, with slack. The next power of two, 48 KiB, encodes
+/// to 65,536 characters — the entire event budget before any
+/// other field — so 32 KiB is the largest power of two that fits.
+/// A longer body is refused, never silently truncated.
+pub const MAX_HTTP_FETCH_RESPONSE_BYTES: usize = 32 * 1024;
+/// Most redirects one `http.fetch` follows. Each hop is resolved
+/// against the current URL and must pass the same validation and
+/// allowlist check as a fresh request; a hop off the list refuses
+/// the fetch, and so does a redirect past this count.
+pub const MAX_HTTP_FETCH_REDIRECTS: usize = 3;
+/// Total time budget for one `http.fetch`, in milliseconds, all
+/// redirect hops together. The client-provider deadline precedent
+/// is 30 s; a fetch is a single round trip, and the budget also
+/// bounds how long one fetch can occupy the synchronous actor.
+pub const MAX_HTTP_FETCH_TIMEOUT_MS: u64 = 10_000;
+/// Most `http.fetch` attempts one world may make per rate window.
+/// Attempts are counted when made — refused and failed fetches
+/// spend the budget too — because the bound is on traffic
+/// attempted under the host's name, not on responses received.
+pub const MAX_HTTP_FETCH_BURST: usize = 10;
+/// The `http.fetch` rate window, in milliseconds: a burst of
+/// [`MAX_HTTP_FETCH_BURST`] per minute lets a program poll one
+/// endpoint every six seconds while capping its worst-case actor
+/// occupancy at ten timeouts per minute.
+pub const HTTP_FETCH_RATE_WINDOW_MS: u64 = 60_000;
 /// Largest page of records served over the session protocol and the
 /// host view, in bytes. Cap results are not served this way: a
 /// `records.read` result is delivered through `result_event` and is
@@ -1231,6 +1313,50 @@ pub fn validate_blob_hash(hash: &str) -> Result<()> {
         "blob hash must be lowercase hex"
     );
     Ok(())
+}
+
+/// The canonical spelling of an `http.fetch` host for allowlist
+/// comparison: lowercase, with one trailing dot (the DNS root in
+/// a fully-qualified name) stripped. Applied to URL hosts and to
+/// allowlist entries alike, so the comparison is between like
+/// spellings.
+#[must_use]
+pub fn normalize_http_fetch_host(host: &str) -> String {
+    let mut normalized = host.to_ascii_lowercase();
+    if normalized.ends_with('.') {
+        normalized.pop();
+    }
+    normalized
+}
+
+/// Check an `http.fetch` URL and return its normalized host: the
+/// spelling the admin allowlist is matched against. Only `http`
+/// and `https` URLs with a host and no userinfo pass — other
+/// schemes are not fetches, and credentials in a URL would leak
+/// into logs and audit digests.
+///
+/// # Errors
+///
+/// Names the rule the URL breaks.
+pub fn validate_http_fetch_url(url: &str) -> Result<String> {
+    ensure!(
+        !url.is_empty() && url.len() <= MAX_HTTP_FETCH_URL_BYTES,
+        "http fetch url must be 1 to {MAX_HTTP_FETCH_URL_BYTES} bytes"
+    );
+    let parsed =
+        url::Url::parse(url).map_err(|_| anyhow::anyhow!("http fetch url is malformed"))?;
+    ensure!(
+        matches!(parsed.scheme(), "http" | "https"),
+        "http fetch url scheme must be http or https"
+    );
+    ensure!(
+        parsed.username().is_empty() && parsed.password().is_none(),
+        "http fetch url must not carry credentials"
+    );
+    let host = parsed
+        .host_str()
+        .ok_or_else(|| anyhow::anyhow!("http fetch url has no host"))?;
+    Ok(normalize_http_fetch_host(host))
 }
 
 /// Whether `name` is a capability the server can provide.
@@ -2616,6 +2742,63 @@ mod tests {
     }
 
     #[test]
+    fn http_fetch_urls_validate_and_yield_their_host() {
+        // The host comes back normalized: lowercase, no trailing
+        // root dot — the spelling the allowlist is matched against.
+        assert_eq!(
+            validate_http_fetch_url("https://Example.COM/a/b?x=1").unwrap(),
+            "example.com"
+        );
+        assert_eq!(
+            validate_http_fetch_url("http://example.com./").unwrap(),
+            "example.com"
+        );
+        assert_eq!(
+            validate_http_fetch_url("http://127.0.0.1:8080/x").unwrap(),
+            "127.0.0.1"
+        );
+        assert_eq!(
+            validate_http_fetch_url("https://[2001:db8::1]/x").unwrap(),
+            "[2001:db8::1]"
+        );
+        let long = format!(
+            "https://example.com/{}",
+            "a".repeat(MAX_HTTP_FETCH_URL_BYTES)
+        );
+        for bad in [
+            "",
+            "example.com/no-scheme",
+            "ftp://example.com/file",
+            "file:///etc/passwd",
+            "https://user@example.com/",
+            "https://user:secret@example.com/",
+            "https://",
+            "http://exa mple.com/",
+            long.as_str(),
+        ] {
+            assert!(validate_http_fetch_url(bad).is_err(), "{bad:?}");
+        }
+        assert_eq!(
+            normalize_http_fetch_host("EXAMPLE.com."),
+            "example.com",
+            "allowlist entries normalize the same way"
+        );
+    }
+
+    #[test]
+    fn http_fetch_is_registered_but_off_by_default() {
+        // The provider exists in the catalog (an operator can name
+        // it in a ceiling) but joins no default ceiling: the
+        // registry half of the #1062 off-by-default rule. The
+        // allowlist half is the executor's.
+        assert!(catalog_names().contains("http.fetch"));
+        assert!(!default_ceiling_names().contains("http.fetch"));
+        let manifest = PROVIDER_REGISTRY.get("http.fetch").unwrap();
+        assert_eq!(manifest.default_ceiling, DefaultCeiling::Excluded);
+        assert_eq!(manifest.required_scope, RequiredScope::Join);
+    }
+
+    #[test]
     fn result_events_are_bounded_and_carry_codes() {
         let ok: serde_json::Value =
             serde_json::from_str(&result_event("a", Ok(serde_json::json!({"n":1})))).unwrap();
@@ -2790,6 +2973,7 @@ mod tests {
                 "blob.put",
                 "blob.get",
                 "blob.delete",
+                "http.fetch",
                 "schedule.at",
                 "schedule.cancel",
                 "world.info",
@@ -2861,11 +3045,15 @@ mod tests {
         // subtracted the same way.
         // client.file.read (F13.7 step 5) is likewise Excluded: it is
         // in the registry's name set but joins no default ceiling.
+        // http.fetch (#1062) is Excluded for the same reason: an
+        // outward-facing provider joins no default ceiling, and its
+        // executor additionally enforces the admin host allowlist.
         let excluded_from_ceiling = names(&[
             "loc.position",
             "loc.watch",
             "speech.transcribe",
             "speech.capture",
+            "http.fetch",
             CLIENT_FILE_READ_NAME,
         ]);
         #[cfg(feature = "test-provider")]
