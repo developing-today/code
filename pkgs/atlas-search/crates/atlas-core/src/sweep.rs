@@ -654,6 +654,17 @@ pub struct RunOutcome {
 /// their content addresses recorded as landed (the staging write and
 /// the #6057 promotion are downstream of this core).
 pub fn run_once(state_dir: &Path, req: &RunRequest) -> Result<RunOutcome> {
+    run_once_with_landing(state_dir, req, |_| Ok(()))
+}
+
+/// Run one sweep while landing each accepted candidate before persisting
+/// its content address in runner state. If landing fails, state is not
+/// advanced; an idempotent landing implementation makes retry safe.
+pub fn run_once_with_landing(
+    state_dir: &Path,
+    req: &RunRequest,
+    mut land: impl FnMut(&CandidateFacts) -> Result<()>,
+) -> Result<RunOutcome> {
     let mut state = load_state(state_dir)?;
     let key = class_host_key(req.source_class, &req.host);
     let mut report = RunReportRow {
@@ -774,6 +785,7 @@ pub fn run_once(state_dir: &Path, req: &RunRequest) -> Result<RunOutcome> {
         let outcome = filter_candidate(req.source_class, facts, &landed);
         let (outcome_name, reason) = match outcome {
             FilterOutcome::Accept => {
+                land(facts)?;
                 report.items_accepted += 1;
                 report.bytes_staged = report.bytes_staged.saturating_add(facts.bytes);
                 if let Some(address) = &facts.content_address {

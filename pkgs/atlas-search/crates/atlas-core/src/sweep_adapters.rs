@@ -9,7 +9,9 @@ use std::path::{Path, PathBuf};
 
 use crate::error::{Error, Result};
 use crate::shards::Tier;
-use crate::sweep::{CandidateFacts, OVERSIZE_BYTES};
+use crate::stage::stage_sweep_item;
+use crate::sweep::{CandidateFacts, OVERSIZE_BYTES, RunOutcome, RunRequest, run_once_with_landing};
+use rusqlite::Connection;
 
 /// A discovered source object paired with the facts consumed by the
 /// deterministic sweep filter and the text passed to staging on accept.
@@ -18,6 +20,46 @@ pub struct DiscoveredItem {
     pub facts: CandidateFacts,
     pub text: String,
     pub sensitivity: Tier,
+}
+
+/// Run discovered candidates and stage each accepted item before the
+/// sweep state records its content address. A failed staging write leaves
+/// runner state retryable; staging itself is content-addressed and idempotent.
+pub fn run_once_with_staging(
+    state_dir: &Path,
+    req: &RunRequest,
+    items: &[DiscoveredItem],
+    conn: &Connection,
+    unit_id: &str,
+) -> Result<RunOutcome> {
+    run_once_with_landing(state_dir, req, |facts| {
+        let item = items
+            .iter()
+            .find(|item| item.facts.source_ref == facts.source_ref)
+            .ok_or_else(|| {
+                Error::fatal(format!(
+                    "sweep staging: no discovered item for accepted source {}",
+                    facts.source_ref
+                ))
+            })?;
+        let address = facts.content_address.as_deref().ok_or_else(|| {
+            Error::fatal(format!(
+                "sweep staging: accepted source {} has no content address",
+                facts.source_ref
+            ))
+        })?;
+        stage_sweep_item(
+            conn,
+            unit_id,
+            req.source_class.name(),
+            &facts.source_ref,
+            address,
+            &item.text,
+            item.sensitivity,
+            &req.at,
+        )?;
+        Ok(())
+    })
 }
 
 /// Discover boot segments from JSONL init event files. Each event needs
@@ -643,8 +685,11 @@ fn collect_report_files(path: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::stage::{provision_staging_db, stage_sweep_item};
-    use crate::sweep::{FilterOutcome, ReasonCode, SourceClass, filter_candidate};
+    use crate::stage::provision_staging_db;
+    use crate::sweep::{
+        EnvelopeLine, FilterOutcome, Measurements, ReasonCode, RunRequest, SourceClass,
+        filter_candidate, load_state,
+    };
     use rusqlite::Connection;
     use std::collections::HashSet;
 
@@ -830,13 +875,15 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// Oracle: the fixture's final report yields one database row
-    /// across retries; the partial report remains held by §2.
+    /// Oracle: run-once stages accepted fixture content once, then the
+    /// persisted sweep state reports it as duplicate-content on retry.
     #[test]
     fn accepted_fixture_report_lands_once_while_partial_stays_held() {
         let root = std::env::temp_dir().join(format!("atlas-report-e2e-{}", std::process::id()));
         let db = root.with_extension("db");
+        let state_dir = root.with_extension("state");
         let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&state_dir);
         let _ = std::fs::remove_file(&db);
         std::fs::create_dir_all(&root).expect("fixture dir");
         std::fs::write(root.join("final.md"), "finished sweep report").expect("final report");
@@ -844,56 +891,104 @@ mod tests {
         provision_staging_db(&db).expect("provision fixture staging DB");
         let conn = Connection::open(&db).expect("open fixture staging DB");
         let items = discover_reports(&root, |_| Tier::Internal).expect("discover reports");
-        let landed = HashSet::new();
-        let accepted = items
-            .iter()
-            .find(|item| item.facts.source_ref.ends_with("final.md"))
-            .expect("final item");
-        assert_eq!(
-            filter_candidate(SourceClass::Reports, &accepted.facts, &landed),
-            FilterOutcome::Accept
-        );
-        let address = accepted.facts.content_address.as_deref().expect("hash");
-        assert!(
-            stage_sweep_item(
-                &conn,
-                "unit-sweep",
-                SourceClass::Reports.name(),
-                &accepted.facts.source_ref,
-                address,
-                &accepted.text,
-                accepted.sensitivity,
-                "2026-11-21T00:00:00Z",
-            )
-            .expect("first staging")
-        );
-        assert!(
-            !stage_sweep_item(
-                &conn,
-                "unit-sweep",
-                SourceClass::Reports.name(),
-                &accepted.facts.source_ref,
-                address,
-                &accepted.text,
-                accepted.sensitivity,
-                "2026-11-21T00:01:00Z",
-            )
-            .expect("retry is idempotent")
-        );
-        let partial = items
-            .iter()
-            .find(|item| item.facts.partial_write)
-            .expect("partial item");
-        assert!(matches!(
-            filter_candidate(SourceClass::Reports, &partial.facts, &landed),
-            FilterOutcome::Hold(None)
-        ));
+        let make_request = |run_id: &str, at: &str| RunRequest {
+            run_id: run_id.to_owned(),
+            batch_id: "batch-fixture".to_owned(),
+            source_class: SourceClass::Reports,
+            host: "fixture-host".to_owned(),
+            at: at.to_owned(),
+            now_unix: 1,
+            candidates: items.iter().map(|item| item.facts.clone()).collect(),
+            item_failures: Vec::new(),
+            measurements: Measurements {
+                src_free_bytes: 20 * 1024 * 1024 * 1024,
+                src_volume_bytes: 20 * 1024 * 1024 * 1024,
+                stg_free_bytes: 20 * 1024 * 1024 * 1024,
+                ..Measurements::default()
+            },
+            envelope: Vec::<EnvelopeLine>::new(),
+            embed_usd: 0.0,
+            embed_usd_median: None,
+        };
+        let first = run_once_with_staging(
+            &state_dir,
+            &make_request("run-1", "2026-11-21T00:00:00Z"),
+            &items,
+            &conn,
+            "unit-sweep",
+        )
+        .expect("first fixture run");
+        assert_eq!(first.report.as_ref().expect("report").items_accepted, 1);
+        assert!(first.records.iter().any(|record| {
+            record.outcome == "held" && record.source_ref.ends_with("partial.md.tmp")
+        }));
+
+        let retry = run_once_with_staging(
+            &state_dir,
+            &make_request("run-2", "2026-11-21T00:01:00Z"),
+            &items,
+            &conn,
+            "unit-sweep",
+        )
+        .expect("retry fixture run");
+        assert_eq!(retry.report.as_ref().expect("report").items_rejected, 1);
+        assert!(retry.records.iter().any(|record| {
+            record.reason_code.as_deref() == Some("duplicate-content")
+                && record.source_ref.ends_with("final.md")
+        }));
         let count: i64 = conn
-            .query_row("SELECT COUNT(*) FROM items", [], |r| r.get(0))
+            .query_row(
+                "SELECT COUNT(*) FROM items WHERE unit_id = 'unit-sweep'",
+                [],
+                |r| r.get(0),
+            )
             .expect("staged item count");
-        assert_eq!(count, 1);
+        assert_eq!(count, 1, "accepted report lands exactly once");
         let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&state_dir);
         let _ = std::fs::remove_file(&db);
+    }
+
+    /// Oracle: a failed staging write leaves no landed address in sweep
+    /// state, allowing the same source to be retried after recovery.
+    #[test]
+    fn staging_failure_does_not_advance_sweep_state() {
+        let root = std::env::temp_dir().join(format!("atlas-stage-failure-{}", std::process::id()));
+        let state_dir = root.with_extension("state");
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&state_dir);
+        std::fs::create_dir_all(&root).expect("fixture dir");
+        std::fs::write(root.join("final.md"), "finished report").expect("fixture report");
+        let items = discover_reports(&root, |_| Tier::Internal).expect("discover report");
+        let req = RunRequest {
+            run_id: "run-fail".to_owned(),
+            batch_id: "batch-fail".to_owned(),
+            source_class: SourceClass::Reports,
+            host: "fixture-host".to_owned(),
+            at: "2026-11-21T00:00:00Z".to_owned(),
+            now_unix: 1,
+            candidates: items.iter().map(|item| item.facts.clone()).collect(),
+            item_failures: Vec::new(),
+            measurements: Measurements {
+                src_free_bytes: 20 * 1024 * 1024 * 1024,
+                src_volume_bytes: 20 * 1024 * 1024 * 1024,
+                stg_free_bytes: 20 * 1024 * 1024 * 1024,
+                ..Measurements::default()
+            },
+            envelope: Vec::new(),
+            embed_usd: 0.0,
+            embed_usd_median: None,
+        };
+        let conn = Connection::open_in_memory().expect("open unprovisioned staging DB");
+        assert!(run_once_with_staging(&state_dir, &req, &items, &conn, "unit-sweep").is_err());
+        assert!(
+            load_state(&state_dir)
+                .expect("load retryable state")
+                .landed
+                .is_empty()
+        );
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&state_dir);
     }
 
     /// Oracle: only a terminal session with a real exchange passes §2;
