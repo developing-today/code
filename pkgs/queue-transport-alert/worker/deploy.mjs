@@ -55,6 +55,8 @@ try {
 }
 
 if (!process.env.CLOUDFLARE_ACCOUNT_ID) throw new Error("CLOUDFLARE_ACCOUNT_ID is not set; run deploy.sh");
+const gha = process.env.QTA_GHA === "1";
+if (gha && !process.env.CLOUDFLARE_API_TOKEN) throw new Error("CLOUDFLARE_API_TOKEN is required in GHA mode");
 const names = {
   cf: process.env.QTA_CF_TOKEN_SECRET ?? "cloudflare.api-token-day-to-day",
   accessId: process.env.QTA_ACCESS_ID_SECRET ?? "cloudflare.access.queue-broker-client-id",
@@ -62,13 +64,13 @@ const names = {
   github: process.env.QTA_GITHUB_TOKEN_SECRET ?? "github.developing-today-code-automation",
   telegram: process.env.QTA_TELEGRAM_SECRET ?? "openclaw.telegram-bot-token",
 };
-const vault = JSON.parse(execFileSync("bws", ["secret", "list", "-o", "json"], { encoding: "utf8" }));
+const vault = gha ? [] : JSON.parse(execFileSync("bws", ["secret", "list", "-o", "json"], { encoding: "utf8" }));
 const byName = (name) => {
   const value = vault.find((s) => s.key === name)?.value;
   if (!value) throw new Error(`no Bitwarden secret named ${name}`);
   return value.replace(/\r?\n$/, "");
 };
-const env = { ...process.env, CLOUDFLARE_API_TOKEN: byName(names.cf) };
+const env = { ...process.env, CLOUDFLARE_API_TOKEN: gha ? process.env.CLOUDFLARE_API_TOKEN : byName(names.cf) };
 
 // Stage a writable copy (the store path is read-only and cf writes
 // .cloudflare/ build output next to the config) with node_modules
@@ -154,12 +156,52 @@ async function verify(versionId) {
   console.log(`verified: version ${versionId} serves 100%; ${url} reports the broker ${status.status ?? "unknown"}`);
 }
 
+if (gha && deployVersion === null) {
+  const required = ["ACCESS_CLIENT_ID", "ACCESS_CLIENT_SECRET", "GITHUB_TOKEN", "TELEGRAM_BOT_TOKEN"];
+  for (const key of required) if (!process.env[key]) throw new Error(`${key} is required in GHA mode`);
+  const workerSecrets = Object.fromEntries(required.map((key) => [key, process.env[key]]));
+  if (process.env.BROKER_AGENT_TOKEN) workerSecrets.BROKER_AGENT_TOKEN = process.env.BROKER_AGENT_TOKEN;
+  const sha = execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+  const tag = `git-${sha.slice(0, 12)}`;
+  const message = `deploy ${sha} via GitHub Actions`;
+  runCfWithSecrets(["workers", "versions", "create", "--worker", WORKER, "--tag", tag, "--message", message], workerSecrets);
+  const versions = listItems(parseJsonOutput(runCf(["workers", "versions", "list", "--worker-id", WORKER], { capture: true })), "versions");
+  const version = newestWithTag(versions, tag);
+  if (!version) throw new Error(`uploaded version with tag ${tag} not found in the versions list`);
+  const handoff = {
+    worker: WORKER,
+    source_sha: sha,
+    tag,
+    version_id: version.id,
+    upload_run_id: process.env.GITHUB_RUN_ID,
+    upload_run_attempt: process.env.GITHUB_RUN_ATTEMPT,
+  };
+  if (!handoff.upload_run_id || !handoff.upload_run_attempt || !process.env.QTA_HANDOFF_FILE) {
+    throw new Error("GHA upload requires GITHUB_RUN_ID, GITHUB_RUN_ATTEMPT and QTA_HANDOFF_FILE");
+  }
+  await (await import("node:fs/promises")).writeFile(process.env.QTA_HANDOFF_FILE, `${JSON.stringify(handoff, null, 2)}\n`, { mode: 0o600 });
+  console.log(`uploaded version ${version.id}; handoff manifest saved`);
+  process.exit(0);
+}
+
 if (deployVersion !== null) {
+  if (gha) {
+    const handoff = JSON.parse(readFileSync(process.env.QTA_HANDOFF_FILE ?? "", "utf8"));
+    if (handoff.worker !== WORKER || handoff.version_id !== deployVersion || handoff.source_sha !== process.env.QTA_SOURCE_SHA ||
+        handoff.upload_run_id !== process.env.QTA_UPLOAD_RUN_ID || handoff.tag !== `git-${handoff.source_sha.slice(0, 12)}`) {
+      throw new Error("handoff manifest does not bind this version to the expected Worker, source SHA, tag and upload run");
+    }
+    const versions = listItems(parseJsonOutput(runCf(["workers", "versions", "list", "--worker-id", WORKER], { capture: true })), "versions");
+    const match = versions.find((v) => v.id === deployVersion &&
+      (v.annotations?.["workers/tag"] ?? v.metadata?.annotations?.["workers/tag"]) === handoff.tag);
+    if (!match) throw new Error("requested Worker version is absent or is not associated with the handoff tag");
+  }
   if (dryRun) {
     console.log(`dry run: would deploy ${WORKER} at existing version ${deployVersion} (100%); nothing created`);
     process.exit(0);
   }
   createDeployment(deployVersion);
+  if (gha) runCf(["workers", "triggers", "deploy", "--worker", WORKER]);
   await verify(deployVersion);
   console.log(`live: ${WORKER_URL} at version ${deployVersion}`);
   process.exit(0);
