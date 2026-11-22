@@ -136,8 +136,14 @@ async fn the_walk_commands_drive_the_path_between_two_nodes() {
         report_ids.push((report.id, report.key));
     }
     // The differential oracle: both nodes report the same conflict —
-    // same report id, same conflict key — after both have restarted.
-    assert_eq!(report_ids[0], report_ids[1]);
+    // same conflict key, base and versions — after both have
+    // restarted. The report ids themselves differ, by design: a
+    // report's canonical bytes include how each version arrived at
+    // the reporting node (ingress path and source label), so a
+    // report id is node-local and the conflict key is the shared
+    // identity. Each node's Resolved outcomes below name its own.
+    assert_eq!(report_ids[0].1, report_ids[1].1);
+    assert_ne!(report_ids[0].0, report_ids[1].0);
 
     // Nothing was merged or dropped: both edits still read from
     // their addresses on B.
