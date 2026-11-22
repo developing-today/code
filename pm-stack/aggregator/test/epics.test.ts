@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { GhItem, ProjectPoolItem, Provenance, RefKey } from "../src/model.ts";
-import { buildEpicRollups, evaluateEpicClosureGate } from "../src/epics.ts";
+import { buildEpicRollups, evaluateEpicClosureGate, type EpicClosureGateBlocker } from "../src/epics.ts";
 import { renderItem, renderProgramProject, renderProjects } from "../src/render.ts";
 import { buildProjectDetail, projectConfigById } from "../src/project-config.ts";
 
@@ -102,6 +102,44 @@ describe("epic rollups", () => {
 
 describe("epic closure gate", () => {
   // Oracle: design §7's three conditions; incomplete subtree facts must fail closed.
+  test("matches the policy model for every completeness/blocker combination", () => {
+    const refs = [R(11), R(12), R(13)];
+
+    for (let mask = 0; mask < 16; mask += 1) {
+      const facts = {
+        factsComplete: (mask & 1) !== 0,
+        unfinishedDesignRefs: (mask & 2) !== 0 ? [refs[0]] : [],
+        qualifyingOpenDescendantRefs: (mask & 4) !== 0 ? [refs[1]] : [],
+        unfinishedChildrenWithoutReparentDestinationRefs: (mask & 8) !== 0 ? [refs[2]] : [],
+      };
+
+      // Independent policy model: incompleteness and each unmet closure
+      // condition independently contribute one blocker, in policy order.
+      const expectedBlockers: EpicClosureGateBlocker[] = [];
+      if (!facts.factsComplete) expectedBlockers.push({ condition: "source_incomplete", refs: [] });
+      if (facts.unfinishedDesignRefs.length > 0) {
+        expectedBlockers.push({ condition: "designs_incomplete", refs: facts.unfinishedDesignRefs });
+      }
+      if (facts.qualifyingOpenDescendantRefs.length > 0) {
+        expectedBlockers.push({
+          condition: "qualifying_open_descendants",
+          refs: facts.qualifyingOpenDescendantRefs,
+        });
+      }
+      if (facts.unfinishedChildrenWithoutReparentDestinationRefs.length > 0) {
+        expectedBlockers.push({
+          condition: "unfinished_children_without_reparent_destination",
+          refs: facts.unfinishedChildrenWithoutReparentDestinationRefs,
+        });
+      }
+
+      expect(evaluateEpicClosureGate(facts), `policy mask ${mask}`).toEqual({
+        closable: expectedBlockers.length === 0,
+        blockers: expectedBlockers,
+      });
+    }
+  });
+
   test("fails closed when the monitor did not fetch a complete subtree", () => {
     expect(
       evaluateEpicClosureGate({
