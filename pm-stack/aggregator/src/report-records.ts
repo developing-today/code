@@ -81,7 +81,7 @@ export class ReportRecordConflictError extends Error {
 
 /** Stable across reruns for the same period, template and source cursor. */
 export function reportRecordId(input: Pick<ReportRecordInput, "period" | "templateVersion" | "sourceCursor">): string {
-  const key = `${input.period.id}\n${input.templateVersion}\n${input.sourceCursor}`;
+  const key = JSON.stringify([input.period.id, input.templateVersion, input.sourceCursor]);
   return `report:${createHash("sha256").update(key).digest("hex")}`;
 }
 
@@ -153,6 +153,7 @@ async function readEvents(file: string): Promise<ReportRecordEvent[]> {
 
 export type ReportRecordLocation = string | AppendOnlyDocumentRemote;
 const REPORT_DOCUMENT_PREFIX = "c7-report:v1:";
+const REPORT_RECORD_CLAIM_PREFIX = "c7-report-record:v1:";
 
 function reportDocumentKey(event: ReportRecordEvent): string {
   return `${REPORT_DOCUMENT_PREFIX}${event.type}:${createHash("sha256").update(event.eventId).digest("hex")}`;
@@ -195,6 +196,16 @@ function sameReportEvent(left: ReportRecordEvent, right: ReportRecordEvent): boo
     return !!left.correction && !!right.correction && left.correction.id === right.correction.id && left.correction.snapshotId === right.correction.snapshotId && left.correction.originalRecordId === right.correction.originalRecordId && sameRecordContent(left.correction.record, right.correction.record);
   }
   return false;
+}
+
+async function claimRemoteRecord(location: AppendOnlyDocumentRemote, record: ReportRecord): Promise<void> {
+  const key = `${REPORT_RECORD_CLAIM_PREFIX}${createHash("sha256").update(record.id).digest("hex")}`;
+  if (await location.insertIfAbsent(key, 1, record)) return;
+  const stored = await location.load(key);
+  if (!stored || !isObject(stored.document) || typeof stored.document.id !== "string") {
+    throw new Error(`permanent report identity claim disappeared or is malformed: ${record.id}`);
+  }
+  if (!sameRecordContent(stored.document as unknown as ReportRecord, record)) throw new ReportRecordConflictError(record.id);
 }
 
 async function appendDocumentEvent(location: AppendOnlyDocumentRemote, event: ReportRecordEvent): Promise<{ inserted: boolean; event: ReportRecordEvent }> {
@@ -251,6 +262,7 @@ export async function appendReportRecord(location: ReportRecordLocation, record:
   };
   if (typeof location !== "string") {
     assertRecordIdContent(await readLocationEvents(location), record);
+    await claimRemoteRecord(location, record);
     const result = await appendDocumentEvent(location, event);
     if (result.event.type !== "report.generated" || !result.event.record) throw new Error("permanent report record has an invalid event type");
     return { inserted: result.inserted, record: result.event.record };
@@ -328,6 +340,7 @@ export async function appendReportSnapshot(location: ReportRecordLocation, recor
   if (typeof location !== "string") {
     const events = await readLocationEvents(location);
     assertRecordIdContent(events, record);
+    await claimRemoteRecord(location, record);
     const result = await appendDocumentEvent(location, event);
     if (result.event.type !== "report.snapshot" || !result.event.snapshot) throw new Error("permanent snapshot has an invalid event type");
     return { inserted: result.inserted, snapshot: result.event.snapshot };

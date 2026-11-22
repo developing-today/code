@@ -252,6 +252,9 @@ describe("C7 canonical report records", () => {
     expect((await readCurrentReportRecords(file)).map((record) => record.sourceCursor)).toEqual(["cursor-2"]);
     expect(reportBlockConflict("Stored  paragraph.\n", "Stored paragraph.")).toBe(false);
     expect(reportBlockConflict("Stored paragraph.", "Human changed paragraph.")).toBe(true);
+    const identityFirst = makeReportRecord({ ...base, templateVersion: "daily-v1\nsource", sourceCursor: "cursor" }, "2026-11-22T05:45:01.000Z");
+    const identitySecond = makeReportRecord({ ...base, templateVersion: "daily-v1", sourceCursor: "source\ncursor" }, "2026-11-22T05:45:01.000Z");
+    expect(identityFirst.id).not.toBe(identitySecond.id);
   });
 
   test("uses append-only permanent document keys for report history and snapshots", async () => {
@@ -292,7 +295,45 @@ describe("C7 canonical report records", () => {
     expect(snapshotRerun.snapshot.snapshotAt).toBe("2026-11-22T14:00:00.000Z");
     expect(await readReportRecords(remote)).toEqual([record]);
     expect(await readReportSnapshots(remote)).toEqual([snapshot.snapshot]);
-    expect(documents.size).toBe(2);
+    expect(documents.size).toBe(3); // generation, snapshot, and atomic record-ID claim
+  });
+
+  test("remote generation and snapshot conflict checks are atomic across event types", async () => {
+    const documents = new Map<string, unknown>();
+    const remote: AppendOnlyDocumentRemote = {
+      async load(store) { return documents.has(store) ? { version: 1, document: structuredClone(documents.get(store)) } : null; },
+      async insertIfAbsent(store, _version, document) {
+        if (documents.has(store)) return false;
+        documents.set(store, structuredClone(document));
+        return true;
+      },
+      async listPrefix(prefix) {
+        return [...documents.entries()].filter(([store]) => store.startsWith(prefix))
+          .map(([store, document]) => ({ store, version: 1, document: structuredClone(document) }));
+      },
+    };
+    const base = {
+      period: { id: "daily:2026-11-21:America/Chicago", kind: "daily" as const, timezone: "America/Chicago" as const,
+        periodStart: "2026-11-21T06:00:00.000Z", periodEnd: "2026-11-22T06:00:00.000Z", softCloseAt: "2026-11-22T14:00:00.000Z" },
+      asOf: "2026-11-22T05:45:00.000Z", templateVersion: "daily-v1", sourceCursor: "concurrent-cursor",
+      sources: [], blocks: [{ id: "block", text: "original", relatedAt: "2026-11-22T05:40:00.000Z" }],
+    };
+    const generated = makeReportRecord(base, "2026-11-22T05:45:01.000Z");
+    const conflicting = makeReportRecord({ ...base, blocks: [{ ...base.blocks[0]!, text: "different" }] }, "2026-11-22T05:45:02.000Z");
+    const results = await Promise.allSettled([
+      appendReportRecord(remote, generated),
+      appendReportSnapshot(remote, conflicting, "2026-11-22T14:00:00.000Z"),
+    ]);
+    expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    expect(results.filter((result) => result.status === "rejected")).toHaveLength(1);
+    const records = await readReportRecords(remote);
+    const snapshots = await readReportSnapshots(remote);
+    const stored = records[0] ?? snapshots[0]?.record;
+    expect(stored).toBeDefined();
+    if (stored) {
+      expect(records.every((item) => item.blocks[0]?.text === stored.blocks[0]?.text)).toBe(true);
+      expect(snapshots.every((item) => item.record.blocks[0]?.text === stored.blocks[0]?.text)).toBe(true);
+    }
   });
 
   test("canonical JSON retries tolerate omitted optional values", async () => {

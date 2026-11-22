@@ -45,8 +45,10 @@ replication. It remains useful for development and rollback.
 The durable adapter uses the existing `public.agg_store_documents` table from
 #6815; it creates no table or separate report database. Each generated record,
 snapshot, and correction is stored as one immutable document under
-`c7-report:v1:<event-type>:<sha256(event-id)>`. `insertIfAbsent` provides the
-atomic idempotency boundary: a duplicate key reads back and compares the
+`c7-report:v1:<event-type>:<sha256(event-id)>`. A shared atomic content claim
+under `c7-report-record:v1:<sha256(record-id)>` prevents conflicting payloads
+for the same record ID across concurrent event types. `insertIfAbsent` provides
+the atomic idempotency boundary: a duplicate key reads back and compares the
 canonical content, returning the original event for an identical rerun and
 raising a conflict for changed content. Prefix reads return the event set; projections sort by the canonical event
 timestamp and stable event ID. The generic overwrite API is not used for C7
