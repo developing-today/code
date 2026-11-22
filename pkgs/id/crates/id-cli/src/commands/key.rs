@@ -112,16 +112,52 @@ fn import_restored_key(
             .verifying_key()
             .to_bytes(),
     );
-    restored_key::mark_restored(marker, &public)?;
-    if replace {
-        replace_private_file(target, key_bytes)?;
+    let previous_marker = match std::fs::read(&marker) {
+        Ok(contents) => Some(contents),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!(
+                    "could not read restore marker {}",
+                    marker.as_ref().display()
+                )
+            });
+        }
+    };
+    restored_key::mark_restored(&marker, &public)?;
+    let install = if replace {
+        replace_private_file(target, key_bytes)
     } else {
         write_new_private_file(target, key_bytes).with_context(|| {
             format!(
                 "could not create identity key {}; use --replace to overwrite it",
                 target.display()
             )
-        })?;
+        })
+    };
+    if let Err(error) = install {
+        let rollback = match previous_marker {
+            Some(contents) => {
+                let previous = String::from_utf8_lossy(&contents);
+                restored_key::mark_restored(&marker, previous.trim())
+            }
+            None => match std::fs::remove_file(&marker) {
+                Ok(()) => Ok(()),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                Err(error) => Err(error).with_context(|| {
+                    format!(
+                        "could not remove restore marker {}",
+                        marker.as_ref().display()
+                    )
+                }),
+            },
+        };
+        if let Err(rollback_error) = rollback {
+            return Err(error).context(format!(
+                "could not restore previous restore marker: {rollback_error:#}"
+            ));
+        }
+        return Err(error);
     }
     println!("{}", restored_key::warning(&public));
     Ok(())
@@ -199,5 +235,33 @@ mod tests {
         let new_path = temp.path().join("new-key");
         assert!(import_restored_key(&new_path, &marker, &imported, false).is_err());
         assert!(!new_path.exists());
+    }
+
+    #[test]
+    fn failed_key_install_preserves_the_previous_restore_marker() {
+        let temp = TempDir::new().unwrap();
+        let target = temp.path().join("existing-key");
+        let marker = temp.path().join(RESTORED_KEY_FILE);
+        let existing = SecretKey::from([1; 32]).to_bytes();
+        let imported = SecretKey::from([2; 32]).to_bytes();
+        let existing_public = hex_encode(
+            &ed25519_dalek::SigningKey::from_bytes(&existing)
+                .verifying_key()
+                .to_bytes(),
+        );
+        std::fs::write(&target, existing).unwrap();
+        restored_key::mark_restored(&marker, &existing_public).unwrap();
+
+        assert!(import_restored_key(&target, &marker, &imported, false).is_err());
+
+        assert_eq!(std::fs::read(&target).unwrap(), existing);
+        assert_eq!(
+            restored_key::restored_key(&marker).unwrap().as_deref(),
+            Some(existing_public.as_str())
+        );
+
+        std::fs::remove_file(&marker).unwrap();
+        assert!(import_restored_key(&target, &marker, &imported, false).is_err());
+        assert!(!marker.exists());
     }
 }
