@@ -255,3 +255,6 @@ list still has `complete:false,total:null` and proves no global empty total.
 approved non-root caller runner. Its end-to-end test exercises actual CLI parsing,
 signing, Worker/SQLite execution, the laptop client, and bounded JSON output. No
 Aster connector or runner access is installed by this package.
+
+
+The separate stateless smoke Worker has a manual, protected GitHub Actions deployment using the pinned `cf` Versions API flow. It uploads immutable versions first and requires a second explicit exact-UUID promotion. It does not deploy the bridge Worker or change Gateway policies; see [DISCOVERY.md](DISCOVERY.md).

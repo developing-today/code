@@ -129,3 +129,55 @@ There were no external findings to resolve. The independent local review found
 that the original signed bridge was unsuitable for a credential-free smoke;
 this separate artifact addresses that concrete gap. See VERIFICATION.md for
 final-head offline test evidence; no CI pass or live reachability is claimed.
+
+## GitHub Actions deployment boundary
+
+`.github/workflows/private-laptop-bridge-smoke.yml` is manual only, accepts no
+branch/ref input, and runs only when the dispatch ref is exactly `main` in
+`developing-today/code`. It checks out the triggering SHA, has `contents: read`
+only, serializes runs without cancellation, pins Actions by commit and pins
+Node/cf through the workflow and npm lockfile. It targets only
+`private-laptop-bridge-smoke`; it does not deploy `private-laptop-bridge-staging`
+or create/modify Gateway DNS, HTTP Forward, TLS or identity policies. Upload
+creates an immutable version and checks Cloudflare's `deployable=true` set.
+Promotion is a separate explicit dispatch with the exact version UUID, repeats
+the deployability check, creates a 100% deployment, and reads back the exact
+version/percentage. Re-promoting an earlier retained version is the recovery
+path; a fix-forward uploads a new version and then separately promotes that
+UUID. Neither path changes Gateway traffic policy. Smoke application behavior
+stays disabled until the reviewed config carries its bounded test window.
+
+Before enabling the `cloudflare-staging` GitHub Environment, configure required
+reviewers and prevent untrusted branches from using it. Set exactly these
+**environment** secrets (never repository-wide):
+
+- `CF_ACCOUNT_ID`: full 32-character account ID for the verified staging account.
+- `CF_API_TOKEN`: short-lived/rotatable token restricted to that account, with
+  **Workers Scripts: Edit** and **Workers Scripts: Read** only. No Gateway,
+  Access, DNS, Zone, User, or account administration permissions. The token is
+  used only in the protected job environment and never printed.
+
+Those resource names/scopes are the minimum for version upload/list, deployable
+version API read and deployment create/list. Verify them against Cloudflare's
+current token permission catalogue before provisioning. Do not store AMD laptop
+runtime keys or Gateway credentials in this environment. The environment and
+secret names are proposed; no secrets were read or configured.
+
+Exact target for this workflow is the isolated staging smoke Worker named
+`private-laptop-bridge-smoke` in the verified account. Steps: owner establishes
+required-reviewer protection and scoped environment secrets; dispatch
+`upload` on `main`; inspect the summary's exact immutable version and checks;
+review the source/config diff; dispatch `promote` with that exact UUID under the
+environment approval; verify deployment read-back. Gateway Forward remains
+unchanged, so this does not test private ingress by itself. For rollback, dispatch
+`promote` with the previously recorded known-good UUID. For a code fix, upload a
+new commit's version and promote its UUID only after review. If no retained known-
+good version exists or deployment read-back mismatches, stop and use Cloudflare's
+owner console to inspect; never edit traffic policies as automated recovery.
+
+This is not the bridge runtime release workflow. The live bridge requires a
+separate reviewed `cf` native configuration for its Durable Object, explicit
+nonsecret Gateway identifiers and staging registry/separate runtime identity
+provisioning. It must not be silently folded into this smoke deploy. The existing
+`wrangler.staging.jsonc` remains a local dry-run artifact; existing production
+traffic and access policies are untouched.

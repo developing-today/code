@@ -1,0 +1,123 @@
+name: Private laptop bridge smoke Worker
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: Upload a disabled version, or promote a previously reviewed version
+        type: choice
+        required: true
+        options: [upload, promote]
+      version_id:
+        description: Exact version UUID; required for promote and ignored for upload
+        type: string
+        required: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: private-laptop-bridge-smoke-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: github.repository == 'developing-today/code' && github.ref == 'refs/heads/main'
+    environment: cloudflare-staging
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24.22.0
+          cache: npm
+          cache-dependency-path: pm-stack/private-laptop-bridge/package-lock.json
+      - name: Install pinned cf CLI and locked project tooling
+        working-directory: pm-stack/private-laptop-bridge
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Validate request and Cloudflare target
+        env:
+          ACTION_KIND: ${{ inputs.action }}
+          VERSION_ID: ${{ inputs.version_id }}
+          CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+          CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_REF" == refs/heads/main && "$GITHUB_EVENT_NAME" == workflow_dispatch ]]
+          [[ "$CF_ACCOUNT_ID" =~ ^[0-9a-f]{32}$ && -n "$CF_API_TOKEN" ]]
+          if [[ "$ACTION_KIND" == upload ]]; then
+            [[ -z "$VERSION_ID" ]]
+          elif [[ "$ACTION_KIND" == promote ]]; then
+            [[ "$VERSION_ID" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]]
+          else exit 2; fi
+      - name: Test stateless smoke Worker
+        if: inputs.action == 'upload'
+        working-directory: pm-stack/private-laptop-bridge
+        run: node --test smoke.test.mjs
+      - name: Upload immutable version only
+        if: inputs.action == 'upload'
+        working-directory: pm-stack/private-laptop-bridge
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          sha="$GITHUB_SHA"
+          tag="git-${sha:0:12}"
+          npx --no-install cf -q workers versions create --worker private-laptop-bridge-smoke --tag "$tag" --message "smoke candidate $sha"
+          npx --no-install cf -q workers versions list --worker-id private-laptop-bridge-smoke > "$RUNNER_TEMP/versions.json"
+          python3 - "$RUNNER_TEMP/versions.json" "$tag" "$GITHUB_STEP_SUMMARY" <<'PY'
+          import json,sys
+          d=json.load(open(sys.argv[1])); versions=d if isinstance(d,list) else d.get('result', d.get('versions', []))
+          if isinstance(versions,dict): versions=versions.get('items',[])
+          found=[v for v in versions if v.get('annotations',{}).get('workers/tag')==sys.argv[2]]
+          if not found: raise SystemExit('Uploaded version with exact git tag not listed by Cloudflare')
+          found.sort(key=lambda v:v.get('metadata',{}).get('created_on',''),reverse=True)
+          version=found[0]['id']
+          open(sys.argv[3],'a').write(f"Uploaded immutable version `{version}` for `{sys.argv[2]}`. It is not deployed.\n")
+          print(version)
+          PY
+          version="$(python3 -c 'import json,sys;d=json.load(open(sys.argv[1]));vs=d if isinstance(d,list) else d.get("result",d.get("versions",[]));vs=vs.get("items",[]) if isinstance(vs,dict) else vs;tag="git-"+sys.argv[2][:12];m=[v for v in vs if v.get("annotations",{}).get("workers/tag")==tag];m.sort(key=lambda v:v.get("metadata",{}).get("created_on",""),reverse=True);print(m[0]["id"])' "$RUNNER_TEMP/versions.json" "$GITHUB_SHA")"
+          curl --fail --silent --show-error --max-time 15 -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/scripts/private-laptop-bridge-smoke/versions?deployable=true" > "$RUNNER_TEMP/deployable.json"
+          python3 - "$RUNNER_TEMP/deployable.json" "$version" <<'PY'
+          import json,sys
+          d=json.load(open(sys.argv[1])); vs=d.get('result',[]); vs=vs.get('items',[]) if isinstance(vs,dict) else vs
+          if not d.get('success') or sys.argv[2] not in [v.get('id') for v in vs]: raise SystemExit('Uploaded version is not in deployable set')
+          PY
+          echo "Candidate version: $version" >> "$GITHUB_STEP_SUMMARY"
+      - name: Verify exact promotion candidate
+        if: inputs.action == 'promote'
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          VERSION_ID: ${{ inputs.version_id }}
+        run: |
+          set -euo pipefail
+          curl --fail --silent --show-error --max-time 15 -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/scripts/private-laptop-bridge-smoke/versions?deployable=true" > "$RUNNER_TEMP/deployable.json"
+          python3 - "$RUNNER_TEMP/deployable.json" "$VERSION_ID" <<'PY'
+          import json,sys
+          d=json.load(open(sys.argv[1])); vs=d.get('result',[]); vs=vs.get('items',[]) if isinstance(vs,dict) else vs
+          if not d.get('success') or sys.argv[2] not in [v.get('id') for v in vs]: raise SystemExit('Exact requested version is not deployable')
+          PY
+      - name: Promote exact immutable version to 100 percent
+        if: inputs.action == 'promote'
+        working-directory: pm-stack/private-laptop-bridge
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          VERSION_ID: ${{ inputs.version_id }}
+        run: |
+          set -euo pipefail
+          npx --no-install cf -q workers deployments create --worker private-laptop-bridge-smoke --strategy percentage --versions "[{\"version_id\":\"$VERSION_ID\",\"percentage\":100}]"
+          npx --no-install cf -q workers deployments list --worker private-laptop-bridge-smoke > "$RUNNER_TEMP/deployments.json"
+          python3 - "$RUNNER_TEMP/deployments.json" "$VERSION_ID" "$GITHUB_STEP_SUMMARY" <<'PY'
+          import json,sys
+          d=json.load(open(sys.argv[1])); rows=d if isinstance(d,list) else d.get('result',d.get('deployments',[])); rows=rows.get('items',[]) if isinstance(rows,dict) else rows
+          matches=[x for x in rows if any(v.get('version_id')==sys.argv[2] and int(v.get('percentage',0))==100 for v in x.get('versions',[]))]
+          if not matches: raise SystemExit('Deployment read-back did not confirm exact version at 100 percent')
+          open(sys.argv[3],'a').write(f"Promoted `{sys.argv[2]}` and verified deployment read-back at 100%. Smoke ingress remains separately controlled by Gateway policy.\n")
+          PY
