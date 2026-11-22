@@ -282,6 +282,7 @@ if [ -z "$CARGO_TARGET_DIR" ]; then
                       if kill -0 -- "-$worker_pgid" 2>/dev/null; then
                         echo "fleet shell: terminating unresponsive build process group" >&2
                         kill -KILL -- "-$worker_pgid" 2>/dev/null || :
+                        if [ -n "$worker_pid" ]; then kill -KILL "$worker_pid" 2>/dev/null || :; fi
                       fi
                     fi
                     if [ -n "$worker_pid" ]; then
@@ -314,7 +315,8 @@ if [ -z "$CARGO_TARGET_DIR" ]; then
                   ''|*[!0-9]*) ;;
                   *) kill -"$signal" -- "-$worker_pgid" 2>/dev/null || : ;;
                 esac
-              elif [ -n "$worker_pid" ]; then
+              fi
+              if [ -n "$worker_pid" ]; then
                 kill -"$signal" "$worker_pid" 2>/dev/null || :
               fi
               exit "$code"
@@ -327,10 +329,14 @@ if [ -z "$CARGO_TARGET_DIR" ]; then
             # otherwise give background jobs /dev/null on stdin.
             exec 9<&0
             if command -v setsid >/dev/null 2>&1 && [ -n "$group_file" ]; then
+              # Disable job control so setsid does not fork: the background
+              # PID is then also the new session/process-group ID.
+              set +m
+              setsid sh -c 'eval "$1"' sh "$command_text" <&9 &
+              worker_pid=$!
+              printf '%s\n' "$worker_pid" > "$group_file"
               # A private process group lets the parent hold the lane until
               # descendants exit, even if the command ends with exec.
-              setsid sh -c 'printf "%s\n" "$" > "$1"; eval "$2"' sh "$group_file" "$command_text" <&9 &
-              worker_pid=$!
             else
               # Keep the shell's normal background-job wait behavior where
               # setsid is unavailable; supported Fleet build hosts ship it.
