@@ -71,6 +71,33 @@ npm test        # vitest + @cloudflare/vitest-pool-workers
 npm run deploy  # wrangler deploy (fleet Cloudflare account)
 ```
 
+## GitHub Actions version flow
+
+`.github/workflows/github-ci-worker-upload.yml` uploads an immutable
+Workers Version from `main` with `wrangler versions upload`; it does not
+create a deployment or change production traffic. Its run summary gives
+the version UUID. `.github/workflows/github-ci-worker-promote.yml` is a
+separate `workflow_dispatch` workflow that accepts that UUID and deploys
+only the selected version to 100% of traffic. It runs only when
+dispatched from `main` and uses the `github-ci-production` environment
+as the production approval gate.
+
+Set the GitHub repository variable `CLOUDFLARE_ACCOUNT_ID` and add the
+Actions secret `CLOUDFLARE_API_TOKEN` to both the
+`github-ci-cloudflare-upload` and `github-ci-production` environments.
+Use a token scoped to Workers Scripts Edit for the account. Configure
+`github-ci-production` with required reviewers and restrict its
+deployment branches to `main`. The upload environment also needs the
+token, but it does not need production reviewers.
+
+The upload workflow leaves runtime secrets out of GitHub Actions.
+Wrangler's Versions upload inherits the Worker's existing secret
+bindings, while non-secret bindings and production endpoint vars come
+from `wrangler.toml`. Keep the existing `GITHUB_WEBHOOK_SECRET`, Turso,
+and queue-broker secrets provisioned on the Worker before promoting a
+candidate. This is the GitHub CI webhook Worker, not
+`infra/github-backup`'s GitHub App backup receiver.
+
 The cutover from the earlier Postgres receiver is complete (#5693,
 closeout below).
 

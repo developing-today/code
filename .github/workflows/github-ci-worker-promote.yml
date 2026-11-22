@@ -1,0 +1,62 @@
+name: github-ci Worker version promotion
+
+# Promotion is a separate, explicit action. Configure the
+# github-ci-production environment with required reviewers and limit its
+# deployment branches to main. The production API token belongs only in
+# that protected environment.
+on:
+  workflow_dispatch:
+    inputs:
+      version_id:
+        description: Workers Version ID from a successful version-upload run
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: github-ci-worker-production
+  cancel-in-progress: false
+
+jobs:
+  promote:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: github-ci-production
+    defaults:
+      run:
+        working-directory: pkgs/github-ci/worker
+    env:
+      CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      VERSION_ID: ${{ inputs.version_id }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: pkgs/github-ci/worker/package-lock.json
+
+      - name: Validate inputs and credentials
+        run: |
+          test -n "$CLOUDFLARE_ACCOUNT_ID" || { echo "CLOUDFLARE_ACCOUNT_ID repository variable is required" >&2; exit 1; }
+          test -n "$CLOUDFLARE_API_TOKEN" || { echo "CLOUDFLARE_API_TOKEN production environment secret is required" >&2; exit 1; }
+          [[ "$VERSION_ID" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]] || {
+            echo "version_id must be a Cloudflare Workers Version UUID" >&2
+            exit 1
+          }
+
+      - name: Install locked dependencies
+        run: npm ci
+
+      - name: Promote selected version to 100% traffic
+        run: >-
+          npx wrangler versions deploy "${VERSION_ID}@100%"
+          --config wrangler.toml
+          --name github-ci
+          --message "promote github-ci version ${VERSION_ID} via GitHub Actions"
+          --yes

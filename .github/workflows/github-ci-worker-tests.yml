@@ -55,3 +55,6 @@ jobs:
           done
           npm ci
           npm test
+
+      - name: Check version workflow safety boundaries
+        run: python3 pkgs/github-ci/worker/test/deploy_workflows_test.py

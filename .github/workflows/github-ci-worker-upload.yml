@@ -1,0 +1,72 @@
+name: github-ci Worker version upload
+
+# Upload creates an immutable Workers Version only. Traffic changes are
+# handled by the separate, manually dispatched promotion workflow.
+# Wrangler versions upload inherits existing secret bindings; this job
+# never reads or materializes the Worker's runtime secret values.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "pkgs/github-ci/worker/**"
+      - ".github/workflows/github-ci-worker-upload.yml"
+      - ".github/workflows/github-ci-worker-promote.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: github-ci-worker-upload
+  cancel-in-progress: false
+
+jobs:
+  upload:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: github-ci-cloudflare-upload
+    defaults:
+      run:
+        working-directory: pkgs/github-ci/worker
+    env:
+      CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: pkgs/github-ci/worker/package-lock.json
+
+      - name: Require Cloudflare credentials
+        run: |
+          test -n "$CLOUDFLARE_ACCOUNT_ID" || { echo "CLOUDFLARE_ACCOUNT_ID repository variable is required" >&2; exit 1; }
+          test -n "$CLOUDFLARE_API_TOKEN" || { echo "CLOUDFLARE_API_TOKEN Actions secret is required" >&2; exit 1; }
+
+      - name: Install locked dependencies
+        run: npm ci
+
+      - name: Upload immutable Workers Version
+        env:
+          WRANGLER_OUTPUT_FILE_PATH: ${{ runner.temp }}/wrangler-output.jsonl
+        run: |
+          npx wrangler versions upload \
+            --config wrangler.toml \
+            --tag "git-${GITHUB_SHA:0:12}" \
+            --message "github-ci candidate ${GITHUB_SHA}"
+          node --input-type=commonjs <<'NODE'
+          const fs = require("node:fs");
+          const output = process.env.WRANGLER_OUTPUT_FILE_PATH;
+          const rows = fs.readFileSync(output, "utf8").trim().split(/\r?\n/).filter(Boolean).map(JSON.parse);
+          const uploaded = rows.find((row) => row.type === "version-upload");
+          if (!uploaded || uploaded.worker_name !== "github-ci" || !uploaded.version_id) {
+            throw new Error("Wrangler did not report a github-ci Workers Version ID");
+          }
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, `version_id=${uploaded.version_id}\n`);
+          fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY,
+            `Uploaded github-ci Workers Version \`${uploaded.version_id}\` for commit \`${process.env.GITHUB_SHA}\`.\n\n` +
+            "No traffic was promoted. To change production traffic, run the separate **github-ci Worker version promotion** workflow on `main` and provide this version ID.\n");
+          NODE
