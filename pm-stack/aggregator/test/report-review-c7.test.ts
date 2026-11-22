@@ -36,7 +36,17 @@ describe("C7 report review UI", () => {
     expect(html).toContain("((strategy.value==='edited'||strategy.value==='combined')?{resolvedText:text}:{})");
   });
 
-  test("does not re-offer historical alternatives after a block has been resolved", () => {
+  test("selects the newest substantive alternative past a whitespace-only version", () => {
+    const original = record("original", "Original wording.", "2026-11-21T10:00:00.000Z");
+    const whitespace = record("whitespace", "Changed  wording.", "2026-11-21T11:00:00.000Z");
+    const current = record("current", "Changed wording.", "2026-11-21T12:00:00.000Z");
+
+    const reviews = reportBlockReviews([original, whitespace, current], [current]);
+    expect(reviews).toHaveLength(1);
+    expect(reviews[0]?.renderedRecord.id).toBe("original");
+  });
+
+  test("does not re-offer resolved history, but surfaces a later substantive conflict", () => {
     const stored = record("stored", "Human wording.", "2026-11-21T13:00:00.000Z");
     const rendered = record("rendered", "Generated wording.", "2026-11-21T14:00:00.000Z");
     const resolved = record("resolved", "Human wording.", "2026-11-21T15:00:00.000Z");
@@ -47,5 +57,10 @@ describe("C7 report review UI", () => {
     };
 
     expect(reportBlockReviews([stored, rendered, resolved], [resolved])).toHaveLength(0);
+
+    const postResolution = record("post-resolution", "New wording.", "2026-11-21T16:00:00.000Z");
+    const latest = record("latest", "Latest wording.", "2026-11-21T17:00:00.000Z");
+    expect(reportBlockReviews([stored, rendered, resolved, postResolution, latest], [latest]).map((review) => review.renderedRecord.id))
+      .toEqual(["post-resolution"]);
   });
 });

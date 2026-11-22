@@ -2137,6 +2137,9 @@ async function handler(req: Request): Promise<Response> {
   }
 
   if (req.method === "POST" && path === "/api/reports/resolve") {
+    const access = await enforceAccessAuthor(req, { kind: "drew", id: "drew", label: "Drew" });
+    if (!access.ok) return json({ error: access.error }, access.status);
+    if (access.verified && access.author.kind !== "drew") return json({ error: "verified Access owner required" }, 403);
     let body: Record<string, unknown>;
     try {
       const parsed = await readJsonBody(req);
@@ -2176,6 +2179,7 @@ async function handler(req: Request): Promise<Response> {
         strategy as "stored" | "rendered" | "edited" | "combined",
         new Date().toISOString(),
         typeof body.resolvedText === "string" ? body.resolvedText : undefined,
+        renderedRecordId,
       );
       return json({ inserted: result.inserted, record: result.record });
     } catch (error) {

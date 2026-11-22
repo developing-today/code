@@ -14,14 +14,28 @@ export function reportBlockReviews(records: ReportRecord[], current: ReportRecor
   const reviews: ReportBlockReview[] = [];
   for (const storedRecord of current) {
     for (const storedBlock of storedRecord.blocks) {
+      const relatedRecords = records.filter((record) =>
+        record.period.id === storedRecord.period.id && record.templateVersion === storedRecord.templateVersion);
+      const resolvedAt = relatedRecords
+        .flatMap((record) => record.blocks
+          .filter((block) => block.id === storedBlock.id && block.resolution)
+          .map((block) => block.resolution!.resolvedAt))
+        .sort()
+        .at(-1);
       const candidates = records
-        .filter((record) => record.period.id === storedRecord.period.id && record.templateVersion === storedRecord.templateVersion && record.id !== storedRecord.id && (!storedBlock.resolution || record.generatedAt > storedRecord.generatedAt))
+        .filter((record) => record.period.id === storedRecord.period.id && record.templateVersion === storedRecord.templateVersion &&
+          record.id !== storedRecord.id && (!resolvedAt || record.generatedAt > resolvedAt))
         .sort((a, b) => b.generatedAt.localeCompare(a.generatedAt) || b.id.localeCompare(a.id));
-      const renderedRecord = candidates.find((record) => record.blocks.some((block) => block.id === storedBlock.id && block.text !== storedBlock.text));
+      // A whitespace-only version is not a conflict and must not hide an older
+      // substantive alternative. Search until the newest substantive match.
+      const renderedRecord = candidates.find((record) => {
+        const block = record.blocks.find((candidate) => candidate.id === storedBlock.id);
+        return block !== undefined && compareReportBlock(storedBlock.text, block.text).conflict;
+      });
       const renderedBlock = renderedRecord?.blocks.find((block) => block.id === storedBlock.id);
       if (!renderedRecord || !renderedBlock) continue;
       const comparison = compareReportBlock(storedBlock.text, renderedBlock.text);
-      if (comparison.conflict) reviews.push({ periodId: storedRecord.period.id, blockId: storedBlock.id, storedRecord, renderedRecord, comparison });
+      reviews.push({ periodId: storedRecord.period.id, blockId: storedBlock.id, storedRecord, renderedRecord, comparison });
     }
   }
   return reviews;

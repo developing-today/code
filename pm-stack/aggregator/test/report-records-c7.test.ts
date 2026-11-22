@@ -405,6 +405,8 @@ describe("C7 canonical report records", () => {
       comparison,
       "rendered",
       "2026-11-22T13:59:59.000Z",
+      undefined,
+      "rendered-record",
     );
 
     expect(resolved.inserted).toBe(true);
@@ -414,6 +416,7 @@ describe("C7 canonical report records", () => {
       resolution: {
         sourceRecordId: record.id,
         strategy: "rendered",
+        comparedRecordId: "rendered-record",
         resolvedAt: "2026-11-22T13:59:59.000Z",
       },
     });
@@ -428,6 +431,8 @@ describe("C7 canonical report records", () => {
       comparison,
       "rendered",
       "2026-11-22T13:59:58.000Z",
+      undefined,
+      "rendered-record",
     );
     expect(repeated.inserted).toBe(false);
     expect(await readReportRecords(file)).toEqual([record, resolved.record]);

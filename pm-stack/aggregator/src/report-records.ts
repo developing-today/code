@@ -23,6 +23,7 @@ export interface ReportRecordBlock {
   classification?: "implemented" | "cancelled" | "duplicate" | "in-progress" | "blocked" | "queued";
   resolution?: {
     sourceRecordId: string;
+    comparedRecordId?: string;
     strategy: "stored" | "rendered" | "edited" | "combined";
     resolvedAt: string;
   };
@@ -400,10 +401,16 @@ export async function readReportRecords(location: ReportRecordLocation): Promise
   return [...byId.values()];
 }
 
-/** Current projection: latest appended source-cursor version per period/template. */
+/** Current projection: latest event-time source-cursor version per period/template. */
 export async function readCurrentReportRecords(location: ReportRecordLocation): Promise<ReportRecord[]> {
   const current = new Map<string, ReportRecord>();
-  for (const event of await readLocationEvents(location)) {
+  const events = await readLocationEvents(location);
+  // Remote append-only stores may enumerate keys rather than insertion order.
+  // Report timestamps encode causal order; in particular, a resolution must
+  // project after the report version it resolves even when its ID sorts first.
+  const ordered = events.map((event, index) => ({ event, index }))
+    .sort((a, b) => a.event.ts.localeCompare(b.event.ts) || a.index - b.index);
+  for (const { event } of ordered) {
     if (event.type !== "report.generated" || !event.record) continue;
     current.set(`${event.record.period.id}\n${event.record.templateVersion}`, event.record);
   }
@@ -582,6 +589,7 @@ export async function appendReportBlockConflictResolution(
   strategy: "stored" | "rendered" | "edited" | "combined",
   resolvedAt: string,
   resolvedText?: string,
+  comparedRecordId = `${record.id}:comparison`,
 ): Promise<AppendReportRecordResult> {
   return serializeLocationAppend(location, async () => {
     assertCanonicalRecord(record);
@@ -596,6 +604,9 @@ export async function appendReportBlockConflictResolution(
     }
     if (!comparison.conflict || !reportBlockConflict(comparison.storedText, comparison.renderedText)) {
       throw new Error("report block comparison does not contain a conflict");
+    }
+    if (!comparedRecordId.trim() || comparedRecordId === record.id) {
+      throw new Error("compared report record is required and must differ from the stored record");
     }
 
     const canonicalComparison = compareReportBlock(comparison.storedText, comparison.renderedText);
@@ -614,12 +625,12 @@ export async function appendReportBlockConflictResolution(
       throw new Error("stale report block comparison: stored block has changed");
     }
 
-    const cursor = `resolution:${record.id}:${blockId}:${strategy}:${createHash("sha256").update(text).digest("hex")}`;
+    const cursor = `resolution:${record.id}:${comparedRecordId}:${blockId}:${strategy}:${createHash("sha256").update(text).digest("hex")}`;
     const blocks = structuredClone(record.blocks);
     blocks[blockIndex] = {
       ...blocks[blockIndex],
       text,
-      resolution: { sourceRecordId: record.id, strategy, resolvedAt },
+      resolution: { sourceRecordId: record.id, comparedRecordId, strategy, resolvedAt },
     };
     const resolvedRecord = makeReportRecord({
       period: record.period,
@@ -632,7 +643,8 @@ export async function appendReportBlockConflictResolution(
     const previousResolution = (await readReportRecords(location)).find((candidate) => candidate.id === resolvedRecord.id);
     if (previousResolution) {
       const previousBlock = previousResolution.blocks.find((block) => block.id === blockId);
-      if (previousBlock?.text !== text || previousBlock.resolution?.sourceRecordId !== record.id || previousBlock.resolution.strategy !== strategy) {
+      if (previousBlock?.text !== text || previousBlock.resolution?.sourceRecordId !== record.id ||
+          previousBlock.resolution.comparedRecordId !== comparedRecordId || previousBlock.resolution.strategy !== strategy) {
         throw new ReportRecordConflictError(resolvedRecord.id);
       }
       return { inserted: false, record: previousResolution };
