@@ -189,7 +189,10 @@ struct NoteHead {
 /// another document's `note.supersedes` tag names is a past revision, not
 /// a head. Titles are the first line of the verified content. The blob
 /// bytes stand in for the blob store, as a fetch would supply them.
-fn notes_view(store: &EventStore, blobs: &BTreeMap<Hash, Vec<u8>>) -> BTreeMap<String, NoteHead> {
+fn notes_view(
+    store: &EventStore,
+    blobs: &BTreeMap<iroh_blobs::Hash, Vec<u8>>,
+) -> BTreeMap<String, NoteHead> {
     let in_timeline: BTreeSet<Hash> = timeline(store).iter().map(|e| e.event.id).collect();
     let mut note_id_of: BTreeMap<Hash, String> = BTreeMap::new();
     let mut superseded: BTreeSet<String> = BTreeSet::new();
@@ -402,7 +405,7 @@ fn test_first_app_poc_two_identities_exchange_and_a_third_partys_claims_are_excl
 
     // The blob bytes a fetch would supply, keyed by the hash each
     // document names.
-    let blobs: BTreeMap<Hash, Vec<u8>> = [
+    let blobs: BTreeMap<iroh_blobs::Hash, Vec<u8>> = [
         (doc_v1.blob_hash(), NOTE_V1.to_vec()),
         (doc_v2.blob_hash(), NOTE_V2.to_vec()),
         (doc_c.blob_hash(), NOTE_C.to_vec()),
