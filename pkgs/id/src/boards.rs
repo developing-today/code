@@ -280,6 +280,13 @@ impl BoardObject {
                         "note sharer is not canonical Ed25519 hex"
                     );
                 }
+                if let Some(passage) = value
+                    .note_anchor
+                    .as_ref()
+                    .and_then(|anchor| anchor.passage.as_ref())
+                {
+                    validate_text("note passage section", &passage.section_id, false)?;
+                }
             }
             Self::Attachment(value) => {
                 validate_text("attachment media type", &value.media_type, false)?;
@@ -7097,6 +7104,38 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn note_anchor_shape_bounds_the_passage_section() {
+        let creator = key(14);
+        let post = |section_id: String| {
+            BoardObject::Post(Post {
+                board: ArtifactHash::new("e".repeat(64)).unwrap(),
+                thread: ArtifactHash::new("f".repeat(64)).unwrap(),
+                parent_post: None,
+                body: "x".to_owned(),
+                attachments: Vec::new(),
+                embed_ref: None,
+                note_ref: None,
+                note_anchor: Some(NoteAnchor {
+                    object: ArtifactHash::new("a".repeat(64)).unwrap(),
+                    version: ArtifactHash::new("b".repeat(64)).unwrap(),
+                    passage: Some(NotePassageSelector {
+                        section_id,
+                        start_byte: 0,
+                        end_byte: 1,
+                        quote_hash: ArtifactHash::new("c".repeat(64)).unwrap(),
+                    }),
+                }),
+                note_view: None,
+            })
+        };
+
+        assert!(SignedBoardObject::sign(&creator, 1, "", post("intro".to_owned())).is_ok());
+        assert!(SignedBoardObject::sign(&creator, 1, "", post(String::new())).is_err());
+        let oversized = "s".repeat(MAX_BOARD_TEXT_BYTES + 1);
+        assert!(SignedBoardObject::sign(&creator, 1, "", post(oversized)).is_err());
     }
 
     #[test]
