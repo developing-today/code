@@ -39,6 +39,9 @@
       rust-overlay,
       flake-utils,
       bun2nix,
+      # Root runtime packages can skip duplicate tests; named flake checks
+      # keep the same coverage. Standalone builds remain checked by default.
+      checkRuntimePackages ? true,
       # TODO: consider use systems here?
       ...
     }:
@@ -889,7 +892,7 @@
               ${buildWasmHost}
             '';
 
-            doCheck = true;
+            doCheck = checkRuntimePackages;
             # Test phase under the ci-check profile (#3195), not release.
             checkType = "ci-check";
             # serve_tests require networking (bind/listen), unavailable in nix sandbox
@@ -941,7 +944,7 @@
 
             preBuild = buildWasmHost;
 
-            doCheck = true;
+            doCheck = checkRuntimePackages;
             # Test phase under the ci-check profile (#3195), not release.
             checkType = "ci-check";
             # serve_tests require networking (bind/listen), unavailable in nix sandbox

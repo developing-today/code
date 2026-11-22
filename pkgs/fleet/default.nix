@@ -42,6 +42,7 @@
   python3,
   callPackage,
   craneLib ? null,
+  doCheck ? true,
   sourceRev ? "unknown",
   # The derived per-app version (#8566), computed by the release
   # tooling where the git history exists (the nix build source has
@@ -199,7 +200,7 @@ let
           # cargoExtraArgs.
           # SQLite concurrency regressions use Python's stdlib sqlite3.
           nativeCheckInputs = [ python3 ];
-          doCheck = true;
+          doCheck = doCheck;
           checkPhaseCargoCommand = "cargoWithProfile test --locked";
 
           # The atlas-search server tests (#9973) write trace and
@@ -227,6 +228,7 @@ let
 
         nativeCheckInputs = [ python3 ];
         cargoBuildFlags = cargoFlags;
+        doCheck = doCheck;
 
         # Same check-phase HOME fix as the crane path above (#6400).
         preCheck = ''

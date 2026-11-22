@@ -898,6 +898,9 @@ let
               self = result // {
                 outPath = "${inputs.self}/pkgs/id";
               };
+              # Root NixOS runtime output; the ID flake's named test
+              # checks remain available and run through id-check CI.
+              checkRuntimePackages = false;
             }
           );
         in
@@ -1718,17 +1721,18 @@ let
   make-mcpx-overlay = {
     overlays = {
       default = final: prev: {
-        mcpx = prev.callPackage ../pkgs/mcpx/package.nix { };
+        mcpx = prev.callPackage ../pkgs/mcpx/package.nix { doCheck = false; };
       };
       mcpx = final: prev: {
-        mcpx = prev.callPackage ../pkgs/mcpx/package.nix { };
+        mcpx = prev.callPackage ../pkgs/mcpx/package.nix { doCheck = false; };
       };
     };
   };
 
   # The mcpx daemon modules (code#4801): the canonical module files
   # live in pkgs/mcpx/modules; these outputs wrap them with this
-  # flake's own mcpx build as the package default. The opencode fork
+  # flake's own runtime mcpx build (without its duplicate test phase).
+  # mcpx-test and mcpx-nixbuild retain the CI coverage. The opencode fork
   # re-exports the same files defaulted to its build, and
   # openchamber passes them through — the option set never forks.
   make-mcpx-modules =
@@ -1738,7 +1742,9 @@ let
         { lib, pkgs, ... }:
         {
           imports = [ module ];
-          services.mcpx.package = lib.mkDefault (pkgs.callPackage ../pkgs/mcpx/package.nix { });
+          services.mcpx.package = lib.mkDefault (
+            pkgs.callPackage ../pkgs/mcpx/package.nix { doCheck = false; }
+          );
         };
     in
     {

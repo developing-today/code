@@ -28,8 +28,8 @@ Run COMMAND where builds belong, or open a shell there with no COMMAND.
   --target auto|laptop|codespace|local   where (default: auto)
   --codespace NAME                       which codespace (default: the first available)
   --cwd DIR                              directory to run in
-  --build                                a heavy build: take a fleet-build-lock slot on
-                                         the laptop and allow an hour instead of two minutes
+  --build                                a heavy build: take a fleet-build-lock slot;
+                                          Cargo workspaces use a shared target lane
   --timeout SECS                         how long a laptop command may run
   --detach                               start it as a laptop job and return its id
                                          (follow with: fleet laptop-agent poll JOB --wait N)
@@ -210,22 +210,207 @@ pub struct Options {
     pub detach: bool,
 }
 
-/// The whole command, run by a shell beneath the build lock. The lock
-/// wrapper execs one program with its arguments, so a command with
-/// `cd`, `&&` or a pipe has to be one shell's argument: otherwise only
-/// its first word would hold the slot.
+/// Whether a command string needs shell control flow rather than being
+/// a command plus arguments. Plain Cargo strings must reach the build-lock
+/// wrapper as argv so its target broker can put them in the shared lane.
+fn needs_shell(command: &str) -> bool {
+    let mut quote = None;
+    let mut escaped = false;
+
+    for ch in command.chars() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        match quote {
+            Some('\'') => {
+                if ch == '\'' {
+                    quote = None;
+                }
+                continue;
+            }
+            Some('"') => {
+                if ch == '\\' {
+                    escaped = true;
+                } else if ch == '"' {
+                    quote = None;
+                }
+                continue;
+            }
+            _ => {}
+        }
+        if ch == '\\' {
+            escaped = true;
+            continue;
+        }
+        if matches!(ch, '\'' | '"') {
+            quote = Some(ch);
+            continue;
+        }
+        if matches!(
+            ch,
+            ';' | '|' | '&' | '<' | '>' | '\x60' | '(' | ')' | '\n' | '\r'
+        ) {
+            return true;
+        }
+    }
+
+    let first = command
+        .trim_start()
+        .split_ascii_whitespace()
+        .next()
+        .unwrap_or("");
+    if first.contains('=') {
+        return true;
+    }
+    matches!(
+        first,
+        "cd" | "pushd"
+            | "popd"
+            | "export"
+            | "unset"
+            | "source"
+            | "."
+            | "eval"
+            | "exec"
+            | "set"
+            | "umask"
+            | "trap"
+            | "alias"
+            | "read"
+            | "return"
+            | "break"
+            | "continue"
+            | "if"
+            | "for"
+            | "while"
+            | "until"
+            | "case"
+            | "select"
+            | "time"
+            | "!"
+    )
+}
+
+/// Commands that may launch Cargo use the target broker. "just" and "make"
+/// are included because they commonly hide Cargo invocations in recipes.
+fn may_invoke_cargo(command: &str) -> bool {
+    command
+        .split(|ch: char| !(ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-')))
+        .any(|word| matches!(word, "cargo" | "just" | "make"))
+}
+
+/// Keep the whole shell command under one build-lock slot while leasing a
+/// shared target directory for its Cargo work. The caller's cwd matters:
+/// laptop-agent applies --cwd before starting this command, and the broker
+/// cleans only that workspace's artifacts.
+fn broker_aware_shell(command: &str) -> String {
+    let profile = if command
+        .split(|ch: char| !(ch.is_ascii_alphanumeric() || ch == '-'))
+        .any(|word| matches!(word, "test" | "bench"))
+    {
+        "test"
+    } else if command
+        .split_ascii_whitespace()
+        .any(|word| word == "--release")
+    {
+        "release"
+    } else {
+        "dev"
+    };
+    let script = r#"command_text=__COMMAND__
+broker="$HOME/tools/cargo-target-broker"
+if [ -z "$CARGO_TARGET_DIR" ] && [ -x "$broker" ]; then
+  manifest=$(cargo locate-project --workspace --message-format plain 2>/dev/null || true)
+  if [ -n "$manifest" ]; then
+    root=$(dirname -- "$manifest")
+    repo=$(printf '%s\n' "$root" | sed -n 's#^.*/pkgs/\([^/]*\).*#\1#p')
+    if [ -z "$repo" ]; then repo=$(basename -- "$root"); fi
+    repo=$(printf '%s' "$repo" | tr -c 'A-Za-z0-9._-' '_')
+    if [ -n "$repo" ]; then
+      lease=$("$broker" checkout --repo "$repo" --profile __PROFILE__ --wait 900 --json 2>/dev/null) || lease=""
+      if [ -n "$lease" ]; then
+        target=$(printf '%s' "$lease" | python3 -c 'import json,sys; print(json.load(sys.stdin)["path"])' 2>/dev/null) || target=""
+        lease_id=$(printf '%s' "$lease" | python3 -c 'import json,sys; print(json.load(sys.stdin)["lease"])' 2>/dev/null) || lease_id=""
+        if [ -n "$target" ] && [ -n "$lease_id" ]; then
+          export CARGO_TARGET_DIR="$target"
+          trap '"$broker" checkin --lease "$lease_id" >/dev/null 2>&1 || :' EXIT
+          sh -c "$command_text"
+          status=$?
+          "$broker" checkin --lease "$lease_id" >/dev/null 2>&1 || :
+          trap - EXIT
+          exit "$status"
+        fi
+        if [ -n "$lease_id" ]; then
+          "$broker" checkin --lease "$lease_id" >/dev/null 2>&1 || :
+        fi
+      fi
+    fi
+  fi
+  echo "fleet shell: shared Cargo target unavailable; using the normal target directory" >&2
+fi
+exec sh -c "$command_text"
+"#;
+    let script = script
+        .replace("__PROFILE__", profile)
+        .replace("__COMMAND__", &sh_quote_always(command));
+    format!("sh -c {}", sh_quote_always(&script))
+}
+
+/// Run direct commands as wrapper argv so the lock's Cargo routing applies.
+/// Compound commands keep one lock slot and lease a broker target for the
+/// duration of the shell, rather than acquiring one slot per command.
 fn under_build_lock(command: &str) -> String {
-    format!("{BUILD_LOCK} sh -c {}", sh_quote_always(command))
+    if needs_shell(command) {
+        if may_invoke_cargo(command) {
+            format!("{BUILD_LOCK} {}", broker_aware_shell(command))
+        } else {
+            format!("{BUILD_LOCK} sh -c {}", sh_quote_always(command))
+        }
+    } else {
+        format!("{BUILD_LOCK} {command}")
+    }
 }
 
 /// A build on this host: under the build lock where this host has one
 /// (the laptop does), and plainly, with a note, where it does not.
-fn local_build_line(command: &str) -> String {
-    let quoted = sh_quote_always(command);
+fn local_build_line(command: &str, cwd: Option<&str>) -> String {
+    let change_dir = cwd
+        .map(|dir| format!("cd {} || exit $?; ", sh_quote(dir)))
+        .unwrap_or_default();
+    let (locked, fallback) = if needs_shell(command) {
+        (
+            under_build_lock(command),
+            format!("sh -c {}", sh_quote_always(command)),
+        )
+    } else {
+        (under_build_lock(command), command.to_string())
+    };
     format!(
-        "if [ -x {BUILD_LOCK} ]; then exec {BUILD_LOCK} sh -c {quoted}; fi; \
-         echo 'fleet shell: this host has no build lock; running without one' >&2; \
-         exec sh -c {quoted}"
+        "{change_dir}if [ -x {BUILD_LOCK} ]; then exec {locked}; fi; echo 'fleet shell: this host has no build lock; running without one' >&2; exec {fallback}"
+    )
+}
+
+/// A codespace can use the same path when its fleet tools are installed.
+/// If it lacks the lock, try the target broker directly and report the gap.
+fn codespace_build_line(command: &str, cwd: Option<&str>) -> String {
+    let change_dir = cwd
+        .map(|dir| format!("cd {} || exit $?; ", sh_quote(dir)))
+        .unwrap_or_default();
+    let locked = if may_invoke_cargo(command) {
+        format!("{BUILD_LOCK} {}", broker_aware_shell(command))
+    } else {
+        under_build_lock(command)
+    };
+    let fallback = if may_invoke_cargo(command) {
+        broker_aware_shell(command)
+    } else if needs_shell(command) {
+        format!("sh -c {}", sh_quote_always(command))
+    } else {
+        command.to_string()
+    };
+    format!(
+        "{change_dir}if [ -x {BUILD_LOCK} ]; then exec {locked}; fi; echo 'fleet shell: this host has no build lock; running without one' >&2; exec {fallback}"
     )
 }
 
@@ -248,14 +433,13 @@ pub fn plan(target: Target, because: String, words: &[String], opts: &Options) -
                         "--detach starts a laptop job; it needs --target laptop",
                     ));
                 }
-                let line = match &opts.cwd {
-                    Some(dir) => format!("cd {} && {command}", sh_quote(dir)),
-                    None => command,
-                };
                 let line = if opts.build {
-                    local_build_line(&line)
+                    local_build_line(&command, opts.cwd.as_deref())
                 } else {
-                    line
+                    match &opts.cwd {
+                        Some(dir) => format!("cd {} && {command}", sh_quote(dir)),
+                        None => command,
+                    }
                 };
                 ("sh".to_string(), vec!["-lc".to_string(), line])
             }
@@ -297,9 +481,13 @@ pub fn plan(target: Target, because: String, words: &[String], opts: &Options) -
             }
             let mut args = argv(&["codespace", "ssh", "-c", name]);
             if !interactive {
-                let line = match &opts.cwd {
-                    Some(dir) => format!("cd {} && {command}", sh_quote(dir)),
-                    None => command,
+                let line = if opts.build {
+                    codespace_build_line(&command, opts.cwd.as_deref())
+                } else {
+                    match &opts.cwd {
+                        Some(dir) => format!("cd {} && {command}", sh_quote(dir)),
+                        None => command,
+                    }
                 };
                 args.push("--".to_string());
                 args.push(line);

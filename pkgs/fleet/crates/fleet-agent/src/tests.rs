@@ -1037,20 +1037,17 @@ fn a_build_takes_a_lock_slot_and_an_hour() {
             "3600",
             "--shell",
             "--",
-            "~/tools/fleet-build-lock sh -c 'cargo test -p id-core'",
+            "~/tools/fleet-build-lock cargo test -p id-core",
         ])
     );
 }
 
 #[test]
-fn a_compound_build_command_runs_whole_under_the_lock() {
-    // The lock wrapper execs one program with its arguments
-    // (pkgs/fleet/fleet-build-lock ends in `exec "$@"`), so `cd` and
-    // `&&` must reach it inside one shell's argument.
+fn a_single_string_cargo_command_uses_the_shared_target_lane() {
     let plan = shell::plan(
         Target::Laptop,
         "test".into(),
-        &words(&["cd pkgs/id && cargo test -p 'id core'"]),
+        &words(&["cargo test -p 'id core'"]),
         &Options {
             build: true,
             ..opts()
@@ -1059,8 +1056,67 @@ fn a_compound_build_command_runs_whole_under_the_lock() {
     .unwrap();
     assert_eq!(
         plan.args.last().unwrap(),
-        r#"~/tools/fleet-build-lock sh -c 'cd pkgs/id && cargo test -p '\''id core'\'''"#
+        "~/tools/fleet-build-lock cargo test -p 'id core'"
     );
+}
+
+#[test]
+fn a_build_with_environment_assignment_uses_the_shared_target_lane() {
+    let plan = shell::plan(
+        Target::Laptop,
+        "test".into(),
+        &words(&["RUST_LOG=debug cargo test"]),
+        &Options {
+            cwd: Some("pkgs/id".into()),
+            build: true,
+            ..opts()
+        },
+    )
+    .unwrap();
+    let command = plan.args.last().unwrap();
+    assert!(command.starts_with("~/tools/fleet-build-lock sh -c "));
+    assert!(command.contains("cargo-target-broker"));
+    assert!(command.contains("RUST_LOG=debug cargo test"));
+}
+
+#[test]
+fn a_compound_build_command_uses_one_lock_and_a_shared_workspace_lane() {
+    let plan = shell::plan(
+        Target::Laptop,
+        "test".into(),
+        &words(&["cargo test -p 'id core' && cargo clippy -p id-core"]),
+        &Options {
+            cwd: Some("pkgs/id".into()),
+            build: true,
+            ..opts()
+        },
+    )
+    .unwrap();
+    let command = plan.args.last().unwrap();
+    assert!(command.starts_with("~/tools/fleet-build-lock sh -c "));
+    assert!(command.contains("cargo-target-broker"));
+    assert!(command.contains("checkout --repo \"$repo\" --profile test"));
+    assert!(command.contains("cargo test -p"));
+}
+
+#[test]
+fn codespace_build_uses_shared_lane_tools_when_installed() {
+    let plan = shell::plan(
+        Target::Codespace("dev".into()),
+        "test".into(),
+        &words(&["cargo test -p id-core"]),
+        &Options {
+            cwd: Some("pkgs/id".into()),
+            build: true,
+            ..opts()
+        },
+    )
+    .unwrap();
+    assert_eq!(plan.program, "gh");
+    let command = plan.args.last().unwrap();
+    assert!(command.contains("fleet-build-lock"));
+    assert!(command.contains("cargo-target-broker"));
+    assert!(command.contains("cd pkgs/id"));
 }
 
 /// A HOME whose `tools/fleet-build-lock` logs its arguments, one per
@@ -1091,6 +1147,15 @@ fn run_local_plan(home: &std::path::Path, plan: &shell::Plan) -> std::process::O
         .arg("-c")
         .arg(&plan.args[1])
         .env("HOME", home)
+        .env(
+            "PATH",
+            format!(
+                "{}:{}",
+                home.join("tools").display(),
+                std::env::var("PATH").unwrap_or_default()
+            ),
+        )
+        .env_remove("CARGO_TARGET_DIR")
         .current_dir(home)
         .output()
         .expect("sh runs")
@@ -1122,7 +1187,97 @@ fn a_local_build_runs_every_part_of_the_command_under_the_lock() {
     );
     assert_eq!(String::from_utf8_lossy(&out.stdout), "first\nsecond\n");
     let log = std::fs::read_to_string(home.join("lock.log")).unwrap();
-    assert_eq!(log, "sh\n-c\ncd 'work dir' && echo first && echo second\n");
+    assert_eq!(log, "sh\n-c\necho first && echo second\n");
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[test]
+fn a_compound_cargo_build_leases_and_returns_one_workspace_target() {
+    let home = home_with_a_recording_lock();
+    let tools = home.join("tools");
+    let workspace = home.join("workspace");
+    std::fs::create_dir_all(&workspace).unwrap();
+    std::fs::write(workspace.join("Cargo.toml"), "[workspace]\nmembers = []\n").unwrap();
+
+    let cargo = tools.join("cargo");
+    std::fs::write(
+        &cargo,
+        "#!/bin/sh\nif [ \"$1\" = locate-project ]; then printf '%s/Cargo.toml\\n' \"$PWD\"; exit 0; fi\nprintf '%s|%s\\n' \"$CARGO_TARGET_DIR\" \"$*\" >> \"$HOME/cargo.log\"\n",
+    )
+    .unwrap();
+    let broker = tools.join("cargo-target-broker");
+    std::fs::write(
+        &broker,
+        format!(
+            "#!/bin/sh\ncase \"$1\" in checkout) printf '{{\\"path\\":\\"{}\\",\\"lease\\":\\"lease-1\\"}}\\n' ;; checkin) printf '%s\\n' \"$*\" >> \"$HOME/broker.log\" ;; esac\n",
+            home.join("target").display()
+        ),
+    )
+    .unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    for path in [&cargo, &broker] {
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    let plan = shell::plan(
+        Target::Local,
+        "test".into(),
+        &words(&["cargo test && cargo check"]),
+        &Options {
+            cwd: Some("workspace".into()),
+            build: true,
+            ..opts()
+        },
+    )
+    .unwrap();
+    let out = run_local_plan(&home, &plan);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let expected = format!(
+        "{}|test\n{}|check\n",
+        home.join("target").display(),
+        home.join("target").display()
+    );
+    assert_eq!(std::fs::read_to_string(home.join("cargo.log")).unwrap(), expected);
+    assert_eq!(
+        std::fs::read_to_string(home.join("broker.log")).unwrap(),
+        "checkin --lease lease-1\n"
+    );
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[test]
+fn a_local_direct_build_enters_the_lock_after_selecting_its_workspace() {
+    let home = home_with_a_recording_lock();
+    std::fs::create_dir_all(home.join("work dir")).unwrap();
+    let plan = shell::plan(
+        Target::Local,
+        "test".into(),
+        &words(&["pwd"]),
+        &Options {
+            cwd: Some("work dir".into()),
+            build: true,
+            ..opts()
+        },
+    )
+    .unwrap();
+    let out = run_local_plan(&home, &plan);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        format!("{}\n", home.join("work dir").display())
+    );
+    assert_eq!(
+        std::fs::read_to_string(home.join("lock.log")).unwrap(),
+        "pwd\n"
+    );
     let _ = std::fs::remove_dir_all(&home);
 }
 
@@ -1344,7 +1499,7 @@ fn shell_runs_the_plan_or_prints_it() {
             assert_eq!(plan["target"], "laptop");
             assert_eq!(
                 plan["args"][6],
-                "~/tools/fleet-build-lock sh -c 'cargo check'"
+                "~/tools/fleet-build-lock cargo check"
             );
         }
         shell::Done::Ran(_) => panic!("--print must not run"),
