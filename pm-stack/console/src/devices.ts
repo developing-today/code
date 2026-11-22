@@ -10,9 +10,8 @@
 // the phone then presents the verifier, which only it knows, and is
 // given its token. The store keeps hashes of tokens, never the tokens.
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
-import { dirname } from "node:path";
-import { OpError } from "./ops.ts";
+import { OpError } from "./errors.ts";
+import type { Store as Kept } from "./store.ts";
 
 export interface Device {
   id: string;
@@ -80,10 +79,9 @@ export class Limiter {
 
 export class Devices {
   private store: Store | null = null;
-  private writing: Promise<void> = Promise.resolve();
 
   constructor(
-    private file: string,
+    private kept: Kept,
     private now: () => number = Date.now,
     private random: (bytes: number) => Buffer = randomBytes,
   ) {}
@@ -92,25 +90,17 @@ export class Devices {
     if (this.store) return this.store;
     let store: Store = { devices: [], pending: [] };
     try {
-      const parsed = JSON.parse(await readFile(this.file, "utf8"));
+      const parsed = JSON.parse((await this.kept.read()) ?? "");
       if (parsed && Array.isArray(parsed.devices) && Array.isArray(parsed.pending)) store = parsed;
     } catch {
-      // no file yet, or one that cannot be read: start with no devices
+      // nothing kept yet, or something that cannot be read: start with no devices
     }
     this.store ??= store;
     return this.store;
   }
 
-  /** Written whole to a new file and moved into place, one write at a time. */
   private save(): Promise<void> {
-    const next = this.writing.then(async () => {
-      await mkdir(dirname(this.file), { recursive: true, mode: 0o700 });
-      const tmp = `${this.file}.${process.pid}.tmp`;
-      await writeFile(tmp, JSON.stringify(this.store), { mode: 0o600 });
-      await rename(tmp, this.file);
-    });
-    this.writing = next.catch(() => {});
-    return next;
+    return this.kept.write(JSON.stringify(this.store));
   }
 
   /** The owner, signed in, approves a phone that is asking to be linked. */

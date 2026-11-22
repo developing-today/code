@@ -14,26 +14,35 @@ so, and prints what it did:
    the owner's address. Sign-in methods are the one-time PIN, plus Google
    when the secrets `google.access-sso.client-id` and
    `google.access-sso.client-secret` exist.
-2. Four paths bypass sign-in at the edge. Three are files a phone
+2. Five paths bypass sign-in at the edge. Three are files a phone
    fetches before anyone has signed in: the asset-links file, the
    install manifest and its icons. The fourth, /console/device, is where
    the Android app's home-screen widget presents a token of its own to
-   read a short summary. The console serves exactly those files to an
-   unsigned caller, checks that token itself, and answers nothing else.
+   read a short summary. The fifth, /console/edge, is where this host
+   reports to the edge Worker, signed with the host's own key. The
+   console serves exactly those files to an unsigned caller, checks that
+   token and that signature itself, and answers nothing else.
 3. The console's environment file names the Access issuer and the owner,
    and the console is running with it.
 4. The tunnel routes the hostname to the console.
 5. DNS points the hostname at the tunnel.
+6. The hostname's traffic goes through the edge Worker (pm-console-edge,
+   which serves the app from Cloudflare and reaches this host through
+   the same tunnel), and the console is told where to report to it. This
+   happens only once the Worker answers its health check; until then,
+   and after `--edge off`, the hostname goes straight to this host.
 
-The gate comes first and the route last, so the origin is never
+The gate comes first and the routes last, so the origin is never
 reachable without sign-in in front of it. If the console does not come
 up with its sign-in settings, the run stops before the route.
 
 Every secret is read by name through `fleet secrets get` and stays in
 memory. Nothing printed is a secret.
 
-Usage: expose.py [--check] [--host pm.security.cab] [--owner EMAIL]
-  --check   report what would change and exit 1 if anything would.
+Usage: expose.py [--check] [--edge on|off] [--host pm.security.cab] [--owner EMAIL]
+  --check      report what would change and exit 1 if anything would.
+  --edge off   take the hostname off the edge Worker; remembered by later
+               runs (the timer's included) until --edge on.
 """
 
 from __future__ import annotations
@@ -64,7 +73,12 @@ PUBLIC_PATHS = (
     "/manifest.webmanifest",
     "/icons",
     "/console/device",
+    "/console/edge",
 )
+# The Worker that serves the app from the edge (pm-stack/console/edge).
+# It is deployed from the repository; this script only decides whether
+# the hostname's traffic goes through it.
+WORKER = "pm-console-edge"
 GOOGLE_ID = "google.access-sso.client-id"
 GOOGLE_SECRET = "google.access-sso.client-secret"
 
@@ -151,6 +165,72 @@ def ensure_routes(
         f"/accounts/{account}/cfd_tunnel/{tunnel}/configurations",
         {"config": config},
     )
+
+
+def fetch_json(url: str) -> dict | None:
+    """One GET of a JSON document, or None if it cannot be had."""
+    try:
+        with urllib.request.urlopen(url, timeout=10) as res:
+            out = json.load(res)
+            return out if isinstance(out, dict) else None
+    except (OSError, ValueError):
+        return None
+
+
+def edge_choice(state: pathlib.Path, choice: str | None) -> bool:
+    """Whether the hostname should go through the edge Worker. The choice
+    is kept in a file, so a timer's run keeps what was last asked for;
+    with no file the answer is yes."""
+    marker = state / "edge"
+    if choice is not None:
+        state.mkdir(parents=True, exist_ok=True, mode=0o700)
+        marker.write_text(choice + "\n")
+    return not marker.exists() or marker.read_text().strip() != "off"
+
+
+def worker_ready(cf: Cloudflare, account: str) -> bool:
+    """True when the edge Worker is deployed and answers its health check
+    as the edge. Until then the hostname keeps going straight to the
+    host, so there is never a route to a Worker that is not there."""
+    subdomain = cf.get(f"/accounts/{account}/workers/subdomain").get("subdomain")
+    if not subdomain:
+        return False
+    health = fetch_json(f"https://{WORKER}.{subdomain}.workers.dev/console/health")
+    return bool(health and health.get("ok") is True and health.get("edge") is True)
+
+
+def ensure_edge_route(cf: Cloudflare, zone: str, host: str, wanted: bool) -> None:
+    """The hostname's traffic goes through the edge Worker, or does not.
+    A route on this hostname that names another Worker is not this
+    script's, and stops the run."""
+    pattern = f"{host}/*"
+    routes = [
+        r
+        for r in cf.get(f"/zones/{zone}/workers/routes")
+        if r.get("pattern", "").split("/")[0] == host
+    ]
+    foreign = [
+        r for r in routes if r.get("pattern") != pattern or r.get("script") != WORKER
+    ]
+    if foreign:
+        raise SystemExit(
+            f"workers: {host} already has a route that is not {WORKER}'s; not touching it"
+        )
+    if wanted and not routes:
+        cf.change(
+            f"workers: route {pattern} through {WORKER}",
+            "POST",
+            f"/zones/{zone}/workers/routes",
+            {"pattern": pattern, "script": WORKER},
+        )
+    if not wanted:
+        for route in routes:
+            cf.change(
+                f"workers: take {pattern} off {WORKER}",
+                "DELETE",
+                f"/zones/{zone}/workers/routes/{route['id']}",
+                None,
+            )
 
 
 def find_zone(cf: Cloudflare, host: str) -> str:
@@ -362,13 +442,14 @@ def console_up(origin: str, seconds: int = 20) -> bool:
 
 def ensure_console(
     path: pathlib.Path,
-    wanted: dict[str, str],
+    wanted: dict[str, str | None],
     origin: str,
     check: bool,
     changes: list[str],
 ) -> None:
-    """The console runs with the sign-in settings. Raises, so nothing is
-    routed, if it cannot be brought up with them."""
+    """The console runs with the sign-in settings. A value of None means
+    the setting must be absent. Raises, so nothing is routed, if the
+    console cannot be brought up with them."""
     have = env_values(path)
     stale = [k for k, v in wanted.items() if have.get(k) != v]
     if stale:
@@ -388,7 +469,8 @@ def ensure_console(
         kept = [line for line in lines if line.split("=", 1)[0].strip() not in wanted]
         path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         path.write_text(
-            "\n".join(kept + [f"{k}={v}" for k, v in wanted.items()]) + "\n"
+            "\n".join(kept + [f"{k}={v}" for k, v in wanted.items() if v is not None])
+            + "\n"
         )
         path.chmod(0o600)
     done = subprocess.run(
@@ -412,6 +494,12 @@ def main() -> int:
     parser.add_argument("--check", action="store_true")
     parser.add_argument("--host", default="pm.security.cab")
     parser.add_argument("--owner", default="drewrypope@gmail.com")
+    parser.add_argument(
+        "--edge",
+        choices=["on", "off"],
+        help="send the hostname through the edge Worker, or straight to this host; "
+        "the choice is kept for later runs (default: on, once the Worker answers)",
+    )
     args = parser.parse_args()
 
     token = secret("cloudflare.api-token-account-wide")
@@ -432,6 +520,15 @@ def main() -> int:
     zone, dns_needed = dns_plan(cf, args.host, tunnel)
     env = pathlib.Path.home() / ".local/state/pm-console/.env"
     console = console_origin(env)
+    # Through the edge only if that is wanted and the Worker is really
+    # there; otherwise straight to this host, as before the edge existed.
+    edge = edge_choice(env.parent, None if args.check else args.edge)
+    if edge and not worker_ready(cf, account):
+        edge = False
+        print(
+            f"note: the edge Worker {WORKER} is not deployed or does not answer; "
+            "the hostname goes straight to this host"
+        )
 
     # Order matters. The sign-in gate is put in place first and the route
     # last, so the origin is never reachable without the gate in front.
@@ -466,6 +563,9 @@ def main() -> int:
                 "PM_CONSOLE_ACCESS_TEAM_DOMAIN": team,
                 "PM_CONSOLE_ACCESS_AUD": aud,
                 "PM_CONSOLE_OWNER_EMAILS": args.owner,
+                # Where this host reports to the edge; absent, it reports
+                # to nobody.
+                "PM_CONSOLE_EDGE_URL": f"https://{args.host}" if edge else None,
             },
             console,
             args.check,
@@ -474,6 +574,9 @@ def main() -> int:
     if aud or args.check:
         ensure_routes(cf, account, args.host, tunnel, tunnel_config, console)
         ensure_dns(cf, args.host, tunnel, zone, dns_needed)
+        # Last: by now the host is up, knows where the edge is, and is
+        # reachable behind the hostname the Worker will sit on.
+        ensure_edge_route(cf, zone, args.host, edge)
     else:
         raise SystemExit(
             "the Access application has no audience tag; not routing the hostname"

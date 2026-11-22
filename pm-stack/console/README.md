@@ -76,6 +76,39 @@ the coverage reconciliation. The rank sets the task's place in the queue.
 If the enqueue fails, the issue still exists and the page says it is not
 queued.
 
+### Served from the edge
+
+The app is served by a Cloudflare Worker in front of the hostname
+([`edge/`](edge/README.md)), so it opens and works whether or not this
+host can be reached. This service stays what it is, the machine with the
+fleet's tools on it, and becomes a worker behind the edge:
+
+- It reports its state to the edge (`src/sync.ts`): the sections that
+  changed, signed with a key made here whose private half never leaves.
+  The edge learns the public half by asking this host through the tunnel
+  (`GET /console/edge/key`).
+- An action that needs this host is relayed to it at once. One taken
+  while it could not be reached is held at the edge if it is safe to do
+  late, and run here at most once when it is back, recorded in the audit
+  log as `via: edge-held`.
+- Every response this service writes carries `X-PM-Console: 1`, so the
+  edge can tell "the host answered, with an error" from "the host could
+  not be reached".
+
+Set `PM_CONSOLE_EDGE_URL` to turn the reporting on; `scripts/expose.py`
+does that when it sends the hostname through the Worker. Without it this
+service reports to nobody and serves the app itself, as before.
+
+### Merges deploy themselves
+
+`pm-console-redeploy.timer` runs `redeploy.sh` every minute. When the
+checkout holds console code that is not the code in service, the new
+code is started in a self-check that listens on nothing
+(`bun run src/server.ts --check`, with the service's own settings); only
+if that passes is it put into service. Code that does not start is left
+out, the old code keeps running, and the unit fails, which the Services
+screen and notifications show.
+
 ## Sign-in
 
 The console runs no sign-in of its own. A caller arrives with a signed
@@ -112,10 +145,13 @@ app's link to this origin), and the two phone paths under
 ## Run
 
 ```bash
-bash pm-stack/console/install.sh          # user unit pm-console, port 4872, loopback only
+bash pm-stack/console/install.sh          # user unit pm-console, port 4872, loopback only; and its two timers
 python3 pm-stack/console/scripts/expose.py --check   # what public exposure would change
-python3 pm-stack/console/scripts/expose.py           # Access, console env, tunnel route, DNS
+python3 pm-stack/console/scripts/expose.py           # Access, console env, tunnel route, DNS, the edge's route
+python3 pm-stack/console/scripts/expose.py --edge off   # hostname straight to this host, not through the edge
 cd pm-stack/console && bun test
+bun run scripts/demo.ts          # the app with made-up state, on this host alone
+bun run scripts/edge-demo.ts     # the same behind the edge
 ```
 
 `expose.py` is safe to run again: it changes only what is not already so
@@ -137,11 +173,13 @@ the route if the console does not come up with its sign-in settings.
 | `PM_CONSOLE_ANDROID_PACKAGE`, `PM_CONSOLE_ANDROID_SHA256` | `today.developing.pmconsole`, none                 | The Android app's identity in the asset-links file |
 | `PM_CONSOLE_ANDROID_APK`                                  | `~/.local/state/pm-console/android/pm-console.apk` | The signed build the console hands to the owner    |
 | `PM_CONSOLE_DEVICES_FILE`                                 | `~/.local/state/pm-console/devices.json`           | Linked phones (hashes of their tokens)             |
+| `PM_CONSOLE_EDGE_URL`                                     | unset (reports to nobody)                          | The public address the edge answers on, `https://` |
+| `PM_CONSOLE_EDGE_KEY_FILE`, `PM_CONSOLE_EDGE_DONE_FILE`   | `edge-key.json`, `edge-done.json` in the state dir | This host's signing key; what it ran for the edge  |
 | `PM_CONSOLE_REPO`, `PM_CONSOLE_QUEUE`                     | `developing-today/code`, `repo-health-code-pilot`  | What it operates on                                |
 
 A malformed port, a listen address or dashboard address that is not
-loopback, or a malformed issuer stops the process at boot and names the
-variable.
+loopback, an edge address that is not plain `https://host`, or a
+malformed issuer stops the process at boot and names the variable.
 
 ## Android
 

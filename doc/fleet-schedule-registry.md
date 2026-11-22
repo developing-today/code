@@ -256,7 +256,7 @@ Execution route/pool is recorded separately from work scope: the repo-health que
 | `aea12c82-c5af-4e5a-9b66-f8e360f87177` | Queue lane (scheduled) - code           | `*/40 * * * *`                  | True    | `~/.config/openchamber/projects/path_L2hvbWUvdXNlci9naXQvY29kZQ.json` | not recorded               | not recorded | not recorded  | not recorded | 2026-11-03  |
 | `f1b4a33b-14d5-4a69-9ad6-d221e42e3ac9` | Opencode lane claimant/executor - #3026 | `*/10 * * * *`                  | True    | `~/.config/openchamber/projects/path_L2hvbWUvdXNlci9naXQvY29kZQ.json` | opencode-route / workhorse | not recorded | not recorded  | not recorded | 2026-11-03  |
 
-### 2b. Laptop systemd user timers (45 listed: 41 enabled, 1 installed-but-disabled; 4 Nix-configured pending deployment)
+### 2b. Laptop systemd user timers (46 listed: 42 enabled, 1 installed-but-disabled; 4 Nix-configured pending deployment)
 
 The OS-timer half of surface 2. Cadence is the unit's own `OnCalendar`/`OnUnitActiveUSec` spec, read live from `systemctl --user show`. Specs are recorded **complete** — the full effective calendar expression, date **and** time components (e.g. `*-*-* *:*:00`); never truncate a spec to a date-only prefix, because a bare `*-*-*` normalizes to daily at midnight and misstates the cadence (issue #5313). Prompt/brief pointer is the unit file in `~/.config/systemd/user/` (or its Nix store target for linked units). Installed-but-disabled timer units ARE listed in this table and marked `(disabled)` after the unit name: the registry inventories what is installed on the laptop, not only what is currently scheduled, so a disabled unit stays visible until it is uninstalled (reconciled 2026-11-04, issue #5661).
 
@@ -296,6 +296,7 @@ The OS-timer half of surface 2. Cadence is the unit's own `OnCalendar`/`OnUnitAc
 | `pm-dashboard-backup.timer` | `OnCalendar=*-*-* 04:30:00` | `pm-dashboard-backup.service` | laptop (user systemd) | not recorded | not recorded | not recorded | 2026-11-04 |
 | `pm-digest-daily.timer` | `OnCalendar=*-*-* 07:00:00` | `pm-digest-daily.service` | laptop (user systemd) | not recorded | not recorded | not recorded | 2026-11-04 |
 | `pm-console-expose.timer` | `OnUnitActiveUSec=15min,OnBootUSec=5min` | `pm-console-expose.service` | laptop (user systemd; code#12452; runs `pm-stack/console/scripts/expose.py`: keeps the public address as declared, turns Google sign-in on once its secrets exist) | not recorded | not recorded | 2026-11-22 | 2026-11-22 |
+| `pm-console-redeploy.timer` | `OnUnitActiveUSec=1min,OnBootUSec=2min` | `pm-console-redeploy.service` | laptop (user systemd; code#12505; runs `pm-stack/console/redeploy.sh`: puts merged console code into service after a self-check, and leaves out code that does not start) | not recorded | not recorded | 2026-11-22 | 2026-11-22 |
 | `pm-digest-weekly.timer` | `OnCalendar=Mon *-*-* 07:05:00` | `pm-digest-weekly.service` | laptop (user systemd) | not recorded | not recorded | not recorded | 2026-11-04 |
 | `pm-git-sync.timer` | `OnUnitActiveUSec=30s,OnBootUSec=30s` | `pm-git-sync.service` | laptop (user systemd) | not recorded | not recorded | not recorded | 2026-11-04 |
 | `pm-host-health.timer` | `OnCalendar=*-*-* *:00/5:00,OnBootUSec=1min` | `pm-host-health.service` | laptop (user systemd; code#10141) | not recorded | not recorded | 2026-11-14 | 2026-11-14 |
@@ -375,7 +376,7 @@ registered. The primary user's repos are maintained by git's own
 per-user launchd agents, which `git maintenance start` installs outside
 Nix; they are not recorded here until a review reads them on the Mac.
 
-## Surface 6 — PM-stack process intervals (3 entries)
+## Surface 6 — PM-stack process intervals (4 entries)
 
 Recurring loops owned by PM-stack processes (aggregator, console). These are not
 external scheduler surfaces; this inventory records timers that run only
@@ -386,16 +387,20 @@ while the service is alive.
 | SLO journal sampler (#9988) | developing-today/code | every 60 seconds | live aggregator process only | issue #9988   | `pm-stack/aggregator/src/server.ts` (`SLO_SAMPLE_INTERVAL_MS`) | not recorded | Remove/disable if the health view or append-only journal becomes unavailable; sampler is unref'd and does not keep the process alive | 2026-11-18 | 2026-11-18  |
 | Console state refresh       | developing-today/code | every 5 seconds  | live console process only    | PR #12452     | `pm-stack/console/src/docs.ts` (`Docs.start`)                  | not recorded | Reads only while the app was opened in the last 10 minutes; remove if state is no longer served from memory                          | 2026-11-22 | 2026-11-22  |
 | Console notifier            | developing-today/code | every 60 seconds | live console process only    | PR #12452     | `pm-stack/console/src/notify.ts` (`Notifier.start`)            | not recorded | Reads only while a device is subscribed; remove if notifications move to another sender                                              | 2026-11-22 | 2026-11-22  |
+| Console report to the edge  | developing-today/code | 5 to 30 seconds  | live console process only    | PR #12505     | `pm-stack/console/src/sync.ts` (`EdgeLink.start`)              | not recorded | Runs only when PM_CONSOLE_EDGE_URL is set; remove if the app is no longer served from the edge                                       | 2026-11-22 | 2026-11-22  |
 
-## Surface 7 — Cloudflare Worker cron triggers (1 entry)
+## Surface 7 — Cloudflare Worker cron triggers (2 entries)
 
 Cron triggers on Cloudflare Workers in this account, from each Worker's
 `wrangler.jsonc` (`triggers.crons`) and deployed from the flake. They
 run on Cloudflare, off every fleet host. Cadence is the trigger's cron
 expression in UTC. The row was read from the repo and confirmed against
 the Worker's live schedule (Cloudflare `workers/scripts/<name>/schedules`)
-on 2026-11-19.
+on 2026-11-19. The second row is a Durable Object alarm: it is set by
+the Worker's code, so it appears in no `wrangler.jsonc` and in no
+schedules listing.
 
 | name/id                                       | repo/scope            | cadence                           | state                                                                                                                                                                                                        | owner / scope | prompt/brief pointer                                            | budget                                         | kill criteria                                                                                   | created    | last review |
 | --------------------------------------------- | --------------------- | --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------- | --------------------------------------------------------------- | ---------------------------------------------- | ----------------------------------------------------------------------------------------------- | ---------- | ----------- |
 | `queue-transport-alert` (Worker cron trigger) | developing-today/code | `*/10 * * * *` (every 10 min UTC) | enabled; probes the repo-queue broker `/healthz` through Cloudflare Access; files or comments on one `Queue transport incident:` issue, pushes to Telegram, enqueues a triage task on recovery, never closes | issue #6369   | `pkgs/queue-transport-alert/worker/` (`wrangler.jsonc`, `src/`) | Workers free-tier requests; one probe per tick | Remove the trigger if the probe misfires (repeated false alerts) or the broker route is retired | 2026-11-19 | 2026-11-19  |
+| pm-console-edge silent-host alarm             | developing-today/code | 10 minutes after each host report | Durable Object alarm, re-armed by every report from the laptop, so it fires only when the laptop has been silent for ten minutes                                                                             | PR #12505     | `pm-stack/console/edge/src/edge.ts` (`Edge.alarm`)              | one notification a silence                     | Goes with the Worker; `expose.py --edge off` takes the hostname off it                          | 2026-11-22 | 2026-11-22  |

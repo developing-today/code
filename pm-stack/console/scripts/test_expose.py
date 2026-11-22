@@ -38,6 +38,9 @@ class Account(expose.Cloudflare):
         self.dns = []
         self.zones = {"security.cab": "zone"}
         self.order = []
+        # Workers routes on the zone, and whether the edge Worker answers.
+        self.routes = []
+        self.worker_up = True
 
     def call(self, method, path, body=None):
         path, _, query = path.partition("?")
@@ -85,6 +88,14 @@ class Account(expose.Cloudflare):
         elif path == "/zones":
             name = query.partition("name=")[2]
             result = [{"id": self.zones[name]}] if name in self.zones else []
+        elif path.endswith("/workers/subdomain"):
+            result = {"subdomain": "acct"}
+        elif "/workers/routes" in path:
+            if method == "POST":
+                self.routes.append({"id": f"route-{len(self.routes)}", **body})
+            elif method == "DELETE":
+                self.routes = [r for r in self.routes if r["id"] != path.split("/")[-1]]
+            result = self.routes
         elif path.endswith("/dns_records"):
             if method == "POST":
                 self.dns.append({**body, "zone": path.split("/")[2]})
@@ -131,6 +142,16 @@ def run(account, home, *args, machine=None):
         mock.patch.object(expose.pathlib.Path, "home", lambda: pathlib.Path(home)),
         mock.patch.object(expose.subprocess, "run", machine.systemctl),
         mock.patch.object(expose, "console_up", machine.up),
+        mock.patch.object(
+            expose,
+            "fetch_json",
+            lambda url: (
+                {"ok": True, "edge": True}
+                if account.worker_up
+                and url == f"https://{expose.WORKER}.acct.workers.dev/console/health"
+                else None
+            ),
+        ),
         mock.patch.object(sys, "argv", argv),
         mock.patch("builtins.print"),
     ):
@@ -235,9 +256,11 @@ class Expose(unittest.TestCase):
                 "/manifest.webmanifest",
                 "/icons",
                 "/console/device",
+                "/console/edge",
             ),
         )
-        self.assertEqual(len(account.changes), len(expose.PUBLIC_PATHS) + 4)
+        # ... and the hostname's route through the edge Worker.
+        self.assertEqual(len(account.changes), len(expose.PUBLIC_PATHS) + 5)
         self.assertFalse(
             (pathlib.Path(self.home) / ".local/state/pm-console/.env").exists()
         )
@@ -395,6 +418,97 @@ class Expose(unittest.TestCase):
         with self.assertRaisesRegex(SystemExit, "no zone"):
             run(account, self.home, "--host", host)
         self.assertEqual(account.order, [])
+
+    def env(self):
+        return expose.env_values(
+            pathlib.Path(self.home) / ".local/state/pm-console/.env"
+        )
+
+    def test_the_hostname_goes_through_the_edge_last_and_only_once_it_answers(self):
+        # The Worker is not deployed yet: nothing about the edge is set up.
+        account = Account()
+        account.worker_up = False
+        self.assertEqual(run(account, self.home), 0)
+        self.assertEqual(account.routes, [])
+        self.assertNotIn("PM_CONSOLE_EDGE_URL", self.env())
+        self.assertEqual(run(account, self.home), 0)
+        self.assertEqual(account.changes, [])
+        # It answers: the host is told where to report, then the route goes in, last of all.
+        account.worker_up = True
+        account.order.clear()
+        machine = Machine()
+        self.assertEqual(run(account, self.home, machine=machine), 0)
+        self.assertEqual(
+            account.routes,
+            [{"id": "route-0", "pattern": f"{HOST}/*", "script": expose.WORKER}],
+        )
+        self.assertEqual(self.env()["PM_CONSOLE_EDGE_URL"], f"https://{HOST}")
+        self.assertIn("restart", machine.commands)
+        self.assertEqual(account.order, ["POST /zones/zone/workers/routes"])
+        self.assertEqual(
+            account.changes,
+            [
+                "console environment: PM_CONSOLE_EDGE_URL",
+                f"workers: route {HOST}/* through {expose.WORKER}",
+            ],
+        )
+        self.assertEqual(run(account, self.home), 0)
+        self.assertEqual(account.changes, [])
+
+    def test_a_console_that_does_not_come_up_is_never_put_behind_the_edge(self):
+        account = Account()
+        with self.assertRaises(SystemExit):
+            run(account, self.home, machine=Machine(comes_up=False))
+        self.assertEqual(account.routes, [])
+
+    def test_edge_off_is_remembered_and_edge_on_brings_it_back(self):
+        account = Account()
+        run(account, self.home)
+        self.assertEqual(len(account.routes), 1)
+        self.assertEqual(run(account, self.home, "--edge", "off"), 0)
+        self.assertEqual(account.routes, [])
+        self.assertNotIn("PM_CONSOLE_EDGE_URL", self.env())
+        # The sign-in settings are still there: only the edge's went.
+        self.assertEqual(self.env()["PM_CONSOLE_OWNER_EMAILS"], "drewrypope@gmail.com")
+        # A later run with no flag (the timer's) keeps it off.
+        self.assertEqual(run(account, self.home), 0)
+        self.assertEqual(account.changes, [])
+        self.assertEqual(account.routes, [])
+        self.assertEqual(run(account, self.home, "--edge", "on"), 0)
+        self.assertEqual(
+            [(r["pattern"], r["script"]) for r in account.routes],
+            [(f"{HOST}/*", expose.WORKER)],
+        )
+        self.assertEqual(self.env()["PM_CONSOLE_EDGE_URL"], f"https://{HOST}")
+
+    def test_another_workers_route_on_the_hostname_is_left_alone(self):
+        for foreign in (
+            {"id": "x", "pattern": f"{HOST}/*", "script": "someone-elses"},
+            {"id": "y", "pattern": f"{HOST}/api/*", "script": expose.WORKER},
+        ):
+            account = Account()
+            account.routes = [dict(foreign)]
+            with self.assertRaises(SystemExit) as stopped:
+                run(account, self.home)
+            self.assertIn("not touching it", str(stopped.exception))
+            self.assertEqual(account.routes, [foreign])
+            self.assertFalse(any("workers/routes" in c for c in account.order))
+        # A route for a different hostname in the same zone is nobody's business here.
+        account = Account()
+        account.routes = [
+            {"id": "z", "pattern": "bridge.security.cab/*", "script": "message-bridge"}
+        ]
+        self.assertEqual(run(account, self.home), 0)
+        self.assertEqual(len(account.routes), 2)
+
+    def test_check_never_records_an_edge_choice(self):
+        account = Account()
+        run(account, self.home)
+        self.assertEqual(run(account, self.home, "--check", "--edge", "off"), 0)
+        self.assertFalse(
+            (pathlib.Path(self.home) / ".local/state/pm-console/edge").exists()
+        )
+        self.assertEqual(len(account.routes), 1)
 
 
 if __name__ == "__main__":

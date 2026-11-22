@@ -6,12 +6,13 @@
 // owner typed.
 import type { Devices } from "./devices.ts";
 import type { Docs } from "./docs.ts";
-import { OpError, type Ops } from "./ops.ts";
+import { OpError } from "./errors.ts";
+import type { Ops } from "./ops.ts";
 import type { Push } from "./push.ts";
 import type { Work } from "./work.ts";
 
 type Args = Record<string, unknown>;
-interface Action {
+export interface Action {
   run: (args: Args) => Promise<unknown>;
   /** Sections to read again afterwards. */
   touch: string[];
@@ -30,7 +31,10 @@ const asked = async <T>(p: Promise<T>): Promise<T> =>
     throw error instanceof OpError ? error : new OpError(400, error.message);
   });
 
-export function actions(ops: Ops, work: Work, push?: Push, devices?: Devices): Record<string, Action> {
+/** The actions that need nothing from the host: this device's
+ * notifications, and phones linked to read the summary. They are the
+ * ones the edge runs itself. */
+export function ownActions(push?: Push, devices?: Devices): Record<string, Action> {
   // A phone linked to read the summary its home-screen widget shows.
   const phones: Record<string, Action> = devices
     ? {
@@ -56,9 +60,12 @@ export function actions(ops: Ops, work: Work, push?: Push, devices?: Devices): R
         },
       }
     : {};
+  return { ...notify, ...phones };
+}
+
+export function actions(ops: Ops, work: Work, push?: Push, devices?: Devices): Record<string, Action> {
   return {
-    ...notify,
-    ...phones,
+    ...ownActions(push, devices),
     "ask.send": { run: (a) => work.ask(a), touch: ["asks", "board"], audit: () => ({}) },
     "ask.reply": { run: (a) => work.askReply(a), touch: ["asks", "board"], audit: ids("issue") },
     "ask.close": { run: (a) => work.askClose(a), touch: ["asks"], audit: ids("issue") },
