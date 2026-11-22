@@ -1506,7 +1506,7 @@ printf '%s|%s|%s|%s\n' "$PWD" "$CARGO_TARGET_DIR" "$CARGO_BUILD_JOBS" "$*" > "$H
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fleet-build-lock");
     let manifest = workspace.join("Cargo.toml").display().to_string();
     let output = std::process::Command::new("/bin/bash")
-        .arg(lock_script)
+        .arg(&lock_script)
         .args([
             "cargo",
             "test",
@@ -1777,7 +1777,7 @@ printf '%s|%s|%s\n' "$PWD" "$CARGO_TARGET_DIR" "$*" >> "$HOME/cargo.log"
     std::fs::write(
         &broker,
         format!(
-            "#!/bin/sh\ncase \"$1\" in checkout) printf '%s\\n' \"$*\" >> \"$HOME/broker.log\"; printf '{{\\"path\\":\\"{}\\",\\"lease\\":\\"lease-1\\"}}\\n' ;; checkin) printf '%s\\n' \"$*\" >> \"$HOME/broker.log\" ;; esac\n",
+            "#!/bin/sh\ncase \"$1\" in checkout) printf '%s\\n' \"$*\" >> \"$HOME/broker.log\"; printf '{{\"path\":\"{}\",\"lease\":\"lease-1\"}}\\n' ;; checkin) printf '%s\\n' \"$*\" >> \"$HOME/broker.log\" ;; esac\n",
             home.join("target").display()
         ),
     )
