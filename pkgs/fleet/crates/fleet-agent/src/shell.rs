@@ -27,7 +27,7 @@ Run COMMAND where builds belong, or open a shell there with no COMMAND.
 
   --target auto|laptop|codespace|local   where (default: auto)
   --codespace NAME                       which codespace (default: the first available)
-  --cwd DIR                              directory to run in
+  --cwd DIR                              directory to run in (Cargo workspace for shared lane)
   --build                                a heavy build: take a fleet-build-lock slot;
                                           Cargo workspaces use a shared target lane
   --timeout SECS                         how long a laptop command may run
@@ -320,7 +320,7 @@ fn broker_aware_shell(command: &str) -> String {
     };
     let script = r#"command_text=__COMMAND__
 broker="$HOME/tools/cargo-target-broker"
-if [ -z "$CARGO_TARGET_DIR" ] && [ -x "$broker" ]; then
+if [ -z "$CARGO_TARGET_DIR" ]; then
   manifest=$(cargo locate-project --workspace --message-format plain 2>/dev/null || true)
   if [ -n "$manifest" ]; then
     root=$(dirname -- "$manifest")
@@ -328,26 +328,31 @@ if [ -z "$CARGO_TARGET_DIR" ] && [ -x "$broker" ]; then
     if [ -z "$repo" ]; then repo=$(basename -- "$root"); fi
     repo=$(printf '%s' "$repo" | tr -c 'A-Za-z0-9._-' '_')
     if [ -n "$repo" ]; then
-      lease=$("$broker" checkout --repo "$repo" --profile __PROFILE__ --wait 900 --json 2>/dev/null) || lease=""
-      if [ -n "$lease" ]; then
-        target=$(printf '%s' "$lease" | python3 -c 'import json,sys; print(json.load(sys.stdin)["path"])' 2>/dev/null) || target=""
-        lease_id=$(printf '%s' "$lease" | python3 -c 'import json,sys; print(json.load(sys.stdin)["lease"])' 2>/dev/null) || lease_id=""
-        if [ -n "$target" ] && [ -n "$lease_id" ]; then
-          export CARGO_TARGET_DIR="$target"
-          trap '"$broker" checkin --lease "$lease_id" >/dev/null 2>&1 || :' EXIT
-          sh -c "$command_text"
-          status=$?
-          "$broker" checkin --lease "$lease_id" >/dev/null 2>&1 || :
-          trap - EXIT
-          exit "$status"
-        fi
-        if [ -n "$lease_id" ]; then
-          "$broker" checkin --lease "$lease_id" >/dev/null 2>&1 || :
+      if [ -x "$broker" ]; then
+        lease=$("$broker" checkout --repo "$repo" --profile __PROFILE__ --wait 900 --json 2>/dev/null) || lease=""
+        if [ -n "$lease" ]; then
+          target=$(printf '%s' "$lease" | python3 -c 'import json,sys; print(json.load(sys.stdin)["path"])' 2>/dev/null) || target=""
+          lease_id=$(printf '%s' "$lease" | python3 -c 'import json,sys; print(json.load(sys.stdin)["lease"])' 2>/dev/null) || lease_id=""
+          if [ -n "$target" ] && [ -n "$lease_id" ]; then
+            export CARGO_TARGET_DIR="$target"
+            trap '"$broker" checkin --lease "$lease_id" >/dev/null 2>&1 || :' EXIT
+            sh -c "$command_text"
+            status=$?
+            "$broker" checkin --lease "$lease_id" >/dev/null 2>&1 || :
+            trap - EXIT
+            exit "$status"
+          fi
+          if [ -n "$lease_id" ]; then
+            "$broker" checkin --lease "$lease_id" >/dev/null 2>&1 || :
+          fi
         fi
       fi
+      CARGO_TARGET_DIR="$HOME/build-cache/$repo"
+      mkdir -p "$CARGO_TARGET_DIR"
+      export CARGO_TARGET_DIR
+      echo "fleet shell: broker unavailable; using shared fallback $CARGO_TARGET_DIR" >&2
     fi
   fi
-  echo "fleet shell: shared Cargo target unavailable; using the normal target directory" >&2
 fi
 exec sh -c "$command_text"
 "#;
@@ -378,13 +383,13 @@ fn local_build_line(command: &str, cwd: Option<&str>) -> String {
     let change_dir = cwd
         .map(|dir| format!("cd {} || exit $?; ", sh_quote(dir)))
         .unwrap_or_default();
-    let (locked, fallback) = if needs_shell(command) {
-        (
-            under_build_lock(command),
-            format!("sh -c {}", sh_quote_always(command)),
-        )
+    let locked = under_build_lock(command);
+    let fallback = if may_invoke_cargo(command) {
+        broker_aware_shell(command)
+    } else if needs_shell(command) {
+        format!("sh -c {}", sh_quote_always(command))
     } else {
-        (under_build_lock(command), command.to_string())
+        command.to_string()
     };
     format!(
         "{change_dir}if [ -x {BUILD_LOCK} ]; then exec {locked}; fi; echo 'fleet shell: this host has no build lock; running without one' >&2; exec {fallback}"

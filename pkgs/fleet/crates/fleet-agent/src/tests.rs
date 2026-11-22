@@ -1209,7 +1209,7 @@ fn a_compound_cargo_build_leases_and_returns_one_workspace_target() {
     std::fs::write(
         &broker,
         format!(
-            "#!/bin/sh\ncase \"$1\" in checkout) printf '{{\\"path\\":\\"{}\\",\\"lease\\":\\"lease-1\\"}}\\n' ;; checkin) printf '%s\\n' \"$*\" >> \"$HOME/broker.log\" ;; esac\n",
+            "#!/bin/sh\ncase \"$1\" in checkout) printf '{{\"path\":\"{}\",\"lease\":\"lease-1\"}}\\n' ;; checkin) printf '%s\\n' \"$*\" >> \"$HOME/broker.log\" ;; esac\n",
             home.join("target").display()
         ),
     )

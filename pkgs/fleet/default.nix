@@ -174,6 +174,9 @@ let
           cargoLock = ./Cargo.lock;
           strictDeps = true;
           cargoExtraArgs = "--locked " + lib.concatStringsSep " " cargoFlags;
+          # buildDepsOnly also builds test targets unless this is forwarded.
+          # Runtime NixOS packages skip those; checked package outputs keep them.
+          doCheck = doCheck;
           env = envAttrs;
         };
 
