@@ -40,8 +40,9 @@
 //! without its reports. A crash between an admission and its write
 //! loses that admission — and nothing else: anti-entropy is
 //! idempotent, so a peer re-sends what the restarted node lacks. A
-//! persist failure inside a call rolls the admission back instead
-//! (see [`StoredReplica::produce`]), so a failed version is neither
+//! A persistence failure or cancellation before the write-through
+//! point commits rolls the admission back instead (see
+//! [`StoredReplica::produce`]), so an unpersisted version is neither
 //! kept live nor left half-logged.
 //!
 //! # Opening is replay
@@ -762,6 +763,104 @@ pub struct StoredReplica<B> {
     node: NodeStore<B>,
 }
 
+/// Restore a single stored replica if an admission future is dropped
+/// before its write-through point commits. In particular, dropping an
+/// async future while a blob write is pending must not leave an
+/// admission visible in memory without its version record.
+struct AdmissionRollback<'a, B: BlobBackend + Sync> {
+    stored: &'a mut StoredReplica<B>,
+    saved_replica: Option<Replica>,
+    saved_index: Option<Index>,
+}
+
+impl<'a, B: BlobBackend + Sync> AdmissionRollback<'a, B> {
+    fn new(stored: &'a mut StoredReplica<B>) -> Self {
+        Self {
+            saved_replica: Some(stored.replica.clone()),
+            saved_index: Some(stored.node.checkpoint()),
+            stored,
+        }
+    }
+
+    fn commit(mut self) {
+        self.saved_replica = None;
+        self.saved_index = None;
+    }
+}
+
+impl<B: BlobBackend + Sync> std::ops::Deref for AdmissionRollback<'_, B> {
+    type Target = StoredReplica<B>;
+
+    fn deref(&self) -> &Self::Target {
+        self.stored
+    }
+}
+
+impl<B: BlobBackend + Sync> std::ops::DerefMut for AdmissionRollback<'_, B> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.stored
+    }
+}
+
+impl<B: BlobBackend + Sync> Drop for AdmissionRollback<'_, B> {
+    fn drop(&mut self) {
+        if let Some(replica) = self.saved_replica.take() {
+            self.stored.replica = replica;
+        }
+        if let Some(index) = self.saved_index.take() {
+            self.stored.node.restore(index);
+        }
+    }
+}
+
+/// Restore both sides if an exchange future is dropped before both
+/// write-through points finish.
+struct ExchangeRollback<'a, B: BlobBackend + Sync> {
+    left: &'a mut StoredReplica<B>,
+    right: &'a mut StoredReplica<B>,
+    left_replica: Option<Replica>,
+    right_replica: Option<Replica>,
+    left_index: Option<Index>,
+    right_index: Option<Index>,
+}
+
+impl<'a, B: BlobBackend + Sync> ExchangeRollback<'a, B> {
+    fn new(left: &'a mut StoredReplica<B>, right: &'a mut StoredReplica<B>) -> Self {
+        Self {
+            left_replica: Some(left.replica.clone()),
+            right_replica: Some(right.replica.clone()),
+            left_index: Some(left.node.checkpoint()),
+            right_index: Some(right.node.checkpoint()),
+            left,
+            right,
+        }
+    }
+
+    fn commit(mut self) {
+        self.left_replica = None;
+        self.right_replica = None;
+        self.left_index = None;
+        self.right_index = None;
+    }
+}
+
+impl<B: BlobBackend + Sync> Drop for ExchangeRollback<'_, B> {
+    fn drop(&mut self) {
+        if let Some(replica) = self.left_replica.take() {
+            self.left.replica = replica;
+        }
+        if let Some(replica) = self.right_replica.take() {
+            self.right.replica = replica;
+        }
+        if let Some(index) = self.left_index.take() {
+            self.left.node.restore(index);
+        }
+        if let Some(index) = self.right_index.take() {
+            self.right.node.restore(index);
+        }
+    }
+}
+
 /// A stored replica over the production on-disk backend.
 pub type DiskReplica = StoredReplica<FsBlobs>;
 
@@ -851,7 +950,8 @@ impl<B: BlobBackend + Sync> StoredReplica<B> {
     }
 
     /// Admit a version a local producer signed, and persist it.
-    /// When persisting fails, the admission is rolled back — the
+    /// When persisting fails or this future is cancelled, the
+    /// admission is rolled back — the
     /// version leaves the replica and the index — so the envelope
     /// can be retried instead of being rejected as a replay, no
     /// child can be admitted on a version that was never logged,
@@ -870,28 +970,23 @@ impl<B: BlobBackend + Sync> StoredReplica<B> {
         envelope: &Envelope,
         now: LogicalTime,
     ) -> Result<IngestOutcome, StoredError> {
-        let before = self.report_snapshot();
-        let replica = self.replica.clone();
-        let index = self.node.checkpoint();
-        let source = self.replica.name().to_owned();
-        let outcome = self
+        let mut rollback = AdmissionRollback::new(self);
+        let before = rollback.report_snapshot();
+        let source = rollback.replica.name().to_owned();
+        let outcome = rollback
             .replica
             .produce(envelope, now)
             .map_err(StoredError::Ingest)?;
-        if let Err(error) = self
+        rollback
             .persist_admission(envelope, IngressPath::Local, &source, now, &before)
-            .await
-        {
-            self.replica = replica;
-            self.node.restore(index);
-            return Err(error);
-        }
+            .await?;
+        rollback.commit();
         Ok(outcome)
     }
 
     /// Admit one envelope from a peer, and persist it. As
-    /// [`StoredReplica::produce`], a persist failure rolls the
-    /// admission back.
+    /// [`StoredReplica::produce`], a persist failure or cancellation
+    /// rolls the admission back.
     ///
     /// # Errors
     ///
@@ -903,29 +998,25 @@ impl<B: BlobBackend + Sync> StoredReplica<B> {
         source: &str,
         now: LogicalTime,
     ) -> Result<IngestOutcome, StoredError> {
-        let before = self.report_snapshot();
-        let replica = self.replica.clone();
-        let index = self.node.checkpoint();
-        let outcome = self
+        let mut rollback = AdmissionRollback::new(self);
+        let before = rollback.report_snapshot();
+        let outcome = rollback
             .replica
             .receive(path, envelope, source, now)
             .map_err(StoredError::Ingest)?;
-        if let Err(error) = self
+        rollback
             .persist_admission(envelope, path, source, now, &before)
-            .await
-        {
-            self.replica = replica;
-            self.node.restore(index);
-            return Err(error);
-        }
+            .await?;
+        rollback.commit();
         Ok(outcome)
     }
 
     /// Reconcile with another stored replica over one link, then
     /// persist what each side admitted during the exchange (from
     /// the exchange's own outcomes) and every report that changed.
-    /// When persisting fails, the exchange is rolled back on both
-    /// sides — replicas and indexes return to what they had, and
+    /// When persisting fails or this future is cancelled, the
+    /// exchange is rolled back on both sides — replicas and indexes
+    /// return to what they had, and
     /// the exchange can run again — so a half-persisted exchange
     /// never leaves one side holding a version the other lost.
     ///
@@ -938,43 +1029,43 @@ impl<B: BlobBackend + Sync> StoredReplica<B> {
         config: &SyncScopeConfig,
         now: LogicalTime,
     ) -> Result<Exchange, RecordStoreError> {
-        let self_before = self.report_snapshot();
-        let other_before = other.report_snapshot();
-        let self_replica = self.replica.clone();
-        let other_replica = other.replica.clone();
-        let self_index = self.node.checkpoint();
-        let other_index = other.node.checkpoint();
-        let self_name = self.replica.name().to_owned();
-        let other_name = other.replica.name().to_owned();
-        let exchange = reconcile(&mut self.replica, &mut other.replica, config, now);
+        let mut rollback = ExchangeRollback::new(self, other);
+        let self_before = rollback.left.report_snapshot();
+        let other_before = rollback.right.report_snapshot();
+        let self_name = rollback.left.replica.name().to_owned();
+        let other_name = rollback.right.replica.name().to_owned();
+        let exchange = reconcile(
+            &mut rollback.left.replica,
+            &mut rollback.right.replica,
+            config,
+            now,
+        );
         let persisted = async {
             for (event_id, outcome) in &exchange.forward.outcomes {
                 if outcome.is_ok() {
-                    other
+                    rollback
+                        .right
                         .persist_exchange_admission(event_id, &self_name, now)
                         .await?;
                 }
             }
             for (event_id, outcome) in &exchange.backward.outcomes {
                 if outcome.is_ok() {
-                    self.persist_exchange_admission(event_id, &other_name, now)
+                    rollback
+                        .left
+                        .persist_exchange_admission(event_id, &other_name, now)
                         .await?;
                 }
             }
-            self.persist_reports_since(&self_before).await?;
-            other.persist_reports_since(&other_before).await?;
-            self.node.flush_index()?;
-            other.node.flush_index()?;
+            rollback.left.persist_reports_since(&self_before).await?;
+            rollback.right.persist_reports_since(&other_before).await?;
+            rollback.left.node.flush_index()?;
+            rollback.right.node.flush_index()?;
             Ok::<(), RecordStoreError>(())
         }
         .await;
-        if let Err(error) = persisted {
-            self.replica = self_replica;
-            other.replica = other_replica;
-            self.node.restore(self_index);
-            other.node.restore(other_index);
-            return Err(error);
-        }
+        persisted?;
+        rollback.commit();
         Ok(exchange)
     }
 
@@ -1114,16 +1205,14 @@ impl DiskReplica {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use std::collections::BTreeMap;
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
 
     use ed25519_dalek::SigningKey;
     use iroh_blobs::Hash;
     use proptest::prelude::*;
 
-    use super::super::slices::b07_conflict_report::{
-        RetentionPolicy, VersionHeader, conflict_key,
-    };
+    use super::super::slices::b07_conflict_report::{RetentionPolicy, VersionHeader, conflict_key};
     use super::super::slices::b32_ingest_gate::{
         FreshnessWindow, SignerAuthorization, sign_envelope,
     };
@@ -1198,6 +1287,34 @@ mod tests {
                 return Err(anyhow::anyhow!("simulated blob commit failure"));
             }
             self.inner.commit(bytes).await
+        }
+    }
+
+    /// A backend whose first blob commit can be observed and then
+    /// held pending, so tests can cancel an admission at its await.
+    #[derive(Debug, Clone, Default)]
+    struct BlockingBackend {
+        inner: MapBackend,
+        entered: Arc<tokio::sync::Notify>,
+        block_next: Arc<AtomicBool>,
+    }
+
+    impl BlobBackend for BlockingBackend {
+        async fn has(&self, hash: Hash) -> Result<bool, anyhow::Error> {
+            self.inner.has(hash).await
+        }
+
+        async fn read(&self, hash: Hash) -> Result<Option<Vec<u8>>, anyhow::Error> {
+            self.inner.read(hash).await
+        }
+
+        async fn commit(&self, _bytes: Vec<u8>) -> Result<Hash, anyhow::Error> {
+            if self.block_next.swap(false, Ordering::SeqCst) {
+                self.entered.notify_one();
+                std::future::pending().await
+            } else {
+                self.inner.commit(_bytes).await
+            }
         }
     }
 
@@ -1506,6 +1623,112 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn cancelling_a_pending_admission_rolls_it_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let index_path = dir.path().join("index");
+        let backend = BlockingBackend::default();
+        let node = NodeStore::new(
+            ContentStore::new(backend.clone(), ContentStoreConfig::default()),
+            index_path,
+        )
+        .unwrap();
+        let mut stored =
+            StoredReplica::open(node, Replica::new("node-a", "home", conflict_store()))
+                .await
+                .unwrap();
+        let envelope = plain_version([0x42; 32], b"cancel me");
+        let entered = backend.entered.clone();
+        backend.block_next.store(true, Ordering::SeqCst);
+        {
+            let admission = stored.produce(&envelope, START);
+            tokio::pin!(admission);
+            tokio::select! {
+                _ = entered.notified() => {},
+                result = &mut admission => panic!("blocked admission unexpectedly returned: {result:?}"),
+            }
+        }
+        assert!(!stored.replica().inventory().contains(&[0x42; 32]));
+        assert_eq!(stored.replica().envelope(&[0x42; 32]), None);
+        assert!(stored.store().heads(&[0x11; 32]).is_empty());
+    }
+
+    #[tokio::test]
+    async fn cancelling_a_pending_receive_rolls_it_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let backend = BlockingBackend::default();
+        let node = NodeStore::new(
+            ContentStore::new(backend.clone(), ContentStoreConfig::default()),
+            dir.path().join("index"),
+        )
+        .unwrap();
+        let mut stored =
+            StoredReplica::open(node, Replica::new("node-a", "home", conflict_store()))
+                .await
+                .unwrap();
+        let envelope = plain_version([0x43; 32], b"cancel receive");
+        let entered = backend.entered.clone();
+        backend.block_next.store(true, Ordering::SeqCst);
+        {
+            let admission = stored.receive(IngressPath::Remote, &envelope, "node-b", START);
+            tokio::pin!(admission);
+            tokio::select! {
+                _ = entered.notified() => {},
+                result = &mut admission => panic!("blocked receive unexpectedly returned: {result:?}"),
+            }
+        }
+        assert!(!stored.replica().inventory().contains(&[0x43; 32]));
+        assert_eq!(stored.replica().envelope(&[0x43; 32]), None);
+        assert!(stored.store().heads(&[0x11; 32]).is_empty());
+    }
+
+    #[tokio::test]
+    async fn cancelling_a_pending_exchange_rolls_both_sides_back() {
+        let dir_a = tempfile::tempdir().unwrap();
+        let dir_b = tempfile::tempdir().unwrap();
+        let backend_a = BlockingBackend::default();
+        let backend_b = BlockingBackend::default();
+        let mut a = StoredReplica::open(
+            NodeStore::new(
+                ContentStore::new(backend_a, ContentStoreConfig::default()),
+                dir_a.path().join("index"),
+            )
+            .unwrap(),
+            Replica::new("node-a", "home", conflict_store()),
+        )
+        .await
+        .unwrap();
+        let mut b = StoredReplica::open(
+            NodeStore::new(
+                ContentStore::new(backend_b.clone(), ContentStoreConfig::default()),
+                dir_b.path().join("index"),
+            )
+            .unwrap(),
+            Replica::new("node-b", "home", conflict_store()),
+        )
+        .await
+        .unwrap();
+        let x = [0x44; 32];
+        let y = [0x45; 32];
+        a.produce(&plain_version(x, b"x"), START).await.unwrap();
+        b.produce(&plain_version(y, b"y"), START).await.unwrap();
+        let entered = backend_b.entered.clone();
+        backend_b.block_next.store(true, Ordering::SeqCst);
+        let link = SyncScopeConfig::new("notes", "home");
+        {
+            let exchange = a.reconcile_with(&mut b, &link, START + 1);
+            tokio::pin!(exchange);
+            tokio::select! {
+                _ = entered.notified() => {},
+                result = &mut exchange => panic!("blocked exchange unexpectedly returned: {result:?}"),
+            }
+        }
+        assert!(a.replica().inventory().contains(&x));
+        assert!(!a.replica().inventory().contains(&y));
+        assert!(!b.replica().inventory().contains(&x));
+        assert!(b.replica().inventory().contains(&y));
+    }
+
+    #[tokio::test]
     async fn a_failed_report_persist_rolls_the_admission_back() {
         // The version blob lands but the report blob it created
         // does not: the admission — and the index entry the version
@@ -1552,10 +1775,7 @@ mod tests {
         backend.stop_failing();
         let outcome = stored.produce(&envelope, START + 2).await.unwrap();
         assert!(matches!(outcome, IngestOutcome::Conflict(_)));
-        assert_eq!(
-            stored.store().heads(&[0x11; 32]),
-            vec![alice, bob],
-        );
+        assert_eq!(stored.store().heads(&[0x11; 32]), vec![alice, bob],);
         assert!(stored.store().open_report(&[0x11; 32]).is_some());
     }
 
@@ -1609,7 +1829,10 @@ mod tests {
         // commit, which is the exchange version it persists first.
         backend_b.fail_from(1);
         let link = SyncScopeConfig::new("notes", "home");
-        let error = a.reconcile_with(&mut b, &link, START + 1).await.unwrap_err();
+        let error = a
+            .reconcile_with(&mut b, &link, START + 1)
+            .await
+            .unwrap_err();
         assert!(matches!(error, RecordStoreError::Content(_)));
         assert!(a.replica().inventory().contains(&x));
         assert!(!a.replica().inventory().contains(&y));

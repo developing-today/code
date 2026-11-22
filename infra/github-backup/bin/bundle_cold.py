@@ -13,7 +13,13 @@ import subprocess
 import sys
 import tempfile
 
-from ghb_common import RUN_TIMEOUT_SECONDS, backup_root, load_plan, mirror_path, valid_mirror
+from ghb_common import (
+    RUN_TIMEOUT_SECONDS,
+    backup_root,
+    load_plan,
+    mirror_path,
+    valid_mirror,
+)
 
 
 REPO_PART = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
@@ -63,8 +69,12 @@ def create_bundle(mirror, bundle_path):
 
 def _parser():
     parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
-    parser.add_argument("--repo", required=True, help="planned repository as OWNER/REPO")
-    parser.add_argument("--root", help="backup tree root (defaults to configured backup_root)")
+    parser.add_argument(
+        "--repo", required=True, help="planned repository as OWNER/REPO"
+    )
+    parser.add_argument(
+        "--root", help="backup tree root (defaults to configured backup_root)"
+    )
     return parser
 
 
@@ -72,10 +82,15 @@ def main(argv=None):
     args = _parser().parse_args(argv)
     parts = args.repo.split("/")
     if len(parts) != 2 or not all(REPO_PART.fullmatch(part) for part in parts):
-        print("github-backup: --repo must be OWNER/REPO using safe path components", file=sys.stderr)
+        print(
+            "github-backup: --repo must be OWNER/REPO using safe path components",
+            file=sys.stderr,
+        )
         return 2
 
-    root = os.path.abspath(os.path.expanduser(args.root)) if args.root else backup_root()
+    root = (
+        os.path.abspath(os.path.expanduser(args.root)) if args.root else backup_root()
+    )
     plan, problems = load_plan(root)
     if problems:
         for problem in problems:
@@ -92,7 +107,9 @@ def main(argv=None):
     except (OSError, RuntimeError, ValueError) as exc:
         print(f"github-backup: {args.repo}: {exc}", file=sys.stderr)
         return 1
-    print(f"github-backup: {args.repo}: verified bundle at {result['bundle']} ({result['head']})")
+    print(
+        f"github-backup: {args.repo}: verified bundle at {result['bundle']} ({result['head']})"
+    )
     return 0
 
 

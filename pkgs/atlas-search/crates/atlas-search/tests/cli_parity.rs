@@ -115,7 +115,17 @@ fn run_bin(db: &Path, args: &[&str]) -> std::process::Output {
 fn search_tail(name: &str) -> Vec<&'static str> {
     match name {
         "hybrid_default" => vec![],
-        "hybrid_secret_ceiling" => vec!["--max-sensitivity", "secret-bearing"],
+        // The recorded envelope comes from the local Python
+        // CLI at a spelled-out secret ceiling; the matching
+        // disclosure context is the owner's local surface
+        // (#12404) — the CLI's fleet-internal default would
+        // (correctly) withhold the secret-bearing rows.
+        "hybrid_secret_ceiling" => vec![
+            "--max-sensitivity",
+            "secret-bearing",
+            "--context",
+            "local-owner",
+        ],
         "hybrid_shareable_ceiling" => vec!["--max-sensitivity", "shareable"],
         "fts_default" => vec!["--mode", "fts"],
         "vector_default" => vec!["--mode", "vector"],

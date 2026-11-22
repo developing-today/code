@@ -11,7 +11,7 @@ package codegen
 // ".ts" or "mcpx-client.ts" named it on its own — so adding a language was
 // an audit, not an entry. Now the existing package-level emitters are the
 // TypeScript entry's emitters, reached through the table; a new language
-// (Python is the queued follow-on, #1917 Phase 1 remainder) is one more
+// (Python and Roc are additional targets) is one more
 // entry with its own emitters, and callers that ask the Language for file
 // names never spell a foreign target's.
 //
@@ -19,7 +19,7 @@ package codegen
 // data plus three renderings, and a table literal states both at the
 // place a reader looks for them.
 type Language struct {
-	// Name is the registry key: "typescript", and in time "python".
+	// Name is the registry key, such as "typescript", "python" or "roc".
 	Name string
 	// ClientFile is the generated client module's name on disk. For
 	// TypeScript it must stay runner.ClientFileName — the runner writes
@@ -62,10 +62,10 @@ var TypeScript = Language{
 }
 
 // Languages is the registry of codegen targets, in preference order.
-var Languages = []Language{TypeScript, Python}
+var Languages = []Language{TypeScript, Python, Roc}
 
 // Default is the target every surface that does not name one means: the
-// only target there has ever been.
+// original target unless a script selects another language.
 func Default() Language { return TypeScript }
 
 // Lookup finds a target by name.

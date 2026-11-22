@@ -1,10 +1,13 @@
 import { SELF } from "cloudflare:test";
 import { fetchMock } from "./fetch-mock";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
-import { EMBED_DIMS, EMBED_MODEL } from "../src/space";
+import { CEILING, CONTEXT, EMBED_DIMS, EMBED_MODEL } from "../src/space";
 
 const GATE = { Authorization: "Bearer test-gate" };
 const counts = { embed: 0, search: 0 };
+// Raw body of the /v1/search request the Worker forwarded for
+// the #12622 context probe query (captured by its interceptor).
+let statedSearchBody: string | undefined;
 
 function embedReply(space: "good" | "bad") {
   return () => {
@@ -74,6 +77,18 @@ beforeAll(() => {
         responseOptions: { headers: { "Content-Type": "application/json" } },
       };
     })
+    .persist();
+  origin
+    .intercept({
+      path: "/v1/search",
+      method: "POST",
+      body: (b: string) => {
+        if (!b.includes("context probe query")) return false;
+        statedSearchBody = b;
+        return true;
+      },
+    })
+    .reply(searchReply)
     .persist();
   origin.intercept({ path: "/v1/search", method: "POST" }).reply(searchReply).persist();
 });
@@ -161,10 +176,9 @@ describe("atlas-search worker", () => {
     });
     expect(purged.status).toBe(200);
     expect(await purged.json()).toMatchObject({ purged: true, query });
-    const inspect = await SELF.fetch(
-      `https://worker.test/v1/cache/inspect?query=${encodeURIComponent(query)}`,
-      { headers: GATE },
-    );
+    const inspect = await SELF.fetch(`https://worker.test/v1/cache/inspect?query=${encodeURIComponent(query)}`, {
+      headers: GATE,
+    });
     expect(await inspect.json()).toMatchObject({ exists: false });
 
     const second = await search({ query });
@@ -244,5 +258,21 @@ describe("atlas-search worker", () => {
     // retryable in the embedded state); no result was cached.
     expect(meta.has_embedding).toBe(true);
     expect(meta.has_result).toBe(false);
+  });
+
+  it("states the hosted-per-user disclosure context on the forwarded search (#12622)", async () => {
+    // Oracle: #12622 acceptance — the Worker states its
+    // disclosure context on the requests it forwards, instead
+    // of leaving the service to resolve its own default for an
+    // unstated context. The probe interceptor in beforeAll
+    // captured the exact body posted to the search service.
+    statedSearchBody = undefined;
+    const resp = await search({ query: "context probe query" });
+    expect(resp.status).toBe(200);
+    expect(statedSearchBody).toBeDefined();
+    const forwarded = JSON.parse(String(statedSearchBody)) as Record<string, unknown>;
+    expect(forwarded.context).toBe(CONTEXT);
+    expect(forwarded.context).toBe("hosted-per-user");
+    expect(forwarded.ceiling).toBe(CEILING);
   });
 });

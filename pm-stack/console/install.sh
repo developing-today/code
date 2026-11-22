@@ -31,15 +31,16 @@ if [ ! -f "$STATE/.env" ]; then
   printf 'PM_CONSOLE_PORT=4872\nPM_CONSOLE_OWNER_EMAILS=\n' >"$STATE/.env"
 fi
 install -m 644 "$UNIT_SRC" "$UNIT_DST"
-# The timer keeps the public address as declared, and turns Google
-# sign-in on by itself once its two secrets exist.
-for unit in pm-console-expose.service pm-console-expose.timer; do
+# One timer keeps the public address as declared, and turns Google
+# sign-in on by itself once its two secrets exist. The other puts merged
+# console code into service, so a merge needs nobody at this machine.
+for unit in pm-console-expose.service pm-console-expose.timer pm-console-redeploy.service pm-console-redeploy.timer; do
   install -m 644 "$(dirname "$SRC")/systemd/$unit" "$(dirname "$UNIT_DST")/$unit"
 done
 systemctl --user daemon-reload
 systemctl --user enable pm-console.service >/dev/null
 systemctl --user restart pm-console.service
-systemctl --user enable --now pm-console-expose.timer >/dev/null
+systemctl --user enable --now pm-console-expose.timer pm-console-redeploy.timer >/dev/null
 
 # systemd strips one pair of quotes from an EnvironmentFile value, so
 # PM_CONSOLE_PORT="4872" is a valid line: read it the same way.
@@ -48,10 +49,10 @@ PORT="${PORT#[\"\']}"
 PORT="${PORT%[\"\']}"
 PORT="${PORT:-4872}"
 case "$PORT" in
-  *[!0-9]*)
-    echo "install.sh: PM_CONSOLE_PORT in $STATE/.env is not a number: $PORT" >&2
-    exit 1
-    ;;
+*[!0-9]*)
+  echo "install.sh: PM_CONSOLE_PORT in $STATE/.env is not a number: $PORT" >&2
+  exit 1
+  ;;
 esac
 for _ in 1 2 3 4 5 6 7 8 9 10; do
   if curl -fsS "http://127.0.0.1:$PORT/console/health" >/dev/null 2>&1; then

@@ -107,6 +107,8 @@
         "/nix/store"
         "/nix/var/log/nix"
         "/home/user/git/fleet"
+        # Persistent home is the backing path for the bind-mounted git tree.
+        "/nix/persistent/home/user/git/fleet"
       ];
       #localuser = null;
     };

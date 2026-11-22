@@ -477,12 +477,15 @@ pub(crate) fn not_code_lane_owner(lane_id: &str) -> Option<&'static str> {
 /// The family of a lane id shaped `<family>-<suffix>`, when the
 /// family is one the broker knows and the suffix is a nonempty
 /// lowercase alphabetic string ("code-a", "not-code-c",
-/// "darwin-nix-a"). claim_preamble uses this as the wildcard
-/// rule (Drew, 2026-11-16): a claim naming a known-family lane
-/// with no registry row auto-provisions the row instead of
-/// failing with "unknown lane_id". darwin-nix is wildcard-only:
-/// it is deliberately not part of the canonical seed set above,
-/// but a darwin-nix lane claim provisions its row on first use.
+/// "darwin-nix-a"). Since #12544 (Drew, 2026-11-22) claims no
+/// longer consult this: claim_preamble auto-registers ANY lane
+/// name on first claim. The family rule survives for
+/// execution_lane_fields, which derives an execution record's
+/// mode from the family of the lane id it carries (#7598).
+/// darwin-nix remains wildcard-only in the seed sense: it is
+/// deliberately not part of the canonical seed set above, but a
+/// darwin-nix lane claim registers its row on first use, like
+/// any other name.
 pub(crate) fn lane_family_of(lane_id: &str) -> Option<&str> {
     let (family, suffix) = lane_id.rsplit_once('-')?;
     if suffix.is_empty() || !suffix.bytes().all(|b| b.is_ascii_lowercase()) {
@@ -502,31 +505,15 @@ const LANE_FAMILIES: [&str; 7] = [
     "darwin-nix",
 ];
 
-/// The refusal for a claim whose lane id has no registry row and no
-/// known family. It keeps the "unknown lane_id" verdict callers key
-/// on, and when the id is a bare family name ("not-code" for
-/// "not-code-d", #6853's recurrence) it says so and names the shape
-/// to pass instead, so the caller can correct itself rather than
-/// stop.
-pub(crate) fn unknown_lane_error(lane_id: &str) -> String {
-    if LANE_FAMILIES.contains(&lane_id) {
-        format!(
-            "claim_repo_task: unknown lane_id {lane_id}: that is a lane family, not a lane; \
-             pass a lane in it such as {lane_id}-<suffix> (your scheduled lane's full id)"
-        )
-    } else {
-        format!("claim_repo_task: unknown lane_id {lane_id}")
-    }
-}
-
 /// The registry seed statement (#6853): INSERT OR IGNORE, so it
 /// restores a missing registration with its canonical fields and
 /// can never resurrect or re-enable a lane whose row already
 /// exists in any state -- a lane disabled by hand stays disabled
 /// across broker restarts until it is re-enabled by hand. Lanes
-/// outside the canonical set are never seeded at all; the
-/// claim-time wildcard (lane_family_of) provisions known-family
-/// lanes the seed does not name.
+/// outside the canonical set are never seeded at all;
+/// claim_preamble's auto-registration (lane_provision_sql,
+/// #12544) registers any lane the seed does not name, on first
+/// claim.
 pub(crate) fn lane_seed_sql() -> String {
     let values: Vec<String> = canonical_lanes()
         .iter()
@@ -536,6 +523,19 @@ pub(crate) fn lane_seed_sql() -> String {
         "INSERT OR IGNORE INTO lanes (lane_id, worker_id, queue, enabled) VALUES {}",
         values.join(", ")
     )
+}
+
+/// The claim-time auto-registration statement (#12544, Drew
+/// 2026-11-22): a claim naming a lane with no registry row
+/// registers it on the spot -- the claiming worker as owner, the
+/// one-queue binding ("*"), enabled = 1 -- and the claim
+/// proceeds. INSERT OR IGNORE, so a row that already exists (or
+/// lands concurrently) is never overwritten: an existing row's
+/// owner and enabled flag always win over a registration
+/// attempt. Extracted as a builder so the tests pin its shape
+/// without a live store (the claim_update_sql pattern).
+pub(crate) fn lane_provision_sql() -> &'static str {
+    "INSERT OR IGNORE INTO lanes (lane_id, worker_id, queue, enabled) VALUES (?, ?, '*', 1)"
 }
 
 impl TursoBackend {
@@ -1532,6 +1532,12 @@ pub(crate) fn verb_sweep(t: &TursoBackend, req: &Value) -> Value {
 /// (Drew's doctrine, 2026-11-07: a done task means triage or a slice, not
 /// a resolved issue), and neither is a task in another queue.
 ///
+/// The caller may also supply `pulls` (`[{"number": 123}]`, #12280): the
+/// answer then carries `covered_pulls` / `uncovered_pulls` under the same
+/// live-task rule, matched on the PR dedupe-key classes (the warden's
+/// `pr` key and the reconciliation's `merge-watch` key). Callers that do
+/// not send `pulls` get the issue-only answer, unchanged.
+///
 /// Read-only by construction: it never writes tasks or events, so it is
 /// safe to run on a schedule and safe to run in observe mode. The caller
 /// decides what to enqueue; the dedupe key makes that idempotent.
@@ -1548,6 +1554,13 @@ pub(crate) fn verb_coverage(t: &TursoBackend, req: &Value) -> Value {
         Some(a) => a.clone(),
         None => return fail(2, "coverage: issues must be an array".to_string()),
     };
+    let pulls: Option<Vec<Value>> = match req.get("pulls") {
+        None => None,
+        Some(v) => match v.as_array() {
+            Some(a) => Some(a.clone()),
+            None => return fail(2, "coverage: pulls must be an array".to_string()),
+        },
+    };
     let work = (|| -> Result<Value, TErr> {
         // One query for every live task in the queue that carries an
         // issue dedupe key; the match is done in Rust so both the
@@ -1561,6 +1574,8 @@ pub(crate) fn verb_coverage(t: &TursoBackend, req: &Value) -> Value {
         )?;
         let mut live: std::collections::HashMap<i64, (i64, String)> =
             std::collections::HashMap::new();
+        let mut live_prs: std::collections::HashMap<i64, (i64, String)> =
+            std::collections::HashMap::new();
         for r in &rows {
             let id = r.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
             let status = r
@@ -1572,7 +1587,10 @@ pub(crate) fn verb_coverage(t: &TursoBackend, req: &Value) -> Value {
                 continue;
             };
             if let Some(n) = issue_number_for_repo(key, &repo) {
-                live.entry(n).or_insert((id, status));
+                live.entry(n).or_insert((id, status.clone()));
+            }
+            if let Some(n) = pr_number_for_repo(key, &repo) {
+                live_prs.entry(n).or_insert((id, status));
             }
         }
         let mut uncovered: Vec<Value> = Vec::new();
@@ -1595,7 +1613,7 @@ pub(crate) fn verb_coverage(t: &TursoBackend, req: &Value) -> Value {
                 })),
             }
         }
-        Ok(json!({
+        let mut out = json!({
             "queue": queue,
             "repo": repo,
             "open_issues": issues.len(),
@@ -1603,12 +1621,50 @@ pub(crate) fn verb_coverage(t: &TursoBackend, req: &Value) -> Value {
             "uncovered": uncovered.len(),
             "uncovered_issues": uncovered,
             "covered_issues": covered,
-        }))
+        });
+        if let Some(pulls) = &pulls {
+            let mut covered_pulls: Vec<Value> = Vec::new();
+            let mut uncovered_pulls: Vec<Value> = Vec::new();
+            for pr in pulls {
+                let Some(n) = pr.get("number").and_then(|v| v.as_i64()) else {
+                    continue;
+                };
+                match live_prs.get(&n) {
+                    Some((id, status)) => covered_pulls.push(json!({
+                        "number": n,
+                        "task": id,
+                        "status": status,
+                    })),
+                    None => uncovered_pulls.push(json!({ "number": n })),
+                }
+            }
+            out["covered_pulls"] = json!(covered_pulls);
+            out["uncovered_pulls"] = json!(uncovered_pulls);
+        }
+        Ok(out)
     })();
     match work {
         Ok(v) => ok(v),
         Err(e) => terr(e),
     }
+}
+
+/// The number after a `:<repo>:<class>:` marker in a dedupe key, with
+/// the shared tail rule: what follows the digits must be empty or a
+/// further `:`-separated suffix (e.g. `:dispatch:<x>`), so a malformed
+/// key like `…:issue:12abc` cannot silently claim coverage for 12.
+fn number_after_marker(key: &str, marker: &str) -> Option<i64> {
+    let start = key.find(marker)? + marker.len();
+    let rest = &key[start..];
+    let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+    if digits.is_empty() {
+        return None;
+    }
+    let tail = &rest[digits.len()..];
+    if !(tail.is_empty() || tail.starts_with(':')) {
+        return None;
+    }
+    digits.parse::<i64>().ok()
 }
 
 /// Extract the issue number from a repo-health dedupe key for `repo`.
@@ -1618,20 +1674,18 @@ pub(crate) fn verb_coverage(t: &TursoBackend, req: &Value) -> Value {
 /// variants (`…:issue:<n>:dispatch:<x>`) and the legacy repo-name aliases
 /// the reconciliation run of 2026-11-07 had to match by hand.
 pub(crate) fn issue_number_from_dedupe(key: &str, repo: &str) -> Option<i64> {
-    let marker = format!(":{repo}:issue:");
-    let start = key.find(&marker)? + marker.len();
-    let rest = &key[start..];
-    let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
-    if digits.is_empty() {
-        return None;
-    }
-    // Reject `:issue:12abc` style tails only when the tail is not a
-    // known suffix separator.
-    let tail = &rest[digits.len()..];
-    if !(tail.is_empty() || tail.starts_with(':')) {
-        return None;
-    }
-    digits.parse::<i64>().ok()
+    number_after_marker(key, &format!(":{repo}:issue:"))
+}
+
+/// Extract the PR number from a repo-health dedupe key for `repo`.
+///
+/// Both PR-naming key classes carry the same `:<repo>:pr:<n>` segment:
+/// the stale-PR warden's shepherd key `repo-health:v1:pr:<repo>:pr:<n>`
+/// and the coverage reconciliation's merge-watch key
+/// `repo-health:v1:merge-watch:<repo>:pr:<n>` (#4951). One marker parse
+/// covers both, so a live task of either family is PR coverage (#12280).
+pub(crate) fn pr_number_from_dedupe(key: &str, repo: &str) -> Option<i64> {
+    number_after_marker(key, &format!(":{repo}:pr:"))
 }
 
 /// The other name a repository's issue dedupe keys may carry.
@@ -1658,6 +1712,12 @@ pub(crate) fn legacy_alias(repo: &str) -> Option<&'static str> {
 pub(crate) fn issue_number_for_repo(key: &str, repo: &str) -> Option<i64> {
     issue_number_from_dedupe(key, repo)
         .or_else(|| legacy_alias(repo).and_then(|alias| issue_number_from_dedupe(key, alias)))
+}
+
+/// PR number from a key under `repo` or any legacy alias of it.
+pub(crate) fn pr_number_for_repo(key: &str, repo: &str) -> Option<i64> {
+    pr_number_from_dedupe(key, repo)
+        .or_else(|| legacy_alias(repo).and_then(|alias| pr_number_from_dedupe(key, alias)))
 }
 
 pub(crate) fn touch_worker(

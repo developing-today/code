@@ -31,6 +31,18 @@ interface Section {
   loading: Promise<void> | null;
 }
 
+/** Data that carries the time it was really read: a copy of a section
+ * that somewhere else read (the host reporting to the edge). */
+export class Stamped {
+  constructor(
+    public data: unknown,
+    public at: number,
+    /** Why the place that read it could not read it again, if it could
+     * not: the data is then its last good copy. */
+    public error: string | null = null,
+  ) {}
+}
+
 export interface Act {
   id: string;
   kind: string;
@@ -55,6 +67,8 @@ export class Docs {
   private sections = new Map<string, Section>();
   private asked = 0;
   private acts: Act[] = [];
+  /** Small values that travel in the core document beside its sections. */
+  private extras: Record<string, unknown> = {};
   private timer: ReturnType<typeof setInterval> | null = null;
 
   constructor(
@@ -79,10 +93,13 @@ export class Docs {
     if (s.loading) return s.loading;
     s.loading = (async () => {
       try {
-        s.data = await s.load();
-        s.ok = true;
-        s.error = null;
-        s.goodAt = this.now();
+        const loaded = await s.load();
+        const now = this.now();
+        // A copy read elsewhere is as old as that read, never newer than now.
+        s.data = loaded instanceof Stamped ? loaded.data : loaded;
+        s.goodAt = loaded instanceof Stamped ? Math.min(now, loaded.at) : now;
+        s.error = loaded instanceof Stamped ? loaded.error : null;
+        s.ok = s.error === null;
       } catch (error) {
         s.ok = false;
         s.error = (error as Error).message.slice(0, 300);
@@ -97,6 +114,27 @@ export class Docs {
   /** After an action: read the sections it changed, so the next document shows it. */
   async touch(names: string[]): Promise<void> {
     await Promise.all(names.map((n) => this.refresh(n)));
+  }
+
+  /** Record a section read by another trusted source, such as the edge
+   * reading GitHub or the queue store while the laptop is away. */
+  record(name: string, data: unknown, at = this.now()): void {
+    const s = this.sections.get(name);
+    if (!s) return;
+    s.data = data;
+    s.at = at;
+    s.goodAt = at;
+    s.ok = true;
+    s.error = null;
+  }
+
+  /** Keep the last good value, but say that a fresh read failed. */
+  recordFailure(name: string, error: unknown): void {
+    const s = this.sections.get(name);
+    if (!s) return;
+    s.at = this.now();
+    s.ok = false;
+    s.error = (error as Error).message.slice(0, 300);
   }
 
   private stale(s: Section): boolean {
@@ -126,8 +164,80 @@ export class Docs {
     return s && s.goodAt > 0 ? s.data : null;
   }
 
+  /** Sections brought up to date for a caller that asks rarely (a
+   * phone's widget): stale ones are read again and waited for, up to
+   * `waitMs`. It does not count as someone looking, so it does not keep
+   * the background loop running. `missing` names the sections that have
+   * never been read; `at` is the oldest good read among the rest. */
+  async current(
+    names: string[],
+    waitMs: number,
+  ): Promise<{ data: Record<string, unknown>; at: number; missing: string[] }> {
+    const stale = names.filter((n) => {
+      const s = this.sections.get(n);
+      return s !== undefined && this.stale(s);
+    });
+    if (stale.length > 0) {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      await Promise.race([
+        Promise.all(stale.map((n) => this.refresh(n))),
+        new Promise((resolve) => {
+          timer = setTimeout(resolve, waitMs);
+        }),
+      ]);
+      clearTimeout(timer);
+    }
+    const read = names.map((n) => this.sections.get(n)?.goodAt ?? 0);
+    const good = read.filter((t) => t > 0);
+    return {
+      data: Object.fromEntries(names.map((n) => [n, this.good(n)])),
+      at: good.length > 0 ? Math.min(...good) : 0,
+      missing: names.filter((_, i) => read[i] === 0),
+    };
+  }
+
   logAct(act: Act): void {
     this.acts = [act, ...this.acts.filter((a) => a.id !== act.id)].slice(0, ACTS_KEPT);
+  }
+
+  /** What the owner did lately, newest first; and a way to put it back
+   * after a restart of whatever holds this. */
+  recentActs(): Act[] {
+    return this.acts;
+  }
+
+  restoreActs(acts: Act[]): void {
+    this.acts = acts.slice(0, ACTS_KEPT);
+  }
+
+  /** Set, or with undefined remove, a value carried in the core document. */
+  extra(name: string, value: unknown): void {
+    if (value === undefined) delete this.extras[name];
+    else this.extras[name] = value;
+  }
+
+  /** Someone is looking, though not through this process: keep reading. */
+  keepAlive(): void {
+    this.asked = this.now();
+  }
+
+  /** Whether anyone has asked for a document lately. */
+  watched(): boolean {
+    return this.now() - this.asked <= WATCH_MS;
+  }
+
+  /** Every section that has been read, with when and a fingerprint of
+   * its content: what is reported to the edge, and how it tells that a
+   * section has not changed. */
+  snapshot(): { name: string; at: number; hash: string; data: unknown; error: string | null }[] {
+    const out: { name: string; at: number; hash: string; data: unknown; error: string | null }[] = [];
+    for (const [name, s] of this.sections) {
+      if (s.goodAt === 0) continue;
+      const hash = createHash("sha1").update(JSON.stringify(s.data)).digest("base64url");
+      // The data is the last good copy; `error` says the latest read failed.
+      out.push({ name, at: s.goodAt, hash, data: s.data, error: s.ok ? null : s.error });
+    }
+    return out;
   }
 
   /** The document, at once. Only a section that has never been read is
@@ -158,7 +268,7 @@ export class Docs {
       health[n] = { ok: s.ok, error: s.error };
     }
     out.health = health;
-    if (name === "core") out.acts = this.acts;
+    if (name === "core") Object.assign(out, this.extras, { acts: this.acts });
     // The tag covers the content and not the times it was read, so a
     // document that has not changed costs the phone nothing. The read
     // times travel beside it.

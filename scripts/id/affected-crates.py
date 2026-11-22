@@ -5,6 +5,7 @@ Usage:
   git diff --name-only origin/main...HEAD | python3 scripts/id/affected-crates.py -
   python3 scripts/id/affected-crates.py change.patch
 """
+
 from __future__ import annotations
 
 import argparse
@@ -49,7 +50,7 @@ def diff_paths(diff_text: str) -> list[str]:
             import shlex
 
             try:
-                sides = shlex.split(line[len("diff --git "):])
+                sides = shlex.split(line[len("diff --git ") :])
             except ValueError:
                 continue
             if len(sides) == 2:
@@ -99,7 +100,9 @@ def select_affected(diff_file_paths: list[str], metadata: dict[str, Any]) -> lis
             return sorted(all_names)
         # A change to workspace-level Cargo configuration can affect every
         # member even though it is not owned by a package directory.
-        if path == ID_ROOT / ".cargo" or str(path).startswith(str(ID_ROOT / ".cargo") + "/"):
+        if path == ID_ROOT / ".cargo" or str(path).startswith(
+            str(ID_ROOT / ".cargo") + "/"
+        ):
             return sorted(all_names)
         if path != ID_ROOT and not str(path).startswith(str(ID_ROOT) + "/"):
             continue

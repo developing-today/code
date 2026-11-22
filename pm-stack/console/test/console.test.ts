@@ -16,6 +16,7 @@ import { beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { actions } from "../src/actions.ts";
 import {
   AuthError,
   authorize,
@@ -44,7 +45,7 @@ const CENTRAL: Issuer = {
   audience: "pm-console",
   source: "bearer",
 };
-const OWNER = "drewrypope@gmail.com";
+const OWNER = "owner@example.com";
 
 function b64u(bytes: Uint8Array | string): string {
   const raw = typeof bytes === "string" ? new TextEncoder().encode(bytes) : bytes;
@@ -235,7 +236,7 @@ describe("who is the owner", () => {
     });
     expect(
       await identify(
-        edge({ cookie: `x=1; CF_Authorization=${await rsa.sign(good(ACCESS, { email: "DrewryPope@Gmail.com" }))}` }),
+        edge({ cookie: `x=1; CF_Authorization=${await rsa.sign(good(ACCESS, { email: "Owner@Example.COM" }))}` }),
         cfg,
         at(keys),
       ),
@@ -256,7 +257,7 @@ describe("who is the owner", () => {
     expect(await status(edge({ "cf-access-jwt-assertion": "garbage" }))).toBe(401);
     expect(await status(edge({ "cf-access-jwt-assertion": await other.sign(good(ACCESS)) }))).toBe(401);
     expect(
-      await status(edge({ "cf-access-jwt-assertion": await rsa.sign(good(ACCESS, { email: "someone@gmail.com" })) })),
+      await status(edge({ "cf-access-jwt-assertion": await rsa.sign(good(ACCESS, { email: "someone@example.net" })) })),
     ).toBe(403);
     expect(
       await status(edge({ "cf-access-jwt-assertion": await rsa.sign(good(ACCESS, { email_verified: false })) })),
@@ -326,7 +327,7 @@ describe("configuration", () => {
     const cfg = readConfig(
       {
         HOME: "/h",
-        PM_CONSOLE_OWNER_EMAILS: " DrewryPope@gmail.com ,",
+        PM_CONSOLE_OWNER_EMAILS: " Owner@Example.com ,",
         PM_CONSOLE_ACCESS_TEAM_DOMAIN: "team.cloudflareaccess.com",
         PM_CONSOLE_ACCESS_AUD: "aud-tag",
         PM_CONSOLE_ISSUERS_FILE: "/x",
@@ -432,6 +433,25 @@ describe("operations", () => {
       await expect(ops.queueAct(action, task, reason)).rejects.toThrow(OpError);
     }
     expect(r.calls.length).toBe(1);
+  });
+
+  test("a failed deferred prompt enqueue is reported, not recorded done", async () => {
+    // The laptop runs this late, with nobody listening for the answer:
+    // a nonzero enqueue must throw, so the held action is reported
+    // failed and the edge does not acknowledge a queue task that was
+    // never filed.
+    const r = recorder(() => ({ code: 1, stderr: "queue is down" }));
+    const ops = new Ops(CFG, r.run);
+    const table = actions(ops, {} as never);
+    await expect(
+      table["prompt.enqueue"].run({ issue: 201, text: "Do the docs", at: "2026-11-22T12:00:00Z" }),
+    ).rejects.toThrow(/queue is down/);
+    // And the good path still answers queued.
+    const ok = recorder(() => ({ code: 0, stderr: "" }));
+    const good = actions(new Ops(CFG, ok.run), {} as never);
+    await expect(
+      good["prompt.enqueue"].run({ issue: 201, text: "Do the docs", at: "2026-11-22T12:00:00Z" }),
+    ).resolves.toEqual({ issue: 201, queued: true });
   });
 
   test("the queue is read with bound parameters and never written", async () => {
