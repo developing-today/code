@@ -6,10 +6,10 @@ name: pm-console-edge deploy
 # Deploys the Worker that serves the PM app from the edge
 # (pm-stack/console/edge): every push to main that touches the console,
 # or a manual run, runs the console's tests (which drive the Worker's
-# routing and state against the host's real handler), bundles the
-# Worker, and uploads it with the CLOUDFLARE_API_TOKEN and
-# CLOUDFLARE_ACCOUNT_ID repository secrets, the ones message-bridge
-# deploys with.
+# routing and state against the host's real handler), bundles the Worker,
+# uploads a cf Worker version, explicitly promotes it, and uses the
+# CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID repository secrets (the
+# same credentials used by message-bridge).
 #
 # The Worker has no secrets: the keys it uses it makes itself, or are
 # published by the host. It has no route here either. The host's
@@ -47,6 +47,9 @@ concurrency:
 jobs:
   deploy:
     name: deploy pm-console-edge
+    # workflow_dispatch can select a non-main ref. Never expose repository
+    # Cloudflare secrets to a workflow copy from another ref.
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -62,43 +65,100 @@ jobs:
             echo "ready=false" >> "$GITHUB_OUTPUT"
             echo "Skipped the upload: set the CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID repository secrets to deploy pm-console-edge from the repo." >> "$GITHUB_STEP_SUMMARY"
           fi
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
+      - uses: DeterminateSystems/magic-nix-cache-action@84c0677f58dcedf3b91f8223ce36a9ea5b3c84b7 # v15
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: 24
+          node-version: 24.22.0
       - name: Test the console and its edge
         working-directory: pm-stack/console
         run: bun test
       - name: Install the deploy tool
         working-directory: pm-stack/console/edge
         run: npm ci --no-audit --no-fund
+      - name: Build the repo-pinned cf CLI
+        env:
+          NIXPKGS_ALLOW_UNFREE: "1"
+        run: |
+          # Reuse the cf and Wrangler packages already pinned by the repo flake.
+          nix build --impure .#messageBridgeDeploy --print-build-logs --out-link "$RUNNER_TEMP/messageBridgeDeploy"
+          cf_path="$(nix path-info --recursive "$RUNNER_TEMP/messageBridgeDeploy" | awk -F/ '$NF ~ /^cf-[0-9]/ {print; exit}')"
+          if [ -z "$cf_path" ]; then
+            echo "cf package was not in the message-bridge deployment closure" >&2
+            exit 1
+          fi
+          echo "$cf_path/bin" >> "$GITHUB_PATH"
+          echo "CF_MODULE=$cf_path/lib/node_modules/cf" >> "$GITHUB_ENV"
+          test "$("$cf_path/bin/cf" --version)" = "1.0.0-beta.20"
+      - name: Link cf project config
+        working-directory: pm-stack/console/edge
+        run: |
+          mkdir -p node_modules
+          ln -s "$CF_MODULE" node_modules/cf
       - name: Bundle the Worker
         working-directory: pm-stack/console/edge
         run: |
           node build.mjs
-          npx wrangler deploy --dry-run --outdir .wrangler/dry
-      - name: Deploy
-        if: steps.secrets.outputs.ready == 'true'
+          cf -q workers versions create --worker pm-console-edge \
+            --tag "git-${GITHUB_SHA}" \
+            --message "git ${GITHUB_SHA}" \
+            --dry-run
+      - name: Upload Worker version
+        id: upload
+        if: steps.secrets.outputs.ready == 'true' && inputs.rollback_version == ''
+        working-directory: pm-stack/console/edge
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          VERSION_TAG: git-${{ github.sha }}
+        run: |
+          cf -q workers versions create --worker pm-console-edge \
+            --tag "$VERSION_TAG" \
+            --message "git ${GITHUB_SHA}"
+          version_id="$(cf -q workers versions list --worker-id pm-console-edge | VERSION_TAG="$VERSION_TAG" node -e '
+            const data = JSON.parse(require("node:fs").readFileSync(0, "utf8"));
+            const items = [data, data?.result, data?.result?.items, data?.items, data?.versions].find(Array.isArray);
+            if (!items) throw new Error("cf workers versions list returned an unexpected response");
+            const tag = process.env.VERSION_TAG;
+            const matches = items.filter((v) => (v.annotations?.["workers/tag"] ?? v.metadata?.annotations?.["workers/tag"]) === tag);
+            matches.sort((a, b) => Date.parse(b.metadata?.created_on ?? b.created_on ?? 0) - Date.parse(a.metadata?.created_on ?? a.created_on ?? 0));
+            if (!matches[0]?.id) throw new Error(`uploaded version with tag ${tag} was not found`);
+            process.stdout.write(matches[0].id);
+          ')"
+          if ! printf '%s' "$version_id" | grep -Eq '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'; then
+            echo "cf returned an invalid Worker version id" >&2
+            exit 1
+          fi
+          echo "version_id=$version_id" >> "$GITHUB_OUTPUT"
+      - name: Promote uploaded version
+        if: steps.secrets.outputs.ready == 'true' && inputs.rollback_version == ''
+        working-directory: pm-stack/console/edge
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          VERSION_ID: ${{ steps.upload.outputs.version_id }}
+        run: |
+          versions="$(jq -cn --arg id "$VERSION_ID" '[{version_id:$id,percentage:100}]')"
+          cf -q workers deployments create --worker pm-console-edge --strategy percentage --versions "$versions"
+          echo "Promoted pm-console-edge version ${VERSION_ID} from ${GITHUB_SHA}." >> "$GITHUB_STEP_SUMMARY"
+      - name: Promote rollback version
+        if: steps.secrets.outputs.ready == 'true' && inputs.rollback_version != ''
         working-directory: pm-stack/console/edge
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           ROLLBACK_VERSION: ${{ inputs.rollback_version }}
         run: |
-          # The input goes through the env, never into the script text,
-          # and must look like a version id before it is used.
-          if [ -n "${ROLLBACK_VERSION:-}" ]; then
-            if ! printf '%s' "$ROLLBACK_VERSION" | grep -Eq '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'; then
-              echo "rollback_version is not a version id" >&2
-              exit 2
-            fi
-            npx wrangler rollback "$ROLLBACK_VERSION" --yes --message "rollback from workflow run ${GITHUB_RUN_ID}"
-            echo "Put pm-console-edge back to version ${ROLLBACK_VERSION}." >> "$GITHUB_STEP_SUMMARY"
-          else
-            npx wrangler deploy --var "VERSION:${GITHUB_SHA::12}" --message "git ${GITHUB_SHA}"
-            echo "Deployed pm-console-edge from ${GITHUB_SHA}." >> "$GITHUB_STEP_SUMMARY"
+          # The input stays in the environment and must be a version id.
+          if ! printf '%s' "$ROLLBACK_VERSION" | grep -Eq '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'; then
+            echo "rollback_version is not a version id" >&2
+            exit 2
           fi
+          versions="$(jq -cn --arg id "$ROLLBACK_VERSION" '[{version_id:$id,percentage:100}]')"
+          cf -q workers deployments create --worker pm-console-edge --strategy percentage --versions "$versions"
+          echo "Put pm-console-edge back to version ${ROLLBACK_VERSION}." >> "$GITHUB_STEP_SUMMARY"
       - name: Check the deployed Worker answers
         if: steps.secrets.outputs.ready == 'true' && inputs.rollback_version == ''
         env:
