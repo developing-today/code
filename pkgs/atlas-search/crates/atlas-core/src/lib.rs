@@ -113,8 +113,10 @@ pub use search::{
     run_search_with_executor_traced,
 };
 pub use stage::{
-    REGISTRY_V1_DDL, Registry, STAGE_SCHEMA_VERSION, STAGE_V1_DDL, STAGE_V1_TABLES, StagingUnit,
-    UnitState, check_stage_schema, provision_staging_db, schema_version,
+    ChunkClassification, REGISTRY_V1_DDL, Registry, STAGE_SCHEMA_VERSION, STAGE_V1_DDL,
+    STAGE_V1_TABLES, StagingUnit, UnitState, check_stage_schema, chunk_classifications,
+    provision_staging_db, schema_version, stage_classified_artifact,
+    stage_classified_artifact_in_db,
 };
 pub use trace::{JsonlTraceSink, TRACE_SCHEMA, TraceContext, TraceSink};
 pub use trace_ingest::{
