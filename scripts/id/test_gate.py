@@ -13,8 +13,10 @@ from __future__ import annotations
 import importlib.util
 import json
 import math
+import os
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 
@@ -120,6 +122,83 @@ class BatchLogTests(unittest.TestCase):
             raw = path.read_text(encoding="utf-8").strip().splitlines()
         self.assertEqual(len(raw), 1)
         self.assertEqual(json.loads(raw[0])["prs"], [101])
+
+
+class RunBatchTests(unittest.TestCase):
+    """Oracle: injected command/GitHub fakes capture the exact gate state transitions."""
+
+    def test_green_batch_checks_then_merges_and_logs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            events: list[tuple[str, object]] = []
+
+            def git(args: list[str], **kwargs: object) -> str:
+                events.append(("git", args))
+                return ""
+
+            def shell(command: str, **kwargs: object) -> int:
+                events.append(("shell", command))
+                return 0
+
+            def gh(args: list[str], **kwargs: object) -> str:
+                events.append(("gh", args))
+                if args[:2] == ["pr", "view"]:
+                    return '{"headRefOid":"deadbeef"}'
+                return ""
+
+            result = gate.run_batch(
+                [12470], 1, affected={12470: ["id-core"]},
+                log_path=Path(tmp) / "gate.jsonl", repo=Path(tmp),
+                git=git, shell=shell, gh=gh,
+            )
+            self.assertEqual(result, "green")
+            self.assertTrue(any(name == "shell" for name, _ in events))
+            self.assertTrue(any(name == "gh" and "merge" in args for name, args in events))
+            record, = gate.read_log(Path(tmp) / "gate.jsonl")
+            self.assertEqual(record["result"], "green")
+            self.assertEqual(record["prs"], [12470])
+
+    def test_red_batch_bisects_merges_green_and_logs_all_runs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            shell_calls: list[str] = []
+            gh_calls: list[list[str]] = []
+
+            def git(args: list[str], **kwargs: object) -> str:
+                return ""
+
+            def shell(command: str, **kwargs: object) -> int:
+                shell_calls.append(command)
+                # Oracle fixture: PR 2 is the sole culprit.
+                prs = kwargs.get("prs", [])
+                return int(2 in prs)
+
+            def gh(args: list[str], **kwargs: object) -> str:
+                gh_calls.append(args)
+                return '{"headRefOid":"deadbeef"}' if args[:2] == ["pr", "view"] else ""
+
+            def verdict(prs: list[int], command: str, repo: Path) -> int:
+                return int(2 in prs)
+
+            result = gate.run_batch(
+                [1, 2], 7, affected={1: ["a"], 2: ["b"]},
+                log_path=Path(tmp) / "gate.jsonl", repo=Path(tmp),
+                git=git, shell=verdict, gh=gh,
+            )
+            self.assertEqual(result, "red")
+            records = gate.read_log(Path(tmp) / "gate.jsonl")
+            self.assertEqual([(r["prs"], r["result"]) for r in records],
+                             [([1, 2], "red"), ([1], "green"), ([2], "red")])
+            self.assertTrue(any("merge" in args and "1" in args for args in gh_calls))
+            self.assertFalse(any("merge" in args and "2" in args for args in gh_calls))
+
+    def test_gate_off_runs_nothing(self) -> None:
+        with mock.patch.dict(os.environ, {"ID_GATE_OFF": "1"}):
+            result = gate.run_batch(
+                [1], 1, affected={}, log_path=Path("unused.jsonl"),
+                repo=Path("."), git=lambda *a, **k: self.fail("git ran"),
+                shell=lambda *a, **k: self.fail("shell ran"),
+                gh=lambda *a, **k: self.fail("gh ran"),
+            )
+        self.assertEqual(result, "off")
 
 
 if __name__ == "__main__":

@@ -34,7 +34,10 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shlex
+import subprocess
 import sys
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Iterable, Mapping, Sequence
@@ -43,6 +46,8 @@ from typing import Callable, Iterable, Mapping, Sequence
 DEFAULT_BATCH_SIZE = 5
 OFF_ENV = "ID_GATE_OFF"
 MANIFEST = "pkgs/id/Cargo.toml"
+REPO_ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_LOG_PATH = REPO_ROOT / "scripts/id/gate-log.jsonl"
 
 
 def gate_enabled() -> bool:
@@ -125,6 +130,70 @@ def read_log(path: Path) -> list[dict[str, object]]:
         for line in path.read_text(encoding="utf-8").splitlines()
         if line.strip()
     ]
+
+
+def _run_git(args: list[str], *, cwd: Path | None = None, **_: object) -> str:
+    result = subprocess.run(["git", *args], cwd=cwd, check=True, text=True,
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    return result.stdout.strip()
+
+
+def _run_gh(args: list[str], *, cwd: Path | None = None, **_: object) -> str:
+    result = subprocess.run(["gh", *args], cwd=cwd, check=True, text=True,
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    return result.stdout.strip()
+
+
+def _run_fleet(command: str, *, cwd: Path | None = None, **_: object) -> int:
+    result = subprocess.run(["fleet", "shell", "--build", "--", command], cwd=cwd)
+    return result.returncode
+
+
+def run_batch(
+    prs: Sequence[int], batch: int, *, affected: Mapping[int, Iterable[str]],
+    log_path: Path = DEFAULT_LOG_PATH, repo: Path = REPO_ROOT,
+    git: Callable[..., str] = _run_git,
+    shell: Callable[..., int] = _run_fleet,
+    gh: Callable[..., str] = _run_gh,
+) -> str:
+    """Build and gate one ordered batch. Command seams make the driver unit-testable."""
+    if gate_enabled():
+        return "off"
+    if not prs:
+        raise ValueError("a batch must contain at least one PR")
+    command = batch_command(prs, affected)
+
+    def evaluate(subset: list[int], number: int) -> bool:
+        # Each verdict is assembled from current main, never from a prior probe.
+        with tempfile.TemporaryDirectory(prefix="id-gate-") as temp:
+            candidate = Path(temp) / "candidate"
+            git(["worktree", "add", "--detach", str(candidate), "origin/main"], cwd=repo)
+            try:
+                for pr in subset:
+                    data = json.loads(gh(["pr", "view", str(pr), "--json", "headRefOid"], cwd=repo))
+                    oid = data["headRefOid"]
+                    git(["fetch", "origin", oid], cwd=candidate)
+                    git(["merge", "--no-ff", "--no-edit", "FETCH_HEAD"], cwd=candidate)
+                result = shell(command, cwd=candidate, prs=subset)
+                verdict = result == 0
+                append_log(log_path, log_record(number, subset, command,
+                                                "green" if verdict else "red"))
+                return verdict
+            finally:
+                git(["worktree", "remove", "--force", str(candidate)], cwd=repo)
+
+    if evaluate(list(prs), batch):
+        green = list(prs)
+        red: list[int] = []
+    else:
+        red = find_culprits(prs, lambda subset: not evaluate(subset, batch))
+        green = [pr for pr in prs if pr not in set(red)]
+
+    # `gh pr merge --merge` creates the durable merge commit and marks each
+    # source PR merged; each accepted PR is applied in the same order tested.
+    for pr in green:
+        gh(["pr", "merge", str(pr), "--merge"], cwd=repo)
+    return "red" if red else "green"
 
 
 def _prs(text: str) -> list[int]:
