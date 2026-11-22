@@ -425,7 +425,7 @@ describe("what the owner asks for in his own words", () => {
     );
     expect(enqueue.packet).toMatchObject({
       priority: 10,
-      dedupe_key: `repo-health:v1:owner-prompt:${REPO}:issue:12501`,
+      dedupe_key: `repo-health:v1:triage:${REPO}:issue:12501`,
       payload: { schema: "repo-task/v1", kind: "triage", issue: { number: 12501 } },
     });
     // The label is prepared once per process, and "already there" is success.
@@ -481,7 +481,7 @@ describe("what the owner asks for in his own words", () => {
     expect(JSON.parse(w.calls[1].stdin ?? "").body).toBe("also do the docs\n\n<!-- owner-reply:v1 -->");
     expect(w.calls[3].packet).toMatchObject({
       priority: 10,
-      dedupe_key: `repo-health:v1:owner-prompt:${REPO}:issue:12501:reply:777`,
+      dedupe_key: `repo-health:v1:triage:${REPO}:issue:12501`,
     });
     const other = world({ commands: () => issue("open", ["bug"]) });
     await expect(new Work(other.ops).askReply({ issue: 5, text: "x" })).rejects.toThrow(
@@ -528,9 +528,9 @@ describe("what the owner asks for in his own words", () => {
         );
       },
       rows: () => [
-        { dedupe_key: `repo-health:v1:owner-prompt:${REPO}:issue:3`, status: "claimed", worker: "w1" },
-        { dedupe_key: `repo-health:v1:owner-prompt:${REPO}:issue:4:reply:9`, status: "queued", worker: null },
-        { dedupe_key: `repo-health:v1:owner-prompt:${REPO}:issue:4`, status: "done", worker: null },
+        { dedupe_key: `repo-health:v1:triage:${REPO}:issue:3`, status: "claimed", worker: "w1" },
+        { dedupe_key: `repo-health:v1:triage:${REPO}:issue:4`, status: "queued", worker: null },
+        { dedupe_key: `repo-health:v1:triage:${REPO}:issue:4`, status: "done", worker: null },
       ],
     });
     const work = new Work(w.ops);

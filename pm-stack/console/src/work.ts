@@ -80,15 +80,19 @@ export interface Submission {
   lean?: (typeof LEANS)[number];
 }
 
-/** The task that carries out an owner prompt. Top band: the owner asked. */
-export function promptPacket(repo: string, queue: string, number: number, text: string, at: string, suffix = "") {
+/** The task that carries out an owner prompt. Top band: the owner asked.
+ * It takes the issue's triage key, the one key the queue has for "someone
+ * must look at this issue", so an issue never has two tasks: a reply on a
+ * prompt whose task is still live joins it, and one whose task has
+ * finished gets a new one. */
+export function promptPacket(repo: string, queue: string, number: number, text: string, at: string) {
   const url = `https://github.com/${repo}/issues/${number}`;
   const first = text.split("\n")[0].trim();
   return {
     title: `Owner prompt ${repo}#${number}: ${first}`.slice(0, 180),
     body: `Instruction from the owner, sent from the PM console: ${url}`,
     priority: 10,
-    dedupe_key: `repo-health:v1:owner-prompt:${repo}:issue:${number}${suffix}`,
+    dedupe_key: `repo-health:v1:triage:${repo}:issue:${number}`,
     payload: {
       schema: "repo-task/v1",
       kind: "triage",
@@ -427,13 +431,17 @@ export class Work {
         comments: number;
       }[];
     };
-    const tasks = await this.ops.sql(
-      "SELECT dedupe_key, status, worker_id AS worker FROM tasks WHERE queue = ? AND dedupe_key LIKE ? ORDER BY id DESC LIMIT 200",
-      [this.ops.cfg.queue, `repo-health:v1:owner-prompt:${this.repo}:issue:%`],
-    );
+    // The newest task for each prompt's issue, by the key the task was filed under.
+    const keys = found.items.map((i) => `repo-health:v1:triage:${this.repo}:issue:${i.number}`);
+    const tasks = keys.length
+      ? await this.ops.sql(
+          `SELECT dedupe_key, status, worker_id AS worker FROM tasks WHERE queue = ? AND dedupe_key IN (${keys.map(() => "?").join(",")}) ORDER BY id DESC LIMIT 200`,
+          [this.ops.cfg.queue, ...keys],
+        )
+      : [];
     const taskOf = new Map<number, Row>();
     for (const t of tasks) {
-      const n = Number(/:issue:(\d+)/.exec(String(t.dedupe_key))?.[1]);
+      const n = Number(/:issue:(\d+)$/.exec(String(t.dedupe_key))?.[1]);
       if (n && !taskOf.has(n)) taskOf.set(n, t);
     }
     const out = [];
@@ -535,14 +543,14 @@ export class Work {
     if (!current.labels.some((l) => l.name === this.ops.cfg.promptLabel)) {
       throw new OpError(400, "that issue is not one of the owner's prompts");
     }
-    const made = (await this.ops.gh(["-X", "POST", `repos/${this.repo}/issues/${issue}/comments`], {
+    await this.ops.gh(["-X", "POST", `repos/${this.repo}/issues/${issue}/comments`], {
       body: `${text}\n\n${OWNER_REPLY_MARK}`,
-    })) as { id: number };
+    });
     if (current.state === "closed") {
       await this.ops.gh(["-X", "PATCH", `repos/${this.repo}/issues/${issue}`], { state: "open" });
     }
     const queued = await this.ops.enqueue(
-      promptPacket(this.repo, this.ops.cfg.queue, issue, text, this.clock().toISOString(), `:reply:${made.id}`),
+      promptPacket(this.repo, this.ops.cfg.queue, issue, text, this.clock().toISOString()),
     );
     return { issue, queued: queued.code === 0 };
   }

@@ -50,10 +50,12 @@ TUNNEL = "amd-6-pm-stack"
 CONSOLE = "http://localhost:4872"
 UNIT = "pm-console.service"
 # The sign-in cookie is not sent on another site's requests, and page
-# scripts cannot read it.
+# scripts cannot read it. A sign-in lasts a month, so signing in is a
+# rare event and not a daily one.
 APP_SETTINGS = {
     "same_site_cookie_attribute": "lax",
     "http_only_cookie_attribute": True,
+    "session_duration": "720h",
 }
 PUBLIC_PATHS = ("/.well-known/assetlinks.json", "/manifest.webmanifest", "/icons")
 GOOGLE_ID = "google.access-sso.client-id"
