@@ -275,6 +275,10 @@ fn classify_failure(output: &str) -> FailureClass {
     }
     if lower.contains("missing required scopes")
         || lower.contains("insufficient_scopes")
+        // GraphQL hides nodes the identity cannot see as unresolvable
+        // rather than inaccessible; resolution precedes execution, so
+        // the call did not land (#12154).
+        || lower.contains("could not resolve to a node")
         || lower.contains("resource not accessible")
         || lower.contains("not accessible by integration")
         || lower.contains("not accessible by personal access token")
@@ -1749,6 +1753,12 @@ mod tests {
         );
         assert_eq!(
             classify_failure("Resource not accessible by integration"),
+            FailureClass::Permission
+        );
+        assert_eq!(
+            classify_failure(
+                "GraphQL: Could not resolve to a node with the global id of 'PVT_kwHOA123'"
+            ),
             FailureClass::Permission
         );
         assert_eq!(
