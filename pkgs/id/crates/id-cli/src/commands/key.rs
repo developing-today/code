@@ -1,6 +1,8 @@
 //! Local export and import commands for identity keys.
 
+use std::fs::File;
 use std::io::Write as _;
+use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
@@ -107,6 +109,7 @@ fn import_restored_key(
     key_bytes: &[u8; 32],
     replace: bool,
 ) -> Result<()> {
+    let _lock = lock_restored_key(marker.as_ref())?;
     let public = hex_encode(
         &ed25519_dalek::SigningKey::from_bytes(key_bytes)
             .verifying_key()
@@ -163,6 +166,29 @@ fn import_restored_key(
     Ok(())
 }
 
+/// Locks one identity's restore transaction across processes. The lock file is
+/// intentionally persistent: unlinking it could let waiters lock different inodes.
+fn lock_restored_key(marker: &Path) -> Result<File> {
+    let mut lock_name = marker.file_name().unwrap_or_default().to_os_string();
+    lock_name.push(".lock");
+    let lock_path = marker.with_file_name(lock_name);
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&lock_path)
+        .with_context(|| format!("could not open restore lock {}", lock_path.display()))?;
+    // SAFETY: flock only uses this valid, open file descriptor; the File remains
+    // alive for the full duration of the guarded import transaction.
+    let result = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) };
+    if result == -1 {
+        return Err(std::io::Error::last_os_error()).with_context(|| {
+            format!("could not lock restore transaction {}", lock_path.display())
+        });
+    }
+    Ok(file)
+}
+
 fn write_new_private_file(path: &Path, contents: &[u8]) -> Result<()> {
     let parent = path
         .parent()
@@ -203,6 +229,49 @@ mod tests {
     use super::*;
     use iroh_base::SecretKey;
     use tempfile::TempDir;
+
+    #[test]
+    fn concurrent_replacements_keep_installed_key_and_marker_in_sync() {
+        use std::sync::{Arc, Barrier};
+        use std::thread;
+
+        let temp = TempDir::new().unwrap();
+        let target = temp.path().join(".iroh-key");
+        let marker = temp.path().join(RESTORED_KEY_FILE);
+        let keys = [
+            SecretKey::from([11; 32]).to_bytes(),
+            SecretKey::from([12; 32]).to_bytes(),
+        ];
+        let barrier = Arc::new(Barrier::new(3));
+        let joins: Vec<_> = keys
+            .into_iter()
+            .map(|key| {
+                let barrier = Arc::clone(&barrier);
+                let target = target.clone();
+                let marker = marker.clone();
+                thread::spawn(move || {
+                    barrier.wait();
+                    import_restored_key(&target, &marker, &key, true).unwrap();
+                })
+            })
+            .collect();
+        barrier.wait();
+        for join in joins {
+            join.join().unwrap();
+        }
+
+        let installed = std::fs::read(&target).unwrap();
+        let installed: [u8; 32] = installed.try_into().unwrap();
+        let expected_public = hex_encode(
+            &ed25519_dalek::SigningKey::from_bytes(&installed)
+                .verifying_key()
+                .to_bytes(),
+        );
+        assert_eq!(
+            restored_key::restored_key(&marker).unwrap().as_deref(),
+            Some(expected_public.as_str())
+        );
+    }
 
     #[test]
     fn imports_without_clobbering_and_replaces_only_when_requested() {
