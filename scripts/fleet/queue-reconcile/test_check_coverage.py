@@ -705,6 +705,63 @@ class VerdictCoverageTest(unittest.TestCase):
         self.assertEqual(stale["verdict"], "still_blocked")
         self.assertFalse(check_coverage.verdict_fresh(stale))
 
+    def test_fetch_resume_state_reads_unquoted_dependency_state(self):
+        # Codex P1 on #12565: `--jq .state` emits the raw state word
+        # (`closed` / `open`), not JSON — decoding it as JSON raised
+        # on every live lookup and left closed dependencies unknown.
+        import subprocess as sp
+        import unittest.mock
+
+        seen = []
+
+        def fake_run(cmd, **kw):
+            seen.append(cmd)
+            if "/issues/" in " ".join(cmd):
+                return sp.CompletedProcess(
+                    cmd, 0, stdout="closed\n", stderr=""
+                )
+            return sp.CompletedProcess(
+                cmd,
+                0,
+                stdout=json.dumps({"merged": True, "state": "closed"}) + "\n",
+                stderr="",
+            )
+
+        with unittest.mock.patch.object(
+            check_coverage.subprocess, "run", side_effect=fake_run
+        ):
+            state = check_coverage.fetch_resume_state(
+                REPO, "dependency_closed:539"
+            )
+            self.assertEqual(state, "closed")
+            self.assertTrue(
+                check_coverage.resolve_resume(REPO, "dependency_closed:539")
+            )
+            self.assertEqual(
+                check_coverage.fetch_resume_state(REPO, "slice_landed:12543"),
+                "merged",
+            )
+        dep_cmd = [c for c in seen if "/issues/" in " ".join(c)][0]
+        self.assertEqual(dep_cmd[-2:], ["--jq", ".state"])
+
+    def test_fetch_resume_state_open_dependency_is_not_fulfilled(self):
+        import subprocess as sp
+        import unittest.mock
+
+        def fake_run(cmd, **kw):
+            return sp.CompletedProcess(cmd, 0, stdout="open\n", stderr="")
+
+        with unittest.mock.patch.object(
+            check_coverage.subprocess, "run", side_effect=fake_run
+        ):
+            self.assertEqual(
+                check_coverage.fetch_resume_state(REPO, "dependency_closed:539"),
+                "open",
+            )
+            self.assertFalse(
+                check_coverage.resolve_resume(REPO, "dependency_closed:539")
+            )
+
     def test_unread_verdict_issue_is_skipped_from_import(self):
         # Thread 3 (P2): the comments fetch fails, so the issue's
         # verdict is unknown — no triage packet, exit 3.

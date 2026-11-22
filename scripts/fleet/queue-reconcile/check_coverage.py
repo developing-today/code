@@ -561,6 +561,12 @@ def fetch_resume_state(repo: str, resume: str, gh: str = "gh") -> str:
             f"github resume target failed for {repo} {resume} "
             f"(exit {out.returncode}): {out.stderr.strip()[:400]}"
         )
+    if kind == "dependency_closed":
+        # `--jq .state` emits the raw state word (`closed` / `open`),
+        # not JSON — read it as stripped text. Decoding it as JSON
+        # raised on every live lookup and left closed dependencies
+        # classified unknown.
+        return out.stdout.strip()
     try:
         value = json.loads(out.stdout.strip())
     except json.JSONDecodeError as exc:
