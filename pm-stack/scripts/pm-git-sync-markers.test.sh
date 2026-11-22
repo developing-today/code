@@ -108,4 +108,46 @@ if out="$(bash "$sync" 2>&1)"; then fail "a local merge did not refuse: $out"; f
 printf '%s\n' "$out" | grep -q 'changes files or is a merge' || fail "wrong merge refusal: $out"
 [ "$(head_of "$clone")" = "$merge_head" ] || fail "main moved despite a local merge"
 
+# 7. A rebuild that commits while the sync is at work (it does not
+#    coordinate with it) never loses its commit. A stand-in git makes a
+#    commit in the clone the first time the sync runs a chosen step.
+real_git="$(command -v git)"
+mkdir -p "$tmp/bin"
+cat >"$tmp/bin/git" <<SHIM
+#!/usr/bin/env bash
+if [ "\${1:-}" = "\${SHIM_ON:-}" ] && [ ! -e "$tmp/shim-done" ]; then
+  : >"$tmp/shim-done"
+  "$real_git" -C "$clone" commit -q --allow-empty -m "amd 600"
+fi
+exec "$real_git" "\$@"
+SHIM
+chmod +x "$tmp/bin/git"
+fresh() { # back on origin/main with one marker, origin one ahead
+  "$real_git" -C "$clone" checkout -q main 2>/dev/null || true
+  "$real_git" -C "$clone" reset -q --hard origin/main
+  "$real_git" -C "$clone" commit -q --allow-empty -m "amd 599"
+  upstream "$1"
+  rm -f "$tmp/shim-done"
+}
+
+# 7a. It lands while the markers are being tagged: main is not moved at
+#     all, and the next run takes both markers aside.
+fresh six
+if out="$(SHIM_ON=tag PATH="$tmp/bin:$PATH" bash "$sync" 2>&1)"; then fail "a commit during tagging did not refuse: $out"; fi
+printf '%s\n' "$out" | grep -q 'main moved while this ran' || fail "wrong refusal for a commit during tagging: $out"
+[ "$(git -C "$clone" log -1 --format=%s)" = "amd 600" ] || fail "the commit made during tagging is not on main"
+out="$(bash "$sync" 2>&1)" || fail "run after a commit during tagging exited non-zero: $out"
+[ "$(git -C "$clone" log -1 --format=%s 'rebuild-marker/amd-600')" = "amd 600" ] || fail "late marker not kept: $out"
+[ "$(cat "$clone/tracked.txt")" = six ] || fail "pull after a commit during tagging did not land"
+
+# 7b. It lands in the instant before main is moved: main follows origin,
+#     the commit is kept under a tag of its own, and the run fails loudly.
+fresh seven
+if out="$(SHIM_ON=reset PATH="$tmp/bin:$PATH" bash "$sync" 2>&1)"; then fail "a commit at the move did not fail: $out"; fi
+printf '%s\n' "$out" | grep -q 'is NOT on main' || fail "wrong message for a commit at the move: $out"
+late="$(git -C "$clone" for-each-ref --format='%(refname:short)' 'refs/tags/rebuild-marker/unexpected-*')"
+[ -n "$late" ] && [ "$(git -C "$clone" log -1 --format=%s "$late")" = "amd 600" ] || fail "commit at the move not kept: $out"
+[ "$(head_of "$clone")" = "$(git -C "$clone" rev-parse origin/main)" ] || fail "main did not follow origin after a commit at the move"
+out="$(bash "$sync" 2>&1)" || fail "run after a commit at the move exited non-zero: $out"
+
 echo "pm-git-sync markers suite passed."

@@ -133,9 +133,27 @@ if [ "$ahead" -gt 0 ] && [ "$behind" -gt 0 ]; then
     fi
     echo "pm-git-sync: kept empty commit $(git log -1 --format='%h "%s"' "$commit") under tag $tag"
   done < <(git rev-list --reverse origin/main..HEAD)
+  # A rebuild commits here whenever it likes and does not coordinate
+  # with this service. Main is moved only if it is still where it was
+  # when its commits were looked at; otherwise nothing is moved and the
+  # next run looks again.
+  if [ "$(git rev-parse HEAD)" != "$current" ]; then
+    echo "pm-git-sync: FAIL $REPO main moved while this ran (was $current) — main not moved; the next run looks again"
+    exit 1
+  fi
   # --keep refuses to touch a file with local changes; there are none.
   if ! git reset --quiet --keep origin/main || [ "$(git rev-parse HEAD)" != "$remote" ]; then
     echo "pm-git-sync: FAIL could not move main to origin/main after keeping $ahead empty commit(s) — check $REPO"
+    exit 1
+  fi
+  # And if a commit landed in the instant between that look and the
+  # move, it is no longer on main. It is never left unreachable: it is
+  # kept under a tag, and this run fails so that someone looks at it.
+  moved_from="$(git rev-parse -q --verify ORIG_HEAD || true)"
+  if [ -n "$moved_from" ] && [ "$moved_from" != "$current" ]; then
+    tag="rebuild-marker/unexpected-$(git rev-parse --short=12 "$moved_from")"
+    git tag -f "$tag" "$moved_from" >/dev/null
+    echo "pm-git-sync: FAIL a commit landed on main while it was being moved: $(git log -1 --format='%h "%s"' "$moved_from") is kept under tag $tag and is NOT on main — check it"
     exit 1
   fi
   echo "pm-git-sync: moved $ahead empty commit(s) aside; updated $current -> $remote"
