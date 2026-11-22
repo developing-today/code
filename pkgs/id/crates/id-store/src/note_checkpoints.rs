@@ -20,7 +20,11 @@
 //! The log is reconstructible: [`NoteCheckpoints::from_events`] rebuilds
 //! it from the applied note events alone (a restart, a sync from a peer),
 //! and the fold is order-independent, so the rebuilt heads are the heads
-//! the live log had. Persistence and transport of the events are the
+//! the live log had. Policies are the one thing the events do not carry:
+//! the host persists the [`NoteCheckpoints::policies`] snapshot
+//! alongside the events and re-states it with
+//! [`NoteCheckpoints::seed_policies`], or a rebuilt log treats every
+//! note as public. Persistence and transport of the events are the
 //! event store's business, as for every other kind; this core owns the
 //! checkpoint rules and nothing else.
 
@@ -28,6 +32,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use p2panda_core::Hash;
+use serde::{Deserialize, Serialize};
 
 use id_core::waiting::AuthorKey;
 
@@ -86,7 +91,7 @@ pub enum CheckpointError {
 /// wider `Role`: a group resolver maps its roles onto these three
 /// (Read -> Read, Write/Manage -> Write, Admin -> Admin) when it
 /// answers for a group grant.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum NoteRole {
     /// May read the note's content.
     Read,
@@ -98,7 +103,7 @@ pub enum NoteRole {
 
 /// Who a grant names: one account key, or a group (whose members'
 /// roles a [`GroupRoles`] resolver answers for).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum NotePrincipal {
     /// A single account, by its key.
     User(AuthorKey),
@@ -107,7 +112,7 @@ pub enum NotePrincipal {
 }
 
 /// One access grant on a note: a principal and what it may do.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NoteGrant {
     /// Who the grant names.
     pub principal: NotePrincipal,
@@ -118,7 +123,7 @@ pub struct NoteGrant {
 /// A note's access policy (#2048 Q3, ledger shared-notes-read-3819:
 /// notes are public by default, or read/write/admin to one or more
 /// groups and users).
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum NoteAccess {
     /// Public by default: anyone may read the note, and anyone may
     /// append a revision — appends are signed, so a public append
@@ -130,6 +135,23 @@ pub enum NoteAccess {
     /// always Admin) hold any access. An author with no grant at or
     /// above the needed role is refused.
     Scoped(Vec<NoteGrant>),
+}
+
+/// One note's recorded access policy: the durable form of a policy.
+/// The event log carries no policy, so a host that persists the log
+/// persists these alongside [`NoteCheckpoints::events`] and re-states
+/// them with [`NoteCheckpoints::seed_policies`] after a rebuild —
+/// otherwise a rebuilt log treats every note as public. The owner is
+/// the note's create event's author; a record naming anyone else is
+/// refused by `seed_policies`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NotePolicyRecord {
+    /// The note's stable ID: its `note.create` event's ID.
+    pub note: Hash,
+    /// The note's owner: its create event's author, who always holds Admin.
+    pub owner: AuthorKey,
+    /// The note's access policy.
+    pub access: NoteAccess,
 }
 
 /// Resolves group membership roles for access checks: given a group
@@ -185,7 +207,9 @@ impl Default for GroupRoles {
 /// log: the log's events carry no policy, so a log rebuilt with
 /// [`NoteCheckpoints::from_events`] treats every note as
 /// owner-created and [`NoteAccess::Public`] until the host re-states
-/// its policies with [`NoteCheckpoints::set_access`].
+/// its policies with [`NoteCheckpoints::seed_policies`] (from the
+/// snapshot [`NoteCheckpoints::policies`] returns). A policy that is
+/// never re-stated is a policy silently reopened to public.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct NotePolicy {
     owner: AuthorKey,
@@ -214,7 +238,10 @@ impl NoteCheckpoints {
 
     /// Rebuilds a log from applied note events — the restart/sync path:
     /// the events are the durable state, and the fold they produce is
-    /// the state the live log had.
+    /// the state the live log had. Policies do NOT travel with the
+    /// events: the rebuilt log treats every note as public until the
+    /// host re-states them with [`Self::seed_policies`]; use
+    /// [`Self::from_events_with_policies`] when the host has both.
     ///
     /// # Errors
     ///
@@ -229,12 +256,101 @@ impl NoteCheckpoints {
         })
     }
 
+    /// [`Self::from_events`], with the policies the events do not
+    /// carry: the rebuild restores the boundary exactly as the live
+    /// log had it. Seed order matters — the events first (the notes
+    /// must exist), then the policies.
+    ///
+    /// # Errors
+    ///
+    /// Returns the errors of [`Self::from_events`], and of
+    /// [`Self::seed_policies`] for a record naming an unknown note
+    /// or an owner other than the note's create author.
+    pub fn from_events_with_policies(
+        events: Vec<AppliedNote>,
+        policies: Vec<NotePolicyRecord>,
+    ) -> Result<Self, CheckpointError> {
+        let mut rebuilt = Self::from_events(events)?;
+        rebuilt.seed_policies(policies)?;
+        Ok(rebuilt)
+    }
+
     /// The applied note events, in the order they were recorded. This
     /// is the durable form of the log: persist or sync these and
     /// [`Self::from_events`] rebuilds the rest.
     #[must_use]
     pub fn events(&self) -> &[AppliedNote] {
         &self.events
+    }
+
+    /// The effective access policy of every note in the log, in note
+    /// ID order: the durable form of the policies, to persist
+    /// alongside [`Self::events`] and re-state with
+    /// [`Self::seed_policies`] after a rebuild. A note with no
+    /// recorded policy is reported with its create event's author as
+    /// owner and [`NoteAccess::Public`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CheckpointError::Fold`] when the recorded events do
+    /// not fold. Events are validated before they are recorded, so a
+    /// log built through this type's methods does not produce this.
+    pub fn policies(&self) -> Result<Vec<NotePolicyRecord>, CheckpointError> {
+        let mut records = Vec::new();
+        for record in self.notes()? {
+            let (owner, access) = self
+                .access(record.id)
+                .ok_or(CheckpointError::UnknownNote(record.id))?;
+            records.push(NotePolicyRecord {
+                note: record.id,
+                owner,
+                access,
+            });
+        }
+        Ok(records)
+    }
+
+    /// Re-states policies after a rebuild from events (the
+    /// restart/sync path): each record replaces the note's policy.
+    /// This is a trusted restore of the host's own persisted
+    /// snapshot, not a policy change — it takes no author and runs
+    /// no admin check — so it refuses corrupt input instead: a
+    /// record for a note the log does not have, or naming an owner
+    /// other than the note's create event's author. On any error the
+    /// policies are unchanged.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CheckpointError::UnknownNote`] for a record naming
+    /// a note with no create event in the log, and
+    /// [`CheckpointError::Note`] for a record naming the wrong owner.
+    pub fn seed_policies(
+        &mut self,
+        policies: Vec<NotePolicyRecord>,
+    ) -> Result<(), CheckpointError> {
+        let mut candidate = self.policies.clone();
+        for record in &policies {
+            let (owner, _) = self
+                .access(record.note)
+                .ok_or(CheckpointError::UnknownNote(record.note))?;
+            if record.owner != owner {
+                return Err(CheckpointError::Note(NoteError::Field(format!(
+                    "policy for note {} names owner {:?}, its create event names {:?}",
+                    record.note.to_hex(),
+                    record.owner,
+                    owner,
+                ))));
+            }
+            candidate.insert(
+                record.note,
+                NotePolicy {
+                    owner,
+                    access: record.access.clone(),
+                },
+            );
+        }
+        self.policies = candidate;
+        Ok(())
     }
 
     /// Every note in the log, folded, in note ID order.
@@ -958,5 +1074,86 @@ mod tests {
             .merge_checked(note, hash(13), author(3), content(b"merged"), &groups)
             .unwrap();
         assert_eq!(merged.heads, vec![hash(13)]);
+    }
+
+    #[test]
+    fn test_a_scoped_policy_survives_a_restart_rebuild() {
+        // Oracle: a restart rebuilds the log from its durable form,
+        // and the access boundary must hold exactly as before the
+        // restart — a scoped note must not silently reopen to public.
+        let (log, note) = scoped_log();
+        let groups = GroupRoles::none();
+        assert!(!log.may_append(note, author(8), &groups));
+
+        // Restart/sync: the events alone rebuild the log, and the
+        // policies snapshot re-states what the events do not carry.
+        let events = log.events().to_vec();
+        let policies = log.policies().unwrap();
+        let mut rebuilt = NoteCheckpoints::from_events(events).unwrap();
+        rebuilt.seed_policies(policies).unwrap();
+
+        assert!(!rebuilt.may_append(note, author(8), &groups));
+        assert!(rebuilt.may_append(note, author(3), &groups));
+        assert!(rebuilt.may_read(note, author(2), &groups));
+        rebuilt
+            .checkpoint_on_heads_checked(note, hash(11), author(3), content(b"second"), &groups)
+            .unwrap();
+        assert!(matches!(
+            rebuilt.checkpoint_on_heads_checked(
+                note,
+                hash(12),
+                author(8),
+                content(b"nope"),
+                &groups
+            ),
+            Err(CheckpointError::NotAuthorized { .. })
+        ));
+    }
+
+    #[test]
+    fn test_seed_policies_refuses_unknown_notes_and_wrong_owners() {
+        let (log, note) = scoped_log();
+        let events = log.events().to_vec();
+        let mut rebuilt = NoteCheckpoints::from_events(events).unwrap();
+        // Before any seeding the rebuild treats the note as public.
+        let unseeded = rebuilt.policies().unwrap();
+        assert_eq!(unseeded.len(), 1);
+        assert_eq!(unseeded[0].access, NoteAccess::Public);
+        // A policy for a note the rebuilt log does not have: the
+        // host seeded policies before events, or the wrong log.
+        let unknown = NotePolicyRecord {
+            note: hash(77),
+            owner: author(1),
+            access: NoteAccess::Public,
+        };
+        assert_eq!(
+            rebuilt.seed_policies(vec![unknown]).unwrap_err(),
+            CheckpointError::UnknownNote(hash(77))
+        );
+        // A policy naming anyone but the create author is corrupt
+        // input, not a transfer of ownership.
+        let wrong_owner = NotePolicyRecord {
+            note,
+            owner: author(2),
+            access: NoteAccess::Public,
+        };
+        assert!(matches!(
+            rebuilt.seed_policies(vec![wrong_owner]).unwrap_err(),
+            CheckpointError::Note(_)
+        ));
+        // Either refusal leaves the policies exactly as they were.
+        assert_eq!(rebuilt.policies().unwrap(), unseeded);
+        // And the correct snapshot still re-states the boundary.
+        rebuilt.seed_policies(log.policies().unwrap()).unwrap();
+        assert_eq!(rebuilt.policies().unwrap(), log.policies().unwrap());
+    }
+
+    #[test]
+    fn test_policies_snapshot_serializes_for_the_host_to_persist() {
+        let (log, _) = scoped_log();
+        let policies = log.policies().unwrap();
+        let json = serde_json::to_string(&policies).unwrap();
+        let restored: Vec<NotePolicyRecord> = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored, policies);
     }
 }
