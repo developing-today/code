@@ -355,6 +355,7 @@ impl Sandbox {
             seed,
             limits: self.limits,
             metrics,
+            fuel_rate: None,
             trap_fuel: None,
             store,
             memory,
@@ -383,6 +384,12 @@ pub struct WorldInstance {
     seed: u64,
     limits: SandboxLimits,
     metrics: CallMetrics,
+    /// The owning account's fuel-rate budget (#1067, F12.10), when the
+    /// host installed one for this world. Every [`Self::update`]
+    /// admission charges it the invocation's fuel allowance; `None` —
+    /// every host that has not wired account quotas yet — leaves
+    /// invocation admission exactly as it was before F12.10.
+    fuel_rate: Option<id_caps::account_quota::FuelRateBudget>,
     /// Fuel a trapped call had spent, captured before the diagnostic getters
     /// refill the store; taken by [`Self::settle`].
     trap_fuel: Option<u64>,
@@ -425,6 +432,49 @@ impl WorldInstance {
         &self.metrics
     }
 
+    /// Install the owning account's fuel-rate budget (#1067, F12.10).
+    ///
+    /// From the next [`Self::update`] on, every invocation admission
+    /// charges this budget the invocation's fuel allowance, and an
+    /// account at its rate has its updates refused until the budget's
+    /// window rolls. Installing replaces any budget already installed;
+    /// the replaced budget's accounting is discarded with it. Hosts
+    /// that never call this leave the instance uncharged, exactly as
+    /// before F12.10.
+    pub fn set_fuel_rate_budget(&mut self, budget: id_caps::account_quota::FuelRateBudget) {
+        self.fuel_rate = Some(budget);
+    }
+
+    /// The installed fuel-rate budget, if any (#1067). For reporting:
+    /// its counters say what the account was charged at admission,
+    /// which is deliberately not the metered consumption in
+    /// [`Self::metrics`].
+    pub const fn fuel_rate_budget(&self) -> Option<&id_caps::account_quota::FuelRateBudget> {
+        self.fuel_rate.as_ref()
+    }
+
+    /// Charge this invocation's fuel allowance against the owning
+    /// account's rate budget (#1067), when one is installed.
+    ///
+    /// Admission control, priced at the allowance: the store is about
+    /// to be handed `limits.fuel`, so that is what the account is
+    /// charged — before the guest runs, so a refusal means the
+    /// invocation never happens and nothing is metered. A refusal is
+    /// recoverable: it does not poison the instance, and the same
+    /// call can succeed once the budget's window rolls.
+    ///
+    /// # Errors
+    ///
+    /// The budget's
+    /// [`FuelRateRefusal`](id_caps::account_quota::FuelRateRefusal)
+    /// when the account is at its rate for the current window.
+    fn charge_fuel_rate(&mut self) -> Result<()> {
+        if let Some(budget) = &mut self.fuel_rate {
+            budget.try_charge(std::time::Instant::now(), self.limits.fuel)?;
+        }
+        Ok(())
+    }
+
     /// Fuel the most recent `call` spent; zero if it has not run.
     pub const fn last_fuel(&self, call: GuestCall) -> u64 {
         self.metrics.get(call).fuel_last
@@ -441,12 +491,15 @@ impl WorldInstance {
     }
 
     /// Apply one event from `participant`. The model pointer is committed
-    /// only if guest update succeeds.
+    /// only if guest update succeeds. When the owning account has a
+    /// fuel-rate budget installed (#1067), admission charges it first
+    /// and a refusal runs nothing.
     pub fn update(&mut self, participant: u64, event: &[u8]) -> Result<()> {
         ensure!(
             !self.poisoned,
             "world guest is poisoned after a previous failure"
         );
+        self.charge_fuel_rate()?;
         self.check_message_size(event)?;
         // The world's participant limit keeps IDs far below i32::MAX; clamp
         // defensively so a hostile caller can never wrap the guest argument.
@@ -934,6 +987,50 @@ mod tests {
         assert_eq!(world.view().unwrap(), b"hello");
         world.update(1, b"event").unwrap();
         assert_eq!(world.view().unwrap(), b"hello");
+    }
+
+    #[test]
+    fn an_account_at_its_fuel_rate_refuses_the_next_update() {
+        let limits = SandboxLimits {
+            fuel: 10_000,
+            ..SandboxLimits::default()
+        };
+        let runner = compile(ECHO, limits).unwrap();
+        let mut world = runner.instantiate(123).unwrap();
+        // One invocation's allowance exactly fills the account's window.
+        world.set_fuel_rate_budget(id_caps::account_quota::FuelRateBudget::new(limits.fuel));
+        world.update(1, b"event").unwrap();
+        let refusal = world
+            .update(1, b"event")
+            .unwrap_err()
+            .downcast::<id_caps::account_quota::FuelRateRefusal>()
+            .unwrap();
+        assert_eq!(refusal.limit_per_second, limits.fuel);
+        assert_eq!(refusal.charged_in_window, limits.fuel);
+        assert_eq!(refusal.requested_fuel, limits.fuel);
+        // The refused invocation never ran: only one update is metered.
+        assert_eq!(world.metrics().get(GuestCall::Update).calls, 1);
+        // A refusal is recoverable, not poisoning: reads still serve.
+        assert_eq!(world.view().unwrap(), b"hello");
+    }
+
+    #[test]
+    fn a_fuel_rate_budget_accounts_each_admitted_allowance() {
+        let limits = SandboxLimits {
+            fuel: 10_000,
+            ..SandboxLimits::default()
+        };
+        let runner = compile(ECHO, limits).unwrap();
+        let mut world = runner.instantiate(123).unwrap();
+        world.set_fuel_rate_budget(id_caps::account_quota::FuelRateBudget::new(limits.fuel * 3));
+        for _ in 0..3 {
+            world.update(1, b"event").unwrap();
+        }
+        assert!(world.update(1, b"event").is_err());
+        let budget = world.fuel_rate_budget().unwrap();
+        assert_eq!(budget.total_charged(), limits.fuel * 3);
+        assert_eq!(budget.charged_in_window(), limits.fuel * 3);
+        assert_eq!(budget.refusal_count(), 1);
     }
 
     #[test]
