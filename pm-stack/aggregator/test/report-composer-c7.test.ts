@@ -2,7 +2,7 @@ import { access, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, test } from "bun:test";
-import { weeklyReportPeriod, dailyReportPeriod } from "../src/report-periods.ts";
+import { annualReportPeriod, monthlyReportPeriod, quarterlyReportPeriod, weeklyReportPeriod, dailyReportPeriod } from "../src/report-periods.ts";
 import { composeReport, generateReportFromStoredRecords, MODAL_LIVING_ITEM_FIXTURE } from "../src/report-composer.ts";
 import { appendReportRecord, makeReportRecord, readCurrentReportRecords, type ReportRecord } from "../src/report-records.ts";
 import { parseArgs } from "../scripts/generate-report.ts";
@@ -62,6 +62,7 @@ describe("C7 report composition", () => {
     expect(() => parseArgs(["--kind", "weekly", "--period", "next-week", "--as-of", "2026-11-22T12:00:00.000Z"])).toThrow(/Monday/);
     expect(() => parseArgs(["--kind", "daily", "--period", "2026-11-21", "--as-of", "2026-11-22T05:00:00Z", "--surprise", "x"])).toThrow(/unknown argument/);
     expect(() => parseArgs(["--kind", "daily", "--period", "2026-11-21", "--as-of", "2026-11-22T05:00:00.000Z", "--kind", "weekly"])).toThrow(/duplicate argument/);
+    expect(() => parseArgs(["--kind", "daily", "--period", "2026-11-21", "--as-of", "2026-11-22T12:00:00.000Z"])).toThrow(/within the report period/);
   });
 
   test("report CLI does not silently use a file when the configured backend is Turso", async () => {
@@ -120,6 +121,19 @@ describe("C7 report composition", () => {
     });
     expect(rerun.inserted).toBe(false);
     expect(rerun.record.id).toBe(generated.record.id);
+
+    const dailyRerun = await generateReportFromStoredRecords(file, dailyReportPeriod("2026-11-21"), {
+      asOf: "2026-11-21T18:00:00.000Z",
+      generatedAt: "2026-11-21T18:02:00.000Z",
+    });
+    expect(dailyRerun.inserted).toBe(false);
+    expect(dailyRerun.record.id).toBe(daily.record.id);
+    const dailyRefresh = await generateReportFromStoredRecords(file, dailyReportPeriod("2026-11-21"), {
+      asOf: "2026-11-21T19:00:00.000Z",
+      generatedAt: "2026-11-21T19:01:00.000Z",
+    });
+    expect(dailyRefresh.inserted).toBe(true);
+    expect(dailyRefresh.record.id).not.toBe(daily.record.id);
   });
 
   test("keeps generation dependent on explicit period identity and uses the amendment's Modal example", () => {
@@ -132,7 +146,68 @@ describe("C7 report composition", () => {
 
   test("includes prior Friday through calendar boundaries across a DST transition", () => {
     const friday = dailyRecord("2026-03-06", "Friday before the spring DST transition.");
-    const result = composeReport(weeklyReportPeriod("2026-03-09"), [friday], { asOf: "2026-03-10T12:00:00.000Z" });
+    const saturday = dailyRecord("2026-03-07", "Saturday must not be reach-back context.");
+    const sunday = dailyRecord("2026-03-08", "Sunday must not be reach-back context.");
+    const result = composeReport(weeklyReportPeriod("2026-03-09"), [friday, saturday, sunday], { asOf: "2026-03-10T12:00:00.000Z" });
     expect(result.blocks.some((block) => block.text.startsWith("[Prior-Friday reach-back] Friday before"))).toBe(true);
+    expect(result.blocks.some((block) => block.text.includes("Saturday must not"))).toBe(false);
+    expect(result.blocks.some((block) => block.text.includes("Sunday must not"))).toBe(false);
+  });
+
+  test("keeps source provenance separate from classified member links", () => {
+    const period = dailyReportPeriod("2026-11-21");
+    const at = "2026-11-21T18:00:00.000Z";
+    const source = makeReportRecord({
+      period,
+      asOf: at,
+      templateVersion: "daily-source-v1",
+      sourceCursor: "member-and-evidence",
+      sources: [{ id: "evidence", uri: "doc:evidence", observedAt: at }],
+      blocks: [{ id: "done", text: "Implemented one issue.", relatedAt: at, links: ["issue:one"], classification: "implemented" }],
+    }, at);
+    const report = composeReport(period, [source], { asOf: at });
+    expect(report.classifiedActivity.implemented).toEqual(["issue:one"]);
+    expect(report.sources.map((item) => item.uri)).toEqual(["doc:evidence"]);
+  });
+
+  test("carries explicit higher-grain candidates without showing them at excluded grains", () => {
+    const source = makeReportRecord({
+      period: dailyReportPeriod("2026-01-05"),
+      asOf: "2026-01-05T18:00:00.000Z",
+      templateVersion: "daily-source-v1",
+      sourceCursor: "annual-only-candidate",
+      sources: [{ id: "event", uri: "event:annual", observedAt: "2026-01-05T18:00:00.000Z" }],
+      blocks: [{ id: "candidate", text: "This item is explicitly annual.", relatedAt: "2026-01-05T18:00:00.000Z", importance: ["daily", "weekly", "annual"] }],
+    }, "2026-01-05T18:01:00.000Z");
+    const daily = makeReportRecord(composeReport(dailyReportPeriod("2026-01-05"), [source], { asOf: "2026-01-05T18:00:00.000Z" }), "2026-01-05T18:02:00.000Z");
+    const weekly = makeReportRecord(composeReport(weeklyReportPeriod("2026-01-05"), [source, daily], { asOf: "2026-01-11T18:00:00.000Z" }), "2026-01-11T18:01:00.000Z");
+    const monthly = makeReportRecord(composeReport(monthlyReportPeriod("2026-01"), [weekly], { asOf: "2026-01-31T18:00:00.000Z" }), "2026-01-31T18:01:00.000Z");
+    const quarterly = makeReportRecord(composeReport(quarterlyReportPeriod("2026-Q1"), [monthly], { asOf: "2026-03-31T18:00:00.000Z" }), "2026-03-31T18:01:00.000Z");
+    const annual = composeReport(annualReportPeriod("2026"), [quarterly], { asOf: "2026-12-31T18:00:00.000Z" });
+
+    expect(weekly.blocks.some((block) => block.text === "This item is explicitly annual.")).toBe(true);
+    expect(monthly.blocks.some((block) => block.text === "This item is explicitly annual.")).toBe(false);
+    expect(monthly.bubblingCandidates?.some((block) => block.text === "This item is explicitly annual.")).toBe(true);
+    expect(annual.blocks.some((block) => block.text === "This item is explicitly annual.")).toBe(true);
+  });
+
+  test("excludes future records and activity from an earlier as-of view", () => {
+    const monday = dailyRecord("2026-11-16", "Occurred before the requested point.", "implemented");
+    const saturday = dailyRecord("2026-11-21", "Occurred after the requested point.", "implemented");
+    const result = composeReport(weeklyReportPeriod("2026-11-16"), [monday, saturday], { asOf: "2026-11-19T12:00:00.000Z" });
+    expect(result.blocks.some((block) => block.text.includes("Occurred before"))).toBe(true);
+    expect(result.blocks.some((block) => block.text.includes("Occurred after"))).toBe(false);
+    expect(result.classifiedActivity.implemented).toEqual(["gh:developing-today/code/issues/2026-11-16"]);
+  });
+
+  test("excludes prior-month activity from a weekly record used in a monthly rollup", () => {
+    const start = dailyRecord("2026-10-27", "October activity in a cross-month week.", "implemented");
+    const november = dailyRecord("2026-11-01", "November activity in a cross-month week.", "implemented");
+    const weekPeriod = weeklyReportPeriod("2026-10-26");
+    const weekly = makeReportRecord(composeReport(weekPeriod, [start, november], { asOf: "2026-11-01T18:00:00.000Z" }), "2026-11-01T18:01:00.000Z");
+    const monthly = composeReport(monthlyReportPeriod("2026-11"), [weekly], { asOf: "2026-11-30T18:00:00.000Z" });
+    expect(monthly.blocks.some((block) => block.text.includes("October activity"))).toBe(false);
+    expect(monthly.blocks.some((block) => block.text.includes("November activity"))).toBe(true);
+    expect(monthly.classifiedActivity.implemented).toEqual(["gh:developing-today/code/issues/2026-11-01"]);
   });
 });
