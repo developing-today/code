@@ -19,17 +19,29 @@ If the two disagree the app still works, with a browser bar at the top.
 ## Build
 
 ```bash
-gh workflow run pm-console-android.yml        # signed APK, attached to the release pm-console-android
+gh workflow run pm-console-android.yml        # builds the APK in CI
 bash pm-stack/console/android/build.sh        # locally: needs JAVA_HOME (17 or 21) and ANDROID_HOME
+bash pm-stack/console/android/sign.sh app-release-unsigned.apk   # sign a CI build with the key on this machine
 ```
 
-The workflow signs with the repository secrets
-`PM_CONSOLE_ANDROID_KEYSTORE_B64` and
-`PM_CONSOLE_ANDROID_KEYSTORE_PASSWORD`, and fails unless the APK's
-certificate matches `signing-fingerprint.txt`. The keystore itself is on
-the pm-stack host at `~/.local/state/pm-console/android/release.p12`.
-Losing it means a new key, a new fingerprint and a reinstall; nothing
-else depends on it.
+The signing key is on the pm-stack host at
+`~/.local/state/pm-console/android/release.p12`, and it stays there. The
+workflow builds an unsigned APK and keeps it as the artifact
+`pm-console-apk-unsigned`; `sign.sh` on the host signs it, checks the
+certificate against `signing-fingerprint.txt`, and the signed
+`pm-console.apk` is uploaded to the release:
+
+```bash
+gh run download <run-id> -n pm-console-apk-unsigned -D /tmp/pm-apk
+nix shell nixpkgs#apksigner -c bash pm-stack/console/android/sign.sh /tmp/pm-apk/app-release-unsigned.apk
+gh release upload pm-console-android /tmp/pm-apk/pm-console.apk --clobber
+```
+
+If the repository secrets `PM_CONSOLE_ANDROID_KEYSTORE_B64` and
+`PM_CONSOLE_ANDROID_KEYSTORE_PASSWORD` are ever set, the workflow signs
+and publishes by itself instead, and fails unless the certificate
+matches. Losing the key means a new key, a new fingerprint and a
+reinstall; nothing else depends on it.
 
 ## Install
 

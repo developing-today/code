@@ -17,14 +17,14 @@ Phase 2 (2026-10-24) added three layers, each in its own subdirectory
 with the same deploy shape (SOPS → mode-600 env → compose/unit →
 health gate):
 
-| Layer     | Piece           | Version / pin                                                    | Reach                                                                                           | Deployment definition |
-| --------- | --------------- | ---------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- | --------------------- |
-| Dispatch  | ready-for-agent | npm `ready-for-agent@1.1.0` (no container image exists upstream) | UI + GraphQL on `6056`, loopback + tailnet (app loopback-only; tailnet via socket proxy, #1181) | `ready-for-agent/`    |
-| Planning  | Pad             | `ghcr.io/perpetualsoftware/pad:0.18.1`, pinned by digest         | `127.0.0.1:7777` + host tailnet address (`PM_STACK_TAILNET_IP`):7777; no tunnel hostname        | `pad/`                |
-| Tables    | Grist           | `gristlabs/grist-oss:v1.7.21`, pinned by digest                  | `127.0.0.1:8484` + host tailnet address (`PM_STACK_TAILNET_IP`):8484; no tunnel hostname        | `grist/`              |
-| Dashboard | Aggregator      | this repo (Bun app, user unit `pm-aggregator`)                   | `127.0.0.1:4870` + tailnet `amd-6.raptor-pumpkinseed.ts.net:4870`; no public route              | `aggregator/`         |
-| Intake    | pm-dispatch     | this repo (Bun app, user unit `pm-dispatch`)                     | `127.0.0.1:4879` + tailnet; public via tunnel as `dispatch.security.cab`                        | `dispatch/`           |
-| Console   | pm-console      | this repo (Bun app, user unit `pm-console`)                      | `127.0.0.1:4872`; public behind sign-in as `pm.security.cab/console` (dashboard at `/`)         | `console/`            |
+| Layer     | Piece           | Version / pin                                                    | Reach                                                                                                                             | Deployment definition |
+| --------- | --------------- | ---------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- | --------------------- |
+| Dispatch  | ready-for-agent | npm `ready-for-agent@1.1.0` (no container image exists upstream) | UI + GraphQL on `6056`, loopback + tailnet (app loopback-only; tailnet via socket proxy, #1181)                                   | `ready-for-agent/`    |
+| Planning  | Pad             | `ghcr.io/perpetualsoftware/pad:0.18.1`, pinned by digest         | `127.0.0.1:7777` + host tailnet address (`PM_STACK_TAILNET_IP`):7777; no tunnel hostname                                          | `pad/`                |
+| Tables    | Grist           | `gristlabs/grist-oss:v1.7.21`, pinned by digest                  | `127.0.0.1:8484` + host tailnet address (`PM_STACK_TAILNET_IP`):8484; no tunnel hostname                                          | `grist/`              |
+| Dashboard | Aggregator      | this repo (Bun app, user unit `pm-aggregator`)                   | `127.0.0.1:4870` + tailnet `amd-6.raptor-pumpkinseed.ts.net:4870`; no public route                                                | `aggregator/`         |
+| Intake    | pm-dispatch     | this repo (Bun app, user unit `pm-dispatch`)                     | `127.0.0.1:4879` + tailnet; public via tunnel as `dispatch.security.cab`                                                          | `dispatch/`           |
+| Console   | pm-console      | this repo (Bun app, user unit `pm-console`)                      | `127.0.0.1:4872`; public behind sign-in as `pm.security.cab` (console at `/console`, dashboard at `/` through the console's gate) | `console/`            |
 
 ready-for-agent runs as a systemd **user unit** (like `pm-tunnel`)
 because upstream ships only an npm package; Pad and Grist run as

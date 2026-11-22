@@ -3,11 +3,16 @@ name: pm-console android
 # Builds the PM console's Android app (pm-stack/console/android): a
 # Trusted Web Activity over https://pm.security.cab. Manual only: it is
 # run when the app changes, which is rarely, since the app is the site.
+#
+# With the signing secrets set, the APK is signed here and attached to
+# the release. Without them the build is unsigned and kept as an
+# artifact, to be signed by pm-stack/console/android/sign.sh on the
+# machine that holds the key.
 on:
   workflow_dispatch:
     inputs:
       publish:
-        description: "Attach the signed APK to the release pm-console-android"
+        description: "Attach the APK to the release pm-console-android (signed builds only)"
         type: boolean
         default: true
 
@@ -16,30 +21,33 @@ permissions:
 
 jobs:
   build:
-    name: "build: signed APK"
+    name: "build: APK"
     runs-on: ubuntu-latest
     timeout-minutes: 25
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v7
-      - name: Build, sign and check the signing certificate
+      - name: Build, and sign when the signing secrets are set
+        id: build
         env:
           KEYSTORE_B64: ${{ secrets.PM_CONSOLE_ANDROID_KEYSTORE_B64 }}
           PM_ANDROID_KEYSTORE_PASSWORD: ${{ secrets.PM_CONSOLE_ANDROID_KEYSTORE_PASSWORD }}
         run: |
-          if [ -z "$KEYSTORE_B64" ] || [ -z "$PM_ANDROID_KEYSTORE_PASSWORD" ]; then
-            echo "::error::The signing secrets PM_CONSOLE_ANDROID_KEYSTORE_B64 and PM_CONSOLE_ANDROID_KEYSTORE_PASSWORD are not set."
-            exit 1
-          fi
           bash pm-stack/console/android/build.sh
+          if [ -f pm-stack/console/android/app/build/outputs/apk/release/pm-console.apk ]; then
+            echo "signed=true" >>"$GITHUB_OUTPUT"
+          else
+            echo "signed=false" >>"$GITHUB_OUTPUT"
+            echo "::notice::Built unsigned: the signing secrets are not set. Sign the artifact with pm-stack/console/android/sign.sh on the machine that holds the key."
+          fi
       - uses: actions/upload-artifact@v7
         with:
-          name: pm-console-apk
-          path: pm-stack/console/android/app/build/outputs/apk/release/pm-console.apk
+          name: ${{ steps.build.outputs.signed == 'true' && 'pm-console-apk' || 'pm-console-apk-unsigned' }}
+          path: pm-stack/console/android/app/build/outputs/apk/release/*.apk
           if-no-files-found: error
       - name: Attach to the release
-        if: inputs.publish
+        if: inputs.publish && steps.build.outputs.signed == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |

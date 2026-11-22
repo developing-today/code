@@ -1,9 +1,12 @@
 // pm-console: the write side of the PM stack. The dashboard
 // (pm-aggregator) shows the fleet; this service acts on it.
 //
-// Everything lives under /console so one public hostname can carry both:
-// the tunnel sends /console and the Android asset-links file here and
-// every other path to the dashboard.
+// One public hostname carries both, and all of it arrives here. /console
+// is this service. Every other path is the dashboard's, passed through
+// only for a verified owner: the dashboard has no sign-in of its own, so
+// the check happens at this origin and does not rest on how the edge
+// reads a path. Three files a phone fetches before anyone has signed in
+// (the install manifest, its icons, the Android asset links) are public.
 import { mkdirSync, readFileSync } from "node:fs";
 import { appendFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
@@ -24,6 +27,25 @@ const SECURITY = {
   "X-Content-Type-Options": "nosniff",
   "Referrer-Policy": "same-origin",
 };
+/** The dashboard's files that are public, matched against the parsed
+ * path in full. They say nothing about the fleet. */
+const PUBLIC_DASHBOARD =
+  /^\/(manifest\.webmanifest|icons\/(icon-192|icon-512|icon-maskable-512|apple-touch-icon)\.png)$/;
+/** Headers that belong to one connection, not to the request or response. */
+const HOP_BY_HOP = new Set([
+  "connection",
+  "keep-alive",
+  "proxy-authenticate",
+  "proxy-authorization",
+  "proxy-connection",
+  "te",
+  "trailer",
+  "transfer-encoding",
+  "upgrade",
+]);
+const UPSTREAM_HEADER_TIMEOUT_MS = 60_000;
+const UPSTREAM_BODY_LIMIT = 16 * 1024 * 1024;
+
 /** Longest a request may run with nothing written: above the longest
  * operation (a 60 second systemctl call), or the connection would drop
  * while the action carried on. Bun's limit is 255. */
@@ -70,6 +92,69 @@ export interface Deps {
   /** `peer` is the connection's remote address as the server saw it. */
   identify: (req: Request, peer: string | null) => Promise<Identity>;
   audit: (entry: Record<string, unknown>) => Promise<void>;
+  /** Reaches the dashboard. Injected so tests can stand in for it. */
+  upstream?: (url: string, init: RequestInit) => Promise<Response>;
+}
+
+/** A write must come from this site. A browser sends Origin on every
+ * cross-site write and Sec-Fetch-Site on every request, and the sign-in
+ * cookie alone must not be enough for another site to act as the owner. */
+function crossSiteWrite(req: Request): boolean {
+  if (req.method === "GET" || req.method === "HEAD") return false;
+  if (req.headers.get("sec-fetch-site") === "cross-site") return true;
+  const origin = req.headers.get("origin");
+  if (origin === null) return false;
+  try {
+    return new URL(origin).host !== (req.headers.get("host") ?? "");
+  } catch {
+    return true;
+  }
+}
+
+/** Pass one request to the dashboard and its answer back. `open` is for
+ * the public files: nothing the caller sent goes with it. */
+async function toDashboard(req: Request, url: URL, deps: Deps, open: boolean): Promise<Response> {
+  const headers = new Headers();
+  if (!open) {
+    for (const [name, value] of req.headers) {
+      if (!HOP_BY_HOP.has(name) && name !== "content-length" && name !== "accept-encoding") headers.set(name, value);
+    }
+  }
+  // The dashboard builds links and checks origins against the public
+  // name; and an uncompressed answer keeps its headers true as it passes.
+  headers.set("host", req.headers.get("host") ?? url.host);
+  headers.set("accept-encoding", "identity");
+  let body: ArrayBuffer | undefined;
+  if (!open && req.method !== "GET" && req.method !== "HEAD") {
+    body = await req.arrayBuffer();
+    if (body.byteLength > UPSTREAM_BODY_LIMIT) return json({ error: "request body too large" }, 413);
+  }
+  const abort = new AbortController();
+  const stop = () => abort.abort();
+  req.signal.addEventListener("abort", stop, { once: true });
+  const timer = setTimeout(stop, UPSTREAM_HEADER_TIMEOUT_MS);
+  let res: Response;
+  try {
+    // The parsed path is what was checked, so it is what is sent: the
+    // dashboard never sees a spelling of the path the check did not.
+    res = await (deps.upstream ?? fetch)(`${deps.cfg.dashboardUrl}${url.pathname}${url.search}`, {
+      method: open ? "GET" : req.method,
+      headers,
+      body,
+      redirect: "manual",
+      signal: abort.signal,
+    });
+  } catch (error) {
+    console.error(`pm-console: dashboard: ${(error as Error).message}`);
+    return json({ error: "the dashboard did not answer" }, 502);
+  } finally {
+    clearTimeout(timer);
+  }
+  const out = new Headers();
+  for (const [name, value] of res.headers) {
+    if (!HOP_BY_HOP.has(name) && name !== "content-length" && name !== "content-encoding") out.append(name, value);
+  }
+  return new Response(req.method === "HEAD" ? null : res.body, { status: res.status, headers: out });
 }
 
 /** A state-changing request must be one this page made: a custom header
@@ -93,7 +178,12 @@ export async function handle(req: Request, deps: Deps, peer: string | null = nul
   // Public, unauthenticated: nothing here says anything about the fleet.
   if (path === "/.well-known/assetlinks.json" && method === "GET") return json(assetLinks(deps.cfg));
   if (path === `${BASE}/health` && method === "GET") return json({ ok: true });
-  if (path !== BASE && !path.startsWith(`${BASE}/`)) return json({ error: "not found" }, 404);
+  const ours = path === BASE || path.startsWith(`${BASE}/`);
+  if (!ours) {
+    if (deps.cfg.dashboardUrl === null) return json({ error: "not found" }, 404);
+    if ((method === "GET" || method === "HEAD") && PUBLIC_DASHBOARD.test(path))
+      return toDashboard(req, url, deps, true);
+  }
 
   let who: Identity;
   try {
@@ -101,6 +191,10 @@ export async function handle(req: Request, deps: Deps, peer: string | null = nul
   } catch (error) {
     if (error instanceof AuthError) return json({ error: error.message }, error.status);
     throw error;
+  }
+  if (!ours) {
+    if (crossSiteWrite(req)) return json({ error: "this request did not come from this site" }, 403);
+    return toDashboard(req, url, deps, false);
   }
 
   const rest = path.slice(BASE.length).replace(/^\/+/, "");
@@ -253,6 +347,6 @@ if (import.meta.main) {
     fetch: (req, srv) => handle(req, deps, srv.requestIP(req)?.address ?? null),
   });
   console.log(
-    `pm-console listening on http://${server.hostname}:${server.port}${BASE}/ — owners: ${cfg.owners.length}, issuers: ${cfg.issuers.map((i) => i.name).join(", ") || "none (edge requests are refused)"}`,
+    `pm-console listening on http://${server.hostname}:${server.port}${BASE}/ — owners: ${cfg.owners.length}, issuers: ${cfg.issuers.map((i) => i.name).join(", ") || "none (edge requests are refused)"}, dashboard: ${cfg.dashboardUrl ?? "not fronted"}`,
   );
 }

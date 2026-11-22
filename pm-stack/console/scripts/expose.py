@@ -2,20 +2,25 @@
 """Put the PM stack on a public hostname behind sign-in, or check that it is.
 
 One hostname carries the dashboard (pm-aggregator) and the console
-(pm-console). This script makes each of these true, changing only what
-is not already so, and prints what it did:
+(pm-console). All of it is routed to the console, which serves /console
+and passes every other path to the dashboard only for a verified owner.
+The dashboard has no sign-in of its own, so sign-in is checked twice: by
+Cloudflare Access at the edge, and by the console at the origin.
+
+This script makes each of these true, changing only what is not already
+so, and prints what it did:
 
 1. A Cloudflare Access application covers the hostname, with one policy:
    the owner's address. Sign-in methods are the one-time PIN, plus Google
    when the secrets `google.access-sso.client-id` and
    `google.access-sso.client-secret` exist.
-2. Three public paths bypass sign-in, because a phone fetches them before
-   anyone has signed in: the asset-links file, the install manifest and
-   its icons. None of them says anything about the fleet.
+2. Three public paths bypass sign-in at the edge, because a phone
+   fetches them before anyone has signed in: the asset-links file, the
+   install manifest and its icons. The console serves exactly those
+   files to an unsigned caller and nothing else.
 3. The console's environment file names the Access issuer and the owner,
    and the console is running with it.
-4. The tunnel routes the hostname: /console and the Android asset-links
-   file to the console, every other path to the dashboard.
+4. The tunnel routes the hostname to the console.
 5. DNS points the hostname at the tunnel.
 
 The gate comes first and the route last, so the origin is never
@@ -44,8 +49,12 @@ API = "https://api.cloudflare.com/client/v4"
 TUNNEL = "amd-6-pm-stack"
 CONSOLE = "http://localhost:4872"
 UNIT = "pm-console.service"
-DASHBOARD = "http://localhost:4870"
-CONSOLE_PATHS = r"^/(console($|/)|\.well-known/assetlinks\.json$)"
+# The sign-in cookie is not sent on another site's requests, and page
+# scripts cannot read it.
+APP_SETTINGS = {
+    "same_site_cookie_attribute": "lax",
+    "http_only_cookie_attribute": True,
+}
 PUBLIC_PATHS = ("/.well-known/assetlinks.json", "/manifest.webmanifest", "/icons")
 GOOGLE_ID = "google.access-sso.client-id"
 GOOGLE_SECRET = "google.access-sso.client-secret"
@@ -109,20 +118,18 @@ def ensure_routes(
     cf: Cloudflare, account: str, host: str, tunnel: str, config: dict, console: str
 ) -> None:
     ingress = config.get("ingress") or []
-    wanted = [
-        # A rule with a path must come before the same hostname's rule without one.
-        {"hostname": host, "path": CONSOLE_PATHS, "service": console},
-        {"hostname": host, "service": DASHBOARD},
-    ]
+    # One rule, no path: every path on the hostname goes to the console,
+    # which is the only thing that decides what reaches the dashboard.
+    wanted = [{"hostname": host, "service": console}]
 
     def plain(rule: dict) -> dict:
         return {k: rule[k] for k in ("hostname", "path", "service") if k in rule}
 
-    # cloudflared takes the first rule that matches. This host's rules go
+    # cloudflared takes the first rule that matches. This host's rule goes
     # ahead of every other rule, so a wildcard such as *.security.cab can
-    # never take the host's traffic and send it somewhere with no /console.
-    if [plain(r) for r in ingress[:2]] == wanted and all(
-        r.get("hostname") != host for r in ingress[2:]
+    # never take the host's traffic and send it somewhere with no gate.
+    if [plain(r) for r in ingress[:1]] == wanted and all(
+        r.get("hostname") != host for r in ingress[1:]
     ):
         return
     rest = [r for r in ingress if r.get("hostname") != host]
@@ -130,7 +137,7 @@ def ensure_routes(
         rest.append({"service": "http_status:404"})
     config["ingress"] = wanted + rest
     cf.change(
-        f"tunnel {TUNNEL}: route {host} (/console -> console, the rest -> dashboard)",
+        f"tunnel {TUNNEL}: route {host} to the console",
         "PUT",
         f"/accounts/{account}/cfd_tunnel/{tunnel}/configurations",
         {"config": config},
@@ -231,6 +238,7 @@ def ensure_app(
     decision: str,
     include: list,
     idps: list[str] | None,
+    settings: dict | None = None,
 ) -> str | None:
     app = next(
         (
@@ -250,6 +258,7 @@ def ensure_app(
         }
         if idps:
             body["allowed_idps"] = idps
+        body.update(settings or {})
         app = cf.change(
             f"access: application for {domain}",
             "POST",
@@ -258,14 +267,20 @@ def ensure_app(
         )
         if app is None:
             return None
-    elif idps and sorted(app.get("allowed_idps") or []) != sorted(idps):
-        app["allowed_idps"] = idps
-        cf.change(
-            f"access: sign-in methods for {domain}",
-            "PUT",
-            f"/accounts/{account}/access/apps/{app['id']}",
-            app,
-        )
+    else:
+        stale = [k for k, v in (settings or {}).items() if app.get(k) != v]
+        if idps and sorted(app.get("allowed_idps") or []) != sorted(idps):
+            stale.append("allowed_idps")
+        if stale:
+            app.update(settings or {})
+            if idps:
+                app["allowed_idps"] = idps
+            cf.change(
+                f"access: settings for {domain} ({', '.join(sorted(stale))})",
+                "PUT",
+                f"/accounts/{account}/access/apps/{app['id']}",
+                app,
+            )
     policies = cf.get(f"/accounts/{account}/access/apps/{app['id']}/policies")
     # Exclude and require rules change who a policy lets in, so a policy
     # carrying either is not the one this script writes.
@@ -433,6 +448,7 @@ def main() -> int:
         "allow",
         [{"email": {"email": args.owner}}],
         idps,
+        APP_SETTINGS,
     )
     if aud:
         ensure_console(
