@@ -37,9 +37,11 @@ so, and prints what it did:
    token and the queue store token) and the explicit opt-in that lets it
    use them. Off by default, remembered like `--edge`, and nothing is
    uploaded on a run that does not change the choice. Turning it off
-   turns the opt-in off; the tokens stay on the Worker, inert without
-   it. The Worker says in /console/health whether the flag is on and
-   whether each token is there.
+   turns the opt-in off and takes the two tokens away again. They go
+   through Cloudflare's API with the token this script already holds, so
+   nothing has to be installed here for it. The Worker says in
+   /console/health whether the flag is on and whether each token is
+   there.
 
 The gate comes first and the routes last, so the origin is never
 reachable without sign-in in front of it. If the console does not come
@@ -68,18 +70,16 @@ Usage: expose.py [--check] [--edge on|off] [--edge-direct on|off]
   --edge-direct on
                let the edge Worker act itself while the laptop is away:
                upload the GitHub and queue tokens and turn the opt-in
-               on; remembered by later runs until --edge-direct off.
-               Off by default.
+               on; remembered by later runs until --edge-direct off,
+               which also takes the tokens away. Off by default.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
-import os
 import pathlib
 import re
-import shutil
 import subprocess
 import sys
 import time
@@ -261,8 +261,10 @@ def ensure_edge_direct(
     """Upload the two tokens the edge Worker acts with, and its opt-in,
     or turn the opt-in off. Nothing is uploaded on a run that does not
     change the choice, so the timer's runs leave the secrets alone.
-    A secret is read by name through `fleet secrets get` and piped to
-    `wrangler secret put`; it is never printed or written to a file.
+    A secret is read by name through `fleet secrets get` and sent to
+    Cloudflare's API as a Worker secret; it is never printed, written to
+    a file or put on a command line. Turning the mode off takes the two
+    tokens away again.
     The choice is remembered only after the Worker has it: a run that
     fails part-way leaves the old marker, so the next run tries again
     instead of assuming the mode is already set."""
@@ -280,39 +282,19 @@ def ensure_edge_direct(
             "edge direct: upload the GitHub and queue tokens and turn direct actions on"
         )
     else:
-        what = "edge direct: turn direct actions off"
+        what = "edge direct: turn direct actions off and take the two tokens away"
     cf.changes.append(what)
     if check:
         return
-    edge_dir = pathlib.Path(__file__).resolve().parent.parent / "edge"
-    wrangler = shutil.which("wrangler") or str(
-        edge_dir / "node_modules" / ".bin" / "wrangler"
-    )
-    if not wrangler or not pathlib.Path(wrangler).exists():
-        raise SystemExit(
-            "wrangler is not installed here; run `npm ci` in pm-stack/console/edge, then rerun"
-        )
-    envs = {
-        **os.environ,
-        "CLOUDFLARE_API_TOKEN": cf.token,
-        "CLOUDFLARE_ACCOUNT_ID": account,
-    }
+    # Straight to Cloudflare's API, with the token this script already
+    # holds: nothing to install on this host, and the value travels in
+    # the request body, never on a command line.
+    secrets_path = f"/accounts/{account}/workers/scripts/{WORKER}/secrets"
 
     def put(name: str, value: str) -> None:
-        done = subprocess.run(
-            [wrangler, "secret", "put", name],
-            input=value,
-            capture_output=True,
-            text=True,
-            cwd=edge_dir,
-            env=envs,
-            check=False,
+        cf.call(
+            "PUT", secrets_path, {"name": name, "text": value, "type": "secret_text"}
         )
-        if done.returncode != 0:
-            raise SystemExit(
-                f"wrangler secret put {name} failed ({(done.stderr or '').strip()[:200]}); "
-                "the edge Worker was not given its secrets"
-            )
 
     if wanted:
         github = secret(GITHUB_TOKEN_SECRET)
@@ -328,8 +310,14 @@ def ensure_edge_direct(
         put("QUEUE_TOKEN", queue)
         put("EDGE_DIRECT", "on")
     else:
-        # The tokens stay, inert without the opt-in; only the flag moves.
+        # The opt-in goes first, so the Worker stops acting at once; then
+        # the two tokens are taken away again. Off leaves it holding
+        # nothing it could act with.
         put("EDGE_DIRECT", "off")
+        held = {s.get("name") for s in cf.get(secrets_path)}
+        for name in ("GITHUB_TOKEN", "QUEUE_TOKEN"):
+            if name in held:
+                cf.call("DELETE", f"{secrets_path}/{name}")
     # The Worker has the change now, so the choice is remembered; a
     # failure above raises before this line and leaves the old marker.
     if choice is not None:

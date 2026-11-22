@@ -51,6 +51,10 @@ class Account(expose.Cloudflare):
         # its next health checks get no answer.
         self.worker_host = HOST
         self.health_misses = 0
+        # What the Worker holds as secrets, and how many of the next
+        # uploads Cloudflare refuses.
+        self.worker_secrets = {}
+        self.secret_failures = 0
 
     def call(self, method, path, body=None):
         path, _, query = path.partition("?")
@@ -103,6 +107,21 @@ class Account(expose.Cloudflare):
         elif path == "/zones":
             name = query.partition("name=")[2]
             result = [{"id": self.zones[name]}] if name in self.zones else []
+        elif path.endswith(f"/workers/scripts/{expose.WORKER}/secrets"):
+            # The Worker's secrets: names can be listed, values never read back.
+            if method == "PUT":
+                if self.secret_failures > 0:
+                    self.secret_failures -= 1
+                    raise SystemExit("cloudflare PUT secrets: refused")
+                self.worker_secrets[body["name"]] = body["text"]
+            result = [
+                {"name": name, "type": "secret_text"} for name in self.worker_secrets
+            ]
+        elif (
+            f"/workers/scripts/{expose.WORKER}/secrets/" in path and method == "DELETE"
+        ):
+            self.worker_secrets.pop(path.split("/")[-1], None)
+            result = None
         elif path.endswith("/workers/subdomain"):
             result = {"subdomain": "acct"}
         elif "/workers/routes" in path:
@@ -152,12 +171,10 @@ def run(
     owner=OWNER,
     stdin=None,
     secrets=None,
-    wrangler_path=None,
 ):
     """One run of the script. What it printed is left in account.printed."""
     argv = ["expose.py", *(["--owner", owner] if owner else []), *args]
     machine = machine or Machine()
-    real_which = expose.shutil.which
 
     def secret(name):
         if secrets is not None and name in secrets:
@@ -178,13 +195,6 @@ def run(
     with (
         mock.patch.object(expose, "Cloudflare", lambda token, check: account),
         mock.patch.object(expose, "secret", secret),
-        mock.patch.object(
-            expose.shutil,
-            "which",
-            lambda cmd, *a, **k: (
-                wrangler_path if wrangler_path is not None else real_which(cmd, *a, **k)
-            ),
-        ),
         mock.patch.object(expose.pathlib.Path, "home", lambda: pathlib.Path(home)),
         mock.patch.object(expose.subprocess, "run", machine.systemctl),
         mock.patch.object(expose, "console_up", machine.up),
@@ -523,68 +533,77 @@ class Expose(unittest.TestCase):
         )
         self.assertEqual(self.env()["PM_CONSOLE_EDGE_URL"], f"https://{HOST}")
 
-    def test_direct_choice_is_remembered_only_after_it_is_applied(self):
+    def test_direct_mode_gives_the_worker_its_tokens_and_takes_them_away_again(self):
         account = Account()
         run(account, self.home)
         marker = pathlib.Path(self.home) / ".local/state/pm-console/edge-direct"
-        fake = pathlib.Path(self.home) / "wrangler"
-        fake.write_text("#!/bin/sh\n")
+        path = f"/accounts/acc/workers/scripts/{expose.WORKER}/secrets"
+        # Off by default: an ordinary run uploads nothing.
+        self.assertEqual(account.worker_secrets, {})
+        # Asked what turning it on would change: said, and nothing done.
+        account.order.clear()
+        self.assertEqual(run(account, self.home, "--check", "--edge-direct", "on"), 1)
+        self.assertEqual(len(account.changes), 1)
+        self.assertEqual(account.order, [])
+        self.assertFalse(marker.exists())
         # The tokens cannot be read here: the run fails, and nothing is
         # remembered, so a later run still tries to turn direct mode on.
         with self.assertRaisesRegex(SystemExit, "is not readable here"):
-            run(account, self.home, "--edge-direct", "on", wrangler_path=str(fake))
+            run(account, self.home, "--edge-direct", "on")
         self.assertFalse(marker.exists())
-        # Readable now: the tokens are uploaded and the choice is remembered.
+        self.assertEqual(account.worker_secrets, {})
         secrets = {
-            expose.GITHUB_TOKEN_SECRET: "gh-test",
-            expose.QUEUE_TOKEN_DEFAULT: "queue-test",
+            expose.GITHUB_TOKEN_SECRET: "gh-test-value",
+            expose.QUEUE_TOKEN_DEFAULT: "queue-test-value",
         }
-        machine = Machine()
+        # Cloudflare refuses part-way: still nothing remembered.
+        account.secret_failures = 1
+        with self.assertRaisesRegex(SystemExit, "refused"):
+            run(account, self.home, "--edge-direct", "on", secrets=secrets)
+        self.assertFalse(marker.exists())
+        # Readable and accepted: the two tokens and the opt-in are the
+        # Worker's, through Cloudflare's API and nothing installed here.
+        account.order.clear()
         self.assertEqual(
-            run(
-                account,
-                self.home,
-                "--edge-direct",
-                "on",
-                machine=machine,
-                secrets=secrets,
-                wrangler_path=str(fake),
-            ),
-            0,
+            run(account, self.home, "--edge-direct", "on", secrets=secrets), 0
         )
+        self.assertEqual(
+            account.worker_secrets,
+            {
+                "GITHUB_TOKEN": "gh-test-value",
+                "QUEUE_TOKEN": "queue-test-value",
+                "EDGE_DIRECT": "on",
+            },
+        )
+        self.assertEqual(account.order, [f"PUT {path}"] * 3)
         self.assertEqual(marker.read_text().strip(), "on")
-        self.assertEqual(machine.commands.count("put"), 3)
-        # A later run with the same choice uploads nothing again.
-        machine = Machine()
+        # Neither value is in anything it printed, said it changed, or wrote.
+        said = "\n".join(account.printed + account.changes)
+        for value in secrets.values():
+            self.assertNotIn(value, said)
+            for kept in pathlib.Path(self.home).rglob("*"):
+                if kept.is_file():
+                    self.assertNotIn(value, kept.read_text())
+        # A later run with the same choice, or with none (the timer's),
+        # uploads nothing again.
+        for again in (("--edge-direct", "on"), ()):
+            account.order.clear()
+            self.assertEqual(run(account, self.home, *again, secrets=secrets), 0)
+            self.assertEqual(account.changes, [])
+            self.assertEqual(account.order, [])
+        # Off: the opt-in first, then the two tokens are taken away.
+        account.order.clear()
+        self.assertEqual(run(account, self.home, "--edge-direct", "off"), 0)
+        self.assertEqual(account.worker_secrets, {"EDGE_DIRECT": "off"})
         self.assertEqual(
-            run(
-                account,
-                self.home,
-                "--edge-direct",
-                "on",
-                machine=machine,
-                secrets=secrets,
-                wrangler_path=str(fake),
-            ),
-            0,
-        )
-        self.assertEqual(account.changes, [])
-        self.assertNotIn("put", machine.commands)
-        # Turning it off is remembered the same way, once the Worker has it.
-        self.assertEqual(
-            run(
-                account,
-                self.home,
-                "--edge-direct",
-                "off",
-                machine=machine,
-                secrets=secrets,
-                wrangler_path=str(fake),
-            ),
-            0,
+            account.order,
+            [
+                f"PUT {path}",
+                f"DELETE {path}/GITHUB_TOKEN",
+                f"DELETE {path}/QUEUE_TOKEN",
+            ],
         )
         self.assertEqual(marker.read_text().strip(), "off")
-        self.assertEqual(machine.commands.count("put"), 1)
 
     def test_another_workers_route_on_the_hostname_is_left_alone(self):
         for foreign in (

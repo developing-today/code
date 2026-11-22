@@ -3,7 +3,7 @@
 // Oracles: the elapsed-time phrases and the device labels are written
 // out here by hand for real inputs (two real browser names).
 import { expect, test } from "bun:test";
-import { ago, band, deviceLabel, endpointMark, subscriptionState } from "../public/app.js";
+import { ago, awayState, band, deviceLabel, endpointMark, subscriptionState } from "../public/app.js";
 import { contact, endpointMark as serverMark } from "../src/push.ts";
 
 test("elapsed time reads as a phrase on its own, never 'just now ago'", () => {
@@ -65,4 +65,43 @@ test("a device with notifications on tells whether the sender still has it, and 
 
 test("the contact given to push services is the project's page, never a person's address", () => {
   expect(contact("developing-today/code")).toBe("https://github.com/developing-today/code");
+});
+
+test("the Laptop away screen reads the edge's own account of itself", () => {
+  // Straight from the laptop, or no answer: there is no edge to ask.
+  expect(awayState(null)).toEqual({ served: false });
+  expect(awayState({ ok: true })).toEqual({ served: false });
+  // Served from the edge, the switch never touched.
+  expect(awayState({ ok: true, edge: true, directEnabled: false, directReady: false, selfCheck: null })).toEqual({
+    served: true,
+    on: false,
+    ready: false,
+    checkedAt: null,
+    checks: [],
+  });
+  // On and holding its tokens: each kind of read it tried, in the owner's words.
+  expect(
+    awayState({
+      edge: true,
+      directEnabled: true,
+      directReady: true,
+      selfCheck: {
+        at: 1_700_000_000_000,
+        kinds: { board: { ok: true }, asks: { ok: false, error: "queue store answered http 401" } },
+      },
+    }),
+  ).toEqual({
+    served: true,
+    on: true,
+    ready: true,
+    checkedAt: 1_700_000_000_000,
+    checks: [
+      { what: "The board", ok: true, error: "" },
+      { what: "Your prompts", ok: false, error: "queue store answered http 401" },
+    ],
+  });
+  // The flag is on but a token is missing: on, and not ready.
+  expect(awayState({ edge: true, directEnabled: true, directReady: false }).ready).toBe(false);
+  // Ready without the flag is not ready: the flag is what the owner turned.
+  expect(awayState({ edge: true, directEnabled: false, directReady: true })).toMatchObject({ on: false, ready: false });
 });

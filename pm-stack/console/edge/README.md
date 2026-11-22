@@ -81,7 +81,11 @@ laptop: pm-console (../src/server.ts), reporting through ../src/sync.ts
   `via: edge-held` with who took it and when.
 
 Three secrets are optional, put there by the laptop's
-`scripts/expose.py --edge-direct on` (off by default, remembered):
+`scripts/expose.py --edge-direct on` (off by default, remembered). The
+owner turns it on and off in the app, under More, Laptop away, which
+runs that script on the laptop; `--edge-direct off` takes the two
+tokens away again. They travel through Cloudflare's API with the token
+the script already holds, so nothing is installed on the laptop for it:
 `GITHUB_TOKEN` (the repository automation token), `QUEUE_TOKEN` (the
 queue store token), and `EDGE_DIRECT`, the explicit opt-in that must
 read `on` for either to be used. With them, the edge reads the board,

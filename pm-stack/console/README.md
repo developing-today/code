@@ -162,6 +162,10 @@ bun run scripts/demo.ts          # the app with made-up state, on this host alon
 bun run scripts/edge-demo.ts     # the same behind the edge
 ```
 
+The app's own switches for what this script sets up are under More:
+Sign-in (the Google client) and Laptop away (whether Cloudflare acts
+by itself while the laptop cannot be reached; see edge/README.md).
+
 The owner's address is given once with `--owner` and remembered in the
 console's environment file; it is not written in the script.
 

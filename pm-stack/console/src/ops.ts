@@ -541,6 +541,27 @@ export class Ops {
     return { google: true, changed: said.filter((line) => line.startsWith("changed: ")).map((line) => line.slice(9)) };
   }
 
+  /** Let the edge act by itself while this host is away, or stop it.
+   * Turning it on gives the Worker the repository automation token and
+   * the queue store token, read from the secret store by the setup
+   * script and sent to Cloudflare; turning it off takes them away. It
+   * can only be done here, where the secret store is. */
+  async edgeDirect(on: unknown) {
+    if (typeof on !== "boolean") throw new OpError(400, "on: true or false");
+    const r = await this.expose(["--edge-direct", on ? "on" : "off"]);
+    const said = `${r.stdout}\n${r.stderr}`
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((line) => line !== "");
+    if (r.code !== 0) {
+      throw new OpError(
+        502,
+        `Cloudflare was not ${on ? "given" : "relieved of"} the tokens: ${(said.pop() ?? "the setup script failed").slice(0, 300)}`,
+      );
+    }
+    return { on, changed: said.filter((line) => line.startsWith("changed: ")).map((line) => line.slice(9)) };
+  }
+
   // ---- services ----------------------------------------------------------
 
   async services(): Promise<Unit[]> {
