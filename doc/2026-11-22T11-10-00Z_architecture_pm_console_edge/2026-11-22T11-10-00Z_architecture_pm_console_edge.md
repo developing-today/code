@@ -113,3 +113,61 @@ Not checked before going live: the owner's real sign-in token at the
 edge. The edge counts requests it answered as the owner's and requests
 it left to the laptop (`/console/health`), so the first real visit shows
 which happened.
+
+## 2026-11-22T11:50Z Update: going live, and the first review
+
+Two things stopped the first go-live, and neither was in the design.
+
+- The laptop's checkout had stopped following `main` two hours earlier.
+  A system rebuild had left an empty marker commit on the local `main`,
+  and the sync only ever fast-forwards, so it stood still, 28 commits
+  behind, and nothing merged since had been deployed. The marker was
+  kept under the tag `rebuild-marker/amd-569` and `main` was moved to
+  `origin/main` (nothing was discarded: the commit was empty and the
+  tree was clean). The sync still cannot do this by itself; that is a
+  separate change to `pm-git-sync`.
+- The setup script judged the Worker "not deployed" while it was
+  answering. Its health check went out under Python's default client
+  name, which Cloudflare refuses with a 403; `curl` from the same
+  machine got the answer. The check now names its program (and nothing
+  else), asks three times before believing a failure, and is covered by
+  a test that looks at the request actually made.
+
+What the first review found, and what was done:
+
+- **An action could run twice.** If the laptop did a relayed action and
+  its answer was lost on the way back, the edge held the action under a
+  new name and the laptop ran it again at the next report. An action is
+  now named at the edge before it goes anywhere; the laptop writes the
+  name down before starting and the outcome after; a held action
+  offered under a name the laptop knows is answered from that record,
+  and one still running is left to finish. Tested with the answer lost
+  after the work, and with the edge giving up while the work was still
+  going.
+- **A source the laptop could no longer read looked healthy at the
+  edge.** The laptop keeps its last good copy, so the data and its
+  fingerprint do not change; the report now says of every section
+  whether its latest read failed and why, and the edge shows that with
+  the copy, across its own restarts.
+- **A late answer the dashboard refused was logged as done.** It is now
+  logged as not recorded, with the reason.
+- **Notifications after the move.** A browser's subscription is made
+  for one sender's key, and the edge has its own. The app now checks, on
+  opening, whether the sender still holds this device and under which
+  key, and makes the subscription again or hands it over again without
+  asking (the owner already said yes on that device). The sender tells
+  the app which devices it holds by a short mark of each address, never
+  the address. Until a device next opens the app, the laptop goes on
+  sending to it. Phones linked for the widget are not carried across an
+  edge on/off change yet: one linked on one side has to be linked again
+  on the other.
+- **The setup script**: `--check --edge off` now previews that choice
+  instead of ignoring it; a Worker built for another hostname is not
+  given this one (the Worker says which it is built for); the redeploy
+  check reads quoted settings the way the service does; the build and
+  the smoke check refuse arguments they do not take.
+
+One change nobody asked for: the contact handed to push services with
+every notification was the owner's address. It is now the project's
+page. Delivery does not depend on it, and an address has no reason to
+travel to Google or Mozilla with each message.

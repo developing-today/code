@@ -34,7 +34,7 @@ import {
 } from "./http.ts";
 import { Notifier } from "./notify.ts";
 import { OpError, Ops } from "./ops.ts";
-import { Push } from "./push.ts";
+import { contact, Push } from "./push.ts";
 import { EdgeLink } from "./sync.ts";
 import { Work } from "./work.ts";
 
@@ -47,6 +47,7 @@ const STATIC = new Map([
 ]);
 
 const APK_NAME = "pm-console.apk";
+const ACT_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 /** The dashboard's files that are public, matched against the parsed
  * path in full. They say nothing about the fleet. */
 const PUBLIC_DASHBOARD = /^\/icons\/(icon-192|icon-512|icon-maskable-512|apple-touch-icon)\.png$/;
@@ -102,7 +103,7 @@ export interface Deps {
    * exist only when their limits do. */
   phones?: Phones;
   /** This host's link to the edge, when the app is served from one. */
-  link?: Pick<EdgeLink, "publicKey">;
+  link?: Pick<EdgeLink, "publicKey"> & Partial<Pick<EdgeLink, "begin" | "end">>;
 }
 
 /** Text that shrinks well. The dashboard's fragments run to a megabyte
@@ -368,17 +369,25 @@ export async function handle(req: Request, deps: Deps, peer: string | null = nul
               acts: docs.recentActs(),
             })
           : undefined;
+      // Relayed by the edge under a name: the name is written down before
+      // the action starts and its outcome after, so that if this answer
+      // is lost and the edge offers the action again, it is not repeated.
+      const name = req.headers.get("x-pm-act") ?? "";
+      const link = ACT_ID.test(name) && deps.link?.begin && deps.link.end ? deps.link : null;
       return await act(
         kind || "unknown",
         kept,
         async () => {
+          await link?.begin?.(name);
           docs.logAct({ ...entry, status: "running" });
           try {
             const result = await perform(table, docs, kind, args);
             docs.logAct({ ...entry, status: "done" });
+            await link?.end?.(name, { ok: true });
             return result;
           } catch (error) {
             docs.logAct({ ...entry, status: "failed", note: (error as Error).message.slice(0, 200) });
+            await link?.end?.(name, { ok: false, error: (error as Error).message.slice(0, 300) });
             throw error;
           }
         },
@@ -497,7 +506,22 @@ export function heldRunner(deps: Pick<Deps, "docs" | "actions" | "audit">): (hel
         .audit({ ...base, phase: "done", ...more })
         .catch((error) => console.error(`pm-console: audit: ${(error as Error).message}`));
     try {
-      await perform(table, docs, held.kind, held.args);
+      const result = (await perform(table, docs, held.kind, held.args)) as {
+        applied?: number;
+        refused?: { why?: string }[];
+      } | null;
+      // An answer can come back "not recorded" without anything being
+      // thrown (the question was settled in the meantime). Sent at once,
+      // the app says so; sent late, this has to.
+      const refused = Array.isArray(result?.refused) ? result.refused : [];
+      if (refused.length > 0) {
+        const why = String(refused[0]?.why ?? "no reason given");
+        throw new Error(
+          (result?.applied ?? 0) > 0
+            ? `${result?.applied} recorded, ${refused.length} not recorded: ${why}`
+            : `not recorded: ${why}`,
+        );
+      }
       docs.logAct({ ...entry, status: "done", note: "Sent late: held while the laptop could not be reached." });
       await done({ ok: true });
     } catch (error) {
@@ -528,7 +552,7 @@ if (import.meta.main) {
   const work = new Work(ops);
   const docs = new Docs(loaders(ops, work, await morePages()));
   const state = dirname(cfg.auditFile);
-  const push = new Push(fileStore(join(state, "push.json")), `mailto:${cfg.owners[0] ?? "owner@invalid.example"}`);
+  const push = new Push(fileStore(join(state, "push.json")), contact(cfg.repo));
   const notifier = new Notifier(docs, push, fileStore(join(state, "notified.json")));
   const devices = new Devices(fileStore(cfg.devicesFile));
   const deps: Deps = {

@@ -19,6 +19,10 @@ import { type Deps, handle, heldRunner, marked } from "../src/server.ts";
 import { memoryStore } from "../src/store.ts";
 import { EdgeLink } from "../src/sync.ts";
 
+if (process.argv.length > 2) {
+  console.error("usage: bun run scripts/edge-smoke.ts   (it takes no arguments; EDGE names the Worker's address)");
+  process.exit(2);
+}
 const EDGE = process.env.EDGE ?? "http://localhost:8799";
 const cfg = readConfig({ HOME: "/tmp/pm-edge-smoke", PM_CONSOLE_OWNER_EMAILS: "owner@example.com" });
 cfg.issuers = [

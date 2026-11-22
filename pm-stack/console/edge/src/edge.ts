@@ -49,7 +49,7 @@ import {
   sameSiteWrite,
 } from "../../src/http.ts";
 import { Notifier } from "../../src/notify.ts";
-import { Push } from "../../src/push.ts";
+import { contact, Push } from "../../src/push.ts";
 import type { Store } from "../../src/store.ts";
 
 /** The edge's own storage: small values by key. */
@@ -94,6 +94,7 @@ const STATIC: Record<string, string> = {
   "icon.svg": "image/svg+xml",
   "sw.js": "text/javascript; charset=utf-8",
 };
+const ACT_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const ICONS = /^\/icons\/(icon-192|icon-512|icon-maskable-512|apple-touch-icon)\.png$/;
 
 interface Mirror {
@@ -142,7 +143,7 @@ export class Edge {
   private hostSeq: number | null = null;
   /** For each section, the content the host last said it has and when
    * it read it: a copy with that content is current as of that read. */
-  private confirmed: Record<string, { hash: string; at: number }> = {};
+  private confirmed: Record<string, { hash: string; at: number; error: string | null }> = {};
   private sure = 0;
   private unsure = 0;
   readonly docs: Docs;
@@ -165,7 +166,8 @@ export class Edge {
             load: async () => {
               const m = await this.mirror(name);
               if (!m) throw new Error("the laptop has not reported this yet");
-              return new Stamped(m.data, m.at);
+              // With the laptop's own word on whether it could still read it.
+              return new Stamped(m.data, m.at, this.confirmed[name]?.error ?? null);
             },
           },
         ]),
@@ -174,8 +176,8 @@ export class Edge {
     );
     this.push = new Push(
       kvStore(this.kv, "push"),
-      // Who a push service may write to about these messages: the owner.
-      () => `mailto:${this.cfg?.owners[0] ?? "owner@invalid.example"}`,
+      // The contact a push service is given: the project's page.
+      () => contact(this.cfg?.repo ?? "developing-today/code"),
       (url, init) => this.fetchImpl(url, init as RequestInit),
       this.now,
     );
@@ -295,7 +297,7 @@ export class Edge {
     if (this.ownActs === null) await this.showActs();
     if (this.hostSeen === null) {
       const host = (await this.kv.get("host")) as
-        | { seen: number; seq: number; confirmed?: Record<string, { hash: string; at: number }> }
+        | { seen: number; seq: number; confirmed?: Record<string, { hash: string; at: number; error: string | null }> }
         | undefined;
       this.hostSeen = host?.seen ?? 0;
       this.hostSeq = host?.seq ?? 0;
@@ -350,16 +352,25 @@ export class Edge {
       await this.kv.put("cfg", cfg);
       this.cfg = cfg;
     }
-    const changed = await this.take(msg.sections);
-    // A section that has not changed is not sent again, but the host
-    // says when it last read it: the copy here is as current as that.
-    const fresher: string[] = [];
+    // What the host says of every section it has: how current it is, and
+    // whether it could still read it. Taken first, so a section that
+    // arrives in this report is shown with its health as of this report.
+    const told: { name: string; healthChanged: boolean }[] = [];
     for (const [name, theirs] of Object.entries(msg.have ?? {})) {
       if (!Object.hasOwn(SECTIONS, name) || typeof theirs?.hash !== "string" || typeof theirs.at !== "number") continue;
-      this.confirmed[name] = { hash: theirs.hash, at: Math.min(theirs.at, now) };
+      const error = typeof theirs.error === "string" && theirs.error !== "" ? theirs.error.slice(0, 300) : null;
+      told.push({ name, healthChanged: (this.confirmed[name]?.error ?? null) !== error });
+      this.confirmed[name] = { hash: theirs.hash, at: Math.min(theirs.at, now), error };
+    }
+    const changed = await this.take(msg.sections);
+    // A section that has not changed is not sent again: the copy here is
+    // as current as the host says, and as healthy.
+    const fresher: string[] = [];
+    for (const { name, healthChanged } of told) {
       const copy = await this.mirror(name);
-      if (copy && copy.hash === theirs.hash && this.confirmed[name].at > copy.at) {
-        copy.at = this.confirmed[name].at;
+      if (!copy || copy.hash !== this.confirmed[name].hash) continue;
+      if (this.confirmed[name].at > copy.at || healthChanged) {
+        copy.at = Math.max(copy.at, this.confirmed[name].at);
         if (!changed.includes(name)) fresher.push(name);
       }
     }
@@ -583,7 +594,18 @@ export class Edge {
       if (!Object.hasOwn(this.table, kind)) {
         // The host's to do. The stateless part relays it, and if the
         // host cannot be reached comes back to have it held.
-        return next("relay", { mode: "act", kind, args, who: by, holdable: HOLDABLE.has(kind) });
+        // It is named here, before it goes anywhere. If the host's answer
+        // is lost on the way back, the action is held under the same
+        // name, and the host, which wrote the name down before starting,
+        // does not do it a second time.
+        return next("relay", {
+          mode: "act",
+          id: crypto.randomUUID(),
+          kind,
+          args,
+          who: by,
+          holdable: HOLDABLE.has(kind),
+        });
       }
       return await this.own(kind, args as Record<string, unknown>, by, who.via);
     } catch (error) {
@@ -618,6 +640,7 @@ export class Edge {
    * that may be done late. */
   private async hold(req: Request): Promise<Response> {
     const body = (await req.json().catch(() => null)) as {
+      id?: unknown;
       kind?: unknown;
       args?: unknown;
       who?: unknown;
@@ -626,7 +649,12 @@ export class Edge {
     const args = body?.args;
     if (!HOLDABLE.has(kind) || args === null || typeof args !== "object" || Array.isArray(args)) {
       return json(
-        { error: "The laptop cannot be reached, and this is not safe to do late. Try again when it is back." },
+        // No answer is not "not done": the laptop may have got it and its
+        // answer been lost. Nothing is kept to do later, and it says so.
+        {
+          error:
+            "The laptop did not answer, and this is not something to do late, so it is not kept. Check whether it happened before trying again.",
+        },
         503,
       );
     }
@@ -636,7 +664,8 @@ export class Edge {
       return json({ error: "The laptop cannot be reached, and too much is already waiting for it." }, 503);
     }
     const item: Held = {
-      id: crypto.randomUUID(),
+      // The name it was relayed under, so the host can tell it has seen it.
+      id: typeof body?.id === "string" && ACT_ID.test(body.id) ? body.id : crypto.randomUUID(),
       kind,
       args: args as Record<string, unknown>,
       who: String(body?.who ?? "owner"),

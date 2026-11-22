@@ -29,8 +29,9 @@ so, and prints what it did:
 6. The hostname's traffic goes through the edge Worker (pm-console-edge,
    which serves the app from Cloudflare and reaches this host through
    the same tunnel), and the console is told where to report to it. This
-   happens only once the Worker answers its health check; until then,
-   and after `--edge off`, the hostname goes straight to this host.
+   happens only once the Worker answers its health check and says it is
+   built for this hostname; until then, and after `--edge off`, the
+   hostname goes straight to this host.
 
 The gate comes first and the routes last, so the origin is never
 reachable without sign-in in front of it. If the console does not come
@@ -40,7 +41,8 @@ Every secret is read by name through `fleet secrets get` and stays in
 memory. Nothing printed is a secret.
 
 Usage: expose.py [--check] [--edge on|off] [--host pm.security.cab] [--owner EMAIL]
-  --check      report what would change and exit 1 if anything would.
+  --check      report what would change and exit 1 if anything would;
+               with --edge, what that choice would change, keeping nothing.
   --edge off   take the hostname off the edge Worker; remembered by later
                runs (the timer's included) until --edge on.
 """
@@ -167,36 +169,63 @@ def ensure_routes(
     )
 
 
+# Cloudflare answers 403 to a client that calls itself Python-urllib. The
+# name sent is this program's and nothing more: no address, no contact.
+USER_AGENT = "pm-console-expose"
+# A health check that fails once is asked again before the hostname is
+# taken off the edge over it.
+HEALTH_TRIES = 3
+HEALTH_WAIT_SECONDS = 3
+
+
 def fetch_json(url: str) -> dict | None:
     """One GET of a JSON document, or None if it cannot be had."""
     try:
-        with urllib.request.urlopen(url, timeout=10) as res:
+        request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+        with urllib.request.urlopen(request, timeout=10) as res:
             out = json.load(res)
             return out if isinstance(out, dict) else None
     except (OSError, ValueError):
         return None
 
 
-def edge_choice(state: pathlib.Path, choice: str | None) -> bool:
-    """Whether the hostname should go through the edge Worker. The choice
-    is kept in a file, so a timer's run keeps what was last asked for;
-    with no file the answer is yes."""
+def edge_choice(state: pathlib.Path, choice: str | None, keep: bool) -> bool:
+    """Whether the hostname should go through the edge Worker. A choice
+    given now decides, and with `keep` it is written to a file, so a
+    timer's run keeps what was last asked for. With no choice given the
+    file decides, and with no file the answer is yes."""
     marker = state / "edge"
     if choice is not None:
-        state.mkdir(parents=True, exist_ok=True, mode=0o700)
-        marker.write_text(choice + "\n")
+        if keep:
+            state.mkdir(parents=True, exist_ok=True, mode=0o700)
+            marker.write_text(choice + "\n")
+        return choice != "off"
     return not marker.exists() or marker.read_text().strip() != "off"
 
 
-def worker_ready(cf: Cloudflare, account: str) -> bool:
-    """True when the edge Worker is deployed and answers its health check
-    as the edge. Until then the hostname keeps going straight to the
-    host, so there is never a route to a Worker that is not there."""
+def worker_ready(cf: Cloudflare, account: str, host: str) -> bool:
+    """True when the edge Worker is deployed, answers its health check as
+    the edge, and is built for this hostname (it treats any other as
+    having no host behind it). Until then the hostname keeps going
+    straight to the host, so there is never a route to a Worker that is
+    not there or would not serve it. One failed answer is not believed:
+    it is asked again, so a passing fault does not take the hostname off
+    the edge."""
     subdomain = cf.get(f"/accounts/{account}/workers/subdomain").get("subdomain")
     if not subdomain:
         return False
-    health = fetch_json(f"https://{WORKER}.{subdomain}.workers.dev/console/health")
-    return bool(health and health.get("ok") is True and health.get("edge") is True)
+    for attempt in range(HEALTH_TRIES):
+        if attempt:
+            time.sleep(HEALTH_WAIT_SECONDS)
+        health = fetch_json(f"https://{WORKER}.{subdomain}.workers.dev/console/health")
+        if (
+            health
+            and health.get("ok") is True
+            and health.get("edge") is True
+            and health.get("host") == host
+        ):
+            return True
+    return False
 
 
 def ensure_edge_route(cf: Cloudflare, zone: str, host: str, wanted: bool) -> None:
@@ -522,12 +551,13 @@ def main() -> int:
     console = console_origin(env)
     # Through the edge only if that is wanted and the Worker is really
     # there; otherwise straight to this host, as before the edge existed.
-    edge = edge_choice(env.parent, None if args.check else args.edge)
-    if edge and not worker_ready(cf, account):
+    # --check previews a choice given with it, and keeps nothing.
+    edge = edge_choice(env.parent, args.edge, keep=not args.check)
+    if edge and not worker_ready(cf, account, args.host):
         edge = False
         print(
-            f"note: the edge Worker {WORKER} is not deployed or does not answer; "
-            "the hostname goes straight to this host"
+            f"note: the edge Worker {WORKER} is not deployed, does not answer, or is "
+            f"not built for {args.host}; the hostname goes straight to this host"
         )
 
     # Order matters. The sign-in gate is put in place first and the route

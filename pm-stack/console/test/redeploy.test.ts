@@ -83,10 +83,14 @@ beforeEach(() => {
   // in and one setting from the service's file, then passes or fails.
   writeFileSync(
     join(dir, "fake-bun"),
-    `#!/usr/bin/env bash\necho "check $* in=$(basename "$PWD") port=\${PM_CONSOLE_PORT:-} note=\${PM_NOTE:-}" >>"${log}"\n[ "$CHECK" = pass ] || { echo "boom: cannot start" >&2; exit 1; }\necho "pm-console: check passed"\n`,
+    `#!/usr/bin/env bash\necho "check $* in=$(basename "$PWD") port=\${PM_CONSOLE_PORT:-} note=\${PM_NOTE:-} plain=\${PM_PLAIN:-}" >>"${log}"\n[ "$CHECK" = pass ] || { echo "boom: cannot start" >&2; exit 1; }\necho "pm-console: check passed"\n`,
   );
   chmodSync(join(dir, "fake-bun"), 0o755);
-  writeFileSync(join(home, ".local/state/pm-console/.env"), "# settings\nPM_CONSOLE_PORT=4872\n\nPM_NOTE=two words\n");
+  // As systemd allows: a comment, a blank line, quoted values, a value with a space.
+  writeFileSync(
+    join(home, ".local/state/pm-console/.env"),
+    '# settings\nPM_CONSOLE_PORT="4872"\n\nPM_NOTE=\'two words\'\nPM_PLAIN=it\'s "kept"\n',
+  );
   git("init", "-q", "-b", "main");
   git("add", "-A");
   git("commit", "-q", "-m", "one");
@@ -100,7 +104,10 @@ describe("redeploy.sh", () => {
     expect(first.code).toBe(0);
     expect(first.out).toContain("is in service");
     // The check ran in the console's directory, with the settings file's values, spaces and all.
-    expect(events()).toEqual(["check run src/server.ts --check in=console port=4872 note=two words", "install"]);
+    expect(events()).toEqual([
+      'check run src/server.ts --check in=console port=4872 note=two words plain=it\'s "kept"',
+      "install",
+    ]);
     expect(state("deployed")).not.toBeNull();
     // Nothing has changed: nothing is checked or installed again.
     expect(run().code).toBe(0);

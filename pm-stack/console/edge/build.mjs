@@ -5,6 +5,10 @@ import { cpSync, mkdirSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+if (process.argv.length > 2) {
+  console.error("usage: node build.mjs   (it takes no arguments)");
+  process.exit(2);
+}
 const here = dirname(fileURLToPath(import.meta.url));
 const dist = join(here, "dist");
 rmSync(dist, { recursive: true, force: true });

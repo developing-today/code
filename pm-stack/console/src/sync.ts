@@ -62,6 +62,8 @@ export class EdgeLink {
   private watchedAt = 0;
   private timer: ReturnType<typeof setTimeout> | null = null;
   private busy = false;
+  /** Actions being done right now, by the name the edge gave them. */
+  private running = new Set<string>();
   private now: () => number;
   private fetchImpl: typeof fetch;
   private log: (line: string) => void;
@@ -117,9 +119,28 @@ export class EdgeLink {
     await this.o.done.write(JSON.stringify(Object.fromEntries(fates)));
   }
 
+  /** The edge relayed an action under this name and it is about to be
+   * done. Written down first, so that if the answer never reaches the
+   * edge and the edge offers the action again, it is not done twice. */
+  async begin(id: string): Promise<void> {
+    this.running.add(id);
+    await this.record(id, "started");
+  }
+
+  /** How a relayed action came out. */
+  async end(id: string, fate: { ok: boolean; error?: string }): Promise<void> {
+    try {
+      await this.record(id, fate);
+    } finally {
+      this.running.delete(id);
+    }
+  }
+
   /** A held action from the edge: run it unless it has been seen before. */
   private async take(held: Held): Promise<void> {
     if (this.acks.some((a) => a.id === held.id)) return;
+    // Still being done (its answer was slow, not lost): say nothing yet.
+    if (this.running.has(held.id)) return;
     const seen = (await this.fate()).get(held.id);
     if (seen === "started") {
       // The host stopped while this was running. Whether it happened is
@@ -165,7 +186,7 @@ export class EdgeLink {
         at,
         config: await this.o.config(),
         sections,
-        have: Object.fromEntries(snapshot.map((s) => [s.name, { hash: s.hash, at: s.at }])),
+        have: Object.fromEntries(snapshot.map((s) => [s.name, { hash: s.hash, at: s.at, error: s.error }])),
         acks,
         acts: this.o.docs.recentActs(),
       };
