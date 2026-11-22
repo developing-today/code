@@ -95,6 +95,15 @@ pub struct Inventory {
 }
 
 impl Inventory {
+    /// An inventory built from a peer's report of what it holds, as
+    /// received over the wire (B2(c), #12232): the same sets
+    /// [`Replica::inventory`] builds locally, from the other side's
+    /// telling. Divergence and offers computed against it are the
+    /// in-process ones; only the source of the sets differs.
+    pub fn from_objects(objects: BTreeMap<ObjectId, BTreeSet<EventId>>) -> Self {
+        Self { objects }
+    }
+
     /// The versions held for one object.
     pub fn versions(&self, object_id: &ObjectId) -> Option<&BTreeSet<EventId>> {
         self.objects.get(object_id)
