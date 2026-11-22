@@ -10,6 +10,6 @@
     "dev": "node build.mjs && wrangler dev --port 8799"
   },
   "devDependencies": {
-    "wrangler": "4.147.0"
+    "wrangler": "4.166.0"
   }
 }
