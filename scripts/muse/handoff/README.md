@@ -15,8 +15,10 @@ scripts/muse/handoff/deploy.sh
 python3 scripts/muse/handoff/create-url.py
 ```
 
-The deploy script reads the scoped `cloudflare.api-token-day-to-day` secret
-through the existing BWS login. It stores a separate local admin token and
+The deploy script reads the existing BWS login token from
+`~/.config/bitwarden/access-token` (Muse bootstrap) or
+`~/.config/bws/access-token` (BWS CLI), then resolves the scoped
+`cloudflare.api-token-day-to-day` secret. It stores a separate local admin token and
 encryption key under `${XDG_CONFIG_HOME:-~/.config}/muse-agent-handoff`,
 with mode 0600. They are not committed. The creator prompts for BWS and OP
 tokens with hidden input and prints only an agent name plus a 15-minute URL.

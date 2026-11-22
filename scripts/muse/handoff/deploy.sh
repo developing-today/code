@@ -8,7 +8,10 @@ cd "$HERE/worker"
 
 CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
 STATE="$CONFIG_HOME/muse-agent-handoff"
-BWS_FILE="$CONFIG_HOME/bitwarden/access-token"
+BWS_FILE="${BWS_ACCESS_TOKEN_FILE:-$CONFIG_HOME/bitwarden/access-token}"
+if [ ! -s "$BWS_FILE" ] && [ -s "$CONFIG_HOME/bws/access-token" ]; then
+  BWS_FILE="$CONFIG_HOME/bws/access-token"
+fi
 mkdir -p "$STATE"
 chmod 700 "$STATE"
 [ -s "$BWS_FILE" ] || { echo "handoff deploy: missing BWS token file at $BWS_FILE" >&2; exit 1; }
