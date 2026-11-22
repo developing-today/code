@@ -298,8 +298,8 @@ build forgot. The registered domains are `fleet queue`, `fleet serve`,
 `fleet proxy`, `fleet dispatch`, `fleet dispatch-test`,
 `fleet secrets`, `fleet gh`, `fleet bridge`, `fleet agent`,
 `fleet shell`, `fleet search` and `fleet laptop-agent`, plus the
-built-ins `fleet init`, `fleet version`, `fleet capabilities` and
-`fleet help`.
+built-ins `fleet init`, `fleet session`, `fleet version`,
+`fleet capabilities` and `fleet help`.
 
 The per-domain `subcommands` arrays are the top-level command inventory rendered by `fleet <domain> --help`. The argument grammar and nested leaves live in the domain handlers and are documented in [`docs/verbs.md`](docs/verbs.md). That reference covers all shipped Fleet domains, top-level verbs, nested queue and agent commands, and where to ask a leaf for exact usage.
 
