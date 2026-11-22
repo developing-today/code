@@ -1100,6 +1100,90 @@ fn a_compound_build_command_uses_one_lock_and_a_shared_workspace_lane() {
 }
 
 #[test]
+fn a_background_cargo_build_holds_its_target_lease_until_exit() {
+    let home = home_with_a_recording_lock();
+    let tools = home.join("tools");
+    let workspace = home.join("workspace");
+    std::fs::create_dir_all(&workspace).unwrap();
+    std::fs::write(workspace.join("Cargo.toml"), "[workspace]\nmembers = []\n").unwrap();
+
+    let cargo = tools.join("cargo");
+    std::fs::write(
+        &cargo,
+        "#!/bin/sh\nif [ \"$1\" = locate-project ]; then printf '%s/Cargo.toml\\n' \"$PWD\"; exit 0; fi\nprintf started > \"$HOME/started\"\nwhile [ ! -e \"$HOME/release\" ]; do sleep 0.01; done\nprintf finished > \"$HOME/finished\"\n",
+    )
+    .unwrap();
+    let broker = tools.join("cargo-target-broker");
+    std::fs::write(
+        &broker,
+        format!(
+            "#!/bin/sh\ncase \"$1\" in checkout) printf '{{\"path\":\"{}\",\"lease\":\"lease-1\"}}\\n' ;; checkin) printf '%s\\n' \"$*\" >> \"$HOME/broker.log\" ;; esac\n",
+            home.join("target").display()
+        ),
+    )
+    .unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    for path in [&cargo, &broker] {
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    let plan = shell::plan(
+        Target::Local,
+        "test".into(),
+        &words(&["cargo test &"]),
+        &Options {
+            cwd: Some("workspace".into()),
+            build: true,
+            ..opts()
+        },
+    )
+    .unwrap();
+    let mut child = std::process::Command::new("/bin/sh")
+        .arg("-c")
+        .arg(&plan.args[1])
+        .env("HOME", &home)
+        .env(
+            "PATH",
+            format!(
+                "{}:{}",
+                tools.display(),
+                std::env::var("PATH").unwrap_or_default()
+            ),
+        )
+        .env_remove("CARGO_TARGET_DIR")
+        .current_dir(&home)
+        .spawn()
+        .unwrap();
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    while !home.join("started").exists() && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    if !home.join("started").exists() {
+        let _ = child.kill();
+        let _ = child.wait();
+        panic!("background cargo process did not start");
+    }
+    let checked_in_early = std::fs::read_to_string(home.join("broker.log"))
+        .map(|log| !log.is_empty())
+        .unwrap_or(false);
+    std::fs::write(home.join("release"), "").unwrap();
+    let output = child.wait_with_output().unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(!checked_in_early, "target lease returned while Cargo was active");
+    assert!(home.join("finished").exists());
+    assert_eq!(
+        std::fs::read_to_string(home.join("broker.log")).unwrap(),
+        "checkin --lease lease-1\n"
+    );
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[test]
 fn a_just_build_command_uses_the_shared_target_lane() {
     let plan = shell::plan(
         Target::Laptop,
