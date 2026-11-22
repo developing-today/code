@@ -43,12 +43,7 @@ use id_sync::federation::slices::b32_ingest_gate::EventId;
 const START: u64 = 10_000;
 
 async fn heads(dir: &Path) -> BTreeSet<EventId> {
-    node_reports(dir)
-        .await
-        .unwrap()
-        .heads
-        .into_iter()
-        .collect()
+    node_reports(dir).await.unwrap().heads.into_iter().collect()
 }
 
 #[tokio::test]
@@ -73,9 +68,7 @@ async fn the_walk_commands_drive_the_path_between_two_nodes() {
     // Step 3: synced to B over the transport, B serving from its
     // own directory. The exchange names the one send.
     let server_b = start_server(&b_dir).await.unwrap();
-    let exchange = sync_node(&a_dir, &server_b.peer, START + 1)
-        .await
-        .unwrap();
+    let exchange = sync_node(&a_dir, &server_b.peer, START + 1).await.unwrap();
     assert_eq!(exchange.forward.offer.send, vec![base.event]);
     server_b.shutdown().await.unwrap();
 
@@ -88,9 +81,7 @@ async fn the_walk_commands_drive_the_path_between_two_nodes() {
 
     // A repeated sync changes nothing.
     let server_b = start_server(&b_dir).await.unwrap();
-    let exchange = sync_node(&a_dir, &server_b.peer, START + 2)
-        .await
-        .unwrap();
+    let exchange = sync_node(&a_dir, &server_b.peer, START + 2).await.unwrap();
     assert!(exchange.is_quiet());
     server_b.shutdown().await.unwrap();
 
@@ -179,9 +170,7 @@ async fn the_walk_commands_drive_the_path_between_two_nodes() {
 
     // The next sync closes the report on A too, and says so.
     let server_b = start_server(&b_dir).await.unwrap();
-    let exchange = sync_node(&a_dir, &server_b.peer, START + 7)
-        .await
-        .unwrap();
+    let exchange = sync_node(&a_dir, &server_b.peer, START + 7).await.unwrap();
     server_b.shutdown().await.unwrap();
     assert_eq!(
         exchange.backward.outcomes,
@@ -207,9 +196,7 @@ async fn the_walk_commands_drive_the_path_between_two_nodes() {
 
     // And a final sync is quiet.
     let server_b = start_server(&b_dir).await.unwrap();
-    let exchange = sync_node(&a_dir, &server_b.peer, START + 8)
-        .await
-        .unwrap();
+    let exchange = sync_node(&a_dir, &server_b.peer, START + 8).await.unwrap();
     assert!(exchange.is_quiet());
     server_b.shutdown().await.unwrap();
 }

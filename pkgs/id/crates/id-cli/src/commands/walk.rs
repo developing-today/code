@@ -244,9 +244,7 @@ pub async fn init_node(dir: &Path, name: &str) -> anyhow::Result<()> {
     let stored = match tokio::time::timeout(OPEN_TIMEOUT, DiskReplica::open_dir(dir, replica(name)))
         .await
     {
-        Ok(stored) => {
-            stored.with_context(|| format!("creating the store in {}", dir.display()))?
-        }
+        Ok(stored) => stored.with_context(|| format!("creating the store in {}", dir.display()))?,
         Err(_) => return Err(open_timed_out(dir)),
     };
     stored.shutdown().await?;
@@ -276,13 +274,11 @@ fn build_version(
 ) -> anyhow::Result<(OpenedRecord, EventId, Envelope)> {
     let record = GraphRecord::new(
         LogicalGraphId::new(GRAPH),
-        vec![
-            id_core::graph::term::Triple::new(
-                Term::typed(1, b"urn:note:1".to_vec()),
-                Term::typed(2, b"body".to_vec()),
-                Term::typed(3, text.as_bytes().to_vec()),
-            ),
-        ],
+        vec![id_core::graph::term::Triple::new(
+            Term::typed(1, b"urn:note:1".to_vec()),
+            Term::typed(2, b"body".to_vec()),
+            Term::typed(3, text.as_bytes().to_vec()),
+        )],
     );
     let signed = record.sign(CONTEXT, writer, &writer_key(writer))?;
     let event: EventId = *signed.id.content_id().digest();
@@ -382,8 +378,8 @@ pub async fn read_record(dir: &Path, address: &str) -> anyhow::Result<ReadView> 
     let (_config, stored) = open_node(dir).await?;
     let served = stored.replica().envelope(named.digest()).cloned();
     stored.shutdown().await?;
-    let served = served
-        .ok_or_else(|| anyhow::anyhow!("this node does not hold the record at {address}"))?;
+    let served =
+        served.ok_or_else(|| anyhow::anyhow!("this node does not hold the record at {address}"))?;
 
     let dispatch = ProfileDispatch::default();
     let header = VersionHeader::decode(&served.payload)
@@ -585,9 +581,7 @@ pub async fn start_server(dir: &Path) -> anyhow::Result<WalkServer> {
     )
     .await
     {
-        Ok(serving) => {
-            serving.with_context(|| format!("opening walk node {}", dir.display()))?
-        }
+        Ok(serving) => serving.with_context(|| format!("opening walk node {}", dir.display()))?,
         Err(_) => return Err(open_timed_out(dir)),
     };
     let (protocol, mut admissions) = serving.protocol();

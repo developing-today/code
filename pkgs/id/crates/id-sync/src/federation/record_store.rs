@@ -1170,15 +1170,10 @@ impl<B: BlobBackend + Sync> StoredReplica<B> {
     ) -> Result<Exchange, RecordStoreError> {
         let mut rollback = RemoteRollback::new(self);
         let before = rollback.report_snapshot();
-        let (exchange, remote_name) = reconcile_remote_named(
-            endpoint,
-            target,
-            &mut rollback.replica,
-            config,
-            now,
-        )
-        .await
-        .map_err(|error| RecordStoreError::Exchange(error.to_string()))?;
+        let (exchange, remote_name) =
+            reconcile_remote_named(endpoint, target, &mut rollback.replica, config, now)
+                .await
+                .map_err(|error| RecordStoreError::Exchange(error.to_string()))?;
         let persisted = async {
             for (event_id, outcome) in &exchange.backward.outcomes {
                 if outcome.is_ok() {
