@@ -1362,6 +1362,8 @@ fn cargo_lane_classifier_preserves_global_arguments_and_scans_compound_commands(
     for (command, should_lease) in [
         ("cargo +1.84.1 test", true),
         ("cargo --config net.offline=true check", true),
+        ("cargo --manifest-path=../pkgs/id/Cargo.toml test", true),
+        ("/usr/bin/cargo +1.84.1 test", true),
         ("cargo --color always check", true),
         ("cargo fmt --check && cargo test", true),
         ("cargo metadata --format-version 1 && cargo build", true),
