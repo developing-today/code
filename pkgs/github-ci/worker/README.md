@@ -68,36 +68,40 @@ broker's own agent token — the value in
 ```sh
 npm install
 npm test        # vitest + @cloudflare/vitest-pool-workers
-npm run deploy  # wrangler deploy (fleet Cloudflare account)
+npm run build   # offline Build Output v1, delegated to Wrangler 4.166.0
+npm run test:deployment
 ```
 
 ## GitHub Actions version flow
 
-`.github/workflows/github-ci-worker-upload.yml` uploads an immutable
-Workers Version from `main` with `wrangler versions upload`; it does not
-create a deployment or change production traffic. Its run summary gives
-the version UUID. `.github/workflows/github-ci-worker-promote.yml` is a
-separate `workflow_dispatch` workflow that accepts that UUID and deploys
-only the selected version to 100% of traffic. It runs only when
-dispatched from `main`, uses the `github-ci-production` environment as
-the production approval gate, and verifies Cloudflare reports that
-version serving 100% of traffic.
+`.github/workflows/github-ci-worker-upload.yml` builds Build Output v1
+and uploads an immutable Workers Version with `cf workers versions
+create --prebuilt`; it does not create a deployment or change production
+traffic. Its run summary gives the version UUID. The separate
+`.github/workflows/github-ci-worker-promote.yml` accepts that UUID and
+promotes only that version with `cf workers deployments create`. It runs
+only from `main`, uses the protected `github-ci-production` environment,
+and verifies the newest Cloudflare deployment serves that version at
+100% traffic.
 
-Set the GitHub repository variable `CLOUDFLARE_ACCOUNT_ID` and add the
-Actions secret `CLOUDFLARE_API_TOKEN` to both the
-`github-ci-cloudflare-upload` and `github-ci-production` environments.
-Use a token scoped to Workers Scripts Edit for the account. Configure
-`github-ci-production` with required reviewers and restrict its
-deployment branches to `main`. The upload environment also needs the
-token, but it does not need production reviewers.
+Add environment secrets `CF_ACCOUNT_ID` and `CF_API_TOKEN` to
+`github-ci-cloudflare-upload` and `github-ci-production`. Use separate
+account-owned Cloudflare API tokens scoped to the `github-ci` Worker.
+Configure `github-ci-production` with required reviewers and restrict
+its deployment branches to `main`; the upload environment does not need
+production reviewers. The upload workflow checks the Worker exists and
+never bootstraps or creates resources.
 
-The upload workflow leaves runtime secrets out of GitHub Actions.
-Wrangler's Versions upload inherits the Worker's existing secret
-bindings, while non-secret bindings and production endpoint vars come
-from `wrangler.toml`. Keep the existing `GITHUB_WEBHOOK_SECRET`, Turso,
-and queue-broker secrets provisioned on the Worker before promoting a
-candidate. This is the GitHub CI webhook Worker, not
-`infra/github-backup`'s GitHub App backup receiver.
+Runtime secret values never enter GitHub Actions. The `cf` config
+declares their names, and `cf workers versions create` uses strict
+binding inheritance from the existing Worker version. Before any
+promotion, the workflow reads the candidate version and fails unless
+all six secret bindings remain present. It also checks that the version
+tag and message identify a full Git commit that is an ancestor of
+`main`, and that Cloudflare lists the exact version as deployable. This
+is the GitHub CI webhook Worker, not `infra/github-backup`'s GitHub App
+backup receiver. Use the GitHub Actions flow for deployments; direct
+`npm run deploy` is disabled.
 
 The cutover from the earlier Postgres receiver is complete (#5693,
 closeout below).

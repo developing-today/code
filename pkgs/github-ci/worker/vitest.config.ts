@@ -5,6 +5,9 @@ import { defineConfig } from "vitest/config";
 // as a Vite plugin; the old defineWorkersConfig + test.poolOptions.workers
 // shape (and the /config export it came from) no longer exists.
 export default defineConfig({
+  test: {
+    include: ["test/**/*.test.ts"],
+  },
   plugins: [
     cloudflareTest({
       wrangler: { configPath: "./wrangler.toml" },

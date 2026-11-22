@@ -1,9 +1,8 @@
 name: github-ci Worker version upload
 
-# Upload creates an immutable Workers Version only. Traffic changes are
-# handled by the separate, manually dispatched promotion workflow.
-# Wrangler versions upload inherits existing secret bindings; this job
-# never reads or materializes the Worker's runtime secret values.
+# Upload creates an immutable Workers Version only. It never changes
+# production traffic. Every Cloudflare API operation uses cf; cf build
+# delegates the offline artifact production to the pinned Wrangler.
 on:
   push:
     branches: [main]
@@ -22,51 +21,107 @@ concurrency:
 
 jobs:
   upload:
-    if: github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
+    if: github.repository == 'developing-today/code' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
     environment: github-ci-cloudflare-upload
     defaults:
       run:
         working-directory: pkgs/github-ci/worker
-    env:
-      CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
     steps:
-      - uses: actions/checkout@v7
-
-      - uses: actions/setup-node@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          node-version: 24
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24.22.0
           cache: npm
           cache-dependency-path: pkgs/github-ci/worker/package-lock.json
 
-      - name: Require Cloudflare credentials
-        run: |
-          test -n "$CLOUDFLARE_ACCOUNT_ID" || { echo "CLOUDFLARE_ACCOUNT_ID repository variable is required" >&2; exit 1; }
-          test -n "$CLOUDFLARE_API_TOKEN" || { echo "CLOUDFLARE_API_TOKEN Actions secret is required" >&2; exit 1; }
+      - name: Install pinned cf and locked tooling
+        run: npm ci --ignore-scripts --no-audit --no-fund
 
-      - name: Install locked dependencies
-        run: npm ci
+      - name: Typecheck the Worker and cf config
+        run: npm run typecheck
 
-      - name: Upload immutable Workers Version
+      - name: Build Build Output v1 offline
         env:
-          WRANGLER_OUTPUT_FILE_PATH: ${{ runner.temp }}/wrangler-output.jsonl
+          XDG_CONFIG_HOME: ${{ runner.temp }}/cf-config
+          WRANGLER_SEND_METRICS: "false"
+        run: npm run build
+
+      - name: Verify Build Output, secret declarations, and pinned producer
         run: |
-          npx wrangler versions upload \
-            --config wrangler.toml \
-            --tag "git-${GITHUB_SHA:0:12}" \
-            --message "github-ci candidate ${GITHUB_SHA}"
-          node --input-type=commonjs <<'NODE'
-          const fs = require("node:fs");
-          const output = process.env.WRANGLER_OUTPUT_FILE_PATH;
-          const rows = fs.readFileSync(output, "utf8").trim().split(/\r?\n/).filter(Boolean).map(JSON.parse);
-          const uploaded = rows.find((row) => row.type === "version-upload");
-          if (!uploaded || uploaded.worker_name !== "github-ci" || !uploaded.version_id) {
-            throw new Error("Wrangler did not report a github-ci Workers Version ID");
-          }
-          fs.appendFileSync(process.env.GITHUB_OUTPUT, `version_id=${uploaded.version_id}\n`);
-          fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY,
-            `Uploaded github-ci Workers Version \`${uploaded.version_id}\` for commit \`${process.env.GITHUB_SHA}\`.\n\n` +
-            "No traffic was promoted. To change production traffic, run the separate **github-ci Worker version promotion** workflow on `main` and provide this version ID.\n");
-          NODE
+          node scripts/deployment-guard.mjs build .cloudflare/output/v1
+          npm run test:deployment
+
+      - name: Dry-run the exact prebuilt Version API request
+        env:
+          XDG_CONFIG_HOME: ${{ runner.temp }}/cf-config
+          WRANGLER_SEND_METRICS: "false"
+        run: >-
+          ./node_modules/.bin/cf -q workers versions create
+          --worker github-ci --tag offline-check --message offline-check
+          --prebuilt --dry-run
+
+      - name: Validate Cloudflare credentials
+        env:
+          CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+          CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          [[ "$CF_ACCOUNT_ID" =~ ^[0-9a-fA-F]{32}$ ]]
+          [[ -n "$CF_API_TOKEN" ]]
+
+      - name: Require the existing Worker
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+        run: ./node_modules/.bin/cf -q workers get github-ci >/dev/null
+
+      - name: Upload immutable Workers Version only
+        id: upload
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          tag="git-${GITHUB_SHA:0:12}"
+          ./node_modules/.bin/cf -q workers versions create \
+            --worker github-ci \
+            --tag "$tag" \
+            --message "github-ci candidate ${GITHUB_SHA}" \
+            --prebuilt
+          ./node_modules/.bin/cf -q workers versions list --worker github-ci \
+            > "$RUNNER_TEMP/github-ci-versions.json"
+          node scripts/deployment-guard.mjs select-upload \
+            "$RUNNER_TEMP/github-ci-versions.json" "$GITHUB_SHA"
+
+      - name: Read back exact candidate and verify retained secret bindings
+        id: candidate
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          VERSION_ID: ${{ steps.upload.outputs.version_id }}
+        run: |
+          set -euo pipefail
+          ./node_modules/.bin/cf -q workers versions get "$VERSION_ID" --worker github-ci \
+            > "$RUNNER_TEMP/github-ci-version.json"
+          node scripts/deployment-guard.mjs verify-version \
+            "$RUNNER_TEMP/github-ci-version.json" "$VERSION_ID" "$GITHUB_SHA"
+
+      - name: Require the uploaded version to be deployable
+        env:
+          CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+          CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          VERSION_ID: ${{ steps.upload.outputs.version_id }}
+        run: |
+          set -euo pipefail
+          curl --fail --silent --show-error --max-time 15 \
+            -H "Authorization: Bearer $CF_API_TOKEN" \
+            "https://api.cloudflare.com/client/v4/accounts/$CF_ACCOUNT_ID/workers/scripts/github-ci/versions?deployable=true" \
+            > "$RUNNER_TEMP/github-ci-deployable.json"
+          node scripts/deployment-guard.mjs verify-deployable \
+            "$RUNNER_TEMP/github-ci-deployable.json" "$VERSION_ID"

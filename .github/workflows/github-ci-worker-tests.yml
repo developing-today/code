@@ -43,9 +43,12 @@ jobs:
       - name: Set up Node
         uses: actions/setup-node@v7
         with:
-          node-version: 24
+          node-version: 24.22.0
       - name: Run the github-ci worker vitest suite
         working-directory: pkgs/github-ci/worker
+        env:
+          XDG_CONFIG_HOME: ${{ runner.temp }}/cf-config
+          WRANGLER_SEND_METRICS: "false"
         run: |
           for f in package.json package-lock.json test/policy.test.ts test/turso.test.ts test/sink.test.ts test/worker.test.ts; do
             if [ ! -f "$f" ]; then
@@ -55,6 +58,17 @@ jobs:
           done
           npm ci
           npm test
+          npm run typecheck
+
+      - name: Build and verify deployment metadata offline
+        working-directory: pkgs/github-ci/worker
+        env:
+          XDG_CONFIG_HOME: ${{ runner.temp }}/cf-config
+          WRANGLER_SEND_METRICS: "false"
+        run: |
+          npm run build
+          node scripts/deployment-guard.mjs build .cloudflare/output/v1
+          npm run test:deployment
 
       - name: Check version workflow safety boundaries
         run: python3 pkgs/github-ci/worker/test/deploy_workflows_test.py
