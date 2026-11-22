@@ -181,6 +181,47 @@ impl WorldCore {
         Ok(())
     }
 
+    /// How many retained notifications fall inside the rate window
+    /// ending at `now_ms` (#1062): sends whose time is within
+    /// `NOTIFY_RATE_WINDOW_MS` before `now_ms`. The count is exact
+    /// even though the log is pruned to its retention cap: the
+    /// per-window cap is below it, so every send inside a window is
+    /// still retained when the next send is checked.
+    pub(crate) fn notify_in_window(&self, now_ms: u64) -> usize {
+        let floor = now_ms.saturating_sub(crate::world_caps::NOTIFY_RATE_WINDOW_MS);
+        self.notifications
+            .iter()
+            .filter(|notification| notification.at_ms > floor)
+            .count()
+    }
+
+    /// Whether a `notify.send` of `title` / `text` may be accepted
+    /// at host time `now_ms`. The error says why; the program sees
+    /// only `bad_args`.
+    ///
+    /// # Errors
+    ///
+    /// A malformed title or text, or a send that would exceed the
+    /// rate cap for the current window.
+    pub(crate) fn check_notify_send(
+        &self,
+        title: Option<&str>,
+        text: &str,
+        now_ms: u64,
+    ) -> Result<()> {
+        if let Some(title) = title {
+            crate::world_caps::validate_notify_title(title)?;
+        }
+        crate::world_caps::validate_notify_text(text)?;
+        ensure!(
+            self.notify_in_window(now_ms) < crate::world_caps::MAX_NOTIFY_PER_WINDOW,
+            "notify rate limit: at most {} sends per {} ms",
+            crate::world_caps::MAX_NOTIFY_PER_WINDOW,
+            crate::world_caps::NOTIFY_RATE_WINDOW_MS
+        );
+        Ok(())
+    }
+
     /// Apply one fire of a pending schedule: re-arm it in place while
     /// fires remain (fixed-rate: the next due time advances by the
     /// interval from the planned time, never from now), or consume it.

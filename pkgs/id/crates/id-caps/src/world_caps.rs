@@ -60,6 +60,24 @@
 //! [`MAX_BLOBS`], [`MAX_BLOB_TOTAL_BYTES`]); a write past a bound is
 //! refused with `bad_args` and a reason, and stores nothing.
 //!
+//! The `notify` provider (#1062, F12.5) is one request, `notify.send`
+//! (`{"text":"..."}` with an optional `"title"`), recording a
+//! user-visible outbound notification in the world's bounded,
+//! durable notification log; it answers `{"sent":true,"at_ms":N}`,
+//! the host time the send was accepted. The journal entry is written
+//! before the result is delivered, so the log — the audit record of
+//! every accepted send — survives restarts and checkpoint
+//! compaction, and hosts surface it to the world's users. Title and
+//! text are bounded ([`MAX_NOTIFY_TITLE_BYTES`],
+//! [`MAX_NOTIFY_TEXT_BYTES`]), the retained log is bounded
+//! ([`MAX_NOTIFICATIONS`], oldest first out), and sends are rate
+//! limited ([`MAX_NOTIFY_PER_WINDOW`] per
+//! [`NOTIFY_RATE_WINDOW_MS`]); a send past a bound is refused with
+//! `bad_args` and a reason, and records nothing. Unlike the inward
+//! `kv`/`blob` stores, `notify.send` reaches outside the world, so
+//! it is excluded from default ceilings: a world uses it only
+//! through an explicit ceiling entry and an explicit grant.
+//!
 //! The server answers each new request with
 //! `{"cap":"result","id":"r1","ok":true,"value":...}` (or `"ok":false` with an
 //! `"error"`), and each subscription with its own events
@@ -488,6 +506,29 @@ const BLOB_DELETE_BOUNDS: &[ProviderBound] = &[
     ProviderBound::ArgsBytes(MAX_ARGS_BYTES),
     ProviderBound::IdentifierBytes(MAX_BLOB_ID_BYTES),
 ];
+/// Argument schema for `notify.send`: a required `text`, plus an
+/// optional `title`.
+const NOTIFY_SEND_ARGUMENTS: &[ProviderArgument] = &[
+    ProviderArgument {
+        name: "title",
+        value_type: ArgumentType::String,
+        required: false,
+    },
+    ProviderArgument {
+        name: "text",
+        value_type: ArgumentType::String,
+        required: true,
+    },
+];
+/// Bounds for `notify.send`: argument bytes plus the rate cap — at
+/// most this many sends are accepted inside one rate window
+/// ([`NOTIFY_RATE_WINDOW_MS`]). The title/text byte caps and the
+/// retained-log cap are enforced by the executor and the core, like
+/// the `kv` total-bytes cap.
+const NOTIFY_SEND_BOUNDS: &[ProviderBound] = &[
+    ProviderBound::ArgsBytes(MAX_ARGS_BYTES),
+    ProviderBound::Items(MAX_NOTIFY_PER_WINDOW),
+];
 /// Bounds for `schedule.at`: argument bytes, id bytes, pending cap, and horizon.
 const SCHEDULE_AT_BOUNDS: &[ProviderBound] = &[
     ProviderBound::ArgsBytes(MAX_ARGS_BYTES),
@@ -680,6 +721,20 @@ define_provider_registry! {
         bounds: BLOB_DELETE_BOUNDS,
         required_scope: RequiredScope::Join,
         default_ceiling: DefaultCeiling::Included,
+    },
+    // The F12.5 `notify` provider (#1062): user-visible outbound
+    // notifications, rate limited. Unlike the inward `kv`/`blob`
+    // stores it reaches outside the world, so it is excluded from
+    // default ceilings (off by default): a world reaches it only
+    // through an explicit ceiling entry and an explicit grant, and
+    // every accepted send is journaled — the audit entry per use.
+    "notify.send" => {
+        version: 1,
+        kind: ProviderKind::Request,
+        argument_schema: ArgumentSchema::JsonObject(NOTIFY_SEND_ARGUMENTS),
+        bounds: NOTIFY_SEND_BOUNDS,
+        required_scope: RequiredScope::Join,
+        default_ceiling: DefaultCeiling::Excluded,
     },
     "schedule.at" => {
         version: 1,
@@ -1123,6 +1178,33 @@ pub const MAX_BLOBS: usize = 256;
 /// bounded independently of the count and size caps, whose product
 /// would allow 1 MiB.
 pub const MAX_BLOB_TOTAL_BYTES: usize = 256 * 1024;
+
+/// Longest `notify` title, in bytes: a notification title is one
+/// short line on a user's screen, not a document.
+pub const MAX_NOTIFY_TITLE_BYTES: usize = 128;
+/// Longest `notify` text, in bytes: the notification's body, sized
+/// for a lock-screen message, not a post.
+pub const MAX_NOTIFY_TEXT_BYTES: usize = 512;
+/// Most notifications one world's log retains. The log is a recent
+/// window, not an archive: a send past the cap drops the oldest
+/// retained notification. Sized so a full log's checkpoint
+/// declaration — 32 × (128 title + 512 text) bytes of payload, at
+/// most twice that JSON-escaped, plus per-entry framing — stays
+/// inside the checkpoint part bound (`MAX_CHECKPOINT_PART_BYTES`,
+/// 192 KiB in the worlds crate) alongside a full `kv` declaration,
+/// so a world can always compact its journal.
+pub const MAX_NOTIFICATIONS: usize = 32;
+/// Most `notify` sends one world may have accepted inside one rate
+/// window: the provider is rate limited so a program cannot turn a
+/// grant into a notification flood.
+pub const MAX_NOTIFY_PER_WINDOW: usize = 10;
+/// The `notify` rate window, in milliseconds: at most
+/// [`MAX_NOTIFY_PER_WINDOW`] sends are accepted with send times in
+/// any span of this length. The window is derived from the retained
+/// log's send times, which is exact because the per-window cap is
+/// below the retention cap ([`MAX_NOTIFICATIONS`]): every send
+/// inside a window is still retained when the next send is checked.
+pub const NOTIFY_RATE_WINDOW_MS: u64 = 60_000;
 /// Largest page of records served over the session protocol and the
 /// host view, in bytes. Cap results are not served this way: a
 /// `records.read` result is delivered through `result_event` and is
@@ -1229,6 +1311,45 @@ pub fn validate_blob_hash(hash: &str) -> Result<()> {
         hash.bytes()
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)),
         "blob hash must be lowercase hex"
+    );
+    Ok(())
+}
+
+/// Check a `notify` title: at most [`MAX_NOTIFY_TITLE_BYTES`] bytes
+/// and no control characters, so a title is always one printable
+/// line and no control characters reach the journal.
+///
+/// # Errors
+///
+/// Names the rule the title breaks.
+pub fn validate_notify_title(title: &str) -> Result<()> {
+    ensure!(
+        title.len() <= MAX_NOTIFY_TITLE_BYTES,
+        "notify title must be at most {MAX_NOTIFY_TITLE_BYTES} bytes"
+    );
+    ensure!(
+        !title.chars().any(char::is_control),
+        "notify title must not contain control characters"
+    );
+    Ok(())
+}
+
+/// Check a `notify` text: 1 to [`MAX_NOTIFY_TEXT_BYTES`] bytes and
+/// no control characters except the newline, so the body is plain
+/// printable text and no other control characters reach the
+/// journal.
+///
+/// # Errors
+///
+/// Names the rule the text breaks.
+pub fn validate_notify_text(text: &str) -> Result<()> {
+    ensure!(
+        !text.is_empty() && text.len() <= MAX_NOTIFY_TEXT_BYTES,
+        "notify text must be 1 to {MAX_NOTIFY_TEXT_BYTES} bytes"
+    );
+    ensure!(
+        text.chars().all(|ch| !ch.is_control() || ch == '\n'),
+        "notify text must not contain control characters"
     );
     Ok(())
 }
@@ -2790,6 +2911,7 @@ mod tests {
                 "blob.put",
                 "blob.get",
                 "blob.delete",
+                "notify.send",
                 "schedule.at",
                 "schedule.cancel",
                 "world.info",
@@ -2866,6 +2988,7 @@ mod tests {
             "loc.watch",
             "speech.transcribe",
             "speech.capture",
+            "notify.send",
             CLIENT_FILE_READ_NAME,
         ]);
         #[cfg(feature = "test-provider")]

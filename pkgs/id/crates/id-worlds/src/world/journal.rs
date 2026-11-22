@@ -14,9 +14,9 @@ use serde::{Deserialize, Serialize};
 
 use super::signed;
 use super::{
-    CheckpointBlobEntry, CheckpointKvEntry, CheckpointSchedule, FileScope, HandoffTransferState,
-    Isolation, LeaseRejectionReason, ModuleProvenance, Participant, WorldEvent, WorldEventKind,
-    WriteLease, hex_decode, hex_encode, replication,
+    CheckpointBlobEntry, CheckpointKvEntry, CheckpointNotifyEntry, CheckpointSchedule, FileScope,
+    HandoffTransferState, Isolation, LeaseRejectionReason, ModuleProvenance, Participant,
+    WorldEvent, WorldEventKind, WriteLease, hex_decode, hex_encode, replication,
 };
 
 /// One durable fact in the region coordinator's own journal (#3870 phase 1,
@@ -444,6 +444,21 @@ pub enum JournalEntry {
         /// The hash of the blob that was removed.
         hash: String,
     },
+    /// A `notify.send` request was accepted (#1062): the world's
+    /// notification log gains this record. Written before the
+    /// request's result is delivered; it is the send's audit entry.
+    /// Replay appends it and drops the oldest retained notification
+    /// when the log is past its cap, exactly as the writer did, and
+    /// the rate window is counted from the retained records' times.
+    NotifySent {
+        /// The notification's title, when the send named one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        title: Option<String>,
+        /// The notification's text.
+        text: String,
+        /// When the send was accepted, in unix milliseconds.
+        at_ms: u64,
+    },
     /// A participant's author key was bound for signed play (#2814,
     /// #4346). Written when the binding is first made; replaying it
     /// restores the binding and the author's (still empty) chain, so a
@@ -664,6 +679,11 @@ pub enum JournalEntry {
         /// bytes, and each is hash-verified as it replays.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         blobs: Option<Vec<CheckpointBlobEntry>>,
+        /// Retained `notify` log (#1062): the whole records, in
+        /// send order. Absent when the world has sent nothing, and
+        /// it must match the `NotifySent` entries before it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        notifications: Option<Vec<CheckpointNotifyEntry>>,
         /// Active region-seam handoffs (#3870 phase 1, design #2818 §3):
         /// export fences/payloads, import receipts/dedupe keys and owner
         /// epochs, so compaction cannot resurrect an exported entity or
@@ -819,10 +839,17 @@ pub const JOURNAL_VERSION_KV: u32 = 13;
 /// instead.
 pub const JOURNAL_VERSION_BLOB: u32 = 14;
 
+/// Journal version 15 (#1062): the `notify` log entry
+/// ([`JournalEntry::NotifySent`]) and a checkpoint carrying a
+/// `notifications` field. A version-14 binary cannot parse the new
+/// entry kind and would fail mid-replay, so a journal containing
+/// them must be refused at the header check instead.
+pub const JOURNAL_VERSION_NOTIFY: u32 = 15;
+
 /// Newest journal version this binary can read. Journals with a higher
 /// header version are refused at the header check, before any entry is
 /// applied.
-pub const MAX_JOURNAL_VERSION: u32 = JOURNAL_VERSION_BLOB;
+pub const MAX_JOURNAL_VERSION: u32 = JOURNAL_VERSION_NOTIFY;
 
 /// The header version a journal must carry once it contains `entry`: version 2
 /// for execution-profile entries, version 3 for region-handoff entries,
@@ -930,6 +957,7 @@ fn entry_kind_version(entry: &JournalEntry) -> u32 {
         }
         JournalEntry::KvSet { .. } | JournalEntry::KvDeleted { .. } => JOURNAL_VERSION_KV,
         JournalEntry::BlobStored { .. } | JournalEntry::BlobRemoved { .. } => JOURNAL_VERSION_BLOB,
+        JournalEntry::NotifySent { .. } => JOURNAL_VERSION_NOTIFY,
         JournalEntry::PortalGrantSet { .. } => JOURNAL_VERSION_PORTALS,
         JournalEntry::Checkpoint {
             transfers,
@@ -940,9 +968,12 @@ fn entry_kind_version(entry: &JournalEntry) -> u32 {
             schedules,
             kv,
             blobs,
+            notifications,
             ..
         } => {
-            let base = if blobs.is_some() {
+            let base = if notifications.is_some() {
+                JOURNAL_VERSION_NOTIFY
+            } else if blobs.is_some() {
                 JOURNAL_VERSION_BLOB
             } else if kv.is_some() {
                 JOURNAL_VERSION_KV

@@ -1272,6 +1272,7 @@ impl WorldActor {
             "blob.put" => self.execute_blob_put(&request.args),
             "blob.get" => self.execute_blob_get(&request.args),
             "blob.delete" => self.execute_blob_delete(&request.args),
+            "notify.send" => self.execute_notify_send(&request.args),
             "schedule.at" => self.execute_schedule_at(&request.args),
             "schedule.cancel" => self.execute_schedule_cancel(&request.args),
             _ => Err(CapError::unknown()),
@@ -1878,6 +1879,59 @@ impl WorldActor {
         }
         self.core.blobs.remove(hash);
         Ok(serde_json::json!({"hash": hash, "deleted": true}))
+    }
+
+    /// `notify.send` (#1062): record a user-visible outbound
+    /// notification in the world's log. The send is journaled before
+    /// the result is delivered — the journal entry is the send's
+    /// audit entry — and the retained log drops its oldest record
+    /// past the cap, exactly as replay will. An empty `title` names
+    /// no title.
+    pub(super) fn execute_notify_send(
+        &mut self,
+        args: &serde_json::Value,
+    ) -> Result<serde_json::Value, CapError> {
+        let text = args
+            .get("text")
+            .and_then(serde_json::Value::as_str)
+            .ok_or(CapError::bad_args())?;
+        let title = match args.get("title") {
+            None => None,
+            Some(value) => Some(
+                value
+                    .as_str()
+                    .ok_or(CapError::bad_args())?
+                    .to_owned(),
+            ),
+        }
+        .filter(|title| !title.is_empty());
+        let now_ms = self.core.clock().now_ms();
+        if let Err(error) = self.core.check_notify_send(title.as_deref(), text, now_ms) {
+            tracing::debug!(
+                "world {}: notify send refused: {error:#}",
+                self.core.world_id
+            );
+            return Err(CapError::bad_args_with(format!("{error:#}")));
+        }
+        if self
+            .persist(JournalEntry::NotifySent {
+                title: title.clone(),
+                text: text.to_owned(),
+                at_ms: now_ms,
+            })
+            .is_err()
+        {
+            return Err(CapError::failed());
+        }
+        self.core.notifications.push_back(CheckpointNotifyEntry {
+            title,
+            text: text.to_owned(),
+            at_ms: now_ms,
+        });
+        while self.core.notifications.len() > crate::world_caps::MAX_NOTIFICATIONS {
+            self.core.notifications.pop_front();
+        }
+        Ok(serde_json::json!({"sent": true, "at_ms": now_ms}))
     }
 
     /// `chat.say` commits a host chat line; its result is the new sequence.

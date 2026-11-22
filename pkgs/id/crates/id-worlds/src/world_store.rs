@@ -3336,6 +3336,7 @@ mod tests {
             schedules: None,
             kv: None,
             blobs: None,
+            notifications: None,
             transfers: None,
             lease: None,
             snapshot: "s".to_owned(),

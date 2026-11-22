@@ -786,6 +786,7 @@ mod tests {
                     schedules: None,
                     kv: None,
                     blobs: None,
+                    notifications: None,
                     transfers: Some(vec![receipt.clone()]),
                     lease: None,
                     snapshot: "snapshot".to_owned(),
@@ -1200,6 +1201,7 @@ mod tests {
                 schedules: None,
                 kv: None,
                 blobs: None,
+                notifications: None,
                 transfers: None,
                 lease: None,
                 snapshot: "s".to_owned(),
@@ -1281,6 +1283,7 @@ mod tests {
                     schedules: None,
                     kv: None,
                     blobs: None,
+                    notifications: None,
                     transfers: None,
                     lease: None,
                     snapshot: "s".to_owned(),
@@ -1467,6 +1470,7 @@ mod tests {
                 schedules: None,
                 kv: None,
                 blobs: None,
+                notifications: None,
                 transfers: Some(transfers),
                 lease: None,
                 snapshot: "state".to_owned(),
@@ -1535,6 +1539,7 @@ mod tests {
             schedules: None,
             kv: None,
             blobs: None,
+            notifications: None,
             transfers: None,
             lease: None,
             admin_history: None,
@@ -1702,9 +1707,10 @@ mod tests {
         // version 8 for recurring schedules (#1355); the lease entries
         // still require exactly 7.
         // Version 12 (#11960) records join and revoke times, version
-        // 13 the kv store entries and version 14 the blob store
-        // entries (both #1062).
-        assert_eq!(MAX_JOURNAL_VERSION, JOURNAL_VERSION_BLOB);
+        // 13 the kv store entries, version 14 the blob store
+        // entries, and version 15 the notify log entries (all three
+        // providers #1062).
+        assert_eq!(MAX_JOURNAL_VERSION, JOURNAL_VERSION_NOTIFY);
         // A checkpoint carrying a non-bootstrap lease also requires
         // version 7; one without a lease keeps its existing version.
         let mut lease = WriteLease::bootstrap();
@@ -1721,6 +1727,7 @@ mod tests {
             schedules: None,
             kv: None,
             blobs: None,
+            notifications: None,
             transfers: None,
             lease,
             snapshot: "s".to_owned(),
@@ -2409,6 +2416,7 @@ mod tests {
             schedules: None,
             kv: None,
             blobs: None,
+            notifications: None,
             transfers: None,
             lease: None,
             snapshot: "s".to_owned(),
@@ -2430,6 +2438,7 @@ mod tests {
             schedules: None,
             kv: None,
             blobs: None,
+            notifications: None,
             transfers: None,
             lease: None,
             snapshot: "s".to_owned(),
@@ -3721,6 +3730,7 @@ mod tests {
             schedules: None,
             kv: None,
             blobs: None,
+            notifications: None,
             transfers: None,
             snapshot: "snapshot".to_owned(),
             events,
@@ -10438,6 +10448,7 @@ mod schedule_tests {
             schedules: None,
             kv,
             blobs: None,
+            notifications: None,
             transfers: None,
             lease: None,
             snapshot: "s".to_owned(),
@@ -10821,6 +10832,7 @@ mod schedule_tests {
             schedules: None,
             kv: None,
             blobs,
+            notifications: None,
             transfers: None,
             lease: None,
             snapshot: "s".to_owned(),
@@ -10853,6 +10865,351 @@ mod schedule_tests {
             checkpoint(Some(vec![declared(), declared()])),
         ];
         assert!(WorldCore::restore("w", WorldLimits::default(), duplicated).is_err());
+    }
+
+    // ---- F12.5 notify provider (#1062) ----
+
+    #[test]
+    fn notify_bounds_and_rate_refuse_each_violation_with_a_reason() {
+        let mut core = world(8);
+        let now = 1_000_000;
+        assert!(core.check_notify_send(None, "hello", now).is_ok());
+        assert!(
+            core.check_notify_send(Some("t"), "hello", now).is_ok(),
+            "a titled send within bounds is accepted"
+        );
+        // Text bounds: empty, and one byte past the cap.
+        let error = core.check_notify_send(None, "", now).unwrap_err();
+        assert!(error.to_string().contains("notify text"), "{error}");
+        let error = core
+            .check_notify_send(None, &"x".repeat(crate::world_caps::MAX_NOTIFY_TEXT_BYTES + 1), now)
+            .unwrap_err();
+        assert!(error.to_string().contains("notify text"), "{error}");
+        assert!(
+            core.check_notify_send(
+                None,
+                &"x".repeat(crate::world_caps::MAX_NOTIFY_TEXT_BYTES),
+                now,
+            )
+            .is_ok(),
+            "a text at the cap fits"
+        );
+        // A control character in the text, and one in the title.
+        let error = core.check_notify_send(None, "bad\u{7}text", now).unwrap_err();
+        assert!(error.to_string().contains("control"), "{error}");
+        let error = core
+            .check_notify_send(Some(&"t".repeat(crate::world_caps::MAX_NOTIFY_TITLE_BYTES + 1)), "ok", now)
+            .unwrap_err();
+        assert!(error.to_string().contains("notify title"), "{error}");
+        // Rate: the window fills at the cap, the next send is refused,
+        // and once the oldest send is a full window old it fits again.
+        for index in 0..crate::world_caps::MAX_NOTIFY_PER_WINDOW {
+            core.notifications.push_back(CheckpointNotifyEntry {
+                title: None,
+                text: format!("n{index}"),
+                at_ms: now,
+            });
+        }
+        assert_eq!(core.notify_in_window(now), crate::world_caps::MAX_NOTIFY_PER_WINDOW);
+        let error = core.check_notify_send(None, "one more", now).unwrap_err();
+        assert!(error.to_string().contains("rate limit"), "{error}");
+        let later = now + crate::world_caps::NOTIFY_RATE_WINDOW_MS;
+        assert_eq!(core.notify_in_window(later), 0);
+        assert!(
+            core.check_notify_send(None, "after the window", later).is_ok(),
+            "a send a full window after the burst fits"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_notify_send_is_refused_by_the_default_ceiling() {
+        // Off by default (#1062): even with a grant, the default
+        // ceiling excludes `notify.send`, so the send is refused and
+        // nothing is journaled or recorded.
+        let (mut actor, _clock, token, journal) =
+            scheduling_actor("notify-ceiling", &["notify.send"], false);
+        ask(
+            &mut actor,
+            &token,
+            serde_json::json!({"requests": [
+                {"id": "n1", "cap": "notify.send", "args": {"text": "hello"}},
+            ]}),
+        )
+        .await;
+        assert_eq!(
+            schedule_result(&actor, "n1").unwrap()["error"],
+            "outside_ceiling"
+        );
+        assert!(
+            actor.core.ledger.usage()["notify.send"].denied > 0,
+            "{:?}",
+            actor.core.ledger.usage()
+        );
+        assert!(
+            actor.core.notifications.is_empty(),
+            "a ceiling-refused send records nothing"
+        );
+        assert!(
+            journal
+                .entries()
+                .iter()
+                .all(|entry| !matches!(entry, JournalEntry::NotifySent { .. })),
+            "a ceiling-refused send journals nothing"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_ungranted_notify_send_is_refused_and_counted() {
+        let (mut actor, _clock, token, journal) = scheduling_actor("notify-refused", &[], false);
+        let (reply, response) = tokio::sync::oneshot::channel();
+        actor
+            .handle(WorldCommand::SetCapsCeiling {
+                ceiling: vec!["notify.send".to_owned()],
+                reply,
+            })
+            .await;
+        let _ = response.await.unwrap().unwrap();
+        actor.after_change().await;
+        ask(
+            &mut actor,
+            &token,
+            serde_json::json!({"requests": [
+                {"id": "n1", "cap": "notify.send", "args": {"text": "hello"}},
+            ]}),
+        )
+        .await;
+        assert_eq!(
+            schedule_result(&actor, "n1").unwrap()["error"],
+            "cap_denied"
+        );
+        assert!(
+            actor.core.ledger.usage()["notify.send"].denied > 0,
+            "{:?}",
+            actor.core.ledger.usage()
+        );
+        assert!(actor.core.notifications.is_empty());
+        assert!(
+            journal
+                .entries()
+                .iter()
+                .all(|entry| !matches!(entry, JournalEntry::NotifySent { .. })),
+            "a refused send journals nothing"
+        );
+    }
+
+    #[tokio::test]
+    async fn notify_send_round_trip_through_the_actor() {
+        let (mut actor, clock, token, journal) =
+            scheduling_actor("notify-round-trip", &["notify.send"], false);
+        let (reply, response) = tokio::sync::oneshot::channel();
+        actor
+            .handle(WorldCommand::SetCapsCeiling {
+                ceiling: vec!["notify.send".to_owned()],
+                reply,
+            })
+            .await;
+        let _ = response.await.unwrap().unwrap();
+        actor.after_change().await;
+        ask(
+            &mut actor,
+            &token,
+            serde_json::json!({"requests": [
+                {"id": "n1", "cap": "notify.send", "args": {"title": "Deploy", "text": "v2 is live"}},
+                {"id": "n2", "cap": "notify.send", "args": {"text": "untitled"}},
+                {"id": "n3", "cap": "notify.send", "args": {"title": "x"}},
+                {"id": "n4", "cap": "notify.send", "args": {"text": ""}},
+            ]}),
+        )
+        .await;
+        let sent = schedule_result(&actor, "n1").unwrap();
+        assert_eq!(sent["ok"], true, "{sent}");
+        assert_eq!(sent["value"]["sent"], true, "{sent}");
+        assert_eq!(sent["value"]["at_ms"], EPOCH_MS, "{sent}");
+        let untitled = schedule_result(&actor, "n2").unwrap();
+        assert_eq!(untitled["ok"], true, "{untitled}");
+        assert_eq!(
+            schedule_result(&actor, "n3").unwrap()["error"],
+            "bad_args",
+            "a send without text is refused"
+        );
+        assert_eq!(
+            schedule_result(&actor, "n4").unwrap()["error"],
+            "bad_args",
+            "a send with empty text is refused"
+        );
+        assert_eq!(actor.core.notifications.len(), 2);
+        assert_eq!(
+            actor.core.notifications[0],
+            CheckpointNotifyEntry {
+                title: Some("Deploy".to_owned()),
+                text: "v2 is live".to_owned(),
+                at_ms: EPOCH_MS,
+            }
+        );
+        assert_eq!(actor.core.notifications[1].title, None);
+        let entries = journal.entries();
+        assert_eq!(
+            entries
+                .iter()
+                .filter(|entry| matches!(entry, JournalEntry::NotifySent { .. }))
+                .count(),
+            2,
+            "one journal entry per accepted send, none for the refused ones"
+        );
+        // The rate cap refuses through the actor too: fill the window
+        // from the core's side, then the next send is a `bad_args`
+        // whose reason names the rate limit, until the clock moves
+        // a full window past the burst.
+        for index in 0..crate::world_caps::MAX_NOTIFY_PER_WINDOW - 2 {
+            actor.core.notifications.push_back(CheckpointNotifyEntry {
+                title: None,
+                text: format!("filler {index}"),
+                at_ms: EPOCH_MS,
+            });
+        }
+        ask(
+            &mut actor,
+            &token,
+            serde_json::json!({"requests": [
+                {"id": "n5", "cap": "notify.send", "args": {"text": "over the rate"}},
+            ]}),
+        )
+        .await;
+        let refused = schedule_result(&actor, "n5").unwrap();
+        assert_eq!(refused["error"], "bad_args", "{refused}");
+        clock.advance(crate::world_caps::NOTIFY_RATE_WINDOW_MS);
+        ask(
+            &mut actor,
+            &token,
+            serde_json::json!({"requests": [
+                {"id": "n6", "cap": "notify.send", "args": {"text": "after the window"}},
+            ]}),
+        )
+        .await;
+        let after = schedule_result(&actor, "n6").unwrap();
+        assert_eq!(after["ok"], true, "{after}");
+    }
+
+    #[test]
+    fn notify_entries_replay_and_survive_compaction() {
+        let header = || JournalEntry::Created {
+            world_id: "w".to_owned(),
+            version: JOURNAL_VERSION_NOTIFY,
+        };
+        let sent = |text: &str, at_ms: u64| JournalEntry::NotifySent {
+            title: None,
+            text: text.to_owned(),
+            at_ms,
+        };
+        assert_eq!(
+            journal_version_required_by(&sent("a", 1)),
+            JOURNAL_VERSION_NOTIFY
+        );
+        let restored = WorldCore::restore(
+            "w",
+            WorldLimits::default(),
+            [header(), sent("alpha", 10), sent("beta", 20)],
+        )
+        .unwrap();
+        assert_eq!(restored.core.notifications.len(), 2);
+        assert_eq!(restored.core.notifications[0].text, "alpha");
+        assert_eq!(restored.core.notifications[1].at_ms, 20);
+        // Retention is applied on replay exactly as at write time:
+        // past the cap, the oldest sends drop out.
+        let mut entries = vec![header()];
+        for index in 0..=crate::world_caps::MAX_NOTIFICATIONS {
+            entries.push(sent(&format!("n{index}"), index as u64));
+        }
+        let restored = WorldCore::restore("w", WorldLimits::default(), entries).unwrap();
+        assert_eq!(
+            restored.core.notifications.len(),
+            crate::world_caps::MAX_NOTIFICATIONS
+        );
+        assert_eq!(restored.core.notifications[0].text, "n1");
+        // A notification past the writer's bounds refuses the restore.
+        let oversized = [
+            header(),
+            JournalEntry::NotifySent {
+                title: None,
+                text: "x".repeat(crate::world_caps::MAX_NOTIFY_TEXT_BYTES + 1),
+                at_ms: 1,
+            },
+        ];
+        assert!(WorldCore::restore("w", WorldLimits::default(), oversized).is_err());
+        // Compaction: a core carrying notifications re-emits them
+        // before its checkpoint, so a restored core sees the same log.
+        let mut core = world(8);
+        core.active_module_hash = Some("h".to_owned());
+        core.notifications.push_back(CheckpointNotifyEntry {
+            title: Some("Deploy".to_owned()),
+            text: "v2 is live".to_owned(),
+            at_ms: 10,
+        });
+        core.notifications.push_back(CheckpointNotifyEntry {
+            title: None,
+            text: "untitled".to_owned(),
+            at_ms: 20,
+        });
+        let entries = core.checkpoint_entries("state".to_owned()).unwrap();
+        assert!(
+            entries.contains(&sent("untitled", 20)),
+            "a compacted journal keeps the notify entries"
+        );
+        let restored = WorldCore::restore("test-world", WorldLimits::default(), entries).unwrap();
+        assert_eq!(restored.core.notifications, core.notifications);
+    }
+
+    #[test]
+    fn a_checkpoint_that_disagrees_with_its_notify_log_is_refused() {
+        let header = || JournalEntry::Created {
+            world_id: "w".to_owned(),
+            version: JOURNAL_VERSION_NOTIFY,
+        };
+        let sent = |text: &str, at_ms: u64| JournalEntry::NotifySent {
+            title: None,
+            text: text.to_owned(),
+            at_ms,
+        };
+        let checkpoint =
+            |notifications: Option<Vec<CheckpointNotifyEntry>>| JournalEntry::Checkpoint {
+                sequence: 0,
+                module_hash: "h".to_owned(),
+                seed: 1,
+                provenance: None,
+                execution_profile: None,
+                caps_ceiling: None,
+                schedules: None,
+                kv: None,
+                blobs: None,
+                notifications,
+                transfers: None,
+                lease: None,
+                snapshot: "s".to_owned(),
+                events: Vec::new(),
+                admin_history: None,
+                open_presence: None,
+            };
+        let declared = || CheckpointNotifyEntry {
+            title: None,
+            text: "alpha".to_owned(),
+            at_ms: 10,
+        };
+        let agreed = [header(), sent("alpha", 10), checkpoint(Some(vec![declared()]))];
+        assert!(WorldCore::restore("w", WorldLimits::default(), agreed).is_ok());
+        let omitted = [header(), sent("alpha", 10), checkpoint(None)];
+        assert!(WorldCore::restore("w", WorldLimits::default(), omitted).is_err());
+        let unwritten = [header(), checkpoint(Some(vec![declared()]))];
+        assert!(WorldCore::restore("w", WorldLimits::default(), unwritten).is_err());
+        let wrong_time = [
+            header(),
+            sent("alpha", 10),
+            checkpoint(Some(vec![CheckpointNotifyEntry {
+                title: None,
+                text: "alpha".to_owned(),
+                at_ms: 11,
+            }])),
+        ];
+        assert!(WorldCore::restore("w", WorldLimits::default(), wrong_time).is_err());
     }
 
     #[test]
@@ -11380,6 +11737,7 @@ mod schedule_tests {
             schedules,
             kv: None,
             blobs: None,
+            notifications: None,
             transfers: None,
             lease: None,
             snapshot: "s".to_owned(),

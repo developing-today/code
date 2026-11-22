@@ -107,6 +107,12 @@ pub struct WorldCore {
     /// its result is delivered, and replay rebuilds the set from the
     /// journal, verifying each blob against its address.
     pub(crate) blobs: BTreeMap<String, Vec<u8>>,
+    /// The world's `notify` log (#1062): the retained notifications
+    /// in send order, oldest first. Bounded by `MAX_NOTIFICATIONS`;
+    /// every accepted send is journaled before its result is
+    /// delivered, and replay rebuilds the log from the journal. The
+    /// rate window is counted from the retained sends' times.
+    pub(crate) notifications: VecDeque<CheckpointNotifyEntry>,
     /// Schedule-delivery consent by peer world (#1355 part 2): this
     /// world's half of the reciprocal F12.14 grant pair.
     pub(crate) schedule_grants: BTreeMap<String, ScheduleGrant>,
@@ -396,6 +402,7 @@ impl WorldCore {
             schedules: BTreeMap::new(),
             kv: BTreeMap::new(),
             blobs: BTreeMap::new(),
+            notifications: VecDeque::new(),
             schedule_grants: BTreeMap::new(),
             portal_grants: id_caps::portal::PortalGrants::new(),
             schedule_receipts: BTreeSet::new(),
@@ -1110,6 +1117,29 @@ impl WorldCore {
                         "journal removes blob {hash}, which is not stored"
                     );
                 }
+                JournalEntry::NotifySent { title, text, at_ms } => {
+                    // The bounds the writer holds are re-checked here:
+                    // a journal carrying a notification past them
+                    // refuses the restore instead (#1062). The rate
+                    // cap is a writer-side acceptance rule, not a
+                    // state invariant, so it is not re-checked; the
+                    // retention cap is applied exactly as the writer
+                    // applied it, dropping the oldest.
+                    if let Some(title) = &title {
+                        crate::world_caps::validate_notify_title(title)
+                            .context("invalid notify title in journal")?;
+                    }
+                    crate::world_caps::validate_notify_text(&text)
+                        .context("invalid notify text in journal")?;
+                    core.notifications.push_back(CheckpointNotifyEntry {
+                        title,
+                        text,
+                        at_ms,
+                    });
+                    while core.notifications.len() > crate::world_caps::MAX_NOTIFICATIONS {
+                        core.notifications.pop_front();
+                    }
+                }
                 JournalEntry::EntityExported {
                     handoff_id,
                     entity_ref,
@@ -1407,6 +1437,7 @@ impl WorldCore {
                     schedules,
                     kv,
                     blobs,
+                    notifications,
                     transfers,
                     lease,
                     mut snapshot,
@@ -1625,6 +1656,17 @@ impl WorldCore {
                         declared_blobs.len() == listed_blobs.len()
                             && declared_blobs == replayed_blobs,
                         "journal checkpoint's blob index disagrees with its blob stored entries"
+                    );
+                    // The same agreement for the `notify` log: the
+                    // writer emits one `NotifySent` per retained
+                    // notification before the checkpoint, so the two
+                    // must agree exactly, in send order.
+                    let declared_notifications = notifications.unwrap_or_default();
+                    let replayed_notifications: Vec<CheckpointNotifyEntry> =
+                        core.notifications.iter().cloned().collect();
+                    ensure!(
+                        declared_notifications == replayed_notifications,
+                        "journal checkpoint's notifications disagree with its notify sent entries"
                     );
                     program = Some(RestoredProgram {
                         module_hash,
@@ -1907,6 +1949,21 @@ impl WorldCore {
                 })
                 .collect()
         });
+        // One entry per retained notification, before the checkpoint,
+        // like the `kv` entries: without them compaction would forget
+        // the log (and its rate window, which is counted from the
+        // retained sends' times). The checkpoint declares the whole
+        // records — the log is bounded small enough for the scalar
+        // bound (see `MAX_NOTIFICATIONS`).
+        for notification in &self.notifications {
+            entries.push(JournalEntry::NotifySent {
+                title: notification.title.clone(),
+                text: notification.text.clone(),
+                at_ms: notification.at_ms,
+            });
+        }
+        let notifications: Option<Vec<CheckpointNotifyEntry>> =
+            (!self.notifications.is_empty()).then(|| self.notifications.iter().cloned().collect());
         let schedules: Option<Vec<CheckpointSchedule>> = (!self.schedules.is_empty()).then(|| {
             self.schedules
                 .iter()
@@ -1953,6 +2010,7 @@ impl WorldCore {
                     schedules: schedules.clone(),
                     kv: kv.clone(),
                     blobs: blobs.clone(),
+                    notifications: notifications.clone(),
                     transfers: transfers.clone(),
                     lease: (!self.write_lease.is_bootstrap()).then(|| self.write_lease.clone()),
                     snapshot,

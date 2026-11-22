@@ -1399,6 +1399,27 @@ pub struct CheckpointBlobEntry {
     pub size: usize,
 }
 
+/// One retained notification of the world's `notify` log as a
+/// checkpoint declares it (#1062): the whole record, not an index —
+/// the log is small and bounded, and the record is the audit entry
+/// hosts surface to users. The writer also emits one `NotifySent`
+/// journal entry per retained notification before the checkpoint,
+/// and replay refuses a checkpoint whose declared log disagrees
+/// with them — the schedule treatment ([`CheckpointSchedule`])
+/// applied to the log. The send times ride along because the rate
+/// window is derived from them.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct CheckpointNotifyEntry {
+    /// The notification's title, when the send named one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    /// The notification's text.
+    pub text: String,
+    /// When the send was accepted, in unix milliseconds: the rate
+    /// window is counted from the retained sends' times.
+    pub at_ms: u64,
+}
+
 /// This world's schedule-delivery consent for one peer world (#1355
 /// part 2): the pair must be reciprocal across the two worlds for a
 /// cross-world fire to happen — the source holds `send` for the target,
