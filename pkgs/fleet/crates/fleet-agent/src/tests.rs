@@ -272,8 +272,44 @@ fn an_empty_mailbox_falls_to_a_queue_claim() {
     );
     // The claim carries the agent as worker, the lane, and the claimer's own flags.
     assert!(fake.called(
-        "fleet queue claim --worker oc-go-1 --lane go --platform opencode --remaining-budget-minutes 90"
+        "fleet queue claim --worker oc-go-1 --lane go --lease-seconds 14400 --platform opencode --remaining-budget-minutes 90"
     ));
+}
+
+#[test]
+fn a_queue_claim_carries_the_agent_lease_and_the_handout_names_it() {
+    // Oracle (#12618): a claim taken by `next` asks the queue for the
+    // agent-work lease explicitly — 14400 seconds, never the queue's
+    // 2700-second default, which lapsed mid-task and evaporated the
+    // claim — and the task handed to the worker names that lease, so
+    // the completion deadline is visible instead of silent.
+    let fake = Fake::new();
+    fake.on(INBOX, vec![empty_inbox()]).on(
+        CLAIM,
+        vec![ok(
+            json!({"id": 10813, "queue": "fleet", "status": "claimed", "title": "Lease task"}),
+        )],
+    );
+    let (out, code) = run(&fake, &["next", "--agent", "archer"]);
+    assert_eq!(code, EXIT_OK);
+    assert_eq!(out["rung"], "queue");
+    let lane = crate::next::default_lane("archer");
+    assert!(
+        fake.called(&format!(
+            "fleet queue claim --worker archer --lane {lane} --lease-seconds 14400"
+        )),
+        "the claim argv must carry the agent lease: {:?}",
+        fake.calls()
+    );
+    assert_eq!(out["task"]["lease_seconds"], 14_400);
+    assert!(
+        out["task"]["instructions"]
+            .as_str()
+            .unwrap()
+            .contains("14400 seconds"),
+        "the hand-out must name the lease: {}",
+        out["task"]["instructions"]
+    );
 }
 
 #[test]
