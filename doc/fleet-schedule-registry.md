@@ -80,6 +80,19 @@ marked disabled per the inclusion policy now stated in the Surface
 2b intro, and the section count was corrected to 39 rows
 (38 enabled + 1 disabled) for issue #5661.
 
+Surface 2b re-verified 2026-11-21 by queue task 9170: enabled the
+existing read-only `opencode-quota-freshness-summary.timer` as the
+low-risk OpenCode scheduled-task pilot for issue #2232. The first
+service invocation exposed a missing Python directory in the user unit's
+explicit `PATH`; adding `/etc/profiles/per-user/user/bin` fixed it. A
+manual service start completed with exit 0 at 2026-11-21 19:05 CST. The
+first hourly firing was observed at 2026-11-21 20:00:58 CST and finished
+at 20:01:17 with exit 0; `latest.log` and `history.jsonl` record the
+`opencode-route/workhorse` run (`20261122T020058Z`). The systemd trigger
+used zero Muse tokens; the execution used the selected OpenCode route.
+A numeric before/after Muse-token baseline is unavailable. The timer
+remains enabled. Surface 2b now has 39 enabled rows.
+
 Surface 5 added 2026-11-18 for issue #11805 from `dezren39/darwin-nix`
 main at `6af58a6`: every `StartCalendarInterval` / `StartInterval` in
 the repo's Nix files (three jobs). Read from the Nix definitions, not
@@ -223,7 +236,7 @@ the two rows below are the amendment, not a recount.
 | `repo-queue-worker-shift-p`               | Repo queue worker shift P — code pilot (bundle of up to 20)                                       | `interval@40m`                | enabled  | goal:keep-the-four-repos-healthy                                           | `/home/hatch/workspace/goals/keep-the-four-repos-healthy/crons/minutely/repo-queue-worker-shift-p__interval@40m.md`                                                                | not recorded | not recorded  | not recorded | 2026-11-03  |
 | `roadmap-sync-grist-md`                   | Roadmap sync — Grist ↔ roadmap MD files (every 4h)                                                | `interval@4h`                 | enabled  | goal:keep-the-four-repos-healthy                                           | `/home/hatch/workspace/goals/keep-the-four-repos-healthy/crons/hourly/roadmap-sync-grist-md__interval@4h.md`                                                                       | not recorded | not recorded  | not recorded | 2026-11-03  |
 | `runtime-db-export`                       | Runtime DB export to Supabase                                                                     | `interval@6h`                 | enabled  | —                                                                          | `/home/hatch/workspace/cron.d/hourly/runtime-db-export__interval@6h.md`                                                                                                            | not recorded | not recorded  | not recorded | 2026-11-03  |
-| `stale-pr-warden`                         | Stale PR warden — merge-ready, stalled, and abandoned PRs across the four repos                   | `daily@10:12:00`              | enabled  | goal:keep-the-four-repos-healthy                                           | `/home/hatch/workspace/goals/keep-the-four-repos-healthy/crons/daily/stale-pr-warden__daily@10:12:00_user_current.md`                                                              | not recorded | not recorded  | not recorded | 2026-11-03  |
+| `stale-pr-warden`                         | Stale PR warden — merge-ready, stalled, and abandoned PRs across the four repos                   | `daily@10:12:00`              | enabled  | goal:keep-the-four-repos-healthy                                           | `/home/hatch/workspace/goals/keep-the-four-repos-healthy/crons/daily/stale-pr-warden__daily@10:12:00_user_current.md`                                                              | not recorded | not recorded  | not recorded | 2026-11-22  |
 | `stewardship-cycle`                       | Stewardship cycle — review and dispatch                                                           | `interval@1h`                 | enabled  | goal:stewardship-commission-recurring-review-and-dispatch                  | `/home/hatch/workspace/goals/stewardship-commission-recurring-review-and-dispatch/crons/hourly/stewardship-cycle__interval@1h.md`                                                  | not recorded | not recorded  | not recorded | 2026-11-03  |
 | `turso-cloudflare-idea-engine`            | Turso + Cloudflare idea (6×/day)                                                                  | `interval@4h`                 | enabled  | goal:stand-up-lab-cluster-talm-talos-cozystack-postgres-rustfs             | `/home/hatch/workspace/goals/stand-up-lab-cluster-talm-talos-cozystack-postgres-rustfs/crons/hourly/turso-cloudflare-idea-engine__interval@4h.md`                                  | not recorded | not recorded  | not recorded | 2026-11-03  |
 | `turso-v2-meter-recheck`                  | Turso v2 storage meter recheck                                                                    | `runonce@2026-10-31T15:30:00` | disabled | goal:turso-atlas-v2-storage-meter-recheck                                  | `/home/hatch/workspace/goals/turso-atlas-v2-storage-meter-recheck/crons/runonce/turso-v2-meter-recheck__runonce@2026-10-31T15:30:00.md`                                            | not recorded | not recorded  | not recorded | 2026-11-03  |
@@ -256,7 +269,7 @@ Execution route/pool is recorded separately from work scope: the repo-health que
 | `aea12c82-c5af-4e5a-9b66-f8e360f87177` | Queue lane (scheduled) - code           | `*/40 * * * *`                  | True    | `~/.config/openchamber/projects/path_L2hvbWUvdXNlci9naXQvY29kZQ.json` | not recorded               | not recorded | not recorded  | not recorded | 2026-11-03  |
 | `f1b4a33b-14d5-4a69-9ad6-d221e42e3ac9` | Opencode lane claimant/executor - #3026 | `*/10 * * * *`                  | True    | `~/.config/openchamber/projects/path_L2hvbWUvdXNlci9naXQvY29kZQ.json` | opencode-route / workhorse | not recorded | not recorded  | not recorded | 2026-11-03  |
 
-### 2b. Laptop systemd user timers (44 listed: 40 enabled, 1 installed-but-disabled; 4 Nix-configured pending deployment)
+### 2b. Laptop systemd user timers (46 listed: 42 enabled, 1 installed-but-disabled; 4 Nix-configured pending deployment)
 
 The OS-timer half of surface 2. Cadence is the unit's own `OnCalendar`/`OnUnitActiveUSec` spec, read live from `systemctl --user show`. Specs are recorded **complete** — the full effective calendar expression, date **and** time components (e.g. `*-*-* *:*:00`); never truncate a spec to a date-only prefix, because a bare `*-*-*` normalizes to daily at midnight and misstates the cadence (issue #5313). Prompt/brief pointer is the unit file in `~/.config/systemd/user/` (or its Nix store target for linked units). Installed-but-disabled timer units ARE listed in this table and marked `(disabled)` after the unit name: the registry inventories what is installed on the laptop, not only what is currently scheduled, so a disabled unit stays visible until it is uninstalled (reconciled 2026-11-04, issue #5661).
 
@@ -278,6 +291,7 @@ The OS-timer half of surface 2. Cadence is the unit's own `OnCalendar`/`OnUnitAc
 | `git-maintenance@weekly.timer` | `OnCalendar=Mon *-*-* 00:56:00` | `git-maintenance@weekly.service` | laptop (user systemd) | not recorded | not recorded | not recorded | 2026-11-04 |
 | `github-backup-drain.timer` | `OnCalendar=*-*-* *:00/5:00,OnBootUSec=3min` | `github-backup-drain.service` | laptop (user systemd) | not recorded | not recorded | not recorded | 2026-11-04 |
 | `github-backup-fetch.timer` | `OnCalendar=*-*-* 00:00:00` | `github-backup-fetch.service` | laptop (user systemd) | not recorded | not recorded | not recorded | 2026-11-04 |
+| `github-backup-r2.timer` (repo-shipped, not yet installed) | `OnCalendar=*-*-* 01:30:00` + `RandomizedDelaySec=30m` | `github-backup-r2.service` | laptop (user systemd; code#8584) | not recorded | Disable if any scheduled run cannot verify every planned R2 object; repair credentials or target and rerun before re-enabling | 2026-11-22 | 2026-11-22 |
 | `github-backup-reconcile.timer` | `OnCalendar=Mon *-*-* 00:00:00` | `github-backup-reconcile.service` | laptop (user systemd) | not recorded | not recorded | not recorded | 2026-11-04 |
 | `laptop-autocommit-hatch-personal.timer` | `OnCalendar=*-*-* *:*:00` | `laptop-autocommit-hatch-personal.service` | laptop (user systemd) | not recorded | not recorded | not recorded | 2026-11-04 |
 | `laptop-autocommit-hatch.timer` | `OnCalendar=*-*-* *:*:00` | `laptop-autocommit-hatch.service` | laptop (user systemd) | not recorded | not recorded | not recorded | 2026-11-04 |
@@ -290,11 +304,13 @@ The OS-timer half of surface 2. Cadence is the unit's own `OnCalendar`/`OnUnitAc
 | `openai-cred-watchdog.timer` | `OnCalendar=*-*-* *:00:00` | `openai-cred-watchdog.service` | laptop (user systemd) | not recorded | not recorded | not recorded | 2026-11-04 |
 | `opencode-go-seating-guard.timer` (Nix-configured; not yet loaded) | `OnCalendar=hourly (not live-verified)` | `opencode-go-seating-guard.service` | laptop (user systemd; code#5611) | not recorded | not recorded | 2026-11-08 | 2026-11-08 |
 | `openclaw-backup.timer` | `OnCalendar=*-*-* 04:05:00` | `openclaw-backup.service` | laptop (user systemd) | not recorded | not recorded | not recorded | 2026-11-04 |
-| `opencode-quota-freshness-summary.timer` (disabled) | `OnCalendar=*-*-* *:00:00` | `opencode-quota-freshness-summary.service` | laptop (user systemd) | not recorded | not recorded | not recorded | 2026-11-04 |
+| `opencode-quota-freshness-summary.timer` | `OnCalendar=*-*-* *:00:00` | `opencode-quota-freshness-summary.service` | laptop (user systemd) | not recorded | not recorded | not recorded | 2026-11-21 |
 | `opencode-usage-export.timer` | `OnCalendar=*-*-* *:00/15:00` | `opencode-usage-export.service` | laptop (user systemd) | not recorded | not recorded | not recorded | 2026-11-04 |
 | `pm-apps-health.timer` (Nix-configured system timer; not yet loaded) | `OnUnitActiveSec=1min,OnBootSec=2min` (not live-verified) | `pm-apps-health.service` | laptop (system systemd; NixOS pm-apps readiness probe, code#8940) | not recorded | not recorded | 2026-11-12 | 2026-11-12 |
 | `pm-dashboard-backup.timer` | `OnCalendar=*-*-* 04:30:00` | `pm-dashboard-backup.service` | laptop (user systemd) | not recorded | not recorded | not recorded | 2026-11-04 |
 | `pm-digest-daily.timer` | `OnCalendar=*-*-* 07:00:00` | `pm-digest-daily.service` | laptop (user systemd) | not recorded | not recorded | not recorded | 2026-11-04 |
+| `pm-console-expose.timer` | `OnUnitActiveUSec=15min,OnBootUSec=5min` | `pm-console-expose.service` | laptop (user systemd; code#12452; runs `pm-stack/console/scripts/expose.py`: keeps the public address as declared, turns Google sign-in on once its secrets exist) | not recorded | not recorded | 2026-11-22 | 2026-11-22 |
+| `pm-console-redeploy.timer` | `OnUnitActiveUSec=1min,OnBootUSec=2min` | `pm-console-redeploy.service` | laptop (user systemd; code#12505; runs `pm-stack/console/redeploy.sh`: puts merged console code into service after a self-check, and leaves out code that does not start) | not recorded | not recorded | 2026-11-22 | 2026-11-22 |
 | `pm-digest-weekly.timer` | `OnCalendar=Mon *-*-* 07:05:00` | `pm-digest-weekly.service` | laptop (user systemd) | not recorded | not recorded | not recorded | 2026-11-04 |
 | `pm-git-sync.timer` | `OnUnitActiveUSec=30s,OnBootUSec=30s` | `pm-git-sync.service` | laptop (user systemd) | not recorded | not recorded | not recorded | 2026-11-04 |
 | `pm-host-health.timer` | `OnCalendar=*-*-* *:00/5:00,OnBootUSec=1min` | `pm-host-health.service` | laptop (user systemd; code#10141) | not recorded | not recorded | 2026-11-14 | 2026-11-14 |
@@ -374,25 +390,31 @@ registered. The primary user's repos are maintained by git's own
 per-user launchd agents, which `git maintenance start` installs outside
 Nix; they are not recorded here until a review reads them on the Mac.
 
-## Surface 6 — PM-stack process intervals (1 entry)
+## Surface 6 — PM-stack process intervals (4 entries)
 
-Recurring loops owned by the PM-stack aggregator process. These are not
+Recurring loops owned by PM-stack processes (aggregator, console). These are not
 external scheduler surfaces; this inventory records timers that run only
 while the service is alive.
 
 | name/id                     | repo/scope            | cadence          | state                        | owner / scope | prompt/brief pointer                                           | budget       | kill criteria                                                                                                                        | created    | last review |
 | --------------------------- | --------------------- | ---------------- | ---------------------------- | ------------- | -------------------------------------------------------------- | ------------ | ------------------------------------------------------------------------------------------------------------------------------------ | ---------- | ----------- |
 | SLO journal sampler (#9988) | developing-today/code | every 60 seconds | live aggregator process only | issue #9988   | `pm-stack/aggregator/src/server.ts` (`SLO_SAMPLE_INTERVAL_MS`) | not recorded | Remove/disable if the health view or append-only journal becomes unavailable; sampler is unref'd and does not keep the process alive | 2026-11-18 | 2026-11-18  |
+| Console state refresh       | developing-today/code | every 5 seconds  | live console process only    | PR #12452     | `pm-stack/console/src/docs.ts` (`Docs.start`)                  | not recorded | Reads only while the app was opened in the last 10 minutes; remove if state is no longer served from memory                          | 2026-11-22 | 2026-11-22  |
+| Console notifier            | developing-today/code | every 60 seconds | live console process only    | PR #12452     | `pm-stack/console/src/notify.ts` (`Notifier.start`)            | not recorded | Reads only while a device is subscribed; remove if notifications move to another sender                                              | 2026-11-22 | 2026-11-22  |
+| Console report to the edge  | developing-today/code | 5 to 30 seconds  | live console process only    | PR #12505     | `pm-stack/console/src/sync.ts` (`EdgeLink.start`)              | not recorded | Runs only when PM_CONSOLE_EDGE_URL is set; remove if the app is no longer served from the edge                                       | 2026-11-22 | 2026-11-22  |
 
-## Surface 7 — Cloudflare Worker cron triggers (1 entry)
+## Surface 7 — Cloudflare Worker cron triggers (2 entries)
 
 Cron triggers on Cloudflare Workers in this account, from each Worker's
 `wrangler.jsonc` (`triggers.crons`) and deployed from the flake. They
 run on Cloudflare, off every fleet host. Cadence is the trigger's cron
 expression in UTC. The row was read from the repo and confirmed against
 the Worker's live schedule (Cloudflare `workers/scripts/<name>/schedules`)
-on 2026-11-19.
+on 2026-11-19. The second row is a Durable Object alarm: it is set by
+the Worker's code, so it appears in no `wrangler.jsonc` and in no
+schedules listing.
 
 | name/id                                       | repo/scope            | cadence                           | state                                                                                                                                                                                                        | owner / scope | prompt/brief pointer                                            | budget                                         | kill criteria                                                                                   | created    | last review |
 | --------------------------------------------- | --------------------- | --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------- | --------------------------------------------------------------- | ---------------------------------------------- | ----------------------------------------------------------------------------------------------- | ---------- | ----------- |
 | `queue-transport-alert` (Worker cron trigger) | developing-today/code | `*/10 * * * *` (every 10 min UTC) | enabled; probes the repo-queue broker `/healthz` through Cloudflare Access; files or comments on one `Queue transport incident:` issue, pushes to Telegram, enqueues a triage task on recovery, never closes | issue #6369   | `pkgs/queue-transport-alert/worker/` (`wrangler.jsonc`, `src/`) | Workers free-tier requests; one probe per tick | Remove the trigger if the probe misfires (repeated false alerts) or the broker route is retired | 2026-11-19 | 2026-11-19  |
+| pm-console-edge silent-host alarm             | developing-today/code | 10 minutes after each host report | Durable Object alarm, re-armed by every report from the laptop, so it fires only when the laptop has been silent for ten minutes                                                                             | PR #12505     | `pm-stack/console/edge/src/edge.ts` (`Edge.alarm`)              | one notification a silence                     | Goes with the Worker; `expose.py --edge off` takes the hostname off it                          | 2026-11-22 | 2026-11-22  |

@@ -159,6 +159,41 @@ $GB/systemd/install-units.sh
 
 ## 8. Restore from a mirror
 
+Create and locally verify a cold bundle for a planned mirror:
+
+```sh
+python3 ~/git/code/infra/github-backup/bin/bundle_cold.py \
+  --repo developing-today/code --root ~/backups/github
+git clone ~/backups/github/cold-bundles/developing-today/code.bundle ./code-cold
+```
+
+The local command verifies the bundle in an empty repository and confirms the
+restored HEAD matches the mirror before publishing the bundle. It writes only
+to the local backup tree; use the separate uploader below for R2.
+
+To upload one planned mirror to an existing R2 bucket, configure rclone's
+`r2bak` remote using the runtime-only credentials pattern in
+`nixos/home/atlas-backup.sh`, then run:
+
+```sh
+python3 ~/git/code/infra/github-backup/bin/bundle_r2.py \
+  --repo developing-today/code --bucket supabase-backups \
+  --root ~/backups/github
+```
+
+The uploader first completes the local empty-repository verification and
+clone-HEAD comparison, then uploads with `rclone copyto`, downloads that exact
+remote object with a second `rclone copyto`, and compares its SHA-256 against
+the local bundle. The content-addressed key is under
+`github-backup/cold-bundles/<owner>/<repo>/<head>-<sha256>.bundle`, so a newer
+artifact does not replace an earlier one. A non-zero upload or read-back check
+is a failed run. This command handles one repository only; the daily
+`github-backup-r2.timer` runs the four-fleet-repository uploader through the
+existing runtime-only Bitwarden/R2 credential path. A failed fleet repository makes
+the scheduled run fail; disable the timer until the cause is fixed and a full
+run succeeds. This does not provide a freshness/lag status record or automatic
+issue filing.
+
 ```sh
 # normal repo:
 git clone ~/backups/github/<owner>/<repo>.git ./<repo>

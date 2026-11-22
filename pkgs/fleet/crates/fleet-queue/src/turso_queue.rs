@@ -276,6 +276,48 @@ mod tests {
     }
 
     #[test]
+    fn not_claimed_reason_names_a_lapsed_lease_12618() {
+        // #12618 oracle: a worker whose lease expired is told the task
+        // went back to the queue, not just that it is "not claimed";
+        // a claim held by another worker names that worker; a missing
+        // task says so; and an expiry by someone else, or one followed
+        // by a new claim, adds no lease detail.
+        let queued = json!({"status": "queued", "worker_id": null});
+        let expired = json!({
+            "worker_id": "archer",
+            "kind": "lease_expired",
+            "created_at": "2026-11-22T16:00:00Z",
+        });
+        let reason = not_claimed_reason(Some(&queued), Some(&expired), "archer");
+        assert!(
+            reason.starts_with("it is queued; archer's lease expired at 2026-11-22T16:00:00Z"),
+            "{reason}"
+        );
+        assert!(
+            reason.contains("claim it again before completing it"),
+            "{reason}"
+        );
+
+        let held = json!({"status": "claimed", "worker_id": "felix"});
+        assert_eq!(
+            not_claimed_reason(Some(&held), None, "archer"),
+            "it is claimed by felix"
+        );
+        assert_eq!(not_claimed_reason(None, None, "archer"), "no such task");
+
+        let other = json!({"worker_id": "felix", "kind": "lease_expired"});
+        assert_eq!(
+            not_claimed_reason(Some(&queued), Some(&other), "archer"),
+            "it is queued"
+        );
+        let reclaimed = json!({"worker_id": "archer", "kind": "claimed"});
+        assert_eq!(
+            not_claimed_reason(Some(&queued), Some(&reclaimed), "archer"),
+            "it is queued"
+        );
+    }
+
+    #[test]
     fn bind_rejects_malformed_session_id_8287() {
         // #8287 oracle: verb_bind refuses a malformed session id
         // as a usage error (exit 2) before any store access, so
@@ -628,8 +670,11 @@ mod tests {
 
     #[test]
     fn lane_family_of_accepts_known_families_and_rejects_garbage() {
-        // The claim-time wildcard (Drew, 2026-11-16): known
-        // family + nonempty lowercase alphabetic suffix.
+        // The family rule (Drew, 2026-11-16), kept for
+        // execution_lane_fields' mode derivation (#7598): known
+        // family + nonempty lowercase alphabetic suffix. Claims no
+        // longer consult it (#12544): any lane name auto-registers
+        // on first claim, whatever family it parses to (or none).
         for (id, family) in [
             ("code-a", "code"),
             ("code-z", "code"),
@@ -664,21 +709,65 @@ mod tests {
     }
 
     #[test]
-    fn a_bare_family_lane_id_is_refused_with_the_shape_to_pass() {
-        // #6853 recurrence: scheduled lanes passed `--lane not-code`
-        // for not-code-d. The refusal keeps the unknown-lane verdict
-        // but says what to pass, so the caller can correct itself.
-        let bare = unknown_lane_error("not-code");
-        assert!(
-            bare.starts_with("claim_repo_task: unknown lane_id not-code"),
-            "{bare}"
-        );
-        assert!(bare.contains("lane family"), "{bare}");
-        assert!(bare.contains("not-code-<suffix>"), "{bare}");
-        // Ids that are not a family keep the plain refusal.
+    fn lane_provision_sql_registers_enabled_unbound_for_the_claimer_12544() {
+        // #12544 oracle (auto-register): the statement
+        // claim_preamble runs for a lane with no registry row
+        // registers exactly the canonical row shape -- the
+        // claiming worker as owner (the second bound parameter),
+        // the one-queue binding "*", enabled = 1 -- and INSERT OR
+        // IGNORE means an existing row (in particular one
+        // disabled by hand) is never overwritten by a registration
+        // attempt. After this insert the preamble re-reads the
+        // row, so a claim under a never-seen name ("archer",
+        // "banana-1", a bare "not-code") proceeds with the lane
+        // present and enabled in the registry.
         assert_eq!(
-            unknown_lane_error("banana-1"),
-            "claim_repo_task: unknown lane_id banana-1"
+            lane_provision_sql(),
+            "INSERT OR IGNORE INTO lanes (lane_id, worker_id, queue, enabled) \
+             VALUES (?, ?, '*', 1)"
+        );
+    }
+
+    #[test]
+    fn claim_preamble_auto_registers_instead_of_refusing_unknown_lanes_12544() {
+        // #12544 oracle (unknown-lane errors are gone; the
+        // existing-row refusals stay): the claim preamble
+        // provisions a missing lane via lane_provision_sql and
+        // never refuses a name as unknown -- the unknown-lane
+        // verdict function is deleted outright -- while the
+        // checks an EXISTING row carries keep their refusals in
+        // the same preamble: worker ownership (a lane disabled or
+        // owned is an explicit recorded state, not an unknown
+        // name) and the disabled flag both still refuse, and the
+        // stream-binding check stays.
+        let src = &test_source();
+        let preamble = seg8217(src, "fn claim_preamble(", "\nfn claim_pick_once(");
+        assert!(
+            preamble.contains("lane_provision_sql()"),
+            "preamble auto-registers a missing lane"
+        );
+        assert!(
+            !preamble.contains("unknown_lane_error"),
+            "preamble never refuses a lane as unknown"
+        );
+        // The banned needle is built with format! so this test
+        // file does not itself contain the literal it bans.
+        let verdict_fn = format!("fn unknown_lane_{}", "error");
+        assert!(
+            !src.contains(&verdict_fn),
+            "the unknown-lane verdict is gone from the backend"
+        );
+        assert!(
+            preamble.contains("belongs to worker"),
+            "an existing row's owner still binds the lane"
+        );
+        assert!(
+            preamble.contains("is disabled"),
+            "a lane disabled by hand still refuses"
+        );
+        assert!(
+            preamble.contains("lane_queue_binds("),
+            "preamble honors the unbound registration marker"
         );
     }
 
@@ -3156,6 +3245,124 @@ mod tests {
         fn prop_other_repo_never_matches(n in 1i64..10_000_000i64) {
             let key = format!("repo-health:v1:triage:developing-today-forks/opencode:issue:{n}");
             prop_assert_eq!(issue_number_from_dedupe(&key, "developing-today/code"), None);
+        }
+    }
+
+    // -- /coverage PR half (#12280): a ready PR is covered iff a LIVE
+    // -- task's dedupe key names it. The parser decides which keys name
+    // -- a PR; the live-status rule is the same SQL filter as issues.
+
+    #[test]
+    fn pr_number_parses_warden_and_merge_watch_keys() {
+        let repo = "developing-today/code";
+        // The stale-PR warden's shepherd key.
+        assert_eq!(
+            pr_number_from_dedupe("repo-health:v1:pr:developing-today/code:pr:12206", repo),
+            Some(12206)
+        );
+        // The coverage reconciliation's merge-watch key (#4951) — a live
+        // merge-watch is a live pr_shepherd naming the PR, so it must
+        // count as coverage or the fallback would double-file.
+        assert_eq!(
+            pr_number_from_dedupe(
+                "repo-health:v1:merge-watch:developing-today/code:pr:12206",
+                repo
+            ),
+            Some(12206)
+        );
+        // Dispatch-suffixed variants parse like the issue classes do.
+        assert_eq!(
+            pr_number_from_dedupe(
+                "repo-health:v1:pr:developing-today/code:pr:12206:dispatch:abc123",
+                repo
+            ),
+            Some(12206)
+        );
+    }
+
+    #[test]
+    fn pr_number_rejects_other_repos_and_non_pr_keys() {
+        let repo = "developing-today/code";
+        // A different repo's PR is not coverage for this one.
+        assert_eq!(
+            pr_number_from_dedupe(
+                "repo-health:v1:pr:developing-today-forks/opencode:pr:2496",
+                repo
+            ),
+            None
+        );
+        // An issue key never reads as PR coverage: triage for issue 5
+        // does not name PR 5.
+        assert_eq!(
+            pr_number_from_dedupe("repo-health:v1:triage:developing-today/code:issue:5", repo),
+            None
+        );
+        // And a PR key never reads as issue coverage.
+        assert_eq!(
+            issue_number_from_dedupe("repo-health:v1:pr:developing-today/code:pr:5", repo),
+            None
+        );
+        // No number at all, and the malformed-tail rule.
+        assert_eq!(
+            pr_number_from_dedupe("repo-health:v1:pr:developing-today/code:pr:", repo),
+            None
+        );
+        assert_eq!(
+            pr_number_from_dedupe("repo-health:v1:pr:developing-today/code:pr:12abc", repo),
+            None
+        );
+    }
+
+    #[test]
+    fn pr_number_matches_legacy_repo_aliases() {
+        // A shepherd filed under the pre-rename repo name is coverage
+        // when the caller names the current one, and vice versa.
+        assert_eq!(
+            pr_number_for_repo(
+                "repo-health:v1:pr:developing-today/opencode:pr:2496",
+                "developing-today-forks/opencode"
+            ),
+            Some(2496)
+        );
+        assert_eq!(
+            pr_number_for_repo(
+                "repo-health:v1:merge-watch:developing-today-forks/openchamber:pr:81",
+                "developing-today/openchamber"
+            ),
+            Some(81)
+        );
+        // Aliases never cross into a different repo.
+        assert_eq!(
+            pr_number_for_repo(
+                "repo-health:v1:pr:developing-today/opencode:pr:1",
+                "developing-today/code"
+            ),
+            None
+        );
+    }
+
+    proptest! {
+        /// Canonical PR keys round-trip for both PR-naming classes,
+        /// with or without a dispatch suffix.
+        #[test]
+        fn prop_pr_number_round_trips(
+            n in 1i64..10_000_000i64,
+            class in prop::sample::select(vec!["pr", "merge-watch"]),
+            suffix in prop::option::of("[a-z0-9]{1,12}"),
+        ) {
+            let repo = "developing-today/code";
+            let mut key = format!("repo-health:v1:{class}:{repo}:pr:{n}");
+            if let Some(s) = &suffix {
+                key.push_str(&format!(":dispatch:{s}"));
+            }
+            prop_assert_eq!(pr_number_from_dedupe(&key, repo), Some(n));
+        }
+
+        /// A PR key for a different repo never matches.
+        #[test]
+        fn prop_pr_other_repo_never_matches(n in 1i64..10_000_000i64) {
+            let key = format!("repo-health:v1:pr:developing-today-forks/opencode:pr:{n}");
+            prop_assert_eq!(pr_number_from_dedupe(&key, "developing-today/code"), None);
         }
     }
 

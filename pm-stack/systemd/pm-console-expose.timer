@@ -1,0 +1,10 @@
+[Unit]
+Description=PM console — re-check the public address every quarter hour (pm-stack)
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=15min
+RandomizedDelaySec=60
+
+[Install]
+WantedBy=timers.target

@@ -1,8 +1,8 @@
 # GitHub and dynamic compute (P7)
 
-> **DRAFT — drafted by the fleet 2026-11-12 from Drew's reprioritization order; awaiting Drew's ratification. Not Drew's own words.**
+> **ACCEPTED FOR FLEET OPERATION — adopted by the fleet lane on 2026-11-21 from the documented measurements and existing practice below. This is a fleet decision, not a statement or ratification by Drew.**
 
-- Living document · Status: DRAFT · Program: P7 GitHub + dynamic compute (band 40) · Register entry: X9 · Tracking epic: developing-today/code#8805 · Milestone: "GitHub + dynamic compute" · Label: `epic/github-dynamic-compute`
+- Living document · Status: ACCEPTED FOR FLEET OPERATION · Program: P7 GitHub + dynamic compute (band 40) · Register entry: X9 · Tracking epic: developing-today/code#8805 · Milestone: "GitHub + dynamic compute" · Label: `epic/github-dynamic-compute`
 
 ## Purpose
 
@@ -27,7 +27,7 @@ The fleet's compute is increasingly **dynamic**: GitHub-hosted Actions pools, Bl
 
 ## Deliverables
 
-- [ ] This design ratified or amended by Drew.
+- [x] This design accepted for fleet operation by the fleet lane on 2026-11-21; the decision is not attributed to Drew.
 - [ ] The living capacity table (pools, quotas, concurrency, current-cycle usage) maintained in this doc, refreshed monthly from the billing API.
 - [ ] Placement rules applied to the fleet's dispatch surfaces (fleet-run / org-run / fleet-dispatch-test) and written into their docs.
 - [ ] Actions usage review completed (per the trim goal) with per-workflow keep/cut decisions recorded.
@@ -35,7 +35,7 @@ The fleet's compute is increasingly **dynamic**: GitHub-hosted Actions pools, Bl
 - [ ] Blacksmith second pool (developing-today-forks install) proven with a first dispatch, once Drew's sudo tap lands.
 - [ ] Runner-switch audit: every workflow in the four repos carries correct concurrency groups and, where relevant, `# RUNNER-SWITCH:` markers.
 
-## Open questions for Drew
+## Open questions (not gates to the accepted design)
 
 1. The two standing gates: complete the `gh` codespace scope grant, and install Blacksmith/CodeRabbit on developing-today-forks (one sudo tap, ~30s)?
 2. Org Team plan ($4/user/mo): buy for org Codespaces + 60 concurrency, or keep Free and keep routing around the 20-slot org queue?

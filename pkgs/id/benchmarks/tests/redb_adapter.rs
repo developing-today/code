@@ -11,11 +11,8 @@
 //!
 //! Run: `cargo test --manifest-path pkgs/id/benchmarks/Cargo.toml --test redb_adapter`
 
-#[path = "../src/adapters/redb.rs"]
-mod redb_adapter;
-
+use id_benchmarks::adapters::redb::RedbStore;
 use id_benchmarks::{ReferenceStore, content_id, support_level};
-use redb_adapter::RedbStore;
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::path::PathBuf;

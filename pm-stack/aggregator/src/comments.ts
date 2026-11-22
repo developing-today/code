@@ -84,6 +84,7 @@ export function authorizeCommentAuthor(
 
 const GH_REF = /^[\w.-]+\/[\w.-]+#\d+$/;
 const COMMENT_KINDS = new Set<DashCommentKind>(["message", "note", "github"]);
+const REGISTRY_SOURCES = new Set(["opencode-sandbox", "opencode-laptop", "jules", "claude-code", "cron"]);
 
 function commentRecordProblem(value: unknown): string | null {
   if (!isRecord(value)) return "record must be an object";
@@ -99,6 +100,16 @@ function commentRecordProblem(value: unknown): string | null {
   }
   if (value.provenance !== undefined && value.provenance !== "verified" && value.provenance !== "asserted-legacy") {
     return "provenance must be verified or asserted-legacy";
+  }
+  if (value.linkedIdentity !== undefined) {
+    if (
+      !isRecord(value.linkedIdentity) ||
+      typeof value.linkedIdentity.source !== "string" ||
+      !REGISTRY_SOURCES.has(value.linkedIdentity.source) ||
+      !isNonEmptyString(value.linkedIdentity.id)
+    ) {
+      return "linkedIdentity must have a source and non-empty id";
+    }
   }
   if (typeof value.body !== "string") return "body must be a string";
   if (
@@ -322,6 +333,15 @@ export class CommentsStore {
       valid.push(comment as DashComment);
     });
     this.comments = valid;
+    // #9607: persist the legacy marker once, without deriving identity or
+    // changing any author string. Existing explicit markers are untouched.
+    let migrated = false;
+    for (const comment of this.comments) {
+      if (comment.provenance === undefined) {
+        comment.provenance = "asserted-legacy";
+        migrated = true;
+      }
+    }
     if (invalid.length > 0) {
       const quarantined = await this.archive(this.file, raw, invalid);
       console.error(
@@ -330,6 +350,8 @@ export class CommentsStore {
       );
       // The exact source bytes and diagnostics are durable before this
       // atomic rewrite removes malformed rows from the active store.
+      await this.persist();
+    } else if (migrated) {
       await this.persist();
     }
   }

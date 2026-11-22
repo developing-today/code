@@ -29,7 +29,11 @@
 
 pub mod aggregate;
 pub mod backend;
+pub mod boundary;
+pub mod classification;
+pub mod classify;
 pub mod detect;
+pub mod disclosure;
 pub mod embed;
 pub mod embed_cache;
 pub mod error;
@@ -43,6 +47,7 @@ pub mod github_comments;
 pub mod join;
 pub mod local;
 pub mod manifest;
+pub mod owner_inventory;
 pub mod search;
 pub mod shards;
 pub mod shingles;
@@ -65,6 +70,7 @@ pub use detect::{
     PathVerdict, PlainTreeOptions, SourceLedger, Verdict, VerdictCounts, default_ledger_path,
     git_tree_detection, plain_tree_detection, resolve_commit,
 };
+pub use disclosure::{DisclosureContext, chunk_classification};
 pub use embed::{
     AtlasEmbedder, DocEmbedder, FixedDocEmbedder, FixedEmbedder, QUERY_PROMPT, QueryEmbedder,
 };
@@ -98,13 +104,19 @@ pub use manifest::{
     LoadedManifest, Manifest, ManifestRow, ManifestSource, builtin_manifest, load_manifest,
     parse_manifest_rows,
 };
+pub use owner_inventory::{
+    INVENTORY_FORMAT, OwnerInventory, OwnerInventoryFinding, PatternClass, SECRET_REFERENCE_ENV,
+};
 pub use search::{
     BackendBranchExecutor, BranchPoolExecutor, SearchMode, SearchOptions, TraceJob, run_get_chunk,
-    run_search, run_search_traced, run_search_with_executor, run_search_with_executor_traced,
+    run_get_chunk_with_context, run_search, run_search_traced, run_search_with_executor,
+    run_search_with_executor_traced,
 };
 pub use stage::{
-    REGISTRY_V1_DDL, Registry, STAGE_SCHEMA_VERSION, STAGE_V1_DDL, STAGE_V1_TABLES, StagingUnit,
-    UnitState, check_stage_schema, provision_staging_db, schema_version,
+    ChunkClassification, REGISTRY_V1_DDL, Registry, STAGE_SCHEMA_VERSION, STAGE_V1_DDL,
+    STAGE_V1_TABLES, StagingUnit, UnitState, check_stage_schema, chunk_classifications,
+    provision_staging_db, schema_version, stage_classified_artifact,
+    stage_classified_artifact_in_db,
 };
 pub use trace::{JsonlTraceSink, TRACE_SCHEMA, TraceContext, TraceSink};
 pub use trace_ingest::{

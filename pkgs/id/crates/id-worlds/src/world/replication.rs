@@ -2517,15 +2517,8 @@ mod tests {
         )
         .unwrap();
         assert!(SignedReplicationEnvelope::sign(control, &key).is_some());
-        let env = ReplicationEnvelope::snapshot(
-            WORLD,
-            source,
-            2,
-            NONCE,
-            [0; 32],
-            payload.clone(),
-        )
-        .unwrap();
+        let env = ReplicationEnvelope::snapshot(WORLD, source, 2, NONCE, [0; 32], payload.clone())
+            .unwrap();
         assert!(SignedReplicationEnvelope::sign(env, &key).is_none());
     }
 }
