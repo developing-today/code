@@ -399,28 +399,60 @@ elif want tailnet; then
     # have under load.
     RECORDED_MODE=$(cat "$TS_STATE/mode" 2>/dev/null || echo "")
     [ "$RECORDED_MODE" = userspace ] && MODE=userspace
-    if pgrep -f -- "--state=$TS_STATE/tailscaled.state" >/dev/null 2>&1; then
-      MODE=$(cat "$TS_STATE/mode" 2>/dev/null || echo "$MODE") # daemon alive, only logged out
-    elif [ "$MODE" = kernel ]; then
-      rm -f "$TS_SOCK" # a recycle leaves the old socket file on the durable volume
-      # Rotate, never truncate: the previous daemon's log is the
-      # only evidence when a start fails (the 2026-11-22 05:25
-      # attempt's log was destroyed by the next start's `>`).
-      [ -f "$TS_STATE/tailscaled.log" ] && mv "$TS_STATE/tailscaled.log" "$TS_STATE/tailscaled.log.prev"
-      $SUDO setsid nohup "$BIN/tailscaled" --state="$TS_STATE/tailscaled.state" --socket="$TS_SOCK" \
-        >"$TS_STATE/tailscaled.log" 2>&1 </dev/null &
-    else
+    ts_backend() { "$BIN/tailscale" --socket="$TS_SOCK" status --json 2>/dev/null |
+      python3 -c 'import json,sys; print(json.load(sys.stdin).get("BackendState",""))' 2>/dev/null || true; }
+    ts_alive() { pgrep -f -- "--state=$TS_STATE/tailscaled.state" >/dev/null 2>&1; }
+    # Rotate, never truncate: the previous daemon's log is the only
+    # evidence when a start fails (the 2026-11-22 05:25 attempt's log
+    # was destroyed by the next start's `>`). A recycle also leaves the
+    # old socket file on the durable volume, where it could pass for a
+    # live daemon.
+    ts_fresh_start() {
       rm -f "$TS_SOCK"
-      [ -f "$TS_STATE/tailscaled.log" ] && mv "$TS_STATE/tailscaled.log" "$TS_STATE/tailscaled.log.prev"
+      if [ -f "$TS_STATE/tailscaled.log" ]; then mv "$TS_STATE/tailscaled.log" "$TS_STATE/tailscaled.log.prev"; fi
+    }
+    ts_start_userspace() {
+      ts_fresh_start
       setsid nohup "$BIN/tailscaled" --tun=userspace-networking --state="$TS_STATE/tailscaled.state" \
         --socket="$TS_SOCK" --outbound-http-proxy-listen=127.0.0.1:3130 \
         >"$TS_STATE/tailscaled.log" 2>&1 </dev/null &
+    }
+    if ts_alive; then
+      MODE=$(cat "$TS_STATE/mode" 2>/dev/null || echo "$MODE") # daemon alive, only logged out
+    elif [ "$MODE" = kernel ]; then
+      ts_fresh_start
+      $SUDO setsid nohup "$BIN/tailscaled" --state="$TS_STATE/tailscaled.state" --socket="$TS_SOCK" \
+        >"$TS_STATE/tailscaled.log" 2>&1 </dev/null &
+      # The probe can pick kernel where creating the TUN interface is
+      # still forbidden (#12427): the daemon then exits during engine
+      # setup, possibly after its socket file appeared. Count the
+      # kernel start as up only once the daemon reports a backend
+      # state (the backend exists only after the engine does) and is
+      # still alive a moment later; otherwise fall back to userspace.
+      kernel_up=""
+      for _ in $(seq 1 20); do
+        ts_alive || break
+        grep -q 'tstun.New' "$TS_STATE/tailscaled.log" 2>/dev/null && break
+        if [ -n "$(ts_backend)" ]; then
+          sleep 2
+          ts_alive && ! grep -q 'tstun.New' "$TS_STATE/tailscaled.log" 2>/dev/null && kernel_up=1
+          break
+        fi
+        sleep 1
+      done
+      if [ -z "$kernel_up" ]; then
+        say "tailnet: the kernel TUN daemon did not come up (see $TS_STATE/tailscaled.log.prev); falling back to userspace networking"
+        $SUDO pkill -f -- "--state=$TS_STATE/tailscaled.state" 2>/dev/null || true
+        for _ in 1 2 3 4 5; do ts_alive || break; sleep 1; done
+        MODE=userspace
+        ts_start_userspace
+      fi
+    else
+      ts_start_userspace
     fi
     echo "$MODE" >"$TS_STATE/mode"
     # The node key in $TS_STATE survives a recycle, so after a restart
     # tailscaled logs itself back in; the auth key is only for a new node.
-    ts_backend() { "$BIN/tailscale" --socket="$TS_SOCK" status --json 2>/dev/null |
-      python3 -c 'import json,sys; print(json.load(sys.stdin).get("BackendState",""))' 2>/dev/null || true; }
     state=""
     # 60 iterations, not 30: each poll spawns tailscale + python3,
     # and under sandbox CPU contention (concurrent lane builds) a
