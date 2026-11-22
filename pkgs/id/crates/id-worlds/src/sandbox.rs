@@ -356,6 +356,9 @@ impl Sandbox {
             limits: self.limits,
             metrics,
             trap_fuel: None,
+            burn_budget: crate::guest_burn::GuestBurnBudget::shared(),
+            charge_key: next_guest_charge_key(),
+            active_permit: None,
             store,
             memory,
             alloc,
@@ -386,6 +389,20 @@ pub struct WorldInstance {
     /// Fuel a trapped call had spent, captured before the diagnostic getters
     /// refill the store; taken by [`Self::settle`].
     trap_fuel: Option<u64>,
+    /// The burn budget this guest's calls are admitted against
+    /// (#1067): the process-wide shared budget unless the
+    /// composition layer substitutes a dedicated one.
+    burn_budget: std::sync::Arc<crate::guest_burn::GuestBurnBudget>,
+    /// The key this guest's burns are charged to: the world id where
+    /// the composition layer knows it, else a unique per-instance
+    /// label (a live world has exactly one live instance, so the
+    /// two coincide while the world is live).
+    charge_key: String,
+    /// The permit of the call currently inside
+    /// [`Self::run_guest_call`]; taken and settled by
+    /// [`Self::settle`] with the call's measured fuel spend, the
+    /// same shape as `trap_fuel`.
+    active_permit: Option<crate::guest_burn::GuestBurnPermit>,
     store: Store<StoreLimits>,
     memory: Memory,
     alloc: TypedFunc<i32, i32>,
@@ -418,26 +435,14 @@ fn fuel_spent(store: &Store<StoreLimits>, limit: u64) -> u64 {
     limit.saturating_sub(store.get_fuel().unwrap_or(limit))
 }
 
-/// Run one guest call without parking a shared Tokio worker for its
-/// duration: on a multi-thread runtime the call runs under
-/// `block_in_place`, so the runtime hands this worker's other tasks to
-/// a replacement thread while the guest executes. Everywhere else
-/// (plain threads, `spawn_blocking`, current-thread test runtimes) the
-/// call is direct. A guest call may burn its whole fuel budget — the
-/// default is 10,000,000 — in one synchronous execution; without this,
-/// one spinning world monopolizes a hub worker for that whole span and
-/// every other world's actor sharing the runtime waits behind it
-/// (#1067, F12.10). Same guard as `world_store::recv_writer_reply`
-/// (#557). Fuel, ordering, and poisoning semantics are unchanged: the
-/// same call runs, just in blocking context.
-fn run_guest_call<T>(call: impl FnOnce() -> T) -> T {
-    if tokio::runtime::Handle::try_current()
-        .is_ok_and(|handle| handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread)
-    {
-        tokio::task::block_in_place(call)
-    } else {
-        call()
-    }
+/// Unique default charge key for a guest instance whose composition
+/// layer did not name one (see [`WorldInstance::set_charge_key`]).
+fn next_guest_charge_key() -> String {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    format!(
+        "guest-{}",
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    )
 }
 
 impl WorldInstance {
@@ -447,6 +452,62 @@ impl WorldInstance {
         &self.metrics
     }
 
+    /// Name the key this guest's burns are charged to (the world id,
+    /// where the composition layer knows it). See
+    /// [`crate::guest_burn`] for how the charge is used.
+    pub fn set_charge_key(&mut self, key: String) {
+        self.charge_key = key;
+    }
+
+    /// Substitute the burn budget this guest's calls are admitted
+    /// against, replacing the process-wide shared default.
+    pub fn set_burn_budget(
+        &mut self,
+        budget: std::sync::Arc<crate::guest_burn::GuestBurnBudget>,
+    ) {
+        self.burn_budget = budget;
+    }
+
+    /// Run one guest call under burn admission (#1067), without
+    /// parking a shared Tokio worker for its duration: on a
+    /// multi-thread runtime the call runs under `block_in_place`, so
+    /// the runtime hands this worker's other tasks to a replacement
+    /// thread while the guest executes. Everywhere else (plain
+    /// threads, `spawn_blocking`, current-thread test runtimes) the
+    /// call is direct. A guest call may burn its whole fuel budget —
+    /// the default is 10,000,000 — in one synchronous execution;
+    /// without this, one spinning world monopolizes a hub worker for
+    /// that whole span and every other world's actor sharing the
+    /// runtime waits behind it (#1067, F12.10). Same guard as
+    /// `world_store::recv_writer_reply` (#557). Fuel, ordering, and
+    /// poisoning semantics are unchanged: the same call runs, just
+    /// in blocking context.
+    ///
+    /// Admission is acquired inside the blocking context, so a call
+    /// waiting for a burn permit parks a blocking thread, never a
+    /// shared worker. The permit is settled by [`Self::settle`] with
+    /// the call's measured fuel spend.
+    fn run_guest_call<T>(&mut self, call: impl FnOnce(&mut Self) -> T) -> T {
+        let budget = std::sync::Arc::clone(&self.burn_budget);
+        let key = self.charge_key.clone();
+        let allowance = self.limits.fuel;
+        let admitted = |instance: &mut Self| {
+            let permit = budget.acquire(&key, allowance);
+            let result = call(instance);
+            (result, permit)
+        };
+        let (result, permit) =
+            if tokio::runtime::Handle::try_current().is_ok_and(|handle| {
+                handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread
+            }) {
+                tokio::task::block_in_place(|| admitted(self))
+            } else {
+                admitted(self)
+            };
+        self.active_permit = Some(permit);
+        result
+    }
+
     /// Fuel the most recent `call` spent; zero if it has not run.
     pub const fn last_fuel(&self, call: GuestCall) -> u64 {
         self.metrics.get(call).fuel_last
@@ -454,12 +515,18 @@ impl WorldInstance {
 
     /// Record the fuel the call that just finished spent. Runs after every
     /// call that reached the guest, whether it succeeded or trapped.
+    /// Also settles the call's burn permit with the same measured
+    /// spend, so the budget's per-key charge is the actual burn,
+    /// not the allowance the admission decision priced in (#1067).
     fn settle(&mut self, call: GuestCall) {
         let spent = self
             .trap_fuel
             .take()
             .unwrap_or_else(|| fuel_spent(&self.store, self.limits.fuel));
         self.metrics.record(call, spent);
+        if let Some(permit) = self.active_permit.take() {
+            permit.settle(spent);
+        }
     }
 
     /// Apply one event from `participant`. The model pointer is committed
@@ -473,7 +540,7 @@ impl WorldInstance {
         // The world's participant limit keeps IDs far below i32::MAX; clamp
         // defensively so a hostile caller can never wrap the guest argument.
         let participant = i32::try_from(participant).unwrap_or(i32::MAX);
-        let result = run_guest_call(|| self.update_inner(participant, event));
+        let result = self.run_guest_call(|instance| instance.update_inner(participant, event));
         self.settle(GuestCall::Update);
         if result.is_err() {
             self.poisoned = true;
@@ -514,7 +581,7 @@ impl WorldInstance {
             !self.poisoned,
             "world guest is poisoned after a previous failure"
         );
-        let result = run_guest_call(|| self.view_inner());
+        let result = self.run_guest_call(|instance| instance.view_inner());
         self.settle(GuestCall::View);
         // A trapped view does not poison the instance: rendering never changes
         // the model, so the next event retries against intact state (F11.17).
@@ -549,7 +616,7 @@ impl WorldInstance {
         let Some(layout) = self.layout.clone() else {
             return self.view();
         };
-        let result = run_guest_call(|| self.layout_inner(&layout, width, height));
+        let result = self.run_guest_call(|instance| instance.layout_inner(&layout, width, height));
         self.settle(GuestCall::Layout);
         // As with `view`, a trapped layout does not poison the instance.
         result
@@ -590,7 +657,7 @@ impl WorldInstance {
         let Some(records) = self.records.clone() else {
             return Ok(None);
         };
-        let result = run_guest_call(|| self.records_inner(&records));
+        let result = self.run_guest_call(|instance| instance.records_inner(&records));
         self.settle(GuestCall::Records);
         if result.is_err() {
             self.poisoned = true;
@@ -620,7 +687,7 @@ impl WorldInstance {
         let Some(wants) = self.wants.clone() else {
             return Ok(None);
         };
-        let result = run_guest_call(|| self.wants_inner(&wants));
+        let result = self.run_guest_call(|instance| instance.wants_inner(&wants));
         self.settle(GuestCall::Wants);
         if result.is_err() {
             self.poisoned = true;
@@ -651,7 +718,7 @@ impl WorldInstance {
         let Some(snapshot) = self.snapshot.clone() else {
             return Ok(None);
         };
-        let result = run_guest_call(|| self.snapshot_inner(&snapshot));
+        let result = self.run_guest_call(|instance| instance.snapshot_inner(&snapshot));
         self.settle(GuestCall::Snapshot);
         if result.is_err() {
             self.poisoned = true;
@@ -685,7 +752,7 @@ impl WorldInstance {
             anyhow::bail!("guest exports no `plaza_restore`");
         };
         self.check_message_size(snapshot)?;
-        let result = run_guest_call(|| self.restore_inner(&restore, snapshot));
+        let result = self.run_guest_call(|instance| instance.restore_inner(&restore, snapshot));
         self.settle(GuestCall::Restore);
         if result.is_err() {
             self.poisoned = true;
@@ -991,6 +1058,15 @@ mod tests {
         let mut spin_world = spin_runner.instantiate(1).unwrap();
         let echo_runner = compile(ECHO, SandboxLimits::default()).unwrap();
         let mut echo_world = echo_runner.instantiate(2).unwrap();
+        // This oracle is about worker placement, not burn admission
+        // (#1067 slice 2): a dedicated budget of two admits both
+        // calls, so what differs is where the spin executes. The
+        // shared default budget might admit only one call at a time
+        // on a small machine, which would serialize the calls and
+        // measure admission instead.
+        let budget = std::sync::Arc::new(crate::guest_burn::GuestBurnBudget::new(2));
+        spin_world.set_burn_budget(std::sync::Arc::clone(&budget));
+        echo_world.set_burn_budget(budget);
 
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(1)
@@ -1023,6 +1099,55 @@ mod tests {
                 "spin ended without fuel exhaustion: {message}"
             );
         });
+    }
+
+    #[test]
+    fn two_spinning_guests_sharing_a_budget_of_one_serialize_their_burns() {
+        // Oracle (#1067, F12.10 slice 2): burn admission bounds how
+        // many guests burn at once, charged per key. Two spinning
+        // guests on one budget of a single permit must never burn
+        // concurrently — the second burn runs only after the first
+        // exhausts its fuel (the budget's in-flight high-water mark
+        // is the direct evidence) — and each spin's full burn lands
+        // on its own key's charge.
+        const SPIN_FUEL: u64 = 200_000_000;
+        let runner = compile(
+            SPIN,
+            SandboxLimits {
+                fuel: SPIN_FUEL,
+                ..SandboxLimits::default()
+            },
+        )
+        .unwrap();
+        let budget = std::sync::Arc::new(crate::guest_burn::GuestBurnBudget::new(1));
+        let mut threads = Vec::new();
+        for (seed, key) in [(1_u64, "spinner-a"), (2_u64, "spinner-b")] {
+            let mut world = runner.clone().instantiate(seed).unwrap();
+            world.set_charge_key(key.to_owned());
+            world.set_burn_budget(std::sync::Arc::clone(&budget));
+            threads.push(std::thread::spawn(move || {
+                let result = world.update(1, b"spin until fuel is gone");
+                let message = format!("{:#}", result.unwrap_err());
+                assert!(
+                    message.contains("fuel exhausted"),
+                    "spin ended without fuel exhaustion: {message}"
+                );
+            }));
+        }
+        for thread in threads {
+            thread.join().unwrap();
+        }
+        let snapshot = budget.snapshot();
+        assert_eq!(snapshot.in_flight_max, 1);
+        assert_eq!(snapshot.in_flight, 0);
+        for key in ["spinner-a", "spinner-b"] {
+            let charge = &snapshot.keys[key];
+            assert_eq!(charge.admitted, 1, "{key} admitted once");
+            assert_eq!(
+                charge.settled_fuel, SPIN_FUEL,
+                "{key} charged its full burn"
+            );
+        }
     }
 
     #[test]

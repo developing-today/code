@@ -728,7 +728,11 @@ fn spawn_guest_world(
 }
 
 fn counter_program() -> Result<Box<dyn WorldProgram>> {
-    let guest = Sandbox::compile(COUNTER_WASM, SandboxLimits::default())?.instantiate(1)?;
+    let mut guest = Sandbox::compile(COUNTER_WASM, SandboxLimits::default())?.instantiate(1)?;
+    // The victim's burn charge accumulates under one key across the
+    // whole run (#1067 admission): it is the light key the fairness
+    // rule protects, so it must not re-key per call.
+    guest.set_charge_key("fuel-spin-victim".to_owned());
     Ok(Box::new(guest))
 }
 
@@ -758,7 +762,12 @@ async fn spin_worlds(
 ) -> Result<u64> {
     let mut spins = 0u64;
     while !stop.load(Ordering::Relaxed) && Instant::now() < hard_deadline {
-        let guest = sandbox.instantiate(spins)?;
+        let mut guest = sandbox.instantiate(spins)?;
+        // Charge every spin of this worker to the worker's key, not
+        // to a fresh per-instance key: the spinner's attained burn
+        // must persist across its re-instantiations, or the fairness
+        // rule cannot see that this key just burned (#1067).
+        guest.set_charge_key(format!("fuel-spin-{worker}"));
         let world = spawn_guest_world(
             &format!("fuel-spin-{worker}-{spins}"),
             "bench-spinner",
