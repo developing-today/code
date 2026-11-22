@@ -25,6 +25,16 @@ android {
         resValue 'string', 'asset_statements', "[{\\\"relation\\\": [\\\"delegate_permission/common.handle_all_urls\\\"], \\\"target\\\": {\\\"namespace\\\": \\\"web\\\", \\\"site\\\": \\\"${site}\\\"}}]"
     }
 
+    // The sources live in src/twa, not src/main: the repository ignores
+    // every directory named "main".
+    sourceSets {
+        main {
+            manifest.srcFile 'src/twa/AndroidManifest.xml'
+            res.srcDirs = ['src/twa/res']
+            java.srcDirs = []
+        }
+    }
+
     signingConfigs {
         release {
             if (keystore) {
