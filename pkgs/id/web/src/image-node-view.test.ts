@@ -168,6 +168,19 @@ describe("resize clamps", () => {
 
 // ── Committed attrs on mouse-up ────────────────────────────────────
 
+describe("image alt-text editor accessibility", () => {
+  it("associates the visible Alt text label with its input", () => {
+    const { nv } = setup();
+    nv.dom.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+
+    const label = nv.dom.querySelector<HTMLLabelElement>(".pm-image-popover-label");
+    const input = nv.dom.querySelector<HTMLInputElement>(".pm-image-popover-input");
+    expect(label).not.toBeNull();
+    expect(input).not.toBeNull();
+    expect(label?.control).toBe(input);
+  });
+});
+
 describe("committed attrs on mouse-up", () => {
   it("nw outward drag commits the GROWN width/height to the node attrs", () => {
     const { view, nv, img } = setup();

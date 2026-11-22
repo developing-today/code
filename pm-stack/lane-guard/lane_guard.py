@@ -251,7 +251,7 @@ def _gh_json(path: str):
     return pages[0] if pages else None
 
 
-def main(argv=None, gh=_gh_json) -> int:
+def main(argv=None, gh=_gh_json, now=None) -> int:
     ap = argparse.ArgumentParser(prog="lane_guard.py")
     sub = ap.add_subparsers(dest="cmd", required=True)
     h = sub.add_parser("hold", help="is this issue/PR held for a human?")
@@ -273,7 +273,7 @@ def main(argv=None, gh=_gh_json) -> int:
             comments = gh(
                 f"repos/{args.repo}/issues/{args.issue}/comments?per_page=100"
             )
-            verdict = note_verdict(comments, args.task, args.state)
+            verdict = note_verdict(comments, args.task, args.state, now=now)
             verdict["header"] = note_header(args.task, args.state)
             code = EXIT_GO if verdict["post"] else EXIT_STOP
     except (

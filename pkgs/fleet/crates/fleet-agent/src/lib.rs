@@ -383,13 +383,24 @@ pub fn parse(args: &[String], switches: &[&str], values: &[&str]) -> R<Args> {
             None => (a.clone(), None),
         };
         if values.contains(&name.as_str()) {
+            // A present option with no value is a usage error, never
+            // the default (the operator argument contract): a blank
+            // value, the end of the line, `--`, or another declared
+            // option where the value should be.
+            let declared = |token: &str| {
+                let head = token.split_once('=').map_or(token, |(n, _)| n);
+                token == "--" || values.contains(&head) || switches.contains(&head)
+            };
             let v = match inline {
                 Some(v) => v,
-                None => it
-                    .next()
-                    .cloned()
-                    .ok_or_else(|| usage(format!("{name} needs a value")))?,
+                None => match it.next() {
+                    Some(v) if !declared(v) => v.clone(),
+                    _ => return Err(usage(format!("{name} needs a value"))),
+                },
             };
+            if v.trim().is_empty() {
+                return Err(usage(format!("{name} needs a value")));
+            }
             out.flags.push((name, Some(v)));
         } else if switches.contains(&name.as_str()) {
             if inline.is_some() {
@@ -414,7 +425,6 @@ impl Args {
             .find(|(n, _)| n == name)
             .and_then(|(_, v)| v.clone())
             .map(|v| v.trim().to_string())
-            .filter(|v| !v.is_empty())
     }
     pub fn uint(&self, name: &str) -> R<Option<u64>> {
         match self.last(name) {

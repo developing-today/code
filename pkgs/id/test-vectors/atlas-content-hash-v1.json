@@ -1,0 +1,15 @@
+{
+  "schema": "atlas-content-hash-compatibility-v1",
+  "issue": "https://github.com/developing-today/code/issues/10179",
+  "producer_research": "https://github.com/developing-today/code/issues/10147",
+  "producer_research_record": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/crosscut/research-results/atlas-content-hash-producer.md",
+  "atlas_chunk_content_hash": {
+    "scope": "Atlas corpus chunks.content_hash",
+    "status": "producer_unavailable",
+    "algorithm": null,
+    "input_bytes": null,
+    "profile": null,
+    "vectors": [],
+    "interop_claim": "forbidden: do not equate Atlas chunks.content_hash with any ID ContentId profile"
+  }
+}

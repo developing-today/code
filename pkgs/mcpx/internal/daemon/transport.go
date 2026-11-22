@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"strconv"
 
 	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
 )
@@ -55,9 +56,28 @@ type tcpTransport struct {
 func (t tcpTransport) Name() string { return "tcp" }
 
 func (t tcpTransport) Listen() (net.Listener, error) {
+	ln, _, err := t.listen()
+	return ln, err
+}
+
+// listen also reports successful socket activation so the server can avoid
+// re-executing itself without the systemd-owned listener.
+func (t tcpTransport) listen() (net.Listener, bool, error) {
+	fds, hasFds := os.LookupEnv("LISTEN_FDS")
+	pid, hasPID := os.LookupEnv("LISTEN_PID")
+	if hasFds || hasPID {
+		if !hasPID || pid != strconv.Itoa(os.Getpid()) {
+			return nil, false, fmt.Errorf("systemd TCP activation: LISTEN_PID must identify this process")
+		}
+		if !hasFds || fds != "1" {
+			return nil, false, fmt.Errorf("systemd TCP activation: LISTEN_FDS must be 1")
+		}
+		ln, err := adoptSystemdTCP(t.address)
+		return ln, err == nil, err
+	}
 	ln, err := net.Listen("tcp", t.address)
 	if err != nil {
-		return nil, fmt.Errorf("listen tcp: %w", err)
+		return nil, false, fmt.Errorf("listen tcp: %w", err)
 	}
-	return ln, nil
+	return ln, false, nil
 }

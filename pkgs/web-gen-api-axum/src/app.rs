@@ -241,7 +241,7 @@ cfg_if! {
 
         // Log and Table Operations
         fn log_hello_world_with_conn(conn: &Connection) {
-            let hello_rows = conn.execute("SELECT 'hello, world!'", ()).unwrap().unwrap();
+            let hello_rows = conn.query("SELECT 'hello, world!'", ()).unwrap().unwrap();
             let hello_row = hello_rows.next().unwrap().unwrap();
             log!("{}", hello_row.get::<&str>(0).unwrap());
         }
@@ -273,7 +273,7 @@ cfg_if! {
         }
 
         fn get_rows_count_with_conn(conn: &Connection, table: &str) -> i32 {
-            let count_rows = conn.execute(&format!("SELECT COUNT(*) FROM {};", table), ()).unwrap().unwrap();
+            let count_rows = conn.query(&format!("SELECT COUNT(*) FROM {};", table), ()).unwrap().unwrap();
             let count_row = count_rows.next().unwrap().unwrap();
             let rows_count: i32 = count_row.get::<i32>(0).unwrap();
             log!("table: {}, row_count: {}", table, rows_count);
@@ -285,7 +285,7 @@ cfg_if! {
         }
 
         fn log_all_visitors_with_conn(conn: &Connection) {
-            let select_rows = conn.execute("SELECT rowid, * FROM visitors;", ()).unwrap().unwrap();
+            let select_rows = conn.query("SELECT rowid, * FROM visitors;", ()).unwrap().unwrap();
             while let Some(row) = select_rows.next().unwrap() {
                 log!("id: {}, datetime: {}, data: {}", row.get::<i32>(0).unwrap(), row.get::<&str>(1).unwrap(), row.get::<&str>(2).unwrap());
             }

@@ -90,6 +90,25 @@ enum JournalWriterRequest {
     },
 }
 
+/// Wait for a journal writer reply without parking a shared Tokio
+/// worker for the duration of the write+sync: on a multi-thread
+/// runtime the wait runs under `block_in_place`, so the runtime hands
+/// this worker's other tasks to a replacement thread while the caller
+/// waits for durability. Everywhere else (plain threads,
+/// `spawn_blocking`, current-thread test runtimes) the wait is direct.
+/// Without this, W runtime workers cap the whole hub at W appends per
+/// sync latency — the #557 many-worlds profile measured exactly that
+/// ceiling (4 workers / 46 ms ≈ 87 appends/s against 2,000 offered).
+fn recv_writer_reply<T>(result: &Receiver<T>) -> Result<T, mpsc::RecvError> {
+    if tokio::runtime::Handle::try_current()
+        .is_ok_and(|handle| handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread)
+    {
+        tokio::task::block_in_place(|| result.recv())
+    } else {
+        result.recv()
+    }
+}
+
 impl JournalWriter {
     fn new(file: File) -> Result<Self> {
         let (sender, receiver) = mpsc::channel();
@@ -106,8 +125,7 @@ impl JournalWriter {
     fn append(&self, line: Vec<u8>) -> Result<()> {
         let (reply, result) = mpsc::sync_channel(0);
         self.send(JournalWriterRequest::Append { line, reply })?;
-        result
-            .recv()
+        recv_writer_reply(&result)
             .context("world journal writer stopped before append completed")?
             .context("write and sync world journal")
     }
@@ -115,8 +133,7 @@ impl JournalWriter {
     fn replace(&self, file: File) -> Result<()> {
         let (reply, result) = mpsc::sync_channel(0);
         self.send(JournalWriterRequest::Replace { file, reply })?;
-        result
-            .recv()
+        recv_writer_reply(&result)
             .context("world journal writer stopped before replacing its file")
     }
 
@@ -3317,6 +3334,7 @@ mod tests {
             execution_profile: None,
             caps_ceiling: None,
             schedules: None,
+            kv: None,
             transfers: None,
             lease: None,
             snapshot: "s".to_owned(),

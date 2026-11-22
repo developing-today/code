@@ -13,8 +13,11 @@ fleet agent enroll --kind <kind> --name <name>     # once per seat
 fleet agent next                                   # each time you want work
 ```
 
-- `<name>` is the agent's own stable name, the one the queue uses as worker
-  and lane: lowercase letters, digits, `.`, `_`, `-`.
+- `<name>` is the agent's stable worker identity: lowercase letters,
+  digits, `.`, `_`, `-`. The queue uses that name as the worker. Unless
+  `--lane` is supplied, a queue-compatible lane name stays as-is; other
+  names get an unfiltered `any-<name-slug><stable alphabetic digest>` lane. For a designated
+  filtered lane, pass both its `--lane` and its assigned `--filter` expression.
 - Enrolment registers your mailbox, tells you which intake rungs work from
   your seat, and saves a profile so later verbs know who is asking.
 - `fleet agent next` returns one task and the commands to run when it is
@@ -66,6 +69,9 @@ fleet shell -- <command>            # the laptop, a codespace, or here
 fleet shell --build -- <command>    # a long build: takes a build slot
 fleet shell                         # an interactive shell
 ```
+
+A whole command line works as one quoted argument, and all of it runs under
+the build slot: `fleet shell --build -- 'cd pkgs/id && cargo test'`.
 
 ## What you need
 

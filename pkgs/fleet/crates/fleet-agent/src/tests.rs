@@ -277,6 +277,35 @@ fn an_empty_mailbox_falls_to_a_queue_claim() {
 }
 
 #[test]
+fn standalone_agent_gets_a_queue_compatible_unfiltered_default_lane() {
+    let fake = Fake::new();
+    fake.on(INBOX, vec![empty_inbox()]).on(
+        CLAIM,
+        vec![ok(
+            json!({"id": 10812, "queue": "fleet", "status": "claimed", "title": "Next task"}),
+        )],
+    );
+    let (out, code) = run(&fake, &["next", "--agent", "shed"]);
+    assert_eq!(code, EXIT_OK);
+    assert_eq!(out["rung"], "queue");
+    assert!(fake.called("fleet queue claim --worker shed --lane any-shed"));
+    assert!(out["then"][0].as_str().unwrap().contains("--lane any-shed"));
+    assert!(out["then"][1].as_str().unwrap().contains("--lane any-shed"));
+}
+
+#[test]
+fn a_known_lane_agent_name_keeps_its_lane_identity() {
+    assert_eq!(crate::next::default_lane("code-b"), "code-b");
+    let muse_three = crate::next::default_lane("muse-3");
+    let muse_four = crate::next::default_lane("muse-4");
+    assert!(muse_three.starts_with("any-muse"));
+    assert!(muse_four.starts_with("any-muse"));
+    assert_ne!(muse_three, muse_four);
+    assert_eq!(muse_three, crate::next::default_lane("muse-3"));
+    assert!(crate::next::default_lane("oc-go-1").starts_with("any-ocgo"));
+}
+
+#[test]
 fn legs_that_are_down_are_named_and_the_shortlist_answers() {
     let fake = Fake::new();
     fake.on(
@@ -324,6 +353,10 @@ fn a_low_shortlist_makes_this_run_the_filler_and_only_this_run() {
         .on(
             "labels=now",
             vec![ok(json!([issue(557, &["now"]), issue(1067, &["now"])]))],
+        )
+        .on(
+            "issues/900",
+            vec![ok(open_issue(900, &["priority/normal"]))],
         )
         .on("gh api", vec![ok(json!([]))]);
     fake.seed(vec![entry(900, 5, 10), entry(901, 5, 11)]); // two entries: at or under three
@@ -1004,9 +1037,129 @@ fn a_build_takes_a_lock_slot_and_an_hour() {
             "3600",
             "--shell",
             "--",
-            "~/tools/fleet-build-lock cargo test -p id-core",
+            "~/tools/fleet-build-lock sh -c 'cargo test -p id-core'",
         ])
     );
+}
+
+#[test]
+fn a_compound_build_command_runs_whole_under_the_lock() {
+    // The lock wrapper execs one program with its arguments
+    // (pkgs/fleet/fleet-build-lock ends in `exec "$@"`), so `cd` and
+    // `&&` must reach it inside one shell's argument.
+    let plan = shell::plan(
+        Target::Laptop,
+        "test".into(),
+        &words(&["cd pkgs/id && cargo test -p 'id core'"]),
+        &Options {
+            build: true,
+            ..opts()
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        plan.args.last().unwrap(),
+        r#"~/tools/fleet-build-lock sh -c 'cd pkgs/id && cargo test -p '\''id core'\'''"#
+    );
+}
+
+/// A HOME whose `tools/fleet-build-lock` logs its arguments, one per
+/// line, and then runs them, like the real wrapper's last line.
+fn home_with_a_recording_lock() -> PathBuf {
+    let home = std::env::temp_dir().join(format!(
+        "fleet-agent-lock-{}-{}",
+        std::process::id(),
+        NEXT_DIR.fetch_add(1, Ordering::SeqCst)
+    ));
+    let tools = home.join("tools");
+    std::fs::create_dir_all(&tools).expect("tools dir");
+    let lock = tools.join("fleet-build-lock");
+    std::fs::write(
+        &lock,
+        "#!/bin/sh\nprintf '%s\\n' \"$@\" >> \"$HOME/lock.log\"\nexec \"$@\"\n",
+    )
+    .expect("write the lock");
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&lock, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    home
+}
+
+fn run_local_plan(home: &std::path::Path, plan: &shell::Plan) -> std::process::Output {
+    assert_eq!(plan.program, "sh");
+    assert_eq!(plan.args[0], "-lc");
+    std::process::Command::new("/bin/sh")
+        .arg("-c")
+        .arg(&plan.args[1])
+        .env("HOME", home)
+        .current_dir(home)
+        .output()
+        .expect("sh runs")
+}
+
+#[test]
+fn a_local_build_runs_every_part_of_the_command_under_the_lock() {
+    // Oracle: a real shell and a recording stand-in for the wrapper.
+    // Both halves of `a && b` must run, and the lock must have been
+    // given the whole command, once.
+    let home = home_with_a_recording_lock();
+    std::fs::create_dir_all(home.join("work dir")).unwrap();
+    let plan = shell::plan(
+        Target::Local,
+        "test".into(),
+        &words(&["echo first && echo second"]),
+        &Options {
+            cwd: Some("work dir".into()),
+            build: true,
+            ..opts()
+        },
+    )
+    .unwrap();
+    let out = run_local_plan(&home, &plan);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "first\nsecond\n");
+    let log = std::fs::read_to_string(home.join("lock.log")).unwrap();
+    assert_eq!(log, "sh\n-c\ncd 'work dir' && echo first && echo second\n");
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[test]
+fn a_local_build_on_a_host_without_the_lock_still_runs_and_says_so() {
+    let home = std::env::temp_dir().join(format!(
+        "fleet-agent-nolock-{}-{}",
+        std::process::id(),
+        NEXT_DIR.fetch_add(1, Ordering::SeqCst)
+    ));
+    std::fs::create_dir_all(&home).unwrap();
+    let plan = shell::plan(
+        Target::Local,
+        "test".into(),
+        &words(&["echo built"]),
+        &Options {
+            build: true,
+            ..opts()
+        },
+    )
+    .unwrap();
+    let out = run_local_plan(&home, &plan);
+    assert!(out.status.success());
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "built\n");
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("no build lock"),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[test]
+fn a_local_command_without_build_is_left_alone() {
+    // Positive control: no --build, no wrapper.
+    let plan = shell::plan(Target::Local, "test".into(), &words(&["echo hi"]), &opts()).unwrap();
+    assert_eq!(plan.args, argv(&["-lc", "echo hi"]));
 }
 
 #[test]
@@ -1189,7 +1342,10 @@ fn shell_runs_the_plan_or_prints_it() {
     match printed {
         shell::Done::Printed(plan) => {
             assert_eq!(plan["target"], "laptop");
-            assert_eq!(plan["args"][6], "~/tools/fleet-build-lock cargo check");
+            assert_eq!(
+                plan["args"][6],
+                "~/tools/fleet-build-lock sh -c 'cargo check'"
+            );
         }
         shell::Done::Ran(_) => panic!("--print must not run"),
     }
@@ -1216,6 +1372,495 @@ proptest! {
         prop_assert!(out.status.success(), "sh rejected: {}", line);
         prop_assert_eq!(String::from_utf8_lossy(&out.stdout).into_owned(), word);
     }
+}
+
+// ---- review fixes: recheck, reservation, pagination, refill, carried flags ----
+
+fn open_issue(number: u64, labels: &[&str]) -> Value {
+    let mut v = issue(number, labels);
+    v["state"] = json!("open");
+    v
+}
+
+#[test]
+fn a_listed_issue_that_was_held_since_is_dropped_and_the_next_free_one_is_handed_out() {
+    // Oracle: AGENTS.md's hold rule — a human hold wins whenever it is
+    // set. #900 was free when listed and carries `held` now.
+    let fake = Fake::new();
+    fake.on(INBOX, vec![empty_inbox()])
+        .on(CLAIM, vec![no_claim()])
+        .on("issues/900", vec![ok(open_issue(900, &["now", "held"]))])
+        .on("issues/901", vec![ok(open_issue(901, &["now"]))]);
+    fake.seed(vec![
+        entry(900, 2, 10),
+        entry(901, 2, 11),
+        entry(902, 2, 12),
+        entry(903, 2, 13),
+        entry(904, 2, 14),
+    ]);
+    let (out, code) = run(&fake, &["next", "--agent", "muse-3"]);
+    assert_eq!(code, EXIT_OK);
+    assert_eq!(out["rung"], "shortlist");
+    assert_eq!(out["task"]["issue"], 901);
+    assert_eq!(out["task"]["rechecked"], true);
+    // The held entry is gone from the list and was never the task.
+    let list = shortlist::load(&fake.shortlist_path()).unwrap();
+    assert!(!list.has("developing-today/code", 900));
+    assert_eq!(list.entries.len(), 3);
+}
+
+#[test]
+fn a_listed_issue_that_closed_or_was_claimed_is_not_handed_out() {
+    let fake = Fake::new();
+    fake.on(INBOX, vec![empty_inbox()])
+        .on(CLAIM, vec![no_claim()])
+        .on(
+            "issues/900",
+            vec![ok({
+                let mut v = issue(900, &["now"]);
+                v["state"] = json!("closed");
+                v
+            })],
+        )
+        .on(
+            "issues/901",
+            vec![ok(open_issue(901, &["now", "status/in-progress"]))],
+        )
+        .on("issues/902", vec![ok(open_issue(902, &["priority/high"]))]);
+    // Seven entries: dropping two leaves the list above its low-water
+    // mark, so the run keeps taking and is not made the filler.
+    fake.seed((900..907u64).map(|n| entry(n, 2, n)).collect());
+    let (out, _) = run(&fake, &["next", "--agent", "muse-3"]);
+    assert_eq!(out["rung"], "shortlist");
+    assert_eq!(out["task"]["issue"], 902);
+    // The entry carries today's labels, so its rank is today's too.
+    assert_eq!(out["task"]["rank"], 3);
+    assert_eq!(out["task"]["labels"], json!(["priority/high"]));
+}
+
+#[test]
+fn when_github_cannot_be_asked_the_listed_issue_is_handed_out_and_says_it_was_not_rechecked() {
+    let fake = Fake::new();
+    fake.on(INBOX, vec![empty_inbox()])
+        .on(CLAIM, vec![no_claim()])
+        .on("gh api", vec![fail(1, "gh: no network")]);
+    fake.seed(vec![
+        entry(900, 2, 10),
+        entry(901, 2, 11),
+        entry(902, 2, 12),
+        entry(903, 2, 13),
+    ]);
+    let (out, code) = run(&fake, &["next", "--agent", "muse-3"]);
+    assert_eq!(code, EXIT_OK);
+    assert_eq!(out["task"]["issue"], 900);
+    assert_eq!(out["task"]["rechecked"], false);
+    assert!(
+        out["task"]["recheck_note"]
+            .as_str()
+            .unwrap()
+            .contains("Read the issue for a hold"),
+        "{}",
+        out["task"]
+    );
+}
+
+#[test]
+fn a_run_of_stale_entries_gives_way_to_the_priority_rung() {
+    // The first five listed issues have closed. After five in a row
+    // the rung stops and says what it dropped; priority still finds
+    // work. Twelve entries keep the list above its low-water mark.
+    let fake = Fake::new();
+    let closed = |n: u64| {
+        let mut v = issue(n, &["now"]);
+        v["state"] = json!("closed");
+        ok(v)
+    };
+    fake.on(INBOX, vec![empty_inbox()])
+        .on(CLAIM, vec![no_claim()]);
+    for n in 900..905u64 {
+        fake.on(&format!("issues/{n}"), vec![closed(n)]);
+    }
+    fake.on("labels=now", vec![ok(json!([issue(557, &["now"])]))])
+        .on("gh api", vec![ok(json!([]))]);
+    fake.seed((900..912u64).map(|n| entry(n, 2, n)).collect());
+    let (out, code) = run(&fake, &["next", "--agent", "muse-3"]);
+    assert_eq!(code, EXIT_OK);
+    assert_eq!(out["rung"], "priority");
+    assert_eq!(out["task"]["issue"], 557);
+    let shortlist_try = out["tried"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["rung"] == "shortlist")
+        .unwrap();
+    assert_eq!(shortlist_try["result"], "empty");
+    let why = shortlist_try["why"].as_str().unwrap();
+    assert!(why.contains("#900 dropped: it is closed"), "{why}");
+    assert_eq!(why.matches("dropped").count(), 5, "{why}");
+}
+
+#[test]
+fn when_dropping_stale_entries_leaves_the_list_low_this_run_refills_it() {
+    let fake = Fake::new();
+    fake.on(INBOX, vec![empty_inbox()])
+        .on(CLAIM, vec![no_claim()])
+        .on(
+            "issues/900",
+            vec![ok({
+                let mut v = issue(900, &["now"]);
+                v["state"] = json!("closed");
+                v
+            })],
+        )
+        .on("gh api", vec![ok(json!([]))]);
+    // Four entries: one drop leaves three, the low-water mark.
+    fake.seed((900..904u64).map(|n| entry(n, 2, n)).collect());
+    let (out, _) = run(&fake, &["next", "--agent", "muse-3"]);
+    assert_eq!(out["rung"], "refill");
+    assert_eq!(out["task"]["dropped"], "#900 dropped: it is closed");
+    // The three entries that were not read stay listed.
+    assert_eq!(
+        shortlist::load(&fake.shortlist_path())
+            .unwrap()
+            .entries
+            .len(),
+        3
+    );
+}
+
+#[test]
+fn a_host_with_only_a_little_eligible_work_does_it_and_does_not_refill_for_ever() {
+    // The review's case: one eligible issue exists. The fill leaves the
+    // list under the low-water mark; the next run must take the issue.
+    let fake = Fake::new();
+    fake.on(INBOX, vec![empty_inbox()])
+        .on(CLAIM, vec![no_claim()])
+        .on("issues/557", vec![ok(open_issue(557, &["now"]))])
+        .on("labels=now", vec![ok(json!([issue(557, &["now"])]))])
+        .on("gh api", vec![ok(json!([]))]);
+    let (first, _) = run(&fake, &["next", "--agent", "muse-3"]);
+    assert_eq!(first["rung"], "refill");
+    let (filled, _) = run(&fake, &["shortlist", "fill", "--agent", "muse-3"]);
+    assert_eq!(filled["added"], 1);
+    assert_eq!(filled["count"], 1);
+    // One entry is under the low-water mark of three, and still:
+    let (second, _) = run(&fake, &["next", "--agent", "muse-3"]);
+    assert_eq!(second["rung"], "shortlist");
+    assert_eq!(second["task"]["issue"], 557);
+    // With the list empty just after a fill, the run looks further
+    // down the ladder; it is not made the filler again.
+    let (third, code) = run(&fake, &["next", "--agent", "muse-3"]);
+    assert_ne!(third["rung"], "refill");
+    assert_eq!(code, EXIT_NO_WORK);
+    // Positive control: once the window has passed, a low list is
+    // refilled again.
+    fake.now.set(fake.now.get() + shortlist::REFILL_FRESH_SECS);
+    let (later, _) = run(&fake, &["next", "--agent", "muse-3"]);
+    assert_eq!(later["rung"], "refill");
+}
+
+#[test]
+fn a_rank_is_read_past_its_first_page_when_that_page_holds_nothing_free() {
+    // Thirty held issues fill page one of `now`; the free one is on
+    // page two. A short page ends the rank: no page three is asked.
+    let fake = Fake::new();
+    let held: Vec<Value> = (100..130u64).map(|n| issue(n, &["now", "held"])).collect();
+    fake.on(
+        "labels=now&per_page=30&sort=created&direction=asc&page=2",
+        vec![ok(json!([issue(557, &["now"])]))],
+    )
+    .on("labels=now", vec![ok(Value::Array(held))])
+    .on("gh api", vec![ok(json!([]))]);
+    let found = crate::next::candidates(&fake, "developing-today/code", 10).unwrap();
+    assert_eq!(found.iter().map(|e| e.issue).collect::<Vec<_>>(), vec![557]);
+    let now_pages = fake
+        .calls()
+        .iter()
+        .filter(|c| c.contains("labels=now&"))
+        .count();
+    assert_eq!(now_pages, 2);
+    // A rank whose first page is short is asked once.
+    assert_eq!(
+        fake.calls()
+            .iter()
+            .filter(|c| c.contains("labels=expedite&"))
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn a_rank_that_never_ends_is_read_a_bounded_number_of_pages() {
+    let fake = Fake::new();
+    let held: Vec<Value> = (100..130u64).map(|n| issue(n, &["now", "held"])).collect();
+    fake.on("gh api", vec![ok(Value::Array(held))]);
+    let found = crate::next::candidates(&fake, "developing-today/code", 10).unwrap();
+    assert!(found.is_empty());
+    // Five ranked labels, five pages each at most.
+    assert_eq!(count_calls(&fake, "fleet gh api repos/"), 25);
+}
+
+#[test]
+fn follow_up_commands_carry_the_list_repo_and_profile_the_caller_chose() {
+    let fake = Fake::new();
+    let list = fake.dir.join("my list.json");
+    let list_text = list.to_str().unwrap().to_string();
+    fake.on(INBOX, vec![empty_inbox()])
+        .on(CLAIM, vec![no_claim()])
+        .on("gh api", vec![ok(json!([]))]);
+    let (out, _) = run(
+        &fake,
+        &[
+            "next",
+            "--agent",
+            "muse-3",
+            "--repo",
+            "developing-today/opencode",
+            "--shortlist",
+            &list_text,
+        ],
+    );
+    assert_eq!(out["rung"], "refill");
+    let quoted = shell::sh_quote(&list_text);
+    let lane = crate::next::default_lane("muse-3");
+    assert!(quoted.starts_with('\''), "a path with a space is quoted");
+    let then: Vec<String> = out["then"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|l| l.as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(
+        then[0],
+        format!(
+            "fleet agent shortlist fill --agent muse-3 --repo developing-today/opencode --shortlist {quoted}"
+        )
+    );
+    assert!(
+        then[1].contains(&format!("--shortlist {quoted}")),
+        "{}",
+        then[1]
+    );
+    assert_eq!(
+        then[2],
+        format!(
+            "fleet agent next --agent muse-3 --lane {lane} --repo developing-today/opencode --shortlist {quoted}"
+        )
+    );
+    // The marker went into the chosen file, not the default one.
+    assert!(shortlist::load(&list).unwrap().refill.is_some());
+    assert!(!fake.shortlist_path().exists());
+    // Positive control: with nothing chosen, nothing is carried.
+    let plain = Fake::new();
+    plain
+        .on(INBOX, vec![empty_inbox()])
+        .on(CLAIM, vec![no_claim()])
+        .on("gh api", vec![ok(json!([]))]);
+    let (out, _) = run(&plain, &["next", "--agent", "muse-3"]);
+    assert_eq!(
+        out["then"][2],
+        format!("fleet agent next --agent muse-3 --lane {lane}")
+    );
+}
+
+#[test]
+fn runs_at_the_same_moment_never_reserve_the_same_issue() {
+    // Oracle: eight candidates, twelve concurrent reservations on one
+    // file. Each issue is handed to at most one run, all eight are
+    // handed out, and the four runs left over get nothing.
+    let dir = std::env::temp_dir().join(format!(
+        "fleet-agent-reserve-{}-{}",
+        std::process::id(),
+        NEXT_DIR.fetch_add(1, Ordering::SeqCst)
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("shortlist.json");
+    let found: Vec<Entry> = (1..=8u64).map(|n| entry(n, 2, n)).collect();
+    let picks: Vec<Option<u64>> = std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..12)
+            .map(|i| {
+                let file = &file;
+                let found = &found;
+                scope.spawn(move || {
+                    shortlist::reserve(file, 1_800_000_000, &format!("run-{i}"), found)
+                        .expect("reserve")
+                        .map(|e| e.issue)
+                })
+            })
+            .collect();
+        handles.into_iter().map(|h| h.join().unwrap()).collect()
+    });
+    let mut taken: Vec<u64> = picks.iter().flatten().copied().collect();
+    taken.sort_unstable();
+    assert_eq!(taken, (1..=8u64).collect::<Vec<_>>());
+    assert_eq!(picks.iter().filter(|p| p.is_none()).count(), 4);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// ---- the bridge leg is checked as an agent, not by the public health page ----
+//
+// Oracle: the review's case. `fleet bridge health` answers anyone; a
+// seat that cannot resolve the fleet token must not be told its push
+// rung works.
+
+const NO_TOKEN: &str = "secret 'message-bridge.fleet-token' could not be resolved";
+
+#[test]
+fn doctor_reads_the_mailbox_as_the_agent_and_a_seat_without_the_token_is_not_ok() {
+    let fake = Fake::new();
+    // The service is up, and would answer a health check.
+    fake.on("fleet bridge health", vec![ok(json!({"ok": true}))])
+        .on("fleet bridge inbox", vec![fail(3, NO_TOKEN)])
+        .on(
+            "fleet queue health",
+            vec![fail(3, "queue broker unreachable")],
+        )
+        .on("fleet gh api", vec![fail(3, "no token")])
+        .on("gh api", vec![fail(1, "gh: not signed in")])
+        .on(
+            "fleet laptop-agent health",
+            vec![fail(3, "no leg answered")],
+        );
+    let (out, code) = run(&fake, &["doctor", "--agent", "muse-7"]);
+    // No intake leg answers: that is exit 3, not a healthy seat.
+    assert_eq!(code, EXIT_DOWN);
+    assert_eq!(out["rungs"]["push"], false);
+    assert_eq!(out["legs"][0]["leg"], "bridge");
+    assert_eq!(out["legs"][0]["ok"], false);
+    assert!(
+        out["legs"][0]["detail"]
+            .as_str()
+            .unwrap()
+            .contains("fleet-token"),
+        "{}",
+        out["legs"][0]
+    );
+    // The probe read the mailbox without taking anything, and never
+    // used the public health page.
+    assert!(fake.called("fleet bridge inbox --agent muse-7 --limit 1"));
+    assert!(!fake.called("--take"));
+    assert!(!fake.called("fleet bridge health"));
+}
+
+#[test]
+fn doctor_with_a_readable_mailbox_reports_the_push_rung() {
+    let fake = Fake::new();
+    fake.on("fleet bridge inbox", vec![empty_inbox()])
+        .on(
+            "fleet queue health",
+            vec![fail(3, "queue broker unreachable")],
+        )
+        .on("fleet gh api", vec![fail(3, "no token")])
+        .on("gh api", vec![fail(1, "gh: not signed in")])
+        .on(
+            "fleet laptop-agent health",
+            vec![fail(3, "no leg answered")],
+        );
+    let (out, code) = run(&fake, &["doctor", "--agent", "muse-7"]);
+    assert_eq!(code, EXIT_OK);
+    assert_eq!(out["rungs"]["push"], true);
+    assert_eq!(out["legs"][0]["detail"], "the mailbox answers");
+}
+
+#[test]
+fn doctor_without_an_agent_name_does_not_claim_the_push_rung() {
+    let fake = Fake::new();
+    fake.on("fleet bridge health", vec![ok(json!({"ok": true}))])
+        .on(
+            "fleet queue health",
+            vec![fail(3, "queue broker unreachable")],
+        )
+        .on(
+            "fleet gh api",
+            vec![ok(json!({"rate": {"remaining": 4000}}))],
+        )
+        .on(
+            "fleet laptop-agent health",
+            vec![fail(3, "no leg answered")],
+        );
+    let (out, code) = run(&fake, &["doctor"]);
+    // GitHub answers, so the seat has an intake leg.
+    assert_eq!(code, EXIT_OK);
+    assert_eq!(out["agent"], Value::Null);
+    assert_eq!(out["rungs"]["push"], false);
+    assert_eq!(out["rungs"]["priority"], true);
+    assert!(
+        out["legs"][0]["detail"]
+            .as_str()
+            .unwrap()
+            .contains("no agent name is known"),
+        "{}",
+        out["legs"][0]
+    );
+}
+
+#[test]
+fn a_dry_run_enrolment_checks_the_mailbox_without_registering() {
+    let fake = Fake::new();
+    fake.on("fleet bridge health", vec![ok(json!({"ok": true}))])
+        .on("fleet bridge inbox", vec![fail(3, NO_TOKEN)])
+        .on("fleet ", vec![fail(3, "unreachable")])
+        .on("gh ", vec![fail(1, "x")]);
+    let (out, _) = run(
+        &fake,
+        &["enroll", "--kind", "muse", "--name", "muse-7", "--dry-run"],
+    );
+    assert_eq!(out["rungs"]["push"], false);
+    assert!(fake.called("fleet bridge inbox --agent muse-7 --limit 1"));
+    assert!(!fake.called("bridge hello"));
+    assert!(!fake.called("--take"));
+}
+
+// ---- strict arguments ----
+//
+// Oracle: doc/agents/operator-script-argument-contract.md — "a
+// present-but-valueless option is a usage error, never the default".
+
+#[test]
+fn an_option_given_without_a_value_is_a_usage_error_not_the_default() {
+    let values = ["--target", "--profile", "--name", "--kind"];
+    let switches = ["--dry-run"];
+    for line in [
+        vec!["--target="],
+        vec!["--target", ""],
+        vec!["--target", "   "],
+        vec!["--target"],
+        vec!["--name", "--kind", "muse"],
+        vec!["--name", "--kind=muse"],
+        vec!["--name", "--dry-run"],
+        vec!["--profile", "--", "true"],
+    ] {
+        let err = crate::parse(&argv(&line), &switches, &values).unwrap_err();
+        match err {
+            AgentError::Usage(text) => {
+                assert!(text.ends_with("needs a value"), "{line:?}: {text}")
+            }
+            other => panic!("{line:?}: expected a usage error, got {other:?}"),
+        }
+    }
+    // Positive controls: both spellings of a real value parse alike.
+    let spaced = crate::parse(&argv(&["--target", "laptop"]), &switches, &values).unwrap();
+    let inline = crate::parse(&argv(&["--target=laptop"]), &switches, &values).unwrap();
+    assert_eq!(spaced.last("--target").as_deref(), Some("laptop"));
+    assert_eq!(inline.last("--target").as_deref(), Some("laptop"));
+    // A value that only looks like an option, but is not one, is a value.
+    let odd = crate::parse(&argv(&["--name", "--x"]), &switches, &values).unwrap();
+    assert_eq!(odd.last("--name").as_deref(), Some("--x"));
+}
+
+#[test]
+fn a_blank_profile_path_never_falls_back_to_the_default_profile() {
+    // The review's case: `--profile=` must not overwrite the default
+    // profile. Nothing is probed and nothing is written.
+    let fake = Fake::new();
+    let err = execute(
+        &fake,
+        &argv(&["enroll", "--kind", "muse", "--name", "muse-7", "--profile="]),
+    )
+    .unwrap_err();
+    assert!(matches!(err, AgentError::Usage(_)), "{err:?}");
+    assert!(fake.calls().is_empty(), "{:?}", fake.calls());
+    assert!(!fake.profile_path().exists());
 }
 
 // ---- bounded steps ----

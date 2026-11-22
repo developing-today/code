@@ -127,7 +127,11 @@ The `many_worlds` workload creates 1,000 durable idle worlds plus 100
 simultaneously leased active worlds, then submits 20 accepted counter inputs
 per active world per second for 10 seconds (20,000 commands). It records
 per-command p50/p95/p99 from scheduled submission through acknowledgement. The
-active worlds use the checked-in `roc-counter` guest. After the timed load, one
+benchmark also records wake lateness (scheduled deadline to the Tokio task
+starting the input call) and input/ack duration (input call start to its
+acknowledgement). These component distributions are diagnostic: their
+percentiles must not be added to estimate an end-to-end percentile. The active
+worlds use the checked-in `roc-counter` guest. After the timed load, one
 extra input per active world triggers its due checkpoint; these trigger inputs
 are excluded from latency percentiles. The benchmark then evicts all 100 active
 worlds, verifies each journal has a recent checkpoint, reopens the worlds
@@ -175,6 +179,163 @@ the next phase; #557 stays open until a recorded run shows
 target_met=true. The matching measurement is appended to
 `baseline.txt` under its own dated comment; the 2026-11-02 line is
 unchanged.
+
+## #557 p99 profile and fix campaign (2026-11-22, Muse sandbox)
+
+Machine class: `sandbox` — a Muse sandbox VM, 4 visible CPUs under a
+~1.5-core cgroup quota, ~6 GiB RAM, btrfs on a virtual block device,
+shared with other build load. The harness writes world roots under
+`TMPDIR`; these runs set `TMPDIR` to a directory on the btrfs home
+volume because this sandbox's `/tmp` is a 512 MiB tmpfs where fsync
+is free and the numbers would be meaningless. Sandbox numbers are
+this machine's own and are not comparable to the reference laptop's
+5,650.792 ms — what transfers is the cost breakdown and the
+before/after chain, all measured on this machine with the same
+profiler and configuration. `baseline.txt` / `baseline.jsonl` are
+unchanged: they carry the reference machine class.
+
+The profiler is the harness itself (commit `3e2607ac1`):
+`ManyWorldsConfig::full()` accepts `ID_BENCH_MW_IDLE_WORLDS`,
+`ID_BENCH_MW_ACTIVE_WORLDS`, `ID_BENCH_MW_EVENTS_PER_SECOND`, and
+`ID_BENCH_MW_DURATION_SECS` (defaults are the committed full size),
+and every `many_worlds` run now prints a `profile many_worlds ...`
+line aggregating the active worlds' actor metrics — journal-append
+and command latency histograms merged across worlds (exact means,
+bucket-upper-bound percentiles), deepest actor queue depth, and
+checkpoints completed during the load. Producing command:
+
+```sh
+cd pkgs/id
+cargo bench --bench world_bench --no-run
+TMPDIR=<btrfs dir> ./target/release/deps/world_bench-* --only many_worlds
+```
+
+Baseline (origin/main `0e82202a3` plus the profiler commit), full
+configuration — 1,000 idle / 100 active, 20 events/s, 10 s,
+20,000 commands:
+
+```text
+profile many_worlds journal_appends=20200 journal_append_mean_us=46457 journal_append_p50_us=50000 journal_append_p95_us=250000 journal_append_p99_us=250000 commands=20300 command_mean_us=46304 command_p50_us=50000 command_p95_us=250000 command_p99_us=250000 queue_depth_max=0 checkpoints_during_load=0
+bench many_worlds unit=ms_per_command median=109337.796 min=22.150 reps=1 p50_ms=109337.796 p95_ms=211954.226 p99_ms=220672.952 target_p99_ms=50 target_met=false idle_worlds=1000 active_worlds=100 events_per_second=20 duration_secs=10 commands=20000 load_elapsed_secs=232.518 completed_events_per_second=86.0 checkpoint_triggers=100 checkpoints=100 evicted=100 reopened=100
+```
+
+Top three costs, as shares of the 220,672.952 ms p99:
+
+1. **Tokio worker parking on the blocking journal rendezvous —
+   ~99.9% of p99 (the backlog multiplier).** `JournalWriter::append`
+   waited on a std mpsc rendezvous while the writer thread wrote and
+   fsynced; world actors are `tokio::spawn` tasks, so each append
+   parked one shared runtime worker for the whole sync. With W
+   workers the hub caps at W appends per sync latency: measured
+   throughput 86.0/s against the ceiling 4 / 46.5 ms ≈ 87/s, while
+   the offered load is 2,000/s. Per-command deadline lateness is
+   therefore almost entirely backlog behind that ceiling — in-actor
+   service time is only ~46 ms of the 220,673 ms p99.
+2. **Per-command `sync_data` on the journal writer thread — 46.5 ms
+   mean at load, ~100% of command service time** (command mean
+   46.3 ms vs journal-append mean 46.5 ms; the guest update,
+   `wants()`, serialization, and channel hops are inside the noise).
+   It is the S in cost 1's ceiling and the floor under service time:
+   a lone append+sync costs ~42 ms on this storage even at 4 active
+   worlds (quick profile: `journal_append_mean_us=41713`).
+3. **Group commit never engages — appends per sync stays 1.0.**
+   `queue_depth_max=0`: at every actor dequeue the queue was empty,
+   so the #8239 actor-side drain (`handle_input_batch` /
+   `append_batch`) never has a batch to coalesce. With one
+   sequential producer per world the next input cannot exist until
+   the current one is acknowledged, so no amortization of cost 2 is
+   possible from inside one world; coalescing would have to happen
+   across worlds, at the device.
+
+Fix 1 (commit `e55fe23a1`) — cost 1: `recv_writer_reply` runs the
+rendezvous wait under `tokio::task::block_in_place` on multi-thread
+runtimes, so the runtime replaces the parked worker; everywhere
+else the wait is direct. No durability or ordering change. Same
+profiler, same configuration:
+
+```text
+profile many_worlds journal_appends=20200 journal_append_mean_us=50473 journal_append_p50_us=250000 journal_append_p95_us=250000 journal_append_p99_us=250000 commands=20300 command_mean_us=50268 command_p50_us=50000 command_p95_us=250000 command_p99_us=250000 queue_depth_max=0 checkpoints_during_load=0
+bench many_worlds unit=ms_per_command median=544.287 min=10.655 reps=1 p50_ms=544.287 p95_ms=768.054 p99_ms=842.887 target_p99_ms=50 target_met=false idle_worlds=1000 active_worlds=100 events_per_second=20 duration_secs=10 commands=20000 load_elapsed_secs=10.891 completed_events_per_second=1836.3 checkpoint_triggers=100 checkpoints=100 evicted=100 reopened=100
+```
+
+p99 220,672.952 → 842.887 ms; throughput 86.0 → 1,836.3/s. The
+ceiling is gone. Tests on this commit: `cargo test -p id-worlds
+--lib` — 830 passed, 39 failed; every failure is an iroh `*_net`
+connect timeout in this sandbox and fails identically on unmodified
+origin/main (spot-checked 3/3); the journal, actor, hub, and
+session suites pass.
+
+Fix 2 (evaluated, rejected in this venue) — costs 2/3: cross-world
+group commit, one `syncfs` per coalesced batch (2 ms window, 512
+cap) from a per-filesystem coordinator in `world_store.rs`, with
+per-append `sync_data` fallback. At quick size the journal-append
+mean regressed 41.7 ms → 147.4 ms and the run failed in the
+checkpoint phase (`world is unavailable`): on this sandbox a
+`syncfs` flushes the entire shared filesystem — build artifacts
+included — so the shared flush costs more than the per-file syncs
+it replaces. The experiment was rejected on the quick measurement
+without a full run and is not committed. It also identifies the
+production caveat: `syncfs` cost scales with total filesystem
+dirt, not journal dirt, so this design only pays on a filesystem
+dedicated to world data.
+
+Residual: p99 = 842.887 ms in this venue, target not met here. The
+remaining latency is cost 2's tail at ~92% of the service ceiling:
+append mean 50.5 ms against a 50 ms per-world tick puts the system
+at saturation, where p99 is set by service-time variance, and no
+clean code change lowers the mean — the venue's lone fdatasync is
+~42 ms, already most of the 50 ms budget before any queueing. The
+next step is therefore a measurement on hardware whose sync
+latency leaves headroom, not another sandbox iteration: on the
+reference laptop (lone append 5.2 ms) fix 1 alone moves the worker
+ceiling from ~3,077/s to the device limit and per-world service to
+the ~6 ms class, which is the regime where a sub-50 ms p99 is
+decidable. #557 stays open until a recorded run — on any machine
+class — shows `target_met=true`.
+Latency-profile measurement (2026-11-22; rustc 1.99.0, cargo 1.99.0; AMD
+Ryzen 7 7840U, 16 threads, Linux 6.18.60, NixOS; shared fleet build
+activity, build-lock slot 1/2). Command, from `pkgs/id/`:
+
+```sh
+~/tools/fleet-build-lock cargo bench --bench world_bench -- --only many_worlds
+```
+
+```text
+bench many_worlds unit=ms_per_command median=885.541 min=5.341 reps=1 p50_ms=885.541 p95_ms=4760.759 p99_ms=6142.516 wake_p50_ms=829.994 wake_p95_ms=4710.759 wake_p99_ms=6092.517 input_ack_p50_ms=10.283 input_ack_p95_ms=194.474 input_ack_p99_ms=379.032 target_p99_ms=50 target_met=false idle_worlds=1000 active_worlds=100 events_per_second=20 duration_secs=10 commands=20000 load_elapsed_secs=12.941 completed_events_per_second=1545.5 checkpoint_triggers=100 checkpoints=100 evicted=100 reopened=100
+```
+
+All 20,000 scheduled commands completed and the 100 checkpoint, eviction,
+and reopen assertions passed. The measured end-to-end p99 was 6,142.516 ms;
+wake-lateness p99 was 6,092.517 ms, while input/ack p99 was 379.032 ms.
+This run therefore locates most of its observed tail before the input call
+begins, in late task wake-up. Since the laptop was under shared build load,
+this is a diagnostic profile rather than a clean comparison against the
+2026-11-14 baseline; it does not establish the unloaded scheduler behavior.
+The component p99s are not additive. The latency target remains unmet and
+#557 stays open for follow-up. The matching line is appended to `baseline.txt`.
+
+Post-fix measurement (2026-11-22; same laptop, same command, main
+`44bdc15460` including the #12499 worker-parking fix, commit
+`e55fe23a1`; checkout `/home/user/code-557-run` on the laptop, log
+`~/bench557.log` there). The laptop was under heavy shared load for
+the whole run (load average ~12–19; a concurrent workspace
+check+test gate job held build-lock slot 2/2), comparable to or
+heavier than the pre-fix entry above:
+
+```text
+bench many_worlds unit=ms_per_command median=20.125 min=7.513 reps=1 p50_ms=20.125 p95_ms=344.831 p99_ms=426.224 wake_p50_ms=1.113 wake_p95_ms=294.831 wake_p99_ms=376.226 input_ack_p50_ms=18.892 input_ack_p95_ms=77.141 input_ack_p99_ms=115.335 target_p99_ms=50 target_met=false idle_worlds=1000 active_worlds=100 events_per_second=20 duration_secs=10 commands=20000 load_elapsed_secs=10.015 completed_events_per_second=1997.0 checkpoint_triggers=100 checkpoints=100 evicted=100 reopened=100
+```
+
+Against the pre-fix entry: p50 885.541 → 20.125 ms, p99 6,142.516 →
+426.224 ms, wake_p99 6,092.517 → 376.226 ms, completed 1,545.5 →
+1,997.0/s of 2,000 offered (no backlog; load elapsed 10.015 s for a
+10 s load). The fix removed the cost the profile named: the
+wake-lateness tail collapsed ~16×. The 50 ms target is still not
+met (`target_met=false`): the residual p99 is still wake-dominated
+(376 of 426 ms) with input_ack_p99 at 115.335 ms, plausibly
+load-inflated but not proven so by a single loaded run. The clean
+next data point is an unloaded re-run of the same command; #557
+stays open for it. The matching line is appended to `baseline.txt`.
 
 ## Fuel-spin isolation measurement (#1067, F12.10 exit criterion)
 

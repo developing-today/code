@@ -784,6 +784,7 @@ mod tests {
                     execution_profile: None,
                     caps_ceiling: None,
                     schedules: None,
+                    kv: None,
                     transfers: Some(vec![receipt.clone()]),
                     lease: None,
                     snapshot: "snapshot".to_owned(),
@@ -1196,6 +1197,7 @@ mod tests {
                 execution_profile: None,
                 caps_ceiling: None,
                 schedules: None,
+                kv: None,
                 transfers: None,
                 lease: None,
                 snapshot: "s".to_owned(),
@@ -1275,6 +1277,7 @@ mod tests {
                     execution_profile: None,
                     caps_ceiling: None,
                     schedules: None,
+                    kv: None,
                     transfers: None,
                     lease: None,
                     snapshot: "s".to_owned(),
@@ -1459,6 +1462,7 @@ mod tests {
                 execution_profile: None,
                 caps_ceiling: None,
                 schedules: None,
+                kv: None,
                 transfers: Some(transfers),
                 lease: None,
                 snapshot: "state".to_owned(),
@@ -1525,6 +1529,7 @@ mod tests {
             execution_profile: None,
             caps_ceiling: None,
             schedules: None,
+            kv: None,
             transfers: None,
             lease: None,
             admin_history: None,
@@ -1707,6 +1712,7 @@ mod tests {
             execution_profile: None,
             caps_ceiling: None,
             schedules: None,
+            kv: None,
             transfers: None,
             lease,
             snapshot: "s".to_owned(),
@@ -2393,6 +2399,7 @@ mod tests {
             }),
             caps_ceiling: None,
             schedules: None,
+            kv: None,
             transfers: None,
             lease: None,
             snapshot: "s".to_owned(),
@@ -2412,6 +2419,7 @@ mod tests {
             execution_profile: None,
             caps_ceiling: None,
             schedules: None,
+            kv: None,
             transfers: None,
             lease: None,
             snapshot: "s".to_owned(),
@@ -3701,6 +3709,7 @@ mod tests {
             execution_profile: None,
             caps_ceiling: None,
             schedules: None,
+            kv: None,
             transfers: None,
             snapshot: "snapshot".to_owned(),
             events,
@@ -10151,6 +10160,332 @@ mod schedule_tests {
         );
     }
 
+    // ---- F12.5 kv provider (#1062) ----
+
+    #[test]
+    fn kv_bounds_refuse_each_violation_with_a_reason() {
+        let core = world(8);
+        assert!(core.check_kv_set("ok", 4).is_ok());
+        assert!(
+            core.check_kv_set(&"x".repeat(crate::world_caps::MAX_KV_KEY_BYTES), 4)
+                .is_ok()
+        );
+        let long = "x".repeat(crate::world_caps::MAX_KV_KEY_BYTES + 1);
+        for bad in ["", "tab\there", long.as_str()] {
+            let error = core.check_kv_set(bad, 4).unwrap_err();
+            assert!(error.to_string().contains("kv key"), "{error}");
+        }
+        assert!(
+            core.check_kv_set("ok", crate::world_caps::MAX_KV_VALUE_BYTES)
+                .is_ok()
+        );
+        let error = core
+            .check_kv_set("ok", crate::world_caps::MAX_KV_VALUE_BYTES + 1)
+            .unwrap_err();
+        assert!(error.to_string().contains("kv value"), "{error}");
+
+        // Entry cap: a new key is refused at the cap; replacing an
+        // existing key is not — it frees its own slot.
+        let mut full = world(8);
+        for index in 0..crate::world_caps::MAX_KV_ENTRIES {
+            full.kv.insert(format!("k{index}"), "1".to_owned());
+        }
+        assert!(
+            full.check_kv_set("k0", 4).is_ok(),
+            "a replacement at capacity fits: it frees its own slot"
+        );
+        let error = full.check_kv_set("one-more", 4).unwrap_err();
+        assert!(error.to_string().contains("kv entries"), "{error}");
+
+        // Total byte cap, charged as key + value bytes and net of the
+        // entry a replacement displaces.
+        let mut store = world(8);
+        store.kv.insert("a".to_owned(), "v".repeat(40_000));
+        store.kv.insert("b".to_owned(), "v".repeat(20_000));
+        let error = store.check_kv_set("c", 6_000).unwrap_err();
+        assert!(error.to_string().contains("kv store"), "{error}");
+        assert!(
+            store.check_kv_set("a", 8).is_ok(),
+            "shrinking an entry makes room under the total cap"
+        );
+    }
+
+    #[tokio::test]
+    async fn kv_set_get_delete_round_trip_through_the_actor() {
+        let (mut actor, _clock, token, journal) =
+            scheduling_actor("kv-round-trip", &["kv.get", "kv.set", "kv.delete"], false);
+        ask(
+            &mut actor,
+            &token,
+            serde_json::json!({"requests": [
+                {"id": "w1", "cap": "kv.set", "args": {"key": "score", "value": {"best": 7}}},
+            ]}),
+        )
+        .await;
+        let written = schedule_result(&actor, "w1").unwrap();
+        assert_eq!(written["ok"], true, "{written}");
+        assert_eq!(actor.core.kv["score"], "{\"best\":7}");
+        ask(
+            &mut actor,
+            &token,
+            serde_json::json!({"requests": [
+                {"id": "r1", "cap": "kv.get", "args": {"key": "score"}},
+                {"id": "r2", "cap": "kv.get", "args": {"key": "missing"}},
+                {"id": "d1", "cap": "kv.delete", "args": {"key": "score"}},
+            ]}),
+        )
+        .await;
+        let read = schedule_result(&actor, "r1").unwrap();
+        assert_eq!(
+            read["value"]["value"],
+            serde_json::json!({"best": 7}),
+            "{read}"
+        );
+        let missing = schedule_result(&actor, "r2").unwrap();
+        assert_eq!(
+            missing["value"]["value"],
+            serde_json::Value::Null,
+            "{missing}"
+        );
+        let deleted = schedule_result(&actor, "d1").unwrap();
+        assert_eq!(deleted["value"]["deleted"], true, "{deleted}");
+        ask(
+            &mut actor,
+            &token,
+            serde_json::json!({"requests": [
+                {"id": "r3", "cap": "kv.get", "args": {"key": "score"}},
+                {"id": "d2", "cap": "kv.delete", "args": {"key": "score"}},
+            ]}),
+        )
+        .await;
+        let gone = schedule_result(&actor, "r3").unwrap();
+        assert_eq!(gone["value"]["value"], serde_json::Value::Null, "{gone}");
+        let deleted_again = schedule_result(&actor, "d2").unwrap();
+        assert_eq!(deleted_again["value"]["deleted"], false, "{deleted_again}");
+        let entries = journal.entries();
+        assert_eq!(
+            entries
+                .iter()
+                .filter(|entry| matches!(entry, JournalEntry::KvSet { .. }))
+                .count(),
+            1,
+            "one set journals one entry"
+        );
+        assert_eq!(
+            entries
+                .iter()
+                .filter(|entry| matches!(entry, JournalEntry::KvDeleted { .. }))
+                .count(),
+            1,
+            "deleting an absent key journals nothing"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_ungranted_kv_write_is_refused_and_counted() {
+        let (mut actor, _clock, token, journal) = scheduling_actor("kv-refused", &[], false);
+        ask(
+            &mut actor,
+            &token,
+            serde_json::json!({"requests": [
+                {"id": "w1", "cap": "kv.set", "args": {"key": "score", "value": 7}},
+            ]}),
+        )
+        .await;
+        assert_eq!(
+            schedule_result(&actor, "w1").unwrap()["error"],
+            "cap_denied"
+        );
+        assert!(
+            actor.core.ledger.usage()["kv.set"].denied > 0,
+            "{:?}",
+            actor.core.ledger.usage()
+        );
+        assert!(actor.core.kv.is_empty(), "a refused write stores nothing");
+        assert!(
+            journal
+                .entries()
+                .iter()
+                .all(|entry| !matches!(entry, JournalEntry::KvSet { .. })),
+            "a refused write journals nothing"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_kv_write_outside_the_ceiling_is_refused_and_stores_nothing() {
+        let (mut actor, _clock, token, journal) =
+            scheduling_actor("kv-ceiling", &["kv.set"], false);
+        let (reply, response) = tokio::sync::oneshot::channel();
+        actor
+            .handle(WorldCommand::SetCapsCeiling {
+                ceiling: vec!["time.now".to_owned()],
+                reply,
+            })
+            .await;
+        let _ = response.await.unwrap().unwrap();
+        actor.after_change().await;
+        ask(
+            &mut actor,
+            &token,
+            serde_json::json!({"requests": [
+                {"id": "w1", "cap": "kv.set", "args": {"key": "score", "value": 7}},
+            ]}),
+        )
+        .await;
+        assert_eq!(
+            schedule_result(&actor, "w1").unwrap()["error"],
+            "outside_ceiling"
+        );
+        assert!(
+            actor.core.ledger.usage()["kv.set"].denied > 0,
+            "{:?}",
+            actor.core.ledger.usage()
+        );
+        assert!(
+            actor.core.kv.is_empty(),
+            "a ceiling-refused write stores nothing"
+        );
+        assert!(
+            journal
+                .entries()
+                .iter()
+                .all(|entry| !matches!(entry, JournalEntry::KvSet { .. })),
+            "a ceiling-refused write journals nothing"
+        );
+    }
+
+    #[test]
+    fn kv_entries_replay_and_survive_compaction() {
+        let header = || JournalEntry::Created {
+            world_id: "w".to_owned(),
+            version: JOURNAL_VERSION_KV,
+        };
+        let set = |key: &str, value: &str| JournalEntry::KvSet {
+            key: key.to_owned(),
+            value: value.to_owned(),
+        };
+        assert_eq!(
+            journal_version_required_by(&set("a", "1")),
+            JOURNAL_VERSION_KV
+        );
+        let restored = WorldCore::restore(
+            "w",
+            WorldLimits::default(),
+            [
+                header(),
+                set("a", "1"),
+                set("b", "{\"x\":2}"),
+                set("a", "3"),
+                JournalEntry::KvDeleted {
+                    key: "b".to_owned(),
+                },
+            ],
+        )
+        .unwrap();
+        assert_eq!(restored.core.kv.len(), 1);
+        assert_eq!(restored.core.kv["a"], "3", "the last write to a key stands");
+        // A delete of a key that is not stored refuses the restore.
+        let bad = [
+            header(),
+            JournalEntry::KvDeleted {
+                key: "ghost".to_owned(),
+            },
+        ];
+        assert!(WorldCore::restore("w", WorldLimits::default(), bad).is_err());
+        // Compaction: a core carrying entries re-emits them before its
+        // checkpoint, so a restored core sees the same store.
+        let mut core = world(8);
+        core.active_module_hash = Some("h".to_owned());
+        core.kv.insert("a".to_owned(), "3".to_owned());
+        core.kv.insert("c".to_owned(), "[1,2]".to_owned());
+        let entries = core.checkpoint_entries("state".to_owned()).unwrap();
+        assert!(
+            entries.contains(&set("a", "3")),
+            "a compacted journal keeps the kv entry"
+        );
+        let restored = WorldCore::restore("test-world", WorldLimits::default(), entries).unwrap();
+        assert_eq!(restored.core.kv, core.kv);
+    }
+
+    #[test]
+    fn a_checkpoint_that_disagrees_with_its_kv_entries_is_refused() {
+        let header = || JournalEntry::Created {
+            world_id: "w".to_owned(),
+            version: JOURNAL_VERSION_KV,
+        };
+        let set = || JournalEntry::KvSet {
+            key: "a".to_owned(),
+            value: "1".to_owned(),
+        };
+        let checkpoint = |kv: Option<Vec<CheckpointKvEntry>>| JournalEntry::Checkpoint {
+            sequence: 0,
+            module_hash: "h".to_owned(),
+            seed: 1,
+            provenance: None,
+            execution_profile: None,
+            caps_ceiling: None,
+            schedules: None,
+            kv,
+            transfers: None,
+            lease: None,
+            snapshot: "s".to_owned(),
+            events: Vec::new(),
+            admin_history: None,
+            open_presence: None,
+        };
+        let declared = || CheckpointKvEntry {
+            key: "a".to_owned(),
+            value: "1".to_owned(),
+        };
+        let agreed = [header(), set(), checkpoint(Some(vec![declared()]))];
+        assert!(WorldCore::restore("w", WorldLimits::default(), agreed).is_ok());
+        let omitted = [header(), set(), checkpoint(None)];
+        assert!(WorldCore::restore("w", WorldLimits::default(), omitted).is_err());
+        let unwritten = [header(), checkpoint(Some(vec![declared()]))];
+        assert!(WorldCore::restore("w", WorldLimits::default(), unwritten).is_err());
+        let duplicated = [
+            header(),
+            set(),
+            checkpoint(Some(vec![declared(), declared()])),
+        ];
+        assert!(WorldCore::restore("w", WorldLimits::default(), duplicated).is_err());
+    }
+
+    #[test]
+    fn a_journal_past_the_kv_bounds_is_refused() {
+        let header = || JournalEntry::Created {
+            world_id: "w".to_owned(),
+            version: JOURNAL_VERSION_KV,
+        };
+        // A key the writer would never accept.
+        let bad_key = [
+            header(),
+            JournalEntry::KvSet {
+                key: String::new(),
+                value: "1".to_owned(),
+            },
+        ];
+        assert!(WorldCore::restore("w", WorldLimits::default(), bad_key).is_err());
+        // A value past the serialized cap.
+        let big_value = [
+            header(),
+            JournalEntry::KvSet {
+                key: "a".to_owned(),
+                value: "v".repeat(crate::world_caps::MAX_KV_VALUE_BYTES + 1),
+            },
+        ];
+        assert!(WorldCore::restore("w", WorldLimits::default(), big_value).is_err());
+        // More entries than the store may hold.
+        let mut entries = vec![header()];
+        for index in 0..=crate::world_caps::MAX_KV_ENTRIES {
+            entries.push(JournalEntry::KvSet {
+                key: format!("k{index}"),
+                value: "1".to_owned(),
+            });
+        }
+        assert!(WorldCore::restore("w", WorldLimits::default(), entries).is_err());
+    }
+
     #[tokio::test]
     async fn a_due_schedule_fires_once_and_the_program_receives_it() {
         let (mut actor, clock, token, journal) =
@@ -10627,6 +10962,7 @@ mod schedule_tests {
             execution_profile: None,
             caps_ceiling: None,
             schedules,
+            kv: None,
             transfers: None,
             lease: None,
             snapshot: "s".to_owned(),

@@ -58,17 +58,17 @@ fn record_key(doc_key: &[u8]) -> Option<&str> {
     std::str::from_utf8(doc_key.strip_suffix(&[0])?).ok()
 }
 
-/// Write `contents` to `path` atomically: a temp file in the same
-/// directory, renamed over the real path, so a crash mid-write cannot
-/// leave a torn file at `path` (the pattern `tags::save_registry` uses).
+/// Write `contents` to `path` durably: sync a temp file in the same
+/// directory before renaming it over the real path.
 async fn write_atomic(path: &Path, contents: &[u8]) -> Result<()> {
     let tmp = path.with_extension("tmp");
-    tokio::fs::write(&tmp, contents)
-        .await
-        .with_context(|| format!("write temp file {}", tmp.display()))?;
-    tokio::fs::rename(&tmp, path)
-        .await
-        .with_context(|| format!("rename {} over {}", tmp.display(), path.display()))?;
+    id_core::durable_write::write_durable(path, &tmp, contents).with_context(|| {
+        format!(
+            "durably writing namespace file {} via {}",
+            path.display(),
+            tmp.display()
+        )
+    })?;
     Ok(())
 }
 

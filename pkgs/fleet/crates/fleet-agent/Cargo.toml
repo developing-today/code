@@ -8,6 +8,7 @@ description = "The fleet agent domain: one front door for any agent. Enrol a nam
 
 [dependencies]
 fleet-config = { workspace = true }
+sha2 = { workspace = true }
 # preserve_order: every verb prints JSON, and the key order is the shape.
 serde_json = { version = "1", features = ["preserve_order"] }
 

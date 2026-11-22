@@ -96,6 +96,11 @@ pub struct WorldCore {
     /// fires remaining. A schedule occupies one slot however many fires
     /// remain.
     pub(crate) schedules: BTreeMap<String, PendingSchedule>,
+    /// The world's `kv` store (#1062): key to the value's JSON
+    /// encoding. Bounded by the `MAX_KV_*` caps; every mutation is
+    /// journaled before its result is delivered, and replay rebuilds
+    /// the store from the journal.
+    pub(crate) kv: BTreeMap<String, String>,
     /// Schedule-delivery consent by peer world (#1355 part 2): this
     /// world's half of the reciprocal F12.14 grant pair.
     pub(crate) schedule_grants: BTreeMap<String, ScheduleGrant>,
@@ -383,6 +388,7 @@ impl WorldCore {
             memory_budget: crate::world_limits::WorldMemoryBudget::default(),
             caps_ceiling: crate::world_caps::default_ceiling_names(),
             schedules: BTreeMap::new(),
+            kv: BTreeMap::new(),
             schedule_grants: BTreeMap::new(),
             portal_grants: id_caps::portal::PortalGrants::new(),
             schedule_receipts: BTreeSet::new(),
@@ -1023,6 +1029,38 @@ impl WorldCore {
                         "journal fires schedule {id:?}, which is not pending"
                     );
                 }
+                JournalEntry::KvSet { key, value } => {
+                    // The bounds the writer holds are re-checked here:
+                    // a journal that would widen the store past them
+                    // refuses the restore instead (#1062).
+                    crate::world_caps::validate_kv_key(&key)
+                        .context("invalid kv key in journal")?;
+                    ensure!(
+                        value.len() <= crate::world_caps::MAX_KV_VALUE_BYTES,
+                        "journal kv value for {key:?} exceeds {} bytes",
+                        crate::world_caps::MAX_KV_VALUE_BYTES
+                    );
+                    ensure!(
+                        core.kv.contains_key(&key)
+                            || core.kv.len() < crate::world_caps::MAX_KV_ENTRIES,
+                        "journal holds more than {} kv entries",
+                        crate::world_caps::MAX_KV_ENTRIES
+                    );
+                    core.kv.insert(key, value);
+                    ensure!(
+                        core.kv_bytes() <= crate::world_caps::MAX_KV_TOTAL_BYTES,
+                        "journal kv store exceeds {} total bytes",
+                        crate::world_caps::MAX_KV_TOTAL_BYTES
+                    );
+                }
+                JournalEntry::KvDeleted { key } => {
+                    crate::world_caps::validate_kv_key(&key)
+                        .context("invalid kv key in journal")?;
+                    ensure!(
+                        core.kv.remove(&key).is_some(),
+                        "journal deletes kv key {key:?}, which is not stored"
+                    );
+                }
                 JournalEntry::EntityExported {
                     handoff_id,
                     entity_ref,
@@ -1318,6 +1356,7 @@ impl WorldCore {
                     execution_profile,
                     caps_ceiling,
                     schedules,
+                    kv,
                     transfers,
                     lease,
                     mut snapshot,
@@ -1504,6 +1543,18 @@ impl WorldCore {
                     ensure!(
                         declared.len() == listed.len() && declared == core.schedules,
                         "journal checkpoint's pending schedules disagree with its schedule entries"
+                    );
+                    // The same agreement for the `kv` store: the writer
+                    // emits one `KvSet` per live entry before the
+                    // checkpoint, so the two must agree exactly.
+                    let listed_kv = kv.unwrap_or_default();
+                    let declared_kv: BTreeMap<String, String> = listed_kv
+                        .iter()
+                        .map(|entry| (entry.key.clone(), entry.value.clone()))
+                        .collect();
+                    ensure!(
+                        declared_kv.len() == listed_kv.len() && declared_kv == core.kv,
+                        "journal checkpoint's kv entries disagree with its kv set entries"
                     );
                     program = Some(RestoredProgram {
                         module_hash,
@@ -1746,6 +1797,25 @@ impl WorldCore {
                 at_ms: *at_ms,
             });
         }
+        // One entry per live `kv` entry, before the checkpoint, like
+        // the schedules: without them compaction would forget the
+        // store, and an older binary refuses the journal at the
+        // version check instead of restoring without it.
+        for (key, value) in &self.kv {
+            entries.push(JournalEntry::KvSet {
+                key: key.clone(),
+                value: value.clone(),
+            });
+        }
+        let kv: Option<Vec<CheckpointKvEntry>> = (!self.kv.is_empty()).then(|| {
+            self.kv
+                .iter()
+                .map(|(key, value)| CheckpointKvEntry {
+                    key: key.clone(),
+                    value: value.clone(),
+                })
+                .collect()
+        });
         let schedules: Option<Vec<CheckpointSchedule>> = (!self.schedules.is_empty()).then(|| {
             self.schedules
                 .iter()
@@ -1790,6 +1860,7 @@ impl WorldCore {
                     execution_profile: Some(self.execution_profile),
                     caps_ceiling: caps_ceiling.clone(),
                     schedules: schedules.clone(),
+                    kv: kv.clone(),
                     transfers: transfers.clone(),
                     lease: (!self.write_lease.is_bootstrap()).then(|| self.write_lease.clone()),
                     snapshot,

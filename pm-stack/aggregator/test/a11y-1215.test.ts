@@ -8,6 +8,7 @@ import { join } from "node:path";
 import { PAGES } from "../src/pages.ts";
 import { navLinks, pageDropdown, renderAa } from "../src/render.ts";
 import { FIXTURE_AA } from "../src/sources/fixtures.ts";
+import { addConsoleShortcut } from "../src/console-gate.ts";
 
 const renderSource =
   readFileSync(join(import.meta.dir, "..", "src", "ui.css"), "utf8") +
@@ -105,6 +106,21 @@ describe("one navigation model (#1215, curated by #1497)", () => {
     for (const label of ["Overview", "Work", "Ops"]) {
       expect(navLinks("/")).toContain(`>${label}</span>`);
     }
+  });
+});
+
+describe("console link accessibility (#12416)", () => {
+  test("the gated link has an accessible name, and direct hosts omit it", async () => {
+    const response = (host: string) =>
+      addConsoleShortcut(
+        new Response('<nav class="navbar">Dashboard</nav>', { headers: { "content-type": "text/html" } }),
+        new Request("http://aggregator/", { headers: { host } }),
+        "pm.security.cab",
+      );
+    const gated = await (await response("pm.security.cab")).text();
+    expect(gated).toContain('<a href="/console/">Console</a>');
+    const direct = await (await response("100.64.0.1")).text();
+    expect(direct).not.toContain("/console/");
   });
 });
 
