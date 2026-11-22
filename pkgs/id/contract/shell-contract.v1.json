@@ -46,6 +46,7 @@
         "after": "u64?",
         "screen_patches": { "type": "bool", "optional": true, "nullable": false },
         "screen_msgpack": { "type": "bool", "optional": true, "nullable": false },
+        "device_input": { "type": "object", "optional": true, "nullable": false },
         "agent_profile": { "type": "bool", "optional": true, "nullable": false },
         "resume_token": { "type": "string", "optional": true, "nullable": true, "max_bytes": 64 }
       }

@@ -141,6 +141,7 @@ pub fn decode_view_patch(bytes: &[u8]) -> Result<ViewPatchFrame, ScreenCodecErro
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use proptest::prelude::*;
 
