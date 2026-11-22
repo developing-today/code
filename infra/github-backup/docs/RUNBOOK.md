@@ -203,7 +203,25 @@ git bundle verify /tmp/<repo>.bundle
 git clone /tmp/<repo>.bundle ./<repo>
 ```
 
-## 9. Disaster recovery (tree lost, GitHub intact)
+## 9. Synchronize a plain Git mirror
+
+The plain mirror target for `OWNER/REPO` is the pre-created
+`developing-today/<repo>-mirror` repository. Create it under the approved
+organization before the first sync, then run:
+
+```sh
+python3 ~/git/code/infra/github-backup/bin/plain_mirror.py \
+  --repo developing-today/code --root ~/backups/github
+```
+
+The command pushes all branches and tags from the valid local mirror, prunes
+branches/tags removed from the source, then compares remote ref names and
+object IDs with the local source. GitHub's reserved `refs/pull/*` namespace is
+not pushed. It never creates or deletes a GitHub repository. The sync command
+is not scheduled yet; target creation and recurring scheduling remain separate
+work.
+
+## 10. Disaster recovery (tree lost, GitHub intact)
 
 Config (this repo) + Bitwarden are the only inputs. §7 Option B rebuilds
 the entire tree; MANIFEST.json regenerates at the end. Exclusions and
@@ -217,7 +235,7 @@ copy, and a failed owner's repos stay planned rather than silently
 dropping out of the manifest. Read that section before treating any
 status surface here as coverage.
 
-## 10. Health checks
+## 11. Health checks
 
 ```sh
 systemctl --user list-timers 'github-backup-*'
