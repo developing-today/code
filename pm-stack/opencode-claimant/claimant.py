@@ -283,6 +283,7 @@ def log_fire(
     provider_wall: "Dict | None" = None,
     hand_back: "Dict | None" = None,
     babysitter: "Dict | None" = None,
+    nudges: "Dict | None" = None,
 ) -> None:
     """Append a fire log entry to fires.jsonl.
 
@@ -310,6 +311,7 @@ def log_fire(
         "provider_wall": provider_wall,
         "hand_back": hand_back,
         "babysitter": babysitter,
+        "nudges": nudges,
     }
 
     with FIRES_FILE.open("a") as f:
@@ -385,6 +387,26 @@ def _load_babysitter_module():
         spec.loader.exec_module(module)
         _babysitter_module = module
     return _babysitter_module
+
+
+_nudges_module = None
+
+
+def _load_nudges_module():
+    """Load the sibling nudges.py as a module (cached), the same
+    pattern as babysitter.py: the stall-nudge/escalation step
+    (#1187) rides the claimant fire right after the babysitter
+    round whose confirmed stalls it consumes."""
+    global _nudges_module
+    if _nudges_module is None:
+        import importlib.util
+
+        nudges_path = Path(__file__).resolve().parent / "nudges.py"
+        spec = importlib.util.spec_from_file_location("claimant_nudges", nudges_path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        _nudges_module = module
+    return _nudges_module
 
 
 def get_active_root_session_count() -> int:
@@ -1209,6 +1231,53 @@ def _post_handback_agent_note(task_id, candidate) -> bool:
     return result.returncode == 0
 
 
+def _post_stuck_holder_agent_note(
+    *, task_id, session_id, repo, issue_number, nudges_sent
+) -> bool:
+    """Post the stuck-holder escalation note on a stalled task's
+    issue (#1187: a confirmed stall that spent its nudges is
+    escalated to the fleet as a stuck-holder case, on the issue -
+    never only in the local fire log). Mirrors
+    _post_handback_agent_note's failure contract: a failed note
+    does not mark the episode escalated, so nudges.py retries the
+    escalation next round. Returns True iff the post is confirmed
+    by the gh CLI's exit code."""
+    if not repo or not issue_number:
+        return False
+    note = (
+        "<!-- agent-note:v1 agent=opencode-claimant state=stuck-holder "
+        f"task={task_id} session={session_id} -->\n\n"
+        f"Agent note - stuck holder: queue task {task_id}'s OpenCode "
+        f"session {session_id} is in a confirmed stall (silent past "
+        "the stall threshold with no live CI on its bound PR), and "
+        f"the babysitter's {nudges_sent} nudges went unanswered "
+        "(#1187/#1338). The case is escalated to the fleet as a "
+        "stuck holder: the task stays claimed by the session's "
+        "lane, and a live lane should take over, resume, or "
+        "release it. The babysitter sends no further nudges for "
+        "this stall episode."
+    )
+    try:
+        result = subprocess.run(
+            [
+                "gh",
+                "issue",
+                "comment",
+                str(int(str(issue_number).lstrip("#"))),
+                "--repo",
+                str(repo),
+                "--body",
+                note,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+    except Exception:
+        return False
+    return result.returncode == 0
+
+
 def hand_back_step(mode, candidates, exclude_task_ids=None):
     """Hand-back (#1187 criterion 2): when the cap step finds the
     location saturated with launchable candidates waiting, hand
@@ -1735,6 +1804,24 @@ def _fire(mode: str):
         print(f"Warning: babysitter round failed: {e}")
         babysitter_record = {"error": f"babysitter round failed: {e}"}
 
+    # Stall nudges (#1187): the actuation half of the babysitter
+    # loop - consume this round's confirmed stalls (at most two
+    # nudges per episode, then a stuck-holder escalation on the
+    # bound issue). Like the round, it is about sessions, not
+    # candidates, so it runs before the gate; a failed step never
+    # breaks dispatch: the record says so.
+    nudges_record = None
+    try:
+        nudges_record = _load_nudges_module().nudge_step(
+            mode,
+            babysitter_record,
+            send_prompt=_send_prompt,
+            post_note=_post_stuck_holder_agent_note,
+        )
+    except Exception as e:
+        print(f"Warning: stall-nudge step failed: {e}")
+        nudges_record = {"error": f"stall-nudge step failed: {e}"}
+
     # Step 2: Gate (records the fire-start candidate snapshot and
     # the queue-health line in _fire_candidates / _fire_health).
     print("Running gate step...")
@@ -1752,6 +1839,7 @@ def _fire(mode: str):
             [{"reason": "gate_unknown"}],
             health=fire_health,
             babysitter=babysitter_record,
+            nudges=nudges_record,
         )
         return 1
 
@@ -1765,6 +1853,7 @@ def _fire(mode: str):
             [{"reason": "no_candidates"}],
             health=fire_health,
             babysitter=babysitter_record,
+            nudges=nudges_record,
         )
         return 0
 
@@ -1785,6 +1874,7 @@ def _fire(mode: str):
             [{"reason": "cap_unknown"}],
             health=fire_health,
             babysitter=babysitter_record,
+            nudges=nudges_record,
         )
         return 1
 
@@ -1806,6 +1896,7 @@ def _fire(mode: str):
             health=fire_health,
             hand_back=hand_back,
             babysitter=babysitter_record,
+            nudges=nudges_record,
         )
         return 0
 
@@ -1835,6 +1926,7 @@ def _fire(mode: str):
         health=fire_health,
         provider_wall=_fire_provider_wall,
         babysitter=babysitter_record,
+        nudges=nudges_record,
     )
 
     return 0
