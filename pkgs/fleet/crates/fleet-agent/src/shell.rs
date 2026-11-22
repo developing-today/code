@@ -295,15 +295,54 @@ fn broker_aware_shell(command: &str) -> String {
     let script = r#"command_text=__COMMAND__
 broker="$HOME/tools/cargo-target-broker"
 if [ -z "$CARGO_TARGET_DIR" ]; then
-  manifest=$(cargo locate-project --workspace --message-format plain 2>/dev/null || true)
+  manifest_arg=$(python3 -c '
+import shlex, sys
+try:
+    words = shlex.split(sys.argv[1])
+except ValueError:
+    raise SystemExit(0)
+separators = {";", "&&", "||", "|", "&"}
+for index, word in enumerate(words):
+    if word != "cargo":
+        continue
+    index += 1
+    while index < len(words) and words[index] not in separators:
+        token = words[index]
+        if token == "--manifest-path" and index + 1 < len(words):
+            print(words[index + 1])
+            raise SystemExit(0)
+        if token.startswith("--manifest-path="):
+            print(token.split("=", 1)[1])
+            raise SystemExit(0)
+        index += 1
+' "$command_text" 2>/dev/null)
+  if [ -n "$manifest_arg" ]; then
+    case "$manifest_arg" in
+      /*) manifest_path=$manifest_arg ;;
+      *) manifest_path="$PWD/$manifest_arg" ;;
+    esac
+    manifest=$(cargo locate-project --workspace --message-format plain --manifest-path "$manifest_path" 2>/dev/null || true)
+  else
+    manifest=$(cargo locate-project --workspace --message-format plain 2>/dev/null || true)
+  fi
   if [ -n "$manifest" ]; then
     root=$(dirname -- "$manifest")
+    workspace_real=$(cd "$root" 2>/dev/null && pwd -P) || workspace_real=""
+    cwd_real=$(pwd -P)
     repo=$(printf '%s\n' "$root" | sed -n 's#^.*/pkgs/\([^/]*\).*#\1#p')
     if [ -z "$repo" ]; then repo=$(basename -- "$root"); fi
     repo=$(printf '%s' "$repo" | tr -c 'A-Za-z0-9._-' '_')
     if [ -n "$repo" ]; then
       if [ -x "$broker" ]; then
-        lease=$("$broker" checkout --repo "$repo" --profile __PROFILE__ --wait 900 --json 2>/dev/null) || lease=""
+        case "$cwd_real/" in
+          "$workspace_real/"*) outside_workspace=false ;;
+          *) outside_workspace=true ;;
+        esac
+        if [ "$outside_workspace" = true ]; then
+          lease=$("$broker" checkout --repo "$repo" --profile __PROFILE__ --workspace-cwd "$workspace_real" --wait 900 --json 2>/dev/null) || lease=""
+        else
+          lease=$("$broker" checkout --repo "$repo" --profile __PROFILE__ --wait 900 --json 2>/dev/null) || lease=""
+        fi
         if [ -n "$lease" ]; then
           target=$(printf '%s' "$lease" | python3 -c 'import json,sys; print(json.load(sys.stdin)["path"])' 2>/dev/null) || target=""
           lease_id=$(printf '%s' "$lease" | python3 -c 'import json,sys; print(json.load(sys.stdin)["lease"])' 2>/dev/null) || lease_id=""
