@@ -1003,12 +1003,16 @@ impl DiskReplica {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use std::collections::BTreeMap;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
 
     use ed25519_dalek::SigningKey;
     use iroh_blobs::Hash;
+    use proptest::prelude::*;
 
-    use super::super::slices::b07_conflict_report::{RetentionPolicy, VersionHeader};
+    use super::super::slices::b07_conflict_report::{
+        RetentionPolicy, VersionHeader, conflict_key,
+    };
     use super::super::slices::b32_ingest_gate::{
         FreshnessWindow, SignerAuthorization, sign_envelope,
     };
@@ -1038,6 +1042,54 @@ mod tests {
 
     const START: u64 = 10_000;
 
+    /// A [`MapBackend`] that fails commits from `fail_after` on, so
+    /// a test can fault a persist at a chosen point and then let it
+    /// succeed again.
+    #[derive(Debug, Clone)]
+    struct FailingBackend {
+        inner: MapBackend,
+        commits: Arc<AtomicUsize>,
+        fail_after: Arc<AtomicUsize>,
+    }
+
+    impl FailingBackend {
+        fn new(fail_after: usize) -> Self {
+            Self {
+                inner: MapBackend::default(),
+                commits: Arc::new(AtomicUsize::new(0)),
+                fail_after: Arc::new(AtomicUsize::new(fail_after)),
+            }
+        }
+
+        fn stop_failing(&self) {
+            self.fail_after.store(usize::MAX, Ordering::SeqCst);
+        }
+
+        /// Fail commits from `n` on (counting from the backend's
+        /// first commit), so a test can arm a failure mid-scenario.
+        fn fail_from(&self, n: usize) {
+            self.fail_after.store(n, Ordering::SeqCst);
+        }
+    }
+
+    impl BlobBackend for FailingBackend {
+        async fn has(&self, hash: Hash) -> Result<bool, anyhow::Error> {
+            self.inner.has(hash).await
+        }
+
+        async fn read(&self, hash: Hash) -> Result<Option<Vec<u8>>, anyhow::Error> {
+            self.inner.read(hash).await
+        }
+
+        async fn commit(&self, bytes: Vec<u8>) -> Result<Hash, anyhow::Error> {
+            let n = self.commits.fetch_add(1, Ordering::SeqCst);
+            if n >= self.fail_after.load(Ordering::SeqCst) {
+                return Err(anyhow::anyhow!("simulated blob commit failure"));
+            }
+            self.inner.commit(bytes).await
+        }
+    }
+
     fn key() -> SigningKey {
         SigningKey::from_bytes(&[7; 32])
     }
@@ -1050,6 +1102,24 @@ mod tests {
             body: body.to_vec(),
         };
         sign_envelope(&key(), "alice", "notes", &header.encode(), event, START)
+    }
+
+    /// A version following `parents`, naming their conflict key when
+    /// it merges two or more of them (the store requires a merge to
+    /// name what it resolves).
+    fn version_with_parents(
+        event: EventId,
+        body: &[u8],
+        parents: &[EventId],
+        now: u64,
+    ) -> Envelope {
+        let header = VersionHeader {
+            object_id: [0x11; 32],
+            resolves: (parents.len() >= 2).then(|| conflict_key(parents)),
+            parents: parents.to_vec(),
+            body: body.to_vec(),
+        };
+        sign_envelope(&key(), "alice", "notes", &header.encode(), event, now)
     }
 
     fn conflict_store() -> ConflictStore {
@@ -1160,6 +1230,9 @@ mod tests {
             node.append_version(&first).await.unwrap();
             node.append_version(&second).await.unwrap();
             node.put_report(&report).await.unwrap();
+            // Appends and report writes stage their index entries;
+            // the index is committed by this flush.
+            node.flush_index().unwrap();
         }
         let content = ContentStore::new(backend, ContentStoreConfig::default());
         let node = NodeStore::new(content, index_path).unwrap();
@@ -1197,5 +1270,556 @@ mod tests {
         assert!(stored.replica().inventory().contains(&[0x42; 32]));
         assert_eq!(stored.replica().envelope(&[0x42; 32]), Some(&envelope));
         assert_eq!(stored.store().heads(&[0x11; 32]), vec![[0x42; 32]]);
+    }
+
+    #[tokio::test]
+    async fn a_stale_report_record_heals_on_open() {
+        // The crash window from the review: the resolving version
+        // reached the log but its report record still says Open.
+        // Opening replays the log, rebuilds the report as Resolved,
+        // and rewrites the record instead of refusing to open.
+        let dir = tempfile::tempdir().unwrap();
+        let index_path = dir.path().join("index");
+        let backend = MapBackend::default();
+        let base = [0x42; 32];
+        let alice = [0x43; 32];
+        let bob = [0x44; 32];
+        let merge = [0x45; 32];
+        let mut model = Replica::new("node-a", "home", conflict_store());
+        model
+            .produce(&version_with_parents(base, b"base", &[], START), START)
+            .unwrap();
+        model
+            .produce(
+                &version_with_parents(alice, b"alice", &[base], START + 1),
+                START + 1,
+            )
+            .unwrap();
+        model
+            .produce(
+                &version_with_parents(bob, b"bob", &[base], START + 2),
+                START + 2,
+            )
+            .unwrap();
+        let report_id = model.store().open_report(&[0x11; 32]).unwrap();
+        let open_record = model.store().report(&report_id).unwrap().clone();
+        assert_eq!(open_record.status, ReportStatus::Open);
+        let outcome = model
+            .produce(
+                &version_with_parents(merge, b"merge", &[alice, bob], START + 3),
+                START + 3,
+            )
+            .unwrap();
+        assert_eq!(outcome, IngestOutcome::Resolved(report_id));
+        let resolved = model.store().report(&report_id).unwrap().clone();
+        // The torn state, built by hand: the log holds the merge,
+        // the index still names the Open report record.
+        let node = |backend: MapBackend| {
+            NodeStore::new(
+                ContentStore::new(backend, ContentStoreConfig::default()),
+                index_path.clone(),
+            )
+            .unwrap()
+        };
+        {
+            let mut node = node(backend.clone());
+            let records = [
+                (base, b"base".as_slice(), vec![], START),
+                (alice, b"alice".as_slice(), vec![base], START + 1),
+                (bob, b"bob".as_slice(), vec![base], START + 2),
+                (merge, b"merge".as_slice(), vec![alice, bob], START + 3),
+            ];
+            for (event, body, parents, at) in records {
+                node.append_version(&VersionRecord {
+                    envelope: version_with_parents(event, body, &parents, at),
+                    path: IngressPath::Local,
+                    source: "node-a".to_owned(),
+                    admitted_at: at,
+                })
+                .await
+                .unwrap();
+            }
+            node.put_report(&open_record).await.unwrap();
+            node.flush_index().unwrap();
+        }
+        let stored = StoredReplica::open(
+            node(backend.clone()),
+            Replica::new("node-a", "home", conflict_store()),
+        )
+        .await
+        .unwrap();
+        assert_eq!(stored.store().report(&report_id).unwrap(), &resolved);
+        // The heal persisted: a second open finds the Resolved
+        // record, not the stale one.
+        drop(stored);
+        let stored = StoredReplica::open(
+            node(backend),
+            Replica::new("node-a", "home", conflict_store()),
+        )
+        .await
+        .unwrap();
+        assert_eq!(stored.store().report(&report_id).unwrap(), &resolved);
+    }
+
+    #[tokio::test]
+    async fn a_failed_version_persist_rolls_the_admission_back() {
+        // The blob backend fails while appending the version: the
+        // admission must leave no trace, so the same envelope
+        // retries cleanly instead of being rejected as a replay.
+        let dir = tempfile::tempdir().unwrap();
+        let index_path = dir.path().join("index");
+        let backend = FailingBackend::new(0);
+        let node = |backend: FailingBackend| {
+            NodeStore::new(
+                ContentStore::new(backend, ContentStoreConfig::default()),
+                index_path.clone(),
+            )
+            .unwrap()
+        };
+        let mut stored = StoredReplica::open(
+            node(backend.clone()),
+            Replica::new("node-a", "home", conflict_store()),
+        )
+        .await
+        .unwrap();
+        let envelope = plain_version([0x42; 32], b"not a record");
+        let error = stored.produce(&envelope, START).await.unwrap_err();
+        assert!(matches!(error, StoredError::Store(_)));
+        assert!(!stored.replica().inventory().contains(&[0x42; 32]));
+        assert_eq!(stored.replica().envelope(&[0x42; 32]), None);
+        assert!(stored.store().heads(&[0x11; 32]).is_empty());
+        backend.stop_failing();
+        let outcome = stored.produce(&envelope, START).await.unwrap();
+        assert_eq!(outcome, IngestOutcome::Applied);
+        assert!(stored.replica().inventory().contains(&[0x42; 32]));
+    }
+
+    #[tokio::test]
+    async fn a_failed_report_persist_rolls_the_admission_back() {
+        // The version blob lands but the report blob it created
+        // does not: the admission — and the index entry the version
+        // staged — must roll back too, so the retry re-admits the
+        // version instead of finding a phantom in the index.
+        let dir = tempfile::tempdir().unwrap();
+        let index_path = dir.path().join("index");
+        // Commits 0 and 1 are the base and alice versions; commit 2
+        // is bob's version, commit 3 the conflict report it creates.
+        let backend = FailingBackend::new(3);
+        let node = |backend: FailingBackend| {
+            NodeStore::new(
+                ContentStore::new(backend, ContentStoreConfig::default()),
+                index_path.clone(),
+            )
+            .unwrap()
+        };
+        let mut stored = StoredReplica::open(
+            node(backend.clone()),
+            Replica::new("node-a", "home", conflict_store()),
+        )
+        .await
+        .unwrap();
+        let base = [0x42; 32];
+        let alice = [0x43; 32];
+        let bob = [0x44; 32];
+        stored
+            .produce(&version_with_parents(base, b"base", &[], START), START)
+            .await
+            .unwrap();
+        stored
+            .produce(
+                &version_with_parents(alice, b"alice", &[base], START + 1),
+                START + 1,
+            )
+            .await
+            .unwrap();
+        let envelope = version_with_parents(bob, b"bob", &[base], START + 2);
+        let error = stored.produce(&envelope, START + 2).await.unwrap_err();
+        assert!(matches!(error, StoredError::Store(_)));
+        assert!(!stored.replica().inventory().contains(&bob));
+        assert_eq!(stored.store().heads(&[0x11; 32]), vec![alice]);
+        assert!(stored.store().open_report(&[0x11; 32]).is_none());
+        backend.stop_failing();
+        let outcome = stored.produce(&envelope, START + 2).await.unwrap();
+        assert!(matches!(outcome, IngestOutcome::Conflict(_)));
+        assert_eq!(
+            stored.store().heads(&[0x11; 32]),
+            vec![alice, bob],
+        );
+        assert!(stored.store().open_report(&[0x11; 32]).is_some());
+    }
+
+    #[tokio::test]
+    async fn a_failed_reconcile_rolls_both_sides_back() {
+        // Each side holds one version; the exchange admits both
+        // everywhere in memory, then persisting on B fails. Both
+        // replicas return to what they had, and the exchange retries
+        // cleanly once the backend works again.
+        let dir_a = tempfile::tempdir().unwrap();
+        let dir_b = tempfile::tempdir().unwrap();
+        let index_a = dir_a.path().join("index");
+        let index_b = dir_b.path().join("index");
+        let backend_a = FailingBackend::new(usize::MAX);
+        let backend_b = FailingBackend::new(usize::MAX);
+        let node_a = |backend: FailingBackend| {
+            NodeStore::new(
+                ContentStore::new(backend, ContentStoreConfig::default()),
+                index_a.clone(),
+            )
+            .unwrap()
+        };
+        let node_b = |backend: FailingBackend| {
+            NodeStore::new(
+                ContentStore::new(backend, ContentStoreConfig::default()),
+                index_b.clone(),
+            )
+            .unwrap()
+        };
+        let mut a = StoredReplica::open(
+            node_a(backend_a.clone()),
+            Replica::new("node-a", "home", conflict_store()),
+        )
+        .await
+        .unwrap();
+        let mut b = StoredReplica::open(
+            node_b(backend_b.clone()),
+            Replica::new("node-b", "home", conflict_store()),
+        )
+        .await
+        .unwrap();
+        let x = [0x42; 32];
+        let y = [0x43; 32];
+        a.produce(&version_with_parents(x, b"x", &[], START), START)
+            .await
+            .unwrap();
+        b.produce(&version_with_parents(y, b"y", &[], START), START)
+            .await
+            .unwrap();
+        // B has committed once (its own version); fail its next
+        // commit, which is the exchange version it persists first.
+        backend_b.fail_from(1);
+        let link = SyncScopeConfig::new("notes", "home");
+        let error = a.reconcile_with(&mut b, &link, START + 1).await.unwrap_err();
+        assert!(matches!(error, RecordStoreError::Content(_)));
+        assert!(a.replica().inventory().contains(&x));
+        assert!(!a.replica().inventory().contains(&y));
+        assert!(!b.replica().inventory().contains(&x));
+        assert!(b.replica().inventory().contains(&y));
+        assert!(a.store().open_report(&[0x11; 32]).is_none());
+        assert!(b.store().open_report(&[0x11; 32]).is_none());
+        backend_b.stop_failing();
+        a.reconcile_with(&mut b, &link, START + 2).await.unwrap();
+        assert!(a.replica().inventory().contains(&y));
+        assert!(b.replica().inventory().contains(&x));
+        assert!(a.store().open_report(&[0x11; 32]).is_some());
+        assert!(b.store().open_report(&[0x11; 32]).is_some());
+    }
+
+    #[tokio::test]
+    async fn a_failed_open_releases_the_blob_store() {
+        // Opening fails after the blob backend loaded (the index
+        // does not decode): the directory must open again in this
+        // process once the index is fixed, not stay locked until
+        // the process exits.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("index"), b"not an index").unwrap();
+        let replica = Replica::new("node-a", "home", conflict_store());
+        assert!(DiskReplica::open_dir(dir.path(), replica).await.is_err());
+        std::fs::remove_file(dir.path().join("index")).unwrap();
+        let replica = Replica::new("node-a", "home", conflict_store());
+        let stored = DiskReplica::open_dir(dir.path(), replica).await.unwrap();
+        stored.shutdown().await.unwrap();
+    }
+
+    fn path_strategy() -> impl Strategy<Value = IngressPath> {
+        (0..5u8).prop_map(|tag| match tag {
+            0 => IngressPath::Local,
+            1 => IngressPath::Loopback,
+            2 => IngressPath::Internal,
+            3 => IngressPath::Hosted,
+            _ => IngressPath::Remote,
+        })
+    }
+
+    fn envelope_strategy() -> impl Strategy<Value = Envelope> {
+        (
+            any::<String>(),
+            any::<[u8; 32]>(),
+            prop::option::of(any::<[u8; 64]>()),
+            any::<String>(),
+            prop::collection::vec(any::<u8>(), 0..64),
+            any::<[u8; 32]>(),
+            any::<u64>(),
+        )
+            .prop_map(
+                |(signer, verifying_key, signature, scope, payload, event_id, issued_at)| {
+                    let payload_digest = payload_digest(&payload);
+                    Envelope {
+                        signer,
+                        verifying_key,
+                        signature,
+                        scope,
+                        payload,
+                        payload_digest,
+                        event_id,
+                        issued_at,
+                    }
+                },
+            )
+    }
+
+    fn version_record_strategy() -> impl Strategy<Value = VersionRecord> {
+        (
+            envelope_strategy(),
+            path_strategy(),
+            any::<String>(),
+            any::<u64>(),
+        )
+            .prop_map(|(envelope, path, source, admitted_at)| VersionRecord {
+                envelope,
+                path,
+                source,
+                admitted_at,
+            })
+    }
+
+    fn version_ref_strategy() -> impl Strategy<Value = VersionRef> {
+        (
+            any::<[u8; 32]>(),
+            any::<[u8; 32]>(),
+            prop::collection::vec(any::<[u8; 32]>(), 0..4),
+            prop::option::of(any::<[u8; 32]>()),
+            any::<String>(),
+            any::<[u8; 32]>(),
+            path_strategy(),
+            any::<String>(),
+            any::<String>(),
+            any::<u64>(),
+            any::<[u8; 32]>(),
+            any::<u64>(),
+        )
+            .prop_map(
+                |(
+                    event_id,
+                    object_id,
+                    parents,
+                    resolves,
+                    signer,
+                    verifying_key,
+                    path,
+                    source,
+                    scope,
+                    issued_at,
+                    body_digest,
+                    body_len,
+                )| VersionRef {
+                    event_id,
+                    object_id,
+                    parents,
+                    resolves,
+                    signer,
+                    verifying_key,
+                    path,
+                    source,
+                    scope,
+                    issued_at,
+                    body_digest,
+                    body_len,
+                },
+            )
+    }
+
+    fn report_strategy() -> impl Strategy<Value = ConflictReport> {
+        (
+            any::<[u8; 32]>(),
+            prop::collection::vec(version_ref_strategy(), 0..4),
+            prop::collection::vec(any::<[u8; 32]>(), 0..4),
+            prop::collection::vec(any::<String>(), 0..3),
+            any::<[u8; 32]>(),
+            any::<u64>(),
+            any::<u64>(),
+            prop::option::of(any::<[u8; 32]>()),
+        )
+            .prop_map(
+                |(
+                    object_id,
+                    versions,
+                    base,
+                    scopes,
+                    policy_digest,
+                    detected_at,
+                    expires_at,
+                    supersedes,
+                )| ConflictReport {
+                    object_id,
+                    versions,
+                    base,
+                    scopes,
+                    policy_digest,
+                    detected_at,
+                    expires_at,
+                    supersedes,
+                },
+            )
+    }
+
+    fn status_strategy() -> impl Strategy<Value = ReportStatus> {
+        prop_oneof![
+            Just(ReportStatus::Open),
+            (any::<[u8; 32]>(), any::<u64>())
+                .prop_map(|(by, at)| ReportStatus::Resolved { by, at }),
+            any::<[u8; 32]>().prop_map(|by| ReportStatus::Superseded { by }),
+        ]
+    }
+
+    fn stored_report_strategy() -> impl Strategy<Value = StoredReport> {
+        (report_strategy(), status_strategy())
+            .prop_map(|(report, status)| StoredReport { report, status })
+    }
+
+    /// One generated admission: how it links to what came before,
+    /// and its body. Mode 0 starts a new root (a fresh head, and a
+    /// conflict when one exists); mode 1 extends the last admitted
+    /// version; mode 2 merges every current head (resolving the open
+    /// report when there is one).
+    #[derive(Debug, Clone)]
+    struct Op {
+        mode: u8,
+        body: Vec<u8>,
+    }
+
+    fn op_strategy() -> impl Strategy<Value = Op> {
+        (any::<u8>(), prop::collection::vec(any::<u8>(), 0..32))
+            .prop_map(|(mode, body)| Op { mode, body })
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(64))]
+
+        /// Oracle: the codec is a bijection on the values it writes
+        /// — decode(encode(x)) is x, for every generated envelope.
+        #[test]
+        fn envelope_codec_round_trips_generated(envelope in envelope_strategy()) {
+            prop_assert_eq!(
+                decode_envelope(&encode_envelope(&envelope)).unwrap(),
+                envelope
+            );
+        }
+
+        /// Oracle: as above, for version records.
+        #[test]
+        fn version_record_codec_round_trips_generated(record in version_record_strategy()) {
+            prop_assert_eq!(VersionRecord::decode(&record.encode()).unwrap(), record);
+        }
+
+        /// Oracle: as above, for report records — and the decoded
+        /// report keeps its id and canonical bytes.
+        #[test]
+        fn report_record_codec_round_trips_generated(stored in stored_report_strategy()) {
+            let decoded = decode_stored_report(&encode_stored_report(&stored)).unwrap();
+            prop_assert_eq!(decoded, stored);
+            prop_assert_eq!(decoded.report.report_id(), stored.report.report_id());
+            prop_assert_eq!(
+                decoded.report.canonical_bytes(),
+                stored.report.canonical_bytes()
+            );
+        }
+
+        /// Oracle: the in-memory [`Replica`] is the model — a
+        /// reopened stored replica holds the same inventory, heads,
+        /// reports and envelopes after any generated admission
+        /// sequence. (64 cases of up to 12 ops each; every admission
+        /// runs a strict ed25519 verify, which is slow at opt-level
+        /// 0, so the count stays low.)
+        #[test]
+        fn restart_matches_the_in_memory_model(
+            base in any::<[u8; 32]>(),
+            ops in prop::collection::vec(op_strategy(), 1..13),
+        ) {
+            let runtime = tokio::runtime::Runtime::new().unwrap();
+            runtime.block_on(async {
+                let dir = tempfile::tempdir().unwrap();
+                let index_path = dir.path().join("index");
+                let backend = MapBackend::default();
+                let node = |backend: MapBackend| {
+                    NodeStore::new(
+                        ContentStore::new(backend, ContentStoreConfig::default()),
+                        index_path.clone(),
+                    )
+                    .unwrap()
+                };
+                let mut model = Replica::new("node-a", "home", conflict_store());
+                let mut stored = StoredReplica::open(
+                    node(backend.clone()),
+                    Replica::new("node-a", "home", conflict_store()),
+                )
+                .await
+                .unwrap();
+                let mut last: Option<EventId> = None;
+                for (i, op) in ops.iter().enumerate() {
+                    let mut event_id = base;
+                    event_id[0] ^= i as u8;
+                    event_id[1] ^= (i >> 8) as u8;
+                    let now = START + i as u64;
+                    let heads = model.store().heads(&[0x11; 32]);
+                    let parents: Vec<EventId> = match op.mode % 3 {
+                        0 => vec![],
+                        1 => last.iter().copied().collect(),
+                        _ if heads.len() >= 2 => heads,
+                        _ => last.iter().copied().collect(),
+                    };
+                    let envelope = version_with_parents(event_id, &op.body, &parents, now);
+                    match (
+                        model.produce(&envelope, now),
+                        stored.produce(&envelope, now).await,
+                    ) {
+                        (Ok(model_outcome), Ok(stored_outcome)) => {
+                            assert_eq!(stored_outcome, model_outcome, "op {i} outcome");
+                            last = Some(event_id);
+                        }
+                        (Err(model_error), Err(StoredError::Ingest(stored_error))) => {
+                            assert_eq!(stored_error, model_error, "op {i} refusal");
+                        }
+                        (model_result, stored_result) => {
+                            panic!(
+                                "op {i}: model and stored disagree: {model_result:?} vs {stored_result:?}"
+                            );
+                        }
+                    }
+                }
+                drop(stored);
+                let reopened = StoredReplica::open(
+                    node(backend),
+                    Replica::new("node-a", "home", conflict_store()),
+                )
+                .await
+                .unwrap();
+                assert_eq!(reopened.replica().inventory(), model.inventory());
+                assert_eq!(
+                    reopened.store().heads(&[0x11; 32]),
+                    model.store().heads(&[0x11; 32])
+                );
+                let model_reports: BTreeMap<ReportId, StoredReport> = model
+                    .store()
+                    .reports()
+                    .map(|(id, report)| (*id, report.clone()))
+                    .collect();
+                let stored_reports: BTreeMap<ReportId, StoredReport> = reopened
+                    .store()
+                    .reports()
+                    .map(|(id, report)| (*id, report.clone()))
+                    .collect();
+                assert_eq!(stored_reports, model_reports);
+                for (i, _) in ops.iter().enumerate() {
+                    let mut event_id = base;
+                    event_id[0] ^= i as u8;
+                    event_id[1] ^= (i >> 8) as u8;
+                    assert_eq!(
+                        reopened.replica().envelope(&event_id),
+                        model.envelope(&event_id),
+                        "event {event_id:?}"
+                    );
+                }
+            });
+        }
     }
 }
