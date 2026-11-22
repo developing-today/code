@@ -1297,6 +1297,62 @@ mod tests {
     }
 
     #[test]
+    fn label_bands_select_row_priority_7030() {
+        // #7030 oracle (the issue's acceptance line): "Label mapping
+        // flipped and verified by readback: an expedited issue's task
+        // reads in the 10–20 band in the Turso store". The row
+        // task_from_packet builds is what the store reads back, so
+        // the oracle is decided here. Drew ratified the exact stored
+        // values on 2026-11-07: expedite = 15 (10–20 band),
+        // next-up = 25 (20–30 band).
+        let payload = payload_with(json!({"issue": {"number": 7030}}));
+        // The stated 90 is the inverted mapping's expedite value:
+        // valid on the design scale, and exactly what the label must
+        // supersede.
+        let base = json!({"title": "test", "priority": 90, "payload": payload});
+
+        // Expedite: the band is selected over the stated priority
+        // and reads back inside 10..=20.
+        let mut packet = base.clone();
+        packet["payload"]["labels"] = json!(["expedite"]);
+        let row = task_from_packet(&packet, "q");
+        assert_eq!(row["priority"], EXPEDITE_PRIORITY);
+        assert!((10..=20).contains(&row["priority"].as_i64().unwrap()));
+
+        // Next-up: the 20..=30 band, ratified stored value 25.
+        packet["payload"]["labels"] = json!(["next-up"]);
+        let row = task_from_packet(&packet, "q");
+        assert_eq!(row["priority"], NEXT_UP_PRIORITY);
+        assert!((20..=30).contains(&row["priority"].as_i64().unwrap()));
+
+        // Both labels present: expedite outranks next-up.
+        packet["payload"]["labels"] = json!(["next-up", "expedite"]);
+        assert_eq!(
+            task_from_packet(&packet, "q")["priority"],
+            EXPEDITE_PRIORITY
+        );
+
+        // Unrelated labels, then no labels at all: the stated
+        // priority is untouched.
+        packet["payload"]["labels"] = json!(["queue/queued"]);
+        assert_eq!(task_from_packet(&packet, "q")["priority"], 90);
+        packet["payload"].as_object_mut().unwrap().remove("labels");
+        assert_eq!(task_from_packet(&packet, "q")["priority"], 90);
+
+        // Unlabeled and unstated: priority stays null, as before.
+        let mut packet = base.clone();
+        packet.as_object_mut().unwrap().remove("priority");
+        assert!(task_from_packet(&packet, "q")["priority"].is_null());
+
+        // Labeled and unstated: the band still selects the row value.
+        packet["payload"]["labels"] = json!(["expedite"]);
+        assert_eq!(
+            task_from_packet(&packet, "q")["priority"],
+            EXPEDITE_PRIORITY
+        );
+    }
+
+    #[test]
     fn implementation_repo_validates_explicit_target() {
         // Oracle: an optional owner/name target, not an issue-repo allowlist.
         let payload = payload_with(
