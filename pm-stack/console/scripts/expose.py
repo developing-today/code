@@ -275,17 +275,6 @@ def ensure_edge_direct(
     marker = state / "edge-direct"
     current = marker.exists() and marker.read_text().strip() == "on"
     wanted = direct_choice(state, choice, keep=False)
-    if wanted == current:
-        return
-    if wanted:
-        what = (
-            "edge direct: upload the GitHub and queue tokens and turn direct actions on"
-        )
-    else:
-        what = "edge direct: turn direct actions off and take the two tokens away"
-    cf.changes.append(what)
-    if check:
-        return
     # Straight to Cloudflare's API, with the token this script already
     # holds: nothing to install on this host, and the value travels in
     # the request body, never on a command line.
@@ -296,7 +285,34 @@ def ensure_edge_direct(
             "PUT", secrets_path, {"name": name, "text": value, "type": "secret_text"}
         )
 
+    def take_tokens_away() -> None:
+        """Off means the Worker holds nothing it could act with."""
+        held = {s.get("name") for s in cf.get(secrets_path)}
+        for name in ("GITHUB_TOKEN", "QUEUE_TOKEN"):
+            if name in held:
+                cf.change(
+                    f"edge direct: take {name} away from the Worker",
+                    "DELETE",
+                    f"{secrets_path}/{name}",
+                    None,
+                )
+
+    if wanted == current:
+        if not wanted and marker.exists():
+            # Off, after having been on. A token left behind by a run
+            # that stopped part-way is taken away now. This is tidying:
+            # it never fails a run that changes nothing else.
+            try:
+                take_tokens_away()
+            except SystemExit as error:
+                print(f"note: could not look for tokens left on the Worker: {error}")
+        return
     if wanted:
+        cf.changes.append(
+            "edge direct: upload the GitHub and queue tokens and turn direct actions on"
+        )
+        if check:
+            return
         github = secret(GITHUB_TOKEN_SECRET)
         queue_name = (
             env_values(env).get("PM_CONSOLE_QUEUE_TOKEN_NAME") or QUEUE_TOKEN_DEFAULT
@@ -310,19 +326,19 @@ def ensure_edge_direct(
         put("QUEUE_TOKEN", queue)
         put("EDGE_DIRECT", "on")
     else:
-        # The opt-in goes first, so the Worker stops acting at once; then
-        # the two tokens are taken away again. Off leaves it holding
-        # nothing it could act with.
+        cf.changes.append("edge direct: turn direct actions off")
+        if check:
+            return
+        # The opt-in goes first, so the Worker stops acting at once.
         put("EDGE_DIRECT", "off")
-        held = {s.get("name") for s in cf.get(secrets_path)}
-        for name in ("GITHUB_TOKEN", "QUEUE_TOKEN"):
-            if name in held:
-                cf.call("DELETE", f"{secrets_path}/{name}")
     # The Worker has the change now, so the choice is remembered; a
     # failure above raises before this line and leaves the old marker.
-    if choice is not None:
-        state.mkdir(parents=True, exist_ok=True, mode=0o700)
-        marker.write_text(choice + "\n")
+    state.mkdir(parents=True, exist_ok=True, mode=0o700)
+    marker.write_text(("on" if wanted else "off") + "\n")
+    if not wanted:
+        # Then the two tokens are taken away again. If this stops
+        # part-way the mode is still off, and the next run finishes it.
+        take_tokens_away()
 
 
 def worker_ready(cf: Cloudflare, account: str, host: str) -> bool:

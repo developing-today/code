@@ -55,6 +55,7 @@ class Account(expose.Cloudflare):
         # uploads Cloudflare refuses.
         self.worker_secrets = {}
         self.secret_failures = 0
+        self.delete_failures = 0
 
     def call(self, method, path, body=None):
         path, _, query = path.partition("?")
@@ -120,6 +121,9 @@ class Account(expose.Cloudflare):
         elif (
             f"/workers/scripts/{expose.WORKER}/secrets/" in path and method == "DELETE"
         ):
+            if self.delete_failures > 0:
+                self.delete_failures -= 1
+                raise SystemExit("cloudflare DELETE secret: refused")
             self.worker_secrets.pop(path.split("/")[-1], None)
             result = None
         elif path.endswith("/workers/subdomain"):
@@ -604,6 +608,57 @@ class Expose(unittest.TestCase):
             ],
         )
         self.assertEqual(marker.read_text().strip(), "off")
+        # Off again, or the timer's run: nothing left to do.
+        account.order.clear()
+        self.assertEqual(run(account, self.home), 0)
+        self.assertEqual(account.changes, [])
+        self.assertEqual(account.order, [])
+
+    def test_turning_direct_mode_off_is_finished_by_a_later_run_if_it_stopped_part_way(
+        self,
+    ):
+        account = Account()
+        run(account, self.home)
+        marker = pathlib.Path(self.home) / ".local/state/pm-console/edge-direct"
+        secrets = {
+            expose.GITHUB_TOKEN_SECRET: "gh-test-value",
+            expose.QUEUE_TOKEN_DEFAULT: "queue-test-value",
+        }
+        run(account, self.home, "--edge-direct", "on", secrets=secrets)
+        # Cloudflare takes the opt-in off and then refuses a delete.
+        account.delete_failures = 1
+        with self.assertRaisesRegex(SystemExit, "refused"):
+            run(account, self.home, "--edge-direct", "off")
+        # The mode is off and remembered as off, so it can be turned on again.
+        self.assertEqual(account.worker_secrets["EDGE_DIRECT"], "off")
+        self.assertEqual(marker.read_text().strip(), "off")
+        self.assertIn("GITHUB_TOKEN", account.worker_secrets)
+        # Asked what the next run would do: take what was left behind away.
+        self.assertEqual(run(account, self.home, "--check"), 1)
+        self.assertEqual(
+            account.changes,
+            [
+                "edge direct: take GITHUB_TOKEN away from the Worker",
+                "edge direct: take QUEUE_TOKEN away from the Worker",
+            ],
+        )
+        self.assertIn("GITHUB_TOKEN", account.worker_secrets)
+        # The timer's next run does it.
+        self.assertEqual(run(account, self.home), 0)
+        self.assertEqual(account.worker_secrets, {"EDGE_DIRECT": "off"})
+        # Tidying that cannot be done never fails a run.
+        account.worker_secrets["QUEUE_TOKEN"] = "left behind"
+        account.delete_failures = 1
+        self.assertEqual(run(account, self.home), 0)
+        self.assertTrue(
+            any("could not look for tokens" in line for line in account.printed)
+        )
+        # And on again works from here.
+        self.assertEqual(
+            run(account, self.home, "--edge-direct", "on", secrets=secrets), 0
+        )
+        self.assertEqual(account.worker_secrets["EDGE_DIRECT"], "on")
+        self.assertEqual(marker.read_text().strip(), "on")
 
     def test_another_workers_route_on_the_hostname_is_left_alone(self):
         for foreign in (
