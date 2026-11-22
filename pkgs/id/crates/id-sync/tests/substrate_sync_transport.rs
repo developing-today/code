@@ -66,7 +66,7 @@ const BOB: usize = 1;
 const CONTROL_ALPN: &[u8] = b"/id-skeleton-control/1";
 const CHILD_ENV: &str = "ID_SKELETON_NODE_B";
 
-fn accept_error(error: anyhow::Error) -> AcceptError {
+fn accept_error<E: Into<Box<dyn std::error::Error + Send + Sync>>>(error: E) -> AcceptError {
     AcceptError::from_boxed(error.into())
 }
 

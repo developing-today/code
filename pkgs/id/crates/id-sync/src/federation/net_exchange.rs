@@ -73,9 +73,10 @@ pub const FEDERATION_SYNC_ALPN: &[u8] = b"/id-federation-sync/1";
 const EXCHANGE_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// The protocol's error conversion, as in `crate::artifact`:
-/// `AcceptError` takes a boxed standard error, and this crate's
-/// fallible operations return `anyhow` errors.
-fn accept_error(error: anyhow::Error) -> AcceptError {
+/// `AcceptError` takes a boxed standard error; `anyhow` errors and
+/// the concrete errors of the frame and serde calls all convert into
+/// one.
+fn accept_error<E: Into<Box<dyn std::error::Error + Send + Sync>>>(error: E) -> AcceptError {
     AcceptError::from_boxed(error.into())
 }
 
