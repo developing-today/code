@@ -13,7 +13,9 @@
 // compared with literal URLs, so no spelling of a path can pass as one
 // of the public files unless the dashboard is asked for exactly that file.
 import { beforeEach, describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   AuthError,
   authorize,
@@ -1162,6 +1164,32 @@ describe("HTTP surface", () => {
     };
     const failed = await handle(get("/attention"), down);
     expect([failed.status, await failed.json()]).toEqual([502, { error: "the dashboard did not answer" }]);
+  });
+
+  test("the Android app is handed to the signed-in owner only, when a build is on the host", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pm-console-test-"));
+    try {
+      const cfg = readConfig({ HOME: "/h", PM_CONSOLE_ANDROID_APK: join(dir, "pm-console.apk") });
+      expect(readConfig({ HOME: "/h" }).androidApk).toBe("/h/.local/state/pm-console/android/pm-console.apk");
+      const owner = { ...deps("owner"), cfg };
+      // No build yet: the page is told so, and the link answers 404.
+      expect((await (await handle(get("/console/api/me"), owner)).json()).androidApp).toBe(false);
+      expect((await handle(get("/console/pm-console.apk"), owner)).status).toBe(404);
+      writeFileSync(join(dir, "pm-console.apk"), "PK\u0003\u0004 signed apk bytes");
+      expect((await (await handle(get("/console/api/me"), owner)).json()).androidApp).toBe(true);
+      const res = await handle(get("/console/pm-console.apk"), owner);
+      expect(res.status).toBe(200);
+      expect(res.headers.get("content-type")).toBe("application/vnd.android.package-archive");
+      expect(res.headers.get("content-disposition")).toBe('attachment; filename="pm-console.apk"');
+      expect(await res.text()).toBe("PK\u0003\u0004 signed apk bytes");
+      // Not for anyone else, and not by another method or name.
+      expect((await handle(get("/console/pm-console.apk"), { ...deps(401), cfg })).status).toBe(401);
+      expect((await handle(get("/console/pm-console.apk"), { ...deps(403), cfg })).status).toBe(403);
+      expect((await handle(post("/console/pm-console.apk", {}), owner)).status).toBe(404);
+      expect(owner.sent).toEqual([]); // never passed to the dashboard
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   test("an action that cannot be recorded is not taken; one already taken is reported as it went", async () => {
