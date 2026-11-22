@@ -163,14 +163,13 @@ in
     # test log before failing — a readiness failure should show WHY the
     # server did not answer, not just that curl kept refusing (#1374).
     #
-    # The handler catches BaseException, not Exception: the test driver's
-    # RequestedAssertionFailed (what wait_until_succeeds raises on timeout)
-    # derives from BaseException in the current driver, precisely so that
-    # blanket Exception handlers cannot swallow test failures. An
-    # except-Exception version of this helper was exercised in a scratch
-    # VM run and the dump never fired; the BaseException form is what the
-    # scratch run validated. The failure is always re-raised — the dump
-    # only observes it.
+    # Two driver-1.x details shape the handler (both found the hard way:
+    # a scratch VM run whose log contained no dump at all):
+    # - execute() RETURNS its output; it does not log it. The dump must be
+    #   captured and emitted through server.log() to reach the test log.
+    # - The handler catches BaseException and always re-raises, so the
+    #   diagnostic attempt wraps any probe failure and can never swallow
+    #   or replace it; the dump itself is best-effort for the same reason.
     SERVER_READY_TIMEOUT = 900  # seconds; the driver's former implicit bound
 
     def wait_for_http(client, server, unit, url):
@@ -180,11 +179,13 @@ in
             )
         except BaseException:
             try:
-                server.execute(
-                    f"echo 'readiness timeout: {url} never answered; "
-                    f"{unit} journal and listeners follow'; "
-                    f"journalctl -u {unit} --no-pager -n 100; "
-                    "ss -ltnp"
+                _status, dump = server.execute(
+                    f"journalctl -u {unit} --no-pager -n 100 || true; "
+                    "ss -ltnp || true"
+                )
+                server.log(
+                    f"readiness timeout: {url} never answered; "
+                    f"{unit} journal and listeners follow:\n{dump}"
                 )
             except BaseException:
                 pass
