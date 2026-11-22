@@ -62,36 +62,48 @@ export function createClient({ origin, audience, principal, privateKey, fetch: f
   if (url.protocol !== 'https:' || url.origin !== origin || !id(principal) || typeof audience !== 'string' || !audience) throw new Error('invalid-config');
   async function send(path, body, signal) {
     const bounded = signal ? AbortSignal.any([signal, AbortSignal.timeout(requestTimeoutMs)]) : AbortSignal.timeout(requestTimeoutMs);
-    const request = await signRequest({ origin, audience, principal, privateKey, path, body, now: now() });
+    const startedAt = now();
+    const request = await signRequest({ origin, audience, principal, privateKey, path, body, now: startedAt });
     const response = await fetchFn(request, { redirect: 'error', signal: bounded });
-    if ([401,403,410].includes(response.status)) { await response.body?.cancel(); throw new BridgeDenied(); }
-    if (!response.ok || response.redirected) { await response.body?.cancel(); throw new Error('bridge-unavailable'); }
-    return readResponse(response, bounded);
+    if ([401,403,410].includes(response.status)) { void response.body?.cancel().catch(() => {}); throw new BridgeDenied(); }
+    if (!response.ok || response.redirected) { void response.body?.cancel().catch(() => {}); throw new Error('bridge-unavailable'); }
+    return { body: await readResponse(response, bounded), startedAt };
   }
   async function step(signal) {
-    const response = await send('/v1/poll', {}, signal);
+    const {body: response, startedAt} = await send('/v1/poll', {}, signal);
     if (!exact(response, ['job'])) throw new Error('invalid-response');
     const job = response.job;
     if (job === null) return false;
-    if (!exact(job, ['id','lease','operation','args','expiresAt','leaseExpiresAt']) || !id(job.id) || !id(job.lease) || !validateOperation(job.operation, job.args) || !Number.isSafeInteger(job.expiresAt) || job.expiresAt <= now() || job.expiresAt > now() + 60000 || !Number.isSafeInteger(job.leaseExpiresAt) || job.leaseExpiresAt <= now() || job.leaseExpiresAt > now() + 15000 || job.leaseExpiresAt > job.expiresAt) throw new Error('invalid-job');
+    if (!exact(job, ['id','lease','operation','args','expiresAt','leaseExpiresAt','serverNow']) || !id(job.id) || !id(job.lease) || !validateOperation(job.operation, job.args)
+      || !Number.isSafeInteger(job.serverNow) || Math.abs(job.serverNow - startedAt) > 30000
+      || !Number.isSafeInteger(job.expiresAt) || job.expiresAt <= job.serverNow || job.expiresAt - job.serverNow > 60000
+      || !Number.isSafeInteger(job.leaseExpiresAt) || job.leaseExpiresAt <= job.serverNow || job.leaseExpiresAt - job.serverNow > 15000
+      || job.leaseExpiresAt > job.expiresAt) throw new Error('invalid-job');
+    // Translate server-relative lifetimes to local deadlines. Starting at the
+    // request send time conservatively charges both network legs to the budget;
+    // the clocks may differ by the protocol's authenticated 30-second skew.
+    const expiresAt = startedAt + (job.expiresAt - job.serverNow);
+    const leaseExpiresAt = startedAt + (job.leaseExpiresAt - job.serverNow);
+    if (expiresAt <= now() || leaseExpiresAt <= now()) throw new Error('expired-job');
     signal?.throwIfAborted();
-    const abort = AbortSignal.timeout(Math.max(1, Math.min(5000, job.leaseExpiresAt - now())));
+    const abort = AbortSignal.timeout(Math.max(1, Math.min(5000, leaseExpiresAt - now())));
     let onAbort;
     const expired = new Promise((_, reject) => { onAbort = () => reject(new Error('execution-timeout')); abort.addEventListener('abort', onAbort, { once: true }); });
     let result;
     try { result = await Promise.race([execute(job.operation, job.args), expired]); }
     finally { abort.removeEventListener('abort', onAbort); }
     signal?.throwIfAborted();
-    if (job.expiresAt <= now() || job.leaseExpiresAt <= now()) throw new Error('expired-job');
+    if (expiresAt <= now() || leaseExpiresAt <= now()) throw new Error('expired-job');
     if (!validateResult(job.operation, result)) throw new Error('invalid-result');
-    const accepted = await send('/v1/result', { id: job.id, lease: job.lease, result }, signal);
+    const {body: accepted} = await send('/v1/result', { id: job.id, lease: job.lease, result }, signal);
     if (!exact(accepted, ['accepted']) || accepted.accepted !== true) throw new Error('invalid-ack');
     return true;
   }
   async function run(signal) {
     let backoff = 1000;
     while (!signal?.aborted) {
-      try { await step(signal); backoff = 1000; await sleep(1000, undefined, { signal }); }
+      // Reserve request quota for completions; idle polling uses at most 30/min.
+      try { await step(signal); backoff = 1000; await sleep(2000, undefined, { signal }); }
       catch (error) {
         if (signal?.aborted) return;
         if (error instanceof BridgeDenied) throw error; // Explicit revocation needs owner reconnect.

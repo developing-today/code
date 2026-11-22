@@ -3,12 +3,15 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "node --test *.test.mjs"
+    "test": "node --test *.test.mjs",
+    "rehearse": "node --test --test-concurrency=1 *.test.mjs ../aggregator/test/bridge-snapshot.test.ts ../aggregator/test/bridge-refresh.test.ts",
+    "check:staging": "WRANGLER_SEND_METRICS=false wrangler deploy --dry-run --config wrangler.staging.jsonc --outdir .wrangler/staging-dry-run"
   },
   "engines": {
     "node": ">=24"
   },
   "devDependencies": {
-    "miniflare": "4.20260730.0"
+    "miniflare": "4.20260730.0",
+    "wrangler": "4.166.0"
   }
 }

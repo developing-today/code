@@ -182,10 +182,14 @@ test('workerd: actual non-root laptop client completes each named read through W
   const { publishBridgeQueueSnapshot } = await import('../aggregator/src/bridge-snapshot.ts');
   const home = await mkdtemp(join(tmpdir(), 'private-bridge-source-'));
   const fetchedAt = Date.now();
-  const counts = { queued: 1, claimed: 0, parked: 0, handedOff: 0, blocked: 0, done: 0, cancelled: 0, failed: 0 };
-  await publishBridgeQueueSnapshot({ fetchedAt, available: true, stale: false, errors: ['must-not-export'],
-    queues: [counts], tasks: [{ id: 42, status: 'queued', priority: 1, title: 'must-not-export', payload: { token: 'must-not-export' } }],
-  }, '1', home, fetchedAt);
+  const { fetchQueueSnapshot } = await import('../aggregator/src/queue.ts');
+  const counts = { queue: 'synthetic-code-pilot', queued: 1, claimed: 0, parked: 0, handed_off: 0, blocked: 0, done: 0, cancelled: 0, failed: 0 };
+  const snapshot = await fetchQueueSnapshot('http://synthetic-broker.invalid', 'synthetic-not-a-secret', async url => ({
+    ok: true, status: 200, json: async () => url.endsWith('/health') ? {ok: true, rows: [counts]} : {
+      ok: true, rows: [{ id: 42, queue: 'synthetic-code-pilot', status: 'queued', priority: 1, title: 'must-not-export', payload: { token: 'must-not-export' } }],
+    },
+  }), () => fetchedAt);
+  await publishBridgeQueueSnapshot(snapshot, '1', home, fetchedAt);
   assert.equal((await readFile(join(home, '.local/state/pm-aggregator/bridge-queue.json'), 'utf8')).includes('must-not-export'), false);
   await mkdir(join(home, '.config/queue-broker'), { recursive: true, mode: 0o700 });
   let healthRequests = 0;

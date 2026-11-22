@@ -9,7 +9,7 @@ import type { QueueSnapshot } from "../src/queue.ts";
 const NOW = 1_800_000_000_000;
 function source(): QueueSnapshot {
   return {
-    available: true, stale: false, fetchedAt: NOW, errors: [],
+    bridgeVerified: true, available: true, stale: false, fetchedAt: NOW, errors: [],
     tasks: [{ id: 12, status: "queued", priority: 10, title: "SECRET", payload: "SECRET", progressNext: "SECRET" }],
     queues: [{ queued: 1, claimed: 2, parked: 3, handedOff: 4, blocked: 5, done: 6, cancelled: 7, failed: 8, queue: "SECRET" }],
   } as unknown as QueueSnapshot;

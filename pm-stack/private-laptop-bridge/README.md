@@ -1,7 +1,9 @@
 # Private laptop bridge — offline candidate
 
 **Not deployed; not a replacement-ready cutover.** Desktop Commander remains the
-fallback. This package implements bounded Fleet reads, not a shell. Aster still
+fallback. [The staging approval packet](STAGING.md) specifies private Gateway
+ingress, resources, identities, costs, installation and rollback. This package
+implements bounded Fleet reads, not a shell. Aster still
 needs an approved caller integration, a privately reachable control plane, and
 verified enrollment on Drew's AMD NixOS laptop before relying on it.
 
@@ -43,8 +45,10 @@ including newly merged [#12505](https://github.com/developing-today/code/pull/12
   authenticated endpoints or reads their token file.
 * The existing aggregator already reads `/health` and `/list`. An opt-in
   sanitized snapshot producer supplies queue metadata to this bridge without
-  adding another credential consumer. Publication does not add a polling timer:
-  it occurs when the existing collector refreshes. Unrefreshed data expires.
+  adding another credential consumer. Publication follows the existing collector;
+  a separately gated one-hour refresh pilot can maintain its cadence. Unrefreshed
+  data expires, and raw broker provenance must be verified before zeros count as
+  an observed idle queue.
 * `pkgs/laptop-agent/src/laptop_agent.py` exposes general `/exec`, `/jobs` and
   `/file`. None is called or proxied here.
 * `home/common/default.nix` declares `desktop-commander-remote`; this change does
@@ -93,7 +97,8 @@ replacement.
    an owner-controlled channel. Never accept a device-reported caller key or an
    unauthenticated key-discovery endpoint. Prove wrong-role, wrong-device,
    wrong-audience, expired and revoked identities fail at every stage.
-4. Explicitly approve enabling `PM_AGG_BRIDGE_SNAPSHOT=1` on the existing
+4. Explicitly approve enabling `PM_AGG_BRIDGE_SNAPSHOT=1` and, for the bounded
+   refresh pilot, `PM_AGG_BRIDGE_REFRESH=1` on the existing
    aggregator and installing the **disabled example** non-root bridge unit.
    Confirm actual permissions, Nix Node path, fixed snapshot location and local
    health socket. Observe a fresh real snapshot; then simulate stale/missing
@@ -115,7 +120,7 @@ replacement.
 
 Disable the bridge first (`ENABLED` not `true`), revoke the caller/device entries,
 and stop the new user service. Remove private ingress/service bindings only under
-the same approved change procedure. Disable the aggregator snapshot opt-in;
+the same approved change procedure. Remove both aggregator opt-in flags;
 remaining snapshots age out and are never treated as fresh indefinitely. Short
 RPC/result lifetimes bound recoverable data; explicit deletion of cloud resources
 or credential material needs its own approved cleanup. Resume Fleet through the
@@ -167,6 +172,15 @@ new lease; the previous lease cannot commit. All accepted-signature attempts,
 including replay and invalid arguments, consume quota. Unknown/invalid signatures
 produce constant denial log records; they cannot create identity-specific state.
 
+Accepted calls and leased jobs include `serverNow`. The clients convert the
+advertised server-relative lifetime to a conservative local deadline starting at
+request send time, so network transit consumes the budget and ±30-second clock
+offset does not extend a lease. Caller handle `expiresAt` is therefore on the
+caller runner's clock, not server UTC. Queue observation timestamps remain source
+timestamps; a future source timestamp is refused by the caller rather than shown
+as a successful current observation. Idle polling is two seconds, leaving room
+within the device quota for result submissions.
+
 Audit stores only timestamp, validated principal/role, fixed route and status.
 It stores no bodies, results, paths, private keys or exception messages. Denial
 console records contain fixed event/status/code fields. Cloudflare log retention,
@@ -183,8 +197,8 @@ Requires Node 24+. From this directory:
 
 ```sh
 npm ci
-npm test
-node --test ../aggregator/test/bridge-snapshot.test.ts
+npm run rehearse
+npm run check:staging
 ```
 
 `runtime.test.mjs` executes the actual Worker with Miniflare/workerd and SQLite
@@ -194,7 +208,13 @@ local temporary database fixtures are removed after tests. The unit/property and
 state-machine tests complement this runtime evidence. No test deploys a Worker,
 connects to AMD, reads live credentials or installs a service.
 
-No CI workflow or schedule is added. The repository disables automatic PR CI;
+`check:staging` is a local Wrangler bundle dry run, not a deployment. The deployed
+candidate's default HTTP handler always denies; only the Gateway RPC entrypoint
+can reach the signed bridge, after trusted-context checks. The real Gateway DNS,
+device enrollment and TLS-trust path still requires the approval packet's smoke.
+
+No CI workflow or active schedule is added. The optional process interval is
+registered as proposed/disabled. The repository disables automatic PR CI;
 this PR must not imply absent checks passed. Full aggregator/Bun verification and
 NixOS service sandbox validation remain separate from the focused snapshot tests.
 
@@ -221,9 +241,17 @@ follows no redirects, stops on authorization denial, and reconnects with bounded
 backoff after transport failure. The supplied service file is a review template
 with placeholder executable paths and no installation target.
 
-Queue freshness is demand-driven: publication follows the aggregator's existing
-`source.queue()` refresh, currently used by its service view. Enabling publication
-alone does not guarantee a periodic fresh snapshot. Verify the actual refresh
-cadence during the pilot; if the source is idle, the bridge correctly becomes
-unavailable after five minutes. Adding a scheduled refresh would be a separate
-reviewed change with the Fleet schedule registry updated in the same pass.
+Queue publication alone remains demand-driven. The separately approved refresh
+pilot requires **both** literal flags, reads immediately then 65 seconds after
+completion (beyond the 60-second cache), never overlaps, and stops scheduling
+after one hour. It uses a monotonic clock and unref'd timers. An already running
+read may finish after the stop; it cannot schedule another. Removing both flags
+prevents restart from beginning another pilot. No successful read means no new
+source timestamp: after five minutes the client reports unavailable, never idle.
+Fresh explicit zero counters are an observed idle queue; an empty partial task
+list still has `complete:false,total:null` and proves no global empty total.
+
+`aster.mjs` supplies the four strictly parsed commands in STAGING.md for an
+approved non-root caller runner. Its end-to-end test exercises actual CLI parsing,
+signing, Worker/SQLite execution, the laptop client, and bounded JSON output. No
+Aster connector or runner access is installed by this package.

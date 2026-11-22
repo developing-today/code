@@ -105,7 +105,7 @@ export class PrivateLaptopBridge {
       if (Object.keys(s.jobs).length >= 8) return deny(429, 'capacity');
       const id = crypto.randomUUID();
       s.jobs[id] = {id, device: body.device, operation: body.operation, args: body.args, caller: p.id, expiresAt: now + 60000, retainUntil: now + 120000, lease: null, leaseUntil: 0, assignee: null};
-      return {status: 202, body: {id, expiresAt: s.jobs[id].expiresAt}};
+      return {status: 202, body: {id, expiresAt: s.jobs[id].expiresAt, serverNow: now}};
     }
     if (path === '/v1/poll') {
       if (p.role !== 'device') return deny(403, 'role');
@@ -113,7 +113,7 @@ export class PrivateLaptopBridge {
       const job = Object.values(s.jobs).find(j => liveJob(j) && !j.result && j.leaseUntil <= now && allows(p, j.device, j.operation, now));
       if (!job) return {status: 200, body: {job: null}};
       job.lease = crypto.randomUUID(); job.leaseUntil = Math.min(now + 15000, job.expiresAt); job.assignee = p.id;
-      return {status: 200, body: {job: {id: job.id, lease: job.lease, operation: job.operation, args: job.args, expiresAt: job.expiresAt, leaseExpiresAt: job.leaseUntil}}};
+      return {status: 200, body: {job: {id: job.id, lease: job.lease, operation: job.operation, args: job.args, expiresAt: job.expiresAt, leaseExpiresAt: job.leaseUntil, serverNow: now}}};
     }
     if (path === '/v1/result') {
       if (p.role !== 'device') return deny(403, 'role');

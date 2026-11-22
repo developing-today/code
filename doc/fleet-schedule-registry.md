@@ -376,7 +376,7 @@ registered. The primary user's repos are maintained by git's own
 per-user launchd agents, which `git maintenance start` installs outside
 Nix; they are not recorded here until a review reads them on the Mac.
 
-## Surface 6 — PM-stack process intervals (4 entries)
+## Surface 6 — PM-stack process intervals (5 entries, including one proposed/disabled)
 
 Recurring loops owned by PM-stack processes (aggregator, console). These are not
 external scheduler surfaces; this inventory records timers that run only
@@ -388,6 +388,7 @@ while the service is alive.
 | Console state refresh       | developing-today/code | every 5 seconds  | live console process only    | PR #12452     | `pm-stack/console/src/docs.ts` (`Docs.start`)                  | not recorded | Reads only while the app was opened in the last 10 minutes; remove if state is no longer served from memory                          | 2026-11-22 | 2026-11-22  |
 | Console notifier            | developing-today/code | every 60 seconds | live console process only    | PR #12452     | `pm-stack/console/src/notify.ts` (`Notifier.start`)            | not recorded | Reads only while a device is subscribed; remove if notifications move to another sender                                              | 2026-11-22 | 2026-11-22  |
 | Console report to the edge  | developing-today/code | 5 to 30 seconds  | live console process only    | PR #12505     | `pm-stack/console/src/sync.ts` (`EdgeLink.start`)              | not recorded | Runs only when PM_CONSOLE_EDGE_URL is set; remove if the app is no longer served from the edge                                       | 2026-11-22 | 2026-11-22  |
+| Private laptop bridge queue refresh pilot | developing-today/code | immediate, then 65 seconds after completion, for at most one hour | **proposed / disabled; NOT active; no timer installed** | Drew approval required before enablement | `pm-stack/aggregator/src/bridge-refresh.ts` and `sources/live.ts` | at most 57 collector starts; reuses existing queue collector credentials and cache | Requires both literal `PM_AGG_BRIDGE_SNAPSHOT=1` and `PM_AGG_BRIDGE_REFRESH=1`; no overlap; independent one-hour stop even on hung read; cancellation hook; remove both flags after approved pilot so process restart cannot begin another | 2026-11-22 | 2026-11-22 |
 
 ## Surface 7 — Cloudflare Worker cron triggers (2 entries)
 

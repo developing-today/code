@@ -8,6 +8,7 @@ import { createHash } from "node:crypto";
 import { dirname, join } from "node:path";
 import type { Config } from "../config.ts";
 import { publishBridgeQueueSnapshot } from "../bridge-snapshot.ts";
+import { startBridgeRefresh } from "../bridge-refresh.ts";
 import { applyBoardDonePolicy, isRetiredDoneTableTitle } from "../board-policy.ts";
 import { AA_PLAN_FACTS, aaApplyPriceOverlay, isAaSection } from "../aa.ts";
 import { aaCacheFileName, aaPricesFingerprint, isAaBatchCacheEntry } from "../aa-batches.ts";
@@ -888,6 +889,8 @@ export function isFeedAttentionEntry(v: unknown): v is SessionFeedEntry {
 export function liveSource(
   cfg: Config,
   opts?: {
+    /** Optional shutdown hook for the explicitly enabled one-hour queue pilot. */
+    bridgeRefreshSignal?: AbortSignal;
     standingAuto?: () => Promise<boolean>;
     onEvent?: (event: NewStreamEvent) => void;
     hasEvent?: (kind: string, ref: string) => Promise<boolean>;
@@ -1585,6 +1588,14 @@ export function liveSource(
     }
     return queueInFlight;
   }
+  // Proposed/disabled one-hour pilot. Reuse exactly this collector and its
+  // single-flight cache; do not add a credential reader or fabricate timestamps.
+  // 65 seconds after completion exceeds the existing 60-second cache TTL.
+  startBridgeRefresh(queueSnapshot, {
+    snapshot: process.env.PM_AGG_BRIDGE_SNAPSHOT,
+    refresh: process.env.PM_AGG_BRIDGE_REFRESH,
+    signal: opts?.bridgeRefreshSignal,
+  });
   return {
     async board() {
       try {

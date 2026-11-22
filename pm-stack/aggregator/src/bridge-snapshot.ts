@@ -30,7 +30,8 @@ export function bridgeQueueSnapshot(source: QueueSnapshot, now = Date.now()): Br
     version: 1, fetchedAt: now, available: false, stale: true,
     complete: false, total: null, tasks: [], counts: counts(),
   });
-  if (!source.available || source.stale || !nonnegative(source.fetchedAt)
+  if (source.bridgeVerified !== true || source.available !== true || source.stale !== false
+      || !Array.isArray(source.errors) || source.errors.length !== 0 || !nonnegative(source.fetchedAt)
       || source.fetchedAt > now + 5_000 || now - source.fetchedAt > 300_000
       || !Array.isArray(source.tasks) || !Array.isArray(source.queues)) return unavailable();
   const result: BridgeQueueSnapshot = {

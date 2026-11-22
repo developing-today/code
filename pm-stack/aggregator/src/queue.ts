@@ -111,6 +111,11 @@ export interface QueueTask {
 }
 
 export interface QueueSnapshot {
+  /** Set only by the raw broker read after checking explicit success, complete
+   * row containers and all eight counters. Legacy UI projection is permissive
+   * (missing values become zero); the private bridge must not treat those
+   * defaults as evidence that the queue was observed idle. */
+  bridgeVerified?: boolean;
   /** When the broker read that produced this snapshot completed
    * (the source timestamp every payload carries). */
   fetchedAt: number;
@@ -284,17 +289,29 @@ export async function fetchQueueSnapshot(
   listLimit = 200,
 ): Promise<QueueSnapshot> {
   const health = await brokerPost(fetchImpl, brokerUrl, token, "/health", {});
+  const states = ["queued", "claimed", "parked", "handed_off", "blocked", "done", "cancelled", "failed"];
+  const object = (v: unknown): v is Record<string, unknown> => v !== null && typeof v === "object" && !Array.isArray(v);
+  const count = (n: unknown): n is number => Number.isSafeInteger(n) && (n as number) >= 0;
+  let bridgeVerified = health.ok === true && Array.isArray(health.rows)
+    && health.rows.every((row: unknown) => object(row) && typeof row.queue === "string" && row.queue.length > 0
+      && states.every(state => count(row[state])));
   const healthRows = (Array.isArray(health.rows) ? health.rows : []) as BrokerHealthRow[];
+  bridgeVerified &&= new Set(healthRows.map(row => row.queue)).size === healthRows.length;
   const taskRows: BrokerTaskRow[] = [];
   for (const row of healthRows) {
+    if (!object(row)) { bridgeVerified = false; continue; }
     if (typeof row.queue !== "string" || row.queue === "") continue;
     const list = await brokerPost(fetchImpl, brokerUrl, token, "/list", {
       queue: row.queue,
       rich: true,
       limit: listLimit,
     });
+    bridgeVerified &&= list.ok === true && Array.isArray(list.rows)
+      && list.rows.every((task: unknown) => object(task) && count(task.id) && task.id > 0
+        && states.includes(task.status as string)
+        && (task.priority === null || (typeof task.priority === "number" && Number.isFinite(task.priority))));
     if (Array.isArray(list.rows)) taskRows.push(...(list.rows as BrokerTaskRow[]));
   }
   const fetchedAt = now();
-  return projectQueueSnapshot(healthRows, taskRows, fetchedAt, fetchedAt);
+  return { ...projectQueueSnapshot(healthRows, taskRows, fetchedAt, fetchedAt), bridgeVerified };
 }

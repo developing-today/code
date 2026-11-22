@@ -24,6 +24,9 @@ CapabilityBoundingSet=
 UMask=0077
 # A denied/revoked identity stops; no automatic restart loop after denial.
 Restart=no
+RuntimeMaxSec=3600
+# Optional approved per-process Gateway trust; never set globally:
+# Environment=NODE_EXTRA_CA_CERTS=/APPROVED_GATEWAY_PUBLIC_CA_PEM
 # ProtectHome=read-only is not a filesystem secrecy boundary. Before enabling,
 # review mount isolation exposing only device.json, bridge-queue.json and the
 # queue-broker socket. No other home reads are implemented by this program.

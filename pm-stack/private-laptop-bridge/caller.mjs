@@ -30,6 +30,7 @@ export function createCaller({ origin, audience, principal, device, privateKey, 
   async function transport(path, body, signal) {
     const controller = new AbortController();
     let timer, reader, response;
+    const startedAt = now();
     const abort = () => controller.abort();
     if (signal?.aborted) throw new CallerError('cancelled');
     signal?.addEventListener('abort', abort, { once: true });
@@ -43,7 +44,7 @@ export function createCaller({ origin, audience, principal, device, privateKey, 
     try {
       const work = async () => {
         controller.signal.throwIfAborted();
-        const request = await signRequest({ origin, audience, principal, privateKey, path, body, now: now() });
+        const request = await signRequest({ origin, audience, principal, privateKey, path, body, now: startedAt });
         controller.signal.throwIfAborted();
         response = await fetchFn(request, { redirect: 'error', signal: controller.signal });
         if (controller.signal.aborted) { void response.body?.cancel().catch(() => {}); controller.signal.throwIfAborted(); }
@@ -64,7 +65,7 @@ export function createCaller({ origin, audience, principal, device, privateKey, 
         const bytes = new Uint8Array(size); let offset = 0;
         for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
         const decoded = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes));
-        return { status: response.status, body: decoded };
+        return { status: response.status, body: decoded, startedAt };
       };
       return await Promise.race([work(), aborted]);
     } catch (error) {
@@ -90,10 +91,15 @@ export function createCaller({ origin, audience, principal, device, privateKey, 
       if (['denied', 'quota'].includes(error.code)) throw error;
       throw new CallerError('submit-outcome-unknown');
     }
-    if (reply.status !== 202 || !exact(reply.body, ['id', 'expiresAt']) || !identifier(reply.body.id)
-      || !Number.isSafeInteger(reply.body.expiresAt) || reply.body.expiresAt <= now()
-      || reply.body.expiresAt > now() + 60000) throw new CallerError('submit-outcome-unknown');
-    return Object.freeze({ id: reply.body.id, operation, expiresAt: reply.body.expiresAt, args: Object.freeze(requested) });
+    if (reply.status !== 202 || !exact(reply.body, ['id', 'expiresAt', 'serverNow']) || !identifier(reply.body.id)
+      || !Number.isSafeInteger(reply.body.serverNow) || Math.abs(reply.body.serverNow - reply.startedAt) > 30000
+      || !Number.isSafeInteger(reply.body.expiresAt) || reply.body.expiresAt <= reply.body.serverNow
+      || reply.body.expiresAt - reply.body.serverNow > 60000) throw new CallerError('submit-outcome-unknown');
+    // The handle deadline is local, not server UTC. Count transport latency
+    // against the server-issued duration, independently of clock offset.
+    const expiresAt = reply.startedAt + (reply.body.expiresAt - reply.body.serverNow);
+    if (expiresAt <= now()) throw new CallerError('submit-outcome-unknown');
+    return Object.freeze({ id: reply.body.id, operation, expiresAt, args: Object.freeze(requested) });
   }
 
   async function read(handle, { signal } = {}) {

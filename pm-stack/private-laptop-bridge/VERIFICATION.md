@@ -1,4 +1,42 @@
-# Offline verification checkpoint — 2026-11-22
+# Offline verification checkpoints — 2026-11-22
+
+## Follow-up review and private staging candidate
+
+The next revision adds `npm run rehearse` (all bridge, Gateway, Aster, freshness,
+publisher and bounded-refresh tests) and `npm run check:staging` (Wrangler bundle
+dry run, never deployment). The PR records the final tested commit and results;
+the original checkpoint below remains historical evidence for `0ba3dd75a`.
+
+Concrete findings fixed in this follow-up:
+
+* Raw malformed broker counters could normalize to zero and look idle. Bridge
+  publication now requires explicit validated broker provenance and fresh,
+  error-free observations. Eight integration cases prove idle versus unavailable,
+  exact TTL boundaries, missing data, stale completed results and retained-file
+  behavior after failed publication.
+* Awaiting cancellation of a denied response could hang the device client.
+  Cleanup is nonblocking; pending/rejecting cancellation regression tests pass.
+* Slight clock differences rejected legitimate short leases. `serverNow` and
+  conservative request-start-relative deadlines tolerate valid offsets while
+  charging transport time against the lease. Regression coverage includes
+  ±500 ms, ±29 seconds, delayed responses and inconsistent advertised lifetimes.
+* Idle polling consumed the entire per-minute device quota. Two-second polling
+  reserves capacity for results.
+
+The disabled refresh pilot has eight deterministic scheduler tests proving
+strict opt-in, cache-safe cadence, no overlap, monotonic one-hour stop, cancellation
+and no rearming after a hung/late collector. The real Gateway RPC harness verifies
+trusted context/identity/posture gating, direct HTTP denial, and zero upstream
+continuation calls. Aster's four-command CLI has seven tests including actual
+CLI → signed SDK → workerd/SQLite → laptop-client roundtrips.
+
+Wrangler 4.166.0 successfully bundled the private staging configuration in a
+local dry run. Bun 1.4.5 ran the existing queue suite: 18 passed, zero failed.
+These checks do not prove real Gateway routing or AMD service behavior. The
+DNS sink/on-ramp composition, exact account/device inventory and certificate
+trust remain mandatory approval-gated live tests in [STAGING.md](STAGING.md).
+
+## Original checkpoint
 
 Implementation based on developing-today/code `ad4e69670`, refreshed by merge to
 `7bfcaff23` before review. Executed as non-root UID 1000 in an isolated cloud

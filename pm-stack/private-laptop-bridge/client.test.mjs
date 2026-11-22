@@ -12,7 +12,7 @@ const snapshot = () => ({ version:1, fetchedAt:now, available:true, stale:false,
 const json = body => new Response(JSON.stringify(body), { headers:{'content-type':'application/json'} });
 const keys = await crypto.subtle.generateKey('Ed25519', true, ['sign','verify']);
 const base = { origin:'https://bridge.invalid', audience:'test-bridge', principal:'amd-device', privateKey:keys.privateKey, now:()=>now, getuid:()=>1000 };
-const job = (overrides = {}) => ({ id:'job-1', lease:'lease-1', operation:'laptop.health', args:{}, expiresAt:now+60000, leaseExpiresAt:now+15000, ...overrides });
+const job = (overrides = {}) => ({ id:'job-1', lease:'lease-1', operation:'laptop.health', args:{}, expiresAt:now+60000, leaseExpiresAt:now+15000, serverNow:now, ...overrides });
 
 test('oracle: CLI grammar rejects every undeclared argument before activity', () => {
   assert.deepEqual(parseArgs(['--help']), {help:true});
@@ -71,7 +71,7 @@ test('oracle: disconnect backoff is bounded and successful reconnect resets it',
   const abort=new AbortController();const waits=[];let calls=0;
   const client=createClient({...base,fetch:async()=>{calls++;if(calls<=7)throw new Error('offline');return json({job:null});},sleep:async(ms)=>{waits.push(ms);if(calls===8)abort.abort();}});
   await client.run(abort.signal);
-  assert.deepEqual(waits,[1000,2000,4000,8000,16000,30000,30000,1000]);
+  assert.deepEqual(waits,[1000,2000,4000,8000,16000,30000,30000,2000]);
 });
 
 test('oracle: redirects and overlarge responses fail closed', async () => {
