@@ -568,6 +568,7 @@ pub struct BoardListing {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod note_anchor_tests {
     use super::*;
 
@@ -853,6 +854,7 @@ mod note_anchor_tests {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod note_projection_properties {
     //! Generated coverage for the note embed and reply-anchor projections:
     //! a resolved passage keeps its section and quote, an orphan keeps
