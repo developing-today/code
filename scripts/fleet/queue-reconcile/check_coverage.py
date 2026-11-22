@@ -61,6 +61,14 @@ single issue. Fixtures carry the fields on the issue objects:
 come with the enumeration and the verdict is read from the issue's
 comments, for broker-uncovered effort issues only.
 
+The coverage is released when the verdict stops parking the issue:
+the resume condition is evaluated against live state (a closed
+dependency, a merged slice), and a label, commit or body change
+after the verdict ends it — the same freshness rule the lane
+guard applies. A verdict that cannot be read (a failed comments
+fetch) is never treated as absent: the issue is skipped from the
+import, reported as an error, and the run exits 3.
+
 Exit codes: 0 = run completed (uncovered may be > 0 in observe mode),
 2 = configuration/usage error, 3 = a fetch or broker call failed (the
 report names which; a failure never masquerades as "0 uncovered").
@@ -333,12 +341,135 @@ def verdict_from_comments(comments: list) -> dict:
     return {}
 
 
+def verdict_from_comments(comments: list) -> dict:
+    """{"verdict", "resume_condition"} read from the newest agent
+    note, or {} when that note is not a recorded triage verdict.
+
+    Mirrors the lane-guard freshness rule: the scan stops at the
+    newest non-bot comment — a human comment or a newer agent note
+    of any other state means the verdict is no longer the newest
+    signal, so it does not cover. When the note comment carries a
+    timestamp it is returned as `verdict_at`, so the caller can
+    check the timeline for changes after the verdict.
+    """
+    for c in reversed(comments or []):
+        body = c.get("body") or ""
+        if not _AGENT_NOTE_MARKER.search(body):
+            user = c.get("user") or {}
+            if user.get("type") == "Bot":
+                continue  # bots (CI, sweepers) are not news
+            return {}
+        head = body[:600]
+        m_state = _NOTE_STATE_RE.search(head)
+        m_verdict = _NOTE_VERDICT_RE.search(head)
+        if (
+            not m_state
+            or m_state.group(1).lower().replace("-", "_") != "triaged"
+            or not m_verdict
+        ):
+            return {}
+        out = {"verdict": _norm_token(m_verdict.group(1))}
+        m_resume = _NOTE_RESUME_RE.search(head)
+        if m_resume:
+            resume = parse_resume_condition(m_resume.group(1))
+            if resume:
+                out["resume_condition"] = resume
+        if c.get("created_at"):
+            out["verdict_at"] = c["created_at"]
+        return out
+    return {}
+
+
+def _parse_ts(value) -> datetime | None:
+    """An ISO-8601 timestamp, or None when it cannot be read."""
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except (ValueError, TypeError):
+        return None
+
+
+# Timeline event -> the kind of issue change it proves, kept in step
+# with lane_guard.changes_from_timeline: a commit referenced on the
+# issue, a label change, a body edit. `commented` is deliberately
+# absent: comments are judged from the comment list itself, where
+# human vs bot is visible.
+_TIMELINE_CHANGES = {"labeled": "label", "unlabeled": "label", "edited": "body"}
+
+
+def changes_from_timeline(events: list) -> list:
+    """[{"kind", "at"}] for the issue changes a verdict must not
+    outlive. A `referenced` event only counts as a commit when it
+    carries a commit_id (a cross-reference from another issue is
+    not one)."""
+    out = []
+    for e in events or []:
+        if not isinstance(e, dict):
+            continue
+        kind = _TIMELINE_CHANGES.get(e.get("event"))
+        if e.get("event") == "referenced" and e.get("commit_id"):
+            kind = "commit"
+        if kind and e.get("created_at"):
+            out.append({"kind": kind, "at": e["created_at"]})
+    return out
+
+
+def verdict_fresh(issue: dict) -> bool:
+    """True unless a recorded timeline change postdates the verdict.
+
+    The issue carries `verdict_at` (the verdict note's timestamp)
+    and `timeline_changes` (from fetch_issue_verdict, or a fixture).
+    With neither recorded there is nothing to compare, so the
+    verdict stands; an unreadable timestamp never invents staleness.
+    """
+    verdict_at = _parse_ts(issue.get("verdict_at"))
+    if verdict_at is None:
+        return True
+    for ch in issue.get("timeline_changes") or []:
+        at = _parse_ts(ch.get("at") if isinstance(ch, dict) else None)
+        if at is not None and at > verdict_at:
+            return False
+    return True
+
+
+def fetch_issue_timeline(repo: str, number: int, gh: str = "gh") -> list:
+    """The issue changes a verdict must not outlive, from the
+    issue timeline. A failed fetch is a FetchError: without the
+    timeline the verdict's freshness is unknown, so the caller
+    must not treat the verdict as fresh."""
+    cmd = [
+        gh,
+        "api",
+        "--paginate",
+        f"repos/{repo}/issues/{number}/timeline?per_page=100",
+        "--jq",
+        ".[] | {event, created_at, commit_id}",
+    ]
+    try:
+        out = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise FetchError(f"github timeline failed for {repo}#{number}: {exc}") from exc
+    if out.returncode != 0:
+        raise FetchError(
+            f"github timeline failed for {repo}#{number} (exit {out.returncode}): "
+            f"{out.stderr.strip()[:400]}"
+        )
+    events: list[dict] = []
+    for line in out.stdout.splitlines():
+        line = line.strip()
+        if line:
+            events.append(json.loads(line))
+    return changes_from_timeline(events)
+
+
 def fetch_issue_verdict(repo: str, number: int, gh: str = "gh") -> dict:
     """The recorded verdict on one issue, from its comments.
 
     A failed fetch is a FetchError, exactly like the enumerations:
     an unread issue must never read as verdict-covered (which would
-    suppress triage) or silently as verdict-free.
+    suppress triage) or silently as verdict-free. When a verdict is
+    found, its timeline is fetched too and returned as
+    `timeline_changes`, so the caller can end coverage on a label,
+    commit or body change after the verdict (verdict_fresh).
     """
     cmd = [
         gh,
@@ -362,7 +493,100 @@ def fetch_issue_verdict(repo: str, number: int, gh: str = "gh") -> dict:
         line = line.strip()
         if line:
             comments.append(json.loads(line))
-    return verdict_from_comments(comments)
+    verdict = verdict_from_comments(comments)
+    if verdict:
+        verdict["timeline_changes"] = fetch_issue_timeline(repo, number, gh)
+    return verdict
+
+
+# ---------------------------------------------------------------------------
+# Resume conditions (#12233 F2b): is the verdict's wait over?
+# ---------------------------------------------------------------------------
+#
+# Decision (FDR-0013: decide, record, continue — no owner gate): a
+# resume condition is fulfilled by live GitHub state, checked at
+# reconciliation time. `dependency_closed:N` is fulfilled iff issue
+# N is closed. `slice_landed:N` is fulfilled iff PR N is merged; a
+# PR closed without merging did not land the slice, so it does not
+# release the verdict. A target whose state cannot be read is
+# unknown, never fulfilled: the issue stays covered and the failure
+# is reported (exit 3), so a transient outage cannot re-triage a
+# parked issue or park one whose wait is over.
+
+
+def resume_fulfilled(resume: str, state: str | None) -> bool | None:
+    """True/False when `state` settles the resume condition, None
+    when the state is unknown or unrecognised."""
+    kind, _, _ = resume.partition(":")
+    if kind == "dependency_closed":
+        if state == "closed":
+            return True
+        if state == "open":
+            return False
+        return None
+    if kind == "slice_landed":
+        if state == "merged":
+            return True
+        if state in ("open", "closed"):
+            return False
+        return None
+    return None
+
+
+def fetch_resume_state(repo: str, resume: str, gh: str = "gh") -> str:
+    """The live state of a resume condition's target: an issue's
+    state, or a PR's state with "merged" when it has a merge
+    timestamp. A failed fetch is a FetchError."""
+    kind, _, target = resume.partition(":")
+    if kind == "dependency_closed":
+        cmd = [gh, "api", f"repos/{repo}/issues/{target}", "--jq", ".state"]
+    elif kind == "slice_landed":
+        cmd = [
+            gh,
+            "api",
+            f"repos/{repo}/pulls/{target}",
+            "--jq",
+            "{merged: (.merged_at != null), state: .state}",
+        ]
+    else:
+        raise FetchError(f"unknown resume kind in {resume!r}")
+    try:
+        out = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise FetchError(
+            f"github resume target failed for {repo} {resume}: {exc}"
+        ) from exc
+    if out.returncode != 0:
+        raise FetchError(
+            f"github resume target failed for {repo} {resume} "
+            f"(exit {out.returncode}): {out.stderr.strip()[:400]}"
+        )
+    try:
+        value = json.loads(out.stdout.strip())
+    except json.JSONDecodeError as exc:
+        raise FetchError(
+            f"github resume target failed for {repo} {resume}: unreadable reply"
+        ) from exc
+    if kind == "slice_landed":
+        return "merged" if value.get("merged") else str(value.get("state") or "")
+    return str(value or "")
+
+
+def resolve_resume(
+    repo: str, resume: str, states: dict | None = None, gh: str = "gh"
+) -> bool | None:
+    """True when the resume condition is fulfilled, False when its
+    target is known not to be, None when fulfilment is unknown.
+    `states` is the fixture-mode map of canonical resume condition
+    to target state (`"closed"` / `"open"` for a dependency,
+    `"merged"` / `"open"` / `"closed"` for a slice); with no map the
+    target is read live. A resume condition absent from the map is
+    unknown, never assumed fulfilled."""
+    if states is not None:
+        if resume not in states:
+            return None
+        return resume_fulfilled(resume, states[resume])
+    return resume_fulfilled(resume, fetch_resume_state(repo, resume, gh))
 
 
 # ---------------------------------------------------------------------------
@@ -632,15 +856,61 @@ def render_report(
     total_pr = sum(r.get("pr_covered", 0) for r in results)
     total_verdict = sum(r.get("verdict_covered", 0) for r in results)
     total_watch = sum(r.get("watch_imported", 0) for r in results)
+    total_unread = sum(len(r.get("verdict_unread_issues", [])) for r in results)
+    total_fulfilled = sum(
+        len(r.get("resume_fulfilled_issues", [])) for r in results
+    )
+    total_stale = sum(len(r.get("stale_issues", [])) for r in results)
     lines += [
         "",
         f"**Total uncovered: {total_uncovered}** · imported this run: {total_imported}",
         f"Open-PR covered (#4951): {total_pr} · merge-watch imported this run: {total_watch}",
         f"Verdict covered (#12233 F2b): {total_verdict}",
+        f"Verdict unread (fetch failed — skipped from import): {total_unread} "
+        f"· resume condition fulfilled (due for re-triage): {total_fulfilled} "
+        f"· verdict stale (changed after the verdict): {total_stale}",
         "",
     ]
     if errors:
         lines += ["## ERRORS", ""] + [f"- {e}" for e in errors] + [""]
+    unread_any = [(r, i) for r in results for i in r.get("verdict_unread_issues", [])]
+    if unread_any:
+        lines += [
+            "## Verdict unread — fetch failed, skipped from import (#12233 F2b)",
+            "",
+        ]
+        for r, i in unread_any:
+            lines.append(
+                f"- {r['repo']}#{i['number']} — the recorded verdict could not be "
+                "read, so no triage packet was enqueued for it"
+            )
+        lines.append("")
+    fulfilled_any = [
+        (r, i) for r in results for i in r.get("resume_fulfilled_issues", [])
+    ]
+    if fulfilled_any:
+        lines += [
+            "## Resume condition fulfilled — due for re-triage (#12233 F2b)",
+            "",
+        ]
+        for r, i in fulfilled_any:
+            lines.append(
+                f"- {r['repo']}#{i['number']} — verdict {i.get('verdict')} "
+                f"(resume {i.get('resume')} fulfilled)"
+            )
+        lines.append("")
+    stale_any = [(r, i) for r in results for i in r.get("stale_issues", [])]
+    if stale_any:
+        lines += [
+            "## Verdict stale — issue changed after the verdict (#12233 F2b)",
+            "",
+        ]
+        for r, i in stale_any:
+            lines.append(
+                f"- {r['repo']}#{i['number']} — verdict {i.get('verdict')} "
+                "(a label, commit or body change postdates the verdict)"
+            )
+        lines.append("")
     pr_any = [(r, i) for r in results for i in r.get("pr_covered_issues", [])]
     if pr_any:
         lines += [
@@ -737,6 +1007,12 @@ def main(argv: list[str] | None = None) -> int:
 
     results: list[dict] = []
     errors: list[str] = []
+    # Fixture mode only: canonical resume condition -> target state
+    # ("closed"/"open" for a dependency, "merged"/"open"/"closed"
+    # for a slice), so the resume-fulfilment check runs offline. An
+    # absent map is an empty map (unknown, never fulfilled), never a
+    # live lookup: fixtures must not touch the network.
+    resume_states = (fixture.get("resume_targets") or {}) if fixture else None
     for queue, repo in selected:
         try:
             if fixture:
@@ -751,6 +1027,10 @@ def main(argv: list[str] | None = None) -> int:
             errors.append(str(exc))
             continue
 
+        # A verdict read that failed leaves the issue's verdict
+        # unknown: it is skipped from the import below, never
+        # treated as verdict-free.
+        verdict_read_failed: set[int] = set()
         if not fixture:
             # #12233 F2b: the broker diff cannot see verdicts. For
             # the effort issues it calls uncovered, read the recorded
@@ -768,6 +1048,7 @@ def main(argv: list[str] | None = None) -> int:
                     issue.update(fetch_issue_verdict(repo, issue["number"]))
                 except FetchError as exc:
                     errors.append(str(exc))
+                    verdict_read_failed.add(issue["number"])
 
         # #4951: an issue the broker calls uncovered whose fix PR is
         # still open is in-flight, not ownerless — no triage packet.
@@ -782,16 +1063,40 @@ def main(argv: list[str] | None = None) -> int:
 
         # #12233 F2b: an issue the broker calls uncovered whose
         # recorded verdict parks it is verdict-covered — the verdict
-        # note is the park record, so no triage packet.
+        # note is the park record, so no triage packet. Two releases
+        # end the coverage: a timeline change after the verdict
+        # (verdict_fresh), and a fulfilled resume condition
+        # (resolve_resume). An unread verdict is neither covered nor
+        # uncovered — it is skipped from the import entirely.
         by_number = {i["number"]: i for i in issues}
         verdict_covered: list[dict] = []
+        verdict_unread: list[dict] = []
+        resume_fulfilled_issues: list[dict] = []
+        stale_issues: list[dict] = []
         still_uncovered: list[dict] = []
         for entry in uncovered:
-            info = verdict_coverage(by_number.get(entry["number"], entry))
-            if info:
-                verdict_covered.append({**entry, **info})
-            else:
+            issue = by_number.get(entry["number"], entry)
+            if entry["number"] in verdict_read_failed:
+                verdict_unread.append(entry)
+                continue
+            info = verdict_coverage(issue)
+            if not info:
                 still_uncovered.append(entry)
+                continue
+            if not verdict_fresh(issue):
+                stale_issues.append({**entry, **info})
+                still_uncovered.append(entry)
+                continue
+            try:
+                fulfilled = resolve_resume(repo, info["resume"], resume_states)
+            except FetchError as exc:
+                errors.append(str(exc))
+                fulfilled = None
+            if fulfilled:
+                resume_fulfilled_issues.append({**entry, **info})
+                still_uncovered.append(entry)
+            else:
+                verdict_covered.append({**entry, **info})
         uncovered = still_uncovered
 
         imported = 0
@@ -832,6 +1137,11 @@ def main(argv: list[str] | None = None) -> int:
                 "pr_covered_issues": pr_covered,
                 "verdict_covered": len(verdict_covered),
                 "verdict_covered_issues": verdict_covered,
+                "verdict_unread": len(verdict_unread),
+                "verdict_unread_issues": verdict_unread,
+                "resume_fulfilled": len(resume_fulfilled_issues),
+                "resume_fulfilled_issues": resume_fulfilled_issues,
+                "stale_issues": stale_issues,
                 "uncovered": len(uncovered),
                 "imported": imported,
                 "watch_imported": watch_imported,

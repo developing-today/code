@@ -406,13 +406,15 @@ class VerdictCoverageTest(unittest.TestCase):
         return self.base.run_cli(fx, *extra)
 
     @staticmethod
-    def vfixture(entries: dict, uncovered: list[int]) -> dict:
+    def vfixture(
+        entries: dict, uncovered: list[int], resume_targets: dict | None = None
+    ) -> dict:
         issues = [
             {"number": n, "title": f"issue {n}", **extra}
             for n, extra in entries.items()
         ]
         covered = [n for n in entries if n not in uncovered]
-        return {
+        fx = {
             "issues": {REPO: issues},
             "pulls": {REPO: []},
             "coverage": {
@@ -434,6 +436,9 @@ class VerdictCoverageTest(unittest.TestCase):
                 }
             },
         }
+        if resume_targets is not None:
+            fx["resume_targets"] = resume_targets
+        return fx
 
     def test_verdict_covered_issue_is_not_reenqueued(self):
         # The F2b done-test: a triaged large issue is covered.
@@ -501,6 +506,275 @@ class VerdictCoverageTest(unittest.TestCase):
         code, _ = self.run_cli(fx, "--import")
         self.assertEqual(code, 0)
         self.assertEqual(len(self.fleet.calls()), 1)
+
+    def test_fulfilled_dependency_releases_coverage(self):
+        # Thread 1 (P1): #539 closed, so the verdict's wait is over —
+        # the parent is uncovered again and gets a triage packet.
+        fx = self.vfixture(
+            {
+                3: {
+                    "labels": ["effort/l"],
+                    "verdict": "still_blocked",
+                    "resume_condition": "dependency_closed:539",
+                }
+            },
+            [3],
+            resume_targets={"dependency_closed:539": "closed"},
+        )
+        code, out = self.run_cli(fx, "--import")
+        self.assertEqual(code, 0)
+        calls = self.fleet.calls()
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0]["packet"]["payload"]["issue"]["number"], 3)
+        self.assertIn("Total uncovered: 1", out)
+        self.assertIn("resume condition fulfilled", out)
+
+    def test_open_dependency_keeps_coverage(self):
+        fx = self.vfixture(
+            {
+                3: {
+                    "labels": ["effort/l"],
+                    "verdict": "still_blocked",
+                    "resume_condition": "dependency_closed:539",
+                }
+            },
+            [3],
+            resume_targets={"dependency_closed:539": "open"},
+        )
+        code, out = self.run_cli(fx, "--import")
+        self.assertEqual(code, 0)
+        self.assertEqual(self.fleet.calls(), [])
+        self.assertIn("Total uncovered: 0", out)
+
+    def test_merged_slice_releases_coverage(self):
+        fx = self.vfixture(
+            {
+                3: {
+                    "labels": ["effort/l"],
+                    "verdict": "still_blocked",
+                    "resume_condition": "slice_landed:12543",
+                }
+            },
+            [3],
+            resume_targets={"slice_landed:12543": "merged"},
+        )
+        code, _ = self.run_cli(fx, "--import")
+        self.assertEqual(code, 0)
+        self.assertEqual(len(self.fleet.calls()), 1)
+
+    def test_closed_unmerged_slice_keeps_coverage(self):
+        # A slice PR closed without merging did not land the slice.
+        fx = self.vfixture(
+            {
+                3: {
+                    "labels": ["effort/l"],
+                    "verdict": "still_blocked",
+                    "resume_condition": "slice_landed:12543",
+                }
+            },
+            [3],
+            resume_targets={"slice_landed:12543": "closed"},
+        )
+        code, _ = self.run_cli(fx, "--import")
+        self.assertEqual(code, 0)
+        self.assertEqual(self.fleet.calls(), [])
+
+    def test_unknown_resume_state_keeps_coverage(self):
+        # No resume_targets entry: fulfilment is unknown, never
+        # assumed — and the fixture run touches no network.
+        fx = self.vfixture(
+            {
+                3: {
+                    "labels": ["effort/l"],
+                    "verdict": "still_blocked",
+                    "resume_condition": "dependency_closed:539",
+                }
+            },
+            [3],
+            resume_targets={},
+        )
+        code, _ = self.run_cli(fx, "--import")
+        self.assertEqual(code, 0)
+        self.assertEqual(self.fleet.calls(), [])
+
+    def test_stale_verdict_is_uncovered_again(self):
+        # Thread 2 (P1): a label change after the verdict ends it.
+        fx = self.vfixture(
+            {
+                3: {
+                    "labels": ["effort/l"],
+                    "verdict": "still_blocked",
+                    "resume_condition": "dependency_closed:539",
+                    "verdict_at": "2026-11-08T12:00:00Z",
+                    "timeline_changes": [
+                        {"kind": "label", "at": "2026-11-08T12:30:00Z"}
+                    ],
+                }
+            },
+            [3],
+        )
+        code, out = self.run_cli(fx, "--import")
+        self.assertEqual(code, 0)
+        self.assertEqual(len(self.fleet.calls()), 1)
+        self.assertIn("verdict stale", out)
+
+    def test_change_before_the_verdict_keeps_coverage(self):
+        fx = self.vfixture(
+            {
+                3: {
+                    "labels": ["effort/l"],
+                    "verdict": "still_blocked",
+                    "resume_condition": "dependency_closed:539",
+                    "verdict_at": "2026-11-08T12:00:00Z",
+                    "timeline_changes": [
+                        {"kind": "commit", "at": "2026-11-08T11:00:00Z"}
+                    ],
+                }
+            },
+            [3],
+        )
+        code, _ = self.run_cli(fx, "--import")
+        self.assertEqual(code, 0)
+        self.assertEqual(self.fleet.calls(), [])
+
+    def test_verdict_from_comments_records_verdict_time(self):
+        note = (
+            "<!-- agent-note:v1 state=triaged task=11111 "
+            "resume=dependency_closed:539 verdict=still_blocked -->\nTriaged."
+        )
+        comments = [
+            {
+                "body": note,
+                "created_at": "2026-11-08T12:00:00Z",
+                "user": {"type": "User"},
+            }
+        ]
+        self.assertEqual(
+            check_coverage.verdict_from_comments(comments),
+            {
+                "verdict": "still_blocked",
+                "resume_condition": "dependency_closed:539",
+                "verdict_at": "2026-11-08T12:00:00Z",
+            },
+        )
+
+    def test_fetch_issue_verdict_applies_timeline_freshness(self):
+        # Thread 2 (P1) at the fetch level: the timeline is read and
+        # a change after the verdict voids it.
+        import subprocess as sp
+        import unittest.mock
+
+        note = (
+            "<!-- agent-note:v1 state=triaged task=11111 "
+            "resume=dependency_closed:539 verdict=still_blocked -->\nTriaged."
+        )
+
+        def fake_run(cmd, **kw):
+            if "timeline" in " ".join(cmd):
+                return sp.CompletedProcess(
+                    cmd,
+                    0,
+                    stdout=json.dumps(
+                        {
+                            "event": "labeled",
+                            "created_at": "2026-11-08T12:30:00Z",
+                            "commit_id": None,
+                        }
+                    )
+                    + "\n",
+                    stderr="",
+                )
+            return sp.CompletedProcess(
+                cmd,
+                0,
+                stdout=json.dumps(
+                    {
+                        "body": note,
+                        "created_at": "2026-11-08T12:00:00Z",
+                        "user": {"type": "User"},
+                    }
+                )
+                + "\n",
+                stderr="",
+            )
+
+        with unittest.mock.patch.object(
+            check_coverage.subprocess, "run", side_effect=fake_run
+        ):
+            stale = check_coverage.fetch_issue_verdict(REPO, 3)
+        self.assertEqual(stale["verdict"], "still_blocked")
+        self.assertFalse(check_coverage.verdict_fresh(stale))
+
+    def test_unread_verdict_issue_is_skipped_from_import(self):
+        # Thread 3 (P2): the comments fetch fails, so the issue's
+        # verdict is unknown — no triage packet, exit 3.
+        import unittest.mock
+
+        token = self.tmp / "token"
+        token.write_text("test-token\n")
+        coverage = {
+            "queue": QUEUE,
+            "repo": REPO,
+            "open_issues": 1,
+            "covered": 0,
+            "uncovered": 1,
+            "covered_issues": [],
+            "uncovered_issues": [
+                {
+                    "number": 3,
+                    "title": "issue 3",
+                    "url": f"https://github.com/{REPO}/issues/3",
+                }
+            ],
+        }
+        with (
+            unittest.mock.patch.object(
+                check_coverage,
+                "fetch_open_issues",
+                return_value=[
+                    {"number": 3, "title": "issue 3", "labels": ["effort/l"]}
+                ],
+            ),
+            unittest.mock.patch.object(
+                check_coverage, "fetch_open_prs", return_value=[]
+            ),
+            unittest.mock.patch.object(
+                check_coverage, "broker_coverage", return_value=coverage
+            ),
+            unittest.mock.patch.object(
+                check_coverage,
+                "fetch_issue_verdict",
+                side_effect=check_coverage.FetchError(
+                    "github comments failed for developing-today/code#3: boom"
+                ),
+            ),
+        ):
+            import io
+            from contextlib import redirect_stdout, redirect_stderr
+
+            buf = io.StringIO()
+            with redirect_stdout(buf), redirect_stderr(buf):
+                code = check_coverage.main(
+                    [
+                        "--import",
+                        "--state-dir",
+                        str(self.state),
+                        "--fleet",
+                        str(self.fleet.bin),
+                        "--repo",
+                        REPO,
+                        "--token-file",
+                        str(token),
+                        "--now",
+                        "2026-11-08T13:00:00Z",
+                    ]
+                )
+            out = buf.getvalue()
+        self.assertEqual(code, 3)
+        self.assertEqual(self.fleet.calls(), [])
+        self.assertIn("Total uncovered: 0", out)
+        self.assertIn("Verdict unread", out)
+        self.assertIn("github comments failed", out)
 
     def test_parse_resume_condition_forms(self):
         parse = check_coverage.parse_resume_condition

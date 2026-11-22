@@ -310,9 +310,10 @@ class VerdictNote(unittest.TestCase):
     """#12233 F2a: a triage verdict is posted once per verdict per
     unchanged issue, across task ids."""
 
-    def verdict(self, cs, task="99999", verdict="still_blocked", changes=()):
+    def verdict(self, cs, task="99999", verdict="still_blocked", changes=(), resume=None):
         return lg.note_verdict(
-            cs, task, "triaged", now=NOW, verdict=verdict, changes=changes
+            cs, task, "triaged", now=NOW, verdict=verdict, changes=changes,
+            resume=resume,
         )
 
     def test_same_verdict_other_task_unchanged_issue_is_skipped(self):
@@ -387,6 +388,35 @@ class VerdictNote(unittest.TestCase):
         )
         self.assertTrue(v["post"])
 
+    def test_new_resume_condition_posts_despite_duplicate_verdict(self):
+        # Thread 4 (P2, #12565): the stored verdict has no resume
+        # condition; the same verdict WITH one still posts, so the
+        # caller can upgrade it to F2b coverage.
+        v = self.verdict(
+            [comment(HTML_TRIAGED, 40)], resume="dependency_closed:539"
+        )
+        self.assertTrue(v["post"])
+        self.assertIn("resume condition", v["reason"])
+
+    def test_same_resume_condition_still_skips(self):
+        v = self.verdict(
+            [comment(HTML_TRIAGED_RESUME, 40)], resume="dependency_closed:539"
+        )
+        self.assertFalse(v["post"])
+
+    def test_changed_resume_condition_posts(self):
+        v = self.verdict(
+            [comment(HTML_TRIAGED_RESUME, 40)], resume="slice_landed:12543"
+        )
+        self.assertTrue(v["post"])
+        self.assertIn("resume condition", v["reason"])
+
+    def test_invalid_resume_condition_still_skips(self):
+        # A resume value that is not a checkable condition is not a
+        # reason to re-post.
+        v = self.verdict([comment(HTML_TRIAGED, 40)], resume="next week")
+        self.assertFalse(v["post"])
+
     def test_first_verdict_posts(self):
         self.assertTrue(self.verdict([])["post"])
 
@@ -397,9 +427,11 @@ class CoverageVerdict(unittest.TestCase):
     verdict with a valid resume condition is covered, and an issue
     with no verdict is still uncovered."""
 
-    def coverage(self, cs, labels=("effort/l",), changes=(), state="open"):
+    def coverage(self, cs, labels=("effort/l",), changes=(), state="open",
+                 resume_fulfilled=None):
         return lg.coverage_verdict(
-            issue(list(labels), state=state), cs, changes=changes
+            issue(list(labels), state=state), cs, changes=changes,
+            resume_fulfilled=resume_fulfilled,
         )
 
     def test_verdict_with_resume_covers_large_and_medium(self):
@@ -473,6 +505,41 @@ class CoverageVerdict(unittest.TestCase):
     def test_change_before_the_verdict_keeps_coverage(self):
         changes = [{"kind": "label", "at": at(50)}]
         v = self.coverage([comment(HTML_TRIAGED_RESUME, 40)], changes=changes)
+        self.assertTrue(v["covered"])
+
+    def test_fulfilled_resume_condition_ends_coverage(self):
+        # Thread 1 (P1, #12565): the dependency closed, so the
+        # verdict's wait is over and the issue is due for re-triage.
+        seen = []
+        v = self.coverage(
+            [comment(HTML_TRIAGED_RESUME, 40)],
+            resume_fulfilled=lambda r: seen.append(r) or True,
+        )
+        self.assertFalse(v["covered"])
+        self.assertIn("fulfilled", v["reason"])
+        self.assertEqual(seen, ["dependency_closed:539"])
+
+    def test_unfulfilled_resume_condition_keeps_coverage(self):
+        v = self.coverage(
+            [comment(HTML_TRIAGED_RESUME, 40)],
+            resume_fulfilled=lambda r: False,
+        )
+        self.assertTrue(v["covered"])
+
+    def test_unknown_resume_state_keeps_coverage(self):
+        v = self.coverage(
+            [comment(HTML_TRIAGED_RESUME, 40)],
+            resume_fulfilled=lambda r: None,
+        )
+        self.assertTrue(v["covered"])
+
+    def test_resume_checker_error_keeps_coverage(self):
+        def boom(r):
+            raise RuntimeError("gh down")
+
+        v = self.coverage(
+            [comment(HTML_TRIAGED_RESUME, 40)], resume_fulfilled=boom
+        )
         self.assertTrue(v["covered"])
 
 
@@ -638,11 +705,31 @@ class Cli(unittest.TestCase):
                 "repos/o/r/issues/1062",
                 "repos/o/r/issues/1062/comments?per_page=100",
                 "repos/o/r/issues/1062/timeline?per_page=100",
+                # The resume target is read live: dependency 539 is
+                # open here, so the wait is not over.
+                "repos/o/r/issues/539",
             ],
         )
         self.assertEqual(code, lg.EXIT_STOP)
         self.assertTrue(out["covered"])
         self.assertEqual(out["resume"], "dependency_closed:539")
+
+    def test_coverage_cli_fulfilled_resume_is_go(self):
+        def gh(path):
+            if "timeline" in path:
+                return []
+            if "comments" in path:
+                return [comment(HTML_TRIAGED_RESUME, 5)]
+            if path.endswith("/issues/539"):
+                return {"state": "closed"}
+            return issue(["effort/l"])
+
+        code, out = self.run_cli(
+            ["coverage", "--repo", "o/r", "--issue", "1062"], gh=gh
+        )
+        self.assertEqual(code, lg.EXIT_GO)
+        self.assertFalse(out["covered"])
+        self.assertIn("fulfilled", out["reason"])
 
     def test_coverage_cli_uncovered_is_go(self):
         def gh(path):
