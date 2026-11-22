@@ -1155,6 +1155,22 @@ impl<'a, L: LedgerBackend> RegistrationService<'a, L> {
                                     report.retry_later += 1;
                                 }
                             }
+                            // A pending transfer whose ledger timeout has
+                            // already fired cannot be explicitly voided.
+                            // The ledger's authoritative expired response
+                            // still means the unspendable grant expires; it
+                            // must not be re-issued after its own deadline.
+                            Err(TransferError::PendingTransferExpired) => {
+                                if self
+                                    .store
+                                    .transition(&grant.grant_id, GrantState::Expired)
+                                    .is_ok()
+                                {
+                                    report.expired += 1;
+                                } else {
+                                    report.retry_later += 1;
+                                }
+                            }
                             Err(_) => report.retry_later += 1,
                         }
                         continue;
@@ -2121,6 +2137,41 @@ mod tests {
             Some(crate::currency_poc::ledger::PendingTransferState::Voided {
                 resolution_id: expiry_void_transfer_id_for_grant("grant-expiry")
             })
+        );
+    }
+
+    #[test]
+    fn expired_grant_does_not_retry_void_or_reissue_after_ledger_timeout() {
+        let v = verifier();
+        let adverse = no_adverse();
+        let mut svc = service(&v, &adverse);
+        svc.config.get_mut("steam").unwrap().window = WindowSnapshot {
+            refund_window_secs: 1,
+            posting_grace_secs: 2,
+        };
+        svc.config.get_mut("steam").unwrap().expiry_secs = Some(3);
+        svc.register(&request("grant-expiry-timeout", "AAAAA-11111-BBBBB", 1_000))
+            .unwrap();
+        assert!(
+            svc.ledger
+                .mark_pending_expired(transfer_id_for_grant("grant-expiry-timeout"))
+        );
+
+        let report = svc.sweep_pending_holds(1_003);
+        assert_eq!(
+            report.expired, 1,
+            "oracle: ledger timeout plus elapsed grant expiry terminates without replacement value"
+        );
+        assert_eq!(report.reissued, 0);
+        assert_eq!(report.retry_later, 0);
+        assert_eq!(
+            svc.store().grant("grant-expiry-timeout").unwrap().state,
+            GrantState::Expired
+        );
+        assert!(
+            svc.ledger
+                .lookup_transfer(reissue_transfer_id_for_grant("grant-expiry-timeout"))
+                .is_none()
         );
     }
 
