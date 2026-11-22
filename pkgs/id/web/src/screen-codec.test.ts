@@ -24,9 +24,7 @@ const GOLDEN_VIEW_PATCH = Uint8Array.from(atob(GOLDEN_VIEW_PATCH_B64), (c) => c.
  */
 const POPULATED_VIEW_PATCH_B64 =
   "gqd2ZXJzaW9uAaVmcmFtZYWoc2VxdWVuY2UHrXZpZXdfcmV2aXNpb24DsmJhc2Vfdmlld19yZXZpc2lvbgKscmVzdW1lX3Rva2VuwKVwYXRjaISndmVyc2lvbgGld2lkdGgCpmhlaWdodAGkcnVuc5GCpXN0YXJ0AKVjZWxsc5KGpnN5bWJvbKFBomZnAaJiZwKkYm9sZMOnY29sdW1ucwGldG9rZW6nd2FybmluZ4Wmc3ltYm9so+awtKJmZwCiYmcApGJvbGTCp2NvbHVtbnMC";
-const POPULATED_VIEW_PATCH = Uint8Array.from(atob(POPULATED_VIEW_PATCH_B64), (c) =>
-  c.charCodeAt(0),
-);
+const POPULATED_VIEW_PATCH = Uint8Array.from(atob(POPULATED_VIEW_PATCH_B64), (c) => c.charCodeAt(0));
 
 describe("decodeViewPatch", () => {
   it("decodes the Rust golden view-patch frame", () => {
