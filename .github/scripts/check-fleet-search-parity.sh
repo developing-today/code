@@ -64,6 +64,16 @@ FLEET_HEADER_FEEDBACK='//! Rehomed verbatim copy of pkgs/atlas-search'\''s serve
 //! limit: mirror every change in both copies. Drift guard:
 //! .github/scripts/check-fleet-search-parity.sh.'
 
+ATLAS_HEADER_HTTP='//! Source of the verbatim copy in pkgs/fleet'\''s fleet-search crate,
+//! split from server.rs in #12671 to satisfy the production-line
+//! limit: mirror every change there. Drift guard:
+//! .github/scripts/check-fleet-search-parity.sh.'
+
+FLEET_HEADER_HTTP='//! Rehomed verbatim copy of pkgs/atlas-search'\''s server_http.rs,
+//! split from server.rs in #12671 to satisfy the production-line
+//! limit: mirror every change in both copies. Drift guard:
+//! .github/scripts/check-fleet-search-parity.sh.'
+
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
@@ -132,8 +142,9 @@ check_pair pyjson.rs "$ATLAS_HEADER_WRITERS" "$FLEET_HEADER_WRITERS"
 check_pair render.rs "$ATLAS_HEADER_WRITERS" "$FLEET_HEADER_WRITERS"
 check_pair server.rs "$ATLAS_HEADER_SERVER" "$FLEET_HEADER_SERVER"
 check_pair server/server_feedback.rs "$ATLAS_HEADER_FEEDBACK" "$FLEET_HEADER_FEEDBACK"
+check_pair server/server_http.rs "$ATLAS_HEADER_HTTP" "$FLEET_HEADER_HTTP"
 
 if [ "$fail" -ne 0 ]; then
   exit 1
 fi
-echo "fleet-search parity: OK - pyjson.rs, render.rs, server.rs and server/server_feedback.rs match atlas-search byte-for-byte outside the pinned parity headers (#5433 contract, guard #5920)"
+echo "fleet-search parity: OK - pyjson.rs, render.rs, server.rs, server/server_feedback.rs and server/server_http.rs match atlas-search byte-for-byte outside the pinned parity headers (#5433 contract, guard #5920)"
