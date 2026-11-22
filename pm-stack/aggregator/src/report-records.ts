@@ -74,9 +74,10 @@ export interface ReportSnapshot {
 
 type ReportRecordEvent = {
   eventId: string;
-  type: "report.generated" | "report.snapshot";
+  type: "report.generated" | "report.snapshot" | "report.snapshot-correction";
   record?: ReportRecord;
   snapshot?: ReportSnapshot;
+  correction?: ReportSnapshotCorrection;
   ts: string;
 };
 
@@ -143,6 +144,7 @@ function parseEvent(line: string): ReportRecordEvent | null {
     if (typeof event.eventId !== "string" || typeof event.ts !== "string") return null;
     if (event.type === "report.generated" && event.record && typeof event.record === "object" && !Array.isArray(event.record)) return value as ReportRecordEvent;
     if (event.type === "report.snapshot" && event.snapshot && typeof event.snapshot === "object" && !Array.isArray(event.snapshot)) return value as ReportRecordEvent;
+    if (event.type === "report.snapshot-correction" && event.correction && typeof event.correction === "object" && !Array.isArray(event.correction)) return value as ReportRecordEvent;
     return null;
   } catch {
     return null; // Ignore a malformed/torn final line, matching decision-events.ts.
@@ -237,6 +239,19 @@ export interface AppendReportSnapshotResult {
   snapshot: ReportSnapshot;
 }
 
+export interface ReportSnapshotCorrection {
+  id: string;
+  snapshotId: string;
+  originalRecordId: string;
+  correctedAt: string;
+  record: ReportRecord;
+}
+
+export interface AppendReportSnapshotCorrectionResult {
+  inserted: boolean;
+  correction: ReportSnapshotCorrection;
+}
+
 /** Freeze a dated view in the same append-only PM-stack log. Existing snapshot
  * IDs are immutable: a repeated identical write is idempotent, changed content
  * is a conflict that must become a separately linked correction record. */
@@ -281,6 +296,49 @@ export async function readReportSnapshots(file: string): Promise<ReportSnapshot[
   return (await readEvents(file))
     .filter((event): event is ReportRecordEvent & { snapshot: ReportSnapshot } => event.type === "report.snapshot" && !!event.snapshot)
     .map((event) => event.snapshot);
+}
+
+/** Append a correction as a new record linked to an immutable snapshot. */
+export async function appendReportSnapshotCorrection(
+  file: string,
+  snapshotId: string,
+  record: ReportRecord,
+  correctedAt: string,
+): Promise<AppendReportSnapshotCorrectionResult> {
+  assertCanonicalRecord(record);
+  requireIsoDate(correctedAt, "correctedAt");
+  const correction: ReportSnapshotCorrection = {
+    id: `correction:${snapshotId}:${record.id}`,
+    snapshotId,
+    originalRecordId: "",
+    correctedAt,
+    record: structuredClone(record),
+  };
+  return serializeAppend(file, async () => {
+    const events = await readEvents(file);
+    const snapshot = events.find((event) => event.type === "report.snapshot" && event.snapshot?.id === snapshotId)?.snapshot;
+    if (!snapshot) throw new Error(`snapshot does not exist: ${snapshotId}`);
+    if (snapshot.record.period.id !== record.period.id) throw new Error("correction period must match the snapshot");
+    correction.originalRecordId = snapshot.reportRecordId;
+    const existing = events.find((event) => event.type === "report.snapshot-correction" && event.correction?.id === correction.id)?.correction;
+    if (existing) {
+      if (existing.snapshotId !== correction.snapshotId || existing.originalRecordId !== correction.originalRecordId || !sameRecordContent(existing.record, correction.record)) {
+        throw new ReportRecordConflictError(correction.id);
+      }
+      return { inserted: false, correction: existing };
+    }
+    await mkdir(dirname(file), { recursive: true });
+    await terminateTornTail(file);
+    const event: ReportRecordEvent = { eventId: correction.id, type: "report.snapshot-correction", correction, ts: correctedAt };
+    await appendFile(file, `${JSON.stringify(event)}\n`, "utf8");
+    return { inserted: true, correction };
+  });
+}
+
+export async function readReportSnapshotCorrections(file: string): Promise<ReportSnapshotCorrection[]> {
+  return (await readEvents(file))
+    .filter((event): event is ReportRecordEvent & { correction: ReportSnapshotCorrection } => event.type === "report.snapshot-correction" && !!event.correction)
+    .map((event) => event.correction);
 }
 
 function sameRecordContent(left: ReportRecord, right: ReportRecord): boolean {

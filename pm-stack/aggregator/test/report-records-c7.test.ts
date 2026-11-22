@@ -5,12 +5,14 @@ import { afterEach, describe, expect, test } from "bun:test";
 import {
   appendReportRecord,
   appendReportSnapshot,
+  appendReportSnapshotCorrection,
   assertReportUpdateAllowed,
   defaultReportRecordsFile,
   makeReportRecord,
   readCurrentReportRecords,
   readReportRecords,
   readReportSnapshots,
+  readReportSnapshotCorrections,
   reportBlockConflict,
   ReportRecordConflictError,
 } from "../src/report-records.ts";
@@ -127,6 +129,45 @@ describe("C7 canonical report records", () => {
     await expect(appendReportSnapshot(file, mutatedSnapshotSource, "2026-11-22T14:00:00.000Z"))
       .rejects.toBeInstanceOf(ReportRecordConflictError);
     expect((await readReportSnapshots(file))[0]?.record.blocks[0]?.text).toBe("Original prose.");
+  });
+
+  test("records snapshot corrections as new linked immutable records", async () => {
+    const file = await storePath();
+    const input = {
+      period: {
+        id: "daily:2026-11-21:America/Chicago",
+        kind: "daily" as const,
+        timezone: "America/Chicago" as const,
+        periodStart: "2026-11-21T06:00:00.000Z",
+        periodEnd: "2026-11-22T06:00:00.000Z",
+        softCloseAt: "2026-11-22T14:00:00.000Z",
+      },
+      asOf: "2026-11-22T05:45:00.000Z",
+      templateVersion: "daily-v1",
+      sourceCursor: "cursor-original",
+      sources: [{ id: "event-1", uri: "gh:issue/1", observedAt: "2026-11-22T05:40:00.000Z" }],
+      blocks: [{ id: "change-1", text: "Original snapshot.", relatedAt: "2026-11-22T05:40:00.000Z" }],
+    };
+    const original = makeReportRecord(input, "2026-11-22T05:45:01.000Z");
+    await appendReportRecord(file, original);
+    await appendReportSnapshot(file, original, "2026-11-22T14:00:00.000Z");
+    const correction = makeReportRecord({
+      ...input,
+      sourceCursor: "cursor-correction-1",
+      blocks: [{ ...input.blocks[0]!, text: "Corrected snapshot." }],
+    }, "2026-11-22T15:00:00.000Z");
+
+    const first = await appendReportSnapshotCorrection(file, "snapshot:daily:2026-11-21:America/Chicago", correction, "2026-11-22T15:00:00.000Z");
+    const rerun = await appendReportSnapshotCorrection(file, "snapshot:daily:2026-11-21:America/Chicago", correction, "2026-11-22T15:05:00.000Z");
+    expect(first.inserted).toBe(true);
+    expect(rerun.inserted).toBe(false);
+    expect(first.correction.snapshotId).toBe("snapshot:daily:2026-11-21:America/Chicago");
+    expect(first.correction.originalRecordId).toBe(original.id);
+    expect(first.correction.record.id).toBe(correction.id);
+    expect((await readReportSnapshots(file))[0]?.record.blocks[0]?.text).toBe("Original snapshot.");
+    expect((await readReportSnapshotCorrections(file)).map((item) => item.record.id)).toEqual([correction.id]);
+    await expect(appendReportSnapshotCorrection(file, "snapshot:missing", correction, "2026-11-22T15:00:00.000Z"))
+      .rejects.toThrow(/snapshot does not exist/);
   });
 
   test("keeps later appends readable after a torn trailing JSONL fragment", async () => {
