@@ -36,7 +36,8 @@ so, and prints what it did:
    to act itself while the laptop is away (the repository automation
    token and the queue store token) and the explicit opt-in that lets it
    use them. Off by default, remembered like `--edge`, and nothing is
-   uploaded on a run that does not change the choice. Turning it off
+   uploaded on a run that does not change the choice (unless the Worker
+   has lost one of them, and then it gets them again). Turning it off
    turns the opt-in off and takes the two tokens away again. They go
    through Cloudflare's API with the token this script already holds, so
    nothing has to be installed here for it. The Worker says in
@@ -276,15 +277,19 @@ def ensure_edge_direct(
     check: bool,
 ) -> None:
     """Upload the two tokens the edge Worker acts with, and its opt-in,
-    or turn the opt-in off. Nothing is uploaded on a run that does not
-    change the choice, so the timer's runs leave the secrets alone.
+    or turn the opt-in off and take the tokens away again.
+
     A secret is read by name through `fleet secrets get` and sent to
     Cloudflare's API as a Worker secret; it is never printed, written to
-    a file or put on a command line. Turning the mode off takes the two
-    tokens away again.
-    The choice is remembered only after the Worker has it: a run that
-    fails part-way leaves the old marker, so the next run tries again
-    instead of assuming the mode is already set."""
+    a file or put on a command line.
+
+    The choice is remembered only once the Worker has it. Turning it on
+    either gets all three there or leaves none: an attempt that fails
+    part-way takes away what it uploaded. Turning it off puts the opt-in
+    off first, so the Worker stops at once, and then removes the tokens;
+    if that stops part-way the mode is still off and a later run
+    finishes. A run that changes nothing uploads nothing, with one
+    exception: a mode that is on gets back whatever the Worker has lost."""
     state = env.parent
     # Read what is remembered before the choice overwrites it. Nothing is
     # written here: the marker moves only once the Worker has the change.
