@@ -37,8 +37,12 @@ if ! command -v apksigner >/dev/null 2>&1; then
   exit 1
 fi
 
+# No --key-pass: apksigner reads one line of a password file per use, so
+# naming the same file twice fails with "end of file reached" on the
+# second read. Without it, apksigner uses the keystore password for the
+# key, which is how a PKCS#12 keystore is protected anyway.
 apksigner sign --ks "$keystore" --ks-type pkcs12 --ks-key-alias pmconsole \
-  --ks-pass "file:$password_file" --key-pass "file:$password_file" \
+  --ks-pass "file:$password_file" \
   --out "$out" "$in"
 
 got="$(apksigner verify --print-certs "$out" | sed -n 's/^Signer #1 certificate SHA-256 digest: //p' | tr 'a-f' 'A-F' | sed 's/../&:/g; s/:$//')"
