@@ -13,7 +13,10 @@ really holds the name.
 """
 
 import copy
+import io
+import json
 import pathlib
+import re
 import sys
 import tempfile
 import unittest
@@ -23,6 +26,9 @@ sys.path.insert(0, str(pathlib.Path(__file__).parent))
 import expose
 
 HOST = "pm.security.cab"
+OWNER = "owner@example.com"
+GOOGLE_CLIENT = "123456789012-abc123def456.apps.googleusercontent.com"
+GOOGLE_VALUE = "not-a-real-value-0123456789"
 
 
 class Account(expose.Cloudflare):
@@ -48,6 +54,7 @@ class Account(expose.Cloudflare):
 
     def call(self, method, path, body=None):
         path, _, query = path.partition("?")
+        self.asked = getattr(self, "asked", 0) + 1  # every request, reads too
         if method != "GET":
             self.order.append(f"{method} {path}")
         if path == "/accounts":
@@ -58,6 +65,10 @@ class Account(expose.Cloudflare):
             if method == "POST":
                 self.idps.append({"id": f"idp-{body['type']}", **body})
             result = self.idps[-1] if method == "POST" else self.idps
+        elif "/access/identity_providers/" in path and method == "PUT":
+            idp = next(i for i in self.idps if i["id"] == path.split("/")[-1])
+            idp.update(body)
+            result = idp
         elif "/access/apps/" in path and method == "PUT":
             app = next(a for a in self.apps if a["id"] == path.split("/")[-1])
             app.update(body)
@@ -133,8 +144,9 @@ class Machine:
         return self.running
 
 
-def run(account, home, *args, machine=None):
-    argv = ["expose.py", *args]
+def run(account, home, *args, machine=None, owner=OWNER, stdin=None):
+    """One run of the script. What it printed is left in account.printed."""
+    argv = ["expose.py", *(["--owner", owner] if owner else []), *args]
     machine = machine or Machine()
 
     def health(url):
@@ -161,11 +173,15 @@ def run(account, home, *args, machine=None):
         mock.patch.object(expose, "fetch_json", health),
         mock.patch.object(expose.time, "sleep", lambda seconds: None),
         mock.patch.object(sys, "argv", argv),
-        mock.patch("builtins.print"),
+        mock.patch.object(sys, "stdin", io.StringIO(stdin or "")),
+        mock.patch("builtins.print") as printed,
     ):
         account.check = "--check" in args
         account.changes = []
-        return expose.main()
+        try:
+            return expose.main()
+        finally:
+            account.printed = [str(c.args[0]) for c in printed.call_args_list]
 
 
 class Expose(unittest.TestCase):
@@ -187,7 +203,7 @@ class Expose(unittest.TestCase):
                 {
                     "name": "allow: PM stack",
                     "decision": "allow",
-                    "include": [{"email": {"email": "drewrypope@gmail.com"}}],
+                    "include": [{"email": {"email": OWNER}}],
                     "precedence": 1,
                 }
             ],
@@ -225,7 +241,7 @@ class Expose(unittest.TestCase):
         )
         env = (pathlib.Path(self.home) / ".local/state/pm-console/.env").read_text()
         self.assertIn("PM_CONSOLE_ACCESS_AUD=" + main["aud"], env)
-        self.assertIn("PM_CONSOLE_OWNER_EMAILS=drewrypope@gmail.com", env)
+        self.assertIn(f"PM_CONSOLE_OWNER_EMAILS={OWNER}", env)
 
     def test_a_second_run_changes_nothing(self):
         account = Account()
@@ -303,7 +319,7 @@ class Expose(unittest.TestCase):
         self.assertEqual(len(account.policies["app-x"]), 1)
 
         # The owner's own rule with a condition added is not this script's rule.
-        owner = [{"email": {"email": "drewrypope@gmail.com"}}]
+        owner = [{"email": {"email": OWNER}}]
         for extra in (
             {"exclude": owner},
             {"require": [{"geo": {"country_code": "XX"}}]},
@@ -477,7 +493,7 @@ class Expose(unittest.TestCase):
         self.assertEqual(account.routes, [])
         self.assertNotIn("PM_CONSOLE_EDGE_URL", self.env())
         # The sign-in settings are still there: only the edge's went.
-        self.assertEqual(self.env()["PM_CONSOLE_OWNER_EMAILS"], "drewrypope@gmail.com")
+        self.assertEqual(self.env()["PM_CONSOLE_OWNER_EMAILS"], OWNER)
         # A later run with no flag (the timer's) keeps it off.
         self.assertEqual(run(account, self.home), 0)
         self.assertEqual(account.changes, [])
@@ -571,6 +587,119 @@ class Expose(unittest.TestCase):
         # And returns by itself once the Worker answers again.
         self.assertEqual(run(account, self.home), 0)
         self.assertEqual(len(account.routes), 1)
+
+    def test_the_owner_is_named_once_and_remembered_and_never_written_in_the_script(
+        self,
+    ):
+        # Never told, on a machine that has not been set up: refused
+        # before anything is read or changed.
+        account = Account()
+        with self.assertRaisesRegex(SystemExit, "say whose sign-in is let in"):
+            run(account, self.home, owner=None)
+        with self.assertRaisesRegex(SystemExit, "say whose sign-in"):
+            run(account, self.home, owner="not an address")
+        self.assertEqual(getattr(account, "asked", 0), 0)
+        # Told once: the console's environment file remembers, and a run
+        # that is not told (the timer's) uses that and changes nothing.
+        self.assertEqual(run(account, self.home, owner="Owner@Example.com"), 0)
+        self.assertEqual(self.env()["PM_CONSOLE_OWNER_EMAILS"], OWNER)
+        self.assertEqual(run(account, self.home, owner=None), 0)
+        self.assertEqual(account.changes, [])
+        main = next(a for a in account.apps if a["domain"] == HOST)
+        self.assertEqual(
+            account.policies[main["id"]][0]["include"], [{"email": {"email": OWNER}}]
+        )
+        # No address is written in the script itself.
+        source = pathlib.Path(expose.__file__).read_text()
+        self.assertIsNone(
+            re.search(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+\.[a-z]{2,}", source)
+        )
+
+    def test_google_sign_in_is_turned_on_from_a_client_handed_in(self):
+        account = Account()
+        run(account, self.home)
+        main = next(a for a in account.apps if a["domain"] == HOST)
+        self.assertEqual(main["allowed_idps"], ["idp-onetimepin"])
+        # Not a client: refused before Cloudflare is asked anything.
+        for bad in (
+            "",
+            f"{GOOGLE_CLIENT}\n",
+            f"not-a-client-id\n{GOOGLE_VALUE}\n",
+            f"{GOOGLE_CLIENT}\nhas a space in it\n",
+            f"{GOOGLE_CLIENT}\n{GOOGLE_VALUE}\nthird line\n",
+        ):
+            account.asked = 0
+            with self.assertRaisesRegex(SystemExit, "--google-stdin") as refused:
+                run(account, self.home, "--google-stdin", stdin=bad)
+            self.assertEqual(account.asked, 0)
+            self.assertNotIn(GOOGLE_VALUE, str(refused.exception))
+            self.assertNotIn(GOOGLE_VALUE, "\n".join(account.printed))
+        # A client: Google is added and the application lets both methods in.
+        self.assertEqual(
+            run(
+                account,
+                self.home,
+                "--google-stdin",
+                stdin=f"  {GOOGLE_CLIENT}\n{GOOGLE_VALUE}\n",
+            ),
+            0,
+        )
+        google = next(i for i in account.idps if i["type"] == "google")
+        self.assertEqual(
+            google["config"],
+            {"client_id": GOOGLE_CLIENT, "client_secret": GOOGLE_VALUE},
+        )
+        self.assertEqual(main["allowed_idps"], ["idp-onetimepin", "idp-google"])
+        self.assertEqual(account.changes[0], "access: add Google sign-in")
+        # Nothing it printed, and nothing it wrote, holds either value.
+        self.assertNotIn(GOOGLE_VALUE, "\n".join(account.printed))
+        self.assertNotIn(GOOGLE_CLIENT, "\n".join(account.printed))
+        for kept in pathlib.Path(self.home).rglob("*"):
+            if kept.is_file():
+                self.assertNotIn(GOOGLE_VALUE, kept.read_text())
+        # The timer's run, with nothing handed in, keeps it as it is.
+        self.assertEqual(run(account, self.home), 0)
+        self.assertEqual(account.changes, [])
+        # Handed a client again (a corrected one): that is the one used.
+        other = GOOGLE_VALUE[::-1]
+        self.assertEqual(
+            run(
+                account,
+                self.home,
+                "--google-stdin",
+                stdin=f"{GOOGLE_CLIENT}\n{other}\n",
+            ),
+            0,
+        )
+        self.assertEqual(
+            account.changes, ["access: give Google sign-in the client just supplied"]
+        )
+        self.assertEqual(google["config"]["client_secret"], other)
+        self.assertEqual(len([i for i in account.idps if i["type"] == "google"]), 1)
+
+    def test_status_says_which_sign_in_methods_are_on_and_changes_nothing(self):
+        account = Account()
+        # Needs no owner, and works before anything is set up.
+        self.assertEqual(run(account, self.home, "--status", owner=None), 0)
+        self.assertEqual(
+            json.loads(account.printed[-1]),
+            {"google": False, "pin": False, "team": "team.cloudflareaccess.com"},
+        )
+        self.assertEqual(account.order, [])
+        self.assertFalse((pathlib.Path(self.home) / ".local").exists())
+        run(
+            account,
+            self.home,
+            "--google-stdin",
+            stdin=f"{GOOGLE_CLIENT}\n{GOOGLE_VALUE}\n",
+        )
+        account.order.clear()
+        self.assertEqual(run(account, self.home, "--status", owner=None), 0)
+        self.assertEqual(
+            json.loads(account.printed[-1]),
+            {"google": True, "pin": True, "team": "team.cloudflareaccess.com"},
+        )
+        self.assertEqual(account.order, [])
 
     def test_the_health_check_names_itself(self):
         # Found live: the edge's health check answered 403 to Python's

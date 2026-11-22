@@ -105,6 +105,10 @@ export function actions(ops: Ops, work: Work, push?: Push, devices?: Devices): R
       touch: ["services"],
       audit: ids("unit", "action"),
     },
+    // The client's two values are in the arguments: nothing of them is
+    // written to the record of what was done, and the action is never
+    // held anywhere to be done late.
+    "sso.google": { run: (a) => ops.googleSignin(a.clientId, a.clientSecret), touch: [], audit: () => ({}) },
     "message.send": {
       run: (a) => ops.send(a.to, a.text, a.command),
       touch: [],

@@ -726,7 +726,7 @@ describe("the interface's endpoints", () => {
       docs,
       actions: actions(w.ops, work),
       identify: async () => {
-        if (who === "owner") return { via: "cloudflare-access", email: "drewrypope@gmail.com" };
+        if (who === "owner") return { via: "cloudflare-access", email: "owner@example.com" };
         throw new (await import("../src/auth.ts")).AuthError(401, "sign-in required");
       },
       audit: async (e) => {

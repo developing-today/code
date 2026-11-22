@@ -834,6 +834,7 @@ function viewMore() {
       tile("more/services", "Services", ops.services ? `${ops.services.filter((u) => u.active === "failed").length} failed of ${ops.services.length}` : "start, stop, logs"),
       tile("more/notify", "Notifications", "choose what reaches this device"),
       tile("more/phone", "Phones", "the Android app and its home-screen widget"),
+      tile("more/signin", "Sign-in", "Google first, the emailed code as the fallback"),
     ),
   ];
   for (const g of ops.more || []) {
@@ -978,6 +979,71 @@ let linkApprovedAt = null;
 function collectUrl() {
   const back = encodeURIComponent(`${location.origin}/console/#more/phone`);
   return `intent://finish#Intent;scheme=pmconsole;package=${me.androidPackage || "today.developing.pmconsole"};S.browser_fallback_url=${back};end`;
+}
+
+/** Sign-in: what is on, and the one part only the owner can do to put
+ * Google first. Google lets nobody but a signed-in person make the
+ * client its sign-in runs on; everything after that is done here. */
+async function viewSignin() {
+  let s;
+  try {
+    s = await api("signin");
+  } catch (error) {
+    return [empty(`The sign-in settings could not be read just now: ${error.message}`)];
+  }
+  const copy = (text) =>
+    h(
+      "button",
+      {
+        class: "small ghost",
+        onclick: () =>
+          navigator.clipboard.writeText(text).then(
+            () => toast("Copied"),
+            () => toast("Could not copy. Select the text and copy it.", true),
+          ),
+      },
+      "Copy",
+    );
+  const value = (text) => h("div", { class: "row" }, h("code", { class: "wrap" }, text), copy(text));
+  const id = h("input", { type: "text", placeholder: "Client ID", autocomplete: "off", autocapitalize: "none", spellcheck: false });
+  const secret = h("input", { type: "password", placeholder: "Client secret", autocomplete: "off" });
+  const send = async (e) => {
+    const done = await act("sso.google", { clientId: id.value.trim(), clientSecret: secret.value.trim() }, "Google sign-in is on", e.target);
+    secret.value = "";
+    if (done) draw();
+    else e.target.disabled = false;
+  };
+  return [
+    card(
+      h("h3", {}, s.google ? "Google sign-in is on" : "Google sign-in is not on yet"),
+      h(
+        "p",
+        { class: "meta" },
+        s.google
+          ? "The sign-in page offers Google. The code sent by email stays as the fallback."
+          : s.pin
+            ? "For now the sign-in page asks for a code sent by email."
+            : "No sign-in method is on.",
+      ),
+    ),
+    h("h2", {}, s.google ? "Use a different Google client" : "Turn it on"),
+    card(
+      h("p", { class: "meta" }, "Google lets only a signed-in person make the client its sign-in runs on, so this part is yours. A few minutes, once."),
+      h(
+        "ol",
+        { class: "steps" },
+        h("li", {}, "Open ", ext("https://console.cloud.google.com/auth/clients", "Google Cloud, Clients"), ". If it asks, set the app up first: any name, audience External."),
+        h("li", {}, "Create client. Application type: Web application."),
+        h("li", {}, "Authorized JavaScript origins, add:", value(s.origin)),
+        h("li", {}, "Authorized redirect URIs, add:", value(s.redirect)),
+        h("li", {}, "Create, then paste the two values it shows:"),
+      ),
+      id,
+      secret,
+      h("div", { class: "row end" }, h("button", { onclick: send }, s.google ? "Use this client" : "Turn on Google sign-in")),
+      h("p", { class: "meta" }, "Both values go to Cloudflare, which runs the sign-in page, and are kept nowhere else."),
+    ),
+  ];
 }
 
 async function viewPhone(sub) {
@@ -1332,6 +1398,7 @@ const VIEWS = {
   "more/services": ["Services", viewServices, "ops"],
   "more/notify": ["Notifications", viewNotify],
   "more/phone": ["Phones", viewPhone],
+  "more/signin": ["Sign-in", viewSignin],
 };
 let route = "now";
 let drawSeq = 0;

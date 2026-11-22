@@ -44,7 +44,7 @@ const CENTRAL: Issuer = {
   audience: "pm-console",
   source: "bearer",
 };
-const OWNER = "drewrypope@gmail.com";
+const OWNER = "owner@example.com";
 
 function b64u(bytes: Uint8Array | string): string {
   const raw = typeof bytes === "string" ? new TextEncoder().encode(bytes) : bytes;
@@ -235,7 +235,7 @@ describe("who is the owner", () => {
     });
     expect(
       await identify(
-        edge({ cookie: `x=1; CF_Authorization=${await rsa.sign(good(ACCESS, { email: "DrewryPope@Gmail.com" }))}` }),
+        edge({ cookie: `x=1; CF_Authorization=${await rsa.sign(good(ACCESS, { email: "Owner@Example.COM" }))}` }),
         cfg,
         at(keys),
       ),
@@ -256,7 +256,7 @@ describe("who is the owner", () => {
     expect(await status(edge({ "cf-access-jwt-assertion": "garbage" }))).toBe(401);
     expect(await status(edge({ "cf-access-jwt-assertion": await other.sign(good(ACCESS)) }))).toBe(401);
     expect(
-      await status(edge({ "cf-access-jwt-assertion": await rsa.sign(good(ACCESS, { email: "someone@gmail.com" })) })),
+      await status(edge({ "cf-access-jwt-assertion": await rsa.sign(good(ACCESS, { email: "someone@example.net" })) })),
     ).toBe(403);
     expect(
       await status(edge({ "cf-access-jwt-assertion": await rsa.sign(good(ACCESS, { email_verified: false })) })),
@@ -326,7 +326,7 @@ describe("configuration", () => {
     const cfg = readConfig(
       {
         HOME: "/h",
-        PM_CONSOLE_OWNER_EMAILS: " DrewryPope@gmail.com ,",
+        PM_CONSOLE_OWNER_EMAILS: " Owner@Example.com ,",
         PM_CONSOLE_ACCESS_TEAM_DOMAIN: "team.cloudflareaccess.com",
         PM_CONSOLE_ACCESS_AUD: "aud-tag",
         PM_CONSOLE_ISSUERS_FILE: "/x",

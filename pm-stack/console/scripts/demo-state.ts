@@ -7,7 +7,7 @@ import { readConfig } from "../src/config.ts";
 import { Devices, Limiter } from "../src/devices.ts";
 import { Docs } from "../src/docs.ts";
 import { fileStore } from "../src/file-store.ts";
-import { Ops } from "../src/ops.ts";
+import { Ops, type Run } from "../src/ops.ts";
 import { Push } from "../src/push.ts";
 import type { Deps } from "../src/server.ts";
 
@@ -337,6 +337,25 @@ const state = {
   ],
 };
 
+/** The commands the console runs, answered from nothing: every one
+ * succeeds with an empty list, and the sign-in script remembers whether
+ * it was handed a Google client. */
+let demoGoogle = false;
+const demoRun: Run = async (argv) => {
+  if (argv.includes("--google-stdin")) {
+    demoGoogle = true;
+    return { code: 0, stdout: "changed: access: add Google sign-in\n", stderr: "" };
+  }
+  if (argv.includes("--status")) {
+    return {
+      code: 0,
+      stdout: `${JSON.stringify({ google: demoGoogle, pin: true, team: "your-team.cloudflareaccess.com" })}\n`,
+      stderr: "",
+    };
+  }
+  return { code: 0, stdout: "[]", stderr: "" };
+};
+
 const cfg = readConfig({ HOME: "/tmp", PM_CONSOLE_DASHBOARD_URL: "" });
 const docs = new Docs(
   Object.fromEntries(Object.entries(state).map(([name, data]) => [name, { ttlMs: 3_600_000, load: async () => data }])),
@@ -345,15 +364,10 @@ const done = (result: unknown) => ({ run: async () => result, touch: [] as strin
 // Linking a phone is the real thing, kept in a file under /tmp.
 const devices = new Devices(fileStore("/tmp/pm-console-demo-devices.json"));
 const phones = { devices, link: new Limiter(30, 60_000), refused: new Limiter(60, 60_000) };
-const real = realActions(
-  new Ops(cfg, async () => ({ code: 0, stdout: "[]", stderr: "" })),
-  undefined as never,
-  undefined,
-  devices,
-);
+const real = realActions(new Ops(cfg, demoRun), undefined as never, undefined, devices);
 const table = new Proxy({} as Record<string, ReturnType<typeof done>>, {
   get: (_t, kind) =>
-    typeof kind === "string" && kind.startsWith("device.")
+    typeof kind === "string" && (kind.startsWith("device.") || kind === "sso.google")
       ? real[kind]
       : done(
           kind === "ask.send"
@@ -369,7 +383,7 @@ const table = new Proxy({} as Record<string, ReturnType<typeof done>>, {
 /** The made-up host: canned state, and actions that all succeed. */
 export const demoDeps: Deps = {
   cfg,
-  ops: new Ops(cfg, async () => ({ code: 0, stdout: "[]", stderr: "" })),
+  ops: new Ops(cfg, demoRun),
   docs,
   phones,
   push: new Push(fileStore("/tmp/pm-console-demo-push.json"), "mailto:you@example.com", async () => ({

@@ -602,3 +602,20 @@ dialog label {
   min-height: 22px;
   height: 22px;
 }
+
+/* Sign-in: the numbered steps, and a value to copy that may be long. */
+ol.steps {
+  margin: 0.5rem 0;
+  padding-left: 1.3rem;
+  display: grid;
+  gap: 0.6rem;
+}
+code.wrap {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-size: 0.85rem;
+}
+.card input + input {
+  margin-top: 0.5rem;
+}
