@@ -119,40 +119,59 @@ export function composeReport(period: ReportPeriod, records: ReportRecord[], opt
   if (!rows.length) throw new Error("cannot compose a report without canonical source records");
   const orderedBlocks: ReportRecordBlock[] = [];
   const bubblingCandidates: ReportRecordBlock[] = [];
+  const orderedByIdentity = new Map<string, { block: ReportRecordBlock; reachBack: boolean }>();
   const grainOrder: ReportPeriodKind[] = ["daily", "weekly", "monthly", "quarterly", "annual"];
   const targetGrain = grainOrder.indexOf(period.kind);
   for (const { record, reachBack } of rows) {
+    const composedInput = record.templateVersion === REPORT_TEMPLATE_VERSION;
     const sourceBlocks = [...new Map(
       [...record.blocks, ...(record.bubblingCandidates ?? [])].map((block) => [block.id, block]),
     ).values()];
     for (const block of sourceBlocks) {
+      // Templates and summaries describe their source report, not source
+      // activity. Rebuild them at the target grain instead of rolling them up.
+      if (composedInput && (block.id.startsWith("template:") || block.id.startsWith("activity:"))) continue;
       const relatedAt = Date.parse(block.relatedAt);
       const inRequestedPeriod = relatedAt >= Date.parse(period.periodStart) && relatedAt < Date.parse(period.periodEnd);
       if (relatedAt > Date.parse(options.asOf) || (!inRequestedPeriod && !reachBack)) continue;
       const importance = block.importance ?? defaultImportance(record.period.kind);
       const normalized = { ...structuredClone(block), importance };
+      const id = composedInput ? block.id : `${record.id}:${block.id}`;
       if (importance.includes(period.kind)) {
-        orderedBlocks.push({
+        const ordered = {
           ...normalized,
-          id: `${record.id}:${block.id}`,
+          id,
           text: reachBack ? `[Prior-Friday reach-back] ${block.text}` : block.text,
           links: block.links ? [...new Set(block.links)].sort() : undefined,
-        });
+        };
+        const previous = orderedByIdentity.get(id);
+        if (!previous || (previous.reachBack && !reachBack)) orderedByIdentity.set(id, { block: ordered, reachBack });
       }
-      if (importance.some((kind) => grainOrder.indexOf(kind) > targetGrain)) {
-        bubblingCandidates.push({ ...normalized, id: `${record.id}:${block.id}` });
+      if (!reachBack && importance.some((kind) => grainOrder.indexOf(kind) > targetGrain)) {
+        bubblingCandidates.push({ ...normalized, id });
       }
     }
   }
+  orderedBlocks.push(...[...orderedByIdentity.values()].map(({ block }) => block));
   const uniqueCandidates = [...new Map(bubblingCandidates.map((block) => [block.id, block])).values()];
   orderedBlocks.sort((left, right) => left.relatedAt.localeCompare(right.relatedAt) || left.id.localeCompare(right.id));
 
   const activity: ClassifiedActivity = {
     implemented: [], cancelled: [], duplicate: [], inProgress: [], blocked: [], queued: [],
   };
+  const latestClassification = new Map<string, { relatedAt: string; id: string; key: keyof ClassifiedActivity }>();
   for (const block of orderedBlocks) {
-    if (block.classification) activity[classificationKeys[block.classification]].push(...(block.links ?? []));
+    if (!block.classification) continue;
+    const key = classificationKeys[block.classification];
+    for (const member of block.links ?? []) {
+      const previous = latestClassification.get(member);
+      if (!previous || block.relatedAt.localeCompare(previous.relatedAt) > 0 ||
+        (block.relatedAt === previous.relatedAt && block.id.localeCompare(previous.id) > 0)) {
+        latestClassification.set(member, { relatedAt: block.relatedAt, id: block.id, key });
+      }
+    }
   }
+  for (const [member, latest] of latestClassification) activity[latest.key].push(member);
   for (const key of Object.keys(activity) as (keyof ClassifiedActivity)[]) activity[key] = [...new Set(activity[key])].sort();
 
   const summaryBlocks: ReportRecordBlock[] = (Object.keys(activity) as (keyof ClassifiedActivity)[])
