@@ -239,6 +239,7 @@ var implementedEffectProbes = map[string]string{
 	"catalog.budget":                     "TestCatalogBudgetFitsTheSignatures",
 	"catalog.bias":                       "TestCatalogBiasPicksWhatATightBudgetShows",
 	"catalog.pinnedTools":                "TestCatalogPinnedToolsAlwaysListInReactiveMode",
+	"retention.stickyWindow":             "TestRetentionStickyWindowExpiresReactiveTools",
 	"retention.maxTools":                 "TestRetentionMaxToolsCapsTheReactiveWorkingSet",
 	"diagnose.history":                   "TestDiagnoseHistoryCapsRecordedSchemaChanges",
 	"diagnose.preflight":                 "TestDiagnosePreflightStopsAMismatchedScript",
@@ -455,6 +456,7 @@ var effectProbeFuncs = map[string]func(*testing.T){
 	"TestCatalogBudgetFitsTheSignatures":                                             TestCatalogBudgetFitsTheSignatures,
 	"TestCatalogBiasPicksWhatATightBudgetShows":                                      TestCatalogBiasPicksWhatATightBudgetShows,
 	"TestCatalogPinnedToolsAlwaysListInReactiveMode":                                 TestCatalogPinnedToolsAlwaysListInReactiveMode,
+	"TestRetentionStickyWindowExpiresReactiveTools":                                  TestRetentionStickyWindowExpiresReactiveTools,
 	"TestRetentionMaxToolsCapsTheReactiveWorkingSet":                                 TestRetentionMaxToolsCapsTheReactiveWorkingSet,
 	"TestDiagnoseHistoryCapsRecordedSchemaChanges":                                   TestDiagnoseHistoryCapsRecordedSchemaChanges,
 	"TestDiagnosePreflightStopsAMismatchedScript":                                    TestDiagnosePreflightStopsAMismatchedScript,
@@ -1869,6 +1871,12 @@ func reactiveTools(t *testing.T, e *env, query string) map[string]bool {
 
 // servedTools is reactiveTools for any `mcpx serve` arguments.
 func servedTools(t *testing.T, e *env, query string, args ...string) map[string]bool {
+	return servedToolsAfterRequests(t, e, []string{query}, 5, 0, args...)
+}
+
+// servedToolsAfterRequests activates each query in one reactive session,
+// optionally pausing before the final tools/list request.
+func servedToolsAfterRequests(t *testing.T, e *env, queries []string, limit int, pause time.Duration, args ...string) map[string]bool {
 	t.Helper()
 	cmd := exec.Command(e.mcpx, append([]string{"serve"}, args...)...)
 	cmd.Dir = e.dir
@@ -1912,9 +1920,15 @@ func servedTools(t *testing.T, e *env, query string, args ...string) map[string]
 		}
 	}
 	rpc("initialize", map[string]any{})
-	if query != "" {
+	for _, query := range queries {
+		if query == "" {
+			continue
+		}
 		rpc("tools/call", map[string]any{"name": "request_tools",
-			"arguments": map[string]any{"query": query, "limit": 5}})
+			"arguments": map[string]any{"query": query, "limit": limit}})
+	}
+	if pause > 0 {
+		time.Sleep(pause)
 	}
 	var list struct {
 		Tools []struct {
@@ -1929,6 +1943,39 @@ func servedTools(t *testing.T, e *env, query string, args ...string) map[string]
 		names[tool.Name] = true
 	}
 	return names
+}
+
+// TestRetentionStickyWindowExpiresReactiveTools is the effect probe for
+// retention.stickyWindow: a tool requested within the configured window stays
+// listed, while an older requested tool disappears after the window expires.
+func TestRetentionStickyWindowExpiresReactiveTools(t *testing.T) {
+	const pause = 50 * time.Millisecond
+	retained := func(names map[string]bool) int {
+		n := 0
+		for name := range names {
+			if name != "request_tools" && name != "batch_call" {
+				n++
+			}
+		}
+		return n
+	}
+
+	serve := func(window string) map[string]bool {
+		e := newEnv(t, oneServer)
+		e.run("ls")
+		e.setenv("MCPX_RETENTION_STICKY_WINDOW=" + window)
+		return servedToolsAfterRequests(t, e, []string{"echo"}, 5, pause, "--mode", "reactive")
+	}
+
+	withinWindow := serve("1h")
+	if n := retained(withinWindow); n != 5 {
+		t.Errorf("a request inside retention.stickyWindow should keep all 5 requested tools listed; kept %d: %v", n, withinWindow)
+	}
+
+	expired := serve("20ms")
+	if n := retained(expired); n != 0 {
+		t.Errorf("an expired request should no longer list the requested tools; kept %d: %v", n, expired)
+	}
 }
 
 // TestCatalogPinnedToolsAlwaysListInReactiveMode is the effect probe for
