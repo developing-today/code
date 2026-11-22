@@ -314,6 +314,29 @@ this is a diagnostic profile rather than a clean comparison against the
 The component p99s are not additive. The latency target remains unmet and
 #557 stays open for follow-up. The matching line is appended to `baseline.txt`.
 
+Post-fix measurement (2026-11-22; same laptop, same command, main
+`44bdc15460` including the #12499 worker-parking fix, commit
+`e55fe23a1`; checkout `/home/user/code-557-run` on the laptop, log
+`~/bench557.log` there). The laptop was under heavy shared load for
+the whole run (load average ~12–19; a concurrent workspace
+check+test gate job held build-lock slot 2/2), comparable to or
+heavier than the pre-fix entry above:
+
+```text
+bench many_worlds unit=ms_per_command median=20.125 min=7.513 reps=1 p50_ms=20.125 p95_ms=344.831 p99_ms=426.224 wake_p50_ms=1.113 wake_p95_ms=294.831 wake_p99_ms=376.226 input_ack_p50_ms=18.892 input_ack_p95_ms=77.141 input_ack_p99_ms=115.335 target_p99_ms=50 target_met=false idle_worlds=1000 active_worlds=100 events_per_second=20 duration_secs=10 commands=20000 load_elapsed_secs=10.015 completed_events_per_second=1997.0 checkpoint_triggers=100 checkpoints=100 evicted=100 reopened=100
+```
+
+Against the pre-fix entry: p50 885.541 → 20.125 ms, p99 6,142.516 →
+426.224 ms, wake_p99 6,092.517 → 376.226 ms, completed 1,545.5 →
+1,997.0/s of 2,000 offered (no backlog; load elapsed 10.015 s for a
+10 s load). The fix removed the cost the profile named: the
+wake-lateness tail collapsed ~16×. The 50 ms target is still not
+met (`target_met=false`): the residual p99 is still wake-dominated
+(376 of 426 ms) with input_ack_p99 at 115.335 ms, plausibly
+load-inflated but not proven so by a single loaded run. The clean
+next data point is an unloaded re-run of the same command; #557
+stays open for it. The matching line is appended to `baseline.txt`.
+
 ## Fuel-spin isolation measurement (#1067, F12.10 exit criterion)
 
 The `fuel_spin_isolation` workload measures one victim counter world
