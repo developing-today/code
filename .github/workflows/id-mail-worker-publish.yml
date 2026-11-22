@@ -1,26 +1,32 @@
 name: id-mail worker publish
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - "nixos/services/id-mail/worker/**"
-      - ".github/workflows/id-mail-worker-publish.yml"
+  workflow_dispatch:
+    inputs:
+      confirm_upload:
+        description: Confirm upload of a mail Worker version from main
+        required: true
+        type: boolean
+        default: false
 
 permissions:
   contents: read
 
 concurrency:
-  group: id-mail-worker-publish
+  group: id-mail-worker-lifecycle
   cancel-in-progress: false
 
 jobs:
   publish-version:
+    if: github.ref == 'refs/heads/main' && inputs.confirm_upload
     name: Upload id-mail Worker Version
     runs-on: ubuntu-24.04
     timeout-minutes: 15
+    environment: mail-worker-production
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: 24.22.0
@@ -38,10 +44,22 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           GITHUB_SHA: ${{ github.sha }}
         run: node deploy.mjs --dry-run
-      - name: Upload Worker Version
+      - name: Upload Worker Version and capture provenance
         working-directory: nixos/services/id-mail/worker
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          ID_MAIL_WORKER_CF_TOKEN_MAIL_WORKER_PRODUCTION: ${{ secrets.ID_MAIL_WORKER_CF_TOKEN_MAIL_WORKER_PRODUCTION }}
+          ID_MAIL_WORKER_PROVENANCE_FILE: ${{ runner.temp }}/id-mail-worker-provenance.json
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
+          GITHUB_REF: ${{ github.ref }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+          GITHUB_RUN_ATTEMPT: ${{ github.run_attempt }}
           GITHUB_SHA: ${{ github.sha }}
         run: node deploy.mjs
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: id-mail-worker-upload-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/id-mail-worker-provenance.json
+          if-no-files-found: error
+          retention-days: 90

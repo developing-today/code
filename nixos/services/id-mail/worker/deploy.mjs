@@ -1,8 +1,8 @@
 // Validates config.json and uploads a Cloudflare Workers Version. Uploading does not promote it,
 // change routes, or retire another Worker. Promotion and resource retirement are separate actions.
-// Usage: deploy.mjs [--dry-run]. Needs CLOUDFLARE_ACCOUNT_ID; uploads also need CLOUDFLARE_API_TOKEN.
+// Usage: deploy.mjs [--dry-run]. Uploads require the dedicated mail-environment token.
 import { execFileSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -38,7 +38,7 @@ if (problems.length > 0) {
 }
 
 requireEnv("CLOUDFLARE_ACCOUNT_ID");
-if (!dryRun) requireEnv("CLOUDFLARE_API_TOKEN");
+const uploadToken = dryRun ? undefined : requireEnv("ID_MAIL_WORKER_CF_TOKEN_MAIL_WORKER_PRODUCTION");
 
 // cf resolves cloudflare.config.ts from this project's directory. Install the exact
 // locked project dependency on a first local invocation, matching the pkarr Worker flow.
@@ -48,7 +48,21 @@ if (!existsSync(cfBin)) {
 }
 
 const sha = process.env.GITHUB_SHA ?? execFileSync("git", ["rev-parse", "HEAD"], { cwd: here, encoding: "utf8" }).trim();
-const tag = `git-${sha.slice(0, 12)}`;
+const runId = process.env.GITHUB_RUN_ID;
+const runAttempt = process.env.GITHUB_RUN_ATTEMPT;
+const provenancePath = dryRun ? undefined : requireEnv("ID_MAIL_WORKER_PROVENANCE_FILE");
+if (!dryRun) {
+  if (!/^\d+$/.test(runId ?? "") || !/^\d+$/.test(runAttempt ?? "")) {
+    throw new Error("GITHUB_RUN_ID and GITHUB_RUN_ATTEMPT are required for provenance");
+  }
+  if (process.env.GITHUB_EVENT_NAME !== "workflow_dispatch" || process.env.GITHUB_REF !== "refs/heads/main") {
+    throw new Error("uploads are allowed only from a manual workflow run on main");
+  }
+  if (!/^[0-9a-f]{40}$/.test(sha) || !process.env.GITHUB_REPOSITORY) {
+    throw new Error("a full commit SHA and repository identity are required for provenance");
+  }
+}
+const tag = dryRun ? `git-${sha.slice(0, 12)}` : `mail-${sha.slice(0, 12)}-run-${runId}-attempt-${runAttempt}`;
 const cfArgs = [
   "workers", "versions", "create",
   "--worker", config.worker,
@@ -56,10 +70,74 @@ const cfArgs = [
   "--message", `publish ${sha} for ${config.worker} (upload only)`,
 ];
 if (dryRun) cfArgs.push("--dry-run");
-execFileSync(cfBin, cfArgs, { cwd: here, stdio: "inherit" });
-console.log(dryRun
-  ? `dry run: ${config.worker} version is valid; nothing uploaded`
-  : `uploaded ${config.worker} version with tag ${tag}; promotion is a separate operation`);
+let baselineDeployment;
+if (!dryRun) {
+  const baselineOutput = execFileSync(cfBin, ["workers", "deployments", "list", "--worker", config.worker, "--per-page", "1"], {
+    cwd: here,
+    encoding: "utf8",
+    env: { ...process.env, CLOUDFLARE_API_TOKEN: uploadToken },
+  });
+  baselineDeployment = firstDeployment(unwrapJson(baselineOutput));
+  if (typeof baselineDeployment?.versions?.[0]?.version_id !== "string" || !baselineDeployment.id) {
+    throw new Error("cf could not identify the current active Worker deployment; refusing to upload");
+  }
+  const versionsOutput = execFileSync(cfBin, ["workers", "versions", "list", "--worker-id", config.worker, "--per-page", "1"], {
+    cwd: here,
+    encoding: "utf8",
+    env: { ...process.env, CLOUDFLARE_API_TOKEN: uploadToken },
+  });
+  const latestVersion = firstVersion(unwrapJson(versionsOutput));
+  if (latestVersion?.id !== baselineDeployment.versions[0].version_id) {
+    throw new Error("latest uploaded version is not the current active version; refusing to inherit CALLERS from an unpromoted version");
+  }
+}
+const output = execFileSync(cfBin, cfArgs, {
+  cwd: here,
+  encoding: "utf8",
+  env: uploadToken ? { ...process.env, CLOUDFLARE_API_TOKEN: uploadToken } : process.env,
+});
+if (dryRun) {
+  process.stdout.write(output);
+  console.log(`dry run: ${config.worker} version is valid; nothing uploaded`);
+} else {
+  const version = unwrapJson(output);
+  const versionId = version.id ?? version.version_id;
+  if (typeof versionId !== "string" || !versionId) {
+    throw new Error("cf did not return the uploaded version ID; refusing to emit provenance");
+  }
+  if (version.annotations?.["workers/tag"] && version.annotations["workers/tag"] !== tag) {
+    throw new Error("cf returned an uploaded version with an unexpected tag");
+  }
+  const deploymentOutput = execFileSync(cfBin, ["workers", "deployments", "list", "--worker", config.worker, "--per-page", "1"], {
+    cwd: here,
+    encoding: "utf8",
+    env: { ...process.env, CLOUDFLARE_API_TOKEN: uploadToken },
+  });
+  const deployment = firstDeployment(unwrapJson(deploymentOutput));
+  if (deployment?.id !== baselineDeployment.id || deployment?.versions?.[0]?.version_id !== baselineDeployment.versions[0].version_id) {
+    throw new Error("the active deployment changed during upload; refusing to emit provenance");
+  }
+  const provenance = {
+    schema: 1,
+    repository: process.env.GITHUB_REPOSITORY,
+    workflow: ".github/workflows/id-mail-worker-publish.yml",
+    event: process.env.GITHUB_EVENT_NAME,
+    ref: process.env.GITHUB_REF,
+    sha,
+    runId,
+    runAttempt,
+    worker: config.worker,
+    tag,
+    versionId,
+    baselineDeploymentId: baselineDeployment.id,
+    baselineVersionId: baselineDeployment.versions[0].version_id,
+  };
+  if (provenance.event !== "workflow_dispatch" || provenance.ref !== "refs/heads/main") {
+    throw new Error("upload provenance must come from a manual run on main");
+  }
+  writeFileSync(provenancePath, `${JSON.stringify(provenance, null, 2)}\n`, { mode: 0o600 });
+  console.log(`uploaded ${config.worker} version ${versionId} with tag ${tag}; promotion is separate`);
+}
 
 function requireEnv(name) {
   const value = process.env[name];
@@ -67,6 +145,29 @@ function requireEnv(name) {
     throw new Error(`${name} is not set`);
   }
   return value;
+}
+
+function unwrapJson(output) {
+  let parsed;
+  try {
+    parsed = JSON.parse(output);
+  } catch {
+    throw new Error("cf returned non-JSON output; refusing to continue");
+  }
+  return parsed?.result ?? parsed;
+}
+
+function firstDeployment(result) {
+  if (Array.isArray(result)) return result[0];
+  if (Array.isArray(result?.deployments)) return result.deployments[0];
+  return undefined;
+}
+
+function firstVersion(result) {
+  if (Array.isArray(result)) return result[0];
+  if (Array.isArray(result?.versions)) return result.versions[0];
+  if (Array.isArray(result?.items)) return result.items[0];
+  return undefined;
 }
 
 function validate(c) {

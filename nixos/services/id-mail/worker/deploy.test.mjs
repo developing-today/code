@@ -31,7 +31,7 @@ function makeSandbox(mutateConfig) {
   writeFileSync(join(dir, "config.json"), configText);
   const log = join(dir, "calls.log");
   writeFileSync(log, "");
-  writeFileSync(join(cfBin, "cf"), `#!/bin/sh\necho "cf $@" >> "${log}"\nexit 0\n`);
+  writeFileSync(join(cfBin, "cf"), `#!/bin/sh\nprintf 'cf %s\\n' "$*" >> "${log}"\ncase "$1 $2 $3" in\n  "workers deployments list") printf '%s\\n' '{"result":[{"id":"deployment-1","versions":[{"version_id":"baseline-version","percentage":100}]}]}' ;;\n  "workers versions list") printf '%s\\n' '{"result":[{"id":"baseline-version"}]}' ;;\n  "workers versions create") printf '%s\\n' '{"result":{"id":"candidate-version"}}' ;;\nesac\nexit 0\n`);
   chmodSync(join(cfBin, "cf"), 0o755);
   return { dir, cfBin, log };
 }
@@ -42,8 +42,14 @@ async function runDeploy(sb, args, { token = true } = {}) {
       PATH: process.env.PATH,
       CLOUDFLARE_ACCOUNT_ID: "stub-account",
       GITHUB_SHA: "0123456789abcdef0123456789abcdef01234567",
+      GITHUB_REPOSITORY: "developing-today/code",
+      GITHUB_EVENT_NAME: "workflow_dispatch",
+      GITHUB_REF: "refs/heads/main",
+      GITHUB_RUN_ID: "99",
+      GITHUB_RUN_ATTEMPT: "1",
+      ID_MAIL_WORKER_PROVENANCE_FILE: join(sb.dir, "provenance.json"),
     };
-    if (token && !args.includes("--dry-run")) env.CLOUDFLARE_API_TOKEN = "stub-token";
+    if (token && !args.includes("--dry-run")) env.ID_MAIL_WORKER_CF_TOKEN_MAIL_WORKER_PRODUCTION = "stub-token";
     const { stdout, stderr } = await run("node", [join(sb.dir, "deploy.mjs"), ...args], { env });
     return { code: 0, stdout, stderr };
   } catch (error) {
@@ -166,27 +172,44 @@ test("a config without retire validates and uploads a version (#6947)", async ()
   assert.match(dry.stdout, /nothing uploaded/);
   const result = await runDeploy(sb, []);
   assert.equal(result.code, 0, result.stderr);
-  assert.match(result.stdout, /uploaded mail version/);
+  assert.match(result.stdout, /uploaded mail version candidate-version/);
   const calls = readFileSync(sb.log, "utf8");
-  assert.match(calls, /cf workers versions create --worker mail --tag git-0123456789ab/);
+  assert.match(calls, /cf workers versions create --worker mail --tag mail-0123456789ab-run-99-attempt-1/);
+  assert.match(calls, /cf workers deployments list --worker mail --per-page 1/);
   assert.doesNotMatch(calls, /deployments create|delete|wrangler|secret put|bws/);
+  const provenance = JSON.parse(readFileSync(join(sb.dir, "provenance.json"), "utf8"));
+  assert.equal(provenance.versionId, "candidate-version");
+  assert.equal(provenance.baselineVersionId, "baseline-version");
 });
 
-test("upload requires an API token before calling cf", async () => {
+test("upload requires the unique environment token and ignores the generic token", async () => {
   const sb = makeSandbox();
-  const result = await runDeploy(sb, [], { token: false });
+  const env = {
+    PATH: process.env.PATH,
+    CLOUDFLARE_ACCOUNT_ID: "stub-account",
+    CLOUDFLARE_API_TOKEN: "generic-token-must-not-be-used",
+  };
+  let result;
+  try {
+    const { stdout, stderr } = await run("node", [join(sb.dir, "deploy.mjs")], { env });
+    result = { code: 0, stdout, stderr };
+  } catch (error) {
+    result = { code: error.code, stdout: error.stdout ?? "", stderr: error.stderr ?? "" };
+  }
   assert.notEqual(result.code, 0);
-  assert.match(result.stderr, /CLOUDFLARE_API_TOKEN is not set/);
+  assert.match(result.stderr, /ID_MAIL_WORKER_CF_TOKEN_MAIL_WORKER_PRODUCTION is not set/);
   assert.equal(readFileSync(sb.log, "utf8"), "");
 });
 
-test("no args uploads a version only against the stub", async () => {
+test("no args uploads a version only against the stub and records provenance", async () => {
   const sb = makeSandbox();
   const result = await runDeploy(sb, []);
   assert.equal(result.code, 0, result.stderr);
-  assert.match(result.stdout, /uploaded mail version/);
+  assert.match(result.stdout, /uploaded mail version candidate-version/);
   const calls = readFileSync(sb.log, "utf8");
-  assert.equal(calls.split("\n").filter(Boolean).length, 1);
-  assert.match(calls, /^cf workers versions create --worker mail --tag git-0123456789ab/);
+  assert.equal(calls.split("\n").filter(Boolean).length, 4);
+  assert.match(calls, /cf workers versions create --worker mail --tag mail-0123456789ab-run-99-attempt-1/);
+  assert.match(calls, /cf workers deployments list --worker mail --per-page 1/);
+  assert.equal(JSON.parse(readFileSync(join(sb.dir, "provenance.json"), "utf8")).versionId, "candidate-version");
   assert.doesNotMatch(calls, /deployments create|delete|wrangler|secret put|bws/);
 });
