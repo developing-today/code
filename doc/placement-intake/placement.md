@@ -1,3 +1,5 @@
+> Current operational instructions live in [doc/fleet-execution-handoff.md](../fleet-execution-handoff.md). This file records the earlier design and intake state; several status notes below are historical.
+
 # Fleet placement: where build jobs run
 
 `dezren39/fleet` now exists in more than one home, and the fleet has
