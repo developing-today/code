@@ -1103,10 +1103,11 @@ fn toolchain_prefixed_cargo_builds_use_the_shared_target_lane() {
 #[test]
 fn manifest_selected_cargo_builds_use_the_selected_workspace_lane() {
     let manifest = "/tmp/other-workspace/Cargo.toml";
+    let command_text = format!("cargo test --manifest-path {manifest}");
     let plan = shell::plan(
         Target::Laptop,
         "test".into(),
-        &words(&[&format!("cargo test --manifest-path {manifest}")]),
+        &words(&[command_text.as_str()]),
         &Options {
             cwd: Some("caller-workspace".into()),
             build: true,
@@ -1116,7 +1117,9 @@ fn manifest_selected_cargo_builds_use_the_selected_workspace_lane() {
     .unwrap();
     let command = plan.args.last().unwrap();
     assert!(command.contains("--workspace-cwd"));
-    assert!(command.contains("locate-project --workspace --message-format plain --manifest-path"));
+    assert!(
+        command.contains("locate-project --workspace --message-format plain --manifest-path")
+    );
     assert!(command.contains(manifest));
 }
 
@@ -1471,7 +1474,14 @@ printf '%s|%s|%s|%s\n' "$PWD" "$CARGO_TARGET_DIR" "$CARGO_BUILD_JOBS" "$*" > "$H
     let manifest = workspace.join("Cargo.toml").display().to_string();
     let output = std::process::Command::new("/bin/bash")
         .arg(lock_script)
-        .args(["cargo", "test", "-p", "id-core", "--manifest-path", manifest.as_str()])
+        .args([
+            "cargo",
+            "test",
+            "-p",
+            "id-core",
+            "--manifest-path",
+            manifest.as_str(),
+        ])
         .env("HOME", &home)
         .env(
             "PATH",
