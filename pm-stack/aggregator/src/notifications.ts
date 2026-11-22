@@ -225,16 +225,23 @@ interface LocalClock {
   minute: number;
 }
 
+// ⚡ Bolt: formatter construction (~29µs) dominated repeated digest clock
+// conversions. Reuse the immutable formatter for each timezone.
+const LOCAL_CLOCK_FORMATTERS = new Map<string, Intl.DateTimeFormat>();
+function localClockFormatter(timeZone: string): Intl.DateTimeFormat {
+  let fmt = LOCAL_CLOCK_FORMATTERS.get(timeZone);
+  if (!fmt) {
+    fmt = new Intl.DateTimeFormat("en-US", {
+      timeZone, year: "numeric", month: "2-digit", day: "2-digit",
+      hour: "2-digit", minute: "2-digit", hourCycle: "h23",
+    });
+    LOCAL_CLOCK_FORMATTERS.set(timeZone, fmt);
+  }
+  return fmt;
+}
+
 function localClock(at: number, timeZone: string): LocalClock {
-  const parts = new Intl.DateTimeFormat("en-US", {
-    timeZone,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    hourCycle: "h23",
-  }).formatToParts(new Date(at));
+  const parts = localClockFormatter(timeZone).formatToParts(new Date(at));
   const value = (type: Intl.DateTimeFormatPartTypes) => Number(parts.find((part) => part.type === type)?.value);
   return {
     year: value("year"),

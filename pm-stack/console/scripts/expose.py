@@ -32,6 +32,14 @@ so, and prints what it did:
    happens only once the Worker answers its health check and says it is
    built for this hostname; until then, and after `--edge off`, the
    hostname goes straight to this host.
+7. With `--edge-direct on`, the Worker also gets the two tokens it needs
+   to act itself while the laptop is away (the repository automation
+   token and the queue store token) and the explicit opt-in that lets it
+   use them. Off by default, remembered like `--edge`, and nothing is
+   uploaded on a run that does not change the choice. Turning it off
+   turns the opt-in off; the tokens stay on the Worker, inert without
+   it. The Worker says in /console/health whether the flag is on and
+   whether each token is there.
 
 The gate comes first and the routes last, so the origin is never
 reachable without sign-in in front of it. If the console does not come
@@ -40,7 +48,8 @@ up with its sign-in settings, the run stops before the route.
 Every secret is read by name through `fleet secrets get` and stays in
 memory. Nothing printed is a secret.
 
-Usage: expose.py [--check] [--edge on|off] [--host pm.security.cab] [--owner ADDRESS]
+Usage: expose.py [--check] [--edge on|off] [--edge-direct on|off]
+                 [--host pm.security.cab] [--owner ADDRESS]
                  [--google-stdin] [--status]
   --owner      whose sign-in is let in. Needed the first time; after that
                the console's environment file remembers it. The address
@@ -56,14 +65,21 @@ Usage: expose.py [--check] [--edge on|off] [--host pm.security.cab] [--owner ADD
                nothing.
   --edge off   take the hostname off the edge Worker; remembered by later
                runs (the timer's included) until --edge on.
+  --edge-direct on
+               let the edge Worker act itself while the laptop is away:
+               upload the GitHub and queue tokens and turn the opt-in
+               on; remembered by later runs until --edge-direct off.
+               Off by default.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import pathlib
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -95,6 +111,12 @@ PUBLIC_PATHS = (
 WORKER = "pm-console-edge"
 GOOGLE_ID = "google.access-sso.client-id"
 GOOGLE_SECRET = "google.access-sso.client-secret"
+# Bitwarden names for the two tokens the edge Worker acts with while the
+# laptop is away: the repository automation token (the same name the
+# queue-transport-alert deploy uses), and the queue store token, whose
+# name the console's environment file may override.
+GITHUB_TOKEN_SECRET = "github.developing-today-code-automation"
+QUEUE_TOKEN_DEFAULT = "turso.fleet-queue-rw-token"
 
 
 def secret(name: str) -> str:
@@ -213,6 +235,96 @@ def edge_choice(state: pathlib.Path, choice: str | None, keep: bool) -> bool:
             marker.write_text(choice + "\n")
         return choice != "off"
     return not marker.exists() or marker.read_text().strip() != "off"
+
+
+def direct_choice(state: pathlib.Path, choice: str | None, keep: bool) -> bool:
+    """Whether the edge Worker may act itself while the laptop is away.
+    A choice given now decides, and with `keep` it is written to a file,
+    so a timer's run keeps what was last asked for. With no choice given
+    the file decides, and with no file the answer is no: off by default."""
+    marker = state / "edge-direct"
+    if choice is not None:
+        if keep:
+            state.mkdir(parents=True, exist_ok=True, mode=0o700)
+            marker.write_text(choice + "\n")
+        return choice != "off"
+    return marker.exists() and marker.read_text().strip() == "on"
+
+
+def ensure_edge_direct(
+    cf: Cloudflare,
+    account: str,
+    env: pathlib.Path,
+    choice: str | None,
+    check: bool,
+) -> None:
+    """Upload the two tokens the edge Worker acts with, and its opt-in,
+    or turn the opt-in off. Nothing is uploaded on a run that does not
+    change the choice, so the timer's runs leave the secrets alone.
+    A secret is read by name through `fleet secrets get` and piped to
+    `wrangler secret put`; it is never printed or written to a file.
+    The choice is remembered only after the Worker has it: a run that
+    fails part-way leaves the old marker, so the next run tries again
+    instead of assuming the mode is already set."""
+    state = env.parent
+    # Read what is remembered before the choice overwrites it: only a
+    # change uploads anything. Nothing is written here: the marker moves
+    # only once the remote changes below have succeeded.
+    marker = state / "edge-direct"
+    current = marker.exists() and marker.read_text().strip() == "on"
+    wanted = direct_choice(state, choice, keep=False)
+    if wanted == current:
+        return
+    if wanted:
+        what = "edge direct: upload the GitHub and queue tokens and turn direct actions on"
+    else:
+        what = "edge direct: turn direct actions off"
+    cf.changes.append(what)
+    if check:
+        return
+    edge_dir = pathlib.Path(__file__).resolve().parent.parent / "edge"
+    wrangler = shutil.which("wrangler") or str(edge_dir / "node_modules" / ".bin" / "wrangler")
+    if not wrangler or not pathlib.Path(wrangler).exists():
+        raise SystemExit(
+            "wrangler is not installed here; run `npm ci` in pm-stack/console/edge, then rerun"
+        )
+    envs = {**os.environ, "CLOUDFLARE_API_TOKEN": cf.token, "CLOUDFLARE_ACCOUNT_ID": account}
+
+    def put(name: str, value: str) -> None:
+        done = subprocess.run(
+            [wrangler, "secret", "put", name],
+            input=value,
+            capture_output=True,
+            text=True,
+            cwd=edge_dir,
+            env=envs,
+            check=False,
+        )
+        if done.returncode != 0:
+            raise SystemExit(
+                f"wrangler secret put {name} failed ({(done.stderr or '').strip()[:200]}); "
+                "the edge Worker was not given its secrets"
+            )
+
+    if wanted:
+        github = secret(GITHUB_TOKEN_SECRET)
+        queue_name = env_values(env).get("PM_CONSOLE_QUEUE_TOKEN_NAME") or QUEUE_TOKEN_DEFAULT
+        queue = secret(queue_name)
+        if not github:
+            raise SystemExit(f"secret {GITHUB_TOKEN_SECRET} is not readable here")
+        if not queue:
+            raise SystemExit(f"secret {queue_name} is not readable here")
+        put("GITHUB_TOKEN", github)
+        put("QUEUE_TOKEN", queue)
+        put("EDGE_DIRECT", "on")
+    else:
+        # The tokens stay, inert without the opt-in; only the flag moves.
+        put("EDGE_DIRECT", "off")
+    # The Worker has the change now, so the choice is remembered; a
+    # failure above raises before this line and leaves the old marker.
+    if choice is not None:
+        state.mkdir(parents=True, exist_ok=True, mode=0o700)
+        marker.write_text(choice + "\n")
 
 
 def worker_ready(cf: Cloudflare, account: str, host: str) -> bool:
@@ -605,6 +717,13 @@ def main() -> int:
         help="send the hostname through the edge Worker, or straight to this host; "
         "the choice is kept for later runs (default: on, once the Worker answers)",
     )
+    parser.add_argument(
+        "--edge-direct",
+        choices=["on", "off"],
+        help="let the edge Worker act itself while the laptop is away: upload "
+        "its GitHub and queue tokens and turn the opt-in on; the choice is "
+        "kept for later runs (default: off)",
+    )
     args = parser.parse_args()
     env = pathlib.Path.home() / ".local/state/pm-console/.env"
     # Refused here, before anything is asked of Cloudflare.
@@ -700,6 +819,9 @@ def main() -> int:
         # Last: by now the host is up, knows where the edge is, and is
         # reachable behind the hostname the Worker will sit on.
         ensure_edge_route(cf, zone, args.host, edge)
+        # The direct switch is independent of the route: it only decides
+        # whether the Worker already deployed may act itself.
+        ensure_edge_direct(cf, account, env, args.edge_direct, args.check)
     else:
         raise SystemExit(
             "the Access application has no audience tag; not routing the hostname"

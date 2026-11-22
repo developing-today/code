@@ -151,3 +151,42 @@ describe("OpenCodeClient.getSession (#5555)", () => {
     await expect(client.getSession("ses_any")).rejects.toBeInstanceOf(OpenCodeError);
   });
 });
+
+describe("OpenCodeClient.listSessions completeness", () => {
+  let stub: ReturnType<typeof Bun.serve>;
+  let stubUrl = "";
+  let requestedLimits: number[] = [];
+  let responseAtLimit = 0;
+  beforeAll(() => {
+    stub = Bun.serve({
+      port: 0,
+      fetch(req) {
+        const limit = Number(new URL(req.url).searchParams.get("limit"));
+        requestedLimits.push(limit);
+        const count = responseAtLimit >= limit ? limit : Math.min(60, limit - 1);
+        return Response.json({ data: Array.from({ length: count }, (_, i) => ({ id: `ses-${i}` })) });
+      },
+    });
+    stubUrl = `http://127.0.0.1:${stub.port}`;
+  });
+  afterAll(() => {
+    stub.stop(true);
+  });
+
+  test("escalates limits until a response proves the list is complete", async () => {
+    requestedLimits = [];
+    responseAtLimit = 1_000;
+    const client = new OpenCodeClient(stubUrl, authFile("ls-complete.json", JSON.stringify({ password: "pw" })));
+    const sessions = (await client.listSessions()) as unknown[];
+    expect(requestedLimits).toEqual([1_000, 10_000]);
+    expect(sessions).toHaveLength(60);
+  });
+
+  test("fails closed when the maximum limit is still full", async () => {
+    requestedLimits = [];
+    responseAtLimit = 100_000;
+    const client = new OpenCodeClient(stubUrl, authFile("ls-full.json", JSON.stringify({ password: "pw" })));
+    await expect(client.listSessions()).rejects.toThrow(/maximum completeness limit/);
+    expect(requestedLimits).toEqual([1_000, 10_000, 100_000]);
+  });
+});

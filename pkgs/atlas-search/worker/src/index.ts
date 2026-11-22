@@ -19,6 +19,7 @@
 import { readTextUpTo } from "./body";
 import { QueryCache } from "./cache_do";
 import { normalizeQuery, queryKey } from "./key";
+import { CONTEXT } from "./space";
 
 export { QueryCache };
 
@@ -96,7 +97,7 @@ export default {
       const query = normalizeQuery(body.query);
       if (!query) return errorJson(400, "bad_request", "query must not be empty");
       const k = clampK(body.k);
-      const key = await queryKey({ q: query, k });
+      const key = await queryKey({ q: query, k, context: CONTEXT });
       const stub = env.QUERY_CACHE.get(env.QUERY_CACHE.idFromName(key));
       const resp = await stub.fetch("https://do/query", {
         method: "POST",
@@ -121,7 +122,7 @@ export default {
       // keyed or reach a Durable Object.
       if (!query) return errorJson(400, "bad_request", "query must not be empty");
       const k = clampK(Number(url.searchParams.get("k") ?? DEFAULT_K));
-      const key = await queryKey({ q: query, k });
+      const key = await queryKey({ q: query, k, context: CONTEXT });
       const stub = env.QUERY_CACHE.get(env.QUERY_CACHE.idFromName(key));
       const resp = await stub.fetch("https://do/inspect");
       const meta = (await resp.json()) as Record<string, unknown>;
@@ -151,7 +152,7 @@ export default {
       const query = normalizeQuery(body.query);
       if (!query) return errorJson(400, "bad_request", "query must not be empty");
       const k = clampK(body.k);
-      const key = await queryKey({ q: query, k });
+      const key = await queryKey({ q: query, k, context: CONTEXT });
       const stub = env.QUERY_CACHE.get(env.QUERY_CACHE.idFromName(key));
       const resp = await stub.fetch("https://do/purge", { method: "POST" });
       const result = (await resp.json()) as { purged: boolean };

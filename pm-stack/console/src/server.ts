@@ -584,6 +584,10 @@ if (import.meta.main) {
           androidPackage: cfg.androidPackage,
           androidFingerprints: cfg.androidFingerprints,
           androidApp: await Bun.file(cfg.androidApk).exists(),
+          queueDbUrl: cfg.queueDbUrl,
+          queueTokenName: cfg.queueTokenName,
+          promptLabel: cfg.promptLabel,
+          needsRepos: cfg.needsRepos,
         }),
         run: heldRunner(deps),
       })

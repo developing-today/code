@@ -18,9 +18,12 @@ Primary trigger: `pm-stack/aggregator/scripts/stack-sentinel.ts` fires the
 matching hook once when a 3-consecutive-failure transition is first observed,
 and once again on recovery. Hook dispatch is persisted separately from alert
 delivery retries, so an unavailable intake does not launch duplicate
-diagnostics every 30 seconds. Secondary triggers (lane launchers, aggregator
-ticks, PM-stack surfaces) may invoke the wrappers directly with
-`--caller <id>`.
+diagnostics every 30 seconds. Secondary triggers invoke the wrappers
+fire-and-forget with `--caller <id>`: the OpenCode claimant's cap step and
+per-task `launch_one.py` launch when OpenCode sessions cannot be read
+(`lane-launch`), and the aggregator's live source when the laptop's OpenCode
+session map is unreachable on a tick (`aggregator-tick`). PM-stack surfaces
+remain unwired.
 
 ## Incident records
 

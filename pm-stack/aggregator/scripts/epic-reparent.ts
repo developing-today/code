@@ -64,7 +64,14 @@ function parseArgs(argv: string[]): Args {
     if (areas.has(ref as RefKey)) throw new Error(`duplicate --area ref: ${ref}`);
     areas.set(ref as RefKey, area);
   }
-  return { child: one("--child"), closingEpic: one("--closing-epic"), maintenance, candidates, areas, apply: flags.has("--apply") };
+  return {
+    child: one("--child"),
+    closingEpic: one("--closing-epic"),
+    maintenance,
+    candidates,
+    areas,
+    apply: flags.has("--apply"),
+  };
 }
 
 function tokenFromEnvironmentOrGh(): string {
@@ -81,7 +88,11 @@ const ISSUE_QUERY = `query($owner:String!,$name:String!,$number:Int!){repository
 const ADD_PARENT = `mutation($parent:ID!,$child:ID!){addSubIssue(input:{issueId:$parent,subIssueId:$child,replaceParent:true}){issue{id}}}`;
 const REMOVE_PARENT = `mutation($parent:ID!,$child:ID!){removeSubIssue(input:{issueId:$parent,subIssueId:$child}){issue{id}}}`;
 
-interface IssueRecord extends ReparentIssue { id: string; url: string; body: string; }
+interface IssueRecord extends ReparentIssue {
+  id: string;
+  url: string;
+  body: string;
+}
 
 function splitRef(ref: RefKey): { owner: string; name: string; number: number } {
   const match = /^([^/]+)\/([^#]+)#([1-9][0-9]*)$/.exec(ref);
@@ -97,8 +108,13 @@ async function main(): Promise<void> {
   const cache = new Map<RefKey, IssueRecord>();
   const request = async (url: string, init: RequestInit): Promise<unknown> => {
     const response = await fetch(url, init);
-    const body = await response.json().catch(() => null) as { errors?: unknown; message?: string; data?: unknown } | null;
-    if (!response.ok || body?.errors) throw new Error(`GitHub request failed (${response.status})${body?.message ? `: ${body.message}` : ""}`);
+    const body = (await response.json().catch(() => null)) as {
+      errors?: unknown;
+      message?: string;
+      data?: unknown;
+    } | null;
+    if (!response.ok || body?.errors)
+      throw new Error(`GitHub request failed (${response.status})${body?.message ? `: ${body.message}` : ""}`);
     return body;
   };
   const fetchIssue = async (ref: RefKey, fresh = false): Promise<IssueRecord> => {
@@ -107,7 +123,11 @@ async function main(): Promise<void> {
     const location = splitRef(ref);
     const responseBody = await request("https://api.github.com/graphql", {
       method: "POST",
-      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json", "User-Agent": "pm-fleet-epic-reparent" },
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+        "User-Agent": "pm-fleet-epic-reparent",
+      },
       body: JSON.stringify({ query: ISSUE_QUERY, variables: location }),
       signal: AbortSignal.timeout(20_000),
     });
@@ -128,12 +148,20 @@ async function main(): Promise<void> {
     };
     const issue = body.data?.repository?.issue;
     const labels = issue?.labels?.nodes;
-    if (!issue?.id || !issue.url || typeof issue.body !== "string" || !Array.isArray(labels) || labels.length !== issue.labels?.totalCount || labels.some((label) => typeof label.name !== "string"))
+    if (
+      !issue?.id ||
+      !issue.url ||
+      typeof issue.body !== "string" ||
+      !Array.isArray(labels) ||
+      labels.length !== issue.labels?.totalCount ||
+      labels.some((label) => typeof label.name !== "string")
+    )
       throw new Error(`incomplete issue metadata for ${ref}`);
     if (issue.state !== "OPEN" && issue.state !== "CLOSED") throw new Error(`unknown state for ${ref}`);
-    const parentRef = issue.parent?.repository?.nameWithOwner && issue.parent.number
-      ? `${issue.parent.repository.nameWithOwner}#${issue.parent.number}` as RefKey
-      : null;
+    const parentRef =
+      issue.parent?.repository?.nameWithOwner && issue.parent.number
+        ? (`${issue.parent.repository.nameWithOwner}#${issue.parent.number}` as RefKey)
+        : null;
     let currentParent = parentRef;
     const chain = new Set<RefKey>();
     while (currentParent) {
@@ -172,7 +200,12 @@ async function main(): Promise<void> {
   const selection = selectReparentDestination(child, candidateEpics);
   if (selection.kind !== "selected") throw new Error(`cannot choose destination: ${JSON.stringify(selection)}`);
   const plan = planEpicReparent(child, selection.epic);
-  const preview = { mode: args.apply ? "apply" : "dry-run", selection: selection.reason, plan, commentsOn: [args.child, args.closingEpic] };
+  const preview = {
+    mode: args.apply ? "apply" : "dry-run",
+    selection: selection.reason,
+    plan,
+    commentsOn: [args.child, args.closingEpic],
+  };
   console.log(JSON.stringify(preview, null, 2));
   if (!args.apply) return;
 
@@ -187,7 +220,11 @@ async function main(): Promise<void> {
       const subissue = await fetchIssue(args.child, true);
       await request("https://api.github.com/graphql", {
         method: "POST",
-        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json", "User-Agent": "pm-fleet-epic-reparent" },
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+          "User-Agent": "pm-fleet-epic-reparent",
+        },
         body: JSON.stringify({ query: ADD_PARENT, variables: { parent: target.id, child: subissue.id } }),
         signal: AbortSignal.timeout(20_000),
       });
@@ -197,7 +234,11 @@ async function main(): Promise<void> {
       const subissue = await fetchIssue(child, true);
       await request("https://api.github.com/graphql", {
         method: "POST",
-        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json", "User-Agent": "pm-fleet-epic-reparent" },
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+          "User-Agent": "pm-fleet-epic-reparent",
+        },
         body: JSON.stringify({ query: REMOVE_PARENT, variables: { parent: target.id, child: subissue.id } }),
         signal: AbortSignal.timeout(20_000),
       });
@@ -206,7 +247,12 @@ async function main(): Promise<void> {
       const location = splitRef(ref);
       await request(`https://api.github.com/repos/${location.owner}/${location.name}/issues/${location.number}`, {
         method: "PATCH",
-        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json", "User-Agent": "pm-fleet-epic-reparent", "X-GitHub-Api-Version": "2022-11-28" },
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+          "User-Agent": "pm-fleet-epic-reparent",
+          "X-GitHub-Api-Version": "2022-11-28",
+        },
         body: JSON.stringify({ labels }),
         signal: AbortSignal.timeout(20_000),
       });
@@ -219,12 +265,20 @@ async function main(): Promise<void> {
     },
     addComment: async (ref, body) => {
       const location = splitRef(ref);
-      await request(`https://api.github.com/repos/${location.owner}/${location.name}/issues/${location.number}/comments`, {
-        method: "POST",
-        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json", "User-Agent": "pm-fleet-epic-reparent", "X-GitHub-Api-Version": "2022-11-28" },
-        body: JSON.stringify({ body }),
-        signal: AbortSignal.timeout(20_000),
-      });
+      await request(
+        `https://api.github.com/repos/${location.owner}/${location.name}/issues/${location.number}/comments`,
+        {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${token}`,
+            "Content-Type": "application/json",
+            "User-Agent": "pm-fleet-epic-reparent",
+            "X-GitHub-Api-Version": "2022-11-28",
+          },
+          body: JSON.stringify({ body }),
+          signal: AbortSignal.timeout(20_000),
+        },
+      );
     },
   };
   async function writeHistoricalParent(ref: RefKey, parent: RefKey, present: boolean): Promise<boolean> {
@@ -234,7 +288,12 @@ async function main(): Promise<void> {
     const location = splitRef(ref);
     await request(`https://api.github.com/repos/${location.owner}/${location.name}/issues/${location.number}`, {
       method: "PATCH",
-      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json", "User-Agent": "pm-fleet-epic-reparent", "X-GitHub-Api-Version": "2022-11-28" },
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+        "User-Agent": "pm-fleet-epic-reparent",
+        "X-GitHub-Api-Version": "2022-11-28",
+      },
       body: JSON.stringify({ body }),
       signal: AbortSignal.timeout(20_000),
     });

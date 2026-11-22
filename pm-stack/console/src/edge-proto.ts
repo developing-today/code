@@ -20,7 +20,14 @@
 import type { Issuer } from "./config.ts";
 
 /** What the edge needs to know to recognise the owner. It comes from the
- * host in every sync, so there is one place it is set. */
+ * host in every sync, so there is one place it is set. The last four
+ * fields are what the edge needs to read and write by itself while the
+ * laptop is away: where the queue store is and which token opens it, how
+ * the owner's prompts are marked, and which repositories hold his
+ * needs-me items. They are absent from configs stored or reported
+ * before direct mode existed: those still validate, with the fields
+ * empty, and direct capabilities stay off until a config carries them
+ * (see Edge.directConfigReady). */
 export interface EdgeConfig {
   owners: string[];
   certNames: string[];
@@ -31,6 +38,10 @@ export interface EdgeConfig {
   androidFingerprints: string[];
   /** Whether the host has a signed Android build to hand out. */
   androidApp: boolean;
+  queueDbUrl: string;
+  queueTokenName: string;
+  promptLabel: string;
+  needsRepos: string[];
 }
 
 export interface SyncSection {
@@ -92,7 +103,9 @@ export interface SyncResponse {
 
 /** Actions that may be done late, when the host is back. The rest act on
  * something that may have changed by then (a merge, a unit, a task's
- * state), so they are refused while the host cannot be reached. */
+ * state), so they are refused while the host cannot be reached.
+ * `prompt.enqueue` is the second half of a prompt the edge filed itself:
+ * the issue already exists, so only the queue task is left to do. */
 export const HOLDABLE = new Set([
   "ask.send",
   "ask.reply",
@@ -106,6 +119,7 @@ export const HOLDABLE = new Set([
   "issue.rank",
   "task.move",
   "message.send",
+  "prompt.enqueue",
 ]);
 /** A held action older than this is dropped, and said to have been. */
 export const HELD_FOR_MS = 24 * 60 * 60_000;
@@ -198,6 +212,12 @@ export function edgeConfig(value: unknown): EdgeConfig | null {
     });
   }
   if (typeof v.repo !== "string" || typeof v.queue !== "string" || typeof v.androidPackage !== "string") return null;
+  // The direct fields: present ones must be well-formed, absent ones
+  // are a config from before direct mode, which still validates.
+  if (v.queueDbUrl !== undefined && (typeof v.queueDbUrl !== "string" || !/^https:\/\//.test(v.queueDbUrl))) return null;
+  if (v.queueTokenName !== undefined && typeof v.queueTokenName !== "string") return null;
+  if (v.promptLabel !== undefined && typeof v.promptLabel !== "string") return null;
+  if (v.needsRepos !== undefined && !strings(v.needsRepos)) return null;
   return {
     owners: v.owners.map((o) => o.toLowerCase()),
     certNames: v.certNames,
@@ -207,5 +227,9 @@ export function edgeConfig(value: unknown): EdgeConfig | null {
     androidPackage: v.androidPackage,
     androidFingerprints: v.androidFingerprints,
     androidApp: v.androidApp === true,
+    queueDbUrl: typeof v.queueDbUrl === "string" ? v.queueDbUrl : "",
+    queueTokenName: typeof v.queueTokenName === "string" ? v.queueTokenName : "",
+    promptLabel: typeof v.promptLabel === "string" ? v.promptLabel : "",
+    needsRepos: strings(v.needsRepos) ? v.needsRepos : [],
   };
 }

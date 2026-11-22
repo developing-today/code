@@ -101,6 +101,10 @@ const link = new EdgeLink({
     androidPackage: demoDeps.cfg.androidPackage,
     androidFingerprints: [],
     androidApp: false,
+    queueDbUrl: demoDeps.cfg.queueDbUrl,
+    queueTokenName: demoDeps.cfg.queueTokenName,
+    promptLabel: demoDeps.cfg.promptLabel,
+    needsRepos: demoDeps.cfg.needsRepos,
   }),
   run: heldRunner(demoDeps),
   fetchImpl: (async (url: string, init: RequestInit) => {

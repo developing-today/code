@@ -14,9 +14,9 @@ use serde::{Deserialize, Serialize};
 
 use super::signed;
 use super::{
-    CheckpointKvEntry, CheckpointSchedule, FileScope, HandoffTransferState, Isolation,
-    LeaseRejectionReason, ModuleProvenance, Participant, WorldEvent, WorldEventKind, WriteLease,
-    hex_decode, hex_encode, replication,
+    CheckpointBlobEntry, CheckpointKvEntry, CheckpointSchedule, FileScope, HandoffTransferState,
+    Isolation, LeaseRejectionReason, ModuleProvenance, Participant, WorldEvent, WorldEventKind,
+    WriteLease, hex_decode, hex_encode, replication,
 };
 
 /// One durable fact in the region coordinator's own journal (#3870 phase 1,
@@ -423,6 +423,27 @@ pub enum JournalEntry {
         /// The key that was removed.
         key: String,
     },
+    /// A `blob.put` request stored new content (#1062): the blob
+    /// addressed by `hash` — the content's iroh-blobs hash, as
+    /// lowercase hex — now holds `data`, the content as base64.
+    /// Written before the request's result is delivered, and only
+    /// when the world did not already hold the blob: putting content
+    /// the world already holds is a no-op and journals nothing.
+    /// Replay decodes `data` and refuses the entry unless it hashes
+    /// back to `hash`, so the journal is self-verifying.
+    BlobStored {
+        /// The blob's content address: its hash as lowercase hex.
+        hash: String,
+        /// The content, as base64.
+        data: String,
+    },
+    /// A `blob.delete` request removed a live blob (#1062). Written
+    /// only when the blob was present, before the request's result
+    /// is delivered.
+    BlobRemoved {
+        /// The hash of the blob that was removed.
+        hash: String,
+    },
     /// A participant's author key was bound for signed play (#2814,
     /// #4346). Written when the binding is first made; replaying it
     /// restores the binding and the author's (still empty) chain, so a
@@ -636,6 +657,13 @@ pub enum JournalEntry {
         /// empty, and it must match the `KvSet` entries before it.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         kv: Option<Vec<CheckpointKvEntry>>,
+        /// Live blob index (#1062): hash and content size per live
+        /// blob. Absent when the world holds no blobs, and it must
+        /// match the `BlobStored` entries before it. Only the index
+        /// is declared, never the content — the entries carry the
+        /// bytes, and each is hash-verified as it replays.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        blobs: Option<Vec<CheckpointBlobEntry>>,
         /// Active region-seam handoffs (#3870 phase 1, design #2818 §3):
         /// export fences/payloads, import receipts/dedupe keys and owner
         /// epochs, so compaction cannot resurrect an exported entity or
@@ -783,10 +811,28 @@ pub const JOURNAL_VERSION_JOIN_TIMES: u32 = 12;
 /// containing them must be refused at the header check instead.
 pub const JOURNAL_VERSION_KV: u32 = 13;
 
+/// Journal version 14 (#1062): the `blob` store entries
+/// ([`JournalEntry::BlobStored`] / [`JournalEntry::BlobRemoved`])
+/// and a checkpoint carrying a `blobs` field. A version-13 binary
+/// cannot parse the new entry kinds and would fail mid-replay, so a
+/// journal containing them must be refused at the header check
+/// instead.
+pub const JOURNAL_VERSION_BLOB: u32 = 14;
+
+/// Journal version 15 (#1062): a journal that carries a
+/// `notify` provider event — a committed (or retained) event of
+/// kind [`WorldEventKind::Notification`]. The entry kinds are the
+/// old ones; the *event* kind is new, exactly as an
+/// entity-addressed input event required
+/// [`JOURNAL_VERSION_REGION_HANDOFF`]. A version-14 binary cannot
+/// parse the event kind and would fail mid-replay, so a journal
+/// containing one must be refused at the header check instead.
+pub const JOURNAL_VERSION_NOTIFY: u32 = 15;
+
 /// Newest journal version this binary can read. Journals with a higher
 /// header version are refused at the header check, before any entry is
 /// applied.
-pub const MAX_JOURNAL_VERSION: u32 = JOURNAL_VERSION_KV;
+pub const MAX_JOURNAL_VERSION: u32 = JOURNAL_VERSION_NOTIFY;
 
 /// The header version a journal must carry once it contains `entry`: version 2
 /// for execution-profile entries, version 3 for region-handoff entries,
@@ -874,6 +920,7 @@ fn entry_kind_version(entry: &JournalEntry) -> u32 {
         | JournalEntry::CheckpointAdminPart { .. } => JOURNAL_VERSION_CHECKPOINT_PARTS,
         JournalEntry::Committed { event } | JournalEntry::System { event } => match &event.kind {
             WorldEventKind::EntityInput { .. } => JOURNAL_VERSION_REGION_HANDOFF,
+            WorldEventKind::Notification { .. } => JOURNAL_VERSION_NOTIFY,
             _ => JOURNAL_VERSION,
         },
         // A checkpoint stands in for the entries it compacted, so it must
@@ -893,6 +940,7 @@ fn entry_kind_version(entry: &JournalEntry) -> u32 {
             JOURNAL_VERSION_SCHEDULE_RECURRENCE
         }
         JournalEntry::KvSet { .. } | JournalEntry::KvDeleted { .. } => JOURNAL_VERSION_KV,
+        JournalEntry::BlobStored { .. } | JournalEntry::BlobRemoved { .. } => JOURNAL_VERSION_BLOB,
         JournalEntry::PortalGrantSet { .. } => JOURNAL_VERSION_PORTALS,
         JournalEntry::Checkpoint {
             transfers,
@@ -902,9 +950,27 @@ fn entry_kind_version(entry: &JournalEntry) -> u32 {
             execution_profile,
             schedules,
             kv,
+            blobs,
+            admin_history,
             ..
         } => {
-            let base = if kv.is_some() {
+            // A retained `Notification` event is a version-15 kind
+            // wherever the checkpoint carries it — the retained
+            // events or the admin history (the both-places check
+            // the bundle-provenance rule uses).
+            let base = if events
+                .iter()
+                .any(|event| matches!(event.kind, WorldEventKind::Notification { .. }))
+                || admin_history.as_ref().is_some_and(|history| {
+                    history
+                        .events
+                        .iter()
+                        .any(|event| matches!(event.kind, WorldEventKind::Notification { .. }))
+                }) {
+                JOURNAL_VERSION_NOTIFY
+            } else if blobs.is_some() {
+                JOURNAL_VERSION_BLOB
+            } else if kv.is_some() {
                 JOURNAL_VERSION_KV
             } else if schedules.as_ref().is_some_and(|declared| {
                 declared

@@ -66,9 +66,16 @@
 //! request before processing it — rate-limit rejections (the limiter
 //! answers before the mutation runs) and permission/scope rejections
 //! (INSUFFICIENT_SCOPES, "Resource not accessible by …") are both
-//! pre-execution refusals. Any other failure of a write is returned
-//! as-is: the request may have landed, and repeating it could
-//! double-post. Reads repeat on any failure class.
+//! pre-execution refusals. A "Could not resolve to a node" error is
+//! NOT one: GraphQL executes mutation fields serially, so a batched
+//! mutation may already have run an earlier field (e.g. an
+//! `addComment`) before a later field's node fails to resolve — the
+//! response can carry partial results alongside the error. Replaying
+//! the whole mutation would duplicate the part that landed, so
+//! node-resolution failures repeat only read-only calls, like any
+//! other failure. Any other failure of a write is returned as-is:
+//! the request may have landed, and repeating it could double-post.
+//! Reads repeat on any failure class.
 //!
 //! Tokens are never printed, logged, or written to a file: provider
 //! errors name the source and stage only, never values. Attempts
@@ -255,6 +262,13 @@ enum FailureClass {
     /// Authorization refused the request before processing it
     /// (missing scope, resource not accessible to this identity).
     Permission,
+    /// A node the identity cannot see failed to resolve ("Could not
+    /// resolve to a node"). GitHub hides inaccessible nodes this
+    /// way, but resolution is per-field, not a whole-operation
+    /// pre-execution check: in a batched mutation an earlier field
+    /// may already have executed, so this class repeats only
+    /// read-only calls (#12154 review).
+    NodeResolution,
     /// Anything else: the request may or may not have landed.
     Other,
 }
@@ -272,6 +286,14 @@ fn classify_failure(output: &str) -> FailureClass {
         || lower.contains("http 429")
     {
         return FailureClass::RateLimit;
+    }
+    // GraphQL hides nodes the identity cannot see as unresolvable
+    // rather than inaccessible — but resolution is per-field, not a
+    // whole-operation pre-execution check, so a batched mutation may
+    // already have partially executed (#12154 review). This class
+    // repeats read-only calls only; see may_retry.
+    if lower.contains("could not resolve to a node") {
+        return FailureClass::NodeResolution;
     }
     if lower.contains("missing required scopes")
         || lower.contains("insufficient_scopes")
@@ -757,7 +779,9 @@ fn may_retry(class: FailureClass, read_only: bool, attempts_left: bool) -> bool 
     }
     match class {
         FailureClass::RateLimit | FailureClass::Permission => true,
-        FailureClass::Other => read_only,
+        // Node resolution (and anything else) may have partially
+        // executed: repeat only when the call cannot have landed.
+        FailureClass::NodeResolution | FailureClass::Other => read_only,
     }
 }
 
@@ -1033,9 +1057,8 @@ impl TokenProvider for FleetTokenProvider {
 /// one place daemon-resolved and locally-resolved copies of the
 /// secret converge, so neither path can skip the parse.
 fn personal_token(hosts_yml: &str) -> Result<String, String> {
-    parse_hosts_yml_token(hosts_yml).ok_or_else(|| {
-        format!("secret '{PERSONAL_SECRET_NAME}' carries no oauth_token")
-    })
+    parse_hosts_yml_token(hosts_yml)
+        .ok_or_else(|| format!("secret '{PERSONAL_SECRET_NAME}' carries no oauth_token"))
 }
 
 /// Extract the `oauth_token` value from gh's hosts.yml content.
@@ -1252,6 +1275,8 @@ fn run_with_provider<P: TokenProvider>(
                     match class {
                         FailureClass::RateLimit => "rate limit",
                         FailureClass::Permission => "permission/scope refusal",
+                        FailureClass::NodeResolution =>
+                            "node-resolution error on a read-only call",
                         FailureClass::Other => "error on a read-only call",
                     }
                 );
@@ -1770,6 +1795,12 @@ mod tests {
             FailureClass::Permission
         );
         assert_eq!(
+            classify_failure(
+                "GraphQL: Could not resolve to a node with the global id of 'PVT_kwHOA123'"
+            ),
+            FailureClass::NodeResolution
+        );
+        assert_eq!(
             classify_failure("gh: Not Found (HTTP 404)"),
             FailureClass::Other
         );
@@ -1786,6 +1817,9 @@ mod tests {
     fn retry_gate_matches_the_rule() {
         assert!(may_retry(FailureClass::RateLimit, false, true));
         assert!(may_retry(FailureClass::Permission, false, true));
+        assert!(!may_retry(FailureClass::NodeResolution, false, true));
+        assert!(may_retry(FailureClass::NodeResolution, true, true));
+        assert!(!may_retry(FailureClass::NodeResolution, true, false));
         assert!(!may_retry(FailureClass::Other, false, true));
         assert!(may_retry(FailureClass::Other, true, true));
         assert!(!may_retry(FailureClass::RateLimit, false, false));
@@ -2194,6 +2228,10 @@ mod tests {
              \techo 'some unclassifiable failure' >&2\n\
              \texit 7\n\
              fi\n\
+             if [ \"$GH_TOKEN\" = \"tok-node\" ]; then\n\
+             \techo 'GraphQL: Could not resolve to a node with the global id of PVT_kwHOA123' >&2\n\
+             \texit 1\n\
+             fi\n\
              echo 'fake gh output'\n\
              exit 0\n",
             log = log.display()
@@ -2282,6 +2320,62 @@ mod tests {
             1,
             "write attempted exactly once: {calls}"
         );
+    }
+
+    // oracle: the #12154 review — a batched GraphQL mutation whose
+    // later field fails node resolution may already have executed an
+    // earlier field, so the mutation is NOT replayed under the next
+    // token; the same failure on a read IS retried.
+    #[test]
+    fn write_not_repeated_on_node_resolution_failure() {
+        struct NodeProvider;
+        impl TokenProvider for NodeProvider {
+            fn token_for(&mut self, source: &TokenSource) -> Result<String, String> {
+                match source {
+                    TokenSource::Personal => Ok("tok-node".to_string()),
+                    other => Ok(format!("tok-{}", other.label())),
+                }
+            }
+        }
+        let sources = vec![
+            TokenSource::Personal,
+            TokenSource::app(GhApp::Fleet, "developing-today"),
+        ];
+        // A batched mutation: addComment first, a node reference second.
+        let mutation: Vec<String> = [
+            "api",
+            "graphql",
+            "-f",
+            "query=mutation{addComment(input:{subjectId:\"x\",body:\"y\"}){clientMutationId} node(id:\"PVT_kwHOA123\"){id}}",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        assert!(!is_read_call(&mutation));
+        let (dir, script) = fake_gh("write-node");
+        let log = format!("{dir}/calls.log");
+        let mut provider = NodeProvider;
+        let code = run_with_provider(&mut provider, &script, &mutation, &sources, false);
+        assert_eq!(code, 1, "the first attempt's exit code is propagated");
+        let calls = std::fs::read_to_string(&log).unwrap();
+        assert_eq!(
+            calls.lines().count(),
+            1,
+            "mutation attempted exactly once: {calls}"
+        );
+        // The same failure on a read fails over to the next token.
+        let query: Vec<String> = ["api", "graphql", "-f", "query=query{viewer{login}}"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert!(is_read_call(&query));
+        let (dir2, script2) = fake_gh("read-node");
+        let log2 = format!("{dir2}/calls.log");
+        let mut provider = NodeProvider;
+        let code = run_with_provider(&mut provider, &script2, &query, &sources, false);
+        assert_eq!(code, 0);
+        let calls = std::fs::read_to_string(&log2).unwrap();
+        assert_eq!(calls.lines().count(), 2, "both tokens attempted: {calls}");
     }
 
     // oracle: Drew's 2026-11-14 raw-mode contract — a LEADING

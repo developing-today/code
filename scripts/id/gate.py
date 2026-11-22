@@ -139,14 +139,26 @@ def read_log(path: Path) -> list[dict[str, object]]:
 
 
 def _run_git(args: list[str], *, cwd: Path | None = None, **_: object) -> str:
-    result = subprocess.run(["git", *args], cwd=cwd, check=True, text=True,
-                            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    result = subprocess.run(
+        ["git", *args],
+        cwd=cwd,
+        check=True,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
     return result.stdout.strip()
 
 
 def _run_gh(args: list[str], *, cwd: Path | None = None, **_: object) -> str:
-    result = subprocess.run(["gh", *args], cwd=cwd, check=True, text=True,
-                            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    result = subprocess.run(
+        ["gh", *args],
+        cwd=cwd,
+        check=True,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
     return result.stdout.strip()
 
 
@@ -163,17 +175,27 @@ def _run_devshell(command: str, *, cwd: Path | None = None, **_: object) -> int:
     """
     root = cwd if cwd is not None else REPO_ROOT
     argv = [
-        "nix", "--extra-experimental-features", "nix-command flakes",
-        "develop", str(root / "pkgs" / "id"),
-        "--command", "bash", "-c", command,
+        "nix",
+        "--extra-experimental-features",
+        "nix-command flakes",
+        "develop",
+        str(root / "pkgs" / "id"),
+        "--command",
+        "bash",
+        "-c",
+        command,
     ]
     result = subprocess.run(argv, cwd=root)
     return result.returncode
 
 
 def run_batch(
-    prs: Sequence[int], batch: int, *, affected: Mapping[int, Iterable[str]] | None = None,
-    log_path: Path = DEFAULT_LOG_PATH, repo: Path = REPO_ROOT,
+    prs: Sequence[int],
+    batch: int,
+    *,
+    affected: Mapping[int, Iterable[str]] | None = None,
+    log_path: Path = DEFAULT_LOG_PATH,
+    repo: Path = REPO_ROOT,
     git: Callable[..., str] = _run_git,
     shell: Callable[..., int] = _run_devshell,
     gh: Callable[..., str] = _run_gh,
@@ -190,27 +212,39 @@ def run_batch(
         # Each verdict is assembled from current main, never from a prior probe.
         with tempfile.TemporaryDirectory(prefix="id-gate-") as temp:
             candidate = Path(temp) / "candidate"
-            git(["worktree", "add", "--detach", str(candidate), "origin/main"], cwd=repo)
+            git(
+                ["worktree", "add", "--detach", str(candidate), "origin/main"], cwd=repo
+            )
             try:
                 for pr in subset:
-                    data = json.loads(gh(["pr", "view", str(pr), "--json", "headRefOid"], cwd=repo))
+                    data = json.loads(
+                        gh(["pr", "view", str(pr), "--json", "headRefOid"], cwd=repo)
+                    )
                     oid = data["headRefOid"]
                     git(["fetch", "origin", f"refs/pull/{pr}/head"], cwd=candidate)
                     git(["merge", "--no-ff", "--no-edit", "FETCH_HEAD"], cwd=candidate)
                     if pr not in affected_by_pr:
-                        paths = git(["diff", "--name-only", f"origin/main...{oid}"], cwd=repo)
+                        paths = git(
+                            ["diff", "--name-only", f"origin/main...{oid}"], cwd=repo
+                        )
                         selector = candidate / "scripts/id/affected-crates.py"
                         selected = subprocess.run(
-                            [sys.executable, str(selector), "-"], cwd=candidate,
-                            input=paths, text=True, check=True,
-                            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            [sys.executable, str(selector), "-"],
+                            cwd=candidate,
+                            input=paths,
+                            text=True,
+                            check=True,
+                            stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE,
                         ).stdout.splitlines()
                         affected_by_pr[pr] = selected
                 command = batch_command(subset, affected_by_pr)
                 result = shell(command, cwd=candidate, prs=subset)
                 verdict = result == 0
-                append_log(log_path, log_record(number, subset, command,
-                                                "green" if verdict else "red"))
+                append_log(
+                    log_path,
+                    log_record(number, subset, command, "green" if verdict else "red"),
+                )
                 return verdict
             finally:
                 git(["worktree", "remove", "--force", str(candidate)], cwd=repo)
@@ -264,14 +298,20 @@ def main(argv: list[str] | None = None) -> int:
 
     run = sub.add_parser("run", help="assemble, test, and merge one planned batch")
     run.add_argument("--batch", type=int, required=True)
-    run.add_argument("--prs", required=True, help="comma-separated PR numbers, in merge order")
-    run.add_argument("--log", default=str(DEFAULT_LOG_PATH), help="JSONL batch log path")
+    run.add_argument(
+        "--prs", required=True, help="comma-separated PR numbers, in merge order"
+    )
+    run.add_argument(
+        "--log", default=str(DEFAULT_LOG_PATH), help="JSONL batch log path"
+    )
 
     args = parser.parse_args(argv)
 
     if args.command == "run":
         result = run_batch(_prs(args.prs), args.batch, log_path=Path(args.log))
-        print(json.dumps({"batch": args.batch, "prs": _prs(args.prs), "result": result}))
+        print(
+            json.dumps({"batch": args.batch, "prs": _prs(args.prs), "result": result})
+        )
     elif args.command == "plan":
         batches = plan_batches(
             _prs(args.prs), batch_size=args.batch_size, enabled=not args.off
