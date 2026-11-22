@@ -546,6 +546,7 @@ const NOTIFY_SEND_ARGUMENTS: &[ProviderArgument] = &[
 const NOTIFY_SEND_BOUNDS: &[ProviderBound] = &[
     ProviderBound::ArgsBytes(MAX_ARGS_BYTES),
     ProviderBound::Items(MAX_NOTIFY_PER_WINDOW),
+];
 /// Argument schema for `http.fetch`: one required `url`. A fetch
 /// names no method and sends no body — GET only — so the URL is
 /// the whole request.
