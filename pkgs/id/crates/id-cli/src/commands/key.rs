@@ -109,6 +109,16 @@ fn import_restored_key(
     key_bytes: &[u8; 32],
     replace: bool,
 ) -> Result<()> {
+    import_restored_key_with_hook(target, marker, key_bytes, replace, || {})
+}
+
+fn import_restored_key_with_hook(
+    target: &Path,
+    marker: impl AsRef<Path>,
+    key_bytes: &[u8; 32],
+    replace: bool,
+    after_marker_snapshot: impl FnOnce(),
+) -> Result<()> {
     let _lock = lock_restored_key(marker.as_ref())?;
     let public = hex_encode(
         &ed25519_dalek::SigningKey::from_bytes(key_bytes)
@@ -127,6 +137,7 @@ fn import_restored_key(
             });
         }
     };
+    after_marker_snapshot();
     restored_key::mark_restored(&marker, &public)?;
     let install = if replace {
         replace_private_file(target, key_bytes)
@@ -231,9 +242,10 @@ mod tests {
     use tempfile::TempDir;
 
     #[test]
-    fn concurrent_replacements_keep_installed_key_and_marker_in_sync() {
-        use std::sync::{Arc, Barrier};
+    fn concurrent_no_clobber_imports_serialize_marker_snapshot_and_install() {
+        use std::sync::mpsc;
         use std::thread;
+        use std::time::Duration;
 
         let temp = TempDir::new().unwrap();
         let target = temp.path().join(".iroh-key");
@@ -242,23 +254,49 @@ mod tests {
             SecretKey::from([11; 32]).to_bytes(),
             SecretKey::from([12; 32]).to_bytes(),
         ];
-        let barrier = Arc::new(Barrier::new(3));
-        let joins: Vec<_> = keys
-            .into_iter()
-            .map(|key| {
-                let barrier = Arc::clone(&barrier);
-                let target = target.clone();
-                let marker = marker.clone();
-                thread::spawn(move || {
-                    barrier.wait();
-                    import_restored_key(&target, &marker, &key, true).unwrap();
-                })
+        let (snapshot_tx, snapshot_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let first_key = keys[0];
+        let first_target = target.clone();
+        let first_marker = marker.clone();
+        let first = thread::spawn(move || {
+            import_restored_key_with_hook(&first_target, &first_marker, &first_key, false, || {
+                snapshot_tx.send(()).unwrap();
+                release_rx.recv().unwrap();
             })
-            .collect();
-        barrier.wait();
-        for join in joins {
-            join.join().unwrap();
-        }
+        });
+        snapshot_rx.recv().unwrap();
+
+        let (second_started_tx, second_started_rx) = mpsc::channel();
+        let (second_snapshot_tx, second_snapshot_rx) = mpsc::channel();
+        let second_target = target.clone();
+        let second_marker = marker.clone();
+        let second_key = keys[1];
+        let second = thread::spawn(move || {
+            second_started_tx.send(()).unwrap();
+            import_restored_key_with_hook(
+                &second_target,
+                &second_marker,
+                &second_key,
+                false,
+                || second_snapshot_tx.send(()).unwrap(),
+            )
+        });
+        second_started_rx.recv().unwrap();
+
+        // The first transaction has snapshotted the absent marker and is held
+        // there. The second must not pass its own snapshot until the first
+        // publishes the marker and installs its key.
+        let second_passed_snapshot = second_snapshot_rx
+            .recv_timeout(Duration::from_millis(100))
+            .is_ok();
+        release_tx.send(()).unwrap();
+        first.join().unwrap().unwrap();
+        assert!(second.join().unwrap().is_err());
+        assert!(
+            !second_passed_snapshot,
+            "second import bypassed the transaction lock"
+        );
 
         let installed = std::fs::read(&target).unwrap();
         let installed: [u8; 32] = installed.try_into().unwrap();
