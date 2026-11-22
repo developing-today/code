@@ -49,8 +49,11 @@ TS_SHA256="e56693ff74a64f2591b7e819c280635a100aae1ddfb0ef058fcd052b7cd8d16c"
 R2_BASE="s3:https://234b866b99ce2b142d7963d8d139cbfa.r2.cloudflarestorage.com/supabase-backups"
 SANDBOX_HOME=/home/hatch # the old sandbox's home; the restored tools hard-code it
 LAPTOP_TAILNET_IP=100.99.113.103
-TS_HOSTNAME="${TS_HOSTNAME:-muse}"
 AGENT="${FLEET_AGENT:-muse}"
+AGENT_WAS_EXPLICIT=0
+[ "${FLEET_AGENT+x}" = x ] && AGENT_WAS_EXPLICIT=1
+TS_HOSTNAME_OVERRIDE="${TS_HOSTNAME:-}"
+TS_STATE_OVERRIDE="${TS_STATE:-}"
 
 PHASES="tools token restore tailnet fleet persist init check"
 ALL=0
@@ -121,6 +124,27 @@ die() {
 for c in curl tar python3 sha256sum; do command -v "$c" >/dev/null || die "needs $c on PATH"; done
 
 HOME="${HOME:?HOME must be set}"
+# Each explicitly named Fleet agent gets its own Tailscale node state and a
+# stable, readable hostname. Never reuse the legacy shared "muse" identity
+# for a newly named agent: that can silently move an existing node.
+AGENT_SLUG=$(printf '%s' "$AGENT" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9-]/-/g; s/^-*//; s/-*$//' | cut -c1-55)
+[ -n "$AGENT_SLUG" ] || die "FLEET_AGENT must contain at least one letter or number"
+case "$AGENT_SLUG" in muse-*) AGENT_SLUG=${AGENT_SLUG#muse-} ;; esac
+[ -n "$AGENT_SLUG" ] || die "FLEET_AGENT must contain a name after 'muse-'"
+if [ -n "$TS_HOSTNAME_OVERRIDE" ]; then
+  TS_HOSTNAME=$TS_HOSTNAME_OVERRIDE
+elif [ "$AGENT_WAS_EXPLICIT" = 1 ]; then
+  TS_HOSTNAME="muse-$AGENT_SLUG"
+else
+  TS_HOSTNAME=muse # preserve the legacy default for existing installations
+fi
+if [ -n "$TS_STATE_OVERRIDE" ]; then
+  TS_STATE=$TS_STATE_OVERRIDE
+elif [ "$AGENT_WAS_EXPLICIT" = 1 ]; then
+  TS_STATE="$HOME/.local/state/tailscale/agents/$AGENT_SLUG"
+else
+  TS_STATE="$HOME/.local/state/tailscale" # preserve the legacy node state
+fi
 # Only $SANDBOX_HOME (a btrfs volume) survives a sandbox recycle; /, /etc,
 # /root and /usr/local are wiped. Everything below is written under $HOME.
 if [ "$HOME" != "$SANDBOX_HOME" ]; then
@@ -352,7 +376,6 @@ EOF
 fi
 
 # ---- tailnet ----
-TS_STATE="$HOME/.local/state/tailscale"
 TS_SOCK="$TS_STATE/tailscaled.sock"
 if want tailnet && { [ ! -x "$BIN/tailscaled" ] || [ ! -x "$BIN/tailscale" ]; }; then
   say "tailnet: no tailscale binaries (download failed); skipping, the laptop link will not work"
@@ -428,7 +451,24 @@ PY
     echo 'export HTTPS_PROXY=http://127.0.0.1:3130' >"$TS_STATE/fleet-proxy.env"
     say "tailnet: userspace mode; start fleet proxy with HTTPS_PROXY from $TS_STATE/fleet-proxy.env"
   fi
-  say "tailnet: up as $TS_HOSTNAME ($MODE mode)"
+  EFFECTIVE_HOSTNAME=$("$BIN/tailscale" --socket="$TS_SOCK" status --json 2>/dev/null |
+    python3 -c 'import json,sys; print(json.load(sys.stdin).get("Self",{}).get("HostName",""))' 2>/dev/null || true)
+  [ -n "$EFFECTIVE_HOSTNAME" ] || EFFECTIVE_HOSTNAME=$TS_HOSTNAME
+  if [ "$MODE" = userspace ]; then
+    say "tailnet: up as $EFFECTIVE_HOSTNAME (userspace mode; HTTP CONNECT works, direct Iroh/Tailscale UDP is unavailable)"
+  else
+    say "tailnet: up as $EFFECTIVE_HOSTNAME (kernel mode; direct UDP paths are available when NAT/firewall permit)"
+  fi
+  say "tailnet: node state is isolated at $TS_STATE; a hostname collision may get a Tailscale suffix and will not rename another node"
+  if PING_RESULT=$("$BIN/tailscale" --socket="$TS_SOCK" ping --c 1 "$LAPTOP_TAILNET_IP" 2>&1); then
+    case "$PING_RESULT" in
+      *"via DERP"*) say "tailnet: laptop is reachable through DERP; direct Tailscale UDP is not established" ;;
+      *"via "*|*"direct"*) say "tailnet: laptop probe succeeded over a direct Tailscale path" ;;
+      *) say "tailnet: laptop probe succeeded; route type was not reported" ;;
+    esac
+  else
+    say "tailnet: laptop probe to $LAPTOP_TAILNET_IP did not succeed yet; Cloudflare HTTPS remains the fallback"
+  fi
 fi
 
 # ---- fleet ----
