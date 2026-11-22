@@ -476,7 +476,7 @@ describe("over HTTP, without the sign-in", () => {
       const { token, id } = (await (await w.link(VERIFIER)).json()) as { token: string; id: string };
       const asOwner = {
         ...w.deps,
-        identify: async () => ({ via: "cloudflare-access", email: "drewrypope@gmail.com" }),
+        identify: async () => ({ via: "cloudflare-access", email: "owner@example.com" }),
       };
       const listed = await handle(
         new Request("https://pm.security.cab/console/api/devices", { headers: { host: "pm.security.cab" } }),

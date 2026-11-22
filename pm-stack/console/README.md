@@ -119,10 +119,16 @@ the owner (`PM_CONSOLE_OWNER_EMAILS`).
 - **Today:** Cloudflare Access at the public edge runs the interactive
   sign-in and issues the token. The sign-in methods are set on the Access
   application, not here.
-- **Google:** an Access sign-in method. It turns on when
-  `scripts/expose.py` finds the secrets `google.access-sso.client-id` and
-  `google.access-sso.client-secret` (an OAuth client whose redirect URI is
-  `https://<team>.cloudflareaccess.com/cdn-cgi/access/callback`).
+- **Google:** an Access sign-in method, offered beside the emailed code.
+  It needs an OAuth client, which Google lets only a signed-in person
+  make. The app walks through it under More, Sign-in: it shows the two
+  addresses to give Google, takes the client ID and secret, and hands
+  them to `scripts/expose.py --google-stdin`, which gives them to
+  Cloudflare. They are kept nowhere else: not in a file, a log, the
+  record of actions, or (the action is never held) the edge. The same
+  screen replaces the client later. `expose.py` also turns Google on by
+  itself if it finds the secrets `google.access-sso.client-id` and
+  `google.access-sso.client-secret`.
 - **The central OIDC provider (#9077):** either an Access sign-in method
   (generic OIDC), or trusted directly: add
   `{name, issuer, jwksUri, audience}` to the file named by
@@ -146,13 +152,18 @@ app's link to this origin), and the two phone paths under
 
 ```bash
 bash pm-stack/console/install.sh          # user unit pm-console, port 4872, loopback only; and its two timers
+python3 pm-stack/console/scripts/expose.py --owner you@example.com   # first time: Access, console env, tunnel route, DNS, the edge's route
 python3 pm-stack/console/scripts/expose.py --check   # what public exposure would change
-python3 pm-stack/console/scripts/expose.py           # Access, console env, tunnel route, DNS, the edge's route
+python3 pm-stack/console/scripts/expose.py           # later runs (the timer's): the owner is remembered
+python3 pm-stack/console/scripts/expose.py --status  # which sign-in methods are on, as JSON; changes nothing
 python3 pm-stack/console/scripts/expose.py --edge off   # hostname straight to this host, not through the edge
 cd pm-stack/console && bun test
 bun run scripts/demo.ts          # the app with made-up state, on this host alone
 bun run scripts/edge-demo.ts     # the same behind the edge
 ```
+
+The owner's address is given once with `--owner` and remembered in the
+console's environment file; it is not written in the script.
 
 `expose.py` is safe to run again: it changes only what is not already so
 and refuses to touch DNS records or Access policies it did not write. It

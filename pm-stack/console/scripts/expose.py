@@ -40,9 +40,20 @@ up with its sign-in settings, the run stops before the route.
 Every secret is read by name through `fleet secrets get` and stays in
 memory. Nothing printed is a secret.
 
-Usage: expose.py [--check] [--edge on|off] [--host pm.security.cab] [--owner EMAIL]
+Usage: expose.py [--check] [--edge on|off] [--host pm.security.cab] [--owner ADDRESS]
+                 [--google-stdin] [--status]
+  --owner      whose sign-in is let in. Needed the first time; after that
+               the console's environment file remembers it. The address
+               is not written in this script.
   --check      report what would change and exit 1 if anything would;
                with --edge, what that choice would change, keeping nothing.
+  --google-stdin
+               turn Google sign-in on with an OAuth client read from
+               standard input: the client ID on the first line, the
+               client secret on the second. They go to Cloudflare and
+               nowhere else: not to a file, a log or the output.
+  --status     print which sign-in methods are on, as JSON, and change
+               nothing.
   --edge off   take the hostname off the edge Worker; remembered by later
                runs (the timer's included) until --edge on.
 """
@@ -52,6 +63,7 @@ from __future__ import annotations
 import argparse
 import json
 import pathlib
+import re
 import subprocess
 import sys
 import time
@@ -309,7 +321,43 @@ def ensure_dns(cf: Cloudflare, host: str, tunnel: str, zone: str, needed: bool) 
         )
 
 
-def ensure_idps(cf: Cloudflare, account: str) -> list[str]:
+def read_google(stream) -> tuple[str, str]:
+    """A Google OAuth client from standard input: the client ID on the
+    first line and the client secret on the second. Refused, before
+    anything is asked of Cloudflare, unless it looks like one. Neither
+    value is ever printed, in a refusal or otherwise."""
+    lines = [line.strip() for line in stream.read().splitlines() if line.strip()]
+    if len(lines) != 2:
+        raise SystemExit(
+            "--google-stdin: expected two lines, the client ID and then the client secret"
+        )
+    client_id, client_secret = lines
+    if not re.fullmatch(r"[0-9]+-[0-9a-z]+\.apps\.googleusercontent\.com", client_id):
+        raise SystemExit(
+            "--google-stdin: the first line is not a Google OAuth client ID "
+            "(one ends in .apps.googleusercontent.com)"
+        )
+    if not re.fullmatch(r"[\x21-\x7e]{8,200}", client_secret):
+        raise SystemExit("--google-stdin: the second line is not a client secret")
+    return client_id, client_secret
+
+
+def owner_address(given: str | None, env: pathlib.Path) -> str:
+    """Whose sign-in is let in. It is named with --owner the first time;
+    after that the console's own environment file remembers it, so the
+    timer's runs need not be told. It is not written in this script."""
+    remembered = env_values(env).get("PM_CONSOLE_OWNER_EMAILS", "").split(",")[0]
+    owner = (given or remembered).strip().lower()
+    if not re.fullmatch(r"[^@\s,]+@[^@\s,]+\.[^@\s,]+", owner):
+        raise SystemExit(
+            f"say whose sign-in is let in: --owner ADDRESS (after the first run, {env} remembers it)"
+        )
+    return owner
+
+
+def ensure_idps(
+    cf: Cloudflare, account: str, google: tuple[str, str] | None = None
+) -> list[str]:
     idps = cf.get(f"/accounts/{account}/access/identity_providers")
     by_type = {i["type"]: i for i in idps}
     ids = []
@@ -324,9 +372,23 @@ def ensure_idps(cf: Cloudflare, account: str) -> list[str]:
             ids.append(made["id"])
     else:
         ids.append(by_type["onetimepin"]["id"])
-    client_id, client_secret = secret(GOOGLE_ID), secret(GOOGLE_SECRET)
+    # A client handed in now is used; otherwise the two secrets, if they exist.
+    client_id, client_secret = google or (secret(GOOGLE_ID), secret(GOOGLE_SECRET))
     if "google" in by_type:
         ids.append(by_type["google"]["id"])
+        if google:
+            # Already on, and a client was handed in: it is the one to
+            # use from here on (a corrected or replaced client).
+            cf.change(
+                "access: give Google sign-in the client just supplied",
+                "PUT",
+                f"/accounts/{account}/access/identity_providers/{by_type['google']['id']}",
+                {
+                    "name": by_type["google"].get("name") or "Google",
+                    "type": "google",
+                    "config": {"client_id": client_id, "client_secret": client_secret},
+                },
+            )
     elif client_id and client_secret:
         made = cf.change(
             "access: add Google sign-in",
@@ -522,7 +584,21 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--check", action="store_true")
     parser.add_argument("--host", default="pm.security.cab")
-    parser.add_argument("--owner", default="drewrypope@gmail.com")
+    parser.add_argument(
+        "--owner",
+        help="whose sign-in is let in; needed the first time, remembered after",
+    )
+    parser.add_argument(
+        "--google-stdin",
+        action="store_true",
+        help="turn Google sign-in on with the OAuth client ID and secret read "
+        "from standard input, one a line",
+    )
+    parser.add_argument(
+        "--status",
+        action="store_true",
+        help="print which sign-in methods are on, as JSON, and change nothing",
+    )
     parser.add_argument(
         "--edge",
         choices=["on", "off"],
@@ -530,6 +606,10 @@ def main() -> int:
         "the choice is kept for later runs (default: on, once the Worker answers)",
     )
     args = parser.parse_args()
+    env = pathlib.Path.home() / ".local/state/pm-console/.env"
+    # Refused here, before anything is asked of Cloudflare.
+    google = read_google(sys.stdin) if args.google_stdin else None
+    owner = None if args.status else owner_address(args.owner, env)
 
     token = secret("cloudflare.api-token-account-wide")
     if not token:
@@ -542,12 +622,25 @@ def main() -> int:
         raise SystemExit(f"expected one account, found {len(accounts)}")
     account = accounts[0]["id"]
     team = cf.get(f"/accounts/{account}/access/organizations")["auth_domain"]
+    if args.status:
+        kinds = {
+            i["type"] for i in cf.get(f"/accounts/{account}/access/identity_providers")
+        }
+        print(
+            json.dumps(
+                {
+                    "google": "google" in kinds,
+                    "pin": "onetimepin" in kinds,
+                    "team": team,
+                }
+            )
+        )
+        return 0
 
     # Look before changing anything: a hostname that already points
     # somewhere else stops the run with nothing written.
     tunnel, tunnel_config = find_tunnel(cf, account)
     zone, dns_needed = dns_plan(cf, args.host, tunnel)
-    env = pathlib.Path.home() / ".local/state/pm-console/.env"
     console = console_origin(env)
     # Through the edge only if that is wanted and the Worker is really
     # there; otherwise straight to this host, as before the edge existed.
@@ -562,7 +655,7 @@ def main() -> int:
 
     # Order matters. The sign-in gate is put in place first and the route
     # last, so the origin is never reachable without the gate in front.
-    idps = ensure_idps(cf, account)
+    idps = ensure_idps(cf, account, google)
     apps = cf.get(f"/accounts/{account}/access/apps?per_page=200")
     for path in PUBLIC_PATHS:
         ensure_app(
@@ -582,7 +675,7 @@ def main() -> int:
         args.host,
         "PM stack",
         "allow",
-        [{"email": {"email": args.owner}}],
+        [{"email": {"email": owner}}],
         idps,
         APP_SETTINGS,
     )
@@ -592,7 +685,7 @@ def main() -> int:
             {
                 "PM_CONSOLE_ACCESS_TEAM_DOMAIN": team,
                 "PM_CONSOLE_ACCESS_AUD": aud,
-                "PM_CONSOLE_OWNER_EMAILS": args.owner,
+                "PM_CONSOLE_OWNER_EMAILS": owner,
                 # Where this host reports to the edge; absent, it reports
                 # to nobody.
                 "PM_CONSOLE_EDGE_URL": f"https://{args.host}" if edge else None,
@@ -616,7 +709,7 @@ def main() -> int:
         print(("would change: " if args.check else "changed: ") + change)
     if not cf.changes:
         print(
-            f"https://{args.host}/ is set up: dashboard at /, console at /console/, owner {args.owner}"
+            f"https://{args.host}/ is set up: dashboard at /, console at /console/, owner {owner}"
         )
     return 1 if args.check and cf.changes else 0
 

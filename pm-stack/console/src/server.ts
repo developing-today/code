@@ -283,6 +283,7 @@ export async function handle(req: Request, deps: Deps, peer: string | null = nul
       }
       if (seg.length === 1 && seg[0] === "push" && deps.push) return json(await deps.push.status());
       if (seg.length === 1 && seg[0] === "devices" && deps.phones) return json(await deps.phones.devices.list());
+      if (seg.length === 1 && seg[0] === "signin") return json(await ops.signin());
       if (seg.length === 1 && seg[0] === "question" && deps.work) {
         return json(await deps.work.question(query.get("set"), query.get("ledger"), query.get("qid")));
       }
