@@ -15,13 +15,13 @@ leptos = "=0.4.10"
 leptos_axum = { version = "=0.4.10", optional = true }
 leptos_meta = "=0.4.10"
 leptos_router = "=0.4.10"
+start-axum-error = { path = "../start-axum-error" }
 log = "0.4"
 simple_logger = "4"
 tokio = { version = "1.38.2", optional = true }
 tower = { version = "0.4.13", optional = true }
 tower-http = { version = "0.4", features = ["fs"], optional = true }
 wasm-bindgen = "0.2.87"
-thiserror = "1.0.38"
 tracing = { version = "0.1.40", optional = true }
 http = "0.2.8"
 serde = { version = "1.0.176", features = ["derive"] }
@@ -33,12 +33,15 @@ leptos_query = "0.2.3"
 
 [features]
 hydrate = [
+  "start-axum-error/hydrate",
+  "dep:tracing",
   "leptos/hydrate",
   "leptos_meta/hydrate",
   "leptos_router/hydrate",
   "leptos_query/hydrate",
 ]
 ssr = [
+  "start-axum-error/ssr",
   "dep:axum",
   "dep:tokio",
   "dep:tower",
