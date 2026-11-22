@@ -339,7 +339,9 @@ describe("explorer points (charts + perspectives)", () => {
   // cost frontier, off the time frontier, beaten by nobody on all
   // three axes at once (A costs more). The reference design's exact
   // semantics, in data form.
-  function sectionWith(rows: { family: string; score: number; cost: number; time: number }[]): AaSection {
+  type FixtureRow = { family: string; score: number | null; cost: number | null; time: number | null };
+
+  function sectionWith(rows: FixtureRow[]): AaSection {
     const rankings: AaRanking[] = rows.map((r, i) => ({
       rowIndex: i,
       testRunKey: `k${i}`,
@@ -451,6 +453,85 @@ describe("explorer points (charts + perspectives)", () => {
       "duplicate",
       "lower-y",
     ]);
+  });
+
+  test("AA and CAI Pareto flags match the all-pairs dominance oracle under generated inputs", () => {
+    // Independent model: a point is dominated iff another point is no
+    // worse on either axis and strictly better on at least one axis.
+    type Pair = readonly [number | null, number | null];
+    const nonDominated = (pairs: Pair[], i: number): boolean => {
+      const [x, y] = pairs[i];
+      if (x === null || y === null) return false;
+      return !pairs.some(
+        ([a, b]) => a !== null && b !== null && a <= x && b <= y && (a < x || b < y),
+      );
+    };
+
+    let state = 0x50415245; // fixed seed; a failure names its generated case
+    const draw = (limit: number): number => {
+      state = (Math.imul(state, 1_664_525) + 1_013_904_223) >>> 0;
+      return Math.floor((state / 2 ** 32) * limit);
+    };
+    // A small domain makes ties common. Non-finite numbers exercise the
+    // pure projection APIs directly (feed decoding normalizes them to null).
+    const values = [null, -0, 0, 1, 2, 3, 5, 8, NaN, -Infinity, Infinity];
+    const value = () => values[draw(values.length)];
+    const negated = (n: number | null) => (n === null ? null : -n);
+
+    for (let sample = 0; sample < 2_048; sample++) {
+      const rows: FixtureRow[] = Array.from({ length: draw(24) }, (_, i) => ({
+        family: `row-${i}`,
+        score: value(),
+        cost: value(),
+        time: value(),
+      }));
+      for (let i = rows.length - 1; i > 0; i--) {
+        const j = draw(i + 1);
+        [rows[i], rows[j]] = [rows[j], rows[i]];
+      }
+
+      const costScore = rows.map((r): Pair => [r.cost, negated(r.score)]);
+      const timeScore = rows.map((r): Pair => [r.time, negated(r.score)]);
+      const costTime = rows.map((r): Pair => [r.cost, r.time]);
+      const expected = rows.map((r, i) => ({
+        family: r.family,
+        frontierCost: nonDominated(costScore, i),
+        frontierTime: nonDominated(timeScore, i),
+        frontierCostTime: nonDominated(costTime, i),
+      }));
+
+      const aa = sectionWith(rows);
+      // Exercise AA's joined cost/time fallback as well as direct metrics.
+      for (let i = 0; i < rows.length; i++) {
+        if (i % 2 === 0) aa.rankings[i].costTask = null;
+        if (i % 3 === 0) aa.rankings[i].timeTaskSec = null;
+      }
+
+      const cai = rows.map((r): AaCaiRow => ({
+        modelName: r.family,
+        family: r.family,
+        creator: "Test",
+        effort: null,
+        version: "v1.5",
+        score: r.score,
+        cost: r.cost,
+        wallSec: r.time,
+        tokensPerTask: null,
+        harness: null,
+        deepSwe: null,
+        terminalBench: null,
+        sweAtlas: null,
+        snapshotDate: null,
+        sourceUrl: null,
+      }));
+
+      for (const [source, points] of [["AA", aaPoints(aa)], ["CAI", aaCaiPoints(cai)]] as const) {
+        const flags = points.map(({ family, frontierCost, frontierTime, frontierCostTime }) => ({
+          family, frontierCost, frontierTime, frontierCostTime,
+        }));
+        expect(flags, `${source} generated case ${sample}`).toEqual(expected);
+      }
+    }
   });
 });
 
