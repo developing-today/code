@@ -366,12 +366,15 @@ exec sh -c "$command_text"
 /// Compound commands keep one lock slot and lease a broker target for the
 /// duration of the shell, rather than acquiring one slot per command.
 fn under_build_lock(command: &str) -> String {
-    if needs_shell(command) {
-        if may_invoke_cargo(command) {
-            format!("{BUILD_LOCK} {}", broker_aware_shell(command))
-        } else {
-            format!("{BUILD_LOCK} sh -c {}", sh_quote_always(command))
-        }
+    let direct_cargo = command
+        .trim_start()
+        .split_ascii_whitespace()
+        .next()
+        == Some("cargo");
+    if may_invoke_cargo(command) && !direct_cargo {
+        format!("{BUILD_LOCK} {}", broker_aware_shell(command))
+    } else if needs_shell(command) {
+        format!("{BUILD_LOCK} sh -c {}", sh_quote_always(command))
     } else {
         format!("{BUILD_LOCK} {command}")
     }
