@@ -1374,6 +1374,7 @@ pub(crate) fn health_entry(queue: &str) -> Value {
         "parked": 0, "malformed_parked": 0, "handed_off": 0, "blocked": 0, "dep_blocked": 0, "done": 0, "cancelled": 0,
         "failed": 0, "total": 0, "oldest_queued_at": Value::Null,
         "terminal_events_24h": 0, "terminal_events_7d": 0,
+        "failed_events_24h": 0, "failed_events_7d": 0,
     })
 }
 
@@ -1405,6 +1406,38 @@ pub(crate) fn apply_dep_blocked(by_queue: &mut Map<String, Value>, rows: &[Value
         let n = r.get("n").and_then(|v| v.as_i64()).unwrap_or(0);
         if let Some(obj) = by_queue.get_mut(q).and_then(|e| e.as_object_mut()) {
             obj.insert("dep_blocked".to_string(), json!(n));
+        }
+    }
+}
+
+/// Fold per-queue terminal-event counts (#1233) into health entries:
+/// the terminal-events query counts completed AND failed events
+/// together, so a queue could show thousands of terminal events in
+/// 7d with no way to tell whether any were failures — and the epic's
+/// "zero dead-in-queue over a rolling 7 days" criterion stayed
+/// unmeasured. The failed-only sums (f24/f7) name the dead-in-queue
+/// count for each window; queues with no failed events keep the zero
+/// default from health_entry. Rows arrive as {queue, n24, n7, f24, f7}.
+pub(crate) fn apply_terminal_events(by_queue: &mut Map<String, Value>, rows: &[Value]) {
+    for r in rows {
+        let q = r.get("queue").and_then(|v| v.as_str()).unwrap_or("");
+        if let Some(obj) = by_queue.get_mut(q).and_then(|e| e.as_object_mut()) {
+            obj.insert(
+                "terminal_events_24h".to_string(),
+                r.get("n24").cloned().unwrap_or(json!(0)),
+            );
+            obj.insert(
+                "terminal_events_7d".to_string(),
+                r.get("n7").cloned().unwrap_or(json!(0)),
+            );
+            obj.insert(
+                "failed_events_24h".to_string(),
+                r.get("f24").cloned().unwrap_or(json!(0)),
+            );
+            obj.insert(
+                "failed_events_7d".to_string(),
+                r.get("f7").cloned().unwrap_or(json!(0)),
+            );
         }
     }
 }
@@ -1531,13 +1564,21 @@ pub(crate) fn verb_health(t: &TursoBackend, req: &Value) -> Value {
         // Terminal-event counters, the agent.repo_queue_health
         // view's terminal_events_24h/7d (#5690): events and tasks
         // share this database, so the JOIN the PG view did is a
-        // local query here — no cross-database problem.
+        // local query here — no cross-database problem. The failed-
+        // only sums (f24/f7, #1233) split dead-in-queue out of the
+        // completed+failed totals, so the epic's "zero dead-in-
+        // queue over a rolling 7 days" criterion reads off health.
+        // Placeholder order: n24's 24h cutoff, f24's 24h cutoff,
+        // the 7d window floor, then the optional queue filter.
         let mut tsql = "SELECT t.queue AS queue, COUNT(*) AS n7, \
-               SUM(CASE WHEN e.created_at > ? THEN 1 ELSE 0 END) AS n24 \
+               SUM(CASE WHEN e.created_at > ? THEN 1 ELSE 0 END) AS n24, \
+               SUM(CASE WHEN e.kind = 'failed' THEN 1 ELSE 0 END) AS f7, \
+               SUM(CASE WHEN e.kind = 'failed' AND e.created_at > ? THEN 1 ELSE 0 END) AS f24 \
              FROM events e JOIN tasks t ON t.id = e.task_id \
              WHERE e.kind IN ('completed', 'failed') AND e.created_at > ?"
             .to_string();
         let mut targs: Vec<Arg> = vec![
+            Arg::Text(iso(now_unix() - 86_400)),
             Arg::Text(iso(now_unix() - 86_400)),
             Arg::Text(iso(now_unix() - 7 * 86_400)),
         ];
@@ -1547,26 +1588,7 @@ pub(crate) fn verb_health(t: &TursoBackend, req: &Value) -> Value {
         }
         tsql += " GROUP BY t.queue";
         let trows = t.query_objs(&tsql, &targs, &[])?;
-        for r in &trows {
-            let q = r
-                .get("queue")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
-            let entry = by_queue
-                .entry(q.clone())
-                .or_insert_with(|| health_entry(&q));
-            if let Some(obj) = entry.as_object_mut() {
-                obj.insert(
-                    "terminal_events_24h".to_string(),
-                    r.get("n24").cloned().unwrap_or(json!(0)),
-                );
-                obj.insert(
-                    "terminal_events_7d".to_string(),
-                    r.get("n7").cloned().unwrap_or(json!(0)),
-                );
-            }
-        }
+        apply_terminal_events(&mut by_queue, &trows);
         Ok(Value::Array(by_queue.into_iter().map(|(_, v)| v).collect()))
     })();
     match work {

@@ -2345,6 +2345,43 @@ mod tests {
     }
 
     #[test]
+    fn terminal_events_fold_splits_failed_from_completed() {
+        // Fixture for #1233: queue-mixed had 5 terminal events in
+        // 7d (3 in 24h), of which 2 were failures (1 in 24h);
+        // queue-clean had terminal events but zero failures;
+        // queue-quiet had none.
+        let mut by_queue: Map<String, Value> = Map::new();
+        for q in ["queue-mixed", "queue-clean", "queue-quiet"] {
+            by_queue.insert(q.to_string(), health_entry(q));
+        }
+        let rows = vec![
+            json!({"queue": "queue-mixed", "n24": 3, "n7": 5, "f24": 1, "f7": 2}),
+            json!({"queue": "queue-clean", "n24": 4, "n7": 9, "f24": 0, "f7": 0}),
+        ];
+        apply_terminal_events(&mut by_queue, &rows);
+        let mixed = &by_queue["queue-mixed"];
+        assert_eq!(mixed.get("terminal_events_24h"), Some(&json!(3)));
+        assert_eq!(mixed.get("terminal_events_7d"), Some(&json!(5)));
+        assert_eq!(mixed.get("failed_events_24h"), Some(&json!(1)));
+        assert_eq!(mixed.get("failed_events_7d"), Some(&json!(2)));
+        // Completed-only rows leave the failed counters at zero,
+        // and a queue with no terminal events at all keeps every
+        // default.
+        assert_eq!(
+            by_queue["queue-clean"].get("failed_events_7d"),
+            Some(&json!(0))
+        );
+        assert_eq!(
+            by_queue["queue-quiet"].get("failed_events_7d"),
+            Some(&json!(0))
+        );
+        assert_eq!(
+            by_queue["queue-quiet"].get("terminal_events_7d"),
+            Some(&json!(0))
+        );
+    }
+
+    #[test]
     fn at_cap_fold_covers_zero_claimable_and_partial_queues() {
         // Fixture for #6528 criterion 3: queue-dead has queued > 0
         // with EVERY queued task at cap (zero claimable); queue-live
