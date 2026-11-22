@@ -2951,6 +2951,144 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_note_policies_survive_a_host_restart_through_the_snapshot_file() {
+        use id_store::note_checkpoints::{GroupRoles, NoteGrant, NotePrincipal, NoteRole};
+
+        // Author 5 is a Write member of group 9; author 6 is not.
+        fn group_roles() -> GroupRoles {
+            GroupRoles::new(|group, member| {
+                if group == Hash::from_bytes([9u8; 32]) && member == [5u8; 32] {
+                    Some(NoteRole::Write)
+                } else {
+                    None
+                }
+            })
+        }
+
+        // The host restart drill (#3819): the live state persists
+        // its checkpoint log to the snapshot file as it mutates; a
+        // fresh state over the same file restores events and
+        // policies, so the access boundary — not just the log —
+        // survives the restart.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(".note-checkpoints.json");
+        let note = Hash::from_bytes([47u8; 32]);
+        let key = note_session_key(&note);
+        let public_note = Hash::from_bytes([49u8; 32]);
+        let public_key = note_session_key(&public_note);
+        let owner: AuthorKey = [7u8; 32];
+        let granted: AuthorKey = [8u8; 32];
+        let member: AuthorKey = [5u8; 32];
+        let stranger: AuthorKey = [9u8; 32];
+
+        let live = CollabState::new()
+            .with_note_group_roles(group_roles())
+            .with_note_snapshot_path(path.clone());
+        live.get_or_create_for_note(&note, "", Some(b"# First"), Some("n.md"))
+            .await;
+        live.publish_note_checkpoint(&key, owner).await.unwrap();
+        live.set_note_access(
+            note,
+            owner,
+            NoteAccess::Scoped(vec![
+                NoteGrant {
+                    principal: NotePrincipal::User(granted),
+                    role: NoteRole::Write,
+                },
+                NoteGrant {
+                    principal: NotePrincipal::Group(Hash::from_bytes([9u8; 32])),
+                    role: NoteRole::Write,
+                },
+            ]),
+        )
+        .await
+        .unwrap();
+        live.get_or_create_for_note(&public_note, "", Some(b"# Open"), Some("p.md"))
+            .await;
+        live.publish_note_checkpoint(&public_key, owner)
+            .await
+            .unwrap();
+
+        // The mutations reached the file: it parses as a snapshot
+        // holding both notes' events and both policies.
+        let persisted: NoteCheckpointSnapshot =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(persisted.events.len(), 2);
+        assert_eq!(persisted.policies.len(), 2);
+        let heads_before = live.note_heads(note).await.unwrap();
+
+        // Restart: a fresh state over the same file.
+        let restarted = CollabState::new()
+            .with_note_group_roles(group_roles())
+            .with_note_snapshot_path(path.clone());
+        assert!(restarted.restore_persisted_note_snapshot().await.unwrap());
+        assert_eq!(restarted.note_events().await, live.note_events().await);
+        assert_eq!(restarted.note_heads(note).await.unwrap(), heads_before);
+
+        // The boundary holds after the restart: the granted user and
+        // the group member chain on; the stranger is refused and the
+        // refusal records nothing.
+        let doc = restarted
+            .get_or_create_for_note(&note, "", Some(b"# Second"), Some("n.md"))
+            .await;
+        let chained = restarted
+            .publish_note_checkpoint(&key, granted)
+            .await
+            .unwrap();
+        assert_eq!(chained.revisions.len(), 2);
+        *doc.doc.write().await = plain_text_to_prosemirror("# Third");
+        let chained = restarted
+            .publish_note_checkpoint(&key, member)
+            .await
+            .unwrap();
+        assert_eq!(chained.revisions.len(), 3);
+        *doc.doc.write().await = plain_text_to_prosemirror("# Nope");
+        let err = restarted
+            .publish_note_checkpoint(&key, stranger)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(
+                err,
+                PublishCheckpointError::Checkpoint(CheckpointError::NotAuthorized { .. })
+            ),
+            "a stranger's publication is refused after the restart: {err}"
+        );
+        assert_eq!(
+            restarted.note_events().await.len(),
+            3,
+            "the refusal recorded nothing"
+        );
+
+        // And the public note stayed public: the same stranger
+        // appends to it without any grant.
+        restarted
+            .get_or_create_for_note(&public_note, "", Some(b"# Open two"), Some("p.md"))
+            .await;
+        let appended = restarted
+            .publish_note_checkpoint(&public_key, stranger)
+            .await
+            .unwrap();
+        assert_eq!(appended.revisions.len(), 2);
+        assert_eq!(restarted.note_events().await.len(), 4);
+    }
+
+    #[tokio::test]
+    async fn test_a_corrupt_note_snapshot_fails_the_restart_not_opens_notes() {
+        // A snapshot that does not parse is a failed restart, never
+        // a host that silently reopens scoped notes to public; a
+        // missing snapshot is a fresh host, not an error.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(".note-checkpoints.json");
+        std::fs::write(&path, b"{\"events\":").unwrap();
+        let state = CollabState::new().with_note_snapshot_path(path);
+        assert!(state.restore_persisted_note_snapshot().await.is_err());
+
+        let fresh = CollabState::new().with_note_snapshot_path(dir.path().join("absent.json"));
+        assert!(!fresh.restore_persisted_note_snapshot().await.unwrap());
+    }
+
+    #[tokio::test]
     async fn test_seed_note_policies_before_events_is_refused() {
         // Policies name notes; a policy for a note the log has no
         // create event for is a failed restart, never a note
