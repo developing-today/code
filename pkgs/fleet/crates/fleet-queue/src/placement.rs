@@ -541,6 +541,70 @@ fn valid_owner_repo(repo: &str) -> bool {
     valid_part(owner) && valid_part(name) && !name.contains('/')
 }
 
+/// A portable run reference names the Fleet runner repository and its
+/// GitHub Actions run ID. Unlike an fp_ handle, it is resolvable from
+/// any workspace with GitHub access and the same surface registry.
+fn parse_portable_run_reference(reference: &str) -> Option<(String, i64)> {
+    let (repo, raw_id) = reference.rsplit_once('#')?;
+    let run_id = raw_id.parse::<i64>().ok()?;
+    if !valid_owner_repo(repo) || run_id <= 0 {
+        return None;
+    }
+    Some((repo.to_string(), run_id))
+}
+
+fn resolve_portable_run_reference(reference: &str, registry: &Value, gh: &dyn Gh) -> R<Value> {
+    let (repo, run_id) = parse_portable_run_reference(reference).ok_or_else(|| {
+        Die(format!(
+            "invalid portable run reference {reference:?}; expected owner/repo#run_id"
+        ))
+    })?;
+    let surface = registry_surfaces(registry)
+        .into_iter()
+        .find(|surface| {
+            surf_str(surface, "repo") == repo
+                && matches!(surf_str(surface, "kind"), "github-actions" | "blacksmith")
+        })
+        .ok_or_else(|| {
+            Die(format!(
+                "{repo} is not a registered Fleet GitHub Actions runner repository"
+            ))
+        })?;
+    let token = surface_token(&surface, gh).ok_or_else(|| {
+        Die(format!(
+            "no GitHub token is available to read runner {repo}"
+        ))
+    })?;
+    let (status, run) = gh.api(
+        "GET",
+        &format!("/repos/{repo}/actions/runs/{run_id}"),
+        &token,
+        None,
+    )?;
+    if status != 200 {
+        return die(format!(
+            "cannot read Fleet run {reference} (GitHub API HTTP {status})"
+        ));
+    }
+    let run_url = run
+        .get("html_url")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("https://github.com/{repo}/actions/runs/{run_id}"));
+    Ok(json!({
+        "handle": reference,
+        "portable_id": reference,
+        "runner_repo": repo,
+        "run_id": run_id,
+        "run_url": run_url,
+        "surface": surf_str(&surface, "id"),
+        "surface_kind": surf_str(&surface, "kind"),
+        "state": map_run_state(&run),
+        "created_at": run.get("created_at").cloned().unwrap_or(Value::Null),
+        "updated_at": run.get("updated_at").cloned().unwrap_or(Value::Null),
+    }))
+}
+
 fn load_registry(path: &str) -> R<Value> {
     let text = std::fs::read_to_string(path)
         .map_err(|e| Die(format!("cannot read registry {path}: {e}")))?;
@@ -1978,8 +2042,13 @@ fn refresh_session(store: &mut Value, handle: &str, registry: &Value, gh: &dyn G
         .get("surface")
         .and_then(|s| s.as_str())
         .map(str::to_string);
-    if let (Some(_), Some(sid)) = (run_id, surface_id) {
+    if let (Some(run_id), Some(sid)) = (run_id, surface_id) {
         if let Some(surface) = find_surface(registry, &sid) {
+            let runner_repo = surf_str(surface, "repo");
+            if !runner_repo.is_empty() {
+                rec["runner_repo"] = json!(runner_repo);
+                rec["portable_id"] = json!(format!("{runner_repo}#{run_id}"));
+            }
             if let Some(ad) = adapter_for(surface) {
                 let state = ad.status(&rec, gh);
                 if state != rec.get("state").and_then(|s| s.as_str()).unwrap_or("") {
@@ -1995,7 +2064,7 @@ fn refresh_session(store: &mut Value, handle: &str, registry: &Value, gh: &dyn G
                     if let Some(token) = surface_token(surface, gh) {
                         if let Ok((200, run)) = gh.api(
                             "GET",
-                            &format!("/repos/{repo}/actions/runs/{}", run_id.unwrap()),
+                            &format!("/repos/{repo}/actions/runs/{run_id}"),
                             &token,
                             None,
                         ) {
@@ -2210,8 +2279,9 @@ fn blacksmith_reconcile_handles(store: &Value, registry: &Value) -> Vec<String> 
 
 const DISPATCH_USAGE: &str = "usage: repo-queue dispatch --repo <owner/name> --command '<cmd>' \
 [--ref REF] [--runner auto|github|blacksmith] [--platform linux|macos] [--container IMAGE] \
-[--surface ID] [--followup HANDLE] [--push-nix-cache] [--actions-cache KEY:PATH] \
-[--actions-cache-restore-key PREFIX]... [--allow-paid-blacksmith MINUTES] \
+[--surface ID] [--followup HANDLE|OWNER/REPO#RUN_ID] [--push-nix-cache] \
+[--actions-cache KEY:PATH] [--actions-cache-restore-key PREFIX]... \
+[--allow-paid-blacksmith MINUTES] \
 [--laptop-busy] [--dispatch] [--json] [--registry PATH]\nDry-run unless --dispatch; prints the placement decision.";
 
 fn run_dispatch(args: &[String]) -> R<i32> {
@@ -2379,7 +2449,9 @@ fn run_dispatch(args: &[String]) -> R<i32> {
         });
     }
     if let Some(handle) = &followup_handle {
-        let previous = if dispatch {
+        let previous = if parse_portable_run_reference(handle).is_some() {
+            resolve_portable_run_reference(handle, &registry, &gh)?
+        } else if dispatch {
             with_store_lock(|| {
                 let mut store = load_store();
                 let previous = refresh_session(&mut store, handle, &registry, &gh)?;
@@ -2420,12 +2492,19 @@ fn run_dispatch(args: &[String]) -> R<i32> {
         if let Some(surface_id) = previous_surface {
             job.preferred_surface = Some(surface_id.to_string());
             if let Some(run_id) = previous.get("run_id").and_then(Value::as_i64) {
-                if let Some(surface) = find_surface(&registry, surface_id) {
-                    let host_repo = surf_str(surface, "repo");
-                    if !host_repo.is_empty() {
-                        job.previous_run_id = Some(run_id);
-                        job.previous_run_repo = Some(host_repo.to_string());
-                    }
+                let host_repo = previous
+                    .get("runner_repo")
+                    .and_then(Value::as_str)
+                    .filter(|repo| !repo.is_empty())
+                    .map(str::to_string)
+                    .or_else(|| {
+                        find_surface(&registry, surface_id)
+                            .map(|surface| surf_str(surface, "repo").to_string())
+                            .filter(|repo| !repo.is_empty())
+                    });
+                if let Some(host_repo) = host_repo {
+                    job.previous_run_id = Some(run_id);
+                    job.previous_run_repo = Some(host_repo);
                 }
             }
         }
@@ -2497,11 +2576,21 @@ fn run_dispatch(args: &[String]) -> R<i32> {
             let surface = adapter.surface().clone();
             let sid = surf_str(&surface, "id").to_string();
             let kind = surf_str(&surface, "kind").to_string();
+            let runner_repo = surf_str(&surface, "repo").to_string();
             let mut rec = Map::new();
             rec.insert("handle".into(), json!(handle));
             rec.insert("job".into(), job.to_json());
             rec.insert("surface".into(), json!(sid));
             rec.insert("surface_kind".into(), json!(kind));
+            if !runner_repo.is_empty() {
+                rec.insert("runner_repo".into(), json!(runner_repo.clone()));
+            }
+            if let Some(run_id) = result.run_id {
+                rec.insert(
+                    "portable_id".into(),
+                    json!(format!("{runner_repo}#{run_id}")),
+                );
+            }
             rec.insert("decision_reasoning".into(), json!(reasoning));
             rec.insert(
                 "run_id".into(),
@@ -2555,6 +2644,15 @@ fn run_dispatch(args: &[String]) -> R<i32> {
             };
             commit_new_session(&Value::Object(rec), blacksmith_entry.as_ref())?;
             out.insert("handle".into(), json!(handle));
+            if let Some(run_id) = result.run_id {
+                if !runner_repo.is_empty() {
+                    out.insert("runner_repo".into(), json!(runner_repo));
+                    out.insert(
+                        "portable_id".into(),
+                        json!(format!("{runner_repo}#{run_id}")),
+                    );
+                }
+            }
             out.insert(
                 "run_id".into(),
                 result.run_id.map(Value::from).unwrap_or(Value::Null),
@@ -2569,7 +2667,7 @@ fn run_dispatch(args: &[String]) -> R<i32> {
     Ok(0)
 }
 
-const SESSION_USAGE: &str = "usage: repo-queue session <status|result|list> [HANDLE] \
+const SESSION_USAGE: &str = "usage: repo-queue session <status|result|list> [HANDLE|OWNER/REPO#RUN_ID] \
 [--mine] [--json] [--registry PATH]";
 
 fn run_session(args: &[String]) -> R<i32> {
@@ -2583,12 +2681,16 @@ fn run_session(args: &[String]) -> R<i32> {
                 .cloned()
                 .ok_or_else(|| Die(format!("session {sub} needs a HANDLE")))?;
             let registry = registry_value(&cli)?;
-            let rec = with_store_lock(|| {
-                let mut store = load_store();
-                let rec = refresh_session(&mut store, &handle, &registry, &gh)?;
-                save_store(&store)?;
-                Ok(rec)
-            })?;
+            let rec = if parse_portable_run_reference(&handle).is_some() {
+                resolve_portable_run_reference(&handle, &registry, &gh)?
+            } else {
+                with_store_lock(|| {
+                    let mut store = load_store();
+                    let rec = refresh_session(&mut store, &handle, &registry, &gh)?;
+                    save_store(&store)?;
+                    Ok(rec)
+                })?
+            };
             if sub == "status" {
                 print_out(&rec, cli.json, |r| {
                     format!(
@@ -3534,6 +3636,52 @@ mod tests {
         assert_eq!(
             handles,
             vec!["fp_done_unrec".to_string(), "fp_live".to_string()]
+        );
+    }
+
+    #[test]
+    fn portable_run_reference_parser_validates_repo_and_id() {
+        assert_eq!(
+            parse_portable_run_reference("developing-today/fleet#12345"),
+            Some(("developing-today/fleet".to_string(), 12345))
+        );
+        assert_eq!(
+            parse_portable_run_reference("developing-today/fleet#0"),
+            None
+        );
+        assert_eq!(parse_portable_run_reference("not-a-repo#12345"), None);
+        assert_eq!(
+            parse_portable_run_reference("developing-today/fleet#latest"),
+            None
+        );
+    }
+
+    #[test]
+    fn portable_run_reference_resolves_without_local_session_store() {
+        let reg = registry();
+        let reference = "developing-today/code#12345";
+        let gh = FakeGh {
+            runs_by_id: Map2::from([(
+                12345,
+                json!({
+                    "status": "completed",
+                    "conclusion": "success",
+                    "html_url": "https://github.com/developing-today/code/actions/runs/12345"
+                }),
+            )]),
+            ..Default::default()
+        };
+
+        let rec = resolve_portable_run_reference(reference, &reg, &gh).unwrap();
+
+        assert_eq!(rec["portable_id"], json!(reference));
+        assert_eq!(rec["runner_repo"], json!("developing-today/code"));
+        assert_eq!(rec["run_id"], json!(12345));
+        assert_eq!(rec["surface"], json!("org-run"));
+        assert_eq!(rec["state"], json!("succeeded"));
+        assert_eq!(
+            rec["run_url"],
+            json!("https://github.com/developing-today/code/actions/runs/12345")
         );
     }
 
