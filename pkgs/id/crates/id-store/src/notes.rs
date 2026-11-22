@@ -137,7 +137,11 @@ pub fn check_note_op(kind: &str, op: &NoteOp) -> Result<(), NoteError> {
 }
 
 /// An applied note event, as the fold reads it: its ID, its signer, and its operation.
-#[derive(Clone, Debug, PartialEq, Eq)]
+///
+/// Serializable so a host can persist the log's events alongside the
+/// policy snapshot and rebuild the log from them after a restart
+/// (#3819): the events are the durable form of the log.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AppliedNote {
     /// The event's ID. For a `note.create`, this is also the note's stable ID.
     pub id: Hash,
