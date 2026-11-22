@@ -49,6 +49,9 @@ export interface Config {
   /** Android app identity served at /.well-known/assetlinks.json. */
   androidPackage: string;
   androidFingerprints: string[];
+  /** The signed APK the console hands to the signed-in owner, if the
+   * file exists. */
+  androidApk: string;
 }
 
 export class ConfigError extends Error {}
@@ -207,5 +210,6 @@ export function readConfig(
     dashboardUrl,
     androidPackage: env.PM_CONSOLE_ANDROID_PACKAGE ?? "today.developing.pmconsole",
     androidFingerprints: fingerprints,
+    androidApk: env.PM_CONSOLE_ANDROID_APK ?? `${home}/.local/state/pm-console/android/pm-console.apk`,
   };
 }

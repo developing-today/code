@@ -232,5 +232,8 @@ async function show(name) {
 }
 
 for (const [name, [label]] of Object.entries(VIEWS)) tabs.append(h("button", { "data-view": name, onclick: () => show(name) }, label));
-api("me").then((me) => (document.getElementById("who").textContent = me.email || me.certName || me.via)).catch(() => {});
+api("me").then((me) => {
+  document.getElementById("who").textContent = me.email || me.certName || me.via;
+  document.getElementById("apk").hidden = !me.androidApp;
+}).catch(() => {});
 show(location.hash.slice(1));

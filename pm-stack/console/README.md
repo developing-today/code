@@ -85,17 +85,18 @@ the route if the console does not come up with its sign-in settings.
 
 ## Configuration
 
-| Variable                                                  | Default                                           | Meaning                                            |
-| --------------------------------------------------------- | ------------------------------------------------- | -------------------------------------------------- |
-| `PM_CONSOLE_PORT`, `PM_CONSOLE_BIND`                      | `4872`, `127.0.0.1`                               | Listener; the address must be loopback             |
-| `PM_CONSOLE_OWNER_EMAILS`                                 | none (nobody)                                     | Comma-separated owner addresses                    |
-| `PM_CONSOLE_ACCESS_TEAM_DOMAIN`, `PM_CONSOLE_ACCESS_AUD`  | unset                                             | The Access issuer; set together                    |
-| `PM_CONSOLE_ISSUERS_FILE`                                 | unset                                             | JSON list of further issuers                       |
-| `PM_CONSOLE_CERT_NAMES`                                   | none                                              | Certificate common names that are the owner        |
-| `PM_CONSOLE_DASHBOARD_URL`                                | `http://127.0.0.1:4870`                           | The dashboard behind the gate; loopback, or empty  |
-| `PM_CONSOLE_UNITS`, `PM_CONSOLE_PROTECTED_UNITS`          | the stack's units                                 | Units the console manages; units it will not stop  |
-| `PM_CONSOLE_ANDROID_PACKAGE`, `PM_CONSOLE_ANDROID_SHA256` | `today.developing.pmconsole`, none                | The Android app's identity in the asset-links file |
-| `PM_CONSOLE_REPO`, `PM_CONSOLE_QUEUE`                     | `developing-today/code`, `repo-health-code-pilot` | What it operates on                                |
+| Variable                                                  | Default                                            | Meaning                                            |
+| --------------------------------------------------------- | -------------------------------------------------- | -------------------------------------------------- |
+| `PM_CONSOLE_PORT`, `PM_CONSOLE_BIND`                      | `4872`, `127.0.0.1`                                | Listener; the address must be loopback             |
+| `PM_CONSOLE_OWNER_EMAILS`                                 | none (nobody)                                      | Comma-separated owner addresses                    |
+| `PM_CONSOLE_ACCESS_TEAM_DOMAIN`, `PM_CONSOLE_ACCESS_AUD`  | unset                                              | The Access issuer; set together                    |
+| `PM_CONSOLE_ISSUERS_FILE`                                 | unset                                              | JSON list of further issuers                       |
+| `PM_CONSOLE_CERT_NAMES`                                   | none                                               | Certificate common names that are the owner        |
+| `PM_CONSOLE_DASHBOARD_URL`                                | `http://127.0.0.1:4870`                            | The dashboard behind the gate; loopback, or empty  |
+| `PM_CONSOLE_UNITS`, `PM_CONSOLE_PROTECTED_UNITS`          | the stack's units                                  | Units the console manages; units it will not stop  |
+| `PM_CONSOLE_ANDROID_PACKAGE`, `PM_CONSOLE_ANDROID_SHA256` | `today.developing.pmconsole`, none                 | The Android app's identity in the asset-links file |
+| `PM_CONSOLE_ANDROID_APK`                                  | `~/.local/state/pm-console/android/pm-console.apk` | The signed build the console hands to the owner    |
+| `PM_CONSOLE_REPO`, `PM_CONSOLE_QUEUE`                     | `developing-today/code`, `repo-health-code-pilot`  | What it operates on                                |
 
 A malformed port, a listen address or dashboard address that is not
 loopback, or a malformed issuer stops the process at boot and names the
@@ -105,5 +106,8 @@ variable.
 
 `pm-stack/console/android/` is a Trusted Web Activity: the same site in
 Chrome without browser chrome, so sign-in is Chrome's own and nothing is
-reimplemented. The signed APK is built by the `pm-console-android`
-workflow and attached to the release of the same name. See its README.
+reimplemented. The `pm-console-android` workflow builds it and the host
+signs it. Once the signed file is on the host, the console's header
+shows "Android app": a download for the signed-in owner at
+`/console/pm-console.apk`, so the phone gets the app from the site it
+opens. See its README.

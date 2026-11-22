@@ -45,6 +45,18 @@ reinstall; nothing else depends on it.
 
 ## Install
 
-Download `pm-console.apk` from the
-[release](https://github.com/developing-today/code/releases/tag/pm-console-android)
-on the phone and open it. Later builds install over it.
+On the phone, open `https://pm.security.cab/console/`, sign in, and tap
+"Android app" in the header. That downloads the signed build from the
+host (`/console/pm-console.apk`, owner only); open it to install. Later
+builds install over it.
+
+The console serves whatever signed build is at
+`~/.local/state/pm-console/android/pm-console.apk` on the host, so
+putting a new build in place is the whole release:
+
+```bash
+install -m 644 /tmp/pm-apk/pm-console.apk ~/.local/state/pm-console/android/pm-console.apk
+```
+
+The same file can also be attached to the GitHub release
+`pm-console-android` for a copy outside the host.

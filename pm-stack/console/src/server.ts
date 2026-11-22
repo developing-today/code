@@ -21,6 +21,7 @@ const STATIC = new Map([
   ["app.css", "text/css; charset=utf-8"],
   ["icon.svg", "image/svg+xml"],
 ]);
+const APK_NAME = "pm-console.apk";
 const SECURITY = {
   "Content-Security-Policy":
     "default-src 'self'; img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
@@ -204,6 +205,20 @@ export async function handle(req: Request, deps: Deps, peer: string | null = nul
   }
   const type = method === "GET" ? STATIC.get(rest) : undefined;
   if (type !== undefined) return file(rest, type);
+  // The Android app, for the signed-in owner: the phone gets it from the
+  // site it opens, and nothing has to be published anywhere else.
+  if (method === "GET" && rest === APK_NAME) {
+    const apk = Bun.file(deps.cfg.androidApk);
+    if (!(await apk.exists())) return json({ error: "no Android build is installed on this host" }, 404);
+    return new Response(apk, {
+      headers: {
+        "Content-Type": "application/vnd.android.package-archive",
+        "Content-Disposition": `attachment; filename="${APK_NAME}"`,
+        "Cache-Control": "no-store",
+        ...SECURITY,
+      },
+    });
+  }
   if (!rest.startsWith("api/")) return json({ error: "not found" }, 404);
 
   let seg: string[];
@@ -219,7 +234,12 @@ export async function handle(req: Request, deps: Deps, peer: string | null = nul
       if (seg.length === 1) {
         switch (seg[0]) {
           case "me":
-            return json({ ...who, repo: deps.cfg.repo, queue: deps.cfg.queue });
+            return json({
+              ...who,
+              repo: deps.cfg.repo,
+              queue: deps.cfg.queue,
+              androidApp: await Bun.file(deps.cfg.androidApk).exists(),
+            });
           case "overview":
             return json(await ops.overview());
           case "queue":
