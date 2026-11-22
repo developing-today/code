@@ -138,6 +138,9 @@ export function actions(ops: Ops, work: Work, push?: Push, devices?: Devices): R
     // written to the record of what was done, and the action is never
     // held anywhere to be done late.
     "sso.google": { run: (a) => ops.googleSignin(a.clientId, a.clientSecret), touch: [], audit: () => ({}) },
+    // The owner's switch for the edge acting by itself while the laptop
+    // is away. Done on the laptop, where the tokens are, and never held.
+    "edge.direct": { run: (a) => ops.edgeDirect(a.on), touch: [], audit: (a) => ({ on: a.on === true }) },
     "message.send": {
       run: (a) => ops.send(a.to, a.text, a.command),
       touch: [],

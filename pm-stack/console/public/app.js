@@ -835,6 +835,7 @@ function viewMore() {
       tile("more/notify", "Notifications", "choose what reaches this device"),
       tile("more/phone", "Phones", "the Android app and its home-screen widget"),
       tile("more/signin", "Sign-in", "Google first, the emailed code as the fallback"),
+      tile("more/away", "Laptop away", "what Cloudflare does by itself when the laptop cannot be reached"),
     ),
   ];
   for (const g of ops.more || []) {
@@ -984,6 +985,99 @@ function collectUrl() {
 /** Sign-in: what is on, and the one part only the owner can do to put
  * Google first. Google lets nobody but a signed-in person make the
  * client its sign-in runs on; everything after that is done here. */
+/** What the edge says of acting by itself, read from its public health
+ * answer. `served` is false when the app is coming straight from the
+ * laptop and there is no edge to ask. */
+export function awayState(health) {
+  if (!health || health.edge !== true) return { served: false };
+  const kinds = health.selfCheck?.kinds || {};
+  const names = { board: "The board", prs: "Pull requests", priorities: "Ranked issues", asks: "Your prompts" };
+  return {
+    served: true,
+    on: health.directEnabled === true,
+    // On, and holding both tokens with a laptop new enough to have said
+    // where things are: it will act once the laptop has been quiet.
+    ready: health.directEnabled === true && health.directReady === true,
+    checkedAt: typeof health.selfCheck?.at === "number" ? health.selfCheck.at : null,
+    checks: Object.keys(names)
+      .filter((kind) => kinds[kind])
+      .map((kind) => ({ what: names[kind], ok: kinds[kind].ok === true, error: String(kinds[kind].error || "") })),
+  };
+}
+
+/** Laptop away: whether Cloudflare acts by itself when the laptop cannot
+ * be reached, what that covers, and the switch. The switch is the
+ * owner's because turning it on hands the Worker two of his tokens. */
+async function viewAway() {
+  let health = null;
+  try {
+    const res = await fetch("/console/health", { cache: "no-store" });
+    health = res.ok ? await res.json() : null;
+  } catch {
+    health = null;
+  }
+  const s = awayState(health);
+  if (!s.served) {
+    return [
+      card(
+        h("h3", {}, "The app is coming straight from the laptop"),
+        h("p", { class: "meta" }, "It is not being served from Cloudflare right now, so nothing there can act while the laptop is away."),
+      ),
+    ];
+  }
+  const flip = async (e) => {
+    const done = await act(
+      "edge.direct",
+      { on: !s.on },
+      s.on ? "Cloudflare no longer acts by itself" : "Cloudflare will act while the laptop is away",
+      e.target,
+    );
+    if (!done) return;
+    // The Worker restarts with what it was given; ask it again shortly.
+    await new Promise((resolve) => setTimeout(resolve, 5000));
+    draw();
+  };
+  const checked = s.on
+    ? s.checks.length > 0
+      ? h(
+          "ul",
+          { class: "plain" },
+          s.checks.map((c) => h("li", {}, `${c.what}: ${c.ok ? "read from Cloudflare" : `could not be read (${c.error || "no reason given"})`}`)),
+        )
+      : h("p", { class: "meta" }, "Not tried yet. It tries one read of each kind within a minute of being turned on.")
+    : null;
+  return [
+    card(
+      h("h3", {}, s.on ? "Cloudflare acts by itself while the laptop is away" : "While the laptop is away, Cloudflare only waits"),
+      h(
+        "p",
+        { class: "meta" },
+        s.on
+          ? s.ready
+            ? "It starts once the laptop has been quiet for a minute, and stops when the laptop reports again."
+            : "It is on, but the Worker does not have everything it needs yet. Turning it off and on again gives it the tokens afresh."
+          : "The app still opens and shows what the laptop last reported. What you send is kept and done when the laptop is back.",
+      ),
+      checked,
+      s.on && s.checkedAt ? h("p", { class: "meta" }, `Tried ${ago(new Date(s.checkedAt).toISOString())}.`) : null,
+    ),
+    h("h2", {}, s.on ? "Turn it off" : "Turn it on"),
+    card(
+      h(
+        "p",
+        { class: "meta" },
+        "On, Cloudflare reads the board, pull requests, ranked issues and your prompts itself, and does these at once: reply to or close a prompt, comment, rank an issue, move a task. A new prompt is filed at once and queued for the fleet when the laptop is back.",
+      ),
+      h(
+        "p",
+        { class: "meta" },
+        "Turning it on gives the Worker two tokens from your secret store: the repository automation token and the queue store token. They are kept as the Worker's secrets in your Cloudflare account. Turning it off takes them away again. The laptop has to be reachable for either.",
+      ),
+      h("div", { class: "row end" }, h("button", { class: s.on ? "ghost" : "", onclick: flip }, s.on ? "Turn off" : "Turn on")),
+    ),
+  ];
+}
+
 async function viewSignin() {
   let s;
   try {
@@ -1399,6 +1493,7 @@ const VIEWS = {
   "more/notify": ["Notifications", viewNotify],
   "more/phone": ["Phones", viewPhone],
   "more/signin": ["Sign-in", viewSignin],
+  "more/away": ["Laptop away", viewAway],
 };
 let route = "now";
 let drawSeq = 0;

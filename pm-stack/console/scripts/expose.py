@@ -36,10 +36,13 @@ so, and prints what it did:
    to act itself while the laptop is away (the repository automation
    token and the queue store token) and the explicit opt-in that lets it
    use them. Off by default, remembered like `--edge`, and nothing is
-   uploaded on a run that does not change the choice. Turning it off
-   turns the opt-in off; the tokens stay on the Worker, inert without
-   it. The Worker says in /console/health whether the flag is on and
-   whether each token is there.
+   uploaded on a run that does not change the choice (unless the Worker
+   has lost one of them, and then it gets them again). Turning it off
+   turns the opt-in off and takes the two tokens away again. They go
+   through Cloudflare's API with the token this script already holds, so
+   nothing has to be installed here for it. The Worker says in
+   /console/health whether the flag is on and whether each token is
+   there.
 
 The gate comes first and the routes last, so the origin is never
 reachable without sign-in in front of it. If the console does not come
@@ -68,18 +71,18 @@ Usage: expose.py [--check] [--edge on|off] [--edge-direct on|off]
   --edge-direct on
                let the edge Worker act itself while the laptop is away:
                upload the GitHub and queue tokens and turn the opt-in
-               on; remembered by later runs until --edge-direct off.
-               Off by default.
+               on; remembered by later runs until --edge-direct off,
+               which also takes the tokens away. Off by default.
 """
 
 from __future__ import annotations
 
 import argparse
+import contextlib
+import fcntl
 import json
-import os
 import pathlib
 import re
-import shutil
 import subprocess
 import sys
 import time
@@ -117,6 +120,21 @@ GOOGLE_SECRET = "google.access-sso.client-secret"
 # name the console's environment file may override.
 GITHUB_TOKEN_SECRET = "github.developing-today-code-automation"
 QUEUE_TOKEN_DEFAULT = "turso.fleet-queue-rw-token"
+
+
+@contextlib.contextmanager
+def one_at_a_time(state: pathlib.Path):
+    """Hold this for a run that may change something: a second run waits
+    for the first. The timer's run and one started from the app would
+    otherwise each read what is so, then both act on it (one deleting a
+    token the other has just uploaded)."""
+    state.mkdir(parents=True, exist_ok=True, mode=0o700)
+    with open(state / "expose.lock", "w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock, fcntl.LOCK_UN)
 
 
 def secret(name: str) -> str:
@@ -259,62 +277,56 @@ def ensure_edge_direct(
     check: bool,
 ) -> None:
     """Upload the two tokens the edge Worker acts with, and its opt-in,
-    or turn the opt-in off. Nothing is uploaded on a run that does not
-    change the choice, so the timer's runs leave the secrets alone.
-    A secret is read by name through `fleet secrets get` and piped to
-    `wrangler secret put`; it is never printed or written to a file.
-    The choice is remembered only after the Worker has it: a run that
-    fails part-way leaves the old marker, so the next run tries again
-    instead of assuming the mode is already set."""
+    or turn the opt-in off and take the tokens away again.
+
+    A secret is read by name through `fleet secrets get` and sent to
+    Cloudflare's API as a Worker secret; it is never printed, written to
+    a file or put on a command line.
+
+    The choice is remembered only once the Worker has it. Turning it on
+    either gets all three there or leaves none: an attempt that fails
+    part-way takes away what it uploaded. Turning it off puts the opt-in
+    off first, so the Worker stops at once, and then removes the tokens;
+    if that stops part-way the mode is still off and a later run
+    finishes. A run that changes nothing uploads nothing, with one
+    exception: a mode that is on gets back whatever the Worker has lost."""
     state = env.parent
-    # Read what is remembered before the choice overwrites it: only a
-    # change uploads anything. Nothing is written here: the marker moves
-    # only once the remote changes below have succeeded.
+    # Read what is remembered before the choice overwrites it. Nothing is
+    # written here: the marker moves only once the Worker has the change.
     marker = state / "edge-direct"
     current = marker.exists() and marker.read_text().strip() == "on"
     wanted = direct_choice(state, choice, keep=False)
-    if wanted == current:
-        return
-    if wanted:
-        what = (
-            "edge direct: upload the GitHub and queue tokens and turn direct actions on"
-        )
-    else:
-        what = "edge direct: turn direct actions off"
-    cf.changes.append(what)
-    if check:
-        return
-    edge_dir = pathlib.Path(__file__).resolve().parent.parent / "edge"
-    wrangler = shutil.which("wrangler") or str(
-        edge_dir / "node_modules" / ".bin" / "wrangler"
-    )
-    if not wrangler or not pathlib.Path(wrangler).exists():
-        raise SystemExit(
-            "wrangler is not installed here; run `npm ci` in pm-stack/console/edge, then rerun"
-        )
-    envs = {
-        **os.environ,
-        "CLOUDFLARE_API_TOKEN": cf.token,
-        "CLOUDFLARE_ACCOUNT_ID": account,
-    }
+    # Straight to Cloudflare's API, with the token this script already
+    # holds: nothing to install on this host, and the value travels in
+    # the request body, never on a command line.
+    secrets_path = f"/accounts/{account}/workers/scripts/{WORKER}/secrets"
+    all_three = ("GITHUB_TOKEN", "QUEUE_TOKEN", "EDGE_DIRECT")
 
     def put(name: str, value: str) -> None:
-        done = subprocess.run(
-            [wrangler, "secret", "put", name],
-            input=value,
-            capture_output=True,
-            text=True,
-            cwd=edge_dir,
-            env=envs,
-            check=False,
+        cf.call(
+            "PUT", secrets_path, {"name": name, "text": value, "type": "secret_text"}
         )
-        if done.returncode != 0:
-            raise SystemExit(
-                f"wrangler secret put {name} failed ({(done.stderr or '').strip()[:200]}); "
-                "the edge Worker was not given its secrets"
-            )
 
-    if wanted:
+    def held() -> set[str]:
+        return {s.get("name") for s in cf.get(secrets_path)}
+
+    def remember(mode: str) -> None:
+        state.mkdir(parents=True, exist_ok=True, mode=0o700)
+        marker.write_text(mode + "\n")
+
+    def take_tokens_away() -> None:
+        """Off means the Worker holds nothing it could act with."""
+        names = held()
+        for name in ("GITHUB_TOKEN", "QUEUE_TOKEN"):
+            if name in names:
+                cf.change(
+                    f"edge direct: take {name} away from the Worker",
+                    "DELETE",
+                    f"{secrets_path}/{name}",
+                    None,
+                )
+
+    def upload() -> None:
         github = secret(GITHUB_TOKEN_SECRET)
         queue_name = (
             env_values(env).get("PM_CONSOLE_QUEUE_TOKEN_NAME") or QUEUE_TOKEN_DEFAULT
@@ -324,17 +336,69 @@ def ensure_edge_direct(
             raise SystemExit(f"secret {GITHUB_TOKEN_SECRET} is not readable here")
         if not queue:
             raise SystemExit(f"secret {queue_name} is not readable here")
-        put("GITHUB_TOKEN", github)
-        put("QUEUE_TOKEN", queue)
-        put("EDGE_DIRECT", "on")
-    else:
-        # The tokens stay, inert without the opt-in; only the flag moves.
+        try:
+            put("GITHUB_TOKEN", github)
+            put("QUEUE_TOKEN", queue)
+            put("EDGE_DIRECT", "on")
+        except SystemExit:
+            # Part-way is not on. What did get there is taken away again,
+            # so a failed attempt leaves the Worker holding nothing.
+            if not current:
+                try:
+                    take_tokens_away()
+                except SystemExit:
+                    pass
+            raise
+
+    if wanted and current:
+        # On already. A timer's run uploads nothing, unless the Worker
+        # has lost one of the three, and then it gets them again.
+        try:
+            lost = sorted(set(all_three) - held())
+        except SystemExit as error:
+            print(f"note: could not see what the Worker holds: {error}")
+            return
+        if lost:
+            cf.changes.append(
+                f"edge direct: give the Worker back what it has lost ({', '.join(lost)})"
+            )
+            if not check:
+                upload()
+        return
+    if wanted:
+        cf.changes.append(
+            "edge direct: upload the GitHub and queue tokens and turn direct actions on"
+        )
+        if check:
+            return
+        upload()
+        # The Worker has all three now, so the choice is remembered; a
+        # failure above raises before this line and leaves no marker.
+        remember("on")
+        return
+    if current:
+        cf.changes.append("edge direct: turn direct actions off")
+        if check:
+            return
+        # The opt-in goes first, so the Worker stops acting at once, and
+        # the mode is off from here whatever happens to the tidying.
         put("EDGE_DIRECT", "off")
-    # The Worker has the change now, so the choice is remembered; a
-    # failure above raises before this line and leaves the old marker.
-    if choice is not None:
-        state.mkdir(parents=True, exist_ok=True, mode=0o700)
-        marker.write_text(choice + "\n")
+        remember("off")
+        take_tokens_away()
+        return
+    if choice == "off":
+        # Asked for off while already off, or after an attempt to turn it
+        # on that never finished: make sure nothing was left behind.
+        take_tokens_away()
+        return
+    if marker.exists():
+        # Off, after having been on, and nobody asking: a token left by a
+        # run that stopped part-way is taken away now. This is tidying;
+        # it never fails a run that changes nothing else.
+        try:
+            take_tokens_away()
+        except SystemExit as error:
+            print(f"note: could not look for tokens left on the Worker: {error}")
 
 
 def worker_ready(cf: Cloudflare, account: str, host: str) -> bool:
@@ -703,6 +767,15 @@ def ensure_console(
 
 
 def main() -> int:
+    # A run that only looks needs no turn. One that may change something
+    # waits for any other such run to finish first.
+    if {"--status", "--check"} & set(sys.argv[1:]):
+        return configure()
+    with one_at_a_time(pathlib.Path.home() / ".local/state/pm-console"):
+        return configure()
+
+
+def configure() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--check", action="store_true")
     parser.add_argument("--host", default="pm.security.cab")
