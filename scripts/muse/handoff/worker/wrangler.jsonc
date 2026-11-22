@@ -1,7 +1,7 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "muse-agent-handoff",
-  "main": "worker/src/index.js",
+  "main": "src/index.js",
   "compatibility_date": "2026-11-21",
   "workers_dev": true,
   "observability": { "enabled": false },
