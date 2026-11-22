@@ -1,0 +1,147 @@
+import type { RefKey } from "./model.ts";
+
+export interface ReparentIssue {
+  ref: RefKey;
+  parentRef: RefKey | null;
+  state: "OPEN" | "CLOSED";
+  labels: readonly string[];
+  /** Native ancestors, nearest first. */
+  primaryParentChain: readonly RefKey[];
+  area: string | null;
+}
+
+export interface ReparentEpic {
+  ref: RefKey;
+  state: "OPEN" | "CLOSED";
+  labels: readonly string[];
+  /** Native ancestors, nearest first. */
+  primaryParentChain: readonly RefKey[];
+  area: string | null;
+  maintenance: boolean;
+}
+
+export type ReparentRelation =
+  | "shared_design"
+  | "shared_primary_parent"
+  | "shared_epic"
+  | "shared_area"
+  | "maintenance_fallback";
+
+export type ReparentSelection =
+  | { kind: "selected"; epic: ReparentEpic; reason: ReparentRelation }
+  | { kind: "ambiguous"; reason: Exclude<ReparentRelation, "maintenance_fallback">; refs: RefKey[] }
+  | { kind: "unavailable"; reason: "no_open_destination_or_maintenance_epic" };
+
+const intersection = (a: readonly string[], b: readonly string[]) =>
+  a.filter((value) => b.includes(value));
+
+function sharedLabel(child: ReparentIssue, epic: ReparentEpic, prefix: string): boolean {
+  const childLabels = child.labels.filter((label) => label.startsWith(prefix));
+  const epicLabels = new Set(epic.labels.filter((label) => label.startsWith(prefix)));
+  return childLabels.some((label) => epicLabels.has(label));
+}
+
+/** Select a unique highest-ranked open related epic. Ties are surfaced, never guessed. */
+export function selectReparentDestination(
+  child: ReparentIssue,
+  candidates: readonly ReparentEpic[],
+): ReparentSelection {
+  const rank: Exclude<ReparentRelation, "maintenance_fallback">[] = [
+    "shared_design",
+    "shared_primary_parent",
+    "shared_epic",
+    "shared_area",
+  ];
+  const related = candidates.filter(
+    (candidate) => candidate.state === "OPEN" && candidate.ref !== child.ref && candidate.ref !== child.parentRef,
+  );
+  for (const relation of rank) {
+    const matches = related.filter((candidate) => {
+      switch (relation) {
+        case "shared_design":
+          return sharedLabel(child, candidate, "design/");
+        case "shared_primary_parent":
+          return intersection(child.primaryParentChain, candidate.primaryParentChain).length > 0;
+        case "shared_epic":
+          return sharedLabel(child, candidate, "epic/");
+        case "shared_area":
+          return child.area !== null && child.area === candidate.area;
+      }
+    });
+    if (matches.length === 1) return { kind: "selected", epic: matches[0]!, reason: relation };
+    if (matches.length > 1)
+      return { kind: "ambiguous", reason: relation, refs: matches.map((match) => match.ref).sort() };
+  }
+  const maintenance = related.filter((candidate) => candidate.maintenance);
+  if (maintenance.length === 1)
+    return { kind: "selected", epic: maintenance[0]!, reason: "maintenance_fallback" };
+  if (maintenance.length > 1)
+    return { kind: "ambiguous", reason: "shared_area", refs: maintenance.map((match) => match.ref).sort() };
+  return { kind: "unavailable", reason: "no_open_destination_or_maintenance_epic" };
+}
+
+export interface EpicReparentPlan {
+  ref: RefKey;
+  oldParentRef: RefKey | null;
+  newParentRef: RefKey;
+  expectedLabels: string[];
+  labelsToApply: string[];
+}
+
+/** Build the exact label set for a move; only the primary-parent label is replaced. */
+export function planEpicReparent(
+  child: ReparentIssue,
+  destination: ReparentEpic,
+): EpicReparentPlan {
+  if (destination.state !== "OPEN") throw new Error(`destination epic is not open: ${destination.ref}`);
+  if (destination.ref === child.ref) throw new Error(`issue cannot be re-parented to itself: ${child.ref}`);
+  if (destination.ref === child.parentRef) throw new Error(`destination is already the child's parent: ${destination.ref}`);
+  const slugs = destination.labels
+    .filter((label) => label.startsWith("epic/"))
+    .map((label) => label.slice("epic/".length))
+    .filter(Boolean);
+  if (slugs.length !== 1)
+    throw new Error(`destination must have exactly one epic/<slug> label: ${destination.ref}`);
+  const labelsToApply = new Set(child.labels.filter((label) => !label.startsWith("primary-parent/")));
+  labelsToApply.add(`primary-parent/${slugs[0]}`);
+  return {
+    ref: child.ref,
+    oldParentRef: child.parentRef,
+    newParentRef: destination.ref,
+    expectedLabels: [...new Set(child.labels)].sort(),
+    labelsToApply: [...labelsToApply].sort(),
+  };
+}
+
+export interface ReparentGateway {
+  readChild(ref: RefKey): Promise<ReparentIssue>;
+  isOpenEpic(ref: RefKey): Promise<boolean>;
+  /** Atomically re-point the native sub-issue edge (GitHub replaceParent). */
+  replaceNativeParent(child: RefKey, oldParent: RefKey | null, newParent: RefKey): Promise<void>;
+  /** Set the exact planned labels after verifying the plan's expected label set. */
+  replaceLabels(child: RefKey, labels: readonly string[]): Promise<void>;
+  addComment(ref: RefKey, body: string): Promise<void>;
+}
+
+/** Apply a previously reviewed plan only if live child state still matches it. */
+export async function applyEpicReparent(
+  plan: EpicReparentPlan,
+  closingEpicRef: RefKey,
+  gateway: ReparentGateway,
+): Promise<void> {
+  const child = await gateway.readChild(plan.ref);
+  if (child.state !== "OPEN") throw new Error(`child is not open: ${plan.ref}`);
+  if (child.parentRef !== plan.oldParentRef)
+    throw new Error(`child parent changed since plan was made: ${plan.ref}`);
+  const labels = [...new Set(child.labels)].sort();
+  if (JSON.stringify(labels) !== JSON.stringify(plan.expectedLabels))
+    throw new Error(`child labels changed since plan was made: ${plan.ref}`);
+  if (!(await gateway.isOpenEpic(plan.newParentRef)))
+    throw new Error(`destination is not an open epic: ${plan.newParentRef}`);
+
+  await gateway.replaceNativeParent(plan.ref, plan.oldParentRef, plan.newParentRef);
+  await gateway.replaceLabels(plan.ref, plan.labelsToApply);
+  const note = `Re-parented from ${plan.oldParentRef ?? "(no parent)"} to ${plan.newParentRef} as part of closing ${closingEpicRef}; labels were preserved except for the primary-parent marker.`;
+  await gateway.addComment(plan.ref, note);
+  await gateway.addComment(closingEpicRef, note);
+}
