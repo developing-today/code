@@ -1104,7 +1104,7 @@ impl<B: BlobBackend + Sync> StoredReplica<B> {
         config: &SyncScopeConfig,
         now: LogicalTime,
     ) -> Result<Exchange, RecordStoreError> {
-        let mut rollback = ExchangeRollback::new(self, other);
+        let rollback = ExchangeRollback::new(self, other);
         let self_before = rollback.left.report_snapshot();
         let other_before = rollback.right.report_snapshot();
         let self_name = rollback.left.replica.name().to_owned();
