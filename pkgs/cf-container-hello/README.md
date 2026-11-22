@@ -58,6 +58,26 @@ pkgs/lab-ops-hub) crawler image recipe is what the probe runs.
 npm test   # python3 -m unittest discover -s test -p "test_*.py"
 ```
 
+## Publishing and activation
+
+This package keeps its standalone `cf-container-hello` Worker identity. The
+`HelloContainer` and `HelloLite` bindings use Cloudflare's official
+`hello-world:v1` image, already present in the Cloudflare registry. There is
+no locally built image to upload. `npm run publish-image` records that image
+reference without changing the registry. `npm run publish-image` uses the
+pinned Cloudflare `cf@1.0.0-beta.20 workers versions create` command to upload
+a Worker version without activating it. Then activate that specific version
+with `npm run deploy -- activate --version <id>`. The manual workflow exposes
+these as separate operations and accepts the uploaded version ID for activate.
+Use `--dry-run` on publish-image to validate locally without an upload;
+activation dry-run makes no API call.
+
+The workflow's manual `operation` input offers `test`, `publish-image`, and
+`activate` as separate choices. Both upload and activation use the pinned cf
+CLI and the `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` repository
+secrets. The uploaded image reference remains the official hello-world image;
+this flow versions the Worker bundle, it does not publish an OCI image.
+
 `test/test_probe_hardening.py` pins the #955 regression: the production
 validator the probe now runs refuses `file://`, loopback, private-IP
 and redirect-to-private targets; no stale crawler copy exists in this

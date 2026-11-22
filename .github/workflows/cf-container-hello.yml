@@ -35,6 +35,20 @@ on:
     # .github/ci-policy.md "Nightly main CI").
     - cron: "17 7 * * *"
   workflow_dispatch:
+    inputs:
+      operation:
+        description: "Choose the standalone probe operation"
+        required: true
+        type: choice
+        default: test
+        options:
+          - test
+          - publish-image
+          - activate
+      version_id:
+        description: "Worker version ID returned by publish-image (activate only)"
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -50,6 +64,7 @@ concurrency:
 
 jobs:
   test:
+    if: github.event_name != 'workflow_dispatch' || inputs.operation == 'test'
     name: test
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -73,3 +88,35 @@ jobs:
       - name: Run the #955 hardening suite
         working-directory: pkgs/cf-container-hello
         run: npm test
+
+  publish-image:
+    if: github.event_name == 'workflow_dispatch' && inputs.operation == 'publish-image'
+    name: publish image reference
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+      - name: Report image
+        working-directory: pkgs/cf-container-hello
+        run: node deploy.mjs publish-image
+
+  activate:
+    if: github.event_name == 'workflow_dispatch' && inputs.operation == 'activate'
+    name: activate probe Worker
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+      - name: Set up Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      - name: Install dependencies
+        working-directory: pkgs/cf-container-hello
+        run: npm ci
+      - name: Activate Worker
+        working-directory: pkgs/cf-container-hello
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: npm run deploy -- activate --version "${{ inputs.version_id }}"
