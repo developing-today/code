@@ -7,10 +7,18 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/developing-today/code/pkgs/mcpx/internal/cli"
+	"github.com/developing-today/code/pkgs/mcpx/internal/daemon"
+	"github.com/developing-today/code/pkgs/mcpx/internal/settings"
 )
 
 // Effect probes for the http/transport settings family (#8469, task
@@ -406,6 +414,173 @@ func TestHTTPStreamBufferMaxEndsAnOversizedEventLine(t *testing.T) {
 	}
 	if strings.Contains(tiny, "\"kind\":\"call.finished\"") {
 		t.Fatalf("no event should be delivered past a 256-byte line ceiling:\n%s", tiny)
+	}
+}
+
+// idleProbeServer holds each pair of requests until both have reached it.
+// This forces two connections to be live concurrently, then lets the test
+// observe how many the configured client retains for its next pair.
+func idleProbeServer(t *testing.T, network string) (string, *atomic.Int64, func(), func()) {
+	t.Helper()
+	var ln net.Listener
+	var err error
+	endpoint := ""
+	if network == "unix" {
+		dir, mkdirErr := os.MkdirTemp("", "mcp-")
+		if mkdirErr != nil {
+			t.Fatal(mkdirErr)
+		}
+		t.Cleanup(func() { _ = os.RemoveAll(dir) })
+		path := filepath.Join(dir, "p.sock")
+		ln, err = net.Listen("unix", path)
+		endpoint = "unix://" + path
+	} else {
+		ln, err = net.Listen("tcp", "127.0.0.1:0")
+		if err == nil {
+			endpoint = "http://" + ln.Addr().String()
+		}
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	connections := &atomic.Int64{}
+	var mu sync.Mutex
+	arrived := 0
+	gate := make(chan struct{})
+	server := &http.Server{
+		Handler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			mu.Lock()
+			arrived++
+			if arrived == 2 {
+				close(gate)
+			}
+			current := gate
+			mu.Unlock()
+			<-current
+			_, _ = io.WriteString(w, "ok")
+		}),
+		ConnState: func(_ net.Conn, state http.ConnState) {
+			if state == http.StateNew {
+				connections.Add(1)
+			}
+		},
+	}
+	go func() { _ = server.Serve(ln) }()
+	reset := func() {
+		mu.Lock()
+		arrived = 0
+		gate = make(chan struct{})
+		mu.Unlock()
+	}
+	return endpoint, connections, func() { _ = server.Close() }, reset
+}
+
+func configuredClient(t *testing.T, endpoint string, env ...string) *cli.Client {
+	t.Helper()
+	sch, err := settings.New(settings.Registry())
+	if err != nil {
+		t.Fatal(err)
+	}
+	set := settings.NewSet(sch)
+	if err := sch.ApplyEnv(set, env); err != nil {
+		t.Fatal(err)
+	}
+	return cli.NewClientAtWithSettings(daemon.Paths{}, "", endpoint, set)
+}
+
+func pingPair(t *testing.T, c *cli.Client) {
+	t.Helper()
+	results := make(chan bool, 2)
+	for range 2 {
+		go func() { results <- c.Ping(context.Background()) }()
+	}
+	for range 2 {
+		select {
+		case ok := <-results:
+			if !ok {
+				t.Fatal("health request failed")
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("health request pair did not complete")
+		}
+	}
+}
+
+func TestHTTPIdleConnectionPoolSettingsChangeReuse(t *testing.T) {
+	recordSettingProbes(t)
+	for _, tc := range []struct {
+		name, network, setting string
+	}{
+		{"local idle connection cap", "unix", "MCPX_HTTP_IDLE_CONNS"},
+		{"remote idle connection cap", "tcp", "MCPX_HTTP_REMOTE_IDLE_CONNS"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, configured := range []struct {
+				name string
+				env  []string
+				want int64
+			}{
+				{"default", nil, 0},
+				{"one retained connection", []string{tc.setting + "=1"}, 1},
+			} {
+				t.Run(configured.name, func(t *testing.T) {
+					endpoint, conns, closeServer, reset := idleProbeServer(t, tc.network)
+					defer closeServer()
+					client := configuredClient(t, endpoint, configured.env...)
+					pingPair(t, client)
+					if got := conns.Load(); got != 2 {
+						t.Fatalf("first concurrent pair opened %d connections, want 2", got)
+					}
+					reset()
+					pingPair(t, client)
+					newConnections := conns.Load() - 2
+					if got := newConnections == 1; got != (configured.want == 1) {
+						t.Fatalf("second concurrent pair opened %d new connections; constrained=%v", newConnections, configured.want == 1)
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestHTTPIdleConnTimeoutExpiresAnIdleClientConnection(t *testing.T) {
+	recordSettingProbes(t)
+	for _, tc := range []struct {
+		name string
+		env  []string
+		want int64
+	}{
+		{"default", nil, 1},
+		{"short timeout", []string{"MCPX_HTTP_IDLE_CONN_TIMEOUT=50ms"}, 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ln, err := net.Listen("tcp", "127.0.0.1:0")
+			if err != nil {
+				t.Fatal(err)
+			}
+			connections := &atomic.Int64{}
+			server := &http.Server{
+				Handler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = io.WriteString(w, "ok") }),
+				ConnState: func(_ net.Conn, state http.ConnState) {
+					if state == http.StateNew {
+						connections.Add(1)
+					}
+				},
+			}
+			go func() { _ = server.Serve(ln) }()
+			defer func() { _ = server.Close() }()
+			client := configuredClient(t, "http://"+ln.Addr().String(), tc.env...)
+			if !client.Ping(context.Background()) {
+				t.Fatal("first health request failed")
+			}
+			time.Sleep(200 * time.Millisecond)
+			if !client.Ping(context.Background()) {
+				t.Fatal("second health request failed")
+			}
+			if got := connections.Load(); got != tc.want {
+				t.Fatalf("accepted %d connections after idle interval, want %d", got, tc.want)
+			}
+		})
 	}
 }
 

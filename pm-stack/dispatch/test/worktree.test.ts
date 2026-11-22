@@ -93,7 +93,13 @@ describe("createDispatchWorktree", () => {
 
   test("refuses to reuse an existing worktree path", async () => {
     await expect(
-      createDispatchWorktree({ primary, requestedDirectory: primary, root, repo: "developing-today/code", taskId: 20901 }),
+      createDispatchWorktree({
+        primary,
+        requestedDirectory: primary,
+        root,
+        repo: "developing-today/code",
+        taskId: 20901,
+      }),
     ).rejects.toBeInstanceOf(WorktreeError);
   });
 

@@ -112,6 +112,24 @@
       "status": "mapped"
     },
     {
+      "id": "id.rust.substrate-path",
+      "paths": [
+        "pkgs/id/crates/id-core/tests/substrate_path.rs",
+        "pkgs/id/crates/id-sync/tests/substrate_sync_path.rs",
+        "pkgs/id/crates/id-sync/tests/substrate_transport_path.rs"
+      ],
+      "invocation": "nix flake check ./pkgs/id (check test-sandbox runs cargo nextest --all-features for default workspace members)",
+      "venue": {
+        "workflow": ".github/workflows/id-check.yml",
+        "job_step": "full-flake-check / Run full nix flake check",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped",
+      "related_issues": [12232, 9106],
+      "notes": "The #9106 walking skeleton (#12232), steps 1 and 2: a signed record read back from its id:// address, then written on one in-process node, synced to a second, and a conflicting write reported on both. Step 3 (substrate_transport_path) runs the same path between two OS processes over the iroh transport (/id-fed-exchange/1); it needs UDP loopback, so it runs where UDP is available (the laptop, CI) and not in the Muse sandbox. The only substrate suites that import from id_core and id_sync instead of including modules by path, so they also fail to compile when a substrate module stops being part of its crate. Direct run: cargo test --manifest-path pkgs/id/Cargo.toml -p id-core --test substrate_path && cargo test --manifest-path pkgs/id/Cargo.toml -p id-sync --test substrate_sync_path && cargo test --manifest-path pkgs/id/Cargo.toml -p id-sync --test substrate_transport_path."
+    },
+    {
       "id": "id.rust.planted-bug-check",
       "paths": ["pkgs/id/tests/planted-bug-check.sh", "pkgs/id/tests/planted/*.patch"],
       "invocation": "bash pkgs/id/tests/planted-bug-check.sh (the planted-bug-check flake check stages a throwaway git repo around pkgs/id and runs the script there; also run by pkgs/id/check-all in non-quick mode)",
@@ -253,9 +271,10 @@
         "pkgs/id/hosted-worker/test/canonical-cbor.test.ts",
         "pkgs/id/hosted-worker/test/usage.test.ts",
         "pkgs/id/hosted-worker/test/currency.test.ts",
-        "pkgs/id/hosted-worker/test/front-door.test.ts"
+        "pkgs/id/hosted-worker/test/front-door.test.ts",
+        "pkgs/id/hosted-worker/test/id-uri-vectors.test.ts"
       ],
-      "invocation": "cd pkgs/id/hosted-worker && npm test (node --experimental-transform-types --test test/routing.test.ts test/blobs.test.ts test/canonical-cbor.test.ts test/usage.test.ts test/currency.test.ts test/front-door.test.ts)",
+      "invocation": "cd pkgs/id/hosted-worker && npm test (node --experimental-transform-types --test test/routing.test.ts test/blobs.test.ts test/canonical-cbor.test.ts test/usage.test.ts test/currency.test.ts test/front-door.test.ts test/id-uri-vectors.test.ts)",
       "venue": {
         "workflow": ".github/workflows/id-hosted-worker-tests.yml",
         "job_step": "hosted-worker-tests / Run the hosted-worker routing suite",
@@ -741,6 +760,18 @@
       "venue": {
         "workflow": ".github/workflows/pm-aggregator-tests.yml",
         "job_step": "projector test job",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped"
+    },
+    {
+      "id": "pm-stack.console",
+      "paths": ["pm-stack/console/test/*.test.ts", "pm-stack/console/scripts/test_expose.py"],
+      "invocation": "cd pm-stack/console && bun test && python3 -I -m unittest discover -s scripts -p 'test_*.py'",
+      "venue": {
+        "workflow": ".github/workflows/pm-stack-tests.yml",
+        "job_step": "Test console",
         "state": "active",
         "dispatchable": true
       },
@@ -1309,32 +1340,32 @@
       "notes": "Registered 2026-11-14 (#6188 ratchet): already invoked by mcpx.yml but named by no registry row."
     },
     {
-      "id": "id.rust.other-crate-integration",
+      "id": "id.rust.id-core.integration",
       "paths": [
         "pkgs/id/crates/id-core/tests/array_address.rs",
         "pkgs/id/crates/id-core/tests/array_order_prop.rs",
         "pkgs/id/crates/id-core/tests/canonical_cbor_vectors.rs",
+        "pkgs/id/crates/id-core/tests/array_shorthand.rs",
+        "pkgs/id/crates/id-core/tests/content_id_vectors.rs",
+        "pkgs/id/crates/id-core/tests/cross_signing_challenge.rs",
+        "pkgs/id/crates/id-core/tests/delegation_model.rs",
+        "pkgs/id/crates/id-core/tests/graph_query_reference.rs",
+        "pkgs/id/crates/id-core/tests/graph_term_codec.rs",
+        "pkgs/id/crates/id-core/tests/hash_profile.rs",
+        "pkgs/id/crates/id-core/tests/id_uri_format.rs",
+        "pkgs/id/crates/id-core/tests/id_uri_parse.rs",
+        "pkgs/id/crates/id-core/tests/id_uri_property.rs",
         "pkgs/id/crates/id-core/tests/id_shape.rs",
+        "pkgs/id/crates/id-core/tests/legacy_hash_vectors.rs",
+        "pkgs/id/crates/id-core/tests/namespace_definition.rs",
+        "pkgs/id/crates/id-core/tests/numeric_order_prop.rs",
+        "pkgs/id/crates/id-core/tests/numeric_value_prop.rs",
+        "pkgs/id/crates/id-core/tests/signed_envelope_identity.rs",
         "pkgs/id/crates/id-core/tests/screen_parity.rs",
-        "pkgs/id/crates/id-core/tests/typed_value.rs",
-        "pkgs/id/crates/id-currency-registry/tests/acceptance.rs",
-        "pkgs/id/crates/id-currency-registry/tests/factory_acceptance.rs",
-        "pkgs/id/crates/id-currency-registry/tests/grants_acceptance.rs",
-        "pkgs/id/crates/id-render/tests/compose.rs",
-        "pkgs/id/crates/id-render/tests/lower.rs",
-        "pkgs/id/crates/id-render/tests/lower_gui.rs",
-        "pkgs/id/crates/id-render/tests/lower_native.rs",
-        "pkgs/id/crates/id-render/tests/pipeline.rs",
-        "pkgs/id/crates/id-sync/tests/federation_b01.rs",
-        "pkgs/id/crates/id-sync/tests/federation_b02.rs",
-        "pkgs/id/crates/id-sync/tests/federation_b03.rs",
-        "pkgs/id/crates/id-sync/tests/federation_b04.rs",
-        "pkgs/id/crates/id-sync/tests/federation_b05.rs",
-        "pkgs/id/crates/id-sync/tests/federation_b08.rs",
-        "pkgs/id/crates/id-sync/tests/federation_b20.rs",
-        "pkgs/id/crates/id-sync/tests/federation_b21.rs",
-        "pkgs/id/crates/id-sync/tests/federation_b31.rs",
-        "pkgs/id/crates/id-sync/tests/federation_b32.rs"
+        "pkgs/id/crates/id-core/tests/signer_bound_space.rs",
+        "pkgs/id/crates/id-core/tests/succeeds_dag.rs",
+        "pkgs/id/crates/id-core/tests/swarm_bench.rs",
+        "pkgs/id/crates/id-core/tests/typed_value.rs"
       ],
       "invocation": "nix flake check ./pkgs/id (check test-sandbox runs cargo nextest --all-features for default workspace members)",
       "venue": {
@@ -1344,7 +1375,105 @@
         "dispatchable": true
       },
       "status": "mapped",
-      "notes": "Existing nightly full-flake check runs test-sandbox over default workspace members; these additional integration targets are distinct from the five explicit PR targets added by #10329."
+      "notes": "Existing nightly full-flake check runs test-sandbox over default workspace members; this crate's integration targets are distinct from the five explicit PR targets added by #10329."
+    },
+    {
+      "id": "id.rust.id-currency-registry.integration",
+      "paths": [
+        "pkgs/id/crates/id-currency-registry/tests/acceptance.rs",
+        "pkgs/id/crates/id-currency-registry/tests/factory_acceptance.rs",
+        "pkgs/id/crates/id-currency-registry/tests/grants_acceptance.rs"
+      ],
+      "invocation": "nix flake check ./pkgs/id (check test-sandbox runs cargo nextest --all-features for default workspace members)",
+      "venue": {
+        "workflow": ".github/workflows/id-check.yml",
+        "job_step": "full-flake-check / Run full nix flake check",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped"
+    },
+    {
+      "id": "id.rust.id-render.integration",
+      "paths": [
+        "pkgs/id/crates/id-render/tests/compose.rs",
+        "pkgs/id/crates/id-render/tests/lower.rs",
+        "pkgs/id/crates/id-render/tests/lower_gui.rs",
+        "pkgs/id/crates/id-render/tests/lower_native.rs",
+        "pkgs/id/crates/id-render/tests/pipeline.rs"
+      ],
+      "invocation": "nix flake check ./pkgs/id (check test-sandbox runs cargo nextest --all-features for default workspace members)",
+      "venue": {
+        "workflow": ".github/workflows/id-check.yml",
+        "job_step": "full-flake-check / Run full nix flake check",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped"
+    },
+    {
+      "id": "id.rust.id-sync.integration",
+      "paths": [
+        "pkgs/id/crates/id-sync/tests/federation_b01.rs",
+        "pkgs/id/crates/id-sync/tests/federation_b02.rs",
+        "pkgs/id/crates/id-sync/tests/federation_b03.rs",
+        "pkgs/id/crates/id-sync/tests/federation_b04.rs",
+        "pkgs/id/crates/id-sync/tests/federation_b05.rs",
+        "pkgs/id/crates/id-sync/tests/federation_b06.rs",
+        "pkgs/id/crates/id-sync/tests/federation_b07.rs",
+        "pkgs/id/crates/id-sync/tests/federation_b08.rs",
+        "pkgs/id/crates/id-sync/tests/federation_b09.rs",
+        "pkgs/id/crates/id-sync/tests/federation_b15.rs",
+        "pkgs/id/crates/id-sync/tests/federation_b16.rs",
+        "pkgs/id/crates/id-sync/tests/federation_b17.rs",
+        "pkgs/id/crates/id-sync/tests/federation_b18.rs",
+        "pkgs/id/crates/id-sync/tests/federation_b19.rs",
+        "pkgs/id/crates/id-sync/tests/federation_b20.rs",
+        "pkgs/id/crates/id-sync/tests/federation_b21.rs",
+        "pkgs/id/crates/id-sync/tests/federation_b22.rs",
+        "pkgs/id/crates/id-sync/tests/federation_b23.rs",
+        "pkgs/id/crates/id-sync/tests/federation_b24.rs",
+        "pkgs/id/crates/id-sync/tests/federation_b28.rs",
+        "pkgs/id/crates/id-sync/tests/federation_b31.rs",
+        "pkgs/id/crates/id-sync/tests/federation_b32.rs",
+        "pkgs/id/crates/id-sync/tests/legacy_artifact_vectors.rs"
+      ],
+      "invocation": "nix flake check ./pkgs/id (check test-sandbox runs cargo nextest --all-features for default workspace members)",
+      "venue": {
+        "workflow": ".github/workflows/id-check.yml",
+        "job_step": "full-flake-check / Run full nix flake check",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped"
+    },
+    {
+      "id": "id.rust.id-store.integration",
+      "paths": [
+        "pkgs/id/crates/id-store/tests/content_store.rs",
+        "pkgs/id/crates/id-store/tests/graph_encoding_bakeoff.rs",
+        "pkgs/id/crates/id-store/tests/graph_index_rebuild.rs"
+      ],
+      "invocation": "nix flake check ./pkgs/id (check test-sandbox runs cargo nextest --all-features for default workspace members)",
+      "venue": {
+        "workflow": ".github/workflows/id-check.yml",
+        "job_step": "full-flake-check / Run full nix flake check",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped"
+    },
+    {
+      "id": "id.rust.id-import-notion.integration",
+      "paths": ["pkgs/id/crates/id-import-notion/tests/recorded_inventory.rs"],
+      "invocation": "nix flake check ./pkgs/id (check test-sandbox runs cargo nextest --all-features for default workspace members)",
+      "venue": {
+        "workflow": ".github/workflows/id-check.yml",
+        "job_step": "full-flake-check / Run full nix flake check",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped"
     },
     {
       "id": "id.benchmarks.integration",
@@ -1445,6 +1574,18 @@
       "venue": {
         "workflow": ".github/workflows/scripts-test.yml",
         "job_step": "update-nixpkgs-inputs-contract / Run queue-reconcile coverage contract tests (#8028)",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped"
+    },
+    {
+      "id": "fleet.flow-report",
+      "paths": ["scripts/fleet/flow-report/test_flow_report.py"],
+      "invocation": "python3 -I -m unittest discover -s scripts/fleet/flow-report -p 'test_flow_report.py' -v",
+      "venue": {
+        "workflow": ".github/workflows/scripts-test.yml",
+        "job_step": "update-nixpkgs-inputs-contract / Run flow-report contract tests",
         "state": "active",
         "dispatchable": true
       },

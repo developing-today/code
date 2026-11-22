@@ -32,6 +32,10 @@ fleet-laptop-agent = { workspace = true, optional = true }
 # The bridge domain: fleet mailboxes on the message bridge (send/receive
 # for central and agents); a working-seat client, so full only.
 fleet-bridge = { workspace = true, optional = true }
+# The agent domain: the front door that composes the other domains'
+# verbs (enroll, doctor, next, shortlist) and `fleet shell`; a
+# working-seat client, so full only.
+fleet-agent = { workspace = true, optional = true }
 serde_json = { workspace = true }
 # The gh domain (code#8887) mints App installation tokens over the
 # GitHub API; same ureq pin as fleet-queue/fleet-search (rustls, no
@@ -66,6 +70,7 @@ full = [
   "secrets",
   "gh",
   "bridge",
+  "agent",
 ]
 # The serve variant's set, as one feature for the nix build.
 serve = [
@@ -107,6 +112,10 @@ laptop-agent = ["dep:fleet-secrets", "dep:fleet-laptop-agent"]
 # Fleet messaging through the message bridge: central sends messages or
 # commands; agents read, answer and ack. Full only (a client, not a role).
 bridge = ["dep:fleet-bridge"]
+# The agent's front door: enrolment, the intake ladder and `fleet shell`.
+# It runs the other domains' verbs through this same binary, so it links
+# only fleet-config. Full only.
+agent = ["dep:fleet-agent"]
 
 [dev-dependencies]
 # Property tests for the gh read classifier (AGENTS.md testing

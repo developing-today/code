@@ -60,6 +60,11 @@ pub enum Capability {
     /// fleet mailboxes: central commands one agent, a group or all;
     /// agents read, answer and ack.
     Bridge,
+    /// `fleet agent …` and `fleet shell …` — the agent's front door:
+    /// enrol an agent of any kind, check what this seat reaches, take
+    /// the next piece of work down the intake ladder, and run a command
+    /// where builds belong. Composes the other domains' verbs.
+    Agent,
 }
 
 impl Capability {
@@ -81,6 +86,7 @@ impl Capability {
             Capability::Secrets => "secrets",
             Capability::Gh => "gh",
             Capability::Bridge => "bridge",
+            Capability::Agent => "agent",
         }
     }
 
@@ -101,6 +107,7 @@ impl Capability {
         Capability::Secrets,
         Capability::Gh,
         Capability::Bridge,
+        Capability::Agent,
     ];
 }
 
@@ -226,21 +233,37 @@ pub const DOMAINS: &[Domain] = &[
         aliases: &["repo-queue"],
         subcommands: &[
             "validate",
-            "list",
             "enqueue",
+            "list",
             "claim",
+            "release",
             "lane",
             "bind",
             "heartbeat",
             "checkpoint",
             "park",
+            "wake",
             "block",
+            "unblock",
+            "dep-recheck",
+            "quarantine-recheck",
             "cancel",
+            "revive",
             "fail",
             "complete",
+            "verify-disposition",
+            "timeline",
+            "history",
+            "show",
+            "models",
             "health",
             "signal",
             "fallback",
+            "dispatch",
+            "session",
+            "surfaces",
+            "outbox",
+            "stack",
         ],
     },
     Domain {
@@ -298,7 +321,7 @@ pub const DOMAINS: &[Domain] = &[
         capabilities: &[Capability::Gh],
         primary: Capability::Gh,
         aliases: &[],
-        subcommands: &[],
+        subcommands: &["tiers", "cache-serve", "cache-status", "closures"],
     },
     Domain {
         name: "bridge",
@@ -311,12 +334,28 @@ pub const DOMAINS: &[Domain] = &[
         ],
     },
     Domain {
+        name: "agent",
+        summary: "The agent's front door: enrol an agent of any kind, check what this seat reaches, and take the next piece of work down the intake ladder (pushed command, queue, local shortlist, highest priority).",
+        capabilities: &[Capability::Agent],
+        primary: Capability::Agent,
+        aliases: &[],
+        subcommands: &["kinds", "enroll", "doctor", "next", "shortlist"],
+    },
+    Domain {
+        name: "shell",
+        summary: "Run a command, or open a shell, where builds belong: the laptop, a codespace, or here.",
+        capabilities: &[Capability::Agent],
+        primary: Capability::Agent,
+        aliases: &[],
+        subcommands: &["targets"],
+    },
+    Domain {
         name: "search",
         summary: "Atlas corpus search over the session history (Snowflake hybrid, via atlas-search).",
         capabilities: &[Capability::Search],
         primary: Capability::Search,
         aliases: &["atlas-search"],
-        subcommands: &["search", "get-chunk"],
+        subcommands: &["search", "get-chunk", "serve"],
     },
     Domain {
         name: "laptop-agent",
@@ -324,7 +363,7 @@ pub const DOMAINS: &[Domain] = &[
         capabilities: &[Capability::LaptopAgent],
         primary: Capability::LaptopAgent,
         aliases: &["laptop-agent"],
-        subcommands: &["run", "status", "poll", "kill"],
+        subcommands: &["health", "jobs", "kill", "exec", "run", "poll", "fetch"],
     },
 ];
 

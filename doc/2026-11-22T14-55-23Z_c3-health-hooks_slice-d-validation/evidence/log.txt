@@ -1,0 +1,11 @@
+[2026-11-22T14:54:57Z] === PM-STACK-REACHABLE CYCLE ===
+[2026-11-22T14:54:57Z] PM-1 hard down: nothing listening on 14870
+[2026-11-22T14:55:02Z] PM-2 surface down (GET /board 503), intake up: POST capture expected
+[2026-11-22T14:55:07Z] PM-3 recovered: GET /board 200
+[2026-11-22T14:55:14Z] PM-4 steady state: expect transient, no new record
+[2026-11-22T14:55:16Z] === OPENCODE-WORKING CYCLE ===
+[2026-11-22T14:55:16Z] OC-1 hard down: nothing listening on 13420 (verified free pre-drill)
+[2026-11-22T14:55:20Z] OC-2 recovered: stand-in serving /global/health 200 on 13420
+[2026-11-22T14:55:23Z] OC-3 steady state: expect transient, no new record
+[2026-11-22T14:55:23Z] stand-ins stopped; ports released
+[2026-11-22T14:55:23Z] === DRILL DONE ===

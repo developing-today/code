@@ -9,7 +9,7 @@ class Local:
     def __init__(self):
         self.c = sqlite3.connect(":memory:")
         self.c.row_factory = sqlite3.Row
-        self.c.executescript("""CREATE TABLE ainventory_models(name,provider);
+        self.c.executescript("""CREATE TABLE ainventory_models(id,name,provider);
   CREATE TABLE ainventory_ingest_batches(id TEXT PRIMARY KEY, inserted_counts TEXT);
   CREATE TABLE ainventory_measurement_events(id INTEGER PRIMARY KEY,model_name TEXT NOT NULL,model_variant_key,effort,benchmark,benchmark_version,value_num,source_date,ingested_at,raw);
   CREATE TABLE ainventory_price_events(id INTEGER PRIMARY KEY,model_name TEXT NOT NULL,provider,context_min_tokens,context_max_tokens,window_kind,effective_date,source_date,ingested_at,input_usd_per_1m);
@@ -34,6 +34,65 @@ class Gatherer(unittest.TestCase):
 
     def tearDown(self):
         self.db.c.close()
+
+    def test_identity_oracle_resolves_cross_source_spellings_to_one_inventory_name(
+        self,
+    ):
+        # Oracle: AA, models.dev and event rows for one model must resolve to
+        # the same canonical name that the current inventory already exposes.
+        models = [{"name": "OpenAI | GPT-6 Luna", "provider": "OpenAI"}]
+        index = g.build_identity_index(models, [])
+        self.assertEqual(
+            g.resolve_identity(["GPT-6 Luna", "openai/gpt-6-luna"], index),
+            "OpenAI | GPT-6 Luna",
+        )
+
+    def test_identity_oracle_handles_curated_rename_without_fuzzy_merging(self):
+        # Oracle: known AA checkpoint renames collapse; unknown near-matches
+        # and ambiguous aliases do not resolve.
+        models = [{"name": "DeepSeek V4 Pro", "provider": "DeepSeek"}]
+        index = g.build_identity_index(models, [])
+        self.assertEqual(
+            g.resolve_identity(["DeepSeek V4 Pro 0813"], index),
+            "DeepSeek V4 Pro",
+        )
+        self.assertIsNone(g.resolve_identity(["DeepSeek V4 Pro 0814"], index))
+        ambiguous = g.build_identity_index(
+            [
+                {"name": "Provider A | Shared Model"},
+                {"name": "Provider B | Shared Model"},
+            ],
+            [],
+        )
+        self.assertIsNone(g.resolve_identity(["Shared Model"], ambiguous))
+
+    def test_modelsdev_price_oracle_uses_same_dimension_id_as_inventory(self):
+        # Oracle: a provider catalog spelling that resolves to an inventory
+        # row must persist the canonical name and FK, not a parallel provider ID.
+        known = [{"id": 23, "name": "OpenAI | GPT-6 Luna", "provider": "OpenAI"}]
+        md = {
+            "openai": {
+                "models": {
+                    "gpt-6-luna": {
+                        "name": "GPT-6 Luna",
+                        "cost": {"input": 2, "output": 8},
+                    }
+                }
+            }
+        }
+        with (
+            tempfile.TemporaryDirectory() as d,
+            patch.object(sys, "argv", ["gather", "--live", "--out", d]),
+            patch.object(g, "Turso", return_value=self.db),
+            patch.object(g, "read_current", return_value=(known, [], [], [])),
+            patch.object(g, "fetch", side_effect=["", json.dumps(md)]),
+            patch.object(g, "parse_aa_models", return_value=[]),
+            patch.object(g, "persist_events") as persist,
+        ):
+            self.assertEqual(g.main(), 0)
+            price = persist.call_args.args[3][0]
+            self.assertEqual(price["model_name"], "OpenAI | GPT-6 Luna")
+            self.assertEqual(price["model_id"], 23)
 
     def test_view_partition_and_order(self):
         rows = [
@@ -111,7 +170,7 @@ class Gatherer(unittest.TestCase):
 
     def test_read_all_not_truncated(self):
         self.db.c.executemany(
-            "insert into ainventory_models values(?,?)",
+            "insert into ainventory_models(name,provider) values(?,?)",
             [(str(i), "p") for i in range(1001)],
         )
         self.assertEqual(len(g.read_current(self.db)[0]), 1001)
@@ -130,10 +189,10 @@ class Gatherer(unittest.TestCase):
 
     def test_live_batch_explicit_timestamps(self):
         # Oracle: legacy deployed parent has no SQL defaults. Both timestamps required.
-        known = [{"name": "model", "provider": "OpenAI"}]
+        known = [{"id": 23, "name": "OpenAI | Model", "provider": "OpenAI"}]
         aa = {
-            "release_name": "model",
-            "release_slug": "model",
+            "release_name": "Model",
+            "release_slug": "openai/model",
             "effort": "high",
             "intelligence_index": 10,
             "cost_per_task_usd": None,
@@ -159,6 +218,9 @@ class Gatherer(unittest.TestCase):
             self.assertEqual(
                 batch["inserted_counts"], {"measurement_events": 1, "price_events": 0}
             )
+            measurement = persist.call_args.args[2][0]
+            self.assertEqual(measurement["model_name"], "OpenAI | Model")
+            self.assertEqual(measurement["model_id"], 23)
 
     def test_numeric_column_name(self):
         sql, args = g.insert_statement("price_events", [{"input_usd_per_1m": 1.25}])
