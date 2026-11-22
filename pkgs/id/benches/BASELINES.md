@@ -371,6 +371,75 @@ recorded rather than reported as acceptance. The matching measurement
 is appended to `baseline.txt`; the existing baselines above are
 unchanged.
 
+## Fuel-spin isolation profile (#1067, F12.10 slice 1)
+
+The measurement above recorded the gap but not where the spinning
+phase's added latency sits. The workload now attributes each phase
+(the #1067 slice-1 instrumentation): the victim driver records the
+same sample split as `many_worlds` — deadline-to-acknowledgement,
+driver wake lateness, input acknowledgement wait — and the bench
+differences the victim actor's own journal-append and command
+latency histograms across each phase from its metrics snapshots.
+Producing command (laptop, reference machine; the bench binary was
+built through `~/tools/fleet-build-lock cargo bench --bench
+world_bench --no-run` at main `63f9558b9` plus the instrumentation):
+
+```text
+./target/release/deps/world_bench-<hash> --only fuel_spin_isolation
+```
+
+Fresh gap measurement at unmodified main `63f9558b9` first (same
+command, laptop under heavy shared fleet load, load average ~17–30):
+victim p99 calm 2.239 ms, spinning 38.168 ms, ratio 17.043,
+`target_met=false`, 1,473 spins — the gap is load-sensitive and was
+wider under this load than in the 2026-11-10 reference run (2.517);
+no profile line exists at base. Two attributed runs with the
+instrumentation (load averages ~20–24 and ~16–23):
+
+```text
+bench fuel_spin_isolation unit=ms_per_command median=2.992 min=0.222 reps=1 victim_p99_ms_calm=1.894 victim_p99_ms_spinning=21.924 ratio=11.575 target_ratio=1.10 target_met=false calm_samples=300 spinning_samples=300 spins=1059 spinners=15 phase_ms=3000 commands_per_second=100 spin_fuel=20000000 calm_elapsed_secs=3.041 spinning_elapsed_secs=3.139
+profile fuel_spin_isolation calm_wake_p99_ms=1.795 calm_input_ack_p99_ms=0.201 spinning_wake_p99_ms=18.929 spinning_input_ack_p99_ms=5.086 calm_journal_appends=0 calm_journal_append_mean_us=0 calm_journal_append_p99_us=0 spinning_journal_appends=0 spinning_journal_append_mean_us=0 spinning_journal_append_p99_us=0 calm_command_mean_us=55 calm_command_p99_us=100 spinning_command_mean_us=130 spinning_command_p99_us=2000 victim_queue_depth_max=0 victim_checkpoints=0
+bench fuel_spin_isolation unit=ms_per_command median=2.470 min=0.273 reps=1 victim_p99_ms_calm=1.904 victim_p99_ms_spinning=13.114 ratio=6.888 target_ratio=1.10 target_met=false calm_samples=300 spinning_samples=300 spins=1822 spinners=15 phase_ms=3000 commands_per_second=100 spin_fuel=20000000 calm_elapsed_secs=3.042 spinning_elapsed_secs=3.116
+profile fuel_spin_isolation calm_wake_p99_ms=1.822 calm_input_ack_p99_ms=0.179 spinning_wake_p99_ms=13.092 spinning_input_ack_p99_ms=4.007 calm_journal_appends=0 calm_journal_append_mean_us=0 calm_journal_append_p99_us=0 spinning_journal_appends=0 spinning_journal_append_mean_us=0 spinning_journal_append_p99_us=0 calm_command_mean_us=48 calm_command_p99_us=500 spinning_command_mean_us=64 spinning_command_p99_us=500 victim_queue_depth_max=0 victim_checkpoints=0
+```
+
+Where the spinning phase's victim p99 goes (component percentiles
+are diagnostic and do not add to the combined percentile, as with
+`many_worlds`):
+
+1. **Driver wake lateness — essentially the whole tail.** Spinning
+   wake p99 was 18.929 ms of a 21.924 ms end-to-end p99 in run 1
+   (~86%) and 13.092 ms of 13.114 ms in run 2 (~100%): the task
+   submitting the victim's inputs cannot get a runtime worker to
+   make the call. The 15 spinners run synchronous, fuel-limited
+   guest calls on the shared multi-thread runtime, so every worker
+   is occupied for the length of each burn.
+2. **Input acknowledgement wait — second, same cause.** Spinning
+   ack p99 rose from ~0.2 ms calm to 5.086 / 4.007 ms: the victim's
+   actor task is itself a task on the same starved runtime, so it
+   is polled late even though its work is nearly free.
+3. **The victim's own service — negligible.** Its actor command
+   latency averaged 55 µs calm vs 130 / 64 µs spinning (bucketed
+   p99 at most 2,000 µs), its queue depth never exceeded 0, and it
+   recorded no journal appends in either phase (the bench victim
+   runs without a journal store), so none of the gap is journal or
+   storage service.
+
+This is the #557 disease in a second form: there, actor tasks
+*parked* workers on a blocking journal wait (fixed by
+`block_in_place`, #12499); here, guest execution *burns* workers
+with CPU-bound synchronous calls, so the remedy is placement, not
+unparking — guest calls must run where they cannot starve the
+runtime (dedicated execution threads or a bounded blocking pool),
+and bounding how many guests burn concurrently is the first piece
+of the fair scheduler itself. Next slice, in the form the profile
+supports: after that PR, the same command's profile line shows the
+spinning wake p99 within ~2× of the calm wake p99 at the same load,
+with the `many_worlds` numbers re-measured for regressions. The
+first run's bench and profile lines are appended to `baseline.txt`;
+the 2026-11-10 reference line is unchanged (the ratios above were
+taken under heavier load and are not comparable to it).
+
 ## Benchmark matrix results bundle (#5896)
 
 The four loadgen-core workloads (`journal_append_fsync`,
