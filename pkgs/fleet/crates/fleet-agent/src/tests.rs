@@ -1329,6 +1329,7 @@ fn a_leased_cargo_run_preserves_the_callers_stdin() {
             ),
         )
         .env_remove("CARGO_TARGET_DIR")
+        .current_dir(&home)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::null())
         .spawn()
@@ -1503,10 +1504,13 @@ printf '%s|%s|%s|%s\n' "$PWD" "$CARGO_TARGET_DIR" "$CARGO_BUILD_JOBS" "$*" > "$H
     }
 
     let lock_script =
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fleet-build-lock");
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../fleet-build-lock")
+            .canonicalize()
+            .unwrap();
     let manifest = workspace.join("Cargo.toml").display().to_string();
-    let output = std::process::Command::new("/bin/bash")
-        .arg(lock_script)
+    let output = std::process::Command::new("bash")
+        .arg(&lock_script)
         .args([
             "cargo",
             "test",
@@ -1560,7 +1564,7 @@ printf '%s|%s|%s|%s\n' "$PWD" "$CARGO_TARGET_DIR" "$CARGO_BUILD_JOBS" "$*" > "$H
         vec!["cargo", "help", "build"],
         vec!["cargo", "fmt", "--package", "test"],
     ] {
-        let output = std::process::Command::new("/bin/bash")
+        let output = std::process::Command::new("bash")
             .arg(&lock_script)
             .args(args)
             .env("HOME", &home)
@@ -1583,7 +1587,7 @@ printf '%s|%s|%s|%s\n' "$PWD" "$CARGO_TARGET_DIR" "$CARGO_BUILD_JOBS" "$*" > "$H
         );
     }
 
-    let no_workspace = std::process::Command::new("/bin/bash")
+    let no_workspace = std::process::Command::new("bash")
         .arg(&lock_script)
         .args(["cargo", "install", "some-crate"])
         .env("HOME", &home)
@@ -1612,10 +1616,10 @@ printf '%s|%s|%s|%s\n' "$PWD" "$CARGO_TARGET_DIR" "$CARGO_BUILD_JOBS" "$*" > "$H
     );
     assert_eq!(
         std::fs::read_to_string(home.join("cargo.log")).unwrap(),
-        format!("{}||2|install some-crate\\n", caller.display())
+        format!("{}||2|install some-crate\n", caller.display())
     );
 
-    let path_install = std::process::Command::new("/bin/bash")
+    let path_install = std::process::Command::new("bash")
         .arg(&lock_script)
         .args(["cargo", "install", "--path"])
         .arg(&workspace)
@@ -1640,7 +1644,7 @@ printf '%s|%s|%s|%s\n' "$PWD" "$CARGO_TARGET_DIR" "$CARGO_BUILD_JOBS" "$*" > "$H
     assert_eq!(
         std::fs::read_to_string(home.join("broker.log")).unwrap(),
         format!(
-            "exec --repo id --profile release --workspace-cwd {} --wait 900 -- cargo install --path {}\\n",
+            "exec --repo id --profile release --workspace-cwd {} --wait 900 -- cargo install --path {}\n",
             workspace.display(),
             workspace.display()
         )
@@ -1648,7 +1652,7 @@ printf '%s|%s|%s|%s\n' "$PWD" "$CARGO_TARGET_DIR" "$CARGO_BUILD_JOBS" "$*" > "$H
     assert_eq!(
         std::fs::read_to_string(home.join("cargo.log")).unwrap(),
         format!(
-            "{}|{}|2|install --path {}\\n",
+            "{}|{}|2|install --path {}\n",
             caller.display(),
             home.join("leased-target").display(),
             workspace.display()
@@ -1662,7 +1666,7 @@ printf '%s|%s|%s|%s\n' "$PWD" "$CARGO_TARGET_DIR" "$CARGO_BUILD_JOBS" "$*" > "$H
             "dev",
         ),
     ] {
-        let output = std::process::Command::new("/bin/bash")
+        let output = std::process::Command::new("bash")
             .arg(&lock_script)
             .args(&args)
             .env("HOME", &home)
@@ -1777,7 +1781,9 @@ printf '%s|%s|%s\n' "$PWD" "$CARGO_TARGET_DIR" "$*" >> "$HOME/cargo.log"
     std::fs::write(
         &broker,
         format!(
-            "#!/bin/sh\ncase \"$1\" in checkout) printf '%s\\n' \"$*\" >> \"$HOME/broker.log\"; printf '{{\\"path\\":\\"{}\\",\\"lease\\":\\"lease-1\\"}}\\n' ;; checkin) printf '%s\\n' \"$*\" >> \"$HOME/broker.log\" ;; esac\n",
+            r#"#!/bin/sh
+case "$1" in checkout) printf '%s\n' "$*" >> "$HOME/broker.log"; printf '{{"path":"{}","lease":"lease-1"}}\n' ;; checkin) printf '%s\n' "$*" >> "$HOME/broker.log" ;; esac
+"#,
             home.join("target").display()
         ),
     )
