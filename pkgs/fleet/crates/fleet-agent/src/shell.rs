@@ -320,6 +320,14 @@ for index, word in enumerate(words):
         if token.startswith("--manifest-path="):
             print(token.split("=", 1)[1])
             raise SystemExit(0)
+        if token == "--path" and index + 1 < len(words):
+            source = words[index + 1]
+            print(source if source.endswith("Cargo.toml") else source.rstrip("/") + "/Cargo.toml")
+            raise SystemExit(0)
+        if token.startswith("--path="):
+            source = token.split("=", 1)[1]
+            print(source if source.endswith("Cargo.toml") else source.rstrip("/") + "/Cargo.toml")
+            raise SystemExit(0)
         index += 1
 ' "$command_text" 2>/dev/null)
   if [ -n "$manifest_arg" ]; then
