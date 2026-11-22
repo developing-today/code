@@ -353,7 +353,12 @@ const table = new Proxy({} as Record<string, ReturnType<typeof done>>, {
   has: () => true,
   getOwnPropertyDescriptor: () => ({ configurable: true, enumerable: true, value: done({}) }),
 });
-const port = Number(process.argv[2] ?? 4899);
+const extra = process.argv.slice(2);
+if (extra.length > 1 || (extra[0] !== undefined && !/^[1-9][0-9]{1,4}$/.test(extra[0]))) {
+  console.error("usage: bun run scripts/demo.ts [port]");
+  process.exit(2);
+}
+const port = Number(extra[0] ?? 4899);
 Bun.serve({
   hostname: "127.0.0.1",
   port,

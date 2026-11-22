@@ -118,6 +118,9 @@ export class ImageNodeView implements NodeView {
     input.className = "pm-image-popover-input";
     input.value = this.node.attrs.alt || "";
     input.placeholder = "Describe this image…";
+    // Nesting the input in its visible label gives assistive technology a
+    // programmatic name without a page-global id that could be duplicated.
+    label.appendChild(input);
 
     // Commit on Enter or blur
     const commit = () => {
@@ -147,7 +150,6 @@ export class ImageNodeView implements NodeView {
     sizeInfo.textContent = `${w} × ${h}`;
 
     popover.appendChild(label);
-    popover.appendChild(input);
     popover.appendChild(sizeInfo);
 
     this.dom.appendChild(popover);

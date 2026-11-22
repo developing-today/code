@@ -297,6 +297,19 @@ describe("questions waiting on the owner", () => {
       { ledgerId: "L1", qid: "c", kind: "answered", optionIds: ["opt-1", "opt-2"] },
     ]);
     await expect(work.acceptRecommended("nope")).rejects.toThrow(/not in the store/);
+    // The dashboard takes at most 256 answers a request: a large set goes in parts, and all of it goes.
+    const large = JSON.parse(store());
+    const template = large.sets[1].items[0].questions[0];
+    large.sets[1].items[0].questions = Array.from({ length: 450 }, (_, n) => ({ ...template, qid: `q${n}`, order: n }));
+    const big = world({
+      dash: (_p, body) => ({
+        outcomes: (body as { submissions: { qid: string }[] }).submissions.map((x) => ({ qid: x.qid, applied: true })),
+      }),
+    });
+    expect((await new Work(big.ops, async () => JSON.stringify(large)).acceptRecommended("new-set")).applied).toBe(450);
+    const sizes = big.dashed.map((d) => (d.body as { submissions: unknown[] }).submissions.length);
+    expect(sizes).toEqual([200, 200, 50]);
+    expect(Math.max(...sizes)).toBeLessThanOrEqual(256);
     const none = JSON.parse(store());
     none.sets[1].items[0].questions = none.sets[1].items[0].questions.filter((q: { qid: string }) => q.qid === "norec");
     await expect(new Work(w.ops, async () => JSON.stringify(none)).acceptRecommended("new-set")).rejects.toThrow(
@@ -506,16 +519,16 @@ describe("what the owner asks for in his own words", () => {
     let commentReads = 0;
     const w = world({
       commands: (argv) => {
-        if (argv.includes("search/issues"))
-          return JSON.stringify({
-            items: [
-              found(1, "closed", 1),
-              found(2, "open", 1),
-              found(3, "open", 0),
-              found(4, "open", 2),
-              found(5, "open", 0),
-            ],
-          });
+        // The issue list (not the search index, which lags), newest change first.
+        if (argv[3] === `repos/${REPO}/issues?labels=owner%2Fprompt&state=all&sort=updated&direction=desc&per_page=20`)
+          return JSON.stringify([
+            found(1, "closed", 1),
+            found(2, "open", 1),
+            found(3, "open", 0),
+            { ...found(99, "open", 0), pull_request: {} }, // a labelled pull request is not a prompt
+            found(4, "open", 2),
+            found(5, "open", 0),
+          ]);
         commentReads++;
         const n = Number(/issues\/(\d+)\/comments/.exec(argv[3])?.[1]);
         return JSON.stringify(
@@ -543,6 +556,25 @@ describe("what the owner asks for in his own words", () => {
       [5, "waiting", null, "words 5", []],
     ]);
     expect(asks[3].replies[1].text).toBe("and I say");
+    // A long thread is read from its last page, and a bot that only links
+    // the issue somewhere else is not the fleet answering.
+    const long = world({
+      commands: (argv) =>
+        argv[3].includes("/issues?labels=")
+          ? JSON.stringify([found(7, "open", 250)])
+          : JSON.stringify([
+              { body: "the real answer", created_at: "2026-11-22T02:00:00Z", user: { type: "User" } },
+              {
+                body: "[CODE-1](https://kaneo.example/task/1)",
+                created_at: "2026-11-22T02:01:00Z",
+                user: { type: "Bot" },
+              },
+            ]),
+    });
+    const [thread] = await new Work(long.ops).asks();
+    expect(long.gh()[1]).toEqual([`repos/${REPO}/issues/7/comments?per_page=100&page=3`]);
+    expect(thread.replies.map((r) => r.text)).toEqual(["the real answer"]);
+    expect(thread.status).toBe("answered");
     // Threads are read again only when the issue has changed.
     await work.asks();
     expect(commentReads).toBe(3);
