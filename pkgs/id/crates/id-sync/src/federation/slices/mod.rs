@@ -1,12 +1,38 @@
-//! Federation slice registry (slice 9110-02, #10160).
+//! Federation slice registry (slice 9110-02, #10160; wired for #12232).
 //!
-//! The B-registry inventory is exactly the 26 slice modules below,
-//! recorded by their module names under `federation/slices/`. The
-//! registry records the paths so sequencing and coverage audits
-//! can enumerate the program, but it deliberately does **not**
-//! declare or export the modules: each slice's module file is
-//! added by its own implementation slice when it lands, and an
-//! absent module must never be exported from this root.
+//! The B-registry inventory is exactly the 26 slice modules in
+//! [`B_SLICE_REGISTRY`], recorded by their module names under
+//! `federation/slices/`, so sequencing and coverage audits can enumerate
+//! the program.
+//!
+//! The modules declared below are the slices that have landed. A slice
+//! that adds its module file declares it here in the same change, in
+//! registry order: `.github/scripts/check-id-module-reach.sh` fails when
+//! a source file is not reachable from its crate root. A slice whose
+//! file does not exist yet is in the registry and is never declared.
+
+pub mod b01_key_lifecycle;
+pub mod b02_key_revocation;
+pub mod b03_replay_guard;
+pub mod b04_signature_suites;
+pub mod b05_signer_binding;
+pub mod b06_rejection_events;
+pub mod b07_conflict_report;
+pub mod b08_sync_scope;
+pub mod b09_anti_entropy;
+pub mod b15_peer_priority;
+pub mod b16_fanout_budget;
+pub mod b17_query_grants;
+pub mod b18_query_privacy;
+pub mod b19_signed_receipt;
+pub mod b20_request_identity;
+pub mod b21_result_dedup;
+pub mod b22_loop_inform;
+pub mod b23_routing_state;
+pub mod b24_topology_probe;
+pub mod b28_takeover_response;
+pub mod b31_peer_classes;
+pub mod b32_ingest_gate;
 
 /// The exact B-slice module names, in registry order. Paths are
 /// `federation/slices/<name>` relative to the `id-sync` crate's

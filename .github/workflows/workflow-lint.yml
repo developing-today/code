@@ -64,3 +64,7 @@ jobs:
         run: bash .github/scripts/check-suite-registry.test.sh
       - name: Coverage ratchet — registry vs tree and venues (#6188)
         run: bash .github/scripts/check-suite-registry.sh
+      - name: Contract tests for the Rust module-reach check (#12232)
+        run: bash .github/scripts/check-rust-module-reach.test.sh
+      - name: Every Rust source file is compiled into its crate (#12232)
+        run: bash .github/scripts/check-rust-module-reach.sh
