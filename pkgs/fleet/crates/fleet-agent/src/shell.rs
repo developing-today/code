@@ -254,7 +254,7 @@ fn may_invoke_cargo(command: &str) -> bool {
 
         let mut next = index + 1;
         while let Some(arg) = words.get(next).copied() {
-            if matches!(arg, "--config" | "--color" | "-Z") {
+            if matches!(arg, "--config" | "--color" | "-Z" | "--manifest-path") {
                 next += 2;
                 continue;
             }
@@ -264,6 +264,7 @@ fn may_invoke_cargo(command: &str) -> bool {
                 || CARGO_FLAGS.contains(&arg)
                 || arg.starts_with("--config=")
                 || arg.starts_with("--color=")
+                || arg.starts_with("--manifest-path=")
             {
                 next += 1;
                 continue;
