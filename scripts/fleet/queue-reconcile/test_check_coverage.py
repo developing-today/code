@@ -427,7 +427,19 @@ class ReadyPrShepherdTest(unittest.TestCase):
         packet = calls[0]["packet"]
         self.assertEqual(calls[0]["queue"], QUEUE)
         self.assertEqual(packet["payload"]["kind"], "pr_shepherd")
-        self.assertEqual(packet["payload"]["prs"], [950])
+        # prs elements are PR references (objects with a positive
+        # integer `number`) — the queue validator refuses bare
+        # numbers (#5549), which the first cut of this packet used.
+        self.assertEqual(
+            packet["payload"]["prs"],
+            [
+                {
+                    "number": 950,
+                    "url": "https://github.com/developing-today/code/pull/950",
+                    "title": "pr 950",
+                }
+            ],
+        )
         self.assertEqual(packet["payload"]["pr"]["number"], 950)
         # The warden's own dedupe key: the two filers share one live task.
         self.assertEqual(
