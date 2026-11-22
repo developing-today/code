@@ -1,10 +1,13 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { spawn, type Subprocess } from "bun";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 // Boots the real server on an ephemeral port and verifies the fixture-backed
 // app serves all four views and its health/JSON endpoints.
 let proc: Subprocess<"ignore", "pipe", "inherit"> | null = null;
 let port = 0;
+const reportRecordsFile = join(tmpdir(), `pm-agg-report-review-${crypto.randomUUID()}.jsonl`);
 
 // #10467: starting the aggregator subprocess can take longer than bun's
 // default 5 s hook budget on a loaded machine; give the hook room to
@@ -14,7 +17,7 @@ beforeAll(async () => {
   proc = spawn({
     cmd: ["bun", "run", "src/server.ts"],
     cwd: import.meta.dir + "/..",
-    env: { ...Bun.env, PM_AGG_PORT: String(port), PM_AGG_SOURCE: "fixtures" },
+    env: { ...Bun.env, PM_AGG_PORT: String(port), PM_AGG_SOURCE: "fixtures", PM_AGG_STORE_BACKEND: "file", PM_AGG_REPORT_RECORDS_FILE: reportRecordsFile },
     stdout: "pipe",
     stderr: "inherit",
   });
@@ -131,6 +134,17 @@ describe("server boots from fixtures", () => {
     const res = await fetch(`http://127.0.0.1:${port}/roadmap`);
     expect(res.status).toBe(200);
     expect(await res.text()).toContain("Roadmap");
+  });
+
+  test("report review route exposes explicit append-only conflict choices", async () => {
+    const page = await fetch(`http://127.0.0.1:${port}/reports`);
+    expect(page.status).toBe(200);
+    const body = await page.text();
+    expect(body).toContain("Report conflict review");
+    expect(body).toContain("No comparable report-block conflicts found");
+    const api = await fetch(`http://127.0.0.1:${port}/api/reports.json`);
+    expect(api.status).toBe(200);
+    expect(await api.json()).toEqual({ records: [], conflicts: [] });
   });
 
   test("quota and attention pages render", async () => {

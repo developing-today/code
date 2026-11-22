@@ -29,6 +29,18 @@ snapshotId, record, correctedAt)` creates a separate linked correction event
   08:00 CT soft-close and its quote/append/banner/event-log/feedback allowlist.
   `reportBlockConflict(stored, rendered)` treats whitespace-only differences
   as equal and reports substantive changes for callers to skip and surface.
+- `appendReportLateUpdate(location, current, operation, block, at, source?)`
+  appends one tagged quote/append/banner/event-log/feedback block as a new
+  report version. Quotes require source provenance; banners lead the page and
+  event-log additions are ordered among prior late events. Re-generating a
+  report after soft close is rejected once a current head exists; the first
+  report may still be created, and retries of already persisted IDs remain
+  idempotent.
+
+The `/reports` page exposes the five late-operation forms only after soft
+close. The authenticated `POST /api/reports/late-update` endpoint validates
+the current record and writes through the same append-only record store; it
+does not grant a general post-close rewrite path.
 
 Events retain `asOf`, source cursor, source IDs/URIs/observation timestamps,
 related timestamps, block IDs and links. `reportPeriod` supplies the canonical
