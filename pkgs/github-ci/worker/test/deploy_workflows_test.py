@@ -27,7 +27,9 @@ class DeploymentWorkflowTests(unittest.TestCase):
         self.assertIn("if: github.ref == 'refs/heads/main'", PROMOTE)
         self.assertIn('"${VERSION_ID}@100%"', PROMOTE)
         self.assertIn("--name github-ci", PROMOTE)
-        self.assertNotIn("wrangler deploy", PROMOTE)
+        self.assertIn("wrangler deployments status", PROMOTE)
+        self.assertIn("versions[0].percentage !== 100", PROMOTE)
+        self.assertNotRegex(PROMOTE, r"wrangler deploy(?:\s|$)")
 
 
 if __name__ == "__main__":

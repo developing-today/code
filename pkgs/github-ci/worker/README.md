@@ -79,8 +79,9 @@ create a deployment or change production traffic. Its run summary gives
 the version UUID. `.github/workflows/github-ci-worker-promote.yml` is a
 separate `workflow_dispatch` workflow that accepts that UUID and deploys
 only the selected version to 100% of traffic. It runs only when
-dispatched from `main` and uses the `github-ci-production` environment
-as the production approval gate.
+dispatched from `main`, uses the `github-ci-production` environment as
+the production approval gate, and verifies Cloudflare reports that
+version serving 100% of traffic.
 
 Set the GitHub repository variable `CLOUDFLARE_ACCOUNT_ID` and add the
 Actions secret `CLOUDFLARE_API_TOKEN` to both the

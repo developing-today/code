@@ -60,3 +60,19 @@ jobs:
           --name github-ci
           --message "promote github-ci version ${VERSION_ID} via GitHub Actions"
           --yes
+
+      - name: Verify selected version serves 100% of production traffic
+        env:
+          DEPLOYMENT_STATUS_PATH: ${{ runner.temp }}/github-ci-deployment.json
+        run: |
+          npx wrangler deployments status --config wrangler.toml --name github-ci --json > "$DEPLOYMENT_STATUS_PATH"
+          node --input-type=commonjs <<'NODE'
+          const fs = require("node:fs");
+          const status = JSON.parse(fs.readFileSync(process.env.DEPLOYMENT_STATUS_PATH, "utf8"));
+          const versions = status.versions ?? [];
+          if (versions.length !== 1 || versions[0].version_id !== process.env.VERSION_ID || versions[0].percentage !== 100) {
+            throw new Error("Production deployment does not serve the requested version at exactly 100% traffic");
+          }
+          fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY,
+            `Verified github-ci version \`${process.env.VERSION_ID}\` serves 100% of production traffic.\n`);
+          NODE
