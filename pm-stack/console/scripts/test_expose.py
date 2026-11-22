@@ -51,6 +51,10 @@ class Account(expose.Cloudflare):
             if method == "POST":
                 self.idps.append({"id": f"idp-{body['type']}", **body})
             result = self.idps[-1] if method == "POST" else self.idps
+        elif "/access/apps/" in path and method == "PUT":
+            app = next(a for a in self.apps if a["id"] == path.split("/")[-1])
+            app.update(body)
+            result = app
         elif path.endswith("/access/apps"):
             if method == "POST":
                 self.apps.append(
@@ -160,17 +164,18 @@ class Expose(unittest.TestCase):
             ],
         )
         self.assertEqual(main["allowed_idps"], ["idp-onetimepin"])
+        self.assertEqual(main["same_site_cookie_attribute"], "lax")
+        self.assertIs(main["http_only_cookie_attribute"], True)
         for path in expose.PUBLIC_PATHS:
             app = next(a for a in account.apps if a["domain"] == HOST + path)
             self.assertEqual(
                 [p["decision"] for p in account.policies[app["id"]]], ["bypass"]
             )
-        # /console before the rest of the host; other hosts and the final rule kept.
+        # The whole host goes to the console: no path of it is routed past the gate.
         self.assertEqual(
             [(r.get("hostname"), r.get("path"), r["service"]) for r in account.ingress],
             [
-                (HOST, expose.CONSOLE_PATHS, expose.CONSOLE),
-                (HOST, None, expose.DASHBOARD),
+                (HOST, None, expose.CONSOLE),
                 ("kaneo.security.cab", None, "http://localhost:5173"),
                 (None, None, "http_status:404"),
             ],
@@ -266,6 +271,16 @@ class Expose(unittest.TestCase):
             account.policies[main["id"]][0].update(extra)
             with self.assertRaisesRegex(SystemExit, "did not write"):
                 run(account, self.home)
+        # Cookie settings changed by hand are put back.
+        account = Account()
+        run(account, self.home)
+        main = next(a for a in account.apps if a["domain"] == HOST)
+        main["same_site_cookie_attribute"] = "none"
+        self.assertEqual(run(account, self.home), 0)
+        self.assertEqual(len(account.changes), 1)
+        self.assertEqual(main["same_site_cookie_attribute"], "lax")
+        self.assertEqual(run(account, self.home), 0)
+        self.assertEqual(account.changes, [])
         # Empty lists, as the API returns them, are still this script's rule.
         account = Account()
         run(account, self.home)
@@ -312,7 +327,6 @@ class Expose(unittest.TestCase):
             [(r.get("hostname"), r["service"]) for r in account.ingress],
             [
                 (HOST, "http://localhost:4999"),
-                (HOST, expose.DASHBOARD),
                 ("*.security.cab", "http://localhost:1"),
                 ("kaneo.security.cab", "http://localhost:5173"),
                 (None, "http_status:404"),
@@ -329,6 +343,18 @@ class Expose(unittest.TestCase):
         self.assertEqual(len(account.changes), 1)
         self.assertEqual(run(account, self.home), 0)
         self.assertEqual(account.changes, [])
+        # Rules from an earlier layout that sent part of the host straight to
+        # the dashboard are replaced: nothing on the host skips the console.
+        account.ingress = [
+            {"hostname": HOST, "path": "^/console", "service": "http://localhost:4999"},
+            {"hostname": HOST, "service": "http://localhost:4870"},
+            {"service": "http_status:404"},
+        ]
+        self.assertEqual(run(account, self.home), 0)
+        self.assertEqual(
+            [(r.get("hostname"), r.get("path"), r["service"]) for r in account.ingress],
+            [(HOST, None, "http://localhost:4999"), (None, None, "http_status:404")],
+        )
         # A tunnel whose last rule is not a catch-all gets one.
         account.ingress = [{"hostname": "kaneo.security.cab", "service": "x"}]
         run(account, self.home)

@@ -43,6 +43,9 @@ export interface Config {
    * either one cuts off the interface that would start it again. */
   protectedUnits: string[];
   auditFile: string;
+  /** The dashboard (pm-aggregator) this service fronts on the public
+   * hostname, or null to serve /console alone. Loopback only. */
+  dashboardUrl: string | null;
   /** Android app identity served at /.well-known/assetlinks.json. */
   androidPackage: string;
   androidFingerprints: string[];
@@ -151,6 +154,35 @@ export function readConfig(
     throw new ConfigError(`PM_CONSOLE_BIND: only a loopback address is supported, not ${JSON.stringify(bind)}`);
   }
 
+  // The dashboard has no sign-in of its own. The console passes requests
+  // to it only for a verified owner, so the address has to be one that
+  // nothing but this machine can reach or answer.
+  let dashboardUrl: string | null = env.PM_CONSOLE_DASHBOARD_URL ?? "http://127.0.0.1:4870";
+  if (dashboardUrl === "") dashboardUrl = null;
+  if (dashboardUrl !== null) {
+    let parsed: URL | null = null;
+    try {
+      parsed = new URL(dashboardUrl);
+    } catch {
+      // reported below
+    }
+    const host = parsed?.hostname ?? "";
+    if (
+      !parsed ||
+      parsed.protocol !== "http:" ||
+      !(host === "127.0.0.1" || host === "localhost" || host === "[::1]") ||
+      parsed.pathname !== "/" ||
+      parsed.search !== "" ||
+      parsed.username !== "" ||
+      parsed.password !== ""
+    ) {
+      throw new ConfigError(
+        `PM_CONSOLE_DASHBOARD_URL: expected http://127.0.0.1:<port> (loopback, no path), got ${JSON.stringify(dashboardUrl)}`,
+      );
+    }
+    dashboardUrl = parsed.origin;
+  }
+
   return {
     port: port(env, "PM_CONSOLE_PORT", 4872),
     bind,
@@ -172,6 +204,7 @@ export function readConfig(
     ]),
     protectedUnits: list(env, "PM_CONSOLE_PROTECTED_UNITS", ["pm-tunnel.service", "pm-console.service"]),
     auditFile: env.PM_CONSOLE_AUDIT_FILE ?? `${home}/.local/state/pm-console/audit.jsonl`,
+    dashboardUrl,
     androidPackage: env.PM_CONSOLE_ANDROID_PACKAGE ?? "today.developing.pmconsole",
     androidFingerprints: fingerprints,
   };

@@ -1,8 +1,17 @@
 # pm-console
 
-The write side of the PM stack. The dashboard (`pm-aggregator`) shows the
-fleet; the console acts on it, from a phone or a browser, at
-`https://pm.security.cab/console/`.
+The write side of the PM stack, and the gate in front of it. The
+dashboard (`pm-aggregator`) shows the fleet; the console acts on it, from
+a phone or a browser, at `https://pm.security.cab/console/`.
+
+The whole public hostname is routed here. `/console` is this service.
+Every other path is the dashboard's, and the console passes it through
+only for a verified owner: the dashboard has no sign-in of its own, so
+the check is made at this origin as well as at the edge, and does not
+depend on how the edge reads a path. Writes from another site are
+refused. Five files a phone fetches before anyone has signed in are
+public, matched exactly: `/manifest.webmanifest` and the four icons under
+`/icons/`.
 
 | Section       | What you can do                                                                     | What runs                               |
 | ------------- | ----------------------------------------------------------------------------------- | --------------------------------------- |
@@ -56,15 +65,16 @@ itself comes from this machine and it crossed no proxy (loopback Host, no
 forwarding headers). The connection's address is the test, since headers
 are the caller's to write; for the same reason the console only listens
 on loopback and refuses to start on any other address. Everything else
-needs a token. Two paths answer without one: `/console/health` and
-`/.well-known/assetlinks.json` (the Android app's link to this origin).
+needs a token. Outside the install files above, two paths answer without
+one: `/console/health` and `/.well-known/assetlinks.json` (the Android
+app's link to this origin).
 
 ## Run
 
 ```bash
 bash pm-stack/console/install.sh          # user unit pm-console, port 4872, loopback only
 python3 pm-stack/console/scripts/expose.py --check   # what public exposure would change
-python3 pm-stack/console/scripts/expose.py           # tunnel routes, DNS, Access, console env
+python3 pm-stack/console/scripts/expose.py           # Access, console env, tunnel route, DNS
 cd pm-stack/console && bun test
 ```
 
@@ -82,12 +92,14 @@ the route if the console does not come up with its sign-in settings.
 | `PM_CONSOLE_ACCESS_TEAM_DOMAIN`, `PM_CONSOLE_ACCESS_AUD`  | unset                                             | The Access issuer; set together                    |
 | `PM_CONSOLE_ISSUERS_FILE`                                 | unset                                             | JSON list of further issuers                       |
 | `PM_CONSOLE_CERT_NAMES`                                   | none                                              | Certificate common names that are the owner        |
+| `PM_CONSOLE_DASHBOARD_URL`                                | `http://127.0.0.1:4870`                           | The dashboard behind the gate; loopback, or empty  |
 | `PM_CONSOLE_UNITS`, `PM_CONSOLE_PROTECTED_UNITS`          | the stack's units                                 | Units the console manages; units it will not stop  |
 | `PM_CONSOLE_ANDROID_PACKAGE`, `PM_CONSOLE_ANDROID_SHA256` | `today.developing.pmconsole`, none                | The Android app's identity in the asset-links file |
 | `PM_CONSOLE_REPO`, `PM_CONSOLE_QUEUE`                     | `developing-today/code`, `repo-health-code-pilot` | What it operates on                                |
 
-A malformed port, a listen address that is not loopback, or a malformed
-issuer stops the process at boot and names the variable.
+A malformed port, a listen address or dashboard address that is not
+loopback, or a malformed issuer stops the process at boot and names the
+variable.
 
 ## Android
 

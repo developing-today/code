@@ -9,6 +9,9 @@
 // unit name outside the allowlist reaches systemctl; the unit parser
 // reads back what a formatter wrote). A request is local only by the
 // connection's own address, which the tests pass in as the server does.
+// The dashboard behind the gate is a recorder too: what it was sent is
+// compared with literal URLs, so no spelling of a path can pass as one
+// of the public files unless the dashboard is asked for exactly that file.
 import { beforeEach, describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import {
@@ -360,6 +363,22 @@ describe("configuration", () => {
     expect(() => readConfig({ PM_CONSOLE_ISSUERS_FILE: "/x" }, () => "{}")).toThrow(ConfigError);
     for (const bind of ["127.0.0.1", "::1", "localhost"]) {
       expect(readConfig({ PM_CONSOLE_BIND: bind }).bind).toBe(bind);
+    }
+    // The dashboard has no sign-in of its own: only an address on this machine can stand behind the gate.
+    expect(readConfig({}).dashboardUrl).toBe("http://127.0.0.1:4870");
+    expect(readConfig({ PM_CONSOLE_DASHBOARD_URL: "http://localhost:9/" }).dashboardUrl).toBe("http://localhost:9");
+    expect(readConfig({ PM_CONSOLE_DASHBOARD_URL: "" }).dashboardUrl).toBeNull();
+    for (const url of [
+      "http://100.99.113.103:4870",
+      "https://127.0.0.1:4870",
+      "http://127.0.0.1:4870/admin",
+      "http://127.0.0.1:4870/?x=1",
+      "http://user:pw@127.0.0.1:4870",
+      "http://127.0.0.1.evil.example:4870",
+      "http://evil.example",
+      "4870",
+    ]) {
+      expect(() => readConfig({ PM_CONSOLE_DASHBOARD_URL: url })).toThrow(/PM_CONSOLE_DASHBOARD_URL/);
     }
   });
 });
@@ -810,9 +829,26 @@ describe("operations", () => {
 });
 
 describe("HTTP surface", () => {
-  function deps(who: "owner" | 401 | 403, r = recorder()): Deps & { audited: Record<string, unknown>[] } {
+  type Sent = { url: string; method: string; headers: Record<string, string>; body: string | null; redirect?: string };
+  function deps(
+    who: "owner" | 401 | 403,
+    r = recorder(),
+    answer: (url: string) => Response = () => new Response("dash", { headers: { "content-type": "text/html" } }),
+  ): Deps & { audited: Record<string, unknown>[]; sent: Sent[] } {
     const audited: Record<string, unknown>[] = [];
+    const sent: Sent[] = [];
     return {
+      sent,
+      upstream: async (url, init) => {
+        sent.push({
+          url,
+          method: String(init.method),
+          headers: Object.fromEntries(new Headers(init.headers)),
+          body: init.body ? new TextDecoder().decode(init.body as ArrayBuffer) : null,
+          redirect: init.redirect,
+        });
+        return answer(url);
+      },
       cfg: CFG,
       ops: new Ops(CFG, r.run),
       identify: async () => {
@@ -855,7 +891,11 @@ describe("HTTP surface", () => {
       expect((await handle(get(path), d)).status).toBe(401);
     }
     expect((await handle(get("/console/api/me"), deps(403))).status).toBe(403);
-    expect((await handle(get("/elsewhere"), d)).status).toBe(404);
+    expect((await handle(get("/elsewhere"), d)).status).toBe(401);
+    expect(d.sent).toEqual([]);
+    // With no dashboard configured there is nothing outside /console.
+    const alone = { ...deps("owner"), cfg: readConfig({ HOME: "/h", PM_CONSOLE_DASHBOARD_URL: "" }) };
+    expect((await handle(get("/elsewhere"), alone)).status).toBe(404);
   });
 
   test("the page and its files are served to the owner with a strict policy", async () => {
@@ -866,7 +906,9 @@ describe("HTTP surface", () => {
     expect(await page.text()).toContain('src="/console/app.js"');
     expect((await handle(get("/console/app.css"), d)).headers.get("content-type")).toContain("text/css");
     expect((await handle(get("/console"), d)).status).toBe(308);
-    expect((await handle(get("/console/../src/server.ts"), d)).status).toBe(404);
+    // A path that climbs out of /console is the dashboard's to answer, never a file of this service.
+    expect(await (await handle(get("/console/../src/server.ts"), d)).text()).toBe("dash");
+    expect(d.sent.map((c) => c.url)).toEqual(["http://127.0.0.1:4870/src/server.ts"]);
     expect((await handle(get("/console/config.ts"), d)).status).toBe(404);
     // Names every object has are not files, and a path that does not decode is a bad request.
     for (const name of ["constructor", "__proto__", "toString", "hasOwnProperty"]) {
@@ -930,6 +972,196 @@ describe("HTTP surface", () => {
         )
       ).status,
     ).toBe(405);
+  });
+
+  const PUBLIC = [
+    "/manifest.webmanifest",
+    "/icons/icon-192.png",
+    "/icons/icon-512.png",
+    "/icons/icon-maskable-512.png",
+    "/icons/apple-touch-icon.png",
+  ];
+
+  test("the dashboard is reached only by the owner, apart from its install files", async () => {
+    const out = deps(401);
+    for (const path of [
+      "/",
+      "/attention",
+      "/api/board",
+      "/sw.js",
+      "/icons/",
+      "/icons/evil.png",
+      "/icons/../attention",
+      "/icons/%2e%2e/attention",
+      "/icons/..%2fattention",
+      "/icons/icon-192.png/../../attention",
+      "/icons/icon-192.png/",
+      "/icons/icon-192.png%00",
+      "/ICONS/icon-192.png",
+      "//icons/icon-192.png",
+      "/manifest.webmanifest/x",
+      "/manifest.webmanifest;x",
+      "/x/manifest.webmanifest",
+      "/.well-known/assetlinks.json/x",
+    ]) {
+      expect([path, (await handle(get(path), out)).status]).toEqual([path, 401]);
+    }
+    expect(out.sent).toEqual([]);
+    expect((await handle(get("/attention"), deps(403))).status).toBe(403);
+
+    // The install files: asked for exactly, read-only, and nothing the caller sent goes along.
+    for (const path of PUBLIC) {
+      const res = await handle(
+        new Request(`https://pm.security.cab${path}?v=2`, {
+          headers: { host: "pm.security.cab", cookie: "CF_Authorization=x", authorization: "Bearer y" },
+        }),
+        out,
+      );
+      expect(await res.text()).toBe("dash");
+    }
+    expect(out.sent.map((c) => c.url)).toEqual(PUBLIC.map((p) => `http://127.0.0.1:4870${p}?v=2`));
+    for (const call of out.sent) {
+      expect(call.method).toBe("GET");
+      expect(call.headers).toEqual({ host: "pm.security.cab", "accept-encoding": "identity" });
+    }
+    expect((await handle(post("/manifest.webmanifest", {}), out)).status).toBe(401);
+    expect(out.sent.length).toBe(PUBLIC.length);
+  });
+
+  test("property: no spelling of a path reaches the dashboard without sign-in unless it is an install file", async () => {
+    const next = rng(4870);
+    const pieces = [
+      "/",
+      "icons",
+      "icon-192.png",
+      "manifest.webmanifest",
+      "attention",
+      "..",
+      ".",
+      "%2e%2e",
+      "%2E",
+      "%2f",
+      "%5c",
+      "\\",
+      "%00",
+      ";",
+      "?",
+      "#",
+      "ICONS",
+      "api",
+      ".well-known",
+      "assetlinks.json",
+      "console",
+      " ",
+      "%20",
+    ];
+    const out = deps(401);
+    const allowed = new Set(PUBLIC.map((p) => `http://127.0.0.1:4870${p}`));
+    let reached = 0;
+    for (let i = 0; i < 4000; i++) {
+      const path = `/${Array.from({ length: 1 + Math.floor(next() * 7) }, () => pieces[Math.floor(next() * pieces.length)]).join(next() < 0.7 ? "/" : "")}`;
+      let req: Request;
+      try {
+        req = get(path);
+      } catch {
+        continue; // not a request a client could send
+      }
+      const before = out.sent.length;
+      const res = await handle(req, out);
+      if (out.sent.length > before) {
+        reached++;
+        expect(allowed.has(out.sent[before].url.split("?")[0])).toBe(true);
+      } else if (!new URL(req.url).pathname.startsWith("/.well-known/assetlinks.json")) {
+        expect([path, res.status === 401 || res.status === 200 || res.status === 308]).toEqual([path, true]);
+      }
+    }
+    expect(reached).toBeGreaterThan(0); // the generator does produce the public files
+    for (const call of out.sent) expect(allowed.has(call.url.split("?")[0])).toBe(true);
+  });
+
+  test("the owner's request passes to the dashboard as it was checked, and the answer comes back", async () => {
+    const d = deps("owner", recorder(), (url) =>
+      url.endsWith("/moved")
+        ? new Response(null, { status: 302, headers: { location: "/attention" } })
+        : new Response("<p>board</p>", {
+            status: 207,
+            headers: {
+              "content-type": "text/html",
+              "content-encoding": "gzip",
+              "content-length": "999",
+              connection: "close",
+              "set-cookie": "a=1",
+              "x-board": "yes",
+            },
+          }),
+    );
+    const res = await handle(
+      new Request("https://pm.security.cab/attention/../board?lane=id&x=%2F", {
+        headers: {
+          host: "pm.security.cab",
+          cookie: "CF_Authorization=t",
+          "cf-access-jwt-assertion": "t",
+          connection: "keep-alive, upgrade",
+          upgrade: "websocket",
+          "accept-encoding": "br",
+          "x-forwarded-for": "203.0.113.9",
+        },
+      }),
+      d,
+    );
+    expect(res.status).toBe(207);
+    expect(await res.text()).toBe("<p>board</p>");
+    expect(res.headers.get("x-board")).toBe("yes");
+    expect(res.headers.get("set-cookie")).toBe("a=1");
+    expect(res.headers.get("content-encoding")).toBeNull();
+    expect(res.headers.get("connection")).toBeNull();
+    expect(d.sent).toEqual([
+      {
+        url: "http://127.0.0.1:4870/board?lane=id&x=%2F",
+        method: "GET",
+        headers: {
+          host: "pm.security.cab",
+          cookie: "CF_Authorization=t",
+          "cf-access-jwt-assertion": "t",
+          "accept-encoding": "identity",
+          "x-forwarded-for": "203.0.113.9",
+        },
+        body: null,
+        redirect: "manual",
+      },
+    ]);
+
+    // A redirect is the browser's to follow, not the console's.
+    const moved = await handle(get("/moved"), d);
+    expect([moved.status, moved.headers.get("location")]).toEqual([302, "/attention"]);
+
+    // Writes: this site's own pass with their body; another site's do not reach the dashboard.
+    const before = d.sent.length;
+    const own = await handle(post("/api/cards/7/move", { to: "done" }), d);
+    expect(own.status).toBe(207);
+    expect(d.sent[before]).toMatchObject({
+      url: "http://127.0.0.1:4870/api/cards/7/move",
+      method: "POST",
+      body: '{"to":"done"}',
+    });
+    expect(d.sent[before].headers["content-length"]).toBeUndefined();
+    for (const headers of [
+      { origin: "https://evil.example" },
+      { origin: "null" },
+      { origin: "https://pm.security.cab", "sec-fetch-site": "cross-site" },
+    ]) {
+      expect((await handle(post("/api/cards/7/move", { to: "done" }, headers), d)).status).toBe(403);
+    }
+    expect(d.sent.length).toBe(before + 1);
+    // An agent on the host, with no browser headers at all, still writes.
+    expect((await handle(post("/api/cards/7/move", {}, {}), d)).status).toBe(207);
+
+    const down = deps("owner");
+    down.upstream = async () => {
+      throw new Error("connection refused");
+    };
+    const failed = await handle(get("/attention"), down);
+    expect([failed.status, await failed.json()]).toEqual([502, { error: "the dashboard did not answer" }]);
   });
 
   test("an action that cannot be recorded is not taken; one already taken is reported as it went", async () => {
