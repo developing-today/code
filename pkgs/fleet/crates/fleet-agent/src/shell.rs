@@ -214,14 +214,33 @@ pub struct Options {
 /// "make" stay conservative because their recipes can hide Cargo builds.
 fn may_invoke_cargo(command: &str) -> bool {
     const COMPILE_ACTIONS: &[&str] = &[
-        "build", "check", "test", "bench", "clippy", "run", "install", "doc",
-        "rustc", "nextest", "fix", "package", "publish",
+        "build",
+        "check",
+        "test",
+        "bench",
+        "clippy",
+        "run",
+        "install",
+        "doc",
+        "rustc",
+        "nextest",
+        "fix",
+        "package",
+        "publish",
     ];
     const CARGO_FLAGS: &[&str] = &[
-        "--locked", "--offline", "--frozen", "--quiet", "--verbose", "-q", "-v",
+        "--locked",
+        "--offline",
+        "--frozen",
+        "--quiet",
+        "--verbose",
+        "-q",
+        "-v",
     ];
     let words: Vec<_> = command
-        .split(|ch: char| !(ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '+')))
+        .split(|ch: char| {
+            !(ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '+'))
+        })
         .filter(|word| !word.is_empty())
         .collect();
 
@@ -235,7 +254,13 @@ fn may_invoke_cargo(command: &str) -> bool {
 
         let mut next = index + 1;
         while let Some(arg) = words.get(next).copied() {
-            if arg.starts_with('+') || CARGO_FLAGS.contains(&arg) || arg.starts_with("--config=") || arg.starts_with("--color=") {
+            if arg.starts_with('+')
+                || arg.starts_with("-Z")
+                || arg.starts_with("-v")
+                || CARGO_FLAGS.contains(&arg)
+                || arg.starts_with("--config=")
+                || arg.starts_with("--color=")
+            {
                 next += 1;
                 continue;
             }
