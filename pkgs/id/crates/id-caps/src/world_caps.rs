@@ -31,6 +31,19 @@
 //! version is refused with `bad_args`, never silently interpreted. A
 //! host that cannot describe its device refuses with `unknown_cap`.
 //!
+//! The `kv` store (#1062, F12.5) is three requests over one bounded,
+//! durable, per-world key-value store: `kv.set`
+//! (`{"key":"k","value":...}`) stores a JSON value and answers
+//! `{"key":"k","value_bytes":N}`; `kv.get` (`{"key":"k"}`) answers
+//! `{"key":"k","value":...}` with `null` when the key is absent;
+//! `kv.delete` (`{"key":"k"}`) answers `{"key":"k","deleted":bool}`.
+//! Writes are journaled before their result is delivered, so the
+//! store survives restarts and checkpoint compaction. Keys, values,
+//! entry count and total bytes are bounded ([`MAX_KV_KEY_BYTES`],
+//! [`MAX_KV_VALUE_BYTES`], [`MAX_KV_ENTRIES`], [`MAX_KV_TOTAL_BYTES`]);
+//! a write past a bound is refused with `bad_args` and a reason, and
+//! stores nothing.
+//!
 //! The server answers each new request with
 //! `{"cap":"result","id":"r1","ok":true,"value":...}` (or `"ok":false` with an
 //! `"error"`), and each subscription with its own events
@@ -385,6 +398,46 @@ const RECORDS_READ_BOUNDS: &[ProviderBound] = &[
     ProviderBound::ArgsBytes(MAX_ARGS_BYTES),
     ProviderBound::ResponseBytes(MAX_RECORDS_RESULT_PAGE_BYTES),
 ];
+/// Argument schema for `kv.get` and `kv.delete`: one required `key`.
+const KV_KEY_ARGUMENTS: &[ProviderArgument] = &[ProviderArgument {
+    name: "key",
+    value_type: ArgumentType::String,
+    required: true,
+}];
+/// Argument schema for `kv.set`: a required `key` and `value`. Values
+/// are arbitrary JSON; the schema's `Object` kind names the
+/// structured-payload slot, and the executor accepts any JSON value
+/// while bounding its serialized size ([`MAX_KV_VALUE_BYTES`]).
+const KV_SET_ARGUMENTS: &[ProviderArgument] = &[
+    ProviderArgument {
+        name: "key",
+        value_type: ArgumentType::String,
+        required: true,
+    },
+    ProviderArgument {
+        name: "value",
+        value_type: ArgumentType::Object,
+        required: true,
+    },
+];
+/// Bounds for `kv.get`: argument bytes, the key cap, and the value cap
+/// the single returned value must fit.
+const KV_GET_BOUNDS: &[ProviderBound] = &[
+    ProviderBound::ArgsBytes(MAX_ARGS_BYTES),
+    ProviderBound::IdentifierBytes(MAX_KV_KEY_BYTES),
+    ProviderBound::ResponseBytes(MAX_KV_VALUE_BYTES),
+];
+/// Bounds for `kv.set`: argument bytes, the key cap, and the entry cap.
+const KV_SET_BOUNDS: &[ProviderBound] = &[
+    ProviderBound::ArgsBytes(MAX_ARGS_BYTES),
+    ProviderBound::IdentifierBytes(MAX_KV_KEY_BYTES),
+    ProviderBound::Items(MAX_KV_ENTRIES),
+];
+/// Bounds for `kv.delete`: argument bytes plus the key cap.
+const KV_DELETE_BOUNDS: &[ProviderBound] = &[
+    ProviderBound::ArgsBytes(MAX_ARGS_BYTES),
+    ProviderBound::IdentifierBytes(MAX_KV_KEY_BYTES),
+];
 /// Bounds for `schedule.at`: argument bytes, id bytes, pending cap, and horizon.
 const SCHEDULE_AT_BOUNDS: &[ProviderBound] = &[
     ProviderBound::ArgsBytes(MAX_ARGS_BYTES),
@@ -519,6 +572,34 @@ define_provider_registry! {
         kind: ProviderKind::Request,
         argument_schema: ArgumentSchema::JsonObject(RECORDS_READ_ARGUMENTS),
         bounds: RECORDS_READ_BOUNDS,
+        required_scope: RequiredScope::Join,
+        default_ceiling: DefaultCeiling::Included,
+    },
+    // The F12.5 `kv` store (#1062): a bounded, durable, per-world
+    // key-value store. Inward-facing like `records.read` and
+    // `schedule.*`, so it joins default ceilings; every use still
+    // passes the grant/ceiling decision and its audit entry.
+    "kv.get" => {
+        version: 1,
+        kind: ProviderKind::Request,
+        argument_schema: ArgumentSchema::JsonObject(KV_KEY_ARGUMENTS),
+        bounds: KV_GET_BOUNDS,
+        required_scope: RequiredScope::Join,
+        default_ceiling: DefaultCeiling::Included,
+    },
+    "kv.set" => {
+        version: 1,
+        kind: ProviderKind::Request,
+        argument_schema: ArgumentSchema::JsonObject(KV_SET_ARGUMENTS),
+        bounds: KV_SET_BOUNDS,
+        required_scope: RequiredScope::Join,
+        default_ceiling: DefaultCeiling::Included,
+    },
+    "kv.delete" => {
+        version: 1,
+        kind: ProviderKind::Request,
+        argument_schema: ArgumentSchema::JsonObject(KV_KEY_ARGUMENTS),
+        bounds: KV_DELETE_BOUNDS,
         required_scope: RequiredScope::Join,
         default_ceiling: DefaultCeiling::Included,
     },
@@ -918,6 +999,25 @@ pub const MAX_SCHEDULE_FIRES_PER_WAKEUP: usize = 64;
 /// Most fires one recurring schedule may name (#1355): recurrence is always
 /// finite, so a series cannot live forever without a bound.
 pub const MAX_SCHEDULE_RECURRENCES: u32 = 1024;
+
+/// Longest `kv` key, in bytes. Keys are printable ASCII (the
+/// [`validate_schedule_id`] rule shape), so no control characters
+/// reach the journal.
+pub const MAX_KV_KEY_BYTES: usize = 256;
+/// Largest `kv` value, serialized, in bytes: the records precedent
+/// (`MAX_RECORD_VALUE_BYTES` in the worlds crate).
+pub const MAX_KV_VALUE_BYTES: usize = 8 * 1024;
+/// Most entries one world's `kv` store may hold at once.
+pub const MAX_KV_ENTRIES: usize = 1024;
+/// Largest total `kv` store per world, in bytes, charged as key bytes
+/// plus serialized value bytes per entry. Sized so a full store's
+/// checkpoint declaration — the entries JSON-escaped into the
+/// checkpoint's scalar remainder — still fits the checkpoint part
+/// bound (`MAX_CHECKPOINT_PART_BYTES`, 192 KiB in the worlds crate)
+/// alongside the other scalar fields: at most twice the charge in
+/// escaping, plus per-entry framing, stays under it, so a world can
+/// always compact its journal no matter what it stored.
+pub const MAX_KV_TOTAL_BYTES: usize = 64 * 1024;
 /// Largest page of records served over the session protocol and the
 /// host view, in bytes. Cap results are not served this way: a
 /// `records.read` result is delivered through `result_event` and is
@@ -985,6 +1085,25 @@ pub fn validate_schedule_id(id: &str) -> Result<()> {
     ensure!(
         id.bytes().all(|byte| (0x20..=0x7e).contains(&byte)),
         "schedule id must be printable ASCII"
+    );
+    Ok(())
+}
+
+/// Check a `kv` key: 1 to [`MAX_KV_KEY_BYTES`] bytes, all printable
+/// ASCII (space through `~`), so no control characters reach the
+/// journal.
+///
+/// # Errors
+///
+/// Names the rule the key breaks.
+pub fn validate_kv_key(key: &str) -> Result<()> {
+    ensure!(
+        !key.is_empty() && key.len() <= MAX_KV_KEY_BYTES,
+        "kv key must be 1 to {MAX_KV_KEY_BYTES} bytes"
+    );
+    ensure!(
+        key.bytes().all(|byte| (0x20..=0x7e).contains(&byte)),
+        "kv key must be printable ASCII"
     );
     Ok(())
 }
@@ -2336,6 +2455,24 @@ mod tests {
     }
 
     #[test]
+    fn kv_keys_are_bounded_printable_ascii() {
+        validate_kv_key("a").unwrap();
+        validate_kv_key("player/7 score: best!").unwrap();
+        validate_kv_key(&"x".repeat(MAX_KV_KEY_BYTES)).unwrap();
+        let long = "x".repeat(MAX_KV_KEY_BYTES + 1);
+        for bad in [
+            "",
+            "a\nb",
+            "tab\there",
+            "del\u{7f}",
+            "caf\u{e9}",
+            long.as_str(),
+        ] {
+            assert!(validate_kv_key(bad).is_err(), "{bad:?}");
+        }
+    }
+
+    #[test]
     fn result_events_are_bounded_and_carry_codes() {
         let ok: serde_json::Value =
             serde_json::from_str(&result_event("a", Ok(serde_json::json!({"n":1})))).unwrap();
@@ -2504,6 +2641,9 @@ mod tests {
                 "chat.say",
                 "chat.history",
                 "records.read",
+                "kv.get",
+                "kv.set",
+                "kv.delete",
                 "schedule.at",
                 "schedule.cancel",
                 "world.info",
