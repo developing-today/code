@@ -484,6 +484,72 @@ shows the spinning ratio below 2 at comparable load, with the
 victim's spinning command mean back at its pre-#12571 level. The
 first pair's lines are appended to `baseline.txt`.
 
+### Admission check: the guest-burn budget on the reference machine (2026-11-22, #1067 slice 2)
+
+Slice 2 is the admission lever the verdict above names: a
+process-wide guest burn budget (`guest_burn` in id-worlds) bounds
+concurrent synchronous guest calls — default
+`available_parallelism − 2`, settable via
+`RuntimeLimits.guest_burn_concurrency` / the
+`--world-guest-burn-concurrency` CLI flag — charged per world
+(the charge key is the world id for store-opened worlds), with
+grants past the bound queued and ordered by least attained
+service (settled fuel, exponentially decayed), never refused.
+Design: `doc/2026-11-22_design_id1067-admission.md`. The profile
+line now ends with the budget's counters (bound, in-flight
+high-water mark, the victim key's admissions and waits), and
+`ID_BENCH_GUEST_BURN_CONCURRENCY` runs the workload on a
+dedicated budget of a chosen size for sizing experiments.
+
+Interleaved pre/post in one session on the reference machine
+(pre = main `9794191ad9` bench tree, identical to base
+`666424e1c` for the bench/sandbox files; post = `525114af9`),
+under shared fleet load (1-minute load ~2.1–3.8 at run starts,
+5-minute ~6 — heavier than the #12571 pairs' regime; the calm
+p99s of 2.0–2.5 ms show the ambient contention):
+
+```text
+bench fuel_spin_isolation unit=ms_per_command median=3.344 min=0.557 reps=1 victim_p99_ms_calm=2.463 victim_p99_ms_spinning=9.571 ratio=3.886 target_ratio=1.10 target_met=false calm_samples=300 spinning_samples=300 spins=2409 spinners=15 phase_ms=3000 commands_per_second=100 spin_fuel=20000000 calm_elapsed_secs=3.041 spinning_elapsed_secs=3.108
+profile fuel_spin_isolation calm_wake_p99_ms=1.859 calm_input_ack_p99_ms=0.302 spinning_wake_p99_ms=3.578 spinning_input_ack_p99_ms=8.310 calm_journal_appends=0 calm_journal_append_mean_us=0 calm_journal_append_p99_us=0 spinning_journal_appends=0 spinning_journal_append_mean_us=0 spinning_journal_append_p99_us=0 calm_command_mean_us=71 calm_command_p99_us=500 spinning_command_mean_us=1980 spinning_command_p99_us=10000 victim_queue_depth_max=0 victim_checkpoints=0 guest_burn_max_concurrent=14 guest_burn_in_flight_max=14 victim_burn_admitted=1805 victim_burn_waits=613
+bench fuel_spin_isolation unit=ms_per_command median=3.421 min=1.061 reps=1 victim_p99_ms_calm=2.417 victim_p99_ms_spinning=11.420 ratio=4.725 target_ratio=1.10 target_met=false calm_samples=300 spinning_samples=300 spins=2505 spinners=15 phase_ms=3000 commands_per_second=100 spin_fuel=20000000 calm_elapsed_secs=3.041 spinning_elapsed_secs=3.105
+profile fuel_spin_isolation calm_wake_p99_ms=2.264 calm_input_ack_p99_ms=0.309 spinning_wake_p99_ms=4.428 spinning_input_ack_p99_ms=9.902 calm_journal_appends=0 calm_journal_append_mean_us=0 calm_journal_append_p99_us=0 spinning_journal_appends=0 spinning_journal_append_mean_us=0 spinning_journal_append_p99_us=0 calm_command_mean_us=70 calm_command_p99_us=500 spinning_command_mean_us=1570 spinning_command_p99_us=10000 victim_queue_depth_max=0 victim_checkpoints=0
+bench fuel_spin_isolation unit=ms_per_command median=2.621 min=0.780 reps=1 victim_p99_ms_calm=2.152 victim_p99_ms_spinning=8.182 ratio=3.801 target_ratio=1.10 target_met=false calm_samples=300 spinning_samples=300 spins=2525 spinners=15 phase_ms=3000 commands_per_second=100 spin_fuel=20000000 calm_elapsed_secs=3.041 spinning_elapsed_secs=3.104
+profile fuel_spin_isolation calm_wake_p99_ms=2.000 calm_input_ack_p99_ms=0.298 spinning_wake_p99_ms=3.430 spinning_input_ack_p99_ms=6.273 calm_journal_appends=0 calm_journal_append_mean_us=0 calm_journal_append_p99_us=0 spinning_journal_appends=0 spinning_journal_append_mean_us=0 spinning_journal_append_p99_us=0 calm_command_mean_us=75 calm_command_p99_us=500 spinning_command_mean_us=1403 spinning_command_p99_us=10000 victim_queue_depth_max=0 victim_checkpoints=0 guest_burn_max_concurrent=14 guest_burn_in_flight_max=14 victim_burn_admitted=1805 victim_burn_waits=727
+```
+
+Verdict: **admission engages and helps, but the slice's exit
+shape is not met — `target_met=false` stands.** The counters
+prove the bound is the active constraint
+(`guest_burn_in_flight_max` equals the bound in every post run),
+spinner throughput at the default bound is barely dented (spins
+2,409 / 2,525 post vs 2,505 pre), and at matched load the ratio
+improves (4.725 pre → 3.886 / 3.801 post), as do the spinning
+wake p99 (4.428 → 3.578 / 3.430 ms) and ack p99 (9.902 → 8.310 /
+6.273 ms). But the ratio stays well above 2, and the victim's
+spinning command mean (~1.4–2.0 ms) does not return to its
+pre-#12571 level (tens of µs) at any bound tried: a sizing sweep
+in the same conditions (bounds 8 / 10 / 14, via
+`ID_BENCH_GUEST_BURN_CONCURRENCY`) moved the ratio (best 3.071
+at bound 10 in one set, 5.832 in another — the ranking flips
+between sets) but never the command mean (1,783–2,637 µs across
+all bounds), and the victim's waits rise as the bound falls
+(613 of 1,805 admissions at bound 14; 900 — every spinning-phase
+call — at bounds 8 and 10). The mean is therefore not
+permit-wait-bound and not burn-bound: what remains is the
+runtime/scheduler contention around the burn path — ~800 world
+spawn/shutdown cycles per second of task and syscall churn on
+the same runtime, the `block_in_place` round trip each call
+pays, and this venue's ambient fleet load — which admission by
+construction does not govern. That is the hub-scheduler /
+executor territory the issue still lists as remaining, and the
+next measurement should separate spawn churn from burn (a
+profile variant with persistent spinner worlds) before choosing
+the lever. The interleaved set above is appended to
+`baseline.txt`. Regression spot-check on the same binary:
+`many_worlds --quick` still reports `target_met=true` (p99
+9.399 ms vs the 50 ms target) — native programs never enter the
+admission path.
+
 ## Fuel-spin isolation on the CI runner — noise-dominated, no verdict (2026-11-22, #1067)
 
 Machine class: `ci-runner` (GitHub-hosted ubuntu-24.04 via the
