@@ -49,19 +49,49 @@ query, result, meta}`.
 - Add an LRU sweeper when there are 10,000 cached queries or 1 GB of
   aggregate cache storage. Until then, entries have no TTL.
 
-## Secrets (names only; set with `wrangler secret put`)
+## Secrets
 
 `GATE_TOKEN`, `SERVICE_TOKEN` (the service's `cf-worker` client
 token), `ACCESS_CLIENT_ID`, `ACCESS_CLIENT_SECRET` (Access
-service token for `atlas-search.security.cab`).
+service token for `atlas-search.security.cab`). The upload workflow
+reads these from the protected GitHub environment and includes them in
+the uploaded version. It does not read the laptop's SOPS or Bitwarden
+stores.
 
 ## Run
 
 ```sh
 npm install
 npm test        # vitest + @cloudflare/vitest-pool-workers
-npm run deploy  # wrangler deploy (fleet Cloudflare account)
+npm run dev     # wrangler dev
 ```
+
+## Production version flow
+
+Production changes use two explicit, manually dispatched GitHub Actions
+workflows on `main`:
+
+1. **Atlas Search Worker — upload version** builds and uploads a
+   git-stamped Cloudflare Worker Version. It does not change traffic. The
+   run summary prints the resulting version ID.
+2. **Atlas Search Worker — promote version** requires that version ID as
+   input, verifies it is deployable, and only then creates a 100% traffic
+   deployment. It reads back the active split and checks the existing
+   `/health` response. There is no automatic promotion or push/PR deploy.
+
+Both jobs use the `atlas-search-production` GitHub Environment. Configure
+required reviewers for that environment and provide its `CLOUDFLARE_API_TOKEN`
+secret, `CLOUDFLARE_ACCOUNT_ID` variable, and Worker secrets named
+`ATLAS_SEARCH_GATE_TOKEN`, `ATLAS_SEARCH_SERVICE_TOKEN`,
+`ATLAS_SEARCH_ACCESS_CLIENT_ID`, and `ATLAS_SEARCH_ACCESS_CLIENT_SECRET`.
+The workflows intentionally fail before contacting Cloudflare when a
+required value is missing. This PR declares the environment reference but
+does not create or change GitHub repository settings.
+
+`cloudflare.config.ts` describes the deployed Worker for `cf`; `wrangler.toml`
+continues to drive local development and Vitest. Keep the Worker name,
+compatibility date, `SERVICE_BASE`, `QUERY_CACHE` Durable Object binding,
+SQLite-backed `QueryCache` export, and secret names aligned between them.
 
 ## Service dependency
 

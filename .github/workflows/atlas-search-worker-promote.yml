@@ -1,0 +1,108 @@
+name: Atlas Search Worker — promote version
+
+on:
+  workflow_dispatch:
+    inputs:
+      version_id:
+        description: Existing, reviewed Atlas Search Worker version ID to serve at 100%
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: atlas-search-production
+  cancel-in-progress: false
+
+jobs:
+  promote:
+    if: github.ref == 'refs/heads/main'
+    name: Explicitly promote one uploaded version
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment:
+      name: atlas-search-production
+    defaults:
+      run:
+        working-directory: pkgs/atlas-search/worker
+    env:
+      CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      VERSION_ID: ${{ inputs.version_id }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24.22.0
+          cache: npm
+          cache-dependency-path: pkgs/atlas-search/worker/package-lock.json
+
+      - name: Install locked deployment tools
+        run: npm ci
+
+      - name: Verify version and promote at 100%
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! "$VERSION_ID" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]]; then
+            echo "::error::version_id must be a Cloudflare Worker Version UUID"
+            exit 2
+          fi
+          for name in CLOUDFLARE_ACCOUNT_ID CLOUDFLARE_API_TOKEN; do
+            if [[ -z "${!name:-}" ]]; then
+              echo "::error::Required atlas-search-production environment value is missing: $name"
+              exit 1
+            fi
+          done
+
+          versions_file="$(mktemp "$RUNNER_TEMP/atlas-search-deployable.XXXXXX.json")"
+          deployments_file="$(mktemp "$RUNNER_TEMP/atlas-search-deployments.XXXXXX.json")"
+          health_file="$(mktemp "$RUNNER_TEMP/atlas-search-health.XXXXXX.json")"
+          trap 'rm -f "$versions_file" "$deployments_file" "$health_file"' EXIT
+
+          curl --fail --silent --show-error \
+            --header "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+            "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/workers/scripts/atlas-search/versions?deployable=true&per_page=100" \
+            > "$versions_file"
+          jq -e --arg id "$VERSION_ID" \
+            '(.result.items // .result // []) | any(.[]; .id == $id)' \
+            "$versions_file" > /dev/null || {
+              echo "::error::The requested version is not in Cloudflare's deployable set"
+              exit 1
+            }
+
+          versions_json="$(jq -cn --arg id "$VERSION_ID" '[{version_id: $id, percentage: 100}]')"
+          CF_QUIET=1 ./node_modules/.bin/cf workers deployments create \
+            --worker atlas-search \
+            --strategy percentage \
+            --versions "$versions_json" > /dev/null
+
+          CF_QUIET=1 ./node_modules/.bin/cf workers deployments list \
+            --worker atlas-search > "$deployments_file"
+          jq -e --arg id "$VERSION_ID" '
+            (.result.items // .result // .deployments // [])
+            | sort_by(.metadata.created_on // .created_on // .createdOn // "")
+            | last
+            | [.versions[] | select((.percentage | tonumber) > 0)]
+            | (length == 1 and .[0].version_id == $id and (.[0].percentage | tonumber) == 100)
+          ' "$deployments_file" > /dev/null || {
+            echo "::error::Latest Cloudflare deployment does not serve the requested version at 100%"
+            exit 1
+          }
+
+          curl --fail --silent --show-error \
+            --header 'User-Agent: atlas-search-ci/1.0 (+https://github.com/developing-today/code)' \
+            "https://atlas-search.developing-today.workers.dev/health" \
+            > "$health_file"
+          jq -e '.status == "ok" and .service == "atlas-search-worker"' \
+            "$health_file" > /dev/null || {
+              echo "::error::The live /health response is unexpected"
+              exit 1
+            }
+          {
+            echo "## Atlas Search Worker version promoted"
+            echo
+            echo "Version `$VERSION_ID` is serving 100% of traffic; `/health` returned the expected response."
+          } >> "$GITHUB_STEP_SUMMARY"

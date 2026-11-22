@@ -1,0 +1,87 @@
+name: Atlas Search Worker — upload version
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: atlas-search-production
+  cancel-in-progress: false
+
+jobs:
+  upload:
+    if: github.ref == 'refs/heads/main'
+    name: Upload an inert Worker version
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment:
+      name: atlas-search-production
+    defaults:
+      run:
+        working-directory: pkgs/atlas-search/worker
+    env:
+      CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      GATE_TOKEN: ${{ secrets.ATLAS_SEARCH_GATE_TOKEN }}
+      SERVICE_TOKEN: ${{ secrets.ATLAS_SEARCH_SERVICE_TOKEN }}
+      ACCESS_CLIENT_ID: ${{ secrets.ATLAS_SEARCH_ACCESS_CLIENT_ID }}
+      ACCESS_CLIENT_SECRET: ${{ secrets.ATLAS_SEARCH_ACCESS_CLIENT_SECRET }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24.22.0
+          cache: npm
+          cache-dependency-path: pkgs/atlas-search/worker/package-lock.json
+
+      - name: Install locked deployment tools
+        run: npm ci
+
+      - name: Upload a version without deploying it
+        id: upload
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          for name in CLOUDFLARE_ACCOUNT_ID CLOUDFLARE_API_TOKEN GATE_TOKEN SERVICE_TOKEN ACCESS_CLIENT_ID ACCESS_CLIENT_SECRET; do
+            if [[ -z "${!name:-}" ]]; then
+              echo "::error::Required atlas-search-production environment value is missing: $name"
+              exit 1
+            fi
+          done
+
+          secrets_file="$(mktemp "$RUNNER_TEMP/atlas-search-secrets.XXXXXX.json")"
+          output_file="$(mktemp "$RUNNER_TEMP/atlas-search-version.XXXXXX.json")"
+          trap 'rm -f "$secrets_file" "$output_file"' EXIT
+          export SECRETS_FILE="$secrets_file"
+          python3 - <<'PY'
+          import json
+          import os
+
+          names = ("GATE_TOKEN", "SERVICE_TOKEN", "ACCESS_CLIENT_ID", "ACCESS_CLIENT_SECRET")
+          with open(os.environ["SECRETS_FILE"], "w", encoding="utf-8") as stream:
+              json.dump({name: os.environ[name] for name in names}, stream)
+          PY
+
+          CF_QUIET=1 ./node_modules/.bin/cf workers versions create \
+            --worker atlas-search \
+            --tag "git-${GITHUB_SHA:0:12}" \
+            --message "upload ${GITHUB_SHA} from GitHub Actions" \
+            --secrets-file "$secrets_file" > "$output_file"
+
+          version_id="$(jq -er '.result.id // .id // .version.id' "$output_file")"
+          if [[ ! "$version_id" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]]; then
+            echo "::error::cf returned an invalid Worker Version ID"
+            exit 1
+          fi
+          echo "version_id=$version_id" >> "$GITHUB_OUTPUT"
+          {
+            echo "## Atlas Search Worker version uploaded"
+            echo
+            echo "Version ID: `$version_id`"
+            echo
+            echo "No traffic was changed. Run **Atlas Search Worker — promote version** with this ID after review."
+          } >> "$GITHUB_STEP_SUMMARY"
