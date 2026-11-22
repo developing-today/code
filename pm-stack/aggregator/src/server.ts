@@ -239,6 +239,14 @@ import { sampleSloFacets } from "./slo-sampler.ts";
 import { SLO_DEFINITIONS, summarizeSloFacet, type SloFacetSummary } from "./slo.ts";
 import { computeFlowAnalytics } from "./flow-analytics.ts";
 import {
+  appendReportBlockConflictResolution,
+  compareReportBlock,
+  defaultReportRecordsFile,
+  readCurrentReportRecords,
+  readReportRecords,
+} from "./report-records.ts";
+import { renderReportReview, reportBlockReviews } from "./report-review.ts";
+import {
   FORECAST_CONTRACT_VERSION,
   quotaForecastContract,
   subjectForecastContracts,
@@ -359,6 +367,7 @@ const storeRemotes = cfg.storeBackend === "turso" ? createTursoRemotes(getTursoS
 const actionsStore = new ActionsStore(cfg.actionsFile, undefined, storeRemotes?.actions);
 const viewsStore = new ViewsStore(cfg.viewsFile);
 const eventsStore = new EventsStore(cfg.eventsFile);
+const reportRecordsLocation = storeRemotes?.aaLastGood ?? defaultReportRecordsFile();
 const identityRegistryStore = new IdentityRegistryStore(cfg.identityRegistryFile);
 const freshnessStore = new FreshnessStore(cfg.freshnessFile);
 
@@ -2101,6 +2110,78 @@ async function handler(req: Request): Promise<Response> {
   const path = url.pathname;
   const prov = () => source.provenance();
   const provDetail = () => source.provenanceDetail?.();
+
+  if (req.method === "GET" && (path === "/reports" || path === "/api/reports.json")) {
+    try {
+      const [records, current] = await Promise.all([
+        readReportRecords(reportRecordsLocation),
+        readCurrentReportRecords(reportRecordsLocation),
+      ]);
+      if (path === "/api/reports.json") {
+        return json({
+          records: current,
+          conflicts: reportBlockReviews(records, current).map((review) => ({
+            periodId: review.periodId,
+            blockId: review.blockId,
+            storedRecordId: review.storedRecord.id,
+            renderedRecordId: review.renderedRecord.id,
+            comparison: review.comparison,
+          })),
+        });
+      }
+      return html(renderReportReview(reportBlockReviews(records, current), records.length));
+    } catch {
+      if (path === "/api/reports.json") return json({ error: "report records unavailable" }, 503);
+      return html(`<h1>Report review unavailable</h1><p>Could not read retained report records.</p>`, 503);
+    }
+  }
+
+  if (req.method === "POST" && path === "/api/reports/resolve") {
+    let body: Record<string, unknown>;
+    try {
+      const parsed = await readJsonBody(req);
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return json({ error: "invalid resolution body" }, 400);
+      body = parsed as Record<string, unknown>;
+    } catch {
+      return json({ error: "invalid resolution body" }, 400);
+    }
+    const storedRecordId = typeof body.storedRecordId === "string" ? body.storedRecordId : "";
+    const renderedRecordId = typeof body.renderedRecordId === "string" ? body.renderedRecordId : "";
+    const blockId = typeof body.blockId === "string" ? body.blockId : "";
+    const strategy = body.strategy;
+    if (!storedRecordId || !renderedRecordId || !blockId || !["stored", "rendered", "edited", "combined"].includes(String(strategy))) {
+      return json({ error: "storedRecordId, renderedRecordId, blockId and a valid strategy are required" }, 400);
+    }
+    if (body.resolvedText !== undefined && typeof body.resolvedText !== "string") {
+      return json({ error: "resolvedText must be text" }, 400);
+    }
+    try {
+      const records = await readReportRecords(reportRecordsLocation);
+      const storedRecord = records.find((record) => record.id === storedRecordId);
+      const renderedRecord = records.find((record) => record.id === renderedRecordId);
+      if (!storedRecord || !renderedRecord) return json({ error: "unknown report record" }, 404);
+      if (storedRecord.period.id !== renderedRecord.period.id || storedRecord.templateVersion !== renderedRecord.templateVersion) {
+        return json({ error: "compared records must have the same period and template" }, 400);
+      }
+      const storedBlock = storedRecord.blocks.find((block) => block.id === blockId);
+      const renderedBlock = renderedRecord.blocks.find((block) => block.id === blockId);
+      if (!storedBlock || !renderedBlock) return json({ error: "compared block is missing" }, 400);
+      const comparison = compareReportBlock(storedBlock.text, renderedBlock.text);
+      if (!comparison.conflict) return json({ error: "report block has no substantive conflict" }, 400);
+      const result = await appendReportBlockConflictResolution(
+        reportRecordsLocation,
+        storedRecord,
+        blockId,
+        comparison,
+        strategy as "stored" | "rendered" | "edited" | "combined",
+        new Date().toISOString(),
+        typeof body.resolvedText === "string" ? body.resolvedText : undefined,
+      );
+      return json({ inserted: result.inserted, record: result.record });
+    } catch (error) {
+      return json({ error: error instanceof Error ? error.message : "report resolution failed" }, 400);
+    }
+  }
 
   // --- #3978: freshness delivery for browsers ------------------------------
   // GET /freshness/stream (SSE) and GET /api/freshness-events.json read the
