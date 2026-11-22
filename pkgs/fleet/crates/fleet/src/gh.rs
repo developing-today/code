@@ -1033,9 +1033,8 @@ impl TokenProvider for FleetTokenProvider {
 /// one place daemon-resolved and locally-resolved copies of the
 /// secret converge, so neither path can skip the parse.
 fn personal_token(hosts_yml: &str) -> Result<String, String> {
-    parse_hosts_yml_token(hosts_yml).ok_or_else(|| {
-        format!("secret '{PERSONAL_SECRET_NAME}' carries no oauth_token")
-    })
+    parse_hosts_yml_token(hosts_yml)
+        .ok_or_else(|| format!("secret '{PERSONAL_SECRET_NAME}' carries no oauth_token"))
 }
 
 /// Extract the `oauth_token` value from gh's hosts.yml content.
