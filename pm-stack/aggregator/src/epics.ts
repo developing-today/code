@@ -20,6 +20,55 @@ export function isEpicChildDone(child: ProjectPoolItem): boolean {
   return child.state === "closed" || child.state === "merged" || child.status?.trim() === "Done";
 }
 
+/** Facts required to evaluate the closure policy in design §7. A monitor
+ *  must derive these from the full native-parent subtree; this classifier
+ *  deliberately does not infer ancestry or label meaning from partial pools. */
+export interface EpicClosureGateFacts {
+  /** True only when the monitor fetched the complete native-parent subtree. */
+  factsComplete: boolean;
+  /** Design tracking issues in the subtree that are not done or Drew-gated. */
+  unfinishedDesignRefs: readonly RefKey[];
+  /** Open descendants already classified as a high/critical bug or follow-up. */
+  qualifyingOpenDescendantRefs: readonly RefKey[];
+  /** Unfinished children for which no re-parent destination is recorded. */
+  unfinishedChildrenWithoutReparentDestinationRefs: readonly RefKey[];
+}
+
+export type EpicClosureGateCondition =
+  | "source_incomplete"
+  | "designs_incomplete"
+  | "qualifying_open_descendants"
+  | "unfinished_children_without_reparent_destination";
+
+export interface EpicClosureGateBlocker {
+  condition: EpicClosureGateCondition;
+  refs: RefKey[];
+}
+
+export interface EpicClosureGateResult {
+  closable: boolean;
+  blockers: EpicClosureGateBlocker[];
+}
+
+/** Apply the three closure conditions from design §7 to already-derived facts.
+ *  The result is deterministic and preserves the blocking refs for reporting. */
+export function evaluateEpicClosureGate(facts: EpicClosureGateFacts): EpicClosureGateResult {
+  const blockers: EpicClosureGateBlocker[] = [];
+  const addBlocker = (condition: EpicClosureGateCondition, refs: readonly RefKey[]) => {
+    if (refs.length > 0) blockers.push({ condition, refs: [...refs] });
+  };
+
+  if (!facts.factsComplete) blockers.push({ condition: "source_incomplete", refs: [] });
+  addBlocker("designs_incomplete", facts.unfinishedDesignRefs);
+  addBlocker("qualifying_open_descendants", facts.qualifyingOpenDescendantRefs);
+  addBlocker(
+    "unfinished_children_without_reparent_destination",
+    facts.unfinishedChildrenWithoutReparentDestinationRefs,
+  );
+
+  return { closable: blockers.length === 0, blockers };
+}
+
 /** Collapse multiple board memberships to one canonical issue for issue-level progress. */
 export function uniqueProjectItemsByRef(pool: readonly ProjectPoolItem[]): ProjectPoolItem[] {
   const byRef = new Map<RefKey, ProjectPoolItem>();

@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { GhItem, ProjectPoolItem, Provenance, RefKey } from "../src/model.ts";
-import { buildEpicRollups } from "../src/epics.ts";
+import { buildEpicRollups, evaluateEpicClosureGate } from "../src/epics.ts";
 import { renderItem, renderProgramProject, renderProjects } from "../src/render.ts";
 import { buildProjectDetail, projectConfigById } from "../src/project-config.ts";
 
@@ -97,5 +97,90 @@ describe("epic rollups", () => {
     });
     expect(itemHtml.indexOf("Epic rollup")).toBeLessThan(itemHtml.indexOf("Linked issues / PRs"));
     expect(itemHtml).toContain("2/4 done");
+  });
+});
+
+describe("epic closure gate", () => {
+  // Oracle: design §7's three conditions; incomplete subtree facts must fail closed.
+  test("fails closed when the monitor did not fetch a complete subtree", () => {
+    expect(
+      evaluateEpicClosureGate({
+        factsComplete: false,
+        unfinishedDesignRefs: [],
+        qualifyingOpenDescendantRefs: [],
+        unfinishedChildrenWithoutReparentDestinationRefs: [],
+      }),
+    ).toEqual({ closable: false, blockers: [{ condition: "source_incomplete", refs: [] }] });
+  });
+
+  test("blocks unfinished designs", () => {
+    expect(
+      evaluateEpicClosureGate({
+        factsComplete: true,
+        unfinishedDesignRefs: [R(11)],
+        qualifyingOpenDescendantRefs: [],
+        unfinishedChildrenWithoutReparentDestinationRefs: [],
+      }),
+    ).toEqual({
+      closable: false,
+      blockers: [{ condition: "designs_incomplete", refs: [R(11)] }],
+    });
+  });
+
+  test("blocks qualifying open descendants", () => {
+    expect(
+      evaluateEpicClosureGate({
+        factsComplete: true,
+        unfinishedDesignRefs: [],
+        qualifyingOpenDescendantRefs: [R(12)],
+        unfinishedChildrenWithoutReparentDestinationRefs: [],
+      }),
+    ).toEqual({
+      closable: false,
+      blockers: [{ condition: "qualifying_open_descendants", refs: [R(12)] }],
+    });
+  });
+
+  test("blocks unfinished children without a re-parent destination", () => {
+    expect(
+      evaluateEpicClosureGate({
+        factsComplete: true,
+        unfinishedDesignRefs: [],
+        qualifyingOpenDescendantRefs: [],
+        unfinishedChildrenWithoutReparentDestinationRefs: [R(13)],
+      }),
+    ).toEqual({
+      closable: false,
+      blockers: [{ condition: "unfinished_children_without_reparent_destination", refs: [R(13)] }],
+    });
+  });
+
+  test("reports each unmet closure condition with its blocking refs", () => {
+    expect(
+      evaluateEpicClosureGate({
+        factsComplete: true,
+        unfinishedDesignRefs: [R(11)],
+        qualifyingOpenDescendantRefs: [R(12)],
+        unfinishedChildrenWithoutReparentDestinationRefs: [R(13)],
+      }),
+    ).toEqual({
+      closable: false,
+      blockers: [
+        { condition: "designs_incomplete", refs: [R(11)] },
+        { condition: "qualifying_open_descendants", refs: [R(12)] },
+        { condition: "unfinished_children_without_reparent_destination", refs: [R(13)] },
+      ],
+    });
+  });
+
+  test("allows closure only when all three conditions are clear", () => {
+    expect(
+      evaluateEpicClosureGate({
+        factsComplete: true,
+        unfinishedDesignRefs: [],
+        qualifyingOpenDescendantRefs: [],
+        unfinishedChildrenWithoutReparentDestinationRefs: [],
+      }),
+    ).toEqual({ closable: true, blockers: [] });
   });
 });
