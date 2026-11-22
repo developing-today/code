@@ -1100,6 +1100,26 @@ fn a_compound_build_command_uses_one_lock_and_a_shared_workspace_lane() {
 }
 
 #[test]
+fn a_just_build_command_uses_the_shared_target_lane() {
+    let plan = shell::plan(
+        Target::Laptop,
+        "test".into(),
+        &words(&["just test"]),
+        &Options {
+            cwd: Some("pkgs/id".into()),
+            build: true,
+            ..opts()
+        },
+    )
+    .unwrap();
+    let command = plan.args.last().unwrap();
+    assert!(command.starts_with("~/tools/fleet-build-lock sh -c "));
+    assert!(command.contains("cargo-target-broker"));
+    assert!(command.contains("checkout --repo \"$repo\" --profile test"));
+    assert!(command.contains("just test"));
+}
+
+#[test]
 fn codespace_build_uses_shared_lane_tools_when_installed() {
     let plan = shell::plan(
         Target::Codespace("dev".into()),
