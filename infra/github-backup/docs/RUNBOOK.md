@@ -159,6 +159,18 @@ $GB/systemd/install-units.sh
 
 ## 8. Restore from a mirror
 
+Create and locally verify a cold bundle for a planned mirror:
+
+```sh
+python3 ~/git/code/infra/github-backup/bin/bundle_cold.py \
+  --repo developing-today/code --root ~/backups/github
+git clone ~/backups/github/cold-bundles/developing-today/code.bundle ./code-cold
+```
+
+The command verifies the bundle in an empty repository and confirms the
+restored HEAD matches the mirror before publishing the bundle. It writes only
+to the local backup tree; it does not upload to R2 or schedule recurring work.
+
 ```sh
 # normal repo:
 git clone ~/backups/github/<owner>/<repo>.git ./<repo>
