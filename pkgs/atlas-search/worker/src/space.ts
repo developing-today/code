@@ -24,6 +24,10 @@ export const VEC_TABLE = "vec_snowflake_m_v2_768_f32";
 /** The one ceiling this surface may ever search under. */
 export const CEILING = "personal";
 
+/** This hosted per-user surface always searches in its explicit disclosure context. */
+export const DISCLOSURE_CONTEXT = "hosted-per-user" as const;
+export type DisclosureContext = "fleet-internal" | "hosted-per-user" | "public-surface" | "local-owner";
+
 export interface EmbedResponse {
   model: string;
   dims: number;

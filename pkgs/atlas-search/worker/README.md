@@ -17,14 +17,15 @@ and caches the result **indefinitely** (no TTL/eviction in v1).
 - `src/service.ts` — calls to `fleet serve search`
   (`POST /v1/embed`, `POST /v1/search`) via the
   `atlas-search.security.cab` tunnel hostname + Cloudflare
-  Access service token. The service enforces this client's
-  `personal` tier ceiling; the Worker holds no Turso credentials
-  and keeps no shard list (new `atlas-core-*` databases join the
-  fan-out through the service's manifest discovery).
+  Access service token. Search requests explicitly state the
+  `hosted-per-user` disclosure context and this client's `personal`
+  tier ceiling; the Worker holds no Turso credentials and keeps no
+  shard list (new `atlas-core-*` databases join the fan-out through
+  the service's manifest discovery).
 - `src/key.ts` — DO key = sha256 over the normalized query plus
-  the pinned config fingerprint (ceiling, model revision, vector
-  table, k). A cached entry is never served across ceilings or
-  embedding spaces.
+  the disclosure context and pinned config fingerprint (ceiling,
+  model revision, vector table, k). A cached entry is never served
+  across contexts, ceilings or embedding spaces.
 
 ## Endpoints
 

@@ -11,7 +11,7 @@
  * service token (the two `CF-Access-*` headers); the service's own
  * client bearer token rides `Authorization`.
  */
-import { CEILING, validateEmbed, type EmbedResponse } from "./space";
+import { CEILING, validateEmbed, type DisclosureContext, type EmbedResponse } from "./space";
 
 export interface ServiceEnv {
   SERVICE_BASE: string;
@@ -81,12 +81,14 @@ export async function searchService(
   env: ServiceEnv,
   query: string,
   k: number,
+  context: DisclosureContext,
 ): Promise<{ result: Record<string, unknown>; ms: number }> {
   const t0 = Date.now();
   const raw: unknown = await postJson(env, "/v1/search", {
     query,
     ceiling: CEILING,
     k,
+    context,
   });
   // The response is untrusted until validated, exactly like the embed
   // door (validateEmbed in space.ts): a JSON null 200 cannot even be

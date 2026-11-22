@@ -8,9 +8,9 @@
  * different ceiling or space (the same rule the search service
  * applies to its job dedupe).
  */
-import { CEILING, MODEL_REV, VEC_TABLE } from "./space";
+import { CEILING, MODEL_REV, VEC_TABLE, type DisclosureContext } from "./space";
 
-export const KEY_SCHEMA = 1;
+export const KEY_SCHEMA = 2;
 
 /** Trim, NFC, and collapse every whitespace run to one space. */
 export function normalizeQuery(q: string): string {
@@ -20,6 +20,7 @@ export function normalizeQuery(q: string): string {
 export interface KeyParts {
   q: string;
   k: number;
+  context: DisclosureContext;
 }
 
 /** The canonical key material (field order is part of the key). */
@@ -27,6 +28,7 @@ export function keyMaterial(parts: KeyParts): string {
   return JSON.stringify({
     v: KEY_SCHEMA,
     q: parts.q,
+    context: parts.context,
     ceiling: CEILING,
     model_rev: MODEL_REV,
     vec_table: VEC_TABLE,
