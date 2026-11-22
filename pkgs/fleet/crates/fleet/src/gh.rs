@@ -1358,6 +1358,19 @@ fn run_raw(gh_bin: &str, args: &[String]) -> i32 {
     }
 }
 
+fn closure_binding(
+    initialize: impl FnOnce() -> Result<Option<String>, String>,
+) -> gh_closure::Binding {
+    let resolved_session_id = match initialize() {
+        Ok(id) => id,
+        Err(error) => {
+            eprintln!("fleet gh: {error}; closure record will omit the session id");
+            None
+        }
+    };
+    gh_closure::Binding::from_resolved_session_id(resolved_session_id)
+}
+
 pub fn run(config: &Config, args: &[String]) -> i32 {
     // Cache flags come first: leading `--cache-addr` (repeatable)
     // and `--no-cache` are fleet's own, stripped before anything
@@ -1448,7 +1461,11 @@ pub fn run(config: &Config, args: &[String]) -> i32 {
         }
     }
     if let Some(i) = intent.filter(|_| code == EXIT_OK) {
-        let record = i.record(&gh_closure::Binding::from_env(), gh_closure::now_unix());
+        // Only a successfully parsed and completed Fleet-owned closure
+        // operation consumes recovered worktree identity. This is deliberately
+        // not a global startup hook or a scan of passthrough `gh` arguments.
+        let binding = closure_binding(|| crate::session_state::initialize(None));
+        let record = i.record(&binding, gh_closure::now_unix());
         if let Err(e) = gh_closure::append(&gh_closure::log_path(), &record) {
             eprintln!(
                 "fleet gh: {} done, but the closure record was not written: {e}",
@@ -1699,6 +1716,24 @@ fn summarize_status(resp: &serde_json::Value) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn successful_closure_binding_consumes_resolved_worktree_session() {
+        let mut initialized = false;
+        let binding = closure_binding(|| {
+            initialized = true;
+            Ok(Some("ses_from_worktree".to_owned()))
+        });
+        assert!(
+            initialized,
+            "closure binding initializes session resolution"
+        );
+        assert_eq!(
+            binding.session_id.as_deref(),
+            Some("ses_from_worktree"),
+            "the resolved worktree identity reaches the closure binding"
+        );
+    }
+
     #[test]
     fn clustered_short_options_are_never_reads() {
         let v = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();

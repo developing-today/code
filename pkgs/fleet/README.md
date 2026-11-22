@@ -144,9 +144,12 @@ directory), so linked worktrees can track different sessions. A recovered
 marker is accepted only when the local OpenCode server returns a matching,
 non-archived session record; an ended or unverifiable marker fails closed.
 Help, malformed commands and other Fleet domains do not inspect or modify the
-marker. Automatic launcher integration and create-path provenance are not
-provided by this command; those require a separately validated launcher or
-create-command boundary.
+marker. A successfully completed Fleet-owned `gh issue|pr close|reopen` also
+resolves the session identity for its closure record, so a live marker is
+effective there even when the parent environment did not carry the id. Other
+Fleet operations are not automatically bound. Automatic launcher integration
+and create-path `provenance.session_id` (tracked separately by #9073) are not
+provided; they require a validated launcher or create-command boundary.
 
 ## Versioning — derived per-app versions (#8566; policy #5790)
 

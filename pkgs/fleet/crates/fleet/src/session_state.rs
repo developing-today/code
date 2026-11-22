@@ -15,7 +15,7 @@ pub fn run(args: &[String]) -> i32 {
     run_with(args, initialize)
 }
 
-fn run_with(args: &[String], initialize: impl FnOnce(Option<&str>) -> Result<(), String>) -> i32 {
+fn run_with<T>(args: &[String], initialize: impl FnOnce(Option<&str>) -> Result<T, String>) -> i32 {
     if args.len() == 1 && matches!(args[0].as_str(), "--help" | "-h") {
         println!("{USAGE}");
         return 0;
@@ -28,7 +28,7 @@ fn run_with(args: &[String], initialize: impl FnOnce(Option<&str>) -> Result<(),
         }
     };
     match initialize(explicit) {
-        Ok(()) => 0,
+        Ok(_) => 0,
         Err(error) => {
             eprintln!("fleet session: {error}");
             2
@@ -188,7 +188,7 @@ fn session_record_is_live(body: &str, session_id: &str) -> bool {
 /// Set `FLEET_SESSION_ID` for Fleet's child processes and persist explicitly
 /// supplied identities. With no supplied identity, a marker is used only when
 /// the OpenCode session endpoint confirms it exists.
-pub fn initialize(explicit: Option<&str>) -> Result<(), String> {
+pub fn initialize(explicit: Option<&str>) -> Result<Option<String>, String> {
     let fleet_env = std::env::var("FLEET_SESSION_ID").ok();
     let opencode_env = std::env::var("OPENCODE_SESSION_ID").ok();
     let root = worktree_root()?;
@@ -203,8 +203,10 @@ pub fn initialize(explicit: Option<&str>) -> Result<(), String> {
         // Explicit values and recovered marker values apply to this process;
         // environment-sourced identities are also persisted by resolve_marker.
         unsafe { std::env::set_var("FLEET_SESSION_ID", &id) };
+        Ok(Some(id))
+    } else {
+        Ok(None)
     }
-    Ok(())
 }
 
 fn initialize_at(

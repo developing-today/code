@@ -216,7 +216,10 @@ pub struct Binding {
 }
 
 impl Binding {
-    pub fn from_env() -> Binding {
+    /// Build a binding with a session id resolved for this operation. The
+    /// caller may provide a live worktree-marker result; `None` keeps the
+    /// environment-only behavior for callers without that resolution step.
+    pub fn from_resolved_session_id(session_id: Option<String>) -> Binding {
         let get = |k: &str| {
             std::env::var(k)
                 .ok()
@@ -227,10 +230,9 @@ impl Binding {
             worker: get("FLEET_WORKER"),
             lane: get("FLEET_LANE"),
             task_id: get("FLEET_TASK_ID"),
-            // `session_state::initialize` writes the chosen identity here,
-            // including explicit CLI overrides, so provenance follows the
-            // same explicit > env > worktree-marker resolution as commands.
-            session_id: preferred_session_id(get("FLEET_SESSION_ID"), get("OPENCODE_SESSION_ID")),
+            session_id: session_id.or_else(|| {
+                preferred_session_id(get("FLEET_SESSION_ID"), get("OPENCODE_SESSION_ID"))
+            }),
             user: get("USER"),
         }
     }
@@ -415,6 +417,8 @@ mod tests {
             preferred_session_id(None, Some("ses_open".into())),
             Some("ses_open".into())
         );
+        let binding = Binding::from_resolved_session_id(Some("ses_marker".into()));
+        assert_eq!(binding.session_id.as_deref(), Some("ses_marker"));
     }
 
     #[test]
