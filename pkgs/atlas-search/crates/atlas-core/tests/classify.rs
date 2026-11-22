@@ -77,7 +77,11 @@ fn insert_record(con: &Connection, record: &ClassificationRecord) {
 /// The fixture corpus: twelve chunks across nine sessions,
 /// covering every sweep branch. Sessions sA/sB/sF/sG/sH/sI share
 /// project `atlas`; sD is 92 days before sA (outside the 90-day
-/// window) and 19 days before sI (inside it).
+/// window) and 19 days before sI (inside it). Chunks 4 and 7
+/// carry the same content in different sessions: the sweep
+/// tolerates duplicate content hashes across sessions (as the
+/// local backend's content-hash mapping does), and the reuse
+/// floor is what keeps their classifications consistent.
 fn fixture_db(tag: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!(
         "atlas-classify-{}-{tag}",
@@ -91,7 +95,7 @@ fn fixture_db(tag: &str) -> PathBuf {
         "CREATE TABLE sessions (id TEXT PRIMARY KEY, title TEXT, client TEXT, created_at TEXT);
          CREATE TABLE messages (id TEXT PRIMARY KEY, session_id TEXT, role TEXT, text TEXT);
          CREATE TABLE chunks (id INTEGER PRIMARY KEY, message_id TEXT NOT NULL, chunk_idx INTEGER, \
-             text TEXT NOT NULL, content_hash TEXT UNIQUE NOT NULL, sensitivity TEXT);
+             text TEXT NOT NULL, content_hash TEXT NOT NULL, sensitivity TEXT);
          CREATE TABLE session_labels (session_id TEXT PRIMARY KEY, client TEXT, kind TEXT, \
              topics TEXT, projects TEXT, sensitivity TEXT, confidence TEXT, scheme TEXT);
          CREATE TABLE generic_labels (session_id TEXT NOT NULL, dimension TEXT NOT NULL, \
