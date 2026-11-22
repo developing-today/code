@@ -221,8 +221,14 @@ describe("questions waiting on the owner", () => {
       ["old-set", "a"],
     ]);
     expect(q.open[0]).toMatchObject({ multi: true, recommended: ["opt-1", "opt-2"], ledger: "L1", setTitle: "Newer" });
-    expect(q.open[0].context.length).toBe(700);
+    expect(q.open[0].context.length).toBe(280);
+    expect(q.open[0].more).toBe(true);
     expect(JSON.stringify(q)).not.toContain(TOKEN);
+    // The rest of the background is read when the question is opened.
+    const work = new Work(w.ops, async () => store());
+    expect(await work.question("new-set", "L1", "b")).toEqual({ context: "c".repeat(900), detail: "d" });
+    await expect(work.question("new-set", "L1", "nope")).rejects.toThrow(/not in the store/);
+    await expect(work.question("__proto__", "L1", "b")).rejects.toThrow(/not in the store/);
     await expect(new Work(w.ops, async () => "not json").questions()).rejects.toThrow(/questions store/);
     expect((await new Work(w.ops, async () => "{}").questions()).total).toBe(0);
   });
@@ -711,8 +717,14 @@ describe("the interface's endpoints", () => {
 
   test("an action runs, is recorded without the owner's words, and shows in the state", async () => {
     const { d, w, audited } = deps();
+    // What an action changes is read again before the answer goes back,
+    // so the next document already shows it.
+    const boardReads = () => w.sqls.filter((batch) => batch.length === 4).length;
+    await handle(get("/console/api/doc/core"), d);
+    const readsBefore = boardReads();
     const res = await handle(post("/console/api/act", { kind: "task.move", args: { task: 21016, to: "first" } }), d);
     expect(await res.json()).toEqual({ ok: true, result: { task: 21016, priority: 10 } });
+    expect(boardReads()).toBe(readsBefore + 1);
     expect(w.sqls.flat().some((s) => s.sql.startsWith("UPDATE tasks SET priority"))).toBe(true);
     await handle(
       post("/console/api/act", { kind: "need.comment", args: { ref: `${REPO}#5`, text: "private words" } }),

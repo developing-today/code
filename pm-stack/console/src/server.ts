@@ -101,6 +101,7 @@ export interface Deps {
   /** The interface's state, kept ready, and the actions it can take. */
   docs?: Docs;
   actions?: ReturnType<typeof actions>;
+  work?: Work;
 }
 
 /** Text that shrinks well. The dashboard's fragments run to a megabyte
@@ -305,6 +306,9 @@ export async function handle(req: Request, deps: Deps, peer: string | null = nul
         if (req.headers.get("if-none-match") === doc.etag) return new Response(null, { status: 304, headers });
         return gzipped(req, new TextEncoder().encode(doc.body), headers) ?? new Response(doc.body, { headers });
       }
+      if (seg.length === 1 && seg[0] === "question" && deps.work) {
+        return json(await deps.work.question(query.get("set"), query.get("ledger"), query.get("qid")));
+      }
       if (seg.length === 2 && seg[0] === "prs") return json(await ops.pr(seg[1]));
       if (seg.length === 3 && seg[0] === "services" && seg[2] === "logs") {
         return json(await ops.serviceLogs(seg[1], query.get("lines")));
@@ -486,6 +490,7 @@ if (import.meta.main) {
     cfg,
     ops,
     docs,
+    work,
     actions: actions(ops, work),
     identify: (req, peer) => identify(req, cfg, { peer }),
     audit: (entry) => appendFile(cfg.auditFile, `${JSON.stringify(entry)}\n`, { mode: 0o600 }),

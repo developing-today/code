@@ -406,7 +406,32 @@ async function sendAnswer(kind, args, key) {
   } catch (error) {
     toast(error.message, true);
   }
-  refresh(true);
+  // The list above is already right; only the counts need reading again.
+  await loadDoc("core").catch(() => {});
+  draw();
+}
+
+/** A line of background, and the rest of it when the question is opened. */
+function background(q) {
+  const body = h("div", {}, q.context ? h("p", {}, q.context) : null);
+  let asked = false;
+  return h(
+    "details",
+    {
+      ontoggle: async (e) => {
+        if (!e.target.open || asked || !q.more) return;
+        asked = true;
+        try {
+          const full = await api(`question?set=${encodeURIComponent(q.set)}&ledger=${encodeURIComponent(q.ledger)}&qid=${encodeURIComponent(q.qid)}`);
+          body.replaceChildren(full.context ? h("p", {}, full.context) : null, full.detail ? h("p", { class: "meta" }, full.detail) : null);
+        } catch {
+          asked = false;
+        }
+      },
+    },
+    h("summary", {}, "Background"),
+    body,
+  );
 }
 
 function questionCard(q) {
@@ -440,9 +465,7 @@ function questionCard(q) {
   return card(
     h("p", { class: "meta" }, q.item, ...q.links.slice(0, 2).map((l) => [" · ", ext(l, `#${l.split("/").pop()}`)])),
     h("h3", {}, q.q),
-    q.context || q.detail
-      ? h("details", {}, h("summary", {}, "Background"), q.context ? h("p", {}, q.context) : null, q.detail ? h("p", { class: "meta" }, q.detail) : null)
-      : null,
+    q.context || q.more ? background(q) : null,
     h("div", { class: "options" }, options),
     h(
       "div",

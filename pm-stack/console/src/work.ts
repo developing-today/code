@@ -281,8 +281,10 @@ export class Work {
             links: (item.links ?? []).slice(0, 3),
             qid: q.qid,
             q: clip(q.question, 600),
-            context: clip(q.context, 700),
-            detail: clip(q.description, 1200),
+            // The list carries a line of background; the rest is read
+            // when a question is opened, so 360 questions fit a phone.
+            context: clip(q.context, 280),
+            more: (q.context ?? "").length > 280 || Boolean(q.description),
             multi: q.mode === "multi",
             recommended: q.recommendedOptionIds ?? [],
             options: (q.options ?? []).map((o) => ({ id: o.id, label: clip(o.label, 240), tags: o.tags ?? [] })),
@@ -291,6 +293,14 @@ export class Work {
       }
     }
     return { total: open.length, sets: new Set(open.map((q) => q.set)).size, open };
+  }
+
+  /** The full background of one question, read when it is opened. */
+  async question(setId: unknown, ledger: unknown, qid: unknown) {
+    const set = (await this.sets()).find((s) => s.setId === setId);
+    const q = set?.items?.find((i) => i.ledgerId === ledger)?.questions?.find((x) => x.qid === qid);
+    if (!q) throw new OpError(404, "that question is not in the store");
+    return { context: clip(q.context, 8000), detail: clip(q.description, 8000) };
   }
 
   /** Answer or hand back questions through the dashboard's own endpoint,
