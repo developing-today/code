@@ -1721,18 +1721,17 @@ let
   make-mcpx-overlay = {
     overlays = {
       default = final: prev: {
-        mcpx = prev.callPackage ../pkgs/mcpx/package.nix { doCheck = false; };
+        mcpx = prev.callPackage ../pkgs/mcpx/package.nix { };
       };
       mcpx = final: prev: {
-        mcpx = prev.callPackage ../pkgs/mcpx/package.nix { doCheck = false; };
+        mcpx = prev.callPackage ../pkgs/mcpx/package.nix { };
       };
     };
   };
 
   # The mcpx daemon modules (code#4801): the canonical module files
   # live in pkgs/mcpx/modules; these outputs wrap them with this
-  # flake's own runtime mcpx build (without its duplicate test phase).
-  # mcpx-test and mcpx-nixbuild retain the CI coverage. The opencode fork
+  # flake's own mcpx build. The opencode fork
   # re-exports the same files defaulted to its build, and
   # openchamber passes them through — the option set never forks.
   make-mcpx-modules =
@@ -1743,7 +1742,7 @@ let
         {
           imports = [ module ];
           services.mcpx.package = lib.mkDefault (
-            pkgs.callPackage ../pkgs/mcpx/package.nix { doCheck = false; }
+            pkgs.callPackage ../pkgs/mcpx/package.nix { }
           );
         };
     in
