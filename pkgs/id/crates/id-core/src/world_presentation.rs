@@ -71,9 +71,9 @@ pub const MAX_SCENE_EXTENT: f64 = 1_000_000.0;
 
 /// A validated view understood by more than one transport presenter.
 ///
-/// Not `Eq`: a scene carries `f64` geometry. Equality is exact value
-/// equality of every field, floats included.
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+/// `Eq` holds for every variant: scene geometry compares bit-exactly
+/// (see [`SceneNode`]'s `PartialEq`), not by `f64` value equality.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum WorldSurface {
     /// A fixed-size terminal cell buffer, suitable for an SSH terminal or web DOM.
@@ -787,7 +787,7 @@ impl ScreenSurface {
 /// derives everything visual from the shape, position and size. The
 /// document shape is the struct shape, so a parsed scene round-trips
 /// through [`parse_surface`].
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct SceneSurface {
     /// Scene format version. `scene/1` defines version 1.
@@ -801,7 +801,7 @@ pub struct SceneSurface {
 }
 
 /// One named object in a [`SceneSurface`].
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct SceneNode {
     /// Stable identifier, unique within the scene.
@@ -846,6 +846,39 @@ impl SceneShape {
         }
     }
 }
+
+/// Bit-exact comparison of 3-component scene geometry.
+fn scene_floats_bit_eq(left: &[f64; 3], right: &[f64; 3]) -> bool {
+    left.iter()
+        .zip(right.iter())
+        .all(|(a, b)| a.to_bits() == b.to_bits())
+}
+
+impl PartialEq for SceneNode {
+    /// Bit-exact equality: two nodes are equal only when every geometry
+    /// component has identical bits. Unlike `f64` value equality, bit
+    /// equality is a true equivalence (reflexive even for NaN, which
+    /// [`SceneSurface::validate`] refuses before a scene is presented),
+    /// so `Eq` is honest and `WorldSurface` keeps the `Eq` bound
+    /// session-state structs rely on.
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id
+            && self.label == other.label
+            && self.shape == other.shape
+            && scene_floats_bit_eq(&self.position, &other.position)
+            && scene_floats_bit_eq(&self.size, &other.size)
+    }
+}
+
+impl Eq for SceneNode {}
+
+impl PartialEq for SceneSurface {
+    fn eq(&self, other: &Self) -> bool {
+        self.version == other.version && self.title == other.title && self.nodes == other.nodes
+    }
+}
+
+impl Eq for SceneSurface {}
 
 impl SceneSurface {
     /// Validate the version, node set, identifiers, safe text, geometry
@@ -2314,6 +2347,25 @@ mod tests {
         assert!(scene([f64::NAN, 0.0, 0.0]).validate().is_err());
         assert!(scene([0.0, f64::INFINITY, 0.0]).validate().is_err());
         assert!(scene([0.0, 0.0, f64::NEG_INFINITY]).validate().is_err());
+    }
+
+    #[test]
+    fn scene_equality_is_bit_exact() {
+        // WorldSurface keeps its Eq derive (session-state structs rely
+        // on it), so scene equality is bit-exact: 0.0 and -0.0 differ.
+        let scene = |x: f64| SceneSurface {
+            version: 1,
+            title: None,
+            nodes: vec![SceneNode {
+                id: "a".into(),
+                label: "A".into(),
+                shape: SceneShape::Point,
+                position: [x, 0.0, 0.0],
+                size: [1.0, 1.0, 1.0],
+            }],
+        };
+        assert_eq!(scene(0.0), scene(0.0));
+        assert_ne!(scene(0.0), scene(-0.0));
     }
 
     #[test]
