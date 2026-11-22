@@ -1,0 +1,589 @@
+{
+  "rows": [
+    {
+      "source_id": "SPEC-FUT-001",
+      "canonical_requirement_id": "FUT-001",
+      "proposal_id": "",
+      "design_section": "Future research: OIDC SSO, MFA, roles and capabilities (not present in the v0.3 baseline designs)",
+      "test_oracle": "No implementation oracle is authorized at this stage; future research must define a synthetic OIDC issuer/audience/role matrix and reject invalid issuer, audience, MFA state and overbroad role grants.",
+      "disposition": "future",
+      "reason": "FUTURE: This is explicitly nonblocking research and no proposal in the reviewed proposal set covers OIDC SSO as a bounded deliverable; the current package does not authorize identity-provider setup."
+    },
+    {
+      "source_id": "SPEC-FUT-002",
+      "canonical_requirement_id": "FUT-002",
+      "proposal_id": "SEED-44",
+      "design_section": "Future research: personal-vault/passkey/OTP portability",
+      "test_oracle": "Compare actual exported passkey/TOTP fixtures against source-vault records; require fidelity and safe OTP presentation, with user authorization distinct from unattended machine sync.",
+      "disposition": "research",
+      "reason": "PARTIAL: SEED-44 is the matching future research deliverable for personal-vault passkey and OTP portability; it does not implement WebAuthn/TOTP lifecycle support or establish coverage of all of FUT-002."
+    },
+    {
+      "source_id": "SPEC-FUT-003",
+      "canonical_requirement_id": "FUT-003",
+      "proposal_id": "SEED-48",
+      "design_section": "Future research: task-bound ephemeral agent credentials and revocation receipts",
+      "test_oracle": "For synthetic agent tasks, verify credentials are scoped, expire at task end, and produce revocation receipts; reject replay, cross-task use and unauthorized resource access.",
+      "disposition": "research",
+      "reason": "PARTIAL: SEED-48 investigates one task-bound credential slice of workload identity. K8s/Talos trust and SPIFFE/SPIRE integration are not thereby covered."
+    },
+    {
+      "source_id": "SPEC-FUT-004",
+      "canonical_requirement_id": "FUT-004",
+      "proposal_id": "FUT-12",
+      "design_section": "Future infrastructure: OCapN, iroh and Fleet id capability-seam convergence",
+      "test_oracle": "Use synthetic identities and capability graphs; verify identity categories remain distinct and unauthorized capabilities cannot be exercised across the proposed transport seam.",
+      "disposition": "research",
+      "reason": "PARTIAL: FUT-12 is the directly matching research deliverable; its bounded assessment is not authorization to contribute upstream or ship OCapN transport."
+    },
+    {
+      "source_id": "SPEC-FUT-005",
+      "canonical_requirement_id": "FUT-005",
+      "proposal_id": "SEED-16",
+      "design_section": "Future research: private ACME enrollment and order-state safety",
+      "test_oracle": "A local synthetic ACME client/CA trace must reject wrong challenge, unauthorized SAN, replayed nonce, expired order, mismatched CSR key and duplicate finalize; independent chain verification is required.",
+      "disposition": "research",
+      "reason": "PARTIAL: SEED-16 covers only private-CA ACME. EST/SCEP, remote issuance generally, and independent public-CA backup are separate uncovered outcomes; no live enrollment is authorized."
+    },
+    {
+      "source_id": "SPEC-FUT-006",
+      "canonical_requirement_id": "FUT-006",
+      "proposal_id": "SEED-45",
+      "design_section": "Future research: typed principal/resource graph and impact queries",
+      "test_oracle": "Against a fixed synthetic graph, compare reachable principals and impact results with a reference traversal; assert no unauthorized cross-domain edge or graph-query mutation.",
+      "disposition": "research",
+      "reason": "PARTIAL: SEED-45 addresses the graph-model slice only; Fleet id, Tailscale and Cozy stack integration remain distinct and are not claimed covered."
+    },
+    {
+      "source_id": "SPEC-FUT-007",
+      "canonical_requirement_id": "FUT-007",
+      "proposal_id": "SEED-43",
+      "design_section": "Future research: threshold signing and two-person root recovery options",
+      "test_oracle": "In a synthetic ceremony, require the configured threshold and two distinct custodians; reject insufficient shares, duplicate custodian identity, replay and unauthorized recovery.",
+      "disposition": "research",
+      "reason": "PARTIAL: SEED-43 covers threshold/recovery options only. Hardware custody adapters and distributed recovery are not fully covered by that proposal and remain research, not baseline authority."
+    },
+    {
+      "source_id": "SPEC-FUT-008",
+      "canonical_requirement_id": "FUT-008",
+      "proposal_id": "SEED-23",
+      "design_section": "Future research: origin-service credential rotation adapters",
+      "test_oracle": "For a synthetic service adapter, compare planned and observed credential versions; fail closed on service rejection, stale credential, partial activation or rollback mismatch, and verify no unrelated service is changed.",
+      "disposition": "research",
+      "reason": "PARTIAL: SEED-23 is a future adapter research deliverable, not approval to rotate real remote accounts; it does not assert all services support safe rotation."
+    },
+    {
+      "source_id": "RESEARCH-0003",
+      "canonical_requirement_id": "R-SEC-01-through-18",
+      "proposal_id": "",
+      "design_section": "Research backlog index: R-SEC-01 through R-SEC-18",
+      "test_oracle": "No single oracle applies to this index statement; each research packet requires its own bounded synthetic experiment, explicit go/no-go criteria and source-specific evidence.",
+      "disposition": "research",
+      "reason": "PARTIAL: this is an aggregate backlog directive spanning 18 distinct outcomes; no single proposal covers the bundle and the individual source records are mapped separately."
+    },
+    {
+      "source_id": "RSEC-01",
+      "canonical_requirement_id": "R-SEC-01",
+      "proposal_id": "PERF-01",
+      "design_section": "Research backlog: synthetic backend performance baseline",
+      "test_oracle": "Reproducible synthetic 1/10/100-item cold/warm benchmark; report measured p50/p95/p99, provider limits, read-after-write behavior and fixture correctness.",
+      "disposition": "research",
+      "reason": "PARTIAL: PERF-01 is a benchmark deliverable and supplies evidence for this research question; it is not a measured result or provider-selection decision."
+    },
+    {
+      "source_id": "RSEC-02",
+      "canonical_requirement_id": "R-SEC-02",
+      "proposal_id": "SEED-50",
+      "design_section": "Research backlog: authorized comprehensive credential inventory and migration",
+      "test_oracle": "On explicitly authorized synthetic/export fixtures, reconcile item IDs, fields, attachments and 2FA; prove lossless mapping and zero unexpected deletion by exact before/after inventory comparison.",
+      "disposition": "research",
+      "reason": "PARTIAL: SEED-50 plans the inventory/migration research. It does not grant BWS, 1Password or Bitwarden access or authorize a live migration."
+    },
+    {
+      "source_id": "RSEC-03",
+      "canonical_requirement_id": "R-SEC-03",
+      "proposal_id": "REC-04",
+      "design_section": "Research backlog: credential journal and forensic recovery",
+      "test_oracle": "Replay a synthetic event journal with tombstones, duplicate/reordered events, outage and redaction; recovered canonical state must match the reference state and contain no plaintext sentinel.",
+      "disposition": "research",
+      "reason": "PARTIAL: REC-04 proposes the local append-only journal and metadata-only outbox slice; its proposal does not resolve the full forensic recovery design."
+    },
+    {
+      "source_id": "RSEC-04",
+      "canonical_requirement_id": "R-SEC-04",
+      "proposal_id": "FUT-13",
+      "design_section": "Research backlog: offline bootstrap and secret continuity",
+      "test_oracle": "With two synthetic providers unavailable, restore only the authorized subset from an encrypted fixture; verify stale policy by credential class and assert no live-provider overwrite.",
+      "disposition": "research",
+      "reason": "PARTIAL: FUT-13 researches cross-source offline continuity. Hardware/TPM bootstrap variants and all per-class stale-policy choices remain open research."
+    },
+    {
+      "source_id": "RSEC-05",
+      "canonical_requirement_id": "R-SEC-05",
+      "proposal_id": "FUT-01",
+      "design_section": "Research backlog: OpenBao pilot and staged HA migration",
+      "test_oracle": "Isolated synthetic OpenBao lab must demonstrate KV/Transit/auth/PKI behavior and restore from backup; failover claims require measured quorum/partition/restore evidence and pinned versions.",
+      "disposition": "research",
+      "reason": "PARTIAL: FUT-01 is a bounded isolated Raft/recovery lab, not the complete OpenBao capability, HA or migration assessment in R-SEC-05."
+    },
+    {
+      "source_id": "RSEC-06",
+      "canonical_requirement_id": "R-SEC-06",
+      "proposal_id": "FUT-10",
+      "design_section": "Research backlog: Cloudflare encrypted vault/continuity relay",
+      "test_oracle": "Synthetic encrypted archive round-trip, tamper rejection, consistency and offline restore must pass; no plaintext sentinel may occur in metadata or logs.",
+      "disposition": "research",
+      "reason": "PARTIAL: FUT-10 evaluates an encrypted R2 continuity archive and no-deployment boundary; it does not decide whether to build the broader custom Worker vault."
+    },
+    {
+      "source_id": "RSEC-07",
+      "canonical_requirement_id": "R-SEC-07",
+      "proposal_id": "PERF-05",
+      "design_section": "Research backlog: SecureStore versus age/SOPS encrypted-file format",
+      "test_oracle": "Synthetic format fixtures must round-trip, reject tampering/rollback and expose atomic-update behavior; independent decrypt/verify result must match the expected fixture.",
+      "disposition": "research",
+      "reason": "PARTIAL: PERF-05 bounds a SecureStore/AEAD evaluation; it does not settle all SOPS/age interoperability or authorize adoption."
+    },
+    {
+      "source_id": "RSEC-08",
+      "canonical_requirement_id": "R-SEC-08",
+      "proposal_id": "PERF-03",
+      "design_section": "Research backlog: fnox/mise integration without duplicate authority",
+      "test_oracle": "Synthetic secret reads must remain read-only; cache invalidation after version change must be observed, and no secondary resolver or write authority may appear.",
+      "disposition": "research",
+      "reason": "PARTIAL: PERF-03 evaluates an optional fnox read-cache adapter; mise integration and final integration mode remain open."
+    },
+    {
+      "source_id": "RSEC-09",
+      "canonical_requirement_id": "R-SEC-09",
+      "proposal_id": "PERF-04",
+      "design_section": "Research backlog: GitOps deployment-secret supply chain",
+      "test_oracle": "Build synthetic NixOS/Kubernetes deployment artifacts and scan Git, CI output and build store for a sentinel plaintext secret; rotation and recovery must preserve the declared recipient set.",
+      "disposition": "research",
+      "reason": "PARTIAL: PERF-04 covers Fleet-side SOPS/age adapter work, only one slice of the NixOS/Flux/multisite supply-chain research; deployment remains unauthorized."
+    },
+    {
+      "source_id": "RSEC-10",
+      "canonical_requirement_id": "R-SEC-10",
+      "proposal_id": "SEED-48",
+      "design_section": "Research backlog: workload identity and dynamic credentials",
+      "test_oracle": "Synthetic container and non-Kubernetes agent identities must receive only scoped short-lived credentials; verify expiry/revocation and reject permanent-key fallback.",
+      "disposition": "research",
+      "reason": "PARTIAL: SEED-48 studies task-bound agent credentials; container identity, dynamic provider credentials and broad workload revocation remain uncovered."
+    },
+    {
+      "source_id": "RSEC-11",
+      "canonical_requirement_id": "R-SEC-11",
+      "proposal_id": "FUT-12",
+      "design_section": "Research backlog: Fleet id and OCapN convergence",
+      "test_oracle": "Synthetic identity/capability model must preserve distinct identity categories and reject capability escalation across an OCapN/iroh transport boundary.",
+      "disposition": "research",
+      "reason": "PARTIAL: FUT-12 researches the identity/capability seam; it does not settle all Fleet id integration or authorize upstream changes."
+    },
+    {
+      "source_id": "RSEC-12",
+      "canonical_requirement_id": "R-SEC-12",
+      "proposal_id": "SEED-47",
+      "design_section": "Research backlog: Cozystack, GitOps/CI and virtualization source of truth",
+      "test_oracle": "A candidate-system matrix must identify exactly one writer per resource; a synthetic reconciliation test must detect and fail on competing controller writes.",
+      "disposition": "research",
+      "reason": "PARTIAL: SEED-47 addresses Cozy ingress/certificate ownership only; NixOS hosts, VMs, KubeVirt, CI and bootstrap source-of-truth selection remain open."
+    },
+    {
+      "source_id": "RSEC-13",
+      "canonical_requirement_id": "R-SEC-13",
+      "proposal_id": "SEED-22",
+      "design_section": "Research backlog: public/private certificate automation",
+      "test_oracle": "For an isolated explicitly authorized test domain, compare CA response with an independent chain verifier and installed-certificate readback; otherwise produce a paper design with named blockers.",
+      "disposition": "research",
+      "reason": "PARTIAL: SEED-22 researches public ACME automation; private PKI coexistence, cert-manager ownership and public-domain authorization remain separate gates."
+    },
+    {
+      "source_id": "RSEC-14",
+      "canonical_requirement_id": "R-SEC-14",
+      "proposal_id": "FUT-11",
+      "design_section": "Research backlog: multi-site access and break-glass",
+      "test_oracle": "Synthetic partition/theft/replay scenarios must enforce identity binding and least privilege; verify break-glass remains available only to the declared principals and is audited.",
+      "disposition": "research",
+      "reason": "PARTIAL: FUT-11 defines access-plane boundaries but does not provide a full multi-site access comparison or a verified break-glass design."
+    },
+    {
+      "source_id": "RSEC-15",
+      "canonical_requirement_id": "R-SEC-15",
+      "proposal_id": "SEED-44",
+      "design_section": "Research backlog: personal vault, passkeys, TOTP and OTP presentation",
+      "test_oracle": "Compare source and exported synthetic passkey/OTP records for fidelity; presentation must require explicit user action and never expose OTP values in unattended logs.",
+      "disposition": "research",
+      "reason": "PARTIAL: SEED-44 studies portability and safe presentation; it does not grant personal-vault access or establish machine-sync behavior."
+    },
+    {
+      "source_id": "RSEC-16",
+      "canonical_requirement_id": "R-SEC-16",
+      "proposal_id": "FUT-12",
+      "design_section": "Research backlog: Fleet identity and capability integration",
+      "test_oracle": "Use synthetic Fleet logical IDs, iroh EndpointIds and capabilities; verify identity categories remain distinct and denied capability operations do not succeed.",
+      "disposition": "research",
+      "reason": "PARTIAL: FUT-12 assesses an OCapN/iroh capability seam, only a slice of the broader Fleet identity/capability integration question; no premature ecosystem integration is authorized."
+    },
+    {
+      "source_id": "RSEC-17",
+      "canonical_requirement_id": "R-SEC-17",
+      "proposal_id": "SEED-42",
+      "design_section": "Research backlog: long-term key lifecycle, revocation and algorithm migration",
+      "test_oracle": "Across synthetic policy versions, verify key lifecycle/rotation and revocation state, reject downgrade and unsupported algorithms, and preserve an explicit migration/recovery path.",
+      "disposition": "research",
+      "reason": "PARTIAL: SEED-42 covers algorithm-policy migration only; long-term key lifecycle, revocation and recovery remain broader research outcomes."
+    },
+    {
+      "source_id": "RSEC-18",
+      "canonical_requirement_id": "R-SEC-18",
+      "proposal_id": "SEED-51",
+      "design_section": "Research backlog: tamper-evident secret provenance and privacy-preserving analytics",
+      "test_oracle": "Synthetic provenance must be tamper-evident and recoverable while a sentinel scan confirms plaintext and unkeyed guessable hashes are absent.",
+      "disposition": "research",
+      "reason": "PARTIAL: SEED-51 covers metadata classification, privacy and analytics roles; the broader journal/recovery mechanics still require REC-04 and follow-on research."
+    },
+    {
+      "source_id": "SPEC-Q-pki074",
+      "canonical_requirement_id": "pki074",
+      "proposal_id": "SEED-37",
+      "design_section": "Future research: hardware-backed signer and KMS adapter requirements",
+      "test_oracle": "Synthetic signer tests must verify declared algorithm/capability, attestation and portability evidence, and reject export or unsupported signing operations.",
+      "disposition": "research",
+      "reason": "PARTIAL: SEED-37 supplies a future research deliverable for hardware/KMS adapters; no production signer, credentials or deployment is authorized."
+    },
+    {
+      "source_id": "SPEC-Q-pki077a",
+      "canonical_requirement_id": "pki077a",
+      "proposal_id": "SEED-01",
+      "design_section": "Future research: read-only key-rotation and trust-impact explorer",
+      "test_oracle": "A fixed synthetic trust graph must produce deterministic impact sets equal to a reference traversal; mutation attempts and secret-bearing graph fields must be rejected.",
+      "disposition": "future",
+      "reason": "FUTURE: SEED-01 is a bounded read-only explorer research proposal, not a dashboard implementation or signing path."
+    },
+    {
+      "source_id": "SPEC-Q-pki077b",
+      "canonical_requirement_id": "pki077b",
+      "proposal_id": "SEED-39",
+      "design_section": "Future research: read-only PKI health monitoring and publication audit",
+      "test_oracle": "Synthetic stale/expired/revoked publication fixtures must yield expected findings; monitoring must not mutate trust or issue certificates.",
+      "disposition": "future",
+      "reason": "FUTURE: SEED-39 is the future monitoring/audit deliverable; managed trust deployment and automatic mitigation remain separate and approval-gated."
+    },
+    {
+      "source_id": "SPEC-Q-pki078a",
+      "canonical_requirement_id": "pki078a",
+      "proposal_id": "SEED-04",
+      "design_section": "Future research: ML-KEM hybrid transport assurance",
+      "test_oracle": "Pinned handshake API and independent packet/handshake capture must agree on classical, hybrid and unsupported negotiation, including downgrade rejection.",
+      "disposition": "research",
+      "reason": "PARTIAL: SEED-04 researches KEM transport separately from signatures; it does not authorize production TLS policy changes."
+    },
+    {
+      "source_id": "SPEC-Q-pki078b",
+      "canonical_requirement_id": "pki078b",
+      "proposal_id": "SEED-42",
+      "design_section": "Future research: explicit algorithm-policy migration and rollout evidence",
+      "test_oracle": "Versioned synthetic policy fixtures must reject downgrade and unsupported algorithm paths while preserving explicitly supported old-profile verification.",
+      "disposition": "research",
+      "reason": "PARTIAL: SEED-42 researches signature-policy evolution; it is not evidence that PQ signature deployment is supported or approved."
+    },
+    {
+      "source_id": "SPEC-B-0008",
+      "canonical_requirement_id": "36",
+      "proposal_id": "SEED-50",
+      "design_section": "Approval-blocked: separately authorized credential inventory/migration sweep",
+      "test_oracle": "Before any live action, require a signed scope/authorization receipt; on fixtures, three-way merge must preserve conflicts and zz.delete history and never delete on incomplete inventory.",
+      "disposition": "approval-blocked",
+      "reason": "APPROVAL-BLOCKED: Sweep B for Bitwarden/personal vaults requires separate explicit authorization and a reviewed migration plan; no such authorization is established by this mapping."
+    },
+    {
+      "source_id": "SPEC-B-0011",
+      "canonical_requirement_id": "48.4",
+      "proposal_id": "OPS-10",
+      "design_section": "Approval-blocked: production approval, custody and recovery gates",
+      "test_oracle": "A production plan must fail validation unless source scope, replication, retention, recovery/root custody, client support and single-controller ownership each have explicit reviewed approvals.",
+      "disposition": "approval-blocked",
+      "reason": "APPROVAL-BLOCKED: This source enumerates unresolved human decisions and the spec grants no access; OPS-10 describes the approval-gate deliverable but does not itself satisfy or grant those approvals."
+    },
+    {
+      "source_id": "SPEC-C-0058",
+      "canonical_requirement_id": "architecture",
+      "proposal_id": "FUT-01",
+      "design_section": "Historical/research context: OpenBao maturity, HA and provider-version evidence",
+      "test_oracle": "Any maturity assertion must cite pinned version evidence; synthetic pilot must distinguish standalone from HA and demonstrate restore rather than infer DR from Helm installation.",
+      "disposition": "research",
+      "reason": "PARTIAL: FUT-01 covers an isolated OpenBao lab/recovery slice; the source's HSM/plugin and ML-DSA OCSP maturity questions remain unresolved."
+    },
+    {
+      "source_id": "SPEC-C-0059",
+      "canonical_requirement_id": "architecture",
+      "proposal_id": "FUT-01",
+      "design_section": "Historical/research context: isolated OpenBao synthetic pilot",
+      "test_oracle": "Synthetic lab tests must exercise auth, KV, nonexporting signing, PKI/CRL, failure/recovery and performance; restoration must reproduce fixture state and least-privilege checks must deny excess access.",
+      "disposition": "research",
+      "reason": "PARTIAL: FUT-01 directly covers isolated Raft/recovery behavior, but not every listed pilot capability or HA migration decision."
+    },
+    {
+      "source_id": "SPEC-C-0060",
+      "canonical_requirement_id": "architecture",
+      "proposal_id": "FUT-01",
+      "design_section": "Historical/research context: OpenBao scale-up and multi-site HA gates",
+      "test_oracle": "Simulated quorum/partition/restore cases must match an explicit topology model; no HA claim is accepted without successful pinned-version restore evidence.",
+      "disposition": "research",
+      "reason": "PARTIAL: The proposal's isolated lab is not a multi-site topology decision; production scale-up remains deferred pending reviewed evidence."
+    },
+    {
+      "source_id": "SPEC-C-0064",
+      "canonical_requirement_id": "architecture",
+      "proposal_id": "FUT-10",
+      "design_section": "Historical/research context: Cloudflare custom provider feasibility and security gate",
+      "test_oracle": "An isolated synthetic prototype must demonstrate authenticated encryption, consistency, recovery and restore; benchmark and threat-model evidence must precede any custom-provider recommendation.",
+      "disposition": "research",
+      "reason": "PARTIAL: FUT-10 researches encrypted continuity archive feasibility, not a live migration or a decision to build a custom Cloudflare vault."
+    },
+    {
+      "source_id": "SPEC-C-0066",
+      "canonical_requirement_id": "architecture",
+      "proposal_id": "PERF-05",
+      "design_section": "Historical/research context: SecureStore cryptography and interoperability review",
+      "test_oracle": "Synthetic tamper, rollback, API and atomic-update fixtures must have expected independent verification outcomes; adoption is blocked on cryptographic/interoperability review.",
+      "disposition": "research",
+      "reason": "PARTIAL: PERF-05 is a bounded evaluation and does not adopt SecureStore or establish that an importer is safe."
+    },
+    {
+      "source_id": "SPEC-C-0067",
+      "canonical_requirement_id": "architecture",
+      "proposal_id": "",
+      "design_section": "Historical provider-candidate and licensing context; no corresponding proposal section",
+      "test_oracle": "No implementation oracle applies; any later provider comparison must verify current license, product semantics and feature/API evidence against pinned releases.",
+      "disposition": "historical",
+      "reason": "HISTORICAL: This is a dated candidate-disposition note (scrt, pass, Infisical, Vaultwarden and Vault/OpenBao distinctions), not an authorized or currently scoped implementation proposal; no matching proposal body covers the bundle."
+    },
+    {
+      "source_id": "COMPANION-OUTSCOPE-0001",
+      "canonical_requirement_id": "separate-pm-charter",
+      "proposal_id": "",
+      "design_section": "Administrative scope boundary: separate PM/queue design program",
+      "test_oracle": "No Fleet CA implementation test applies; scope audit must verify the listed PM/queue behaviors remain assigned to the companion program rather than this design.",
+      "disposition": "administrative",
+      "reason": "ADMINISTRATIVE: Urgency bands and queue/triage behavior are explicitly outside this CA issue inventory and belong to the separate PM charter; no Fleet CA proposal is appropriate."
+    },
+    {
+      "source_id": "COMPANION-OUTSCOPE-0002",
+      "canonical_requirement_id": "separate-pm-charter",
+      "proposal_id": "",
+      "design_section": "Administrative scope boundary: separate PM Stack program",
+      "test_oracle": "No Fleet CA implementation test applies; scope audit must keep mobile PM, routing, queue and work-item behavior in the companion workstream.",
+      "disposition": "administrative",
+      "reason": "ADMINISTRATIVE: This row is an explicit out-of-scope cross-domain bundle, not Fleet CA work; it is retained as an administrative boundary rather than mapped to CA proposals."
+    },
+    {
+      "source_id": "COMPANION-CONTEXT-0001",
+      "canonical_requirement_id": "separate-pm-charter-provenance",
+      "proposal_id": "",
+      "design_section": "Administrative provenance and scope boundary",
+      "test_oracle": "No implementation oracle applies; verify provenance and companion-workstream attribution from the source manifest.",
+      "disposition": "administrative",
+      "reason": "ADMINISTRATIVE: The statement records provenance for a separate PM Stack draft and explicitly says it is not a Fleet CA implementation requirement."
+    },
+    {
+      "source_id": "HANDOFF-CONTEXT-0001",
+      "canonical_requirement_id": "handoff-provenance",
+      "proposal_id": "",
+      "design_section": "Historical provenance and evidence-lineage context",
+      "test_oracle": "No implementation oracle applies; confirm linked historical references and missing-conversation limitation are represented without promoting them to requirements.",
+      "disposition": "historical",
+      "reason": "HISTORICAL: This row records historical provenance and evidence limitations only; it contains no verified new requirement or implementation outcome."
+    },
+    {
+      "source_id": "SPEC-C-0094",
+      "canonical_requirement_id": "input3-§1 Mission / authority",
+      "proposal_id": "",
+      "design_section": "Historical crosswalk: input-three mission and authority",
+      "test_oracle": "No standalone implementation oracle applies; conflict resolution is controlled by current v0.3 sections, with any normative obligations mapped at their operative source rows.",
+      "disposition": "historical",
+      "reason": "HISTORICAL: This is an explicit historical crosswalk to current sections, not a new requirement; mapping it to an implementation proposal would duplicate or elevate historical context."
+    },
+    {
+      "source_id": "SPEC-C-0095",
+      "canonical_requirement_id": "input3-§2 Architectural principles",
+      "proposal_id": "",
+      "design_section": "Historical crosswalk: input-three architectural principles",
+      "test_oracle": "No standalone oracle applies; operative current architecture requirements remain the normative test sources.",
+      "disposition": "historical",
+      "reason": "HISTORICAL: The row is a historical crosswalk that points to current sections; it is not an independent deliverable."
+    },
+    {
+      "source_id": "SPEC-C-0106",
+      "canonical_requirement_id": "input3-§13 SSH and other credentials",
+      "proposal_id": "SEED-12",
+      "design_section": "Historical crosswalk: SSH and other credentials; native SSH CA remains future research",
+      "test_oracle": "For synthetic SSH certificates, OpenSSH must accept the expected principal and reject wrong principal/type, expiry, untrusted CA, revoked serial and forbidden forwarding option.",
+      "disposition": "historical",
+      "reason": "HISTORICAL: The source is historical crosswalk context that points to current typed-object/interop sections; SEED-12 covers only a future native SSH CA lifecycle study and does not imply coverage of current SSH credential requirements."
+    },
+    {
+      "source_id": "SPEC-C-0114",
+      "canonical_requirement_id": "input3-Concluding four refinements",
+      "proposal_id": "",
+      "design_section": "Historical crosswalk: concluding input-three refinements",
+      "test_oracle": "No standalone oracle applies; verify each operative refinement against its current source section and dedicated canonical requirement record.",
+      "disposition": "historical",
+      "reason": "HISTORICAL: This is a historical index spanning multiple current outcomes, not one independently testable proposal; its bundled source outcomes must be mapped at their operative requirement records."
+    },
+    {
+      "source_id": "COORD-ADMIN-0002",
+      "canonical_requirement_id": "source-integrity-and-precedence",
+      "proposal_id": "TRACE-01",
+      "design_section": "Administrative source integrity, precedence and traceability",
+      "test_oracle": "Frozen source files must match their manifest SHA-256; duplicate IDs, invalid ranges and nonmatching excerpts must fail inventory validation.",
+      "disposition": "administrative",
+      "reason": "ADMINISTRATIVE: TRACE-01 addresses traceability/evidence coverage; this administrative row defines source provenance and precedence rather than a Fleet capability."
+    },
+    {
+      "source_id": "COORD-ADMIN-0003",
+      "canonical_requirement_id": "repo-and-tool-preflight",
+      "proposal_id": "",
+      "design_section": "Administrative coordinator preflight and run control",
+      "test_oracle": "No CA feature oracle applies; coordinator evidence must record completed preflight inputs and distinguish verified tool behavior from documentation claims.",
+      "disposition": "administrative",
+      "reason": "ADMINISTRATIVE: The statement governs coordinator process/preflight, not a Fleet CA product feature; no implementation proposal is appropriate."
+    },
+    {
+      "source_id": "COORD-ADMIN-0004",
+      "canonical_requirement_id": "source-staging-integrity",
+      "proposal_id": "",
+      "design_section": "Administrative source-staging integrity and security boundary",
+      "test_oracle": "Staging receipt must record authorized transfer, checked identity/path and verified source checksums; absent staging evidence is reported as blocked.",
+      "disposition": "administrative",
+      "reason": "ADMINISTRATIVE: This is a source-handling/run-safety contract, not a product capability or proposal."
+    },
+    {
+      "source_id": "COORD-ADMIN-0005",
+      "canonical_requirement_id": "canonical-issue-hierarchy",
+      "proposal_id": "",
+      "design_section": "Administrative issue hierarchy and dependency conventions",
+      "test_oracle": "Issue-tree audit must distinguish parent/index relationships from blocking dependencies and detect duplicate interchangeable parents.",
+      "disposition": "administrative",
+      "reason": "ADMINISTRATIVE: This row governs issue organization; it is not a Fleet CA implementation outcome."
+    },
+    {
+      "source_id": "COORD-ADMIN-0006",
+      "canonical_requirement_id": "domain-starter-context",
+      "proposal_id": "",
+      "design_section": "Historical planning context: starter themes",
+      "test_oracle": "No product oracle applies; compare the current starter set to the historical themes and record deduplication without recreating obsolete issue structure.",
+      "disposition": "historical",
+      "reason": "HISTORICAL: The ten suggested themes are explicitly historical planning context and are superseded by current starters in note.md."
+    },
+    {
+      "source_id": "COORD-ADMIN-0007",
+      "canonical_requirement_id": "granular-issue-content-contract",
+      "proposal_id": "",
+      "design_section": "Administrative granular-issue quality contract",
+      "test_oracle": "Each published issue must pass a checklist for one deliverable, source references, acceptance, boundaries, tests, recovery, stage and open decisions.",
+      "disposition": "administrative",
+      "reason": "ADMINISTRATIVE: This is an issue-authoring quality contract and does not represent a product feature proposal."
+    },
+    {
+      "source_id": "COORD-ADMIN-0008",
+      "canonical_requirement_id": "issue-outbox-safety",
+      "proposal_id": "",
+      "design_section": "Administrative issue-outbox write safety",
+      "test_oracle": "Dry-run/outbox reconciliation must show stable dedupe keys, quota/backoff compliance, idempotent receipts and post-write verification; pending intent cannot count as creation.",
+      "disposition": "administrative",
+      "reason": "ADMINISTRATIVE: This statement governs safe issue publication; it is not an implementation requirement for Fleet CA."
+    },
+    {
+      "source_id": "COORD-ADMIN-0009",
+      "canonical_requirement_id": "direct-dispatch-verification",
+      "proposal_id": "",
+      "design_section": "Administrative dispatch and launch verification",
+      "test_oracle": "A dispatch receipt must bind canonical issue, authorized route/task/session and prompt delivery; session creation alone must not satisfy the launch check.",
+      "disposition": "administrative",
+      "reason": "ADMINISTRATIVE: This is coordinator dispatch procedure, not a product proposal."
+    },
+    {
+      "source_id": "COORD-ADMIN-0012",
+      "canonical_requirement_id": "issue-priority-and-lifecycle",
+      "proposal_id": "",
+      "design_section": "Administrative issue priority, status and lifecycle policy",
+      "test_oracle": "Issue audit must distinguish priority, scheduling pressure, status and dispatch directive; completed work requires a verified receipt.",
+      "disposition": "administrative",
+      "reason": "ADMINISTRATIVE: The row specifies issue-management semantics, not a Fleet CA feature."
+    },
+    {
+      "source_id": "COORD-ADMIN-0013",
+      "canonical_requirement_id": "design-artifact-set",
+      "proposal_id": "",
+      "design_section": "Future administrative deliverable guidance",
+      "test_oracle": "Artifact audit must link only populated, evidence-backed deliverables and avoid empty scaffolding.",
+      "disposition": "administrative",
+      "reason": "ADMINISTRATIVE: This is future guidance for design artifacts, not evidence that the listed artifacts exist or a product implementation requirement."
+    },
+    {
+      "source_id": "COORD-ADMIN-0014",
+      "canonical_requirement_id": "durable-session-supervision",
+      "proposal_id": "",
+      "design_section": "Administrative supervision and evidence contract",
+      "test_oracle": "If supervision is claimed, a registered monitor must verify session binding, meaningful activity, blockers and terminal evidence; otherwise report unavailable.",
+      "disposition": "administrative",
+      "reason": "ADMINISTRATIVE: This is a run-supervision contract, not a CA product capability; no monitor availability is asserted here."
+    },
+    {
+      "source_id": "COORD-ADMIN-0015",
+      "canonical_requirement_id": "summit-completion-audit",
+      "proposal_id": "",
+      "design_section": "Administrative design-completion audit",
+      "test_oracle": "Completion audit checks source/repo review, precedence, artifacts, issue receipts, dependencies, safety gates and unresolved items independently.",
+      "disposition": "administrative",
+      "reason": "ADMINISTRATIVE: This defines design-run completion evidence and does not close implementation work."
+    },
+    {
+      "source_id": "COORD-ADMIN-0016",
+      "canonical_requirement_id": "launch-and-final-report-fields",
+      "proposal_id": "",
+      "design_section": "Administrative launch receipt and final-report fields",
+      "test_oracle": "Report validation requires identifiers, evidence references, counts, blockers, status and unresolved items to be present and distinguish verified from claimed results.",
+      "disposition": "administrative",
+      "reason": "ADMINISTRATIVE: This is a reporting contract, not a product proposal."
+    },
+    {
+      "source_id": "COORD-ADMIN-0017",
+      "canonical_requirement_id": "completion-evidence-boundaries",
+      "proposal_id": "",
+      "design_section": "Administrative completion and evidence boundaries",
+      "test_oracle": "Final status must distinguish inspect/stage/create/dispatch/verify/supervise and design/implementation; fixture success cannot satisfy production authorization.",
+      "disposition": "administrative",
+      "reason": "ADMINISTRATIVE: This is an explicit administrative safety/reporting boundary and the companion PM charter is out of scope."
+    },
+    {
+      "source_id": "MANIFEST-0001",
+      "canonical_requirement_id": "source-integrity-manifest",
+      "proposal_id": "",
+      "design_section": "Administrative archive integrity metadata",
+      "test_oracle": "Recompute SHA-256 for each covered archive file and compare byte-for-byte with the manifest.",
+      "disposition": "administrative",
+      "reason": "ADMINISTRATIVE: This row is integrity metadata rather than a product outcome; it is not mapped to implementation work."
+    },
+    {
+      "source_id": "IMPLEMENTER-0001",
+      "canonical_requirement_id": "future-implementation-scope",
+      "proposal_id": "",
+      "design_section": "Future administrative implementation handoff scope",
+      "test_oracle": "No implementation oracle applies at design time; future handoff must retain source obligations and distinguish evidence from proposals.",
+      "disposition": "administrative",
+      "reason": "ADMINISTRATIVE: The source is an implementation-phase scope instruction and does not authorize implementation in this mapping task."
+    },
+    {
+      "source_id": "IMPLEMENTER-CONTEXT-0001",
+      "canonical_requirement_id": "future-handoff-deliverables",
+      "proposal_id": "",
+      "design_section": "Future administrative handoff deliverables",
+      "test_oracle": "No current product oracle applies; later deliverables require their own issue receipts and verification evidence.",
+      "disposition": "administrative",
+      "reason": "ADMINISTRATIVE: This is future-deliverable framing, not evidence those artifacts exist and not an implementation proposal."
+    }
+  ]
+}

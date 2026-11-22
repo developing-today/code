@@ -1,0 +1,1072 @@
+[
+  {
+    "source_or_member_id": "SPEC-0002",
+    "primary_proposal_id": "ROOT-02",
+    "supporting_proposal_ids": [
+      "ARCH-01"
+    ],
+    "design_section": "designs/pki-roots.md §§2,4",
+    "planned_test_oracle": "Parse manifest; assert distinct typed identities for root set/key/anchor/certificate/issuer/purpose/generation/partition; reject ambiguous locator resolution.",
+    "coverage_rationale": "ROOT-02 owns PKI object metadata; ARCH-01 remains shared identity seam.",
+    "acceptance_enrichment": []
+  },
+  {
+    "source_or_member_id": "SPEC-0208",
+    "parent_source_id": [
+      "Acceptance must distinguish key-generation/storage approval from per-signature authorization; the latter names signer, final SPKI, serial, dates, TBS hash, purpose and destinations."
+    ],
+    "primary_proposal_id": "ROOT-03",
+    "supporting_proposal_ids": [
+      "ROOT-05"
+    ],
+    "design_section": "designs/pki-roots.md §§2,6-7",
+    "planned_test_oracle": "Reference profile asserts developing.today LLC/US, four algorithms, exact root notAfter 2050-07-07T12:00:00Z, and explicit signer authorization; ambient lookup fails.",
+    "coverage_rationale": "ROOT-03 owns synthetic reference roots; ROOT-05 binds each signature authorization.",
+    "acceptance_enrichment": []
+  },
+  {
+    "source_or_member_id": "SPEC-0006",
+    "primary_proposal_id": "ROOT-04",
+    "supporting_proposal_ids": [
+      "ROOT-03",
+      "ROOT-07"
+    ],
+    "design_section": "designs/pki-roots.md §§2-4",
+    "planned_test_oracle": "Golden graph exactly 4 independent keys/self-signed certs + 9 directed cross-certs; reject ML-DSA-root-to-classical edges; independently verify supported signatures.",
+    "coverage_rationale": "ROOT-03 creates identities; ROOT-04 owns root edges; ROOT-07 owns trust semantics.",
+    "acceptance_enrichment": []
+  },
+  {
+    "source_or_member_id": "SPEC-0122",
+    "primary_proposal_id": "ROOT-01",
+    "supporting_proposal_ids": [],
+    "design_section": "designs/pki-roots.md §2; designs/pki-issuance.md §5",
+    "planned_test_oracle": "Registry round-trip uses standardized ML-DSA-44/FIPS 204/RFC 9881 identifiers/encodings; reject Dilithium2 equivalence and fail closed on unsupported operations.",
+    "coverage_rationale": "ROOT-01 owns algorithm identity and capability policy.",
+    "acceptance_enrichment": []
+  },
+  {
+    "source_or_member_id": "SPEC-0123",
+    "primary_proposal_id": "ROOT-07",
+    "supporting_proposal_ids": [
+      "ROOT-04"
+    ],
+    "design_section": "designs/pki-roots.md §§3-4",
+    "planned_test_oracle": "Path matrix: cross-certs are untrusted candidates; PQ-only accepts only ML-DSA-root/all-ML-DSA paths and rejects classical anchors/signatures; compatibility path makes no PQ claim.",
+    "coverage_rationale": "ROOT-07 owns trust profiles; ROOT-04 supplies graph candidates.",
+    "acceptance_enrichment": []
+  },
+  {
+    "source_or_member_id": "SPEC-0007",
+    "primary_proposal_id": "CERT-06",
+    "supporting_proposal_ids": [
+      "CERT-05"
+    ],
+    "design_section": "designs/pki-issuance.md §§4-6",
+    "planned_test_oracle": "Generate separate Base/Internal Web sets and independent A/B issuer keys with correct CA extensions; assert no key reuse.",
+    "coverage_rationale": "CERT-06 owns issuer keys/cert variants; CERT-05 owns profiles.",
+    "acceptance_enrichment": []
+  },
+  {
+    "source_or_member_id": "SPEC-0008",
+    "primary_proposal_id": "ROOT-07",
+    "supporting_proposal_ids": [
+      "CERT-13"
+    ],
+    "design_section": "designs/pki-roots.md §4; designs/pki-issuance.md §§8,11",
+    "planned_test_oracle": "Export all/classical/PQ bundles; assert only selected self-signed roots are anchors and cross-certs/intermediates remain candidates; run strict PQ negatives.",
+    "coverage_rationale": "ROOT-07 owns root trust subsets; CERT-13 owns install/test matrix.",
+    "acceptance_enrichment": []
+  },
+  {
+    "source_or_member_id": "SPEC-0009",
+    "parent_source_id": [
+      "State explicitly that an issued certificate’s CDP URL remains durable and serves later verified monotonic CRLs for the same signer/generation."
+    ],
+    "primary_proposal_id": "CERT-10",
+    "supporting_proposal_ids": [
+      "CERT-09",
+      "CERT-15",
+      "ROOT-06"
+    ],
+    "design_section": "designs/pki-issuance.md §§9-10",
+    "planned_test_oracle": "Fixture checks correct issuer AIA and signer-specific stable CDP; mirror receipts bind MIME/hash/cache/DNS/status/proof/rollback; later monotonic CRL update appears at original CDP without certificate rewrite.",
+    "coverage_rationale": "CERT-10 owns durable CDP/publication; CERT-09 owns CRL state; CERT-15 owns DNS/runbook.",
+    "acceptance_enrichment": []
+  },
+  {
+    "source_or_member_id": "SPEC-0010",
+    "parent_source_id": [
+      "Include exact-expiry rejection at the boundary: notAfter <= current injected time is expired."
+    ],
+    "primary_proposal_id": "ROOT-02",
+    "supporting_proposal_ids": [
+      "CERT-08"
+    ],
+    "design_section": "designs/pki-roots.md §§6-7; designs/pki-issuance.md §§3,7",
+    "planned_test_oracle": "Model/property tests round-trip stable IDs, generation/partition, serial uniqueness, expiry and parent resolution; reject collision, ambiguity and notAfter <= injected now.",
+    "coverage_rationale": "ROOT-02 owns metadata/serial schema; CERT-08 owns lifecycle.",
+    "acceptance_enrichment": []
+  },
+  {
+    "source_or_member_id": "SPEC-0012-refined01",
+    "parent_source_id": "SPEC-0012",
+    "primary_proposal_id": "CERT-12",
+    "supporting_proposal_ids": [
+      "ROOT-08",
+      "OPS-04"
+    ],
+    "design_section": "designs/pki-issuance.md §§7-8",
+    "planned_test_oracle": "Generated public/private fixture matches manifest hashes and CMS fingerprints; private output requires authorized encrypted destination; unsafe formats fail.",
+    "coverage_rationale": "CERT-12 owns certs-only CMS/delivery kit; ROOT-08 owns root public bundles; OPS-04 owns archive atomicity.",
+    "acceptance_enrichment": []
+  },
+  {
+    "source_or_member_id": "SPEC-0012-refined02",
+    "parent_source_id": "SPEC-0012",
+    "primary_proposal_id": "OPS-04",
+    "supporting_proposal_ids": [
+      "CERT-12"
+    ],
+    "design_section": "designs/pki-issuance.md §8",
+    "planned_test_oracle": "Crash each archive-write boundary; assert atomic rollback/resume, unrelated-file preservation and no private bytes in public-only mode.",
+    "coverage_rationale": "OPS-04 owns archive transaction; CERT-12 owns kit content.",
+    "acceptance_enrichment": []
+  },
+  {
+    "source_or_member_id": "SPEC-0228",
+    "primary_proposal_id": "CERT-08",
+    "supporting_proposal_ids": [
+      "CERT-01"
+    ],
+    "design_section": "designs/pki-issuance.md §§6-7",
+    "planned_test_oracle": "State model distinguishes create/inspect/list/renew/rotate/replace/restrict; assert key/generation transitions and idempotent resume.",
+    "coverage_rationale": "CERT-08 owns lifecycle; CERT-01 owns typed operation contract.",
+    "acceptance_enrichment": []
+  },
+  {
+    "source_or_member_id": "SPEC-0262",
+    "primary_proposal_id": "CERT-06",
+    "supporting_proposal_ids": [
+      "CERT-02",
+      "ROOT-04"
+    ],
+    "design_section": "designs/pki-issuance.md §5; designs/pki-roots.md §3",
+    "planned_test_oracle": "Compare literal §24.2 edge manifest: 13 issuer certs per purpose/partition, 52 issuer certs total, 16 independent issuer keypairs, 65 CA certificates including 13 root variants; reject extra/missing edges and invented 32+20 split.",
+    "coverage_rationale": "CERT-06 implements issuer graph; CERT-02 freezes exact 65-certificate manifest; ROOT-04 owns root graph.",
+    "acceptance_enrichment": []
+  },
+  {
+    "source_or_member_id": "SPEC-0201#atomic-001",
+    "parent_source_id": "SPEC-0201",
+    "primary_proposal_id": "ROOT-12",
+    "supporting_proposal_ids": [
+      "ROOT-05",
+      "ROOT-09"
+    ],
+    "design_section": "designs/pki-roots.md §§5-7; designs/pki-issuance.md §12",
+    "planned_test_oracle": "Synthetic ceremony rejects implicit signer lookup, missing explicit root source/destination policy and production action without separate approval.",
+    "coverage_rationale": "ROOT-12 owns production gates; ROOT-05 signature binding; ROOT-09 synthetic closed escrow.",
+    "acceptance_enrichment": [
+      "Keep root key generation/storage/escrow approval separate from each signature authorization; no production operation is authorized by these synthetic proposals."
+    ]
+  },
+  {
+    "source_or_member_id": "SPEC-0201#atomic-002",
+    "parent_source_id": "SPEC-0201",
+    "primary_proposal_id": "ROOT-05",
+    "supporting_proposal_ids": [
+      "ARCH-06"
+    ],
+    "design_section": "designs/pki-roots.md §6",
+    "planned_test_oracle": "Reject absent/expired/reused/mismatched authorization; valid tuple binds signer, final subject SPKI, serial, exact dates, TBS digest, purpose and destinations.",
+    "coverage_rationale": "ROOT-05 owns transaction-bound signer authorization; ARCH-06 is shared seam.",
+    "acceptance_enrichment": []
+  },
+  {
+    "source_or_member_id": "SPEC-0201#atomic-003",
+    "parent_source_id": "SPEC-0201",
+    "primary_proposal_id": "ROOT-09",
+    "supporting_proposal_ids": [
+      "ROOT-10",
+      "ROOT-12"
+    ],
+    "design_section": "designs/pki-roots.md §§8-10",
+    "planned_test_oracle": "Synthetic escrow permits only encrypted laptop, authorized BWS project and authorized 1Password vault; resolver/cache/prefetch/equality-index/replication paths fail; independent restore verifies hashes.",
+    "coverage_rationale": "ROOT-09 synthetic adapter; ROOT-10 payload/recovery design; ROOT-12 production gate.",
+    "acceptance_enrichment": []
+  },
+  {
+    "source_or_member_id": "SPEC-0202#atomic-001",
+    "parent_source_id": "SPEC-0202",
+    "primary_proposal_id": "ROOT-02",
+    "supporting_proposal_ids": [
+      "CERT-06"
+    ],
+    "design_section": "designs/pki-roots.md §7; designs/pki-issuance.md §§3,5",
+    "planned_test_oracle": "Schema tests enforce stable configurable RFC5280 subject grammar, generation token, distinct partition ID, unique issuer+serial and unambiguous manifest resolution.",
+    "coverage_rationale": "ROOT-02 owns metadata; CERT-06 owns issuer identity/serial graph.",
+    "acceptance_enrichment": []
+  },
+  {
+    "source_or_member_id": "SPEC-0202#atomic-002",
+    "parent_source_id": "SPEC-0202",
+    "primary_proposal_id": "CERT-06",
+    "supporting_proposal_ids": [],
+    "design_section": "designs/pki-issuance.md §5",
+    "planned_test_oracle": "Generate configured repeated algorithms/counts under declared zipped/Cartesian semantics; assert independent keys and child validity bounded by parent/purpose.",
+    "coverage_rationale": "CERT-06 owns issuer builder.",
+    "acceptance_enrichment": []
+  },
+  {
+    "source_or_member_id": "SPEC-0202#atomic-003",
+    "parent_source_id": "SPEC-0202",
+    "primary_proposal_id": "CERT-06",
+    "supporting_proposal_ids": [
+      "ROOT-02"
+    ],
+    "design_section": "designs/pki-issuance.md §§3,5",
+    "planned_test_oracle": "Golden subject tests ensure configurable CN ends in G token with partition before it and A/B separately represented; collision fails.",
+    "coverage_rationale": "CERT-06 owns issuer names/reference sets; ROOT-02 grammar.",
+    "acceptance_enrichment": []
+  },
+  {
+    "source_or_member_id": "SPEC-0203#atomic-001",
+    "parent_source_id": "SPEC-0203",
+    "primary_proposal_id": "CERT-16",
+    "supporting_proposal_ids": [
+      "ROOT-03",
+      "CERT-06",
+      "ARCH-07"
+    ],
+    "design_section": "designs/pki-issuance.md §§6-7",
+    "planned_test_oracle": "Crash each root-plus-base plan step; assert dependency order, durable receipt, no double signature, idempotent resume and both references.",
+    "coverage_rationale": "CERT-16 owns journal/resume over shared ARCH-07; ROOT-03/CERT-06 build artifacts.",
+    "acceptance_enrichment": []
+  },
+  {
+    "source_or_member_id": "SPEC-0204#atomic-001",
+    "parent_source_id": "SPEC-0204",
+    "primary_proposal_id": "CERT-05",
+    "supporting_proposal_ids": [
+      "CERT-07"
+    ],
+    "design_section": "designs/pki-issuance.md §§4,6",
+    "planned_test_oracle": "Property tests normalize/dedupe SANs, enforce wildcard apex+wildcard for reference domains and algorithm-family KU/EKU; invalid/policy-forbidden names fail.",
+    "coverage_rationale": "CERT-05 owns profiles/SAN; CERT-07 issuance.",
+    "acceptance_enrichment": []
+  },
+  {
+    "source_or_member_id": "SPEC-0205#atomic-001",
+    "parent_source_id": "SPEC-0205",
+    "primary_proposal_id": "CERT-10",
+    "supporting_proposal_ids": [
+      "CERT-09",
+      "CERT-11"
+    ],
+    "design_section": "designs/pki-issuance.md §§9-10",
+    "planned_test_oracle": "For each signer verify AIA issuer candidate/CDP actual signer’s current CRL; mirror receipt validates MIME/hash/cache/DNS/status/proof/rollback; stable CDP updates monotonically.",
+    "coverage_rationale": "CERT-10 owns publication; CERT-09 CRL state; CERT-11 guarded promotion.",
+    "acceptance_enrichment": [
+      "Test update-after-issuance: retain original CDP URL and publish successive verified CRL numbers for same signer/generation."
+    ]
+  },
+  {
+    "source_or_member_id": "SPEC-0264",
+    "primary_proposal_id": "CERT-09",
+    "supporting_proposal_ids": [
+      "CERT-10",
+      "CERT-14"
+    ],
+    "design_section": "designs/pki-issuance.md §9",
+    "planned_test_oracle": "Per-issuer tests distinguish good/revoked/unknown; enforce freshness, monotonic CRL number and signer/AKI; stale/unknown follows explicit soft/hard policy; no phantom OCSP.",
+    "coverage_rationale": "CERT-09 owns leaf CRLs; CERT-14 OCSP boundary; CERT-10 publication.",
+    "acceptance_enrichment": []
+  },
+  {
+    "source_or_member_id": "SPEC-0206#atomic-001",
+    "parent_source_id": "SPEC-0206",
+    "primary_proposal_id": "CERT-15",
+    "supporting_proposal_ids": [],
+    "design_section": "designs/pki-issuance.md §10",
+    "planned_test_oracle": "Parse BIND and JSON/YAML DNS plan; assert validated FQDN/TTL, no live-deployment claim, and CAA/CT limited to public CA workflows, not private CA.",
+    "coverage_rationale": "CERT-15 owns non-applying DNS/publication plan; public ACME staged.",
+    "acceptance_enrichment": []
+  },
+  {
+    "source_or_member_id": "SPEC-0207#atomic-001",
+    "parent_source_id": "SPEC-0207",
+    "primary_proposal_id": "CERT-13",
+    "supporting_proposal_ids": [
+      "ROOT-08",
+      "CERT-12"
+    ],
+    "design_section": "designs/pki-issuance.md §§8,11",
+    "planned_test_oracle": "Package includes trust/cert/CRL/manifest/provenance/chain/client guides and protected key references; model controlled overlap/removal/rollback.",
+    "coverage_rationale": "CERT-13 trust handoff; ROOT-08 bundle content; CERT-12 encodings.",
+    "acceptance_enrichment": []
+  },
+  {
+    "source_or_member_id": "SPEC-PKI-001",
+    "primary_proposal_id": "ROOT-03",
+    "supporting_proposal_ids": [],
+    "design_section": "designs/pki-roots.md; proposals/pki.json ROOT-03",
+    "planned_test_oracle": "Synthetic acceptance case: four independent root identities; compare exact output/state with the pinned clause and fail on missing, extra, unsupported or unauthorized behavior.",
+    "coverage_rationale": "ROOT-03 is the narrow reviewed owner; this is planned coverage only, not implementation evidence.",
+    "acceptance_enrichment": []
+  },
+  {
+    "source_or_member_id": "SPEC-PKI-002",
+    "primary_proposal_id": "ROOT-04",
+    "supporting_proposal_ids": [],
+    "design_section": "designs/pki-roots.md; proposals/pki.json ROOT-04",
+    "planned_test_oracle": "Synthetic acceptance case: nine asymmetric root cross-certificates; compare exact output/state with the pinned clause and fail on missing, extra, unsupported or unauthorized behavior.",
+    "coverage_rationale": "ROOT-04 is the narrow reviewed owner; this is planned coverage only, not implementation evidence.",
+    "acceptance_enrichment": []
+  },
+  {
+    "source_or_member_id": "SPEC-PKI-003",
+    "primary_proposal_id": "ROOT-04",
+    "supporting_proposal_ids": [],
+    "design_section": "designs/pki-roots.md; proposals/pki.json ROOT-04",
+    "planned_test_oracle": "Synthetic acceptance case: six directed classical root bridges; compare exact output/state with the pinned clause and fail on missing, extra, unsupported or unauthorized behavior.",
+    "coverage_rationale": "ROOT-04 is the narrow reviewed owner; this is planned coverage only, not implementation evidence.",
+    "acceptance_enrichment": []
+  },
+  {
+    "source_or_member_id": "SPEC-PKI-004",
+    "primary_proposal_id": "ROOT-04",
+    "supporting_proposal_ids": [],
+    "design_section": "designs/pki-roots.md; proposals/pki.json ROOT-04",
+    "planned_test_oracle": "Synthetic acceptance case: classical-to-ML-DSA bridge only where supported; compare exact output/state with the pinned clause and fail on missing, extra, unsupported or unauthorized behavior.",
+    "coverage_rationale": "ROOT-04 is the narrow reviewed owner; this is planned coverage only, not implementation evidence.",
+    "acceptance_enrichment": []
+  },
+  {
+    "source_or_member_id": "SPEC-PKI-005",
+    "primary_proposal_id": "ROOT-04",
+    "supporting_proposal_ids": [],
+    "design_section": "designs/pki-roots.md; proposals/pki.json ROOT-04",
+    "planned_test_oracle": "Synthetic acceptance case: negative: ML-DSA root never signs classical root; compare exact output/state with the pinned clause and fail on missing, extra, unsupported or unauthorized behavior.",
+    "coverage_rationale": "ROOT-04 is the narrow reviewed owner; this is planned coverage only, not implementation evidence.",
+    "acceptance_enrichment": []
+  },
+  {
+    "source_or_member_id": "SPEC-PKI-006",
+    "primary_proposal_id": "ROOT-07",
+    "supporting_proposal_ids": [],
+    "design_section": "designs/pki-roots.md; proposals/pki.json ROOT-07",
+    "planned_test_oracle": "Synthetic acceptance case: PQ-only rejects classical anchors and paths; compare exact output/state with the pinned clause and fail on missing, extra, unsupported or unauthorized behavior.",
+    "coverage_rationale": "ROOT-07 is the narrow reviewed owner; this is planned coverage only, not implementation evidence.",
+    "acceptance_enrichment": []
+  },
+  {
+    "source_or_member_id": "SPEC-PKI-007",
+    "primary_proposal_id": "ROOT-07",
+    "supporting_proposal_ids": [],
+    "design_section": "designs/pki-roots.md; proposals/pki.json ROOT-07",
+    "planned_test_oracle": "Synthetic acceptance case: trust anchors are selected self-signed roots only; compare exact output/state with the pinned clause and fail on missing, extra, unsupported or unauthorized behavior.",
+    "coverage_rationale": "ROOT-07 is the narrow reviewed owner; this is planned coverage only, not implementation evidence.",
+    "acceptance_enrichment": []
+  },
+  {
+    "source_or_member_id": "SPEC-PKI-008",
+    "primary_proposal_id": "ROOT-09",
+    "supporting_proposal_ids": [],
+    "design_section": "designs/pki-roots.md; proposals/pki.json ROOT-09",
+    "planned_test_oracle": "Synthetic acceptance case: default sync cannot export root private key; compare exact output/state with the pinned clause and fail on missing, extra, unsupported or unauthorized behavior.",
+    "coverage_rationale": "ROOT-09 is the narrow reviewed owner; this is planned coverage only, not implementation evidence.",
+    "acceptance_enrichment": []
+  },
+  {
+    "source_or_member_id": "SPEC-PKI-009",
+    "primary_proposal_id": "CERT-06",
+    "supporting_proposal_ids": [],
+    "design_section": "designs/pki-issuance.md; proposals/pki.json CERT-06",
+    "planned_test_oracle": "Synthetic acceptance case: independent Base issuer set; compare exact output/state with the pinned clause and fail on missing, extra, unsupported or unauthorized behavior.",
+    "coverage_rationale": "CERT-06 is the narrow reviewed owner; this is planned coverage only, not implementation evidence.",
+    "acceptance_enrichment": []
+  },
+  {
+    "source_or_member_id": "SPEC-PKI-010",
+    "primary_proposal_id": "CERT-06",
+    "supporting_proposal_ids": [],
+    "design_section": "designs/pki-issuance.md; proposals/pki.json CERT-06",
+    "planned_test_oracle": "Synthetic acceptance case: independent Internal Web issuer set; compare exact output/state with the pinned clause and fail on missing, extra, unsupported or unauthorized behavior.",
+    "coverage_rationale": "CERT-06 is the narrow reviewed owner; this is planned coverage only, not implementation evidence.",
+    "acceptance_enrichment": []
+  },
+  {
+    "source_or_member_id": "SPEC-PKI-011",
+    "primary_proposal_id": "CERT-06",
+    "supporting_proposal_ids": [],
+    "design_section": "designs/pki-issuance.md; proposals/pki.json CERT-06",
+    "planned_test_oracle": "Synthetic acceptance case: issuer inherits parent org/naming/algorithm defaults; compare exact output/state with the pinned clause and fail on missing, extra, unsupported or unauthorized behavior.",
+    "coverage_rationale": "CERT-06 is the narrow reviewed owner; this is planned coverage only, not implementation evidence.",
+    "acceptance_enrichment": []
+  },
+  {
+    "source_or_member_id": "SPEC-PKI-013",
+    "primary_proposal_id": "CERT-06",
+    "supporting_proposal_ids": [],
+    "design_section": "designs/pki-issuance.md; proposals/pki.json CERT-06",
+    "planned_test_oracle": "Synthetic acceptance case: add purpose-specific issuer set; compare exact output/state with the pinned clause and fail on missing, extra, unsupported or unauthorized behavior.",
+    "coverage_rationale": "CERT-06 is the narrow reviewed owner; this is planned coverage only, not implementation evidence.",
+    "acceptance_enrichment": []
+  },
+  {
+    "source_or_member_id": "SPEC-PKI-015",
+    "primary_proposal_id": "CERT-05",
+    "supporting_proposal_ids": [],
+    "design_section": "designs/pki-issuance.md; proposals/pki.json CERT-05",
+    "planned_test_oracle": "Synthetic acceptance case: Web issuer purpose and leaf EKU; compare exact output/state with the pinned clause and fail on missing, extra, unsupported or unauthorized behavior.",
+    "coverage_rationale": "CERT-05 is the narrow reviewed owner; this is planned coverage only, not implementation evidence.",
+    "acceptance_enrichment": []
+  },
+  {
+    "source_or_member_id": "SPEC-PKI-017",
+    "primary_proposal_id": "ROOT-03",
+    "supporting_proposal_ids": [],
+    "design_section": "designs/pki-roots.md; proposals/pki.json ROOT-03",
+    "planned_test_oracle": "Synthetic acceptance case: unnamed root has safe unique identity; compare exact output/state with the pinned clause and fail on missing, extra, unsupported or unauthorized behavior.",
+    "coverage_rationale": "ROOT-03 is the narrow reviewed owner; this is planned coverage only, not implementation evidence.",
+    "acceptance_enrichment": []
+  },
+  {
+    "source_or_member_id": "SPEC-PKI-018",
+    "primary_proposal_id": "ROOT-03",
+    "supporting_proposal_ids": [],
+    "design_section": "designs/pki-roots.md; proposals/pki.json ROOT-03",
+    "planned_test_oracle": "Synthetic acceptance case: default organization/country; compare exact output/state with the pinned clause and fail on missing, extra, unsupported or unauthorized behavior.",
+    "coverage_rationale": "ROOT-03 is the narrow reviewed owner; this is planned coverage only, not implementation evidence.",
+    "acceptance_enrichment": []
+  },
+  {
+    "source_or_member_id": "SPEC-PKI-019",
+    "primary_proposal_id": "ROOT-03",
+    "supporting_proposal_ids": [],
+    "design_section": "designs/pki-roots.md; proposals/pki.json ROOT-03",
+    "planned_test_oracle": "Synthetic acceptance case: 20-calendar-year default; compare exact output/state with the pinned clause and fail on missing, extra, unsupported or unauthorized behavior.",
+    "coverage_rationale": "ROOT-03 is the narrow reviewed owner; this is planned coverage only, not implementation evidence.",
+    "acceptance_enrichment": []
+  },
+  {
+    "source_or_member_id": "SPEC-PKI-020",
+    "primary_proposal_id": "ROOT-03",
+    "supporting_proposal_ids": [],
+    "design_section": "designs/pki-roots.md; proposals/pki.json ROOT-03",
+    "planned_test_oracle": "Synthetic acceptance case: duration and exact RFC3339 UTC notAfter; compare exact output/state with the pinned clause and fail on missing, extra, unsupported or unauthorized behavior.",
+    "coverage_rationale": "ROOT-03 is the narrow reviewed owner; this is planned coverage only, not implementation evidence.",
+    "acceptance_enrichment": []
+  },
+  {
+    "source_or_member_id": "SPEC-PKI-021",
+    "primary_proposal_id": "CERT-06",
+    "supporting_proposal_ids": [],
+    "design_section": "designs/pki-issuance.md; proposals/pki.json CERT-06",
+    "planned_test_oracle": "Synthetic acceptance case: Base reference issuer exact expiry; compare exact output/state with the pinned clause and fail on missing, extra, unsupported or unauthorized behavior.",
+    "coverage_rationale": "CERT-06 is the narrow reviewed owner; this is planned coverage only, not implementation evidence.",
+    "acceptance_enrichment": []
+  },
+  {
+    "source_or_member_id": "SPEC-PKI-022",
+    "primary_proposal_id": "CERT-06",
+    "supporting_proposal_ids": [],
+    "design_section": "designs/pki-issuance.md; proposals/pki.json CERT-06",
+    "planned_test_oracle": "Synthetic acceptance case: explicit Web expiry override; compare exact output/state with the pinned clause and fail on missing, extra, unsupported or unauthorized behavior.",
+    "coverage_rationale": "CERT-06 is the narrow reviewed owner; this is planned coverage only, not implementation evidence.",
+    "acceptance_enrichment": []
+  },
+  {
+    "source_or_member_id": "SPEC-PKI-023",
+    "primary_proposal_id": "CERT-07",
+    "supporting_proposal_ids": [],
+    "design_section": "designs/pki-issuance.md; proposals/pki.json CERT-07",
+    "planned_test_oracle": "Synthetic acceptance case: Base one-year and Web template leaf validity; compare exact output/state with the pinned clause and fail on missing, extra, unsupported or unauthorized behavior.",
+    "coverage_rationale": "CERT-07 is the narrow reviewed owner; this is planned coverage only, not implementation evidence.",
+    "acceptance_enrichment": []
+  },
+  {
+    "source_or_member_id": "SPEC-PKI-024",
+    "primary_proposal_id": "CERT-05",
+    "supporting_proposal_ids": [],
+    "design_section": "designs/pki-issuance.md; proposals/pki.json CERT-05",
+    "planned_test_oracle": "Synthetic acceptance case: both reference web domains; compare exact output/state with the pinned clause and fail on missing, extra, unsupported or unauthorized behavior.",
+    "coverage_rationale": "CERT-05 is the narrow reviewed owner; this is planned coverage only, not implementation evidence.",
+    "acceptance_enrichment": []
+  },
+  {
+    "source_or_member_id": "SPEC-PKI-025",
+    "primary_proposal_id": "CERT-05",
+    "supporting_proposal_ids": [],
+    "design_section": "designs/pki-issuance.md; proposals/pki.json CERT-05",
+    "planned_test_oracle": "Synthetic acceptance case: wildcard shorthand apex plus wildcard; compare exact output/state with the pinned clause and fail on missing, extra, unsupported or unauthorized behavior.",
+    "coverage_rationale": "CERT-05 is the narrow reviewed owner; this is planned coverage only, not implementation evidence.",
+    "acceptance_enrichment": []
+  },
+  {
+    "source_or_member_id": "SPEC-PKI-026",
+    "primary_proposal_id": "CERT-05",
+    "supporting_proposal_ids": [],
+    "design_section": "designs/pki-issuance.md; proposals/pki.json CERT-05",
+    "planned_test_oracle": "Synthetic acceptance case: SAN override, dedupe and validation; compare exact output/state with the pinned clause and fail on missing, extra, unsupported or unauthorized behavior.",
+    "coverage_rationale": "CERT-05 is the narrow reviewed owner; this is planned coverage only, not implementation evidence.",
+    "acceptance_enrichment": []
+  },
+  {
+    "source_or_member_id": "SPEC-PKI-027",
+    "primary_proposal_id": "CERT-07",
+    "supporting_proposal_ids": [],
+    "design_section": "designs/pki-issuance.md; proposals/pki.json CERT-07",
+    "planned_test_oracle": "Synthetic acceptance case: each leaf algorithm has separate key/certificate; compare exact output/state with the pinned clause and fail on missing, extra, unsupported or unauthorized behavior.",
+    "coverage_rationale": "CERT-07 is the narrow reviewed owner; this is planned coverage only, not implementation evidence.",
+    "acceptance_enrichment": []
+  },
+  {
+    "source_or_member_id": "SPEC-PKI-028",
+    "primary_proposal_id": "CERT-12",
+    "supporting_proposal_ids": [],
+    "design_section": "designs/pki-issuance.md; proposals/pki.json CERT-12",
+    "planned_test_oracle": "Synthetic acceptance case: import-ready selected credential artifacts; compare exact output/state with the pinned clause and fail on missing, extra, unsupported or unauthorized behavior.",
+    "coverage_rationale": "CERT-12 is the narrow reviewed owner; this is planned coverage only, not implementation evidence.",
+    "acceptance_enrichment": []
+  },
+  {
+    "source_or_member_id": "SPEC-PKI-029",
+    "primary_proposal_id": "CERT-12",
+    "supporting_proposal_ids": [],
+    "design_section": "designs/pki-issuance.md; proposals/pki.json CERT-12",
+    "planned_test_oracle": "Synthetic acceptance case: full/minimal package modes; compare exact output/state with the pinned clause and fail on missing, extra, unsupported or unauthorized behavior.",
+    "coverage_rationale": "CERT-12 is the narrow reviewed owner; this is planned coverage only, not implementation evidence.",
+    "acceptance_enrichment": []
+  },
+  {
+    "source_or_member_id": "SPEC-PKI-030",
+    "primary_proposal_id": "CERT-12",
+    "supporting_proposal_ids": [],
+    "design_section": "designs/pki-issuance.md; proposals/pki.json CERT-12",
+    "planned_test_oracle": "Synthetic acceptance case: public/key/no-chain/no-doc package variants; compare exact output/state with the pinned clause and fail on missing, extra, unsupported or unauthorized behavior.",
+    "coverage_rationale": "CERT-12 is the narrow reviewed owner; this is planned coverage only, not implementation evidence.",
+    "acceptance_enrichment": []
+  },
+  {
+    "source_or_member_id": "SPEC-PKI-031",
+    "primary_proposal_id": "CERT-12",
+    "supporting_proposal_ids": [],
+    "design_section": "designs/pki-issuance.md; proposals/pki.json CERT-12",
+    "planned_test_oracle": "Synthetic acceptance case: PEM/DER/CMS/chains and safe private imports; compare exact output/state with the pinned clause and fail on missing, extra, unsupported or unauthorized behavior.",
+    "coverage_rationale": "CERT-12 is the narrow reviewed owner; this is planned coverage only, not implementation evidence.",
+    "acceptance_enrichment": []
+  },
+  {
+    "source_or_member_id": "SPEC-PKI-032",
+    "primary_proposal_id": "CERT-12",
+    "supporting_proposal_ids": [],
+    "design_section": "designs/pki-issuance.md; proposals/pki.json CERT-12",
+    "planned_test_oracle": "Synthetic acceptance case: native SSH/OpenPGP/JWT not X.509 encodings; compare exact output/state with the pinned clause and fail on missing, extra, unsupported or unauthorized behavior.",
+    "coverage_rationale": "CERT-12 is the narrow reviewed owner; this is planned coverage only, not implementation evidence.",
+    "acceptance_enrichment": []
+  },
+  {
+    "source_or_member_id": "SPEC-PKI-033",
+    "primary_proposal_id": "CERT-10",
+    "supporting_proposal_ids": [
+      "ROOT-06"
+    ],
+    "design_section": "designs/pki-issuance.md; proposals/pki.json CERT-10",
+    "planned_test_oracle": "Synthetic acceptance case: correct AIA/CDP; OCSP only if operational; compare exact output/state with the pinned clause and fail on missing, extra, unsupported or unauthorized behavior.",
+    "coverage_rationale": "CERT-10 is the narrow reviewed owner; this is planned coverage only, not implementation evidence.",
+    "acceptance_enrichment": []
+  },
+  {
+    "source_or_member_id": "SPEC-PKI-034",
+    "primary_proposal_id": "CERT-12",
+    "supporting_proposal_ids": [],
+    "design_section": "designs/pki-issuance.md; proposals/pki.json CERT-12",
+    "planned_test_oracle": "Synthetic acceptance case: DER and CMS where supported; compare exact output/state with the pinned clause and fail on missing, extra, unsupported or unauthorized behavior.",
+    "coverage_rationale": "CERT-12 is the narrow reviewed owner; this is planned coverage only, not implementation evidence.",
+    "acceptance_enrichment": []
+  },
+  {
+    "source_or_member_id": "SPEC-PKI-035",
+    "primary_proposal_id": "CERT-13",
+    "supporting_proposal_ids": [],
+    "design_section": "designs/pki-issuance.md; proposals/pki.json CERT-13",
+    "planned_test_oracle": "Synthetic acceptance case: specific chains; cross-certs untrusted; compare exact output/state with the pinned clause and fail on missing, extra, unsupported or unauthorized behavior.",
+    "coverage_rationale": "CERT-13 is the narrow reviewed owner; this is planned coverage only, not implementation evidence.",
+    "acceptance_enrichment": []
+  },
+  {
+    "source_or_member_id": "SPEC-PKI-036",
+    "primary_proposal_id": "CERT-09",
+    "supporting_proposal_ids": [
+      "ROOT-06"
+    ],
+    "design_section": "designs/pki-issuance.md; proposals/pki.json CERT-09",
+    "planned_test_oracle": "Synthetic acceptance case: signed empty CRL before CDP cert publishable; compare exact output/state with the pinned clause and fail on missing, extra, unsupported or unauthorized behavior.",
+    "coverage_rationale": "CERT-09 is the narrow reviewed owner; this is planned coverage only, not implementation evidence.",
+    "acceptance_enrichment": []
+  },
+  {
+    "source_or_member_id": "SPEC-PKI-037",
+    "primary_proposal_id": "CERT-10",
+    "supporting_proposal_ids": [],
+    "design_section": "designs/pki-issuance.md; proposals/pki.json CERT-10",
+    "planned_test_oracle": "Synthetic acceptance case: real relative artifact paths and served URLs; compare exact output/state with the pinned clause and fail on missing, extra, unsupported or unauthorized behavior.",
+    "coverage_rationale": "CERT-10 is the narrow reviewed owner; this is planned coverage only, not implementation evidence.",
+    "acceptance_enrichment": []
+  },
+  {
+    "source_or_member_id": "SPEC-PKI-038",
+    "primary_proposal_id": "CERT-15",
+    "supporting_proposal_ids": [],
+    "design_section": "designs/pki-issuance.md; proposals/pki.json CERT-15",
+    "planned_test_oracle": "Synthetic acceptance case: BIND and structured DNS change plan; compare exact output/state with the pinned clause and fail on missing, extra, unsupported or unauthorized behavior.",
+    "coverage_rationale": "CERT-15 is the narrow reviewed owner; this is planned coverage only, not implementation evidence.",
+    "acceptance_enrichment": []
+  },
+  {
+    "source_or_member_id": "SPEC-PKI-039",
+    "primary_proposal_id": "CERT-15",
+    "supporting_proposal_ids": [],
+    "design_section": "designs/pki-issuance.md; proposals/pki.json CERT-15",
+    "planned_test_oracle": "Synthetic acceptance case: DNS/serve/validation/revocation README; compare exact output/state with the pinned clause and fail on missing, extra, unsupported or unauthorized behavior.",
+    "coverage_rationale": "CERT-15 is the narrow reviewed owner; this is planned coverage only, not implementation evidence.",
+    "acceptance_enrichment": []
+  },
+  {
+    "source_or_member_id": "SPEC-PKI-040",
+    "primary_proposal_id": "CERT-10",
+    "supporting_proposal_ids": [],
+    "design_section": "designs/pki-issuance.md; proposals/pki.json CERT-10",
+    "planned_test_oracle": "Synthetic acceptance case: stable HTTP cert/CRL URLs; OCSP only if real; compare exact output/state with the pinned clause and fail on missing, extra, unsupported or unauthorized behavior.",
+    "coverage_rationale": "CERT-10 is the narrow reviewed owner; this is planned coverage only, not implementation evidence.",
+    "acceptance_enrichment": []
+  },
+  {
+    "source_or_member_id": "SPEC-PKI-041",
+    "primary_proposal_id": "ROOT-02",
+    "supporting_proposal_ids": [],
+    "design_section": "designs/pki-roots.md; proposals/pki.json ROOT-02",
+    "planned_test_oracle": "Synthetic acceptance case: stable logical secret path and slug; compare exact output/state with the pinned clause and fail on missing, extra, unsupported or unauthorized behavior.",
+    "coverage_rationale": "ROOT-02 is the narrow reviewed owner; this is planned coverage only, not implementation evidence.",
+    "acceptance_enrichment": []
+  },
+  {
+    "source_or_member_id": "SPEC-PKI-042",
+    "primary_proposal_id": "CERT-08",
+    "supporting_proposal_ids": [],
+    "design_section": "designs/pki-issuance.md; proposals/pki.json CERT-08",
+    "planned_test_oracle": "Synthetic acceptance case: generation/partition and renewal semantics; compare exact output/state with the pinned clause and fail on missing, extra, unsupported or unauthorized behavior.",
+    "coverage_rationale": "CERT-08 is the narrow reviewed owner; this is planned coverage only, not implementation evidence.",
+    "acceptance_enrichment": []
+  },
+  {
+    "source_or_member_id": "SPEC-PKI-043",
+    "primary_proposal_id": "CERT-08",
+    "supporting_proposal_ids": [],
+    "design_section": "designs/pki-issuance.md; proposals/pki.json CERT-08",
+    "planned_test_oracle": "Synthetic acceptance case: reissue versus independent key rotation; compare exact output/state with the pinned clause and fail on missing, extra, unsupported or unauthorized behavior.",
+    "coverage_rationale": "CERT-08 is the narrow reviewed owner; this is planned coverage only, not implementation evidence.",
+    "acceptance_enrichment": []
+  },
+  {
+    "source_or_member_id": "SPEC-PKI-044",
+    "primary_proposal_id": "ROOT-11",
+    "supporting_proposal_ids": [],
+    "design_section": "designs/pki-roots.md; proposals/pki.json ROOT-11",
+    "planned_test_oracle": "Synthetic acceptance case: replacement and trust migration; compare exact output/state with the pinned clause and fail on missing, extra, unsupported or unauthorized behavior.",
+    "coverage_rationale": "ROOT-11 is the narrow reviewed owner; this is planned coverage only, not implementation evidence.",
+    "acceptance_enrichment": []
+  },
+  {
+    "source_or_member_id": "SPEC-PKI-045",
+    "primary_proposal_id": "CERT-01",
+    "supporting_proposal_ids": [],
+    "design_section": "designs/pki-issuance.md; proposals/pki.json CERT-01",
+    "planned_test_oracle": "Synthetic acceptance case: supported root/issuer locator types; compare exact output/state with the pinned clause and fail on missing, extra, unsupported or unauthorized behavior.",
+    "coverage_rationale": "CERT-01 is the narrow reviewed owner; this is planned coverage only, not implementation evidence.",
+    "acceptance_enrichment": []
+  },
+  {
+    "source_or_member_id": "SPEC-PKI-046",
+    "primary_proposal_id": "CERT-01",
+    "supporting_proposal_ids": [],
+    "design_section": "designs/pki-issuance.md; proposals/pki.json CERT-01",
+    "planned_test_oracle": "Synthetic acceptance case: single approved canonical parent auto-locate; compare exact output/state with the pinned clause and fail on missing, extra, unsupported or unauthorized behavior.",
+    "coverage_rationale": "CERT-01 is the narrow reviewed owner; this is planned coverage only, not implementation evidence.",
+    "acceptance_enrichment": []
+  },
+  {
+    "source_or_member_id": "SPEC-PKI-047",
+    "primary_proposal_id": "CERT-01",
+    "supporting_proposal_ids": [],
+    "design_section": "designs/pki-issuance.md; proposals/pki.json CERT-01",
+    "planned_test_oracle": "Synthetic acceptance case: missing/ambiguous parent fails; compare exact output/state with the pinned clause and fail on missing, extra, unsupported or unauthorized behavior.",
+    "coverage_rationale": "CERT-01 is the narrow reviewed owner; this is planned coverage only, not implementation evidence.",
+    "acceptance_enrichment": []
+  },
+  {
+    "source_or_member_id": "SPEC-PKI-048",
+    "primary_proposal_id": "CERT-12",
+    "supporting_proposal_ids": [],
+    "design_section": "designs/pki-issuance.md; proposals/pki.json CERT-12",
+    "planned_test_oracle": "Synthetic acceptance case: archive formats and in-memory API; compare exact output/state with the pinned clause and fail on missing, extra, unsupported or unauthorized behavior.",
+    "coverage_rationale": "CERT-12 is the narrow reviewed owner; this is planned coverage only, not implementation evidence.",
+    "acceptance_enrichment": []
+  },
+  {
+    "source_or_member_id": "SPEC-PKI-049",
+    "primary_proposal_id": "CERT-16",
+    "supporting_proposal_ids": [],
+    "design_section": "designs/pki-issuance.md; proposals/pki.json CERT-16",
+    "planned_test_oracle": "Synthetic acceptance case: unattended structured interface; compare exact output/state with the pinned clause and fail on missing, extra, unsupported or unauthorized behavior.",
+    "coverage_rationale": "CERT-16 is the narrow reviewed owner; this is planned coverage only, not implementation evidence.",
+    "acceptance_enrichment": []
+  },
+  {
+    "source_or_member_id": "SPEC-PKI-050",
+    "primary_proposal_id": "CERT-16",
+    "supporting_proposal_ids": [],
+    "design_section": "designs/pki-issuance.md; proposals/pki.json CERT-16",
+    "planned_test_oracle": "Synthetic acceptance case: dependency-aware resumable batch; compare exact output/state with the pinned clause and fail on missing, extra, unsupported or unauthorized behavior.",
+    "coverage_rationale": "CERT-16 is the narrow reviewed owner; this is planned coverage only, not implementation evidence.",
+    "acceptance_enrichment": []
+  },
+  {
+    "source_or_member_id": "SPEC-PKI-051",
+    "primary_proposal_id": "CERT-07",
+    "supporting_proposal_ids": [],
+    "design_section": "designs/pki-issuance.md; proposals/pki.json CERT-07",
+    "planned_test_oracle": "Synthetic acceptance case: fast leaf issuance without docs/network; compare exact output/state with the pinned clause and fail on missing, extra, unsupported or unauthorized behavior.",
+    "coverage_rationale": "CERT-07 is the narrow reviewed owner; this is planned coverage only, not implementation evidence.",
+    "acceptance_enrichment": []
+  },
+  {
+    "source_or_member_id": "SPEC-PKI-052",
+    "primary_proposal_id": "CERT-01",
+    "supporting_proposal_ids": [],
+    "design_section": "designs/pki-issuance.md; proposals/pki.json CERT-01",
+    "planned_test_oracle": "Synthetic acceptance case: composable high/low-level Rust APIs; compare exact output/state with the pinned clause and fail on missing, extra, unsupported or unauthorized behavior.",
+    "coverage_rationale": "CERT-01 is the narrow reviewed owner; this is planned coverage only, not implementation evidence.",
+    "acceptance_enrichment": []
+  },
+  {
+    "source_or_member_id": "SPEC-PKI-053",
+    "primary_proposal_id": "ROOT-09",
+    "supporting_proposal_ids": [],
+    "design_section": "designs/pki-roots.md; proposals/pki.json ROOT-09",
+    "planned_test_oracle": "Synthetic acceptance case: store sync only under explicit closed policy; compare exact output/state with the pinned clause and fail on missing, extra, unsupported or unauthorized behavior.",
+    "coverage_rationale": "ROOT-09 is the narrow reviewed owner; this is planned coverage only, not implementation evidence.",
+    "acceptance_enrichment": []
+  },
+  {
+    "source_or_member_id": "SPEC-PKI-054",
+    "primary_proposal_id": "ROOT-09",
+    "supporting_proposal_ids": [],
+    "design_section": "designs/pki-roots.md; proposals/pki.json ROOT-09",
+    "planned_test_oracle": "Synthetic acceptance case: permitted sync redacted receipt/recovery; compare exact output/state with the pinned clause and fail on missing, extra, unsupported or unauthorized behavior.",
+    "coverage_rationale": "ROOT-09 is the narrow reviewed owner; this is planned coverage only, not implementation evidence.",
+    "acceptance_enrichment": []
+  },
+  {
+    "source_or_member_id": "SPEC-PKI-055",
+    "primary_proposal_id": "CERT-12",
+    "supporting_proposal_ids": [],
+    "design_section": "designs/pki-issuance.md; proposals/pki.json CERT-12",
+    "planned_test_oracle": "Synthetic acceptance case: explicit public/private output mode; compare exact output/state with the pinned clause and fail on missing, extra, unsupported or unauthorized behavior.",
+    "coverage_rationale": "CERT-12 is the narrow reviewed owner; this is planned coverage only, not implementation evidence.",
+    "acceptance_enrichment": []
+  },
+  {
+    "source_or_member_id": "SPEC-PKI-056",
+    "primary_proposal_id": "CERT-01",
+    "supporting_proposal_ids": [],
+    "design_section": "designs/pki-issuance.md; proposals/pki.json CERT-01",
+    "planned_test_oracle": "Synthetic acceptance case: flag normalization and collision rejection; compare exact output/state with the pinned clause and fail on missing, extra, unsupported or unauthorized behavior.",
+    "coverage_rationale": "CERT-01 is the narrow reviewed owner; this is planned coverage only, not implementation evidence.",
+    "acceptance_enrichment": []
+  },
+  {
+    "source_or_member_id": "SPEC-PKI-057",
+    "primary_proposal_id": "CERT-18",
+    "supporting_proposal_ids": [],
+    "design_section": "designs/pki-issuance.md; proposals/pki.json CERT-18",
+    "planned_test_oracle": "Synthetic acceptance case: dry-run and separate hazard approvals; compare exact output/state with the pinned clause and fail on missing, extra, unsupported or unauthorized behavior.",
+    "coverage_rationale": "CERT-18 is the narrow reviewed owner; this is planned coverage only, not implementation evidence.",
+    "acceptance_enrichment": []
+  },
+  {
+    "source_or_member_id": "SPEC-PKI-058",
+    "primary_proposal_id": "CERT-01",
+    "supporting_proposal_ids": [],
+    "design_section": "designs/pki-issuance.md; proposals/pki.json CERT-01",
+    "planned_test_oracle": "Synthetic acceptance case: help/completers/developer docs; compare exact output/state with the pinned clause and fail on missing, extra, unsupported or unauthorized behavior.",
+    "coverage_rationale": "CERT-01 is the narrow reviewed owner; this is planned coverage only, not implementation evidence.",
+    "acceptance_enrichment": []
+  },
+  {
+    "source_or_member_id": "SPEC-PKI-059",
+    "primary_proposal_id": "CERT-13",
+    "supporting_proposal_ids": [],
+    "design_section": "designs/pki-issuance.md; proposals/pki.json CERT-13",
+    "planned_test_oracle": "Synthetic acceptance case: versioned OS/client install guides; compare exact output/state with the pinned clause and fail on missing, extra, unsupported or unauthorized behavior.",
+    "coverage_rationale": "CERT-13 is the narrow reviewed owner; this is planned coverage only, not implementation evidence.",
+    "acceptance_enrichment": []
+  },
+  {
+    "source_or_member_id": "SPEC-PKI-060",
+    "primary_proposal_id": "CERT-01",
+    "supporting_proposal_ids": [],
+    "design_section": "designs/pki-issuance.md; proposals/pki.json CERT-01",
+    "planned_test_oracle": "Synthetic acceptance case: Fleet registry/config/Nix integration; compare exact output/state with the pinned clause and fail on missing, extra, unsupported or unauthorized behavior.",
+    "coverage_rationale": "CERT-01 is the narrow reviewed owner; this is planned coverage only, not implementation evidence.",
+    "acceptance_enrichment": []
+  },
+  {
+    "source_or_member_id": "SPEC-PKI-061",
+    "primary_proposal_id": "CERT-17",
+    "supporting_proposal_ids": [],
+    "design_section": "designs/pki-issuance.md; proposals/pki.json CERT-17",
+    "planned_test_oracle": "Synthetic acceptance case: OpenSSL and independent Rust validation; compare exact output/state with the pinned clause and fail on missing, extra, unsupported or unauthorized behavior.",
+    "coverage_rationale": "CERT-17 is the narrow reviewed owner; this is planned coverage only, not implementation evidence.",
+    "acceptance_enrichment": []
+  },
+  {
+    "source_or_member_id": "SPEC-PKI-062",
+    "primary_proposal_id": "CERT-13",
+    "supporting_proposal_ids": [],
+    "design_section": "designs/pki-issuance.md; proposals/pki.json CERT-13",
+    "planned_test_oracle": "Synthetic acceptance case: conditional positive/strict negative trust matrix; compare exact output/state with the pinned clause and fail on missing, extra, unsupported or unauthorized behavior.",
+    "coverage_rationale": "CERT-13 is the narrow reviewed owner; this is planned coverage only, not implementation evidence.",
+    "acceptance_enrichment": []
+  },
+  {
+    "source_or_member_id": "SPEC-PKI-063",
+    "primary_proposal_id": "CERT-17",
+    "supporting_proposal_ids": [],
+    "design_section": "designs/pki-issuance.md; proposals/pki.json CERT-17",
+    "planned_test_oracle": "Synthetic acceptance case: format/archive/store/script failure coverage; compare exact output/state with the pinned clause and fail on missing, extra, unsupported or unauthorized behavior.",
+    "coverage_rationale": "CERT-17 is the narrow reviewed owner; this is planned coverage only, not implementation evidence.",
+    "acceptance_enrichment": []
+  },
+  {
+    "source_or_member_id": "SPEC-PKI-064",
+    "primary_proposal_id": "CERT-17",
+    "supporting_proposal_ids": [],
+    "design_section": "designs/pki-issuance.md; proposals/pki.json CERT-17",
+    "planned_test_oracle": "Synthetic acceptance case: demo bundles from implemented binary; compare exact output/state with the pinned clause and fail on missing, extra, unsupported or unauthorized behavior.",
+    "coverage_rationale": "CERT-17 is the narrow reviewed owner; this is planned coverage only, not implementation evidence.",
+    "acceptance_enrichment": []
+  },
+  {
+    "source_or_member_id": "SPEC-PKI-065",
+    "primary_proposal_id": "CERT-01",
+    "supporting_proposal_ids": [],
+    "design_section": "designs/pki-issuance.md; proposals/pki.json CERT-01",
+    "planned_test_oracle": "Synthetic acceptance case: future roadmap/dependency register; compare exact output/state with the pinned clause and fail on missing, extra, unsupported or unauthorized behavior.",
+    "coverage_rationale": "CERT-01 is the narrow reviewed owner; this is planned coverage only, not implementation evidence.",
+    "acceptance_enrichment": []
+  },
+  {
+    "source_or_member_id": "SPEC-PKI-068",
+    "primary_proposal_id": "CERT-06",
+    "supporting_proposal_ids": [],
+    "design_section": "designs/pki-issuance.md; proposals/pki.json CERT-06",
+    "planned_test_oracle": "Synthetic acceptance case: four algorithms and A/B reference sets; compare exact output/state with the pinned clause and fail on missing, extra, unsupported or unauthorized behavior.",
+    "coverage_rationale": "CERT-06 is the narrow reviewed owner; this is planned coverage only, not implementation evidence.",
+    "acceptance_enrichment": []
+  },
+  {
+    "source_or_member_id": "SPEC-PKI-069",
+    "primary_proposal_id": "ROOT-02",
+    "supporting_proposal_ids": [],
+    "design_section": "designs/pki-roots.md; proposals/pki.json ROOT-02",
+    "planned_test_oracle": "Synthetic acceptance case: immutable manifest and renderers; compare exact output/state with the pinned clause and fail on missing, extra, unsupported or unauthorized behavior.",
+    "coverage_rationale": "ROOT-02 is the narrow reviewed owner; this is planned coverage only, not implementation evidence.",
+    "acceptance_enrichment": []
+  },
+  {
+    "source_or_member_id": "SPEC-PKI-070",
+    "primary_proposal_id": "ROOT-01",
+    "supporting_proposal_ids": [],
+    "design_section": "designs/pki-roots.md; proposals/pki.json ROOT-01",
+    "planned_test_oracle": "Synthetic acceptance case: algorithm/object capability matrix; compare exact output/state with the pinned clause and fail on missing, extra, unsupported or unauthorized behavior.",
+    "coverage_rationale": "ROOT-01 is the narrow reviewed owner; this is planned coverage only, not implementation evidence.",
+    "acceptance_enrichment": []
+  },
+  {
+    "source_or_member_id": "SPEC-PKI-071",
+    "primary_proposal_id": "ROOT-12",
+    "supporting_proposal_ids": [],
+    "design_section": "designs/pki-roots.md; proposals/pki.json ROOT-12",
+    "planned_test_oracle": "Synthetic acceptance case: offline ceremony; HSM only capability-gated; compare exact output/state with the pinned clause and fail on missing, extra, unsupported or unauthorized behavior.",
+    "coverage_rationale": "ROOT-12 is the narrow reviewed owner; this is planned coverage only, not implementation evidence.",
+    "acceptance_enrichment": [
+      "Keep production use separately approval-gated; this proposal covers synthetic evidence only."
+    ]
+  },
+  {
+    "source_or_member_id": "SPEC-PKI-072",
+    "primary_proposal_id": "CERT-01",
+    "supporting_proposal_ids": [],
+    "design_section": "designs/pki-issuance.md; proposals/pki.json CERT-01",
+    "planned_test_oracle": "Synthetic acceptance case: versioned operator docs/skills; compare exact output/state with the pinned clause and fail on missing, extra, unsupported or unauthorized behavior.",
+    "coverage_rationale": "CERT-01 is the narrow reviewed owner; this is planned coverage only, not implementation evidence.",
+    "acceptance_enrichment": []
+  },
+  {
+    "source_or_member_id": "SPEC-D-app-pki-002",
+    "primary_proposal_id": "ROOT-03",
+    "supporting_proposal_ids": [
+      "ROOT-04"
+    ],
+    "design_section": "designs/pki-roots.md",
+    "planned_test_oracle": "Future synthetic test: each root self-certificate verifies against its matching independent root key; positive behavior is independently checked and unsupported/forbidden path has a negative oracle.",
+    "coverage_rationale": "ROOT-03 owns this narrow source outcome; planned test is not evidence that implementation or live cryptography ran.",
+    "acceptance_enrichment": []
+  },
+  {
+    "source_or_member_id": "SPEC-D-app-pki-002b",
+    "primary_proposal_id": "ROOT-04",
+    "supporting_proposal_ids": [],
+    "design_section": "designs/pki-roots.md",
+    "planned_test_oracle": "Future synthetic test: exact nine asymmetric cross-cert edges; positive behavior is independently checked and unsupported/forbidden path has a negative oracle.",
+    "coverage_rationale": "ROOT-04 owns this narrow source outcome; planned test is not evidence that implementation or live cryptography ran.",
+    "acceptance_enrichment": []
+  },
+  {
+    "source_or_member_id": "SPEC-D-app-pki-003",
+    "primary_proposal_id": "ROOT-04",
+    "supporting_proposal_ids": [],
+    "design_section": "designs/pki-roots.md",
+    "planned_test_oracle": "Future synthetic test: all classical root bridge paths validate; positive behavior is independently checked and unsupported/forbidden path has a negative oracle.",
+    "coverage_rationale": "ROOT-04 owns this narrow source outcome; planned test is not evidence that implementation or live cryptography ran.",
+    "acceptance_enrichment": []
+  },
+  {
+    "source_or_member_id": "SPEC-D-app-pki-004",
+    "primary_proposal_id": "ROOT-04",
+    "supporting_proposal_ids": [],
+    "design_section": "designs/pki-roots.md",
+    "planned_test_oracle": "Future synthetic test: classical-signed ML-DSA root edges only where supported; positive behavior is independently checked and unsupported/forbidden path has a negative oracle.",
+    "coverage_rationale": "ROOT-04 owns this narrow source outcome; planned test is not evidence that implementation or live cryptography ran.",
+    "acceptance_enrichment": []
+  },
+  {
+    "source_or_member_id": "SPEC-D-app-pki-006a",
+    "primary_proposal_id": "ROOT-07",
+    "supporting_proposal_ids": [],
+    "design_section": "designs/pki-roots.md",
+    "planned_test_oracle": "Future synthetic test: PQ-only rejects classical trust anchors; positive behavior is independently checked and unsupported/forbidden path has a negative oracle.",
+    "coverage_rationale": "ROOT-07 owns this narrow source outcome; planned test is not evidence that implementation or live cryptography ran.",
+    "acceptance_enrichment": []
+  },
+  {
+    "source_or_member_id": "SPEC-D-app-pki-006b",
+    "primary_proposal_id": "ROOT-07",
+    "supporting_proposal_ids": [],
+    "design_section": "designs/pki-roots.md",
+    "planned_test_oracle": "Future synthetic test: PQ-only rejects classical-signed paths; positive behavior is independently checked and unsupported/forbidden path has a negative oracle.",
+    "coverage_rationale": "ROOT-07 owns this narrow source outcome; planned test is not evidence that implementation or live cryptography ran.",
+    "acceptance_enrichment": []
+  },
+  {
+    "source_or_member_id": "SPEC-D-app-pki-009a",
+    "primary_proposal_id": "CERT-06",
+    "supporting_proposal_ids": [],
+    "design_section": "designs/pki-issuance.md",
+    "planned_test_oracle": "Future synthetic test: Base-purpose intermediate set generated; positive behavior is independently checked and unsupported/forbidden path has a negative oracle.",
+    "coverage_rationale": "CERT-06 owns this narrow source outcome; planned test is not evidence that implementation or live cryptography ran.",
+    "acceptance_enrichment": []
+  },
+  {
+    "source_or_member_id": "SPEC-D-app-pki-009b",
+    "primary_proposal_id": "CERT-06",
+    "supporting_proposal_ids": [],
+    "design_section": "designs/pki-issuance.md",
+    "planned_test_oracle": "Future synthetic test: independent Internal Web intermediate set generated; positive behavior is independently checked and unsupported/forbidden path has a negative oracle.",
+    "coverage_rationale": "CERT-06 owns this narrow source outcome; planned test is not evidence that implementation or live cryptography ran.",
+    "acceptance_enrichment": []
+  },
+  {
+    "source_or_member_id": "SPEC-D-app-pki-033a",
+    "primary_proposal_id": "CERT-10",
+    "supporting_proposal_ids": [],
+    "design_section": "designs/pki-issuance.md",
+    "planned_test_oracle": "Future synthetic test: AIA caIssuers names correct issuer; positive behavior is independently checked and unsupported/forbidden path has a negative oracle.",
+    "coverage_rationale": "CERT-10 owns this narrow source outcome; planned test is not evidence that implementation or live cryptography ran.",
+    "acceptance_enrichment": []
+  },
+  {
+    "source_or_member_id": "SPEC-D-app-pki-033b",
+    "primary_proposal_id": "CERT-10",
+    "supporting_proposal_ids": [
+      "CERT-09"
+    ],
+    "design_section": "designs/pki-issuance.md",
+    "planned_test_oracle": "Future synthetic test: CDP names actual signing authority CRL; positive behavior is independently checked and unsupported/forbidden path has a negative oracle.",
+    "coverage_rationale": "CERT-10 owns this narrow source outcome; planned test is not evidence that implementation or live cryptography ran.",
+    "acceptance_enrichment": []
+  },
+  {
+    "source_or_member_id": "SPEC-D-app-pki-033c",
+    "primary_proposal_id": "CERT-14",
+    "supporting_proposal_ids": [],
+    "design_section": "designs/pki-issuance.md",
+    "planned_test_oracle": "Future synthetic test: OCSP included only when operational; positive behavior is independently checked and unsupported/forbidden path has a negative oracle.",
+    "coverage_rationale": "CERT-14 owns this narrow source outcome; planned test is not evidence that implementation or live cryptography ran.",
+    "acceptance_enrichment": []
+  },
+  {
+    "source_or_member_id": "SPEC-R-gate-s22-1",
+    "primary_proposal_id": "CERT-14",
+    "supporting_proposal_ids": [],
+    "design_section": "designs/pki-issuance.md",
+    "planned_test_oracle": "Future synthetic test: missing OCSP endpoint is never embedded; positive behavior is independently checked and unsupported/forbidden path has a negative oracle.",
+    "coverage_rationale": "CERT-14 owns this narrow source outcome; planned test is not evidence that implementation or live cryptography ran.",
+    "acceptance_enrichment": []
+  },
+  {
+    "source_or_member_id": "SPEC-R-gate-s22-2",
+    "primary_proposal_id": "CERT-14",
+    "supporting_proposal_ids": [],
+    "design_section": "designs/pki-issuance.md",
+    "planned_test_oracle": "Future synthetic test: OpenBao ML-DSA responder limitation disables unsupported path; positive behavior is independently checked and unsupported/forbidden path has a negative oracle.",
+    "coverage_rationale": "CERT-14 owns this narrow source outcome; planned test is not evidence that implementation or live cryptography ran.",
+    "acceptance_enrichment": []
+  },
+  {
+    "source_or_member_id": "SPEC-R-evidence-5",
+    "primary_proposal_id": "CERT-02",
+    "supporting_proposal_ids": [
+      "CERT-17"
+    ],
+    "design_section": "designs/pki-issuance.md",
+    "planned_test_oracle": "Future synthetic test: record exact edge matrix plus independently verified synthetic fingerprints; positive behavior is independently checked and unsupported/forbidden path has a negative oracle.",
+    "coverage_rationale": "CERT-02 owns this narrow source outcome; planned test is not evidence that implementation or live cryptography ran.",
+    "acceptance_enrichment": []
+  },
+  {
+    "source_or_member_id": "SPEC-R-evidence-6",
+    "primary_proposal_id": "CERT-10",
+    "supporting_proposal_ids": [
+      "CERT-13"
+    ],
+    "design_section": "designs/pki-issuance.md",
+    "planned_test_oracle": "Future synthetic test: verify AIA/CDP/CRL publication and mark unsupported deployments explicitly; positive behavior is independently checked and unsupported/forbidden path has a negative oracle.",
+    "coverage_rationale": "CERT-10 owns this narrow source outcome; planned test is not evidence that implementation or live cryptography ran.",
+    "acceptance_enrichment": []
+  },
+  {
+    "source_or_member_id": "SPEC-PKI2-006",
+    "primary_proposal_id": "CERT-06",
+    "supporting_proposal_ids": [
+      "ROOT-06"
+    ],
+    "design_section": "designs/pki-roots.md §11; designs/pki-issuance.md §5, proposals/pki.json ROOT-06/CERT-06",
+    "planned_test_oracle": "Build the exact §24.2 intermediate cross-sign matrix per purpose and partition: each of three classical roots signs each classical intermediate algorithm; all four roots sign the ML-DSA intermediate; the ML-DSA root never signs a classical intermediate. Assert 13 issuer certificates per purpose/partition, the two purposes × two partitions total 52 issuer certificates and 65 total CA certificates including 13 root variants. Independently verify each certificate signature, require each cross-certificate SPKI to equal its subject issuer key SPKI, and require unique issuer/serial pairs. Secondary revocation check: attribute each root-issued CA certificate to its actual signing-root key ID+serial for ROOT-06 CRL coverage; do not substitute this for cross-signature acceptance.",
+    "coverage_rationale": "CERT-06 owns the issuer graph; ROOT-06 owns root-signed CRLs for root-issued CA certificates, distinct from CERT-09 leaf CRLs. This is future planned behavior, not an executed CRL operation.",
+    "acceptance_enrichment": []
+  }
+]

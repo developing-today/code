@@ -1,0 +1,157 @@
+[
+  {
+    "id": "MTC-01",
+    "title": "Pin current MTC draft and verify implementation maturity",
+    "parent": "#9167",
+    "kind": "research",
+    "source_ranges": [
+      "spec §3.4, §9, §14, §27.4, §46 R-SEC-16",
+      "handoff MTC note",
+      "coordinator §4.2"
+    ],
+    "requirement_ids": [
+      "PKI-MTC-OPTIONAL",
+      "PKI-MTC-CURRENT-DRAFT",
+      "PKI-MTC-PROVENANCE"
+    ],
+    "stage": "optional research; V1 unaffected",
+    "lifecycle": "Backlog",
+    "urgency": 1800,
+    "depends_on": [],
+    "body": "## Goal / user outcome\nIdentify the current MTC draft and reusable implementation boundary for an optional synthetic experiment. No deployment or adoption decision.\n\n## Current evidence\nDatatracker lists active WG `draft-ietf-plants-merkle-tree-certs-08`, updated 2026-11-01 and dated 2026-11-02; it is an Internet-Draft, not an RFC. Cloudflare `azul` README says it implements tiled Static CT API log for Workers, and configurable tlog-mirror/tlog-witness mirror worker with Ed25519 or ML-DSA-44 checkpoint signers. It does not describe a turnkey MTC CA/issuance server. Cloudflare's 2026-09-29 post reports an experimental Chrome Beta 146 bootstrap CA that served MTCs backed by traditional chains to 50% of Beta users/billions of handshakes; reported 9% median gain was versus classical signature chains, mostly intermediate elision, and used classical signatures. Cloudflare states early-2027 target for new CA/Chrome Quantum-resistant Root Store. This is not current production MTC CA or PQ chain/KEX evidence. `bwesterb/mtc` is explicitly outdated and lacks TLS/ACME integration.\n\n## Deliverable / acceptance\nRecord pinned draft rev, test vectors, Azul commit and crate roles, per-crate license (repo LICENSE is mixed BSD-3-Clause/Apache-2.0/BSD/MIT), gaps to MTC CA/ACME/cert construction/cosigning/browser integration, independent verifier options, and blog report vs current capability distinction. Cite README, LICENSE, draft and blog directly. State no-go for direct integration unless a conforming current-draft MTC certificate producer and independent verifier are found.\n\n## Negative tests / oracle\nDo not infer MTC CA capability from Static CT/witness implementation, license from repository name, deployment from authorship, PQ KEX from PQ checkpoint signer, or PQ performance from classical experiment. Oracle is pinned source/repo behavior and draft-defined conformance evidence, not demo marketing.\n\n## Boundaries / rollback\nRead-only research only: no key generation, DNS, certificate, endpoint, trust change, upstream contribution or source checkout modification. No rollback.\n\n## Priority / dependencies\nOptional Someday; urgency 1800, queue projection 70, complexity M. Depends on no runtime feature. Sources checked 2026-11-12: https://datatracker.ietf.org/doc/draft-ietf-plants-merkle-tree-certs/ ; https://github.com/ietf-plants-wg/merkle-tree-certs ; https://github.com/cloudflare/azul ; https://github.com/cloudflare/azul/blob/main/LICENSE ; https://blog.cloudflare.com/pq-ca-with-mtcs/ ; https://github.com/bwesterb/mtc .\n\n**Priority semantics:** intrinsic urgency 1800 (Someday), separate from importance, blocker status and optional stage; legacy queue projection 70.\n\n## Technical boundary and file ownership\nNo Fleet PKI crate, TLS client, trust store, DNS, public CA, endpoint or production cert/key changes. Issue-specific report and sanitized synthetic artifacts belong under `doc/2026-11-13T01-34-11Z_design_fleet_ca_credentials_secrets/evidence/MTC-01/`; do not rewrite this proposal JSON as results. The synthetic test CA owns the only generated values. Any API/CLI integration requires a separate issue.",
+    "urgency_band": "Someday",
+    "queue_priority_projection": 70
+  },
+  {
+    "id": "MTC-02",
+    "title": "Run synthetic MTC CA, cosigner, mirror and independent verifier lab",
+    "parent": "#9167",
+    "kind": "test",
+    "source_ranges": [
+      "spec §§3, 11, 27.4, 46 R-SEC-16",
+      "handoff MTC note",
+      "coordinator §4.2"
+    ],
+    "requirement_ids": [
+      "PKI-MTC-OPTIONAL",
+      "PKI-MTC-PROOF-VALIDATION",
+      "PKI-MTC-NEGATIVE-CASES"
+    ],
+    "stage": "optional synthetic lab",
+    "lifecycle": "Backlog",
+    "urgency": 1800,
+    "depends_on": [
+      "MTC-01"
+    ],
+    "body": "## Goal\nProve current-draft MTC issue/proof/verification semantics with disposable data and independent verifier, or determine implementation is not mature enough.\n\n## Evidence / prerequisites\nCurrent draft-08 is an Internet-Draft, not final RFC; legacy bwesterb implementation explicitly outdated. Must complete MTC-01 and pin tested implementation/draft before coding. Fleet MTC is optional; no production integration exists.\n\n## Scope\nUse fake domains and generated disposable keys in local isolated lab. Exercise assertion/certificate request, log entry, checkpoint, CA signature, cosignature, inclusion/consistency proof, mirror, monitor, validity window/landmark update and revocation mechanism as specified by pinned draft. Do not expose any endpoint, publish DNS, connect production CA or modify trust store.\n\n## Acceptance / oracle\nCurrent implementation output validates in at least one independently maintained verifier and conforms to draft test vectors. Mutated proof node, wrong issuer/CA ID, wrong domain, bad cosignature, stale checkpoint and replayed response are rejected. Log/mirror/cosigner unavailability behavior and recovery are recorded. Artifacts, exact commands, implementation commit and verifier versions are retained; keys/secret values removed. No-go if independent verifier unavailable or draft mismatch.\n\n## Rollback / boundary\nStop all local processes and remove synthetic keys/state. No Fleet CLI/PKI implementation or public service. Conventional ML-DSA-44 certificates remain baseline and fallback.\n\n## Priority\nOptional Backlog; intrinsic urgency 1800 (Someday), queue projection 70; complexity L; depends MTC-01. Sources: https://datatracker.ietf.org/doc/draft-ietf-plants-merkle-tree-certs/ ; https://github.com/ietf-plants-wg/merkle-tree-certs .\n\n**Priority semantics:** intrinsic urgency 1800 (Someday; optional research), distinct from importance, blocking status and stage. Legacy queue projection is 70 (low) under explicit publisher map.\n\n## Technical boundary and file ownership\nNo Fleet PKI crate, TLS client, trust store, DNS, public CA, endpoint or production cert/key changes. Issue-specific report and sanitized synthetic artifacts belong under `doc/2026-11-13T01-34-11Z_design_fleet_ca_credentials_secrets/evidence/MTC-02/`; do not rewrite this proposal JSON as results. The synthetic test CA owns the only generated values. Any API/CLI integration requires a separate issue.",
+    "urgency_band": "Someday",
+    "queue_priority_projection": 70
+  },
+  {
+    "id": "MTC-03",
+    "title": "Measure full MTC versus conventional ML-DSA-44 certificate bytes",
+    "parent": "#9167",
+    "kind": "research",
+    "source_ranges": [
+      "spec §§3.4, 11, 27.4, 46 R-SEC-16",
+      "handoff MTC note",
+      "coordinator §4.2"
+    ],
+    "requirement_ids": [
+      "PKI-MTC-OPTIONAL",
+      "PKI-MTC-BYTE-ACCOUNTING",
+      "PKI-MLDSA44-BASELINE"
+    ],
+    "stage": "optional synthetic lab",
+    "lifecycle": "Backlog",
+    "urgency": 1800,
+    "depends_on": [
+      "MTC-01",
+      "MTC-02"
+    ],
+    "body": "## Goal\nMeasure whether MTC reduces complete serialized authentication bytes versus shortest valid conventional ML-DSA-44 certificate chain for the same synthetic identity/policy.\n\n## Current evidence and scope\nDraft-08 §6.5 component estimates include landmark-relative 736 bytes/23-hash inclusion proof and ~384-byte standalone inclusion proof; standalone additionally carries required CA/trusted cosigner checkpoint/subtree signatures and framing. They are not whole-certificate or chain sizes. Cloudflare's reported 9% median was on classical signatures over traditional chains, with most benefit from intermediate elision, not the ML-DSA comparison requested here. After MTC-01/02 pin implementation and verifier, use disposable synthetic keys/domain. Compare standalone, landmark-relative fresh, stale/cold fallback and shortest conventional ML-DSA-44 chain.\n\n## Acceptance / byte oracle\nCapture complete TLS Certificate/authentication flight at protocol boundary; count full TBSCertificate, every cert, proof, CA/cosigner signatures, extensions, certificate framing, fallback and protocol overhead. Separately tabulate CertificateVerify and negotiated KEX; do not attribute them to certificate compression. Reconcile packet capture with serialized artifact component totals; independent TLS decoder/verifier confirms same identity/SAN/validity/trust/profile. Report raw bytes, draft/implementation/client versions, state, repetitions and % delta. Go only if measured complete-flight savings are material over shortest valid ML-DSA-44 chain for named clients; no-go if savings only compare proof bytes to full chain or omit mandatory signatures/fallback.\n\n## Negative tests\nReject profile mismatch, omitted cosigners, omitted chain, stale client without fallback, or invalid proof. State explicitly certificate signature does not prove PQ KEX. Oracle: independent packet decoder + independent proof/path verifier and component byte sum.\n\n## Boundaries / rollback\nSynthetic/loopback only; no public endpoint, client trust changes, production cert or Fleet implementation. Delete keys/artifacts after sanitized report. No baseline change.\n\n## Dependencies / priority\nDepends MTC-01 and MTC-02. Optional Someday, urgency 1800, queue projection 70, complexity M/H. Sources: draft-08 §6.5 https://www.ietf.org/archive/id/draft-ietf-plants-merkle-tree-certs-08.html ; Cloudflare report https://blog.cloudflare.com/pq-ca-with-mtcs/ .\n\n**Priority semantics:** intrinsic urgency 1800 (Someday), distinct from importance, blocker status and stage; queue projection 70.\n\n## Technical boundary and file ownership\nNo Fleet PKI crate, TLS client, trust store, DNS, public CA, endpoint or production cert/key changes. Issue-specific report and sanitized synthetic artifacts belong under `doc/2026-11-13T01-34-11Z_design_fleet_ca_credentials_secrets/evidence/MTC-03/`; do not rewrite this proposal JSON as results. The synthetic test CA owns the only generated values. Any API/CLI integration requires a separate issue.",
+    "urgency_band": "Someday",
+    "queue_priority_projection": 70
+  },
+  {
+    "id": "MTC-04",
+    "title": "Test fresh, cold, stale and offline MTC verifier behavior",
+    "parent": "#9167",
+    "kind": "test",
+    "source_ranges": [
+      "spec §§3.4, 11, 27.4, 46 R-SEC-16",
+      "handoff MTC note",
+      "coordinator §4.2"
+    ],
+    "requirement_ids": [
+      "PKI-MTC-OPTIONAL",
+      "PKI-MTC-STALE-FAIL-CLOSED",
+      "PKI-MTC-FALLBACK"
+    ],
+    "stage": "optional synthetic lab",
+    "lifecycle": "Backlog",
+    "urgency": 1800,
+    "depends_on": [
+      "MTC-01",
+      "MTC-02"
+    ],
+    "body": "## Goal\nEstablish whether MTC can be verified safely by relying parties with current, absent, cold, stale or offline landmark/log state, and define conventional fallback requirements.\n\n## Acceptance\nBuild a matrix for fresh warmed client, first-use cold client, deliberately stale landmark, expired update channel, offline verifier and mirror outage. For each record required bytes, network dependency, accepted/rejected result, update interval, rollback protection and error behavior. Where compact landmark-relative cert cannot be proven current, client must choose a verifiable standalone form or fail closed; no silent acceptance of stale state. Verify current draft's exact freshness rules and implementation behavior.\n\n## Negative tests / oracle\nReplay earlier checkpoint/landmark; remove cosigner, corrupt update, swap trust domain, disconnect network and exceed configured age. Assert conventional signed fallback only where independently verified; else fail closed. Oracle is controlled verifier state/version plus independent proof verifier, not producer success.\n\n## Boundaries\nDisposable synthetic clients/domains only. No browser trust changes, deployed clients, DNS or production cert. Remove all synthetic state after report.\n\n## Dependencies / priority\nDepends MTC-01/MTC-02. Optional Backlog; intrinsic urgency 1800 (Someday), queue projection 70; complexity L. Source: https://datatracker.ietf.org/doc/draft-ietf-plants-merkle-tree-certs/ .\n\n**Priority semantics:** intrinsic urgency 1800 (Someday; optional research), distinct from importance, blocking status and stage. Legacy queue projection is 70 (low) under explicit publisher map.\n\n## Technical boundary and file ownership\nNo Fleet PKI crate, TLS client, trust store, DNS, public CA, endpoint or production cert/key changes. Issue-specific report and sanitized synthetic artifacts belong under `doc/2026-11-13T01-34-11Z_design_fleet_ca_credentials_secrets/evidence/MTC-04/`; do not rewrite this proposal JSON as results. The synthetic test CA owns the only generated values. Any API/CLI integration requires a separate issue.",
+    "urgency_band": "Someday",
+    "queue_priority_projection": 70
+  },
+  {
+    "id": "MTC-05",
+    "title": "Verify MTC TLS integration without conflating certificate signatures and key exchange",
+    "parent": "#9167",
+    "kind": "security review",
+    "source_ranges": [
+      "spec §§3, 11, 27.4, 44, 46 R-SEC-16",
+      "source input 3 §3",
+      "handoff MTC note",
+      "coordinator §4.2"
+    ],
+    "requirement_ids": [
+      "PKI-MTC-OPTIONAL",
+      "PKI-PQ-KEX-SEPARATION",
+      "PKI-MLDSA44-BASELINE"
+    ],
+    "stage": "optional synthetic interoperability lab",
+    "lifecycle": "Backlog",
+    "urgency": 1800,
+    "depends_on": [
+      "MTC-01",
+      "MTC-02",
+      "MTC-04"
+    ],
+    "body": "## Goal\nEstablish exact TLS client/version support and security properties for MTC, while proving certificate signing scheme and TLS key exchange are measured independently.\n\n## Scope / acceptance\nUsing synthetic endpoints only, test only clients claiming current draft support. Cloudflare’s reported Chrome Beta 146 experiment served MTCs backed by traditional certificate chains and used classical signatures; it does not establish PQ certificate-chain or KEX support. Capture ClientHello/ServerHello, negotiated group, peer Certificate representation, CertificateVerify algorithm, validation chain, MTC update/fallback behavior and failure code. Separately validate ML-DSA-44 certificate signature/path policy. Matrix includes version, draft revision, implementation, client flags and independent packet/certificate decoder. Demonstrate no PQ KEX claim follows merely from ML-DSA-signed certificate.\n\n## Negative tests / oracle\nRequire-PQ-signature policy rejects classical signature; require-PQ-KEX policy rejects classical negotiated group independently; wrong trust anchor and malformed MTC proof fail. Oracle is packet capture plus independent cryptographic/path verifier and configured client policy. If tooling cannot distinguish negotiation components, test is inconclusive/no-go, not a positive result.\n\n## Boundaries / rollback\nLoopback/disposable lab, no public exposure, production trust or DNS. Delete keys and endpoint. Fleet's ML-DSA-44 baseline remains.\n\n## Priority\nOptional Backlog; intrinsic urgency 1800 (Someday), queue projection 70; complexity L; depends MTC-01/02/04. References: draft-08 §§7–8, https://datatracker.ietf.org/doc/draft-ietf-plants-merkle-tree-certs/ and relevant tested TLS implementation docs.\n\n**Priority semantics:** intrinsic urgency 1800 (Someday; optional research), distinct from importance, blocking status and stage. Legacy queue projection is 70 (low) under explicit publisher map.\n\n## Technical boundary and file ownership\nNo Fleet PKI crate, TLS client, trust store, DNS, public CA, endpoint or production cert/key changes. Issue-specific report and sanitized synthetic artifacts belong under `doc/2026-11-13T01-34-11Z_design_fleet_ca_credentials_secrets/evidence/MTC-05/`; do not rewrite this proposal JSON as results. The synthetic test CA owns the only generated values. Any API/CLI integration requires a separate issue.",
+    "urgency_band": "Someday",
+    "queue_priority_projection": 70
+  },
+  {
+    "id": "MTC-06",
+    "title": "Model MTC log availability, revocation and operator cost",
+    "parent": "#9167",
+    "kind": "research",
+    "source_ranges": [
+      "spec §§11, 14, 27.4, 46 R-SEC-16",
+      "handoff MTC note",
+      "coordinator §4.2"
+    ],
+    "requirement_ids": [
+      "PKI-MTC-OPTIONAL",
+      "PKI-MTC-LOG-AVAILABILITY",
+      "PKI-MTC-REVOCATION-OPERATIONS"
+    ],
+    "stage": "optional research",
+    "lifecycle": "Backlog",
+    "urgency": 1800,
+    "depends_on": [
+      "MTC-01",
+      "MTC-02",
+      "MTC-04"
+    ],
+    "body": "## Goal\nDetermine if MTC log/cosigner/mirror/monitor and renewal responsibilities are viable for the named future relying-party set, compared with ordinary certificate transparency/private log monitoring.\n\n## Acceptance\nModel bounded traffic (explicit synthetic certs/day, proof retention, batch interval and validity) and list CA, cosigner quorum, mirror, monitor, update channel, offline recovery and renewal responsibilities. Fault-inject each component in prior lab or use clearly labelled calculations: report issuance delay, verification outcome, status/revocation delay, storage, egress/operations, alert coverage, restore RTO, named operator hours and failure-domain assumptions. Compare conventional ML-DSA chain and CT/monitor alternatives. State revocation semantics per exact draft, not generic X.509 assumptions. Recommend no-go if operator cost or online dependencies outweigh measured size/security outcome.\n\n## Oracle / negative tests\nStop CA, cosigner, mirror and update service individually; assert issuance/validation behavior as specified. Revoke/expire a test assertion and verify clients reject within a stated measured bound, including stale/offline case. Oracle is test client outcomes and current draft; projection formulas must identify input assumptions.\n\n## Scope / rollback\nNo production logs, keys, endpoints, domains or public account. No DNS, trust-store or service changes. Stop lab and remove synthetic records.\n\n## Priority\nOptional Backlog; intrinsic urgency 1800 (Someday), queue projection 70; complexity L; depends MTC-01/02/04. Sources: current draft §§5, 7, 10, 12: https://datatracker.ietf.org/doc/draft-ietf-plants-merkle-tree-certs/ .\n\n**Priority semantics:** intrinsic urgency 1800 (Someday; optional research), distinct from importance, blocking status and stage. Legacy queue projection is 70 (low) under explicit publisher map.\n\n## Technical boundary and file ownership\nNo Fleet PKI crate, TLS client, trust store, DNS, public CA, endpoint or production cert/key changes. Issue-specific report and sanitized synthetic artifacts belong under `doc/2026-11-13T01-34-11Z_design_fleet_ca_credentials_secrets/evidence/MTC-06/`; do not rewrite this proposal JSON as results. The synthetic test CA owns the only generated values. Any API/CLI integration requires a separate issue.",
+    "urgency_band": "Someday",
+    "queue_priority_projection": 70
+  }
+]

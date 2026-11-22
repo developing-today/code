@@ -1,0 +1,108 @@
+[
+  {
+    "gap_id": "ARCH-GAP-01-EXHAUSTIVE-REPOSITORY-CENSUS",
+    "source_members": [
+      {
+        "source_or_member_id": "SPEC-0118-member-002",
+        "parent_source_id": "SPEC-0118",
+        "source_ref": "source-snapshots/intake-34faffbff2/sources/fleet_architecture_spec_v0_3.md §1 line 69",
+        "clause": "Enumerate every pre-existing CLI/domain/alias/feature flag/secret namespace/config key/docs entry/planned feature/HSM-storage adapter/automation caller and confirm Nix packaging, pinned toolchain, concurrency and deployments from a pinned commit."
+      }
+    ],
+    "existing_proposals_checked": [
+      "TRACE-01",
+      "TRACE-02",
+      "ARCH-07",
+      "ARCH-10",
+      "OPS-08",
+      "SEED-50"
+    ],
+    "why_no_existing_packet_owns_it": "TRACE-01 validates canonical inventory/mapping/evidence links, TRACE-02 freezes CLI/profile goldens, ARCH-07 wires command features, ARCH-10 measures selected profile closure, OPS-08 validates synthetic outputs, and SEED-50 concerns authorized credential inventory/migration. None accepts the exhaustive current-repository/config/deployment/automation census in §1 line 69. `evidence/census.md` is explicitly a bounded V1 census, not that exhaustive deliverable. The domain starter #9156 is not a granular implementation packet.",
+    "status": "no-owner-in-current-proposal-set",
+    "resolved_by": "TRACE-03",
+    "new_issue_created": false
+  },
+  {
+    "gap_id": "ARCH-GAP-02-UNIFIED-HIGH-LEVEL-FLEET-CONTEXT",
+    "source_members": [
+      {
+        "source_or_member_id": "SPEC-0119-member-002",
+        "parent_source_id": "SPEC-0119",
+        "source_ref": "source-snapshots/intake-34faffbff2/sources/fleet_architecture_spec_v0_3.md §2.1 line 80",
+        "clause": "One high-level Rust API achieves the same functionality with paths, byte buffers, secret refs, key handles and stream interfaces; fine-grained APIs support custom pipelines (NATS→DB+Redis) without disk."
+      },
+      {
+        "source_or_member_id": "SPEC-0141-refined06",
+        "parent_source_id": "SPEC-0141",
+        "source_ref": "source-snapshots/intake-34faffbff2/sources/fleet_architecture_spec_v0_3.md §6.4 lines 428-470",
+        "clause": "A FleetContext builder composes policy, secret stores, signers, event sink and output sink for high-level PKI, generation and reconciliation calls; Rust API semantics equal CLI without spawning Fleet."
+      }
+    ],
+    "existing_proposals_checked": [
+      "ARCH-01",
+      "ARCH-06",
+      "ARCH-07",
+      "GEN-01",
+      "CERT-01",
+      "SEC-02",
+      "SEC-03",
+      "REC-07",
+      "OPS-01",
+      "OPS-03"
+    ],
+    "why_no_existing_packet_owns_it": "These packets own specific seams: ARCH-01 runtime refs, ARCH-06 signer/output authority, GEN-01 generation, CERT-01 PKI, SEC-02/03 records/providers, REC-07 reconciliation, OPS-01/03 plan/apply. None accepts the cross-domain FleetContext composition or proves end-to-end human/script/embedded parity across those operation families. A design can depend on these owners but must not claim their names compose a complete facade.",
+    "status": "no-owner-in-current-proposal-set",
+    "resolved_by": "ARCH-11",
+    "new_issue_created": false
+  },
+  {
+    "gap_id": "ARCH-GAP-03-UNIFIED-INPUT-REFERENCE-RESOLVER",
+    "source_members": [
+      {
+        "source_or_member_id": "SPEC-0120-member-001",
+        "parent_source_id": "SPEC-0120",
+        "source_ref": "source-snapshots/intake-34faffbff2/sources/fleet_architecture_spec_v0_3.md §2.1 line 81",
+        "clause": "Local directory, compressed bundle, secret-store references, default inventory lookup, explicit archives and safe untrusted input are supported uniformly through one resolver."
+      },
+      {
+        "source_or_member_id": "SPEC-0146-a01",
+        "parent_source_id": "SPEC-0146",
+        "source_ref": "source-snapshots/intake-34faffbff2/sources/fleet_architecture_spec_v0_3.md §8.4 lines 622-632",
+        "clause": "Commands accepting root/issuer/bundle accept file/directory/archive/stdin and explicit secret reference; named default inventory is restricted to non-root signing; ambiguous sources fail rather than guess."
+      },
+      {
+        "source_or_member_id": "SPEC-B-0003-AT-L1645-683365-1",
+        "parent_source_id": "SPEC-B-0003",
+        "source_ref": "source-snapshots/intake-34faffbff2/sources/fleet_architecture_spec_v0_3.md §25.3 line 1645",
+        "clause": "No silent guessing between ambiguous matching paths, archives and names."
+      },
+      {
+        "source_or_member_id": "SPEC-B-0003-AT-L1645-508711-1",
+        "parent_source_id": "SPEC-B-0003",
+        "source_ref": "source-snapshots/intake-34faffbff2/sources/fleet_architecture_spec_v0_3.md §25.3 line 1645",
+        "clause": "Multiple source candidates must be uniquely identified or disambiguated by a typed selector."
+      },
+      {
+        "source_or_member_id": "SPEC-B-0003-AT-L1645-a57364-1",
+        "parent_source_id": "SPEC-B-0003",
+        "source_ref": "source-snapshots/intake-34faffbff2/sources/fleet_architecture_spec_v0_3.md §25.3 line 1645",
+        "clause": "Support an in-memory object for library callers."
+      }
+    ],
+    "existing_proposals_checked": [
+      "ARCH-01",
+      "SEC-02",
+      "SEC-03",
+      "OPS-02",
+      "OPS-04",
+      "GEN-01",
+      "CERT-07",
+      "CERT-12",
+      "SEED-29"
+    ],
+    "why_no_existing_packet_owns_it": "ARCH-01 owns the typed secret-reference/runtime resolver seam only; SEC-02/03 own record/provider refs; OPS-04 owns safe filesystem/archive writes; OPS-02 batch DAG validation is not a general input resolver; GEN-01 materializes generated artifacts; CERT-07 handles PKI leaf requests; CERT-12 formats delivery kits; SEED-29 handles manifest-driven portable public-bundle inspect/diff/extract. None accepts one API that resolves all source kinds (including directories, archive/stdin, provider refs, PKI fingerprints, default inventory, hardware handles and in-memory objects) with a single typed ambiguity policy. Supporting proposals cover components, not the resolver contract.",
+    "status": "no-owner-in-current-proposal-set",
+    "resolved_by": "ARCH-12",
+    "new_issue_created": false
+  }
+]
