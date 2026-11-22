@@ -1,0 +1,16 @@
+[Unit]
+Description=PM console — queue, priorities, agents, services and pull requests (pm-stack)
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/git/code/pm-stack/console
+ExecStart=/run/current-system/sw/bin/bun run src/server.ts
+EnvironmentFile=%h/.local/state/pm-console/.env
+# The console shells out to fleet, gh (through fleet), systemctl and journalctl.
+Environment=PATH=%h/.local/bin:/etc/profiles/per-user/%u/bin:/run/current-system/sw/bin:/usr/bin:/bin
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

@@ -764,6 +764,18 @@
       "status": "mapped"
     },
     {
+      "id": "pm-stack.console",
+      "paths": ["pm-stack/console/test/*.test.ts", "pm-stack/console/scripts/test_expose.py"],
+      "invocation": "cd pm-stack/console && bun test && python3 -I -m unittest discover -s scripts -p 'test_*.py'",
+      "venue": {
+        "workflow": ".github/workflows/pm-stack-tests.yml",
+        "job_step": "Test console",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped"
+    },
+    {
       "id": "pm-stack.dispatch",
       "paths": ["pm-stack/dispatch/test/*.test.ts"],
       "invocation": "cd pm-stack/dispatch && bun test",
