@@ -1,0 +1,52 @@
+// The PM console for Android: a Trusted Web Activity. The app is the
+// site itself, shown by Chrome without browser chrome, so sign-in is
+// Chrome's and nothing is reimplemented here. There is no code in this
+// module: the launcher activity comes from androidbrowserhelper.
+plugins {
+    id 'com.android.application'
+}
+
+def site = 'https://pm.security.cab'
+def keystore = System.getenv('PM_ANDROID_KEYSTORE')
+
+android {
+    namespace 'today.developing.pmconsole'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId 'today.developing.pmconsole'
+        minSdk 23
+        targetSdk 34
+        versionCode 1
+        versionName '0.1.0'
+        manifestPlaceholders = [hostName: 'pm.security.cab', defaultUrl: "${site}/console/"]
+        // The app's half of the link to the site. The site's half is
+        // /.well-known/assetlinks.json, served by pm-console.
+        resValue 'string', 'asset_statements', "[{\\\"relation\\\": [\\\"delegate_permission/common.handle_all_urls\\\"], \\\"target\\\": {\\\"namespace\\\": \\\"web\\\", \\\"site\\\": \\\"${site}\\\"}}]"
+    }
+
+    signingConfigs {
+        release {
+            if (keystore) {
+                storeFile file(keystore)
+                storeType 'pkcs12'
+                storePassword System.getenv('PM_ANDROID_KEYSTORE_PASSWORD')
+                keyAlias 'pmconsole'
+                keyPassword System.getenv('PM_ANDROID_KEYSTORE_PASSWORD')
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            if (keystore) {
+                signingConfig signingConfigs.release
+            }
+        }
+    }
+}
+
+dependencies {
+    implementation 'com.google.androidbrowserhelper:androidbrowserhelper:2.5.0'
+}

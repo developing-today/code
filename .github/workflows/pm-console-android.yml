@@ -1,0 +1,52 @@
+name: pm-console android
+
+# Builds the PM console's Android app (pm-stack/console/android): a
+# Trusted Web Activity over https://pm.security.cab. Manual only: it is
+# run when the app changes, which is rarely, since the app is the site.
+on:
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: "Attach the signed APK to the release pm-console-android"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: "build: signed APK"
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+      - name: Build, sign and check the signing certificate
+        env:
+          KEYSTORE_B64: ${{ secrets.PM_CONSOLE_ANDROID_KEYSTORE_B64 }}
+          PM_ANDROID_KEYSTORE_PASSWORD: ${{ secrets.PM_CONSOLE_ANDROID_KEYSTORE_PASSWORD }}
+        run: |
+          if [ -z "$KEYSTORE_B64" ] || [ -z "$PM_ANDROID_KEYSTORE_PASSWORD" ]; then
+            echo "::error::The signing secrets PM_CONSOLE_ANDROID_KEYSTORE_B64 and PM_CONSOLE_ANDROID_KEYSTORE_PASSWORD are not set."
+            exit 1
+          fi
+          bash pm-stack/console/android/build.sh
+      - uses: actions/upload-artifact@v7
+        with:
+          name: pm-console-apk
+          path: pm-stack/console/android/app/build/outputs/apk/release/pm-console.apk
+          if-no-files-found: error
+      - name: Attach to the release
+        if: inputs.publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          apk=pm-stack/console/android/app/build/outputs/apk/release/pm-console.apk
+          if ! gh release view pm-console-android >/dev/null 2>&1; then
+            gh release create pm-console-android --latest=false \
+              --title "PM console for Android" \
+              --notes "The PM stack's console as an Android app. It opens https://pm.security.cab/console/ and signs in the way the site does. Install pm-console.apk; later builds install over it."
+          fi
+          gh release upload pm-console-android "$apk" --clobber
