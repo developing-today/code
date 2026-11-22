@@ -176,7 +176,10 @@ fn read_config(dir: &Path) -> anyhow::Result<NodeConfig> {
 }
 
 /// Open a node directory as a one-shot stored replica, plus its
-/// recorded configuration.
+/// recorded configuration. The caller shuts the store down on
+/// every path out — success and error alike: a store dropped
+/// without shutdown keeps its database locked, and the next open
+/// of the directory waits on it.
 async fn open_node(dir: &Path) -> anyhow::Result<(NodeConfig, DiskReplica)> {
     let config = read_config(dir)?;
     let stored = DiskReplica::open_dir(dir, replica(&config.name))
@@ -289,25 +292,32 @@ pub async fn write_record(
         bail!("unknown demo writer {writer:?}; the walk writers are {WRITERS:?}");
     }
     let (config, mut stored) = open_node(dir).await?;
-    let parents: Vec<EventId> = if parents.is_empty() {
-        stored.store().heads(&GRAPH)
-    } else {
-        parents.to_vec()
-    };
-    let (signed, event, version) = build_version(writer, text, &parents, now)?;
-    let outcome = stored.produce(&version, now).await?;
+    // Every path out of an open node shuts its store down: a store
+    // dropped without shutdown keeps its database locked, and the
+    // next open of the directory would wait on it forever.
+    let written = async {
+        let parents: Vec<EventId> = if parents.is_empty() {
+            stored.store().heads(&GRAPH)
+        } else {
+            parents.to_vec()
+        };
+        let (signed, event, version) = build_version(writer, text, &parents, now)?;
+        let outcome = stored.produce(&version, now).await?;
+        let address = IdUriV1::new(
+            &config.name,
+            NAMESPACE,
+            UriTarget::Content(*signed.id.content_id()),
+        )?
+        .format();
+        Ok::<_, anyhow::Error>(WrittenView {
+            address,
+            event,
+            outcome,
+        })
+    }
+    .await;
     stored.shutdown().await?;
-    let address = IdUriV1::new(
-        &config.name,
-        NAMESPACE,
-        UriTarget::Content(*signed.id.content_id()),
-    )?
-    .format();
-    Ok(WrittenView {
-        address,
-        event,
-        outcome,
-    })
+    written
 }
 
 /// What a `read` found: the record's signer and its note text, if
@@ -340,12 +350,10 @@ pub async fn read_record(dir: &Path, address: &str) -> anyhow::Result<ReadView> 
         bail!("{address} does not name a record");
     };
     let (_config, stored) = open_node(dir).await?;
-    let served = stored
-        .replica()
-        .envelope(named.digest())
-        .cloned()
-        .ok_or_else(|| anyhow::anyhow!("this node does not hold the record at {address}"))?;
+    let served = stored.replica().envelope(named.digest()).cloned();
     stored.shutdown().await?;
+    let served = served
+        .ok_or_else(|| anyhow::anyhow!("this node does not hold the record at {address}"))?;
 
     let dispatch = ProfileDispatch::default();
     let header = VersionHeader::decode(&served.payload)
@@ -545,7 +553,13 @@ pub async fn start_server(dir: &Path) -> anyhow::Result<WalkServer> {
         .await
         .with_context(|| format!("opening walk node {}", dir.display()))?;
     let (protocol, mut admissions) = serving.protocol();
-    let endpoint = endpoint(dir).await?;
+    let endpoint = match endpoint(dir).await {
+        Ok(endpoint) => endpoint,
+        Err(error) => {
+            let _ = serving.shutdown().await;
+            return Err(error);
+        }
+    };
     let router = Router::builder(endpoint.clone())
         .accept(EXCHANGE_ALPN, protocol)
         .spawn();
