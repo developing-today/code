@@ -1209,7 +1209,10 @@ def neighbor_map(be, d, n, ceiling="secret-bearing"):
         r["id"]
         for r in rows
         if (detail := details.get(r["id"]))
-        and disclosure_allows(detail.get("eff_sensitivity"), ceiling)
+        # Output authorization is based on the chunk's own classification.
+        # Session labels are metadata, not a fallback grant for an unclassified
+        # chunk at a destination boundary.
+        and disclosure_allows(detail.get("chunk_sensitivity"), ceiling)
     }
     before = [
         {"chunk_id": r["id"], "text": r["text"]}
@@ -1265,7 +1268,7 @@ def run_get_chunk(be, args):
     details = fetch_details(be, [args.chunk_id])
     d = details.get(args.chunk_id)
     if d is None or not disclosure_allows(
-        d.get("eff_sensitivity"), filters.effective_ceiling
+        d.get("chunk_sensitivity"), filters.effective_ceiling
     ):
         die(f"chunk {args.chunk_id} not found", code=1)
     out = {

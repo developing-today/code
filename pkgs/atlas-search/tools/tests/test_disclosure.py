@@ -58,6 +58,39 @@ class DisclosureClassificationTests(unittest.TestCase):
             atlas_search.disclosure_allows("excluded_personal_life", "secret-bearing")
         )
 
+    def test_context_intersection_matches_exhaustive_reference_model(self):
+        # Oracle: an independent rank-based model of the design's four
+        # destination ceilings, caller intersection, and fail-closed labels.
+        ranks = {label: rank for rank, label in enumerate(
+            ("shareable", "personal", "local-only", "secret-bearing")
+        )}
+        contexts = {
+            "fleet-internal": "local-only",
+            "hosted-per-user": "personal",
+            "public-surface": "shareable",
+            "local-owner": "secret-bearing",
+        }
+        classifications = (*ranks, None, "", "unknown", "excluded_personal_life")
+        for context, context_ceiling in contexts.items():
+            for caller, caller_rank in ranks.items():
+                ceiling = min(context_ceiling, caller, key=ranks.__getitem__)
+                with self.subTest(context=context, caller=caller):
+                    self.assertEqual(
+                        atlas_search.effective_sensitivity_ceiling(context, caller),
+                        ceiling,
+                    )
+                    for classification in classifications:
+                        expected = (
+                            classification in ranks
+                            and classification != "excluded_personal_life"
+                            and ranks[classification] <= ranks[ceiling]
+                        )
+                        with self.subTest(classification=classification):
+                            self.assertEqual(
+                                atlas_search.disclosure_allows(classification, ceiling),
+                                expected,
+                            )
+
 
 class SQLiteFixtureBackend:
     name = "local"
@@ -85,6 +118,7 @@ class SQLiteFixtureBackend:
             INSERT INTO chunks VALUES (2, 9, 1, 'safe target');
             INSERT INTO chunks VALUES (3, 9, 2, 'personal neighbor');
             INSERT INTO chunks VALUES (4, 9, 3, 'excluded neighbor');
+            INSERT INTO chunks VALUES (5, 9, 4, 'unclassified neighbor');
             INSERT INTO v_chunk_sens VALUES (1, 'shareable');
             INSERT INTO v_chunk_sens VALUES (2, 'shareable');
             INSERT INTO v_chunk_sens VALUES (3, 'personal');
@@ -119,6 +153,25 @@ class DisclosureOutputTests(unittest.TestCase):
             {"before": [{"chunk_id": 1, "text": "safe before"}], "after": []},
         )
 
+    def test_missing_chunk_classification_does_not_inherit_session_label(self):
+        # Oracle: raw chunk classification must be known before admission;
+        # session-level shareable metadata cannot authorize an unclassified chunk.
+        details = atlas_search.fetch_details(self.backend, [5])[5]
+        self.assertIsNone(details["chunk_sensitivity"])
+        self.assertFalse(
+            atlas_search.disclosure_allows(
+                details.get("chunk_sensitivity"), "shareable"
+            )
+        )
+        args = SimpleNamespace(
+            chunk_id=2,
+            neighbors=3,
+            max_sensitivity="secret-bearing",
+            context="public-surface",
+        )
+        result = atlas_search.run_get_chunk(self.backend, args)
+        self.assertNotIn(5, [c["chunk_id"] for c in result["context"]["after"]])
+
     def test_full_message_withheld_if_any_chunk_exceeds_boundary(self):
         # Oracle: full-message hydration cannot bypass the same output boundary.
         details = atlas_search.fetch_details(self.backend, [2])[2]
@@ -141,6 +194,9 @@ class DisclosureOutputTests(unittest.TestCase):
     def test_full_message_is_returned_when_every_chunk_is_allowed(self):
         self.backend.execute(
             "UPDATE v_chunk_sens SET sensitivity='shareable'", []
+        )
+        self.backend.execute(
+            "INSERT INTO v_chunk_sens VALUES (5, 'shareable')", []
         )
         details = atlas_search.fetch_details(self.backend, [2])[2]
         self.assertEqual(
