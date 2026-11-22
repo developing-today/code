@@ -434,6 +434,24 @@ describe("explorer points (charts + perspectives)", () => {
     expect(ghost.frontierCostTime).toBe(false);
     expect(ghost.beatenBy).toEqual([]);
   });
+
+  test("Pareto sweep preserves equal-coordinate duplicates and same-axis domination", () => {
+    const pts = aaPoints(
+      sectionWith([
+        { family: "higher-y", score: 50, cost: 1, time: 5 },
+        { family: "same-x-min", score: 50, cost: 1, time: 3 },
+        { family: "duplicate", score: 50, cost: 1, time: 3 },
+        { family: "same-y-later-x", score: 50, cost: 2, time: 3 },
+        { family: "dominated", score: 50, cost: 2, time: 4 },
+        { family: "lower-y", score: 50, cost: 3, time: 2 },
+      ]),
+    );
+    expect(pts.filter((p) => p.frontierCostTime).map((p) => p.family)).toEqual([
+      "same-x-min",
+      "duplicate",
+      "lower-y",
+    ]);
+  });
 });
 
 describe("fleet catalog (Model Explorer)", () => {
