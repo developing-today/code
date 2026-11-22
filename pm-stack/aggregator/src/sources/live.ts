@@ -7,6 +7,7 @@ import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { dirname, join } from "node:path";
 import type { Config } from "../config.ts";
+import { publishBridgeQueueSnapshot } from "../bridge-snapshot.ts";
 import { applyBoardDonePolicy, isRetiredDoneTableTitle } from "../board-policy.ts";
 import { AA_PLAN_FACTS, aaApplyPriceOverlay, isAaSection } from "../aa.ts";
 import { aaCacheFileName, aaPricesFingerprint, isAaBatchCacheEntry } from "../aa-batches.ts";
@@ -1564,10 +1565,15 @@ export function liveSource(
           const token = await readBrokerToken(cfg.queueBrokerTokenFile);
           if (!token) throw new Error(`queue broker token file unreadable: ${cfg.queueBrokerTokenFile}`);
           const snap = await fetchQueueSnapshot(cfg.queueBrokerUrl, token);
+          // Optional local projection only; no additional broker call or credential.
+          await publishBridgeQueueSnapshot(snap).catch(() => {});
           queueCache = { value: snap, at: Date.now() };
           return snap;
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
+          // Revoke a recent good projection on a known read failure. If disk
+          // publication fails too, the bridge rejects it after its five-minute TTL.
+          await publishBridgeQueueSnapshot(unavailableQueueSnapshot(Date.now(), "unavailable")).catch(() => {});
           if (queueCache) {
             return { ...queueCache.value, available: false, stale: true, errors: [msg] };
           }
