@@ -9843,6 +9843,14 @@ mod schedule_tests {
         id: &str,
         bounds: CapabilityBounds,
     ) -> (WorldActor, JoinCapability, BatchJournal) {
+        batch_actor_with(id, bounds, Box::new(BatchProgram))
+    }
+
+    fn batch_actor_with(
+        id: &str,
+        bounds: CapabilityBounds,
+        program: Box<dyn WorldProgram>,
+    ) -> (WorldActor, JoinCapability, BatchJournal) {
         let journal = BatchJournal::for_world(id);
         let mut core = WorldCore::new(id, WorldLimits::default()).unwrap();
         let (ann, token) = core
@@ -9850,11 +9858,7 @@ mod schedule_tests {
             .unwrap();
         let issued = core.issued_entry(ann.id).unwrap();
         journal.entries.lock().unwrap().push(issued);
-        let actor = WorldActor::for_test(
-            core,
-            Box::new(BatchProgram),
-            Some(Box::new(journal.clone())),
-        );
+        let actor = WorldActor::for_test(core, program, Some(Box::new(journal.clone())));
         (actor, token, journal)
     }
 
@@ -9928,6 +9932,104 @@ mod schedule_tests {
         assert_eq!(journal.committed().len(), 1);
         assert_eq!(*journal.batches.lock().unwrap(), vec![1]);
         assert!(!actor.program_healthy);
+    }
+
+    /// A program that refuses the input `limited` at the account's
+    /// fuel rate and accepts everything else (#1067).
+    struct FuelLimitedBatchProgram;
+
+    impl WorldProgram for FuelLimitedBatchProgram {
+        fn update(&mut self, event: &WorldEvent) -> Result<()> {
+            if let WorldEventKind::Input(input) = &event.kind {
+                if input == b"limited" {
+                    return Err(anyhow::Error::new(
+                        id_caps::account_quota::FuelRateRefusal {
+                            limit_per_second: 10_000,
+                            charged_in_window: 10_000,
+                            requested_fuel: 10_000,
+                        },
+                    ));
+                }
+            }
+            Ok(())
+        }
+    }
+
+    // #1067 oracle: a fuel-rate refusal inside a batch is recoverable -
+    // the staged prefix commits, the refused input is answered with the
+    // refusal, and the input after it goes through the single path, where
+    // the still-healthy program accepts it instead of refusing it as
+    // unavailable.
+    #[tokio::test]
+    async fn a_fuel_rate_refusal_in_a_batch_keeps_the_actor_healthy() {
+        let (mut actor, token, journal) = batch_actor_with(
+            "batch-fuel-rate",
+            CapabilityBounds::default(),
+            Box::new(FuelLimitedBatchProgram),
+        );
+        let results = batch_replies(&mut actor, &token, &[b"one", b"limited", b"two"]).await;
+        assert!(results[0].is_ok(), "{:?}", results[0]);
+        let refused = format!("{:#}", results[1].as_ref().unwrap_err());
+        assert!(refused.contains("fuel rate"), "{refused}");
+        assert!(
+            !refused.contains("unavailable after a previous failure"),
+            "{refused}"
+        );
+        assert!(results[2].is_ok(), "{:?}", results[2]);
+        assert!(actor.program_healthy);
+        assert_eq!(journal.committed().len(), 2);
+        assert_eq!(*journal.batches.lock().unwrap(), vec![1]);
+    }
+
+    /// A program that refuses host (system) events at the account's
+    /// fuel rate and accepts everything else (#1067).
+    struct FuelLimitedSystemProgram;
+
+    impl WorldProgram for FuelLimitedSystemProgram {
+        fn update(&mut self, event: &WorldEvent) -> Result<()> {
+            if let WorldEventKind::System { .. } = &event.kind {
+                return Err(anyhow::Error::new(
+                    id_caps::account_quota::FuelRateRefusal {
+                        limit_per_second: 10_000,
+                        charged_in_window: 10_000,
+                        requested_fuel: 10_000,
+                    },
+                ));
+            }
+            Ok(())
+        }
+    }
+
+    // #1067 oracle: a fuel-rate refusal of a host event is
+    // recoverable — a refused schedule fire leaves the schedule
+    // pending and the program healthy, and the next participant
+    // input still succeeds.
+    #[tokio::test]
+    async fn a_fuel_rate_refusal_of_a_host_event_keeps_the_actor_healthy() {
+        let journal = Recorded::for_world("system-fuel-rate");
+        let clock: Arc<ManualClock> = Arc::new(ManualClock::new(EPOCH_MS));
+        let mut core = WorldCore::new_with_clock(
+            "system-fuel-rate",
+            WorldLimits::default(),
+            clock.clone(),
+        )
+        .unwrap();
+        let (ann, token) = core
+            .issue_capability("ann", WorldScopes::GUEST, CapabilityBounds::default())
+            .unwrap();
+        let issued = core.issued_entry(ann.id).unwrap();
+        super::tests::push_bumped(&mut journal.0.lock().unwrap(), &issued);
+        let mut actor = WorldActor::for_test(
+            core,
+            Box::new(FuelLimitedSystemProgram),
+            Some(Box::new(journal.clone())),
+        );
+        actor.core.schedules.insert("tick".to_owned(), PendingSchedule::one_shot(EPOCH_MS));
+        actor.fire_schedules().await;
+        assert!(actor.program_healthy);
+        assert!(actor.core.schedules.contains_key("tick"));
+        let results = batch_replies(&mut actor, &token, &[b"after"]).await;
+        assert!(results[0].is_ok(), "{:?}", results[0]);
     }
 
     // #8239 oracle: staged spends count against the uses limit before

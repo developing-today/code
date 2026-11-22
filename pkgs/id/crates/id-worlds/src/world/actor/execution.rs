@@ -213,8 +213,21 @@ impl WorldActor {
                     });
                 }
                 Err(error) => {
-                    self.program_healthy = false;
-                    failed = Some((reply, error.context("world program rejected input")));
+                    if super::is_fuel_rate_refusal(&error) {
+                        // Recoverable admission refusal (#1067): the
+                        // program never ran and stays healthy, so the
+                        // failing input is answered with the refusal and
+                        // the inputs after it go through the single
+                        // path, where the same refusal — not an
+                        // unavailable program — answers them too.
+                        failed = Some((
+                            reply,
+                            error.context("world program refused input at its fuel rate"),
+                        ));
+                    } else {
+                        self.program_healthy = false;
+                        failed = Some((reply, error.context("world program rejected input")));
+                    }
                     break;
                 }
             }
@@ -723,6 +736,14 @@ impl WorldActor {
             kind: WorldEventKind::System { event: text },
         };
         if let Err(error) = self.program.update(&event) {
+            if super::is_fuel_rate_refusal(&error) {
+                // Recoverable admission refusal (#1067): the program
+                // never ran and stays healthy; this host event is
+                // dropped and the next tick or capability result is
+                // delivered as usual once the window rolls.
+                tracing::warn!("world program refused a host event at its fuel rate: {error:#}");
+                return false;
+            }
             self.program_healthy = false;
             tracing::error!("world program rejected a host event: {error:#}");
             return false;

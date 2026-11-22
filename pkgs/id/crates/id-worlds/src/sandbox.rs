@@ -356,6 +356,8 @@ impl Sandbox {
             limits: self.limits,
             metrics,
             fuel_rate: None,
+            #[cfg(test)]
+            fuel_now: None,
             trap_fuel: None,
             store,
             memory,
@@ -390,6 +392,13 @@ pub struct WorldInstance {
     /// every host that has not wired account quotas yet — leaves
     /// invocation admission exactly as it was before F12.10.
     fuel_rate: Option<id_caps::account_quota::FuelRateBudget>,
+    /// Test-only admission clock (#1067): when set,
+    /// [`Self::charge_fuel_rate`] charges at this instant instead of
+    /// `Instant::now()`, so admission tests can pin the budget's
+    /// window — or step it by hand — instead of racing the wall
+    /// clock. `None` everywhere except tests that set it.
+    #[cfg(test)]
+    fuel_now: Option<std::time::Instant>,
     /// Fuel a trapped call had spent, captured before the diagnostic getters
     /// refill the store; taken by [`Self::settle`].
     trap_fuel: Option<u64>,
@@ -470,7 +479,13 @@ impl WorldInstance {
     /// when the account is at its rate for the current window.
     fn charge_fuel_rate(&mut self) -> Result<()> {
         if let Some(budget) = &mut self.fuel_rate {
-            budget.try_charge(std::time::Instant::now(), self.limits.fuel)?;
+            // Tests pin `fuel_now` (#1067); production always reads
+            // the wall clock.
+            #[cfg(test)]
+            let now = self.fuel_now.unwrap_or_else(std::time::Instant::now);
+            #[cfg(not(test))]
+            let now = std::time::Instant::now();
+            budget.try_charge(now, self.limits.fuel)?;
         }
         Ok(())
     }
@@ -868,6 +883,14 @@ impl WorldInstance {
     fn snapshot_via_trait(&mut self) -> Option<String> {
         crate::world::WorldProgram::snapshot(self).unwrap()
     }
+
+    /// Pin the admission clock (#1067): [`Self::charge_fuel_rate`]
+    /// charges at `now` until this is called again, so a test can
+    /// hold the budget's window still — or step it past a rollover —
+    /// without sleeping or racing the wall clock.
+    pub fn set_fuel_now_for_test(&mut self, now: std::time::Instant) {
+        self.fuel_now = Some(now);
+    }
 }
 
 impl crate::world::WorldProgram for WorldInstance {
@@ -1067,9 +1090,11 @@ mod tests {
         use proptest::prelude::*;
 
         /// The oracle: what the ledger and the invocation metrics
-        /// must say after each event. A case runs back-to-back
-        /// inside one second, so no window rolls mid-case and the
-        /// window charge is just the sum of admitted allowances.
+        /// must say after each event. The admission clock is pinned
+        /// for the whole case (see below), so no window rolls
+        /// mid-case and the window charge is just the sum of
+        /// admitted allowances; the case then steps the clock by
+        /// hand to cover a rollover deterministically.
         #[derive(Debug, Default)]
         struct Oracle {
             charged: u64,
@@ -1101,6 +1126,11 @@ mod tests {
                 world.set_fuel_rate_budget(
                     id_caps::account_quota::FuelRateBudget::new(budget_limit),
                 );
+                // Pin the admission clock (#1067): the budget's
+                // window can only roll when this case steps it, never
+                // because the test process was descheduled mid-case.
+                let fuel_now = std::time::Instant::now();
+                world.set_fuel_now_for_test(fuel_now);
                 let mut oracle = Oracle::default();
                 for len in ops {
                     let event = vec![b'e'; len];
@@ -1150,6 +1180,33 @@ mod tests {
                     // its "hello" data — that is the fixture, not
                     // poisoning.)
                     prop_assert!(world.view().is_ok());
+                }
+                // Step the pinned clock past the window (#1067): the
+                // ledger restarts from zero, so an allowance that
+                // fits the limit is admitted fresh, and one larger
+                // than the limit is still refused — now with an
+                // empty window behind it.
+                world.set_fuel_now_for_test(fuel_now + std::time::Duration::from_secs(2));
+                let rolled = world.update(1, &[]);
+                if fuel <= budget_limit {
+                    prop_assert!(rolled.is_ok());
+                    prop_assert_eq!(
+                        world.fuel_rate_budget().unwrap().charged_in_window(),
+                        fuel
+                    );
+                } else {
+                    prop_assert!(rolled.is_err());
+                    prop_assert!(
+                        rolled
+                            .unwrap_err()
+                            .downcast_ref::<id_caps::account_quota::FuelRateRefusal>()
+                            .is_some(),
+                        "a fresh window still refuses an allowance larger than the limit"
+                    );
+                    prop_assert_eq!(
+                        world.fuel_rate_budget().unwrap().charged_in_window(),
+                        0
+                    );
                 }
             }
         }
