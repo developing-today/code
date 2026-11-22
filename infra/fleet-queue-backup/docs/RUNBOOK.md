@@ -78,14 +78,19 @@ because a silently wrong coordination store double-claims work.
    token file; never the production broker's):
 
    ```bash
-   printf '%s' '<target token>' > /tmp/restored-token
+   printf '%s' '<target token>' > ~/restore-drill/turso-token
+   printf '%s' '<any drill token>' > ~/restore-drill/broker-token
+   QUEUE_BROKER_BIND=127.0.0.1:4899 \
+   QUEUE_BROKER_SOCKET=~/restore-drill/broker.sock \
+   QUEUE_BROKER_TOKEN_FILE=~/restore-drill/broker-token \
    QUEUE_BROKER_TURSO_URL=https://fleet-queue-restored-dezren39.aws-us-east-1.turso.io \
-   QUEUE_BROKER_TURSO_TOKEN_FILE=/tmp/restored-token \
-   QUEUE_BROKER_PORT=4899 \
+   QUEUE_BROKER_TURSO_TOKEN_FILE=~/restore-drill/turso-token \
      ~/tools/fleet serve queue-broker &
    REPO_QUEUE_BROKER_URL=http://127.0.0.1:4899 \
+   QUEUE_BROKER_TOKEN_FILE=~/restore-drill/broker-token \
      ~/tools/fleet queue claim --worker restore-drill
    REPO_QUEUE_BROKER_URL=http://127.0.0.1:4899 \
+   QUEUE_BROKER_TOKEN_FILE=~/restore-drill/broker-token \
      ~/tools/fleet queue list --status claimed
    ```
 
