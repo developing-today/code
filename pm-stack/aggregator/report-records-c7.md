@@ -63,24 +63,29 @@ selected.
 
 ## Period composition and generation
 
-`src/report-composer.ts` composes an explicit target period from current
-canonical lower-grain records. Daily reports use source records; weekly reports
-use daily records and separately label the prior Friday as reach-back context;
-monthly, quarterly, and annual reports prefer composed records at the next
-smaller grain, falling back to source records for a child period when no
-composed version exists. Stable source-time and record-ID ordering makes the
-result independent of record arrival order. Blocks bubble upward according to
-their `importance` grains (or the default path from their source grain), and
-classified activity carries linked members into the summary. The template
-sections and composer identity are versioned as `c7-rollup-v1`.
+`src/report-composer.ts` composes an explicit target period from the latest
+retained lower-grain records available at `asOf`, and excludes blocks after
+that instant or outside the target period. Daily reports use source records;
+weekly reports use daily records and separately label only the prior Friday as
+reach-back context; monthly, quarterly, and annual reports prefer composed
+records at the next smaller grain, falling back to source records for a child
+period when no composed version exists. Stable source-time and record-ID
+ordering makes the result independent of record arrival order. Blocks bubble
+upward according to their `importance` grains (or the default path from their
+source grain). Non-visible `bubblingCandidates` preserve explicitly selected
+higher grains across an excluded intermediate grain. Classified activity
+carries only explicit member links; source attribution remains in `sources`.
+The template sections and composer identity are versioned as `c7-rollup-v1`.
 
 Generate a record with `bun run report:generate --kind <daily|weekly|monthly|quarterly|annual>
 --period <identity> --as-of <canonical-ISO-timestamp> [--store <jsonl-path>]`.
 Period identities are explicit: `YYYY-MM-DD` (daily), Monday `YYYY-MM-DD`
 (weekly), `YYYY-MM` (monthly), `YYYY-QN` (quarterly), and `YYYY` (annual).
-The command validates its complete argument list and period identity before
-store I/O, reads the selected retained records, and appends the result
-idempotently. It follows `PM_AGG_STORE_BACKEND`: file mode uses the local
+The command validates its complete argument list, period identity, and
+half-open `asOf` bounds before store I/O, selects retained records available at
+that point in time, and appends the result idempotently. A changed `asOf` is
+part of the derived source cursor so distinct point-in-time views cannot
+conflict under one immutable record ID. It follows `PM_AGG_STORE_BACKEND`: file mode uses the local
 report-record JSONL file (`PM_AGG_REPORT_RECORDS_FILE` or the default path),
 and `--store` selects another JSONL path in file mode. Turso mode uses the
 existing durable document adapter and never silently falls back to a file;

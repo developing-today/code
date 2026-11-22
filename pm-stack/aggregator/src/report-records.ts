@@ -30,6 +30,8 @@ export interface ReportRecordInput {
   sourceCursor: string;
   sources: ReportRecordSource[];
   blocks: ReportRecordBlock[];
+  /** Non-visible blocks retained for explicitly requested higher-grain rollups. */
+  bubblingCandidates?: ReportRecordBlock[];
 }
 
 export interface ReportRecord extends ReportRecordInput {
@@ -160,6 +162,24 @@ export function makeReportRecord(input: ReportRecordInput, generatedAt = new Dat
       (!Array.isArray(block.links) || block.links.some((link) => typeof link !== "string" || !link.trim()))
     ) {
       throw new Error(`report block ${block.id} has invalid links`);
+    }
+  }
+  for (const block of input.bubblingCandidates ?? []) {
+    if (!block.id.trim() || !block.text.trim()) throw new Error("each bubbling candidate requires an id and text");
+    requireIsoDate(block.relatedAt, "bubbling candidate relatedAt");
+    if (
+      block.importance &&
+      (!Array.isArray(block.importance) ||
+        block.importance.some((kind) => !(REPORT_PERIOD_KINDS as readonly string[]).includes(kind)) ||
+        new Set(block.importance).size !== block.importance.length)
+    ) {
+      throw new Error(`bubbling candidate ${block.id} has invalid importance levels`);
+    }
+    if (
+      block.links &&
+      (!Array.isArray(block.links) || block.links.some((link) => typeof link !== "string" || !link.trim()))
+    ) {
+      throw new Error(`bubbling candidate ${block.id} has invalid links`);
     }
   }
   return { ...structuredClone(input), id: reportRecordId(input), generatedAt };
