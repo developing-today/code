@@ -6,9 +6,42 @@ The opaque claim secret appears only in the URL fragment, is sent to the Worker
 in a POST body, expires after 15 minutes, and can be consumed once. Responses
 are non-cacheable; Worker request logs are disabled.
 
-## Deploy once, then create one link per agent
+## Deployment and link creation
 
-From a trusted checkout on the laptop:
+Worker code releases use `.github/workflows/muse-handoff-deploy.yml`.
+Changes merged to `main` upload an immutable Worker Version through the
+pinned `cf` CLI and Cloudflare Workers Versions API; this upload does not
+create a deployment or move production traffic. The workflow intentionally
+has no pull-request trigger, and it passes Cloudflare credentials only to
+jobs running on `main`.
+Configure the repository secrets `CLOUDFLARE_API_TOKEN` and
+`CLOUDFLARE_ACCOUNT_ID` before enabling deployment. The API token should
+use `Individual Workers Editor` scoped to this Worker; the workflow needs
+only `contents: read` in GitHub and no OIDC permission.
+
+Before promotion, inspect the uploaded version and verify it matches the
+currently serving Worker: the `muse-agent-handoff` target, compatibility
+date, workers.dev setting, disabled preview URLs and observability, the
+`HANDOFFS` binding to `Handoff`, SQLite storage and the existing `v1`
+migration, plus the existing `ADMIN_TOKEN` and `HANDOFF_ENCRYPTION_KEY`
+secret bindings. The workflow never reads or changes those secret values.
+The current config disables preview URLs, and Cloudflare does not issue
+Version URLs for Workers that implement Durable Objects. A safe runtime
+parity check therefore needs an isolated staging Worker with its own
+Durable Object namespace; do not test a candidate against the production
+namespace or promote it based only on the workflow checkbox. That staging
+path is a cutover prerequisite and is intentionally not created here. The
+current production deployment stays live until isolated parity is verified.
+After that, dispatch the workflow on `main`, provide the uploaded version
+ID, and confirm the parity review. It then creates a separate 100%
+deployment for that version.
+
+The existing local `deploy.sh` remains the initial Worker bootstrap and
+secret-provisioning path described below; it is not the GitHub Actions
+routine code-release path. The workflow assumes the Worker already exists.
+
+From a trusted checkout on the laptop, bootstrap the Worker and provision
+its local admin/encryption secrets when needed:
 
 ```bash
 scripts/muse/handoff/deploy.sh
@@ -33,10 +66,11 @@ python3 scripts/muse/handoff/create-url.py \
 
 Keep the URL for the prompt that starts that one lane; do not reuse it.
 
-To rotate/redeploy the Worker, run `deploy.sh` again. It reuses the local
-admin and encryption keys, so already-issued links remain decryptable until
-they expire. If the admin file is lost, provision a new admin token and update
-the Worker secret before issuing another link.
+For local admin/encryption key rotation, run `deploy.sh` again. It reuses the
+local admin and encryption keys, so already-issued links remain decryptable
+until they expire. If the admin file is lost, provision a new admin token and
+update the Worker secret before issuing another link. Routine code releases
+use the GitHub Actions upload/review/promotion flow above.
 
 ## Agent command
 
@@ -79,7 +113,8 @@ there is no task available on this pass; it is not an enrollment failure.
 
 - `worker/src/index.js`: Worker API and per-link Durable Object.
 - `worker/wrangler.jsonc`: deployment binding and migration.
-- `deploy.sh`: deploy and configure Worker secrets without writing them to Git.
+- `deploy.sh`: bootstrap the Worker and configure its secrets without writing
+  them to Git.
 - `create-url.py`: laptop-side hidden-input URL generator.
 - `enroll-agent.py`: Muse-side handoff consumer and bootstrap runner.
 - `PROMPT.md`: copy-ready starting prompt for a new Muse lane.

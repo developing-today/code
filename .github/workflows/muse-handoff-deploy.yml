@@ -1,0 +1,150 @@
+name: muse handoff Worker deploy
+
+# Uploads from trusted main pushes are staged as immutable Worker versions.
+# Production traffic changes only through a separate workflow_dispatch after
+# an operator has verified parity in an isolated stage. This Worker uses a
+# Durable Object, so its current settings do not provide a safe version URL.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "scripts/muse/handoff/worker/**"
+      - ".github/workflows/muse-handoff-deploy.yml"
+  workflow_dispatch:
+    inputs:
+      version_id:
+        description: "Uploaded Worker Version ID to promote after staged parity review"
+        required: true
+        type: string
+      staged_parity_verified:
+        description: "Confirm parity was verified in an isolated stage, including bindings, secrets, and Durable Object migration"
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: muse-handoff-worker-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    # workflow_dispatch can select a branch. Only main may enter a job that
+    # receives the Cloudflare token; pull requests have no trigger at all.
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: scripts/muse/handoff/worker
+    steps:
+      - name: Validate promotion request
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          VERSION_ID: ${{ inputs.version_id }}
+          PARITY_VERIFIED: ${{ inputs.staged_parity_verified }}
+        run: |
+          if [ "$PARITY_VERIFIED" != "true" ]; then
+            echo "Refusing promotion until staged parity has been reviewed." >&2
+            exit 1
+          fi
+          if ! [[ "$VERSION_ID" =~ ^[[:xdigit:]-]{36}$ ]]; then
+            echo "version_id must be a Cloudflare Worker Version UUID." >&2
+            exit 1
+          fi
+
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24.22.0
+          cache: npm
+          cache-dependency-path: scripts/muse/handoff/worker/package-lock.json
+
+      - name: Install pinned cf CLI
+        run: npm ci --ignore-scripts --no-audit --no-fund
+
+      - name: Check Cloudflare credentials are configured
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          if [ -z "$CLOUDFLARE_API_TOKEN" ] || [ -z "$CLOUDFLARE_ACCOUNT_ID" ]; then
+            echo "Set CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID before enabling this deployment." >&2
+            exit 1
+          fi
+
+      - name: Upload staged Worker Version
+        id: upload
+        if: github.event_name == 'push'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          GIT_SHA: ${{ github.sha }}
+        run: |
+          tag="git-${GIT_SHA:0:12}"
+          ./node_modules/.bin/cf workers versions create \
+            --worker muse-agent-handoff \
+            --tag "$tag" \
+            --message "deploy $GIT_SHA via GitHub Actions"
+          version_id="$(node --input-type=module <<'NODE'
+          import { execFileSync } from "node:child_process";
+
+          const worker = "muse-agent-handoff";
+          const tag = `git-${process.env.GIT_SHA.slice(0, 12)}`;
+          const output = execFileSync("./node_modules/.bin/cf", [
+            "-q", "workers", "versions", "list", "--worker-id", worker,
+          ], { encoding: "utf8" });
+          const parsed = parseJson(output);
+          const versions = Array.isArray(parsed) ? parsed
+            : Array.isArray(parsed?.result) ? parsed.result
+            : Array.isArray(parsed?.result?.items) ? parsed.result.items
+            : Array.isArray(parsed?.versions) ? parsed.versions
+            : [];
+          const match = versions
+            .filter((version) => version.annotations?.["workers/tag"] === tag)
+            .sort((a, b) => createdOn(b) - createdOn(a))[0];
+          if (!match?.id) throw new Error(`uploaded version tagged ${tag} was not found`);
+          process.stdout.write(match.id);
+
+          function parseJson(text) {
+            const trimmed = text.trim();
+            try { return JSON.parse(trimmed); } catch {}
+            for (const open of ["{", "["]) {
+              for (let i = trimmed.indexOf(open); i >= 0; i = trimmed.indexOf(open, i + 1)) {
+                try { return JSON.parse(trimmed.slice(i)); } catch {}
+              }
+            }
+            throw new Error(`could not parse cf JSON output: ${trimmed.slice(0, 200)}`);
+          }
+
+          function createdOn(version) {
+            const raw = version.metadata?.created_on ?? version.created_on ?? 0;
+            const parsed = typeof raw === "number" ? raw : Date.parse(raw);
+            return Number.isFinite(parsed) ? parsed : 0;
+          }
+          NODE
+          )"
+          echo "version_id=$version_id" >> "$GITHUB_OUTPUT"
+          {
+            echo "Uploaded staged version `$version_id` (tag `$tag`)."
+            echo "Production traffic was not changed. Review the uploaded version, then dispatch this workflow on `main` with the version ID and staged parity confirmation to promote it."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Promote reviewed Worker Version to 100% traffic
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          VERSION_ID: ${{ inputs.version_id }}
+        run: |
+          versions="$(node -e 'process.stdout.write(JSON.stringify([{ version_id: process.env.VERSION_ID, percentage: 100 }]))')"
+          ./node_modules/.bin/cf workers deployments create \
+            --worker muse-agent-handoff \
+            --strategy percentage \
+            --versions "$versions"
+          echo "Promoted Worker version `$VERSION_ID` to 100% traffic after staged parity confirmation." >> "$GITHUB_STEP_SUMMARY"
