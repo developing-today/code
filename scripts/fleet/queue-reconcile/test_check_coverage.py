@@ -13,7 +13,10 @@ Covers:
   the queue's dedupe key, but the script must not double-submit within
   a run or across runs given the same coverage answer);
 - a fetch failure is an ERROR with exit 3, never a silent "0 uncovered";
-- the triage packet is schema-shaped and carries the issue dedupe basis.
+- the triage packet is schema-shaped and carries the issue dedupe basis;
+- #12280: a ready PR older than 6h with no live task naming it gets
+  one warden-keyed pr_shepherd packet; drafts, young PRs, PRs with a
+  live task, and PRs already merge-watched this run get none.
 """
 
 import importlib.util
@@ -381,6 +384,122 @@ class OpenPrCoverageTest(unittest.TestCase):
             ),
             {},
         )
+
+
+def ready_pr(number: int, created_at: str, draft: bool = False, **kw) -> dict:
+    pr = {
+        "number": number,
+        "title": kw.get("title", f"pr {number}"),
+        "body": kw.get("body", ""),
+        "head": {"ref": kw.get("branch", f"feat/pr-{number}")},
+        "draft": draft,
+        "created_at": created_at,
+    }
+    return pr
+
+
+class ReadyPrShepherdTest(unittest.TestCase):
+    """#12280: a ready PR older than 6h with no live task naming it
+    gets a warden-keyed pr_shepherd packet from the reconciliation —
+    the fallback for when the stale-PR warden has not run. Oracle:
+    the issue's done-when (queue store vs `gh pr list`). The CLI runs
+    at --now 2026-11-08T13:00:00Z (see CoverageReconcileTest.run_cli).
+    """
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.fleet = StubFleet(self.tmp)
+        self.state = self.tmp / "state"
+        self.base = CoverageReconcileTest("test_observe_mode_imports_nothing")
+        self.base.tmp = self.tmp
+        self.base.fleet = self.fleet
+        self.base.state = self.state
+
+    def run_cli(self, fx: dict, *extra: str):
+        return self.base.run_cli(fx, *extra)
+
+    def test_old_ready_uncovered_pr_gets_one_warden_keyed_shepherd(self):
+        pulls = [ready_pr(950, "2026-11-07T00:00:00Z")]  # 37h old at --now
+        code, _ = self.run_cli(fixture([], [], pulls), "--import")
+        self.assertEqual(code, 0)
+        calls = self.fleet.calls()
+        self.assertEqual(len(calls), 1)
+        packet = calls[0]["packet"]
+        self.assertEqual(calls[0]["queue"], QUEUE)
+        self.assertEqual(packet["payload"]["kind"], "pr_shepherd")
+        self.assertEqual(packet["payload"]["prs"], [950])
+        self.assertEqual(packet["payload"]["pr"]["number"], 950)
+        # The warden's own dedupe key: the two filers share one live task.
+        self.assertEqual(
+            packet["dedupe_key"], "repo-health:v1:pr:developing-today/code:pr:950"
+        )
+        # The done rule rides in the packet: merged or closed with a reason.
+        self.assertIn("merged or closed with a reason", packet["body"])
+
+    def test_draft_and_young_prs_get_nothing(self):
+        pulls = [
+            ready_pr(951, "2026-11-01T00:00:00Z", draft=True),  # old but draft
+            ready_pr(952, "2026-11-08T10:00:00Z"),  # ready but 3h old
+        ]
+        code, _ = self.run_cli(fixture([], [], pulls), "--import")
+        self.assertEqual(code, 0)
+        self.assertEqual(self.fleet.calls(), [])
+
+    def test_pr_with_a_live_task_naming_it_gets_nothing(self):
+        pulls = [ready_pr(953, "2026-11-07T00:00:00Z")]
+        fx = fixture([], [], pulls)
+        # The broker's PR diff: PR 953 is named by a live task, so it
+        # is absent from uncovered_pulls.
+        fx["coverage"][REPO]["uncovered_pulls"] = []
+        code, _ = self.run_cli(fx, "--import")
+        self.assertEqual(code, 0)
+        self.assertEqual(self.fleet.calls(), [])
+
+    def test_merge_watch_pr_is_not_double_filed_as_shepherd(self):
+        pulls = [
+            ready_pr(
+                954,
+                "2026-11-07T00:00:00Z",
+                body="Closes #3",
+                branch="queue/111-3-fix-thing",
+            )
+        ]
+        fx = fixture([], [3], pulls)
+        fx["coverage"][REPO]["uncovered_pulls"] = [{"number": 954}]
+        code, _ = self.run_cli(fx, "--import")
+        self.assertEqual(code, 0)
+        calls = self.fleet.calls()
+        # Exactly one packet: the merge-watch, keyed merge-watch.
+        self.assertEqual(len(calls), 1)
+        self.assertTrue(
+            calls[0]["packet"]["dedupe_key"].startswith(
+                "repo-health:v1:merge-watch:"
+            )
+        )
+
+    def test_observe_mode_reports_candidates_and_enqueues_nothing(self):
+        pulls = [ready_pr(955, "2026-11-07T00:00:00Z")]
+        code, out = self.run_cli(fixture([], [], pulls))
+        self.assertEqual(code, 0)
+        self.assertEqual(self.fleet.calls(), [])
+        self.assertIn("Ready-PR shepherd candidates (#12280): 1", out)
+        self.assertIn(f"{REPO}#955", out)
+
+    def test_candidate_selection_fails_closed_on_unproven_fields(self):
+        sel = check_coverage.ready_shepherd_candidates
+        now = "2026-11-08T13:00:00Z"
+        old = "2026-11-07T00:00:00Z"
+        # No draft field at all: readiness unproven, never filed on.
+        pr = {"number": 1, "created_at": old}
+        self.assertEqual(sel([pr], {1}, set(), now), [])
+        # No created_at: age unproven, never filed on.
+        pr = {"number": 1, "draft": False}
+        self.assertEqual(sel([pr], {1}, set(), now), [])
+        # Exactly 6h old qualifies; 5h59m does not.
+        pr = {"number": 1, "draft": False, "created_at": "2026-11-08T07:00:00Z"}
+        self.assertEqual(len(sel([pr], {1}, set(), now)), 1)
+        pr = {"number": 1, "draft": False, "created_at": "2026-11-08T07:01:00Z"}
+        self.assertEqual(sel([pr], {1}, set(), now), [])
 
 
 if __name__ == "__main__":
