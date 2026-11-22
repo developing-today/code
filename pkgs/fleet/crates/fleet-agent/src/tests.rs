@@ -1101,6 +1101,26 @@ fn toolchain_prefixed_cargo_builds_use_the_shared_target_lane() {
 }
 
 #[test]
+fn manifest_selected_cargo_builds_use_the_selected_workspace_lane() {
+    let manifest = "/tmp/other-workspace/Cargo.toml";
+    let plan = shell::plan(
+        Target::Laptop,
+        "test".into(),
+        &words(&[&format!("cargo test --manifest-path {manifest}")]),
+        &Options {
+            cwd: Some("caller-workspace".into()),
+            build: true,
+            ..opts()
+        },
+    )
+    .unwrap();
+    let command = plan.args.last().unwrap();
+    assert!(command.contains("--workspace-cwd"));
+    assert!(command.contains("locate-project --workspace --message-format plain --manifest-path"));
+    assert!(command.contains(manifest));
+}
+
+#[test]
 fn shell_builtins_run_in_a_shell_under_the_build_lock() {
     for command in ["exit 0", ":", "ulimit -n"] {
         let plan = shell::plan(
@@ -1396,7 +1416,7 @@ fn home_with_a_recording_lock() -> PathBuf {
 }
 
 #[test]
-fn fleet_build_lock_routes_direct_cargo_through_the_target_broker() {
+fn fleet_build_lock_routes_manifest_selected_cargo_through_the_target_broker() {
     let home = std::env::temp_dir().join(format!(
         "fleet-agent-direct-lock-{}-{}",
         std::process::id(),
@@ -1404,14 +1424,30 @@ fn fleet_build_lock_routes_direct_cargo_through_the_target_broker() {
     ));
     let tools = home.join("tools");
     let workspace = home.join("code/pkgs/id");
+    let caller = home.join("caller");
     std::fs::create_dir_all(&tools).unwrap();
     std::fs::create_dir_all(&workspace).unwrap();
+    std::fs::create_dir_all(&caller).unwrap();
     std::fs::write(workspace.join("Cargo.toml"), "[workspace]\nmembers = []\n").unwrap();
 
     let cargo = tools.join("cargo");
     std::fs::write(
         &cargo,
-        "#!/bin/sh\nif [ \"$1\" = locate-project ]; then printf '%s/Cargo.toml\\n' \"$PWD\"; exit 0; fi\nprintf '%s|%s|%s\\n' \"$CARGO_TARGET_DIR\" \"$CARGO_BUILD_JOBS\" \"$*\" > \"$HOME/cargo.log\"\n",
+        r#"#!/bin/sh
+if [ "$1" = locate-project ]; then
+  shift
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --manifest-path) shift; printf '%s\n' "$1"; exit 0 ;;
+      --manifest-path=*) printf '%s\n' "${1#--manifest-path=}"; exit 0 ;;
+    esac
+    shift
+  done
+  printf '%s/Cargo.toml\n' "$PWD"
+  exit 0
+fi
+printf '%s|%s|%s|%s\n' "$PWD" "$CARGO_TARGET_DIR" "$CARGO_BUILD_JOBS" "$*" > "$HOME/cargo.log"
+"#,
     )
     .unwrap();
     let broker = tools.join("cargo-target-broker");
@@ -1432,9 +1468,10 @@ fn fleet_build_lock_routes_direct_cargo_through_the_target_broker() {
 
     let lock_script =
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fleet-build-lock");
+    let manifest = workspace.join("Cargo.toml").display().to_string();
     let output = std::process::Command::new("/bin/bash")
         .arg(lock_script)
-        .args(["cargo", "test", "-p", "id-core"])
+        .args(["cargo", "test", "-p", "id-core", "--manifest-path", manifest.as_str()])
         .env("HOME", &home)
         .env(
             "PATH",
@@ -1445,7 +1482,7 @@ fn fleet_build_lock_routes_direct_cargo_through_the_target_broker() {
             ),
         )
         .env_remove("CARGO_TARGET_DIR")
-        .current_dir(&workspace)
+        .current_dir(&caller)
         .output()
         .unwrap();
 
@@ -1456,11 +1493,20 @@ fn fleet_build_lock_routes_direct_cargo_through_the_target_broker() {
     );
     assert_eq!(
         std::fs::read_to_string(home.join("broker.log")).unwrap(),
-        "exec --repo id --profile test --wait 900 -- cargo test -p id-core\n"
+        format!(
+            "exec --repo id --profile test --workspace-cwd {} --wait 900 -- cargo test -p id-core --manifest-path {}\n",
+            workspace.display(),
+            manifest
+        )
     );
     assert_eq!(
         std::fs::read_to_string(home.join("cargo.log")).unwrap(),
-        format!("{}|2|test -p id-core\n", home.join("leased-target").display())
+        format!(
+            "{}|{}|2|test -p id-core --manifest-path {}\n",
+            caller.display(),
+            home.join("leased-target").display(),
+            manifest
+        )
     );
     let _ = std::fs::remove_dir_all(&home);
 }
