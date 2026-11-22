@@ -30,6 +30,7 @@ use serde_json::{Map, Value, json};
 mod commands_lifecycle;
 mod commands_query;
 mod fallback_stack;
+mod mode_report;
 mod support;
 mod transport;
 mod verify_disposition;
@@ -37,6 +38,7 @@ mod verify_disposition;
 pub(crate) use self::commands_lifecycle::*;
 pub(crate) use self::commands_query::*;
 pub(crate) use self::fallback_stack::*;
+pub(crate) use self::mode_report::*;
 pub(crate) use self::support::*;
 pub(crate) use self::transport::*;
 pub(crate) use self::verify_disposition::*;
@@ -681,6 +683,72 @@ mod tests {
         assert_eq!(v["verb"], json!("/claim"));
         assert_eq!(v["broker_exit"], json!(4));
         assert_eq!(FALLBACK_SWITCH_EXIT, 6);
+    }
+
+    #[test]
+    fn mode_line_reports_the_route_the_verb_actually_used() {
+        // #8581 oracle: the client adapter selects through
+        // route_for — a served verb on a healthy store reports
+        // normal/cloud; a failed GitHub leg degrades the mode,
+        // not the route (writes before reads); a dead store with
+        // no client-held replica lands on the marker fallback,
+        // db-degraded.
+        let v = mode_line_for("claim", legs_served(true, true)).json_value();
+        assert_eq!(
+            v,
+            json!({"verb": "claim", "mode": "normal", "route": "cloud"})
+        );
+        let v = mode_line_for("claim", legs_served(true, false)).json_value();
+        assert_eq!(
+            v,
+            json!({"verb": "claim", "mode": "gh-read-degraded", "route": "cloud"})
+        );
+        let v = mode_line_for("claim", legs_served(false, true)).json_value();
+        assert_eq!(
+            v,
+            json!({"verb": "claim", "mode": "gh-write-degraded", "route": "cloud"})
+        );
+        let v = mode_line_for("/claim", legs_store_down()).json_value();
+        assert_eq!(
+            v,
+            json!({"verb": "claim", "mode": "db-degraded", "route": "github-markers"})
+        );
+        // The bind path is the claim verb served in one round
+        // trip: /claim-flow reports as "claim".
+        let v = mode_line_for("/claim-flow", legs_store_down()).json_value();
+        assert_eq!(v["verb"], json!("claim"));
+        assert_eq!(v["route"], json!("github-markers"));
+    }
+
+    #[test]
+    fn fallback_switch_json_carries_the_contract_mode_line() {
+        // #8581: the switch envelope names the mode and route the
+        // contract assigns to a primary-store failure with no
+        // local replica: db-degraded on github-markers, under the
+        // same mode_line shape the served path prints.
+        let v = fallback_switch_json("/heartbeat", 3, "broker unreachable");
+        assert_eq!(
+            v["mode_line"],
+            json!({"verb": "heartbeat", "mode": "db-degraded", "route": "github-markers"})
+        );
+    }
+
+    #[test]
+    fn attach_mode_line_adds_the_key_to_objects_only() {
+        // #8581: the mode line rides the verb's printed object
+        // under `mode_line` (the guard_warning /
+        // claim_flow_partial additive-key pattern); a non-object
+        // output has nowhere to carry it and is left untouched.
+        let mut row = json!({"id": 7, "status": "claimed"});
+        attach_mode_line(&mut row, "heartbeat", legs_served(true, true));
+        assert_eq!(
+            row["mode_line"],
+            json!({"verb": "heartbeat", "mode": "normal", "route": "cloud"})
+        );
+        assert_eq!(row["id"], json!(7));
+        let mut scalar = json!(5);
+        attach_mode_line(&mut scalar, "heartbeat", legs_served(true, true));
+        assert_eq!(scalar, json!(5));
     }
 
     #[test]
