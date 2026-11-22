@@ -1087,7 +1087,7 @@ mod tests {
                         8 => 0..=1024usize,
                         // Past the 1 MiB message ceiling: rejected
                         // before admission, so it must charge nothing.
-                        2 => (1024 * 1024 + 1)..=(1024 * 1024 + 512),
+                        2 => (1024 * 1024 + 1usize)..=(1024 * 1024 + 512usize),
                     ],
                     0..=32,
                 ),
