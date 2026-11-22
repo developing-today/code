@@ -26,6 +26,7 @@
 //! of FDR-0012 keep an issue out.
 
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 
 use crate::shortlist::{self, Entry, rank_of};
 use crate::{
@@ -361,12 +362,24 @@ pub(super) fn default_lane(agent: &str) -> String {
     if is_lane {
         return agent.to_string();
     }
-    let suffix: String = agent
+    // Lane rows are bound to their first worker, so two worker names
+    // that normalize to the same slug must still get different lanes.
+    // Keep 128 digest bits encoded as letters (two a-p letters per byte).
+    let digest = Sha256::digest(agent.as_bytes());
+    let digest_suffix: String = digest[..16]
+        .iter()
+        .flat_map(|byte| [b'a' + (byte >> 4), b'a' + (byte & 0x0f)])
+        .map(char::from)
+        .collect();
+    let slug: String = agent
         .chars()
         .filter(|c| c.is_ascii_lowercase())
-        .take(55)
+        .take(20)
         .collect();
-    format!("any-{}", if suffix.is_empty() { "agent" } else { &suffix })
+    format!(
+        "any-{}{digest_suffix}",
+        if slug.is_empty() { "agent" } else { &slug }
+    )
 }
 
 /// How many listed entries in a row may turn out stale in one run

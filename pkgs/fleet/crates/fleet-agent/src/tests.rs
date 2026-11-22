@@ -296,8 +296,13 @@ fn standalone_agent_gets_a_queue_compatible_unfiltered_default_lane() {
 #[test]
 fn a_known_lane_agent_name_keeps_its_lane_identity() {
     assert_eq!(crate::next::default_lane("code-b"), "code-b");
-    assert_eq!(crate::next::default_lane("muse-xaltha"), "any-musexaltha");
-    assert_eq!(crate::next::default_lane("oc-go-1"), "any-ocgo");
+    let muse_three = crate::next::default_lane("muse-3");
+    let muse_four = crate::next::default_lane("muse-4");
+    assert!(muse_three.starts_with("any-muse"));
+    assert!(muse_four.starts_with("any-muse"));
+    assert_ne!(muse_three, muse_four);
+    assert_eq!(muse_three, crate::next::default_lane("muse-3"));
+    assert!(crate::next::default_lane("oc-go-1").starts_with("any-ocgo"));
 }
 
 #[test]
@@ -1617,6 +1622,7 @@ fn follow_up_commands_carry_the_list_repo_and_profile_the_caller_chose() {
     );
     assert_eq!(out["rung"], "refill");
     let quoted = shell::sh_quote(&list_text);
+    let lane = crate::next::default_lane("muse-3");
     assert!(quoted.starts_with('\''), "a path with a space is quoted");
     let then: Vec<String> = out["then"]
         .as_array()
@@ -1638,7 +1644,7 @@ fn follow_up_commands_carry_the_list_repo_and_profile_the_caller_chose() {
     assert_eq!(
         then[2],
         format!(
-            "fleet agent next --agent muse-3 --lane any-muse --repo developing-today/opencode --shortlist {quoted}"
+            "fleet agent next --agent muse-3 --lane {lane} --repo developing-today/opencode --shortlist {quoted}"
         )
     );
     // The marker went into the chosen file, not the default one.
@@ -1653,7 +1659,7 @@ fn follow_up_commands_carry_the_list_repo_and_profile_the_caller_chose() {
     let (out, _) = run(&plain, &["next", "--agent", "muse-3"]);
     assert_eq!(
         out["then"][2],
-        "fleet agent next --agent muse-3 --lane any-muse"
+        format!("fleet agent next --agent muse-3 --lane {lane}")
     );
 }
 
