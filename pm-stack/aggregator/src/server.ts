@@ -236,7 +236,8 @@ import { ItemHistoryStore } from "./item-history.ts";
 import { SloJournal, groupSamplesByFacet } from "./slo-journal.ts";
 import { sampleSloFacets } from "./slo-sampler.ts";
 import { SLO_DEFINITIONS, summarizeSloFacet, type SloFacetSummary } from "./slo.ts";
-import { watchdogHeartbeatLine, WATCHDOG_HEARTBEAT_INTERVAL_MS } from "./watchdog-heartbeat.ts";
+import { watchdogHeartbeatLine } from "./watchdog-heartbeat.ts";
+import { createWatchdogHeartbeatRecorder, finishWatchdogGapSync } from "./watchdog-runner.ts";
 import { computeFlowAnalytics } from "./flow-analytics.ts";
 import {
   FORECAST_CONTRACT_VERSION,
@@ -1624,24 +1625,17 @@ async function searchContext(query: string) {
 // createWatchdogGapSyncQueue in activity.ts for why the bare
 // fire-and-forget sync interleaved.
 const enqueueWatchdogGapSync = createWatchdogGapSyncQueue();
-let lastWatchdogHeartbeatAt = 0;
-let watchdogHeartbeatWrite: Promise<void> | null = null;
+const watchdogHeartbeatRecorder = createWatchdogHeartbeatRecorder(async (nowMs) => {
+  await sloJournal.append([watchdogHeartbeatLine(nowMs)]);
+});
 
 /** Record liveness only after a watchdog derivation completes. A timer here
  * would stay green even if the watchdog work itself stopped making progress. */
-async function recordWatchdogHeartbeat(nowMs: number): Promise<void> {
-  if (nowMs - lastWatchdogHeartbeatAt < WATCHDOG_HEARTBEAT_INTERVAL_MS) return;
-  if (watchdogHeartbeatWrite) return watchdogHeartbeatWrite;
-  watchdogHeartbeatWrite = (async () => {
-    await sloJournal.append([watchdogHeartbeatLine(nowMs)]);
-    lastWatchdogHeartbeatAt = nowMs;
-  })();
+async function recordWatchdogHeartbeat(nowMs: number, scheduled = false): Promise<void> {
   try {
-    await watchdogHeartbeatWrite;
+    await (scheduled ? watchdogHeartbeatRecorder.scheduled(nowMs) : watchdogHeartbeatRecorder.request(nowMs));
   } catch (error) {
     console.error(`[watchdog] WARNING: heartbeat append failed: ${error instanceof Error ? error.message : String(error)}`);
-  } finally {
-    watchdogHeartbeatWrite = null;
   }
 }
 
@@ -1655,7 +1649,10 @@ async function recordWatchdogHeartbeat(nowMs: number): Promise<void> {
 // assembly here is deliberately UNPRIMED (see healthContext): the
 // watchdog needs only the feed file, the cached probes, and the
 // registry age from the source's already-loaded feed.
-async function deriveWatchdogItems(diagnosis?: ReturnType<NonNullable<Source["diagnostics"]>>["orchestration"]) {
+async function deriveWatchdogItems(
+  diagnosis?: ReturnType<NonNullable<Source["diagnostics"]>>["orchestration"],
+  mode: "request" | "scheduled" = "request",
+) {
   if (cfg.source !== "live") return [];
   const [health, projectAudit, hostHealth] = await Promise.all([
     healthContext(false),
@@ -1691,12 +1688,15 @@ async function deriveWatchdogItems(diagnosis?: ReturnType<NonNullable<Source["di
   // breach clears), so one continuous outage is one delivery.
   const stableItems = watchdogEpisodes.stabilize(items);
   void recordActivity(watchdogDeliveries(stableItems));
-  let gapSyncSucceeded = true;
-  await enqueueWatchdogGapSync(activityStore, stableItems).catch((err) => {
-    gapSyncSucceeded = false;
-    console.error(`[activity] WARNING: watchdog gap sync failed: ${err instanceof Error ? err.message : String(err)}`);
+  await finishWatchdogGapSync({
+    items,
+    sync: enqueueWatchdogGapSync(activityStore, stableItems),
+    mode,
+    recordHeartbeat: () => recordWatchdogHeartbeat(Date.now(), mode === "scheduled"),
+    onError: (err) => {
+      console.error(`[activity] WARNING: watchdog gap sync failed: ${err instanceof Error ? err.message : String(err)}`);
+    },
   });
-  if (gapSyncSucceeded) await recordWatchdogHeartbeat(Date.now());
   return items;
 }
 
@@ -4674,7 +4674,7 @@ if (cfg.source === "live") {
       // Refresh the live orchestration diagnosis before deriving cards.
       // A source failure is not a successful watchdog pass.
       await source.orchestration();
-      await deriveWatchdogItems(source.diagnostics?.().orchestration);
+      await deriveWatchdogItems(source.diagnostics?.().orchestration, "scheduled");
     } catch (error) {
       console.error(`[watchdog] WARNING: scheduled derivation failed: ${error instanceof Error ? error.message : String(error)}`);
     } finally {
