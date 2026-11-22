@@ -12,9 +12,10 @@ use atlas_proto::{RawMode, SearchParametersV1};
 use serde_json::{Map, Value as Json, json};
 
 use crate::backend::SearchBackend;
+use crate::disclosure::{DisclosureContext, chunk_classification};
 use crate::embed::QueryEmbedder;
 use crate::error::{Error, Result};
-use crate::filters::Filters;
+use crate::filters::{Filters, Sensitivity};
 use crate::fusion::{FusedEntry, fts_match_expr, fuse_with_parameters};
 use crate::trace::{TraceContext, TraceSink, build_trace_record, new_query_id};
 use crate::types::{BranchPools, BranchQuery, ChunkDetail, DEFAULT_MODEL, VectorBackend, round6};
@@ -81,6 +82,14 @@ pub struct SearchOptions {
     pub vector_backend: VectorBackend,
     /// Versioned query-time controls shared with the wire protocol.
     pub parameters: SearchParametersV1,
+    /// The disclosure context of the destination surface
+    /// (#12404, #9096 design section 4). The context ceiling
+    /// intersects the filters' caller ceiling at the output
+    /// boundary; neither can widen the other. The default is
+    /// `public-surface` — fail-closed: a caller that does not
+    /// state its surface's context gets the strictest outbound
+    /// treatment. Front-ends state their context explicitly.
+    pub context: DisclosureContext,
 }
 
 impl Default for SearchOptions {
@@ -98,6 +107,7 @@ impl Default for SearchOptions {
             trunc: 0,
             vector_backend: VectorBackend::Scan,
             parameters: SearchParametersV1::default(),
+            context: DisclosureContext::PublicSurface,
         }
     }
 }
@@ -352,13 +362,77 @@ fn run_search_impl(
         notes.push(n);
     }
 
+    // Disclosure-context enforcement (#12404, #9096 design
+    // section 4): the caller's ceiling was applied inside the
+    // branch queries (filter-before-rank); here, at the final
+    // output boundary, the destination context's ceiling
+    // intersects it — neither can widen the other, and
+    // excluded content is ineligible in every context. Every
+    // rendered shape below (flat, grouped, raw branch rows)
+    // draws only from `permitted`, and the trace's served set
+    // is collected from the rendered envelope, so cached and
+    // paged payloads inherit the same filter. Details are
+    // resolved for every ranked candidate (the traced path
+    // already pays this) because a candidate's classification
+    // is a property of its detail row.
+    let all_ids: Vec<i64> = ranked.iter().map(|e| e.chunk_id).collect();
+    let all_details = details_map(backend, &all_ids)?;
+    let mut permitted: std::collections::HashSet<i64> = std::collections::HashSet::new();
+    let mut withheld = 0usize;
+    for e in &ranked {
+        match all_details.get(&e.chunk_id) {
+            Some(d) => {
+                let class = chunk_classification(d.eff_sensitivity.as_deref());
+                if opts
+                    .context
+                    .permits_with_grant(class, filters.max_sensitivity)
+                {
+                    permitted.insert(e.chunk_id);
+                } else {
+                    withheld += 1;
+                }
+            }
+            // No detail row: the candidate renders nowhere
+            // (the flat/grouped paths already skip it), and it
+            // is not a disclosure decision, so it is not
+            // counted as withheld.
+            None => {}
+        }
+    }
+    if withheld > 0 {
+        notes.push(format!(
+            "disclosure: context {} withheld {} candidate(s) (context ceiling {}, caller ceiling {})",
+            opts.context.name(),
+            withheld,
+            opts.context.ceiling().name(),
+            filters.max_sensitivity.name(),
+        ));
+    }
+    // Full-content payloads (the parent message, hydration)
+    // carry text beyond the classified chunk itself; a public
+    // surface cannot safely filter them at chunk granularity,
+    // so they are withheld there outright (design section 4:
+    // "if an output cannot be safely filtered, withhold it").
+    let withhold_full_content = opts.context == DisclosureContext::PublicSurface
+        && (opts.with_message || opts.parameters.hydrate > 0);
+    if withhold_full_content {
+        notes.push(
+            "disclosure: context public-surface withholds full-content message/hydration payloads"
+                .to_string(),
+        );
+    }
+
     let mut out = if opts.parameters.raw_mode == RawMode::Branches {
         // Pre-fusion branch rows, exactly as the branches
         // produced them (design s3.3 --raw=branches): no fusion,
-        // no grouping, no detail fetch.
+        // no grouping, no detail fetch beyond the disclosure
+        // pass above.
         let mut rows = Vec::new();
         for (branch, hits) in [("fts", &pools.fts), ("vector", &pools.vector)] {
             for (i, hit) in hits.iter().enumerate() {
+                if !permitted.contains(&hit.chunk_id) {
+                    continue;
+                }
                 let mut row = Map::new();
                 row.insert("chunk_id".into(), json!(hit.chunk_id));
                 row.insert("branch".into(), json!(branch));
@@ -375,20 +449,31 @@ fn run_search_impl(
             .insert("raw".into(), json!("branches"));
         env
     } else if opts.group_by_session && opts.parameters.raw_mode == RawMode::Off {
-        grouped_output(backend, opts, filters, &ranked, &vec_dist, &notes)?
+        grouped_output(
+            backend, opts, filters, &ranked, &vec_dist, &permitted, &notes,
+        )?
     } else {
-        let keep = &ranked[..opts.k.min(ranked.len())];
-        let ids: Vec<i64> = keep.iter().map(|e| e.chunk_id).collect();
-        let details = details_map(backend, &ids)?;
+        // Take the top-k *permitted* candidates: a withheld
+        // candidate must not shrink the page (the same
+        // filter-before-serve rule the branch queries apply
+        // to the caller ceiling).
         let mut results = Vec::new();
-        for e in keep {
-            let Some(d) = details.get(&e.chunk_id) else {
+        for e in &ranked {
+            if results.len() >= opts.k {
+                break;
+            }
+            if !permitted.contains(&e.chunk_id) {
+                continue;
+            }
+            let Some(d) = all_details.get(&e.chunk_id) else {
                 continue;
             };
-            let mut entry = result_entry(backend, opts, e, d, &vec_dist)?;
+            let mut entry = result_entry(backend, opts, filters.max_sensitivity, e, d, &vec_dist)?;
             // Hydration: the first `hydrate` RENDERED results
-            // (details present) gain full content.
-            if results.len() < opts.parameters.hydrate {
+            // (details present) gain full content — except on a
+            // public surface, where full-content payloads are
+            // withheld outright (see the disclosure pass above).
+            if !withhold_full_content && results.len() < opts.parameters.hydrate {
                 let hydrated = hydrate_entry(backend, d)?;
                 entry
                     .as_object_mut()
@@ -435,9 +520,11 @@ fn run_search_impl(
         // Trace capture (issue #9973): resolve details for EVERY
         // pool entrant (not only the served top-k), build the
         // record, and persist it before the response is released.
-        // Fail-closed: any failure here fails the search.
-        let all_ids: Vec<i64> = ranked.iter().map(|e| e.chunk_id).collect();
-        let details = details_map(backend, &all_ids)?;
+        // Fail-closed: any failure here fails the search. The
+        // disclosure pass above already resolved every ranked
+        // candidate's details; withheld candidates appear in
+        // the record as considered-but-not-served.
+        let details = &all_details;
         let mut served: Vec<i64> = Vec::new();
         collect_served(out.get("results"), &mut served);
         let record = build_trace_record(
@@ -451,7 +538,7 @@ fn run_search_impl(
             &pools,
             &ranked,
             &vec_dist,
-            &details,
+            details,
             &served,
         );
         job.sink.write_trace(&record)?;
@@ -511,13 +598,35 @@ fn hydrate_entry(backend: &dyn SearchBackend, d: &ChunkDetail) -> Result<Json> {
     }))
 }
 
-/// The Python's `run_get_chunk`: a by-id lookup with NO
+/// The Python's `run_get_chunk`: a by-id lookup with NO caller
 /// sensitivity ceiling (an explicit-id tool, like the Python).
+/// The local-owner disclosure context still applies (#12404):
+/// its ceiling is `secret-bearing`, so the only content this
+/// entry point withholds that the Python served is
+/// `excluded_personal_life` content, ineligible in every
+/// context (design section 4).
 pub fn run_get_chunk(backend: &dyn SearchBackend, chunk_id: i64, neighbors: usize) -> Result<Json> {
+    run_get_chunk_with_context(backend, chunk_id, neighbors, DisclosureContext::LocalOwner)
+}
+
+/// `run_get_chunk` under an explicit disclosure context: the
+/// chunk itself must be permitted by the context (a withheld
+/// chunk reads exactly like a missing one — the lookup must not
+/// confirm that classified content exists), and neighbor
+/// expansion is filtered by each neighbor's own classification.
+pub fn run_get_chunk_with_context(
+    backend: &dyn SearchBackend,
+    chunk_id: i64,
+    neighbors: usize,
+    context: DisclosureContext,
+) -> Result<Json> {
     let details = backend.chunk_details(&[chunk_id])?;
     let Some(d) = details.iter().find(|d| d.chunk_id == chunk_id) else {
         return Err(Error::fatal(format!("chunk {chunk_id} not found")));
     };
+    if !context.permits(chunk_classification(d.eff_sensitivity.as_deref())) {
+        return Err(Error::fatal(format!("chunk {chunk_id} not found")));
+    }
     let mut msg = Map::new();
     msg.insert("id".into(), Json::String(d.message_id.clone()));
     msg.insert(
@@ -535,7 +644,10 @@ pub fn run_get_chunk(backend: &dyn SearchBackend, chunk_id: i64, neighbors: usiz
     out.insert("session".into(), session_obj(d));
     out.insert("session_id".into(), Json::String(d.session_id.clone()));
     if neighbors > 0 {
-        out.insert("context".into(), neighbor_map(backend, d, neighbors)?);
+        out.insert(
+            "context".into(),
+            neighbor_map(backend, d, neighbors, context, context.ceiling())?,
+        );
     }
     let notes = backend.notes();
     if !notes.is_empty() {
@@ -614,6 +726,7 @@ fn session_obj(d: &ChunkDetail) -> Json {
 fn result_entry(
     backend: &dyn SearchBackend,
     opts: &SearchOptions,
+    grant: Sensitivity,
     e: &FusedEntry,
     d: &ChunkDetail,
     vec_dist: &HashMap<i64, Option<f64>>,
@@ -625,7 +738,7 @@ fn result_entry(
     entry.insert("rank_sources".into(), e.rank_sources_json());
     entry.insert("text".into(), Json::String(d.text.clone()));
     entry.insert("session".into(), session_obj(d));
-    entry_chunk_extras(backend, opts, e, d, vec_dist, &mut entry)?;
+    entry_chunk_extras(backend, opts, grant, e, d, vec_dist, &mut entry)?;
     Ok(Json::Object(entry))
 }
 
@@ -634,6 +747,7 @@ fn result_entry(
 fn entry_chunk_extras(
     backend: &dyn SearchBackend,
     opts: &SearchOptions,
+    grant: Sensitivity,
     e: &FusedEntry,
     d: &ChunkDetail,
     vec_dist: &HashMap<i64, Option<f64>>,
@@ -643,22 +757,48 @@ fn entry_chunk_extras(
         entry.insert("vector_distance".into(), json!(round6(*dist)));
     }
     if opts.expand > 0 {
-        entry.insert("context".into(), neighbor_map(backend, d, opts.expand)?);
+        entry.insert(
+            "context".into(),
+            neighbor_map(backend, d, opts.expand, opts.context, grant)?,
+        );
     }
-    if opts.with_message {
+    // The parent message is a full-content payload: it carries
+    // text beyond the classified chunk, so on a public surface
+    // it is withheld outright (design section 4). Other
+    // contexts gate it on the served chunk's own classification
+    // via the disclosure pass that admitted the chunk.
+    if opts.with_message && opts.context != DisclosureContext::PublicSurface {
         entry.insert("message".into(), message_obj(backend, d)?);
     }
     Ok(())
 }
 
-/// The Python's `neighbor_map`.
-fn neighbor_map(backend: &dyn SearchBackend, d: &ChunkDetail, n: usize) -> Result<Json> {
+/// The Python's `neighbor_map`, with disclosure filtering
+/// (#12404): neighbor rows come from a raw adjacency query that
+/// carries no classification, so each neighbor's own detail row
+/// decides whether its text may cross this boundary. A neighbor
+/// with no detail row is withheld (fail-closed).
+fn neighbor_map(
+    backend: &dyn SearchBackend,
+    d: &ChunkDetail,
+    n: usize,
+    context: DisclosureContext,
+    grant: Sensitivity,
+) -> Result<Json> {
     let n = i64::try_from(n)
         .map_err(|_| Error::fatal("neighbor count does not fit in the backend's signed range"))?;
     let rows = backend.neighbors(&d.message_id, d.chunk_idx, n)?;
+    let ids: Vec<i64> = rows.iter().map(|r| r.chunk_id).collect();
+    let details = details_map(backend, &ids)?;
     let mut before = Vec::new();
     let mut after = Vec::new();
     for r in &rows {
+        let permitted = details.get(&r.chunk_id).is_some_and(|nd| {
+            context.permits_with_grant(chunk_classification(nd.eff_sensitivity.as_deref()), grant)
+        });
+        if !permitted {
+            continue;
+        }
         let item = json!({"chunk_id": r.chunk_id, "text": r.text});
         if r.chunk_idx < d.chunk_idx {
             before.push(item);
@@ -702,6 +842,7 @@ fn grouped_output(
     filters: &Filters,
     ranked: &[FusedEntry],
     vec_dist: &HashMap<i64, Option<f64>>,
+    permitted: &std::collections::HashSet<i64>,
     notes: &[String],
 ) -> Result<Json> {
     // The consideration window is k * 10, but k is unbounded at
@@ -719,6 +860,11 @@ fn grouped_output(
     let mut order: Vec<String> = Vec::new();
     let mut groups: HashMap<String, Group> = HashMap::new();
     for e in consideration {
+        // Disclosure pass (#12404): a withheld candidate
+        // contributes neither a chunk nor a hit_count.
+        if !permitted.contains(&e.chunk_id) {
+            continue;
+        }
         let Some(d) = details.get(&e.chunk_id) else {
             continue;
         };
@@ -763,7 +909,15 @@ fn grouped_output(
             ce.insert("score".into(), json!(round6(e.score)));
             ce.insert("rank_sources".into(), e.rank_sources_json());
             ce.insert("text".into(), Json::String(d.text.clone()));
-            entry_chunk_extras(backend, opts, e, d, vec_dist, &mut ce)?;
+            entry_chunk_extras(
+                backend,
+                opts,
+                filters.max_sensitivity,
+                e,
+                d,
+                vec_dist,
+                &mut ce,
+            )?;
             chunks.push(Json::Object(ce));
         }
         let mut entry = Map::new();
@@ -877,10 +1031,22 @@ mod trace_tests {
         }
     }
 
+    /// The local operator's maximal grant: the stub chunks'
+    /// non-ladder labels fail closed to secret-bearing under
+    /// the disclosure pass, so the harness's ceiling must be
+    /// secret-bearing for the chunks to be servable at all.
+    fn local_filters() -> Filters {
+        Filters::new(vec![], vec![], vec![], vec![], "secret-bearing", None, None).expect("filters")
+    }
+
     fn fts_opts(k: usize) -> SearchOptions {
         SearchOptions {
             mode: SearchMode::Fts,
             k,
+            // The harness models the local operator surface;
+            // its stub labels are non-ladder values, which the
+            // disclosure pass fail-closes to secret-bearing.
+            context: DisclosureContext::LocalOwner,
             ..SearchOptions::new("backup database")
         }
     }
@@ -892,7 +1058,7 @@ mod trace_tests {
         let out = run_search_traced(
             &StubBackend,
             &StubEmbedder,
-            &Filters::default(),
+            &local_filters(),
             &fts_opts(1),
             &sink,
             ctx,
@@ -929,13 +1095,8 @@ mod trace_tests {
         assert_eq!(unserved["stages"]["merge"]["rank_after_fusion"], 3);
         // Ranking behaviour unchanged: the untraced envelope is the
         // traced envelope minus query_id.
-        let plain = run_search(
-            &StubBackend,
-            &StubEmbedder,
-            &Filters::default(),
-            &fts_opts(1),
-        )
-        .unwrap();
+        let plain =
+            run_search(&StubBackend, &StubEmbedder, &local_filters(), &fts_opts(1)).unwrap();
         let mut stripped = out.clone();
         stripped.as_object_mut().unwrap().remove("query_id");
         assert_eq!(stripped, plain);
@@ -949,7 +1110,7 @@ mod trace_tests {
         let err = run_search_traced(
             &StubBackend,
             &StubEmbedder,
-            &Filters::default(),
+            &local_filters(),
             &fts_opts(2),
             &FailSink,
             TraceContext::new("cli", "user", "test"),
@@ -1060,10 +1221,18 @@ mod jaccard_tests {
         }
     }
 
+    /// As in trace_tests: maximal local grant, because the
+    /// stub labels fail closed to secret-bearing.
+    fn local_filters() -> Filters {
+        Filters::new(vec![], vec![], vec![], vec![], "secret-bearing", None, None).expect("filters")
+    }
+
     fn opts(depth: usize) -> SearchOptions {
         let mut o = SearchOptions {
             mode: SearchMode::Fts,
             k: 3,
+            // Local operator surface, as in trace_tests above.
+            context: DisclosureContext::LocalOwner,
             ..SearchOptions::new(PASSAGE)
         };
         o.parameters.jaccard_depth = depth;
@@ -1083,12 +1252,12 @@ mod jaccard_tests {
     fn rescore_promotes_the_pasted_passage_end_to_end() {
         // Off (the production default): fused order stands, the
         // topical chunk leads.
-        let off = run_search(&JaccardStub, &StubEmbedder, &Filters::default(), &opts(0)).unwrap();
+        let off = run_search(&JaccardStub, &StubEmbedder, &local_filters(), &opts(0)).unwrap();
         assert_eq!(result_ids(&off)[0], 1);
 
         // On: the near-exact tier promotes the quoted passage itself
         // to rank 1, and the envelope notes the rescore.
-        let on = run_search(&JaccardStub, &StubEmbedder, &Filters::default(), &opts(100)).unwrap();
+        let on = run_search(&JaccardStub, &StubEmbedder, &local_filters(), &opts(100)).unwrap();
         assert_eq!(result_ids(&on)[0], 2);
         let notes = on["notes"].to_string();
         assert!(notes.contains("jaccard rescore"), "{notes}");

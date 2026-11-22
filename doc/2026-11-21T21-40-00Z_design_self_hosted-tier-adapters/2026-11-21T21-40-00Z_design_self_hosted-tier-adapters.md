@@ -55,11 +55,11 @@ Each live object has immutable content identity, one or more replica records, an
 
 Suggested initial classes:
 
-| Class | Intent | Typical media | Read behavior | Retention |
-|---|---|---|---|---|
-| `hot` | frequent/latency-sensitive access | NVMe / fast object tier | immediate | policy minimum; no automatic eviction while pinned |
-| `warm` | ordinary durable content | HDD-backed RustFS / standard object tier | online, possibly slower | policy minimum; default durable live copy |
-| `archive` | infrequent, capacity-optimized data | optional cold disk/object tier | restore may be delayed | explicit policy; never silently selected for latency-sensitive reads |
+| Class     | Intent                              | Typical media                            | Read behavior           | Retention                                                            |
+| --------- | ----------------------------------- | ---------------------------------------- | ----------------------- | -------------------------------------------------------------------- |
+| `hot`     | frequent/latency-sensitive access   | NVMe / fast object tier                  | immediate               | policy minimum; no automatic eviction while pinned                   |
+| `warm`    | ordinary durable content            | HDD-backed RustFS / standard object tier | online, possibly slower | policy minimum; default durable live copy                            |
+| `archive` | infrequent, capacity-optimized data | optional cold disk/object tier           | restore may be delayed  | explicit policy; never silently selected for latency-sensitive reads |
 
 Class names describe service guarantees, not a required disk count or product. A deployment maps classes to one or more failure domains. A class is eligible only if its configured durability, capacity and restore-time bounds meet the policy. The initial safe default is at least one verified warm copy; hot is an optional additional copy, and archive is opt-in.
 

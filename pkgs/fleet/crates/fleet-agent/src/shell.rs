@@ -214,19 +214,8 @@ pub struct Options {
 /// "make" stay conservative because their recipes can hide Cargo builds.
 fn may_invoke_cargo(command: &str) -> bool {
     const COMPILE_ACTIONS: &[&str] = &[
-        "build",
-        "check",
-        "test",
-        "bench",
-        "clippy",
-        "run",
-        "install",
-        "doc",
-        "rustc",
-        "nextest",
-        "fix",
-        "package",
-        "publish",
+        "build", "check", "test", "bench", "clippy", "run", "install", "doc", "rustc", "nextest",
+        "fix", "package", "publish",
     ];
     const CARGO_FLAGS: &[&str] = &[
         "--locked",

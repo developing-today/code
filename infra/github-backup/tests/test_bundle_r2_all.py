@@ -33,17 +33,19 @@ class BundleR2AllTests(unittest.TestCase):
                 raise RuntimeError("upload failed")
             return {"head": "abc"}
 
-        with patch.object(bundle_r2_all, "load_plan", return_value=plan), patch.object(
-            bundle_r2_all.bundle_r2, "upload_repo", side_effect=upload
+        with (
+            patch.object(bundle_r2_all, "load_plan", return_value=plan),
+            patch.object(bundle_r2_all.bundle_r2, "upload_repo", side_effect=upload),
         ):
             self.assertEqual(bundle_r2_all.run_all("/backup", "supabase-backups"), 1)
         self.assertEqual(attempted, list(bundle_r2_all.FLEET_REPOS))
 
     def test_missing_fleet_repo_fails_before_upload(self):
         plan = ([{"repo": bundle_r2_all.FLEET_REPOS[0]}], [])
-        with patch.object(bundle_r2_all, "load_plan", return_value=plan), patch.object(
-            bundle_r2_all.bundle_r2, "upload_repo"
-        ) as upload:
+        with (
+            patch.object(bundle_r2_all, "load_plan", return_value=plan),
+            patch.object(bundle_r2_all.bundle_r2, "upload_repo") as upload,
+        ):
             self.assertEqual(bundle_r2_all.run_all("/backup", "supabase-backups"), 1)
         upload.assert_not_called()
 

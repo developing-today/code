@@ -170,6 +170,18 @@ pub struct EffectiveClassification {
 }
 
 impl EffectiveClassification {
+    /// Build directly from a resolved sensitivity and exclusion
+    /// flag, for surfaces whose store carries the legacy label
+    /// string rather than full classification records (the search
+    /// detail rows). Composition from records ([`Self::compose`])
+    /// remains the rule wherever records exist.
+    pub fn from_parts(sensitivity: Sensitivity, excluded: bool) -> Self {
+        Self {
+            sensitivity,
+            excluded,
+        }
+    }
+
     pub fn compose<'a>(records: impl IntoIterator<Item = &'a ClassificationRecord>) -> Self {
         let mut result = Self {
             sensitivity: Sensitivity::Shareable,

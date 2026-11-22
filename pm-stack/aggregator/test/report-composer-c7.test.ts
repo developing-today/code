@@ -4,7 +4,12 @@ import { join } from "node:path";
 import { afterEach, describe, expect, test } from "bun:test";
 import { weeklyReportPeriod, dailyReportPeriod } from "../src/report-periods.ts";
 import { composeReport, generateReportFromStoredRecords, MODAL_LIVING_ITEM_FIXTURE } from "../src/report-composer.ts";
-import { appendReportRecord, makeReportRecord, readCurrentReportRecords, type ReportRecord } from "../src/report-records.ts";
+import {
+  appendReportRecord,
+  makeReportRecord,
+  readCurrentReportRecords,
+  type ReportRecord,
+} from "../src/report-records.ts";
 import { parseArgs } from "../scripts/generate-report.ts";
 
 const tempDirs: string[] = [];
@@ -26,29 +31,36 @@ function dailyRecord(
 ) {
   const period = dailyReportPeriod(date);
   const at = new Date(Date.parse(period.periodStart) + 12 * 60 * 60 * 1000).toISOString();
-  return makeReportRecord({
-    period,
-    asOf: at,
-    templateVersion: "daily-source-v1",
-    sourceCursor: `source:${date}:${text}`,
-    sources: [{ id: `event:${date}`, uri: `gh:developing-today/code/issues/${date}`, observedAt: at }],
-    blocks: [
-      {
-        id: `activity:${date}`,
-        text,
-        relatedAt: at,
-        links: [`gh:developing-today/code/issues/${date}`],
-        classification,
-      },
-      ...(extra ? [{
-        id: `activity:${date}:late`,
-        text: extra.text,
-        relatedAt: new Date(Date.parse(at) + 60_000).toISOString(),
-        links: [`gh:developing-today/code/issues/${date}:late`],
-        classification: extra.classification,
-      }] : []),
-    ],
-  }, at);
+  return makeReportRecord(
+    {
+      period,
+      asOf: at,
+      templateVersion: "daily-source-v1",
+      sourceCursor: `source:${date}:${text}`,
+      sources: [{ id: `event:${date}`, uri: `gh:developing-today/code/issues/${date}`, observedAt: at }],
+      blocks: [
+        {
+          id: `activity:${date}`,
+          text,
+          relatedAt: at,
+          links: [`gh:developing-today/code/issues/${date}`],
+          classification,
+        },
+        ...(extra
+          ? [
+              {
+                id: `activity:${date}:late`,
+                text: extra.text,
+                relatedAt: new Date(Date.parse(at) + 60_000).toISOString(),
+                links: [`gh:developing-today/code/issues/${date}:late`],
+                classification: extra.classification,
+              },
+            ]
+          : []),
+      ],
+    },
+    at,
+  );
 }
 
 describe("C7 report composition", () => {
@@ -59,18 +71,44 @@ describe("C7 report composition", () => {
       asOf: "2026-11-22T12:00:00.000Z",
     });
     expect(() => parseArgs(["--kind", "weekly", "--as-of", "2026-11-22T12:00:00.000Z"])).toThrow(/--period/);
-    expect(() => parseArgs(["--kind", "weekly", "--period", "next-week", "--as-of", "2026-11-22T12:00:00.000Z"])).toThrow(/Monday/);
-    expect(() => parseArgs(["--kind", "daily", "--period", "2026-11-21", "--as-of", "2026-11-22T05:00:00Z", "--surprise", "x"])).toThrow(/unknown argument/);
-    expect(() => parseArgs(["--kind", "daily", "--period", "2026-11-21", "--as-of", "2026-11-22T05:00:00.000Z", "--kind", "weekly"])).toThrow(/duplicate argument/);
+    expect(() =>
+      parseArgs(["--kind", "weekly", "--period", "next-week", "--as-of", "2026-11-22T12:00:00.000Z"]),
+    ).toThrow(/Monday/);
+    expect(() =>
+      parseArgs(["--kind", "daily", "--period", "2026-11-21", "--as-of", "2026-11-22T05:00:00Z", "--surprise", "x"]),
+    ).toThrow(/unknown argument/);
+    expect(() =>
+      parseArgs([
+        "--kind",
+        "daily",
+        "--period",
+        "2026-11-21",
+        "--as-of",
+        "2026-11-22T05:00:00.000Z",
+        "--kind",
+        "weekly",
+      ]),
+    ).toThrow(/duplicate argument/);
   });
 
   test("report CLI does not silently use a file when the configured backend is Turso", async () => {
     const file = await storePath();
     const script = new URL("../scripts/generate-report.ts", import.meta.url).pathname;
-    const child = Bun.spawn([
-      process.execPath, script,
-      "--kind", "daily", "--period", "2026-11-21", "--as-of", "2026-11-21T18:00:00.000Z", "--store", file,
-    ], { env: { ...Bun.env, PM_AGG_STORE_BACKEND: "turso" }, stdout: "pipe", stderr: "pipe" });
+    const child = Bun.spawn(
+      [
+        process.execPath,
+        script,
+        "--kind",
+        "daily",
+        "--period",
+        "2026-11-21",
+        "--as-of",
+        "2026-11-21T18:00:00.000Z",
+        "--store",
+        file,
+      ],
+      { env: { ...Bun.env, PM_AGG_STORE_BACKEND: "turso" }, stdout: "pipe", stderr: "pipe" },
+    );
     const [exitCode, stderr] = await Promise.all([child.exited, new Response(child.stderr).text()]);
     expect(exitCode).toBe(2);
     expect(stderr).toContain("--store is only valid with PM_AGG_STORE_BACKEND=file");
@@ -80,7 +118,10 @@ describe("C7 report composition", () => {
   test("generates weekly rollups from stored daily records with deterministic ordering and classified links", async () => {
     const file = await storePath();
     const inputs = [
-      dailyRecord("2026-11-13", "Modal re-embed began.", "in-progress", { text: "Late result disproved the earlier hypothesis.", classification: "cancelled" }),
+      dailyRecord("2026-11-13", "Modal re-embed began.", "in-progress", {
+        text: "Late result disproved the earlier hypothesis.",
+        classification: "cancelled",
+      }),
       dailyRecord("2026-11-21", "Late result: implementation confirmed.", "implemented"),
       dailyRecord("2026-11-20", "An issue was cancelled as duplicate.", "duplicate"),
       dailyRecord("2026-11-16", "Weekly work started.", "implemented"),
@@ -104,14 +145,24 @@ describe("C7 report composition", () => {
     expect(daily.record.period.kind).toBe("daily");
     expect(weekly?.period.id).toBe("weekly:2026-11-16:America/Chicago");
     const eventBlocks = weekly?.blocks.filter((block) => block.id.startsWith("report:")) ?? [];
-    expect(eventBlocks.map((block) => block.relatedAt)).toEqual([...eventBlocks.map((block) => block.relatedAt)].sort());
+    expect(eventBlocks.map((block) => block.relatedAt)).toEqual(
+      [...eventBlocks.map((block) => block.relatedAt)].sort(),
+    );
     expect(weekly?.blocks.some((block) => block.text.startsWith("[Prior-Friday reach-back] Modal"))).toBe(true);
-    expect(weekly?.blocks.some((block) => block.text.startsWith("[Prior-Friday reach-back] Late result disproved"))).toBe(true);
+    expect(
+      weekly?.blocks.some((block) => block.text.startsWith("[Prior-Friday reach-back] Late result disproved")),
+    ).toBe(true);
     expect(weekly?.blocks.some((block) => block.text.includes("Late result"))).toBe(true);
-    expect(generated.record.blocks.some((block) => block.id === "activity:implemented" && block.links?.length === 2)).toBe(true);
-    expect(generated.record.blocks.some((block) => block.id === "activity:duplicate" && block.links?.length === 1)).toBe(true);
+    expect(
+      generated.record.blocks.some((block) => block.id === "activity:implemented" && block.links?.length === 2),
+    ).toBe(true);
+    expect(
+      generated.record.blocks.some((block) => block.id === "activity:duplicate" && block.links?.length === 1),
+    ).toBe(true);
 
-    const dailyReadBack = (await readCurrentReportRecords(file)).filter((record) => record.period.id === "daily:2026-11-21:America/Chicago");
+    const dailyReadBack = (await readCurrentReportRecords(file)).filter(
+      (record) => record.period.id === "daily:2026-11-21:America/Chicago",
+    );
     expect(dailyReadBack.some((record) => record.id === daily.record.id)).toBe(true);
 
     const rerun = await generateReportFromStoredRecords(file, period, {

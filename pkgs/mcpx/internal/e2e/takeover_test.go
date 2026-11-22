@@ -178,17 +178,7 @@ func awaitMainPID(t *testing.T, ln *net.UnixConn, pid int) {
 	}
 }
 
-// exited reports whether a process is gone or a zombie; processExists alone
-// counts a zombie as alive.
-func exited(pid int) bool {
-	b, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
-	if err != nil {
-		return true
-	}
-	i := strings.LastIndexByte(string(b), ')')
-	return i+2 < len(b) && b[i+2] == 'Z'
-}
-
+// awaitExit waits for exited(pid), which is per platform (exited_*_test.go).
 func awaitExit(t *testing.T, pid int, what string) {
 	t.Helper()
 	deadline := time.Now().Add(20 * time.Second)

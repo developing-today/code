@@ -321,12 +321,7 @@ pub const DOMAINS: &[Domain] = &[
         capabilities: &[Capability::Gh],
         primary: Capability::Gh,
         aliases: &[],
-        subcommands: &[
-            "tiers",
-            "cache-serve",
-            "cache-status",
-            "closures",
-        ],
+        subcommands: &["tiers", "cache-serve", "cache-status", "closures"],
     },
     Domain {
         name: "bridge",
@@ -360,11 +355,7 @@ pub const DOMAINS: &[Domain] = &[
         capabilities: &[Capability::Search],
         primary: Capability::Search,
         aliases: &["atlas-search"],
-        subcommands: &[
-            "search",
-            "get-chunk",
-            "serve",
-        ],
+        subcommands: &["search", "get-chunk", "serve"],
     },
     Domain {
         name: "laptop-agent",
@@ -372,15 +363,7 @@ pub const DOMAINS: &[Domain] = &[
         capabilities: &[Capability::LaptopAgent],
         primary: Capability::LaptopAgent,
         aliases: &["laptop-agent"],
-        subcommands: &[
-            "health",
-            "jobs",
-            "kill",
-            "exec",
-            "run",
-            "poll",
-            "fetch",
-        ],
+        subcommands: &["health", "jobs", "kill", "exec", "run", "poll", "fetch"],
     },
 ];
 

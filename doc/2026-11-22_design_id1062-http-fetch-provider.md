@@ -48,7 +48,7 @@ front of it, and both default to closed.
   names it. A use before an operator enables it is refused
   `outside_ceiling` by the ordinary ledger decision, before any
   provider code runs. Enabling it is the operator's explicit act:
-  name `http.fetch` in the server caps *and* the world's ceiling,
+  name `http.fetch` in the server caps _and_ the world's ceiling,
   plus the usual grant. (It is not a sensor cap: the sensor set
   is the `loc.*`/microphone family, whose per-use consent seam
   does not apply to a server-configured outbound fetch.)
@@ -120,7 +120,7 @@ there is nothing to replay (below).
 
 ## Durability: a fetch journals nothing
 
-`kv` and `blob` journal because they *are* world state: replay
+`kv` and `blob` journal because they _are_ world state: replay
 must rebuild the store from the entries alone, and a response
 body is not state. A fetch is an effect against the live
 network — its result depends on the world outside the journal,
@@ -135,7 +135,7 @@ ones every request produces, reads included: the input's
 `Committed` event, the result's `System` event (the delivery
 replay feeds the program, not an effect replay applies), and —
 when grant-on-use mints the grant — the pre-existing
-`CapsGranted`, which journals the *authority*, as it does for
+`CapsGranted`, which journals the _authority_, as it does for
 every provider. No entry records the URL, the response, or any
 fetch effect.
 

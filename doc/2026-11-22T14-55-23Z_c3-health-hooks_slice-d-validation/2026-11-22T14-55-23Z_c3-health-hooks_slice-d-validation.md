@@ -45,20 +45,20 @@ cycles; incident ids and timestamps will differ.
 
 ### pm-stack-reachable — incident `d50ada41-77a1-4fdd-a91f-4a3b79bbcf27`
 
-| Phase | At (UTC) | Condition | Hook verdict | Record |
-| --- | --- | --- | --- | --- |
-| PM-1 | 14:54:57Z | nothing on :14870 | `down`, severity `critical` | JSONL down record; throat POST failed (connection refused — the intake itself was the outage) |
-| PM-2 | 14:55:02Z | `/board` 503, intake up | `down`, **same incidentId** (open-outage reuse) | second JSONL record; POST captured (`evidence/captures.jsonl` #1) |
-| PM-3 | 14:55:07Z | `/board` 200 | `up`, severity `info` | recovery record, `recoveryOf` = the down incident, `recoveryDelivered: true`; POST captured (#2) |
-| PM-4 | 14:55:14Z | `/board` 200 | `transient` | no record, no post — correct steady-state behaviour |
+| Phase | At (UTC)  | Condition               | Hook verdict                                    | Record                                                                                           |
+| ----- | --------- | ----------------------- | ----------------------------------------------- | ------------------------------------------------------------------------------------------------ |
+| PM-1  | 14:54:57Z | nothing on :14870       | `down`, severity `critical`                     | JSONL down record; throat POST failed (connection refused — the intake itself was the outage)    |
+| PM-2  | 14:55:02Z | `/board` 503, intake up | `down`, **same incidentId** (open-outage reuse) | second JSONL record; POST captured (`evidence/captures.jsonl` #1)                                |
+| PM-3  | 14:55:07Z | `/board` 200            | `up`, severity `info`                           | recovery record, `recoveryOf` = the down incident, `recoveryDelivered: true`; POST captured (#2) |
+| PM-4  | 14:55:14Z | `/board` 200            | `transient`                                     | no record, no post — correct steady-state behaviour                                              |
 
 ### opencode-working — incident `295e4e8b-b67f-4fb8-ae01-acd718caf66c`
 
-| Phase | At (UTC) | Condition | Hook verdict | Record |
-| --- | --- | --- | --- | --- |
-| OC-1 | 14:55:16Z | nothing on :13420 | `down`, severity `warning` | JSONL down record; POST captured (#3) |
-| OC-2 | 14:55:20Z | stand-in serving `/global/health` 200 | `up`, severity `info` | recovery record, `recoveryOf` = the down incident, `recoveryDelivered: true`; POST captured (#4) |
-| OC-3 | 14:55:23Z | stand-in still up | `transient` | no record, no post |
+| Phase | At (UTC)  | Condition                             | Hook verdict               | Record                                                                                           |
+| ----- | --------- | ------------------------------------- | -------------------------- | ------------------------------------------------------------------------------------------------ |
+| OC-1  | 14:55:16Z | nothing on :13420                     | `down`, severity `warning` | JSONL down record; POST captured (#3)                                                            |
+| OC-2  | 14:55:20Z | stand-in serving `/global/health` 200 | `up`, severity `info`      | recovery record, `recoveryOf` = the down incident, `recoveryDelivered: true`; POST captured (#4) |
+| OC-3  | 14:55:23Z | stand-in still up                     | `transient`                | no record, no post                                                                               |
 
 Every firing finished inside the design's 60 s sequence cap. The
 runner's own suite on main also passes: `pytest test_run.py` → **22
@@ -71,7 +71,7 @@ Three shapes were diffed against the design contract:
 
 1. **Hook-local incident record (JSONL)** — conforms. All contract
    fields present (`source, key, severity, title, body, target, state,
-   caller, firedAt, observedAt, incidentId, recoveryOf, evidence{…}`),
+caller, firedAt, observedAt, incidentId, recoveryOf, evidence{…}`),
    severities match the design's mapping, `recoveryOf` lineage is
    correct, evidence sections match with additive fields only
    (`confirmFailure`, `reachability.tcpOk/tcpError`,
@@ -84,8 +84,8 @@ Three shapes were diffed against the design contract:
 3. **Events-stream `AuditEvent`** (PR #12226's
    `health-hook-audit-event.ts`, not yet on main) — conforms exactly to
    the design's "Event-store append" section: `kind =
-   health-hook-incident`, `ref = health-hook:<target>`, `actor =
-   health-hook`, `summary = title`, attribution `unknown` /
+health-hook-incident`, `ref = health-hook:<target>`, `actor =
+health-hook`, `summary = title`, attribution `unknown` /
    `asserted=false`, source identity `health-hook/<target>`,
    deterministic replay id. Verified by running the PR's tests in a
    scratch worktree: `bun test test/health-hook-audit-event.test.ts` →

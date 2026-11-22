@@ -57,13 +57,17 @@ def run_all(root, bucket):
 def _parser():
     parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     parser.add_argument("--bucket", default=DEFAULT_BUCKET, help="existing R2 bucket")
-    parser.add_argument("--root", help="backup tree root (defaults to configured backup_root)")
+    parser.add_argument(
+        "--root", help="backup tree root (defaults to configured backup_root)"
+    )
     return parser
 
 
 def main(argv=None):
     args = _parser().parse_args(argv)
-    root = os.path.abspath(os.path.expanduser(args.root)) if args.root else backup_root()
+    root = (
+        os.path.abspath(os.path.expanduser(args.root)) if args.root else backup_root()
+    )
     return run_all(root, args.bucket)
 
 

@@ -7,7 +7,8 @@ import { generateReportFromStoredRecords } from "../src/report-composer.ts";
 import { parseStoreBackend } from "../src/store-backend.ts";
 import { createTursoDocumentRemote } from "../src/remote-stores.ts";
 
-const USAGE = "usage: generate-report.ts --kind <daily|weekly|monthly|quarterly|annual> --period <explicit-identity> --as-of <ISO-8601> [--store <jsonl-path>]";
+const USAGE =
+  "usage: generate-report.ts --kind <daily|weekly|monthly|quarterly|annual> --period <explicit-identity> --as-of <ISO-8601> [--store <jsonl-path>]";
 
 interface Command {
   kind: ReportPeriodKind;
@@ -65,11 +66,21 @@ async function main(args: string[]): Promise<void> {
     process.exitCode = 2;
     return;
   }
-  const location: ReportRecordLocation = backend === "turso"
-    ? createTursoDocumentRemote()
-    : command.store ?? defaultReportRecordsFile();
+  const location: ReportRecordLocation =
+    backend === "turso" ? createTursoDocumentRemote() : (command.store ?? defaultReportRecordsFile());
   const result = await generateReportFromStoredRecords(location, period, { asOf: command.asOf });
-  console.log(JSON.stringify({ inserted: result.inserted, id: result.record.id, period: result.record.period.id, sourceCursor: result.record.sourceCursor }, null, 2));
+  console.log(
+    JSON.stringify(
+      {
+        inserted: result.inserted,
+        id: result.record.id,
+        period: result.record.period.id,
+        sourceCursor: result.record.sourceCursor,
+      },
+      null,
+      2,
+    ),
+  );
 }
 
 if (import.meta.main) {
