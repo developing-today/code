@@ -6,6 +6,7 @@
 // owner typed.
 import type { Docs } from "./docs.ts";
 import { OpError, type Ops } from "./ops.ts";
+import type { Push } from "./push.ts";
 import type { Work } from "./work.ts";
 
 type Args = Record<string, unknown>;
@@ -22,8 +23,33 @@ const ids =
   (args: Args) =>
     Object.fromEntries(keys.map((k) => [k, args[k]]));
 
-export function actions(ops: Ops, work: Work): Record<string, Action> {
+/** A refusal from the push module is the caller's mistake, not a failure of this service. */
+const asked = async <T>(p: Promise<T>): Promise<T> =>
+  p.catch((error: Error) => {
+    throw error instanceof OpError ? error : new OpError(400, error.message);
+  });
+
+export function actions(ops: Ops, work: Work, push?: Push): Record<string, Action> {
+  const notify: Record<string, Action> = push
+    ? {
+        "push.on": { run: (a) => asked(push.subscribe(a.subscription, a.label)), touch: [], audit: () => ({}) },
+        "push.off": { run: (a) => asked(push.unsubscribe(a.endpoint)), touch: [], audit: () => ({}) },
+        "push.class": { run: (a) => asked(push.setClass(a.class, a.on)), touch: [], audit: ids("class", "on") },
+        "push.test": {
+          run: () =>
+            push.send("test", {
+              title: "PM",
+              body: "Notifications are on for this device.",
+              url: "/console/",
+              tag: "test",
+            }),
+          touch: [],
+          audit: () => ({}),
+        },
+      }
+    : {};
   return {
+    ...notify,
     "ask.send": { run: (a) => work.ask(a), touch: ["asks", "board"], audit: () => ({}) },
     "ask.reply": { run: (a) => work.askReply(a), touch: ["asks", "board"], audit: ids("issue") },
     "ask.close": { run: (a) => work.askClose(a), touch: ["asks"], audit: ids("issue") },

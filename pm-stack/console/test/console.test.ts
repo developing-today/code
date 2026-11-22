@@ -977,7 +977,6 @@ describe("HTTP surface", () => {
   });
 
   const PUBLIC = [
-    "/manifest.webmanifest",
     "/icons/icon-192.png",
     "/icons/icon-512.png",
     "/icons/icon-maskable-512.png",
@@ -1026,6 +1025,11 @@ describe("HTTP surface", () => {
       expect(call.method).toBe("GET");
       expect(call.headers).toEqual({ host: "pm.security.cab", "accept-encoding": "identity" });
     }
+    expect((await handle(post("/icons/icon-192.png", {}), out)).status).toBe(401);
+    // The install manifest is the app's own: public, and it opens the app.
+    const manifest = await handle(get("/manifest.webmanifest"), out);
+    expect(manifest.headers.get("content-type")).toContain("application/manifest+json");
+    expect(await manifest.json()).toMatchObject({ start_url: "/console/", scope: "/", display: "standalone" });
     expect((await handle(post("/manifest.webmanifest", {}), out)).status).toBe(401);
     expect(out.sent.length).toBe(PUBLIC.length);
   });

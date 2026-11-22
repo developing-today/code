@@ -120,6 +120,12 @@ export class Docs {
     this.timer = null;
   }
 
+  /** The last good copy of one section, or null if it has never been read. */
+  good(name: string): unknown {
+    const s = this.sections.get(name);
+    return s && s.goodAt > 0 ? s.data : null;
+  }
+
   logAct(act: Act): void {
     this.acts = [act, ...this.acts.filter((a) => a.id !== act.id)].slice(0, ACTS_KEPT);
   }

@@ -7,6 +7,7 @@
 import { readConfig } from "../src/config.ts";
 import { Docs } from "../src/docs.ts";
 import { Ops } from "../src/ops.ts";
+import { Push } from "../src/push.ts";
 import { handle } from "../src/server.ts";
 
 const iso = (minutesAgo: number) => new Date(Date.now() - minutesAgo * 60_000).toISOString().slice(0, 19);
@@ -361,6 +362,7 @@ Bun.serve({
       cfg,
       ops: new Ops(cfg, async () => ({ code: 0, stdout: "[]", stderr: "" })),
       docs,
+      push: new Push("/tmp/pm-console-demo-push.json", "mailto:you@example.com", async () => ({ status: 201 })),
       actions: table,
       identify: async () => ({ via: "demo", email: "you@example.com" }),
       audit: async () => {},

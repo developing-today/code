@@ -14,7 +14,9 @@ import { actions, perform } from "./actions.ts";
 import { AuthError, type Identity, identify } from "./auth.ts";
 import { type Config, readConfig } from "./config.ts";
 import { DOC_NAMES, type DocName, Docs } from "./docs.ts";
+import { Notifier } from "./notify.ts";
 import { OpError, Ops } from "./ops.ts";
+import { Push } from "./push.ts";
 import { Work } from "./work.ts";
 
 const BASE = "/console";
@@ -23,7 +25,32 @@ const STATIC = new Map([
   ["app.js", "text/javascript; charset=utf-8"],
   ["app.css", "text/css; charset=utf-8"],
   ["icon.svg", "image/svg+xml"],
+  ["sw.js", "text/javascript; charset=utf-8"],
 ]);
+
+/** The install manifest of the app at this origin. The home-screen icon
+ * opens the app, and a long press offers its four primary screens. */
+const MANIFEST = {
+  name: "PM",
+  short_name: "PM",
+  description: "What the fleet is doing, what is next, what needs you, and a place to say what you want.",
+  start_url: "/console/",
+  scope: "/",
+  display: "standalone",
+  background_color: "#0b0f14",
+  theme_color: "#11161d",
+  icons: [
+    { src: "/icons/icon-192.png", sizes: "192x192", type: "image/png", purpose: "any" },
+    { src: "/icons/icon-512.png", sizes: "512x512", type: "image/png", purpose: "any" },
+    { src: "/icons/icon-maskable-512.png", sizes: "512x512", type: "image/png", purpose: "maskable" },
+  ],
+  shortcuts: [
+    { name: "Ask the fleet", short_name: "Ask", url: "/console/#ask" },
+    { name: "Needs me", short_name: "Needs me", url: "/console/#needs" },
+    { name: "In progress", short_name: "Now", url: "/console/#now" },
+    { name: "Queued next", short_name: "Next", url: "/console/#next" },
+  ],
+};
 const APK_NAME = "pm-console.apk";
 const SECURITY = {
   "Content-Security-Policy":
@@ -33,8 +60,7 @@ const SECURITY = {
 };
 /** The dashboard's files that are public, matched against the parsed
  * path in full. They say nothing about the fleet. */
-const PUBLIC_DASHBOARD =
-  /^\/(manifest\.webmanifest|icons\/(icon-192|icon-512|icon-maskable-512|apple-touch-icon)\.png)$/;
+const PUBLIC_DASHBOARD = /^\/icons\/(icon-192|icon-512|icon-maskable-512|apple-touch-icon)\.png$/;
 /** Headers that belong to one connection, not to the request or response. */
 const HOP_BY_HOP = new Set([
   "connection",
@@ -102,6 +128,7 @@ export interface Deps {
   docs?: Docs;
   actions?: ReturnType<typeof actions>;
   work?: Work;
+  push?: Push;
 }
 
 /** Text that shrinks well. The dashboard's fragments run to a megabyte
@@ -211,6 +238,11 @@ export async function handle(req: Request, deps: Deps, peer: string | null = nul
   // Public, unauthenticated: nothing here says anything about the fleet.
   if (path === "/.well-known/assetlinks.json" && method === "GET") return json(assetLinks(deps.cfg));
   if (path === `${BASE}/health` && method === "GET") return json({ ok: true });
+  if (path === "/manifest.webmanifest" && method === "GET") {
+    return new Response(JSON.stringify(MANIFEST), {
+      headers: { "Content-Type": "application/manifest+json; charset=utf-8", "Cache-Control": "no-cache", ...SECURITY },
+    });
+  }
   const ours = path === BASE || path.startsWith(`${BASE}/`);
   if (!ours) {
     if (deps.cfg.dashboardUrl === null) return json({ error: "not found" }, 404);
@@ -306,6 +338,7 @@ export async function handle(req: Request, deps: Deps, peer: string | null = nul
         if (req.headers.get("if-none-match") === doc.etag) return new Response(null, { status: 304, headers });
         return gzipped(req, new TextEncoder().encode(doc.body), headers) ?? new Response(doc.body, { headers });
       }
+      if (seg.length === 1 && seg[0] === "push" && deps.push) return json(await deps.push.status());
       if (seg.length === 1 && seg[0] === "question" && deps.work) {
         return json(await deps.work.question(query.get("set"), query.get("ledger"), query.get("qid")));
       }
@@ -486,12 +519,16 @@ if (import.meta.main) {
   const work = new Work(ops);
   const docs = new Docs(loaders(ops, work, await morePages()));
   docs.start();
+  const state = dirname(cfg.auditFile);
+  const push = new Push(join(state, "push.json"), `mailto:${cfg.owners[0] ?? "owner@invalid.example"}`);
+  new Notifier(docs, push, join(state, "notified.json")).start();
   const deps: Deps = {
     cfg,
     ops,
     docs,
     work,
-    actions: actions(ops, work),
+    push,
+    actions: actions(ops, work, push),
     identify: (req, peer) => identify(req, cfg, { peer }),
     audit: (entry) => appendFile(cfg.auditFile, `${JSON.stringify(entry)}\n`, { mode: 0o600 }),
   };

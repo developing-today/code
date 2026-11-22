@@ -762,6 +762,7 @@ function viewMore() {
       tile("more/issues", "Ranked issues", ops.priorities ? `${ops.priorities.issues.length} ranked` : "change what matters most"),
       tile("more/agents", "Agents", ops.agents ? `${ops.agents.length} registered` : "message one or all"),
       tile("more/services", "Services", ops.services ? `${ops.services.filter((u) => u.active === "failed").length} failed of ${ops.services.length}` : "start, stop, logs"),
+      tile("more/notify", "Notifications", "choose what reaches this device"),
     ),
   ];
   for (const g of ops.more || []) {
@@ -774,6 +775,73 @@ function viewMore() {
     h("a", { class: "link", href: "/cdn-cgi/access/logout" }, "Sign out"),
   );
   return out;
+}
+
+const NOTICE = {
+  replies: "The fleet replied to something you asked",
+  needs: "Something new needs you",
+  questions: "New questions for you",
+  trouble: "A unit failed",
+};
+
+function keyBytes(b64) {
+  const text = atob((b64 + "=".repeat((4 - (b64.length % 4)) % 4)).replace(/-/g, "+").replace(/_/g, "/"));
+  return Uint8Array.from(text, (c) => c.charCodeAt(0));
+}
+
+async function viewNotify() {
+  if (!("serviceWorker" in navigator) || !("PushManager" in window) || !("Notification" in window)) {
+    return [empty("This browser cannot receive notifications. On Android, use Chrome or the app.")];
+  }
+  const status = await api("push");
+  const reg = await navigator.serviceWorker.getRegistration("/console/");
+  const sub = reg ? await reg.pushManager.getSubscription() : null;
+  const on = Boolean(sub) && Notification.permission === "granted";
+  const turnOn = async (e) => {
+    e.target.disabled = true;
+    try {
+      if ((await Notification.requestPermission()) !== "granted") {
+        throw new Error("Notifications are blocked for this site. Allow them in the browser's site settings, then try again.");
+      }
+      const r = await navigator.serviceWorker.register("/console/sw.js", { scope: "/console/" });
+      await navigator.serviceWorker.ready;
+      const s = await r.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: keyBytes(status.key) });
+      await act("push.on", { subscription: s.toJSON(), label: navigator.userAgent.replace(/^.*\((.*?)\).*$/, "$1").slice(0, 60) }, "Notifications are on for this device");
+    } catch (error) {
+      toast(error.message, true);
+      e.target.disabled = false;
+    }
+  };
+  const turnOff = async (e) => {
+    const endpoint = sub.endpoint;
+    await sub.unsubscribe().catch(() => {});
+    act("push.off", { endpoint }, "Turned off for this device", e.target);
+  };
+  return [
+    card(
+      h("h3", {}, on ? "On for this device" : "Off for this device"),
+      h("p", { class: "meta" }, `${status.devices} device${status.devices === 1 ? "" : "s"} subscribed in all.`),
+      Notification.permission === "denied" ? h("p", { class: "why" }, "This browser is set to block notifications from this site.") : null,
+      h(
+        "div",
+        { class: "row end" },
+        on ? h("button", { class: "small ghost", onclick: turnOff }, "Turn off") : null,
+        on ? h("button", { class: "small ghost", onclick: (e) => act("push.test", {}, (r) => (r.sent ? `Test sent to ${r.sent} device${r.sent === 1 ? "" : "s"}` : "No device took the test"), e.target) }, "Send a test") : null,
+        on ? null : h("button", { onclick: turnOn }, "Turn on for this device"),
+      ),
+    ),
+    h("h2", {}, "Tell me when"),
+    card(
+      ...Object.entries(NOTICE).map(([cls, label]) =>
+        h(
+          "label",
+          { class: "row check" },
+          h("input", { type: "checkbox", checked: status.classes[cls], onchange: (e) => act("push.class", { class: cls, on: e.target.checked }, e.target.checked ? "On" : "Off") }),
+          label,
+        ),
+      ),
+    ),
+  ];
 }
 
 const QUEUE_STATES = ["blocked", "queued", "claimed", "parked"];
@@ -1025,6 +1093,7 @@ const VIEWS = {
   "more/issues": ["Ranked issues", viewIssues, "ops"],
   "more/agents": ["Agents", viewAgents, "ops"],
   "more/services": ["Services", viewServices, "ops"],
+  "more/notify": ["Notifications", viewNotify],
 };
 let route = "now";
 let drawSeq = 0;
@@ -1128,6 +1197,8 @@ if (typeof document !== "undefined" && view) {
       me = m;
     })
     .catch(() => {});
+  // The worker shows notifications and opens the right screen when one is tapped.
+  if ("serviceWorker" in navigator) navigator.serviceWorker.register("/console/sw.js", { scope: "/console/" }).catch(() => {});
   draw();
   refresh(true);
 }

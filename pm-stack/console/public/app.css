@@ -567,3 +567,14 @@ dialog label {
   font-size: 0.85rem;
   color: var(--quiet);
 }
+
+.check {
+  padding: 8px 0;
+  flex-wrap: nowrap;
+}
+.check input {
+  flex: 0 0 22px;
+  width: 22px;
+  min-height: 22px;
+  height: 22px;
+}
