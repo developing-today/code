@@ -13,6 +13,7 @@ async fn main() -> std::io::Result<()> {
     use actix_web::*;
     use leptos::prelude::*;
     use leptos_actix::{generate_route_list, LeptosRoutes};
+    use leptos_meta::MetaTags;
     use leptos_start::app::*;
 
     let conf = leptos::config::get_configuration(None).unwrap();
@@ -21,8 +22,9 @@ async fn main() -> std::io::Result<()> {
     let routes = generate_route_list(|| view! { <App/> });
 
     HttpServer::new(move || {
-        let leptos_options = &conf.leptos_options;
-        let site_root = &leptos_options.site_root;
+        let leptos_options = conf.leptos_options.clone();
+        let site_root = leptos_options.site_root.clone();
+        let route_leptos_options = leptos_options.clone();
 
         App::new()
             .route("/api/{tail:.*}", leptos_actix::handle_server_fns())
@@ -32,8 +34,24 @@ async fn main() -> std::io::Result<()> {
             .service(Files::new("/assets", site_root.to_string()))
             // serve the favicon from /favicon.ico
             .service(favicon)
-            .leptos_routes(routes.to_owned(), || view! { <App/> })
-            .app_data(web::Data::new(leptos_options.to_owned()))
+            .leptos_routes(routes.to_owned(), move || {
+                view! {
+                    <!DOCTYPE html>
+                    <html lang="en">
+                        <head>
+                            <meta charset="utf-8"/>
+                            <meta name="viewport" content="width=device-width, initial-scale=1"/>
+                            <AutoReload options=route_leptos_options.clone() />
+                            <HydrationScripts options=route_leptos_options.clone() />
+                            <MetaTags/>
+                        </head>
+                        <body>
+                            <App/>
+                        </body>
+                    </html>
+                }
+            })
+            .app_data(web::Data::new(leptos_options))
         //.wrap(middleware::Compress::default())
     })
     .bind(&addr)?
