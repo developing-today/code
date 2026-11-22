@@ -2230,6 +2230,38 @@ func logFiles(t *testing.T, dir string) []string {
 	return out
 }
 
+// rotatedLogFiles excludes the per-day active files. A run that crosses
+// midnight can legitimately leave one active file for each day, while
+// logging.keep applies only to timestamp-suffixed rotations.
+func rotatedLogFiles(t *testing.T, dir string) []string {
+	t.Helper()
+	var out []string
+	for _, name := range logFiles(t, dir) {
+		stem := strings.TrimSuffix(name, ".jsonl")
+		if len(stem) > len("mcpx-2006-01-02") {
+			out = append(out, name)
+		}
+	}
+	return out
+}
+
+func TestRotatedLogFilesIgnoresDailyActiveFiles(t *testing.T) {
+	dir := t.TempDir()
+	for _, name := range []string{
+		"mcpx-2026-11-21.jsonl",
+		"mcpx-2026-11-22.jsonl",
+		"mcpx-2026-11-22-031602.jsonl",
+	} {
+		if err := os.WriteFile(filepath.Join(dir, name), nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got := rotatedLogFiles(t, dir)
+	if len(got) != 1 || got[0] != "mcpx-2026-11-22-031602.jsonl" {
+		t.Fatalf("rotated log list = %v, want only the timestamp-suffixed rotation", got)
+	}
+}
+
 // TestLoggingLevelShowsDebugRecords is the effect probe for logging.level:
 // a script's debug record is hidden at the default level and shown at debug.
 func TestLoggingLevelShowsDebugRecords(t *testing.T) {
@@ -2328,11 +2360,11 @@ func hasIPv4NetworkInterface() bool {
 // logging.maxLines: the default keeps one file, and one line per file
 // rotates into several.
 func TestLoggingMaxLinesRotatesTheFile(t *testing.T) {
-	if _, dir, _ := loggedRun(t); len(logFiles(t, dir)) != 1 {
-		t.Errorf("the default logging.maxLines should keep one file: %v", logFiles(t, dir))
+	if _, dir, _ := loggedRun(t); len(rotatedLogFiles(t, dir)) != 0 {
+		t.Errorf("the default logging.maxLines should not rotate: %v", rotatedLogFiles(t, dir))
 	}
-	if _, dir, _ := loggedRun(t, "MCPX_LOGGING_MAX_LINES=1"); len(logFiles(t, dir)) < 3 {
-		t.Errorf("logging.maxLines=1 should rotate into several files: %v", logFiles(t, dir))
+	if _, dir, _ := loggedRun(t, "MCPX_LOGGING_MAX_LINES=1"); len(rotatedLogFiles(t, dir)) < 3 {
+		t.Errorf("logging.maxLines=1 should rotate into several files: %v", rotatedLogFiles(t, dir))
 	}
 }
 
@@ -2340,11 +2372,11 @@ func TestLoggingMaxLinesRotatesTheFile(t *testing.T) {
 // logging.maxBytes: the default keeps one file, and a 10-byte bound
 // rotates into several.
 func TestLoggingMaxBytesRotatesTheFile(t *testing.T) {
-	if _, dir, _ := loggedRun(t); len(logFiles(t, dir)) != 1 {
-		t.Errorf("the default logging.maxBytes should keep one file: %v", logFiles(t, dir))
+	if _, dir, _ := loggedRun(t); len(rotatedLogFiles(t, dir)) != 0 {
+		t.Errorf("the default logging.maxBytes should not rotate: %v", rotatedLogFiles(t, dir))
 	}
-	if _, dir, _ := loggedRun(t, "MCPX_LOGGING_MAX_BYTES=10"); len(logFiles(t, dir)) < 3 {
-		t.Errorf("logging.maxBytes=10 should rotate into several files: %v", logFiles(t, dir))
+	if _, dir, _ := loggedRun(t, "MCPX_LOGGING_MAX_BYTES=10"); len(rotatedLogFiles(t, dir)) < 3 {
+		t.Errorf("logging.maxBytes=10 should rotate into several files: %v", rotatedLogFiles(t, dir))
 	}
 }
 
@@ -2352,11 +2384,11 @@ func TestLoggingMaxBytesRotatesTheFile(t *testing.T) {
 // rotating every line keeps many rotated files at the default, and at most
 // one besides the live file at keep=1.
 func TestLoggingKeepPrunesRotatedFiles(t *testing.T) {
-	if _, dir, _ := loggedRun(t, "MCPX_LOGGING_MAX_LINES=1"); len(logFiles(t, dir)) < 3 {
-		t.Errorf("the default logging.keep should keep several rotated files: %v", logFiles(t, dir))
+	if _, dir, _ := loggedRun(t, "MCPX_LOGGING_MAX_LINES=1"); len(rotatedLogFiles(t, dir)) < 3 {
+		t.Errorf("the default logging.keep should keep several rotated files: %v", rotatedLogFiles(t, dir))
 	}
-	if _, dir, _ := loggedRun(t, "MCPX_LOGGING_MAX_LINES=1", "MCPX_LOGGING_KEEP=1"); len(logFiles(t, dir)) > 2 {
-		t.Errorf("logging.keep=1 should prune to one rotated file: %v", logFiles(t, dir))
+	if _, dir, _ := loggedRun(t, "MCPX_LOGGING_MAX_LINES=1", "MCPX_LOGGING_KEEP=1"); len(rotatedLogFiles(t, dir)) != 1 {
+		t.Errorf("logging.keep=1 should prune to one rotated file: %v", rotatedLogFiles(t, dir))
 	}
 }
 
