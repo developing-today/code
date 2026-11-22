@@ -134,7 +134,9 @@ pub struct ReplicaClaim {
 pub struct DoubleClaim {
     pub task_id: i64,
     pub local_worker: String,
+    pub local_lane: String,
     pub cloud_worker: String,
+    pub cloud_lane: String,
 }
 
 /// What a replica sync reports: every local claim reconciled, the
@@ -225,7 +227,7 @@ pub struct MemoryReplica {
     claims: HashMap<i64, ReplicaClaim>,
     expiries: HashMap<i64, i64>,
     checkpoints: HashMap<i64, String>,
-    cloud_claims: HashMap<i64, String>,
+    cloud_claims: HashMap<i64, (String, String)>,
 }
 
 impl MemoryReplica {
@@ -242,10 +244,11 @@ impl MemoryReplica {
         self.now_unix = now_unix;
     }
 
-    /// Record that the cloud holds `task_id` for `worker` (drill /
-    /// test injection for the partition double-claim case).
-    pub fn inject_cloud_claim(&mut self, task_id: i64, worker: &str) {
-        self.cloud_claims.insert(task_id, worker.to_string());
+    /// Record that the cloud holds `task_id` for (`worker`, `lane`)
+    /// (drill / test injection for the partition double-claim case).
+    pub fn inject_cloud_claim(&mut self, task_id: i64, worker: &str, lane: &str) {
+        self.cloud_claims
+            .insert(task_id, (worker.to_string(), lane.to_string()));
     }
 
     /// The live local claim on `task_id`, if one is held and unexpired.
@@ -329,11 +332,15 @@ impl CoordinationReplica for MemoryReplica {
         for task_id in task_ids {
             let claim = &self.claims[&task_id];
             match self.cloud_claims.get(&task_id) {
-                Some(cloud_worker) if cloud_worker != &claim.worker => {
+                Some((cloud_worker, cloud_lane))
+                    if cloud_worker != &claim.worker || cloud_lane != &claim.lane =>
+                {
                     report.double_claims.push(DoubleClaim {
                         task_id,
                         local_worker: claim.worker.clone(),
+                        local_lane: claim.lane.clone(),
                         cloud_worker: cloud_worker.clone(),
+                        cloud_lane: cloud_lane.clone(),
                     });
                 }
                 _ => report.synced_claims.push(task_id),
@@ -527,7 +534,7 @@ mod tests {
         now_unix: i64,
         claims: HashMap<i64, (String, String, i64)>,
         checkpoints: HashMap<i64, String>,
-        cloud_claims: HashMap<i64, String>,
+        cloud_claims: HashMap<i64, (String, String)>,
     }
 
     impl ModelReplica {
@@ -573,13 +580,17 @@ mod tests {
             let mut task_ids: Vec<i64> = self.claims.keys().copied().collect();
             task_ids.sort_unstable();
             for task_id in task_ids {
-                let (worker, _, _) = &self.claims[&task_id];
+                let (worker, lane, _) = &self.claims[&task_id];
                 match self.cloud_claims.get(&task_id) {
-                    Some(cloud_worker) if cloud_worker != worker => {
+                    Some((cloud_worker, cloud_lane))
+                        if cloud_worker != worker || cloud_lane != lane =>
+                    {
                         report.double_claims.push(DoubleClaim {
                             task_id,
                             local_worker: worker.clone(),
+                            local_lane: lane.clone(),
                             cloud_worker: cloud_worker.clone(),
+                            cloud_lane: cloud_lane.clone(),
                         });
                     }
                     _ => report.synced_claims.push(task_id),
@@ -593,7 +604,7 @@ mod tests {
     proptest! {
         #[test]
         fn memory_replica_matches_model_over_generated_sequences(
-            ops in proptest::prop::collection::vec(
+            ops in proptest::collection::vec(
                 (0..6u8, 1..4i64, 0..2usize, 0..2usize, 0..2i64, 1000..2000i64),
                 1..40,
             ),
@@ -650,8 +661,11 @@ mod tests {
                         prop_assert_eq!(got, want);
                     }
                     4 => {
-                        replica.inject_cloud_claim(task_id, worker);
-                        model.cloud_claims.insert(task_id, worker.to_string());
+                        replica.inject_cloud_claim(task_id, worker, lane);
+                        model.cloud_claims.insert(
+                            task_id,
+                            (worker.to_string(), lane.to_string()),
+                        );
                     }
                     _ => {
                         replica.set_now(now);
@@ -672,13 +686,33 @@ mod tests {
     fn memory_replica_double_claim_surfaces_in_sync_report() {
         let mut replica = MemoryReplica::new(1_000);
         replica.claim(7, "worker-a", "lane-x", 300).unwrap();
-        replica.inject_cloud_claim(7, "worker-b");
+        replica.inject_cloud_claim(7, "worker-b", "lane-y");
         let report = replica.sync_up().unwrap();
         assert!(report.zero_lost());
         assert!(report.synced_claims.is_empty());
         assert_eq!(report.double_claims.len(), 1);
         assert_eq!(report.double_claims[0].task_id, 7);
         assert_eq!(report.double_claims[0].local_worker, "worker-a");
+        assert_eq!(report.double_claims[0].local_lane, "lane-x");
         assert_eq!(report.double_claims[0].cloud_worker, "worker-b");
+        assert_eq!(report.double_claims[0].cloud_lane, "lane-y");
+    }
+
+    #[test]
+    fn memory_replica_double_claim_distinguishes_lanes_sharing_a_worker() {
+        let mut replica = MemoryReplica::new(1_000);
+        replica.claim(7, "repo-worker-code", "code-h", 300).unwrap();
+        replica.inject_cloud_claim(7, "repo-worker-code", "code-i");
+
+        let report = replica.sync_up().unwrap();
+
+        assert!(report.zero_lost());
+        assert!(report.synced_claims.is_empty());
+        assert_eq!(report.double_claims.len(), 1);
+        assert_eq!(report.double_claims[0].task_id, 7);
+        assert_eq!(report.double_claims[0].local_worker, "repo-worker-code");
+        assert_eq!(report.double_claims[0].local_lane, "code-h");
+        assert_eq!(report.double_claims[0].cloud_worker, "repo-worker-code");
+        assert_eq!(report.double_claims[0].cloud_lane, "code-i");
     }
 }
