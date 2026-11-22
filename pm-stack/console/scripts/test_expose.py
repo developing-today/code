@@ -226,7 +226,18 @@ class Expose(unittest.TestCase):
         account = Account()
         self.assertEqual(run(account, self.home, "--check"), 1)
         self.assertEqual(account.order, [])
-        self.assertEqual(len(account.changes), 7)
+        # One per public path, then the application, the console's
+        # settings, the route and the DNS record.
+        self.assertEqual(
+            expose.PUBLIC_PATHS,
+            (
+                "/.well-known/assetlinks.json",
+                "/manifest.webmanifest",
+                "/icons",
+                "/console/device",
+            ),
+        )
+        self.assertEqual(len(account.changes), len(expose.PUBLIC_PATHS) + 4)
         self.assertFalse(
             (pathlib.Path(self.home) / ".local/state/pm-console/.env").exists()
         )

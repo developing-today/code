@@ -52,6 +52,8 @@ export interface Config {
   /** The signed APK the console hands to the signed-in owner, if the
    * file exists. */
   androidApk: string;
+  /** Where linked phones are kept (hashes of their tokens, never the tokens). */
+  devicesFile: string;
   /** The dashboard's decision-set store: the questions waiting on the
    * owner, and the per-set tokens that authorise an answer. */
   decisionsFile: string;
@@ -218,6 +220,7 @@ export function readConfig(
     androidPackage: env.PM_CONSOLE_ANDROID_PACKAGE ?? "today.developing.pmconsole",
     androidFingerprints: fingerprints,
     androidApk: env.PM_CONSOLE_ANDROID_APK ?? `${home}/.local/state/pm-console/android/pm-console.apk`,
+    devicesFile: env.PM_CONSOLE_DEVICES_FILE ?? `${home}/.local/state/pm-console/devices.json`,
     decisionsFile: env.PM_CONSOLE_DECISIONS_FILE ?? `${home}/.local/state/pm-aggregator/decisions.json`,
     promptLabel: env.PM_CONSOLE_PROMPT_LABEL ?? "owner/prompt",
     needsRepos: list(env, "PM_CONSOLE_NEEDS_REPOS", [

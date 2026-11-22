@@ -4,7 +4,9 @@
 //
 // The real server code answers; only the sources are canned, and every
 // action succeeds and is listed under "What you did".
+import { actions as realActions } from "../src/actions.ts";
 import { readConfig } from "../src/config.ts";
+import { Devices, Limiter } from "../src/devices.ts";
 import { Docs } from "../src/docs.ts";
 import { Ops } from "../src/ops.ts";
 import { Push } from "../src/push.ts";
@@ -341,15 +343,26 @@ const docs = new Docs(
   Object.fromEntries(Object.entries(state).map(([name, data]) => [name, { ttlMs: 3_600_000, load: async () => data }])),
 );
 const done = (result: unknown) => ({ run: async () => result, touch: [] as string[], audit: () => ({}) });
+// Linking a phone is the real thing, kept in a file under /tmp.
+const devices = new Devices("/tmp/pm-console-demo-devices.json");
+const phones = { devices, link: new Limiter(30, 60_000), refused: new Limiter(60, 60_000) };
+const real = realActions(
+  new Ops(cfg, async () => ({ code: 0, stdout: "[]", stderr: "" })),
+  undefined as never,
+  undefined,
+  devices,
+);
 const table = new Proxy({} as Record<string, ReturnType<typeof done>>, {
   get: (_t, kind) =>
-    done(
-      kind === "ask.send"
-        ? { issue: 12503, queued: true }
-        : kind === "questions.accept"
-          ? { applied: 2, refused: [] }
-          : { ok: true },
-    ),
+    typeof kind === "string" && kind.startsWith("device.")
+      ? real[kind]
+      : done(
+          kind === "ask.send"
+            ? { issue: 12503, queued: true }
+            : kind === "questions.accept"
+              ? { applied: 2, refused: [] }
+              : { ok: true },
+        ),
   has: () => true,
   getOwnPropertyDescriptor: () => ({ configurable: true, enumerable: true, value: done({}) }),
 });
@@ -367,6 +380,7 @@ Bun.serve({
       cfg,
       ops: new Ops(cfg, async () => ({ code: 0, stdout: "[]", stderr: "" })),
       docs,
+      phones,
       push: new Push("/tmp/pm-console-demo-push.json", "mailto:you@example.com", async () => ({ status: 201 })),
       actions: table,
       identify: async () => ({ via: "demo", email: "you@example.com" }),
