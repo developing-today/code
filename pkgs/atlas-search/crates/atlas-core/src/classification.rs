@@ -26,6 +26,8 @@ pub struct ClassificationProvenance {
     pub config_version: String,
     pub evidence_refs: Vec<String>,
     pub previous_decision_id: Option<String>,
+    /// Unrecognized additive provenance fields, preserved verbatim.
+    pub extras: Map<String, Json>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -95,13 +97,10 @@ impl ClassificationRecord {
             Some(Json::String(s)) => Some(s),
             _ => return Err("previous_decision_id must be a string or null".into()),
         };
-        if !p.is_empty() {
-            return Err("unknown provenance fields are not supported".into());
-        }
+        let provenance_extras = p;
         if invalid_sensitivity {
             object.insert("sensitivity".into(), raw_sensitivity.unwrap());
         }
-        object.extend(p);
         Ok(Self {
             schema_version,
             embed_id,
@@ -115,6 +114,7 @@ impl ClassificationRecord {
                 config_version,
                 evidence_refs,
                 previous_decision_id,
+                extras: provenance_extras,
             },
             extras: object,
         })
@@ -131,7 +131,27 @@ impl ClassificationRecord {
             value.insert("disposition".into(), Json::from(disposition.name()));
         }
         let p = &self.provenance;
-        value.insert("provenance".into(), serde_json::json!({"actor":p.actor,"decided_at":p.decided_at,"method":p.method,"method_version":p.method_version,"config_version":p.config_version,"evidence_refs":p.evidence_refs,"previous_decision_id":p.previous_decision_id}));
+        let mut provenance = p.extras.clone();
+        provenance.insert("actor".into(), Json::from(p.actor.clone()));
+        provenance.insert("decided_at".into(), Json::from(p.decided_at.clone()));
+        provenance.insert("method".into(), Json::from(p.method.clone()));
+        provenance.insert(
+            "method_version".into(),
+            Json::from(p.method_version.clone()),
+        );
+        provenance.insert(
+            "config_version".into(),
+            Json::from(p.config_version.clone()),
+        );
+        provenance.insert(
+            "evidence_refs".into(),
+            serde_json::to_value(&p.evidence_refs).expect("strings serialize"),
+        );
+        provenance.insert(
+            "previous_decision_id".into(),
+            serde_json::to_value(&p.previous_decision_id).expect("optional string serializes"),
+        );
+        value.insert("provenance".into(), Json::Object(provenance));
         Json::Object(value)
     }
 }
@@ -170,7 +190,8 @@ impl EffectiveClassification {
 
 #[cfg(test)]
 mod tests {
-    use serde_json::json;
+    use proptest::prelude::*;
+    use serde_json::{Value as Json, json};
 
     use super::{ClassificationDisposition, ClassificationRecord, EffectiveClassification};
     use crate::filters::Sensitivity;
@@ -311,11 +332,16 @@ mod tests {
                 "method_version": "1",
                 "config_version": "1",
                 "evidence_refs": ["issue:1"],
-                "previous_decision_id": "decision-0"
+                "previous_decision_id": "decision-0",
+                "future_provenance": {"keep": ["nested", 7]}
             }
         });
         let parsed = ClassificationRecord::parse(value.clone()).expect("valid record");
         assert_eq!(parsed.provenance.actor, "reviewer/1");
+        assert_eq!(
+            parsed.provenance.extras.get("future_provenance"),
+            Some(&json!({"keep": ["nested", 7]}))
+        );
         assert_eq!(
             parsed.provenance.previous_decision_id.as_deref(),
             Some("decision-0")
@@ -325,5 +351,114 @@ mod tests {
             Some(&json!({"keep": [1, true]}))
         );
         assert_eq!(parsed.to_json(), value);
+    }
+
+    fn sensitivity_strategy() -> impl Strategy<Value = Sensitivity> {
+        prop_oneof![
+            Just(Sensitivity::Shareable),
+            Just(Sensitivity::Personal),
+            Just(Sensitivity::LocalOnly),
+            Just(Sensitivity::SecretBearing),
+        ]
+    }
+
+    fn disposition_strategy() -> impl Strategy<Value = Option<ClassificationDisposition>> {
+        prop_oneof![
+            Just(None),
+            Just(Some(ClassificationDisposition::Included)),
+            Just(Some(ClassificationDisposition::ExcludedPersonalLife)),
+        ]
+    }
+
+    fn record_for_properties(
+        sensitivity: Sensitivity,
+        disposition: Option<ClassificationDisposition>,
+        embed_id: usize,
+    ) -> ClassificationRecord {
+        let name = match sensitivity {
+            Sensitivity::Shareable => "shareable",
+            Sensitivity::Personal => "personal",
+            Sensitivity::LocalOnly => "local-only",
+            Sensitivity::SecretBearing => "secret-bearing",
+        };
+        let disposition = disposition.map(ClassificationDisposition::name);
+        let mut value = json!({
+            "schema_version": 1,
+            "embed_id": embed_id.to_string(),
+            "sensitivity": name,
+            "provenance": {
+                "actor": "property-test",
+                "decided_at": "2026-11-22T00:00:00Z",
+                "method": "generated",
+                "method_version": "1",
+                "config_version": "1",
+                "evidence_refs": [],
+                "previous_decision_id": null
+            }
+        });
+        if let Some(disposition) = disposition {
+            value["disposition"] = Json::from(disposition);
+        }
+        ClassificationRecord::parse(value).expect("generated record is valid")
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(256))]
+
+        #[test]
+        fn composition_is_max_order_independent_and_exclusion_is_sticky(
+            fields in proptest::collection::vec((sensitivity_strategy(), disposition_strategy()), 0..40),
+        ) {
+            let records: Vec<_> = fields.into_iter().enumerate()
+                .map(|(i, (sensitivity, disposition))| record_for_properties(sensitivity, disposition, i))
+                .collect();
+            let expected_sensitivity = records.iter().map(|record| record.sensitivity).max().unwrap_or(Sensitivity::Shareable);
+            let expected_excluded = records.iter().any(|record| record.disposition == Some(ClassificationDisposition::ExcludedPersonalLife));
+            let forward = EffectiveClassification::compose(records.iter());
+            let backward = EffectiveClassification::compose(records.iter().rev());
+
+            prop_assert_eq!(forward.sensitivity, expected_sensitivity);
+            prop_assert_eq!(forward.is_excluded(), expected_excluded);
+            prop_assert_eq!(backward, forward);
+        }
+
+        #[test]
+        fn unknown_fields_and_malformed_sensitivity_round_trip_fail_closed(
+            unknown in prop_oneof![
+                Just(Json::Null),
+                any::<bool>().prop_map(Json::from),
+                any::<i64>().prop_map(Json::from),
+                "[a-zA-Z0-9 _-]{0,24}".prop_map(Json::from),
+                proptest::collection::vec(any::<i32>(), 0..8).prop_map(Json::from),
+            ],
+            malformed in prop_oneof![
+                Just(Json::Null),
+                any::<bool>().prop_map(Json::from),
+                any::<i64>().prop_map(Json::from),
+                "[A-Z]{1,20}".prop_map(Json::from),
+                proptest::collection::vec(any::<i32>(), 0..8).prop_map(Json::from),
+            ],
+        ) {
+            let mut value = json!({
+                "schema_version": 1,
+                "embed_id": "property-test",
+                "sensitivity": "shareable",
+                "future_field": unknown,
+                "provenance": {
+                    "actor": "property-test",
+                    "decided_at": "2026-11-22T00:00:00Z",
+                    "method": "generated",
+                    "method_version": "1",
+                    "config_version": "1",
+                    "evidence_refs": [],
+                    "previous_decision_id": null,
+                    "future_provenance": {"value": unknown}
+                }
+            });
+            value["sensitivity"] = malformed;
+            let parsed = ClassificationRecord::parse(value.clone()).expect("well-formed envelope remains readable");
+            prop_assert_eq!(parsed.sensitivity, Sensitivity::SecretBearing);
+            prop_assert_eq!(parsed.to_json(), value);
+        }
     }
 }
