@@ -95,6 +95,7 @@ dependencies = [
  "atlas-proto",
  "base64 0.23.1",
  "blake3",
+ "libc",
  "proptest",
  "rusqlite",
  "serde",

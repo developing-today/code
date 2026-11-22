@@ -273,7 +273,8 @@ fn is_top_level_declaration(line: &str) -> bool {
 /// is one chunk; above it, chunks break before top-level
 /// declaration lines (a non-indented, non-comment line carrying a
 /// `:` or opening a block), and any chunk still over
-/// [`MAX_CHUNK_BYTES`] is split further at line boundaries. The
+/// [`MAX_CHUNK_BYTES`] is split further at line boundaries and, for a
+/// single overlong line, at UTF-8 character boundaries. The
 /// chunks always partition the input exactly: concatenating them
 /// reproduces `text` byte for byte.
 pub fn chunk_artifact_text(text: &str) -> Vec<String> {
@@ -297,11 +298,38 @@ pub fn chunk_artifact_text(text: &str) -> Vec<String> {
             continue;
         }
         // One declaration over the hard ceiling: split at line
-        // boundaries, keeping every piece within the ceiling when
-        // a boundary exists inside it.
+        // boundaries, then split any individual overlong line at
+        // UTF-8 character boundaries.
         let mut start = 0usize;
         let mut acc = 0usize;
         for line in piece.split_inclusive('\n') {
+            if line.len() > MAX_CHUNK_BYTES {
+                if acc > 0 {
+                    chunks.push(piece[start..start + acc].to_string());
+                    start += acc;
+                }
+                let mut line_start = 0usize;
+                while line.len() - line_start > MAX_CHUNK_BYTES {
+                    let remaining = &line[line_start..];
+                    let end = line_start
+                        + remaining
+                            .char_indices()
+                            .map(|(idx, _)| idx)
+                            .chain(std::iter::once(remaining.len()))
+                            .take_while(|idx| *idx <= MAX_CHUNK_BYTES)
+                            .last()
+                            .expect("a UTF-8 boundary exists within the byte limit");
+                    chunks.push(line[line_start..end].to_string());
+                    line_start = end;
+                }
+                acc = line.len() - line_start;
+                if acc > 0 {
+                    chunks.push(line[line_start..].to_string());
+                    start += line.len();
+                    acc = 0;
+                }
+                continue;
+            }
             if acc > 0 && acc + line.len() > MAX_CHUNK_BYTES {
                 chunks.push(piece[start..start + acc].to_string());
                 start += acc;
@@ -383,6 +411,102 @@ pub fn stage_artifact(
         })?;
     }
     Ok(item_id)
+}
+
+/// Stage one accepted sweep item by its content address. The content
+/// address is the idempotency key shared with `sweep::CandidateFacts`:
+/// a retry returns `false` without adding rows, while the first write
+/// inserts the item, chunks, and key atomically. This only writes to a
+/// staging DB; it does not promote or delete anything.
+pub fn stage_sweep_item(
+    conn: &Connection,
+    unit_id: &str,
+    source_class: &str,
+    source_ref: &str,
+    content_address: &str,
+    text: &str,
+    sensitivity: Tier,
+    now: &str,
+) -> Result<bool> {
+    check_stage_schema(conn)?;
+    if sensitivity == Tier::Secret {
+        return Err(Error::fatal(
+            "staging: secret-tier sweep items must be held until a local embedder route exists",
+        ));
+    }
+    let key = format!("sweep-content:{content_address}");
+    conn.execute_batch("BEGIN IMMEDIATE")
+        .map_err(|e| Error::backend(format!("staging: beginning sweep item transaction: {e}")))?;
+    let result = (|| {
+        let existing_text: Option<String> = conn
+            .query_row(
+                "SELECT i.text FROM kv k JOIN items i ON i.id = CAST(k.value AS INTEGER) WHERE k.key = ?1",
+                [&key],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(|e| Error::backend(format!("staging: checking content address: {e}")))?;
+        if let Some(existing_text) = existing_text {
+            if existing_text != text {
+                return Err(Error::fatal(format!(
+                    "staging: content address {content_address:?} already names different text"
+                )));
+            }
+            return Ok(false);
+        }
+        let chunks = chunk_artifact_text(text);
+        let meta = serde_json::json!({
+            "source_class": source_class,
+            "source_ref": source_ref,
+            "content_address": content_address,
+            "chunks": chunks.len(),
+        })
+        .to_string();
+        conn.execute(
+            "INSERT INTO items (unit_id, kind, source, text, sensitivity, created_at, meta) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                unit_id,
+                source_class,
+                source_ref,
+                text,
+                sensitivity.name(),
+                now,
+                meta
+            ],
+        )
+        .map_err(|e| Error::backend(format!("staging: inserting sweep item {source_ref}: {e}")))?;
+        let item_id = conn.last_insert_rowid();
+        for (idx, chunk) in chunks.iter().enumerate() {
+            conn.execute(
+                "INSERT INTO chunks_raw (item_id, idx, text, content_hash, created_at) \
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![item_id, idx as i64, chunk, sha256_hex(chunk), now],
+            )
+            .map_err(|e| Error::backend(format!("staging: inserting sweep chunk {idx}: {e}")))?;
+        }
+        conn.execute(
+            "INSERT INTO kv (key, value, updated_at) VALUES (?1, ?2, ?3)",
+            params![key, item_id.to_string(), now],
+        )
+        .map_err(|e| Error::backend(format!("staging: recording sweep content address: {e}")))?;
+        Ok(true)
+    })();
+    match result {
+        Ok(inserted) => match conn.execute_batch("COMMIT") {
+            Ok(()) => Ok(inserted),
+            Err(e) => {
+                let _ = conn.execute_batch("ROLLBACK");
+                Err(Error::backend(format!(
+                    "staging: committing sweep item: {e}"
+                )))
+            }
+        },
+        Err(err) => {
+            let _ = conn.execute_batch("ROLLBACK");
+            Err(err)
+        }
+    }
 }
 
 /// [`stage_artifact`] against a staging DB file: the form the
@@ -1305,6 +1429,114 @@ mod tests {
         let db = dir.join("unit.db");
         provision_staging_db(&db).expect("provision staging db");
         open(&db).expect("open staging db")
+    }
+
+    /// Oracle: chunk sizes never exceed the hard ceiling and their
+    /// concatenation exactly reconstructs a single very long UTF-8 line.
+    #[test]
+    fn chunks_split_overlong_utf8_lines_at_character_boundaries() {
+        let text = "λ".repeat(MAX_CHUNK_BYTES + 7);
+        let chunks = chunk_artifact_text(&text);
+        assert!(chunks.iter().all(|chunk| chunk.len() <= MAX_CHUNK_BYTES));
+        assert_eq!(chunks.concat(), text);
+    }
+
+    /// Oracle: stored item/chunk/key counts stay one on retry and
+    /// conflict, and the design's secret-tier hold writes no rows.
+    #[test]
+    fn sweep_stage_is_idempotent_conflict_safe_and_never_stages_secret() {
+        let dir = std::env::temp_dir().join(format!("atlas-stage-sweep-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let conn = provisioned_conn(&dir);
+        let stage = |address: &str, text: &str, tier| {
+            stage_sweep_item(
+                &conn,
+                "unit-sweep",
+                "reports",
+                "report.md",
+                address,
+                text,
+                tier,
+                "2026-11-21T00:00:00Z",
+            )
+        };
+        assert!(stage("addr-1", "conclusion", Tier::Internal).expect("first stage"));
+        assert!(!stage("addr-1", "conclusion", Tier::Internal).expect("retry"));
+        assert!(
+            stage("addr-1", "different", Tier::Internal)
+                .expect_err("address collision must not hide changed content")
+                .to_string()
+                .contains("different text")
+        );
+        assert!(
+            stage("addr-secret", "secret", Tier::Secret)
+                .expect_err("secret content must be held before staging")
+                .to_string()
+                .contains("secret-tier")
+        );
+        let counts: (i64, i64, i64) = conn
+            .query_row(
+                "SELECT (SELECT COUNT(*) FROM items), (SELECT COUNT(*) FROM chunks_raw), (SELECT COUNT(*) FROM kv)",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .expect("row counts");
+        assert_eq!(counts, (1, 1, 1));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Oracle: an injected chunk failure leaves all three tables
+    /// empty; a subsequent write on the same connection succeeds.
+    #[test]
+    fn sweep_stage_rolls_back_an_item_when_chunk_write_fails() {
+        let dir =
+            std::env::temp_dir().join(format!("atlas-stage-sweep-rollback-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let conn = provisioned_conn(&dir);
+        conn.execute_batch(
+            "CREATE TRIGGER fail_sweep_chunk BEFORE INSERT ON chunks_raw \
+             BEGIN SELECT RAISE(ABORT, 'fixture chunk failure'); END;",
+        )
+        .expect("failure trigger");
+        assert!(
+            stage_sweep_item(
+                &conn,
+                "unit-sweep",
+                "reports",
+                "report.md",
+                "addr-fail",
+                "conclusion",
+                Tier::Internal,
+                "2026-11-21T00:00:00Z",
+            )
+            .is_err()
+        );
+        let counts: (i64, i64, i64) = conn
+            .query_row(
+                "SELECT (SELECT COUNT(*) FROM items), (SELECT COUNT(*) FROM chunks_raw), (SELECT COUNT(*) FROM kv)",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .expect("row counts after rollback");
+        assert_eq!(counts, (0, 0, 0));
+        conn.execute_batch("DROP TRIGGER fail_sweep_chunk")
+            .expect("remove trigger");
+        assert!(
+            stage_sweep_item(
+                &conn,
+                "unit-sweep",
+                "reports",
+                "report.md",
+                "addr-fail",
+                "conclusion",
+                Tier::Internal,
+                "2026-11-21T00:00:00Z",
+            )
+            .expect("connection remains usable")
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
