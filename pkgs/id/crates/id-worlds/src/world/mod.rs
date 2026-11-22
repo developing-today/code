@@ -81,13 +81,14 @@ pub use hotness::{FiredSignal, HotnessBand, HotnessReport, HotnessSignal};
 pub use id_caps::portal::{PortalGrantState, PortalGrants, PortalRefusal};
 pub(crate) use journal::JournalAdminHistory;
 pub use journal::{
-    CoordinatorJournalEntry, JOURNAL_VERSION, JOURNAL_VERSION_CHECKPOINT_PARTS,
-    JOURNAL_VERSION_EXECUTION_PROFILE, JOURNAL_VERSION_JOIN_TIMES, JOURNAL_VERSION_KV,
-    JOURNAL_VERSION_OPEN_PRESENCE, JOURNAL_VERSION_PORTALS, JOURNAL_VERSION_PROGRAM_BUNDLE,
-    JOURNAL_VERSION_REGION_HANDOFF, JOURNAL_VERSION_SCHEDULE_RECURRENCE,
-    JOURNAL_VERSION_SIGNED_PLAY, JOURNAL_VERSION_WORLD_BUDGET, JOURNAL_VERSION_WRITE_LEASE,
-    JournalEntry, JournalSignedMove, JournalSnapshot, JournalSnapshotSource, MAX_JOURNAL_VERSION,
-    TrustBasis, TrustDecision, WorldJournal, journal_version_required_by,
+    CoordinatorJournalEntry, JOURNAL_VERSION, JOURNAL_VERSION_BLOB,
+    JOURNAL_VERSION_CHECKPOINT_PARTS, JOURNAL_VERSION_EXECUTION_PROFILE,
+    JOURNAL_VERSION_JOIN_TIMES, JOURNAL_VERSION_KV, JOURNAL_VERSION_OPEN_PRESENCE,
+    JOURNAL_VERSION_PORTALS, JOURNAL_VERSION_PROGRAM_BUNDLE, JOURNAL_VERSION_REGION_HANDOFF,
+    JOURNAL_VERSION_SCHEDULE_RECURRENCE, JOURNAL_VERSION_SIGNED_PLAY, JOURNAL_VERSION_WORLD_BUDGET,
+    JOURNAL_VERSION_WRITE_LEASE, JournalEntry, JournalSignedMove, JournalSnapshot,
+    JournalSnapshotSource, MAX_JOURNAL_VERSION, TrustBasis, TrustDecision, WorldJournal,
+    journal_version_required_by,
 };
 pub use metrics::{
     HistogramSnapshot, MetricsSnapshot, RegionWrites, WorldMetrics, WriteLocalitySnapshot,
@@ -115,9 +116,9 @@ pub use upgrade::{
 };
 pub use util::{EventPage, hex_encode, publish_records};
 pub(crate) use util::{
-    constant_time_eq, hex_decode, hex_decode_32, is_pre_fix_mint_display_name,
-    legacy_sanitize_display_name, pre_fix_sanitize_display_name, sanitize_chat,
-    sanitize_display_name, token_digest,
+    blob_decode, blob_encode, blob_id, constant_time_eq, hex_decode, hex_decode_32,
+    is_pre_fix_mint_display_name, legacy_sanitize_display_name, pre_fix_sanitize_display_name,
+    sanitize_chat, sanitize_display_name, token_digest,
 };
 
 /// Identity of one live connection. It stays in memory only and is never part
@@ -1379,6 +1380,23 @@ pub struct CheckpointKvEntry {
     /// encoding, not a parsed `Value`, so journal and checkpoint
     /// records stay `Eq` and the byte charge is the string's length.
     pub value: String,
+}
+
+/// One live blob of the world as a checkpoint declares it (#1062):
+/// the blob's index entry, not its content. The writer also emits
+/// one `BlobStored` journal entry per live blob before the
+/// checkpoint, and replay refuses a checkpoint whose declared index
+/// disagrees with them — the schedule treatment
+/// ([`CheckpointSchedule`]) applied to the blob set. Only the index
+/// is declared because the content would exceed the checkpoint
+/// scalar bound on its own; the entries carry the bytes, and the
+/// declared size pins what each entry must hold.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct CheckpointBlobEntry {
+    /// The blob's content address: its hash as lowercase hex.
+    pub hash: String,
+    /// The content's length, in bytes.
+    pub size: usize,
 }
 
 /// This world's schedule-delivery consent for one peer world (#1355

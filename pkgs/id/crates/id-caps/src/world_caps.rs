@@ -44,6 +44,22 @@
 //! a write past a bound is refused with `bad_args` and a reason, and
 //! stores nothing.
 //!
+//! The `blob` store (#1062, F12.5) is three requests over one bounded,
+//! durable, per-world set of content-addressed blobs: `blob.put`
+//! (`{"data":"<base64>"}`) stores content and answers
+//! `{"hash":H,"size":N}`, where `H` is the content's iroh-blobs
+//! address (its BLAKE3 hash as 64 lowercase hex characters);
+//! `blob.get` (`{"hash":H}`) answers `{"hash":H,"data":"<base64>"}`
+//! with `null` data when the world holds no such blob; `blob.delete`
+//! (`{"hash":H}`) answers `{"hash":H,"deleted":bool}`. Putting content
+//! the world already holds is a no-op — the address is the same.
+//! Writes are journaled before their result is delivered, and replay
+//! verifies each stored blob against its address, so the store
+//! survives restarts and checkpoint compaction. Content size, blob
+//! count and total bytes are bounded ([`MAX_BLOB_BYTES`],
+//! [`MAX_BLOBS`], [`MAX_BLOB_TOTAL_BYTES`]); a write past a bound is
+//! refused with `bad_args` and a reason, and stores nothing.
+//!
 //! The server answers each new request with
 //! `{"cap":"result","id":"r1","ok":true,"value":...}` (or `"ok":false` with an
 //! `"error"`), and each subscription with its own events
@@ -438,6 +454,40 @@ const KV_DELETE_BOUNDS: &[ProviderBound] = &[
     ProviderBound::ArgsBytes(MAX_ARGS_BYTES),
     ProviderBound::IdentifierBytes(MAX_KV_KEY_BYTES),
 ];
+/// Argument schema for `blob.get` and `blob.delete`: one required
+/// `hash`, the blob's content address.
+const BLOB_HASH_ARGUMENTS: &[ProviderArgument] = &[ProviderArgument {
+    name: "hash",
+    value_type: ArgumentType::String,
+    required: true,
+}];
+/// Argument schema for `blob.put`: a required `data`, the content as
+/// a base64 string. The executor decodes it and bounds the decoded
+/// size ([`MAX_BLOB_BYTES`]).
+const BLOB_PUT_ARGUMENTS: &[ProviderArgument] = &[ProviderArgument {
+    name: "data",
+    value_type: ArgumentType::String,
+    required: true,
+}];
+/// Bounds for `blob.put`: argument bytes and the blob-count cap. The
+/// content cap is on the decoded bytes, which the argument byte cap
+/// already over-bounds (base64 is longer than the content).
+const BLOB_PUT_BOUNDS: &[ProviderBound] = &[
+    ProviderBound::ArgsBytes(MAX_ARGS_BYTES),
+    ProviderBound::Items(MAX_BLOBS),
+];
+/// Bounds for `blob.get`: argument bytes, the address cap, and the
+/// encoded-content cap the single returned blob must fit.
+const BLOB_GET_BOUNDS: &[ProviderBound] = &[
+    ProviderBound::ArgsBytes(MAX_ARGS_BYTES),
+    ProviderBound::IdentifierBytes(MAX_BLOB_ID_BYTES),
+    ProviderBound::ResponseBytes(MAX_BLOB_ENCODED_BYTES),
+];
+/// Bounds for `blob.delete`: argument bytes plus the address cap.
+const BLOB_DELETE_BOUNDS: &[ProviderBound] = &[
+    ProviderBound::ArgsBytes(MAX_ARGS_BYTES),
+    ProviderBound::IdentifierBytes(MAX_BLOB_ID_BYTES),
+];
 /// Bounds for `schedule.at`: argument bytes, id bytes, pending cap, and horizon.
 const SCHEDULE_AT_BOUNDS: &[ProviderBound] = &[
     ProviderBound::ArgsBytes(MAX_ARGS_BYTES),
@@ -600,6 +650,34 @@ define_provider_registry! {
         kind: ProviderKind::Request,
         argument_schema: ArgumentSchema::JsonObject(KV_KEY_ARGUMENTS),
         bounds: KV_DELETE_BOUNDS,
+        required_scope: RequiredScope::Join,
+        default_ceiling: DefaultCeiling::Included,
+    },
+    // The F12.5 `blob` store (#1062): a bounded, durable, per-world
+    // set of content-addressed blobs. Inward-facing like `kv.*` and
+    // `records.read`, so it joins default ceilings; every use still
+    // passes the grant/ceiling decision and its audit entry.
+    "blob.put" => {
+        version: 1,
+        kind: ProviderKind::Request,
+        argument_schema: ArgumentSchema::JsonObject(BLOB_PUT_ARGUMENTS),
+        bounds: BLOB_PUT_BOUNDS,
+        required_scope: RequiredScope::Join,
+        default_ceiling: DefaultCeiling::Included,
+    },
+    "blob.get" => {
+        version: 1,
+        kind: ProviderKind::Request,
+        argument_schema: ArgumentSchema::JsonObject(BLOB_HASH_ARGUMENTS),
+        bounds: BLOB_GET_BOUNDS,
+        required_scope: RequiredScope::Join,
+        default_ceiling: DefaultCeiling::Included,
+    },
+    "blob.delete" => {
+        version: 1,
+        kind: ProviderKind::Request,
+        argument_schema: ArgumentSchema::JsonObject(BLOB_HASH_ARGUMENTS),
+        bounds: BLOB_DELETE_BOUNDS,
         required_scope: RequiredScope::Join,
         default_ceiling: DefaultCeiling::Included,
     },
@@ -1018,6 +1096,33 @@ pub const MAX_KV_ENTRIES: usize = 1024;
 /// escaping, plus per-entry framing, stays under it, so a world can
 /// always compact its journal no matter what it stored.
 pub const MAX_KV_TOTAL_BYTES: usize = 64 * 1024;
+
+/// Length of a blob id, in bytes: an iroh-blobs `Hash` spelled as
+/// lowercase hex (32 bytes, two characters each).
+pub const MAX_BLOB_ID_BYTES: usize = 64;
+/// Largest single blob, in content bytes. Sized by the channel:
+/// content travels base64 inside request args (capped by
+/// [`MAX_ARGS_BYTES`]) and result events (capped by
+/// [`MAX_EVENT_BYTES`]); 4 KiB is the largest power-of-two content
+/// whose encoding fits a maximal args document with its framing —
+/// 6 KiB of content encodes to 8,192 characters, the whole args
+/// budget before framing.
+pub const MAX_BLOB_BYTES: usize = 4 * 1024;
+/// Length of a maximal blob's base64 encoding, in characters: the
+/// response cap a `blob.get` result's content must fit.
+pub const MAX_BLOB_ENCODED_BYTES: usize = 4 * ((MAX_BLOB_BYTES + 2) / 3);
+/// Most blobs one world may hold at once. Sized against the
+/// checkpoint: a checkpoint declares the blob index (hash plus size
+/// per blob, about 85 bytes of JSON), so a full index declares in
+/// about 22 KiB — inside the checkpoint part bound
+/// (`MAX_CHECKPOINT_PART_BYTES`, 192 KiB in the worlds crate)
+/// alongside a full `kv` declaration and the pending schedules.
+pub const MAX_BLOBS: usize = 256;
+/// Largest total blob content per world, in bytes, charged as
+/// content bytes per blob. Keeps a world's journaled content
+/// bounded independently of the count and size caps, whose product
+/// would allow 1 MiB.
+pub const MAX_BLOB_TOTAL_BYTES: usize = 256 * 1024;
 /// Largest page of records served over the session protocol and the
 /// host view, in bytes. Cap results are not served this way: a
 /// `records.read` result is delivered through `result_event` and is
@@ -1104,6 +1209,26 @@ pub fn validate_kv_key(key: &str) -> Result<()> {
     ensure!(
         key.bytes().all(|byte| (0x20..=0x7e).contains(&byte)),
         "kv key must be printable ASCII"
+    );
+    Ok(())
+}
+
+/// Check a blob id: exactly [`MAX_BLOB_ID_BYTES`] lowercase hex
+/// characters — an iroh-blobs `Hash` in its canonical spelling, so
+/// no other string reaches the journal as a blob id.
+///
+/// # Errors
+///
+/// Names the rule the id breaks.
+pub fn validate_blob_hash(hash: &str) -> Result<()> {
+    ensure!(
+        hash.len() == MAX_BLOB_ID_BYTES,
+        "blob hash must be {MAX_BLOB_ID_BYTES} hex characters"
+    );
+    ensure!(
+        hash.bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)),
+        "blob hash must be lowercase hex"
     );
     Ok(())
 }
@@ -2473,6 +2598,24 @@ mod tests {
     }
 
     #[test]
+    fn blob_hashes_are_64_lowercase_hex() {
+        validate_blob_hash(&"0".repeat(MAX_BLOB_ID_BYTES)).unwrap();
+        validate_blob_hash(&"0123456789abcdef".repeat(4)).unwrap();
+        let long = "a".repeat(MAX_BLOB_ID_BYTES + 1);
+        let short = "a".repeat(MAX_BLOB_ID_BYTES - 1);
+        for bad in [
+            "",
+            "A".repeat(MAX_BLOB_ID_BYTES).as_str(),
+            "g".repeat(MAX_BLOB_ID_BYTES).as_str(),
+            "z0".repeat(32).as_str(),
+            long.as_str(),
+            short.as_str(),
+        ] {
+            assert!(validate_blob_hash(bad).is_err(), "{bad:?}");
+        }
+    }
+
+    #[test]
     fn result_events_are_bounded_and_carry_codes() {
         let ok: serde_json::Value =
             serde_json::from_str(&result_event("a", Ok(serde_json::json!({"n":1})))).unwrap();
@@ -2644,6 +2787,9 @@ mod tests {
                 "kv.get",
                 "kv.set",
                 "kv.delete",
+                "blob.put",
+                "blob.get",
+                "blob.delete",
                 "schedule.at",
                 "schedule.cancel",
                 "world.info",

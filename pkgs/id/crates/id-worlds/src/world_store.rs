@@ -3335,6 +3335,7 @@ mod tests {
             caps_ceiling: None,
             schedules: None,
             kv: None,
+            blobs: None,
             transfers: None,
             lease: None,
             snapshot: "s".to_owned(),

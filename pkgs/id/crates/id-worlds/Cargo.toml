@@ -50,6 +50,7 @@ test-utils = []
 
 [dependencies]
 anyhow = "1"
+base64 = "0.23"
 blake3 = "1"
 ed25519-dalek = { version = "3", features = ["rand_core"] }
 futures-lite = "2"
