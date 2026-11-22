@@ -547,6 +547,19 @@ pub(crate) enum WorldCommand {
     },
 }
 
+/// Whether `error` is a fuel-rate admission refusal (#1067): the
+/// program never ran, so the actor stays healthy and the input may
+/// be retried once the account's window rolls. Every other program
+/// error is a guest failure and poisons the program.
+///
+/// Checked before any `.context(...)` is applied: the bare program
+/// error carries the refusal at its outermost layer.
+fn is_fuel_rate_refusal(error: &anyhow::Error) -> bool {
+    error
+        .downcast_ref::<id_caps::account_quota::FuelRateRefusal>()
+        .is_some()
+}
+
 /// Trim `journal` behind a verified snapshot of `program`. `Ok(false)` means
 /// the program cannot snapshot.
 pub(crate) fn compact_journal(
@@ -1406,8 +1419,19 @@ impl WorldActor {
                                     })
                             }
                             Err(error) => {
-                                self.program_healthy = false;
-                                Err(error.context("world program rejected input"))
+                                if is_fuel_rate_refusal(&error) {
+                                    // Recoverable admission refusal
+                                    // (#1067): the program never ran
+                                    // and stays healthy; the same
+                                    // input can succeed once the
+                                    // account's window rolls.
+                                    Err(error.context(
+                                        "world program refused input at its fuel rate",
+                                    ))
+                                } else {
+                                    self.program_healthy = false;
+                                    Err(error.context("world program rejected input"))
+                                }
                             }
                         }
                     }
@@ -1453,8 +1477,19 @@ impl WorldActor {
                                     self.republished(records.unwrap_or_default(), event.sequence);
                                 }),
                             Err(error) => {
-                                self.program_healthy = false;
-                                Err(error.context("world program rejected entity input"))
+                                if is_fuel_rate_refusal(&error) {
+                                    // Recoverable admission refusal
+                                    // (#1067): the program never ran
+                                    // and stays healthy; the same
+                                    // input can succeed once the
+                                    // account's window rolls.
+                                    Err(error.context(
+                                        "world program refused entity input at its fuel rate",
+                                    ))
+                                } else {
+                                    self.program_healthy = false;
+                                    Err(error.context("world program rejected entity input"))
+                                }
                             }
                         }
                     }

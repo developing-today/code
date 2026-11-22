@@ -2903,6 +2903,61 @@ mod tests {
         (handle, token)
     }
 
+    /// A fuel-rate admission refusal is recoverable at the actor level
+    /// (#1067, Codex review on #12557): exhausting the budget must not
+    /// mark the program unhealthy, so the same input succeeds once the
+    /// window rolls instead of requiring a program replacement.
+    #[tokio::test]
+    async fn a_fuel_rate_refusal_keeps_the_actor_healthy() {
+        use crate::sandbox::{Sandbox, SandboxLimits};
+
+        // The same echo program as the sandbox tests: `plaza_update`
+        // returns the participant id and never traps.
+        const ECHO: &str = r#"
+        (module
+          (memory (export "memory") 1 1)
+          (data (i32.const 32) "hello")
+          (func (export "plaza_alloc") (param i32) (result i32) (i32.const 0))
+          (func (export "plaza_free") (param i32 i32))
+          (func (export "plaza_init") (param i64) (result i32) (i32.const 0))
+          (func (export "plaza_update") (param i32 i32 i32 i32) (result i32)
+            local.get 0)
+          (func (export "plaza_view") (param i32) (result i32)
+            (i32.const 32))
+          (func (export "plaza_out_len") (result i32) (i32.const 5)))
+    "#;
+        let limits = SandboxLimits {
+            fuel: 10_000,
+            ..SandboxLimits::default()
+        };
+        let wasm = wat::parse_str(ECHO).unwrap();
+        let runner = Sandbox::compile(&wasm, limits).unwrap();
+        let mut program = runner.instantiate(123).unwrap();
+        // One allowance exactly fills the account's window.
+        program.set_fuel_rate_budget(id_caps::account_quota::FuelRateBudget::new(limits.fuel));
+        let core = WorldCore::new("fuel-rate", WorldLimits::default()).unwrap();
+        let world = WorldHandle::spawn_with_program(core, Box::new(program));
+        let (_, token) = world.issue("ann", WorldScopes::GUEST).await.unwrap();
+        world.input(token.clone(), b"event".to_vec()).await.unwrap();
+        // The next input is refused at admission — but the actor stays
+        // healthy: the error names the fuel rate, not an unavailable
+        // program.
+        let refusal = world
+            .input(token.clone(), b"event".to_vec())
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(refusal.contains("fuel rate"), "{refusal}");
+        assert!(
+            !refusal.contains("unavailable after a previous failure"),
+            "{refusal}"
+        );
+        // Once the window rolls, the same input succeeds: the refusal
+        // did not poison the program.
+        tokio::time::sleep(Duration::from_millis(1100)).await;
+        world.input(token, b"event".to_vec()).await.unwrap();
+    }
+
     #[tokio::test]
     async fn an_ungranted_request_is_refused_and_counted() {
         let (world, token) = caps_world_sync(false).await;

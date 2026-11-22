@@ -492,15 +492,17 @@ impl WorldInstance {
 
     /// Apply one event from `participant`. The model pointer is committed
     /// only if guest update succeeds. When the owning account has a
-    /// fuel-rate budget installed (#1067), admission charges it first
-    /// and a refusal runs nothing.
+    /// fuel-rate budget installed (#1067), admission charges it and a
+    /// refusal runs nothing — but only after the message-size check:
+    /// an oversized event never runs, so it must not consume the
+    /// account's execution budget.
     pub fn update(&mut self, participant: u64, event: &[u8]) -> Result<()> {
         ensure!(
             !self.poisoned,
             "world guest is poisoned after a previous failure"
         );
-        self.charge_fuel_rate()?;
         self.check_message_size(event)?;
+        self.charge_fuel_rate()?;
         // The world's participant limit keeps IDs far below i32::MAX; clamp
         // defensively so a hostile caller can never wrap the guest argument.
         let participant = i32::try_from(participant).unwrap_or(i32::MAX);
@@ -1031,6 +1033,122 @@ mod tests {
         assert_eq!(budget.total_charged(), limits.fuel * 3);
         assert_eq!(budget.charged_in_window(), limits.fuel * 3);
         assert_eq!(budget.refusal_count(), 1);
+    }
+
+    #[test]
+    fn an_oversized_event_does_not_consume_the_fuel_budget() {
+        let limits = SandboxLimits {
+            fuel: 10_000,
+            ..SandboxLimits::default()
+        };
+        let runner = compile(ECHO, limits).unwrap();
+        let mut world = runner.instantiate(123).unwrap();
+        // One allowance exactly fills the account's window.
+        world.set_fuel_rate_budget(id_caps::account_quota::FuelRateBudget::new(limits.fuel));
+        let oversized = vec![b'e'; limits.message_bytes + 1];
+        assert!(world.update(1, &oversized).is_err());
+        // The rejected non-invocation charged nothing: the next
+        // valid event still fits the window.
+        world.update(1, b"event").unwrap();
+        let budget = world.fuel_rate_budget().unwrap();
+        assert_eq!(budget.total_charged(), limits.fuel);
+        assert_eq!(budget.refusal_count(), 0);
+    }
+
+    /// Property coverage for the admission accounting invariants
+    /// (Codex review on #12557): generated allowance, quota, event
+    /// size, and admission/refusal sequences, checked against an
+    /// explicit accounting oracle — bounded charges, and refused
+    /// calls that neither execute nor alter invocation metrics nor
+    /// poison the instance. The examples above stay as smoke
+    /// coverage.
+    mod admission_property {
+        use super::*;
+        use proptest::prelude::*;
+
+        /// The oracle: what the ledger and the invocation metrics
+        /// must say after each event. A case runs back-to-back
+        /// inside one second, so no window rolls mid-case and the
+        /// window charge is just the sum of admitted allowances.
+        #[derive(Debug, Default)]
+        struct Oracle {
+            charged: u64,
+            refusals: u64,
+            calls: u64,
+        }
+
+        proptest! {
+            #[test]
+            fn admission_accounting_matches_its_oracle(
+                (fuel, budget_limit) in (10_000u64..=100_000u64)
+                    .prop_flat_map(|fuel| (Just(fuel), 0..=fuel * 5)),
+                ops in prop::collection::vec(
+                    prop_oneof![
+                        8 => 0..=1024usize,
+                        // Past the 1 MiB message ceiling: rejected
+                        // before admission, so it must charge nothing.
+                        2 => (1024 * 1024 + 1)..=(1024 * 1024 + 512),
+                    ],
+                    0..=32,
+                ),
+            ) {
+                let limits = SandboxLimits {
+                    fuel,
+                    ..SandboxLimits::default()
+                };
+                let runner = compile(ECHO, limits).unwrap();
+                let mut world = runner.instantiate(123).unwrap();
+                world.set_fuel_rate_budget(
+                    id_caps::account_quota::FuelRateBudget::new(budget_limit),
+                );
+                let mut oracle = Oracle::default();
+                for len in ops {
+                    let event = vec![b'e'; len];
+                    let result = world.update(1, &event);
+                    if len > limits.message_bytes {
+                        // Oversized: rejected before admission, so
+                        // neither the budget nor the metrics move.
+                        prop_assert!(result.is_err());
+                        prop_assert!(
+                            result
+                                .unwrap_err()
+                                .downcast_ref::<id_caps::account_quota::FuelRateRefusal>()
+                                .is_none(),
+                            "an oversized event is a size rejection, not a fuel refusal"
+                        );
+                    } else if oracle
+                        .charged
+                        .checked_add(fuel)
+                        .is_none_or(|total| total > budget_limit)
+                    {
+                        // Refused whole at admission: the guest
+                        // never ran, so nothing is metered.
+                        let refusal = result
+                            .unwrap_err()
+                            .downcast::<id_caps::account_quota::FuelRateRefusal>()
+                            .unwrap();
+                        prop_assert_eq!(refusal.charged_in_window, oracle.charged);
+                        prop_assert_eq!(refusal.requested_fuel, fuel);
+                        oracle.refusals += 1;
+                    } else {
+                        prop_assert!(result.is_ok());
+                        oracle.charged += fuel;
+                        oracle.calls += 1;
+                    }
+                    // Bounded charges, exact refusal accounting, and
+                    // metrics that count admitted invocations only —
+                    // after every operation.
+                    let budget = world.fuel_rate_budget().unwrap();
+                    prop_assert_eq!(budget.total_charged(), oracle.charged);
+                    prop_assert_eq!(budget.charged_in_window(), oracle.charged);
+                    prop_assert_eq!(budget.refusal_count(), oracle.refusals);
+                    prop_assert_eq!(world.metrics().get(GuestCall::Update).calls, oracle.calls);
+                    // A refusal never poisons the instance: reads
+                    // still serve.
+                    prop_assert_eq!(world.view().unwrap(), b"hello");
+                }
+            }
+        }
     }
 
     #[test]
