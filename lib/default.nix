@@ -901,6 +901,7 @@ let
               # Root NixOS runtime output; the ID flake's named test
               # checks remain available and run through id-check CI.
               checkRuntimePackages = false;
+              crane = inputs.crane;
             }
           );
         in
