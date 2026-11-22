@@ -119,6 +119,28 @@ The claimant monitors four queues:
 - Only root sessions without terminal markers count toward cap
 - Cap room = 36 - active_count
 
+## Hand-Back on Saturation (#1187)
+
+When a live fire finds the cap saturated with launchable
+candidates waiting, it hands the **next** candidate back in the
+same fire instead of leaving it silently queued:
+
+1. The claimant targeted-claims the candidate (the broker's park
+   verb only parks a task its caller holds).
+2. It parks the task with reason class `executor-saturated` and
+   the broker's capacity ready-condition (`{"kind": "capacity"}` —
+   a capacity wait: floored at the capacity scale, and the pick
+   may take it early when a slot frees).
+3. It posts a hand-back agent-note on the candidate's issue
+   naming the release path (the queue `wake` verb, or an owner's
+   explicit order).
+
+One hand-back per fire. Shadow fires mutate nothing. The fire
+log records the outcome under its `hand_back` key; a hand-back
+whose claim does not land parks nothing. Saturation is a success
+state, not a failure — a Claude lane can still claim the task if
+urgent.
+
 ## Recovery Rules (#4758, Phase 3 of #4912)
 
 ### Zero-Message Recovery
