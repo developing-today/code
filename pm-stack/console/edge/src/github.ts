@@ -18,6 +18,7 @@ export async function readOpenPullRequests(
     headers: {
       accept: "application/vnd.github+json",
       authorization: `Bearer ${token}`,
+      "user-agent": "pm-console-edge",
       "x-github-api-version": "2022-11-28",
     },
     signal: AbortSignal.timeout(20_000),

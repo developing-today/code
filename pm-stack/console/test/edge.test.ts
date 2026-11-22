@@ -432,6 +432,8 @@ describe("fresh GitHub reads while the host is away", () => {
     });
     expect(request?.url).toBe("https://api.github.com/repos/developing-today/code/pulls?state=open&per_page=60");
     expect(new Headers(request?.init?.headers).get("authorization")).toBe("Bearer test-token");
+    // GitHub rejects requests without one, and a Worker sends none by default.
+    expect(new Headers(request?.init?.headers).get("user-agent")).toBe("pm-console-edge");
     expect(pulls).toEqual([
       {
         number: 42,
