@@ -438,9 +438,8 @@ let
   # Provides `grok`, which t3code's `grok` driver shells out to.
   grok-cli = pkgs.callPackage (lib.from-root "pkgs/grok-cli") { };
 
-  # mcpx MCP gateway and Code Mode execution runner. Its Go test suite
-  # runs in the dedicated mcpx workflows, not during every system rebuild.
-  mcpx = pkgs.callPackage (lib.from-root "pkgs/mcpx/package.nix") { doCheck = false; };
+  # mcpx MCP gateway and Code Mode execution runner.
+  mcpx = pkgs.callPackage (lib.from-root "pkgs/mcpx/package.nix") { };
 
   # Claude Code 2.1.293 (nixpkgs has 2.1.234 in both channel and unstable).
   claude-code = pkgs.callPackage (lib.from-root "pkgs/claude-code") { };
