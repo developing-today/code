@@ -74,8 +74,14 @@ YAML_TRIAGED = (
     f"body_fp: {lg.body_fingerprint(ISSUE_BODY)}\n\n"
     "Verdict: still blocked on F12.4 (#1061)."
 )
-# A verdict note recorded before body fingerprints existed: no
-# body_fp field, so a body edit since it cannot be ruled out.
+# A YAML verdict note whose verdict is the last metadata field,
+# followed by narrative: the verdict value must stop at the end of
+# its line, not swallow the narrative below it into the verdict.
+YAML_TRIAGED_VERDICT_LAST = (
+    "agent-note:v1\nstate: triaged\ntask: 22222\n"
+    f"body_fp: {lg.body_fingerprint(ISSUE_BODY)}\nverdict: still_blocked\n\n"
+    "Still blocked on F12.4 (#1061)."
+)
 HTML_TRIAGED_LEGACY = (
     "<!-- agent-note:v1 state=triaged task=11111 verdict=still_blocked -->\n"
     "Triaged: still blocked on F12.4 (#1061)."
@@ -222,6 +228,19 @@ class ParseNote(unittest.TestCase):
         )
         self.assertNotEqual(lg.body_fingerprint(ISSUE_BODY + " edited"), fp)
 
+    def test_verdict_value_stops_at_end_of_line(self):
+        # The verdict is the last metadata field; the narrative
+        # below it must not become part of the verdict key.
+        self.assertEqual(
+            lg.parse_note(YAML_TRIAGED_VERDICT_LAST),
+            {
+                "state": "triaged",
+                "task": "22222",
+                "verdict": "still_blocked",
+                "body_fp": lg.body_fingerprint(ISSUE_BODY),
+            },
+        )
+
     def test_plain_comment_is_not_a_note(self):
         self.assertIsNone(lg.parse_note("Looks good, ship it."))
         self.assertIsNone(lg.parse_note(None))
@@ -349,6 +368,20 @@ class VerdictNote(unittest.TestCase):
         v = self.verdict([comment(HTML_TRIAGED, 40)], body=ISSUE_BODY)
         self.assertFalse(v["post"])
         self.assertIn("duplicate verdict", v["reason"])
+
+    def test_verdict_last_field_still_dedupes(self):
+        # The verdict is the last metadata field with narrative
+        # below it; the unchanged issue still dedupes.
+        v = self.verdict([comment(YAML_TRIAGED_VERDICT_LAST, 40)])
+        self.assertFalse(v["post"])
+        self.assertIn("duplicate verdict", v["reason"])
+
+    def test_cleared_body_after_verdict_posts(self):
+        # A body cleared to null is a known-empty body, not an
+        # unknown one: it invalidates the stored fingerprint.
+        v = self.verdict([comment(HTML_TRIAGED, 40)], body="")
+        self.assertTrue(v["post"])
+        self.assertIn("body", v["reason"])
 
     def test_verdict_without_body_fingerprint_posts_once(self):
         # A legacy verdict note records no fingerprint, so a body
@@ -582,6 +615,41 @@ class Cli(unittest.TestCase):
         self.assertEqual(code, lg.EXIT_GO)
         self.assertTrue(out["post"])
         self.assertIn("body", out["reason"])
+
+    def test_note_cli_verdict_posts_after_body_cleared(self):
+        def gh(path):
+            if "timeline" in path:
+                return []
+            if "comments" in path:
+                return [comment(HTML_TRIAGED, 5)]
+            return {"body": None}
+
+        code, out = self.run_cli(
+            [
+                "note",
+                "--repo",
+                "o/r",
+                "--issue",
+                "1062",
+                "--task",
+                "20028",
+                "--state",
+                "triaged",
+                "--verdict",
+                "still_blocked",
+            ],
+            gh=gh,
+        )
+        self.assertEqual(code, lg.EXIT_GO)
+        self.assertTrue(out["post"])
+        self.assertIn("body", out["reason"])
+        # A null body is known-empty: the new note still records a
+        # fingerprint, of the empty body.
+        self.assertEqual(
+            out["header"],
+            "<!-- agent-note:v1 state=triaged task=20028 "
+            f"verdict=still_blocked body_fp={lg.body_fingerprint('')} -->",
+        )
 
     def test_gh_failure_is_exit_2(self):
         def boom(path):

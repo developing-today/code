@@ -144,12 +144,13 @@ _TASK_RE = re.compile(r"\btask(?:_id)?\s*[:=]?\s*#?(\d{3,})", re.IGNORECASE)
 # The recorded verdict of a triage note: `verdict: still_blocked` /
 # `verdict=still_blocked` in the header area. A short token, so two
 # lanes recording the same outcome produce the same key. The value is
-# a run of words; a word followed by `=` or `:` ends it, so a later
-# header field (`body_fp=...`, `task=...`) is never swallowed into
-# the verdict — the old greedy `[\w -]*` did exactly that once
-# `body_fp` followed the verdict.
+# a run of words on ONE line: whitespace inside it is horizontal
+# only, so a YAML note whose verdict is the last field never swallows
+# the blank line and narrative below it into the verdict. A word
+# followed by `=` or `:` ends the value, so a later header field
+# (`body_fp=...`, `task=...`) is never swallowed into it either.
 _VERDICT_RE = re.compile(
-    r"\bverdict\s*[:=]\s*([A-Za-z0-9][\w-]*(?:\s+(?![\w-]+\s*[:=])[\w-]+)*)",
+    r"\bverdict[ \t]*[:=][ \t]*([A-Za-z0-9][\w-]*(?:[ \t]+(?![\w-]+\s*[:=])[\w-]+)*)",
     re.IGNORECASE,
 )
 # The body fingerprint of a triage note: `body_fp: <16 hex>` /
@@ -497,9 +498,20 @@ def main(argv=None, gh=_gh_json, now=None) -> int:
                 # The issue body, for the verdict fingerprint: the
                 # timeline never reports body edits, so the verdict
                 # note records a fingerprint of the body it was
-                # triaged against, and this check compares it.
+                # triaged against, and this check compares it. A
+                # null body is a known-empty body, not an unknown
+                # one: normalise it to "" so clearing the body
+                # invalidates the stored fingerprint (and an
+                # initially empty body still gets one). None stays
+                # for a response that carries no body at all.
                 item = gh(f"repos/{args.repo}/issues/{args.issue}")
-                body = item.get("body") if isinstance(item, dict) else None
+                body = None
+                if isinstance(item, dict):
+                    # A null body is a known-empty body, not an
+                    # unknown one: normalise it to "" so clearing the
+                    # body invalidates the stored fingerprint (and an
+                    # initially empty body still gets one).
+                    body = item.get("body") or ""
                 timeline = gh(
                     f"repos/{args.repo}/issues/{args.issue}/timeline?per_page=100"
                 )
