@@ -282,6 +282,7 @@ def log_fire(
     health: "str | None" = None,
     provider_wall: "Dict | None" = None,
     hand_back: "Dict | None" = None,
+    babysitter: "Dict | None" = None,
 ) -> None:
     """Append a fire log entry to fires.jsonl.
 
@@ -308,6 +309,7 @@ def log_fire(
         "queue_health": health,
         "provider_wall": provider_wall,
         "hand_back": hand_back,
+        "babysitter": babysitter,
     }
 
     with FIRES_FILE.open("a") as f:
@@ -361,6 +363,28 @@ def _load_poll_module():
         spec.loader.exec_module(module)
         _poll_module = module
     return _poll_module
+
+
+_babysitter_module = None
+
+
+def _load_babysitter_module():
+    """Load the sibling babysitter.py as a module (cached), the
+    same pattern as poll.py: the babysitter's verdict rounds
+    (#1338) ride the claimant fire, and babysitter.py owns the
+    round engine so the fire only carries its record."""
+    global _babysitter_module
+    if _babysitter_module is None:
+        import importlib.util
+
+        babysitter_path = Path(__file__).resolve().parent / "babysitter.py"
+        spec = importlib.util.spec_from_file_location(
+            "claimant_babysitter", babysitter_path
+        )
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        _babysitter_module = module
+    return _babysitter_module
 
 
 def get_active_root_session_count() -> int:
@@ -1695,6 +1719,18 @@ def _fire(mode: str):
         recovered = supervision_step(mode)
         recovered_ids = [c["task_id"] for c in recovered]
 
+    # Babysitter round (#1338): one verdict round over ALL sessions
+    # per fire, whatever the launch outcome below - rounds are
+    # about sessions, not candidates, so the round runs before the
+    # gate and its record rides every fire-log entry from here on.
+    # A failed round never breaks dispatch: the record says so.
+    babysitter_record = None
+    try:
+        babysitter_record = _load_babysitter_module().babysitter_step(mode)
+    except Exception as e:
+        print(f"Warning: babysitter round failed: {e}")
+        babysitter_record = {"error": f"babysitter round failed: {e}"}
+
     # Step 2: Gate (records the fire-start candidate snapshot and
     # the queue-health line in _fire_candidates / _fire_health).
     print("Running gate step...")
@@ -1704,7 +1740,7 @@ def _fire(mode: str):
 
     if has_candidates is None:
         print("Gate check failed: candidate discovery unknown. Exiting.")
-        log_fire(mode, None, [], None, [{"reason": "gate_unknown"}], health=fire_health)
+        log_fire(mode, None, [], None, [{"reason": "gate_unknown"}], health=fire_health, babysitter=babysitter_record)
         return 1
 
     if not has_candidates:
@@ -1716,6 +1752,7 @@ def _fire(mode: str):
             None,
             [{"reason": "no_candidates"}],
             health=fire_health,
+            babysitter=babysitter_record,
         )
         return 0
 
@@ -1733,6 +1770,7 @@ def _fire(mode: str):
             None,
             [{"reason": "cap_unknown"}],
             health=fire_health,
+            babysitter=babysitter_record,
         )
         return 1
 
@@ -1753,6 +1791,7 @@ def _fire(mode: str):
             [{"reason": "cap_saturated"}],
             health=fire_health,
             hand_back=hand_back,
+            babysitter=babysitter_record,
         )
         return 0
 
@@ -1781,6 +1820,7 @@ def _fire(mode: str):
         skips,
         health=fire_health,
         provider_wall=_fire_provider_wall,
+        babysitter=babysitter_record,
     )
 
     return 0
