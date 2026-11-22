@@ -31,8 +31,10 @@ adding a database or writing into the disposable projector.
   as equal and reports substantive changes for callers to skip and surface.
 
 Events retain `asOf`, source cursor, source IDs/URIs/observation timestamps,
-related timestamps, block IDs and links. `dailyReportPeriod` supplies the
-period identity and DST-aware boundaries.
+related timestamps, block IDs and links. `reportPeriod` supplies the canonical
+period identity and DST-aware boundaries for daily, Monday-based weekly,
+monthly, quarterly, and annual periods. `dailyReportPeriod` remains as the
+daily convenience function.
 
 ## Storage contract and current scope
 
@@ -57,5 +59,30 @@ event keys.
 At the composition root, callers choose the file or Turso store according to
 `PM_AGG_STORE_BACKEND` and pass that single backend into the report-record API.
 There is no dual write and no silent local fallback when the durable store is
-selected. This slice supports daily periods; other calendar grains and report
-rendering/source integration remain subsequent C7 work.
+selected.
+
+## Period composition and generation
+
+`src/report-composer.ts` composes an explicit target period from current
+canonical lower-grain records. Daily reports use source records; weekly reports
+use daily records and separately label the prior Friday as reach-back context;
+monthly, quarterly, and annual reports prefer composed records at the next
+smaller grain, falling back to source records for a child period when no
+composed version exists. Stable source-time and record-ID ordering makes the
+result independent of record arrival order. Blocks bubble upward according to
+their `importance` grains (or the default path from their source grain), and
+classified activity carries linked members into the summary. The template
+sections and composer identity are versioned as `c7-rollup-v1`.
+
+Generate a record with `bun run report:generate --kind <daily|weekly|monthly|quarterly|annual>
+--period <identity> --as-of <canonical-ISO-timestamp> [--store <jsonl-path>]`.
+Period identities are explicit: `YYYY-MM-DD` (daily), Monday `YYYY-MM-DD`
+(weekly), `YYYY-MM` (monthly), `YYYY-QN` (quarterly), and `YYYY` (annual).
+The command validates its complete argument list and period identity before
+store I/O, reads the selected retained records, and appends the result
+idempotently. It follows `PM_AGG_STORE_BACKEND`: file mode uses the local
+report-record JSONL file (`PM_AGG_REPORT_RECORDS_FILE` or the default path),
+and `--store` selects another JSONL path in file mode. Turso mode uses the
+existing durable document adapter and never silently falls back to a file;
+`--store` is rejected in that mode. The composition API also accepts the
+canonical report-record storage capability directly.
