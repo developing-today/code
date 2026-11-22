@@ -181,7 +181,13 @@ func pythonDispatch(opts Options) (*dispatch, error) {
 func rocDispatch(opts Options) (*dispatch, error) {
 	bin, err := exec.LookPath("roc")
 	if err != nil {
-		return nil, errors.New("runner: roc binary not found on PATH for a Roc script")
+		if !devshellIsFlake(opts.Devshell) {
+			return nil, errors.New("runner: roc binary not found on PATH for a Roc script")
+		}
+		// As for an explicitly selected JavaScript runtime, a flake devshell
+		// may provide the compiler even when the host cannot find it. Keep
+		// the invocation name so nix develop resolves the pinned compiler.
+		bin = "roc"
 	}
 	c, ok := opts.Clients[codegen.Roc.Name]
 	var client *Client
