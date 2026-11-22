@@ -22,7 +22,10 @@ dispatch: a bounded pool, exclusive leases, no concurrent writers.
 - `checkout` grants an **exclusive lease** on a warm pooled dir (or
   creates one). A concurrent request for the same key gets a second
   pooled dir — up to the per-key cap (default 3) — or waits; it never
-  shares a live dir.
+  shares a live dir. Before returning the lease, the broker cleans the
+  current workspace members' outputs from that target dir, preventing
+  checkout-sensitive artifacts from leaking between worktrees while
+  retaining dependency artifacts.
 - `checkin` releases the lease and refreshes the dir's recorded
   size. The dir stays warm for the next lane of the same repo.
 - Bounds: total pool cap (default 300 GiB) with LRU eviction of
@@ -56,18 +59,19 @@ used). Holders default to `user@host:pid`; set
 
 Useful flags: `--wait SECONDS` on checkout/exec (wait for a dir
 instead of failing when the per-key cap is fully leased),
+`--workspace-cwd DIR` on checkout/exec (clean the selected Cargo workspace
+while keeping the command's original working directory),
 `--cap-gib`, `--per-key`, `--ttl-secs`, `--pool-root`, `--state-dir`.
 
 ## Integration status
 
 Fully wired (2026-11-11, code#6797):
 
-- `~/tools/fleet-build-lock` routes its `CARGO_TARGET_DIR` default
-  through `checkout`/`checkin`: a cargo build that reaches the lock
-  without `CARGO_TARGET_DIR` set leases a pooled dir — keyed by the
-  lock's workspace key plus the invocation's profile label — for
-  the build's duration. If the broker cannot lease, the lock falls
-  back to the pre-broker static per-workspace dir.
+- `~/tools/fleet-build-lock` routes direct Cargo compile commands
+  through a broker lease keyed by workspace and profile. A command with
+  `--manifest-path` supplies the selected workspace for checkout cleanup,
+  while Cargo itself keeps running from the caller's original directory.
+  If the broker is absent, the lock uses the static per-workspace fallback.
 - Repo-queue session launches: the opencode claimant's session
   prompts (`pm-stack/opencode-claimant/launch_one.py` and
   `claimant.py`) instruct launched sessions to run heavy cargo

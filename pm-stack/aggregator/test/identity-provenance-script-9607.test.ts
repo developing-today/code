@@ -11,25 +11,29 @@ describe("identity provenance migration script (#9607)", () => {
     const commentsPath = join(directory, "comments.json");
     const registryPath = join(directory, "registry.json");
     const comments = {
-      comments: [{
-        id: "comment-1",
-        objectRef: "gh:developing-today/code#9607",
-        kind: "note",
-        author: { kind: "drew", id: "drew", label: "Drew  " },
-        body: "Keep this text unchanged.",
-        createdAt: "2026-11-01T00:00:00.000Z",
-      }],
+      comments: [
+        {
+          id: "comment-1",
+          objectRef: "gh:developing-today/code#9607",
+          kind: "note",
+          author: { kind: "drew", id: "drew", label: "Drew  " },
+          body: "Keep this text unchanged.",
+          createdAt: "2026-11-01T00:00:00.000Z",
+        },
+      ],
     };
-    const registry = [{
-      id: "session-1",
-      source: "opencode-sandbox",
-      label: "Exact title  ",
-      agentId: "opencode:main",
-      agentLabel: "claimed label",
-      parentId: null,
-      status: "idle",
-      taskRefs: [],
-    }];
+    const registry = [
+      {
+        id: "session-1",
+        source: "opencode-sandbox",
+        label: "Exact title  ",
+        agentId: "opencode:main",
+        agentLabel: "claimed label",
+        parentId: null,
+        status: "idle",
+        taskRefs: [],
+      },
+    ];
 
     try {
       await writeFile(commentsPath, JSON.stringify(comments));

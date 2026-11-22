@@ -14,8 +14,9 @@
 # Phases (each one is idempotent and skips what is already done):
 #   tools     fleet (static musl, bridge capable), bws, restic, tailscale
 #             into ~/.local/share/muse-bootstrap/bin, sha256-checked
-#   token     the bws access token into ~/.config/bitwarden/access-token
-#             (600), read from stdin or a hidden prompt, never argv
+#   token     BWS and optional 1Password service-account tokens into
+#             ~/.config/bitwarden/access-token and ~/.config/op/service-account-token
+#             (600), read from stdin or hidden prompts, never argv
 #   restore   ~/.config from restic-sandbox-config, then every top-level
 #             home entry from restic-sandbox-home (latest snapshot per
 #             entry; ~/git and ~/agents only with --all)
@@ -36,8 +37,8 @@
 set -euo pipefail
 
 # ---- pinned artifacts (update together; sha256 of the downloaded file) ----
-FLEET_URL="${FLEET_URL:-https://github.com/developing-today/code/releases/download/fleet-static-7bdd04a/fleet-x86_64-linux-musl}"
-FLEET_SHA256="${FLEET_SHA256:-da460c7f337f80a2f9c9fadf681d57f6736181e12888a5d1bb5472b4f45c29df}"
+FLEET_URL="${FLEET_URL:-https://github.com/developing-today/code/releases/download/fleet-static-ad0707b/fleet-x86_64-linux-musl}"
+FLEET_SHA256="${FLEET_SHA256:-762bac6318329f202e47f8aeb7727cf6351e22ca93c278fd4d95377febcfa5f2}"
 BWS_URL="https://github.com/bitwarden/sdk-sm/releases/download/bws-v2.1.0/bws-x86_64-unknown-linux-musl-2.1.0.zip"
 BWS_SHA256="f59ee150e42b82128d437087e9bac920053c6bfddcb960d20ce9386e5ac9bba6"
 RESTIC_URL="https://github.com/restic/restic/releases/download/v0.20.0/restic_0.20.0_linux_amd64.bz2"
@@ -48,8 +49,11 @@ TS_SHA256="e56693ff74a64f2591b7e819c280635a100aae1ddfb0ef058fcd052b7cd8d16c"
 R2_BASE="s3:https://234b866b99ce2b142d7963d8d139cbfa.r2.cloudflarestorage.com/supabase-backups"
 SANDBOX_HOME=/home/hatch # the old sandbox's home; the restored tools hard-code it
 LAPTOP_TAILNET_IP=100.99.113.103
-TS_HOSTNAME="${TS_HOSTNAME:-muse}"
 AGENT="${FLEET_AGENT:-muse}"
+AGENT_WAS_EXPLICIT=0
+[ "${FLEET_AGENT+x}" = x ] && AGENT_WAS_EXPLICIT=1
+TS_HOSTNAME_OVERRIDE="${TS_HOSTNAME:-}"
+TS_STATE_OVERRIDE="${TS_STATE:-}"
 
 PHASES="tools token restore tailnet fleet persist init check"
 ALL=0
@@ -120,6 +124,27 @@ die() {
 for c in curl tar python3 sha256sum; do command -v "$c" >/dev/null || die "needs $c on PATH"; done
 
 HOME="${HOME:?HOME must be set}"
+# Each explicitly named Fleet agent gets its own Tailscale node state and a
+# stable, readable hostname. Never reuse the legacy shared "muse" identity
+# for a newly named agent: that can silently move an existing node.
+AGENT_SLUG=$(printf '%s' "$AGENT" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9-]/-/g; s/^-*//; s/-*$//' | cut -c1-55)
+[ -n "$AGENT_SLUG" ] || die "FLEET_AGENT must contain at least one letter or number"
+case "$AGENT_SLUG" in muse-*) AGENT_SLUG=${AGENT_SLUG#muse-} ;; esac
+[ -n "$AGENT_SLUG" ] || die "FLEET_AGENT must contain a name after 'muse-'"
+if [ -n "$TS_HOSTNAME_OVERRIDE" ]; then
+  TS_HOSTNAME=$TS_HOSTNAME_OVERRIDE
+elif [ "$AGENT_WAS_EXPLICIT" = 1 ]; then
+  TS_HOSTNAME="muse-$AGENT_SLUG"
+else
+  TS_HOSTNAME=muse # preserve the legacy default for existing installations
+fi
+if [ -n "$TS_STATE_OVERRIDE" ]; then
+  TS_STATE=$TS_STATE_OVERRIDE
+elif [ "$AGENT_WAS_EXPLICIT" = 1 ]; then
+  TS_STATE="$HOME/.local/state/tailscale/agents/$AGENT_SLUG"
+else
+  TS_STATE="$HOME/.local/state/tailscale" # preserve the legacy node state
+fi
 # Only $SANDBOX_HOME (a btrfs volume) survives a sandbox recycle; /, /etc,
 # /root and /usr/local are wiped. Everything below is written under $HOME.
 if [ "$HOME" != "$SANDBOX_HOME" ]; then
@@ -196,6 +221,7 @@ fi
 
 # ---- token ----
 TOKEN_FILE="$HOME/.config/bitwarden/access-token"
+OP_TOKEN_FILE="$HOME/.config/op/service-account-token"
 store_token() { # store_token VALUE: the supplied token, mode 600
   mkdir -p "$(dirname "$TOKEN_FILE")"
   chmod 700 "$(dirname "$TOKEN_FILE")"
@@ -223,9 +249,22 @@ if want token && [ ! -s "$TOKEN_FILE" ]; then
   store_token "$tok"
   unset tok
 fi
+if [ -n "${OP_SERVICE_ACCOUNT_TOKEN:-}" ]; then
+  mkdir -p "$(dirname "$OP_TOKEN_FILE")"
+  chmod 700 "$(dirname "$OP_TOKEN_FILE")"
+  (
+    umask 077
+    printf '%s' "$OP_SERVICE_ACCOUNT_TOKEN" >"$OP_TOKEN_FILE.tmp"
+  ) &&
+    mv -f "$OP_TOKEN_FILE.tmp" "$OP_TOKEN_FILE"
+fi
 if [ -s "$TOKEN_FILE" ]; then
   BWS_ACCESS_TOKEN=$(cat "$TOKEN_FILE")
   export BWS_ACCESS_TOKEN
+fi
+if [ -s "$OP_TOKEN_FILE" ]; then
+  OP_SERVICE_ACCOUNT_TOKEN=$(cat "$OP_TOKEN_FILE")
+  export OP_SERVICE_ACCOUNT_TOKEN
 fi
 secret() { # secret NAME -> value on stdout, nothing else
   [ -n "${BWS_ACCESS_TOKEN:-}" ] || die "no bws token (run the token phase)"
@@ -275,9 +314,19 @@ if want restore; then
     say "restore: ~/.config restored; $(grep -cE 'operation not permitted|xattr' "$rlog") ownership/xattr errors ignored (this box cannot set them)"
   fi
   rm -f "$rlog"
-  # The snapshot carries the old box's Bitwarden token file; keep the one
-  # supplied for this run.
-  if [ "$ROOT" = / ]; then store_token "$BWS_ACCESS_TOKEN"; fi
+  # The snapshot can carry old credentials; keep the values supplied for this run.
+  if [ "$ROOT" = / ]; then
+    store_token "$BWS_ACCESS_TOKEN"
+    if [ -n "${OP_SERVICE_ACCOUNT_TOKEN:-}" ]; then
+      mkdir -p "$(dirname "$OP_TOKEN_FILE")"
+      chmod 700 "$(dirname "$OP_TOKEN_FILE")"
+      (
+        umask 077
+        printf '%s' "$OP_SERVICE_ACCOUNT_TOKEN" >"$OP_TOKEN_FILE.tmp"
+      ) &&
+        mv -f "$OP_TOKEN_FILE.tmp" "$OP_TOKEN_FILE"
+    fi
+  fi
   restic_env restic-sandbox-home restic.sandbox-home-password
   restic snapshots --no-lock --json >"$HOME/.bootstrap-snapshots.json" || die "restore: cannot list home snapshots"
   python3 - "$HOME/.bootstrap-snapshots.json" "$SANDBOX_HOME" "$ALL" >"$HOME/.bootstrap-restore-plan" <<'PY'
@@ -311,8 +360,28 @@ PY
   say "restore: done (plan kept at ~/.bootstrap-restore-plan)"
 fi
 
+# ---- keep the OP credential available to later Muse shell sessions ----
+# The script and tokens live under persistent HOME on Muse. This hook only
+# reads the 0600 token file; it never prints or exports it to logs.
+OP_ENV="$HOME/tools/op-env.sh"
+cat >"$OP_ENV.tmp" <<'EOF'
+#!/usr/bin/env bash
+if [ -z "${OP_SERVICE_ACCOUNT_TOKEN:-}" ] && [ -r "$HOME/.config/op/service-account-token" ]; then
+  IFS= read -r OP_SERVICE_ACCOUNT_TOKEN <"$HOME/.config/op/service-account-token" || :
+  export OP_SERVICE_ACCOUNT_TOKEN
+fi
+EOF
+chmod 700 "$OP_ENV.tmp" && mv -f "$OP_ENV.tmp" "$OP_ENV"
+SHELL_ENV="$HOME/tools/shell-env.sh"
+if [ -f "$SHELL_ENV" ] && ! grep -q 'muse-op-token' "$SHELL_ENV"; then
+  cat >>"$SHELL_ENV" <<'EOF'
+
+# muse-op-token: load the service account for headless Fleet secrets resolution.
+[ -r "$HOME/tools/op-env.sh" ] && . "$HOME/tools/op-env.sh"
+EOF
+fi
+
 # ---- tailnet ----
-TS_STATE="$HOME/.local/state/tailscale"
 TS_SOCK="$TS_STATE/tailscaled.sock"
 if want tailnet && { [ ! -x "$BIN/tailscaled" ] || [ ! -x "$BIN/tailscale" ]; }; then
   say "tailnet: no tailscale binaries (download failed); skipping, the laptop link will not work"
@@ -321,25 +390,76 @@ elif want tailnet; then
   if ! tailscale --socket="$TS_SOCK" status >/dev/null 2>&1; then
     MODE=userspace
     if [ -c /dev/net/tun ] && { [ "$(id -u)" = 0 ] || [ -n "$SUDO" ]; }; then MODE=kernel; fi
-    if pgrep -f -- "--state=$TS_STATE/tailscaled.state" >/dev/null 2>&1; then
-      MODE=$(cat "$TS_STATE/mode" 2>/dev/null || echo "$MODE") # daemon alive, only logged out
-    elif [ "$MODE" = kernel ]; then
-      rm -f "$TS_SOCK" # a recycle leaves the old socket file on the durable volume
-      $SUDO setsid nohup "$BIN/tailscaled" --state="$TS_STATE/tailscaled.state" --socket="$TS_SOCK" \
-        >"$TS_STATE/tailscaled.log" 2>&1 </dev/null &
-    else
+    # A mode a previous run recorded has already proven itself on
+    # this host; let it override the probe. In the muse sandbox the
+    # probe picks kernel (a TUN device exists and we run as root)
+    # but creating the interface is forbidden, so every cold start
+    # burned ~11s on a doomed kernel daemon before the userspace
+    # fallback — time the 2026-11-22 05:25 keeper restart did not
+    # have under load.
+    RECORDED_MODE=$(cat "$TS_STATE/mode" 2>/dev/null || echo "")
+    [ "$RECORDED_MODE" = userspace ] && MODE=userspace
+    ts_backend() { "$BIN/tailscale" --socket="$TS_SOCK" status --json 2>/dev/null |
+      python3 -c 'import json,sys; print(json.load(sys.stdin).get("BackendState",""))' 2>/dev/null || true; }
+    ts_alive() { pgrep -f -- "--state=$TS_STATE/tailscaled.state" >/dev/null 2>&1; }
+    # Rotate, never truncate: the previous daemon's log is the only
+    # evidence when a start fails (the 2026-11-22 05:25 attempt's log
+    # was destroyed by the next start's `>`). A recycle also leaves the
+    # old socket file on the durable volume, where it could pass for a
+    # live daemon.
+    ts_fresh_start() {
       rm -f "$TS_SOCK"
+      if [ -f "$TS_STATE/tailscaled.log" ]; then mv "$TS_STATE/tailscaled.log" "$TS_STATE/tailscaled.log.prev"; fi
+    }
+    ts_start_userspace() {
+      ts_fresh_start
       setsid nohup "$BIN/tailscaled" --tun=userspace-networking --state="$TS_STATE/tailscaled.state" \
         --socket="$TS_SOCK" --outbound-http-proxy-listen=127.0.0.1:3130 \
         >"$TS_STATE/tailscaled.log" 2>&1 </dev/null &
+    }
+    if ts_alive; then
+      MODE=$(cat "$TS_STATE/mode" 2>/dev/null || echo "$MODE") # daemon alive, only logged out
+    elif [ "$MODE" = kernel ]; then
+      ts_fresh_start
+      $SUDO setsid nohup "$BIN/tailscaled" --state="$TS_STATE/tailscaled.state" --socket="$TS_SOCK" \
+        >"$TS_STATE/tailscaled.log" 2>&1 </dev/null &
+      # The probe can pick kernel where creating the TUN interface is
+      # still forbidden (#12427): the daemon then exits during engine
+      # setup, possibly after its socket file appeared. Count the
+      # kernel start as up only once the daemon reports a backend
+      # state (the backend exists only after the engine does) and is
+      # still alive a moment later; otherwise fall back to userspace.
+      kernel_up=""
+      for _ in $(seq 1 20); do
+        ts_alive || break
+        grep -q 'tstun.New' "$TS_STATE/tailscaled.log" 2>/dev/null && break
+        if [ -n "$(ts_backend)" ]; then
+          sleep 2
+          ts_alive && ! grep -q 'tstun.New' "$TS_STATE/tailscaled.log" 2>/dev/null && kernel_up=1
+          break
+        fi
+        sleep 1
+      done
+      if [ -z "$kernel_up" ]; then
+        say "tailnet: the kernel TUN daemon did not come up (see $TS_STATE/tailscaled.log.prev); falling back to userspace networking"
+        $SUDO pkill -f -- "--state=$TS_STATE/tailscaled.state" 2>/dev/null || true
+        for _ in 1 2 3 4 5; do ts_alive || break; sleep 1; done
+        MODE=userspace
+        ts_start_userspace
+      fi
+    else
+      ts_start_userspace
     fi
     echo "$MODE" >"$TS_STATE/mode"
     # The node key in $TS_STATE survives a recycle, so after a restart
     # tailscaled logs itself back in; the auth key is only for a new node.
-    ts_backend() { "$BIN/tailscale" --socket="$TS_SOCK" status --json 2>/dev/null |
-      python3 -c 'import json,sys; print(json.load(sys.stdin).get("BackendState",""))' 2>/dev/null || true; }
     state=""
-    for _ in $(seq 1 30); do
+    # 60 iterations, not 30: each poll spawns tailscale + python3,
+    # and under sandbox CPU contention (concurrent lane builds) a
+    # single poll can take several seconds — 30 polls elapsed
+    # before a healthy daemon reached Running in the 2026-11-22
+    # 05:25 restart, and the phase died on the auth-key path.
+    for _ in $(seq 1 60); do
       state=$(ts_backend)
       case "$state" in Running | NeedsLogin | NoState | Stopped) [ "$state" = NoState ] || break ;; esac
       sleep 1
@@ -387,8 +507,29 @@ PY
   if [ "$MODE" = userspace ]; then
     echo 'export HTTPS_PROXY=http://127.0.0.1:3130' >"$TS_STATE/fleet-proxy.env"
     say "tailnet: userspace mode; start fleet proxy with HTTPS_PROXY from $TS_STATE/fleet-proxy.env"
+  else
+    # Fleet's tailnet tunnels prefer this file over the ambient proxy,
+    # so a kernel-mode seat must not keep one from an earlier run.
+    rm -f "$TS_STATE/fleet-proxy.env"
   fi
-  say "tailnet: up as $TS_HOSTNAME ($MODE mode)"
+  EFFECTIVE_HOSTNAME=$("$BIN/tailscale" --socket="$TS_SOCK" status --json 2>/dev/null |
+    python3 -c 'import json,sys; print(json.load(sys.stdin).get("Self",{}).get("HostName",""))' 2>/dev/null || true)
+  [ -n "$EFFECTIVE_HOSTNAME" ] || EFFECTIVE_HOSTNAME=$TS_HOSTNAME
+  if [ "$MODE" = userspace ]; then
+    say "tailnet: up as $EFFECTIVE_HOSTNAME (userspace mode; HTTP CONNECT works; direct Tailscale UDP is unavailable (Iroh public UDP may still work))"
+  else
+    say "tailnet: up as $EFFECTIVE_HOSTNAME (kernel mode; direct UDP paths are available when NAT/firewall permit)"
+  fi
+  say "tailnet: node state is isolated at $TS_STATE; a hostname collision may get a Tailscale suffix and will not rename another node"
+  if PING_RESULT=$("$BIN/tailscale" --socket="$TS_SOCK" ping --c 1 "$LAPTOP_TAILNET_IP" 2>&1); then
+    case "$PING_RESULT" in
+    *"via DERP"*) say "tailnet: laptop is reachable through DERP; direct Tailscale UDP is not established" ;;
+    *"via "* | *"direct"*) say "tailnet: laptop probe succeeded over a direct Tailscale path" ;;
+    *) say "tailnet: laptop probe succeeded; route type was not reported" ;;
+    esac
+  else
+    say "tailnet: laptop probe to $LAPTOP_TAILNET_IP did not succeed yet; Cloudflare HTTPS remains the fallback"
+  fi
 fi
 
 # ---- fleet ----
@@ -508,6 +649,13 @@ except OSError:
     rc=1
   fi
   if fleet secrets list >/dev/null 2>&1; then say "check: session broker answers"; else say "check: no session broker answering yet (init.sh starts it; bws fallback still works)"; fi
+  if command -v op >/dev/null 2>&1 && [ -n "${OP_SERVICE_ACCOUNT_TOKEN:-}" ] &&
+    OP_SERVICE_ACCOUNT_TOKEN="$OP_SERVICE_ACCOUNT_TOKEN" op whoami >/dev/null 2>&1; then
+    say "check: 1Password CLI and service account answer"
+  else
+    say "check: 1Password CLI/token did not verify (op is restored from ~/tools or login data is missing)"
+    rc=1
+  fi
   if fleet bridge hello --agent "$AGENT" --groups muse >/dev/null 2>&1; then
     say "check: bridge hello as $AGENT ok; unread commands: $(fleet bridge inbox --agent "$AGENT" --commands 2>/dev/null | python3 -c 'import json,sys;d=json.load(sys.stdin);print(len(d if isinstance(d,list) else d.get("messages",d.get("items",[]))))' 2>/dev/null || echo '?')"
   else

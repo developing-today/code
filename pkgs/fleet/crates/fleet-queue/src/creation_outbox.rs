@@ -187,13 +187,13 @@ pub fn payload_hash(payload: &Value) -> String {
 // ---------------------------------------------------------------------------
 
 /// Delay before the next attempt after a failure. A `Retry-After`
-/// from GitHub is honored exactly (never write before the deadline);
-/// otherwise exponential backoff `BASE * 2^(attempt-1)` capped at
-/// `CAP`, scaled by a jitter factor in `[0.5, 1.5)` derived from
-/// `jitter_unit` in `[0, 1)`.
+/// from GitHub is honored up to `CAP` (never write before the deadline
+/// unless it exceeds the operational cap); otherwise exponential
+/// backoff `BASE * 2^(attempt-1)` capped at `CAP`, scaled by a jitter
+/// factor in `[0.5, 1.5)` derived from `jitter_unit` in `[0, 1)`.
 pub fn backoff_delay(attempt: i64, retry_after: Option<i64>, jitter_unit: f64) -> i64 {
     if let Some(ra) = retry_after {
-        return ra.max(1);
+        return ra.clamp(1, BACKOFF_CAP_SECONDS);
     }
     let shift = (attempt.max(1) - 1).min(20) as u32;
     let base = BACKOFF_BASE_SECONDS
@@ -1167,15 +1167,21 @@ mod tests {
     }
 
     #[test]
-    fn backoff_grows_caps_and_retry_after_wins() {
-        // Oracle: backoff doubles per attempt, caps, and a
-        // Retry-After always wins over the computed delay.
+    fn backoff_grows_caps_and_retry_after_is_bounded() {
+        // Oracle: backoff doubles per attempt and caps; Retry-After
+        // overrides computed backoff but remains within the same cap.
         assert_eq!(backoff_delay(1, None, 0.5), 30);
         assert_eq!(backoff_delay(2, None, 0.5), 60);
         assert_eq!(backoff_delay(3, None, 0.5), 120);
         assert_eq!(backoff_delay(30, None, 0.5), BACKOFF_CAP_SECONDS);
         assert_eq!(backoff_delay(1, Some(7), 0.5), 7);
         assert_eq!(backoff_delay(9, Some(900), 0.5), 900);
+        assert_eq!(
+            backoff_delay(9, Some(BACKOFF_CAP_SECONDS + 1), 0.5),
+            BACKOFF_CAP_SECONDS
+        );
+        assert_eq!(backoff_delay(9, Some(i64::MAX), 0.5), BACKOFF_CAP_SECONDS);
+        assert_eq!(backoff_delay(9, Some(0), 0.5), 1);
     }
 
     #[test]

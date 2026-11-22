@@ -184,12 +184,16 @@ def build_identity_index(models, events):
         if canonical:
             for key in identity_keys(canonical):
                 candidates.setdefault(key, set()).add(canonical)
-    return {key: next(iter(names)) for key, names in candidates.items() if len(names) == 1}
+    return {
+        key: next(iter(names)) for key, names in candidates.items() if len(names) == 1
+    }
 
 
 def resolve_identity(values, index):
     """Resolve source spellings only when they point to one known identity."""
-    matches = {index[key] for value in values for key in identity_keys(value) if key in index}
+    matches = {
+        index[key] for value in values for key in identity_keys(value) if key in index
+    }
     return next(iter(matches)) if len(matches) == 1 else None
 
 
@@ -338,7 +342,9 @@ def main():
     seen_releases = {}
     unchanged = 0
     for v in aa:
-        canonical = resolve_identity([v["release_name"], v["release_slug"]], identity_index)
+        canonical = resolve_identity(
+            [v["release_name"], v["release_slug"]], identity_index
+        )
         if canonical is None:
             seen_releases.setdefault(
                 v["release_slug"],

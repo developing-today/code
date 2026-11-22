@@ -57,6 +57,7 @@ records.
 - [Web listener bindings for `id serve`](../../doc/2026-11-02T11-47-29Z_design_web_listeners/2026-11-02T11-47-29Z_design_web_listeners.md)
 - [Petname anti-mimicry: Unicode UTS #39 confusable skeleton](../../doc/2026-11-02T12-47-00Z_design_petname_unicode_confusable_skeleton/2026-11-02T12-47-00Z_design_petname_unicode_confusable_skeleton.md)
 - [Design: task-placement framework v1 — decision rules and a shared-pool efficiency model](../../doc/2026-11-03T15-10-56Z_design_task-placement-framework-v1/2026-11-03T15-10-56Z_design_task-placement-framework-v1.md)
+- [C8 Atlas ingestion and error-driven investigation](../../doc/2026-11-22T01-48-21Z_design_c8_atlas_ingestion_investigation/2026-11-22T01-48-21Z_design_c8_atlas_ingestion_investigation.md)
 - [Design: TigerBeetle LedgerBackend binding (`tb_ledger`)](../../doc/2026-11-03T20-36-00Z_design_tigerbeetle_ledger_binding/2026-11-03T20-36-00Z_design_tigerbeetle_ledger_binding.md)
 - [Atlas as a Rust binary and a multi-client search service](../../doc/2026-11-04T08-07-13Z_design_atlas_binary_service/2026-11-04T08-07-13Z_design_atlas_binary_service.md)
 - [File listing provenance: origin node and upload time in List](../../doc/2026-11-04T10-46-17Z_design_listing_origin_and_upload_time/2026-11-04T10-46-17Z_design_listing_origin_and_upload_time.md)

@@ -7,7 +7,8 @@
 //! journaled, and no session token or code is kept in a form that can be used
 //! after its time is up.
 
-use std::collections::HashMap;
+use std::cmp::Reverse;
+use std::collections::{BinaryHeap, HashMap};
 use std::time::Duration;
 
 use anyhow::{Context as _, Result};
@@ -361,6 +362,10 @@ fn code_digest(address: &str, kind: PurposeKind, code: &str) -> [u8; 32] {
 #[derive(Debug, Default)]
 pub struct ReplayGuard {
     seen: HashMap<String, u64>,
+    // Avoid scanning the full replay window on every request: expire entries
+    // from the heap and use `seen_by_key` for constant-time key-limit checks.
+    expirations: BinaryHeap<Reverse<(u64, String, String)>>,
+    seen_by_key: HashMap<String, usize>,
     quiet_until: u64,
 }
 
@@ -372,6 +377,8 @@ impl ReplayGuard {
         let window_ms = u64::try_from(window.as_millis()).unwrap_or(u64::MAX);
         Self {
             seen: HashMap::new(),
+            expirations: BinaryHeap::new(),
+            seen_by_key: HashMap::new(),
             quiet_until: boot.saturating_add(window_ms),
         }
     }
@@ -395,23 +402,28 @@ impl ReplayGuard {
             ))
             .into());
         }
-        self.seen
-            // Keep nonces through the same inclusive boundary as `verify_signed`'s `window_ok` below.
-            .retain(|_, seen_at| *seen_at + SIGNED_WINDOW_MS >= now);
+        // Keep nonces through the same inclusive boundary as `verify_signed`'s
+        // `window_ok` below. The heap lets the common case avoid a full-map scan.
+        while self
+            .expirations
+            .peek()
+            .is_some_and(|Reverse((expires_at, _, _))| *expires_at < now)
+        {
+            if let Some(Reverse((_, expired_key, expired_id))) = self.expirations.pop() {
+                self.seen.remove(&expired_id);
+                if let Some(count) = self.seen_by_key.get_mut(&expired_key) {
+                    *count -= 1;
+                    if *count == 0 {
+                        self.seen_by_key.remove(&expired_key);
+                    }
+                }
+            }
+        }
         let id = format!("{key}:{nonce}");
         if self.seen.contains_key(&id) {
             return Err(Refusal::Unauthenticated("request was already used".to_owned()).into());
         }
-        // The per-key bound is counted from the same map the duplicate
-        // check reads, after pruning, so it can never drift from the
-        // state it bounds. Keys are normalised hex and nonces exclude
-        // ':', so the "{key}:" prefix matches exactly this key's entries.
-        let key_prefix = format!("{key}:");
-        let held_by_key = self
-            .seen
-            .keys()
-            .filter(|seen_id| seen_id.starts_with(&key_prefix))
-            .count();
+        let held_by_key = self.seen_by_key.get(key).copied().unwrap_or(0);
         if held_by_key >= SIGNED_NONCE_PER_KEY_LIMIT {
             return Err(Refusal::RateLimited(
                 "too many signed requests from one key; try again shortly".to_owned(),
@@ -424,7 +436,13 @@ impl ReplayGuard {
             )
             .into());
         }
-        self.seen.insert(id, at);
+        self.seen.insert(id.clone(), at);
+        self.expirations.push(Reverse((
+            at.saturating_add(SIGNED_WINDOW_MS),
+            key.to_owned(),
+            id,
+        )));
+        *self.seen_by_key.entry(key.to_owned()).or_default() += 1;
         Ok(())
     }
 }
@@ -1169,6 +1187,20 @@ mod tests {
         // never admitted merely because the guard is full.
         let err = replays.accept("aa", "n0", at, at).unwrap_err();
         assert!(format!("{err:#}").contains("already used"), "{err:#}");
+    }
+
+    #[test]
+    fn expired_replay_entries_refill_the_key_allowance() {
+        let at = now();
+        let mut replays = ReplayGuard::default();
+        for i in 0..SIGNED_NONCE_PER_KEY_LIMIT {
+            replays.accept("aa", &format!("n{i}"), at, at).unwrap();
+        }
+
+        let later = at + SIGNED_WINDOW_MS + 1;
+        replays.accept("aa", "fresh", later, later).unwrap();
+        assert_eq!(replays.seen.len(), 1);
+        assert_eq!(replays.seen_by_key.get("aa"), Some(&1));
     }
 
     #[test]

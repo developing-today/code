@@ -78,7 +78,7 @@ type Options struct {
 	Runtime string
 	// Language is the explicit script-language selection for this run
 	// (script.language / --language / ExecOptions.language): auto,
-	// typescript, javascript or python. Empty means auto. It decides the
+	// typescript, javascript, python or roc. Empty means auto. It decides the
 	// language -- and so which generated client is installed -- when no
 	// shebang or configured interpreter dispatch decides first (#1917).
 	Language string
@@ -489,13 +489,19 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 		// harness path honours what the raw path preserves.
 		opts.Runtime = js.runtime
 		jsEnv = js
-	} else if EffectiveScriptLanguage(opts.evidenceFile(), opts.Source, opts.Language) == codegen.Python.Name {
+	} else if lang := EffectiveScriptLanguage(opts.evidenceFile(), opts.Source, opts.Language); lang == codegen.Python.Name || lang == codegen.Roc.Name {
 		// Rank 3: nothing named an interpreter and the script is Python
 		// by extension, so the run is a Python harness run rather than a
 		// TypeScript one. Installing the client is the difference from a
 		// raw dispatch: `import mcpx_client` works, and the script's own
 		// top-level code is the program.
-		d, derr := pythonDispatch(opts)
+		var d *dispatch
+		var derr error
+		if lang == codegen.Roc.Name {
+			d, derr = rocDispatch(opts)
+		} else {
+			d, derr = pythonDispatch(opts)
+		}
 		if derr != nil {
 			return nil, derr
 		}
