@@ -79,6 +79,7 @@ pub mod serve;
 pub mod serve_publications;
 pub mod tag;
 pub mod text;
+pub mod walk;
 #[cfg(feature = "world")]
 pub mod world;
 pub mod writer_set;
@@ -111,6 +112,7 @@ pub use serve::{
     is_process_alive, remove_serve_lock,
 };
 pub use tag::{cmd_migrate_tags, cmd_tag};
+pub use walk::cmd_walk;
 #[cfg(feature = "world")]
 pub use world::cmd_world;
 pub use writer_set::cmd_writer_sets;

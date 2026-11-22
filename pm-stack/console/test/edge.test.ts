@@ -19,7 +19,7 @@ import { clearJwksCache, identify } from "../src/auth.ts";
 import { readConfig } from "../src/config.ts";
 import { Devices, Limiter } from "../src/devices.ts";
 import { Docs } from "../src/docs.ts";
-import { type EdgeConfig, keyId, newKeyPair, sign } from "../src/edge-proto.ts";
+import { type EdgeConfig, edgeConfig as parseEdgeConfig, keyId, newKeyPair, sign } from "../src/edge-proto.ts";
 import { OpError } from "../src/errors.ts";
 import { Ops } from "../src/ops.ts";
 import { type Deps, handle, heldRunner, marked } from "../src/server.ts";
@@ -51,10 +51,12 @@ const SECTION_NAMES = [
   "more",
 ];
 
-async function setup() {
+async function setup(options: { direct?: boolean } = {}) {
   const now = { t: START };
   const clock = () => now.t;
   const access = await signer("k1");
+  const cfg = readConfig({ HOME: "/h", PM_CONSOLE_OWNER_EMAILS: OWNER });
+  cfg.issuers = [ISSUER];
   const pushes: { url: string; body: Uint8Array; authorization: string }[] = [];
   const pushFailures = { remaining: 0 };
   const outward = async (url: string | URL | Request, init?: { body?: unknown; headers?: Record<string, string> }) => {
@@ -70,6 +72,344 @@ async function setup() {
     }
     throw new Error(`unexpected fetch ${u}`);
   };
+
+  // ---- the outside world, as the edge reaches it directly --------------
+  // GitHub and the queue store, standing in for the real ones: the edge's
+  // direct reads and writes go through these, and only these. The data
+  // here is newer than the host's last report, as it would be after the
+  // laptop has been away for a while.
+  const githubCalls: { method: string; url: string; body?: string }[] = [];
+  const queueCalls: { sql: string; args: (string | number)[] }[] = [];
+  const ghIssues: Record<
+    number,
+    {
+      number: number;
+      title: string;
+      body: string;
+      html_url: string;
+      state: string;
+      created_at: string;
+      updated_at: string;
+      comments: number;
+    }
+  > = {
+    201: {
+      number: 201,
+      title: "Owner: Do the docs",
+      body: "Do the docs\n\n---\nAn instruction from the owner.",
+      html_url: "https://github.com/developing-today/code/issues/201",
+      state: "open",
+      created_at: "2026-11-22T11:00:00Z",
+      updated_at: "2026-11-22T12:31:00Z",
+      comments: 1,
+    },
+    202: {
+      number: 202,
+      title: "Owner: Check the queue",
+      body: "Check the queue",
+      html_url: "https://github.com/developing-today/code/issues/202",
+      state: "open",
+      created_at: "2026-11-22T11:30:00Z",
+      updated_at: "2026-11-22T12:32:00Z",
+      comments: 0,
+    },
+  };
+  const ghComments: Record<number, { body: string; created_at: string; user: { type: string } }[]> = {
+    201: [{ body: "Done: the docs are updated.", created_at: "2026-11-22T12:31:00Z", user: { type: "User" } }],
+  };
+  const ghLabels: Record<number, string[]> = { 201: ["owner/prompt"], 202: ["owner/prompt"], 301: ["now"] };
+  const ghLabelNames = new Set(["owner/prompt"]);
+  const ghPrs = [
+    {
+      number: 55,
+      title: "Fresh PR",
+      draft: false,
+      html_url: "https://github.com/developing-today/code/pull/55",
+      created_at: "2026-11-22T12:30:00Z",
+      user: { login: "worker" },
+      head: { ref: "queue/55" },
+    },
+  ];
+  const ghSearch = [
+    {
+      number: 301,
+      title: "Ranked fresh",
+      html_url: "https://github.com/developing-today/code/issues/301",
+      updated_at: "2026-11-22T12:31:00Z",
+      comments: 2,
+      labels: [{ name: "now" }],
+    },
+  ];
+  let ghNextIssue = 500;
+  const queueTasks: {
+    id: number;
+    title: string;
+    priority: number;
+    status: string;
+    attempts: number;
+    claimed: string | null;
+    lease: string | null;
+    created: string;
+    worker: string | null;
+    lane: string | null;
+    model: string | null;
+    kind: string | null;
+    issue: number | null;
+    pr: number | null;
+    step: string | null;
+    goal: string | null;
+  }[] = [
+    {
+      id: 21047,
+      title: "Owner prompt developing-today/code#201: Do the docs",
+      priority: 10,
+      status: "claimed",
+      attempts: 1,
+      claimed: "2026-11-22T12:00:00",
+      lease: "2026-11-22T12:45:00",
+      created: "2026-11-22T11:00:00",
+      worker: "xaltha",
+      lane: null,
+      model: "muse",
+      kind: "triage",
+      issue: 201,
+      pr: null,
+      step: "reading the issue",
+      goal: "Carry out the owner's instruction",
+    },
+    {
+      id: 21048,
+      title: "Next task",
+      priority: 20,
+      status: "queued",
+      attempts: 0,
+      claimed: null,
+      lease: null,
+      created: "2026-11-22T11:30:00",
+      worker: null,
+      lane: null,
+      model: null,
+      kind: "triage",
+      issue: 301,
+      pr: null,
+      step: null,
+      goal: "Triage",
+    },
+    {
+      id: 21049,
+      title: "Blocked task",
+      priority: 30,
+      status: "blocked",
+      attempts: 2,
+      claimed: null,
+      lease: null,
+      created: "2026-11-22T10:00:00",
+      worker: null,
+      lane: null,
+      model: null,
+      kind: "triage",
+      issue: null,
+      pr: null,
+      step: null,
+      goal: null,
+    },
+  ];
+  const TASK_COLS = [
+    "id",
+    "title",
+    "priority",
+    "status",
+    "attempts",
+    "claimed",
+    "lease",
+    "created",
+    "worker",
+    "lane",
+    "model",
+    "kind",
+    "issue",
+    "pr",
+    "step",
+    "goal",
+  ];
+  const taskRow = (t: (typeof queueTasks)[number]) =>
+    TASK_COLS.map((c) => ({ value: (t as Record<string, string | number | null>)[c] ?? null }));
+  const queueAnswer = (sql: string, args: (string | number)[]) => {
+    const cols = (names: string[]) => names.map((name) => ({ name }));
+    const rows = (rs: { value: string | number | null }[][]) => rs;
+    if (sql.includes("count(*) AS n") && sql.includes("GROUP BY status")) {
+      const counts = new Map<string, number>();
+      for (const t of queueTasks) counts.set(t.status, (counts.get(t.status) ?? 0) + 1);
+      return {
+        cols: cols(["status", "n"]),
+        rows: rows([...counts.entries()].map(([status, n]) => [{ value: status }, { value: n }])),
+      };
+    }
+    // The single-row reads first: they also carry a status clause.
+    if (sql.startsWith("SELECT priority FROM tasks")) {
+      const found = queueTasks.find((t) => t.id === Number(args[0]) && t.status === "queued");
+      return { cols: cols(["priority"]), rows: rows(found ? [[{ value: found.priority }]] : []) };
+    }
+    if (sql.startsWith("UPDATE tasks SET priority")) {
+      const found = queueTasks.find((t) => t.id === Number(args[1]) && t.status === "queued");
+      if (found) found.priority = Number(args[0]);
+      return { cols: cols([]), rows: [], affected_row_count: found ? 1 : 0 };
+    }
+    if (sql.includes("status = 'claimed'")) {
+      return { cols: cols(TASK_COLS), rows: rows(queueTasks.filter((t) => t.status === "claimed").map(taskRow)) };
+    }
+    if (sql.includes("status = 'queued'")) {
+      return { cols: cols(TASK_COLS), rows: rows(queueTasks.filter((t) => t.status === "queued").map(taskRow)) };
+    }
+    if (sql.includes("status = 'blocked'")) {
+      return {
+        cols: cols(["why", "n"]),
+        rows: rows([
+          [{ value: "waiting on the owner" }, { value: queueTasks.filter((t) => t.status === "blocked").length }],
+        ]),
+      };
+    }
+    if (sql.includes("dedupe_key IN")) {
+      const keys = args.slice(1) as string[];
+      return {
+        cols: cols(["dedupe_key", "status", "worker"]),
+        rows: rows(
+          queueTasks
+            .filter((t) => t.issue !== null && keys.includes(`repo-health:v1:triage:${cfg.repo}:issue:${t.issue}`))
+            .map((t) => [
+              { value: `repo-health:v1:triage:${cfg.repo}:issue:${t.issue}` },
+              { value: t.status },
+              { value: t.worker },
+            ]),
+        ),
+      };
+    }
+    throw new Error(`unexpected queue SQL: ${sql}`);
+  };
+  const githubAnswer = (method: string, url: string, body?: string) => {
+    const u = new URL(url);
+    const path = u.pathname.replace(/^\/repos\/developing-today\/code\//, "");
+    const ok = (data: unknown, status = 200) => ({ ok: true, status, json: async () => data });
+    const fail = (status: number, data: unknown) => ({ ok: false, status, json: async () => data });
+    if (method === "GET" && path === "pulls") return ok(ghPrs);
+    if (method === "GET" && u.pathname === "/search/issues")
+      return ok({ items: ghSearch, total_count: ghSearch.length });
+    if (method === "GET" && path === "issues") {
+      return ok(
+        Object.values(ghIssues)
+          .sort((a, b) => b.updated_at.localeCompare(a.updated_at))
+          .map((i) => ({ ...i, pull_request: undefined })),
+      );
+    }
+    const issueMatch = /^issues\/(\d+)$/.exec(path);
+    if (method === "GET" && issueMatch) {
+      const n = Number(issueMatch[1]);
+      return ok({
+        number: n,
+        state: ghIssues[n]?.state ?? "open",
+        labels: (ghLabels[n] ?? []).map((name) => ({ name })),
+      });
+    }
+    const commentsMatch = /^issues\/(\d+)\/comments$/.exec(path);
+    if (method === "GET" && commentsMatch) return ok(ghComments[Number(commentsMatch[1])] ?? []);
+    if (method === "POST" && commentsMatch) {
+      const n = Number(commentsMatch[1]);
+      const parsed = JSON.parse(body ?? "{}") as { body?: string };
+      (ghComments[n] ??= []).push({
+        body: parsed.body ?? "",
+        created_at: new Date(now.t).toISOString(),
+        user: { type: "User" },
+      });
+      if (ghIssues[n]) {
+        ghIssues[n].comments = (ghComments[n] ?? []).length;
+        ghIssues[n].updated_at = new Date(now.t).toISOString();
+      }
+      return ok({ html_url: `https://github.com/developing-today/code/issues/${n}#issuecomment-1` }, 201);
+    }
+    if (method === "POST" && path === "issues") {
+      const parsed = JSON.parse(body ?? "{}") as { title?: string; body?: string; labels?: string[] };
+      const n = ghNextIssue++;
+      ghIssues[n] = {
+        number: n,
+        title: parsed.title ?? "",
+        body: parsed.body ?? "",
+        html_url: `https://github.com/developing-today/code/issues/${n}`,
+        state: "open",
+        created_at: new Date(now.t).toISOString(),
+        updated_at: new Date(now.t).toISOString(),
+        comments: 0,
+      };
+      ghLabels[n] = parsed.labels ?? [];
+      return ok({ number: n, title: parsed.title, html_url: ghIssues[n].html_url }, 201);
+    }
+    if (method === "PATCH" && issueMatch) {
+      const n = Number(issueMatch[1]);
+      const parsed = JSON.parse(body ?? "{}") as { state?: string };
+      if (parsed.state) ghIssues[n].state = parsed.state;
+      ghIssues[n].updated_at = new Date(now.t).toISOString();
+      return ok({ number: n, state: ghIssues[n].state });
+    }
+    const labelsMatch = /^issues\/(\d+)\/labels$/.exec(path);
+    if (method === "POST" && labelsMatch) {
+      const n = Number(labelsMatch[1]);
+      const parsed = JSON.parse(body ?? "{}") as { labels?: string[] };
+      for (const label of parsed.labels ?? []) if (!ghLabels[n].includes(label)) ghLabels[n].push(label);
+      return ok(
+        ghLabels[n].map((name) => ({ name })),
+        201,
+      );
+    }
+    const labelMatch = /^issues\/(\d+)\/labels\/(.+)$/.exec(path);
+    if (method === "DELETE" && labelMatch) {
+      const n = Number(labelMatch[1]);
+      ghLabels[n] = ghLabels[n].filter((l) => l !== decodeURIComponent(labelMatch[2]));
+      return ok({});
+    }
+    if (method === "POST" && path === "labels") {
+      const parsed = JSON.parse(body ?? "{}") as { name?: string };
+      if (parsed.name && ghLabelNames.has(parsed.name)) {
+        return fail(422, {
+          message: "Validation Failed",
+          errors: [{ resource: "Label", code: "already_exists", field: "name" }],
+        });
+      }
+      if (parsed.name) ghLabelNames.add(parsed.name);
+      return ok({ name: parsed.name }, 201);
+    }
+    throw new Error(`unexpected GitHub call ${method} ${url}`);
+  };
+  /** The direct source, made to fail by a test that turns it on. */
+  const directDown = { on: false };
+  const directFetch = (async (
+    url: string,
+    init: { method?: string; headers?: Record<string, string>; body?: string },
+  ) => {
+    // Made to fail by a test: the direct source is down, not the data.
+    if (directDown.on) throw new Error("the direct source is down");
+    const u = String(url);
+    const method = init?.method ?? "GET";
+    if (u.startsWith("https://api.github.com/")) {
+      githubCalls.push({ method, url: u, body: init?.body });
+      return githubAnswer(method, u, init?.body);
+    }
+    if (u === `${cfg.queueDbUrl}/v2/pipeline`) {
+      const parsed = JSON.parse(init?.body ?? "{}") as {
+        requests?: { stmt?: { sql: string; args: { value: string }[] } }[];
+      };
+      const results: unknown[] = [];
+      for (const req of parsed.requests ?? []) {
+        if (!req.stmt) {
+          results.push({ type: "ok" });
+          continue;
+        }
+        const args = (req.stmt.args ?? []).map((a) => a.value);
+        queueCalls.push({ sql: req.stmt.sql, args });
+        results.push({ type: "ok", response: { result: queueAnswer(req.stmt.sql, args) } });
+      }
+      return { ok: true, status: 200, json: async () => ({ results }) };
+    }
+    throw new Error(`unexpected direct fetch ${u}`);
+  }) as never;
 
   // ---- the edge ----------------------------------------------------------
   const stored = new Map<string, unknown>();
@@ -91,6 +431,9 @@ async function setup() {
       kv,
       now: clock,
       fetchImpl: outward as never,
+      direct: options.direct
+        ? { enabled: true, githubToken: "gh-test", queueToken: "queue-test", fetchImpl: directFetch }
+        : undefined,
       setAlarm: async (at) => {
         alarm.at = at;
       },
@@ -98,8 +441,6 @@ async function setup() {
   const edge = { now: makeEdge() };
 
   // ---- the host ----------------------------------------------------------
-  const cfg = readConfig({ HOME: "/h", PM_CONSOLE_OWNER_EMAILS: OWNER });
-  cfg.issuers = [ISSUER];
   const data: Record<string, unknown> = {
     board: { counts: { claimed: 1, queued: 2 }, now: [{ id: 1, title: "First task" }], next: [], blocked: [] },
     sessions: { moving: [], waiting: [] },
@@ -159,6 +500,15 @@ async function setup() {
       touch: [],
       audit: (a) => ({ issue: a.issue }),
     },
+    // The laptop's half of a prompt the edge filed: enqueue its task.
+    "prompt.enqueue": {
+      run: async (a) => {
+        ran.push({ kind: "prompt.enqueue", args: a });
+        return { issue: a.issue, queued: true };
+      },
+      touch: ["board"],
+      audit: (a) => ({ issue: a.issue }),
+    },
     "pr.merge": {
       run: async (a) => {
         ran.push({ kind: "pr.merge", args: a });
@@ -213,6 +563,10 @@ async function setup() {
     androidPackage: cfg.androidPackage,
     androidFingerprints: [],
     androidApp: true,
+    queueDbUrl: cfg.queueDbUrl,
+    queueTokenName: cfg.queueTokenName,
+    promptLabel: cfg.promptLabel,
+    needsRepos: cfg.needsRepos,
   };
 
   // ---- the Worker's routing, with the two wired together -----------------
@@ -255,6 +609,7 @@ async function setup() {
       keys,
       done,
       docs: hostDocs,
+      phones: hostDeps.phones!.devices,
       config: async () => edgeConfig,
       run: heldRunner(hostDeps),
       fetchImpl: (async (url: string, init: RequestInit) => {
@@ -350,6 +705,15 @@ async function setup() {
     table,
     access,
     edgeConfig,
+    directDown,
+    githubCalls,
+    queueCalls,
+    ghIssues,
+    ghComments,
+    ghLabels,
+    ghPrs,
+    ghSearch,
+    queueTasks,
   };
 }
 
@@ -366,6 +730,11 @@ describe("before the host's first report", () => {
       ok: true,
       edge: true,
       configured: false,
+      directEnabled: false,
+      githubTokenConfigured: false,
+      queueTokenConfigured: false,
+      directReady: false,
+      selfCheck: null,
       hostSeen: null,
       answered: 0,
       deferred: 0,
@@ -713,6 +1082,7 @@ describe("actions", () => {
       ),
       done: memoryStore(JSON.stringify(done)),
       docs: w.hostDocs,
+      phones: w.hostDeps.phones!.devices,
       config: async () => w.edgeConfig,
       run: heldRunner(w.hostDeps),
       fetchImpl: (async (url: string, init: RequestInit) =>
@@ -1179,7 +1549,11 @@ describe("notifications and phones, from the edge", () => {
       new Request(`https://${HOST}/console/device/link`, { method: "POST", body: JSON.stringify({ verifier }) }),
       w.io,
     );
-    const { token } = (await linked.json()) as { token: string };
+    const { token, id } = (await linked.json()) as { token: string; id: string };
+    // Phone identity crosses only the signed sync as a hash; the host can
+    // validate the token locally after an edge/host endpoint switch.
+    await w.link.now.once();
+    expect((await w.hostDeps.phones!.devices.check(token))?.name).toBe("Pocket");
     const read = await route(
       new Request(`https://${HOST}/console/device/summary`, { headers: { authorization: `Bearer ${token}` } }),
       w.io,
@@ -1192,6 +1566,7 @@ describe("notifications and phones, from the edge", () => {
     expect(await (await w.browse("/console/api/devices")).json()).toEqual([
       expect.objectContaining({ name: "Pocket" }),
     ]);
+    expect(JSON.stringify(await w.hostDeps.phones!.devices.links())).not.toContain(token);
     // Linked phones live at the edge and survive its restart; the token is not in its storage.
     expect(JSON.stringify([...w.stored.entries()])).not.toContain(token);
     w.edge.now = w.makeEdge();
@@ -1201,5 +1576,294 @@ describe("notifications and phones, from the edge", () => {
     );
     expect(after.status).toBe(200);
     expect(w.hostSaw).toEqual([]);
+    await w.act("device.remove", { id });
+    await w.link.now.once();
+    expect(await w.hostDeps.phones!.devices.check(token)).toBeNull();
+  });
+
+  test("a host-linked phone survives the edge cutover and an owner removal reaches both stores", async () => {
+    const w = await setup();
+    await w.hostReads();
+    const verifier = "h".repeat(43);
+    const challenge = Buffer.from(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier))).toString(
+      "base64url",
+    );
+    await w.hostDeps.phones!.devices.approve({ challenge, name: "Host phone" });
+    const linked = await w.hostDeps.phones!.devices.link(verifier);
+    expect(linked).not.toBeNull();
+    await w.link.now.once();
+    expect((await w.edge.now.phones.devices.check(linked!.token))?.name).toBe("Host phone");
+    expect(JSON.stringify(await w.edge.now.phones.devices.links())).not.toContain(linked!.token);
+
+    await w.hostDeps.phones!.devices.remove({ id: linked!.id });
+    await w.link.now.once();
+    expect(await w.edge.now.phones.devices.check(linked!.token)).toBeNull();
+    expect(await w.hostDeps.phones!.devices.check(linked!.token)).toBeNull();
+  });
+});
+
+describe("direct reads and writes while the host is away", () => {
+  /** The host has reported, then gone quiet for a minute. */
+  async function quiet() {
+    const w = await setup({ direct: true });
+    await w.hostReads();
+    await w.link.now.once();
+    w.net.hostUp = false;
+    w.net.edgeUp = false;
+    w.now.t += 60_000;
+    w.hostSaw.length = 0;
+    return w;
+  }
+  /** Only the laptop's doc pokes, never an ask for it to do anything. */
+  const onlyPokes = (w: Awaited<ReturnType<typeof setup>>) =>
+    w.hostSaw.every((s) => s.startsWith("GET /console/api/doc/"));
+
+  test("the board, pull requests, ranked issues and prompts come from GitHub and the queue store after a minute of silence", async () => {
+    const w = await setup({ direct: true });
+    await w.hostReads();
+    await w.link.now.once();
+    // Before the minute is up the host's copy is served, and nothing is read directly.
+    const stale = await w.core();
+    expect(stale.doc.board).toEqual(w.data.board);
+    expect(stale.doc.asks).toEqual([]);
+    expect(w.githubCalls).toEqual([]);
+    expect(w.queueCalls).toEqual([]);
+    // A minute of silence: the next read is fresh.
+    w.net.hostUp = false;
+    w.net.edgeUp = false;
+    w.now.t += 60_000;
+    w.hostSaw.length = 0;
+    const { doc } = await w.core();
+    expect(doc.board.counts).toEqual({ claimed: 1, queued: 1, blocked: 1 });
+    expect(doc.board.now.map((t: { id: number }) => t.id)).toEqual([21047]);
+    expect(doc.board.next.map((t: { id: number }) => t.id)).toEqual([21048]);
+    expect(doc.asks.map((a: { issue: number }) => a.issue)).toEqual([202, 201]);
+    expect(doc.asks[1].replies).toEqual([
+      { you: false, at: "2026-11-22T12:31:00", text: "Done: the docs are updated." },
+    ]);
+    const ops = await w.browse("/console/api/doc/ops");
+    const opsDoc = (await ops.json()) as {
+      prs: unknown[];
+      priorities: { issues: { number: number; rank: string }[] };
+    };
+    expect(opsDoc.prs).toEqual([
+      {
+        number: 55,
+        title: "Fresh PR",
+        draft: false,
+        url: "https://github.com/developing-today/code/pull/55",
+        created: "2026-11-22T12:30",
+        author: "worker",
+        branch: "queue/55",
+      },
+    ]);
+    expect(opsDoc.priorities.issues.map((i) => i.number)).toEqual([301]);
+    expect(opsDoc.priorities.issues[0].rank).toBe("now");
+    // The reads went to GitHub and the queue store; the laptop was never asked for anything.
+    expect(onlyPokes(w)).toBe(true);
+    expect(w.githubCalls.map((c) => c.url)).toContain(
+      "https://api.github.com/repos/developing-today/code/pulls?state=open&per_page=60",
+    );
+    expect(w.queueCalls.some((c) => c.sql.includes("GROUP BY status"))).toBe(true);
+  });
+
+  test("a reply to a prompt is posted once at the edge and not repeated when the laptop returns", async () => {
+    const w = await quiet();
+    const res = await w.act("ask.reply", { issue: 201, text: "Thanks — noted." });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true, result: { issue: 201, queued: true } });
+    const comments = w.githubCalls.filter((c) => c.method === "POST" && c.url.includes("/issues/201/comments"));
+    expect(comments).toHaveLength(1);
+    expect(JSON.parse(comments[0].body ?? "{}").body).toContain("Thanks — noted.");
+    // The reply shows up in the next read at the edge.
+    const { doc } = await w.core();
+    const asked = doc.asks.find((a: { issue: number }) => a.issue === 201) as {
+      replies: { you: boolean; text: string }[];
+    };
+    expect(asked.replies[asked.replies.length - 1]).toEqual({
+      you: true,
+      at: "2026-11-22T12:01:00",
+      text: "Thanks — noted.",
+    });
+    // Only the queue task waits for the laptop.
+    expect((w.stored.get("held") as { kind: string }[]).map((h) => h.kind)).toEqual(["prompt.enqueue"]);
+    // The laptop returns: it runs the held enqueue once, and the reply is not posted again.
+    w.net.hostUp = true;
+    w.net.edgeUp = true;
+    w.now.t += 60_000;
+    const first = await w.link.now.once();
+    expect(first?.commands.map((c) => c.kind)).toEqual(["prompt.enqueue"]);
+    expect(w.ran.filter((r) => r.kind === "prompt.enqueue")).toHaveLength(1);
+    w.now.t += 1_000;
+    const second = await w.link.now.once();
+    expect(second?.commands).toEqual([]);
+    expect(w.ran.filter((r) => r.kind === "prompt.enqueue")).toHaveLength(1);
+    expect(w.githubCalls.filter((c) => c.method === "POST" && c.url.includes("/issues/201/comments"))).toHaveLength(1);
+  });
+
+  test("a new prompt is filed at the edge and only its queue task waits for the laptop", async () => {
+    const w = await quiet();
+    const res = await w.act("ask.send", { text: "File this from the edge" });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      ok: true,
+      result: { issue: 500, url: "https://github.com/developing-today/code/issues/500", queued: true },
+    });
+    expect(w.githubCalls.filter((c) => c.method === "POST" && c.url.endsWith("/issues"))).toHaveLength(1);
+    const held = w.stored.get("held") as { kind: string; args: Record<string, unknown> }[];
+    expect(held).toHaveLength(1);
+    expect(held[0].kind).toBe("prompt.enqueue");
+    expect(held[0].args.issue).toBe(500);
+    // The laptop returns and enqueues it once; the issue is not filed again.
+    w.net.hostUp = true;
+    w.net.edgeUp = true;
+    w.now.t += 60_000;
+    await w.link.now.once();
+    expect(w.ran.filter((r) => r.kind === "prompt.enqueue")).toHaveLength(1);
+    expect(w.githubCalls.filter((c) => c.method === "POST" && c.url.endsWith("/issues"))).toHaveLength(1);
+  });
+
+  test("closing a prompt, ranking an issue, commenting on a need and moving a task run at the edge", async () => {
+    const w = await quiet();
+    const closed = await w.act("ask.close", { issue: 202 });
+    expect(closed.status).toBe(200);
+    expect(await closed.json()).toEqual({ ok: true, result: { issue: 202, closed: true } });
+    expect(w.ghIssues[202].state).toBe("closed");
+    const ranked = await w.act("issue.rank", { issue: 301, rank: "next" });
+    expect(ranked.status).toBe(200);
+    expect(await ranked.json()).toEqual({ ok: true, result: { issue: 301, rank: "next" } });
+    expect(w.ghLabels[301]).toEqual(["next"]);
+    const need = await w.act("need.comment", { ref: "developing-today/code#301", text: "Noted." });
+    expect(need.status).toBe(200);
+    expect((w.ghComments[301] ?? []).some((c) => c.body.startsWith("Noted."))).toBe(true);
+    const moved = await w.act("task.move", { task: 21048, to: "first" });
+    expect(moved.status).toBe(200);
+    expect(await moved.json()).toEqual({ ok: true, result: { task: 21048, priority: 10 } });
+    expect(w.queueTasks.find((t) => t.id === 21048)?.priority).toBe(10);
+    // Nothing was held for the laptop: all four were done here.
+    expect((w.stored.get("held") as unknown[] | undefined) ?? []).toEqual([]);
+    expect(onlyPokes(w)).toBe(true);
+    // And the board the edge serves already shows the move.
+    const { doc } = await w.core();
+    expect(doc.board.next.find((t: { id: number }) => t.id === 21048)?.priority).toBe(10);
+  });
+
+  test("health reports the direct capability and the self-check", async () => {
+    const w = await setup({ direct: true });
+    await w.hostReads();
+    await w.link.now.once();
+    const health = (await (await w.browse("/console/health", { token: null })).json()) as Record<string, unknown>;
+    expect(health.directEnabled).toBe(true);
+    expect(health.githubTokenConfigured).toBe(true);
+    expect(health.queueTokenConfigured).toBe(true);
+    expect(health.directReady).toBe(true);
+    const selfCheck = health.selfCheck as { at: number; kinds: Record<string, { ok: boolean }> };
+    expect(selfCheck.at).toBe(START);
+    expect(Object.keys(selfCheck.kinds).sort()).toEqual(["asks", "board", "priorities", "prs"]);
+    expect(Object.values(selfCheck.kinds).every((k) => k.ok)).toBe(true);
+    // A second health read reuses the stored self-check: no more direct reads.
+    const calls = w.githubCalls.length + w.queueCalls.length;
+    await w.browse("/console/health", { token: null });
+    expect(w.githubCalls.length + w.queueCalls.length).toBe(calls);
+  });
+
+  test("without the direct switch, or before the laptop is quiet, actions go to the host as before", async () => {
+    // No direct switch: the host is away, so the action is held, not run here.
+    const w = await setup();
+    await w.hostReads();
+    await w.link.now.once();
+    w.net.hostUp = false;
+    w.net.edgeUp = false;
+    const held = await w.act("issue.comment", { issue: 14, text: "late" });
+    expect(await held.json()).toEqual({ ok: true, held: true, result: null });
+    expect(w.githubCalls).toEqual([]);
+    expect(w.queueCalls).toEqual([]);
+    // Direct switch on but the laptop still reporting: the action goes to the host.
+    // A second setup signs with a fresh key under the same kid, so the
+    // cached key set from the first setup must go first.
+    clearJwksCache();
+    const d = await setup({ direct: true });
+    await d.hostReads();
+    await d.link.now.once();
+    const res = await d.act("issue.comment", { issue: 14, text: "now" });
+    expect(res.status).toBe(200);
+    expect(d.ran).toEqual([{ kind: "issue.comment", args: { issue: 14, text: "now" } }]);
+    expect(d.githubCalls).toEqual([]);
+    expect(d.queueCalls).toEqual([]);
+  });
+
+  test("a config stored before direct mode still serves the offline app, without acting itself", async () => {
+    const w = await setup({ direct: true });
+    await w.hostReads();
+    await w.link.now.once();
+    // What an older Worker stored: the same settings, without the fields
+    // direct mode added. That shape still validates, with those empty.
+    const legacy = { ...w.edgeConfig } as Record<string, unknown>;
+    delete legacy.queueDbUrl;
+    delete legacy.queueTokenName;
+    delete legacy.promptLabel;
+    delete legacy.needsRepos;
+    expect(parseEdgeConfig(legacy)).toMatchObject({
+      repo: w.edgeConfig.repo,
+      queueDbUrl: "",
+      queueTokenName: "",
+      promptLabel: "",
+      needsRepos: [],
+    });
+    w.stored.set("cfg", legacy);
+    w.edge.now = w.makeEdge();
+    // The laptop is out of reach: the app is still served from the
+    // mirror, not relayed to a host that cannot answer.
+    w.net.hostUp = false;
+    w.net.edgeUp = false;
+    const { res, doc } = await w.core();
+    expect(res.status).toBe(200);
+    expect(doc.board).toEqual(w.data.board);
+    expect(doc.asks).toEqual([]);
+    expect(w.githubCalls).toEqual([]);
+    expect(w.queueCalls).toEqual([]);
+    const health = (await (await w.browse("/console/health", { token: null })).json()) as Record<string, unknown>;
+    expect(health.configured).toBe(true);
+    expect(health.directReady).toBe(false);
+  });
+
+  test("a notification about a directly read reply is sent, and the fresh read is not overwritten", async () => {
+    const w = await setup({ direct: true });
+    const phone = await browser();
+    await w.hostReads();
+    await w.link.now.once();
+    // Subscribing primes the notifier on the host's last copy: no replies yet.
+    expect((await w.act("push.on", { subscription: phone.subscription, label: "Pocket" })).status).toBe(200);
+    expect(w.pushes).toHaveLength(0);
+    // The laptop goes quiet; the next read comes from GitHub, where the
+    // fleet has since answered prompt #201.
+    w.net.hostUp = false;
+    w.net.edgeUp = false;
+    w.now.t += 60_000;
+    const { doc } = await w.core();
+    const asked = doc.asks.find((a: { issue: number }) => a.issue === 201) as {
+      replies: { you: boolean; at: string; text: string }[];
+    };
+    expect(asked.replies).toEqual([{ you: false, at: "2026-11-22T12:31:00", text: "Done: the docs are updated." }]);
+    // The notifier saw that fresh reply, not the mirror's empty asks.
+    expect(w.pushes).toHaveLength(1);
+    expect(JSON.parse(await phone.open(w.pushes[0].body)).title).toBe("The fleet replied on #201");
+  });
+
+  test("after a restart, a failed first direct read still shows the mirrored copy", async () => {
+    const w = await setup({ direct: true });
+    await w.hostReads();
+    await w.link.now.once();
+    // The edge restarts: nothing is in memory, but the mirror is durable.
+    w.edge.now = w.makeEdge();
+    w.directDown.on = true;
+    w.net.hostUp = false;
+    w.net.edgeUp = false;
+    w.now.t += 60_000;
+    const { doc } = await w.core();
+    expect(doc.board).toEqual(w.data.board);
+    expect(doc.asks).toEqual([]);
+    expect(doc.health.board).toEqual({ ok: false, error: expect.stringContaining("the direct source is down") });
+    expect(doc.health.asks.ok).toBe(false);
   });
 });

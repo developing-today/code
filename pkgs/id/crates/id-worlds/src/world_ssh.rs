@@ -54,7 +54,7 @@ use crate::directory_auth::Caller;
 use crate::directory_view::{
     DirectoryAction, DirectoryOutcome, HELP, Line, parse_line, render_text,
 };
-use crate::frames::{Decoded, FrameBuffer, encode_frame};
+use crate::frames::{Decoded, FrameBuffer, encode_frame, mark_binary_frame, unmark_binary_frame};
 use crate::world::hex_encode;
 use crate::world_hub::{ResolveError, WorldHub};
 #[cfg(test)]
@@ -744,6 +744,9 @@ impl SessionIo for SshFrameIo {
         loop {
             match self.buffer.next_frame() {
                 Some(Decoded::Frame(body)) => {
+                    if let Some(payload) = unmark_binary_frame(&body) {
+                        return Inbound::Bytes(payload.to_vec());
+                    }
                     return String::from_utf8(body).map_or(Inbound::Unsupported, Inbound::Text);
                 }
                 // As on iroh, an oversized length ends the stream unread.
@@ -760,6 +763,19 @@ impl SessionIo for SshFrameIo {
 
     async fn send(&mut self, frame: String) -> bool {
         match encode_frame(frame.as_bytes()) {
+            Ok(bytes) => self.handle.data(self.channel, bytes).await.is_ok(),
+            Err(_) => false,
+        }
+    }
+
+    fn supports_bytes(&self) -> bool {
+        true
+    }
+
+    async fn send_bytes(&mut self, frame: Vec<u8>) -> bool {
+        // Same envelope as a text frame; the body carries the binary
+        // marker so the peer's reader reports it as bytes.
+        match encode_frame(&mark_binary_frame(&frame)) {
             Ok(bytes) => self.handle.data(self.channel, bytes).await.is_ok(),
             Err(_) => false,
         }

@@ -116,6 +116,27 @@ export class Docs {
     await Promise.all(names.map((n) => this.refresh(n)));
   }
 
+  /** Record a section read by another trusted source, such as the edge
+   * reading GitHub or the queue store while the laptop is away. */
+  record(name: string, data: unknown, at = this.now()): void {
+    const s = this.sections.get(name);
+    if (!s) return;
+    s.data = data;
+    s.at = at;
+    s.goodAt = at;
+    s.ok = true;
+    s.error = null;
+  }
+
+  /** Keep the last good value, but say that a fresh read failed. */
+  recordFailure(name: string, error: unknown): void {
+    const s = this.sections.get(name);
+    if (!s) return;
+    s.at = this.now();
+    s.ok = false;
+    s.error = (error as Error).message.slice(0, 300);
+  }
+
   private stale(s: Section): boolean {
     return this.now() - s.at > s.ttlMs;
   }

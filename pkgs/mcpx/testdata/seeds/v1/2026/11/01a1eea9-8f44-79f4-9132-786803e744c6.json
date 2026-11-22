@@ -1,0 +1,12 @@
+{
+  "seed": "01a1eea9-8f44-79f4-9132-786803e744c6",
+  "commit": "4673a776d26c084585395392401f99937ca4199e",
+  "ref": "refs/heads/fix/11806-dogfood-sync",
+  "event": "workflow_dispatch",
+  "run": "https://github.com/developing-today/code/actions/runs/44305685872",
+  "attempt": 1,
+  "result": "failure",
+  "derivation": "v1",
+  "generators": "",
+  "date": "2026-11-18"
+}

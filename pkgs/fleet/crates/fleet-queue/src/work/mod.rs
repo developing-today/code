@@ -6,4 +6,6 @@
 
 pub mod authority;
 pub mod completion;
+pub mod degraded;
+pub mod routing;
 pub mod selection;

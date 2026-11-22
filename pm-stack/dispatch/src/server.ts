@@ -49,6 +49,7 @@ import { annotateLaunch } from "./launch_annotations.ts";
 import { GitHubClient } from "./github.ts";
 import { OpenCodeClient, OpenCodeError } from "./opencode.ts";
 import { createDispatchWorktree, worktreeNotice } from "./worktree.ts";
+import { WorktreeRegistry, cleanupDispatchWorktree, sweepDispatchWorktrees } from "./worktree_cleanup.ts";
 
 const cfg: Config = loadConfig();
 // #9028: the queue client talks to the fleet queue broker. Its token
@@ -67,6 +68,31 @@ const brokerToken = loadBrokerToken();
 const queue = brokerToken ? new QueueClient(cfg.queueBrokerUrl, brokerToken) : null;
 const github = new GitHubClient(cfg.githubAppId, cfg.githubAppPrivateKeyPem);
 const opencode = new OpenCodeClient(cfg.opencodeUrl, cfg.opencodeAuthFile);
+const worktreeRegistry = new WorktreeRegistry(cfg.worktreeRegistryFile);
+
+/** Best-effort periodic cleanup. A failed upstream read or unsafe tree is
+ * retained by the cleanup module; cleanup outcomes never affect dispatch. */
+async function sweepWorktrees(): Promise<void> {
+  if (!cfg.worktreeRoot) return;
+  const outcomes = await sweepDispatchWorktrees({
+    registry: worktreeRegistry,
+    getSession: (id) => opencode.getSession(id),
+    listSessions: () => opencode.listSessions(),
+  });
+  for (const outcome of outcomes) {
+    console.info(
+      `[dispatch-worktree] ${outcome.removed ? "removed" : "retained"} ${outcome.worktree}: ${outcome.reason}`,
+    );
+  }
+}
+
+function startWorktreeSweep(): void {
+  if (!cfg.worktreeRoot || cfg.worktreeSweepSeconds == null) return;
+  const interval = setInterval(() => void sweepWorktrees(), cfg.worktreeSweepSeconds * 1000);
+  interval.unref();
+  // One startup pass catches trees from before this process restarted.
+  void sweepWorktrees();
+}
 
 const MAX_BODY_BYTES = 256 * 1024;
 const LEASE_SECONDS = 6 * 60 * 60;
@@ -171,6 +197,30 @@ async function maybeCreateIssue(
 // POST /v1/sessions
 // ---------------------------------------------------------------------------
 
+/** Failure-path retirement looks up only the exact recorded worktree.
+ * Missing/bad registry state is an explicit retained outcome rather
+ * than a guessed path or an exception that could replace the launch
+ * error. */
+async function retireFailedWorktree(worktree: string | null, sessionId: string | null = null) {
+  if (!worktree) return null;
+  try {
+    // A previous registry bind may have failed even though createSession
+    // returned. Retry the durable binding after the failure handler has
+    // deleted that known session, so cleanup can use confirmed evidence.
+    if (sessionId != null) await worktreeRegistry.setSessionId(worktree, sessionId);
+    const record = (await worktreeRegistry.load()).find((r) => r.worktree === worktree && r.state === "active");
+    if (!record) return { worktree, removed: false, reason: "no active registry record; retained" };
+    return await cleanupDispatchWorktree({
+      record,
+      registry: worktreeRegistry,
+      getSession: (id) => opencode.getSession(id),
+      listSessions: () => opencode.listSessions(),
+    });
+  } catch (e) {
+    return { worktree, removed: false, reason: `cleanup unavailable: ${e instanceof Error ? e.message : String(e)}` };
+  }
+}
+
 async function launchSession(
   caller: CallerIdentity,
   req: SessionRequest,
@@ -185,6 +235,7 @@ async function launchSession(
   // launch fails and the task is cancelled like any pre-session error.
   let sessionDirectory = directory;
   let notice = "";
+  let createdWorktree: { directory: string; worktree: string; base: string } | null = null;
   if (cfg.worktreeRoot) {
     const primary = resolveSessionDirectory("bearer", req.repo, undefined, REPO_DIRS);
     const wt = await createDispatchWorktree({
@@ -194,14 +245,40 @@ async function launchSession(
       repo: req.repo,
       taskId: task.id,
     });
+    createdWorktree = wt;
+    failureContext.worktree = wt.worktree;
     sessionDirectory = wt.directory;
     notice = `\n${worktreeNotice(wt.worktree, primary)}`;
+    try {
+      await worktreeRegistry.add({
+        taskId: task.id,
+        sessionId: null,
+        repo: req.repo,
+        primary,
+        worktree: wt.worktree,
+        base: wt.base,
+        createdAt: new Date().toISOString(),
+      });
+    } catch (e) {
+      warnings.push(
+        `dispatch worktree registry write failed; cleanup will retain this tree: ${e instanceof Error ? e.message : String(e)}`,
+      );
+    }
   }
   const session = await opencode.createSession({
     directory: sessionDirectory,
     title: req.title ?? titleFromPrompt(req.prompt),
     model: req.model,
   });
+  if (createdWorktree) {
+    try {
+      await worktreeRegistry.setSessionId(createdWorktree.worktree, session.id);
+    } catch (e) {
+      warnings.push(
+        `dispatch worktree session binding failed; cleanup will retain this tree: ${e instanceof Error ? e.message : String(e)}`,
+      );
+    }
+  }
   const prefix = `[dispatch] Queue task #${task.id} · Issue ${issue ? issue.url : "none"} · Repo ${req.repo}${notice}`;
   await withCreatedSession(session.id, failureContext, async () => {
     await opencode.sendPrompt(session.id, `${prefix}\n\n${req.prompt}`);
@@ -300,7 +377,7 @@ async function handleSessions(req: Request, caller: CallerIdentity): Promise<Res
   // 3-5. Launch + assign. wait=false: answer after the enqueue and finish
   // the launch asynchronously, recording the outcome on the task row.
   if (!body.wait) {
-    const failureContext: LaunchFailureContext = { sessionId: null };
+    const failureContext: LaunchFailureContext = { sessionId: null, worktree: null };
     void (async () => {
       try {
         await launchSession(caller, body, task, issue, directory, warnings, failureContext);
@@ -317,6 +394,7 @@ async function handleSessions(req: Request, caller: CallerIdentity): Promise<Res
           e,
           failureContext.sessionId,
           (sessionId) => opencode.deleteSession(sessionId),
+          (sessionId) => retireFailedWorktree(failureContext.worktree, sessionId),
         );
       }
     })();
@@ -330,7 +408,7 @@ async function handleSessions(req: Request, caller: CallerIdentity): Promise<Res
   }
 
   let sessionId: string;
-  const failureContext: LaunchFailureContext = { sessionId: null };
+  const failureContext: LaunchFailureContext = { sessionId: null, worktree: null };
   try {
     sessionId = await launchSession(caller, body, task, issue, directory, warnings, failureContext);
   } catch (e) {
@@ -346,6 +424,7 @@ async function handleSessions(req: Request, caller: CallerIdentity): Promise<Res
       e,
       failureContext.sessionId,
       (sessionId) => opencode.deleteSession(sessionId),
+      (failedSessionId) => retireFailedWorktree(failureContext.worktree, failedSessionId),
     );
     // A lost claim race is a conflict, not an upstream failure: the
     // task is running under the worker that claimed it (#10737).
@@ -852,4 +931,5 @@ if (import.meta.main) {
   for (const server of servers) {
     console.log(`dispatch listening on http://${server.hostname}:${server.port} (version: ${cfg.buildVersion})`);
   }
+  startWorktreeSweep();
 }

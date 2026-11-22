@@ -14,6 +14,8 @@ export type ScreenCell = {
   bg: number;
   bold: boolean;
   columns: number;
+  /** Style token name from the wire model, when the frame carries one. */
+  token?: string | null;
 };
 
 export type ScreenPatch = {

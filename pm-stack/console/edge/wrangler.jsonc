@@ -28,8 +28,11 @@
   },
   // One object holds the state: the copy of what the host last
   // reported, what is held for it, notification subscriptions and keys,
-  // linked phones. No secrets are configured: every key it uses it made
-  // itself, or was published by the host.
+  // linked phones. Three secrets are optional, put there by
+  // scripts/expose.py --edge-direct (off by default): GITHUB_TOKEN and
+  // QUEUE_TOKEN, which let the Worker read and write GitHub and the
+  // queue store itself while the laptop is away, and EDGE_DIRECT, the
+  // explicit opt-in that must read `on` for either to be used.
   "durable_objects": { "bindings": [{ "name": "PM", "class_name": "PmEdge" }] },
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["PmEdge"] }]
 }

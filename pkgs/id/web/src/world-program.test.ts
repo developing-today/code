@@ -123,7 +123,15 @@ describe("program-only surface (#2146 phase 2)", () => {
     expect(session.url).toMatch(/\/ws\/world$/);
     session.open();
     expect(session.sent("join")).toEqual([
-      { type: "join", capability: "guest-capability", after: null, world: "arena", screen_patches: true },
+      {
+        type: "join",
+        capability: "guest-capability",
+        after: null,
+        world: "arena",
+        screen_patches: true,
+        screen_msgpack: true,
+        device_input: { keys: 128, encoder: false, pointer: true, text_entry: "keyboard" },
+      },
     ]);
 
     // Text rendering through the trusted presenter: guest output

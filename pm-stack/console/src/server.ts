@@ -574,6 +574,7 @@ if (import.meta.main) {
         keys: fileStore(cfg.edgeKeyFile),
         done: fileStore(cfg.edgeDoneFile),
         docs,
+        phones: devices,
         config: async () => ({
           owners: cfg.owners,
           certNames: cfg.certNames,
@@ -583,6 +584,10 @@ if (import.meta.main) {
           androidPackage: cfg.androidPackage,
           androidFingerprints: cfg.androidFingerprints,
           androidApp: await Bun.file(cfg.androidApk).exists(),
+          queueDbUrl: cfg.queueDbUrl,
+          queueTokenName: cfg.queueTokenName,
+          promptLabel: cfg.promptLabel,
+          needsRepos: cfg.needsRepos,
         }),
         run: heldRunner(deps),
       })

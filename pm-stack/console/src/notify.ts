@@ -132,13 +132,15 @@ export class Notifier {
     return this.seen;
   }
 
-  /** One pass. Does nothing while no device is subscribed. */
-  async tick(): Promise<number> {
+  /** One pass. Does nothing while no device is subscribed. Sections in
+   * `skip` were just read from their live source and are compared as
+   * they are, not reloaded from the mirror first. */
+  async tick(skip: string[] = []): Promise<number> {
     if (this.busy) return 0;
     this.busy = true;
     try {
       if ((await this.push.status()).devices === 0) return 0;
-      await this.docs.touch(WATCHED);
+      await this.docs.touch(WATCHED.filter((n) => !skip.includes(n)));
       const now = Object.fromEntries(WATCHED.map((n) => [n, this.docs.good(n)])) as State;
       const { messages, seen } = changes(await this.load(), now);
       for (const m of messages) await this.push.send(m.cls, m);

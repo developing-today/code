@@ -31,6 +31,13 @@ interface Pending {
 interface Store {
   devices: Device[];
   pending: Pending[];
+  removed: { hash: string; at: string }[];
+}
+
+/** Only identity metadata crosses the signed host/edge sync boundary. */
+export interface DeviceLinks {
+  devices: Pick<Device, "id" | "name" | "hash" | "createdAt" | "seenAt">[];
+  removed: { hash: string; at: string }[];
 }
 
 const CHALLENGE = /^[A-Za-z0-9_-]{43}$/;
@@ -88,10 +95,16 @@ export class Devices {
 
   private async load(): Promise<Store> {
     if (this.store) return this.store;
-    let store: Store = { devices: [], pending: [] };
+    let store: Store = { devices: [], pending: [], removed: [] };
     try {
       const parsed = JSON.parse((await this.kept.read()) ?? "");
-      if (parsed && Array.isArray(parsed.devices) && Array.isArray(parsed.pending)) store = parsed;
+      if (parsed && Array.isArray(parsed.devices) && Array.isArray(parsed.pending)) {
+        store = {
+          devices: parsed.devices,
+          pending: parsed.pending,
+          removed: Array.isArray(parsed.removed) ? parsed.removed : [],
+        };
+      }
     } catch {
       // nothing kept yet, or something that cannot be read: start with no devices
     }
@@ -177,8 +190,69 @@ export class Devices {
     const device = store.devices.find((d) => d.id === id);
     if (!device) throw new OpError(404, "that phone is not linked");
     store.devices = store.devices.filter((d) => d !== device);
+    store.removed = [
+      ...store.removed.filter((r) => r.hash !== device.hash),
+      { hash: device.hash, at: new Date(this.now()).toISOString() },
+    ];
     await this.save();
     return { removed: device.name };
+  }
+
+  /** Hash-only snapshot for the signed sync protocol; pending verifiers and
+   * token values are deliberately not part of this shape. */
+  async links(): Promise<DeviceLinks> {
+    const store = await this.load();
+    return {
+      devices: store.devices.map(({ id, name, hash, createdAt, seenAt }) => ({ id, name, hash, createdAt, seenAt })),
+      removed: store.removed.map(({ hash, at }) => ({ hash, at })),
+    };
+  }
+
+  /** Merge another endpoint's hash-only state. A removal wins for the same
+   * token hash regardless of timestamps: endpoints may have skewed clocks,
+   * and a fresh link always has a different token hash. */
+  async mergeLinks(value: unknown): Promise<void> {
+    if (!value || typeof value !== "object") return;
+    const incoming = value as Partial<DeviceLinks>;
+    if (!Array.isArray(incoming.devices) || !Array.isArray(incoming.removed)) return;
+    const validDate = (s: unknown): s is string => typeof s === "string" && Number.isFinite(Date.parse(s));
+    const store = await this.load();
+    for (const raw of incoming.removed) {
+      if (!raw || typeof raw.hash !== "string" || !/^[0-9a-f]{64}$/.test(raw.hash) || !validDate(raw.at)) continue;
+      const previous = store.removed.find((r) => r.hash === raw.hash);
+      if (!previous || Date.parse(raw.at) > Date.parse(previous.at)) {
+        store.removed = [...store.removed.filter((r) => r.hash !== raw.hash), { hash: raw.hash, at: raw.at }];
+      }
+    }
+    for (const raw of incoming.devices) {
+      if (
+        !raw ||
+        typeof raw.id !== "string" ||
+        raw.id.length > 32 ||
+        typeof raw.name !== "string" ||
+        raw.name.length > 60 ||
+        typeof raw.hash !== "string" ||
+        !/^[0-9a-f]{64}$/.test(raw.hash) ||
+        !validDate(raw.createdAt) ||
+        (raw.seenAt !== null && !validDate(raw.seenAt))
+      )
+        continue;
+      const removed = store.removed.find((r) => r.hash === raw.hash);
+      if (removed) continue;
+      const current = store.devices.find((d) => d.hash === raw.hash);
+      if (!current) store.devices.push({ ...raw });
+      else {
+        current.seenAt = !current.seenAt
+          ? raw.seenAt
+          : !raw.seenAt
+            ? current.seenAt
+            : Date.parse(raw.seenAt) > Date.parse(current.seenAt)
+              ? raw.seenAt
+              : current.seenAt;
+      }
+    }
+    store.devices = store.devices.filter((d) => !store.removed.some((r) => r.hash === d.hash));
+    await this.save();
   }
 }
 

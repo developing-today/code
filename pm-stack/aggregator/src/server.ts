@@ -50,6 +50,7 @@ import { GithubHotListConsumer, unconfiguredGithubStatus } from "./github-hot-li
 import { RoadmapAnnotationsStore, validateNewRoadmapAnnotation } from "./roadmap-annotations.ts";
 import { createAccessAuthorEnforcer, enforceAccessAuthor } from "./access-identity.ts";
 import { IdentityRegistryStore, identityMappingAuditEvent, validateIdentityMapping } from "./identity-registry.ts";
+import { healthHookAuditEvent } from "./health-hook-audit-event.ts";
 import {
   computeCoverage,
   CoverageSnapshotStore,
@@ -108,6 +109,7 @@ import {
   type DecisionEventInput,
 } from "./decision-events.ts";
 import { listStackHealthDown, readStackHealthStates, setStackHealth, validateStackHealth } from "./stack-health.ts";
+import { validateHealthHook, type HealthHookRecord } from "./health-hook.ts";
 import {
   buildHealth,
   pageRenderHealth,
@@ -240,6 +242,20 @@ import { SLO_DEFINITIONS, summarizeSloFacet, type SloFacetSummary } from "./slo.
 import { watchdogHeartbeatLine } from "./watchdog-heartbeat.ts";
 import { createWatchdogHeartbeatRecorder, finishWatchdogGapSync } from "./watchdog-runner.ts";
 import { computeFlowAnalytics } from "./flow-analytics.ts";
+import { fireOpenCodeWorkingHook } from "./health-hook-fire.ts";
+import {
+  appendReportBlockConflictResolution,
+  appendReportLateUpdate,
+  compareReportBlock,
+  defaultReportRecordsFile,
+  ReportRecordConflictError,
+  readReportRecords,
+  readReportSnapshots,
+  selectCurrentReportRecords,
+  type ReportLateUpdateOperation,
+  type ReportRecordSource,
+} from "./report-records.ts";
+import { renderReportReview, reportBlockReviews } from "./report-review.ts";
 import {
   FORECAST_CONTRACT_VERSION,
   quotaForecastContract,
@@ -361,6 +377,7 @@ const storeRemotes = cfg.storeBackend === "turso" ? createTursoRemotes(getTursoS
 const actionsStore = new ActionsStore(cfg.actionsFile, undefined, storeRemotes?.actions);
 const viewsStore = new ViewsStore(cfg.viewsFile);
 const eventsStore = new EventsStore(cfg.eventsFile);
+const reportRecordsLocation = storeRemotes?.aaLastGood ?? defaultReportRecordsFile();
 const identityRegistryStore = new IdentityRegistryStore(cfg.identityRegistryFile);
 const freshnessStore = new FreshnessStore(cfg.freshnessFile);
 
@@ -486,6 +503,9 @@ function pickSource(): Source {
         onSourceGap: recordSourceGap,
         seenActivityIds: (source) => activityStore.seenIds(source),
         snapshotRemote: storeRemotes?.usage,
+        onLaptopUnreachable: (detail) => {
+          fireOpenCodeWorkingHook("aggregator-tick", detail);
+        },
       })
     : fixtureSource();
 }
@@ -2127,6 +2147,211 @@ async function handler(req: Request): Promise<Response> {
   const prov = () => source.provenance();
   const provDetail = () => source.provenanceDetail?.();
 
+  if (req.method === "GET" && (path === "/reports" || path === "/api/reports.json")) {
+    try {
+      const records = await readReportRecords(reportRecordsLocation);
+      const snapshots = await readReportSnapshots(reportRecordsLocation);
+      const current = selectCurrentReportRecords(records);
+      if (path === "/api/reports.json") {
+        return json({
+          records: current,
+          conflicts: reportBlockReviews(records, current).map((review) => ({
+            periodId: review.periodId,
+            blockId: review.blockId,
+            storedRecordId: review.storedRecord.id,
+            renderedRecordId: review.renderedRecord.id,
+            comparison: review.comparison,
+          })),
+        });
+      }
+      return html(
+        renderReportReview(
+          reportBlockReviews(records, current),
+          records.length,
+          new Date(),
+          current,
+          new Set(snapshots.map((snapshot) => snapshot.record.period.id)),
+        ),
+      );
+    } catch {
+      if (path === "/api/reports.json") return json({ error: "report records unavailable" }, 503);
+      return html(`<h1>Report review unavailable</h1><p>Could not read retained report records.</p>`, 503);
+    }
+  }
+
+  if (req.method === "POST" && path === "/api/reports/resolve") {
+    const access = await enforceAccessAuthor(req, { kind: "drew", id: "drew", label: "Drew" });
+    if (!access.ok || !access.verified || access.author.kind !== "drew") {
+      return json({ error: "verified Access owner required" }, 403);
+    }
+    let body: Record<string, unknown>;
+    try {
+      const parsed = await readJsonBody(req);
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
+        return json({ error: "invalid resolution body" }, 400);
+      body = parsed as Record<string, unknown>;
+    } catch {
+      return json({ error: "invalid resolution body" }, 400);
+    }
+    const storedRecordId = typeof body.storedRecordId === "string" ? body.storedRecordId : "";
+    const renderedRecordId = typeof body.renderedRecordId === "string" ? body.renderedRecordId : "";
+    const blockId = typeof body.blockId === "string" ? body.blockId : "";
+    const strategy = body.strategy;
+    if (
+      !storedRecordId ||
+      !renderedRecordId ||
+      !blockId ||
+      typeof strategy !== "string" ||
+      !["stored", "rendered", "edited", "combined"].includes(strategy)
+    ) {
+      return json({ error: "storedRecordId, renderedRecordId, blockId and a valid strategy are required" }, 400);
+    }
+    if (body.resolvedText !== undefined && typeof body.resolvedText !== "string") {
+      return json({ error: "resolvedText must be text" }, 400);
+    }
+    let records;
+    try {
+      records = await readReportRecords(reportRecordsLocation);
+    } catch {
+      return json({ error: "report records unavailable" }, 503);
+    }
+    const storedRecord = records.find((record) => record.id === storedRecordId);
+    const renderedRecord = records.find((record) => record.id === renderedRecordId);
+    if (!storedRecord || !renderedRecord) return json({ error: "unknown report record" }, 404);
+    if (
+      storedRecord.period.id !== renderedRecord.period.id ||
+      storedRecord.templateVersion !== renderedRecord.templateVersion
+    ) {
+      return json({ error: "compared records must have the same period and template" }, 400);
+    }
+    const storedBlock = storedRecord.blocks.find((block) => block.id === blockId);
+    const renderedBlock = renderedRecord.blocks.find((block) => block.id === blockId);
+    if (!storedBlock || !renderedBlock) return json({ error: "compared block is missing" }, 400);
+    const comparison = compareReportBlock(storedBlock.text, renderedBlock.text);
+    if (!comparison.conflict) return json({ error: "report block has no substantive conflict" }, 400);
+    const selectedPair = reportBlockReviews(records, selectCurrentReportRecords(records)).some(
+      (review) =>
+        review.blockId === blockId &&
+        review.storedRecord.id === storedRecordId &&
+        review.renderedRecord.id === renderedRecordId,
+    );
+    const selectedText =
+      strategy === "stored" ? storedBlock.text : strategy === "rendered" ? renderedBlock.text : body.resolvedText;
+    const exactRetry = records.some((candidate) =>
+      candidate.blocks.some(
+        (block) =>
+          block.id === blockId &&
+          block.text === selectedText &&
+          block.resolution?.sourceRecordId === storedRecordId &&
+          block.resolution.comparedRecordId === renderedRecordId &&
+          block.resolution.strategy === strategy,
+      ),
+    );
+    if (!selectedPair && !exactRetry) {
+      return json({ error: "compared records are not the current review selection" }, 409);
+    }
+    try {
+      const result = await appendReportBlockConflictResolution(
+        reportRecordsLocation,
+        storedRecord,
+        blockId,
+        comparison,
+        strategy as "stored" | "rendered" | "edited" | "combined",
+        new Date().toISOString(),
+        typeof body.resolvedText === "string" ? body.resolvedText : undefined,
+        renderedRecordId,
+      );
+      return json({ inserted: result.inserted, record: result.record });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "report resolution failed";
+      const status =
+        error instanceof ReportRecordConflictError || message.startsWith("stale report block comparison:")
+          ? 409
+          : /^(report block comparison|compared report record|resolvedAt must be later|report operation |(?:stored|rendered|edited|combined) report block resolution)/.test(
+                message,
+              )
+            ? 400
+            : 500;
+      return json({ error: message }, status);
+    }
+  }
+
+  if (req.method === "POST" && path === "/api/reports/late-update") {
+    const access = await enforceAccessAuthor(req, { kind: "drew", id: "drew", label: "Drew" });
+    if (!access.ok || !access.verified || access.author.kind !== "drew") {
+      return json({ error: "verified Access owner required" }, 403);
+    }
+    let body: Record<string, unknown>;
+    try {
+      const parsed = await readJsonBody(req);
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
+        return json({ error: "invalid late update body" }, 400);
+      body = parsed as Record<string, unknown>;
+    } catch {
+      return json({ error: "invalid late update body" }, 400);
+    }
+    const reportRecordId = typeof body.reportRecordId === "string" ? body.reportRecordId : "";
+    const operation = body.operation;
+    const blockId = typeof body.blockId === "string" ? body.blockId : "";
+    const text = typeof body.text === "string" ? body.text : "";
+    const relatedAt = typeof body.relatedAt === "string" ? body.relatedAt : "";
+    const lateOperations = ["quote", "append", "banner", "event-log", "feedback"];
+    if (
+      !reportRecordId ||
+      !blockId ||
+      !text.trim() ||
+      !relatedAt ||
+      typeof operation !== "string" ||
+      !lateOperations.includes(operation)
+    ) {
+      return json({ error: "reportRecordId, a permitted operation, blockId, text and relatedAt are required" }, 400);
+    }
+    let source: ReportRecordSource | undefined;
+    if (body.source !== undefined) {
+      if (!body.source || typeof body.source !== "object" || Array.isArray(body.source))
+        return json({ error: "invalid late update source" }, 400);
+      const candidate = body.source as Record<string, unknown>;
+      if (
+        typeof candidate.id !== "string" ||
+        typeof candidate.uri !== "string" ||
+        typeof candidate.observedAt !== "string"
+      ) {
+        return json({ error: "late update source requires id, uri and observedAt" }, 400);
+      }
+      source = { id: candidate.id, uri: candidate.uri, observedAt: candidate.observedAt };
+    }
+    let records;
+    try {
+      records = await readReportRecords(reportRecordsLocation);
+    } catch {
+      return json({ error: "report records unavailable" }, 503);
+    }
+    const current = records.find((record) => record.id === reportRecordId);
+    if (!current) return json({ error: "unknown report record" }, 404);
+    try {
+      const result = await appendReportLateUpdate(
+        reportRecordsLocation,
+        current,
+        operation as ReportLateUpdateOperation,
+        { id: blockId, text, relatedAt },
+        new Date().toISOString(),
+        source,
+      );
+      return json({ inserted: result.inserted, record: result.record });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "late report update failed";
+      const status =
+        error instanceof ReportRecordConflictError || message.startsWith("stale report block comparison:")
+          ? 409
+          : /^(report operation |quote report update|feedback report update|each late report update|block relatedAt|source observedAt|late update source|duplicate report block)/.test(
+                message,
+              )
+            ? 400
+            : 500;
+      return json({ error: message }, status);
+    }
+  }
+
   // --- #3978: freshness delivery for browsers ------------------------------
   // GET /freshness/stream (SSE) and GET /api/freshness-events.json read the
   // #3977 journal only. Scope is server-derived from the page name; a caller
@@ -3722,20 +3947,41 @@ async function handler(req: Request): Promise<Response> {
       const rawBody: unknown = await readJsonBody(req);
       const parsed = validateNewIncident(rawBody);
       if (!parsed.ok) return json({ error: parsed.error }, 400);
-      const { incident, created } = await store.postIncident(parsed.value);
-      const status = created ? 201 : 200;
-      // #8568/#8766 producer extensions: exactly one of needsDrew /
-      // stackHealth / decisionSet may ride an incident post. The incident insert
-      // above is unchanged; a VALIDATION failure of an extension is a
-      // 400 (the poster's bug should be loud at the poster), while a
-      // store failure is logged and never fails the incident post.
       const ext =
         rawBody && typeof rawBody === "object" && !Array.isArray(rawBody) ? (rawBody as Record<string, unknown>) : {};
       const hasNeedsDrew = ext.needsDrew !== undefined;
       const hasStackHealth = ext.stackHealth !== undefined;
       const hasDecisionSet = ext.decisionSet !== undefined;
+      const hasHealthHook = ext.healthHook !== undefined;
+      // #12602 (#12599 decision b): the healthHook extension carries the
+      // full C3 incident record to the alerts ledger. It is gated and
+      // validated BEFORE the incident insert, unlike the extensions
+      // below, because a valid record rides the insert onto the opened
+      // event's detail; a malformed one is a 400 naming the field,
+      // before anything is stored.
+      let healthHook: HealthHookRecord | undefined;
+      if (hasHealthHook) {
+        if (parsed.value.source !== "health-hook") {
+          return json({ error: 'healthHook extension is only accepted for source "health-hook"' }, 400);
+        }
+        const hv = validateHealthHook(ext.healthHook);
+        if (!hv.ok) return json({ error: hv.error }, 400);
+        healthHook = hv.value;
+      }
+      const { incident, created } = await store.postIncident(parsed.value, healthHook ? { healthHook } : undefined);
+      const status = created ? 201 : 200;
+      // #8568/#8766 producer extensions: exactly one of needsDrew /
+      // stackHealth / decisionSet may ride an incident post; #12602 adds
+      // healthHook, which may co-ride with stackHealth (health-hook
+      // source only, gated above) and with nothing else. A VALIDATION
+      // failure of an extension is a 400 (the poster's bug should be
+      // loud at the poster), while a store failure is logged and never
+      // fails the incident post.
       if ([hasNeedsDrew, hasStackHealth, hasDecisionSet].filter(Boolean).length > 1) {
         return json({ error: "needsDrew, stackHealth and decisionSet extensions are mutually exclusive" }, 400);
+      }
+      if (hasHealthHook && (hasNeedsDrew || hasDecisionSet)) {
+        return json({ error: "healthHook extension may only co-ride with stackHealth" }, 400);
       }
       if (hasNeedsDrew) {
         const v = validateNeedsDrew(ext.needsDrew);
@@ -3757,8 +4003,28 @@ async function handler(req: Request): Promise<Response> {
         if (!v.ok) return json({ error: v.error }, 400);
         try {
           await setStackHealth(cfg.stackHealthFile, v.value);
+          const auditEvent = healthHookAuditEvent({
+            title: parsed.value.title,
+            source: parsed.value.source,
+            stackHealth: v.value,
+          });
+          if (auditEvent) {
+            try {
+              await eventsStore.record(auditEvent);
+            } catch (err) {
+              console.error(
+                `alerts intake: health-hook audit append failed (${err instanceof Error ? err.message : "error"})`,
+              );
+            }
+          }
           if (v.value.state === "up") {
-            await store.closeOpenIncidentByKey(parsed.value.source, parsed.value.key);
+            // #12602: a healthHook recovery record rides the closed
+            // event's detail of the incident it closes.
+            await store.closeOpenIncidentByKey(
+              parsed.value.source,
+              parsed.value.key,
+              healthHook?.state === "up" ? { healthHook } : undefined,
+            );
           }
           requestAlertTick();
         } catch (err) {
@@ -4249,6 +4515,20 @@ async function handler(req: Request): Promise<Response> {
     const result = alertActionMatch[2] === "ack" ? await store.ackIncident(id) : await store.closeIncident(id);
     if (!result.incident) return json({ error: "no such incident", id }, 404);
     return json({ incident: result.incident, transitioned: result.transitioned });
+  }
+  // Per-incident read (#12602): the incident plus its full ledger
+  // event history — C6's detail path for the healthHook incident
+  // records stored on the opened/closed event details.
+  const alertReadMatch = /^\/api\/alerts\/([\w-]+)$/.exec(path);
+  if (req.method === "GET" && alertReadMatch) {
+    const id = alertReadMatch[1];
+    if (!UUID_RE.test(id)) return json({ error: "incident id must be a uuid" }, 400);
+    const store = await getAlertsStore();
+    if (!store) return json({ error: "alerts store unavailable" }, 503);
+    const incident = await store.getIncident(id);
+    if (!incident) return json({ error: "no such incident", id }, 404);
+    const events = await store.listIncidentEvents(id);
+    return json({ incident, events });
   }
   if (path === "/alerts" || path === "/api/alerts.json") {
     const store = await getAlertsStore();

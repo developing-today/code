@@ -34,6 +34,7 @@
 //!   world        Mint invites for, and join, multiplayer worlds hosted over Iroh
 //!   gallery      Administer a program gallery directory (removals, appeals, review)
 //!   match-audit Export and verify signed match-audit v0 logs
+//!   walk       The #9106 walking skeleton, driven by hand (stored nodes, sync, reports)
 //!   group        Groups: create, policy, add, remove, set roles, list, join
 //!   delegate     Grant a delegate a scope in a group
 //!   revoke       Revoke a delegation by its grant's event ID
@@ -111,6 +112,7 @@ pub mod groups;
 #[cfg(feature = "sandbox")]
 pub mod match_audit;
 pub mod tag;
+pub mod walk;
 pub mod world;
 pub mod writer_sets;
 
@@ -121,6 +123,7 @@ pub use groups::{DelegateArgs, GroupCommand, GroupRemoveMode, GroupTemplate, Rev
 #[cfg(feature = "sandbox")]
 pub use match_audit::MatchAuditCommand;
 pub use tag::TagCommand;
+pub use walk::WalkCommand;
 pub use world::{
     JournalCommand, WorldApplyArgs, WorldCapsArgs, WorldCommand, WorldCompileArgs,
     WorldCrossWorldWriteArgs, WorldDevArgs, WorldDiffArgs, WorldDoctorArgs, WorldDownloadArgs,
@@ -1387,6 +1390,11 @@ pub enum Command {
     #[cfg(feature = "sandbox")]
     #[command(subcommand)]
     MatchAudit(MatchAuditCommand),
+    /// The #9106 walking skeleton, driven by hand: stored nodes,
+    /// a signed record at an id:// address, sync over the
+    /// federation exchange protocol, conflict reports (#12232).
+    #[command(subcommand)]
+    Walk(WalkCommand),
     /// Groups: create, show the policy, add, remove, set roles, list, and join (P6.7a).
     ///
     /// Each action records one event in the group log and prints one line, or one JSON object with

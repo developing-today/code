@@ -43,9 +43,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use atlas_core::classify::{
-    self, Disposition, ReviewerIdentity, RunConfig, SchemaDoc, iso_now,
-};
+use atlas_core::classify::{self, Disposition, ReviewerIdentity, RunConfig, SchemaDoc, iso_now};
 use serde_json::Value as Json;
 
 fn fail(msg: &str) -> ExitCode {
@@ -109,8 +107,7 @@ impl Flags {
     }
 
     fn require(&self, name: &str) -> Result<&str, String> {
-        self.get(name)
-            .ok_or_else(|| format!("missing {name}"))
+        self.get(name).ok_or_else(|| format!("missing {name}"))
     }
 
     fn has(&self, name: &str) -> bool {
@@ -127,17 +124,14 @@ fn now_default() -> String {
 }
 
 fn read_json(path: &str) -> Result<Json, String> {
-    let text =
-        std::fs::read_to_string(path).map_err(|e| format!("read {path}: {e}"))?;
+    let text = std::fs::read_to_string(path).map_err(|e| format!("read {path}: {e}"))?;
     serde_json::from_str(&text).map_err(|e| format!("parse {path}: {e}"))
 }
 
 fn emit(doc: &Json, manifest_out: Option<&str>) -> Result<(), String> {
-    let text = serde_json::to_string_pretty(doc)
-        .map_err(|e| format!("serialize manifest: {e}"))?;
+    let text = serde_json::to_string_pretty(doc).map_err(|e| format!("serialize manifest: {e}"))?;
     if let Some(path) = manifest_out {
-        std::fs::write(path, format!("{text}\n"))
-            .map_err(|e| format!("write {path}: {e}"))?;
+        std::fs::write(path, format!("{text}\n")).map_err(|e| format!("write {path}: {e}"))?;
     }
     println!("{text}");
     Ok(())
@@ -206,10 +200,10 @@ fn action_schema_review(db: &Path, args: &[String]) -> Result<Json, String> {
         ],
         &[],
     )?;
-    let old = SchemaDoc::parse(&read_json(flags.require("--old-schema")?)?)
-        .map_err(|e| e.to_string())?;
-    let new = SchemaDoc::parse(&read_json(flags.require("--new-schema")?)?)
-        .map_err(|e| e.to_string())?;
+    let old =
+        SchemaDoc::parse(&read_json(flags.require("--old-schema")?)?).map_err(|e| e.to_string())?;
+    let new =
+        SchemaDoc::parse(&read_json(flags.require("--new-schema")?)?).map_err(|e| e.to_string())?;
     // The review's config provenance binds the reviewer identity
     // and both schema documents.
     let config_canonical = format!(
@@ -235,8 +229,8 @@ fn action_schema_review(db: &Path, args: &[String]) -> Result<Json, String> {
             classify::sha256_hex(config_canonical.as_bytes())
         ),
     };
-    let review = classify::review_schema_change(db, &old, &new, reviewer)
-        .map_err(|e| e.to_string())?;
+    let review =
+        classify::review_schema_change(db, &old, &new, reviewer).map_err(|e| e.to_string())?;
     serde_json::to_value(&review).map_err(|e| format!("serialize review: {e}"))
 }
 

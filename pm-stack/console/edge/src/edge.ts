@@ -17,8 +17,9 @@
 // presents a sign-in token that verifies; the host is whoever signs with
 // the key the host itself published through its tunnel; a phone is
 // whoever holds a token this service issued.
-import { type Action, ownActions } from "../../src/actions.ts";
+import { actions, type Action, ownActions } from "../../src/actions.ts";
 import { AuthError, type Identity, identify } from "../../src/auth.ts";
+import { DIRECT_ACTIONS, DIRECT_READ_SECTIONS, directClasses, directRead } from "./direct.ts";
 import { Devices, Limiter } from "../../src/devices.ts";
 import { type Act, DOC_NAMES, type DocName, Docs, Stamped } from "../../src/docs.ts";
 import {
@@ -87,6 +88,10 @@ const AUDIT_KEPT = 300;
 const WATCHING_MS = 90_000;
 /** The host is reported silent after this long without a sync. */
 export const SILENT_MS = 10 * 60_000;
+/** The laptop is quiet long enough to bypass it for safe reads and writes. */
+const DIRECT_READ_AFTER_MS = 60_000;
+/** How often the self-check may run again. */
+const SELF_CHECK_EVERY_MS = 60 * 60_000;
 const KEY_FETCH_EVERY_MS = 30_000;
 const STATIC: Record<string, string> = {
   "app.js": "text/javascript; charset=utf-8",
@@ -123,6 +128,14 @@ export interface EdgeOptions {
   now?: () => number;
   /** Reaches the sign-in issuer's keys and the push services. */
   fetchImpl?: typeof fetch;
+  /** What the edge may do itself while the laptop is away: the switch,
+   * the two tokens, and the fetch the direct reads and writes use. */
+  direct?: {
+    enabled: boolean;
+    githubToken?: string;
+    queueToken?: string;
+    fetchImpl?: typeof fetch;
+  };
   /** Ask to be woken at a time: the check for a silent host. */
   setAlarm?: (at: number) => Promise<void>;
 }
@@ -131,6 +144,12 @@ export class Edge {
   private kv: KV;
   private now: () => number;
   private fetchImpl: typeof fetch;
+  private direct?: EdgeOptions["direct"];
+  /** When each section was last read directly, so a fresh read is not
+   * made more often than the section's own interval. */
+  private directAt = new Map<string, number>();
+  /** The last self-check: one direct read of each kind, and how it went. */
+  private selfCheckResult: { at: number; kinds: Record<string, { ok: boolean; error?: string }> } | null = null;
   private setAlarm: (at: number) => Promise<void>;
   private cfg: EdgeConfig | null | undefined;
   private mirrors = new Map<string, Mirror | null>();
@@ -156,6 +175,7 @@ export class Edge {
     this.kv = options.kv;
     this.now = options.now ?? Date.now;
     this.fetchImpl = options.fetchImpl ?? fetch;
+    this.direct = options.direct;
     this.setAlarm = options.setAlarm ?? (async () => {});
     this.docs = new Docs(
       Object.fromEntries(
@@ -305,6 +325,175 @@ export class Edge {
     }
   }
 
+  // ---- doing it here while the laptop is away --------------------------
+
+  /** The laptop has been quiet long enough to bypass it. */
+  private directQuiet(): boolean {
+    return this.now() - (this.hostSeen ?? 0) >= DIRECT_READ_AFTER_MS;
+  }
+
+  /** The switch is on and both tokens are here: the edge may act itself.
+   * The quiet gate is separate, so health can say the capability is
+   * ready even while the laptop is still reporting. */
+  private directCapable(): boolean {
+    return this.direct?.enabled === true && Boolean(this.direct.githubToken) && Boolean(this.direct.queueToken);
+  }
+
+  /** May act itself right now: capable, and the laptop known quiet. */
+  private directReady(cfg: EdgeConfig | null): boolean {
+    return this.directCapable() && this.directConfigReady(cfg) && this.directQuiet();
+  }
+
+  /** The config carries what direct mode needs: a config stored or
+   * reported before direct mode existed has these empty, and the edge
+   * serves the offline app from it without acting itself. */
+  private directConfigReady(cfg: EdgeConfig | null): boolean {
+    return cfg !== null && cfg.queueDbUrl !== "" && cfg.queueTokenName !== "" && cfg.promptLabel !== "";
+  }
+
+  /** The laptop's own classes, wired for the edge. Null while the
+   * capability is not there. */
+  private directClasses(cfg: EdgeConfig | null): ReturnType<typeof directClasses> | null {
+    if (cfg === null || !this.directCapable() || !this.directConfigReady(cfg)) return null;
+    return directClasses(cfg, {
+      githubToken: this.direct?.githubToken,
+      queueToken: this.direct?.queueToken,
+      fetchImpl: this.direct?.fetchImpl as never,
+    });
+  }
+
+  /** One direct read of a section, recorded in the mirror the documents
+   * are built from. A section is not read again within its own interval,
+   * and a failed read keeps the last good copy and says why. After an
+   * action of this side's own, the read is forced: the change must show
+   * at once, not when the interval runs out. */
+  private async directReadSection(name: string, cfg: EdgeConfig | null, force = false): Promise<void> {
+    const now = this.now();
+    const last = this.directAt.get(name) ?? 0;
+    if (!force && now - last < (SECTIONS[name] ?? 0)) return;
+    this.directAt.set(name, now);
+    const direct = this.directClasses(cfg);
+    if (!direct) return;
+    // After a restart the in-memory sections are empty even though the
+    // durable mirror holds the host's last copy: load it first, so a
+    // failed first read keeps last-good data instead of nothing.
+    if (this.docs.good(name) === null) await this.docs.refresh(name);
+    try {
+      this.docs.record(name, await directRead(name, direct.ops, direct.work), now);
+    } catch (error) {
+      this.docs.recordFailure(name, error);
+    }
+  }
+
+  /** The sections of one document that the edge reads itself, when it may. */
+  private async directRefresh(doc: DocName): Promise<void> {
+    const names = doc === "core" ? ["board", "asks"] : doc === "ops" ? ["prs", "priorities"] : [];
+    if (names.length === 0) return;
+    const cfg = await this.config();
+    if (!this.directReady(cfg)) return;
+    for (const name of names) await this.directReadSection(name, cfg);
+    // The notifier is told of the sections just read directly, so its
+    // refresh does not reload the laptop's mirror over them.
+    const watched = names.filter((n) => WATCHED.includes(n));
+    if (watched.length > 0) {
+      await this.notifier.tick(watched).catch(() => {});
+    }
+  }
+
+  /** The self-check: one direct read of each kind, run when the
+   * capability arrives and at most once an hour after, its result kept
+   * for health. It proves the path without taking the laptop down. */
+  private async maybeSelfCheck(cfg: EdgeConfig | null): Promise<void> {
+    const direct = this.directClasses(cfg);
+    if (!direct) return;
+    const now = this.now();
+    const stored = (await this.kv.get("selfcheck")) as
+      | { at: number; kinds: Record<string, { ok: boolean; error?: string }> }
+      | undefined;
+    if (stored && now - stored.at < SELF_CHECK_EVERY_MS) {
+      this.selfCheckResult = stored;
+      return;
+    }
+    const kinds: Record<string, { ok: boolean; error?: string }> = {};
+    for (const name of DIRECT_READ_SECTIONS) {
+      try {
+        await directRead(name, direct.ops, direct.work);
+        kinds[name] = { ok: true };
+      } catch (error) {
+        kinds[name] = { ok: false, error: (error as Error).message.slice(0, 200) };
+      }
+    }
+    this.selfCheckResult = { at: now, kinds };
+    await this.kv.put("selfcheck", this.selfCheckResult);
+  }
+
+  /** The stand-in for the queue's enqueue in a prompt the edge files or
+   * answers itself: the issue already exists on GitHub, so only its
+   * queue task is left, held for the laptop's return as prompt.enqueue.
+   * The packet carries the issue's number; the text is the owner's own. */
+  private enqueueRecorder(
+    args: Record<string, unknown>,
+    by: string,
+  ): (packet: unknown) => Promise<{ code: number; stdout: string; stderr: string }> {
+    return async (packet) => {
+      const issue = Number((packet as { payload?: { issue?: { number?: unknown } } })?.payload?.issue?.number);
+      if (!Number.isSafeInteger(issue) || issue <= 0) {
+        throw new Error("the prompt's issue could not be read from its packet");
+      }
+      const at = new Date(this.now()).toISOString();
+      const held = await this.heldList();
+      held.push({
+        id: crypto.randomUUID(),
+        kind: "prompt.enqueue",
+        args: { issue, text: String(args.text ?? ""), at },
+        who: by,
+        at,
+      });
+      await this.saveHeld();
+      return { code: 0, stdout: "", stderr: "" };
+    };
+  }
+
+  /** An action this side runs itself through the laptop's own classes,
+   * recorded before and after like own(). Only the sections it touched
+   * that the edge reads itself are read again at once. */
+  private async directAct(kind: string, args: Record<string, unknown>, by: string, via: string): Promise<Response> {
+    const cfg = await this.config();
+    const direct = this.directClasses(cfg);
+    if (!direct) throw new Error("the edge cannot act itself right now");
+    const table = actions(direct.ops, direct.work, this.push, this.phones.devices);
+    const action = table[kind];
+    const base = { at: new Date(this.now()).toISOString(), who: by, via, action: kind, args: action.audit(args) };
+    await this.audit({ ...base, phase: "start" });
+    const entry = { id: crypto.randomUUID(), kind, at: base.at, by, note: "" };
+    try {
+      let result: unknown;
+      if (kind === "ask.send") result = await direct.work.ask(args, this.enqueueRecorder(args, by));
+      else if (kind === "ask.reply") result = await direct.work.askReply(args, this.enqueueRecorder(args, by));
+      else result = await action.run(args);
+      await this.audit({ ...base, phase: "done", ok: true });
+      await this.logAct({ ...entry, status: "done" });
+      for (const name of action.touch) {
+        if ((DIRECT_READ_SECTIONS as readonly string[]).includes(name)) {
+          await this.directReadSection(name, cfg, true);
+        }
+      }
+      if (action.touch.some((n) => WATCHED.includes(n))) {
+        // The sections just read directly are not reloaded from the
+        // laptop's mirror by the notifier's refresh.
+        const refreshed = action.touch.filter(
+          (n) => (DIRECT_READ_SECTIONS as readonly string[]).includes(n) && WATCHED.includes(n),
+        );
+        await this.notifier.tick(refreshed).catch(() => {});
+      }
+      return json({ ok: true, result });
+    } catch (error) {
+      await this.audit({ ...base, phase: "done", ok: false, error: (error as Error).message });
+      await this.logAct({ ...entry, status: "failed", note: (error as Error).message.slice(0, 200) });
+      throw error;
+    }
+  }
+
   // ---- the host's report -------------------------------------------------
 
   /** The host's public key, given by the stateless part after it asked
@@ -363,6 +552,7 @@ export class Edge {
       this.confirmed[name] = { hash: theirs.hash, at: Math.min(theirs.at, now), error };
     }
     const changed = await this.take(msg.sections);
+    await this.phones.devices.mergeLinks(msg.phones);
     // A section that has not changed is not sent again: the copy here is
     // as current as the host says, and as healthy.
     const fresher: string[] = [];
@@ -453,6 +643,7 @@ export class Edge {
       notify: (await this.push.status()).devices > 0 || (await this.phones.devices.list()).length > 0,
       want,
       commands: held,
+      phones: await this.phones.devices.links(),
     };
     return json(answer);
   }
@@ -498,10 +689,21 @@ export class Edge {
     // Public: nothing here says anything about the fleet.
     if (path === `${BASE}/health` && method === "GET") {
       await this.ready();
+      // The self-check runs when the capability is there: one direct
+      // read of each kind, and how it went. Nothing here is a secret.
+      await this.maybeSelfCheck(cfg);
       return json({
         ok: true,
         edge: true,
         configured: cfg !== null,
+        directEnabled: this.direct?.enabled === true,
+        githubTokenConfigured: Boolean(this.direct?.githubToken),
+        queueTokenConfigured: Boolean(this.direct?.queueToken),
+        // Ready to act itself once the laptop is quiet: the switch and
+        // tokens are here, and the config carries what direct mode
+        // needs. The quiet gate itself is not part of this answer.
+        directReady: this.directCapable() && this.directConfigReady(cfg),
+        selfCheck: this.selfCheckResult,
         hostSeen: this.hostSeen || null,
         // Since this object last started: requests it answered as the
         // owner's, and requests it left to the host to judge.
@@ -570,6 +772,9 @@ export class Edge {
         }
         if (seg.length === 2 && seg[0] === "doc" && DOC_NAMES.includes(seg[1] as DocName)) {
           this.lastDocAt = this.now();
+          // A document the edge reads itself: refresh its sections
+          // directly first, when the laptop has gone quiet.
+          await this.directRefresh(seg[1] as DocName);
           const res = docResponse(req, await this.docs.doc(seg[1] as DocName));
           // When the host last reported, beside the document rather than
           // in it: it changes with every report and the content does not.
@@ -601,6 +806,13 @@ export class Edge {
         return json({ error: "args: expected an object" }, 400);
       }
       if (!Object.hasOwn(this.table, kind)) {
+        // One the edge does itself: while the laptop is known quiet it
+        // runs here, through the laptop's own classes, and is never
+        // sent to the laptop — so the laptop cannot do it a second
+        // time. Otherwise it is the host's to do, as before.
+        if ((DIRECT_ACTIONS as readonly string[]).includes(kind) && this.directReady(cfg)) {
+          return await this.directAct(kind, args as Record<string, unknown>, by, who.via);
+        }
         // The host's to do. The stateless part relays it, and if the
         // host cannot be reached comes back to have it held.
         // It is named here, before it goes anywhere. If the host's answer

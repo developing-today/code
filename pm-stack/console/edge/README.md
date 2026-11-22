@@ -7,16 +7,17 @@ runs the fleet's tools can be reached.
 
 ## What runs where
 
-| Thing                                                    | Where                          | When the laptop cannot be reached                                           |
-| -------------------------------------------------------- | ------------------------------ | --------------------------------------------------------------------------- |
-| The app's page, script and icons                         | edge                           | unchanged                                                                   |
-| Checking who is calling                                  | edge, and again on the laptop  | the edge still answers the owner; anyone it is unsure of gets nothing       |
-| State (in progress, next, needs me, prompts, pull…)      | edge, from the laptop's report | served as of the last report, with that time shown                          |
-| Notifications: keys, subscriptions, sending              | edge                           | unchanged; and one says the laptop has gone quiet                           |
-| Linked phones and the widget's summary                   | edge                           | unchanged                                                                   |
-| Actions safe to do late (prompts, answers, comments, …)  | laptop, relayed at once        | held at the edge, run once when it is back, dropped after a day and said so |
-| Actions not safe to do late (merge, units, unblock, …)   | laptop, relayed at once        | refused, saying why                                                         |
-| The dashboard's own pages, logs, one pull request's page | laptop                         | a plain notice with a link to the app                                       |
+| Thing                                                                            | Where                                             | When the laptop cannot be reached                                                                                                                                                            |
+| -------------------------------------------------------------------------------- | ------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| The app's page, script and icons                                                 | edge                                              | unchanged                                                                                                                                                                                    |
+| Checking who is calling                                                          | edge, and again on the laptop                     | the edge still answers the owner; anyone it is unsure of gets nothing                                                                                                                        |
+| State (in progress, next, needs me, prompts, pull…)                              | edge, from the laptop's report                    | the board, pull requests, ranked issues and prompts refresh from GitHub and the queue store after one minute of silence; the rest stays as of the last report                                |
+| Notifications: keys, subscriptions, sending                                      | edge                                              | unchanged; and one says the laptop has gone quiet                                                                                                                                            |
+| Linked phones and the widget's summary                                           | edge                                              | unchanged                                                                                                                                                                                    |
+| Actions safe to do late (prompts, answers, comments, …)                          | laptop, relayed at once                           | held at the edge, run once when it is back, dropped after a day and said so                                                                                                                  |
+| Direct actions (reply to or close a prompt, comment, rank an issue, move a task) | edge, once the laptop has been quiet for a minute | run at the edge through the laptop's own classes, and never sent to the laptop, so they are not done twice; a new prompt is filed at the edge and only its queue task is held for the laptop |
+| Actions not safe to do late (merge, units, unblock, …)                           | laptop, relayed at once                           | refused, saying why                                                                                                                                                                          |
+| The dashboard's own pages, logs, one pull request's page                         | laptop                                            | a plain notice with a link to the app                                                                                                                                                        |
 
 The list of actions that may be done late is `HOLDABLE` in
 `../src/edge-proto.ts`.
@@ -31,7 +32,9 @@ Cloudflare Access ── sign-in (email code; Google once its client exists)
 pm-console-edge (this Worker, on the hostname's route)
   ├─ src/worker.ts   wiring: the object, the app's files, the laptop
   ├─ src/entry.ts    what to do with a request
-  └─ src/edge.ts     the state, in one Durable Object
+  ├─ src/edge.ts     the state, in one Durable Object
+  └─ src/direct.ts   the laptop's own classes (Ops, Work) with stand-ins
+                     for GitHub and the queue store, for while it is away
       │  same hostname, through the tunnel
 laptop: pm-console (../src/server.ts), reporting through ../src/sync.ts
 ```
@@ -77,7 +80,21 @@ laptop: pm-console (../src/server.ts), reporting through ../src/sync.ts
   only actions on the late list, and records each in its audit log as
   `via: edge-held` with who took it and when.
 
-The Worker has no secrets configured. The keys it uses it made itself
+Three secrets are optional, put there by the laptop's
+`scripts/expose.py --edge-direct on` (off by default, remembered):
+`GITHUB_TOKEN` (the repository automation token), `QUEUE_TOKEN` (the
+queue store token), and `EDGE_DIRECT`, the explicit opt-in that must
+read `on` for either to be used. With them, the edge reads the board,
+pull requests, ranked issues and prompts itself, and runs the direct
+actions, once the laptop has been quiet for a minute; without them, or
+with the flag off, it serves only the laptop's last report and holds
+what the owner does, as before. `/console/health` says whether the
+flag is on, whether each token is present, whether the direct
+capability is ready, and the result of the self-check: one direct read
+of each kind, run when the secrets arrive and at most once an hour
+after. A secret is sent only to its own service — the GitHub token
+only to GitHub, the queue token only to the queue store — and is never
+returned by health. The other keys the Worker uses it made itself
 (notification signing) or were published to it (the laptop's, the
 sign-in issuer's).
 
@@ -116,10 +133,18 @@ simply what is behind the hostname.
 
 ## Limits worth knowing
 
-- State at the edge is the laptop's last report. With the laptop gone it
-  ages, and the app says how old it is; it does not go on changing.
-- Reading the queue and filing a prompt straight from the edge, with the
-  laptop off, is not built: it needs the queue store's and GitHub's
-  credentials at the edge.
+- State at the edge is the laptop's last report, except for the board,
+  pull requests, ranked issues and prompts, which the edge reads itself
+  after the laptop has been quiet for a minute. The rest ages, and the
+  app says how old it is.
+- A new prompt filed at the edge still needs the laptop for its queue
+  task: the issue is filed at once and only the task is held, as
+  `prompt.enqueue`, for the laptop's return. The queue task is never
+  written from the edge itself: there is no fleet binary there, and
+  copying the queue's rows by hand would break its contract.
+- An action the edge runs itself is never sent to the laptop, so the
+  laptop cannot repeat it; an action that was relayed and got no answer
+  is only ever resolved by the laptop, which wrote its name down before
+  starting. That is the rule against doing anything twice.
 - The storage is one Durable Object. A section larger than one stored
   value is kept in pieces.

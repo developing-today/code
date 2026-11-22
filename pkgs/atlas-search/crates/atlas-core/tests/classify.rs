@@ -83,10 +83,7 @@ fn insert_record(con: &Connection, record: &ClassificationRecord) {
 /// local backend's content-hash mapping does), and the reuse
 /// floor is what keeps their classifications consistent.
 fn fixture_db(tag: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!(
-        "atlas-classify-{}-{tag}",
-        std::process::id()
-    ));
+    let dir = std::env::temp_dir().join(format!("atlas-classify-{}-{tag}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("create fixture dir");
     let path = dir.join("corpus.db");
@@ -128,10 +125,38 @@ fn fixture_db(tag: &str) -> PathBuf {
     }
     // (session, kind, topics, projects, sensitivity, confidence)
     let labels = [
-        ("sA", "chat", "[\"nixos\"]", "[\"atlas\"]", "personal", "high"),
-        ("sB", "code", "[\"rust\"]", "[\"atlas\"]", "shareable", "high"),
-        ("sD", "chat", "[\"nixos\"]", "[\"atlas\"]", "local-only", "high"),
-        ("sE", "chat", "[\"personal-life\"]", "[]", "personal", "high"),
+        (
+            "sA",
+            "chat",
+            "[\"nixos\"]",
+            "[\"atlas\"]",
+            "personal",
+            "high",
+        ),
+        (
+            "sB",
+            "code",
+            "[\"rust\"]",
+            "[\"atlas\"]",
+            "shareable",
+            "high",
+        ),
+        (
+            "sD",
+            "chat",
+            "[\"nixos\"]",
+            "[\"atlas\"]",
+            "local-only",
+            "high",
+        ),
+        (
+            "sE",
+            "chat",
+            "[\"personal-life\"]",
+            "[]",
+            "personal",
+            "high",
+        ),
         ("sF", "chat", "[]", "[\"atlas\"]", "bogus-value", "high"),
         ("sG", "chat", "[]", "[\"atlas\"]", "personal", "low"),
         ("sH", "chat", "[]", "[\"atlas\"]", "local-only", "high"),
@@ -183,7 +208,8 @@ fn fixture_db(tag: &str) -> PathBuf {
         )
         .expect("vector");
     }
-    con.execute_batch(atlas_core::classify::RECORDS_DDL).expect("records ddl");
+    con.execute_batch(atlas_core::classify::RECORDS_DDL)
+        .expect("records ddl");
     insert_record(&con, &decided_record("chunk:7", "local-only"));
     insert_record(&con, &decided_record("chunk:8", "personal"));
     path
@@ -256,14 +282,8 @@ fn dry_run_enumerates_only_unclassified_and_writes_nothing() {
         "{:?}",
         manifest.counts.by_outcome
     );
-    assert_eq!(
-        manifest.counts.by_outcome.get("confirmed_secret"),
-        Some(&1)
-    );
-    assert_eq!(
-        manifest.counts.by_outcome.get("held_by_reuse"),
-        Some(&1)
-    );
+    assert_eq!(manifest.counts.by_outcome.get("confirmed_secret"), Some(&1));
+    assert_eq!(manifest.counts.by_outcome.get("held_by_reuse"), Some(&1));
     assert_eq!(
         manifest.counts.by_outcome.get("excluded_personal_life"),
         Some(&1)
@@ -394,10 +414,7 @@ fn rerun_is_idempotent_and_resume_completes_an_interrupted_run() {
     assert_eq!(second.counts.written, 0);
     assert_eq!(second.counts.already_classified, 9);
     assert_eq!(second.counts.candidates, 3);
-    assert_eq!(
-        second.counts.by_prior_state.get("unresolved"),
-        Some(&3)
-    );
+    assert_eq!(second.counts.by_prior_state.get("unresolved"), Some(&3));
     assert_eq!(all_records(&path), after_first);
 
     // Resume: cap the first run at 4 decisions; the follow-up run
@@ -425,7 +442,10 @@ fn rerun_is_idempotent_and_resume_completes_an_interrupted_run() {
             })
             .collect()
     };
-    assert_eq!(strip(all_records(&interrupted)), strip(all_records(&single)));
+    assert_eq!(
+        strip(all_records(&interrupted)),
+        strip(all_records(&single))
+    );
 }
 
 fn reviewer() -> atlas_core::classify::ReviewerIdentity {
@@ -467,14 +487,17 @@ fn schema_review_examines_changed_sections_only_and_records_provenance() {
     run_classification(&path, true, &config()).expect("seed records");
     let old = SchemaDoc::parse(&serde_json::from_str(CURRENT_SCHEMA_JSON).expect("v1 json"))
         .expect("v1 schema");
-    let review = review_schema_change(&path, &old, &schema_v2_with_rename(), reviewer())
-        .expect("review");
+    let review =
+        review_schema_change(&path, &old, &schema_v2_with_rename(), reviewer()).expect("review");
     assert_eq!(review.old_version, 1);
     assert_eq!(review.new_version, 2);
     assert!(review.old_schema_hash.starts_with("sha256:"));
     assert_eq!(
         review.sections_examined,
-        vec!["provenance_fields".to_string(), "sensitivity_values".to_string()]
+        vec![
+            "provenance_fields".to_string(),
+            "sensitivity_values".to_string()
+        ]
     );
     assert_eq!(
         review.sections_skipped,
@@ -500,8 +523,8 @@ fn schema_review_never_lowers_without_a_reviewed_disposition() {
     run_classification(&path, true, &config()).expect("seed records");
     let old = SchemaDoc::parse(&serde_json::from_str(CURRENT_SCHEMA_JSON).expect("v1 json"))
         .expect("v1 schema");
-    let review = review_schema_change(&path, &old, &schema_v2_with_rename(), reviewer())
-        .expect("review");
+    let review =
+        review_schema_change(&path, &old, &schema_v2_with_rename(), reviewer()).expect("review");
 
     // No dispositions: nothing applies, least of all a lowering.
     let none = parse_dispositions(&json!({"dispositions": {}})).expect("empty dispositions");
@@ -572,9 +595,11 @@ fn removed_sensitivity_value_fails_closed_to_the_locked_default() {
         .filter(|p| p.section == "sensitivity_values" && p.action == "change")
         .collect();
     assert_eq!(proposals.len(), 2);
-    assert!(proposals
-        .iter()
-        .all(|p| p.proposed_sensitivity == "secret-bearing" && !p.lowering));
+    assert!(
+        proposals
+            .iter()
+            .all(|p| p.proposed_sensitivity == "secret-bearing" && !p.lowering)
+    );
 }
 
 mod decide_properties {
@@ -597,24 +622,23 @@ mod decide_properties {
             Just(Some(Sensitivity::LocalOnly)),
             Just(Some(Sensitivity::SecretBearing)),
         ];
-        (sens.clone(), sens, floor, any::<bool>(), any::<bool>())
-            .prop_map(|(label, chunk, floor, detector, personal_life)| {
-                CandidateContext {
-                    embed_id: "chunk:1".to_string(),
-                    chunk_legacy_sensitivity: chunk,
-                    label_sensitivity: label,
-                    label_confidence: Some("high".to_string()),
-                    kind: personal_life.then(|| "personal-life".to_string()),
-                    detector_hits: if detector {
-                        vec!["github-token"]
-                    } else {
-                        vec![]
-                    },
-                    reuse_floor: floor,
-                    reuse_floor_ref: floor.map(|_| "chunk:9".to_string()),
-                    ..CandidateContext::default()
-                }
-            })
+        (sens.clone(), sens, floor, any::<bool>(), any::<bool>()).prop_map(
+            |(label, chunk, floor, detector, personal_life)| CandidateContext {
+                embed_id: "chunk:1".to_string(),
+                chunk_legacy_sensitivity: chunk,
+                label_sensitivity: label,
+                label_confidence: Some("high".to_string()),
+                kind: personal_life.then(|| "personal-life".to_string()),
+                detector_hits: if detector {
+                    vec!["github-token"]
+                } else {
+                    vec![]
+                },
+                reuse_floor: floor,
+                reuse_floor_ref: floor.map(|_| "chunk:9".to_string()),
+                ..CandidateContext::default()
+            },
+        )
     }
 
     proptest! {

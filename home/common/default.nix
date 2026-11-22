@@ -1184,6 +1184,17 @@ in
   # EnvironmentFile at every server start — it is never stored in this
   # repo or the Nix store. The quota gatherer reads the same file (see
   # nixos/services/pm-stack) so its `opencode quota` refresh works too.
+  # Helper-only unit changes must not interrupt the server (#10639).
+  # Home Manager still reloads the unit; the activation below owns build
+  # changes explicitly, using only the serving package's store path as key.
+  systemd.user.services.opencode.Unit."X-RestartIfChanged" = false;
+  home.activation.opencodeDeploy = lib.hm.dag.entryAfter [ "reloadSystemd" ] ''
+    run ${pkgs.bash}/bin/bash ${./opencode-deploy.sh} \
+      '${opencodeCascade}' \
+      "''${XDG_STATE_HOME:-$HOME/.local/state}/opencode/deployed-build" \
+      '${pkgs.systemd}/bin/systemctl' /proc
+  '';
+
   systemd.user.services.opencode.Service = {
     ExecStartPre = toString (
       pkgs.writeShellScript "opencode-env-key-materialize" ''

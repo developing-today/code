@@ -21,10 +21,14 @@
 //!   other chunk keeps its exact byte range and text, so its
 //!   classification and vector stay valid (design §3, #6038).
 //!
-//! This is the splitting primitive only. Wiring declared boundaries
-//! into staging (`stage`) and promotion (`aggregate`) is the next
-//! slice; until then the staging path keeps its current behaviour
-//! and this module is exercised by its own tests.
+//! This module is the splitting primitive. Declared boundaries are
+//! wired into staging by [`crate::stage::stage_classified_artifact`]
+//! (boundary-safe `chunks_raw` plus one persisted classification
+//! record per chunk) and into promotion by [`crate::aggregate`],
+//! which writes each chunk's effective sensitivity into the shard
+//! and embeds identical texts once (#12628). The legacy staging
+//! path ([`crate::stage::stage_artifact`]) keeps its current
+//! behaviour for producers that declare no segments.
 
 use crate::filters::Sensitivity;
 
@@ -99,10 +103,7 @@ impl BoundaryChunk {
 /// * **Only affected chunks change** — the split depends only on the
 ///   segment edges overlapping each chunk, so revising one segment
 ///   leaves every non-overlapping chunk byte-identical.
-pub fn split_by_boundaries(
-    source: &str,
-    segments: &[ClassificationSegment],
-) -> Vec<BoundaryChunk> {
+pub fn split_by_boundaries(source: &str, segments: &[ClassificationSegment]) -> Vec<BoundaryChunk> {
     let len = source.len();
     if len == 0 {
         return Vec::new();
@@ -245,11 +246,7 @@ mod tests {
         let source = format!("{trip}{deploy}");
         let segments = [
             ClassificationSegment::certain(0, trip.len(), Sensitivity::Personal),
-            ClassificationSegment::certain(
-                trip.len(),
-                source.len(),
-                Sensitivity::Shareable,
-            ),
+            ClassificationSegment::certain(trip.len(), source.len(), Sensitivity::Shareable),
         ];
         let chunks = split_by_boundaries(&source, &segments);
         assert_eq!(chunks.len(), 2, "one chunk per turn: {chunks:?}");
@@ -277,11 +274,7 @@ mod tests {
         let secret_end = secret_start + secret.len();
         let segments = [
             ClassificationSegment::certain(0, secret_start, Sensitivity::Shareable),
-            ClassificationSegment::certain(
-                secret_start,
-                secret_end,
-                Sensitivity::SecretBearing,
-            ),
+            ClassificationSegment::certain(secret_start, secret_end, Sensitivity::SecretBearing),
             ClassificationSegment::certain(secret_end, source.len(), Sensitivity::Shareable),
         ];
         let chunks = split_by_boundaries(&source, &segments);
@@ -332,11 +325,7 @@ mod tests {
         let first_len = "2026-11-22T09:00:00Z INFO started\n".len();
         let segments = [
             ClassificationSegment::certain(0, first_len, Sensitivity::Shareable),
-            ClassificationSegment::certain(
-                first_len,
-                logs.len(),
-                Sensitivity::LocalOnly,
-            ),
+            ClassificationSegment::certain(first_len, logs.len(), Sensitivity::LocalOnly),
         ];
         let chunks = split_by_boundaries(logs, &segments);
         assert_eq!(chunks.len(), 2);

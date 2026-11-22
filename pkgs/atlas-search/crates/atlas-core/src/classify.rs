@@ -431,12 +431,14 @@ pub fn decide(ctx: &CandidateContext) -> Decision {
     // 3. Positive personal-life evidence excludes the embed.
     //    Sensitivity stays at the locked default; the exclusion
     //    disposition is the decision (design §2).
-    let personal_life = ctx.kind.as_deref().is_some_and(|k| {
-        k == "personal-life" || k == "personal_life"
-    }) || ctx
-        .topics
-        .iter()
-        .any(|t| t == "personal-life" || t == "personal_life");
+    let personal_life = ctx
+        .kind
+        .as_deref()
+        .is_some_and(|k| k == "personal-life" || k == "personal_life")
+        || ctx
+            .topics
+            .iter()
+            .any(|t| t == "personal-life" || t == "personal_life");
     if personal_life {
         return finish(
             Sensitivity::SecretBearing,
@@ -796,9 +798,7 @@ fn vectors_hash(con: &Connection) -> Result<String> {
         ))
         .map_err(|e| Error::backend(format!("classify: vector hash: {e}")))?;
     let rows = stmt
-        .query_map([], |r| {
-            Ok((r.get::<_, i64>(0)?, r.get::<_, Vec<u8>>(1)?))
-        })
+        .query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, Vec<u8>>(1)?)))
         .map_err(|e| Error::backend(format!("classify: vector hash: {e}")))?;
     let mut h = Sha256::new();
     for row in rows {
@@ -942,8 +942,7 @@ pub fn run_classification(db_path: &Path, commit: bool, config: &RunConfig) -> R
             })
             .map_err(|e| Error::backend(format!("classify: read associations: {e}")))?;
         for row in rows {
-            let (sid, dimension, values_json) =
-                row.map_err(|e| Error::backend(e.to_string()))?;
+            let (sid, dimension, values_json) = row.map_err(|e| Error::backend(e.to_string()))?;
             if !ASSOCIATION_DIMENSIONS.contains(&dimension.as_str()) {
                 continue;
             }
@@ -969,7 +968,9 @@ pub fn run_classification(db_path: &Path, commit: bool, config: &RunConfig) -> R
         let Some(id_str) = embed_id.strip_prefix(EMBED_ID_PREFIX) else {
             continue;
         };
-        let Ok(id) = id_str.parse::<i64>() else { continue };
+        let Ok(id) = id_str.parse::<i64>() else {
+            continue;
+        };
         let Some(chunk) = chunk_by_id.get(&id) else {
             continue;
         };
@@ -1023,9 +1024,7 @@ pub fn run_classification(db_path: &Path, commit: bool, config: &RunConfig) -> R
         let mut count = 0usize;
         let mut max_sens: Option<Sensitivity> = None;
         for (sid, projects) in &session_projects {
-            if sid == &chunk.session_id
-                || projects.iter().all(|p| !my_projects.contains(p))
-            {
+            if sid == &chunk.session_id || projects.iter().all(|p| !my_projects.contains(p)) {
                 continue;
             }
             let Some(day) = session_day.get(sid).copied().flatten() else {
@@ -1116,9 +1115,7 @@ pub fn run_classification(db_path: &Path, commit: bool, config: &RunConfig) -> R
         let (related_sessions, related_max) = related_stats(chunk);
         let mut evidence_refs = vec![format!("session:{}", chunk.session_id)];
         evidence_refs.extend(decision.evidence_refs.iter().cloned());
-        let previous = records
-            .get(&embed_id)
-            .map(|s| record_digest(&s.json_text));
+        let previous = records.get(&embed_id).map(|s| record_digest(&s.json_text));
         // Idempotency: an unresolved record with the same reason
         // and sensitivity is already the run's outcome — rewriting
         // it would only churn provenance.
@@ -1127,8 +1124,7 @@ pub fn run_classification(db_path: &Path, commit: bool, config: &RunConfig) -> R
                 is_unresolved(&stored.record)
                     && decision.outcome == DecisionOutcome::Unresolved
                     && stored.record.sensitivity == decision.sensitivity
-                    && stored.record.extras.get("unresolved_reason")
-                        == Some(&Json::from(reason))
+                    && stored.record.extras.get("unresolved_reason") == Some(&Json::from(reason))
             }
             _ => false,
         };
@@ -1773,8 +1769,7 @@ pub fn apply_schema_review(
                 entries.push(skip(
                     "skipped_no_disposition",
                     if proposal.lowering {
-                        "lowering proposal without a reviewed disposition — refused"
-                            .to_string()
+                        "lowering proposal without a reviewed disposition — refused".to_string()
                     } else {
                         "no reviewed disposition for this record".to_string()
                     },
@@ -1792,21 +1787,17 @@ pub fn apply_schema_review(
                 .ok();
             let Some(current_json) = current_json else {
                 skipped += 1;
-                entries.push(skip(
-                    "skipped_stale",
-                    "record no longer exists".to_string(),
-                ));
+                entries.push(skip("skipped_stale", "record no longer exists".to_string()));
                 continue;
             };
-            let current = ClassificationRecord::parse(
-                serde_json::from_str(&current_json).map_err(|e| {
+            let current =
+                ClassificationRecord::parse(serde_json::from_str(&current_json).map_err(|e| {
                     Error::fatal(format!(
                         "classify: stored record for {} is not valid JSON: {e}",
                         proposal.embed_id
                     ))
-                })?,
-            )
-            .map_err(|e| Error::fatal(format!("classify: stored record: {e}")))?;
+                })?)
+                .map_err(|e| Error::fatal(format!("classify: stored record: {e}")))?;
             let version_ok = current.schema_version == review.old_version
                 || (advanced.contains(&proposal.embed_id)
                     && current.schema_version == review.new_version);
@@ -1824,9 +1815,7 @@ pub fn apply_schema_review(
             let proposed_disposition = match &proposal.proposed_disposition {
                 Some(name) => Some(match name.as_str() {
                     "included" => ClassificationDisposition::Included,
-                    "excluded_personal_life" => {
-                        ClassificationDisposition::ExcludedPersonalLife
-                    }
+                    "excluded_personal_life" => ClassificationDisposition::ExcludedPersonalLife,
                     other => {
                         skipped += 1;
                         entries.push(skip(

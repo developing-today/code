@@ -11,12 +11,16 @@ name: pm-console-edge deploy
 # CLOUDFLARE_ACCOUNT_ID repository secrets, the ones message-bridge
 # deploys with.
 #
-# The Worker has no secrets: the keys it uses it makes itself, or are
-# published by the host. It has no route here either. The host's
-# pm-stack/console/scripts/expose.py sends the hostname through it once
-# it answers its health check, and `expose.py --edge off` takes the
-# hostname off it again, which is the rollback that needs no deploy. A
-# manual run with rollback_version puts an earlier version back.
+# The Worker has no secrets from this deploy: the keys it uses it makes
+# itself, or are published by the host. Three secrets are optional, put
+# there by the host's scripts/expose.py --edge-direct (off by default):
+# GITHUB_TOKEN and QUEUE_TOKEN, which let it act itself while the laptop
+# is away, and EDGE_DIRECT, the opt-in that must read `on`. It has no
+# route here either. The host's pm-stack/console/scripts/expose.py sends
+# the hostname through it once it answers its health check, and
+# `expose.py --edge off` takes the hostname off it again, which is the
+# rollback that needs no deploy. A manual run with rollback_version puts
+# an earlier version back.
 #
 # Until both secrets exist the job says so in its summary and skips the
 # upload instead of failing.

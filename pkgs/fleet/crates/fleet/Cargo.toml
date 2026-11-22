@@ -37,6 +37,9 @@ fleet-bridge = { workspace = true, optional = true }
 # working-seat client, so full only.
 fleet-agent = { workspace = true, optional = true }
 serde_json = { workspace = true }
+# The OpenCode session liveness probe (session_state.rs) only;
+# optional so the connect variant stays under the D7 size gate.
+base64 = { version = "0.23", optional = true }
 # The gh domain (code#8887) mints App installation tokens over the
 # GitHub API; same ureq pin as fleet-queue/fleet-search (rustls, no
 # native-tls). Only the JSON-free surface is needed: bodies are read
@@ -71,6 +74,7 @@ full = [
   "gh",
   "bridge",
   "agent",
+  "opencode-probe",
 ]
 # The serve variant's set, as one feature for the nix build.
 serve = [
@@ -79,6 +83,7 @@ serve = [
   "secrets-broker",
   "search-serve",
   "secrets",
+  "opencode-probe",
 ]
 proxy-serve = ["fleet-proxy/serve"]
 queue = ["dep:fleet-secrets", "dep:fleet-queue", "fleet-queue/client"]
@@ -109,6 +114,13 @@ secrets = ["dep:fleet-secrets"]
 # if ever needed, it is not a daemon role.
 gh = ["dep:fleet-secrets", "dep:ureq"]
 laptop-agent = ["dep:fleet-secrets", "dep:fleet-laptop-agent"]
+# Ask the local OpenCode server whether a worktree's recorded session
+# is live before reusing it (session_state.rs). In full and serve;
+# never in connect, where ureq+rustls would break the D7 2 MiB gate
+# and no local OpenCode server is expected. Without it a recorded
+# session is treated as not live, the same answer as an unreachable
+# server.
+opencode-probe = ["dep:ureq", "dep:base64"]
 # Fleet messaging through the message bridge: central sends messages or
 # commands; agents read, answer and ack. Full only (a client, not a role).
 bridge = ["dep:fleet-bridge"]

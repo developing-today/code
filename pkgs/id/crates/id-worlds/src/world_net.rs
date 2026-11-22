@@ -417,9 +417,12 @@ impl StreamIo {
                         .await;
                         if admitted {
                             match read_frame_body(&mut recv, len).await {
-                                Ok(body) => match String::from_utf8(body) {
-                                    Ok(text) => Inbound::Text(text),
-                                    Err(_) => Inbound::Unsupported,
+                                Ok(body) => match crate::frames::unmark_binary_frame(&body) {
+                                    Some(payload) => Inbound::Bytes(payload.to_vec()),
+                                    None => match String::from_utf8(body) {
+                                        Ok(text) => Inbound::Text(text),
+                                        Err(_) => Inbound::Unsupported,
+                                    },
                                 },
                                 Err(_) => Inbound::Closed,
                             }
@@ -476,6 +479,27 @@ impl SessionIo for StreamIo {
             return false;
         }
         write_frame(&mut self.send, frame.as_bytes()).await.is_ok()
+    }
+
+    fn supports_bytes(&self) -> bool {
+        true
+    }
+
+    async fn send_bytes(&mut self, frame: Vec<u8>) -> bool {
+        // Same charge and envelope as a text frame; the body carries
+        // the binary marker so the peer's reader reports it as bytes.
+        let body = crate::frames::mark_binary_frame(&frame);
+        let admitted = charge_frame_with_backpressure(
+            &self.abuse,
+            self.remote,
+            self.authorized.load(Ordering::Acquire),
+            body.len(),
+        )
+        .await;
+        if !admitted {
+            return false;
+        }
+        write_frame(&mut self.send, &body).await.is_ok()
     }
 
     fn mark_authorized(&mut self) {
@@ -667,63 +691,9 @@ impl AdminHistoryBudget {
     }
 }
 
-/// Budget for validating records returned by a plain records query.
-/// Enforces the same caps as `parse_records` and `read_records`.
-#[derive(Default)]
-struct RecordsBudget {
-    record_count: usize,
-    last_key: Option<String>,
-}
-
-impl RecordsBudget {
-    fn validate_record(&mut self, key: &str, value: &serde_json::Value) -> Result<()> {
-        // Check key length and non-empty
-        anyhow::ensure!(
-            !key.is_empty() && key.len() <= crate::world::MAX_RECORD_KEY_BYTES,
-            "record key must be 1..={} bytes",
-            crate::world::MAX_RECORD_KEY_BYTES
-        );
-
-        // Check for control characters
-        anyhow::ensure!(
-            !key.chars().any(char::is_control),
-            "record key {key:?} contains a control character"
-        );
-
-        // Check value size
-        let value_bytes = serde_json::to_vec(value)
-            .context("measure record value")?
-            .len();
-        anyhow::ensure!(
-            value_bytes <= crate::world::MAX_RECORD_VALUE_BYTES,
-            "record {key:?} is {value_bytes} bytes; the limit is {} bytes",
-            crate::world::MAX_RECORD_VALUE_BYTES
-        );
-
-        // Check total count
-        self.record_count = self
-            .record_count
-            .checked_add(1)
-            .context("record count overflow")?;
-        anyhow::ensure!(
-            self.record_count <= crate::world::MAX_RECORDS,
-            "records query contains more than {} records; the limit is {}",
-            self.record_count,
-            crate::world::MAX_RECORDS
-        );
-
-        // Check ordering: keys must be strictly ascending
-        if let Some(last) = &self.last_key {
-            anyhow::ensure!(
-                key > last.as_str(),
-                "records are out of order: key {key:?} <= last key {last:?}"
-            );
-        }
-
-        self.last_key = Some(key.to_owned());
-        Ok(())
-    }
-}
+/// Validation of plain records-query results (split out, #12671).
+mod records_budget;
+use records_budget::RecordsBudget;
 
 /// A client-side world connection (one session).
 #[derive(Debug)]
