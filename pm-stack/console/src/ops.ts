@@ -17,8 +17,11 @@ export interface RunResult {
 export type Run = (argv: string[], opts?: { stdin?: string; timeoutMs?: number }) => Promise<RunResult>;
 export type Fetch = (
   url: string,
-  init: { method: string; headers: Record<string, string>; body: string },
+  init: { method: string; headers: Record<string, string>; body?: string; signal?: AbortSignal },
 ) => Promise<{ ok: boolean; status: number; json(): Promise<unknown> }>;
+export type Row = Record<string, string | number | null>;
+/** Queue priorities, most urgent first (the queue's design scale). */
+export const PRIORITY_SCALE = [10, 20, 30, 40, 50, 70, 90] as const;
 
 export class OpError extends Error {
   constructor(
@@ -171,12 +174,12 @@ export class Ops {
   private queueToken: string | null = null;
 
   constructor(
-    private cfg: Config,
-    private run: Run = realRun,
-    private fetchImpl: Fetch = fetch as unknown as Fetch,
+    readonly cfg: Config,
+    readonly run: Run = realRun,
+    readonly fetchImpl: Fetch = fetch as unknown as Fetch,
   ) {}
 
-  private async must(argv: string[], opts?: { stdin?: string; timeoutMs?: number }): Promise<string> {
+  async must(argv: string[], opts?: { stdin?: string; timeoutMs?: number }): Promise<string> {
     const r = await this.run(argv, opts);
     if (r.code !== 0) {
       const detail = (r.stderr || r.stdout).trim().split("\n").slice(-3).join(" ").slice(0, 400);
@@ -185,7 +188,7 @@ export class Ops {
     return r.stdout;
   }
 
-  private async gh(args: string[], body?: unknown): Promise<unknown> {
+  async gh(args: string[], body?: unknown): Promise<unknown> {
     const argv = [this.cfg.fleetBin, "gh", "api", ...args];
     const out = await this.must(
       body === undefined ? argv : [...argv, "--input", "-"],
@@ -196,19 +199,19 @@ export class Ops {
 
   // ---- queue -----------------------------------------------------------
 
-  private async sql(statement: string, args: (string | number)[]): Promise<Record<string, string | number | null>[]> {
-    if (!/^\s*select\b/i.test(statement)) throw new Error("the console only reads the queue store");
+  /** One request to the queue store carrying `statements` in order. */
+  private async pipeline(statements: { sql: string; args: (string | number)[] }[]) {
     const body = {
       requests: [
-        {
+        ...statements.map((st) => ({
           type: "execute",
           stmt: {
-            sql: statement,
-            args: args.map((a) =>
+            sql: st.sql,
+            args: st.args.map((a) =>
               typeof a === "number" ? { type: "integer", value: String(a) } : { type: "text", value: a },
             ),
           },
-        },
+        })),
         { type: "close" },
       ],
     };
@@ -229,17 +232,60 @@ export class Ops {
       res = await ask();
     }
     if (!res.ok) throw new OpError(502, `queue store answered http ${res.status}`);
-    const first = (
-      (await res.json()) as {
-        results?: {
-          type?: string;
-          response?: { result?: { cols: { name: string }[]; rows: { value?: string | number | null }[][] } };
-        }[];
-      }
-    ).results?.[0];
-    const result = first?.type === "ok" ? first.response?.result : undefined;
-    if (!result) throw new OpError(502, "queue store refused the query");
-    return result.rows.map((row) => Object.fromEntries(result.cols.map((c, i) => [c.name, row[i]?.value ?? null])));
+    const results =
+      (
+        (await res.json()) as {
+          results?: {
+            type?: string;
+            response?: {
+              result?: {
+                cols: { name: string }[];
+                rows: { value?: string | number | null }[][];
+                affected_row_count?: number;
+              };
+            };
+          }[];
+        }
+      ).results ?? [];
+    return statements.map((_, i) => {
+      const result = results[i]?.type === "ok" ? results[i].response?.result : undefined;
+      if (!result) throw new OpError(502, "queue store refused the query");
+      return result;
+    });
+  }
+
+  /** Several reads in one round trip. Reads only: anything else throws. */
+  async reads(statements: { sql: string; args: (string | number)[] }[]): Promise<Row[][]> {
+    for (const st of statements) {
+      if (!/^\s*select\b/i.test(st.sql)) throw new Error("the console only reads the queue store");
+    }
+    return (await this.pipeline(statements)).map((result) =>
+      result.rows.map((row) => Object.fromEntries(result.cols.map((c, i) => [c.name, row[i]?.value ?? null]))),
+    );
+  }
+
+  async sql(statement: string, args: (string | number)[]): Promise<Row[]> {
+    return (await this.reads([{ sql: statement, args }]))[0];
+  }
+
+  /**
+   * Move a queued task along the priority scale. The one write this
+   * service makes to the queue store, because the queue has no verb for
+   * it: one column, on one row, and only while the task is still queued.
+   */
+  async setTaskPriority(task: unknown, priority: unknown) {
+    const t = id(task, "task");
+    if (!PRIORITY_SCALE.includes(priority as (typeof PRIORITY_SCALE)[number])) {
+      throw new OpError(400, `priority: one of ${PRIORITY_SCALE.join(", ")}`);
+    }
+    const [result] = await this.pipeline([
+      {
+        sql: "UPDATE tasks SET priority = ? WHERE id = ? AND queue = ? AND status = 'queued'",
+        args: [priority as number, t, this.cfg.queue],
+      },
+    ]);
+    if (!result.affected_row_count) throw new OpError(409, `task ${t} is not queued, so its place cannot change`);
+    return { task: t, priority };
   }
 
   async queueCounts(): Promise<Record<string, number>> {
@@ -352,6 +398,19 @@ export class Ops {
     return { issue: n, url: made.html_url };
   }
 
+  /** Hand one packet to the queue. `fleet queue enqueue` reads a packet
+   * file, not stdin, so the packet lives in a private file for the call. */
+  async enqueue(packet: unknown): Promise<RunResult> {
+    const dir = mkdtempSync(join(tmpdir(), "pm-console-"));
+    const file = join(dir, "packet.json");
+    try {
+      writeFileSync(file, JSON.stringify(packet), { mode: 0o600 });
+      return await this.run([this.cfg.fleetBin, "queue", "enqueue", file, "--queue", this.cfg.queue]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
   /**
    * File an idea as an issue and enqueue its triage task in the same
    * pass (doc/agents/one-queue-claiming-work.md): an issue with no queue
@@ -376,16 +435,7 @@ export class Ops {
       rank as Rank,
       new Date().toISOString(),
     );
-    // `fleet queue enqueue` reads a packet file, not stdin.
-    const dir = mkdtempSync(join(tmpdir(), "pm-console-"));
-    const file = join(dir, "packet.json");
-    let queued: RunResult;
-    try {
-      writeFileSync(file, JSON.stringify(packet), { mode: 0o600 });
-      queued = await this.run([this.cfg.fleetBin, "queue", "enqueue", file, "--queue", this.cfg.queue]);
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
+    const queued = await this.enqueue(packet);
     return {
       issue: made.number,
       url: made.html_url,
