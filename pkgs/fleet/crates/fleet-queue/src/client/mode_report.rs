@@ -81,11 +81,11 @@ pub(super) fn legs_store_down() -> LegAvailability {
 /// operated in, and the route it actually used, selected by
 /// [`route_for`] from the observed legs.
 pub(super) fn mode_line_for(verb: &str, legs: LegAvailability) -> ModeLine<'_> {
-    let _ = legs;
+    let (mode, route) = route_for(legs);
     ModeLine {
         verb: contract_verb(verb),
-        mode: crate::work::degraded::Mode::Normal,
-        route: "cloud",
+        mode,
+        route: route.label(),
     }
 }
 
