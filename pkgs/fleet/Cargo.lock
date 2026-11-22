@@ -703,6 +703,7 @@ dependencies = [
  "fleet-secrets",
  "libc",
  "proptest",
+ "rusqlite",
  "serde",
  "serde_json",
  "tiny_http",
