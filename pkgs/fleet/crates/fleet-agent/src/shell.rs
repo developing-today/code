@@ -397,7 +397,7 @@ for index, word in enumerate(words):
                         sleep 0.1
                         grace=$((grace + 1))
                       done
-                      if kill -0 -- "-$worker_pgid" 2>/dev/null; then
+                      if kill -0 "-$worker_pgid" 2>/dev/null; then
                         echo "fleet shell: terminating unresponsive build process group" >&2
                         kill -KILL "-$worker_pgid" 2>/dev/null || :
                         if [ -n "$worker_pid" ]; then kill -KILL "$worker_pid" 2>/dev/null || :; fi
@@ -406,7 +406,7 @@ for index, word in enumerate(words):
                     if [ -n "$worker_pid" ]; then
                       wait "$worker_pid" >/dev/null 2>&1 || :
                     fi
-                    while kill -0 -- "-$worker_pgid" 2>/dev/null; do sleep 0.05; done
+                    while kill -0 "-$worker_pgid" 2>/dev/null; do sleep 0.05; done
                     ;;
                 esac
               elif [ -n "$worker_pid" ]; then
