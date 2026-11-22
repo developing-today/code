@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"tailscale.com/ipn/store/mem"
 	"tailscale.com/tsnet"
@@ -42,16 +43,24 @@ type tsnetTransport struct {
 	hostname string
 	stateDir string
 	authKey  string
+	// upTimeout is daemon.tsnetUpTimeout; zero means the built-in default.
+	upTimeout time.Duration
 }
 
 func (t tsnetTransport) Name() string { return "tsnet" }
 
-// tsnetUpTimeout bounds how long a node may take to authenticate and
-// reach Running before its listener is believed. tsnet's Start is
-// asynchronous: without this wait a daemon with an expired or revoked
-// auth key would report startup success while its identity route never
-// joins the tailnet.
-var tsnetUpTimeout = defaults.TSNetUpTimeout
+// tsnetUpBudget is how long a node may take to authenticate and reach
+// Running before its listener is believed: daemon.tsnetUpTimeout, or the
+// built-in default when it is unset. tsnet's Start is asynchronous:
+// without this wait a daemon with an expired or revoked auth key would
+// report startup success while its identity route never joins the
+// tailnet.
+func tsnetUpBudget(configured time.Duration) time.Duration {
+	if configured > 0 {
+		return configured
+	}
+	return defaults.TSNetUpTimeout
+}
 
 func (t tsnetTransport) Listen() (net.Listener, error) {
 	node, err := newTSNetNode(t.hostname, t.stateDir, t.authKey, false)
@@ -62,12 +71,13 @@ func (t tsnetTransport) Listen() (net.Listener, error) {
 	if err != nil {
 		return nil, err
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), tsnetUpTimeout)
+	budget := tsnetUpBudget(t.upTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), budget)
 	defer cancel()
 	if _, err := node.server.Up(ctx); err != nil {
 		_ = ln.Close()
 		_ = node.Close()
-		return nil, fmt.Errorf("tsnet node %s did not join the tailnet within %s (auth key expired or revoked?): %w", t.hostname, tsnetUpTimeout, err)
+		return nil, fmt.Errorf("tsnet node %s did not join the tailnet within %s (auth key expired or revoked?): %w", t.hostname, budget, err)
 	}
 	return ln, nil
 }
@@ -218,8 +228,9 @@ func ParseTSNetEndpoint(endpoint string) (host string, port int, ok bool, err er
 // process. Without an auth key the dial fails with the reason — a
 // tsnet endpoint is never silently retried as a plain TCP address.
 type TSNetDialer struct {
-	hostname string
-	authKey  string
+	hostname  string
+	authKey   string
+	upTimeout time.Duration
 
 	once sync.Once
 	node *tsnetNode
@@ -240,19 +251,21 @@ type TSNetDialer struct {
 // wait is a no-op; a failed join is reported once, with the reason.
 func (d *TSNetDialer) ensureJoined() error {
 	d.joinOnce.Do(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), tsnetUpTimeout)
+		budget := tsnetUpBudget(d.upTimeout)
+		ctx, cancel := context.WithTimeout(context.Background(), budget)
 		defer cancel()
 		if _, err := d.node.server.Up(ctx); err != nil {
-			d.joinErr = fmt.Errorf("tsnet client did not join the tailnet within %s: %w", tsnetUpTimeout, err)
+			d.joinErr = fmt.Errorf("tsnet client did not join the tailnet within %s: %w", budget, err)
 		}
 	})
 	return d.joinErr
 }
 
 // NewTSNetDialer builds a dialer for one client hostname (the name this
-// client appears under on the tailnet).
-func NewTSNetDialer(hostname string) *TSNetDialer {
-	return &TSNetDialer{hostname: hostname, authKey: envTSNetAuthKey()}
+// client appears under on the tailnet). upTimeout is the join budget
+// (daemon.tsnetUpTimeout); zero means the built-in default.
+func NewTSNetDialer(hostname string, upTimeout time.Duration) *TSNetDialer {
+	return &TSNetDialer{hostname: hostname, authKey: envTSNetAuthKey(), upTimeout: upTimeout}
 }
 
 func envTSNetAuthKey() string {

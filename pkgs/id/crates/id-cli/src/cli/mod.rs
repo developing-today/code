@@ -28,9 +28,11 @@
 //!   list       List all stored files
 //!   id         Print node ID
 //!   key        Export or import a local identity key
+//!   keyset     Show or change this identity's keyset (admin key and devices)
 //!   peers      Discover and list known peers
 //!   tag        Manage metadata tags (set, del, list, search) (aliases: label, link)
 //!   world        Mint invites for, and join, multiplayer worlds hosted over Iroh
+//!   gallery      Administer a program gallery directory (removals, appeals, review)
 //!   match-audit Export and verify signed match-audit v0 logs
 //!   group        Groups: create, policy, add, remove, set roles, list, join
 //!   delegate     Grant a delegate a scope in a group
@@ -373,6 +375,9 @@ pub struct ServeArgs {
     /// discover peers. Useful for isolated servers.
     #[arg(long)]
     pub no_gossip: bool,
+    /// Enable gossip peer discovery, overriding a build-time disabled default.
+    #[arg(long, conflicts_with = "no_gossip")]
+    pub gossip: bool,
     /// Start web interface.
     ///
     /// Enables an HTTP server with a browser-based UI for
@@ -405,23 +410,17 @@ pub struct ServeArgs {
     /// Default: "id-public-discovery-v1" (public network).
     #[arg(long)]
     pub topic_secret: Option<String>,
-    /// Skip default bootstrap node IDs from `defaults.conf`.
+    /// Skip default bootstrap node IDs from `defaults.json`.
     ///
     /// Only CLI-provided `--bootstrap` nodes are used.
     #[arg(long)]
     pub no_default_bootstrap: bool,
-    /// Skip default topic and secret from `defaults.conf`.
+    /// Skip default topic and secret from `defaults.json`.
     ///
     /// Falls back to the hardcoded constant values. CLI-provided
     /// `--topic` and `--topic-secret` still take precedence.
     #[arg(long)]
     pub no_default_topic: bool,
-    /// Use only `defaults.conf` values, ignoring hardcoded fallbacks.
-    ///
-    /// Useful when you want to fully control defaults via the
-    /// embedded configuration file at build time.
-    #[arg(long)]
-    pub replace_defaults: bool,
     /// Disable mDNS local peer discovery.
     ///
     /// By default, the server uses mDNS to discover peers on the
@@ -454,7 +453,7 @@ pub struct ServeArgs {
     /// Web listener to bind, as `IP:PORT` (repeatable; #2145).
     ///
     /// Each occurrence adds one listener; the set replaces any
-    /// `[web_bindings]` entries from `defaults.conf` entirely.
+    /// `web_bindings` entries from `defaults.json` entirely.
     /// Combining `--web-listen` with an explicitly-set `--bind` or
     /// `--port` is a startup error naming the conflict. IPv6
     /// addresses use the bracket form, e.g. `[::1]:3001`.
@@ -665,8 +664,6 @@ pub enum Command {
     /// # Skip built-in topic/secret (use hardcoded constants)
     /// id serve --no-default-topic
     ///
-    /// # Use only defaults.conf values (ignore hardcoded fallbacks)
-    /// id serve --replace-defaults
     /// ```
     Serve(ServeArgs),
     /// Publish a program (world) on the RUNNING `id serve` (#2147).
@@ -1608,19 +1605,16 @@ pub enum Command {
         /// Used to encrypt DHT bootstrap records.
         #[arg(long)]
         topic_secret: Option<String>,
-        /// Skip default bootstrap node IDs from `defaults.conf`.
+        /// Skip default bootstrap node IDs from `defaults.json`.
         ///
         /// Only CLI-provided `--bootstrap` nodes are used.
         #[arg(long)]
         no_default_bootstrap: bool,
-        /// Skip default topic and secret from `defaults.conf`.
+        /// Skip default topic and secret from `defaults.json`.
         ///
         /// Falls back to the hardcoded constant values.
         #[arg(long)]
         no_default_topic: bool,
-        /// Use only `defaults.conf` values, ignoring hardcoded fallbacks.
-        #[arg(long)]
-        replace_defaults: bool,
         /// Disable relay servers and use direct connections only.
         #[arg(long)]
         no_relay: bool,

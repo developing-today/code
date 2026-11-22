@@ -12,11 +12,11 @@ explicit gap.
 
 Three identifiers are never interchangeable:
 
-| Concept | What it is | Authoritative for | Never used for |
-|---|---|---|---|
-| Account | Authenticated identity from a verified sign-in method | Who may sign in and own stores | Continuity of an unsigned browser |
-| Installation | Browser/device UUID stored in local storage | Continuity of a guest's local work | Authentication, permission, or linking two devices to one person |
-| Principal | The actor on a command: account, guest session, or service actor | Authorization decisions | Anything without a verified source |
+| Concept      | What it is                                                       | Authoritative for                  | Never used for                                                   |
+| ------------ | ---------------------------------------------------------------- | ---------------------------------- | ---------------------------------------------------------------- |
+| Account      | Authenticated identity from a verified sign-in method            | Who may sign in and own stores     | Continuity of an unsigned browser                                |
+| Installation | Browser/device UUID stored in local storage                      | Continuity of a guest's local work | Authentication, permission, or linking two devices to one person |
+| Principal    | The actor on a command: account, guest session, or service actor | Authorization decisions            | Anything without a verified source                               |
 
 - Trusted identity originates at the validated gateway (the existing Tailscale path), never a
   browser-supplied actor field. Every state-changing command carries a principal derived server-side.
@@ -87,16 +87,16 @@ L4 below, with default **no overrides** until reviewed.
 Every surface calls the same evaluator with the same principal. No surface may filter with its own
 logic.
 
-| Surface | Seam the call goes through | Denial behaviour |
-|---|---|---|
-| API reads and writes | Command validation layer, before the repository | 403 without revealing existence |
-| Search (including Atlas index partitions) | Query scope builder; default-deny filter | Results omit denied rows; no count leak |
-| Counts and totals | Same query scope as search | Counts computed after the filter |
-| History and audit trail | History reader | Denied entities omitted, not redacted to a placeholder |
-| Media | Media fetch route | Not found, indistinguishable from absent |
-| Exports | Export builder | Export contains only authorized rows; source revision stated |
-| Summaries and reports | Report pipeline input | Aggregates computed over authorized rows only |
-| Background jobs | Job envelope carries the initiating principal | Job cannot obtain broader visibility than its initiator |
+| Surface                                   | Seam the call goes through                      | Denial behaviour                                             |
+| ----------------------------------------- | ----------------------------------------------- | ------------------------------------------------------------ |
+| API reads and writes                      | Command validation layer, before the repository | 403 without revealing existence                              |
+| Search (including Atlas index partitions) | Query scope builder; default-deny filter        | Results omit denied rows; no count leak                      |
+| Counts and totals                         | Same query scope as search                      | Counts computed after the filter                             |
+| History and audit trail                   | History reader                                  | Denied entities omitted, not redacted to a placeholder       |
+| Media                                     | Media fetch route                               | Not found, indistinguishable from absent                     |
+| Exports                                   | Export builder                                  | Export contains only authorized rows; source revision stated |
+| Summaries and reports                     | Report pipeline input                           | Aggregates computed over authorized rows only                |
+| Background jobs                           | Job envelope carries the initiating principal   | Job cannot obtain broader visibility than its initiator      |
 
 Nonmembers must not infer hidden existence through IDs, counts, search, history, summaries or
 exports. Responses for missing and forbidden entities must be identical in shape and timing where
@@ -117,22 +117,22 @@ practical.
 
 ## 7. Gaps and explicit non-claims
 
-| Ledger row | Disposition | Reason |
-|---|---|---|
-| BA-003 | Contract + leaf L2 | Multi-person comes from membership and roles; not equivalent to full onboarding |
-| BA-043 | Gap, design only | Browser deletion and eviction prevent a forever guarantee; recovery and retention need design |
-| BA-044 | Deliberately absent | Privacy and consent; fingerprints must never grant authorization |
-| BA-045 | Contract + leaf L2 | Display name separated from identifiers |
-| BA-046 | Contract + leaf L6 | Exact allowed/rejected classes defined server-side |
-| BA-078, BA-079 | Contract + leaves L2, L3 | Roles, invitations |
-| BA-080, BA-081 | Contract + leaf L2 | Provisioning rules; second-person access is an external gate |
-| BA-082 | Out of scope | Username/password or Google authentication is a separate identity provider decision |
-| BA-083, BA-084 | Contract + leaf L5 (gated) | External gate: account-link proofs and provider setup |
-| BA-085 | Contract, gated | "Open" audience must be defined explicitly; not public by assumption |
-| BA-086 | Contract + leaf L4 | Query scopes and denial behaviour |
-| BA-087 | Deferred | Atlas/Snowflake ingestion is not implemented; no interface added |
-| BA-088 | Contract + leaf L4 | Per-item ACL, later |
-| BA-089 | Contract + leaf L4 | Override semantics; default no overrides until reviewed |
+| Ledger row     | Disposition                | Reason                                                                                        |
+| -------------- | -------------------------- | --------------------------------------------------------------------------------------------- |
+| BA-003         | Contract + leaf L2         | Multi-person comes from membership and roles; not equivalent to full onboarding               |
+| BA-043         | Gap, design only           | Browser deletion and eviction prevent a forever guarantee; recovery and retention need design |
+| BA-044         | Deliberately absent        | Privacy and consent; fingerprints must never grant authorization                              |
+| BA-045         | Contract + leaf L2         | Display name separated from identifiers                                                       |
+| BA-046         | Contract + leaf L6         | Exact allowed/rejected classes defined server-side                                            |
+| BA-078, BA-079 | Contract + leaves L2, L3   | Roles, invitations                                                                            |
+| BA-080, BA-081 | Contract + leaf L2         | Provisioning rules; second-person access is an external gate                                  |
+| BA-082         | Out of scope               | Username/password or Google authentication is a separate identity provider decision           |
+| BA-083, BA-084 | Contract + leaf L5 (gated) | External gate: account-link proofs and provider setup                                         |
+| BA-085         | Contract, gated            | "Open" audience must be defined explicitly; not public by assumption                          |
+| BA-086         | Contract + leaf L4         | Query scopes and denial behaviour                                                             |
+| BA-087         | Deferred                   | Atlas/Snowflake ingestion is not implemented; no interface added                              |
+| BA-088         | Contract + leaf L4         | Per-item ACL, later                                                                           |
+| BA-089         | Contract + leaf L4         | Override semantics; default no overrides until reviewed                                       |
 
 External gates named by the issue: provider setup and credentials, new audience access, account-link
 proofs. Leaves that depend on them are filed with the `gated` label and are not silently dropped.
@@ -170,16 +170,16 @@ ordered rules) and property tests over generated rule sets, per the testing doct
 
 Each leaf is an issue sized for one fix packet, linked from #9365.
 
-| Leaf | Scope | Depends on | Gate |
-|---|---|---|---|
-| L1 | Principal and installation separation: server-derived principal, UUID as continuity only | none | none |
-| L2 | Stores, membership, roles, provisioning rules, editable display name | L1 | none |
-| L3 | Invitation lifecycle state machine with expiry and single-use tokens | L2 | none |
-| L4 | Policy evaluator (section 4), query scopes for search and counts, shadow mode | L2 | priority override decision |
-| L5 | Guest claim and sign-in linking with proofs, preview, audit | L1, L3 | gated: account-link proofs, provider setup |
-| L6 | Unicode structural validator and golden corpus | none (parallel) | none |
-| L7 | Enforcement on history, media, exports, summaries and background jobs | L4 | none |
-| L8 | Negative-test suite from section 8, and cache clearing on logout and account switch | L4, L5 | none |
+| Leaf | Scope                                                                                    | Depends on      | Gate                                       |
+| ---- | ---------------------------------------------------------------------------------------- | --------------- | ------------------------------------------ |
+| L1   | Principal and installation separation: server-derived principal, UUID as continuity only | none            | none                                       |
+| L2   | Stores, membership, roles, provisioning rules, editable display name                     | L1              | none                                       |
+| L3   | Invitation lifecycle state machine with expiry and single-use tokens                     | L2              | none                                       |
+| L4   | Policy evaluator (section 4), query scopes for search and counts, shadow mode            | L2              | priority override decision                 |
+| L5   | Guest claim and sign-in linking with proofs, preview, audit                              | L1, L3          | gated: account-link proofs, provider setup |
+| L6   | Unicode structural validator and golden corpus                                           | none (parallel) | none                                       |
+| L7   | Enforcement on history, media, exports, summaries and background jobs                    | L4              | none                                       |
+| L8   | Negative-test suite from section 8, and cache clearing on logout and account switch      | L4, L5          | none                                       |
 
 Parallel-safe: L6 may proceed alongside L1 to L4. L5 must not start until its gate is recorded.
 

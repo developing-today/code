@@ -212,6 +212,7 @@ impl WorldCore {
                 uses: record.bounds.uses,
                 used: record.used,
                 subject: record.subject.clone(),
+                issued_at: record.issued_at,
             })
     }
 
@@ -487,6 +488,7 @@ impl WorldCore {
         let token = format!("{id}.{}", hex_encode(&secret));
         let digest = token_digest(&token);
         let participant = Participant { id, display_name };
+        let issued_at = Some(self.clock().now_ms());
         self.capabilities.insert(
             id,
             CapabilityRecord {
@@ -495,9 +497,12 @@ impl WorldCore {
                 scopes,
                 parent,
                 revoked: false,
+                revoked_by: None,
                 bounds,
                 used: 0,
                 subject,
+                issued_at,
+                revoked_at: None,
             },
         );
         Ok((participant, JoinCapability(token)))
@@ -523,6 +528,38 @@ impl WorldCore {
                     .filter(|child| child.parent == Some(id))
                     .map(|child| child.participant.id),
             );
+        }
+        revoked
+    }
+
+    /// [`Self::revoke_tree`], recording `by` (the moderator participant
+    /// who ordered it; `None` for the admin) on the revoked root so a
+    /// checkpoint keeps the audit actor (#11778).
+    pub fn revoke_tree_by(&mut self, participant_id: u64, by: Option<u64>) -> Vec<u64> {
+        self.revoke_tree_at(participant_id, by, None)
+    }
+
+    /// [`Self::revoke_tree_by`], also recording `at` (Unix ms) as the
+    /// revoke time of every capability it newly revokes (#11960), so the
+    /// owner report and a checkpoint keep when each one stopped working.
+    pub(crate) fn revoke_tree_at(
+        &mut self,
+        participant_id: u64,
+        by: Option<u64>,
+        at: Option<u64>,
+    ) -> Vec<u64> {
+        let revoked = self.revoke_tree(participant_id);
+        if !revoked.is_empty()
+            && let Some(record) = self.capabilities.get_mut(&participant_id)
+        {
+            record.revoked_by = by;
+        }
+        if at.is_some() {
+            for id in &revoked {
+                if let Some(record) = self.capabilities.get_mut(id) {
+                    record.revoked_at = at;
+                }
+            }
         }
         revoked
     }

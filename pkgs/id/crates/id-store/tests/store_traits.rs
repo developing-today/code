@@ -182,6 +182,20 @@ fn test_the_lock_has_no_sqlite_with_logsync_wired() {
              shipped build (see vendor/README.md)"
         );
     }
+    // This crate may also declare SQLite names only as dev-dependencies: the graph
+    // encoding bake-off (#10219) measures real SQLite. Cargo.lock records dev edges
+    // too, so the lock check below lets this crate through once its manifest shows
+    // SQLite stays out of its shipped dependencies; cargo tree below checks the graph.
+    let own_manifest = std::fs::read_to_string(format!("{manifest_dir}/Cargo.toml")).unwrap();
+    let own = manifest_package_name(&own_manifest).unwrap();
+    let own_shipped = manifest_dep_names(&own_manifest, false);
+    for name in SQLITE {
+        assert!(
+            !own_shipped.iter().any(|declared| declared.as_str() == name),
+            "{own}/Cargo.toml declares {name} outside dev-dependencies: SQLite is back in \
+             the shipped build (see vendor/README.md)"
+        );
+    }
     // Cargo.lock includes optional dependency edges. p2panda-store declares optional `sqlx`,
     // which is inactive in the shipped default-feature graph checked below.
     for (name, deps) in &packages {
@@ -190,6 +204,7 @@ fn test_the_lock_has_no_sqlite_with_logsync_wired() {
                 assert!(
                     SQLITE.contains(&name.as_str())
                         || name == &root
+                        || name == &own
                         || (name == "p2panda-store" && dep == "sqlx")
                         // Cargo.lock records sqlx-sqlite's optional backend edge even
                         // when it is inactive; cargo tree below checks the shipped graph.

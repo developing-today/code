@@ -176,7 +176,7 @@ in
           Type = "simple";
           WorkingDirectory = "${pmDir}/ready-for-agent";
           Environment = [
-            "PATH=${home}/.local/bin:/etc/profiles/per-user/user/bin:${home}/.nix-profile/bin:/run/current-system/sw/bin:/usr/bin:/bin"
+            "PATH=${home}/.local/bin:/etc/profiles/per-user/${cfg.user}/bin:${home}/.nix-profile/bin:/run/current-system/sw/bin:/usr/bin:/bin"
           ];
           # The binary is installed by pm-stack/ready-for-agent/install.sh;
           # state (SQLite) lives in ~/.local/share/ready-for-agent/ by

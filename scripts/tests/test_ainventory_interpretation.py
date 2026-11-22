@@ -245,3 +245,50 @@ class ScriptSurface(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TursoAdapterTests(unittest.TestCase):
+    """Oracle: concrete SQLite selection and INSERT RETURNING semantics."""
+
+    def test_awaiting_and_insert(self):
+        import sqlite3
+
+        module = load_module()
+
+        class DB:
+            def __init__(self):
+                self.c = sqlite3.connect(":memory:")
+                self.c.row_factory = sqlite3.Row
+                self.c.executescript(
+                    "CREATE TABLE ainventory_ingest_batches(id,source_kind,source_ref,ran_at,inserted_counts,note); CREATE TABLE ainventory_interpretation_runs(id INTEGER PRIMARY KEY,ingest_batch_id); CREATE TABLE ainventory_notes(id INTEGER PRIMARY KEY,kind,body,author,created_at);"
+                )
+
+            def query(self, sql, args=()):
+                return [dict(r) for r in self.c.execute(sql, args)]
+
+            def batch(self, statements, transaction=False):
+                with self.c:
+                    return [self.query(sql, args) for sql, args in statements]
+
+        db = DB()
+        for id, kind, counts in [
+            ("yes", "gatherer", '{"price_events":2}'),
+            ("empty", "gatherer", "{}"),
+            ("other", "watcher", '{"price_events":3}'),
+        ]:
+            db.query(
+                "INSERT INTO ainventory_ingest_batches VALUES(?,?,NULL,?, ?,NULL)",
+                [id, kind, "2026-11-18", counts],
+            )
+        rows = module.rest(db, "GET", "/v_batches_awaiting_interpretation?limit=20")
+        self.assertEqual([r["id"] for r in rows], ["yes"])
+        self.assertEqual(rows[0]["inserted_counts"], {"price_events": 2})
+        result = module.rest(
+            db,
+            "POST",
+            "/notes",
+            [{"kind": "agent_note", "body": "test", "author": "test"}],
+        )
+        self.assertEqual(result, [{"id": 1}])
+        with self.assertRaises(ValueError):
+            module.rest(db, "POST", "/unknown", [{}])

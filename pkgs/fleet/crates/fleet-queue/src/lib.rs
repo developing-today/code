@@ -37,6 +37,7 @@ pub mod client;
 pub mod fallback;
 #[cfg(feature = "client")]
 pub mod needs_drew;
+pub mod person_wait;
 #[cfg(feature = "client")]
 pub mod placement;
 #[cfg(feature = "queue-broker")]

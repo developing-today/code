@@ -492,7 +492,7 @@ pub(super) fn claim_batch_output(resp: &Value, worker: &str, requested: i64) -> 
 /// the pool in the same touch instead of sitting claimed and idle
 /// until its lease expires.
 pub(super) fn cmd_release(rest: &[String]) -> i32 {
-    let args = parse_verb_args("release", rest, &["worker", "reason"], &[]);
+    let args = parse_verb_args("release", rest, &["worker", "lane", "reason"], &[]);
     reject_extra_pos("release", &args, 1);
     let Some(reason) = args.get("reason") else {
         die(
@@ -508,6 +508,7 @@ pub(super) fn cmd_release(rest: &[String]) -> i32 {
         &json!({
             "task_id": args.pos_i64(0, "task_id"),
             "worker": opt_worker(&args),
+            "lane": lane_arg(&args),
             "reason": reason,
         }),
     ));
@@ -750,7 +751,13 @@ pub(super) fn cmd_heartbeat(rest: &[String]) -> i32 {
     let args = parse_verb_args(
         "heartbeat",
         rest,
-        &["worker", "extend-seconds", "progress", "progress-file"],
+        &[
+            "worker",
+            "lane",
+            "extend-seconds",
+            "progress",
+            "progress-file",
+        ],
         &[],
     );
     reject_extra_pos("heartbeat", &args, 1);
@@ -764,6 +771,7 @@ pub(super) fn cmd_heartbeat(rest: &[String]) -> i32 {
             &json!({
                 "task_id": args.pos_i64(0, "task_id"),
                 "worker": opt_worker(&args),
+                "lane": lane_arg(&args),
                 "extend_seconds": extend_seconds,
                 "progress": progress_arg(&args),
             }),
@@ -778,7 +786,7 @@ pub(super) fn cmd_checkpoint(rest: &[String]) -> i32 {
     let args = parse_verb_args(
         "checkpoint",
         rest,
-        &["worker", "stage", "progress", "progress-file"],
+        &["worker", "lane", "stage", "progress", "progress-file"],
         &[],
     );
     reject_extra_pos("checkpoint", &args, 1);
@@ -791,6 +799,7 @@ pub(super) fn cmd_checkpoint(rest: &[String]) -> i32 {
             &json!({
                 "task_id": args.pos_i64(0, "task_id"),
                 "worker": opt_worker(&args),
+                "lane": lane_arg(&args),
                 "stage": stage,
                 "progress": progress_arg(&args).unwrap_or(json!({})),
             }),
@@ -807,6 +816,7 @@ pub(super) fn cmd_park(rest: &[String]) -> i32 {
         rest,
         &[
             "worker",
+            "lane",
             "reason",
             "delay-seconds",
             "not-before",
@@ -815,6 +825,10 @@ pub(super) fn cmd_park(rest: &[String]) -> i32 {
             "ready-condition",
             "execution",
             "required-budget-minutes",
+            // FDR-0013: a park may wait on a person only as a hands
+            // item, named by these two flags.
+            "hands",
+            "action",
         ],
         &[],
     );
@@ -831,6 +845,7 @@ pub(super) fn cmd_park(rest: &[String]) -> i32 {
     let mut body = json!({
         "task_id": args.pos_i64(0, "task_id"),
         "worker": opt_worker(&args),
+        "lane": lane_arg(&args),
         "reason": reason,
         "progress": progress_arg(&args).unwrap_or(json!({})),
     });
@@ -856,6 +871,28 @@ pub(super) fn cmd_park(rest: &[String]) -> i32 {
             die(2, "--ready-condition must be a JSON object");
         }
         body["ready_condition"] = rc;
+    }
+    // FDR-0013: no park waits on a person to decide. Checked before
+    // any broker contact; a hands item is stamped onto the progress so
+    // the row says what a person has to do.
+    let condition_kind = body["ready_condition"]
+        .get("kind")
+        .and_then(|k| k.as_str())
+        .map(str::to_string);
+    let hands_flag = args.get("hands");
+    let action_flag = args.get("action");
+    match crate::person_wait::check(&crate::person_wait::Wait {
+        reason_class: None,
+        condition_kind: condition_kind.as_deref(),
+        text: &reason,
+        hands: hands_flag.as_deref(),
+        action: action_flag.as_deref(),
+    }) {
+        Ok(Some(hands)) => {
+            body["progress"]["hands"] = json!({"kind": hands.kind, "action": hands.action});
+        }
+        Ok(None) => {}
+        Err(message) => die(2, &format!("park: {message}")),
     }
     // --required-budget-minutes <n>: the minimum remaining shift
     // budget a future claimer must declare to take this park
@@ -969,6 +1006,7 @@ pub(super) fn cmd_block(rest: &[String]) -> i32 {
         rest,
         &[
             "worker",
+            "lane",
             "reason-class",
             "blocker",
             "progress",
@@ -992,6 +1030,10 @@ pub(super) fn cmd_block(rest: &[String]) -> i32 {
             "blocked-by-ci",
             "dep-recheck-seconds",
             "dep-max-ttl-seconds",
+            // FDR-0013: a block may wait on a person only as a hands
+            // item, named by these two flags.
+            "hands",
+            "action",
         ],
         &[],
     );
@@ -1002,11 +1044,30 @@ pub(super) fn cmd_block(rest: &[String]) -> i32 {
     let blocker = args
         .get("blocker")
         .unwrap_or_else(|| die(2, "block: --blocker is required"));
+    // FDR-0013: no block waits on a person to decide. Checked before
+    // any broker contact, so a refused block changes nothing.
+    let hands_flag = args.get("hands");
+    let action_flag = args.get("action");
+    let hands = match crate::person_wait::check(&crate::person_wait::Wait {
+        reason_class: Some(&rc),
+        condition_kind: None,
+        text: &blocker,
+        hands: hands_flag.as_deref(),
+        action: action_flag.as_deref(),
+    }) {
+        Ok(hands) => hands,
+        Err(message) => die(2, &format!("block: {message}")),
+    };
     // #8568: the needs-drew payload is live only for an
     // escalated-to-user block that names its ledger item and its
-    // question; every other block keeps today's shape exactly.
+    // question; every other block keeps today's shape exactly. A
+    // hands item's action is the question when none was given, so the
+    // push says what to do.
+    let question = args
+        .get("question")
+        .or_else(|| hands.as_ref().map(|h| h.action.clone()));
     let needs_drew = if rc == "escalated-to-user" {
-        match (args.get("ledger-id"), args.get("question")) {
+        match (args.get("ledger-id"), question) {
             (Some(ledger_id), Some(question)) => Some(crate::needs_drew::BlockNeedsDrew {
                 ledger_id,
                 question,
@@ -1021,6 +1082,9 @@ pub(super) fn cmd_block(rest: &[String]) -> i32 {
         None
     };
     let mut progress = progress_arg(&args).unwrap_or(json!({}));
+    if let Some(hands) = &hands {
+        progress["hands"] = json!({"kind": hands.kind, "action": hands.action});
+    }
     if let Some(nd) = &needs_drew {
         // Stamp the ledger id onto the task row through the
         // progress the CURRENT broker already persists — no
@@ -1040,6 +1104,7 @@ pub(super) fn cmd_block(rest: &[String]) -> i32 {
     let mut body = json!({
         "task_id": args.pos_i64(0, "task_id"),
         "worker": opt_worker(&args),
+        "lane": lane_arg(&args),
         "reason_class": rc,
         "blocker": blocker,
         "progress": progress,
@@ -1256,7 +1321,7 @@ pub(super) fn cmd_fail(rest: &[String]) -> i32 {
     let args = parse_verb_args(
         "fail",
         rest,
-        &["worker", "error", "reason-class", "execution"],
+        &["worker", "lane", "error", "reason-class", "execution"],
         &[],
     );
     reject_extra_pos("fail", &args, 1);
@@ -1275,6 +1340,7 @@ pub(super) fn cmd_fail(rest: &[String]) -> i32 {
     let mut body = json!({
         "task_id": args.pos_i64(0, "task_id"),
         "worker": opt_worker(&args),
+        "lane": lane_arg(&args),
         "error": error,
         "reason_class": reason_class,
     });
@@ -1296,6 +1362,7 @@ pub(super) fn cmd_complete(rest: &[String]) -> i32 {
         rest,
         &[
             "worker",
+            "lane",
             "result",
             "result-file",
             "telemetry",
@@ -1409,6 +1476,7 @@ pub(super) fn cmd_complete(rest: &[String]) -> i32 {
     let mut body = json!({
         "task_id": args.pos_i64(0, "task_id"),
         "worker": opt_worker(&args),
+        "lane": lane_arg(&args),
         "result": result_obj,
     });
     if let Some(ex) = ex {

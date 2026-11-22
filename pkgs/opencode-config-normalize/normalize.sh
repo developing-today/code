@@ -35,6 +35,15 @@
 # native-wins semantics), preserving everything else including comments.
 # It is idempotent and a no-op when the file is already canonical, so it
 # is safe to run on a path-unit trigger.
+#
+# Writes are atomic (temp file in the same directory, then rename) and
+# keep the original's metadata: mode bits (#3180) and its POSIX access
+# ACL (#11836), copied as the raw system.posix_acl_access xattr and
+# verified on the new file before the rename. A file with no extended
+# ACL stays without one, even under a directory default ACL. If the ACL
+# cannot be read, restored or verified, the config is left untouched and
+# the script exits 1. On a platform or filesystem without POSIX ACLs
+# (no os.getxattr, or ENOTSUP) only the mode bits are carried over.
 
 set -euo pipefail
 
@@ -46,13 +55,60 @@ fi
 [ -r "$CONFIG" ] || exit 0
 
 python3 - "$CONFIG" <<'PY'
-import json, os, pathlib, re, stat, sys, tempfile
+import errno, json, os, pathlib, re, stat, sys, tempfile
 
 path = pathlib.Path(sys.argv[1])
 if path.is_symlink():
     print(f'opencode-config-normalize: refusing symlinked config {path}', file=sys.stderr)
     sys.exit(1)
 original_mode = stat.S_IMODE(path.stat().st_mode)
+
+# POSIX access ACL of the original file (#11836). The atomic replace
+# below writes a new inode, which would otherwise come out with no
+# file-specific ACL entries (or with entries inherited from a directory
+# default ACL, which are not the original's). Snapshot the raw
+# `system.posix_acl_access` xattr (numeric ids, so it restores exactly)
+# and put it back on the temp inode before the rename.
+#   - None: the original has no extended ACL (or the platform or
+#     filesystem has no POSIX ACLs); the new inode must carry none either.
+#   - bytes: restore and verify these exact bytes.
+# Any other failure to read it fails closed: the original is left
+# untouched rather than silently changing its access policy.
+ACL_XATTR = 'system.posix_acl_access'
+ACL_UNSUPPORTED = {errno.ENOTSUP, getattr(errno, 'EOPNOTSUPP', errno.ENOTSUP)}
+ACL_ABSENT = {errno.ENODATA} if hasattr(errno, 'ENODATA') else set()
+acl_supported = hasattr(os, 'getxattr')
+original_acl = None
+if acl_supported:
+    try:
+        original_acl = os.getxattr(path, ACL_XATTR, follow_symlinks=False)
+    except OSError as e:
+        if e.errno in ACL_UNSUPPORTED:
+            acl_supported = False
+        elif e.errno not in ACL_ABSENT:
+            print(f'opencode-config-normalize: cannot read the ACL of {path} ({e}); '
+                  'leaving it untouched', file=sys.stderr)
+            sys.exit(1)
+
+
+def apply_original_acl(fd):
+    """Give the temp inode exactly the original's access ACL, then verify."""
+    if not acl_supported:
+        return
+    if original_acl is None:
+        # Drop anything inherited from a directory default ACL so the
+        # repaired file keeps the original's (absent) extended ACL.
+        try:
+            os.removexattr(fd, ACL_XATTR)
+        except OSError as e:
+            if e.errno not in ACL_ABSENT | ACL_UNSUPPORTED:
+                raise
+        return
+    os.setxattr(fd, ACL_XATTR, original_acl)
+    if os.getxattr(fd, ACL_XATTR) != original_acl:
+        raise OSError(errno.EIO, 'restored ACL does not match the original')
+
+
 raw = path.read_text()
 
 
@@ -690,6 +746,16 @@ try:
         f.write(out)
         f.flush()
         os.fchmod(f.fileno(), original_mode)
+        try:
+            apply_original_acl(f.fileno())
+        except OSError as e:
+            print(f'opencode-config-normalize: cannot carry the ACL of {path} over to '
+                  f'the repaired file ({e}); leaving it untouched', file=sys.stderr)
+            sys.exit(1)
+        if stat.S_IMODE(os.fstat(f.fileno()).st_mode) != original_mode:
+            print(f'opencode-config-normalize: repaired file mode does not match {path}; '
+                  'leaving it untouched', file=sys.stderr)
+            sys.exit(1)
         os.fsync(f.fileno())
     tmp.replace(path)
 finally:

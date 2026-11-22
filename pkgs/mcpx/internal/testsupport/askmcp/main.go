@@ -163,8 +163,18 @@ func (s *server) handle(f frame) map[string]any {
 				"inputSchema": map[string]any{"type": "object", "properties": map[string]any{}},
 			},
 			{
+				"name":        "need_repo_twice",
+				"description": "Asks which repository twice, then reports both answers.",
+				"inputSchema": map[string]any{"type": "object", "properties": map[string]any{}},
+			},
+			{
 				"name":        "need_model",
 				"description": "Asks the client's model to write something.",
+				"inputSchema": map[string]any{"type": "object", "properties": map[string]any{}},
+			},
+			{
+				"name":        "need_roots",
+				"description": "Asks the client for its roots, then reports them.",
 				"inputSchema": map[string]any{"type": "object", "properties": map[string]any{}},
 			},
 			{
@@ -262,6 +272,27 @@ func (s *server) callTool(f frame) map[string]any {
 			return ok(f.ID, text("no repository was chosen ("+e.Action+")"))
 		}
 		return ok(f.ID, text(fmt.Sprintf("using %v", e.Content["repo"])))
+	case "need_repo_twice":
+		var repos []string
+		for round := 1; round <= 2; round++ {
+			res, err := s.ask("elicitation/create", map[string]any{
+				"message":         fmt.Sprintf("Which repository should this go in (round %d)?", round),
+				"requestedSchema": repoSchema(),
+			})
+			if err != nil {
+				return fail(f.ID, -32603, err.Error())
+			}
+			var e struct {
+				Action  string         `json:"action"`
+				Content map[string]any `json:"content"`
+			}
+			_ = json.Unmarshal(res, &e)
+			if e.Action != "accept" {
+				return ok(f.ID, text("no repository was chosen ("+e.Action+")"))
+			}
+			repos = append(repos, fmt.Sprint(e.Content["repo"]))
+		}
+		return ok(f.ID, text(fmt.Sprintf("using %s and %s", repos[0], repos[1])))
 	case "need_model":
 		res, err := s.ask("sampling/createMessage", map[string]any{
 			"maxTokens":    64,
@@ -273,6 +304,12 @@ func (s *server) callTool(f frame) map[string]any {
 			return fail(f.ID, -32603, err.Error())
 		}
 		return ok(f.ID, text("model said "+string(res)))
+	case "need_roots":
+		res, err := s.ask("roots/list", map[string]any{})
+		if err != nil {
+			return fail(f.ID, -32603, err.Error())
+		}
+		return ok(f.ID, text("roots "+string(res)))
 	case "declared":
 		s.mu.Lock()
 		b, _ := json.Marshal(s.clientCaps)

@@ -43,6 +43,9 @@ pub mod graph;
 /// Deterministic graph-native currency fold over the graph contracts.
 pub mod fold;
 
+/// Issuer snapshots over the fold: balance roots, frontier, recomputation.
+pub mod snapshot;
+
 /// The currency gateway's signed request envelope (#2319).
 #[cfg(feature = "world")]
 pub mod gateway;

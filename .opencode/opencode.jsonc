@@ -944,6 +944,9 @@
         "deepseek-v4.1-flash": {
           "name": "DeepSeek V4.1 Flash"
         },
+        "deepseek-v4.1-flash-eco": {
+          "name": "DeepSeek V4.1 Flash Eco"
+        },
         "glm-5.3-flash": {
           "name": "GLM-5.3 Flash"
         },
@@ -1634,6 +1637,60 @@
     // replacing opencode-go.lab). The Home workspace, its commented
     // opencode-go.home provider, and the retired dash-form aliases were
     // removed the same day; git history keeps the old forms.
+    // API keys in Fleet secrets; PAYG providers are manual only, never pool members.
+    "openai-payg": {
+      "npm": "@ai-sdk/openai",
+      "name": "OpenAI API (PAYG, manual only)",
+      "options": {
+        "baseURL": "https://api.openai.com/v1"
+      },
+      "models": {
+        "gpt-6.2-astra": {
+          "name": "GPT-6.2 Astra"
+        },
+        "gpt-6.2-sol": {
+          "name": "GPT-6.2 Sol"
+        },
+        "gpt-6-luna": {
+          "name": "GPT-6 Luna"
+        },
+        "gpt-6-astra": {
+          "name": "GPT-6 Astra"
+        },
+        "gpt-6-sol": {
+          "name": "GPT-6 Sol"
+        }
+      }
+    },
+    "claude-payg": {
+      "npm": "@ai-sdk/anthropic",
+      "name": "Claude API (PAYG, manual only)",
+      "options": {
+        "baseURL": "https://api.anthropic.com/v1"
+      },
+      "models": {
+        "claude-fable-5-2": {
+          "name": "Claude Fable 5.2"
+        },
+        "claude-opus-5-5": {
+          "name": "Claude Opus 5.5"
+        },
+        "claude-sonnet-5-5": {
+          "name": "Claude Sonnet 5.5"
+        },
+        "claude-haiku-5-5": {
+          "name": "Claude Haiku 5.5"
+        }
+      }
+    },
+    "opencode-go.0x111dev": {
+      "instanceOf": "opencode-go",
+      "name": "OpenCode Go (0x111dev)"
+    },
+    "opencode.0x111dev": {
+      "instanceOf": "opencode",
+      "name": "OpenCode Zen (0x111dev)"
+    },
     "opencode-go.drewrypope": {
       "instanceOf": "opencode-go",
       "name": "OpenCode Go (drewrypope)"
@@ -2612,9 +2669,9 @@
       // burn landed on that account unattributed. Quota/health rules
       // still demote a walled member inside the group.
       "opencode-go-plans": {
-        "providers": ["opencode-go.drewrypope", "opencode-go.popesdrew", "opencode-go.developing-today-0"],
+        "providers": ["opencode-go.drewrypope", "opencode-go.popesdrew", "opencode-go.developing-today-0", "opencode-go.0x111dev"],
         "selection": "weighted",
-        "weights": { "opencode-go.drewrypope": 1, "opencode-go.popesdrew": 1, "opencode-go.developing-today-0": 1 }
+        "weights": { "opencode-go.drewrypope": 1, "opencode-go.popesdrew": 1, "opencode-go.developing-today-0": 1, "opencode-go.0x111dev": 1 }
       },
       // opencode-plans (2026-11-14, Drew): the OpenCode Zen plans as ONE
       // virtual provider, mirroring opencode-go-plans. Consumers name
@@ -2634,9 +2691,9 @@
       // its Go/plan doors; in the ordered tiers the Zen routes sit last
       // before the escalation leg.
       "zen-plans": {
-        "providers": ["opencode.drewrypope", "opencode.popesdrew", "opencode.developing-today-0"],
+        "providers": ["opencode.drewrypope", "opencode.popesdrew", "opencode.developing-today-0", "opencode.0x111dev"],
         "selection": "weighted",
-        "weights": { "opencode.drewrypope": 1, "opencode.popesdrew": 1, "opencode.developing-today-0": 1 }
+        "weights": { "opencode.drewrypope": 1, "opencode.popesdrew": 1, "opencode.developing-today-0": 1, "opencode.0x111dev": 1 }
       },
       // google-free (2026-11-16, Drew): the four AI Studio free
       // projects as ONE virtual provider (provider route).
@@ -2814,8 +2871,10 @@
                   // (~2026-12-06, 22d from 2026-11-14) or a fresh quota read shows
                   // monthly <100%, AND a live completion through the door proves
                   // it answers again.
+          // Drew, 2026-11-18: use OpenDesign Flash Eco (live /v1/models verified).
+          // Same plan/seat/tier; no paid fallback. Eco can be slower for batch work.
           {
-            "model": "opendesign/deepseek-v4.1-flash",
+            "model": "opendesign/deepseek-v4.1-flash-eco",
             "variants": { "xhigh": "high", "max": "high" }
           },
           "_commandcode/deepseek/deepseek-v4.1-flash"
@@ -2828,7 +2887,7 @@
         "weights": {
           "opencode-go-plans/glm-5.3": 4,
           "opencode-go-plans/deepseek-v4.1-flash": 2,
-          "opendesign/deepseek-v4.1-flash": 1,
+          "opendesign/deepseek-v4.1-flash-eco": 1,
           "_commandcode/deepseek/deepseek-v4.1-flash": 1
         },
         // #7927 (task 14574): the 10s default first-output deadline mass-killed
@@ -4433,7 +4492,7 @@
         // seat is the CLAUDE bucket, same stage, equal weight 10.
         // 2026-11-09 (Drew, AA-match rule): the Sonnet seat drops
         // #high -> #medium. A pool is matched by its AA score, not
-        // its effort label. AA v5 (Supabase ainventory via the
+        // its effort label. AA v5 (ainventory via the
         // aggregator collector's aa-last-good, generated
         // 2026-11-10T00:40Z, read tonight): this pool sits at Luna
         // #xhigh II 23, Gemini 3.8 Flash #high II 31, and Spark

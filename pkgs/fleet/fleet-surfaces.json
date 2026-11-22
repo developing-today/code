@@ -1,5 +1,5 @@
 {
-  "comment": "Fleet placement surface registry (docs/placement.md). Adding a location = adding an entry here (+ app installation + a fleet copy). The dispatcher core (tools/fleet-place) reads ONLY this file for what exists; kinds map to adapters in the dispatcher. Limits source: GitHub Actions limits reference, https://docs.github.com/en/actions/reference/limits (verified 2026-11-04): concurrent GitHub-hosted jobs per account Free 20 / Pro 40 / Team 60 / Enterprise 500 (macOS subset 5 / 5 / 5 / 50); included private-repo minutes per month Free 2000 / Pro 3000 / Team 3000 / Enterprise 50000; public repositories: minutes unlimited on every plan, so for public targets the binding limit is the concurrency cap, not minutes.",
+  "comment": "Fleet placement surface registry (docs/placement.md). Adding a location = adding an entry here (+ a fleet copy, and either an app installation or \"dispatch_as\": \"user\" where the fleet's GitHub user can start workflows on the copy). The dispatcher core (tools/fleet-place) reads ONLY this file for what exists; kinds map to adapters in the dispatcher. Limits source: GitHub Actions limits reference, https://docs.github.com/en/actions/reference/limits (verified 2026-11-04): concurrent GitHub-hosted jobs per account Free 20 / Pro 40 / Team 60 / Enterprise 500 (macOS subset 5 / 5 / 5 / 50); included private-repo minutes per month Free 2000 / Pro 3000 / Team 3000 / Enterprise 50000; public repositories: minutes unlimited on every plan, so for public targets the binding limit is the concurrency cap, not minutes.",
   "laptop": {
     "busy": false,
     "busy_source": "manual-flag",
@@ -46,12 +46,13 @@
     },
     {
       "app_installation": 174792676,
+      "dispatch_as": "user",
       "id": "fleet-org",
       "kind": "github-actions",
-      "notes": "Org fork of dezren39/fleet (created 2026-11-04). Actions are enabled at repo level, but the developing-today app installation is repository-selected and does not yet include this repo (API add refused 403; org-owner GUI grant filed under GRANTS NEEDED in the placement report). Ineligible for app dispatch until covered. Also needs repo secrets (GHCR_ORG_PAT for cross-repo checkout; NIX_CACHE_* for cache pushes) before non-trivial jobs.",
+      "notes": "Org fork of dezren39/fleet (created 2026-11-04). Dispatches with the user's own token (dispatch_as: user): the fleet's GitHub user is an admin of this repo, so no App installation is needed to start a workflow. Repo secrets are provisioned (GHCR_ORG_PAT, CACHIX_AUTH_TOKEN, NIX_CACHE_SIGNING_KEY, NIX_CACHE_UPLOAD_URL). Verified 2026-11-21 by a real dispatch: run 44900088840 succeeded on ubuntu-24.04. This copy's fleet-run.yml has diverged from upstream (it carries the cache options and the anonymous-checkout fallback; upstream carries dispatch_id and setup_runner), so its daily sync-upstream fails on a merge conflict and it declares no dispatch_id input here: runs are correlated by the snapshot fallback until the copies converge.",
       "owner": "developing-today",
       "repo": "developing-today/fleet",
-      "status": "pending-app-coverage",
+      "status": "active",
       "targets": [
         "developing-today/code",
         "developing-today/opencode",
@@ -63,17 +64,18 @@
     },
     {
       "app_installation": null,
+      "dispatch_as": "user",
+      "dispatch_id_input": true,
       "id": "fleet-forks",
       "kind": "github-actions",
-      "notes": "Third copy of the umbrella, in the forks org (stood up 2026-11-04; Drew is org admin). Absorbed as registry DATA only - no dispatcher change; the live extensibility proof. The developing-today app is NOT installed on developing-today-forks, so this surface is ineligible-app-missing until that grant lands (GRANTS NEEDED); no user-token fallback, per the app-only rule.",
+      "notes": "Third copy of the umbrella, in the forks org (stood up 2026-11-04). Dispatches with the user's own token (dispatch_as: user): the fleet's GitHub user is an admin of this repo. Synced to upstream head 72049ac on 2026-11-21 (sync-upstream run 44900085581), so it carries the dispatch_id input. Verified 2026-11-21 by a real dispatch: run 44900259404 succeeded on ubuntu-24.04 against developing-today/code. This copy has no GHCR_ORG_PAT secret, so its targets are public repos only; cache pushes need the NIX_CACHE_* secrets and are not available here.",
       "owner": "developing-today-forks",
       "repo": "developing-today-forks/fleet",
-      "status": "pending-app-installation",
+      "status": "active",
       "targets": [
         "developing-today/code",
         "developing-today/opencode",
         "developing-today/openchamber",
-        "dezren39/darwin-nix",
         "dezren39/fleet"
       ],
       "workflow": "fleet-run.yml"
@@ -104,13 +106,14 @@
         "paid_cap_minutes": 0,
         "rate_note": "Blacksmith is orgs-only: 3,000 free min/mo, then PAID per-minute (it charges for public-repo minutes past the free tier). paid_cap_minutes is the registry knob Drew can raise; 0 = free tier only."
       },
+      "dispatch_as": "user",
       "host_surface": "fleet-org",
       "id": "fleet-org-blacksmith",
       "kind": "blacksmith",
-      "notes": "Blacksmith variant of the org fork's fleet-run (runner input = blacksmith, label blacksmith-4vcpu-ubuntu-2404). Blacksmith app (blacksmith-sh, id 807020) VERIFIED installed on the developing-today org with repository_selection=all (2026-11-04). Org surfaces only \u2014 never the personal copy (provider is orgs-only). Inherits fleet-org's app-coverage blocker.",
+      "notes": "Blacksmith variant of the org fork's fleet-run (runner input = blacksmith, label blacksmith-4vcpu-ubuntu-2404). Blacksmith app (blacksmith-sh, id 807020) installed on the developing-today org with repository_selection=all. Org surfaces only \u2014 never the personal copy (provider is orgs-only). Dispatches with the user's own token, like its host surface fleet-org. Verified 2026-11-21 by a real dispatch: run 44900255411 ran its leg on a blacksmith-4vcpu-ubuntu-2404 runner and succeeded.",
       "owner": "developing-today",
       "repo": "developing-today/fleet",
-      "status": "pending-app-coverage",
+      "status": "active",
       "targets": [
         "developing-today/code",
         "developing-today/opencode",

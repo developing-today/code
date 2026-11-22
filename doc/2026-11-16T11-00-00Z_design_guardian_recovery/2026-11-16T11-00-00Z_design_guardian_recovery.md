@@ -167,7 +167,8 @@ if all of the following hold, evaluated from the fold at that head
 and the annex:
 
 1. The request exists, is unconsumed, and its `successor_*` fields
-   equal the rotation's.
+   equal the rotation's; the successor admin key has never appeared
+   in the pinned fold's admin-key map (including revoked keys).
 2. `approval_hashes` resolve to approvals for this `request_id`
    from at least `threshold` **distinct** guardian identities in
    the guardian set folded at that head, each signed by an Active
@@ -224,7 +225,10 @@ created_at`, and compute the delay from
   device key (Decision 2) cancels, at any time before the rotation
   folds. Cancellation is itself an annex record relayed and
   timestamped by the directory; a cancellation first seen after a
-  rotation has already folded is void (the rotation is chain
+  rotation has already folded is void. The directory stamps both in
+  whole Unix seconds, so a cancellation first seen in the same second
+  as the rotation counts as before it, whichever arrived first; the
+  status flow and Rule R agree on this (#11773). (The rotation is chain
   history; the remedy for a folded hostile rotation is a fresh
   recovery or admin action by the successor's opponents using the
   carried-over guardian set — stated plainly: after the delay, the

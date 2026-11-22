@@ -5,11 +5,7 @@ Implements Drew's ratified rule (2026-11-05): EXTERNAL COMMS ARE NEVER
 SILENT. Every send outside our own repos/channels under Drew's identity
 or a fleet identity is recorded at send time in the ledger table
 `agent_external_comms` in the Turso database fleet-platform
-(repointed 2026-11-07 from `agent.external_comms` in Supabase
-muse-dev2, whose data plane has been down since 2026-11-06,
-code#6619; DDL: migration-0002-agent-external-comms-turso.sql.
-The 58 rows recorded in Postgres before the repoint stay there
-until the finalize pass tops this table up by id.)
+(DDL: migration-0002-agent-external-comms-turso.sql).
 
 Write pattern (the pm-stack durability pattern, cf. aggregator
 events.ts): DATABASE-FIRST WITH SPILL TO OUTBOX.

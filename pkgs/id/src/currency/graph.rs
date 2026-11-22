@@ -31,7 +31,7 @@ const RECURSION_LIMIT: u16 = 16;
 const LENGTH_LIMIT: u64 = 512;
 const OOM_MITIGATION: usize = 64;
 
-mod key_bytes {
+pub(super) mod key_bytes {
     use std::fmt;
 
     use serde::de::{Error, Visitor};
@@ -419,6 +419,32 @@ pub fn sign_issue(
     sign_body(key, seq_num, backlink, &body, ISSUE_KIND, after)
 }
 
+/// Sign an issuance with a rotated-in issuer generation key (design #2804).
+///
+/// [`sign_issue`] signs only with the currency's generation-0 key. A later
+/// generation's key signs here instead; whether it may issue is the fold's
+/// decision, from the issuer's generation chain and this event's causal
+/// position, so `after` must reach the rotation that installed `key`.
+///
+/// # Errors
+///
+/// [`TokenError::CurrencyMismatch`] when the body names another currency,
+/// and the signing errors of [`sign_issue`] otherwise.
+pub fn sign_generation_issue(
+    key: &SigningKey,
+    seq_num: SeqNum,
+    backlink: Option<Hash>,
+    currency: &CurrencyId,
+    issue: &TokenIssue,
+    after: Vec<Hash>,
+) -> Result<Event, TokenError> {
+    if issue.currency != currency.compact_hash() {
+        return Err(TokenError::CurrencyMismatch);
+    }
+    let body = issue.body()?;
+    sign_body(key, seq_num, backlink, &body, ISSUE_KIND, after)
+}
+
 /// Sign a holder transfer. This only signs the assertion; it does not prove funds.
 pub fn sign_transfer(
     key: &SigningKey,
@@ -443,7 +469,7 @@ pub fn sign_burn(
     sign_body(key, seq_num, backlink, &body, BURN_KIND, after)
 }
 
-fn sign_body(
+pub(super) fn sign_body(
     key: &SigningKey,
     seq_num: SeqNum,
     backlink: Option<Hash>,
@@ -481,12 +507,12 @@ fn validate_amount(amount: u128) -> Result<(), TokenError> {
     Ok(())
 }
 
-fn canonical_body<T: Serialize>(value: &T) -> Result<Vec<u8>, BodyError> {
+pub(super) fn canonical_body<T: Serialize>(value: &T) -> Result<Vec<u8>, BodyError> {
     let value = Value::serialized(value).map_err(|error| BodyError::Schema(error.to_string()))?;
     Ok(value.encode())
 }
 
-fn decode_body<T>(bytes: &[u8]) -> Result<T, BodyError>
+pub(super) fn decode_body<T>(bytes: &[u8]) -> Result<T, BodyError>
 where
     T: DeserializeOwned + Serialize,
 {

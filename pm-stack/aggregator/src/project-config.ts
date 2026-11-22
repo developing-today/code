@@ -16,6 +16,7 @@ import { parseRef, refUrl } from "./model.ts";
 import { PROGRAM, TRACKED_REFS, type ProgramEntry, type TrackedIssue } from "./program.ts";
 import type { ProjectDocSnapshot, ProjectDocTarget } from "./project-doc.ts";
 import { summarizeWeights, type WeightSummary } from "./weights.ts";
+import { uniqueProjectItemsByRef } from "./epics.ts";
 import { isIsoDate } from "./validate.ts";
 
 export interface ProjectHomeDoc {
@@ -766,7 +767,7 @@ export function buildProjectSummary(
     roadmapArea: config.roadmapArea,
     poolTotal: mine.length,
     poolByStatus: counts(mine.map((p) => p.status)),
-    weights: summarizeWeights(mine),
+    weights: summarizeWeights(uniqueProjectItemsByRef(mine)),
     roadmapRows: config.roadmapArea === null ? 0 : rows.filter((r) => r.area === config.roadmapArea).length,
     homeDoc: config.homeDoc ?? null,
   };

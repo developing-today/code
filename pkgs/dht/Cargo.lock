@@ -701,15 +701,24 @@ name = "dht"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "dht-node",
+ "futures-lite",
+ "iroh-gossip",
+ "tokio",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "dht-node"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
  "dht-rotation",
  "distributed-topic-tracker",
  "ed25519-dalek",
- "futures-lite",
  "iroh",
  "iroh-gossip",
  "rand 0.9.5",
- "tokio",
- "tracing-subscriber",
 ]
 
 [[package]]

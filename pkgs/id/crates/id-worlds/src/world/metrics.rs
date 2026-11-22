@@ -198,6 +198,11 @@ pub struct MetricsSnapshot {
     pub actor_queue_depth_max: u64,
     /// Live sessions (joined participants) at snapshot time.
     pub sessions: u64,
+    /// Distinct participants holding at least one live session at
+    /// snapshot time (one participant may hold several sessions). Absent
+    /// (0) in snapshots from binaries before #11775.
+    #[serde(default)]
+    pub participants: u64,
     /// Write locality (#2275): per-region journal write counts.
     pub write_locality: WriteLocalitySnapshot,
     /// Sustained hotness over the retained snapshot window (#2275),
@@ -349,6 +354,13 @@ impl WorldMetrics {
     /// at snapshot time rather than kept here.
     #[must_use]
     pub fn snapshot(&self, sessions: u64) -> MetricsSnapshot {
+        self.snapshot_with_participants(sessions, 0)
+    }
+
+    /// [`Self::snapshot`] with the distinct connected-participant count,
+    /// which, like `sessions`, only the actor knows.
+    #[must_use]
+    pub fn snapshot_with_participants(&self, sessions: u64, participants: u64) -> MetricsSnapshot {
         let mut snapshot = MetricsSnapshot {
             commands_total: self.inner.commands_total.load(Ordering::Relaxed),
             command_latency: self.inner.command_latency.snapshot(),
@@ -360,6 +372,7 @@ impl WorldMetrics {
             actor_queue_depth: self.inner.actor_queue_depth.load(Ordering::Relaxed),
             actor_queue_depth_max: self.inner.actor_queue_depth_max.load(Ordering::Relaxed),
             sessions,
+            participants,
             write_locality: self.write_locality_snapshot(),
             hotness: super::hotness::HotnessReport::default(),
         };

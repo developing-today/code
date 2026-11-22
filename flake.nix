@@ -287,8 +287,21 @@ rec {
     # };
     nixos-hardware.url = "github:nixos/nixos-hardware"; # ?shallow=1";
     # OpenCode 2.x line: developing-today's fork, carrying the model-routing work; the default branch tracks it.
+    # Its mcpx-src input follows THIS flake (`""` is the root flake):
+    # this repo is mcpx's canonical home (pkgs/mcpx), so there is ONE
+    # mcpx source in this flake graph, the same rule the openchamber
+    # follow below states for opencode. Left to the fork's own lock,
+    # the opencode-bundled mcpx was built from whatever code rev that
+    # lock last pinned (d3a0db81), so a fix landed here never reached
+    # amd until someone re-locked the fork: amd's rebuild failed on a
+    # pool test (TestDefaultConfigStdioRunsSupervised) that main had
+    # already fixed. Following the root also makes the bundled mcpx
+    # the same derivation as packages.<system>.mcpx (same pkgs/mcpx
+    # tree, same fleet nixpkgs), so a rebuild builds and tests mcpx
+    # once instead of twice.
     opencode = {
       url = "github:developing-today-forks/opencode";
+      inputs.mcpx-src.follows = "";
     };
     # OpenChamber. Its opencode input follows this flake's
     # `opencode` above: there is ONE opencode source in this flake

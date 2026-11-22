@@ -1236,6 +1236,7 @@ impl loadgen::Target<ReplaySession> for ReplayTarget {
             uses: None,
             used: 0,
             subject: None,
+            issued_at: None,
         });
         for seq in 1..=self.events {
             journal.push(JournalEntry::Committed {

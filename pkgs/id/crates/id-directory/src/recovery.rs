@@ -297,6 +297,10 @@ pub fn check_rotation(check: &RotationCheck<'_>) -> Result<Successor> {
         "head fold is not the one the request pins"
     );
     ensure!(
+        !check.head.admin_keys.contains_key(successor_admin_key),
+        "successor admin key was already present in the pinned head"
+    );
+    ensure!(
         rotation.prev_hash == *keyset_head_hash,
         "a rotation continues the head its request pins"
     );
@@ -339,8 +343,12 @@ pub fn check_rotation(check: &RotationCheck<'_>) -> Result<Successor> {
         check.rotation_first_seen >= earliest,
         "recovery delay has not elapsed"
     );
+    // A cancellation first seen in the same second as the rotation wins
+    // (#11773): the relay attests whole Unix seconds, so it cannot tell
+    // which arrived first, and the status flow (`recovery_flow::progress`)
+    // already counts an equal-second cancellation as effective.
     if let Some(cancel) = check.cancellations.iter().find(|cancel| {
-        cancel.first_seen < check.rotation_first_seen
+        cancel.first_seen <= check.rotation_first_seen
             && cancels(cancel.record, check.head, request_id)
     }) {
         bail!("recovery request was cancelled by {}", cancel.record.author);

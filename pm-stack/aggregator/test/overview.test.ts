@@ -35,6 +35,7 @@ const health: HealthView = {
   comments: { pendingMessages: 0, pendingGithub: 0, total: 0 },
   conflicts: null,
   push: null,
+  slo: null,
   rfa: { state: "fixtures", detail: "fixtures mode — no live harness read", repositories: [], backends: [] },
 };
 

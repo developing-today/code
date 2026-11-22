@@ -367,22 +367,11 @@ fn classify_tag(name: &str) -> (FileKind, Option<u64>) {
         }
     }
 
-    // Check for archive: "{name}.archive.{unix_timestamp}"
-    // Only an archive when the suffix actually parses as a unix
-    // timestamp (#2793) — the same rule #809 applied to the "auto-"
-    // prefix above. An ordinary file that merely contains ".archive."
-    // (notes.archive.txt) is Primary. No producer mints a non-numeric
-    // suffix: the archive claim path always formats a u64.
-    if let Some(pos) = name.rfind(".archive.") {
-        let ts_str = &name[pos + ".archive.".len()..];
-        // The producer's Display form is unsigned decimal digits only:
-        // parse::<u64>() would also accept a leading '+', a spelling no
-        // producer mints (#4329).
-        if !ts_str.is_empty() && ts_str.bytes().all(|b| b.is_ascii_digit()) {
-            if let Ok(ts) = ts_str.parse::<u64>() {
-                return (FileKind::Archive, Some(ts));
-            }
-        }
+    // Check for archive: "{name}.archive.{unix_timestamp}". The shared
+    // FileOps rule decides it, so the writer's reservation and this reader
+    // classify every name the same way (#2793, #4329, #11790).
+    if let Some(ts) = id_sync::fileops::archive_tag_timestamp(name) {
+        return (FileKind::Archive, Some(ts));
     }
 
     (FileKind::Primary, None)
@@ -1120,7 +1109,7 @@ async fn blob_handler(
     Query(query): Query<BlobQuery>,
 ) -> Response {
     // Parse the hash
-    let Ok(parsed_hash) = hash.parse::<iroh_blobs::Hash>() else {
+    let Ok(parsed_hash) = id_core::iroh_hash::parse_hash(&hash) else {
         return (StatusCode::BAD_REQUEST, "Invalid hash format").into_response();
     };
 
@@ -1879,8 +1868,7 @@ async fn get_file_name(store: &iroh_blobs::api::Store, hash: &str) -> Option<Str
 /// Returns the file content as bytes if found, or an HTML error message.
 async fn get_file_bytes(store: &iroh_blobs::api::Store, hash: &str) -> Result<Vec<u8>, String> {
     // Parse the hash
-    let hash = hash
-        .parse::<iroh_blobs::Hash>()
+    let hash = id_core::iroh_hash::parse_hash(hash)
         .map_err(|_err| "<p>Invalid hash format</p>".to_owned())?;
 
     // Read the blob content
@@ -2371,8 +2359,40 @@ mod save_publication_tests {
         // The current version is A's, untouched by B's refused save.
         let current = current_filename_hash(&state.store, "notes.md")
             .await
+            .unwrap()
             .unwrap();
         assert_eq!(current.to_string(), h2);
+    }
+
+    #[tokio::test]
+    async fn save_is_refused_when_the_current_version_cannot_be_read() {
+        // #12146: a tag-store read failure must not read as "no binding".
+        // That would skip the #8524 stale-save check and let the save
+        // supersede whatever the name points to.
+        let (mut state, _endpoint, _docs) = state().await;
+        state.save_limiter = SaveRateLimiter::new(Duration::ZERO);
+
+        let first = save(state.clone(), "notes.md", "original").await;
+        assert_eq!(first.status(), StatusCode::OK);
+        let h1 = response_json(first).await["hash"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+
+        state.store.shutdown().await.unwrap();
+        assert!(
+            current_filename_hash(&state.store, "notes.md")
+                .await
+                .is_err(),
+            "a store that cannot be read reports an error, not an unbound name"
+        );
+
+        let refused = save_based_on(state.clone(), "notes.md", "edit", &h1).await;
+        assert_eq!(refused.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(
+            response_json(refused).await["reason"],
+            "current_version_unavailable"
+        );
     }
 
     #[tokio::test]
@@ -2439,6 +2459,7 @@ mod save_publication_tests {
         .await;
         let current = current_filename_hash(&state.store, "notes.md")
             .await
+            .unwrap()
             .unwrap();
         assert_eq!(current.to_string(), winner_body["hash"].as_str().unwrap());
     }
@@ -3570,6 +3591,19 @@ mod upload_router_tests {
         let headers = response.headers().clone();
         let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         (status, headers, bytes.to_vec())
+    }
+
+    // `iroh_blobs::Hash::from_str` panics on text that is not 52 or 64
+    // characters long; the blob route must answer 400 instead.
+    #[tokio::test]
+    async fn blob_route_rejects_malformed_hash_text_without_panicking() {
+        let (router, _dir, _endpoint, _docs) = router().await;
+        let full = iroh_blobs::Hash::new(b"x").to_string();
+        for bad in ["abc", &full[..63], &format!("{full}0"), &"z".repeat(64)] {
+            let (status, _, body) = get_blob(router.clone(), &format!("/blob/{bad}")).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{bad}");
+            assert_eq!(body, b"Invalid hash format", "{bad}");
+        }
     }
 
     fn header_str<'a>(headers: &'a axum::http::HeaderMap, name: &str) -> Option<&'a str> {
@@ -5455,6 +5489,20 @@ mod tests {
             assert_eq!(kind, FileKind::Primary, "{name}");
             assert!(ts.is_none(), "{name}");
         }
+    }
+
+    #[test]
+    fn test_classify_tag_archive_matches_writer_rule() {
+        // Regression (#11790): the reader must agree with the FileOps writer
+        // on empty-stem and u64-overflow archive suffixes.
+        for name in [".archive.5", "x.archive.18446744073709551616"] {
+            let (kind, ts) = classify_tag(name);
+            assert_eq!(kind, FileKind::Primary, "{name}");
+            assert!(ts.is_none(), "{name}");
+        }
+        let (kind, ts) = classify_tag("x.archive.18446744073709551615");
+        assert_eq!(kind, FileKind::Archive);
+        assert_eq!(ts, Some(u64::MAX));
     }
 
     #[test]

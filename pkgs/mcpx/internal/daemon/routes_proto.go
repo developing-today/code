@@ -546,7 +546,7 @@ func askRequestor(cc config.CallContext) tasks.Requestor {
 
 func (s *Server) handleAskBegin(w http.ResponseWriter, r *http.Request) {
 	var req askReq
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, defaults.HTTPCallBodyLimit)).Decode(&req); err != nil {
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, s.bodyBytes("http.callBodyLimit", defaults.HTTPCallBodyLimit))).Decode(&req); err != nil {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
@@ -1058,7 +1058,7 @@ func (s *Server) handleCallPath(w http.ResponseWriter, r *http.Request) {
 	} else {
 		res, err = s.reg.Call(callCtx, r.PathValue("server"), r.PathValue("tool"), cc, args)
 	}
-	s.reportCallFrame(callCtx, r.PathValue("server"), r.PathValue("tool"), args, start, res, err)
+	s.reportCallFrame(callCtx, r.PathValue("server"), r.PathValue("tool"), cc.SessionID, args, start, res, err)
 	if err != nil {
 		writeJSON(w, failureStatus(err), map[string]any{"ok": false, "error": err.Error()})
 		return

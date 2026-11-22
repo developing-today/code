@@ -7,7 +7,7 @@ section — read the topic file before acting on that section's rules.
 ## Web retrieval fallback
 
 Full rules: [`doc/agents/web-retrieval-fallback.md`](doc/agents/web-retrieval-fallback.md).
-In short: use the normal/default request first; on a 403, 429, or
+In short: use the default request first; on a 403, 429, or
 bot-block, retry with a normal browser User-Agent, then rotate others
 (list and site matrix in
 [`ai-crawler-site-access-table.md`](./ai-crawler-site-access-table.md#user-agents)).
@@ -33,13 +33,10 @@ discipline (target broker, narrowest Rust verification).
 
 ## Testing doctrine
 
-Three tools, used where they fit:
-
-- **PBT (property-based testing):** state invariants that must always hold, then let a generator hammer the code with thousands of random inputs to find counterexamples. Where code has meaningful invariants — parsers, serializers, state machines, replication, ID/crypto formats — state the invariants and cover them with property tests. In Rust here that is `proptest` (already a dev-dependency of `pkgs/id`).
-- **MBT (model-based testing):** where a system's behavior has a spec or design model, build the model and generate tests — and their expected results — from it, instead of hand-writing cases only.
-- **Oracles:** the decision procedure that tells you whether actual output matches expected — the hard part of automated testing. Every automated test names its oracle: a reference implementation, the model, an invariant check, or a golden corpus. A test with no decidable oracle is a smell to fix, not ship.
-
-Example-based tests remain fine for smoke and acceptance coverage; they do not replace PBT/MBT where those fit.
+Full text: [`doc/agents/testing-doctrine.md`](doc/agents/testing-doctrine.md).
+In short: property tests (PBT, `proptest`) where code has invariants;
+model-based tests (MBT) where a spec or model exists; every automated
+test names its oracle. Example tests stay fine for smoke and acceptance.
 
 ## Operator script argument contract (#3352)
 
@@ -65,29 +62,14 @@ is a defect.
 
 ## Filing an issue outside a creator run
 
-**File and enqueue in the same pass.** Any lane that files a GitHub issue
-outside a creator run — a work lane filing a blocker mid-task, an audit
-lane, a hand filing — enqueues that issue's triage packet in the same
-pass, or records in the filing comment why it is deliberately not
-queued. An issue filed without a queue item is invisible to every worker
-lane: nothing dispositions it, and it sits open until someone notices by
-hand (#7016).
-
-```bash
-repo-queue enqueue <packet.json> --queue repo-health-<repo>-pilot
-```
-
-The standing backstop is the coverage reconciliation
-(`scripts/fleet/queue-reconcile/`, `doc` in its README): every open issue
-must hold a **live** task — `queued`, `claimed`, `parked` or `blocked` —
-in its own pilot queue. A `done` task is not coverage, and neither is a
-task in a `*-shadow` queue. When the reconciliation reports uncovered
-issues, the rule above was missed somewhere; fix the filing path, not
-just the import.
+Read the [filing and queue coverage rules](doc/agents/one-queue-claiming-work.md#filing-an-issue-outside-a-creator-run) before filing.
+File and enqueue in the same pass, or record in the filing comment why not.
+Open issues need live pilot tasks; fix uncovered filing paths, not just imports.
 
 ## The one queue: claiming work
 
 Full text: [`doc/agents/one-queue-claiming-work.md`](doc/agents/one-queue-claiming-work.md).
+Before claiming, read [central commands](doc/agents/fleet-command-channel.md).
 In short: there is ONE fleet queue; per-repo `queue` values are stream
 labels, not separate queues. The default claim is unfiltered —
 `repo-queue claim --worker <worker> --lane <lane>` returns the
@@ -97,6 +79,30 @@ expression, empty by default on both sides; filters are never registry
 bindings, and claimer identity is recorded, never itself a filter.
 Designated filtered lanes (5 code-only, 3 not-code per surface) are the
 only exceptions; the sets are recorded on #8097.
+
+## Who holds an issue (assignee is not a hold)
+
+Read the [ownership and note rules](doc/agents/one-queue-claiming-work.md#who-holds-an-issue-assignee-is-not-a-hold) before acting on ownership.
+Only `held`, `user/owned`, and `do-not-auto-edit` hold for a human;
+`do-not-merge` blocks merging only. Assignee, authorship and `work/assigned`
+are not holds; workers own tasks by atomic claim. Check holds before parking
+for ownership; check notes before posting a park/pickup note. Always post
+progress notes. Land or checkpoint a reviewable slice before parking for size.
+There is no ownership handoff: never park awaiting one.
+
+## Nothing waits on the owner
+
+Full text: [FDR-0013](doc/decisions/FDR-0013-no-owner-decision-gates.md); how: `.agents/skills/decide-and-proceed`.
+Never park, block or label work as waiting on the owner for a choice,
+review or approval: decide, record it on the issue, continue. Only a
+hands item (one action only a person's hands can do) may wait.
+
+## Finishing work
+
+A PR that completes an issue says `Closes #N`. After a merge, run the
+issue's done check and close it, or note what is left and clear
+`status:in-review`: open issues with merged work block their waiters.
+Out of work: `fleet agent next` ([onboarding](doc/agents/onboarding-an-agent.md)).
 
 ## Research, design and delivery workflow
 

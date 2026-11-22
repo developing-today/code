@@ -1794,13 +1794,25 @@ mod tests {
         let receiver_key = SigningKey::from_bytes(&[81; 32]);
         let pinned_source = *receiver_key.verifying_key().as_bytes();
         let nonce = [19; crate::world::SESSION_NONCE_BYTES];
+        // The snapshot must carry the writer journal's own header version:
+        // issuing the spectator records its join time, which raises the
+        // header to JOURNAL_VERSION_JOIN_TIMES (#11960).
+        let header_version = match serde_json::from_slice::<JournalEntry>(
+            journal_bytes.split(|byte| *byte == b'\n').next().unwrap(),
+        )
+        .unwrap()
+        {
+            JournalEntry::Created { version, .. } => version,
+            other => panic!("writer journal must open with its header, got {other:?}"),
+        };
+        assert!(header_version >= JOURNAL_VERSION);
         let mut receiver =
             DurableReceiver::open(replica_dir.path(), "replica-offline", pinned_source).unwrap();
         receiver.begin_session(nonce);
         let snapshot = ReplicationEnvelope::snapshot(
             "replica-offline",
             pinned_source,
-            receiver.header_version().unwrap_or(JOURNAL_VERSION),
+            header_version,
             nonce,
             [0; 32],
             journal_bytes.clone(),
@@ -1816,7 +1828,7 @@ mod tests {
         let terminal = ReplicationEnvelope::terminal(
             "replica-offline",
             pinned_source,
-            JOURNAL_VERSION,
+            header_version,
             nonce,
             snapshot_cursor,
             previous,
@@ -1883,8 +1895,9 @@ mod tests {
     async fn offline_replica_serves_friend_delegation_from_directory_facts_without_writer() {
         use crate::directory::Actor;
         use crate::world::{
-            DurableReceiver, JOURNAL_VERSION, JournalEntry, ReplicationEnvelope,
-            SignedReplicationEnvelope, WorldCore, frame_digest, journal_entry_line,
+            DurableReceiver, JournalEntry, MAX_JOURNAL_VERSION as JOURNAL_VERSION,
+            ReplicationEnvelope, SignedReplicationEnvelope, WorldCore, frame_digest,
+            journal_entry_line,
         };
         use ed25519_dalek::SigningKey;
 
@@ -2048,9 +2061,9 @@ mod tests {
 
         use crate::directory::Actor;
         use crate::world::{
-            DurableReceiver, JOURNAL_VERSION, JournalEntry, ReplicationEnvelope,
-            SignedReplicationEnvelope, WorldCore, WorldEvent, WorldEventKind, frame_digest,
-            journal_entry_line,
+            DurableReceiver, JournalEntry, MAX_JOURNAL_VERSION as JOURNAL_VERSION,
+            ReplicationEnvelope, SignedReplicationEnvelope, WorldCore, WorldEvent, WorldEventKind,
+            frame_digest, journal_entry_line,
         };
 
         let mut writer_core = WorldCore::new(world_id, WorldLimits::default()).unwrap();
@@ -2739,6 +2752,7 @@ mod tests {
             .unwrap();
         journal
             .append(&JournalEntry::Issued {
+                issued_at: None,
                 participant,
                 digest: "00".repeat(32),
                 scopes: WorldScopes::GUEST.bits(),
@@ -2872,6 +2886,7 @@ mod tests {
         drop(FileJournal::open(&path, "w").unwrap());
         let created = std::fs::read(&path).unwrap();
         let revoked = serde_json::to_vec(&JournalEntry::Revoked {
+            revoked_at: None,
             participant_id: 1,
             by: None,
         })

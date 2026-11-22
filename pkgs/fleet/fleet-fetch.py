@@ -16,14 +16,8 @@ Writes go through the libSQL HTTP pipeline to fleet-queue (token by
 name: turso.fleet-queue-rw-token). Failure of one repo never fails
 the others; exit is non-zero only if ALL repos fail.
 
-History: snapshots/watermarks lived in Supabase muse-dev
-(agent.repo_snapshots / agent.watermarks) until 2026-11-07, when the
-#5693 ci re-home moved them to fleet-queue alongside the github-ci
-Worker (which advances head_sha in the same table on push). The
-snapshot_refresh event's sink (#5690, AGENT_EVENTS_SINK) had already
-flipped to turso; the PG event leg is retired with this repoint —
-the event now always lands in the fleet-queue events table.
-Cutover: doc/fleet/agent-events-turso.md in developing-today/code.
+Snapshots/watermarks and the snapshot_refresh event all live in the
+fleet-queue Turso DB (doc/fleet/agent-events-turso.md).
 """
 
 import json
@@ -242,9 +236,8 @@ def fetch_repo(repo):
 
 
 def write_sql(statements):
-    """Kept name, new home (#5693): statements run against the
-    fleet-queue Turso DB (agent_repo_snapshots / agent_watermarks /
-    events), not Supabase."""
+    """Statements run against the fleet-queue Turso DB
+    (agent_repo_snapshots / agent_watermarks / events)."""
     turso_pipeline(statements)
 
 
@@ -304,7 +297,7 @@ def main():
             except Exception as exc:
                 results[repo] = {"ok": False, "error": str(exc)[:300]}
 
-    # Write each snapshot in its own supabase-exec call so one bad write
+    # Write each snapshot in its own pipeline call so one bad write
     # cannot sink the repos that fetched fine.
     write_errors = []
     for repo, snap in snapshots.items():

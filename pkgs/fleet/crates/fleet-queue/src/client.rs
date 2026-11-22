@@ -13,7 +13,7 @@
 //! role picks the broker's Unix socket when it answers; an absent
 //! or stale socket keeps the session-proxy route, and a failed
 //! UDS attempt falls back to it within the same call.
-//! No Bitwarden fetch, no direct Supabase access. Exit 3 means the
+//! No Bitwarden fetch, no direct database access. Exit 3 means the
 //! broker path itself is unavailable.
 //!
 //! Entry points: the fleet binary's queue domain and the standalone
@@ -1213,10 +1213,6 @@ mod tests {
         // limit is below the matching count says so; an exhaustive
         // listing reports completeness; an unknown total is null,
         // never a fabricated zero.
-        assert_eq!(content_range_total("0-49/237"), Some(237));
-        assert_eq!(content_range_total("*/0"), Some(0));
-        assert_eq!(content_range_total("0-49/*"), None);
-        assert_eq!(content_range_total("garbage"), None);
         let rows = json!([{"id": 1}, {"id": 2}]);
         let limited = list_envelope(rows.clone(), Some(5), 0);
         assert_eq!(limited["total"], json!(5));

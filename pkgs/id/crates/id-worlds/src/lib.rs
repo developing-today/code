@@ -45,6 +45,7 @@
 pub use id_core::port;
 
 pub mod blob_gate;
+pub mod chat_anchor_render;
 pub mod groups;
 pub mod program_bundle;
 pub mod program_gallery;
@@ -72,6 +73,8 @@ pub mod world_replication_net;
 pub mod world_session;
 #[cfg(feature = "ssh")]
 pub mod world_ssh;
+pub mod world_owner_report;
+pub mod world_storage;
 pub mod world_store;
 pub mod world_terminal;
 

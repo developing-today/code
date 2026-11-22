@@ -42,9 +42,10 @@
 # pm-dispatch's env files are external the same way:
 # ~/pm-stack/dispatch/.env (rendered by pm-stack/dispatch/install.sh
 # from the same SOPS file — it carries the GitHub App material and the
-# fleet Supabase config: supabase_url + supabase_service_role_key for
-# muse-dev2) and ~/secrets/dispatch.env (operator-only secrets that
-# are not in SOPS: DISPATCH_API_TOKEN). install.sh remains the env
+# queue broker URL; the queue itself is the Turso-backed fleet queue
+# broker, reached with the token in ~/.config/queue-broker/token) and
+# ~/secrets/dispatch.env
+# (operator-only secrets that are not in SOPS: DISPATCH_API_TOKEN). install.sh remains the env
 # renderer and the fallback installer; this module owns the unit
 # lifecycle.
 #
@@ -299,11 +300,11 @@ in
               "PM_AGG_ACTIVITY_FILE=${aggState}/activity-ingestion.json"
               # #6815: the four aggregator stores that used to live only
               # in this state dir (actions, activity-ingestion, usage
-              # snapshots, aa-last-good) are canonical in Supabase
-              # muse-dev2. The local files stay as a rebuildable cache
+              # snapshots, aa-last-good) are canonical in Turso
+              # fleet-platform. The local files stay as a rebuildable cache
               # (see pm-stack/aggregator/README.md, "Store backend");
               # switching this back to "file" is the rollback.
-              "PM_AGG_STORE_BACKEND=supabase"
+              "PM_AGG_STORE_BACKEND=turso"
               "PM_AGG_STORE_WRITER=pm-aggregator.service"
               "BWS_BIN=/run/current-system/sw/bin/bws"
               "BWS_ACCESS_TOKEN_FILE=${home}/.config/bws/access-token"
@@ -347,12 +348,13 @@ in
             ExecStart = "${sigtermWitness}/bin/sigterm-witness --log ${disState}/sigterm-witness.log ${pmDispatch}/bin/pm-dispatch";
             # The env files stay outside the module, exactly like the
             # aggregator's: install.sh renders the sops-derived file
-            # (GitHub App + Supabase config), and the operator file is
+            # (GitHub App + queue broker URL), and the operator file is
             # laptop-only (DISPATCH_API_TOKEN). The "-" keeps the hand
             # unit's semantics — a missing operator file degrades the
             # service instead of crash-looping it. systemd applies the
-            # files in order, so the operator file wins on a collision:
-            # it must never carry SUPABASE_* lines (install.sh warns).
+            # files in order, so the operator file wins on a collision.
+            # The build version in
+            # /health comes from the package wrapper, not these files.
             EnvironmentFile = [
               "${stackDir}/dispatch/.env"
               "-${home}/secrets/dispatch.env"
@@ -472,10 +474,10 @@ in
               "BWS_BIN=/run/current-system/sw/bin/bws"
               "BWS_ACCESS_TOKEN_FILE=${home}/.config/bws/access-token"
               # #6815: the collector writes the aa-last-good canonical
-              # document to Supabase muse-dev2 (the local file stays a
+              # document to Turso fleet-platform (the local file stays a
               # rebuildable cache). Same writer identity as the
               # aggregator unit env; see "Store backend" in the README.
-              "PM_AGG_STORE_BACKEND=supabase"
+              "PM_AGG_STORE_BACKEND=turso"
               "PM_AGG_STORE_WRITER=fleet-feed-collector"
               "FLEET_FEED_OUT=${aggState}/fleet-feed.json"
               "PM_AGG_FRESHNESS_URL=http://127.0.0.1:4871/publish"

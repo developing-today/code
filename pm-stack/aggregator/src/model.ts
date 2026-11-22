@@ -72,6 +72,8 @@ export interface MilestoneRef {
  * linked issue's state) but not arbitrary issues.
  */
 export interface ProjectPoolItem {
+  /** Stable local board-registry key; refs remain board-agnostic. */
+  boardId?: string;
   /** Project item node id (PVTI_…). */
   id: string;
   /** Project item database id, used in the item URL's itemId param. */
@@ -130,6 +132,8 @@ export interface ProjectPoolItem {
    *  no epic ancestor, and when the parent chain leaves the pool (the
    *  collector only knows Kind for items on the board). */
   epicRef?: RefKey;
+  /** Former parent refs retained by the PM metadata record after a split. */
+  historicalParentRefs?: RefKey[];
 }
 
 export interface ProjectPoolEdgeDiagnostic {
@@ -162,6 +166,9 @@ export interface ProjectAudit {
   url: string;
   generatedAt: string;
   totalItems: number;
+  /** Total across all registered boards in a multi-board feed. The audit's
+   *  distributions and totalItems remain scoped to its own board. */
+  poolTotalItems?: number;
   fields: ProjectAuditField[];
   views: ProjectAuditView[];
   counts: {
@@ -241,6 +248,10 @@ export interface RoadmapRow {
   source: string;
   notes: string;
   links: Link[];
+  /** Genealogy overlay from the Project pool; absent when no linked item resolves. */
+  priority?: RefKey | null;
+  afterRefs?: RefKey[];
+  releaseRef?: RefKey | null;
   /** Grist UI link for this row's document (#1136), when known. */
   gristUrl?: string;
   /** Repo-file link for this row's source file + heading (#1738), when
@@ -412,7 +423,7 @@ export interface GathererProviderFreshness {
   serviceId: string;
   credentialLabel?: string;
   state: "ok" | "stale" | "error" | "lapsed";
-  measuredAt: string;
+  measuredAt: string | null;
   source: string;
   error?: string;
 }
@@ -425,6 +436,8 @@ export interface GathererSummary {
   source: string;
   tickAt: string | null;
   ok: boolean;
+  durationMs?: number | null;
+  error?: string;
   providers: GathererProviderFreshness[];
 }
 
@@ -867,8 +880,8 @@ export interface DnsSection {
 }
 
 // ---------------------------------------------------------------------------
-// AA cost explorer: the Artificial Analysis import data (Supabase
-// `ainventory`, latest import batch) as the collector embeds it in the
+// AA cost explorer: the Artificial Analysis import data (Turso
+// `ainventory_*`, latest import batch) as the collector embeds it in the
 // fleet feed. The figures are the import snapshot's — AA Intelligence
 // Index v4.3.2, Test_Runs snapshots of Sep–Oct 2026 — not a live AA pull;
 // the section's provenance says exactly which batch and files they are.
@@ -1213,7 +1226,7 @@ export interface AaSection {
   staleReason?: string;
 }
 
-/** The section's degraded form: the collector could not reach Supabase
+/** The section's degraded form: the collector could not reach Turso
  * (or the payload failed its check) and no last good payload exists
  * to fall back to (code#3332) — the page renders the reason, and the
  * feed never fails over it. */
@@ -1249,6 +1262,9 @@ export interface DashAuthor {
 /** How a comment's author was established (#1253 §5). */
 export type CommentProvenance = "verified" | "asserted-legacy";
 
+/** How a registry record's author identity was established (#1253 §5). */
+export type RegistryProvenance = "verified" | "asserted-legacy";
+
 export interface DashComment {
   id: string;
   /** The object ref the thread hangs on (see above). */
@@ -1265,6 +1281,8 @@ export interface DashComment {
    * on old records; read it through commentProvenance().
    */
   provenance?: CommentProvenance;
+  /** Owner-confirmed display link only; never changes author or provenance. */
+  linkedIdentity?: { source: RegistrySource; id: string };
   body: string;
   createdAt: string;
   /** kind "message": the orchestrator's triage state. */
@@ -1307,6 +1325,8 @@ export interface SessionRecord {
   agentId: string;
   /** Display name for the agent identity. */
   agentLabel: string;
+  /** Missing on pre-migration rows; those remain asserted-legacy. */
+  provenance?: RegistryProvenance;
   /** Parent session id for sub-sessions, else null. */
   parentId: string | null;
   startedAt?: string;

@@ -122,6 +122,11 @@ export function serviceIdFor(providerId: string): string {
       return "opencode-go.popesdrew";
     case "opencode.developing-today-0":
       return "opencode-go.developing-today-0";
+    // The 0x111dev Go and Zen doors read the same workspace meter. Keep
+    // the Zen spelling on the Go account pool, like the named workspace
+    // aliases above, rather than synthesizing a second pool.
+    case "opencode.0x111dev":
+      return "opencode-go.0x111dev";
     default:
       return providerId;
   }

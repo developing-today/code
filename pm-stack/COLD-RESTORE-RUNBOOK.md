@@ -33,7 +33,9 @@ targets are never claimed until verified by a drill.
    never depends on them.
 
 Secrets are restored **by name** from Bitwarden via the standing secrets
-route; no backup archive contains plaintext secrets.
+route; no backup archive contains plaintext secrets. A new computer first
+bootstraps its roots of trust (BWS token, Google Drive OAuth) per
+[`BOOTSTRAP-CREDENTIALS.md`](BOOTSTRAP-CREDENTIALS.md).
 
 ## Drill / restore steps
 
