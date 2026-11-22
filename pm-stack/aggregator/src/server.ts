@@ -1624,6 +1624,26 @@ async function searchContext(query: string) {
 // createWatchdogGapSyncQueue in activity.ts for why the bare
 // fire-and-forget sync interleaved.
 const enqueueWatchdogGapSync = createWatchdogGapSyncQueue();
+let lastWatchdogHeartbeatAt = 0;
+let watchdogHeartbeatWrite: Promise<void> | null = null;
+
+/** Record liveness only after a watchdog derivation completes. A timer here
+ * would stay green even if the watchdog work itself stopped making progress. */
+async function recordWatchdogHeartbeat(nowMs: number): Promise<void> {
+  if (nowMs - lastWatchdogHeartbeatAt < WATCHDOG_HEARTBEAT_INTERVAL_MS) return;
+  if (watchdogHeartbeatWrite) return watchdogHeartbeatWrite;
+  watchdogHeartbeatWrite = (async () => {
+    await sloJournal.append([watchdogHeartbeatLine(nowMs)]);
+    lastWatchdogHeartbeatAt = nowMs;
+  })();
+  try {
+    await watchdogHeartbeatWrite;
+  } catch (error) {
+    console.error(`[watchdog] WARNING: heartbeat append failed: ${error instanceof Error ? error.message : String(error)}`);
+  } finally {
+    watchdogHeartbeatWrite = null;
+  }
+}
 
 // #1148: the watchdog derives NEEDS ORCHESTRATOR items from the
 // current diagnoses (feed age + probes via the health assembly —
@@ -1670,9 +1690,12 @@ async function deriveWatchdogItems(diagnosis?: ReturnType<NonNullable<Source["di
   // breach clears), so one continuous outage is one delivery.
   const stableItems = watchdogEpisodes.stabilize(items);
   void recordActivity(watchdogDeliveries(stableItems));
-  void enqueueWatchdogGapSync(activityStore, stableItems).catch((err) => {
+  let gapSyncSucceeded = true;
+  await enqueueWatchdogGapSync(activityStore, stableItems).catch((err) => {
+    gapSyncSucceeded = false;
     console.error(`[activity] WARNING: watchdog gap sync failed: ${err instanceof Error ? err.message : String(err)}`);
   });
+  if (gapSyncSucceeded) await recordWatchdogHeartbeat(Date.now());
   return items;
 }
 
@@ -4633,24 +4656,6 @@ if (cfg.source !== "fixtures") {
   const timer = setInterval(() => void sampleSlo(), SLO_SAMPLE_INTERVAL_MS);
   timer.unref?.();
 
-  // #9992: an independent page-health-push checker reads this append-only
-  // journal heartbeat. Keep its cadence independent from the one-minute SLO
-  // sample so two missed five-minute cycles have an unambiguous meaning.
-  let heartbeatWriting = false;
-  const writeWatchdogHeartbeat = async (): Promise<void> => {
-    if (heartbeatWriting) return;
-    heartbeatWriting = true;
-    try {
-      await sloJournal.append([watchdogHeartbeatLine(Date.now())]);
-    } catch (error) {
-      console.error(`[watchdog] WARNING: heartbeat append failed: ${error instanceof Error ? error.message : String(error)}`);
-    } finally {
-      heartbeatWriting = false;
-    }
-  };
-  void writeWatchdogHeartbeat();
-  const heartbeatTimer = setInterval(() => void writeWatchdogHeartbeat(), WATCHDOG_HEARTBEAT_INTERVAL_MS);
-  heartbeatTimer.unref?.();
 }
 
 // The alert throat's engine (#3676): the ~60s delivery/escalation

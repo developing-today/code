@@ -40,7 +40,8 @@ function parseArgs(args: readonly string[]): { journal: string | undefined } {
 async function postAlert(check: WatchdogHeartbeatCheck): Promise<void> {
   if (check.alert !== "needs-orchestrator" && check.alert !== "page-drew") return;
   const isPage = check.alert === "page-drew";
-  const key = isPage ? "watchdog-heartbeat-page-drew" : "watchdog-heartbeat-needs-orchestrator";
+  // Stable for one outage, but distinct after a recovery and later failure.
+  const key = `watchdog-heartbeat-${check.lastHeartbeatAtMs}-${isPage ? "page-drew" : "needs-orchestrator"}`;
   const title = isPage
     ? "PM-stack watchdog heartbeat missing — page Drew"
     : "NEEDS ORCHESTRATOR: PM-stack watchdog missed two heartbeat cycles";

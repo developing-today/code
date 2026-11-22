@@ -79,4 +79,42 @@ describe("watchdog heartbeat", () => {
       await rm(dir, { recursive: true, force: true });
     }
   });
+
+  test("generated histories select the newest valid beat and obey threshold oracle", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "watchdog-heartbeat-property-"));
+    try {
+      const file = join(dir, "slo-journal.jsonl");
+      // Deterministic PRNG keeps counterexamples reproducible while
+      // generating varied orderings, malformed lines, and unrelated records.
+      let seed = 0x6d2b79f5;
+      const random = (): number => {
+        seed = Math.imul(seed ^ (seed >>> 15), seed | 1);
+        seed ^= seed + Math.imul(seed ^ (seed >>> 7), seed | 61);
+        return ((seed ^ (seed >>> 14)) >>> 0) / 0x1_0000_0000;
+      };
+      for (let example = 0; example < 500; example++) {
+        const beats = Array.from({ length: 1 + Math.floor(random() * 20) }, () => Math.floor(random() * 10_000_000));
+        const shuffled = [...beats];
+        for (let i = shuffled.length - 1; i > 0; i--) {
+          const j = Math.floor(random() * (i + 1));
+          [shuffled[i], shuffled[j]] = [shuffled[j]!, shuffled[i]!];
+        }
+        const lines = shuffled.map((atMs) => JSON.stringify({ facet: "watchdog-heartbeat", atMs }));
+        lines.splice(Math.floor(random() * (lines.length + 1)), 0, "not-json", JSON.stringify({ facet: "other", atMs: 99_000_000 }));
+        await writeFile(file, `${lines.join("\n")}\n`, "utf8");
+
+        const newest = Math.max(...beats);
+        const missed = Math.floor(random() * 5);
+        const now = newest + missed * WATCHDOG_HEARTBEAT_INTERVAL_MS;
+        const expectedAlert = missed >= 3 ? "page-drew" : missed >= 2 ? "needs-orchestrator" : "none";
+        expect(await checkWatchdogHeartbeatJournal(file, now)).toEqual({
+          alert: expectedAlert,
+          missedCycles: missed,
+          lastHeartbeatAtMs: newest,
+        });
+      }
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
 });

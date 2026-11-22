@@ -78,14 +78,28 @@ describe("watchdog heartbeat runner", () => {
       const orchestrator = await runScript(["--journal", file], env);
       expect(orchestrator.code).toBe(0);
       expect(await Bun.file(argsFile).text()).toContain("--severity warning");
-      expect(await Bun.file(argsFile).text()).toContain("watchdog-heartbeat-needs-orchestrator");
+      const orchestratorArgs = await Bun.file(argsFile).text();
+      expect(orchestratorArgs).toContain("watchdog-heartbeat-");
+      expect(orchestratorArgs).toContain("-needs-orchestrator");
 
       const pageFile = join(dir, "page-journal.jsonl");
       await new SloJournal(pageFile).append([watchdogHeartbeatLine(Date.now() - 3 * WATCHDOG_HEARTBEAT_INTERVAL_MS)]);
       const page = await runScript(["--journal", pageFile], env);
       expect(page.code).toBe(0);
-      expect(await Bun.file(argsFile).text()).toContain("--severity critical");
-      expect(await Bun.file(argsFile).text()).toContain("watchdog-heartbeat-page-drew");
+      const pageArgs = await Bun.file(argsFile).text();
+      expect(pageArgs).toContain("--severity critical");
+      expect(pageArgs).toContain("watchdog-heartbeat-");
+      expect(pageArgs).toContain("-page-drew");
+      const incidentKey = (args: string) => args.match(/watchdog-heartbeat-[^ ]+/)?.[0];
+      expect(incidentKey(pageArgs)).not.toBe(incidentKey(orchestratorArgs));
+
+      const recoveredEpisodeFile = join(dir, "recovered-episode-journal.jsonl");
+      await new SloJournal(recoveredEpisodeFile).append([
+        watchdogHeartbeatLine(Date.now() - 2 * WATCHDOG_HEARTBEAT_INTERVAL_MS - 60_000),
+      ]);
+      const laterOutage = await runScript(["--journal", recoveredEpisodeFile], env);
+      expect(laterOutage.code).toBe(0);
+      expect(incidentKey(await Bun.file(argsFile).text())).not.toBe(incidentKey(orchestratorArgs));
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
