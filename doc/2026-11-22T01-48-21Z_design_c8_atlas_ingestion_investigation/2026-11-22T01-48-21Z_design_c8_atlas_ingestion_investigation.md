@@ -36,7 +36,7 @@ Every C8 document uses Atlas's existing versioned metadata envelope, not a C8-on
   "page": {
     "kind": "incident_report",
     "media_type": "text/markdown",
-    "url_parts": {"scheme": "https", "host": "…", "path": "…"},
+    "url_parts": { "scheme": "https", "host": "…", "path": "…" },
     "generated_by": [],
     "graph_libraries": []
   },
@@ -91,13 +91,13 @@ Fetch failure, invalid metadata, unavailable joins, or missing telemetry are vis
 
 These are named implementation slices for follow-on packets; the design issue does not implement them:
 
-| Slice | Deliverable | Owner / constraint |
-|---|---|---|
-| C8-I — report/page adapter and cycle checkpoint | Idempotent source adapter, cursor commit semantics, retry/reject evidence, fixture-backed “visible after next successful cycle” check | C8 implementation; integrate through #9091 ingestion interfaces |
-| C8-M — metadata and typed links | C8 profile in the shared versioned envelope, URL sanitization, explicit link extraction/resolution, compatibility test for #9106 relation projection | C8 implementation; consume #9073/#9074/#9075 fields where available |
-| C8-R — bounded planner features | Dataset/recency policy, explainable capped boosts, exact error mode behind a flag, ranking evaluation corpus | #9091 planner owner; C8 supplies feature requirements and evaluation cases |
-| C8-E — investigation evidence bundle | Exact fingerprint/time-range workflow, provenance-labelled commit→PR→issue joins, gap reporting, unpushed-final-commit check | C8 implementation; depend on live #9073/#9075 data and queue/session interfaces |
-| C8-T — recurring-fix triage output | Candidate class-fix and residual-subtask records, dedupe before enqueue, schedule registry update if a recurring job is later approved | C8 output only; task creation follows one-queue filing rules |
+| Slice                                           | Deliverable                                                                                                                                          | Owner / constraint                                                              |
+| ----------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------- |
+| C8-I — report/page adapter and cycle checkpoint | Idempotent source adapter, cursor commit semantics, retry/reject evidence, fixture-backed “visible after next successful cycle” check                | C8 implementation; integrate through #9091 ingestion interfaces                 |
+| C8-M — metadata and typed links                 | C8 profile in the shared versioned envelope, URL sanitization, explicit link extraction/resolution, compatibility test for #9106 relation projection | C8 implementation; consume #9073/#9074/#9075 fields where available             |
+| C8-R — bounded planner features                 | Dataset/recency policy, explainable capped boosts, exact error mode behind a flag, ranking evaluation corpus                                         | #9091 planner owner; C8 supplies feature requirements and evaluation cases      |
+| C8-E — investigation evidence bundle            | Exact fingerprint/time-range workflow, provenance-labelled commit→PR→issue joins, gap reporting, unpushed-final-commit check                         | C8 implementation; depend on live #9073/#9075 data and queue/session interfaces |
+| C8-T — recurring-fix triage output              | Candidate class-fix and residual-subtask records, dedupe before enqueue, schedule registry update if a recurring job is later approved               | C8 output only; task creation follows one-queue filing rules                    |
 
 The platform integration is a hard dependency for shipping production behavior, not for settling this C8 design. Do not fork or duplicate #9091 work. Where the exact #9073–#9075 field is not yet available, the adapter remains optional and records “unavailable”; file a narrowly scoped follow-on against the field-owning issue rather than inventing a parallel field.
 

@@ -382,9 +382,11 @@ async fn bench_many_worlds(root: &Path, quick: bool) -> Result<()> {
 
     // Give each world one input every 50 ms, with a phase offset within that
     // interval. A task per world avoids creating a task for every command and
-    // avoids an artificial 100-world burst on each tick. If an actor or journal
-    // falls behind, the missed deadline remains part of the command-latency
-    // sample.
+    // avoids an artificial 100-world burst on each tick. Each sample separates
+    // time from deadline to task wake-up from time awaiting input acknowledgement;
+    // the end-to-end sample remains deadline through acknowledgement. The two
+    // component percentiles are diagnostic and must not be added to estimate a
+    // combined percentile.
     let ticks = config.events_per_second as u64 * config.duration_secs;
     let mut pending = tokio::task::JoinSet::new();
     let load_started = Instant::now();
@@ -399,17 +401,25 @@ async fn bench_many_worlds(root: &Path, quick: bool) -> Result<()> {
                 let deadline =
                     load_started + Duration::from_nanos(tick * interval_nanos + phase_nanos);
                 tokio::time::sleep_until(tokio::time::Instant::from_std(deadline)).await;
+                let input_started = Instant::now();
+                let wake_lateness = input_started.saturating_duration_since(deadline);
                 handle.input(token.clone(), b"inc".to_vec()).await?;
-                samples.push(deadline.elapsed());
+                samples.push((deadline.elapsed(), wake_lateness, input_started.elapsed()));
             }
-            Ok::<Vec<Duration>, anyhow::Error>(samples)
+            Ok::<Vec<(Duration, Duration, Duration)>, anyhow::Error>(samples)
         });
     }
 
     let expected_commands = ticks as usize * config.active_worlds;
     let mut latencies = Vec::with_capacity(expected_commands);
+    let mut wake_lateness = Vec::with_capacity(expected_commands);
+    let mut input_ack = Vec::with_capacity(expected_commands);
     while let Some(result) = pending.join_next().await {
-        latencies.extend(result.context("join many-worlds load task")??);
+        for (latency, wake, acknowledgement) in result.context("join many-worlds load task")?? {
+            latencies.push(latency);
+            wake_lateness.push(wake);
+            input_ack.push(acknowledgement);
+        }
     }
     let load_elapsed_secs = load_started.elapsed().as_secs_f64();
     ensure!(
@@ -569,6 +579,12 @@ async fn bench_many_worlds(root: &Path, quick: bool) -> Result<()> {
     let p50 = percentile(&latencies, 0.50);
     let p95 = percentile(&latencies, 0.95);
     let p99 = percentile(&latencies, 0.99);
+    let wake_p50 = percentile(&wake_lateness, 0.50);
+    let wake_p95 = percentile(&wake_lateness, 0.95);
+    let wake_p99 = percentile(&wake_lateness, 0.99);
+    let input_ack_p50 = percentile(&input_ack, 0.50);
+    let input_ack_p95 = percentile(&input_ack, 0.95);
+    let input_ack_p99 = percentile(&input_ack, 0.99);
     let target_met = p99 < 50.0;
     let completed_events_per_second = latencies.len() as f64 / load_elapsed_secs;
     let min = latencies
@@ -576,7 +592,7 @@ async fn bench_many_worlds(root: &Path, quick: bool) -> Result<()> {
         .map(|latency| latency.as_secs_f64() * 1_000.0)
         .fold(f64::INFINITY, f64::min);
     println!(
-        "bench many_worlds unit=ms_per_command median={p50:.3} min={min:.3} reps=1 p50_ms={p50:.3} p95_ms={p95:.3} p99_ms={p99:.3} target_p99_ms=50 target_met={target_met} idle_worlds={} active_worlds={} events_per_second={} duration_secs={} commands={} load_elapsed_secs={load_elapsed_secs:.3} completed_events_per_second={completed_events_per_second:.1} checkpoint_triggers={} checkpoints={} evicted={} reopened={}",
+        "bench many_worlds unit=ms_per_command median={p50:.3} min={min:.3} reps=1 p50_ms={p50:.3} p95_ms={p95:.3} p99_ms={p99:.3} wake_p50_ms={wake_p50:.3} wake_p95_ms={wake_p95:.3} wake_p99_ms={wake_p99:.3} input_ack_p50_ms={input_ack_p50:.3} input_ack_p95_ms={input_ack_p95:.3} input_ack_p99_ms={input_ack_p99:.3} target_p99_ms=50 target_met={target_met} idle_worlds={} active_worlds={} events_per_second={} duration_secs={} commands={} load_elapsed_secs={load_elapsed_secs:.3} completed_events_per_second={completed_events_per_second:.1} checkpoint_triggers={} checkpoints={} evicted={} reopened={}",
         config.idle_worlds,
         config.active_worlds,
         config.events_per_second,

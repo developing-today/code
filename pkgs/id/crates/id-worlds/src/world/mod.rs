@@ -82,12 +82,12 @@ pub use id_caps::portal::{PortalGrantState, PortalGrants, PortalRefusal};
 pub(crate) use journal::JournalAdminHistory;
 pub use journal::{
     CoordinatorJournalEntry, JOURNAL_VERSION, JOURNAL_VERSION_CHECKPOINT_PARTS,
-    JOURNAL_VERSION_EXECUTION_PROFILE, JOURNAL_VERSION_JOIN_TIMES, JOURNAL_VERSION_OPEN_PRESENCE,
-    JOURNAL_VERSION_PORTALS, JOURNAL_VERSION_PROGRAM_BUNDLE, JOURNAL_VERSION_REGION_HANDOFF,
-    JOURNAL_VERSION_SCHEDULE_RECURRENCE, JOURNAL_VERSION_SIGNED_PLAY, JOURNAL_VERSION_WORLD_BUDGET,
-    JOURNAL_VERSION_WRITE_LEASE, JournalEntry, JournalSignedMove, JournalSnapshot,
-    JournalSnapshotSource, MAX_JOURNAL_VERSION, TrustBasis, TrustDecision, WorldJournal,
-    journal_version_required_by,
+    JOURNAL_VERSION_EXECUTION_PROFILE, JOURNAL_VERSION_JOIN_TIMES, JOURNAL_VERSION_KV,
+    JOURNAL_VERSION_OPEN_PRESENCE, JOURNAL_VERSION_PORTALS, JOURNAL_VERSION_PROGRAM_BUNDLE,
+    JOURNAL_VERSION_REGION_HANDOFF, JOURNAL_VERSION_SCHEDULE_RECURRENCE,
+    JOURNAL_VERSION_SIGNED_PLAY, JOURNAL_VERSION_WORLD_BUDGET, JOURNAL_VERSION_WRITE_LEASE,
+    JournalEntry, JournalSignedMove, JournalSnapshot, JournalSnapshotSource, MAX_JOURNAL_VERSION,
+    TrustBasis, TrustDecision, WorldJournal, journal_version_required_by,
 };
 pub use metrics::{
     HistogramSnapshot, MetricsSnapshot, RegionWrites, WorldMetrics, WriteLocalitySnapshot,
@@ -1364,6 +1364,21 @@ impl<'de> serde::Deserialize<'de> for CheckpointSchedule {
             },
         })
     }
+}
+
+/// One live entry of the world's `kv` store as a checkpoint declares
+/// it (#1062). The writer also emits one `KvSet` journal entry per
+/// live entry before the checkpoint, and replay refuses a checkpoint
+/// whose declared entries disagree with them — the schedule treatment
+/// ([`CheckpointSchedule`]) applied to the store.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct CheckpointKvEntry {
+    /// The entry's key.
+    pub key: String,
+    /// The entry's value, as its JSON encoding: the store keeps the
+    /// encoding, not a parsed `Value`, so journal and checkpoint
+    /// records stay `Eq` and the byte charge is the string's length.
+    pub value: String,
 }
 
 /// This world's schedule-delivery consent for one peer world (#1355

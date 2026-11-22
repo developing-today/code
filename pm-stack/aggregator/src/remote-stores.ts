@@ -11,7 +11,7 @@
 // copy would recreate exactly the laptop-only state #6815 removes.
 import { ACTION_STATES, type ActionsRemote, type DashAction } from "./actions.ts";
 import type { ActivityRemote, ActivitySourceStatus, GapRecord, IngestionFile, SourceCheckpoint } from "./activity.ts";
-import type { DocumentRemote } from "./aa-last-good.ts";
+import type { AppendOnlyDocumentRemote, DocumentRemote } from "./aa-last-good.ts";
 import type { SnapshotsRemote } from "./snapshots.ts";
 import type { SnapshotRecord } from "./model.ts";
 import { snapshotKey } from "./snapshots.ts";
@@ -315,13 +315,13 @@ export function createTursoSnapshotsRemote(getClient: GetClient = getTursoStoreC
 }
 
 // ---------------------------------------------------------------------
-// aa-last-good.json -> public.agg_store_documents
+// namespaced PM documents -> public.agg_store_documents
 // ---------------------------------------------------------------------
 
 export function createTursoDocumentRemote(
   getClient: GetClient = getTursoStoreClient,
   writer: string = storeWriterIdentity(),
-): DocumentRemote {
+): DocumentRemote & AppendOnlyDocumentRemote {
   return {
     async load(store: string): Promise<{ version: number; document: unknown } | null> {
       const db = await requireClient(getClient);
@@ -340,6 +340,25 @@ export function createTursoDocumentRemote(
           `values (${sqlStr(store)}, ${version}, ${sqlJson(document)}, ${sqlStr(writer)}, now()) ` +
           `on conflict (store) do update set version = excluded.version, document = excluded.document, ` +
           `writer = excluded.writer, updated_at = now()`,
+      );
+    },
+
+    async insertIfAbsent(store: string, version: number, document: unknown): Promise<boolean> {
+      const db = await requireClient(getClient);
+      const rows = await db.query<Record<string, unknown>>(
+        `insert into public.agg_store_documents (store, version, document, writer, updated_at) ` +
+          `values (${sqlStr(store)}, ${version}, ${sqlJson(document)}, ${sqlStr(writer)}, now()) ` +
+          `on conflict (store) do nothing returning store`,
+      );
+      return rows.length > 0;
+    },
+
+    async listPrefix(prefix: string): Promise<Array<{ store: string; version: number; document: unknown }>> {
+      const db = await requireClient(getClient);
+      return db.query<{ store: string; version: number; document: unknown }>(
+        `select store, version, document from public.agg_store_documents ` +
+          `where substr(store, 1, length(${sqlStr(prefix)})) = ${sqlStr(prefix)} ` +
+          `order by store asc`,
       );
     },
   };

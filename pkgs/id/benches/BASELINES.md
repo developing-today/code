@@ -127,7 +127,11 @@ The `many_worlds` workload creates 1,000 durable idle worlds plus 100
 simultaneously leased active worlds, then submits 20 accepted counter inputs
 per active world per second for 10 seconds (20,000 commands). It records
 per-command p50/p95/p99 from scheduled submission through acknowledgement. The
-active worlds use the checked-in `roc-counter` guest. After the timed load, one
+benchmark also records wake lateness (scheduled deadline to the Tokio task
+starting the input call) and input/ack duration (input call start to its
+acknowledgement). These component distributions are diagnostic: their
+percentiles must not be added to estimate an end-to-end percentile. The active
+worlds use the checked-in `roc-counter` guest. After the timed load, one
 extra input per active world triggers its due checkpoint; these trigger inputs
 are excluded from latency percentiles. The benchmark then evicts all 100 active
 worlds, verifies each journal has a recent checkpoint, reopens the worlds
@@ -288,6 +292,27 @@ ceiling from ~3,077/s to the device limit and per-world service to
 the ~6 ms class, which is the regime where a sub-50 ms p99 is
 decidable. #557 stays open until a recorded run — on any machine
 class — shows `target_met=true`.
+Latency-profile measurement (2026-11-22; rustc 1.99.0, cargo 1.99.0; AMD
+Ryzen 7 7840U, 16 threads, Linux 6.18.60, NixOS; shared fleet build
+activity, build-lock slot 1/2). Command, from `pkgs/id/`:
+
+```sh
+~/tools/fleet-build-lock cargo bench --bench world_bench -- --only many_worlds
+```
+
+```text
+bench many_worlds unit=ms_per_command median=885.541 min=5.341 reps=1 p50_ms=885.541 p95_ms=4760.759 p99_ms=6142.516 wake_p50_ms=829.994 wake_p95_ms=4710.759 wake_p99_ms=6092.517 input_ack_p50_ms=10.283 input_ack_p95_ms=194.474 input_ack_p99_ms=379.032 target_p99_ms=50 target_met=false idle_worlds=1000 active_worlds=100 events_per_second=20 duration_secs=10 commands=20000 load_elapsed_secs=12.941 completed_events_per_second=1545.5 checkpoint_triggers=100 checkpoints=100 evicted=100 reopened=100
+```
+
+All 20,000 scheduled commands completed and the 100 checkpoint, eviction,
+and reopen assertions passed. The measured end-to-end p99 was 6,142.516 ms;
+wake-lateness p99 was 6,092.517 ms, while input/ack p99 was 379.032 ms.
+This run therefore locates most of its observed tail before the input call
+begins, in late task wake-up. Since the laptop was under shared build load,
+this is a diagnostic profile rather than a clean comparison against the
+2026-11-14 baseline; it does not establish the unloaded scheduler behavior.
+The component p99s are not additive. The latency target remains unmet and
+#557 stays open for follow-up. The matching line is appended to `baseline.txt`.
 
 ## Fuel-spin isolation measurement (#1067, F12.10 exit criterion)
 

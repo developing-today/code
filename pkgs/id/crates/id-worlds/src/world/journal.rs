@@ -14,9 +14,9 @@ use serde::{Deserialize, Serialize};
 
 use super::signed;
 use super::{
-    CheckpointSchedule, FileScope, HandoffTransferState, Isolation, LeaseRejectionReason,
-    ModuleProvenance, Participant, WorldEvent, WorldEventKind, WriteLease, hex_decode, hex_encode,
-    replication,
+    CheckpointKvEntry, CheckpointSchedule, FileScope, HandoffTransferState, Isolation,
+    LeaseRejectionReason, ModuleProvenance, Participant, WorldEvent, WorldEventKind, WriteLease,
+    hex_decode, hex_encode, replication,
 };
 
 /// One durable fact in the region coordinator's own journal (#3870 phase 1,
@@ -405,6 +405,24 @@ pub enum JournalEntry {
         /// The fired schedule's id.
         id: String,
     },
+    /// A `kv.set` request was accepted (#1062): `key` now holds
+    /// `value`, the stored value's JSON encoding. Written before the
+    /// request's result is delivered. Setting an existing key replaces
+    /// its value; replay applies entries in order, so the last write
+    /// to a key is the store's state.
+    KvSet {
+        /// The key being set.
+        key: String,
+        /// The value's JSON encoding.
+        value: String,
+    },
+    /// A `kv.delete` request removed a live entry (#1062). Written
+    /// only when the key was present, before the request's result is
+    /// delivered.
+    KvDeleted {
+        /// The key that was removed.
+        key: String,
+    },
     /// A participant's author key was bound for signed play (#2814,
     /// #4346). Written when the binding is first made; replaying it
     /// restores the binding and the author's (still empty) chain, so a
@@ -614,6 +632,10 @@ pub enum JournalEntry {
         /// interval and remaining fires.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         schedules: Option<Vec<CheckpointSchedule>>,
+        /// Live `kv` store entries (#1062). Absent when the store is
+        /// empty, and it must match the `KvSet` entries before it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        kv: Option<Vec<CheckpointKvEntry>>,
         /// Active region-seam handoffs (#3870 phase 1, design #2818 §3):
         /// export fences/payloads, import receipts/dedupe keys and owner
         /// epochs, so compaction cannot resurrect an exported entity or
@@ -754,10 +776,17 @@ pub const JOURNAL_VERSION_PROGRAM_BUNDLE: u32 = 11;
 /// check instead.
 pub const JOURNAL_VERSION_JOIN_TIMES: u32 = 12;
 
+/// Journal version 13 (#1062): the `kv` store entries
+/// ([`JournalEntry::KvSet`] / [`JournalEntry::KvDeleted`]) and a
+/// checkpoint carrying a `kv` field. A version-12 binary cannot parse
+/// the new entry kinds and would fail mid-replay, so a journal
+/// containing them must be refused at the header check instead.
+pub const JOURNAL_VERSION_KV: u32 = 13;
+
 /// Newest journal version this binary can read. Journals with a higher
 /// header version are refused at the header check, before any entry is
 /// applied.
-pub const MAX_JOURNAL_VERSION: u32 = JOURNAL_VERSION_JOIN_TIMES;
+pub const MAX_JOURNAL_VERSION: u32 = JOURNAL_VERSION_KV;
 
 /// The header version a journal must carry once it contains `entry`: version 2
 /// for execution-profile entries, version 3 for region-handoff entries,
@@ -863,6 +892,7 @@ fn entry_kind_version(entry: &JournalEntry) -> u32 {
         JournalEntry::ScheduleGrantSet { .. } | JournalEntry::ScheduleReceived { .. } => {
             JOURNAL_VERSION_SCHEDULE_RECURRENCE
         }
+        JournalEntry::KvSet { .. } | JournalEntry::KvDeleted { .. } => JOURNAL_VERSION_KV,
         JournalEntry::PortalGrantSet { .. } => JOURNAL_VERSION_PORTALS,
         JournalEntry::Checkpoint {
             transfers,
@@ -871,9 +901,12 @@ fn entry_kind_version(entry: &JournalEntry) -> u32 {
             open_presence,
             execution_profile,
             schedules,
+            kv,
             ..
         } => {
-            let base = if schedules.as_ref().is_some_and(|declared| {
+            let base = if kv.is_some() {
+                JOURNAL_VERSION_KV
+            } else if schedules.as_ref().is_some_and(|declared| {
                 declared
                     .iter()
                     .any(|schedule| schedule.interval_ms.is_some() || schedule.remaining != 1)

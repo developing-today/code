@@ -252,7 +252,10 @@ fi
 if [ -n "${OP_SERVICE_ACCOUNT_TOKEN:-}" ]; then
   mkdir -p "$(dirname "$OP_TOKEN_FILE")"
   chmod 700 "$(dirname "$OP_TOKEN_FILE")"
-  (umask 077; printf '%s' "$OP_SERVICE_ACCOUNT_TOKEN" >"$OP_TOKEN_FILE.tmp") &&
+  (
+    umask 077
+    printf '%s' "$OP_SERVICE_ACCOUNT_TOKEN" >"$OP_TOKEN_FILE.tmp"
+  ) &&
     mv -f "$OP_TOKEN_FILE.tmp" "$OP_TOKEN_FILE"
 fi
 if [ -s "$TOKEN_FILE" ]; then
@@ -317,7 +320,10 @@ if want restore; then
     if [ -n "${OP_SERVICE_ACCOUNT_TOKEN:-}" ]; then
       mkdir -p "$(dirname "$OP_TOKEN_FILE")"
       chmod 700 "$(dirname "$OP_TOKEN_FILE")"
-      (umask 077; printf '%s' "$OP_SERVICE_ACCOUNT_TOKEN" >"$OP_TOKEN_FILE.tmp") &&
+      (
+        umask 077
+        printf '%s' "$OP_SERVICE_ACCOUNT_TOKEN" >"$OP_TOKEN_FILE.tmp"
+      ) &&
         mv -f "$OP_TOKEN_FILE.tmp" "$OP_TOKEN_FILE"
     fi
   fi
@@ -462,9 +468,9 @@ PY
   say "tailnet: node state is isolated at $TS_STATE; a hostname collision may get a Tailscale suffix and will not rename another node"
   if PING_RESULT=$("$BIN/tailscale" --socket="$TS_SOCK" ping --c 1 "$LAPTOP_TAILNET_IP" 2>&1); then
     case "$PING_RESULT" in
-      *"via DERP"*) say "tailnet: laptop is reachable through DERP; direct Tailscale UDP is not established" ;;
-      *"via "*|*"direct"*) say "tailnet: laptop probe succeeded over a direct Tailscale path" ;;
-      *) say "tailnet: laptop probe succeeded; route type was not reported" ;;
+    *"via DERP"*) say "tailnet: laptop is reachable through DERP; direct Tailscale UDP is not established" ;;
+    *"via "* | *"direct"*) say "tailnet: laptop probe succeeded over a direct Tailscale path" ;;
+    *) say "tailnet: laptop probe succeeded; route type was not reported" ;;
     esac
   else
     say "tailnet: laptop probe to $LAPTOP_TAILNET_IP did not succeed yet; Cloudflare HTTPS remains the fallback"
