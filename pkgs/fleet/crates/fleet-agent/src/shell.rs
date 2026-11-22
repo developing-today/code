@@ -239,7 +239,7 @@ fn may_invoke_cargo(command: &str) -> bool {
     ];
     let words: Vec<_> = command
         .split(|ch: char| {
-            !(ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '+'))
+            !(ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '+' | '.' | '='))
         })
         .filter(|word| !word.is_empty())
         .collect();
@@ -269,7 +269,12 @@ fn may_invoke_cargo(command: &str) -> bool {
                 next += 1;
                 continue;
             }
-            return COMPILE_ACTIONS.contains(&arg);
+            if COMPILE_ACTIONS.contains(&arg) {
+                return true;
+            }
+            // A non-compiling Cargo subcommand must not hide a later build
+            // in the same shell command (for example fmt && test).
+            break;
         }
     }
     false
@@ -373,13 +378,13 @@ for index, word in enumerate(words):
                       # laptop-agent escalates the outer process group
                       # after 2 seconds; kill this detached group first.
                       grace=0
-                      while kill -0 -- "-$worker_pgid" 2>/dev/null && [ "$grace" -lt 10 ]; do
+                      while kill -0 "-$worker_pgid" 2>/dev/null && [ "$grace" -lt 10 ]; do
                         sleep 0.1
                         grace=$((grace + 1))
                       done
                       if kill -0 -- "-$worker_pgid" 2>/dev/null; then
                         echo "fleet shell: terminating unresponsive build process group" >&2
-                        kill -KILL -- "-$worker_pgid" 2>/dev/null || :
+                        kill -KILL "-$worker_pgid" 2>/dev/null || :
                         if [ -n "$worker_pid" ]; then kill -KILL "$worker_pid" 2>/dev/null || :; fi
                       fi
                     fi
@@ -411,7 +416,7 @@ for index, word in enumerate(words):
                 worker_pgid=$(cat "$group_file" 2>/dev/null || :)
                 case "$worker_pgid" in
                   ''|*[!0-9]*) ;;
-                  *) kill -"$signal" -- "-$worker_pgid" 2>/dev/null || : ;;
+                  *) kill -"$signal" "-$worker_pgid" 2>/dev/null || : ;;
                 esac
               fi
               if [ -n "$worker_pid" ]; then
