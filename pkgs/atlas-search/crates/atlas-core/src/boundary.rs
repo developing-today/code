@@ -553,7 +553,10 @@ mod tests {
                 .collect();
             let chunks = split_by_boundaries(&source, &segments);
             for chunk in &chunks {
-                for segment in &segments {
+                // An empty declaration covers no bytes and creates no
+                // boundary (the splitter drops it); the oracle only
+                // quantifies over segments covering at least one byte.
+                for segment in segments.iter().filter(|s| s.start < s.end) {
                     // A chunk is fully inside or fully outside every
                     // declared segment: it never straddles an edge.
                     let inside = segment.start <= chunk.start && chunk.end <= segment.end;
