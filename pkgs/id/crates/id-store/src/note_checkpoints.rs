@@ -473,7 +473,11 @@ impl NoteCheckpoints {
             return Some((policy.owner, policy.access.clone()));
         }
         let record = self.record(note).ok()??;
-        let owner = record.revisions.first()?.author;
+        // The owner is the create event's author: the revision whose
+        // ID is the note's ID. Revisions are in ID order, so the
+        // first sorted revision need not be the create — a later
+        // revision's ID may sort before the note's ID.
+        let owner = record.revision(note)?.author;
         Some((owner, NoteAccess::Public))
     }
 
@@ -1146,6 +1150,41 @@ mod tests {
         // And the correct snapshot still re-states the boundary.
         rebuilt.seed_policies(log.policies().unwrap()).unwrap();
         assert_eq!(rebuilt.policies().unwrap(), log.policies().unwrap());
+    }
+
+    #[test]
+    fn test_restored_owner_comes_from_the_create_event_not_the_first_sorted_revision() {
+        // A revision whose ID sorts before the note's create event ID,
+        // by another author: the fold lists it first, but the owner is
+        // still the create event's author.
+        let mut log = NoteCheckpoints::new();
+        let note = log.create(hash(10), author(1), content(b"first")).unwrap().id;
+        log.checkpoint(note, hash(9), author(2), content(b"earlier id"), vec![note]).unwrap();
+        assert_eq!(
+            log.notes().unwrap()[0].revisions.first().unwrap().author,
+            author(2),
+            "the fixture really does put another author's revision first"
+        );
+        let groups = GroupRoles::none();
+        // The live log names the creator through its recorded policy.
+        assert_eq!(log.access(note).unwrap().0, author(1));
+        assert_eq!(log.policies().unwrap()[0].owner, author(1));
+
+        // Restart: the events rebuild the log with no policies, and
+        // the persisted snapshot must re-state. Deriving the owner
+        // from the first sorted revision refused this snapshot.
+        let events = log.events().to_vec();
+        let policies = log.policies().unwrap();
+        let rebuilt = NoteCheckpoints::from_events(events.clone()).unwrap();
+        assert_eq!(rebuilt.access(note).unwrap().0, author(1));
+        assert_eq!(rebuilt.policies().unwrap()[0].owner, author(1));
+        let restored = NoteCheckpoints::from_events_with_policies(events, policies).unwrap();
+        assert_eq!(restored.access(note).unwrap().0, author(1));
+        assert!(restored.may_append(note, author(1), &groups));
+        // And the two-step seeding path accepts the same snapshot.
+        let mut reseeded = NoteCheckpoints::from_events(log.events().to_vec()).unwrap();
+        reseeded.seed_policies(log.policies().unwrap()).unwrap();
+        assert_eq!(reseeded.policies().unwrap(), log.policies().unwrap());
     }
 
     #[test]
