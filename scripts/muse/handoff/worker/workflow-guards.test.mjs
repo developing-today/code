@@ -17,6 +17,7 @@ test("upload workflow is manual, main-only, environment-scoped, and does not pro
   assert.match(source, /environment: muse-handoff-production/);
   assert.match(source, /MUSE_HANDOFF_STAGING_CF_API_TOKEN/);
   assert.match(source, /MUSE_HANDOFF_PRODUCTION_CF_API_TOKEN/);
+  assert.match(source, /vars\.MUSE_HANDOFF_STAGING_WORKERS_DEV_HOST/);
   assert.match(source, /permissions:\n  contents: read/);
   assert.match(source, /workers versions create/);
   assert.equal((source.match(/workers deployments create/g) ?? []).length, 1);

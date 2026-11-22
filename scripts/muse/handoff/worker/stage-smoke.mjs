@@ -6,7 +6,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const STAGING_HOST = "muse-agent-handoff-staging.developing-today.workers.dev";
+const STAGING_HOST_RE = /^muse-agent-handoff-staging\.[a-z0-9.-]+\.workers\.dev$/i;
 const FAKE_BWS = "muse-handoff-stage-dummy-bws-not-a-credential";
 const FAKE_OP = "muse-handoff-stage-dummy-op-not-a-credential";
 const NAME = "stage-smoke";
@@ -53,8 +53,9 @@ async function verify(args) {
   } = options(args, ["--base-url", "--secrets-file", "--source-sha", "--version-id", "--proof-file"]);
   if (!SHA_RE.test(sourceSha) || !UUID_RE.test(versionId)) usage();
   const base = new URL(baseUrlArg);
-  if (base.protocol !== "https:" || base.hostname !== STAGING_HOST) {
-    throw new Error(`refusing to make smoke requests outside ${STAGING_HOST}`);
+  if (base.protocol !== "https:" || !STAGING_HOST_RE.test(base.hostname) || base.pathname !== "/" ||
+      base.search || base.hash || base.port) {
+    throw new Error("refusing smoke requests outside the configured staging Worker workers.dev hostname");
   }
   base.pathname = base.pathname.replace(/\/$/, "");
   const secrets = JSON.parse(await readFile(secretsPath, "utf8"));

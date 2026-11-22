@@ -38,7 +38,9 @@ configure both environments with required reviewers and these environment
 secrets:
 
 - `muse-handoff-staging`: `MUSE_HANDOFF_STAGING_CF_API_TOKEN` and
-  `MUSE_HANDOFF_STAGING_ACCOUNT_ID`.
+  `MUSE_HANDOFF_STAGING_ACCOUNT_ID`, plus the nonsecret environment variable
+  `MUSE_HANDOFF_STAGING_WORKERS_DEV_HOST` set to the staging Worker’s full
+  workers.dev hostname.
 - `muse-handoff-production`: `MUSE_HANDOFF_PRODUCTION_CF_API_TOKEN` and
   `MUSE_HANDOFF_PRODUCTION_ACCOUNT_ID`.
 
