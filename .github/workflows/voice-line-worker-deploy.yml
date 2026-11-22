@@ -1,0 +1,56 @@
+# Production deploys are push-to-main deployments (not PR CI) per
+# .github/ci-policy.md. PRs never receive Cloudflare credentials.
+name: Voice line Worker deploy
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - pm-stack/voice-line-worker/**
+      - .github/workflows/voice-line-worker-deploy.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: voice-line-worker-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      CF_SEND_TELEMETRY: "false"
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+
+      - name: Install worker dependencies
+        working-directory: pm-stack/voice-line-worker
+        run: bun install --frozen-lockfile
+
+      - name: Test offline worker and deployment contracts
+        working-directory: pm-stack/voice-line-worker
+        run: |
+          bun test
+          node --test test/deploy-contract.test.mjs
+          bun run typecheck
+
+      - name: Build the Worker with cf
+        working-directory: pm-stack/voice-line-worker
+        run: npm run cf:build
+
+      - name: Upload and deploy a Workers Version
+        working-directory: pm-stack/voice-line-worker
+        run: npm run deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}

@@ -46,13 +46,30 @@ bunx tsc --noEmit
 bunx wrangler dev   # local: AI binding runs remote against the account
 ```
 
+The checked-in `wrangler.toml` remains the local-development configuration.
+Production deployments use the pinned Cloudflare `cf` CLI and its Workers
+Versions API flow. From this directory, on Node.js 24.22+:
+
+```sh
+npm run cf:build
+npm run deploy
+```
+
+The deploy command requires `CLOUDFLARE_ACCOUNT_ID` and
+`CLOUDFLARE_API_TOKEN` in the environment. It uploads a version tagged with
+the source commit, checks that version is deployable, sends it 100% of traffic,
+then verifies the deployment and `/health` response. It does not make a voice
+call. GitHub Actions runs the same offline tests and deploys only on pushes to
+`main` that touch this worker or its workflow; manual dispatch is also limited
+to `main`.
+
 Deploy needs (account-side, one time):
 
 1. A Turso database for the ledger; set its URL in `wrangler.toml`
    (`TURSO_URL` var) — the schema is created idempotently at runtime.
 2. `wrangler secret put TURSO_TOKEN` and
    `wrangler secret put STATUS_INGEST_TOKEN`.
-3. `bun run deploy`, then push a first queue snapshot:
+3. Push a first queue snapshot:
    `curl -X POST <worker>/ingest-status -H "Authorization: Bearer $STATUS_INGEST_TOKEN" -d '{"queued":0,"claimed":0,"parked":0,"blocked":0}'`
 
 ## Protocol
