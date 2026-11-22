@@ -38,6 +38,8 @@ func ScriptLanguage(file, source string) string {
 	switch strings.ToLower(filepath.Ext(file)) {
 	case codegen.Python.ScriptExt:
 		return codegen.Python.Name
+	case codegen.Roc.ScriptExt:
+		return codegen.Roc.Name
 	case ".ts", ".mts", ".js", ".mjs":
 		return codegen.TypeScript.Name
 	}
@@ -60,6 +62,9 @@ func shebangLanguage(file, source string) string {
 	if sp, ok := parseShebang(first); ok && len(sp.tokens) > 0 {
 		if isPythonInterpreter(sp.tokens[0]) {
 			return codegen.Python.Name
+		}
+		if isRocInterpreter(sp.tokens[0]) {
+			return codegen.Roc.Name
 		}
 		if isJSRuntimeName(Setup{}, sp.tokens[0]) {
 			return codegen.TypeScript.Name
@@ -94,10 +99,12 @@ func NormalizeLanguage(v string) (string, error) {
 		return "", nil
 	case "python":
 		return codegen.Python.Name, nil
+	case "roc":
+		return codegen.Roc.Name, nil
 	case "typescript", "javascript":
 		return codegen.TypeScript.Name, nil
 	default:
-		return "", fmt.Errorf("runner: script language %q is not one of auto, typescript, javascript, python", v)
+		return "", fmt.Errorf("runner: script language %q is not one of auto, typescript, javascript, python, roc", v)
 	}
 }
 
@@ -125,6 +132,8 @@ func isPythonInterpreter(token string) bool {
 	// python3.x is still Python, and the prefix test says so either way.
 	return strings.HasPrefix(strings.TrimSuffix(base, filepath.Ext(base)), "python")
 }
+
+func isRocInterpreter(token string) bool { return filepath.Base(token) == "roc" }
 
 // resolvePython finds the interpreter a Python script runs under: python3,
 // then the bare python some machines provide instead, then uv. uv is the
@@ -169,12 +178,39 @@ func pythonDispatch(opts Options) (*dispatch, error) {
 	}, nil
 }
 
+func rocDispatch(opts Options) (*dispatch, error) {
+	bin, err := exec.LookPath("roc")
+	if err != nil {
+		return nil, errors.New("runner: roc binary not found on PATH for a Roc script")
+	}
+	c, ok := opts.Clients[codegen.Roc.Name]
+	var client *Client
+	if ok {
+		client = &c
+	}
+	return &dispatch{bin: bin, args: []string{"run"}, name: "roc", source: "language", language: codegen.Roc.Name, client: client}, nil
+}
+
 // harnessClient attaches the generated client for a dispatch's language, if
 // this run has one. It is what turns a raw interpreter run into a harnessed
 // one: the client is installed beside the script, the run is told where it
 // is (MCPX_CLIENT), and the "no generated client" notice no longer applies.
 func harnessClient(opts Options, d *dispatch) {
-	if d == nil || !isPythonInterpreter(firstNonEmpty(d.lookupBin, d.bin)) {
+	if d == nil {
+		return
+	}
+	interpreter := firstNonEmpty(d.lookupBin, d.bin)
+	if isRocInterpreter(interpreter) {
+		d.language = codegen.Roc.Name
+		if len(d.args) == 0 || d.args[0] != "run" {
+			d.args = append([]string{"run"}, d.args...)
+		}
+		if c, ok := opts.Clients[d.language]; ok {
+			d.client = &c
+		}
+		return
+	}
+	if !isPythonInterpreter(interpreter) {
 		return
 	}
 	lang := codegen.Python.Name

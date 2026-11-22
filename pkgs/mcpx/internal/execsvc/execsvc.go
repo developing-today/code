@@ -845,7 +845,13 @@ func (s *Service) Run(ctx context.Context, req Request, sink Sink) (*Result, err
 	// Python client.
 	clients := map[string]runner.Client{}
 	effectiveLanguage := firstNonEmpty(opts.Language, s.Limits.Language)
-	if runner.ClientScriptLanguage(firstNonEmpty(req.File, req.SourceName), req.Source, effectiveLanguage) == codegen.Python.Name {
+	clientLanguage := runner.ClientScriptLanguage(firstNonEmpty(req.File, req.SourceName), req.Source, effectiveLanguage)
+	if clientLanguage == codegen.Roc.Name {
+		if module, rocGlobals, cerr := s.Src.ClientModuleFor(ctx, codegen.Roc.Name, opts.NS); cerr == nil {
+			clients[codegen.Roc.Name] = runner.Client{Module: module, Globals: rocGlobals}
+		}
+	}
+	if clientLanguage == codegen.Python.Name {
 		if module, pyGlobals, cerr := s.Src.ClientModuleFor(ctx, codegen.Python.Name, opts.NS); cerr == nil {
 			clients[codegen.Python.Name] = runner.Client{Module: module, Globals: pyGlobals}
 		}

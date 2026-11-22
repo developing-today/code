@@ -877,8 +877,8 @@ func runDispatched(ctx context.Context, opts Options, d *dispatch) (*Result, err
 		// interpreter, tools and tracebacks see the file it is, while a
 		// raw dispatch keeps the interpreter, not the name, deciding.
 		suffix := ""
-		if d.language == codegen.Python.Name {
-			suffix = codegen.Python.ScriptExt
+		if lang, ok := codegen.Lookup(d.language); ok {
+			suffix = lang.ScriptExt
 		}
 		if workDir == "" {
 			wd, err := os.MkdirTemp("", "mcpx-run-")
