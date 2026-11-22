@@ -46,6 +46,9 @@
       # Root runtime packages can skip duplicate tests; named flake checks
       # keep the same coverage. Standalone builds remain checked by default.
       checkRuntimePackages = args.checkRuntimePackages or true;
+      # The root flake injects its pinned Crane input for NixOS runtime
+      # builds; standalone ID flakes keep their existing package builder.
+      craneInput = args.crane or null;
     in
     flake-utils.lib.eachDefaultSystem (
       system:
@@ -70,6 +73,38 @@
           ;
         inherit (nixCommon) nativeBuildInputs;
 
+        # Check derivations use focused tool closures instead of the full
+        # development shell (which includes Playwright browsers, deployment
+        # tools, and unrelated Cargo utilities).
+        checkBaseNativeBuildInputs = with pkgs; [
+          bash
+          coreutils
+          diffutils
+          findutils
+          gnugrep
+          gnused
+          gawk
+          git
+          jq
+          just
+        ];
+        checkCargoNativeBuildInputs = [
+          pkgs.pkg-config
+          pkgs.cmake
+          pkgs.cargo-nextest
+        ];
+        checkWebNativeBuildInputs = [ pkgs.bun ];
+        checkRocNativeBuildInputs = [
+          rocCompiler
+          pkgs.zig_0_16
+        ];
+
+        craneLib =
+          if craneInput == null then
+            null
+          else
+            (craneInput.mkLib pkgs).overrideToolchain rustToolchain;
+
         # Pre-fetch cargo dependencies for sandbox builds (no network access)
         cargoDeps = pkgs.rustPlatform.importCargoLock {
           lockFile = ./Cargo.lock;
@@ -79,6 +114,55 @@
             "p2panda-core-0.7.1" = "sha256-yq+ySfo14ucU1BWOUdJM0n7/FL3+Ria3Z+MxMHFa4Ls=";
           };
         };
+
+        # Root runtime packages use Crane's separate dependency derivation so
+        # source-only changes rebuild the ID workspace without recompiling its
+        # registry/git dependencies. Standalone checked packages keep the
+        # established buildRustPackage path below.
+        mkCraneRuntime =
+          {
+            pname,
+            cargoExtraArgs,
+            nativeBuildInputs,
+            buildInputs ? [ pkgs.openssl ],
+            meta,
+            buildArgs ? { },
+          }:
+          let
+            commonArgs = {
+              inherit pname cargoExtraArgs;
+              version = "0.1.0";
+              src = ./.;
+              strictDeps = true;
+              inherit buildInputs;
+              # The dependency derivation needs the same native tools and
+              # OpenSSL metadata as the runtime compile, but not web assets.
+              nativeBuildInputs = [
+                pkgs.pkg-config
+                pkgs.cmake
+                rustToolchain
+              ];
+              env = {
+                inherit (opensslEnv)
+                  OPENSSL_DIR
+                  OPENSSL_LIB_DIR
+                  OPENSSL_INCLUDE_DIR
+                  PKG_CONFIG_PATH
+                  ;
+              };
+              # Runtime builds deliberately omit test artifacts; named checks
+              # below continue to compile and run their own test targets.
+              doCheck = false;
+            };
+            cargoArtifacts = craneLib.buildDepsOnly commonArgs;
+          in
+          craneLib.buildPackage (
+            commonArgs
+            // {
+              inherit cargoArtifacts buildInputs nativeBuildInputs meta;
+            }
+            // buildArgs
+          );
 
         # Pre-fetch bun dependencies for sandbox builds (no network access)
         bun2nixPkg = bun2nix.packages.${system}.default;
@@ -97,7 +181,11 @@
           name = "id-integration-test-runner";
           src = ./.;
           inherit buildInputs;
-          nativeBuildInputs = nativeBuildInputs ++ [
+          nativeBuildInputs = [
+            rustToolchain
+            pkgs.pkg-config
+            pkgs.cmake
+            pkgs.bun
             bun2nixPkg.hook
             pkgs.rustPlatform.cargoSetupHook
           ];
@@ -172,9 +260,62 @@
           targets = [ "wasm32-unknown-unknown" ];
         };
 
-        # Helper to create a check that runs a just command or direct test
-        # command, with an optional pre-check step and check-specific tools.
+        # Helpers keep each check's derivation focused on the tools and
+        # generated assets it actually consumes. Full CI checks retain the
+        # defaults; static, native-shell, and web-only checks avoid building
+        # unrelated Cargo, Bun, and Roc artifacts.
         mkCheck = name: justCmd: mkCheckWith { inherit name justCmd; };
+        mkCheckLean =
+          name: justCmd:
+          mkCheckWith {
+            inherit name justCmd;
+            needsCargoSetup = false;
+            needsRustToolchain = false;
+            needsBuildInputs = false;
+            installWebDeps = false;
+            buildWebAssets = false;
+            compileRocWorldHost = false;
+          };
+        mkCheckRustOnly =
+          name: justCmd:
+          mkCheckWith {
+            inherit name justCmd;
+            needsCargoSetup = false;
+            needsBuildInputs = false;
+            installWebDeps = false;
+            buildWebAssets = false;
+            compileRocWorldHost = false;
+          };
+        mkCheckBiome =
+          name: justCmd:
+          mkCheckWith {
+            inherit name justCmd;
+            needsCargoSetup = false;
+            needsRustToolchain = false;
+            needsBuildInputs = false;
+            installWebDeps = false;
+            buildWebAssets = false;
+            compileRocWorldHost = false;
+            extraNativeBuildInputs = [ pkgs.biome ];
+          };
+        mkCheckCargoOnly =
+          name: justCmd:
+          mkCheckWith {
+            inherit name justCmd;
+            installWebDeps = false;
+            buildWebAssets = false;
+            compileRocWorldHost = false;
+          };
+        mkCheckWebOnly =
+          name: justCmd:
+          mkCheckWith {
+            inherit name justCmd;
+            needsCargoSetup = false;
+            needsRustToolchain = false;
+            needsBuildInputs = false;
+            buildWebAssets = false;
+            compileRocWorldHost = false;
+          };
 
         mkCheckWith =
           {
@@ -183,8 +324,14 @@
             checkCommand ? null,
             extraNativeBuildInputs ? [ ],
             beforeCheck ? "",
+            needsCargoSetup ? true,
+            needsRustToolchain ? true,
+            needsBuildInputs ? true,
+            installWebDeps ? true,
+            buildWebAssets ? true,
+            compileRocWorldHost ? true,
           }:
-          pkgs.stdenv.mkDerivation {
+          pkgs.stdenv.mkDerivation ({
             name = "id-${name}";
             # Every check builds its own debug test binaries in parallel on a
             # runner with limited disk. Full debuginfo and the incremental cache
@@ -197,24 +344,23 @@
             # shebang in the sandbox, where /bin/sh does not exist (#5926).
             ID_TEST_FAKE_SH = "${pkgs.stdenv.shell}";
             src = ./.;
-            inherit buildInputs;
+            buildInputs = if needsBuildInputs then buildInputs else [ ];
             nativeBuildInputs =
-              nativeBuildInputs
-              ++ extraNativeBuildInputs
-              ++ [
-                bun2nixPkg.hook
-                pkgs.rustPlatform.cargoSetupHook
-              ];
-            inherit cargoDeps;
+              checkBaseNativeBuildInputs
+              ++ pkgs.lib.optionals needsRustToolchain [ rustToolchain ]
+              ++ pkgs.lib.optionals needsCargoSetup (
+                checkCargoNativeBuildInputs ++ [ pkgs.rustPlatform.cargoSetupHook ]
+              )
+              ++ pkgs.lib.optionals installWebDeps (
+                checkWebNativeBuildInputs ++ [ bun2nixPkg.hook ]
+              )
+              ++ pkgs.lib.optionals compileRocWorldHost checkRocNativeBuildInputs
+              ++ extraNativeBuildInputs;
             inherit (opensslEnv) OPENSSL_DIR;
             inherit (opensslEnv) OPENSSL_LIB_DIR;
             inherit (opensslEnv) OPENSSL_INCLUDE_DIR;
             inherit (opensslEnv) PKG_CONFIG_PATH;
 
-            # bun2nix hook: install web deps offline via pre-fetched cache
-            inherit bunDeps;
-            bunRoot = "web";
-            bunInstallFlags = [ "--linker=hoisted" ];
             dontUseBunBuild = true;
             dontUseBunCheck = true;
             dontUseBunInstall = true;
@@ -224,13 +370,15 @@
               export HOME=$(mktemp -d)
               export CARGO_HOME=$HOME/.cargo
 
-              # @tailwindcss/cli uses @parcel/watcher (native module) which needs libstdc++
-              export LD_LIBRARY_PATH="${pkgs.stdenv.cc.cc.lib}/lib''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+              ${if buildWebAssets then ''
+                # @tailwindcss/cli uses @parcel/watcher (native module) which needs libstdc++
+                export LD_LIBRARY_PATH="${pkgs.stdenv.cc.cc.lib}/lib''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 
-              # Build web assets (bun2nix hook already installed node_modules via bunNodeModulesInstallPhase)
-              (cd web && bun run build)
+                # Build web assets (bun2nix hook installed node_modules).
+                (cd web && bun run build)
+              '' else ""}
 
-              ${buildWasmHost}
+              ${if compileRocWorldHost then buildWasmHost else ""}
 
               ${beforeCheck}
 
@@ -240,7 +388,13 @@
               mkdir -p $out
               echo "${name} passed at $(date)" > $out/result.txt
             '';
-          };
+          }
+          // pkgs.lib.optionalAttrs needsCargoSetup { inherit cargoDeps; }
+          // pkgs.lib.optionalAttrs installWebDeps {
+            inherit bunDeps;
+            bunRoot = "web";
+            bunInstallFlags = [ "--linker=hoisted" ];
+          });
 
         # Helper to create a script that runs in the project directory
         mkScript =
@@ -365,22 +519,22 @@
           default = mkCheck "ci" "ci";
 
           # Individual checks
-          cargo-fmt-check = mkCheck "cargo-fmt-check" "cargo-fmt-check";
-          web-fmt-check = mkCheck "web-fmt-check" "web-fmt-check";
+          cargo-fmt-check = mkCheckRustOnly "cargo-fmt-check" "cargo-fmt-check";
+          web-fmt-check = mkCheckBiome "web-fmt-check" "web-fmt-check";
           clippy-lint = mkCheck "clippy-lint" "clippy-lint";
           # id-native-shell gate (#5582): the crate is a non-default
           # workspace member, invisible to the default-member checks.
-          clippy-native-shell = mkCheck "clippy-native-shell" "clippy-native-shell";
-          web-lint = mkCheck "web-lint" "web-lint";
+          clippy-native-shell = mkCheckCargoOnly "clippy-native-shell" "clippy-native-shell";
+          web-lint = mkCheckBiome "web-lint" "web-lint";
           test = mkCheck "test" "test-sandbox";
           test-unit = mkCheck "test-unit" "test-unit";
           test-crate-integration = mkCheck "test-crate-integration" "test-crate-integration";
-          test-native-shell = mkCheck "test-native-shell" "test-native-shell";
+          test-native-shell = mkCheckCargoOnly "test-native-shell" "test-native-shell";
           # Rust example guests (#7904): plaza-sdk (examples/rust-world)
           # and rust-counter (examples/rust-counter) are standalone
           # crates outside the pkgs/id workspace, so no workspace test
           # check ever ran their unit tests (9 + 2).
-          test-rust-examples = mkCheck "test-rust-examples" "test-rust-examples";
+          test-rust-examples = mkCheckCargoOnly "test-rust-examples" "test-rust-examples";
           # Rebuild the Rust counter guest from source and run the
           # sandbox tests against the rebuilt module (#7904) -- the
           # roc-examples pattern. Wasm bytes are not reproducible
@@ -392,6 +546,8 @@
           # tests that load it (src/sandbox.rs include_bytes!).
           rust-counter-wasm = mkCheckWith {
             name = "rust-counter-wasm";
+            installWebDeps = false;
+            buildWebAssets = false;
             beforeCheck = ''
               export PATH="${rustToolchainWasm}/bin:$PATH"
               bash examples/rust-counter/build.sh
@@ -419,17 +575,29 @@
           test-shard-2 = mkCheck "test-shard-2" "test-shard-sandbox 2 4";
           test-shard-3 = mkCheck "test-shard-3" "test-shard-sandbox 3 4";
           test-web = mkCheck "test-web" "test-web-sandbox";
-          test-web-unit = mkCheck "test-web-unit" "test-web-unit";
-          test-web-typecheck = mkCheck "test-web-typecheck" "test-web-typecheck";
+          test-web-unit = mkCheckWebOnly "test-web-unit" "test-web-unit";
+          test-web-typecheck = mkCheckWebOnly "test-web-typecheck" "test-web-typecheck";
           # Roc library expect() tests (#813): runs the roc-test just
           # recipe with the pinned nightly from nix/roc.nix (already in
           # nativeBuildInputs); fails on a missing compiler or a failing
           # expect — the world_compile.rs skip path is not reused here.
-          roc-test = mkCheck "roc-test" "roc-test";
+          roc-test = mkCheckWith {
+            name = "roc-test";
+            needsCargoSetup = false;
+            needsRustToolchain = false;
+            needsBuildInputs = false;
+            installWebDeps = false;
+            buildWebAssets = false;
+            compileRocWorldHost = false;
+            extraNativeBuildInputs = [ rocCompiler ];
+            justCmd = "roc-test";
+          };
           # Rebuild all checked-in Roc examples with the pinned compiler, then
           # run the sandbox behavior and fuel-budget tests against them.
           roc-examples = mkCheckWith {
             name = "roc-examples";
+            installWebDeps = false;
+            buildWebAssets = false;
             checkCommand = ''
               cargo test --no-default-features --features sandbox,world --lib sandbox
               cargo test --test toolchain_pin
@@ -445,14 +613,14 @@
                 bash scripts/rebuild-roc-examples.sh
             '';
           };
-          doc = mkCheck "doc" "doc";
+          doc = mkCheckCargoOnly "doc" "doc";
           cargo-check = mkCheck "cargo-check" "cargo-check";
           # Production module-size guard (#1411): fails when any
           # production .rs file exceeds 2,500 production lines.
           # src/web/markdown.rs was the last id grandfather entry; its
           # split into web/markdown/ submodules landed under #4704 and
           # the entry was removed there, completing #1438.
-          prod-lines-check = mkCheck "prod-lines-check" "prod-lines-check";
+          prod-lines-check = mkCheckLean "prod-lines-check" "prod-lines-check";
           crash-gate = mkCheck "crash-gate" "crash-gate";
           # PR-gate splits of crash-gate (#551): the aggregate above runs
           # every heavy full sweep serially (~15 min, the slowest PR
@@ -469,7 +637,7 @@
           # semantic recipe fields. The recipe projects out generation
           # noise (absolute source path, body serialisation), so this is
           # green on any correctly regenerated file.
-          just-recipes-drift = mkCheck "just-recipes-drift" "just-recipes-check && bash scripts/just-recipes-check-test.sh";
+          just-recipes-drift = mkCheckLean "just-recipes-drift" "just-recipes-check && bash scripts/just-recipes-check-test.sh";
 
           # Planted-bug mutation proof (#8037, plan #1395): the script
           # plants one named mutation at a time and requires the
@@ -503,6 +671,12 @@
           # variant-specific regression fails here instead of in a just recipe.
           build-sh-test = mkCheckWith {
             name = "build-sh-test";
+            needsRustToolchain = false;
+            needsCargoSetup = false;
+            needsBuildInputs = false;
+            installWebDeps = false;
+            buildWebAssets = false;
+            compileRocWorldHost = false;
             checkCommand = "bash scripts/build-sh-test.sh";
           };
 
@@ -574,7 +748,11 @@
             name = "id-test-e2e";
             src = ./.;
             inherit buildInputs;
-            nativeBuildInputs = nativeBuildInputs ++ [
+            nativeBuildInputs = [
+              rustToolchain
+              pkgs.pkg-config
+              pkgs.cmake
+              pkgs.bun
               bun2nixPkg.hook
               pkgs.rustPlatform.cargoSetupHook
               # TODO: Switch back to `bunx playwright test` once Bun supports Playwright's
@@ -838,7 +1016,42 @@
         # =======================================================================
         packages = {
           # Web-enabled package (primary product)
-          id-web = pkgs.rustPlatform.buildRustPackage {
+          id-web =
+            if craneLib != null && !checkRuntimePackages then
+              mkCraneRuntime {
+                pname = "id";
+                cargoExtraArgs = "--locked -p id --features web,sandbox,ssh,world";
+                nativeBuildInputs = [
+                  pkgs.pkg-config
+                  pkgs.cmake
+                  rustToolchain
+                  pkgs.bun
+                  bun2nixPkg.hook
+                  rocCompiler
+                ];
+                buildArgs = {
+                  inherit bunDeps;
+                  bunRoot = "web";
+                  bunInstallFlags = [ "--linker=hoisted" ];
+                  dontUseBunBuild = true;
+                  dontUseBunCheck = true;
+                  dontUseBunInstall = true;
+                  dontUseCmakeConfigure = true;
+                  preBuild = ''
+                    # @tailwindcss/cli uses @parcel/watcher (native module) and needs libstdc++.
+                    export LD_LIBRARY_PATH="${pkgs.stdenv.cc.cc.lib}/lib''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+                    cd web
+                    bun run build
+                    cd ..
+                    ${buildWasmHost}
+                  '';
+                };
+                meta = commonMeta // {
+                  description = "A peer-to-peer file sharing CLI built with Iroh (with web UI)";
+                };
+              }
+            else
+              pkgs.rustPlatform.buildRustPackage {
             pname = "id";
             version = "0.1.0";
             src = ./.;
@@ -858,7 +1071,7 @@
               };
             };
 
-            inherit buildInputs;
+            buildInputs = [ pkgs.openssl ];
             nativeBuildInputs = [
               pkgs.pkg-config
               pkgs.cmake
@@ -912,7 +1125,27 @@
           };
 
           # Library-only package (no web UI, no bun required)
-          id-lib = pkgs.rustPlatform.buildRustPackage {
+          id-lib =
+            if craneLib != null && !checkRuntimePackages then
+              mkCraneRuntime {
+                pname = "id-lib";
+                cargoExtraArgs = "--locked -p id --no-default-features --features sandbox,world";
+                nativeBuildInputs = [
+                  pkgs.pkg-config
+                  pkgs.cmake
+                  rustToolchain
+                  rocCompiler
+                ];
+                buildArgs = {
+                  dontUseCmakeConfigure = true;
+                  preBuild = buildWasmHost;
+                };
+                meta = commonMeta // {
+                  description = "A peer-to-peer file sharing CLI built with Iroh";
+                };
+              }
+            else
+              pkgs.rustPlatform.buildRustPackage {
             pname = "id-lib";
             version = "0.1.0";
             src = ./.;
@@ -932,7 +1165,7 @@
             ];
             dontUseCmakeConfigure = true;
 
-            inherit buildInputs;
+            buildInputs = [ pkgs.openssl ];
             nativeBuildInputs = [
               pkgs.pkg-config
               pkgs.cmake
