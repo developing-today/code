@@ -36,12 +36,24 @@ period identity and DST-aware boundaries.
 
 ## Storage contract and current scope
 
-The JSONL file is append-only and local to the PM aggregator's configured
-state path. Writes are serialized within one process; the current adapter does
-not claim cross-process locking or remote replication. `fleet kv set/put` and
-the amendment's indexed KV families are not implemented in this repository,
-so this seam does not pretend to expose them. A later adapter may mirror the
-same event contract into the fleet's chosen permanent store without changing
-the report-record interface. This first slice supports the existing daily
-period type; other calendar grains and generation commands remain subsequent
-C7 work.
+The caller-facing append/read functions accept either a JSONL path or the
+append-only document capability returned by `createTursoDocumentRemote`.
+The file backend is local to the PM aggregator state path; writes are
+serialized within one process and do not claim cross-process locking or remote
+replication. It remains useful for development and rollback.
+
+The durable adapter uses the existing `public.agg_store_documents` table from
+#6815; it creates no table or separate report database. Each generated record,
+snapshot, and correction is stored as one immutable document under
+`c7-report:v1:<event-type>:<sha256(event-id)>`. `insertIfAbsent` provides the
+atomic idempotency boundary: a duplicate key reads back and compares the
+canonical content, returning the original event for an identical rerun and
+raising a conflict for changed content. Prefix reads return the event set; projections sort by the canonical event
+timestamp and stable event ID. The generic overwrite API is not used for C7
+event keys.
+
+At the composition root, callers choose the file or Turso store according to
+`PM_AGG_STORE_BACKEND` and pass that single backend into the report-record API.
+There is no dual write and no silent local fallback when the durable store is
+selected. This slice supports daily periods; other calendar grains and report
+rendering/source integration remain subsequent C7 work.

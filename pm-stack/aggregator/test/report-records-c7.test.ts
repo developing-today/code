@@ -2,6 +2,7 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, test } from "bun:test";
+import type { AppendOnlyDocumentRemote } from "../src/aa-last-good.ts";
 import {
   appendReportRecord,
   appendReportSnapshot,
@@ -129,6 +130,11 @@ describe("C7 canonical report records", () => {
     await expect(appendReportSnapshot(file, mutatedSnapshotSource, "2026-11-22T14:00:00.000Z"))
       .rejects.toBeInstanceOf(ReportRecordConflictError);
     expect((await readReportSnapshots(file))[0]?.record.blocks[0]?.text).toBe("Original prose.");
+    const conflictingGeneration = makeReportRecord({
+      ...input,
+      blocks: [{ ...input.blocks[0]!, text: "Conflicting after standalone snapshot." }],
+    }, "2026-11-22T05:48:01.000Z");
+    await expect(appendReportRecord(file, conflictingGeneration)).rejects.toBeInstanceOf(ReportRecordConflictError);
   });
 
   test("records snapshot corrections as new linked immutable records", async () => {
@@ -166,6 +172,12 @@ describe("C7 canonical report records", () => {
     expect(first.correction.record.id).toBe(correction.id);
     expect((await readReportSnapshots(file))[0]?.record.blocks[0]?.text).toBe("Original snapshot.");
     expect((await readReportSnapshotCorrections(file)).map((item) => item.record.id)).toEqual([correction.id]);
+    const conflictingOriginal = makeReportRecord({
+      ...input,
+      blocks: [{ ...input.blocks[0]!, text: "Contradictory original record." }],
+    }, "2026-11-22T15:06:00.000Z");
+    await expect(appendReportSnapshotCorrection(file, "snapshot:daily:2026-11-21:America/Chicago", conflictingOriginal, "2026-11-22T15:06:01.000Z"))
+      .rejects.toBeInstanceOf(ReportRecordConflictError);
     await expect(appendReportSnapshotCorrection(file, "snapshot:missing", correction, "2026-11-22T15:00:00.000Z"))
       .rejects.toThrow(/snapshot does not exist/);
   });
@@ -240,6 +252,77 @@ describe("C7 canonical report records", () => {
     expect((await readCurrentReportRecords(file)).map((record) => record.sourceCursor)).toEqual(["cursor-2"]);
     expect(reportBlockConflict("Stored  paragraph.\n", "Stored paragraph.")).toBe(false);
     expect(reportBlockConflict("Stored paragraph.", "Human changed paragraph.")).toBe(true);
+  });
+
+  test("uses append-only permanent document keys for report history and snapshots", async () => {
+    const documents = new Map<string, unknown>();
+    const remote: AppendOnlyDocumentRemote = {
+      async load(store) {
+        return documents.has(store) ? { version: 1, document: structuredClone(documents.get(store)) } : null;
+      },
+      async insertIfAbsent(store, _version, document) {
+        if (documents.has(store)) return false;
+        documents.set(store, structuredClone(document));
+        return true;
+      },
+      async listPrefix(prefix) {
+        return [...documents.entries()].filter(([store]) => store.startsWith(prefix))
+          .map(([store, document]) => ({ store, version: 1, document: structuredClone(document) }));
+      },
+    };
+    const base = {
+      period: { id: "daily:2026-11-21:America/Chicago", kind: "daily" as const, timezone: "America/Chicago" as const,
+        periodStart: "2026-11-21T06:00:00.000Z", periodEnd: "2026-11-22T06:00:00.000Z", softCloseAt: "2026-11-22T14:00:00.000Z" },
+      asOf: "2026-11-22T05:45:00.000Z", templateVersion: "daily-v1", sourceCursor: "cursor-1",
+      sources: [{ id: "event-1", uri: "gh:issue/12349", observedAt: "2026-11-22T05:40:00.000Z" }],
+      blocks: [{ id: "change-1", text: "Original report.", relatedAt: "2026-11-22T05:40:00.000Z" }],
+    };
+    const record = makeReportRecord(base, "2026-11-22T05:45:01.000Z");
+    expect((await appendReportRecord(remote, record)).inserted).toBe(true);
+    const rerun = await appendReportRecord(remote, makeReportRecord(base, "2026-11-22T05:46:01.000Z"));
+    expect(rerun.inserted).toBe(false);
+    expect(rerun.record.generatedAt).toBe(record.generatedAt);
+    await expect(appendReportRecord(remote, makeReportRecord({ ...base,
+      blocks: [{ ...base.blocks[0]!, text: "Conflicting content." }],
+    }, "2026-11-22T05:47:01.000Z"))).rejects.toBeInstanceOf(ReportRecordConflictError);
+    const snapshot = await appendReportSnapshot(remote, record, "2026-11-22T14:00:00.000Z");
+    const snapshotRerun = await appendReportSnapshot(remote, record, "2026-11-22T14:05:00.000Z");
+    expect(snapshot.inserted).toBe(true);
+    expect(snapshotRerun.inserted).toBe(false);
+    expect(snapshotRerun.snapshot.snapshotAt).toBe("2026-11-22T14:00:00.000Z");
+    expect(await readReportRecords(remote)).toEqual([record]);
+    expect(await readReportSnapshots(remote)).toEqual([snapshot.snapshot]);
+    expect(documents.size).toBe(2);
+  });
+
+  test("canonical JSON retries tolerate omitted optional values", async () => {
+    const file = await storePath();
+    const input = {
+      period: {
+        id: "daily:2026-11-21:America/Chicago",
+        kind: "daily" as const,
+        timezone: "America/Chicago" as const,
+        periodStart: "2026-11-21T06:00:00.000Z",
+        periodEnd: "2026-11-22T06:00:00.000Z",
+        softCloseAt: "2026-11-22T14:00:00.000Z",
+      },
+      asOf: "2026-11-22T05:45:00.000Z",
+      templateVersion: "daily-v1",
+      sourceCursor: "optional-links",
+      sources: [],
+      blocks: [
+        {
+          id: "b",
+          text: "Text",
+          relatedAt: "2026-11-22T05:40:00.000Z",
+          links: undefined,
+        },
+      ],
+    };
+    const first = await appendReportRecord(file, makeReportRecord(input, "2026-11-22T05:45:01.000Z"));
+    const rerun = await appendReportRecord(file, makeReportRecord(input, "2026-11-22T05:45:02.000Z"));
+    expect(first.inserted).toBe(true);
+    expect(rerun.inserted).toBe(false);
   });
 
   test("allows a persistent store path override without a second datastore", () => {

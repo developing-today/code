@@ -1,10 +1,11 @@
-// Canonical C7 report records stored in the aggregator's append-only PM-stack
-// event log. The log is the durable source; renderers consume the latest
-// generation for a period/template and retain the source cursor that produced it.
+// Canonical C7 report records over PM-stack append-only storage. Local JSONL
+// supports development/rollback; the durable adapter appends immutable event
+// documents to the existing aggregator document store.
 import { createHash } from "node:crypto";
 import { appendFile, mkdir, readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import type { AppendOnlyDocumentRemote } from "./aa-last-good.ts";
 import { dailyReportPeriod, type DailyReportPeriod } from "./report-periods.ts";
 
 export interface ReportRecordSource {
@@ -43,20 +44,10 @@ export function defaultReportRecordsFile(env: Record<string, string | undefined>
 const REPORT_UPDATE_OPERATIONS = ["edit", "replace", "quote", "append", "banner", "event-log", "feedback"] as const;
 export type ReportUpdateOperation = (typeof REPORT_UPDATE_OPERATIONS)[number];
 
-const ALLOWED_AFTER_SOFT_CLOSE: ReadonlySet<ReportUpdateOperation> = new Set([
-  "quote",
-  "append",
-  "banner",
-  "event-log",
-  "feedback",
-]);
+const ALLOWED_AFTER_SOFT_CLOSE: ReadonlySet<ReportUpdateOperation> = new Set(["quote", "append", "banner", "event-log", "feedback"]);
 
 /** Enforce the report's soft-close allowlist; the close instant is exclusive. */
-export function assertReportUpdateAllowed(
-  period: DailyReportPeriod,
-  operation: ReportUpdateOperation,
-  at: string,
-): void {
+export function assertReportUpdateAllowed(period: DailyReportPeriod, operation: ReportUpdateOperation, at: string): void {
   requireIsoDate(at, "update time");
   if (!(REPORT_UPDATE_OPERATIONS as readonly string[]).includes(operation)) throw new Error(`unknown report operation: ${operation}`);
   if (Date.parse(at) < Date.parse(period.softCloseAt)) return;
@@ -72,7 +63,7 @@ export interface ReportSnapshot {
   record: ReportRecord;
 }
 
-type ReportRecordEvent = {
+export type ReportRecordEvent = {
   eventId: string;
   type: "report.generated" | "report.snapshot" | "report.snapshot-correction";
   record?: ReportRecord;
@@ -103,13 +94,7 @@ export function makeReportRecord(input: ReportRecordInput, generatedAt = new Dat
   if (input.period.timezone !== "America/Chicago") throw new Error("report period must use America/Chicago");
   const date = /^daily:(\d{4}-\d{2}-\d{2}):America\/Chicago$/.exec(input.period.id)?.[1];
   const canonicalPeriod = date ? dailyReportPeriod(date) : null;
-  if (
-    !canonicalPeriod ||
-    input.period.kind !== canonicalPeriod.kind ||
-    input.period.periodStart !== canonicalPeriod.periodStart ||
-    input.period.periodEnd !== canonicalPeriod.periodEnd ||
-    input.period.softCloseAt !== canonicalPeriod.softCloseAt
-  ) {
+  if (!canonicalPeriod || input.period.kind !== canonicalPeriod.kind || input.period.periodStart !== canonicalPeriod.periodStart || input.period.periodEnd !== canonicalPeriod.periodEnd || input.period.softCloseAt !== canonicalPeriod.softCloseAt) {
     throw new Error("period must be a canonical dailyReportPeriod value");
   }
   if (Date.parse(input.asOf) < Date.parse(input.period.periodStart) || Date.parse(input.asOf) >= Date.parse(input.period.periodEnd)) {
@@ -159,7 +144,67 @@ async function readEvents(file: string): Promise<ReportRecordEvent[]> {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
     throw error;
   }
-  return text.split("\n").filter((line) => line.trim()).map(parseEvent).filter((event): event is ReportRecordEvent => event !== null);
+  return text
+    .split("\n")
+    .filter((line) => line.trim())
+    .map(parseEvent)
+    .filter((event): event is ReportRecordEvent => event !== null);
+}
+
+export type ReportRecordLocation = string | AppendOnlyDocumentRemote;
+const REPORT_DOCUMENT_PREFIX = "c7-report:v1:";
+
+function reportDocumentKey(event: ReportRecordEvent): string {
+  return `${REPORT_DOCUMENT_PREFIX}${event.type}:${createHash("sha256").update(event.eventId).digest("hex")}`;
+}
+
+function isObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function parseDocumentEvent(value: unknown): ReportRecordEvent {
+  if (!isObject(value) || typeof value.eventId !== "string" || typeof value.ts !== "string") {
+    throw new Error("invalid C7 report event in permanent document store");
+  }
+  if (value.type === "report.generated" && isObject(value.record)) return value as ReportRecordEvent;
+  if (value.type === "report.snapshot" && isObject(value.snapshot)) return value as ReportRecordEvent;
+  if (value.type === "report.snapshot-correction" && isObject(value.correction)) return value as ReportRecordEvent;
+  throw new Error("unknown C7 report event in permanent document store");
+}
+
+async function readLocationEvents(location: ReportRecordLocation): Promise<ReportRecordEvent[]> {
+  if (typeof location === "string") return readEvents(location);
+  const rows = await location.listPrefix(REPORT_DOCUMENT_PREFIX);
+  const events = rows.map(({ store, document }) => {
+    if (!store.startsWith(REPORT_DOCUMENT_PREFIX)) throw new Error("permanent report store returned a key outside its namespace");
+    return parseDocumentEvent(document);
+  });
+  // The table's stable key ordering is arbitrary; projections need event-time order.
+  return events.sort((left, right) => left.ts.localeCompare(right.ts) || left.eventId.localeCompare(right.eventId));
+}
+
+function sameReportEvent(left: ReportRecordEvent, right: ReportRecordEvent): boolean {
+  if (left.type !== right.type || left.eventId !== right.eventId) return false;
+  if (left.type === "report.generated" && right.type === "report.generated") {
+    return !!left.record && !!right.record && sameRecordContent(left.record, right.record);
+  }
+  if (left.type === "report.snapshot" && right.type === "report.snapshot") {
+    return !!left.snapshot && !!right.snapshot && left.snapshot.id === right.snapshot.id && left.snapshot.reportRecordId === right.snapshot.reportRecordId && sameRecordContent(left.snapshot.record, right.snapshot.record);
+  }
+  if (left.type === "report.snapshot-correction" && right.type === "report.snapshot-correction") {
+    return !!left.correction && !!right.correction && left.correction.id === right.correction.id && left.correction.snapshotId === right.correction.snapshotId && left.correction.originalRecordId === right.correction.originalRecordId && sameRecordContent(left.correction.record, right.correction.record);
+  }
+  return false;
+}
+
+async function appendDocumentEvent(location: AppendOnlyDocumentRemote, event: ReportRecordEvent): Promise<{ inserted: boolean; event: ReportRecordEvent }> {
+  const key = reportDocumentKey(event);
+  if (await location.insertIfAbsent(key, 1, event)) return { inserted: true, event };
+  const stored = await location.load(key);
+  if (!stored) throw new Error(`permanent report event disappeared after duplicate insert: ${event.eventId}`);
+  const existing = parseDocumentEvent(stored.document);
+  if (!sameReportEvent(existing, event)) throw new ReportRecordConflictError(event.eventId);
+  return { inserted: false, event: existing };
 }
 
 /** Keep a torn final JSONL fragment from swallowing the next acknowledged event. */
@@ -180,7 +225,10 @@ const appendChains = new Map<string, Promise<unknown>>();
 function serializeAppend<T>(file: string, fn: () => Promise<T>): Promise<T> {
   const previous = appendChains.get(file) ?? Promise.resolve();
   const run = previous.then(fn, fn);
-  appendChains.set(file, run.catch(() => {}));
+  appendChains.set(
+    file,
+    run.catch(() => {}),
+  );
   return run;
 }
 
@@ -190,44 +238,51 @@ export interface AppendReportRecordResult {
 }
 
 /**
- * Append once by stable record ID. A byte-equivalent rerun is a no-op; the
+ * Append once by stable record ID. A content-equivalent rerun is a no-op; the
  * same id with changed content is a conflict and is never silently replaced.
  */
-export async function appendReportRecord(file: string, record: ReportRecord): Promise<AppendReportRecordResult> {
+export async function appendReportRecord(location: ReportRecordLocation, record: ReportRecord): Promise<AppendReportRecordResult> {
   assertCanonicalRecord(record);
-  return serializeAppend(file, async () => {
-    const events = await readEvents(file);
-    const existing = events.find((event) => event.type === "report.generated" && event.record?.id === record.id)?.record;
+  const event: ReportRecordEvent = {
+    eventId: record.id,
+    type: "report.generated",
+    record,
+    ts: record.generatedAt,
+  };
+  if (typeof location !== "string") {
+    assertRecordIdContent(await readLocationEvents(location), record);
+    const result = await appendDocumentEvent(location, event);
+    if (result.event.type !== "report.generated" || !result.event.record) throw new Error("permanent report record has an invalid event type");
+    return { inserted: result.inserted, record: result.event.record };
+  }
+  return serializeAppend(location, async () => {
+    const events = await readEvents(location);
+    assertRecordIdContent(events, record);
+    const existing = events.find((item) => item.type === "report.generated" && item.record?.id === record.id)?.record;
     if (existing) {
       if (!sameRecordContent(existing, record)) throw new ReportRecordConflictError(record.id);
       return { inserted: false, record: existing };
     }
-    await mkdir(dirname(file), { recursive: true });
-    await terminateTornTail(file);
-    const event: ReportRecordEvent = {
-      eventId: record.id,
-      type: "report.generated",
-      record,
-      ts: record.generatedAt,
-    };
-    await appendFile(file, `${JSON.stringify(event)}\n`, "utf8");
+    await mkdir(dirname(location), { recursive: true });
+    await terminateTornTail(location);
+    await appendFile(location, `${JSON.stringify(event)}\n`, "utf8");
     return { inserted: true, record };
   });
 }
 
 /** Read the latest record per stable ID in append order (currently one per key). */
-export async function readReportRecords(file: string): Promise<ReportRecord[]> {
+export async function readReportRecords(location: ReportRecordLocation): Promise<ReportRecord[]> {
   const byId = new Map<string, ReportRecord>();
-  for (const event of await readEvents(file)) {
+  for (const event of await readLocationEvents(location)) {
     if (event.type === "report.generated" && event.record) byId.set(event.record.id, event.record);
   }
   return [...byId.values()];
 }
 
 /** Current projection: latest appended source-cursor version per period/template. */
-export async function readCurrentReportRecords(file: string): Promise<ReportRecord[]> {
+export async function readCurrentReportRecords(location: ReportRecordLocation): Promise<ReportRecord[]> {
   const current = new Map<string, ReportRecord>();
-  for (const event of await readEvents(file)) {
+  for (const event of await readLocationEvents(location)) {
     if (event.type !== "report.generated" || !event.record) continue;
     current.set(`${event.record.period.id}\n${event.record.templateVersion}`, event.record);
   }
@@ -255,11 +310,7 @@ export interface AppendReportSnapshotCorrectionResult {
 /** Freeze a dated view in the same append-only PM-stack log. Existing snapshot
  * IDs are immutable: a repeated identical write is idempotent, changed content
  * is a conflict that must become a separately linked correction record. */
-export async function appendReportSnapshot(
-  file: string,
-  record: ReportRecord,
-  snapshotAt: string,
-): Promise<AppendReportSnapshotResult> {
+export async function appendReportSnapshot(location: ReportRecordLocation, record: ReportRecord, snapshotAt: string): Promise<AppendReportSnapshotResult> {
   assertCanonicalRecord(record);
   requireIsoDate(snapshotAt, "snapshotAt");
   const snapshot: ReportSnapshot = {
@@ -268,10 +319,22 @@ export async function appendReportSnapshot(
     snapshotAt,
     record: structuredClone(record),
   };
-  return serializeAppend(file, async () => {
-    const events = await readEvents(file);
-    const generated = events.find((event) => event.type === "report.generated" && event.record?.id === record.id)?.record;
-    if (generated && !sameRecordContent(generated, record)) throw new ReportRecordConflictError(record.id);
+  const event: ReportRecordEvent = {
+    eventId: snapshot.id,
+    type: "report.snapshot",
+    snapshot,
+    ts: snapshotAt,
+  };
+  if (typeof location !== "string") {
+    const events = await readLocationEvents(location);
+    assertRecordIdContent(events, record);
+    const result = await appendDocumentEvent(location, event);
+    if (result.event.type !== "report.snapshot" || !result.event.snapshot) throw new Error("permanent snapshot has an invalid event type");
+    return { inserted: result.inserted, snapshot: result.event.snapshot };
+  }
+  return serializeAppend(location, async () => {
+    const events = await readEvents(location);
+    assertRecordIdContent(events, record);
     const existing = events.find((event) => event.type === "report.snapshot" && event.snapshot?.id === snapshot.id)?.snapshot;
     if (existing) {
       if (existing.reportRecordId !== snapshot.reportRecordId || !sameRecordContent(existing.record, snapshot.record)) {
@@ -279,32 +342,19 @@ export async function appendReportSnapshot(
       }
       return { inserted: false, snapshot: existing };
     }
-    await mkdir(dirname(file), { recursive: true });
-    await terminateTornTail(file);
-    const event: ReportRecordEvent = {
-      eventId: snapshot.id,
-      type: "report.snapshot",
-      snapshot,
-      ts: snapshotAt,
-    };
-    await appendFile(file, `${JSON.stringify(event)}\n`, "utf8");
+    await mkdir(dirname(location), { recursive: true });
+    await terminateTornTail(location);
+    await appendFile(location, `${JSON.stringify(event)}\n`, "utf8");
     return { inserted: true, snapshot };
   });
 }
 
-export async function readReportSnapshots(file: string): Promise<ReportSnapshot[]> {
-  return (await readEvents(file))
-    .filter((event): event is ReportRecordEvent & { snapshot: ReportSnapshot } => event.type === "report.snapshot" && !!event.snapshot)
-    .map((event) => event.snapshot);
+export async function readReportSnapshots(location: ReportRecordLocation): Promise<ReportSnapshot[]> {
+  return (await readLocationEvents(location)).filter((event): event is ReportRecordEvent & { snapshot: ReportSnapshot } => event.type === "report.snapshot" && !!event.snapshot).map((event) => event.snapshot);
 }
 
 /** Append a correction as a new record linked to an immutable snapshot. */
-export async function appendReportSnapshotCorrection(
-  file: string,
-  snapshotId: string,
-  record: ReportRecord,
-  correctedAt: string,
-): Promise<AppendReportSnapshotCorrectionResult> {
+export async function appendReportSnapshotCorrection(location: ReportRecordLocation, snapshotId: string, record: ReportRecord, correctedAt: string): Promise<AppendReportSnapshotCorrectionResult> {
   assertCanonicalRecord(record);
   requireIsoDate(correctedAt, "correctedAt");
   const correction: ReportSnapshotCorrection = {
@@ -314,12 +364,32 @@ export async function appendReportSnapshotCorrection(
     correctedAt,
     record: structuredClone(record),
   };
-  return serializeAppend(file, async () => {
-    const events = await readEvents(file);
+  if (typeof location !== "string") {
+    const events = await readLocationEvents(location);
     const snapshot = events.find((event) => event.type === "report.snapshot" && event.snapshot?.id === snapshotId)?.snapshot;
     if (!snapshot) throw new Error(`snapshot does not exist: ${snapshotId}`);
     if (snapshot.record.period.id !== record.period.id) throw new Error("correction period must match the snapshot");
     correction.originalRecordId = snapshot.reportRecordId;
+    assertRecordIdContent(events, record);
+    const event: ReportRecordEvent = {
+      eventId: correction.id,
+      type: "report.snapshot-correction",
+      correction,
+      ts: correctedAt,
+    };
+    const result = await appendDocumentEvent(location, event);
+    if (result.event.type !== "report.snapshot-correction" || !result.event.correction) {
+      throw new Error("permanent snapshot correction has an invalid event type");
+    }
+    return { inserted: result.inserted, correction: result.event.correction };
+  }
+  return serializeAppend(location, async () => {
+    const events = await readEvents(location);
+    const snapshot = events.find((event) => event.type === "report.snapshot" && event.snapshot?.id === snapshotId)?.snapshot;
+    if (!snapshot) throw new Error(`snapshot does not exist: ${snapshotId}`);
+    if (snapshot.record.period.id !== record.period.id) throw new Error("correction period must match the snapshot");
+    correction.originalRecordId = snapshot.reportRecordId;
+    assertRecordIdContent(events, record);
     const existing = events.find((event) => event.type === "report.snapshot-correction" && event.correction?.id === correction.id)?.correction;
     if (existing) {
       if (existing.snapshotId !== correction.snapshotId || existing.originalRecordId !== correction.originalRecordId || !sameRecordContent(existing.record, correction.record)) {
@@ -327,18 +397,38 @@ export async function appendReportSnapshotCorrection(
       }
       return { inserted: false, correction: existing };
     }
-    await mkdir(dirname(file), { recursive: true });
-    await terminateTornTail(file);
-    const event: ReportRecordEvent = { eventId: correction.id, type: "report.snapshot-correction", correction, ts: correctedAt };
-    await appendFile(file, `${JSON.stringify(event)}\n`, "utf8");
+    await mkdir(dirname(location), { recursive: true });
+    await terminateTornTail(location);
+    const event: ReportRecordEvent = {
+      eventId: correction.id,
+      type: "report.snapshot-correction",
+      correction,
+      ts: correctedAt,
+    };
+    await appendFile(location, `${JSON.stringify(event)}\n`, "utf8");
     return { inserted: true, correction };
   });
 }
 
-export async function readReportSnapshotCorrections(file: string): Promise<ReportSnapshotCorrection[]> {
-  return (await readEvents(file))
-    .filter((event): event is ReportRecordEvent & { correction: ReportSnapshotCorrection } => event.type === "report.snapshot-correction" && !!event.correction)
+export async function readReportSnapshotCorrections(location: ReportRecordLocation): Promise<ReportSnapshotCorrection[]> {
+  return (await readLocationEvents(location))
+    .filter(
+      (
+        event,
+      ): event is ReportRecordEvent & {
+        correction: ReportSnapshotCorrection;
+      } => event.type === "report.snapshot-correction" && !!event.correction,
+    )
     .map((event) => event.correction);
+}
+
+function assertRecordIdContent(events: ReportRecordEvent[], candidate: ReportRecord): void {
+  for (const event of events) {
+    const persisted = event.type === "report.generated" ? event.record : event.type === "report.snapshot" ? event.snapshot?.record : event.correction?.record;
+    if (persisted?.id === candidate.id && !sameRecordContent(persisted, candidate)) {
+      throw new ReportRecordConflictError(candidate.id);
+    }
+  }
 }
 
 function sameRecordContent(left: ReportRecord, right: ReportRecord): boolean {
@@ -358,7 +448,10 @@ function canonicalJson(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
   if (typeof value === "object" && value !== null) {
     const object = value as Record<string, unknown>;
-    return `{${Object.keys(object).sort().map((key) => `${JSON.stringify(key)}:${canonicalJson(object[key])}`).join(",")}}`;
+    const keys = Object.keys(object)
+      .filter((key) => object[key] !== undefined)
+      .sort();
+    return `{${keys.map((key) => `${JSON.stringify(key)}:${canonicalJson(object[key])}`).join(",")}}`;
   }
   return JSON.stringify(value) ?? "null";
 }
