@@ -1212,6 +1212,10 @@ func TestExecMaxOutputBytesCapsStdoutFromTheEnvironment(t *testing.T) {
 		t.Helper()
 		e := newEnv(t, oneServer)
 		e.setenv(append([]string{"MCPX_EXEC_OUTPUT=structured"}, env...)...)
+		// Absorb the one-time "reading tool schemas for the first
+		// time..." notice a cold sandbox prints to the merged capture,
+		// as TestExecOutputShapesTheResultFromTheEnvironment does.
+		_ = e.run("exec", `console.log("warmup")`)
 		got := e.run("exec", `console.log("x".repeat(2000))`)
 		var doc map[string]any
 		if err := json.Unmarshal([]byte(strings.TrimSpace(got)), &doc); err != nil {
@@ -3755,15 +3759,28 @@ func TestAutostartIdleExitStopsAnIdleDaemonFromTheEnvironment(t *testing.T) {
 	}
 }
 
-// readAfterRenewal stores one artifact under a 2s retention swept every
-// 200ms (plus env), reads it at 1.5s, and returns the status of a second
-// read at 3s: 200 if the first read renewed it past its expiry, 404 if
-// it was collected.
+// readAfterRenewal stores one artifact under a 6s retention swept every
+// 200ms (plus env), reads it 4.5s after the store began, and returns the
+// status of a second read: 200 if the first read renewed it past its
+// expiry, 404 if it was collected. Callers set idleTtl=9s (renewal from
+// the first read reaches past the second) and maxAge=6s (the cap is the
+// plain retention again).
+//
+// The schedule used to be 2s/1.5s/3s, timed from after the store and a
+// status call: under a loaded nix build the store plus that call took
+// long enough that the "1.5s" read landed after the 2s expiry, and the
+// first read 404ed. Times are now taken from the start of the store, the
+// unit is three times larger, and the second read waits until the
+// artifact is certainly past its unrenewed expiry, measured from when
+// the store returned.
 func readAfterRenewal(t *testing.T, env ...string) int {
 	t.Helper()
+	const unit = 3 * time.Second
 	e := newEnv(t, oneServer)
-	e.setenv(append([]string{"MCPX_ARTIFACTS_TTL=2s", "MCPX_ARTIFACTS_GC_INTERVAL=200ms"}, env...)...)
+	e.setenv(append([]string{"MCPX_ARTIFACTS_TTL=6s", "MCPX_ARTIFACTS_GC_INTERVAL=200ms"}, env...)...)
+	began := time.Now()
 	e.run("exec", artifactScript)
+	stored := time.Now()
 	c := e.socketClient(t)
 	get := func(path string) (int, []byte) {
 		t.Helper()
@@ -3785,37 +3802,47 @@ func readAfterRenewal(t *testing.T, env ...string) int {
 		t.Fatalf("one artifact should be listed (%v):\n%s", err, b)
 	}
 	id := doc.Artifacts[0].ID
-	time.Sleep(1500 * time.Millisecond)
+	time.Sleep(time.Until(began.Add(unit * 3 / 2)))
+	firstRead := time.Now()
 	if code, b := get("/v1/artifacts/" + id); code != http.StatusOK {
 		t.Fatalf("the first read, inside the retention, should succeed: %d %s", code, b)
 	}
-	time.Sleep(1500 * time.Millisecond)
+	// Past the unrenewed expiry (stored+2 units, plus a sweep), and well
+	// inside a renewal from the first read (firstRead+3 units).
+	second := firstRead.Add(unit * 3 / 2)
+	if expired := stored.Add(2*unit + time.Second); expired.After(second) {
+		second = expired
+	}
+	if !second.Before(firstRead.Add(3 * unit)) {
+		t.Fatalf("the store took %v, too long to tell a renewal from an expiry", stored.Sub(began))
+	}
+	time.Sleep(time.Until(second))
 	code, _ := get("/v1/artifacts/" + id)
 	return code
 }
 
 // TestArtifactsIdleTTLRenewsAReadArtifactFromTheEnvironment is the effect
-// probe for artifacts.idleTtl. Under a 2s absolute retention an artifact
-// read at 1.5s is gone at 3s by default (no renewal); with idleTtl=3s the
-// read renews it, so the 3s read still finds it.
+// probe for artifacts.idleTtl. Under a 6s absolute retention an artifact
+// read at 4.5s is gone at 9s by default (no renewal); with idleTtl=9s the
+// read renews it, so the 9s read still finds it.
 func TestArtifactsIdleTTLRenewsAReadArtifactFromTheEnvironment(t *testing.T) {
 	if code := readAfterRenewal(t); code != http.StatusNotFound {
 		t.Fatalf("oracle: without renewal the artifact should have expired, got %d", code)
 	}
-	if code := readAfterRenewal(t, "MCPX_ARTIFACTS_IDLE_TTL=3s"); code != http.StatusOK {
+	if code := readAfterRenewal(t, "MCPX_ARTIFACTS_IDLE_TTL=9s"); code != http.StatusOK {
 		t.Fatalf("with artifacts.idleTtl=3s the read should have renewed the artifact, got %d", code)
 	}
 }
 
 // TestArtifactsMaxAgeCapsARenewedArtifactFromTheEnvironment is the
-// effect probe for artifacts.maxAge. With idleTtl=3s a read at 1.5s
-// renews the artifact past 3s under the default ceiling; a 2s maxAge
-// caps the renewal at creation plus 2s, so it is gone at 3s.
+// effect probe for artifacts.maxAge. With idleTtl=9s a read at 4.5s
+// renews the artifact past 9s under the default ceiling; a 6s maxAge
+// caps the renewal at creation plus 6s, so it is gone at 9s.
 func TestArtifactsMaxAgeCapsARenewedArtifactFromTheEnvironment(t *testing.T) {
-	if code := readAfterRenewal(t, "MCPX_ARTIFACTS_IDLE_TTL=3s"); code != http.StatusOK {
+	if code := readAfterRenewal(t, "MCPX_ARTIFACTS_IDLE_TTL=9s"); code != http.StatusOK {
 		t.Fatalf("oracle: under the default ceiling the renewed artifact should survive, got %d", code)
 	}
-	if code := readAfterRenewal(t, "MCPX_ARTIFACTS_IDLE_TTL=3s", "MCPX_ARTIFACTS_MAX_AGE=2s"); code != http.StatusNotFound {
+	if code := readAfterRenewal(t, "MCPX_ARTIFACTS_IDLE_TTL=9s", "MCPX_ARTIFACTS_MAX_AGE=6s"); code != http.StatusNotFound {
 		t.Fatalf("with artifacts.maxAge=2s the renewal should be capped and the artifact collected, got %d", code)
 	}
 }
