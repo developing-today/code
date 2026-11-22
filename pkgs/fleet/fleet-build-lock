@@ -136,12 +136,21 @@ if [ "$1" = "cargo" ] && [ -z "$target_dir" ]; then
         echo "fleet-build-lock: leasing $repo/$profile Cargo target" >&2
         # For --manifest-path outside the caller's current workspace, clean
         # the selected workspace while keeping Cargo's original cwd intact.
-        if [ -n "$workspace_real" ] && [[ "$cwd_real/" != "$workspace_real/"* ]]; then
-          exec "$broker" exec --repo "$repo" --profile "$profile" --workspace-cwd "$workspace_real" --wait 900 -- "$@"
+        outside_workspace=true
+        if [ -n "$workspace_real" ]; then
+          case "$cwd_real/" in
+            "$workspace_real/"*) outside_workspace=false ;;
+          esac
+        fi
+        if [ "$outside_workspace" = true ] && [ -n "$workspace_real" ]; then
+          exec "$broker" exec \
+            --repo "$repo" --profile "$profile" \
+            --workspace-cwd "$workspace_real" --wait 900 -- "$@"
         fi
         # The lock fd remains open across exec; the broker checks in the lease
         # only after the Cargo process exits.
-        exec "$broker" exec --repo "$repo" --profile "$profile" --wait 900 -- "$@"
+        exec "$broker" exec \
+          --repo "$repo" --profile "$profile" --wait 900 -- "$@"
       fi
 
       CARGO_TARGET_DIR="$HOME/build-cache/$repo"
