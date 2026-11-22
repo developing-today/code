@@ -138,8 +138,8 @@ let
   # Hidden-shell auth hook (1Password service account, Cloudflare).
   # Same derivation nixos/agent-auth uses, so the BASH_ENV paths agree.
   agent-shell-env = pkgs.callPackage ../../pkgs/agent-shell-env { };
-  # mcpx MCP gateway and Code Mode execution runner. Its package output
-  # still runs the Go checks; profile rebuilds reuse the verified binary path.
+  # mcpx MCP gateway and Code Mode execution runner. Its standalone package
+  # still runs Go checks; profile rebuilds skip the separate test phase.
   mcpx = pkgs.callPackage ../../pkgs/mcpx/package.nix {
     doCheck = false;
   };
