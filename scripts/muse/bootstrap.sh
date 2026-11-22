@@ -14,8 +14,9 @@
 # Phases (each one is idempotent and skips what is already done):
 #   tools     fleet (static musl, bridge capable), bws, restic, tailscale
 #             into ~/.local/share/muse-bootstrap/bin, sha256-checked
-#   token     the bws access token into ~/.config/bitwarden/access-token
-#             (600), read from stdin or a hidden prompt, never argv
+#   token     BWS and optional 1Password service-account tokens into
+#             ~/.config/bitwarden/access-token and ~/.config/op/service-account-token
+#             (600), read from stdin or hidden prompts, never argv
 #   restore   ~/.config from restic-sandbox-config, then every top-level
 #             home entry from restic-sandbox-home (latest snapshot per
 #             entry; ~/git and ~/agents only with --all)
@@ -196,6 +197,7 @@ fi
 
 # ---- token ----
 TOKEN_FILE="$HOME/.config/bitwarden/access-token"
+OP_TOKEN_FILE="$HOME/.config/op/service-account-token"
 store_token() { # store_token VALUE: the supplied token, mode 600
   mkdir -p "$(dirname "$TOKEN_FILE")"
   chmod 700 "$(dirname "$TOKEN_FILE")"
@@ -223,9 +225,19 @@ if want token && [ ! -s "$TOKEN_FILE" ]; then
   store_token "$tok"
   unset tok
 fi
+if [ -n "${OP_SERVICE_ACCOUNT_TOKEN:-}" ]; then
+  mkdir -p "$(dirname "$OP_TOKEN_FILE")"
+  chmod 700 "$(dirname "$OP_TOKEN_FILE")"
+  (umask 077; printf '%s' "$OP_SERVICE_ACCOUNT_TOKEN" >"$OP_TOKEN_FILE.tmp") &&
+    mv -f "$OP_TOKEN_FILE.tmp" "$OP_TOKEN_FILE"
+fi
 if [ -s "$TOKEN_FILE" ]; then
   BWS_ACCESS_TOKEN=$(cat "$TOKEN_FILE")
   export BWS_ACCESS_TOKEN
+fi
+if [ -s "$OP_TOKEN_FILE" ]; then
+  OP_SERVICE_ACCOUNT_TOKEN=$(cat "$OP_TOKEN_FILE")
+  export OP_SERVICE_ACCOUNT_TOKEN
 fi
 secret() { # secret NAME -> value on stdout, nothing else
   [ -n "${BWS_ACCESS_TOKEN:-}" ] || die "no bws token (run the token phase)"
@@ -275,9 +287,16 @@ if want restore; then
     say "restore: ~/.config restored; $(grep -cE 'operation not permitted|xattr' "$rlog") ownership/xattr errors ignored (this box cannot set them)"
   fi
   rm -f "$rlog"
-  # The snapshot carries the old box's Bitwarden token file; keep the one
-  # supplied for this run.
-  if [ "$ROOT" = / ]; then store_token "$BWS_ACCESS_TOKEN"; fi
+  # The snapshot can carry old credentials; keep the values supplied for this run.
+  if [ "$ROOT" = / ]; then
+    store_token "$BWS_ACCESS_TOKEN"
+    if [ -n "${OP_SERVICE_ACCOUNT_TOKEN:-}" ]; then
+      mkdir -p "$(dirname "$OP_TOKEN_FILE")"
+      chmod 700 "$(dirname "$OP_TOKEN_FILE")"
+      (umask 077; printf '%s' "$OP_SERVICE_ACCOUNT_TOKEN" >"$OP_TOKEN_FILE.tmp") &&
+        mv -f "$OP_TOKEN_FILE.tmp" "$OP_TOKEN_FILE"
+    fi
+  fi
   restic_env restic-sandbox-home restic.sandbox-home-password
   restic snapshots --no-lock --json >"$HOME/.bootstrap-snapshots.json" || die "restore: cannot list home snapshots"
   python3 - "$HOME/.bootstrap-snapshots.json" "$SANDBOX_HOME" "$ALL" >"$HOME/.bootstrap-restore-plan" <<'PY'
@@ -309,6 +328,27 @@ PY
   rm -f "$HOME/.bootstrap-snapshots.json"
   unset RESTIC_PASSWORD AWS_SECRET_ACCESS_KEY AWS_ACCESS_KEY_ID
   say "restore: done (plan kept at ~/.bootstrap-restore-plan)"
+fi
+
+# ---- keep the OP credential available to later Muse shell sessions ----
+# The script and tokens live under persistent HOME on Muse. This hook only
+# reads the 0600 token file; it never prints or exports it to logs.
+OP_ENV="$HOME/tools/op-env.sh"
+cat >"$OP_ENV.tmp" <<'EOF'
+#!/usr/bin/env bash
+if [ -z "${OP_SERVICE_ACCOUNT_TOKEN:-}" ] && [ -r "$HOME/.config/op/service-account-token" ]; then
+  IFS= read -r OP_SERVICE_ACCOUNT_TOKEN <"$HOME/.config/op/service-account-token" || :
+  export OP_SERVICE_ACCOUNT_TOKEN
+fi
+EOF
+chmod 700 "$OP_ENV.tmp" && mv -f "$OP_ENV.tmp" "$OP_ENV"
+SHELL_ENV="$HOME/tools/shell-env.sh"
+if [ -f "$SHELL_ENV" ] && ! grep -q 'muse-op-token' "$SHELL_ENV"; then
+  cat >>"$SHELL_ENV" <<'EOF'
+
+# muse-op-token: load the service account for headless Fleet secrets resolution.
+[ -r "$HOME/tools/op-env.sh" ] && . "$HOME/tools/op-env.sh"
+EOF
 fi
 
 # ---- tailnet ----
@@ -508,6 +548,13 @@ except OSError:
     rc=1
   fi
   if fleet secrets list >/dev/null 2>&1; then say "check: session broker answers"; else say "check: no session broker answering yet (init.sh starts it; bws fallback still works)"; fi
+  if command -v op >/dev/null 2>&1 && [ -n "${OP_SERVICE_ACCOUNT_TOKEN:-}" ] &&
+    OP_SERVICE_ACCOUNT_TOKEN="$OP_SERVICE_ACCOUNT_TOKEN" op whoami >/dev/null 2>&1; then
+    say "check: 1Password CLI and service account answer"
+  else
+    say "check: 1Password CLI/token did not verify (op is restored from ~/tools or login data is missing)"
+    rc=1
+  fi
   if fleet bridge hello --agent "$AGENT" --groups muse >/dev/null 2>&1; then
     say "check: bridge hello as $AGENT ok; unread commands: $(fleet bridge inbox --agent "$AGENT" --commands 2>/dev/null | python3 -c 'import json,sys;d=json.load(sys.stdin);print(len(d if isinstance(d,list) else d.get("messages",d.get("items",[]))))' 2>/dev/null || echo '?')"
   else
