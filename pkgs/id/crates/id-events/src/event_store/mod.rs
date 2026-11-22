@@ -1289,6 +1289,9 @@ fn upgrade_from_v8(db: &Database) -> Result<(), StoreError> {
     if !is_v8 {
         return Ok(());
     }
+    // A v8-labelled file missing a v8 table is not a store: refuse it before writing, so
+    // NotAStore still leaves the file unchanged.
+    verify_v8_tables(&db.begin_read()?)?;
     let txn = db.begin_write()?;
     txn.open_table(BODIES)?;
     let mut meta = txn.open_table(META)?;
@@ -1299,9 +1302,8 @@ fn upgrade_from_v8(db: &Database) -> Result<(), StoreError> {
     Ok(())
 }
 
-/// Checks that every table exists and that the format row is this store's.
-fn verify_schema(db: &Database) -> Result<(), StoreError> {
-    let txn = db.begin_read()?;
+/// Checks that every table of format v8 exists. Format v9 adds only [`BODIES`].
+fn verify_v8_tables(txn: &redb::ReadTransaction) -> Result<(), StoreError> {
     let missing = |err: redb::TableError| StoreError::NotAStore(err.to_string());
     txn.open_table(EVENTS).map_err(missing)?;
     txn.open_table(HASHES).map_err(missing)?;
@@ -1314,6 +1316,14 @@ fn verify_schema(db: &Database) -> Result<(), StoreError> {
     txn.open_multimap_table(WAITING_BY_DEP).map_err(missing)?;
     txn.open_table(ACTIONS).map_err(missing)?;
     txn.open_table(APPLIED).map_err(missing)?;
+    Ok(())
+}
+
+/// Checks that every table exists and that the format row is this store's.
+fn verify_schema(db: &Database) -> Result<(), StoreError> {
+    let txn = db.begin_read()?;
+    let missing = |err: redb::TableError| StoreError::NotAStore(err.to_string());
+    verify_v8_tables(&txn)?;
     txn.open_table(BODIES).map_err(missing)?;
     let meta = txn.open_table(META).map_err(missing)?;
     match meta.get(FORMAT_KEY)? {
@@ -1884,6 +1894,34 @@ mod tests {
             meta.get(b"marker".as_slice()).unwrap().unwrap().value(),
             b"kept".as_slice()
         );
+    }
+
+    #[test]
+    fn test_a_v8_label_without_the_v8_tables_is_refused_and_left_at_v8() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Database::builder()
+            .create(dir.path().join(FILE_NAME))
+            .unwrap();
+        let txn = db.begin_write().unwrap();
+        txn.open_table(EVENTS).unwrap();
+        {
+            let mut meta = txn.open_table(META).unwrap();
+            meta.insert(FORMAT_KEY, FORMAT_V8).unwrap();
+        }
+        txn.commit().unwrap();
+        drop(db);
+        let err = EventStore::open(dir.path(), WaitingLimits::default(), 0).unwrap_err();
+        assert!(
+            matches!(err, StoreError::NotAStore(_)),
+            "unexpected error: {err}"
+        );
+        let db = Database::builder()
+            .open(dir.path().join(FILE_NAME))
+            .unwrap();
+        let txn = db.begin_read().unwrap();
+        assert!(txn.open_table(BODIES).is_err(), "no bodies table was added");
+        let meta = txn.open_table(META).unwrap();
+        assert_eq!(meta.get(FORMAT_KEY).unwrap().unwrap().value(), FORMAT_V8);
     }
 
     fn block(kind: BlockKind, value: &[u8], expires_at_ms: Option<u64>) -> Block {
