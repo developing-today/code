@@ -62,7 +62,7 @@ def create_bundle(mirror, bundle_path):
 
 
 def _parser():
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     parser.add_argument("--repo", required=True, help="planned repository as OWNER/REPO")
     parser.add_argument("--root", help="backup tree root (defaults to configured backup_root)")
     return parser

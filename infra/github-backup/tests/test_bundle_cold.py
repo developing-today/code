@@ -9,6 +9,8 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from contextlib import redirect_stderr
+from io import StringIO
 from unittest.mock import patch
 
 BIN = os.path.abspath(
@@ -42,6 +44,14 @@ def make_complete_mirror(root):
 
 
 class ColdBundleTests(unittest.TestCase):
+    def test_parser_rejects_abbreviated_options(self):
+        # Oracle: only the declared --repo and --root spellings parse.
+        with redirect_stderr(StringIO()):
+            with self.assertRaises(SystemExit) as raised:
+                bundle_cold._parser().parse_args(["--rep", "owner/repo", "--roo", "/backup"])
+
+        self.assertEqual(raised.exception.code, 2)
+
     def test_bundle_round_trip_matches_mirror_head(self):
         with tempfile.TemporaryDirectory() as root:
             mirror = make_complete_mirror(root)
