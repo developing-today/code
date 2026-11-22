@@ -114,7 +114,16 @@ export function assertDeployable(deployableJson,versionId) {
   return true;
 }
 
-export function assertLatestServing(deploymentsJson,versionId) {
+export function assertDeploymentCreated(responseJson,versionId) {
+  let body; try {body=JSON.parse(responseJson);} catch {fail('deployment-create response is not JSON');}
+  if(body?.success===false) fail('deployment-create API returned success=false');
+  const deployment=body?.result;
+  if(!deployment||!UUID.test(deployment.id??'')||!Array.isArray(deployment.versions)||deployment.versions.length!==1||deployment.versions[0]?.version_id!==versionId||deployment.versions[0]?.percentage!==100) fail('created deployment identity or exact 100% version set is invalid');
+  return deployment.id;
+}
+
+export function assertLatestServing(deploymentsJson,versionId,deploymentId) {
+  if(!UUID.test(deploymentId??'')) fail('invalid deployment identity');
   const rows=parseItems(deploymentsJson,'deployments');
   const dated=rows.map(row=>({row,at:Date.parse(row.created_on??row.created_at??'')}));
   if(dated.some(x=>!Number.isFinite(x.at))) fail('deployment listing contains an invalid timestamp');
@@ -122,7 +131,7 @@ export function assertLatestServing(deploymentsJson,versionId) {
   const latest=dated.filter(x=>x.at===latestAt);
   if(latest.length!==1) fail('latest deployment is ambiguous');
   const traffic=latest[0].row.versions;
-  if(!Array.isArray(traffic)||traffic.length!==1||traffic[0].version_id!==versionId||traffic[0].percentage!==100) fail('latest deployment is not the exact complete 100% version set');
+  if(latest[0].row.id!==deploymentId||!Array.isArray(traffic)||traffic.length!==1||traffic[0].version_id!==versionId||traffic[0].percentage!==100) fail('latest deployment is not the returned deployment identity with the exact complete 100% version set');
   return true;
 }
 
@@ -144,7 +153,7 @@ export function assertUploadRun(run,jobsResponse,handoff) {
 }
 
 export function assertPreflight(proof,{accountId,worker,environment,now=Date.now()}) {
-  if(!proof||proof.schema!==1||proof.verified!==true||proof.account_id!==accountId||!proof.reviewed_by||!proof.reviewed_by.includes('@')||typeof proof.evidence_ref!=='string'||proof.evidence_ref.trim().length<3||!Number.isFinite(Date.parse(proof.verified_at))||!Number.isFinite(Date.parse(proof.expires_at))||Date.parse(proof.verified_at)>now||Date.parse(proof.expires_at)<=now||Date.parse(proof.expires_at)-Date.parse(proof.verified_at)>24*3600000) fail('owner read-only staging proof is absent, expired, or invalid');
+  if(!proof||proof.schema!==1||proof.verified!==true||proof.account_id!==accountId||typeof proof.evidence_ref!=='string'||proof.evidence_ref.trim().length<3||!Number.isFinite(Date.parse(proof.verified_at))||!Number.isFinite(Date.parse(proof.expires_at))||Date.parse(proof.verified_at)>now||Date.parse(proof.expires_at)<=now||Date.parse(proof.expires_at)-Date.parse(proof.verified_at)>24*3600000) fail('owner read-only staging proof is absent, expired, or invalid');
   const release=proof.release_policy,allowedRefs=release?.allowed_environment_branches?.[environment];
   if(release?.repository!=='developing-today/code'||release?.branch!=='main'||release?.branch_protected!==true||release?.required_pull_request_reviews!==true||release?.force_push_disabled!==true||release?.admin_bypass_disabled!==true||release?.environment_reviewers_required?.[environment]!==true||release?.self_review_disabled?.[environment]!==true||!Array.isArray(allowedRefs)||!same(allowedRefs,['main'])||typeof release?.evidence_ref!=='string'||release.evidence_ref.trim().length<3) fail('trusted protected-main or deployment-environment approval proof is absent or invalid');
   const target=proof.targets?.[worker];

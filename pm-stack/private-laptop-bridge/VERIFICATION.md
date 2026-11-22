@@ -158,9 +158,25 @@ smoke preflight requires its existing Worker but no DO. The tracked staging
 proof remains `verified: false`; these tests validate the fail-closed gate and
 do not assert live account state.
 
+Owner evidence is supplied only through separate protected environment
+secrets: `CF_BRIDGE_ACCOUNT_ID`, `CF_BRIDGE_API_TOKEN`,
+`CF_BRIDGE_OWNER_PROOF_JSON` or their `CF_SMOKE_*` equivalents. No generic
+repository secret fallback is used. The public fixture contains no reviewer
+email or account/namespace identifiers; the private proof requires an opaque
+evidence reference, not a person's email. Promotion re-parses and revalidates
+the current private proof immediately before creating a deployment and requires
+its digest to equal the candidate's protected proof digest.
+
+Deployment readback binds to the deployment `result.id` returned by the create
+response, checks its exact one-version 100% set, then retries the list readback
+at most five times, two seconds apart. Success requires that same ID to be the
+latest deployment and to carry the exact 100% version. Tests cover the
+create-response identity and stale/newer/split deployment cases. This path was
+contract-tested offline; no create request or live readback was sent.
+
 After adding these tests, the focused local command
 `node --test --test-reporter=spec release-contract.test.mjs deployment-config.test.mjs smoke.test.mjs gateway.test.mjs`
-passed 19/19 under Node 24.22.0. Both `cf build` variants and both
+passed 21/21 under Node 24.22.0. Both `cf build` variants and both
 `cf workers versions create --prebuilt --dry-run` variants were rerun; the
 effective Build Output checks passed for the smoke and bridge targets. Dry-run
 output confirms the bridge declares its `BRIDGE` Durable Object export and

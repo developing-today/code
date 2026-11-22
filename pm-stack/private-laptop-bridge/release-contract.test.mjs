@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {assertDeployable,assertDryRunPayload,assertEffectivePayload,assertExactVersion,assertLatestServing,assertPreflight,assertUploadRun,assertVersionStillMatches,makeHandoff,provenanceDigest,verifyPromotionProvenance} from './release-contract.mjs';
+import {readFile} from 'node:fs/promises';
+import {assertDeployable,assertDeploymentCreated,assertDryRunPayload,assertEffectivePayload,assertExactVersion,assertLatestServing,assertPreflight,assertUploadRun,assertVersionStillMatches,makeHandoff,provenanceDigest,verifyPromotionProvenance} from './release-contract.mjs';
 
 const uuid='01234567-89ab-cdef-0123-456789abcdef', old='11111111-2222-3333-4444-555555555555';
 const sha='a'.repeat(40), cd='b'.repeat(64), bd='c'.repeat(64), pd='e'.repeat(64), acct='d'.repeat(32);
@@ -61,17 +62,25 @@ test('trusted workflow run must be exact successful main upload attempt',()=>{
 
 test('stale historical deployment cannot mask a newer wrong or split deployment',()=>{
  const deployments=rows=>JSON.stringify({success:true,result:rows});
- const serving={id:'new',created_on:'2026-11-22T12:00:00Z',versions:[{version_id:uuid,percentage:100}]};
- const oldServing={id:'old',created_on:'2026-11-22T11:00:00Z',versions:[{version_id:uuid,percentage:100}]};
- assert.equal(assertLatestServing(deployments([oldServing,serving]),uuid),true);
- assert.throws(()=>assertLatestServing(deployments([oldServing,{...serving,versions:[{version_id:old,percentage:100}]}]),uuid),/latest deployment/);
- assert.throws(()=>assertLatestServing(deployments([oldServing,{...serving,versions:[{version_id:uuid,percentage:50},{version_id:old,percentage:50}]}]),uuid),/latest deployment/);
- assert.throws(()=>assertLatestServing(deployments([oldServing,{...serving,versions:[{version_id:uuid,percentage:100},{version_id:old,percentage:0}]}]),uuid),/latest deployment/);
+ const deploymentId='22222222-2222-3333-4444-555555555555';
+ const serving={id:deploymentId,created_on:'2026-11-22T12:00:00Z',versions:[{version_id:uuid,percentage:100}]};
+ const oldServing={id:old,created_on:'2026-11-22T11:00:00Z',versions:[{version_id:uuid,percentage:100}]};
+ assert.equal(assertLatestServing(deployments([oldServing,serving]),uuid,deploymentId),true);
+ assert.throws(()=>assertLatestServing(deployments([oldServing,{...serving,id:'33333333-2222-3333-4444-555555555555'}]),uuid,deploymentId),/latest deployment/);
+ assert.throws(()=>assertLatestServing(deployments([oldServing,{...serving,versions:[{version_id:old,percentage:100}]}]),uuid,deploymentId),/latest deployment/);
+ assert.throws(()=>assertLatestServing(deployments([oldServing,{...serving,versions:[{version_id:uuid,percentage:50},{version_id:old,percentage:50}]}]),uuid,deploymentId),/latest deployment/);
+ assert.throws(()=>assertLatestServing(deployments([oldServing,{...serving,versions:[{version_id:uuid,percentage:100},{version_id:old,percentage:0}]}]),uuid,deploymentId),/latest deployment/);
+});
+
+test('deployment create response must return the exact 100 percent deployment identity',()=>{
+ const deploymentId='22222222-2222-3333-4444-555555555555';
+ assert.equal(assertDeploymentCreated(JSON.stringify({success:true,result:{id:deploymentId,versions:[{version_id:uuid,percentage:100}]}}),uuid),deploymentId);
+ for(const body of [{success:false,result:{id:deploymentId,versions:[{version_id:uuid,percentage:100}]}},{success:true,result:{id:'bad',versions:[{version_id:uuid,percentage:100}]}},{success:true,result:{id:deploymentId,versions:[{version_id:old,percentage:100}]}},{success:true,result:{id:deploymentId,versions:[{version_id:uuid,percentage:99}]}}]) assert.throws(()=>assertDeploymentCreated(JSON.stringify(body),uuid));
 });
 
 test('read-only owner proof fails closed for missing, stale, public or unexpected callers',()=>{
  const now=Date.parse('2026-11-22T12:00:00Z');
- const good={schema:1,verified:true,account_id:acct,reviewed_by:'owner@example.com',verified_at:'2026-11-22T11:00:00Z',expires_at:'2026-11-22T13:00:00Z',evidence_ref:'review-1',release_policy:{repository:'developing-today/code',branch:'main',branch_protected:true,required_pull_request_reviews:true,force_push_disabled:true,admin_bypass_disabled:true,environment_reviewers_required:{'cloudflare-staging':true,'cloudflare-staging-smoke':true},self_review_disabled:{'cloudflare-staging':true,'cloudflare-staging-smoke':true},allowed_environment_branches:{'cloudflare-staging':['main'],'cloudflare-staging-smoke':['main']},evidence_ref:'policy-review-1'},targets:{'private-laptop-bridge-staging':{environment:'cloudflare-staging',exists:true,script_id:'private-laptop-bridge-staging',account_id:acct,application_enabled:false,workers_dev:false,preview_urls:false,routes:[],custom_domains:[],observability:{enabled:false,logs:false,traces:false},limits:{cpu_ms:10},gateway_forward_policy_ids:[],gateway_caller_ids:[],variables:{ENABLED:'false',GATEWAY_HOST:'private-bridge-staging.invalid',GATEWAY_ACCOUNT_ID:'',GATEWAY_POLICY_ID:'',GATEWAY_IDENTITY_EMAIL:'',GATEWAY_POSTURE_ID:'',BRIDGE_REGISTRY:''},bindings:[{name:'BRIDGE',type:'durable_object_namespace',class_name:'PrivateLaptopBridge',namespace_id:'1'.repeat(32)}],do:{worker_name:'private-laptop-bridge-staging',class_name:'PrivateLaptopBridge',storage:'sqlite',export_state:'created',migration_tag:'v1',pending_migrations:false,namespace_id:'1'.repeat(32)}}}};
+ const good={schema:1,verified:true,account_id:acct,verified_at:'2026-11-22T11:00:00Z',expires_at:'2026-11-22T13:00:00Z',evidence_ref:'review-1',release_policy:{repository:'developing-today/code',branch:'main',branch_protected:true,required_pull_request_reviews:true,force_push_disabled:true,admin_bypass_disabled:true,environment_reviewers_required:{'cloudflare-staging':true,'cloudflare-staging-smoke':true},self_review_disabled:{'cloudflare-staging':true,'cloudflare-staging-smoke':true},allowed_environment_branches:{'cloudflare-staging':['main'],'cloudflare-staging-smoke':['main']},evidence_ref:'policy-review-1'},targets:{'private-laptop-bridge-staging':{environment:'cloudflare-staging',exists:true,script_id:'private-laptop-bridge-staging',account_id:acct,application_enabled:false,workers_dev:false,preview_urls:false,routes:[],custom_domains:[],observability:{enabled:false,logs:false,traces:false},limits:{cpu_ms:10},gateway_forward_policy_ids:[],gateway_caller_ids:[],variables:{ENABLED:'false',GATEWAY_HOST:'private-bridge-staging.invalid',GATEWAY_ACCOUNT_ID:'',GATEWAY_POLICY_ID:'',GATEWAY_IDENTITY_EMAIL:'',GATEWAY_POSTURE_ID:'',BRIDGE_REGISTRY:''},bindings:[{name:'BRIDGE',type:'durable_object_namespace',class_name:'PrivateLaptopBridge',namespace_id:'1'.repeat(32)}],do:{worker_name:'private-laptop-bridge-staging',class_name:'PrivateLaptopBridge',storage:'sqlite',export_state:'created',migration_tag:'v1',pending_migrations:false,namespace_id:'1'.repeat(32)}}}};
  assert.equal(assertPreflight(good,{accountId:acct,worker:'private-laptop-bridge-staging',environment:'cloudflare-staging',now}),true);
  assert.throws(()=>assertPreflight({...good,verified:false},{accountId:acct,worker:'private-laptop-bridge-staging',environment:'cloudflare-staging',now}),/absent, expired, or invalid/);
  assert.throws(()=>assertPreflight({...good,expires_at:'2026-11-22T11:59:59Z'},{accountId:acct,worker:'private-laptop-bridge-staging',environment:'cloudflare-staging',now}),/absent, expired, or invalid/);
@@ -90,7 +99,7 @@ test('Versions release proof separately requires an existing Worker and its read
  const now=Date.parse('2026-11-22T12:00:00Z');
  const policy={repository:'developing-today/code',branch:'main',branch_protected:true,required_pull_request_reviews:true,force_push_disabled:true,admin_bypass_disabled:true,environment_reviewers_required:{'cloudflare-staging':true},self_review_disabled:{'cloudflare-staging':true},allowed_environment_branches:{'cloudflare-staging':['main']},evidence_ref:'policy-review-1'};
  const bridge={environment:'cloudflare-staging',exists:true,script_id:'private-laptop-bridge-staging',account_id:acct,application_enabled:false,workers_dev:false,preview_urls:false,routes:[],custom_domains:[],observability:{enabled:false,logs:false,traces:false},limits:{cpu_ms:10},gateway_forward_policy_ids:[],gateway_caller_ids:[],variables:{ENABLED:'false',GATEWAY_HOST:'private-bridge-staging.invalid',GATEWAY_ACCOUNT_ID:'',GATEWAY_POLICY_ID:'',GATEWAY_IDENTITY_EMAIL:'',GATEWAY_POSTURE_ID:'',BRIDGE_REGISTRY:''},bindings:[{name:'BRIDGE',type:'durable_object_namespace',class_name:'PrivateLaptopBridge',namespace_id:'1'.repeat(32)}],do:{worker_name:'private-laptop-bridge-staging',class_name:'PrivateLaptopBridge',storage:'sqlite',export_state:'created',migration_tag:'v1',pending_migrations:false,namespace_id:'1'.repeat(32)}};
- const makeProof=(target=bridge)=>({schema:1,verified:true,account_id:acct,reviewed_by:'owner@example.com',verified_at:'2026-11-22T11:00:00Z',expires_at:'2026-11-22T13:00:00Z',evidence_ref:'worker-review-1',release_policy:policy,targets:{'private-laptop-bridge-staging':target}});
+ const makeProof=(target=bridge)=>({schema:1,verified:true,account_id:acct,verified_at:'2026-11-22T11:00:00Z',expires_at:'2026-11-22T13:00:00Z',evidence_ref:'worker-review-1',release_policy:policy,targets:{'private-laptop-bridge-staging':target}});
  const check=(proof)=>assertPreflight(proof,{accountId:acct,worker:'private-laptop-bridge-staging',environment:'cloudflare-staging',now});
  assert.equal(check(makeProof()),true);
  assert.throws(()=>check(makeProof({...bridge,exists:false})),/exact private disabled target/);
@@ -103,6 +112,19 @@ test('Versions release proof separately requires an existing Worker and its read
    {bindings:[{...bridge.bindings[0],namespace_id:'2'.repeat(32)}]},
    {bindings:[{...bridge.bindings[0],class_name:'OtherClass'}]},
  ]) assert.throws(()=>check(makeProof({...bridge,...change})),/same-Worker SQLite Durable Object namespace and completed v1 migration state/);
+});
+
+test('tracked preflight fixture is redacted and never substitutes for private owner proof',async()=>{
+ const text=await readFile(new URL('./staging-preflight.json',import.meta.url),'utf8'),fixture=JSON.parse(text);
+ assert.equal(fixture.verified,false);
+ assert.equal(fixture.account_id,'');
+ assert.equal('reviewed_by' in fixture,false);
+ assert.doesNotMatch(text,/@/);
+ for(const target of Object.values(fixture.targets)) {
+   assert.equal(target.account_id,'');
+   assert.equal(target.do?.namespace_id??'','');
+   assert.ok(target.bindings.every(binding=>binding.namespace_id===''));
+ }
 });
 
 test('CI dry-run verifies the effective private Build Output but does not claim account route proof',()=>{

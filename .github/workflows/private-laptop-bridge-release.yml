@@ -88,7 +88,7 @@ jobs:
           TARGET_WORKER: ${{ steps.target.outputs.worker }}
           TARGET_ENV: ${{ steps.target.outputs.environment }}
           TARGET_MODE: ${{ steps.target.outputs.mode }}
-          CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+          CF_ACCOUNT_ID: ${{ inputs.worker == 'bridge' && secrets.CF_BRIDGE_ACCOUNT_ID || inputs.worker == 'smoke' && secrets.CF_SMOKE_ACCOUNT_ID }}
         run: |
           set -euo pipefail
           node release-artifact.mjs provenance \
@@ -100,11 +100,18 @@ jobs:
         if: inputs.action == 'promote'
         working-directory: pm-stack/private-laptop-bridge
         env:
-          CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+          CF_ACCOUNT_ID: ${{ inputs.worker == 'bridge' && secrets.CF_BRIDGE_ACCOUNT_ID || inputs.worker == 'smoke' && secrets.CF_SMOKE_ACCOUNT_ID }}
+          OWNER_PROOF_JSON: ${{ inputs.worker == 'bridge' && secrets.CF_BRIDGE_OWNER_PROOF_JSON || inputs.worker == 'smoke' && secrets.CF_SMOKE_OWNER_PROOF_JSON }}
           TARGET_WORKER: ${{ steps.target.outputs.worker }}
           TARGET_ENV: ${{ steps.target.outputs.environment }}
+          SOURCE_SHA: ${{ steps.provenance.outputs.source_sha }}
           HANDOFF: ${{ runner.temp }}/private-bridge-handoff/candidate.json
-        run: node release-artifact.mjs current-proof "$HANDOFF"
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin main
+          main_sha="$(git rev-parse FETCH_HEAD)"
+          [[ "$SOURCE_SHA" == "$main_sha" ]] || { echo 'Candidate is not from the current protected main head; upload a fresh candidate.' >&2; exit 1; }
+          node release-artifact.mjs current-proof "$HANDOFF"
       - name: Check out the exact uploaded source commit
         if: inputs.action == 'promote'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -126,15 +133,16 @@ jobs:
       - name: Validate account owner proof before Cloudflare access
         working-directory: pm-stack/private-laptop-bridge
         env:
-          CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+          CF_ACCOUNT_ID: ${{ inputs.worker == 'bridge' && secrets.CF_BRIDGE_ACCOUNT_ID || inputs.worker == 'smoke' && secrets.CF_SMOKE_ACCOUNT_ID }}
+          OWNER_PROOF_JSON: ${{ inputs.worker == 'bridge' && secrets.CF_BRIDGE_OWNER_PROOF_JSON || inputs.worker == 'smoke' && secrets.CF_SMOKE_OWNER_PROOF_JSON }}
           TARGET_WORKER: ${{ steps.target.outputs.worker }}
           TARGET_ENV: ${{ steps.target.outputs.environment }}
         run: node release-artifact.mjs preflight
       - name: Require existing exact Worker; never bootstrap from CI
         working-directory: pm-stack/private-laptop-bridge
         env:
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ inputs.worker == 'bridge' && secrets.CF_BRIDGE_ACCOUNT_ID || inputs.worker == 'smoke' && secrets.CF_SMOKE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ inputs.worker == 'bridge' && secrets.CF_BRIDGE_API_TOKEN || inputs.worker == 'smoke' && secrets.CF_SMOKE_API_TOKEN }}
           TARGET_WORKER: ${{ steps.target.outputs.worker }}
         run: npx --no-install cf -q workers get "$TARGET_WORKER" >/dev/null
       - name: Verify source tests and effective local config
@@ -180,9 +188,10 @@ jobs:
         id: upload
         working-directory: pm-stack/private-laptop-bridge
         env:
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
-          CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ inputs.worker == 'bridge' && secrets.CF_BRIDGE_ACCOUNT_ID || inputs.worker == 'smoke' && secrets.CF_SMOKE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ inputs.worker == 'bridge' && secrets.CF_BRIDGE_API_TOKEN || inputs.worker == 'smoke' && secrets.CF_SMOKE_API_TOKEN }}
+          CF_ACCOUNT_ID: ${{ inputs.worker == 'bridge' && secrets.CF_BRIDGE_ACCOUNT_ID || inputs.worker == 'smoke' && secrets.CF_SMOKE_ACCOUNT_ID }}
+          OWNER_PROOF_JSON: ${{ inputs.worker == 'bridge' && secrets.CF_BRIDGE_OWNER_PROOF_JSON || inputs.worker == 'smoke' && secrets.CF_SMOKE_OWNER_PROOF_JSON }}
           TARGET_WORKER: ${{ steps.target.outputs.worker }}
           TARGET_ENV: ${{ steps.target.outputs.environment }}
           TARGET_MODE: ${{ steps.target.outputs.mode }}
@@ -217,9 +226,10 @@ jobs:
         if: inputs.action == 'promote'
         working-directory: pm-stack/private-laptop-bridge
         env:
-          CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CF_ACCOUNT_ID: ${{ inputs.worker == 'bridge' && secrets.CF_BRIDGE_ACCOUNT_ID || inputs.worker == 'smoke' && secrets.CF_SMOKE_ACCOUNT_ID }}
+          OWNER_PROOF_JSON: ${{ inputs.worker == 'bridge' && secrets.CF_BRIDGE_OWNER_PROOF_JSON || inputs.worker == 'smoke' && secrets.CF_SMOKE_OWNER_PROOF_JSON }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ inputs.worker == 'bridge' && secrets.CF_BRIDGE_ACCOUNT_ID || inputs.worker == 'smoke' && secrets.CF_SMOKE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ inputs.worker == 'bridge' && secrets.CF_BRIDGE_API_TOKEN || inputs.worker == 'smoke' && secrets.CF_SMOKE_API_TOKEN }}
           TARGET_WORKER: ${{ steps.target.outputs.worker }}
           TARGET_ENV: ${{ steps.target.outputs.environment }}
           TARGET_MODE: ${{ steps.target.outputs.mode }}
@@ -236,18 +246,43 @@ jobs:
             -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
             "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/scripts/$TARGET_WORKER/versions?deployable=true" > "$DEPLOYABLE_LIST"
           node release-artifact.mjs verify-handoff "$HANDOFF" "$UPLOAD_RUN_JSON" "$RUNNER_TEMP/upload-jobs.json" "$VERSION_LIST" "$DEPLOYABLE_LIST"
+      - name: Revalidate current private proof immediately before promotion
+        if: inputs.action == 'promote'
+        working-directory: pm-stack/private-laptop-bridge
+        env:
+          CF_ACCOUNT_ID: ${{ inputs.worker == 'bridge' && secrets.CF_BRIDGE_ACCOUNT_ID || inputs.worker == 'smoke' && secrets.CF_SMOKE_ACCOUNT_ID }}
+          OWNER_PROOF_JSON: ${{ inputs.worker == 'bridge' && secrets.CF_BRIDGE_OWNER_PROOF_JSON || inputs.worker == 'smoke' && secrets.CF_SMOKE_OWNER_PROOF_JSON }}
+          TARGET_WORKER: ${{ steps.target.outputs.worker }}
+          TARGET_ENV: ${{ steps.target.outputs.environment }}
+          SOURCE_SHA: ${{ steps.provenance.outputs.source_sha }}
+          HANDOFF: ${{ runner.temp }}/private-bridge-handoff/candidate.json
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin main
+          main_sha="$(git rev-parse FETCH_HEAD)"
+          [[ "$SOURCE_SHA" == "$main_sha" ]] || { echo 'Candidate is not from the current protected main head; upload a fresh candidate.' >&2; exit 1; }
+          node release-artifact.mjs current-proof "$HANDOFF"
       - name: Promote only the exact artifact version
         if: inputs.action == 'promote'
         working-directory: pm-stack/private-laptop-bridge
         env:
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ inputs.worker == 'bridge' && secrets.CF_BRIDGE_ACCOUNT_ID || inputs.worker == 'smoke' && secrets.CF_SMOKE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ inputs.worker == 'bridge' && secrets.CF_BRIDGE_API_TOKEN || inputs.worker == 'smoke' && secrets.CF_SMOKE_API_TOKEN }}
           TARGET_WORKER: ${{ steps.target.outputs.worker }}
           HANDOFF: ${{ runner.temp }}/private-bridge-handoff/candidate.json
           DEPLOYMENTS: ${{ runner.temp }}/cf-deployments.json
+          DEPLOYMENT_CREATE_RESPONSE: ${{ runner.temp }}/cf-deployment-create.json
+          DEPLOYMENT_ID: ${{ runner.temp }}/cf-deployment-id.txt
         run: |
           set -euo pipefail
+          rm -f "$DEPLOYMENT_CREATE_RESPONSE" "$DEPLOYMENT_ID"
           version_id="$(node -e 'let h=require(process.env.HANDOFF);process.stdout.write(h.version_id)')"
-          npx --no-install cf -q workers deployments create --worker "$TARGET_WORKER" --strategy percentage --versions "[{\"version_id\":\"$version_id\",\"percentage\":100}]"
-          npx --no-install cf -q workers deployments list --worker "$TARGET_WORKER" > "$DEPLOYMENTS"
-          node release-artifact.mjs verify-deployment "$DEPLOYMENTS" "$HANDOFF"
+          npx --no-install cf -q workers deployments create --worker "$TARGET_WORKER" --strategy percentage --versions "[{\"version_id\":\"$version_id\",\"percentage\":100}]" > "$DEPLOYMENT_CREATE_RESPONSE"
+          node release-artifact.mjs verify-deployment-create "$DEPLOYMENT_CREATE_RESPONSE" "$HANDOFF" "$DEPLOYMENT_ID"
+          for attempt in 1 2 3 4 5; do
+            npx --no-install cf -q workers deployments list --worker "$TARGET_WORKER" > "$DEPLOYMENTS"
+            if node release-artifact.mjs verify-deployment "$DEPLOYMENTS" "$HANDOFF" "$DEPLOYMENT_ID" 2>/dev/null; then exit 0; fi
+            if [[ "$attempt" -lt 5 ]]; then sleep 2; fi
+          done
+          echo 'Deployment readback did not show the returned deployment as latest within five attempts.' >&2
+          exit 1

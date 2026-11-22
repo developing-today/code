@@ -5,13 +5,12 @@ network setting or access grant changed. No AMD or proposed-host probe ran.
 
 ## Verified metadata and limits of inference
 
-- Historical Wrangler verification (2026-10-21),
-  `doc/platform/toolchains/cloudflare-wrangler.md`, names
-  `Developing.today.llc.domains.0@gmail.com's Account`, ID prefix `234b866b…`.
-  No complete account ID or current Cloudflare One Gateway configuration was
-  available through the connected tools or inspected tracked configuration.
+- Historical Wrangler verification (2026-10-21) mentions a Developing.today
+  account, but is insufficient to establish current account ownership or its
+  identifier. No current Cloudflare One Gateway configuration was available
+  through connected tools or inspected tracked configuration.
 - `pm-stack/console/scripts/expose.py` configures `amd-6-pm-stack`,
-  `pm.security.cab`, and owner default `drewrypope@gmail.com`; account and Access
+  `pm.security.cab`, and an owner default; account and Access
   organization are discovered dynamically. These defaults do not verify current
   ownership, Gateway enrollment or a suitable caller runner.
 - Existing `lab-cluster` and `sandbox-link` tunnels use public hostnames. They
@@ -147,19 +146,31 @@ for this repository's `main` ref, checks out the event SHA, has `contents: read`
 only, serializes per Worker, and pins Actions, Node, cf, Wrangler and lockfile
 versions. The `smoke` target is `private-laptop-bridge-smoke` under GitHub
 Environment `cloudflare-staging-smoke`. The real bridge target is
-`private-laptop-bridge-staging` under `cloudflare-staging`. Both environments
-use names `CF_ACCOUNT_ID` and `CF_API_TOKEN`; each token must be independently
-account-owned and scoped as **Workers Editor for that one individual existing
-Worker**. It must not be scoped to the Workers product or whole account. There
-are no environment secrets configured by this change. GitHub environments must
-have required reviewers and reject untrusted refs before secrets are provisioned.
+`private-laptop-bridge-staging` under `cloudflare-staging`. The bridge
+environment uses `CF_BRIDGE_ACCOUNT_ID`, `CF_BRIDGE_API_TOKEN`, and
+`CF_BRIDGE_OWNER_PROOF_JSON`; the smoke environment uses the corresponding
+`CF_SMOKE_*` names. These are distinct environment-only secrets with no
+repository-secret fallback. Each token must be independently account-owned and
+scoped as **Workers Editor for that one individual existing Worker**. It must
+not be scoped to the Workers product or whole account. No secret values are
+configured or read by this change. The owner proof stays private in the
+matching protected environment secret; only its digest is bound to a candidate.
+The tracked `staging-preflight.json` is a redacted, unverified public contract
+fixture. It contains no reviewer email, account ID, or DO namespace ID. The
+private proof does not require a reviewer email; `evidence_ref` must be opaque
+and non-PII. GitHub environments must have required reviewers and reject
+untrusted refs before secrets are provisioned.
 
 Each upload path runs named runtime tests, `cf build` (bridge build uses mode
 `bridge`), a source/config binding equivalence test, then
 `cf workers versions create --prebuilt --dry-run` and the actual immutable
 version upload. It verifies the uploaded UUID appears in the deployable set.
 Promotion is a distinct manual invocation with the exact UUID; it repeats the
-deployable check, creates a 100% deployment, and verifies read-back. Recovery is
+deployable check, captures the create response deployment ID, and retries
+read-back at most five times to verify that exact deployment is latest and
+serves 100%. Immediately before promotion, the workflow requires the candidate
+SHA to equal the freshly fetched protected `main` head and revalidates the
+private owner proof. Recovery is
 an explicit promotion of a recorded known-good retained UUID. Fix-forward uploads
 a new version and separately promotes it. These actions do not apply Gateway
 routes, Workers routes/domains, DNS, TLS settings or access policies.
@@ -167,10 +178,7 @@ routes, Workers routes/domains, DNS, TLS settings or access policies.
 **Target existence is not verified.** The tracked Wrangler configs and `cf`
 config give only the proposed names `private-laptop-bridge-smoke` and
 `private-laptop-bridge-staging`; they prove neither is present in Cloudflare.
-The only account evidence found is historical from 2026-10-21:
-`Developing.today.llc.domains.0@gmail.com's Account`, partial ID `234b866b…` in
-`doc/platform/toolchains/cloudflare-wrangler.md`. No full account ID or live
-metadata was obtained. The first workflow step calls `cf workers get` and fails
+No current account ID or live metadata was obtained. The first workflow step calls `cf workers get` and fails
 closed if the selected exact target is absent; it never bootstraps, creates
 account resources or widens scopes. Before adding secrets, an authorized owner
 must independently confirm full account ID/ownership and existence of the exact
