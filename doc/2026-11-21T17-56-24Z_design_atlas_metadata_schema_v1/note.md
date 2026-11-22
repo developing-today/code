@@ -23,6 +23,8 @@ The artifact identity is external to the bytes whose digest it names, avoiding a
 MetadataArtifactId = "sha256:" + lowercase_hex(SHA-256(exact_metadata_file_bytes))
 ```
 
+For a PM record, which is embedded in an issue or PR body rather than stored as a file, `exact_metadata_file_bytes` is the JSON object text inside the block: take the bytes between the `<!-- pm-metadata:start -->` and `<!-- pm-metadata:end -->` markers as the body is returned by the source API, remove one opening code-fence line (```` ``` ```` or ```` ```json ````) and its closing fence line if present, then trim leading and trailing ASCII whitespace (space, tab, CR, LF). The remaining bytes, from the object's opening `{` to its closing `}`, are hashed unchanged. The markers, the fence, and the surrounding body are never part of the digest.
+
 The main-store record/reference carries this ID for signed and unsigned artifacts alike. Do not hash a parsed-and-reserialized value, normalize line endings, or include a signature companion in the metadata-file digest. A signature is a companion assertion over the exact data bytes. The `.json.signature` companion contains the detached signature and its verification profile; `.cert` carries certificate material/reference. A `.json.signed` container may package the original data and its asserted primary signature, but does not change the data artifact ID. **V1 convention: sign the data bytes**, not the signature companion; an envelope may attest to both as an explicit higher-level statement, but the detached data signature is the primary proof. This is reversible by a new explicit signature profile, never by changing old bytes or guessing from filenames.
 
 V1 Metadata envelope:
@@ -66,6 +68,8 @@ The V1 core enum fields are `kind`, `area`, `group`, and `sensitivity`. Each reg
 ### 3.2 Extras and type mismatch
 
 `extras` is a root-level JSON object keyed by the original field name/path. It stores unrecognized optional data and data a reader cannot safely interpret. Preserve JSON value types, nested structure, and original enum token; do not stringify, discard, or claim successful classification. A sidecar provenance entry may record original path, version, reason (`unknown-field`, `unknown-enum`, `type-mismatch`, or `unconvertible`), and observation time; it must not overwrite the value.
+
+Relocation never overwrites. When the key a relocated value would take is already present in `extras` with a different value, the existing value stays, and the relocated value is appended to the reserved array `extras["$relocated"]` as `{"path": <source path>, "value": <original value>, "reason": <reason>}`. Keys beginning with `$` are reserved for this doctrine; a source key beginning with `$` that the doctrine does not define is itself relocated into `$relocated`. Both values and both paths therefore survive an update.
 
 If a value has the wrong type for a declared field, keep the declared-field view absent/defaulted according to that field's rule and relocate the original value unchanged to `extras`; report the mismatch. Lossless, explicitly registered coercions are allowed only when round-trip safe for the source value. For example, an integer array may become a string array if every element has a canonical decimal rendering; a string array may become an integer array only if every element parses exactly and re-encodes to the same string. Partial conversion is forbidden. If any element fails, preserve the whole original value in `extras`. A projection never rewrites source bytes as a side effect of reading.
 
