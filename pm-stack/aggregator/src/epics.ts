@@ -1,5 +1,6 @@
 import type { ProjectPoolItem, RefKey } from "./model.ts";
 import { isValidRef } from "./model.ts";
+import type { NativeSubissue } from "./epic-subtree.ts";
 
 export interface EpicRollup {
   /** Resolved pool items whose epicRef points at this epic. */
@@ -17,7 +18,11 @@ export interface EpicRollup {
  *  that reports epic progress (/projects rollups, /roadmap drill-down)
  *  must use this helper so the counts cannot drift apart again. */
 export function isEpicChildDone(child: ProjectPoolItem): boolean {
-  return child.state === "closed" || child.state === "merged" || child.status?.trim() === "Done";
+  return (
+    child.state === "closed" ||
+    child.state === "merged" ||
+    child.status?.trim() === "Done"
+  );
 }
 
 /** Facts required to evaluate the closure policy in design §7. A monitor
@@ -52,13 +57,19 @@ export interface EpicClosureGateResult {
 
 /** Apply the three closure conditions from design §7 to already-derived facts.
  *  The result is deterministic and preserves the blocking refs for reporting. */
-export function evaluateEpicClosureGate(facts: EpicClosureGateFacts): EpicClosureGateResult {
+export function evaluateEpicClosureGate(
+  facts: EpicClosureGateFacts,
+): EpicClosureGateResult {
   const blockers: EpicClosureGateBlocker[] = [];
-  const addBlocker = (condition: EpicClosureGateCondition, refs: readonly RefKey[]) => {
+  const addBlocker = (
+    condition: EpicClosureGateCondition,
+    refs: readonly RefKey[],
+  ) => {
     if (refs.length > 0) blockers.push({ condition, refs: [...refs] });
   };
 
-  if (!facts.factsComplete) blockers.push({ condition: "source_incomplete", refs: [] });
+  if (!facts.factsComplete)
+    blockers.push({ condition: "source_incomplete", refs: [] });
   addBlocker("designs_incomplete", facts.unfinishedDesignRefs);
   addBlocker("qualifying_open_descendants", facts.qualifyingOpenDescendantRefs);
   addBlocker(
@@ -69,8 +80,49 @@ export function evaluateEpicClosureGate(facts: EpicClosureGateFacts): EpicClosur
   return { closable: blockers.length === 0, blockers };
 }
 
+/** Conservative read-only §7 report over a successfully fetched complete tree.
+ *  No re-parent plan is yet verified, so every open descendant blocks condition 3.
+ *  Only explicit design tracking labels identify designs, not design membership. */
+export function deriveEpicClosureGateFacts(
+  rootRef: RefKey,
+  descendants: readonly NativeSubissue[],
+): EpicClosureGateFacts {
+  const unfinishedDesignRefs: RefKey[] = [];
+  const qualifyingOpenDescendantRefs: RefKey[] = [];
+  const unfinishedChildrenWithoutReparentDestinationRefs: RefKey[] = [];
+
+  for (const child of descendants) {
+    const labels = new Set(child.labels);
+    const done = child.state === "CLOSED";
+    const design = labels.has("kind/design") || labels.has("design");
+    const drewGated = labels.has("user/escalated");
+
+    if (design && !done && !drewGated) unfinishedDesignRefs.push(child.ref);
+
+    if (child.state === "OPEN") {
+      const qualifyingBug =
+        (labels.has("kind/bug") || labels.has("bug")) &&
+        (labels.has("priority/high") || labels.has("priority/critical"));
+      if (qualifyingBug || labels.has("meta/follow-up"))
+        qualifyingOpenDescendantRefs.push(child.ref);
+
+      if (child.parentRef === rootRef)
+        unfinishedChildrenWithoutReparentDestinationRefs.push(child.ref);
+    }
+  }
+
+  return {
+    factsComplete: true,
+    unfinishedDesignRefs,
+    qualifyingOpenDescendantRefs,
+    unfinishedChildrenWithoutReparentDestinationRefs,
+  };
+}
+
 /** Collapse multiple board memberships to one canonical issue for issue-level progress. */
-export function uniqueProjectItemsByRef(pool: readonly ProjectPoolItem[]): ProjectPoolItem[] {
+export function uniqueProjectItemsByRef(
+  pool: readonly ProjectPoolItem[],
+): ProjectPoolItem[] {
   const byRef = new Map<RefKey, ProjectPoolItem>();
   for (const item of pool) {
     if (!byRef.has(item.ref)) byRef.set(item.ref, item);
@@ -79,14 +131,19 @@ export function uniqueProjectItemsByRef(pool: readonly ProjectPoolItem[]): Proje
 }
 
 /** One representative for every ref classified as an Epic on any board. */
-export function uniqueEpicItemsByRef(pool: readonly ProjectPoolItem[]): ProjectPoolItem[] {
+export function uniqueEpicItemsByRef(
+  pool: readonly ProjectPoolItem[],
+): ProjectPoolItem[] {
   const byRef = new Map<RefKey, ProjectPoolItem>();
-  for (const item of pool) if (item.kind === "Epic" && !byRef.has(item.ref)) byRef.set(item.ref, item);
+  for (const item of pool)
+    if (item.kind === "Epic" && !byRef.has(item.ref)) byRef.set(item.ref, item);
   return [...byRef.values()];
 }
 
 /** Build rollups for epics in the pool, using only explicit epicRef edges. */
-export function buildEpicRollups(pool: readonly ProjectPoolItem[]): Map<RefKey, EpicRollup> {
+export function buildEpicRollups(
+  pool: readonly ProjectPoolItem[],
+): Map<RefKey, EpicRollup> {
   const epicRefs = new Set(uniqueEpicItemsByRef(pool).map((epic) => epic.ref));
   const uniquePool = uniqueProjectItemsByRef(pool);
   const byRef = new Map(uniquePool.map((item) => [item.ref, item]));
