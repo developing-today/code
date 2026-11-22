@@ -22,14 +22,15 @@
 //! [`BoardGraph::replay_game_lineage`] folds a verified turn lineage through
 //! the exact package bytes the game post pins, under the sandbox limits, so
 //! every peer recomputes the same state from the same signed inputs.
-//! Note sharing (#7587, slice 1 of the #5830 model) adds [`Post::note_ref`]:
+//! Note sharing (#7587, slices 1–2 of the #5830 model) adds [`Post::note_ref`]:
 //! a board post may carry a [`NoteRef`] — the note object id, home server,
 //! pinned version id and content hash, and sharer attribution — and never
 //! the note content. The reference is an embeds edge from the post to a
 //! note that need not live in this graph (it lives on its home server);
 //! [`BoardGraph::note_embeds`] / [`BoardGraph::note_backlinks`] project the
-//! edge set. Rendering, reply anchoring, and cross-server resolution are
-//! later slices.
+//! edge set. Slice 2 adds pure live/pinned presentation and reply-anchor
+//! projections; fetching note content and rendering markup remain caller work.
+//! Cross-server resolution is a later slice.
 //! Duplicate `Rules` objects for the same board and revision are legal signed
 //! history. [`BoardGraph::resolve_rules`] selects the greater content hash
 //! within a revision; current rules are the highest revision, using that same
@@ -278,6 +279,13 @@ impl BoardObject {
                         is_public_key(&note_ref.sharer),
                         "note sharer is not canonical Ed25519 hex"
                     );
+                }
+                if let Some(passage) = value
+                    .note_anchor
+                    .as_ref()
+                    .and_then(|anchor| anchor.passage.as_ref())
+                {
+                    validate_text("note passage section", &passage.section_id, false)?;
                 }
             }
             Self::Attachment(value) => {
@@ -2458,6 +2466,8 @@ mod tests {
                 attachments: Vec::new(),
                 embed_ref: None,
                 note_ref: None,
+                note_anchor: None,
+                note_view: None,
             }),
         )
         .unwrap()
@@ -2482,6 +2492,8 @@ mod tests {
                 attachments: Vec::new(),
                 embed_ref: Some(GamePostRef { object: embed_ref }),
                 note_ref: None,
+                note_anchor: None,
+                note_view: None,
             }),
         )
         .unwrap()
@@ -2506,6 +2518,8 @@ mod tests {
                 attachments: Vec::new(),
                 embed_ref: None,
                 note_ref: Some(note_ref),
+                note_anchor: None,
+                note_view: None,
             }),
         )
         .unwrap()
@@ -3056,6 +3070,8 @@ mod tests {
                 attachments: Vec::new(),
                 embed_ref: None,
                 note_ref: None,
+                note_anchor: None,
+                note_view: None,
             }),
         )
         .unwrap();
@@ -3073,6 +3089,8 @@ mod tests {
                 attachments: Vec::new(),
                 embed_ref: None,
                 note_ref: None,
+                note_anchor: None,
+                note_view: None,
             }),
         )
         .unwrap();
@@ -7058,6 +7076,8 @@ mod tests {
                     attachments: Vec::new(),
                     embed_ref: None,
                     note_ref: Some(bad_sharer),
+                    note_anchor: None,
+                    note_view: None,
                 }),
             )
             .is_err()
@@ -7078,10 +7098,44 @@ mod tests {
                     attachments: Vec::new(),
                     embed_ref: None,
                     note_ref: Some(no_home),
+                    note_anchor: None,
+                    note_view: None,
                 }),
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn note_anchor_shape_bounds_the_passage_section() {
+        let creator = key(14);
+        let post = |section_id: String| {
+            BoardObject::Post(Post {
+                board: ArtifactHash::new("e".repeat(64)).unwrap(),
+                thread: ArtifactHash::new("f".repeat(64)).unwrap(),
+                parent_post: None,
+                body: "x".to_owned(),
+                attachments: Vec::new(),
+                embed_ref: None,
+                note_ref: None,
+                note_anchor: Some(NoteAnchor {
+                    object: ArtifactHash::new("a".repeat(64)).unwrap(),
+                    version: ArtifactHash::new("b".repeat(64)).unwrap(),
+                    passage: Some(NotePassageSelector {
+                        section_id,
+                        start_byte: 0,
+                        end_byte: 1,
+                        quote_hash: ArtifactHash::new("c".repeat(64)).unwrap(),
+                    }),
+                }),
+                note_view: None,
+            })
+        };
+
+        assert!(SignedBoardObject::sign(&creator, 1, "", post("intro".to_owned())).is_ok());
+        assert!(SignedBoardObject::sign(&creator, 1, "", post(String::new())).is_err());
+        let oversized = "s".repeat(MAX_BOARD_TEXT_BYTES + 1);
+        assert!(SignedBoardObject::sign(&creator, 1, "", post(oversized)).is_err());
     }
 
     #[test]
@@ -7096,6 +7150,8 @@ mod tests {
             attachments: Vec::new(),
             embed_ref: None,
             note_ref: None,
+            note_anchor: None,
+            note_view: None,
         });
         let value = serde_json::to_value(&object).unwrap();
         assert!(value["data"].get("note_ref").is_none());
