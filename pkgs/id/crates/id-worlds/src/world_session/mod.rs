@@ -226,7 +226,7 @@ pub async fn run_session_with<I: SessionIo>(hub: &WorldHub, io: &mut I, config: 
             let _ = send_error(&unattributed, io, "world frame is too large").await;
             return;
         }
-        Ok(Inbound::Unsupported) => {
+        Ok(Inbound::Unsupported) | Ok(Inbound::Bytes(_)) => {
             let _ = send_error(&unattributed, io, "frames must be UTF-8 text").await;
             return;
         }
@@ -1122,6 +1122,7 @@ async fn joined<I: SessionIo>(
     token: JoinCapability,
     after: Option<u64>,
     screen_patches: bool,
+    screen_msgpack: bool,
     resume_token: Option<String>,
     agent_profile: bool,
     device_input: Option<serde_json::Value>,
@@ -1160,6 +1161,12 @@ async fn joined<I: SessionIo>(
         .then_some(resume_token)
         .flatten()
         .filter(|token| token.len() <= MAX_RESUME_TOKEN_BYTES);
+    // Binary patch negotiation (F12.11 phase 3, contract revision 12):
+    // the client offered MessagePack patches and the transport carries
+    // bytes, so patch frames go out as binary frames. Anything less —
+    // no offer, or a text-only transport — keeps the JSON patch path,
+    // and a client that never opted in is unaffected either way.
+    view_state.msgpack_patches = screen_patches && screen_msgpack && io.supports_bytes();
     if let Some(after) = after {
         match world.events_after(token.clone(), after).await {
             Ok(page) if page.needs_snapshot => {
@@ -1287,7 +1294,7 @@ async fn joined<I: SessionIo>(
                 Inbound::Oversized => {
                     if !send_error(service.frame_meter(), io, "world frame is too large").await { break; }
                 }
-                Inbound::Unsupported => {
+                Inbound::Unsupported | Inbound::Bytes(_) => {
                     if !send_error(service.frame_meter(), io, "frames must be UTF-8 text").await { break; }
                 }
                 Inbound::Closed => break,
@@ -2400,6 +2407,19 @@ async fn send_json<I: SessionIo>(meter: &WorldMetrics, io: &mut I, frame: &impl 
         }
         _ => false,
     }
+}
+
+/// Send one already-encoded binary frame, metered like [`send_json`].
+async fn send_binary<I: SessionIo>(meter: &WorldMetrics, io: &mut I, frame: Vec<u8>) -> bool {
+    if frame.len() > MAX_FRAME_BYTES {
+        return false;
+    }
+    let bytes = frame.len() as u64;
+    let sent = io.send_bytes(frame).await;
+    if sent {
+        meter.add_frame_bytes(bytes);
+    }
+    sent
 }
 
 async fn send_error<I: SessionIo>(meter: &WorldMetrics, io: &mut I, message: &str) -> bool {
