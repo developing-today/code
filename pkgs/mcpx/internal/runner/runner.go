@@ -78,7 +78,7 @@ type Options struct {
 	Runtime string
 	// Language is the explicit script-language selection for this run
 	// (script.language / --language / ExecOptions.language): auto,
-	// typescript, javascript or python. Empty means auto. It decides the
+	// typescript, javascript, python or roc. Empty means auto. It decides the
 	// language -- and so which generated client is installed -- when no
 	// shebang or configured interpreter dispatch decides first (#1917).
 	Language string
@@ -489,13 +489,19 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 		// harness path honours what the raw path preserves.
 		opts.Runtime = js.runtime
 		jsEnv = js
-	} else if EffectiveScriptLanguage(opts.evidenceFile(), opts.Source, opts.Language) == codegen.Python.Name {
+	} else if lang := EffectiveScriptLanguage(opts.evidenceFile(), opts.Source, opts.Language); lang == codegen.Python.Name || lang == codegen.Roc.Name {
 		// Rank 3: nothing named an interpreter and the script is Python
 		// by extension, so the run is a Python harness run rather than a
 		// TypeScript one. Installing the client is the difference from a
 		// raw dispatch: `import mcpx_client` works, and the script's own
 		// top-level code is the program.
-		d, derr := pythonDispatch(opts)
+		var d *dispatch
+		var derr error
+		if lang == codegen.Roc.Name {
+			d, derr = rocDispatch(opts)
+		} else {
+			d, derr = pythonDispatch(opts)
+		}
 		if derr != nil {
 			return nil, derr
 		}
@@ -1437,17 +1443,25 @@ func expandCustom(text string, opts Options, scriptPath, base, export string,
 	// Braced, so that a template naming @entry twice produces two runs rather
 	// than a redeclaration error. Allowing a repeat and then emitting code
 	// that cannot compile would be a worse answer than refusing it outright.
+	// The export is known here, so the selection is made in Go rather
+	// than emitted as a ternary on a string literal: a constant condition
+	// is TS2872/TS2873 under deno check, and run checks by default
+	// (#1868 point 4), so the generated launcher must itself type check.
+	pick, call := "(mod as any).default", "await entry(argv)"
+	if export != "" {
+		pick, call = "(mod as any)["+jsonString(export)+"]", "await entry(...argv)"
+	}
 	entryBlock := fmt.Sprintf(`{
   %s
-  const entry = %s ? (mod as any)[%s] : (mod as any).default;
+  const entry = %s;
   if (typeof entry === "function") {
-    const __v = %s ? await entry(...argv) : await entry(argv);
+    const __v = %s;
     result.value = __v;
     if (__v !== undefined) {
       console.log(typeof __v === "string" ? __v : JSON.stringify(__v, null, 2));
     }
   }
-}`, importLine, jsonString(export), jsonString(export), jsonString(export))
+}`, importLine, pick, call)
 
 	fill := launcher.Fill{
 		launcher.Header:    launcherHeader(scriptPath, base, export),
@@ -1494,7 +1508,16 @@ func expandCustom(text string, opts Options, scriptPath, base, export string,
 		fmt.Fprintf(os.Stderr,
 			"mcpx: %s refers to neither @entry nor @import, so the script will not run\n", name)
 	}
-	return launcher.Expand(tpl, fill, launcher.Options{AllowRepeat: allow, Defs: defs})
+	out, err := launcher.Expand(tpl, fill, launcher.Options{AllowRepeat: allow, Defs: defs})
+	if err != nil {
+		return "", err
+	}
+	// The same ambient reference the built-in launcher carries: without
+	// it a checked run (the default for run, #1868 point 4) reports
+	// "Cannot find name 'log'" for every script that uses a global. A
+	// triple-slash directive only counts at the top of the file, so it
+	// goes first whatever the template puts there.
+	return "/// <reference path=\"./" + GlobalsFileName + "\" />\n" + out, nil
 }
 
 func referencesEntry(t launcher.Template) bool {

@@ -283,6 +283,28 @@ func CallerVersionFrom(ctx context.Context) string {
 	return v
 }
 
+type taskExecutionKey struct{}
+
+// WithTaskExecution marks ctx as carrying a call that runs as the inner
+// call of a protocol task (SEP-2663): the MCP server turns a task-augmented
+// tools/call into a task and runs the call under the task's own context.
+// The daemon's write ledger reads the mark (restored from
+// daemon.TaskExecutionHeader on /v1/call and /v1/ask) to tell a task
+// cancellation -- the write was abandoned by the client and its outcome is
+// moot -- from a call whose outcome is genuinely unknown (#8922).
+func WithTaskExecution(ctx context.Context) context.Context {
+	return context.WithValue(ctx, taskExecutionKey{}, true)
+}
+
+// TaskExecutionFrom reports whether ctx was marked by WithTaskExecution.
+func TaskExecutionFrom(ctx context.Context) bool {
+	if ctx == nil {
+		return false
+	}
+	v, _ := ctx.Value(taskExecutionKey{}).(bool)
+	return v
+}
+
 // CallerLegacy reports whether ctx carries a caller revision from before
 // 2026-07-28 -- one that has a session a server can send requests on.
 func CallerLegacy(ctx context.Context) bool {

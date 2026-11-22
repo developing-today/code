@@ -39,6 +39,7 @@ mod core;
 mod handle;
 mod handoff_operations;
 pub mod hotness;
+mod http_fetch;
 mod journal;
 mod metrics;
 mod provider_broker;
@@ -81,12 +82,14 @@ pub use hotness::{FiredSignal, HotnessBand, HotnessReport, HotnessSignal};
 pub use id_caps::portal::{PortalGrantState, PortalGrants, PortalRefusal};
 pub(crate) use journal::JournalAdminHistory;
 pub use journal::{
-    CoordinatorJournalEntry, JOURNAL_VERSION, JOURNAL_VERSION_CHECKPOINT_PARTS,
-    JOURNAL_VERSION_EXECUTION_PROFILE, JOURNAL_VERSION_OPEN_PRESENCE, JOURNAL_VERSION_PORTALS,
-    JOURNAL_VERSION_REGION_HANDOFF, JOURNAL_VERSION_SCHEDULE_RECURRENCE,
-    JOURNAL_VERSION_SIGNED_PLAY, JOURNAL_VERSION_WORLD_BUDGET, JOURNAL_VERSION_WRITE_LEASE,
-    JournalEntry, JournalSignedMove, JournalSnapshot, JournalSnapshotSource, MAX_JOURNAL_VERSION,
-    TrustBasis, TrustDecision, WorldJournal, journal_version_required_by,
+    CoordinatorJournalEntry, JOURNAL_VERSION, JOURNAL_VERSION_BLOB,
+    JOURNAL_VERSION_CHECKPOINT_PARTS, JOURNAL_VERSION_EXECUTION_PROFILE,
+    JOURNAL_VERSION_JOIN_TIMES, JOURNAL_VERSION_KV, JOURNAL_VERSION_OPEN_PRESENCE,
+    JOURNAL_VERSION_PORTALS, JOURNAL_VERSION_PROGRAM_BUNDLE, JOURNAL_VERSION_REGION_HANDOFF,
+    JOURNAL_VERSION_SCHEDULE_RECURRENCE, JOURNAL_VERSION_SIGNED_PLAY, JOURNAL_VERSION_WORLD_BUDGET,
+    JOURNAL_VERSION_WRITE_LEASE, JournalEntry, JournalSignedMove, JournalSnapshot,
+    JournalSnapshotSource, MAX_JOURNAL_VERSION, TrustBasis, TrustDecision, WorldJournal,
+    journal_version_required_by,
 };
 pub use metrics::{
     HistogramSnapshot, MetricsSnapshot, RegionWrites, WorldMetrics, WriteLocalitySnapshot,
@@ -114,9 +117,9 @@ pub use upgrade::{
 };
 pub use util::{EventPage, hex_encode, publish_records};
 pub(crate) use util::{
-    constant_time_eq, hex_decode, hex_decode_32, is_pre_fix_mint_display_name,
-    legacy_sanitize_display_name, pre_fix_sanitize_display_name, sanitize_chat,
-    sanitize_display_name, token_digest,
+    blob_decode, blob_encode, blob_id, constant_time_eq, hex_decode, hex_decode_32,
+    is_pre_fix_mint_display_name, legacy_sanitize_display_name, pre_fix_sanitize_display_name,
+    sanitize_chat, sanitize_display_name, token_digest,
 };
 
 /// Identity of one live connection. It stays in memory only and is never part
@@ -179,6 +182,12 @@ pub struct WorldLimits {
     /// Capabilities the server allows any world to use. Runtime configuration,
     /// not journaled; a world's own ceiling and grants only narrow it.
     pub server_caps: BTreeSet<String>,
+    /// Hosts the `http.fetch` provider may fetch from (#1062): the
+    /// admin allowlist. Runtime configuration, not journaled; empty
+    /// by default, which refuses every fetch. Entries are matched
+    /// exactly against the URL's normalized host — no wildcards, no
+    /// implied subdomains.
+    pub http_fetch_hosts: BTreeSet<String>,
 }
 
 impl Default for WorldLimits {
@@ -195,6 +204,7 @@ impl Default for WorldLimits {
             min_tick_ms: 1000,
             grant_on_use: false,
             server_caps: crate::world_caps::default_ceiling_names(),
+            http_fetch_hosts: BTreeSet::new(),
         }
     }
 }
@@ -339,6 +349,79 @@ pub enum ModuleProvenance {
     /// The module was forked from another world: the world's state and module
     /// were copied at the fork point, with the origin recorded.
     Fork(ForkProvenance),
+    /// The module was sideloaded from a verified program bundle (#8280,
+    /// design D4): the install record names the bundle's identity, ABI,
+    /// lineage and signature. Journals carrying it need
+    /// [`JOURNAL_VERSION_PROGRAM_BUNDLE`].
+    Bundle(BundleProvenance),
+}
+
+impl ModuleProvenance {
+    /// Whether this provenance is a program-bundle install, which an older
+    /// binary cannot read.
+    #[must_use]
+    pub const fn is_bundle(&self) -> bool {
+        matches!(self, Self::Bundle(_))
+    }
+}
+
+/// How a bundle install follows later versions of its program (D4).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InstallPolicy {
+    /// Exactly this content hash; nothing changes without a new install.
+    #[default]
+    Pinned,
+    /// Discover later versions on this install's exact (author, name) line.
+    Tracking,
+}
+
+impl InstallPolicy {
+    /// Whether this install opts into update discovery for `candidate`.
+    /// This does not authorize applying an update; that remains a separate
+    /// owner decision/flow.
+    #[must_use]
+    pub fn tracks(
+        self,
+        installed: &crate::program_bundle::ProgramIdentity,
+        candidate: &crate::program_bundle::ProgramIdentity,
+    ) -> bool {
+        self == Self::Tracking && installed.same_channel(candidate)
+    }
+}
+
+/// The install record of a sideloaded program bundle (#8280).
+///
+/// It keeps what the verified bundle stated with the install event, so the
+/// world's history says which program, by whom, forked from what, is
+/// running.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BundleProvenance {
+    /// Provenance record schema, independent of the world journal version.
+    pub schema_version: u8,
+    /// The program's D1 identity; its content hash is the module hash.
+    pub program: crate::program_bundle::ProgramIdentity,
+    /// The guest ABI the bundle declared.
+    pub abi: crate::program_bundle::AbiDescriptor,
+    /// Ancestors, oldest first; empty for an original.
+    pub lineage: Vec<crate::program_bundle::ProgramIdentity>,
+    /// The author's licence statement, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub licence: Option<String>,
+    /// The verified bundle signature, lower-case hex.
+    pub bundle_signature: String,
+    /// How this install follows later versions.
+    #[serde(default)]
+    pub policy: InstallPolicy,
+}
+
+impl BundleProvenance {
+    /// Whether a candidate belongs to this install's opted-in update channel.
+    /// Fork lineage is deliberately not part of channel identity.
+    #[must_use]
+    pub fn tracks(&self, candidate: &crate::program_bundle::ProgramIdentity) -> bool {
+        self.policy.tracks(&self.program, candidate)
+    }
 }
 
 /// Provenance recorded when one world is forked from another (F12.2). It
@@ -1136,7 +1219,7 @@ pub(crate) fn presence_event(participant: u64, name: &str, joined: bool) -> Stri
 }
 
 pub(crate) fn presence_change(text: &str) -> Option<(u64, bool)> {
-    let value: serde_json::Value = serde_json::from_str(text).ok()?;
+    let value = id_core::json_unique::parse_json_without_duplicate_keys(text).ok()?;
     if value.get("cap")?.as_str()? != "players" {
         return None;
     }
@@ -1290,6 +1373,38 @@ impl<'de> serde::Deserialize<'de> for CheckpointSchedule {
             },
         })
     }
+}
+
+/// One live entry of the world's `kv` store as a checkpoint declares
+/// it (#1062). The writer also emits one `KvSet` journal entry per
+/// live entry before the checkpoint, and replay refuses a checkpoint
+/// whose declared entries disagree with them — the schedule treatment
+/// ([`CheckpointSchedule`]) applied to the store.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct CheckpointKvEntry {
+    /// The entry's key.
+    pub key: String,
+    /// The entry's value, as its JSON encoding: the store keeps the
+    /// encoding, not a parsed `Value`, so journal and checkpoint
+    /// records stay `Eq` and the byte charge is the string's length.
+    pub value: String,
+}
+
+/// One live blob of the world as a checkpoint declares it (#1062):
+/// the blob's index entry, not its content. The writer also emits
+/// one `BlobStored` journal entry per live blob before the
+/// checkpoint, and replay refuses a checkpoint whose declared index
+/// disagrees with them — the schedule treatment
+/// ([`CheckpointSchedule`]) applied to the blob set. Only the index
+/// is declared because the content would exceed the checkpoint
+/// scalar bound on its own; the entries carry the bytes, and the
+/// declared size pins what each entry must hold.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct CheckpointBlobEntry {
+    /// The blob's content address: its hash as lowercase hex.
+    pub hash: String,
+    /// The content's length, in bytes.
+    pub size: usize,
 }
 
 /// This world's schedule-delivery consent for one peer world (#1355
@@ -1723,7 +1838,17 @@ pub(crate) struct CapabilityRecord {
     scopes: WorldScopes,
     parent: Option<u64>,
     revoked: bool,
+    /// The moderator participant who revoked this capability directly, so a
+    /// checkpoint keeps the audit actor (#11778). `None` for an admin revoke,
+    /// for one inherited from a revoked ancestor, and while active.
+    revoked_by: Option<u64>,
     bounds: CapabilityBounds,
     used: u32,
     subject: Option<String>,
+    /// When the world issued this capability (#11960); `None` when the
+    /// journal that restored it predates recorded times.
+    issued_at: Option<u64>,
+    /// When this capability was revoked, directly or with an ancestor
+    /// (#11960); `None` while active or when no time was recorded.
+    revoked_at: Option<u64>,
 }

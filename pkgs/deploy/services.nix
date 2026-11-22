@@ -18,6 +18,11 @@
   idMailDeploy,
   pkarrDeploy,
   developingTodayBackupDeploy,
+  coldStoreRehydratorDeploy,
+  labOpsHubDeploy,
+  cfContainerHelloDeploy,
+  queueTransportAlertDeploy,
+  messageBridgeDeploy,
 }:
 {
   queue-broker = {
@@ -37,7 +42,6 @@
     # activation time (later slice); a definition never carries a value.
     secrets = [
       "turso.fleet-queue-rw-token" # the Turso backend token, by name
-      "supabase.muse-dev2.service-role-key" # legacy Postgres backend
     ];
     user = "user";
     ports = [ 4801 ];
@@ -158,6 +162,86 @@
   pkarr = {
     package = pkarrDeploy;
     entryPoint = "bin/pkarr-deploy";
+    args = [ ];
+    environment = { };
+    secrets = [ ]; # resolved by the deploy app itself at deploy time
+    user = "user";
+    ports = [ ];
+    restart = "no";
+    healthCheck = null;
+    targets = [ "cloudflare" ];
+    class = "cloudflare";
+  };
+
+  # Issue #5767, phase 2: the remaining in-repo Workers from the
+  # issue's target list, registered behind the deploy CLI. Each
+  # deploy app runs its Worker's flake package (bundle / Worker tree
+  # with lockfile-pinned deps — no deploy-time npm install) and
+  # gathers its Cloudflare credentials impurely at deploy time, so
+  # the definitions name no secrets of their own (the phase-1 shape).
+  cold-store-rehydrator = {
+    package = coldStoreRehydratorDeploy;
+    entryPoint = "bin/cold-store-rehydrator-deploy";
+    args = [ ];
+    environment = { };
+    secrets = [ ]; # resolved by the deploy app itself at deploy time
+    user = "user";
+    ports = [ ];
+    restart = "no";
+    healthCheck = null;
+    targets = [ "cloudflare" ];
+    class = "cloudflare";
+  };
+
+  lab-ops-hub = {
+    package = labOpsHubDeploy;
+    entryPoint = "bin/lab-ops-hub-deploy";
+    args = [ ];
+    environment = { };
+    secrets = [ ]; # resolved by the deploy app itself at deploy time
+    user = "user";
+    ports = [ ];
+    restart = "no";
+    healthCheck = null;
+    targets = [ "cloudflare" ];
+    class = "cloudflare";
+  };
+
+  cf-container-hello = {
+    package = cfContainerHelloDeploy;
+    entryPoint = "bin/cf-container-hello-deploy";
+    args = [ ];
+    environment = { };
+    secrets = [ ]; # resolved by the deploy app itself at deploy time
+    user = "user";
+    ports = [ ];
+    restart = "no";
+    healthCheck = null;
+    targets = [ "cloudflare" ];
+    class = "cloudflare";
+  };
+
+  # code#6369: probes the broker's public route every 10 minutes from a
+  # Cloudflare cron and files/closes a GitHub incident on an outage.
+  queue-transport-alert = {
+    package = queueTransportAlertDeploy;
+    entryPoint = "bin/queue-transport-alert-deploy";
+    args = [ ];
+    environment = { };
+    secrets = [ ]; # resolved by the deploy app itself at deploy time
+    user = "user";
+    ports = [ ];
+    restart = "no";
+    healthCheck = null;
+    targets = [ "cloudflare" ];
+    class = "cloudflare";
+  };
+
+  # Remote MCP connector for Claude that sends and receives messages,
+  # with a history page; one SQLite Durable Object holds the messages.
+  message-bridge = {
+    package = messageBridgeDeploy;
+    entryPoint = "bin/message-bridge-deploy";
     args = [ ];
     environment = { };
     secrets = [ ]; # resolved by the deploy app itself at deploy time

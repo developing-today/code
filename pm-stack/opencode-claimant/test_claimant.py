@@ -539,9 +539,7 @@ class TestProviderWallGate(unittest.TestCase):
                     claimant, "run_queue_health", return_value="health-test-line"
                 ),
                 stub_claimed_rows([]),
-                patch.object(
-                    claimant, "get_active_root_session_count", return_value=0
-                ),
+                patch.object(claimant, "get_active_root_session_count", return_value=0),
                 patch.object(
                     claimant.subprocess,
                     "run",
@@ -786,6 +784,64 @@ class TestMainFireLog(unittest.TestCase):
         )
 
 
+class TestSingleInstanceLock(unittest.TestCase):
+    """#8039: a second fire while one holds the lock exits early and
+    logs already_running, touching nothing else."""
+
+    def test_second_fire_exits_with_already_running(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state_dir = Path(tmp)
+            fires = state_dir / "fires.jsonl"
+            with (
+                patch.object(claimant, "STATE_DIR", state_dir),
+                patch.object(claimant, "FIRES_FILE", fires),
+                patch.object(claimant, "read_mode", return_value="live"),
+                patch.object(claimant, "_fire") as fire,
+            ):
+                held = claimant.acquire_fire_lock()
+                self.assertIsNotNone(held)
+                try:
+                    self.assertEqual(claimant.main(), 0)
+                finally:
+                    held.close()
+                fire.assert_not_called()
+                entries = [json.loads(l) for l in fires.read_text().splitlines() if l]
+                self.assertEqual(len(entries), 1)
+                self.assertEqual(entries[0]["skips"], [{"reason": "already_running"}])
+                self.assertIsNone(entries[0]["candidates_seen"])
+                self.assertIsNone(entries[0]["cap_room"])
+
+    def test_lock_is_released_after_a_fire(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state_dir = Path(tmp)
+            with (
+                patch.object(claimant, "STATE_DIR", state_dir),
+                patch.object(claimant, "FIRES_FILE", state_dir / "fires.jsonl"),
+                patch.object(claimant, "read_mode", return_value="live"),
+                patch.object(claimant, "_fire", return_value=0) as fire,
+            ):
+                self.assertEqual(claimant.main(), 0)
+                self.assertEqual(claimant.main(), 0)
+                self.assertEqual(fire.call_count, 2)
+                again = claimant.acquire_fire_lock()
+                self.assertIsNotNone(again, "the lock is free once fires finish")
+                again.close()
+
+    def test_lock_is_released_when_a_fire_raises(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state_dir = Path(tmp)
+            with (
+                patch.object(claimant, "STATE_DIR", state_dir),
+                patch.object(claimant, "read_mode", return_value="live"),
+                patch.object(claimant, "_fire", side_effect=RuntimeError("boom")),
+            ):
+                with self.assertRaises(RuntimeError):
+                    claimant.main()
+                again = claimant.acquire_fire_lock()
+                self.assertIsNotNone(again)
+                again.close()
+
+
 class TestCapUnknownFireLog(unittest.TestCase):
     def test_cap_unknown_logs_cap_room_null_not_sentinel(self):
         # #7770 Phase 4 audit: cap_step's -1 is an internal unknown
@@ -987,6 +1043,35 @@ class TestBindFailedRecordsError(unittest.TestCase):
         self.assertEqual(
             skips[0]["error"], "bind failed: task not claimed with a live lease"
         )
+
+    def test_bind_failure_deletes_the_created_session(self):
+        """A refused bind leaves the new session bound to nothing.
+        The created session must be deleted before the skip, or the
+        fire orphans an unowned root and leaks a cap slot. #8042
+        added the error text and dropped this delete; the regression
+        went unnoticed because nothing asserted it."""
+        binds = []
+        deletes = []
+        base_fake = make_fake_run(binds, deletes=deletes)
+
+        def fake_run(cmd, **kwargs):
+            argv = [str(part) for part in cmd]
+            if "repo-queue" in argv[0] and "bind" in argv:
+                binds.append(cmd)
+                return Result(1, "", "bind failed: already bound to session ses_old")
+            return base_fake(cmd, **kwargs)
+
+        with (
+            patch.object(
+                claimant, "run_poll", return_value={"candidates": [dict(CANDIDATE)]}
+            ),
+            patch.object(claimant.subprocess, "run", fake_run),
+        ):
+            launched, skips = claimant.launch_step("live", 1)
+        self.assertEqual(launched, [])
+        self.assertEqual(skips[0]["reason"], "bind_failed")
+        self.assertEqual(len(deletes), 1, "created session was not deleted")
+        self.assertIn("ses_new1", " ".join(str(p) for p in deletes[0]))
 
 
 class TestClaimant8038(unittest.TestCase):

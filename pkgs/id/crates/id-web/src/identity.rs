@@ -582,7 +582,8 @@ impl IdentityStore {
             .ok()?;
 
         // Deserialize payload
-        let payload: TokenPayload = serde_json::from_slice(payload_bytes).ok()?;
+        let payload: TokenPayload =
+            id_core::json_unique::from_slice_without_duplicate_keys(payload_bytes).ok()?;
 
         // Reject tokens dated implausibly far in the future, then apply the age cap.
         let now = unix_timestamp();
@@ -1577,6 +1578,19 @@ mod tests {
         })
         .unwrap();
         let token = token_of(&payload, &identity_forgery());
+        assert!(store.decode_token(&token).is_none());
+    }
+
+    #[test]
+    fn a_signed_token_with_a_duplicated_key_is_refused() {
+        // A lenient decode would keep the last value of the key (#8794).
+        let store = IdentityStore::new_ephemeral();
+        let payload = format!(
+            "{{\"x\":1,\"x\":2,\"client_id\":\"abc\",\"created_at\":{}}}",
+            unix_timestamp()
+        );
+        let signature = store.signing_key.sign(payload.as_bytes());
+        let token = token_of(payload.as_bytes(), &signature.to_bytes());
         assert!(store.decode_token(&token).is_none());
     }
 

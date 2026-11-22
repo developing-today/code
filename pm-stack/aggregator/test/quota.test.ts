@@ -457,6 +457,7 @@ describe("pass-through pool assembly (Drew, 2026-11-03)", () => {
       "deepseek",
       "mistral",
       "openrouter",
+      "opencode-go.0x111dev",
     ]);
   });
 

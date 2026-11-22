@@ -14,7 +14,10 @@
 #      silently skipped suite cannot report green;
 #   3. the registry row fleet.smoke is status "mapped" and names this
 #      workflow as its venue;
-#   4. .github/ci-policy.md carries the fleet-smoke tier row.
+#   4. .github/ci-policy.md carries the fleet-smoke tier row;
+#   5. the workflow also runs on atlas-search manifest changes and
+#      runs check-fleet-lock.sh before the build, so a fleet lock
+#      left stale by an atlas dependency change fails by name (#10363).
 # A disagreement fails, naming the broken leg.
 #
 # Usage: check-fleet-smoke.sh [ROOT]   (default: repo root)
@@ -70,6 +73,14 @@ if ! grep -qF 'bash pkgs/fleet/smoke.sh' "$WF"; then
 fi
 if ! grep -qF 'passed, 0 failed' "$WF"; then
   err "workflow does not assert the suite's 'passed, 0 failed' summary — a skipped suite could report green"
+fi
+
+# 5. The lock guard and the atlas path filter (#10363).
+if ! grep -qF 'bash .github/scripts/check-fleet-lock.sh' "$WF"; then
+  err "workflow does not run check-fleet-lock.sh — a stale fleet lock would only fail inside the nix build"
+fi
+if ! grep -qF '"pkgs/atlas-search/crates/**"' "$WF"; then
+  err "workflow path filter does not cover pkgs/atlas-search/crates/** — an atlas dependency change could skip the lock guard"
 fi
 
 # 3 + 4. Registry row and policy row agree with the workflow.

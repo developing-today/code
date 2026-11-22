@@ -42,22 +42,23 @@ import {
 } from "../src/push.ts";
 import { renderAlerts } from "../src/render.ts";
 import type { Provenance } from "../src/model.ts";
-import { sqlInt, sqlJson, sqlStr, type SupabaseClient } from "../src/supabase.ts";
+import { sqlInt, sqlJson, sqlStr, type SqlClient } from "../src/sql-client.ts";
+import { needsDrewIncidentKey } from "../src/needs-drew.ts";
 import type { Config } from "../src/config.ts";
 import type { NotificationHistoryEntry, NotificationSnapshot } from "../src/notifications.ts";
 
 describe("getAlertsStore retry-after-null memoization", () => {
   test("retries a null client, shares the next in-flight attempt, and caches success", async () => {
     let clientCalls = 0;
-    let resolveFirst!: (value: SupabaseClient | null) => void;
-    const firstResult = new Promise<SupabaseClient | null>((resolve) => {
+    let resolveFirst!: (value: SqlClient | null) => void;
+    const firstResult = new Promise<SqlClient | null>((resolve) => {
       resolveFirst = resolve;
     });
-    let resolveRetry!: (value: SupabaseClient | null) => void;
-    const retryResult = new Promise<SupabaseClient | null>((resolve) => {
+    let resolveRetry!: (value: SqlClient | null) => void;
+    const retryResult = new Promise<SqlClient | null>((resolve) => {
       resolveRetry = resolve;
     });
-    const fakeClient: SupabaseClient = {
+    const fakeClient: SqlClient = {
       ref: "test-project",
       async query<T>() {
         return [] as T[];
@@ -263,7 +264,7 @@ describe("stored subscription preference reads (#4978)", () => {
       },
     ];
     const queries: string[] = [];
-    const db: SupabaseClient = {
+    const db: SqlClient = {
       ref: "test",
       async query<T>(sql: string): Promise<T[]> {
         queries.push(sql);
@@ -468,7 +469,7 @@ function alertTickStore(
 }
 
 function pendingIncidentStore(rows: Incident[]): AlertsStore {
-  const db: SupabaseClient = {
+  const db: SqlClient = {
     ref: "test",
     async query<T>(sql: string): Promise<T[]> {
       const orderColumn = /order by (first_seen_at|delivered_at)/i.exec(sql)?.[1] as
@@ -1119,5 +1120,72 @@ describe("subscription class preservation (#7193 Codex)", () => {
     const parsed = validateNewSubscription({ endpoint: "https://push.example/x", keys: { p256dh: "p", auth: "a" } });
     expect(parsed.ok).toBe(true);
     if (parsed.ok) expect(parsed.value.providedClasses).toEqual({});
+  });
+});
+
+describe("closeOpenIncidentByKey — the needs-drew answer close (#8605)", () => {
+  function storeWith(rows: Incident[]) {
+    const calls: string[] = [];
+    const db: SqlClient = {
+      ref: "test",
+      async query<T>(sql: string): Promise<T[]> {
+        calls.push(sql);
+        if (sql.startsWith("select * from alerts.incidents where source =")) {
+          const source = /source = '([^']*)'/.exec(sql)?.[1];
+          const key = /incident_key = '([^']*)'/.exec(sql)?.[1];
+          return rows.filter((r) => r.source === source && r.incident_key === key && r.status !== "closed") as T[];
+        }
+        if (sql.startsWith("update alerts.incidents set status = 'closed'")) {
+          const id = /where id = '([^']*)'/.exec(sql)?.[1];
+          const row = rows.find((r) => r.id === id && r.status !== "closed");
+          if (!row) return [] as T[];
+          row.status = "closed";
+          row.closed_at = "2026-11-17T00:00:00Z";
+          return [row] as T[];
+        }
+        if (sql.startsWith("insert into alerts.incident_events")) return [] as T[];
+        throw new Error(`unexpected query: ${sql}`);
+      },
+    };
+    return { store: new AlertsStore(db), calls };
+  }
+
+  test("closes the open incident filed under the question's source + key", async () => {
+    const rows: Incident[] = [
+      { ...incident, id: "inc-nd-1", source: "fleet-queue", incident_key: needsDrewIncidentKey("ledger-42") },
+      { ...incident, id: "inc-other", source: "fleet-queue", incident_key: needsDrewIncidentKey("ledger-99") },
+    ];
+    const { store, calls } = storeWith(rows);
+    const result = await store.closeOpenIncidentByKey("fleet-queue", needsDrewIncidentKey("ledger-42"));
+    expect(result.transitioned).toBe(true);
+    expect(result.incident?.id).toBe("inc-nd-1");
+    expect(rows[0].status).toBe("closed");
+    expect(rows[0].closed_at).not.toBeNull();
+    expect(rows[1].status).toBe("open");
+    expect(calls.some((sql) => sql.includes("'closed'") && sql.includes("incident_events"))).toBe(true);
+  });
+
+  test("a question with no open incident closes nothing and issues no update", async () => {
+    const { store, calls } = storeWith([]);
+    const result = await store.closeOpenIncidentByKey("fleet-queue", needsDrewIncidentKey("ledger-42"));
+    expect(result).toEqual({ incident: null, transitioned: false });
+    expect(calls.some((sql) => sql.startsWith("update alerts.incidents"))).toBe(false);
+  });
+
+  test("an already-closed incident is not closed twice", async () => {
+    const rows: Incident[] = [
+      {
+        ...incident,
+        id: "inc-nd-2",
+        source: "fleet-queue",
+        incident_key: needsDrewIncidentKey("ledger-42"),
+        status: "closed",
+        closed_at: "2026-11-16T00:00:00Z",
+      },
+    ];
+    const { store, calls } = storeWith(rows);
+    const result = await store.closeOpenIncidentByKey("fleet-queue", needsDrewIncidentKey("ledger-42"));
+    expect(result.transitioned).toBe(false);
+    expect(calls.some((sql) => sql.startsWith("update alerts.incidents"))).toBe(false);
   });
 });

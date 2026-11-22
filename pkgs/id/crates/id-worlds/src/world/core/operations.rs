@@ -95,6 +95,151 @@ impl WorldCore {
         self.check_schedule_inner(id, at_ms, interval_ms, count, target, now_ms, false)
     }
 
+    /// The `kv` store's total charge, in bytes: key bytes plus value
+    /// bytes (the stored JSON encoding's length) per entry (#1062).
+    pub(crate) fn kv_bytes(&self) -> usize {
+        self.kv
+            .iter()
+            .map(|(key, value)| key.len() + value.len())
+            .sum()
+    }
+
+    /// Whether a `kv.set` of `key` to a value of `value_len` serialized
+    /// bytes may be stored. The error says why; the program sees only
+    /// `bad_args`. A set of an existing key is a replacement: it is
+    /// validated against the store as it will be after the write, so
+    /// it consumes neither a second entry slot nor a second byte
+    /// charge.
+    ///
+    /// # Errors
+    ///
+    /// A malformed key, an oversized value, a full store, or a store
+    /// whose total byte budget the write would exceed.
+    pub(crate) fn check_kv_set(&self, key: &str, value_len: usize) -> Result<()> {
+        crate::world_caps::validate_kv_key(key)?;
+        ensure!(
+            value_len <= crate::world_caps::MAX_KV_VALUE_BYTES,
+            "kv value exceeds {} bytes",
+            crate::world_caps::MAX_KV_VALUE_BYTES
+        );
+        let replaced = self.kv.get(key);
+        ensure!(
+            replaced.is_some() || self.kv.len() < crate::world_caps::MAX_KV_ENTRIES,
+            "world already has {} kv entries",
+            crate::world_caps::MAX_KV_ENTRIES
+        );
+        let replaced_charge = replaced.map_or(0, |value| key.len() + value.len());
+        let total = self
+            .kv_bytes()
+            .saturating_sub(replaced_charge)
+            .saturating_add(key.len() + value_len);
+        ensure!(
+            total <= crate::world_caps::MAX_KV_TOTAL_BYTES,
+            "kv store would exceed {} total bytes",
+            crate::world_caps::MAX_KV_TOTAL_BYTES
+        );
+        Ok(())
+    }
+
+    /// The blob set's total charge, in bytes: content bytes per blob
+    /// (#1062).
+    pub(crate) fn blob_bytes(&self) -> usize {
+        self.blobs.values().map(|bytes| bytes.len()).sum()
+    }
+
+    /// Whether a `blob.put` of the content addressed by `hash`, of
+    /// `data_len` bytes, may be stored. The error says why; the
+    /// program sees only `bad_args`. Content the world already holds
+    /// is always accepted: its address is the same, so the put is a
+    /// no-op that consumes neither a second slot nor a second byte
+    /// charge.
+    ///
+    /// # Errors
+    ///
+    /// A malformed hash, oversized content, a full set, or a set
+    /// whose total byte budget the put would exceed.
+    pub(crate) fn check_blob_put(&self, hash: &str, data_len: usize) -> Result<()> {
+        crate::world_caps::validate_blob_hash(hash)?;
+        ensure!(
+            data_len <= crate::world_caps::MAX_BLOB_BYTES,
+            "blob exceeds {} bytes",
+            crate::world_caps::MAX_BLOB_BYTES
+        );
+        if self.blobs.contains_key(hash) {
+            return Ok(());
+        }
+        ensure!(
+            self.blobs.len() < crate::world_caps::MAX_BLOBS,
+            "world already has {} blobs",
+            crate::world_caps::MAX_BLOBS
+        );
+        ensure!(
+            self.blob_bytes() + data_len <= crate::world_caps::MAX_BLOB_TOTAL_BYTES,
+            "blob set would exceed {} total bytes",
+            crate::world_caps::MAX_BLOB_TOTAL_BYTES
+        );
+        Ok(())
+    }
+
+    /// Whether an `http.fetch` of `url` may be attempted (#1062),
+    /// and the normalized host it would connect to. The error says
+    /// why; the program sees only `bad_args`. Three refusals, in
+    /// order: the URL's form (the `id-caps` rule), the admin
+    /// allowlist (`limits.http_fetch_hosts`, exact match on the
+    /// normalized host — no wildcards, no implied subdomains), and
+    /// the rolling rate window. Checking spends nothing: the
+    /// executor records the attempt with
+    /// [`note_http_fetch_attempt`](Self::note_http_fetch_attempt)
+    /// once the check passes, so a refused fetch costs no budget
+    /// and an attempted one always does.
+    ///
+    /// # Errors
+    ///
+    /// A malformed URL, a host outside the allowlist, or a rate
+    /// window already holding `MAX_HTTP_FETCH_BURST` attempts.
+    pub(crate) fn check_http_fetch(&self, url: &str) -> Result<String> {
+        let host = crate::world_caps::validate_http_fetch_url(url)?;
+        ensure!(
+            self.limits
+                .http_fetch_hosts
+                .iter()
+                .any(|listed| crate::world_caps::normalize_http_fetch_host(listed) == host),
+            "http fetch host {host} is not in the allowlist"
+        );
+        let now = self.clock.now_ms();
+        let window_start = now.saturating_sub(crate::world_caps::HTTP_FETCH_RATE_WINDOW_MS);
+        let recent = self
+            .http_fetch_attempts
+            .iter()
+            .filter(|attempt| **attempt > window_start)
+            .count();
+        ensure!(
+            recent < crate::world_caps::MAX_HTTP_FETCH_BURST,
+            "http fetch rate exceeds {} attempts per {} ms",
+            crate::world_caps::MAX_HTTP_FETCH_BURST,
+            crate::world_caps::HTTP_FETCH_RATE_WINDOW_MS
+        );
+        Ok(host)
+    }
+
+    /// Record one `http.fetch` attempt against the rate window,
+    /// pruning attempts the window has aged out. Called by the
+    /// executor after [`check_http_fetch`](Self::check_http_fetch)
+    /// passes and before any connection is made, so failed fetches
+    /// spend the budget too.
+    pub(crate) fn note_http_fetch_attempt(&mut self) {
+        let now = self.clock.now_ms();
+        let window_start = now.saturating_sub(crate::world_caps::HTTP_FETCH_RATE_WINDOW_MS);
+        while self
+            .http_fetch_attempts
+            .front()
+            .is_some_and(|attempt| *attempt <= window_start)
+        {
+            self.http_fetch_attempts.pop_front();
+        }
+        self.http_fetch_attempts.push_back(now);
+    }
+
     /// Apply one fire of a pending schedule: re-arm it in place while
     /// fires remain (fixed-rate: the next due time advances by the
     /// interval from the planned time, never from now), or consume it.
@@ -212,6 +357,7 @@ impl WorldCore {
                 uses: record.bounds.uses,
                 used: record.used,
                 subject: record.subject.clone(),
+                issued_at: record.issued_at,
             })
     }
 
@@ -487,6 +633,7 @@ impl WorldCore {
         let token = format!("{id}.{}", hex_encode(&secret));
         let digest = token_digest(&token);
         let participant = Participant { id, display_name };
+        let issued_at = Some(self.clock().now_ms());
         self.capabilities.insert(
             id,
             CapabilityRecord {
@@ -495,9 +642,12 @@ impl WorldCore {
                 scopes,
                 parent,
                 revoked: false,
+                revoked_by: None,
                 bounds,
                 used: 0,
                 subject,
+                issued_at,
+                revoked_at: None,
             },
         );
         Ok((participant, JoinCapability(token)))
@@ -523,6 +673,38 @@ impl WorldCore {
                     .filter(|child| child.parent == Some(id))
                     .map(|child| child.participant.id),
             );
+        }
+        revoked
+    }
+
+    /// [`Self::revoke_tree`], recording `by` (the moderator participant
+    /// who ordered it; `None` for the admin) on the revoked root so a
+    /// checkpoint keeps the audit actor (#11778).
+    pub fn revoke_tree_by(&mut self, participant_id: u64, by: Option<u64>) -> Vec<u64> {
+        self.revoke_tree_at(participant_id, by, None)
+    }
+
+    /// [`Self::revoke_tree_by`], also recording `at` (Unix ms) as the
+    /// revoke time of every capability it newly revokes (#11960), so the
+    /// owner report and a checkpoint keep when each one stopped working.
+    pub(crate) fn revoke_tree_at(
+        &mut self,
+        participant_id: u64,
+        by: Option<u64>,
+        at: Option<u64>,
+    ) -> Vec<u64> {
+        let revoked = self.revoke_tree(participant_id);
+        if !revoked.is_empty()
+            && let Some(record) = self.capabilities.get_mut(&participant_id)
+        {
+            record.revoked_by = by;
+        }
+        if at.is_some() {
+            for id in &revoked {
+                if let Some(record) = self.capabilities.get_mut(id) {
+                    record.revoked_at = at;
+                }
+            }
         }
         revoked
     }

@@ -17,8 +17,15 @@
 //!   order matters, per the design: checks that do not consume the
 //!   invite (parse, registry lookup, the directory account check) run
 //!   before [`Invite::admit`], and on success the `AccountVerified`
-//!   entry is appended to the server's directory before the 200
-//!   response is returned.
+//!   entry is appended before the 200 response is returned.
+//!
+//! Which directory (#8538): when the invite's world is hosted by this
+//! server, admission binds to that world's live directory — the one
+//! capability authorization consults. The account check consults the
+//! world directory first and the server-config directory second, and
+//! `AccountVerified` lands in exactly one of them: the world's when it
+//! holds the account, otherwise the server-config directory. A world
+//! this server does not host keeps the server-config binding.
 //!
 //! The registry is v1 in-memory state beside the server config: a
 //! restart drops unredeemed invites, which then refuse as unknown.
@@ -56,11 +63,11 @@ struct RegisteredInvite {
 #[derive(Debug)]
 struct SeitanInner {
     invites: HashMap<String, RegisteredInvite>,
-    /// The server's directory: the accounts an admitted `uid` must
-    /// name, and the journal an admission appends `AccountVerified`
-    /// to. In `id serve` this is the directory beside the groups log
-    /// (the server-config directory journal); the default state holds
-    /// an empty in-memory one.
+    /// The server-config directory: consulted after the invite world's
+    /// own directory, and the journal an admission appends
+    /// `AccountVerified` to when that world's directory does not hold
+    /// the account (#8538). In `id serve` this is the directory beside
+    /// the groups log; the default state holds an empty in-memory one.
     directory: Directory,
     /// The freshness window every admit is checked under, resolved
     /// once by the caller (`serve_freshness_window` in serve).
@@ -301,38 +308,96 @@ pub(crate) async fn seitan_admit_handler(
         Err(_) => return error_response(StatusCode::BAD_REQUEST, "malformed"),
     };
     let window = state.seitan.window();
-    let mut inner = state.seitan.inner.lock().unwrap_or_else(|e| e.into_inner());
-    if !inner.invites.contains_key(&fields.invite_id.to_hex()) {
-        return error_response(StatusCode::NOT_FOUND, "unknown_invite");
-    }
-    // The account check runs before `admit`, from the parsed fields,
-    // so an unknown account does not consume the invite: the joiner
-    // can retry once the account exists.
-    if inner.directory.account(&fields.uid).is_none() {
-        return error_response(StatusCode::FORBIDDEN, "unknown_account");
-    }
-    let Some(registered) = inner.invites.get_mut(&fields.invite_id.to_hex()) else {
-        return error_response(StatusCode::NOT_FOUND, "unknown_invite");
-    };
-    let admitted = match registered.invite.admit(&proof, now_ms(), window) {
-        Ok(admitted) => admitted,
-        Err(reject) => {
-            let reason = reject_reason(&reject);
-            let status = if matches!(reject, Reject::Malformed) {
-                StatusCode::BAD_REQUEST
-            } else {
-                StatusCode::FORBIDDEN
-            };
-            return error_response(status, reason);
+    let invite_id = fields.invite_id.to_hex();
+    let world = {
+        let inner = state.seitan.inner.lock().unwrap_or_else(|e| e.into_inner());
+        match inner.invites.get(&invite_id) {
+            Some(registered) => registered.world.clone(),
+            None => return error_response(StatusCode::NOT_FOUND, "unknown_invite"),
         }
     };
-    let world = registered.world.clone();
+    // #8538: the directory an admission lands in is the one capability
+    // authorization consults. When the invite's world is hosted here,
+    // that is the world's own live directory; the server-config
+    // directory is the binding only for a world this server does not
+    // host. A world that exists but cannot be reached right now is a
+    // 503 before anything is consumed, never a silent fallback.
+    let lease = match state.world.as_ref() {
+        None => None,
+        Some(hub) => match hub.lease(Some(&world), None).await {
+            Ok(lease) => Some(lease),
+            Err(ResolveError::UnknownWorld) => None,
+            Err(ResolveError::Busy | ResolveError::TooManyWorlds | ResolveError::Unavailable) => {
+                return StatusCode::SERVICE_UNAVAILABLE.into_response();
+            }
+            Err(_) => None,
+        },
+    };
+    // The account check runs before `admit`, from the parsed fields,
+    // so an unknown account does not consume the invite: the joiner
+    // can retry once the account exists. The world's directory is
+    // consulted first and the server-config directory second, so an
+    // account known to either is admitted.
+    let in_world = match &lease {
+        None => false,
+        Some(lease) => match lease.service().world().directory_account(&fields.uid).await {
+            Ok(account) => account.is_some(),
+            Err(error) => {
+                tracing::warn!(
+                    "[seitan] world {world} directory unavailable for admission: {error:#}"
+                );
+                return StatusCode::SERVICE_UNAVAILABLE.into_response();
+            }
+        },
+    };
+    let admitted = {
+        let mut inner = state.seitan.inner.lock().unwrap_or_else(|e| e.into_inner());
+        if !in_world && inner.directory.account(&fields.uid).is_none() {
+            return error_response(StatusCode::FORBIDDEN, "unknown_account");
+        }
+        let Some(registered) = inner.invites.get_mut(&invite_id) else {
+            return error_response(StatusCode::NOT_FOUND, "unknown_invite");
+        };
+        match registered.invite.admit(&proof, now_ms(), window) {
+            Ok(admitted) => admitted,
+            Err(reject) => {
+                let reason = reject_reason(&reject);
+                let status = if matches!(reject, Reject::Malformed) {
+                    StatusCode::BAD_REQUEST
+                } else {
+                    StatusCode::FORBIDDEN
+                };
+                return error_response(status, reason);
+            }
+        }
+    };
     // Append before responding: the 200 means the membership change
-    // is in the directory journal. If the append fails after a
-    // successful admit, the invite stays consumed in memory
-    // (single-use safety wins over retry convenience, matching the
-    // seitan threat notes) and the failure is a loud 500.
-    if let Err(error) = inner.directory.verify_account(Actor::Server, &admitted.uid) {
+    // is in the directory journal. `AccountVerified` goes to exactly
+    // one directory: the world's own when it holds the account (never
+    // also the server journal, which would recreate the split this
+    // binding removes), otherwise the server-config directory. If the
+    // append fails after a successful admit, the invite stays consumed
+    // in memory (single-use safety wins over retry convenience,
+    // matching the seitan threat notes) and the failure is a loud 500.
+    let appended = match (&lease, in_world) {
+        (Some(lease), true) => lease
+            .service()
+            .world()
+            .apply_directory_entry(id_worlds::directory::DirectoryEntry::AccountVerified {
+                id: admitted.uid.clone(),
+            })
+            .await
+            .map(|()| ()),
+        _ => state
+            .seitan
+            .inner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .directory
+            .verify_account(Actor::Server, &admitted.uid)
+            .map(|_| ()),
+    };
+    if let Err(error) = appended {
         tracing::error!(
             "[seitan] admission for {} consumed its invite but the directory append failed: {error:#}",
             admitted.uid

@@ -16,7 +16,7 @@ total_checks=0
 
 check_passed() {
   echo -e "${GREEN}✓${NC} $1"
-  ((success_count++))
+  success_count=$((success_count + 1))
 }
 
 check_failed() {
@@ -24,7 +24,7 @@ check_failed() {
   exit 1
 }
 
-((total_checks++))
+total_checks=$((total_checks + 1))
 echo "Check 1: Mode file exists and defaults to shadow..."
 if [ -f ~/.local/state/opencode-claimant/mode ]; then
   mode=$(cat ~/.local/state/opencode-claimant/mode)
@@ -37,7 +37,7 @@ else
   check_failed "Mode file does not exist"
 fi
 
-((total_checks++))
+total_checks=$((total_checks + 1))
 echo "Check 2: Constants are correctly defined..."
 if grep -q "CONCURRENCY_CAP = 36" /home/user/git/code/pm-stack/opencode-claimant/claimant.py; then
   check_passed "CONCURRENCY_CAP = 36"
@@ -63,7 +63,7 @@ else
   check_failed "Gone-session recovery constant missing or incorrect"
 fi
 
-((total_checks++))
+total_checks=$((total_checks + 1))
 echo "Check 3: Required queues are defined..."
 if grep -q '"repo-health-code-pilot"' /home/user/git/code/pm-stack/opencode-claimant/claimant.py &&
   grep -q '"repo-health-opencode-pilot"' /home/user/git/code/pm-stack/opencode-claimant/claimant.py &&
@@ -74,7 +74,7 @@ else
   check_failed "Not all queues are defined"
 fi
 
-((total_checks++))
+total_checks=$((total_checks + 1))
 echo "Check 4: poll.py exists and has required functions..."
 if [ -f /home/user/git/code/pm-stack/opencode-claimant/poll.py ]; then
   check_passed "poll.py exists"
@@ -112,7 +112,7 @@ else
   check_failed "get_candidates() function missing"
 fi
 
-((total_checks++))
+total_checks=$((total_checks + 1))
 echo "Check 5: claimant.py has required functions..."
 if grep -q "def supervision_step" /home/user/git/code/pm-stack/opencode-claimant/claimant.py; then
   check_passed "supervision_step() function exists"
@@ -138,7 +138,7 @@ else
   check_failed "_verify_candidate_is_current() function missing"
 fi
 
-((total_checks++))
+total_checks=$((total_checks + 1))
 echo "Check 6: Supervision rules are implemented..."
 if grep -q "_session_terminal" /home/user/git/code/pm-stack/opencode-claimant/claimant.py; then
   check_passed "Session terminal state checking implemented"
@@ -164,7 +164,7 @@ else
   check_failed "Session deletion missing"
 fi
 
-((total_checks++))
+total_checks=$((total_checks + 1))
 echo "Check 7: Atomic recovery operations are implemented..."
 if grep -q "_queue_recovery" /home/user/git/code/pm-stack/opencode-claimant/claimant.py; then
   check_passed "Atomic recovery (_queue_recovery) function exists"
@@ -184,7 +184,7 @@ else
   check_failed "Gone-session recovery operation missing"
 fi
 
-((total_checks++))
+total_checks=$((total_checks + 1))
 echo "Check 8: Session creation and binding is implemented..."
 if grep -q "_create_session_if_cap_room" /home/user/git/code/pm-stack/opencode-claimant/claimant.py; then
   check_passed "Session creation with cap room checking implemented"
@@ -210,7 +210,7 @@ else
   check_failed "Atomic bind operation missing"
 fi
 
-((total_checks++))
+total_checks=$((total_checks + 1))
 echo "Check 9: Prompt delivery is implemented..."
 if grep -q "_prompt_for" /home/user/git/code/pm-stack/opencode-claimant/claimant.py; then
   check_passed "Prompt generation function exists"
@@ -230,7 +230,7 @@ else
   check_failed "GitHub launch note posting missing"
 fi
 
-((total_checks++))
+total_checks=$((total_checks + 1))
 echo "Check 10: Logging and fire recording is implemented..."
 if grep -q "log_fire" /home/user/git/code/pm-stack/opencode-claimant/claimant.py; then
   check_passed "log_fire() function exists"
@@ -244,7 +244,7 @@ else
   check_failed "Fire log file missing"
 fi
 
-((total_checks++))
+total_checks=$((total_checks + 1))
 echo "Check 11: Hard rules are enforced..."
 if grep -q 'HELD_LABELS = {"held", "user/owned", "do-not-merge", "do-not-auto-edit"}' /home/user/git/code/pm-stack/opencode-claimant/claimant.py; then
   check_passed "HELD_LABELS constant defined"
@@ -258,7 +258,7 @@ else
   check_failed "Hard rules documentation missing"
 fi
 
-((total_checks++))
+total_checks=$((total_checks + 1))
 echo "Check 12: Mode handling is correct..."
 if grep -q "def read_mode()" /home/user/git/code/pm-stack/opencode-claimant/claimant.py; then
   check_passed "read_mode() function exists"
@@ -272,7 +272,7 @@ else
   check_failed "Mode file handling documentation missing"
 fi
 
-((total_checks++))
+total_checks=$((total_checks + 1))
 echo "Check 13: Concurrency cap is 36..."
 if grep -q "CONCURRENCY_CAP = 36" /home/user/git/code/pm-stack/opencode-claimant/claimant.py &&
   grep -q "LAUNCH_WORKERS = 36" /home/user/git/code/pm-stack/opencode-claimant/claimant.py; then
@@ -281,7 +281,7 @@ else
   check_failed "Concurrency cap not set to 36"
 fi
 
-((total_checks++))
+total_checks=$((total_checks + 1))
 echo "Check 14: poll.py outputs correct JSON structure..."
 python3 /home/user/git/code/pm-stack/opencode-claimant/poll.py >/tmp/test_poll_output.json 2>/dev/null
 if [ $? -eq 0 ]; then
@@ -307,7 +307,7 @@ else
   check_failed "poll.py execution failed"
 fi
 
-((total_checks++))
+total_checks=$((total_checks + 1))
 echo "Check 15: claimant.py can execute without errors..."
 python3 /home/user/git/code/pm-stack/opencode-claimant/claimant.py >/dev/null 2>&1
 if [ $? -eq 0 ]; then

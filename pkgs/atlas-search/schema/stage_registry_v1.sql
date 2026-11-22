@@ -23,4 +23,15 @@ CREATE TABLE IF NOT EXISTS staging_units (
   updated_at     TEXT NOT NULL
 );
 
+-- Durable audit record for each successful staging-unit promotion.
+-- Kept in the registry DB after the unit leaves the active states.
+CREATE TABLE IF NOT EXISTS merge_manifests (
+  unit_id TEXT PRIMARY KEY,
+  rows_in INTEGER NOT NULL,
+  rows_promoted INTEGER NOT NULL,
+  content_hash TEXT NOT NULL,
+  embedding_model TEXT NOT NULL,
+  promoted_at TEXT NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS staging_units_state ON staging_units (state);

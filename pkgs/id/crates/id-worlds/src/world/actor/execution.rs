@@ -1266,6 +1266,13 @@ impl WorldActor {
                 }))
             }
             "records.read" => self.execute_records_read(&request.args),
+            "kv.get" => self.execute_kv_get(&request.args),
+            "kv.set" => self.execute_kv_set(&request.args),
+            "kv.delete" => self.execute_kv_delete(&request.args),
+            "blob.put" => self.execute_blob_put(&request.args),
+            "blob.get" => self.execute_blob_get(&request.args),
+            "blob.delete" => self.execute_blob_delete(&request.args),
+            "http.fetch" => self.execute_http_fetch(&request.args),
             "schedule.at" => self.execute_schedule_at(&request.args),
             "schedule.cancel" => self.execute_schedule_cancel(&request.args),
             _ => Err(CapError::unknown()),
@@ -1703,6 +1710,208 @@ impl WorldActor {
         Ok(serde_json::json!({
             "records": page,
             "next_after": more.then_some(last_included).flatten(),
+        }))
+    }
+
+    /// `kv.get` (#1062): the value stored under the key, or `null`
+    /// when the key is absent. The store keeps each value's JSON
+    /// encoding; a stored encoding that no longer parses means the
+    /// journal is corrupt, so it fails rather than answering `null`.
+    pub(super) fn execute_kv_get(
+        &self,
+        args: &serde_json::Value,
+    ) -> Result<serde_json::Value, CapError> {
+        let key = args
+            .get("key")
+            .and_then(serde_json::Value::as_str)
+            .ok_or(CapError::bad_args())?;
+        if crate::world_caps::validate_kv_key(key).is_err() {
+            return Err(CapError::bad_args());
+        }
+        let value = match self.core.kv.get(key) {
+            None => serde_json::Value::Null,
+            Some(stored) => {
+                serde_json::from_str(stored).map_err(|_| CapError::failed_with("kv_corrupt"))?
+            }
+        };
+        Ok(serde_json::json!({"key": key, "value": value}))
+    }
+
+    /// `kv.set` (#1062): store a JSON value under a key, replacing any
+    /// value already there. The write is journaled before the result
+    /// is delivered, and bounds are checked against the store as it
+    /// will be after the write.
+    pub(super) fn execute_kv_set(
+        &mut self,
+        args: &serde_json::Value,
+    ) -> Result<serde_json::Value, CapError> {
+        let key = args
+            .get("key")
+            .and_then(serde_json::Value::as_str)
+            .ok_or(CapError::bad_args())?;
+        let value = args.get("value").ok_or(CapError::bad_args())?;
+        let encoded = serde_json::to_string(value).map_err(|_| CapError::failed())?;
+        if let Err(error) = self.core.check_kv_set(key, encoded.len()) {
+            tracing::debug!("world {}: kv set refused: {error:#}", self.core.world_id);
+            return Err(CapError::bad_args_with(format!("{error:#}")));
+        }
+        let value_bytes = encoded.len();
+        if self
+            .persist(JournalEntry::KvSet {
+                key: key.to_owned(),
+                value: encoded.clone(),
+            })
+            .is_err()
+        {
+            return Err(CapError::failed());
+        }
+        self.core.kv.insert(key.to_owned(), encoded);
+        Ok(serde_json::json!({"key": key, "value_bytes": value_bytes}))
+    }
+
+    /// `kv.delete` (#1062): remove the entry under a key. `deleted` is
+    /// false when nothing was stored under it, and nothing is
+    /// journaled in that case.
+    pub(super) fn execute_kv_delete(
+        &mut self,
+        args: &serde_json::Value,
+    ) -> Result<serde_json::Value, CapError> {
+        let key = args
+            .get("key")
+            .and_then(serde_json::Value::as_str)
+            .ok_or(CapError::bad_args())?;
+        if crate::world_caps::validate_kv_key(key).is_err() {
+            return Err(CapError::bad_args());
+        }
+        if !self.core.kv.contains_key(key) {
+            return Ok(serde_json::json!({"key": key, "deleted": false}));
+        }
+        if self
+            .persist(JournalEntry::KvDeleted {
+                key: key.to_owned(),
+            })
+            .is_err()
+        {
+            return Err(CapError::failed());
+        }
+        self.core.kv.remove(key);
+        Ok(serde_json::json!({"key": key, "deleted": true}))
+    }
+
+    /// `blob.put` (#1062): store content under its iroh-blobs
+    /// address. The write is journaled before the result is
+    /// delivered; putting content the world already holds is a
+    /// no-op that journals nothing, because the address is the same.
+    pub(super) fn execute_blob_put(
+        &mut self,
+        args: &serde_json::Value,
+    ) -> Result<serde_json::Value, CapError> {
+        let encoded = args
+            .get("data")
+            .and_then(serde_json::Value::as_str)
+            .ok_or(CapError::bad_args())?;
+        let bytes = super::super::blob_decode(encoded).ok_or(CapError::bad_args())?;
+        let hash = super::super::blob_id(&bytes);
+        if let Err(error) = self.core.check_blob_put(&hash, bytes.len()) {
+            tracing::debug!("world {}: blob put refused: {error:#}", self.core.world_id);
+            return Err(CapError::bad_args_with(format!("{error:#}")));
+        }
+        let size = bytes.len();
+        if !self.core.blobs.contains_key(&hash) {
+            if self
+                .persist(JournalEntry::BlobStored {
+                    hash: hash.clone(),
+                    data: super::super::blob_encode(&bytes),
+                })
+                .is_err()
+            {
+                return Err(CapError::failed());
+            }
+            self.core.blobs.insert(hash.clone(), bytes);
+        }
+        Ok(serde_json::json!({"hash": hash, "size": size}))
+    }
+
+    /// `blob.get` (#1062): the content stored under the address, or
+    /// `null` data when the world holds no such blob.
+    pub(super) fn execute_blob_get(
+        &self,
+        args: &serde_json::Value,
+    ) -> Result<serde_json::Value, CapError> {
+        let hash = args
+            .get("hash")
+            .and_then(serde_json::Value::as_str)
+            .ok_or(CapError::bad_args())?;
+        if crate::world_caps::validate_blob_hash(hash).is_err() {
+            return Err(CapError::bad_args());
+        }
+        let data = match self.core.blobs.get(hash) {
+            None => serde_json::Value::Null,
+            Some(bytes) => serde_json::json!(super::super::blob_encode(bytes)),
+        };
+        Ok(serde_json::json!({"hash": hash, "data": data}))
+    }
+
+    /// `blob.delete` (#1062): remove the blob under an address.
+    /// `deleted` is false when the world held no such blob, and
+    /// nothing is journaled in that case.
+    pub(super) fn execute_blob_delete(
+        &mut self,
+        args: &serde_json::Value,
+    ) -> Result<serde_json::Value, CapError> {
+        let hash = args
+            .get("hash")
+            .and_then(serde_json::Value::as_str)
+            .ok_or(CapError::bad_args())?;
+        if crate::world_caps::validate_blob_hash(hash).is_err() {
+            return Err(CapError::bad_args());
+        }
+        if !self.core.blobs.contains_key(hash) {
+            return Ok(serde_json::json!({"hash": hash, "deleted": false}));
+        }
+        if self
+            .persist(JournalEntry::BlobRemoved {
+                hash: hash.to_owned(),
+            })
+            .is_err()
+        {
+            return Err(CapError::failed());
+        }
+        self.core.blobs.remove(hash);
+        Ok(serde_json::json!({"hash": hash, "deleted": true}))
+    }
+
+    /// `http.fetch` (#1062): a GET of an allowlisted URL. The core
+    /// check refuses a malformed URL, a host outside the admin
+    /// allowlist, and an exhausted rate window before any
+    /// connection is made; the attempt is then recorded (failed
+    /// fetches spend the budget too) and the fetch runs on its own
+    /// thread. No fetch state is journaled: a fetch is an effect
+    /// against the live network, not world state, so replay
+    /// applies nothing for one.
+    pub(super) fn execute_http_fetch(
+        &mut self,
+        args: &serde_json::Value,
+    ) -> Result<serde_json::Value, CapError> {
+        let url = args
+            .get("url")
+            .and_then(serde_json::Value::as_str)
+            .ok_or(CapError::bad_args())?;
+        if let Err(error) = self.core.check_http_fetch(url) {
+            tracing::debug!(
+                "world {}: http fetch refused: {error:#}",
+                self.core.world_id
+            );
+            return Err(CapError::bad_args_with(format!("{error:#}")));
+        }
+        self.core.note_http_fetch_attempt();
+        let allowed_hosts = self.core.limits.http_fetch_hosts.clone();
+        let outcome = super::super::http_fetch::fetch(url, &allowed_hosts)?;
+        Ok(serde_json::json!({
+            "url": outcome.url,
+            "status": outcome.status,
+            "body": super::super::blob_encode(&outcome.body),
+            "body_bytes": outcome.body.len(),
         }))
     }
 

@@ -40,8 +40,8 @@
 
 import { execFile } from "node:child_process";
 import { readdirSync, readFileSync, statSync } from "node:fs";
-import { homedir, tmpdir } from "node:os";
-import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { isAbsolute, join } from "node:path";
 
 import { DaemonOps, OPERATION_FINGERPRINT, OpError } from "./ops.gen.ts";
 
@@ -295,11 +295,22 @@ const envOf = (o: DiscoverOptions): Record<string, string | undefined> =>
  *
  * Kept in step by hand, because the alternative -- asking a daemon -- is the
  * thing that cannot be done before a daemon has been found.
+ *
+ * Home resolution follows the contract (#5762, #11205): an absolute
+ * XDG_STATE_HOME wins, a relative or empty one is ignored, and HOME must be
+ * non-empty. An unset or empty HOME is a named error here, before any path is
+ * read, never the passwd home or a CWD-relative `.local/state`.
  */
 export const stateDir = (env: Record<string, string | undefined>): string => {
   if (env.MCPX_STATE_DIR) return env.MCPX_STATE_DIR;
-  if (env.XDG_STATE_HOME) return join(env.XDG_STATE_HOME, "mcpx");
-  return join(env.HOME ?? homedir(), ".local", "state", "mcpx");
+  const xdg = env.XDG_STATE_HOME;
+  if (xdg && isAbsolute(xdg)) return join(xdg, "mcpx");
+  if (!env.HOME) {
+    throw new Error(
+      "HOME is not set or is empty: mcpx requires a non-empty HOME to resolve its paths (home-resolution contract, issues #5762/#5763)",
+    );
+  }
+  return join(env.HOME, ".local", "state", "mcpx");
 };
 
 /**
@@ -516,9 +527,7 @@ export class DaemonClient {
    *
    * @op health
    */
-  async health(
-    timeoutMs = TUNING.healthTimeoutMs,
-  ): Promise<
+  async health(timeoutMs = TUNING.healthTimeoutMs): Promise<
     | {
         status: string;
         version?: string;

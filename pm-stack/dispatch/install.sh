@@ -15,9 +15,7 @@
 # - Queue access (#9028) needs NO secret in the rendered env: dispatch
 #   talks to the fleet queue broker (QUEUE_BROKER_URL, rendered below
 #   as a plain URL) with the broker token, which stays in its own
-#   file ~/.config/queue-broker/token. The Supabase service-role key
-#   is GONE from this deployment — the direct-PostgREST producer it
-#   fed wrote to the legacy store no lane reads.
+#   file ~/.config/queue-broker/token.
 # - NOT in sops: DISPATCH_API_TOKEN lives in ~/secrets/dispatch.env
 #   (mode 600, laptop-only), which the unit also reads. Its by-name
 #   vault home is Bitwarden `pm-dispatch.api-token` (issue #5555) —
@@ -32,11 +30,7 @@
 #   401s) until the vault and the clients are updated to match.
 #   This script
 #   ensures that file exists and carries a generated
-#   DISPATCH_API_TOKEN when one is absent. SUPABASE_URL /
-#   SUPABASE_SERVICE_ROLE_KEY lines left in that file are stale: the
-#   unit reads it AFTER the rendered file, so they would override the
-#   sops-managed values — this script warns about them below, and the
-#   operator copies should be deleted.
+#   DISPATCH_API_TOKEN when one is absent.
 #
 # Usage (on the laptop, from the repo checkout):  bash install.sh
 set -euo pipefail
@@ -71,9 +65,6 @@ if ! grep -q '^DISPATCH_API_TOKEN=' "$SECRETS_ENV"; then
   printf 'DISPATCH_API_TOKEN=%s\n' "$(openssl rand -hex 32)" >>"$SECRETS_ENV"
   chmod 600 "$SECRETS_ENV"
   echo "generated a DISPATCH_API_TOKEN into $SECRETS_ENV (value not printed)"
-fi
-if grep -q '^SUPABASE_URL=\|^SUPABASE_SERVICE_ROLE_KEY=' "$SECRETS_ENV"; then
-  echo "WARNING: $SECRETS_ENV still carries SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY lines — obsolete since #9028 (dispatch reads no Supabase config; the queue goes through the broker). Delete them from $SECRETS_ENV." >&2
 fi
 
 # --- Change detection + build marker ------------------------------------

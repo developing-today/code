@@ -121,6 +121,33 @@ pub struct GhConfig {
     /// same localhost-then-laptop order serves both machines.
     pub cache_laptop: Option<String>,
 }
+/// `[bridge]` — the message bridge's fleet mailboxes (`fleet
+/// bridge`). Everything is optional: the URL defaults to
+/// [`DEFAULT_BRIDGE_URL`], the agent name comes from `--agent` or
+/// `FLEET_AGENT`, and the tokens resolve by name through
+/// fleet-secrets. Env beats the file for url, agent and groups
+/// (`FLEET_BRIDGE_URL`, `FLEET_AGENT`, `FLEET_AGENT_GROUPS`).
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct BridgeConfig {
+    /// Bridge base URL (`https://host`).
+    pub url: Option<String>,
+    /// This host's agent name (its mailbox).
+    pub agent: Option<String>,
+    /// Groups the agent registers in (e.g. `["muse"]`).
+    pub groups: Option<Vec<String>>,
+    /// Secret name of the owner (central) token; default
+    /// [`DEFAULT_BRIDGE_OWNER_TOKEN_NAME`].
+    pub owner_token_name: Option<String>,
+    /// Secret name of the fleet (agent) token; default
+    /// [`DEFAULT_BRIDGE_FLEET_TOKEN_NAME`].
+    pub fleet_token_name: Option<String>,
+}
+
+pub const DEFAULT_BRIDGE_URL: &str = "https://bridge.security.cab";
+pub const DEFAULT_BRIDGE_OWNER_TOKEN_NAME: &str = "message-bridge.access-token";
+pub const DEFAULT_BRIDGE_FLEET_TOKEN_NAME: &str = "message-bridge.fleet-token";
+
 /// The `fleet serve` role names a `[host]` manifest may assign
 /// (design #5687 §1). The role set of a manifest is exactly the key
 /// set of its `[host.roles]` table; any other name is a loud parse
@@ -363,6 +390,10 @@ pub struct Config {
     pub search: SearchConfig,
     /// `[gh]` — the gh domain's credential-cache view (code#10742).
     pub gh: GhConfig,
+    /// `[bridge]` — the bridge domain's view of the message bridge
+    /// (fleet mailboxes): URL, this host's agent name and groups,
+    /// and the secret names its tokens resolve under.
+    pub bridge: BridgeConfig,
     /// `[host]` — the location/role manifest (design #5687,
     /// implementation #6770). Absent means "no manifest": fleet
     /// init reports an unknown location and starts nothing.
@@ -790,6 +821,10 @@ impl Config {
             (&self.dispatch.token_name, "[dispatch] token_name"),
             (&self.gh.cache_local, "[gh] cache_local"),
             (&self.gh.cache_laptop, "[gh] cache_laptop"),
+            (&self.bridge.url, "[bridge] url"),
+            (&self.bridge.agent, "[bridge] agent"),
+            (&self.bridge.owner_token_name, "[bridge] owner_token_name"),
+            (&self.bridge.fleet_token_name, "[bridge] fleet_token_name"),
         ] {
             if blank(value) {
                 return Err(ConfigError::Parse {
@@ -2531,6 +2566,12 @@ socket = "rel/s.sock"
 #[cfg(test)]
 mod tempfile_dir {
     use std::path::PathBuf;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    // Some targets (notably static musl in parallel test runs) can
+    // return the same clock value for adjacent calls. A timestamp-only
+    // name then lets one test's Drop remove another test's fixture.
+    static NEXT_DIR: AtomicU64 = AtomicU64::new(0);
 
     pub struct Dir(PathBuf);
 
@@ -2540,12 +2581,9 @@ mod tempfile_dir {
             p.push(format!(
                 "fleet-config-test-{}-{}",
                 std::process::id(),
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_nanos())
-                    .unwrap_or(0)
+                NEXT_DIR.fetch_add(1, Ordering::Relaxed)
             ));
-            std::fs::create_dir_all(&p).unwrap();
+            std::fs::create_dir(&p).unwrap();
             Dir(p)
         }
 

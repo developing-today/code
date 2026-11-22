@@ -158,6 +158,14 @@ pub enum ConfigError {
         /// Which `[create]` list held the repetition.
         list: &'static str,
     },
+    /// A `[[boundaries]]` entry or the `[residency]` table is not a usable boundary (#8851).
+    #[error("{place}: {reason}")]
+    Boundary {
+        /// The entry or table at fault.
+        place: String,
+        /// What is wrong with it.
+        reason: String,
+    },
 }
 
 #[derive(Deserialize)]
@@ -170,6 +178,9 @@ struct Raw {
     users: Vec<RawUser>,
     #[serde(default)]
     groups: Vec<RawGroup>,
+    #[serde(default)]
+    boundaries: Vec<id_core::boundary::BoundaryDeclarationBody>,
+    residency: Option<super::boundaries::RawResidency>,
 }
 
 #[derive(Deserialize)]
@@ -332,12 +343,16 @@ pub(super) fn parse(text: &str) -> Result<ServerConfig, ConfigError> {
         None => id_core::abuse::BudgetPolicy::default(),
         Some(raw_budgets) => budget_policy(raw_budgets, &names)?,
     };
+    let boundaries = super::boundaries::parse(&raw.boundaries, raw.residency.as_ref(), |key| {
+        matches!(names.get(key), Some(Object::User(_)))
+    })?;
     Ok(ServerConfig {
         users,
         groups,
         create,
         policy,
         budgets,
+        boundaries,
         names,
         aliases,
     })

@@ -146,3 +146,83 @@ fn native_session_builders_pass_the_f13_1_contract_checker() {
     assert!(violations.is_empty(), "{violations:#?}\n{transcript}");
     assert_eq!(state.view().unwrap().text_projection(), "welcome");
 }
+
+#[test]
+fn agent_profile_transcript_conforms_and_semantic_diffs_render() {
+    // Agent profile (contract revision 11, #6300 sections 4.2/4.3/8):
+    // an agent join, a region + event-class subscription, its
+    // acknowledgement, semantic diffs, and an input carrying the
+    // stale-decision token all conform to the same F13.1 contract, and
+    // the native shell renders a semantic diff as world-term lines.
+    let mut state = SessionState::default();
+    let mut lines = Vec::new();
+    let mut record = |from: &str, frame: Value| {
+        lines.push(json!({"from": from, "frame": frame}).to_string());
+    };
+
+    record(
+        "client",
+        id_native_shell::agent_join_frame("capability", None),
+    );
+    for (frame, expected) in [
+        (
+            json!({"type":"snapshot", "snapshot":{"sequence":0}}),
+            id_native_shell::ServerUpdate::Snapshot,
+        ),
+        (
+            json!({"type":"view", "sequence":0, "data":"hello ada", "view_revision":0}),
+            id_native_shell::ServerUpdate::View,
+        ),
+    ] {
+        assert_eq!(state.apply_server_frame(frame.clone()).unwrap(), expected);
+        record("server", frame);
+    }
+
+    record(
+        "client",
+        id_native_shell::screen_subscribe_frame(Some((0, 0, 10, 2)), Some(&["chat_posted"])),
+    );
+    let subscription = json!({
+        "type": "screen_subscription",
+        "region": {"x": 0, "y": 0, "width": 10, "height": 2},
+        "event_classes": ["chat_posted"],
+        "view_revision": 0
+    });
+    assert_eq!(
+        state.apply_server_frame(subscription.clone()).unwrap(),
+        id_native_shell::ServerUpdate::ScreenSubscription
+    );
+    record("server", subscription);
+    assert_eq!(
+        state.screen_subscription().unwrap()["view_revision"],
+        json!(0)
+    );
+
+    let diff = json!({
+        "type": "semantic_diff", "sequence": 1, "view_revision": 0,
+        "changes": [
+            {"kind": "chat_posted", "participant_id": 2, "text": "hi there"},
+            {"kind": "region_changed", "row": 1, "text": "agent here"}
+        ]
+    });
+    assert_eq!(
+        state.apply_server_frame(diff.clone()).unwrap(),
+        id_native_shell::ServerUpdate::SemanticDiff
+    );
+    record("server", diff);
+    assert_eq!(state.semantic_diffs().len(), 1);
+    assert_eq!(
+        id_native_shell::semantic_diff_text(&state.semantic_diffs()[0]),
+        "chat: hi there\nrow 1: agent here"
+    );
+
+    record(
+        "client",
+        id_native_shell::input_frame_with_revision(b"look\r", 0),
+    );
+
+    let transcript = lines.join("\n");
+    let contract = ShellContract::embedded().expect("embedded F13.1 contract");
+    let violations = check_transcript(&contract, &transcript).expect("parse transcript");
+    assert!(violations.is_empty(), "{violations:#?}\n{transcript}");
+}

@@ -26,6 +26,7 @@ import {
   queuedComments,
   validateNewComment,
 } from "./comments.ts";
+import { PROMPT_STATUSES, PromptsStore, validateNewPrompt, type PromptStatus } from "./prompts.ts";
 import type { SavedView, ViewFilters, ViewItemLike } from "./views.ts";
 import { ViewsStore, filtersFromQuery, itemMatchesView, ownerKey } from "./views.ts";
 import { filterBoardForView, filterRoadmapForView, fragBoardUrl, linkedLike } from "./board-view.ts";
@@ -48,6 +49,7 @@ import {
 import { GithubHotListConsumer, unconfiguredGithubStatus } from "./github-hot-list.ts";
 import { RoadmapAnnotationsStore, validateNewRoadmapAnnotation } from "./roadmap-annotations.ts";
 import { createAccessAuthorEnforcer, enforceAccessAuthor } from "./access-identity.ts";
+import { IdentityRegistryStore, identityMappingAuditEvent, validateIdentityMapping } from "./identity-registry.ts";
 import {
   computeCoverage,
   CoverageSnapshotStore,
@@ -56,7 +58,8 @@ import {
   type RepoCensus,
 } from "./coverage.ts";
 import { loadConfig } from "./config.ts";
-import { createSupabaseRemotes } from "./remote-stores.ts";
+import { getTursoStoreClient } from "./turso-stores.ts";
+import { createTursoRemotes } from "./remote-stores.ts";
 import { itemServiceLinks } from "./service-links.ts";
 import { loadFeed } from "./feed.ts";
 import { AA_PLAN_FACTS, sectionPoolIdsFromConfig } from "./aa.ts";
@@ -64,6 +67,7 @@ import {
   getNeedsDrew,
   listOpenNeedsDrew,
   raiseNeedsDrew,
+  needsDrewIncidentKey,
   recordAnswer,
   shouldFetchNeedsDrewCensus,
   validateNeedsDrew,
@@ -139,6 +143,7 @@ import { SpendRollupStore } from "./spend-rollups.ts";
 import { buildSpendCards, type SpendCardsView } from "./spend-cards.ts";
 import { buildProgramData, programRefs } from "./program.ts";
 import { buildReleaseSnapshots } from "./releases.ts";
+import { deriveGenealogy, enrichRoadmapRows } from "./genealogy.ts";
 import {
   PROJECT_CONFIGS,
   allProjectRefs,
@@ -218,16 +223,20 @@ import {
 } from "./notifications.ts";
 import { readJsonBody } from "./request-body.ts";
 import { parseRegistryQuery, queryRegistry } from "./registry-view.ts";
+import { addConsoleShortcut } from "./console-gate.ts";
 import { searchWork } from "./search-view.ts";
 import type { Source } from "./source.ts";
 import { fixtureSource } from "./sources/fixtures.ts";
 import { liveSource } from "./sources/live.ts";
 import { buildQueueView, queueInputsStale } from "./queue-view.ts";
-import { dashboardResponseWithinDeadline } from "./assembly-deadline.ts";
+import { createDashboardResponseDeadline } from "./assembly-deadline.ts";
 import { dispatchStateFor, fetchRfaState, RFA_NOT_PICKED_UP } from "./sources/ready-for-agent.ts";
 import { TodayCache, TODAY_CACHE_TTL_MS } from "./today-cache.ts";
 import { boardJsonBody, boardJsonViewBody } from "./board-json.ts";
 import { ItemHistoryStore } from "./item-history.ts";
+import { SloJournal, groupSamplesByFacet } from "./slo-journal.ts";
+import { sampleSloFacets } from "./slo-sampler.ts";
+import { SLO_DEFINITIONS, summarizeSloFacet, type SloFacetSummary } from "./slo.ts";
 import { computeFlowAnalytics } from "./flow-analytics.ts";
 import {
   FORECAST_CONTRACT_VERSION,
@@ -250,10 +259,16 @@ function capUnits(t: string, max: number): string {
 }
 
 const cfg = loadConfig();
+// #10383: the bounded routes' last-good survives a restart on disk, so
+// the first request after a deploy serves it instead of a 503.
+const dashboardResponseWithinDeadline = createDashboardResponseDeadline({ persistDir: cfg.lastGoodDir });
 const commentsStore = new CommentsStore(cfg.commentsFile);
+const promptsStore = new PromptsStore(cfg.promptsFile);
 const roadmapAnnotationsStore = new RoadmapAnnotationsStore(cfg.roadmapAnnotationsFile);
 const coverageStore = new CoverageSnapshotStore(cfg.coverageSnapshotFile);
 const itemHistoryStore = new ItemHistoryStore(cfg.itemHistoryFile);
+const sloJournal = new SloJournal(cfg.sloJournalFile);
+let sloSummaryCache: { at: number; value: SloFacetSummary[] } | null = null;
 const spendRollupStore = new SpendRollupStore(cfg.snapshotsDir);
 /** #4824: the Projects/Roadmap spend-beside-progress view over the
  * #4823 rollup store. A failed read renders no spend block (the
@@ -337,13 +352,14 @@ async function coverageSnapshot(
   return next;
 }
 // #6815: the four formerly laptop-local stores (actions, activity
-// ingestion, usage snapshots, aa-last-good) move to muse-dev2 when
-// PM_AGG_STORE_BACKEND=supabase. Exactly one backend is active: with
+// ingestion, usage snapshots, aa-last-good) live in Turso when
+// PM_AGG_STORE_BACKEND=turso. Exactly one backend is active: with
 // "file" (the default) no remote exists and no database call is made.
-const storeRemotes = cfg.storeBackend === "supabase" ? createSupabaseRemotes() : null;
+const storeRemotes = cfg.storeBackend === "turso" ? createTursoRemotes(getTursoStoreClient) : null;
 const actionsStore = new ActionsStore(cfg.actionsFile, undefined, storeRemotes?.actions);
 const viewsStore = new ViewsStore(cfg.viewsFile);
 const eventsStore = new EventsStore(cfg.eventsFile);
+const identityRegistryStore = new IdentityRegistryStore(cfg.identityRegistryFile);
 const freshnessStore = new FreshnessStore(cfg.freshnessFile);
 
 /** #3976: the 5-minute anti-entropy reconciler over the freshness
@@ -579,7 +595,21 @@ async function healthContext(prime = true): Promise<HealthView> {
     comments: await commentsStore.pendingCounts().catch(() => undefined),
     conflicts: await assembleConflicts().catch(() => null),
     pushHealth: cfg.source === "fixtures" ? null : freshnessReconciler.health(new Date()),
+    slo: cfg.source === "fixtures" ? null : await sloSummaries(),
   });
+}
+
+// SLO error budgets (#9988): summaries are read from the append-only journal
+// and cached for a minute, the same cadence the sampler writes at.
+const SLO_SUMMARY_CACHE_MS = 60_000;
+async function sloSummaries(nowMs = Date.now()): Promise<SloFacetSummary[]> {
+  if (sloSummaryCache && nowMs - sloSummaryCache.at < SLO_SUMMARY_CACHE_MS) return sloSummaryCache.value;
+  const byFacet = groupSamplesByFacet(await sloJournal.readAll().catch(() => []));
+  const value = SLO_DEFINITIONS.map((definition) =>
+    summarizeSloFacet(definition, byFacet.get(definition.id) ?? [], nowMs),
+  );
+  sloSummaryCache = { at: nowMs, value };
+  return value;
 }
 
 /** The identities half of the comment form options, behind a
@@ -2089,6 +2119,68 @@ async function handler(req: Request): Promise<Response> {
     return json({ identities: identitiesFromRecords(records) });
   }
 
+  // #9604: role mappings are managed only by a verified Access owner.
+  // The asserted author here is deliberately fixed; request-body identity
+  // or role claims never authorize registry changes.
+  if (
+    path === "/api/admin/identity-registry" &&
+    (req.method === "GET" || req.method === "POST" || req.method === "DELETE")
+  ) {
+    const access = await enforceAccessAuthor(req, { kind: "drew", id: "drew", label: "Drew" });
+    if (!access.ok) return json({ error: access.error }, access.status);
+    if (!access.verified || access.author.kind !== "drew") {
+      return json({ error: "verified Access owner required" }, 403);
+    }
+    const auditActor = access.identity?.sub || access.identity?.email || access.author.id;
+    if (req.method === "GET") return json({ registry: await identityRegistryStore.list() });
+    try {
+      const body = await readJsonBody(req);
+      if (req.method === "POST") {
+        const parsed = validateIdentityMapping(body);
+        if (!parsed.ok) return json({ error: parsed.error }, 400);
+        const result = await identityRegistryStore.set(parsed.identity, parsed.role, auditActor);
+        await eventsStore.record(
+          identityMappingAuditEvent({
+            identity: parsed.identity,
+            previousRole: result.previousRole,
+            role: parsed.role,
+            revision: result.registry.revision,
+            actor: auditActor,
+          }),
+        );
+        return json({ registry: result.registry, previousRole: result.previousRole });
+      }
+      const identity =
+        typeof body === "object" && body !== null ? (body as { identity?: unknown }).identity : undefined;
+      if (
+        typeof identity !== "string" ||
+        identity.trim() === "" ||
+        identity.trim().length > 200 ||
+        /\s/.test(identity.trim())
+      ) {
+        return json({ error: "identity must be a non-empty whitespace-free string (max 200 chars)" }, 400);
+      }
+      const result = await identityRegistryStore.remove(identity.trim());
+      if (result.previousRole !== null) {
+        await eventsStore.record(
+          identityMappingAuditEvent({
+            identity: identity.trim(),
+            previousRole: result.previousRole,
+            role: null,
+            revision: result.registry.revision,
+            actor: auditActor,
+          }),
+        );
+      }
+      return json({ registry: result.registry, previousRole: result.previousRole });
+    } catch (error) {
+      return json(
+        { error: `identity registry operation failed: ${error instanceof Error ? error.message : error}` },
+        500,
+      );
+    }
+  }
+
   // --- Dashboard comment writes (#906 §2) --------------------------------
   if (req.method === "POST" && path === "/api/roadmap/annotations") {
     try {
@@ -2133,6 +2225,30 @@ async function handler(req: Request): Promise<Response> {
     }
   }
 
+  if (req.method === "POST" && path === "/api/prompt") {
+    const parsed = validateNewPrompt(await readJsonBody(req).catch(() => null));
+    if (!parsed.ok) return json({ error: parsed.error }, 400);
+    try {
+      return json({ prompt: await promptsStore.add(parsed.value) }, 201);
+    } catch (err) {
+      return json({ error: `prompt persistence failed: ${err instanceof Error ? err.message : err}` }, 500);
+    }
+  }
+  if (req.method === "GET" && path === "/api/prompt") {
+    const status = url.searchParams.get("status");
+    const page = url.searchParams.get("page") ?? undefined;
+    const filter = {
+      page,
+      status: PROMPT_STATUSES.includes(status as PromptStatus) ? (status as PromptStatus) : undefined,
+    };
+    return json({ prompts: await promptsStore.list(filter) });
+  }
+  if (req.method === "GET" && path.startsWith("/api/prompt/")) {
+    const id = decodeURIComponent(path.slice("/api/prompt/".length));
+    const prompt = await promptsStore.get(id);
+    if (!prompt) return json({ error: "prompt not found" }, 404);
+    return json({ id: prompt.id, status: prompt.status, answer: prompt.answer, error: prompt.error });
+  }
   if (req.method === "POST" && path === "/api/comments") {
     try {
       const parsed = validateNewComment(await readJsonBody(req));
@@ -2157,7 +2273,12 @@ async function handler(req: Request): Promise<Response> {
       // only the validation/body-parse path above earns a 400.
       let comment;
       try {
-        comment = await commentsStore.add(parsed.value, { authorVerified: authorization.authorVerified });
+        comment = await commentsStore.add(parsed.value, {
+          authorVerified: authorization.authorVerified,
+          // #1253 split 4 (#9606): "verified" only when the author came
+          // from the Access JWT above, never from the request body.
+          provenance: commentAccess.verified ? "verified" : "asserted-legacy",
+        });
       } catch (err) {
         return json({ error: `comment persistence failed: ${err instanceof Error ? err.message : err}` }, 500);
       }
@@ -2686,6 +2807,8 @@ async function handler(req: Request): Promise<Response> {
     // the same way — the Roadmap charts render exactly this object.
     const flowAnalytics = computeFlowAnalytics(await itemHistoryStore.readAll().catch(() => []));
     const spendCards = await loadSpendCards();
+    const releaseSnapshots = buildReleaseSnapshots(pool);
+    const prioritiesView = url.searchParams.get("view") === "priorities";
     const g = url.searchParams.get("h") ?? "quarter";
     const grain: RoadmapGrain = GRAINS.has(g) ? (g as RoadmapGrain) : "quarter";
     const resolved = await resolveView(url);
@@ -2719,6 +2842,8 @@ async function handler(req: Request): Promise<Response> {
           forecasts,
           flowAnalytics,
           spendCards,
+          releaseSnapshots,
+          prioritiesView,
         ),
       );
     }
@@ -2744,6 +2869,8 @@ async function handler(req: Request): Promise<Response> {
         forecasts,
         flowAnalytics,
         spendCards,
+        releaseSnapshots,
+        prioritiesView,
       ),
     );
   }
@@ -2781,7 +2908,15 @@ async function handler(req: Request): Promise<Response> {
       source.usage().catch(() => emptyUsageView()),
     ]);
     try {
-      return json(buildQuotaAnalytics({ quota, usage, quotaCurrentPath: cfg.quotaCurrentFile }));
+      return json(
+        buildQuotaAnalytics({
+          quota,
+          usage,
+          quotaCurrentPath: cfg.quotaCurrentFile,
+          mcpxCallLedgerDir: cfg.mcpxCallLedgerDir,
+          fleetInvocationLedgerFile: cfg.fleetInvocationLedgerFile,
+        }),
+      );
     } catch {
       return json({ error: "analytics unavailable" }, 503);
     }
@@ -2799,7 +2934,13 @@ async function handler(req: Request): Promise<Response> {
     // quota page down with it (the builder itself also degrades).
     let analytics: QuotaAnalytics | null = null;
     try {
-      analytics = buildQuotaAnalytics({ quota, usage, quotaCurrentPath: cfg.quotaCurrentFile });
+      analytics = buildQuotaAnalytics({
+        quota,
+        usage,
+        quotaCurrentPath: cfg.quotaCurrentFile,
+        mcpxCallLedgerDir: cfg.mcpxCallLedgerDir,
+        fleetInvocationLedgerFile: cfg.fleetInvocationLedgerFile,
+      });
     } catch {
       analytics = null;
     }
@@ -3025,6 +3166,7 @@ async function handler(req: Request): Promise<Response> {
       // its state resolved, but only expose briefs for the visible items.
       briefs: Object.fromEntries([...briefs].filter(([ref]) => outRefs.has(ref))),
       audit,
+      designBoards: source.designBoards ? await source.designBoards().catch(() => []) : [],
       coverage: coverage.current,
       coverageBaseline: coverage.baseline,
     });
@@ -3054,6 +3196,7 @@ async function handler(req: Request): Promise<Response> {
     const data = {
       ...buildProgramData(items, viewPool, orchestration),
       projects: buildProjectSummaries(PROJECT_CONFIGS, viewPool, rows),
+      designBoards: source.designBoards ? await source.designBoards().catch(() => []) : [],
     };
     if (path === "/api/program.json") return json(data);
     const coverage = await coverageSnapshot(census, pool, poolAvailable);
@@ -3068,6 +3211,7 @@ async function handler(req: Request): Promise<Response> {
     return html(
       renderProgram(data, items, prov(), provDetail(), {
         pool: viewPool,
+        designBoards: data.designBoards,
         area: url.searchParams.get("area"),
         status: url.searchParams.get("status"),
         kind: url.searchParams.get("kind"),
@@ -3280,10 +3424,24 @@ async function handler(req: Request): Promise<Response> {
   }
   if (path === "/api/roadmap.json") {
     const { rows, items, reconciliation } = await roadmapContext();
+    const pool = await source.projects().catch(() => [] as ProjectPoolItem[]);
+    const genealogyRows = enrichRoadmapRows(rows, pool);
+    if (url.searchParams.get("view") === "priorities") {
+      genealogyRows.sort((a, b) => {
+        const rank = (row: typeof a) => {
+          const match = /#(\d+)$/.exec(row.priority ?? "");
+          return match ? Number(match[1]) : Number.MAX_SAFE_INTEGER;
+        };
+        return rank(a) - rank(b) || a.title.localeCompare(b.title);
+      });
+    }
     const resolved = await resolveView(url);
     if (!resolved) {
       const annotatedRows = await Promise.all(
-        rows.map(async (row) => ({ ...row, annotations: await roadmapAnnotationsStore.forObject(row.subject) })),
+        genealogyRows.map(async (row) => ({
+          ...row,
+          annotations: await roadmapAnnotationsStore.forObject(row.subject),
+        })),
       );
       return json({
         rows: annotatedRows,
@@ -3292,14 +3450,16 @@ async function handler(req: Request): Promise<Response> {
         annotationAliases: await roadmapAnnotationsStore.aliasEntries(),
       });
     }
-    const pool = await source.projects().catch(() => [] as ProjectPoolItem[]);
     const poolByRef = new Map(pool.map((p) => [p.ref, p]));
     // #8723: the same rule as the HTML twin -- items linked from a
     // kept row ship even when they fail the view themselves.
     const { rows: keptRows, items: keptItemMap } = filterRoadmapForView(rows, items, poolByRef, resolved.filters);
     const keptItems = [...keptItemMap.values()];
     const annotatedKeptRows = await Promise.all(
-      keptRows.map(async (row) => ({ ...row, annotations: await roadmapAnnotationsStore.forObject(row.subject) })),
+      enrichRoadmapRows(keptRows, pool).map(async (row) => ({
+        ...row,
+        annotations: await roadmapAnnotationsStore.forObject(row.subject),
+      })),
     );
     return json({
       rows: annotatedKeptRows,
@@ -3647,6 +3807,20 @@ async function handler(req: Request): Promise<Response> {
       via: "api",
     });
     if (!updated?.answer) return json({ error: "answer not recorded" }, 500);
+    // #8605: the answer resolves the question, so close its alert
+    // incident — the raiser posted it under this question's source with
+    // key needs-drew:<ledgerId>, and until now nothing ever closed it.
+    // Best-effort, like the stack-health close in the intake above: a
+    // store failure is logged and never fails the recorded answer.
+    try {
+      const store = await getAlertsStore();
+      if (store) {
+        await store.closeOpenIncidentByKey(item.source, needsDrewIncidentKey(ledgerId));
+        requestAlertTick();
+      }
+    } catch (err) {
+      console.error(`needs-drew answer: incident close failed (${err instanceof Error ? err.message : "error"})`);
+    }
     return json({
       ledgerId,
       answered: true,
@@ -4227,6 +4401,7 @@ async function handler(req: Request): Promise<Response> {
       // #1154: when one of the item's refs is in the Project pool, the
       // item page carries the status-request control for that pool item.
       const pooled = pool.find((p) => refs.includes(p.ref));
+      const genealogy = pooled ? deriveGenealogy(pooled, pool) : null;
       const epicRollup = pooled?.kind === "Epic" ? buildEpicRollups(pool).get(pooled.ref) : undefined;
       const dispatchStates = await readyAgentDispatchStates(items);
       if (itemJsonMatch) {
@@ -4234,6 +4409,7 @@ async function handler(req: Request): Promise<Response> {
           subject,
           linkedItems: [...items.values()],
           dispatchStates,
+          ...(genealogy ? { ancestors: genealogy.ancestors, release: genealogy.release } : {}),
         });
       }
       const extras = {
@@ -4254,6 +4430,7 @@ async function handler(req: Request): Promise<Response> {
             }
           : {}),
         ...(epicRollup ? { epicRollup } : {}),
+        ...(genealogy ? { genealogySentence: genealogy.sentence } : {}),
         briefs,
         ...(dispatchStates.length ? { dispatchStates } : {}),
         activity: {
@@ -4304,7 +4481,8 @@ async function fetchHandler(req: Request): Promise<Response> {
       recordRender(route, res.status < 400);
     }
   }
-  return res;
+  const publicHost = process.env.PM_AGG_CONSOLE_HOST?.trim() || "pm.security.cab";
+  return addConsoleShortcut(res, req, publicHost);
 }
 
 // One server per bind address (PM_AGG_HOSTS). Deployment on the
@@ -4433,6 +4611,28 @@ if (githubHotListConsumer) {
       `[activity] WARNING: could not persist unconfigured GitHub source status: ${error instanceof Error ? error.message : String(error)}`,
     );
   });
+}
+
+// SLO sampler (#9988): one sample per facet per minute, appended to the
+// journal from the same health view /health renders. Live mode only.
+const SLO_SAMPLE_INTERVAL_MS = 60_000;
+if (cfg.source !== "fixtures") {
+  let sloSampling = false;
+  const sampleSlo = async (): Promise<void> => {
+    if (sloSampling) return;
+    sloSampling = true;
+    try {
+      const view = await healthContext(false);
+      await sloJournal.append(sampleSloFacets(view, Date.now()));
+    } catch (error) {
+      console.error(`[slo] WARNING: SLO sample failed: ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      sloSampling = false;
+    }
+  };
+  void sampleSlo();
+  const timer = setInterval(() => void sampleSlo(), SLO_SAMPLE_INTERVAL_MS);
+  timer.unref?.();
 }
 
 // The alert throat's engine (#3676): the ~60s delivery/escalation

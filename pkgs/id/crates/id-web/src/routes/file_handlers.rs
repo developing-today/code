@@ -107,8 +107,33 @@ pub(super) async fn save_handler(
     // names the current binding; a doc_id that does not parse as a
     // hash comes from a legacy client that cannot state a base and
     // is not second-guessed here.
-    if let Some(current) = current_filename_hash(&state.store, &req.name).await
-        && let Ok(base) = req.doc_id.parse::<iroh_blobs::Hash>()
+    //
+    // #12146: if the binding cannot be read, the check cannot run, so
+    // the save is refused (503) rather than allowed to proceed as if
+    // the name were unbound.
+    let current_binding = match current_filename_hash(&state.store, &req.name).await {
+        Ok(binding) => binding,
+        Err(err) => {
+            tracing::error!(
+                "[routes] Save of '{}' refused: could not read its current version: {:#}",
+                req.name,
+                err
+            );
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(serde_json::json!({
+                    "error": format!(
+                        "Could not check whether '{}' has a newer version, so the save was not made. Try saving again.",
+                        req.name
+                    ),
+                    "reason": "current_version_unavailable",
+                })),
+            )
+                .into_response();
+        }
+    };
+    if let Some(current) = current_binding
+        && let Ok(base) = id_core::iroh_hash::parse_hash(&req.doc_id)
         && base != current
     {
         tracing::info!(
@@ -1617,21 +1642,21 @@ pub(super) fn extract_raw_text(doc: &serde_json::Value) -> String {
     blocks.join("\n")
 }
 
-/// The hash the filename tag currently points to, if the name is
-/// bound at all. Used by the stale-save conflict check (#8524).
+/// The hash the filename tag currently points to: `Ok(None)` when the
+/// name is not bound, `Err` when the tag store could not be read. Used
+/// by the stale-save conflict check (#8524), which must not mistake a
+/// read failure for "no binding" (#12146): that would skip the check
+/// and let a stale save supersede the current version.
 pub(super) async fn current_filename_hash(
     store: &iroh_blobs::api::Store,
     name: &str,
-) -> Option<iroh_blobs::Hash> {
-    use futures_lite::StreamExt;
-
-    let mut tags = store.tags().list().await.ok()?;
-    while let Some(Ok(tag_info)) = tags.next().await {
-        if tag_info.name.as_ref() == name.as_bytes() {
-            return Some(tag_info.hash);
-        }
-    }
-    None
+) -> anyhow::Result<Option<iroh_blobs::Hash>> {
+    let tag = store
+        .tags()
+        .get(name)
+        .await
+        .map_err(|err| anyhow::anyhow!("reading the filename tag: {err}"))?;
+    Ok(tag.map(|tag_info| tag_info.hash))
 }
 
 /// Archive the original tag by creating a timestamped copy.

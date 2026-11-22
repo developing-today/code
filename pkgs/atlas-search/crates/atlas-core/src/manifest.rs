@@ -175,7 +175,10 @@ impl Manifest {
     pub fn compute_hash(&self) -> String {
         let mut h = Sha256::new();
         h.update(self.canonical().as_bytes());
-        format!("{:x}", h.finalize())
+        h.finalize()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>()
     }
 
     /// The effective surface identity for dedupe keys and source

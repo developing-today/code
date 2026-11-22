@@ -40,14 +40,30 @@
 //!   commits to no body at all can never be decided and is
 //!   [`InvalidReason::InvalidBody`].
 //!
+//! - **Issuer rotation** (design #2804 §3.3, §3.6). Issuance authority
+//!   follows the issuer's generation chain, folded from the
+//!   `issuer.rotation` events in the input with
+//!   [`fold_rotation_chain`]. Each generation key may issue only inside its
+//!   own interval: causally after the rotation that installed it
+//!   ([`InvalidReason::UnlinkedSuccessor`] otherwise) and not causally after
+//!   the rotation that retired it ([`InvalidReason::RetiredGeneration`]).
+//!   Issuance whose position against a rotation the graph cannot settle,
+//!   because the two are causally concurrent or the chain forked, is
+//!   [`FoldOutcome::Disputed`]: kept as evidence, counted in
+//!   [`CurrencyFold::disputed`], and never in balances or supply. A
+//!   currency with no rotation event folds exactly as before. Currency
+//!   definitions commit no recovery key yet (#2251 owns that field), so the
+//!   chain is folded with no recovery commitment and a compromise recovery
+//!   is never authoritative here (§3.4).
+//!
 //! What the fold deliberately does not do:
 //!
 //! - **Anchored currencies.** A definition bound to a ledger
 //!   ([`CurrencyBinding::Ledger`]) registers, but its value events are
 //!   refused ([`InvalidReason::AnchoredBinding`]): anchored balance reads
 //!   come from the ledger, not from graph intent (invariant 3).
-//! - **Rotation, conversion, receipts, grants.** Later design phases with
-//!   their own contracts; not folded here.
+//! - **Conversion, receipts, grants.** Later design phases with their own
+//!   contracts; not folded here.
 //! - **Signature verification.** Events arrive as [`Event`] values whose
 //!   headers the chain layer has already authenticated; the fold trusts the
 //!   header's signer and kind and validates everything else itself.
@@ -61,6 +77,9 @@ use crate::currency::IssuerId;
 use crate::currency::graph::{
     BURN_KIND, CurrencyBinding, CurrencyDefinition, CurrencyId, DEFINE_KIND, ISSUE_KIND,
     TRANSFER_KIND, TokenBurn, TokenIssue, TokenTransfer,
+};
+use crate::issuer_rotation::{
+    ChainStatus, GenerationChain, IssuerRotation, author_id, fold_rotation_chain,
 };
 
 /// Why a currency event was voided by the fold.
@@ -83,6 +102,26 @@ pub enum InvalidReason {
     AnchoredBinding,
     /// Balance or supply arithmetic overflowed `u128`.
     Overflow,
+    /// Issuance signed by a generation key causally after the rotation
+    /// that retired that generation (design #2804 §3.3).
+    RetiredGeneration,
+    /// Issuance signed by a rotated-in key that does not causally follow
+    /// the rotation installing it, so that rotation does not authorise it
+    /// (design #2804 §3.2 rule 4).
+    UnlinkedSuccessor,
+}
+
+/// Why an issuance is disputed rather than settled (design #2804 §3.3).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DisputeReason {
+    /// Signed by a generation key that a rotation retired, but neither
+    /// before nor after that rotation in the causal graph: whether it fell
+    /// inside the generation's interval cannot be decided.
+    ConcurrentWithRotation,
+    /// The issuer's generation chain forked (two rotations claim the same
+    /// predecessor and neither settles), and this issuance is not causally
+    /// before the fork.
+    ForkedChain,
 }
 
 /// The fold's verdict for one input event.
@@ -98,6 +137,9 @@ pub enum FoldOutcome {
     Pending,
     /// Not a currency event; it only participates in causality.
     Ignored,
+    /// Issuance whose validity the observed graph cannot settle. It moves
+    /// no value; its amount is reported by [`CurrencyFold::disputed`].
+    Disputed(DisputeReason),
 }
 
 /// The folded state: definitions, balances, counted supply, and verdicts.
@@ -106,7 +148,12 @@ pub struct CurrencyFold {
     definitions: BTreeMap<Hash, (CurrencyId, CurrencyDefinition)>,
     balances: BTreeMap<(Hash, IssuerId), u128>,
     supply: BTreeMap<Hash, u128>,
+    issued: BTreeMap<Hash, u128>,
+    burned: BTreeMap<Hash, u128>,
+    frontier: BTreeMap<IssuerId, (u64, Hash)>,
     outcomes: BTreeMap<Hash, FoldOutcome>,
+    disputed: BTreeMap<Hash, u128>,
+    generations: BTreeMap<Hash, GenerationChain>,
 }
 
 impl CurrencyFold {
@@ -129,6 +176,51 @@ impl CurrencyFold {
     #[must_use]
     pub fn supply(&self, currency: &Hash) -> u128 {
         self.supply.get(currency).copied().unwrap_or(0)
+    }
+
+    /// Total applied issuance of a currency (never reduced by burns).
+    #[must_use]
+    pub fn issued(&self, currency: &Hash) -> u128 {
+        self.issued.get(currency).copied().unwrap_or(0)
+    }
+
+    /// Total applied burns of a currency.
+    #[must_use]
+    pub fn burned(&self, currency: &Hash) -> u128 {
+        self.burned.get(currency).copied().unwrap_or(0)
+    }
+
+    /// Every holder of a currency with a non-zero balance, by key.
+    #[must_use]
+    pub fn holders(&self, currency: &Hash) -> Vec<(IssuerId, u128)> {
+        self.balances
+            .range((*currency, [0; 32])..=(*currency, [0xff; 32]))
+            .filter(|(_, balance)| **balance > 0)
+            .map(|((_, holder), balance)| (*holder, *balance))
+            .collect()
+    }
+
+    /// The decided frontier: for each author, the highest sequence number
+    /// and event id the fold reached a final verdict on. Pending events are
+    /// not covered. This is the "as of" a snapshot names.
+    #[must_use]
+    pub const fn frontier(&self) -> &BTreeMap<IssuerId, (u64, Hash)> {
+        &self.frontier
+    }
+
+    /// Total disputed issuance of a currency: issuance the observed graph
+    /// cannot place inside its generation's interval. Never in supply.
+    #[must_use]
+    pub fn disputed(&self, currency: &Hash) -> u128 {
+        self.disputed.get(currency).copied().unwrap_or(0)
+    }
+
+    /// The issuer's generation chain for a currency, when the input held
+    /// at least one rotation event for it. `None` means the generation-0
+    /// key is the only issuance key.
+    #[must_use]
+    pub fn generation_chain(&self, currency: &Hash) -> Option<&GenerationChain> {
+        self.generations.get(currency)
     }
 
     /// The fold's verdict for an event id, if the event was in the input.
@@ -166,6 +258,7 @@ pub fn fold_events(events: &[Event], bodies: &BTreeMap<Hash, Vec<u8>>) -> Curren
         by_id.entry(event.id).or_insert(event);
     }
 
+    let graph = Graph::new(&by_id);
     let mut fold = CurrencyFold::default();
     // Events with a final verdict (Applied, Invalid, Ignored). Pending events
     // are never decided, so nothing that depends on them is evaluated.
@@ -199,12 +292,22 @@ pub fn fold_events(events: &[Event], bodies: &BTreeMap<Hash, Vec<u8>>) -> Curren
                 .then_with(|| a.id.as_bytes().cmp(b.id.as_bytes()))
         });
         for event in ordered {
-            let outcome = apply(&mut fold, event, bodies.get(&event.id));
+            let outcome = apply(&mut fold, &graph, event, bodies.get(&event.id));
             fold.outcomes.insert(event.id, outcome);
             if outcome == FoldOutcome::Pending {
                 pending.insert(event.id);
             } else {
                 decided.insert(event.id);
+                let seq = u64::from(event.header.seq_num);
+                let head = fold
+                    .frontier
+                    .entry(signer(event))
+                    .or_insert((seq, event.id));
+                // On a fork (two events at one sequence number) the larger
+                // id is the head, so the frontier does not depend on order.
+                if (seq, event.id.as_bytes()) > (head.0, head.1.as_bytes()) {
+                    *head = (seq, event.id);
+                }
             }
         }
     }
@@ -214,7 +317,175 @@ pub fn fold_events(events: &[Event], bodies: &BTreeMap<Hash, Vec<u8>>) -> Curren
     for id in by_id.keys() {
         fold.outcomes.entry(*id).or_insert(FoldOutcome::Pending);
     }
+    for (compact, (id, _)) in &fold.definitions {
+        if let Some(chain) = graph.chains.get(&(id.issuer(), *compact)) {
+            fold.generations.insert(*compact, chain.clone());
+        }
+    }
     fold
+}
+
+/// One rotation event as [`fold_rotation_chain`] takes it: verified author,
+/// event id, and the rotation its header carries.
+type Rotated = (IssuerId, Hash, IssuerRotation);
+
+/// The causal graph of the input and the issuer generation chains folded
+/// from its rotation events. Both are facts of the input set alone, so
+/// classifying an issuance against them never depends on fold order.
+struct Graph<'a> {
+    by_id: &'a BTreeMap<Hash, &'a Event>,
+    /// Generation chains keyed by (generation-0 issuer, currency compact
+    /// hash), only for currencies that have a rotation event.
+    chains: BTreeMap<(IssuerId, Hash), GenerationChain>,
+}
+
+impl<'a> Graph<'a> {
+    fn new(by_id: &'a BTreeMap<Hash, &'a Event>) -> Self {
+        let mut rotations: BTreeMap<(IssuerId, Hash), Vec<Rotated>> = BTreeMap::new();
+        // The chain layer admits a rotation extension only on the
+        // `issuer.rotation` kind, so the extension alone marks the event.
+        for event in by_id.values() {
+            if let Some(rotation) = &event.header.extensions.rotation {
+                rotations
+                    .entry((rotation.issuer_id, rotation.currency_id))
+                    .or_default()
+                    .push((author_id(event), event.id, rotation.clone()));
+            }
+        }
+        // No currency definition commits a recovery key yet (#2251), so no
+        // recovery transition is authoritative (design #2804 §3.4).
+        let chains = rotations
+            .into_iter()
+            .map(|((issuer, currency), list)| {
+                let chain = fold_rotation_chain(&issuer, &currency, None, &list);
+                ((issuer, currency), chain)
+            })
+            .collect();
+        Self { by_id, chains }
+    }
+
+    /// Whether `ancestor` is a strict causal ancestor of `event` through
+    /// backlinks and `after` links among the input events.
+    fn precedes(&self, ancestor: &Hash, event: &Hash) -> bool {
+        if ancestor == event {
+            return false;
+        }
+        let mut seen: BTreeSet<Hash> = BTreeSet::new();
+        let mut stack: Vec<Hash> = vec![*event];
+        while let Some(id) = stack.pop() {
+            let Some(current) = self.by_id.get(&id) else {
+                continue;
+            };
+            for dep in dependencies(current) {
+                if dep == *ancestor {
+                    return true;
+                }
+                if seen.insert(dep) {
+                    stack.push(dep);
+                }
+            }
+        }
+        false
+    }
+
+    /// Whether `event`, signed by `signer`, may issue under the issuer's
+    /// generation chain for this currency. `Ok` when the currency has no
+    /// rotation and `signer` is the generation-0 key, as before rotation
+    /// existed.
+    fn issuance_authority(
+        &self,
+        issuer: &IssuerId,
+        currency: &Hash,
+        signer: &IssuerId,
+        event: &Hash,
+    ) -> Result<(), FoldOutcome> {
+        let Some(chain) = self.chains.get(&(*issuer, *currency)) else {
+            return if signer == issuer {
+                Ok(())
+            } else {
+                Err(FoldOutcome::Invalid(InvalidReason::NotIssuer))
+            };
+        };
+        // A key may hold more than one generation (A to B and back to A);
+        // the issuance stands if any of its intervals holds it, and the
+        // most favourable verdict wins otherwise.
+        let mut verdict = FoldOutcome::Invalid(InvalidReason::NotIssuer);
+        for (generation, key) in chain.keys.iter().enumerate() {
+            if key != signer {
+                continue;
+            }
+            match self.generation_interval(chain, generation, event) {
+                Ok(()) => return Ok(()),
+                Err(found) => verdict = stronger(verdict, found),
+            }
+        }
+        // A key named only by one of the competing rotations of a forked
+        // chain holds no generation, but its activity after that rotation
+        // is a disputed branch, not a stranger's issuance (§3.2 rule 5).
+        if let ChainStatus::Conflicted { candidates, .. } = &chain.status
+            && candidates.iter().any(|candidate| {
+                self.successor_of(candidate) == Some(*signer) && self.precedes(candidate, event)
+            })
+        {
+            verdict = stronger(verdict, FoldOutcome::Disputed(DisputeReason::ForkedChain));
+        }
+        Err(verdict)
+    }
+
+    /// The successor key a rotation event names.
+    fn successor_of(&self, rotation_event: &Hash) -> Option<IssuerId> {
+        self.by_id
+            .get(rotation_event)
+            .and_then(|event| event.header.extensions.rotation.as_ref())
+            .map(|rotation| rotation.successor_key)
+    }
+
+    /// Whether `event` falls inside `generation`'s interval (§3.3).
+    fn generation_interval(
+        &self,
+        chain: &GenerationChain,
+        generation: usize,
+        event: &Hash,
+    ) -> Result<(), FoldOutcome> {
+        if let Some(start) = generation
+            .checked_sub(1)
+            .and_then(|g| chain.transitions.get(g))
+            && !self.precedes(start, event)
+        {
+            return Err(FoldOutcome::Invalid(InvalidReason::UnlinkedSuccessor));
+        }
+        if let Some(end) = chain.transitions.get(generation) {
+            if self.precedes(end, event) {
+                return Err(FoldOutcome::Invalid(InvalidReason::RetiredGeneration));
+            }
+            if self.precedes(event, end) {
+                return Ok(());
+            }
+            return Err(FoldOutcome::Disputed(DisputeReason::ConcurrentWithRotation));
+        }
+        // The active generation. When the chain forked out of it, only
+        // issuance causally before every competing rotation is settled.
+        if let ChainStatus::Conflicted { candidates, .. } = &chain.status
+            && !candidates
+                .iter()
+                .all(|candidate| self.precedes(event, candidate))
+        {
+            return Err(FoldOutcome::Disputed(DisputeReason::ForkedChain));
+        }
+        Ok(())
+    }
+}
+
+/// Of two refusals for one issuance, the one closest to standing: a
+/// dispute over a voiding, a specific voiding over [`InvalidReason::NotIssuer`],
+/// and otherwise the first found.
+const fn stronger(current: FoldOutcome, found: FoldOutcome) -> FoldOutcome {
+    match (current, found) {
+        (_, FoldOutcome::Disputed(_)) | (FoldOutcome::Invalid(InvalidReason::NotIssuer), _) => {
+            found
+        }
+        _ => current,
+    }
 }
 
 /// The event IDs an event causally depends on: its author's previous event
@@ -232,7 +503,12 @@ fn signer(event: &Event) -> IssuerId {
     *event.header.verifying_key.as_bytes()
 }
 
-fn apply(fold: &mut CurrencyFold, event: &Event, body: Option<&Vec<u8>>) -> FoldOutcome {
+fn apply(
+    fold: &mut CurrencyFold,
+    graph: &Graph<'_>,
+    event: &Event,
+    body: Option<&Vec<u8>>,
+) -> FoldOutcome {
     let kind = event.header.extensions.kind.as_str();
     if !matches!(kind, DEFINE_KIND | ISSUE_KIND | TRANSFER_KIND | BURN_KIND) {
         return FoldOutcome::Ignored;
@@ -243,7 +519,7 @@ fn apply(fold: &mut CurrencyFold, event: &Event, body: Option<&Vec<u8>>) -> Fold
     };
     match kind {
         DEFINE_KIND => apply_define(fold, event, body),
-        ISSUE_KIND => apply_issue(fold, event, body),
+        ISSUE_KIND => apply_issue(fold, graph, event, body),
         TRANSFER_KIND => apply_transfer(fold, event, body),
         BURN_KIND => apply_burn(fold, event, body),
         _ => FoldOutcome::Ignored,
@@ -278,6 +554,8 @@ fn apply_define(fold: &mut CurrencyFold, event: &Event, body: &[u8]) -> FoldOutc
     }
     fold.definitions.insert(compact, (id, definition));
     fold.supply.insert(compact, 0);
+    fold.issued.insert(compact, 0);
+    fold.burned.insert(compact, 0);
     FoldOutcome::Applied
 }
 
@@ -296,7 +574,12 @@ fn value_target(
     Ok((*id, definition.clone()))
 }
 
-fn apply_issue(fold: &mut CurrencyFold, event: &Event, body: &[u8]) -> FoldOutcome {
+fn apply_issue(
+    fold: &mut CurrencyFold,
+    graph: &Graph<'_>,
+    event: &Event,
+    body: &[u8],
+) -> FoldOutcome {
     let Ok(issue) = TokenIssue::from_body(body) else {
         return FoldOutcome::Invalid(InvalidReason::InvalidBody);
     };
@@ -304,12 +587,21 @@ fn apply_issue(fold: &mut CurrencyFold, event: &Event, body: &[u8]) -> FoldOutco
         Ok(pair) => pair,
         Err(outcome) => return outcome,
     };
-    if signer(event) != id.issuer() {
-        return FoldOutcome::Invalid(InvalidReason::NotIssuer);
+    match graph.issuance_authority(&id.issuer(), &issue.currency, &signer(event), &event.id) {
+        Ok(()) => {}
+        Err(FoldOutcome::Disputed(reason)) => {
+            let disputed = fold.disputed(&issue.currency).saturating_add(issue.amount);
+            fold.disputed.insert(issue.currency, disputed);
+            return FoldOutcome::Disputed(reason);
+        }
+        Err(outcome) => return outcome,
     }
     let supply = fold.supply(&issue.currency);
     match supply.checked_add(issue.amount) {
         Some(next) if next <= definition.supply.capped => {
+            let Some(issued) = fold.issued(&issue.currency).checked_add(issue.amount) else {
+                return FoldOutcome::Invalid(InvalidReason::Overflow);
+            };
             if fold
                 .credit(&issue.currency, &issue.to, issue.amount)
                 .is_err()
@@ -317,6 +609,7 @@ fn apply_issue(fold: &mut CurrencyFold, event: &Event, body: &[u8]) -> FoldOutco
                 return FoldOutcome::Invalid(InvalidReason::Overflow);
             }
             fold.supply.insert(issue.currency, next);
+            fold.issued.insert(issue.currency, issued);
             FoldOutcome::Applied
         }
         _ => FoldOutcome::Invalid(InvalidReason::OverCap),
@@ -366,6 +659,9 @@ fn apply_burn(fold: &mut CurrencyFold, event: &Event, body: &[u8]) -> FoldOutcom
     let supply = fold.supply(&burn.currency);
     fold.supply
         .insert(burn.currency, supply.saturating_sub(burn.amount));
+    // Burns never exceed what was issued, so this cannot saturate.
+    let burned = fold.burned(&burn.currency).saturating_add(burn.amount);
+    fold.burned.insert(burn.currency, burned);
     FoldOutcome::Applied
 }
 
@@ -817,5 +1113,323 @@ mod tests {
             ),
             0
         );
+    }
+
+    // ---- issuer rotation (design #2804 §3.3) ----
+
+    fn successor_key() -> SigningKey {
+        SigningKey::from_bytes(&[13; 32])
+    }
+
+    fn rival_key() -> SigningKey {
+        SigningKey::from_bytes(&[15; 32])
+    }
+
+    /// A routine rotation of `world`'s currency, signed by `by` at `seq`
+    /// on `backlink`, installing `to` as generation `from + 1`.
+    fn rotate(
+        world: &World,
+        by: &SigningKey,
+        seq: u32,
+        backlink: Option<Hash>,
+        from: u64,
+        previous: Option<Hash>,
+        to: &SigningKey,
+    ) -> Event {
+        let mut rotation = IssuerRotation::unsigned(
+            crate::issuer_rotation::RotationMode::Routine,
+            world.currency.issuer(),
+            world.currency.compact_hash(),
+            from,
+            previous,
+            crate::currency::issuer_id(to),
+            None,
+        );
+        rotation.prove_successor(to).unwrap();
+        crate::issuer_rotation::sign_rotation(
+            by,
+            seq,
+            backlink,
+            &rotation,
+            backlink.into_iter().collect(),
+        )
+        .unwrap()
+    }
+
+    /// An issuance of `amount` to Alice signed by any generation key.
+    fn issue_by(
+        world: &World,
+        key: &SigningKey,
+        seq: u32,
+        backlink: Option<Hash>,
+        after: Vec<Hash>,
+        amount: u128,
+    ) -> (Event, Vec<u8>) {
+        let body = TokenIssue {
+            currency: world.currency.compact_hash(),
+            amount,
+            to: crate::currency::issuer_id(&alice_key()),
+            memo: None,
+        };
+        let event = crate::currency::graph::sign_generation_issue(
+            key,
+            seq,
+            backlink,
+            &world.currency,
+            &body,
+            after,
+        )
+        .unwrap();
+        (event, body.body().unwrap())
+    }
+
+    /// Folds `events` in the given order and reversed, asserting both
+    /// folds agree on every verdict, and returns the first.
+    fn fold_both_ways(events: &[Event], bodies: &BTreeMap<Hash, Vec<u8>>) -> CurrencyFold {
+        let fold = fold_events(events, bodies);
+        let mut reversed = events.to_vec();
+        reversed.reverse();
+        let back = fold_events(&reversed, bodies);
+        for event in events {
+            assert_eq!(fold.outcome(&event.id), back.outcome(&event.id));
+        }
+        fold
+    }
+
+    #[test]
+    fn a_routine_rotation_hands_issuance_to_the_successor() {
+        let mut world = world(1_000, 100);
+        let (old, new) = (issuer_key(), successor_key());
+        let rotation = rotate(&world, &old, 2, Some(world.issue.id), 0, None, &new);
+        let (by_new, by_new_body) = issue_by(&world, &new, 0, None, vec![rotation.id], 50);
+        let (by_old, by_old_body) = issue_by(&world, &old, 3, Some(rotation.id), vec![], 7);
+        world.bodies.insert(by_new.id, by_new_body);
+        world.bodies.insert(by_old.id, by_old_body);
+        let events = vec![
+            world.define.clone(),
+            world.issue.clone(),
+            rotation.clone(),
+            by_new.clone(),
+            by_old.clone(),
+        ];
+        let fold = fold_both_ways(&events, &world.bodies);
+        let c = world.currency.compact_hash();
+
+        // History before the rotation stands; the successor issues after
+        // it; the retired key cannot issue past its own rotation.
+        assert_eq!(fold.outcome(&world.issue.id), Some(FoldOutcome::Applied));
+        assert_eq!(fold.outcome(&by_new.id), Some(FoldOutcome::Applied));
+        assert_eq!(
+            fold.outcome(&by_old.id),
+            Some(FoldOutcome::Invalid(InvalidReason::RetiredGeneration))
+        );
+        assert_eq!(fold.supply(&c), 150);
+        assert_eq!(fold.disputed(&c), 0);
+        let chain = fold.generation_chain(&c).unwrap();
+        assert_eq!(
+            chain.keys,
+            vec![world.currency.issuer(), crate::currency::issuer_id(&new)]
+        );
+        assert_eq!(chain.transitions, vec![rotation.id]);
+    }
+
+    #[test]
+    fn a_successor_that_does_not_follow_its_rotation_is_not_authorised() {
+        let mut world = world(1_000, 100);
+        let (old, new) = (issuer_key(), successor_key());
+        let rotation = rotate(&world, &old, 2, Some(world.issue.id), 0, None, &new);
+        // Signed by the successor but linked only to the definition.
+        let (early, early_body) = issue_by(&world, &new, 0, None, vec![world.define.id], 50);
+        world.bodies.insert(early.id, early_body);
+        let events = vec![
+            world.define.clone(),
+            world.issue.clone(),
+            rotation,
+            early.clone(),
+        ];
+        let fold = fold_both_ways(&events, &world.bodies);
+        assert_eq!(
+            fold.outcome(&early.id),
+            Some(FoldOutcome::Invalid(InvalidReason::UnlinkedSuccessor))
+        );
+        assert_eq!(fold.supply(&world.currency.compact_hash()), 100);
+    }
+
+    #[test]
+    fn issuance_concurrent_with_a_rotation_is_disputed_not_settled() {
+        let mut world = world(1_000, 100);
+        let (old, new) = (issuer_key(), successor_key());
+        let rotation = rotate(&world, &old, 2, Some(world.issue.id), 0, None, &new);
+        // The old key forks its chain at the rotation's sequence number:
+        // neither before nor after the rotation.
+        let (forked, forked_body) = issue_by(&world, &old, 2, Some(world.issue.id), vec![], 40);
+        world.bodies.insert(forked.id, forked_body);
+        let events = vec![
+            world.define.clone(),
+            world.issue.clone(),
+            rotation,
+            forked.clone(),
+        ];
+        let fold = fold_both_ways(&events, &world.bodies);
+        let c = world.currency.compact_hash();
+        assert_eq!(
+            fold.outcome(&forked.id),
+            Some(FoldOutcome::Disputed(DisputeReason::ConcurrentWithRotation))
+        );
+        assert_eq!(fold.disputed(&c), 40);
+        assert_eq!(fold.supply(&c), 100);
+        assert_eq!(
+            fold.balance(&c, &crate::currency::issuer_id(&alice_key())),
+            100
+        );
+    }
+
+    #[test]
+    fn a_forked_chain_disputes_both_branches_and_keeps_history() {
+        let mut world = world(1_000, 100);
+        let (old, new, rival) = (issuer_key(), successor_key(), rival_key());
+        // The old key's chain forks at sequence 2: an issuance `pre` that
+        // the rotation to `new` follows, and the rotation to `rival`, which
+        // is concurrent with `pre`.
+        let (pre, pre_body) = issue_by(&world, &old, 2, Some(world.issue.id), vec![], 3);
+        let to_new = rotate(&world, &old, 3, Some(pre.id), 0, None, &new);
+        let to_rival = rotate(&world, &old, 2, Some(world.issue.id), 0, None, &rival);
+        let (by_new, by_new_body) = issue_by(&world, &new, 0, None, vec![to_new.id], 5);
+        let (by_rival, by_rival_body) = issue_by(&world, &rival, 0, None, vec![to_rival.id], 6);
+        let (by_old, by_old_body) = issue_by(&world, &old, 4, Some(to_new.id), vec![], 7);
+        // A rival successor's issuance before its own rotation is no branch.
+        let (unlinked, unlinked_body) = issue_by(&world, &rival, 0, None, vec![world.define.id], 9);
+        // A stranger who no rotation names stays a stranger.
+        let (stranger, stranger_body) = issue_by(&world, &bob_key(), 0, None, vec![to_new.id], 8);
+        for (event, body) in [
+            (&pre, pre_body),
+            (&unlinked, unlinked_body),
+            (&by_new, by_new_body),
+            (&by_rival, by_rival_body),
+            (&by_old, by_old_body),
+            (&stranger, stranger_body),
+        ] {
+            world.bodies.insert(event.id, body);
+        }
+        let events = vec![
+            world.define.clone(),
+            world.issue.clone(),
+            pre.clone(),
+            to_new,
+            to_rival,
+            unlinked.clone(),
+            by_new.clone(),
+            by_rival.clone(),
+            by_old.clone(),
+            stranger.clone(),
+        ];
+        let fold = fold_both_ways(&events, &world.bodies);
+        let c = world.currency.compact_hash();
+        let forked = Some(FoldOutcome::Disputed(DisputeReason::ForkedChain));
+        assert_eq!(fold.outcome(&world.issue.id), Some(FoldOutcome::Applied));
+        // `pre` precedes one competing rotation but not the other.
+        assert_eq!(fold.outcome(&pre.id), forked);
+        assert_eq!(
+            fold.outcome(&unlinked.id),
+            Some(FoldOutcome::Invalid(InvalidReason::NotIssuer))
+        );
+        assert_eq!(fold.outcome(&by_new.id), forked);
+        assert_eq!(fold.outcome(&by_rival.id), forked);
+        assert_eq!(fold.outcome(&by_old.id), forked);
+        assert_eq!(
+            fold.outcome(&stranger.id),
+            Some(FoldOutcome::Invalid(InvalidReason::NotIssuer))
+        );
+        assert_eq!(fold.supply(&c), 100);
+        assert_eq!(fold.disputed(&c), 21);
+        assert!(matches!(
+            fold.generation_chain(&c).unwrap().status,
+            ChainStatus::Conflicted { generation: 1, .. }
+        ));
+    }
+
+    #[test]
+    fn a_key_rotated_back_in_issues_again_in_its_new_interval() {
+        let mut world = world(1_000, 100);
+        let (old, new) = (issuer_key(), successor_key());
+        let first = rotate(&world, &old, 2, Some(world.issue.id), 0, None, &new);
+        let back = {
+            let mut rotation = IssuerRotation::unsigned(
+                crate::issuer_rotation::RotationMode::Routine,
+                world.currency.issuer(),
+                world.currency.compact_hash(),
+                1,
+                Some(first.id),
+                world.currency.issuer(),
+                None,
+            );
+            rotation.prove_successor(&old).unwrap();
+            crate::issuer_rotation::sign_rotation(&new, 0, None, &rotation, vec![first.id]).unwrap()
+        };
+        let (again, again_body) = issue_by(&world, &old, 3, Some(first.id), vec![back.id], 9);
+        let (late, late_body) = issue_by(&world, &new, 1, Some(back.id), vec![], 4);
+        world.bodies.insert(again.id, again_body);
+        world.bodies.insert(late.id, late_body);
+        let events = vec![
+            world.define.clone(),
+            world.issue.clone(),
+            first,
+            back,
+            again.clone(),
+            late.clone(),
+        ];
+        let fold = fold_both_ways(&events, &world.bodies);
+        assert_eq!(fold.outcome(&again.id), Some(FoldOutcome::Applied));
+        assert_eq!(
+            fold.outcome(&late.id),
+            Some(FoldOutcome::Invalid(InvalidReason::RetiredGeneration))
+        );
+        assert_eq!(fold.supply(&world.currency.compact_hash()), 109);
+    }
+
+    #[test]
+    fn without_a_rotation_only_the_definition_key_issues() {
+        let mut world = world(1_000, 100);
+        let (stranger, body) = issue_by(&world, &bob_key(), 0, None, vec![world.define.id], 5);
+        world.bodies.insert(stranger.id, body);
+        let events = vec![world.define.clone(), world.issue.clone(), stranger.clone()];
+        let fold = fold_both_ways(&events, &world.bodies);
+        assert_eq!(
+            fold.outcome(&stranger.id),
+            Some(FoldOutcome::Invalid(InvalidReason::NotIssuer))
+        );
+        assert_eq!(fold.supply(&world.currency.compact_hash()), 100);
+    }
+
+    #[test]
+    fn a_rotation_of_another_currency_changes_nothing_here() {
+        let mut world = world(1_000, 100);
+        let (old, new) = (issuer_key(), successor_key());
+        let mut rotation = IssuerRotation::unsigned(
+            crate::issuer_rotation::RotationMode::Routine,
+            world.currency.issuer(),
+            Hash::digest(b"some other currency"),
+            0,
+            None,
+            crate::currency::issuer_id(&new),
+            None,
+        );
+        rotation.prove_successor(&new).unwrap();
+        let elsewhere =
+            crate::issuer_rotation::sign_rotation(&old, 2, Some(world.issue.id), &rotation, vec![])
+                .unwrap();
+        let (more, more_body) = issue_by(&world, &old, 3, Some(elsewhere.id), vec![], 11);
+        world.bodies.insert(more.id, more_body);
+        let events = vec![
+            world.define.clone(),
+            world.issue.clone(),
+            elsewhere,
+            more.clone(),
+        ];
+        let fold = fold_both_ways(&events, &world.bodies);
+        let c = world.currency.compact_hash();
+        assert_eq!(fold.outcome(&more.id), Some(FoldOutcome::Applied));
+        assert!(fold.generation_chain(&c).is_none());
+        assert_eq!(fold.supply(&c), 111);
     }
 }

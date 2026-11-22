@@ -44,6 +44,16 @@
 //!
 //! Artifacts travel over iroh only: pushed to a home server on
 //! [`PUSH_ALPN`], and pulled by account from the same endpoint on [`PULL_ALPN`].
+//!
+//! Signed-bytes profile (slice 9110-11, #10176; research 9110-R1, #10146):
+//! every artifact is signed under one immutable profile, [`LEGACY_PROFILE`]
+//! — see [`signed_bytes`]. Those bytes are never re-serialized, re-hashed or
+//! re-signed. The corrected record profile of the V2 design (deterministic
+//! CBOR body, detached signature over a domain prefix, envelope identity
+//! outside its own preimage) is a separate, additive format,
+//! `id_core::signed_envelope`, not a new reading of these bytes.
+//! [`record_profile`] tells the two apart and reports anything else rather
+//! than guessing.
 
 use std::collections::{BTreeMap, HashSet};
 use std::fs::{self, OpenOptions};
@@ -137,9 +147,23 @@ struct SignedBody<'a> {
     after: Vec<String>,
 }
 
-/// The canonical bytes an artifact's hash and signature cover: the
-/// author's key, sequence, predecessor, kind, body and `after` frontier,
-/// length-prefixed and domain-separated.
+/// The name of the one signed-bytes profile artifacts use.
+pub const LEGACY_PROFILE: &str = "id-artifact-serde-json/v1";
+
+/// The bytes an artifact's hash and signature cover, under [`LEGACY_PROFILE`].
+///
+/// Compact `serde_json` of the author's key, sequence, predecessor, kind,
+/// body and `after` frontier, in that field order, with `after` omitted when
+/// empty and body object keys sorted.
+///
+/// There is no length prefix and no domain separation. An earlier version of
+/// this comment claimed both; the bytes never had them, and every existing
+/// hash and signature covers exactly these bytes, so they must not change
+/// (`test-vectors/legacy-artifact-signatures.json` pins them).
+///
+/// # Errors
+///
+/// A JSON serialization failure (not expected for this shape).
 pub fn signed_bytes(
     author: &str,
     seq: u64,
@@ -156,6 +180,59 @@ pub fn signed_bytes(
         body,
         after: after.to_vec(),
     })?)
+}
+
+/// The signed-record profile a stored record's bytes are in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RecordProfile {
+    /// A JSON [`SignedArtifact`] under [`LEGACY_PROFILE`].
+    LegacyArtifactJson,
+    /// A deterministic-CBOR signed envelope (`id_core::signed_envelope`).
+    SignedEnvelopeCbor,
+}
+
+/// Why a record's bytes name no known profile.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProfileError {
+    /// No bytes at all.
+    Empty,
+    /// The first byte opens neither profile.
+    Unrecognized(u8),
+}
+
+impl std::fmt::Display for ProfileError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Empty => write!(f, "empty record: no signed-record profile"),
+            Self::Unrecognized(byte) => {
+                write!(f, "first byte 0x{byte:02x} opens no signed-record profile")
+            }
+        }
+    }
+}
+
+impl std::error::Error for ProfileError {}
+
+/// Which signed-record profile `bytes` are in, by their first byte, so a
+/// reader dispatches to one parser instead of trying each in turn.
+///
+/// A JSON artifact opens with `{` (0x7b). A canonical CBOR envelope is a
+/// map, so it opens with a CBOR map head (0xa0 to 0xbb). In CBOR 0x7b is a
+/// text-string head, never a map, so the two ranges cannot overlap and one
+/// profile's bytes are never read as the other's. Anything else, including
+/// JSON with leading whitespace, is reported, not coerced: this only names
+/// the profile, and the chosen parser still checks every byte.
+///
+/// # Errors
+///
+/// [`ProfileError`] when the bytes open neither profile.
+pub const fn record_profile(bytes: &[u8]) -> std::result::Result<RecordProfile, ProfileError> {
+    match bytes.first() {
+        None => Err(ProfileError::Empty),
+        Some(b'{') => Ok(RecordProfile::LegacyArtifactJson),
+        Some(0xa0..=0xbb) => Ok(RecordProfile::SignedEnvelopeCbor),
+        Some(other) => Err(ProfileError::Unrecognized(*other)),
+    }
 }
 
 fn is_hash(text: &str) -> bool {
@@ -1283,7 +1360,7 @@ impl<H: SessionHost> ProtocolHandler for ArtifactPullProtocol<H> {
             return Ok(());
         };
         let request: PullRequest =
-            serde_json::from_slice(&frame).map_err(|error| refused(error.into()))?;
+            crate::checked_json::from_slice_unique(&frame).map_err(refused)?;
         let page = self.page(&request).await.map_err(refused)?;
         let bytes = serde_json::to_vec(&page).map_err(|error| refused(error.into()))?;
         write_frame(&mut send, &bytes).await.map_err(refused)?;
@@ -1330,11 +1407,11 @@ pub async fn push(endpoint: &Endpoint, target: EndpointAddr, artifact: &SignedAr
 }
 
 async fn receive_pushed<H: SessionHost>(hub: &H, body: &[u8]) -> Reply {
-    let artifact: SignedArtifact = match serde_json::from_slice(body) {
+    let artifact: SignedArtifact = match crate::checked_json::from_slice_unique(body) {
         Ok(artifact) => artifact,
         Err(error) => {
             return Reply::Refused {
-                message: format!("not an artifact: {error}"),
+                message: format!("not an artifact: {error:#}"),
             };
         }
     };
@@ -1403,7 +1480,8 @@ pub async fn fetch_page_within(
         let frame = read_frame(&mut recv)
             .await?
             .context("home server closed without a page")?;
-        let page: Page = serde_json::from_slice(&frame).context("artifact page is malformed")?;
+        let page: Page =
+            crate::checked_json::from_slice_unique(&frame).context("artifact page is malformed")?;
         ensure!(
             within_budget(&page.artifacts),
             "artifact page is over its byte budget"
@@ -2561,6 +2639,48 @@ mod tests {
             .spawn();
         let client = endpoint().await;
         fetch_page(&client, loopback(&server), &public(1), 0).await
+    }
+    /// #8794: a pushed artifact with a duplicated key is refused at receipt,
+    /// before the hub stores it, and the refusal names the key.
+    #[tokio::test]
+    async fn a_pushed_artifact_with_a_duplicated_key_is_refused_by_name() {
+        let artifact = ArtifactLog::default()
+            .sign(&key(1), &document("hello"))
+            .unwrap();
+        let body = serde_json::to_vec(&artifact).unwrap();
+        let (duplicated, key) = crate::checked_json::with_duplicated_first_key(&body);
+        match receive_pushed(&crate::host::UnreachedHost, &duplicated).await {
+            Reply::Refused { message } => {
+                assert!(message.contains(&format!("{key:?}")), "{message}");
+            }
+            other => panic!("expected a refusal, got {other:?}"),
+        }
+    }
+    /// #8794: pull requests and pages from a peer refuse a duplicated key by
+    /// name instead of collapsing it.
+    #[test]
+    fn pull_frames_with_a_duplicated_key_are_refused_by_name() {
+        let request = serde_json::to_vec(&PullRequest {
+            account: public(1),
+            after: 0,
+        })
+        .unwrap();
+        let page = serde_json::to_vec(&Page {
+            artifacts: Vec::new(),
+        })
+        .unwrap();
+        let (request, request_key) = crate::checked_json::with_duplicated_first_key(&request);
+        let (page, page_key) = crate::checked_json::with_duplicated_first_key(&page);
+        let error = crate::checked_json::from_slice_unique::<PullRequest>(&request).unwrap_err();
+        assert!(
+            format!("{error:#}").contains(&format!("{request_key:?}")),
+            "{error:#}"
+        );
+        let error = crate::checked_json::from_slice_unique::<Page>(&page).unwrap_err();
+        assert!(
+            format!("{error:#}").contains(&format!("{page_key:?}")),
+            "{error:#}"
+        );
     }
     /// The client checks the budget of each page it is sent. A page of several
     /// artifacts over the budget is refused, and one oversized artifact alone is not.

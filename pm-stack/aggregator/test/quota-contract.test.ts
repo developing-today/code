@@ -36,6 +36,9 @@ const ATTENTION_KINDS = ["credential-lifecycle", "over-limit", "payg-unbilled", 
 const isNumOrNull = (v: unknown) => v === null || (typeof v === "number" && Number.isFinite(v));
 const isStrOrNull = (v: unknown) => v === null || typeof v === "string";
 
+// #10467: starting the aggregator subprocess can take longer than bun's
+// default 5 s hook budget on a loaded machine; give the hook room to
+// reach its own readiness deadline and fail with that message instead.
 beforeAll(async () => {
   port = 5100 + Math.floor(Math.random() * 1000);
   proc = spawn({
@@ -61,7 +64,7 @@ beforeAll(async () => {
     await Bun.sleep(120);
   }
   expect(ready).toBe(true);
-});
+}, 60_000);
 
 afterAll(() => {
   proc?.kill();

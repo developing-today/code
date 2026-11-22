@@ -1,19 +1,26 @@
-// AA last-good store (code#3332, moved to Supabase in #6815).
+// AA last-good store (code#3332, remote-capable since #6815; Turso-backed).
 //
-// The collector keeps the last good AA section so a transient Supabase
+// The collector keeps the last good AA section so a transient Turso
 // failure degrades to the previous payload instead of blanking the
-// explorer. In file mode it is a JSON file beside the feed; in supabase
-// mode its canonical copy is public.agg_store_documents keyed
+// explorer. In file mode it is a JSON file beside the feed; in turso
+// mode its canonical copy is agg_store_documents keyed
 // "aa-last-good" (the file is not read or written).
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { AA_LAST_GOOD_DOCUMENT } from "./store-backend.ts";
 
-/** Minimal remote document contract; implemented over Supabase in
+/** Minimal remote document contract; implemented over Turso in
  *  remote-stores.ts and faked in tests. */
 export interface DocumentRemote {
   load(store: string): Promise<{ version: number; document: unknown } | null>;
   save(store: string, version: number, document: unknown): Promise<void>;
+}
+
+/** Append-only capabilities over the same durable document table. */
+export interface AppendOnlyDocumentRemote {
+  load(store: string): Promise<{ version: number; document: unknown } | null>;
+  insertIfAbsent(store: string, version: number, document: unknown): Promise<boolean>;
+  listPrefix(prefix: string): Promise<Array<{ store: string; version: number; document: unknown }>>;
 }
 
 export class AaLastGoodStore {

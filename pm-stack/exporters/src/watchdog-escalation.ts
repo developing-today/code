@@ -25,6 +25,17 @@
 // the #6032 remainder — which calls planEscalation / planRecovery with
 // the tick's pre-decision health record and persists whatever
 // recordEscalation returns.
+//
+// Ordering (task 20118): the incident issue is created BEFORE the
+// queue task is enqueued. Fleet queue validation (repo-task/v1) only
+// accepts a small_fix packet whose dedupe key is the fix family —
+// `repo-health:v1:fix:<repo>:issue:<n>` — with payload.issue.number
+// matching the key, so the task cannot be built until the issue
+// exists. applyEscalationActions stamps the confirmed issue number
+// into the enqueue packet, and buildQueueTaskWrapper is the pure
+// translation from an escalation packet to the validated envelope
+// (the pre-fix production wrapper failed validation on 13 fields and
+// the live hand-off created neither artifact).
 import type { EscalationRecord, FailureClass, SourceHealth } from "./watchdog-state.ts";
 
 /** How long an ordinary escalation stays quiet before it surfaces. */
@@ -47,6 +58,14 @@ export interface EscalationPacket {
   schema: "watchdog-escalation/v1";
   kind: "small_fix";
   source: string;
+  /** Repo that owns the adapter: the incident issue's repo, and the
+   *  queue task's payload.repo / dedupe-key repo. */
+  issueRepo: string;
+  /** Incident issue number once the issue exists. Null in a fresh
+   *  plan (the issue is created first; applyEscalationActions stamps
+   *  the confirmed number in), and carried from the escalation record
+   *  on a partial-hand-off resume. */
+  issueNumber: number | null;
   /** Dedupe pair: (source, failure class). */
   dedupeKey: string;
   outcomeWanted: string;
@@ -86,6 +105,13 @@ export function escalationDedupeKey(source: string, cls: FailureClass | null): s
   return `watchdog-escalation:${source}:${cls ?? "unknown"}`;
 }
 
+/** Every hand-off record this incident carries, latest first — the
+ *  dedupe view planEscalation and buildEscalationPacket share. */
+function escalationRecords(health: SourceHealth): EscalationRecord[] {
+  const existing = health.incident?.escalation;
+  return existing ? [existing, ...(existing.previous ?? [])] : [];
+}
+
 /** Build the queue-task packet for an incident that is escalating. */
 export function buildEscalationPacket(health: SourceHealth, ctx: EscalationContext): EscalationPacket {
   const cls = health.currentClass;
@@ -93,6 +119,8 @@ export function buildEscalationPacket(health: SourceHealth, ctx: EscalationConte
     schema: "watchdog-escalation/v1",
     kind: "small_fix",
     source: health.source,
+    issueRepo: ctx.issueRepo,
+    issueNumber: escalationRecords(health).find((r) => r.class === cls)?.issueNumber ?? null,
     dedupeKey: escalationDedupeKey(health.source, cls),
     outcomeWanted: `source \`${health.source}\` produces a fresh \`latest.json\` with real quota windows again`,
     failure: {
@@ -161,20 +189,113 @@ export function planEscalation(
   // the latest (Codex P2 on PR #8357): a failure class that changes
   // back finds its original pair in `previous` instead of creating a
   // third hand-off.
-  const existing = incident.escalation;
-  const records: EscalationRecord[] = existing ? [existing, ...(existing.previous ?? [])] : [];
+  const records = escalationRecords(health);
   const forClass = records.find((r) => r.class === health.currentClass);
   if (forClass) {
     // Resume a partial hand-off: plan only the creations that never
-    // confirmed, so a retry cannot duplicate the confirmed half.
+    // confirmed, so a retry cannot duplicate the confirmed half. The
+    // issue still plans before the task (the task packet names it).
     const actions: EscalationAction[] = [];
-    if (forClass.queueTaskId === null) actions.push({ type: "enqueue_task", packet });
     if (forClass.issueNumber === null) actions.push(openIssue);
+    if (forClass.queueTaskId === null) actions.push({ type: "enqueue_task", packet });
     return { actions, deduped: actions.length === 0 };
   }
   return {
     deduped: false,
-    actions: [{ type: "enqueue_task", packet }, openIssue],
+    actions: [openIssue, { type: "enqueue_task", packet }],
+  };
+}
+
+/** The repo-task/v1 envelope the fleet queue validates and enqueues.
+ *  Pure translation of an escalation packet: the production
+ *  enqueueTask effector writes this to a file and hands it to
+ *  `fleet queue enqueue`. The full escalation packet rides inside the
+ *  payload, so the claimed task still starts from the packet alone
+ *  (#6033 acceptance: the queue task packet matches the context list). */
+export interface QueueTaskWrapper {
+  title: string;
+  body: string;
+  dedupe_key: string;
+  priority: number;
+  payload: Record<string, unknown>;
+}
+
+export function buildQueueTaskWrapper(packet: EscalationPacket, at: string): QueueTaskWrapper {
+  if (packet.issueNumber === null) {
+    throw new Error(
+      `escalation packet for ${packet.source} carries no incident issue number — the issue must be created before the queue task can name it`,
+    );
+  }
+  const repo = packet.issueRepo;
+  const n = packet.issueNumber;
+  const cls = packet.failure.class ?? "unknown";
+  const repairLines = packet.failure.repairLog.map((e) => `rung ${e.rung} ${e.outcome} at ${e.at}: ${e.detail}`);
+  return {
+    title: `watchdog incident: ${packet.source} (${cls}) — repair the quota producer`,
+    body: [
+      packet.outcomeWanted,
+      "",
+      `Incident issue: ${repo}#${n} (the watchdog auto-closes it on the next producer success — do not close it by hand).`,
+      `Required capability: ${packet.requiredCapability}`,
+      `Acceptance: ${packet.acceptance}`,
+    ].join("\n"),
+    dedupe_key: `repo-health:v1:fix:${repo}:issue:${n}`,
+    priority: 30,
+    payload: {
+      schema: "repo-task/v1",
+      kind: "small_fix",
+      repo,
+      issue: { number: n },
+      problem:
+        `Source \`${packet.source}\` quota producer is failing (${cls}) and every watchdog ` +
+        `repair rung is spent, so the watchdog escalated (watchdog dedupe ${packet.dedupeKey}). ` +
+        `Last detail: ${packet.failure.lastDetail || "(none)"}. The full context packet is in ` +
+        `payload.escalation_packet; the incident issue ${repo}#${n} is the reporting surface.`,
+      priority_reason:
+        "Quota watchdog rung-4 escalation (#6033): a dead quota producer blinds the fleet's " +
+        "provider-quota reads until a browser-enabled agent repairs it; the watchdog has " +
+        "already exhausted its automated repair ladder.",
+      evidence: [
+        `consecutive failures: ${packet.failure.consecutiveFailures}`,
+        ...(repairLines.length > 0 ? repairLines : ["repair log empty — ladder spent without entries"]),
+        `watchdog state file: ${packet.failure.stateFilePath}`,
+      ],
+      acceptance: [
+        packet.acceptance,
+        `incident issue ${repo}#${n} is auto-commented and auto-closed by the watchdog on producer success (the fixer closes nothing by hand)`,
+      ],
+      tests: [
+        "the producer for this source writes a fresh latest.json with status ok and real quota windows",
+        "the watchdog state file shows the incident cleared after the recovery tick",
+      ],
+      context_refs: [
+        packet.failure.stateFilePath,
+        packet.failure.historyRef,
+        packet.failure.adapterRef,
+        `${repo}#${n}`,
+        "developing-today/code#6033",
+      ],
+      scope: {
+        include: [
+          `restore fresh quota documents for source ${packet.source} via its adapter's browser flow (adapter: ${packet.failure.adapterRef})`,
+          "report progress on the incident issue",
+        ],
+        exclude: [
+          ...packet.stopConditions,
+          "rebuilding the watchdog core or the escalation module — report on the incident issue instead if the ladder itself is broken",
+        ],
+      },
+      risk: { level: "low", flags: [] },
+      timebox_minutes: 45,
+      dedupe: {
+        checked_at: at,
+        basis:
+          `watchdog escalation record for (${packet.source}, ${cls}): the incident issue ` +
+          `${repo}#${n} was created by this same hand-off, and the fix-family dedupe key ` +
+          "names it, so a second live task for the incident cannot be enqueued.",
+      },
+      escalation_packet: packet,
+    },
   };
 }
 
@@ -320,9 +441,18 @@ export async function applyEscalationActions(
   for (const action of actions) {
     try {
       switch (action.type) {
-        case "enqueue_task":
-          queueTaskId = await effectors.enqueueTask(action.packet);
+        case "enqueue_task": {
+          // The queue task names the incident issue (fix-family
+          // dedupe): stamp the number this same run just confirmed
+          // into a packet planned before the issue existed. A resume
+          // packet already carries its recorded number.
+          const pkt =
+            action.packet.issueNumber === null && issueNumber !== null
+              ? { ...action.packet, issueNumber }
+              : action.packet;
+          queueTaskId = await effectors.enqueueTask(pkt);
           break;
+        }
         case "open_issue":
           issueNumber = await effectors.openIssue(action);
           break;

@@ -55,6 +55,24 @@ crates/fleet-proxy/         the proxy domain (step 3): `proxy serve`
                             services map). The `serve` half is the
                             fleet-proxy/serve cargo feature, present
                             only in builds carrying proxy-serve.
+crates/fleet-bridge/        the bridge domain: fleet mailboxes on the
+                            message bridge. Central sends messages or
+                            commands to an agent, a group or all
+                            (owner token); agents hello/inbox/post/ack
+                            (fleet token, derived from the owner token
+                            when its own secret is missing). Runbook:
+                            doc/agents/fleet-command-channel.md.
+crates/fleet-agent/         the agent domain and `fleet shell`: one
+                            front door over the other verbs. `agent
+                            enroll` registers any kind of agent and
+                            reports which intake rungs its seat
+                            reaches; `agent next` returns one task
+                            from the highest rung that has one (a
+                            pushed command, the queue, the host's
+                            shortlist, GitHub priority); `shell` runs
+                            a command or opens a shell on the laptop,
+                            a codespace or here. Runbook:
+                            doc/agents/onboarding-an-agent.md.
 crates/fleet-queue/         the queue domain (step 2): the repo-queue
                             client, the queue-broker and secrets-broker
                             roles, and packet validation — the broker
@@ -62,7 +80,9 @@ crates/fleet-queue/         the queue domain (step 2): the repo-queue
                             Its src/bin/ builds the standalone
                             repo-queue / queue-broker / secrets-broker
                             artifacts (the `fleet-brokers` package):
-                            the migration's rollback inventory.
+                            the migration's rollback inventory. Remote
+                            build/test dispatch runbook:
+                            doc/agents/remote-build-and-test.md.
 crates/fleet-search/        the search domain (step 5): the
                             atlas-search CLIENT surface over the
                             live Atlas service's job protocol —
@@ -192,9 +212,9 @@ their domain through argv0.
 
 | nix attr               | profile | capabilities                                                                    |
 | ---------------------- | ------- | ------------------------------------------------------------------------------- |
-| `fleet`                | full    | all ten                                                                         |
+| `fleet`                | full    | every capability                                                                |
 | `fleet-serve`          | serve   | proxy-connect, proxy-serve, queue-broker, secrets-broker, search-serve, secrets |
-| `fleet-static`         | full    | all nine (musl static; the sandbox's artifact)                                  |
+| `fleet-static`         | full    | every capability (musl static; the sandbox's artifact)                          |
 | `fleet-connect`        | connect | proxy-connect (dynamic)                                                         |
 | `fleet-connect-static` | connect | proxy-connect (musl static, runs anywhere)                                      |
 | `fleet-brokers`        | —       | standalone repo-queue / queue-broker / secrets-broker (rollback)                |
@@ -222,12 +242,155 @@ registry, marking each unavailable domain with the reason
 build name, the source rev and the exact enabled-capability list;
 `fleet capabilities` prints the same surface as JSON.
 
+## Operator and contributor contract (DOC-01, #10728)
+
+The queue surface's contract with the humans and agents who operate
+it: lifecycle relations, authority, error posture and privacy. Source
+designs: the lifecycle-subcommands (#9206), typed dependencies /
+notes / journal / field-authority (#9208) and leases / fencing /
+outbox / direct-completion (#9209) components of the pm-orchestration
+design; this section is the reviewed operator/contributor runbook
+their DOC-01 slice called for. A machine check ties it to the
+registry: `pmo_operator_docs_match_registered_help_inventory`
+(`crates/fleet-registry/tests/pmo_operator_docs.rs`).
+
+### The inventory is the registry
+
+`fleet --help` always renders the FULL registry on every variant and
+`fleet capabilities` prints it as JSON. The registered inventory —
+every domain's name, summary, argv0 aliases and the capability ids
+behind them — lives in one place,
+[`crates/fleet-registry/src/lib.rs`](crates/fleet-registry/src/lib.rs),
+and every build compiles it, so no build can know a domain another
+build forgot. The registered domains are `fleet queue`, `fleet serve`,
+`fleet proxy`, `fleet dispatch`, `fleet dispatch-test`,
+`fleet secrets`, `fleet gh`, `fleet bridge`, `fleet agent`,
+`fleet shell`, `fleet search` and `fleet laptop-agent`, plus the
+built-ins `fleet init`, `fleet version`, `fleet capabilities` and
+`fleet help`.
+
+The per-domain `subcommands` arrays are the top-level command inventory rendered by `fleet <domain> --help`. The argument grammar and nested leaves live in the domain handlers and are documented in [`docs/verbs.md`](docs/verbs.md). That reference covers all shipped Fleet domains, top-level verbs, nested queue and agent commands, and where to ask a leaf for exact usage.
+
+The queue client dispatches 32 top-level verbs, including `show`; grouped surfaces (`fallback`, `dispatch`, `session`, `surfaces`, `outbox`, and `stack`) document their nested commands and flags in the same reference. Before scripting an unfamiliar command, check `fleet capabilities` and the leaf's `--help`.
+Shipped examples — every verb below is dispatchable today:
+
+```sh
+fleet queue claim --worker <worker> --lane <lane>        # one atomic claim; identity is stamped at claim time
+fleet queue checkpoint <task> --worker <worker> --stage <stage> --progress '{...}'
+fleet queue park <task> --worker <worker> --reason "CI pending on PR <n>" --delay-seconds 1200
+fleet queue heartbeat <task> --worker <worker> --extend-seconds 900
+fleet queue dep-recheck                                 # re-evaluate recorded typed dependency edges
+fleet queue complete <task> --worker <worker> --result '{...}'
+```
+
+### Designed spellings — not yet in the registry
+
+Two command spellings from the #9206/#9208 designs are contract, not
+surface. They are NOT in the registered inventory and not
+dispatchable today — invoking either answers `unknown command`. They
+appear here because the operator contract references them; do not
+script them until they register:
+
+- `fleet work complete --merge-pr … --close-issues … --close-queue
+--verify --wait` — the designed one-operation completion saga
+  (persist intent → verify each remote effect individually → direct
+  queue close with receipt). Shipped equivalent: verify each remote
+  effect yourself, then `fleet queue complete` with a structured
+  result.
+- `fleet dependency add` — the designed typed-edge verb for declaring
+  a hard blocker on a work item. Shipped equivalent: record the edge
+  with `fleet queue block` (`--blocked-by-issue`, `--blocked-by-pr`,
+  `--blocked-by-task`, `--blocked-by-ci`) and let
+  `fleet queue dep-recheck` re-evaluate it.
+
+### Dependency semantics — typed edges only
+
+What can block a work item is exactly the typed hard-blocker edges
+recorded on it (blocked-by issue / PR / task / CI, each with its
+recheck cadence and TTL). Referencing another item, or being filed as
+its child, blocks nothing: dependency semantics are the typed edges
+only. A cleared edge releases its block; a stale one is re-checked by
+`fleet queue dep-recheck` on the recorded schedule.
+
+### Authority and attribution
+
+A GitHub author field is attribution, not authentication. A session's
+authority over a work item comes from its authenticated queue claim —
+worker, lane, lease, fence — and never from a name in a payload,
+comment or label. The broker stamps claim identity at claim time;
+progress written under a claim is the claimer's record, and message
+text confers nothing.
+
+### Privacy posture — private by default
+
+Everything the broker holds about a task — checkpoints, park
+reasons, heartbeat state, progress JSON — is private by default.
+Nothing mirrors to GitHub automatically: an issue comment or a PR
+reply is a separate, explicit act by the operating agent, and the
+designed private-note mirror requires explicit scoped authorization
+(not shipped). Secrets are by NAME only, resolved through the broker
+([`crates/fleet-secrets`](crates/fleet-secrets)): values never appear
+in code, tests, errors or logs — the strongest redaction is never
+holding the value at all.
+
+Reviewed redaction examples — apply before anything moves from the
+broker's private store to a public surface (amend this table by PR,
+never in place):
+
+| private record (queue-side, fine)             | redacted form before it goes public                            |
+| --------------------------------------------- | -------------------------------------------------------------- |
+| `"progress": {"token": "ghp_abc123…"}`        | `"token": "<redacted — secret resolved by name, never value>"` |
+| `--reason "blocked on https://host/x?auth=…"` | `--reason "blocked on internal service (URL redacted)"`        |
+| a packet body naming a credential value       | the secret's NAME (e.g. `pm-dispatch.api-token`)               |
+
+### Honesty contracts
+
+- **No exactly-once guarantee.** The surface provides
+  no exactly-once guarantee for completion or for the creation
+  outbox: both are at-least-once with receipts, as designed in #9209 —
+  every mutation records a stable operation identity, a result that
+  comes back unknown after a send timeout requires a remote readback
+  before any retry, and completion means a verified terminal state —
+  never a promise that every effect happened exactly once. Operators
+  and agents must not claim an exactly-once property anywhere on
+  this surface.
+- **Concurrency is leases and fencing.** The mechanism is the claim
+  lease with generation/fence checks (#9209); no other concurrency
+  mechanism is offered or implied here.
+- **The Queue Table Improvements gate.** Persisted schema-coupled
+  queue changes are gated on the Queue Table Improvements (QTI)
+  crosswalk. QTI itself remains unlocated/unverified — #9241 is the
+  provenance-recovery research issue — so this contract references
+  it only as a gate and does not describe its content.
+
+### Contributor contract
+
+Keep the command contract together: update
+[`crates/fleet-registry/src/lib.rs`](crates/fleet-registry/src/lib.rs)
+when a top-level help inventory changes, and update
+[`docs/verbs.md`](docs/verbs.md) for every changed or added command,
+including nested leaves and examples, in the same change. Docs must
+not present a designed spelling as shipped: the runtime dispatch is
+the authority on what a binary can run. And a change
+to any settled semantic this section records (claim/park/resume,
+supervision and stop authority, cap policy, attribution/logging)
+requires a decision record in the same body of work — see
+[the fleet decision records index](../../doc/decisions/README.md).
+
 ## Operator reference
 
 - [`docs/fleet-gh-credentials.md`](docs/fleet-gh-credentials.md) —
   the `fleet gh` credential lifecycle: secret names per leg,
   in-process minting, rotation order and overrides, retry-safety,
   unknown-org behavior, exit codes and raw mode (code#10744).
+- [`doc/decisions/`](../../doc/decisions/README.md) — the **fleet
+  decision records** (FDR) index: every durable ruling on queue
+  claim/park/resume semantics, supervision and stop authority, cap
+  policy, and attribution/logging, with its source ruling and
+  implementation links. **A change to any of those semantics requires
+  a decision record in the same body of work** — the same PR, or the
+  same run for non-PR work. See
+  [the rule](../../doc/decisions/README.md#5-same-body-of-work).
 
 ## Build and smoke
 
@@ -254,7 +417,9 @@ both installs. If the build fails in the cargo vendor step with
 'atlas-core'` (or another atlas crate), `pkgs/fleet/Cargo.lock` has
 drifted from the atlas-search path dependencies again — the fleet
 lock covers their external dependencies too (see `default.nix`).
-Regenerate it before building:
+`bash .github/scripts/check-fleet-lock.sh` names that drift in
+seconds without building anything (fleet-smoke runs it on atlas-search
+manifest changes too, #10363). Regenerate the lock before building:
 
 ```sh
 (cd pkgs/fleet && cargo update --workspace)

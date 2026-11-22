@@ -65,6 +65,11 @@ REPO_THRESHOLDS_HOURS = {
     "dezren39/darwin-nix": 6.0,
 }
 
+# Every gh call is bounded (code#11468): a hung gh would otherwise hang
+# the watchdog itself, which is the one outcome a silence probe cannot
+# afford. A timeout is a probe error for that repo, never a verdict.
+GH_TIMEOUT_S = 60.0
+
 TRACKING_TITLE_PREFIX = "CI run silence: "
 TRACKING_LABELS = ["kind/bug", "source/ci-watch", "priority/high"]
 
@@ -164,11 +169,57 @@ def tracking_body(ev: dict) -> str:
 # --- GitHub access (gh CLI only; run history is the only read) ---
 
 
-def gh_json(args: list[str]) -> list | dict:
-    out = subprocess.run(
-        ["gh"] + args, capture_output=True, text=True, check=True
+def gh(args: list[str]) -> str:
+    """Run one gh command, bounded by GH_TIMEOUT_S, and return stdout.
+
+    Raises CalledProcessError, TimeoutExpired or OSError; callers turn
+    those into a per-repo error record (see PROBE_ERRORS)."""
+    return subprocess.run(
+        ["gh"] + args,
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=GH_TIMEOUT_S,
     ).stdout
+
+
+def gh_json(args: list[str]) -> list | dict:
+    out = gh(args)
     return json.loads(out) if out.strip() else []
+
+
+# What one repo's GitHub read or write can raise. Each is recorded on
+# that repo and the pass carries on with the next one (code#11468).
+PROBE_ERRORS = (
+    subprocess.CalledProcessError,
+    subprocess.TimeoutExpired,
+    OSError,
+    json.JSONDecodeError,
+)
+
+
+def describe_error(err: BaseException) -> str:
+    if isinstance(err, subprocess.TimeoutExpired):
+        return f"gh timed out after {err.timeout:g}s: {' '.join(err.cmd[:3])}"
+    if isinstance(err, subprocess.CalledProcessError):
+        detail = (err.stderr or "").strip().splitlines()
+        tail = f": {detail[-1]}" if detail else ""
+        return f"gh exited {err.returncode}: {' '.join(err.cmd[:3])}{tail}"
+    if isinstance(err, json.JSONDecodeError):
+        return f"gh returned unparseable JSON: {err.msg}"
+    return f"{type(err).__name__}: {err}"
+
+
+def error_evaluation(repo: str, threshold_hours: float, err: BaseException) -> dict:
+    """A repo whose history could not be read: no verdict, an error."""
+    return {
+        "repo": repo,
+        "status": "error",
+        "age_hours": None,
+        "threshold_hours": threshold_hours,
+        "last_run": None,
+        "reason": describe_error(err),
+    }
 
 
 def fetch_runs(repo: str) -> list[dict]:
@@ -224,11 +275,10 @@ def apply_action(action: dict, ev: dict) -> None:
         ]
         for label in TRACKING_LABELS:
             args += ["--label", label]
-        subprocess.run(["gh"] + args, capture_output=True, text=True, check=True)
+        gh(args)
     elif action["action"] == "update":
-        subprocess.run(
+        gh(
             [
-                "gh",
                 "issue",
                 "comment",
                 str(action["issue"]),
@@ -236,10 +286,7 @@ def apply_action(action: dict, ev: dict) -> None:
                 repo,
                 "--body",
                 f"Still silent at this pass: {tracking_body(ev)}",
-            ],
-            capture_output=True,
-            text=True,
-            check=True,
+            ]
         )
 
 
@@ -285,16 +332,34 @@ def main(argv: list[str] | None = None) -> int:
             runs = fixture.get("runs", {}).get(repo, [])
             tracking[repo] = fixture.get("tracking", {}).get(repo)
         else:
-            runs = fetch_runs(repo)
-            tracking[repo] = find_tracking_issue(repo)
+            # One repo's failed or hung read is that repo's error; the
+            # others are still evaluated (code#11468).
+            try:
+                runs = fetch_runs(repo)
+                tracking[repo] = find_tracking_issue(repo)
+            except PROBE_ERRORS as err:
+                tracking[repo] = None
+                evaluations.append(error_evaluation(repo, threshold, err))
+                continue
         evaluations.append(evaluate(repo, runs, now, threshold))
 
     actions = plan_actions(evaluations, tracking)
     by_repo = {ev["repo"]: ev for ev in evaluations}
+    apply_errors = []
     if args.apply and fixture is None:
         for action in actions:
-            if action["action"] != "none":
+            if action["action"] == "none":
+                continue
+            try:
                 apply_action(action, by_repo[action["repo"]])
+            except PROBE_ERRORS as err:
+                apply_errors.append(
+                    {
+                        "repo": action["repo"],
+                        "action": action["action"],
+                        "reason": describe_error(err),
+                    }
+                )
 
     print(
         json.dumps(
@@ -303,11 +368,17 @@ def main(argv: list[str] | None = None) -> int:
                 "applied": bool(args.apply and fixture is None),
                 "evaluations": evaluations,
                 "actions": actions,
+                "apply_errors": apply_errors,
             },
             indent=2,
         )
     )
-    return 0
+    # Silence is a finding, not a failure: a completed pass exits 0
+    # whatever it found. A pass where any repo could not be read, or
+    # any tracking write failed, exits 1 so a wired-in step cannot
+    # read partial output as a clean pass.
+    errored = apply_errors or any(ev["status"] == "error" for ev in evaluations)
+    return 1 if errored else 0
 
 
 if __name__ == "__main__":

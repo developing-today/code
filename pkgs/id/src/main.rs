@@ -4,7 +4,7 @@
 //! using content-addressed storage backed by Iroh.
 
 use anyhow::Result;
-use clap::{CommandFactory, Parser};
+use clap::{CommandFactory, FromArgMatches};
 
 // Import from library
 use id::{
@@ -191,14 +191,22 @@ const NOISY_MODULE_FILTERS: &[&str] = &[
 #[tokio::main]
 async fn main() -> Result<()> {
     // Parse CLI first so we can use flags for logging configuration
-    let cli = Cli::parse_from(id::cli::normalize_args(std::env::args_os()));
+    let mut command = Cli::command();
+    let provenance = id_core::discovery::defaults_provenance();
+    let version: &'static str = Box::leak(
+        format!("{}\n{}", env!("CARGO_PKG_VERSION"), provenance.describe()).into_boxed_str(),
+    );
+    command = command.long_version(version);
+    let matches = command
+        .clone()
+        .get_matches_from(id::cli::normalize_args(std::env::args_os()));
+    let cli = Cli::from_arg_matches(&matches).unwrap_or_else(|error| error.exit());
 
     // #2145: `--web-listen` conflicts only with an *explicitly-set*
     // `--bind`/`--port`; clap defaults must not count, so read the value
     // sources from a matches pass (`Cli::parse` above already validated
     // the arguments and would have exited on any error).
     let (bind_explicit, port_explicit) = {
-        let matches = Cli::command().get_matches();
         matches
             .subcommand_matches("serve")
             .map(|serve| {
@@ -291,6 +299,7 @@ async fn main() -> Result<()> {
                 server_config,
                 no_relay,
                 no_gossip,
+                gossip,
                 web,
                 port,
                 bootstrap,
@@ -298,7 +307,6 @@ async fn main() -> Result<()> {
                 topic_secret,
                 no_default_bootstrap,
                 no_default_topic,
-                replace_defaults,
                 no_mdns,
                 dht,
                 iroh_port,
@@ -306,6 +314,8 @@ async fn main() -> Result<()> {
                 web_listen,
                 web_token,
                 web_cookie_secure,
+                gallery_dir,
+                gallery_accept_publish,
                 world,
                 world_admin_token,
                 world_module,
@@ -339,6 +349,7 @@ async fn main() -> Result<()> {
                 groups_log: cli.groups_log,
                 no_relay,
                 no_gossip,
+                gossip,
                 web,
                 port,
                 bootstrap,
@@ -346,7 +357,6 @@ async fn main() -> Result<()> {
                 topic_secret,
                 no_default_bootstrap,
                 no_default_topic,
-                replace_defaults,
                 no_mdns,
                 dht,
                 iroh_port,
@@ -356,6 +366,8 @@ async fn main() -> Result<()> {
                 port_explicit,
                 web_token,
                 web_cookie_secure,
+                gallery_dir,
+                gallery_accept_publish,
                 world,
                 world_admin_token,
                 world_module,
@@ -386,6 +398,7 @@ async fn main() -> Result<()> {
         }
         Some(Command::Id { client }) => cmd_id(client).await,
         Some(Command::Key { command }) => id::commands::cmd_key(command).await,
+        Some(Command::Keyset { command }) => id::commands::cmd_keyset(command).await,
         Some(Command::Peers {
             gossip,
             rpc,
@@ -397,7 +410,6 @@ async fn main() -> Result<()> {
             topic_secret,
             no_default_bootstrap,
             no_default_topic,
-            replace_defaults,
             no_relay,
             no_mdns,
             node,
@@ -414,7 +426,6 @@ async fn main() -> Result<()> {
                 topic_secret,
                 no_default_bootstrap,
                 no_default_topic,
-                replace_defaults,
                 no_relay,
                 no_mdns,
                 abuse,
@@ -455,6 +466,7 @@ async fn main() -> Result<()> {
             id::commands::cmd_unpublish(listen.as_deref(), path.as_deref()).await
         }
         Some(Command::Publications) => id::commands::cmd_publications().await,
+        Some(Command::Gallery(args)) => id::commands::cmd_gallery(args),
         #[cfg(feature = "sandbox")]
         Some(Command::MatchAudit(command)) => id::commands::cmd_match_audit(command),
         #[cfg(feature = "world")]

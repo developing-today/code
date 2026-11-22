@@ -9,6 +9,7 @@
 import { readFile } from "node:fs/promises";
 import type { UnmatchedCharge } from "./charges-match.ts";
 import type { CheckoutDrift } from "./checkout-drift.ts";
+import { isBoardSnapshot, type BoardSnapshot } from "./design-boards.ts";
 import { isProjectAudit, isProjectPoolItem } from "./projects.ts";
 import { isRepoCensus, type RepoCensus } from "./coverage.ts";
 import { isSessionRecord } from "./registry.ts";
@@ -45,6 +46,7 @@ import type {
   SessionRecord,
   SnapshotRecord,
 } from "./model.ts";
+import type { BoardDef } from "./board-registry.ts";
 import { isCredentialLifecycleRow, safeProviderReason } from "./credential-lifecycle.ts";
 
 export interface FleetFeed {
@@ -129,15 +131,21 @@ export interface FleetFeed {
   projects?: ProjectPoolItem[];
   /** Scheduled Project #4 audit snapshot (fields, views, totals, and distributions). */
   projectAudit?: ProjectAudit;
+  /** Per-board audits for the registry-driven Projects pool (#9062). */
+  projectAudits?: Record<string, ProjectAudit>;
+  /** Stable board identities and hierarchy used to produce the Projects pool. */
+  projectBoardRegistry?: BoardDef[];
+  /** Collector-cached Projects #4/#5, including draft ideas and dates. */
+  designBoards?: BoardSnapshot[];
   /** Project #4 coverage census (#1220/#1224): per-repo open-issue,
    * gate-label, and timestamped >90-day untouched-issue counts from the
    * collector's Search API reads, embedded beside the projects section.
    * Absent when the collector had no GitHub token or the census failed. */
   coverage?: RepoCensus[];
   /** AA cost explorer section: the ainventory (AA import) data read
-   * by the collector from Supabase, plus pool/catalog coverage computed
+   * by the collector from Turso, plus pool/catalog coverage computed
    * against the repo's opencode config. Present-but-absent
-   * ({status:"absent", reason}) when Supabase was unreachable — the
+   * ({status:"absent", reason}) when Turso was unreachable — the
    * section degrades, the feed never fails over it. */
   aa?: AaFeedSection;
   /** Optional collector outcomes. Older feeds have no metadata and keep
@@ -1210,4 +1218,9 @@ export function ageMsText(ageMs: number): string {
 /** "3m old", "2h old", "fresh" — for provenance strings. */
 export function feedAgeText(generatedAt: string, now = Date.now()): string {
   return ageMsText(now - Date.parse(generatedAt));
+}
+
+/** Malformed/missing cached boards stay unavailable. */
+export function designBoardsFromFeed(feed: Partial<FleetFeed> | null | undefined): BoardSnapshot[] {
+  return Array.isArray(feed?.designBoards) ? feed.designBoards.filter(isBoardSnapshot) : [];
 }

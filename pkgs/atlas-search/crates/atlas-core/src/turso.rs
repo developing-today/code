@@ -264,7 +264,7 @@ fn run_cmd(prog: &str, args: &[&str], envs: &[(&str, &str)], timeout: Duration) 
 /// value by name (the bws CLI, access token from the environment or
 /// the fleet's bws-env script). Errors are opaque — the caller
 /// treats any failure as "not that source".
-fn bws_secret(name: &str) -> Option<String> {
+pub(crate) fn bws_secret(name: &str) -> Option<String> {
     let access = match std::env::var("BWS_ACCESS_TOKEN") {
         Ok(t) if !t.is_empty() => t,
         _ => {

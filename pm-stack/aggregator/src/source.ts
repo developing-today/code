@@ -1,6 +1,7 @@
 // The one interface every data source implements. The views never know
 // whether they are looking at fixtures or live readers — swapping one for
 // the other is a config change (PM_AGG_SOURCE), not a code change.
+import type { BoardSnapshot } from "./design-boards.ts";
 import type { SectionDiagnosis } from "./feed.ts";
 import type { QueueSnapshot } from "./queue.ts";
 import type { Phase12Snapshot } from "./phase12.ts";
@@ -72,6 +73,8 @@ export interface Source {
   projects(): Promise<ProjectPoolItem[]>;
   /** Scheduled Project #4 audit snapshot; null when unavailable or malformed. */
   projectAudit?(): Promise<ProjectAudit | null>;
+  /** Cached Designs/Roadmaps/Ideas, never a per-page GitHub request. */
+  designBoards?(): Promise<BoardSnapshot[]>;
   /** The collector's per-repo backlog census (#1220), when the source
    * carries one; null = not collected. Optional so fixtures and test
    * doubles keep working — the coverage panel degrades honestly. */

@@ -6,12 +6,15 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/developing-today/code/pkgs/mcpx/internal/config"
 	"github.com/developing-today/code/pkgs/mcpx/internal/execsvc"
+	"github.com/developing-today/code/pkgs/mcpx/internal/logging"
 )
 
 // collectFrames registers a sink for run on s and returns the frames it
@@ -24,12 +27,79 @@ func collectFrames(s *Server, run string) *[]execsvc.Frame {
 	return frames
 }
 
+func TestReportCallFrameWritesPayloadFreeLedgerWithoutRun(t *testing.T) {
+	dir := t.TempDir()
+	ledger, err := logging.NewFileSink(logging.FileOptions{Dir: dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = ledger.Close() }()
+	s := &Server{callLedger: ledger}
+	start := time.Now().Add(-25 * time.Millisecond)
+	s.reportCallFrame(context.Background(), "srv", "tool", "session-7", map[string]any{"secret": "do-not-write"}, start,
+		json.RawMessage(`{"isError":true,"content":[{"text":"private error"}]}`), nil)
+	s.reportCallFrame(context.Background(), "srv", "ok", "", map[string]any{}, time.Now(), json.RawMessage(`{"ok":true}`), nil)
+
+	data, err := os.ReadFile(filepath.Join(dir, "mcpx-"+time.Now().Format("2006-01-02")+".jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("ledger has %d records, want exactly 2: %s", len(lines), data)
+	}
+	var failed, succeeded map[string]any
+	if err := json.Unmarshal([]byte(lines[0]), &failed); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal([]byte(lines[1]), &succeeded); err != nil {
+		t.Fatal(err)
+	}
+	if failed["server"] != "srv" || failed["tool"] != "tool" || failed["outcome"] != "error" || failed["msg"] != "tool_call" || failed["caller_session"] != "session-7" {
+		t.Fatalf("error ledger row = %v", failed)
+	}
+	if _, ok := failed["duration_ms"]; !ok || failed["ts"] == nil {
+		t.Fatalf("error ledger row lacks timestamp or duration: %v", failed)
+	}
+	if succeeded["server"] != "srv" || succeeded["tool"] != "ok" || succeeded["outcome"] != "success" {
+		t.Fatalf("success ledger row = %v", succeeded)
+	}
+	if strings.Contains(string(data), "secret") || strings.Contains(string(data), "private error") {
+		t.Fatalf("ledger leaked call payload: %s", data)
+	}
+}
+
+func TestPruneCallLedgerKeepsEightCalendarDays(t *testing.T) {
+	dir := t.TempDir()
+	now := time.Date(2026, time.November, 18, 12, 0, 0, 0, time.UTC)
+	for _, name := range []string{
+		"mcpx-2026-11-10.jsonl",
+		"mcpx-2026-11-11.jsonl",
+		"mcpx-2026-11-11-120000.jsonl",
+		"other-2026-11-01.jsonl",
+	} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("{}\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	pruneCallLedger(dir, now)
+	if _, err := os.Stat(filepath.Join(dir, "mcpx-2026-11-10.jsonl")); !os.IsNotExist(err) {
+		t.Fatalf("expired daily ledger file was not removed: %v", err)
+	}
+	for _, name := range []string{"mcpx-2026-11-11.jsonl", "mcpx-2026-11-11-120000.jsonl", "other-2026-11-01.jsonl"} {
+		if _, err := os.Stat(filepath.Join(dir, name)); err != nil {
+			t.Fatalf("kept ledger/unrelated file %s missing: %v", name, err)
+		}
+	}
+}
+
 func TestReportCallFrameMarksIsErrorResultsFailed(t *testing.T) {
 	s := &Server{reg: &Registry{}}
 	frames := collectFrames(s, "run-1")
 	ctx := withRun(context.Background(), "run-1")
 
-	s.reportCallFrame(ctx, "srv", "tool", map[string]any{}, time.Now(),
+	s.reportCallFrame(ctx, "srv", "tool", "", map[string]any{}, time.Now(),
 		json.RawMessage(`{"content":[{"type":"text","text":"no"}],"isError":true}`), nil)
 	if len(*frames) != 1 {
 		t.Fatalf("frames = %v, want 1", *frames)
@@ -39,7 +109,7 @@ func TestReportCallFrameMarksIsErrorResultsFailed(t *testing.T) {
 		t.Fatalf("isError result must be a failed call frame, got %+v", c)
 	}
 
-	s.reportCallFrame(ctx, "srv", "tool", map[string]any{}, time.Now(),
+	s.reportCallFrame(ctx, "srv", "tool", "", map[string]any{}, time.Now(),
 		json.RawMessage(`{"content":[],"isError":false}`), nil)
 	if len(*frames) != 2 || !(*frames)[1].Call.OK {
 		t.Fatalf("a clean result must stay ok, got %+v", *frames)
@@ -58,7 +128,7 @@ func TestReportCallFrameResolvesExactServerBeforeNamespace(t *testing.T) {
 	frames := collectFrames(s, "run-2")
 	ctx := withRun(context.Background(), "run-2")
 
-	s.reportCallFrame(ctx, "b", "x", map[string]any{}, time.Now(), nil, nil)
+	s.reportCallFrame(ctx, "b", "x", "", map[string]any{}, time.Now(), nil, nil)
 	if len(*frames) != 1 {
 		t.Fatalf("frames = %v, want 1", *frames)
 	}
@@ -73,7 +143,7 @@ func TestReportCallFrameResolvesExactServerBeforeNamespace(t *testing.T) {
 	}}
 	s2 := &Server{reg: reg2}
 	frames2 := collectFrames(s2, "run-3")
-	s2.reportCallFrame(withRun(context.Background(), "run-3"), "ns", "x",
+	s2.reportCallFrame(withRun(context.Background(), "run-3"), "ns", "x", "",
 		map[string]any{}, time.Now(), nil, nil)
 	if len(*frames2) != 1 {
 		t.Fatalf("frames = %v, want 1", *frames2)

@@ -41,7 +41,29 @@ export interface NeedsDrewItem {
    *  must show the honest fallback, not invent one. */
   reason: string | null;
   updatedAt: string;
+  /** The hands marker in the item body, when it carries one
+   *  (FDR-0013). Absent on items censused before the marker existed;
+   *  read it through {@link needsDrewWait}. */
+  hands?: NeedsDrewHands | null;
 }
+
+/** What only a person's hands can do (FDR-0013). The same four kinds
+ *  `fleet queue block --hands` accepts. */
+export const HANDS_KINDS = ["physical", "interactive-login", "payment", "signature"] as const;
+export type HandsKind = (typeof HANDS_KINDS)[number];
+
+export interface NeedsDrewHands {
+  kind: HandsKind;
+  /** The one action, when the marker states it. */
+  action: string | null;
+}
+
+/** How an item waits (FDR-0013, doc/decisions):
+ *  - `hands`: something only a person's hands can do; it names one action.
+ *  - `review`: a review was asked for (`user/review`).
+ *  - `agent-decides`: an agent parked a choice on the owner. That is
+ *    fleet work, not the owner's: an agent decides it and continues. */
+export type NeedsDrewWait = "hands" | "review" | "agent-decides";
 
 export interface NeedsDrewSourceStatus {
   repo: string;
@@ -123,6 +145,41 @@ export function extractNeedsDrewReason(body: unknown): string | null {
   const m = /(?:^|\n)\s*(?:escalated(?:\s+to\s+drew)?|reason)\s*[:\-—]\s*(.+)/i.exec(body);
   const reason = m?.[1]?.trim();
   return reason ? capUnits(reason, 240) : null;
+}
+
+/** The hands marker an item body carries, if any:
+ *  `<!-- hands:v1 kind=interactive-login action="one sentence" -->`.
+ *  A marker with an unknown kind is not a hands marker: the item then
+ *  falls back to its labels rather than being trusted as a hands item. */
+export function extractNeedsDrewHands(body: unknown): NeedsDrewHands | null {
+  if (typeof body !== "string") return null;
+  const m = /<!--\s*hands:v1\s+kind=([a-z-]+)(?:\s+action="([^"]*)")?\s*-->/.exec(body);
+  if (!m) return null;
+  const kind = (HANDS_KINDS as readonly string[]).includes(m[1]) ? (m[1] as HandsKind) : null;
+  if (!kind) return null;
+  const action = m[2]?.trim();
+  return { kind, action: action ? capUnits(action, 240) : null };
+}
+
+/** How one census item waits. A hands marker wins; then a review
+ *  request; everything else was parked on the owner by an agent. */
+export function needsDrewWait(item: Pick<NeedsDrewItem, "needsLabels" | "hands">): NeedsDrewWait {
+  if (item.hands) return "hands";
+  if (item.needsLabels.includes("user/review")) return "review";
+  return "agent-decides";
+}
+
+/** The census items that are the owner's: hands items and review
+ *  requests. Agent-parked choices are left out. */
+export function needsDrewOwnerItems(census: NeedsDrewCensus): NeedsDrewItem[] {
+  return census.items.filter((i) => needsDrewWait(i) !== "agent-decides");
+}
+
+/** Counts per kind of wait, for headings and scoreboards. */
+export function needsDrewWaitCounts(census: NeedsDrewCensus): Record<NeedsDrewWait, number> {
+  const counts: Record<NeedsDrewWait, number> = { hands: 0, review: 0, "agent-decides": 0 };
+  for (const i of census.items) counts[needsDrewWait(i)]++;
+  return counts;
 }
 
 export interface NeedsDrewSweeperOptions {
@@ -235,6 +292,7 @@ export async function buildNeedsDrewCensus(
               ),
               reason: extractNeedsDrewReason(raw.body),
               updatedAt: typeof raw.updated_at === "string" ? raw.updated_at : fetchedAt,
+              hands: extractNeedsDrewHands(raw.body),
             });
           }
           if (rawItems.length < PER_PAGE || status.count >= total) break;
@@ -435,6 +493,16 @@ export async function raiseNeedsDrew(
 export async function getNeedsDrew(file: string, ledgerId: string): Promise<NeedsDrewQuestion | null> {
   const items = await readNeedsDrewItems(file);
   return items.find((i) => i.ledgerId === ledgerId) ?? null;
+}
+
+/**
+ * The alert-incident key a needs-drew question's incident is posted under:
+ * the raiser (fleet-queue's needs_drew poster) posts the incident with key
+ * `needs-drew:<ledgerId>`, and the answer path closes the incident by this
+ * key (#8605). Pinned here so the convention has exactly one spelling.
+ */
+export function needsDrewIncidentKey(ledgerId: string): string {
+  return `needs-drew:${ledgerId}`;
 }
 
 /** Record an answer. First answer wins; repeats return current state. */

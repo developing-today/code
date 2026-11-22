@@ -7,14 +7,8 @@ Drew 2026-10-28. Runs as an agent cron job `runtime-db-export` every 6 hours
 runtime DB (per-exec mount namespaces hide the socket); the only source
 route is the `muse.db` tool inside an agent run.
 
-**Repointed 2026-11-06** (code#5691): the landing side moved from muse-dev2
-Supabase (`agent.mirror_*`) to the dedicated Turso DB `muse-mirror`
-(`agent_mirror_*`), whose initial contents are the migration copy of the PG
-tables (219,105 rows, parity-verified). The job was paused for the migration
-and is **safe to unpause** — see the status banner at the top of JOB-BODY.md
-for the first-run checks. Nothing in this directory writes to Postgres
-anymore; `load_rows_pg.py` / `run_sql_pg.py` are the retired PG versions,
-kept for reference/rollback only.
+Turso is the store: everything here lands in the Turso DB `muse-mirror`
+(`agent_mirror_*`).
 
 ## Files
 
@@ -41,8 +35,6 @@ kept for reference/rollback only.
   `agent_mirror_export_state`.
 - `spec_m1..m8.json`, `spec_r1.json`, `spec_r2.json`, `spec_s5.json` —
   loader specs for the saved-output flow.
-- `schema.sql`, `schema2.sql` — the original PG DDL for all landing tables
-  (historical; the live SQLite DDL lives in `turso_client.py`).
 - `state.json` — per-unit watermarks/status (mirrored in muse-mirror).
 - `progress/` — backfill logs per unit (build record).
 - `merge_s5.py` — S5 merge helper from the build (superseded by the JOB-BODY

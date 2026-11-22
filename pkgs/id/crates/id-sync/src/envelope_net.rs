@@ -100,7 +100,7 @@ async fn exchange(
         write_frame(&mut send, json).await?;
         send.finish().context("finishing the request")?;
         let frame = read_frame(&mut recv).await?.context("no reply")?;
-        serde_json::from_slice::<Reply>(&frame).context("malformed reply")
+        crate::checked_json::from_slice_unique::<Reply>(&frame).context("malformed reply")
     }
     .await;
     conn.close(0_u32.into(), b"done");
@@ -182,11 +182,11 @@ where
 }
 
 async fn receive<H: SessionHost>(hub: &H, body: &[u8]) -> Reply {
-    let envelope: Envelope = match serde_json::from_slice(body) {
+    let envelope: Envelope = match crate::checked_json::from_slice_unique(body) {
         Ok(envelope) => envelope,
         Err(error) => {
             return Reply::Refused {
-                message: format!("not an envelope: {error}"),
+                message: format!("not an envelope: {error:#}"),
             };
         }
     };
@@ -524,6 +524,34 @@ mod tests {
             started.elapsed()
         );
         assert_eq!(outcome, Outcome::Retry("delivery timed out".to_owned()));
+    }
+    /// #8794: a received envelope with a duplicated key is refused before the
+    /// hub sees it, and the refusal names the key.
+    #[tokio::test]
+    async fn an_envelope_with_a_duplicated_key_is_refused_by_name() {
+        let body = serde_json::to_vec(&test_envelope()).unwrap();
+        let (duplicated, key) = crate::checked_json::with_duplicated_first_key(&body);
+        match receive(&crate::host::UnreachedHost, &duplicated).await {
+            Reply::Refused { message } => {
+                assert!(message.contains(&format!("{key:?}")), "{message}");
+            }
+            other => panic!("expected a refusal, got {other:?}"),
+        }
+    }
+    /// #8794: a peer's reply frame with a duplicated key is refused, not
+    /// collapsed into the outcome the caller acts on.
+    #[test]
+    fn a_reply_with_a_duplicated_key_is_refused_by_name() {
+        let body = serde_json::to_vec(&Reply::Refused {
+            message: "no".to_owned(),
+        })
+        .unwrap();
+        let (duplicated, key) = crate::checked_json::with_duplicated_first_key(&body);
+        let error = crate::checked_json::from_slice_unique::<Reply>(&duplicated).unwrap_err();
+        assert!(
+            format!("{error:#}").contains(&format!("{key:?}")),
+            "{error:#}"
+        );
     }
     /// A signed envelope from a throwaway account, for the delivery tests
     /// that never reach a server which would check it.

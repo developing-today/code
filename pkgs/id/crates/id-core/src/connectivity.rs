@@ -18,7 +18,8 @@ use iroh::{
 /// `N0` is the default: n0's public relays, which also carry traffic when two
 /// peers cannot reach each other directly. `Disabled` uses direct addresses
 /// only, as the `--no-relay` flag does.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum RelayPolicy {
     /// n0's public relay servers.
     #[default]

@@ -58,9 +58,9 @@ import { spawn, spawnSync } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import http from 'node:http';
-import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { expandTilde, resolveHome } from './home-dir.mjs';
 
 // ---------- small utilities ----------
 
@@ -68,9 +68,7 @@ export const expandPath = (p, env = process.env) => {
   if (typeof p !== 'string') return p;
   let out = p.replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g, (_, k) => env[k] ?? '');
   out = out.replace(/\$([A-Za-z_][A-Za-z0-9_]*)/g, (_, k) => env[k] ?? '');
-  if (out === '~') return os.homedir();
-  if (out.startsWith('~/')) return path.join(os.homedir(), out.slice(2));
-  return out;
+  return expandTilde(out, env, 'proxy-supervise (a ~ path in its config)');
 };
 
 export const sha256Hex = (data) => crypto.createHash('sha256').update(data).digest('hex');
@@ -369,7 +367,7 @@ const spawnInstance = async (cfg, proxy, env, port) => {
     const run = () =>
       spawnSync('systemd-run', [
         ...scArgs(cfg), `--unit=${unit}`, '--collect',
-        `--working-directory=${proxy.cwd || os.homedir()}`,
+        `--working-directory=${proxy.cwd || resolveHome(process.env, `proxy-supervise (default cwd for ${proxy.name})`)}`,
         ...setenv, '--', ...proxy.command,
       ], { encoding: 'utf8', timeout: 30000 });
     let r = run();
@@ -396,7 +394,7 @@ const spawnInstance = async (cfg, proxy, env, port) => {
   fs.mkdirSync(path.dirname(logFile), { recursive: true });
   const fd = fs.openSync(logFile, 'a');
   const child = spawn(proxy.command[0], proxy.command.slice(1), {
-    cwd: proxy.cwd || os.homedir(),
+    cwd: proxy.cwd || resolveHome(process.env, `proxy-supervise (default cwd for ${proxy.name})`),
     env: fullEnv,
     detached: true,
     stdio: ['ignore', fd, fd],

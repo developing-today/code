@@ -57,3 +57,35 @@ pub trait SessionHost: Clone + std::fmt::Debug + Send + Sync + 'static {
         after: u64,
     ) -> impl Future<Output = Result<Availability<Vec<SignedArtifact>>, Error>> + Send;
 }
+
+/// Test support: a host that must never be reached, for gate tests that
+/// prove a refused body never gets as far as the hub.
+#[cfg(test)]
+#[derive(Clone, Debug)]
+pub(crate) struct UnreachedHost;
+
+#[cfg(test)]
+#[allow(clippy::panic, clippy::unused_async_trait_impl)]
+impl SessionHost for UnreachedHost {
+    async fn receive_envelope(
+        &self,
+        _envelope: Envelope,
+    ) -> Result<Availability<Option<EnvelopeReceived>>, Error> {
+        panic!("a refused envelope reached the host")
+    }
+
+    async fn receive_artifact(
+        &self,
+        _artifact: SignedArtifact,
+    ) -> Result<Availability<Option<Stored>>, Error> {
+        panic!("a refused artifact reached the host")
+    }
+
+    async fn read_artifacts(
+        &self,
+        _account: String,
+        _after: u64,
+    ) -> Result<Availability<Vec<SignedArtifact>>, Error> {
+        panic!("the host was read")
+    }
+}

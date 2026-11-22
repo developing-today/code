@@ -129,7 +129,13 @@ fn encode_argument(major: u8, value: u64, out: &mut Vec<u8>) {
     }
 }
 
-fn encode_into(value: &Value, out: &mut Vec<u8>) -> Result<(), CborError> {
+/// Encodes `value` at nesting `depth`, with the decoder's exact depth rule (#11315): a
+/// value deeper than [`MAX_NESTING_DEPTH`] is refused, so every encoding round-trips and
+/// a caller-built deep value cannot exhaust the stack.
+fn encode_into(value: &Value, out: &mut Vec<u8>, depth: u32) -> Result<(), CborError> {
+    if depth > MAX_NESTING_DEPTH {
+        return Err(CborError::TooDeeplyNested);
+    }
     match value {
         Value::Null => out.push(0xf6),
         Value::Bool(false) => out.push(0xf4),
@@ -150,7 +156,7 @@ fn encode_into(value: &Value, out: &mut Vec<u8>) -> Result<(), CborError> {
         Value::Array(items) => {
             encode_argument(4, items.len() as u64, out);
             for item in items {
-                encode_into(item, out)?;
+                encode_into(item, out, depth + 1)?;
             }
         }
         Value::Map(entries) => {
@@ -162,7 +168,7 @@ fn encode_into(value: &Value, out: &mut Vec<u8>) -> Result<(), CborError> {
                     return Err(CborError::InvalidMapKey);
                 }
                 let mut key_bytes = Vec::new();
-                encode_into(key, &mut key_bytes)?;
+                encode_into(key, &mut key_bytes, depth + 1)?;
                 if encoded.iter().any(|(existing, _)| *existing == key_bytes) {
                     return Err(CborError::DuplicateKey);
                 }
@@ -172,7 +178,7 @@ fn encode_into(value: &Value, out: &mut Vec<u8>) -> Result<(), CborError> {
             encode_argument(5, encoded.len() as u64, out);
             for (key_bytes, val) in encoded {
                 out.extend_from_slice(&key_bytes);
-                encode_into(val, out)?;
+                encode_into(val, out, depth + 1)?;
             }
         }
     }
@@ -182,7 +188,7 @@ fn encode_into(value: &Value, out: &mut Vec<u8>) -> Result<(), CborError> {
 /// Encode a value in the canonical profile.
 pub fn encode_canonical(value: &Value) -> Result<Vec<u8>, CborError> {
     let mut out = Vec::new();
-    encode_into(value, &mut out)?;
+    encode_into(value, &mut out, 0)?;
     Ok(out)
 }
 

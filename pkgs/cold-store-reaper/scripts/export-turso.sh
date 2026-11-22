@@ -13,6 +13,11 @@
 # dump through scripts/repair_dump.py (libsql does not escape single
 # quotes inside the sqlite_schema INSERTs that register virtual
 # tables, so FTS5 databases are otherwise unparseable — #1391),
+# scripts/dedupe_dump.py (libsql can dump a table twice; an exact
+# repeat is dropped, a differing one fails the export — #12000) and
+# scripts/vector_index_dump.py (stock sqlite3 cannot build a libsql
+# vector index, so its CREATE INDEX is kept as a recorded statement;
+# the index data stays in its shadow tables — #12000),
 # require the filtered dump to end in COMMIT; (a truncated dump
 # otherwise rebuilds into an integrity-clean but partial database),
 # stream it through
@@ -38,11 +43,43 @@
 #   TURSO_DUMP_MAX_TIME_SECONDS
 #                             optional; curl --max-time for one
 #                             database's /dump download (default
-#                             1800). Large databases (atlas is
-#                             ~500 MB of SQL) outgrow the old fixed
-#                             300 s cap; the download also gets one
-#                             whole-request retry on transport
-#                             failure. Small databases are unaffected.
+#                             3600). Large databases outgrow a short
+#                             cap: atlas's dump passed 10 GB by
+#                             2026-11-20 and no longer finished
+#                             inside the old 1800 s. Each attempt is
+#                             also clamped to what is left of
+#                             TURSO_EXPORT_DEADLINE_SECONDS.
+#   TURSO_EXPORT_DEADLINE_SECONDS
+#                             optional; the whole run's budget from
+#                             start (default 10800). No database is
+#                             started once less than 60 s of it is
+#                             left (it fails loudly instead), and a
+#                             dump's attempts and retries are kept
+#                             inside what is left, so one slow
+#                             database cannot use up the nightly
+#                             service's start timeout and starve the
+#                             steps after this one (2026-11-20: the
+#                             run was killed at 2 h mid-atlas).
+#   TURSO_EXPORT_LAST         optional; space-separated database
+#                             names exported after all the others
+#                             (default "atlas"; empty = list order).
+#                             atlas is by far the largest database:
+#                             listed first, a slow atlas download on
+#                             2026-11-20 left the other 49 unfiled.
+#   TURSO_DUMP_RETRY_DELAY_SECONDS
+#                             optional; curl --retry-delay between the
+#                             3 retries of one /dump download (default
+#                             30; must be positive).
+#   TURSO_DUMP_RETRY_PASS_DELAY_SECONDS
+#                             optional; how long to wait before the
+#                             second pass over databases that failed
+#                             the first pass (default 60; 0 = no
+#                             wait). On 2026-11-17 the
+#                             server closed the stream mid-transfer
+#                             (curl 18) on 4 of 42 databases twice in
+#                             a row while others of the same size
+#                             filed fine, so a later second pass is
+#                             the cheap way past a transient window.
 #   TURSO_API_BASE            optional; Platform API base URL
 #                             (default https://api.turso.tech).
 #                             Test seam, mirrors COLD_STORE_S3_BASE.
@@ -63,8 +100,11 @@
 #                             dumps and rebuilds (default:
 #                             ${TMPDIR:-/tmp}/cold-store-export-turso).
 #                             One named directory, wiped at startup
-#                             and on exit - never a fresh anonymous
-#                             mktemp dir (darwin-nix#373).
+#                             and on exit (including SIGTERM, which
+#                             systemd sends at its start timeout) -
+#                             never a fresh anonymous mktemp dir
+#                             (darwin-nix#373). Created mode 0700:
+#                             it holds minted database tokens.
 #
 # A database that fails any stage prints a loud ERROR line naming it;
 # the run continues with the remaining databases and exits non-zero
@@ -77,7 +117,7 @@ if [[ -z ${TURSO_PLATFORM_API_TOKEN:-} ]]; then
 fi
 
 ORG="${TURSO_ORG:-dezren39}"
-DUMP_MAX_TIME="${TURSO_DUMP_MAX_TIME_SECONDS:-1800}"
+DUMP_MAX_TIME="${TURSO_DUMP_MAX_TIME_SECONDS:-3600}"
 case "${DUMP_MAX_TIME}" in
 '' | *[!0-9]*)
   echo "turso export: ERROR: TURSO_DUMP_MAX_TIME_SECONDS must be a positive integer (got '${DUMP_MAX_TIME}')" >&2
@@ -91,6 +131,44 @@ case "${DUMP_MAX_TIME}" in
   exit 1
   ;;
 esac
+RETRY_DELAY="${TURSO_DUMP_RETRY_DELAY_SECONDS:-30}"
+case "${RETRY_DELAY}" in
+*[1-9]*)
+  [[ ${RETRY_DELAY} != *[!0-9]* ]] || {
+    echo "turso export: ERROR: TURSO_DUMP_RETRY_DELAY_SECONDS must be a positive integer (got '${RETRY_DELAY}')" >&2
+    exit 1
+  }
+  ;;
+*)
+  # Empty, non-numeric or all zeros: curl --retry-delay 0 silently
+  # switches to its own backoff, so zero would not mean "no delay".
+  echo "turso export: ERROR: TURSO_DUMP_RETRY_DELAY_SECONDS must be a positive integer (got '${RETRY_DELAY}')" >&2
+  exit 1
+  ;;
+esac
+RETRY_PASS_DELAY="${TURSO_DUMP_RETRY_PASS_DELAY_SECONDS:-60}"
+case "${RETRY_PASS_DELAY}" in
+'' | *[!0-9]*)
+  echo "turso export: ERROR: TURSO_DUMP_RETRY_PASS_DELAY_SECONDS must be a non-negative integer (got '${RETRY_PASS_DELAY}')" >&2
+  exit 1
+  ;;
+*) ;;
+esac
+DEADLINE_SECONDS="${TURSO_EXPORT_DEADLINE_SECONDS:-10800}"
+case "${DEADLINE_SECONDS}" in
+'' | *[!0-9]*)
+  echo "turso export: ERROR: TURSO_EXPORT_DEADLINE_SECONDS must be a positive integer (got '${DEADLINE_SECONDS}')" >&2
+  exit 1
+  ;;
+*[1-9]*) ;;
+*)
+  echo "turso export: ERROR: TURSO_EXPORT_DEADLINE_SECONDS must be a positive integer (got '${DEADLINE_SECONDS}')" >&2
+  exit 1
+  ;;
+esac
+# 10#: a leading zero must not read as octal.
+DEADLINE=$((SECONDS + 10#${DEADLINE_SECONDS}))
+EXPORT_LAST="${TURSO_EXPORT_LAST-atlas}"
 API_BASE="${TURSO_API_BASE:-https://api.turso.tech}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 COLD_STORE="${COLD_STORE_BIN:-${SCRIPT_DIR}/../cold-store}"
@@ -116,8 +194,18 @@ if ! flock -n 9; then
   exit 1
 fi
 rm -rf "${WORK}"
+# 0700 / umask 077: WORK holds each database's minted token response
+# for the length of its export (2026-11-20: a killed run left one
+# world-readable in /tmp until the next night).
+umask 077
 mkdir -p "${WORK}"
+chmod 700 "${WORK}"
 trap 'rm -rf "${WORK}"' EXIT
+# systemd stops the unit at its start timeout with SIGTERM; without a
+# TERM trap bash dies without running the EXIT trap and the scratch
+# (10 GB of atlas dump on 2026-11-20) stays until the next run.
+trap 'exit 143' TERM
+trap 'exit 130' INT
 
 # curl with an Authorization header that never touches argv (#1027):
 # the header travels in a curl config fed on stdin (--config -), the
@@ -160,6 +248,20 @@ if [[ ${#DB_ROWS[@]} -eq 0 ]]; then
   echo "turso export: ERROR: Platform API returned no databases for org ${ORG}" >&2
   exit 1
 fi
+# TURSO_EXPORT_LAST: move the named (largest) databases to the end so
+# a slow one cannot keep the rest from being filed.
+if [[ -n ${EXPORT_LAST// /} ]]; then
+  ROWS_FIRST=()
+  ROWS_LAST=()
+  for row in "${DB_ROWS[@]}"; do
+    if [[ " ${EXPORT_LAST} " == *" ${row%%$'\t'*} "* ]]; then
+      ROWS_LAST+=("${row}")
+    else
+      ROWS_FIRST+=("${row}")
+    fi
+  done
+  DB_ROWS=("${ROWS_FIRST[@]}" "${ROWS_LAST[@]}")
+fi
 
 # ------------------------------------------------------------ one database
 export_one_run() {
@@ -167,6 +269,11 @@ export_one_run() {
   local dump_sql="${WORK}/${name}.sql" db_file="${WORK}/${name}.db"
   local filtered_sql="${WORK}/${name}.filtered.sql"
   local jwt dump_url
+  local remaining=$((DEADLINE - SECONDS)) dump_max_time="${DUMP_MAX_TIME}"
+  if [[ ${remaining} -lt 60 ]]; then
+    echo "turso export: ERROR: ${name}: not started, the run's ${DEADLINE_SECONDS}s deadline (TURSO_EXPORT_DEADLINE_SECONDS) is reached" >&2
+    return 1
+  fi
 
   # Mint a per-database auth token (the value is never printed).
   if ! curl_auth "${TURSO_PLATFORM_API_TOKEN}" -fsS --max-time 60 -X POST \
@@ -198,8 +305,13 @@ PY
   else
     dump_url="https://${hostname}/dump"
   fi
-  if ! curl_auth "${jwt}" -fsS --compressed --max-time "${DUMP_MAX_TIME}" \
-    --retry 1 --retry-all-errors \
+  # --retry-max-time keeps the retries inside the run's deadline.
+  remaining=$((DEADLINE - SECONDS))
+  if [[ ${remaining} -lt 1 ]]; then remaining=1; fi
+  if [[ ${remaining} -lt $((10#${dump_max_time})) ]]; then dump_max_time="${remaining}"; fi
+  if ! curl_auth "${jwt}" -fsS --compressed --max-time "${dump_max_time}" \
+    --retry 3 --retry-delay "${RETRY_DELAY}" --retry-all-errors \
+    --retry-max-time "${remaining}" \
     "${dump_url}" -o "${dump_sql}"; then
     echo "turso export: ERROR: ${name}: dump download failed (${dump_url})" >&2
     return 1
@@ -214,7 +326,23 @@ PY
   # streams the dump (constant memory, one statement buffered) and
   # rewrites only verifiably mis-escaped schema literals with proper
   # '' doubling; everything else passes through byte-identical.
-  if ! python3 "${SCRIPT_DIR}/repair_dump.py" <"${dump_sql}" >"${filtered_sql}"; then
+  #
+  # Repeat pass (#12000): libsql's /dump can emit a table twice (the
+  # atlas vector table came out whole, then whole again, byte for
+  # byte), and the rebuild then stops on the second copy's first
+  # primary key. dedupe_dump.py drops a repeated copy only when its
+  # CREATE statement and every row match the first copy exactly, and
+  # fails (exit 1) when they differ, so no row is dropped silently.
+  #
+  # Vector index pass (#12000): a libsql vector index is dumped as
+  # CREATE INDEX ... (libsql_vector_idx(...)), which stock sqlite3
+  # cannot run, so the rebuild died on the dump's last statement.
+  # vector_index_dump.py records that statement in the table
+  # cold_store_libsql_vector_indexes instead; the index's data is in
+  # its shadow tables, which are dumped and rebuilt as plain tables.
+  if ! python3 "${SCRIPT_DIR}/repair_dump.py" <"${dump_sql}" |
+    python3 "${SCRIPT_DIR}/dedupe_dump.py" |
+    python3 "${SCRIPT_DIR}/vector_index_dump.py" >"${filtered_sql}"; then
     echo "turso export: ERROR: ${name}: dump repair filter failed" >&2
     return 1
   fi
@@ -241,8 +369,20 @@ PY
     echo "turso export: ERROR: ${name}: sqlite3 CLI not found (SQLITE3_BIN=${SQLITE3}); cannot rebuild the export" >&2
     return 1
   fi
-  if ! "${SQLITE3}" -bail "${db_file}" <"${filtered_sql}"; then
+  local rebuild_err="${WORK}/${name}.rebuild.err"
+  if ! "${SQLITE3}" -bail "${db_file}" <"${filtered_sql}" 2>"${rebuild_err}"; then
+    cat "${rebuild_err}" >&2
     echo "turso export: ERROR: ${name}: dump did not rebuild into a SQLite file" >&2
+    # The dump is deleted with the work dir, so say now what the
+    # failing statement was (#12000): its table, and whether the dump
+    # repeats it verbatim. Row values are never printed.
+    local err_line report
+    err_line="$(sed -nE '0,/ near line [0-9]+:/s/^(Parse error|Runtime error|Error) near line ([0-9]+):.*/\2/p' "${rebuild_err}")"
+    if [[ -n ${err_line} ]]; then
+      report="$(python3 "${SCRIPT_DIR}/dump_line_report.py" "${filtered_sql}" "${err_line}" 2>&1)" ||
+        report="line ${err_line}: report failed: ${report}"
+      echo "turso export: ${name}: ${report}" >&2
+    fi
     return 1
   fi
   # Verify the finished file (the CLI reads it; the dump text is
@@ -290,22 +430,40 @@ export_one() {
   local rc=0
   export_one_run "${name}" "${hostname}" || rc=$?
   rm -f "${WORK}/${name}.sql" "${WORK}/${name}.filtered.sql" \
+    "${WORK}/${name}.rebuild.err" \
     "${WORK}/${name}.db" "${WORK}/${name}.db.gz" \
     "${WORK}/${name}.token.json"
   return "${rc}"
 }
 
-FAILURES=0
-for row in "${DB_ROWS[@]}"; do
-  name="${row%%$'\t'*}"
-  hostname="${row##*$'\t'}"
-  # shellcheck disable=SC2310 # by design: export_one guards every
-  # stage itself and returns 1, so one database's failure is counted
-  # here instead of aborting the run via set -e.
-  if ! export_one "${name}" "${hostname}"; then
-    FAILURES=$((FAILURES + 1))
-  fi
-done
+# One pass over a list of "Name<TAB>Hostname" rows; the rows that
+# failed are left in PASS_FAILED for the caller.
+run_pass() {
+  PASS_FAILED=()
+  local row name hostname
+  for row in "$@"; do
+    name="${row%%$'\t'*}"
+    hostname="${row##*$'\t'}"
+    # shellcheck disable=SC2310 # by design: export_one guards every
+    # stage itself and returns 1, so one database's failure is
+    # recorded here instead of aborting the run via set -e.
+    if ! export_one "${name}" "${hostname}"; then
+      PASS_FAILED+=("${row}")
+    fi
+  done
+}
+
+run_pass "${DB_ROWS[@]}"
+# Second pass: a database whose download was cut off is tried once
+# more at the end of the run, after a pause, rather than failing the
+# whole step on one transient window (2026-11-17: 4 of 42 failed
+# inside a few minutes, all with curl 18).
+if [[ ${#PASS_FAILED[@]} -gt 0 ]]; then
+  echo "turso export: retrying ${#PASS_FAILED[@]} failed database(s) after ${RETRY_PASS_DELAY}s"
+  sleep "${RETRY_PASS_DELAY}"
+  run_pass "${PASS_FAILED[@]}"
+fi
+FAILURES=${#PASS_FAILED[@]}
 
 if [[ ${FAILURES} -gt 0 ]]; then
   echo "turso export: ${FAILURES} of ${#DB_ROWS[@]} database(s) FAILED" >&2

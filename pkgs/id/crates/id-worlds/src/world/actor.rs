@@ -80,6 +80,7 @@ impl WorldCommand {
             Self::DelegateToFriend { .. } => "DelegateToFriend",
             Self::Directory { .. } => "Directory",
             Self::ApplyDirectory { .. } => "ApplyDirectory",
+            Self::DirectoryAccount { .. } => "DirectoryAccount",
             Self::Revoke { .. } => "Revoke",
             Self::RevokeAuthorized { .. } => "RevokeAuthorized",
             Self::ParticipantId { .. } => "ParticipantId",
@@ -172,6 +173,14 @@ pub(crate) enum WorldCommand {
     ApplyDirectory {
         entry: crate::directory::DirectoryEntry,
         reply: oneshot::Sender<Result<()>>,
+    },
+    /// Whether the world's directory holds `account`, and if so
+    /// whether it is verified (#8538). Refused on a replica, like
+    /// `ApplyDirectory`: the answer exists so a caller can apply an
+    /// entry next, and a replica never applies one.
+    DirectoryAccount {
+        account: String,
+        reply: oneshot::Sender<Result<Option<bool>>>,
     },
     Revoke {
         participant_id: u64,
@@ -1126,6 +1135,15 @@ impl WorldActor {
                     .and_then(|()| self.core.directory_mut().apply(&entry));
                 let _ = reply.send(result);
             }
+            WorldCommand::DirectoryAccount { account, reply } => {
+                let result = self.check_not_replica().map(|()| {
+                    let directory = self.core.directory();
+                    directory
+                        .account(&account)
+                        .map(|_| directory.is_verified(&account))
+                });
+                let _ = reply.send(result);
+            }
             WorldCommand::Revoke {
                 participant_id,
                 by,
@@ -1150,12 +1168,17 @@ impl WorldActor {
                     let _ = reply.send(false);
                     return;
                 }
-                let revoked = self.core.revoke_tree(participant_id);
+                let revoked_at = Some(self.core.clock().now_ms());
+                let revoked = self.core.revoke_tree_at(participant_id, by, revoked_at);
                 let was_active = !revoked.is_empty();
                 if was_active {
                     // Fail-closed: surface a persist failure rather than
                     // reporting an audited success (design #835 phase 2).
-                    let persisted = self.persist(JournalEntry::Revoked { participant_id, by });
+                    let persisted = self.persist(JournalEntry::Revoked {
+                        participant_id,
+                        by,
+                        revoked_at,
+                    });
                     for id in revoked {
                         let _ = self.revocation_sender.send(id);
                     }
@@ -1193,7 +1216,10 @@ impl WorldActor {
                             );
                             Ok(false)
                         } else {
-                            let revoked = self.core.revoke_tree(participant_id);
+                            let revoked_at = Some(self.core.clock().now_ms());
+                            let revoked =
+                                self.core
+                                    .revoke_tree_at(participant_id, Some(by), revoked_at);
                             let was_active = !revoked.is_empty();
                             if was_active {
                                 // Fail-closed: the in-memory revocation and
@@ -1204,6 +1230,7 @@ impl WorldActor {
                                 let persisted = self.persist(JournalEntry::Revoked {
                                     participant_id,
                                     by: Some(by),
+                                    revoked_at,
                                 });
                                 for id in revoked {
                                     let _ = self.revocation_sender.send(id);
@@ -2203,7 +2230,10 @@ impl WorldActor {
             }
             WorldCommand::Metrics { reply } => {
                 let sessions = self.presence.values().sum::<usize>() as u64;
-                let metrics = self.metrics.snapshot(sessions);
+                let participants = self.presence.values().filter(|n| **n > 0).count() as u64;
+                let metrics = self
+                    .metrics
+                    .snapshot_with_participants(sessions, participants);
                 // No audit record: metrics are readable by any joined
                 // participant holding a capability (the session layer's
                 // Metrics frame), so recording the read as admin would
@@ -2524,6 +2554,8 @@ mod replication_feed_tests {
                 execution_profile: None,
                 caps_ceiling: None,
                 schedules: None,
+                kv: None,
+                blobs: None,
                 transfers: None,
                 lease: None,
                 snapshot: "x".repeat(super::super::replication::MAX_REPLICATION_PAYLOAD_BYTES),
@@ -2566,6 +2598,8 @@ mod replication_feed_tests {
             execution_profile: None,
             caps_ceiling: None,
             schedules: None,
+            kv: None,
+            blobs: None,
             transfers: None,
             lease: None,
             snapshot,
@@ -2579,6 +2613,7 @@ mod replication_feed_tests {
         use proptest::prelude::*;
         prop_oneof![
             any::<u64>().prop_map(|participant_id| JournalEntry::Revoked {
+                revoked_at: None,
                 participant_id,
                 by: None,
             }),
@@ -2614,6 +2649,7 @@ mod replication_feed_tests {
         // the journal TOTAL still ranges past it via the entry count.
         prop_oneof![
             any::<u64>().prop_map(|participant_id| JournalEntry::Revoked {
+                revoked_at: None,
                 participant_id,
                 by: None,
             }),
@@ -3240,7 +3276,7 @@ mod replication_feed_tests {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod device_info_tests {
     use super::*;
-    use crate::world_caps::{CapError, DeviceManifest};
+    use crate::world_caps::{CapError, DeviceManifest, Request};
 
     struct DeviceInfoProgram;
 
@@ -3407,6 +3443,7 @@ mod device_info_tests {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod form_tests {
     use super::*;
+    use crate::world_caps::{CapError, Request};
     use id_core::world_presentation::{
         FormAction, FormActionKind, FormField, FormResult, FormSurface,
     };

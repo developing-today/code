@@ -119,6 +119,25 @@ jobs:
             printf 'Formatting %s file(s):\n' "${#format_files[@]}"
             printf '  %s\n' "${format_files[@]}"
             nix run .#format -- "${format_files[@]}"
+            # treefmt excludes .opencode/**, so a pass that reformats a
+            # file of the mcpx plugin leaves its dogfood copy under
+            # .opencode/plugin behind, and mcpx CI's "dogfood plugin copy
+            # is in sync" step breaks main (#2795, #10498, #11806). Carry
+            # this pass's rewrite over to the copy, but only where the
+            # copy matched the file before the pass, so an edit made to
+            # one side alone is left for that check to catch.
+            while IFS= read -r src; do
+              case "$src" in
+                pkgs/mcpx/plugin/core/*) dst=".opencode/plugin/core/${src#pkgs/mcpx/plugin/core/}" ;;
+                pkgs/mcpx/plugin/opencode/mcpx/*) dst=".opencode/plugin/mcpx/${src#pkgs/mcpx/plugin/opencode/mcpx/}" ;;
+                pkgs/mcpx/plugin/opencode/mcpx-session.ts) dst=".opencode/plugin/mcpx-session.ts" ;;
+                *) continue ;;
+              esac
+              if [[ -f "$dst" ]] && git show "HEAD:$src" | cmp -s - "$dst"; then
+                cp "$src" "$dst"
+                echo "Resynced dogfood copy $dst"
+              fi
+            done < <(git diff --name-only -- pkgs/mcpx/plugin/core pkgs/mcpx/plugin/opencode/mcpx pkgs/mcpx/plugin/opencode/mcpx-session.ts)
             # Stage every tracked change treefmt actually made, not just
             # the listed files: formatters rewrite companions of listed
             # files (rustfmt reformats out-of-line mod children of a

@@ -1,0 +1,262 @@
+{
+  "assessments": [
+    {
+      "criterion_id": "data-model-history",
+      "evidence_refs": ["willow-data-model", "versioned-design-s143"],
+      "option_id": "adopt-now",
+      "reason": "A Willow store keeps only the newest entry per subspace and path, and a newer entry at a path prefix prunes every older entry beneath it, so overwritten and pruned entries leave the store. The design needs retained, inspectable history and a conflict report preserved before any merge; Willow's join discards exactly that history.",
+      "status": "unsupported"
+    },
+    {
+      "criterion_id": "convergence",
+      "evidence_refs": ["willow-data-model"],
+      "option_id": "adopt-now",
+      "reason": "The data model page states that joining stores of one namespace does not depend on the order or grouping of joins and that stores form a join semi-lattice (a state-based CRDT), with ties broken by timestamp, then payload digest, then payload length. Replicas holding the same authorised entries converge.",
+      "status": "supported"
+    },
+    {
+      "criterion_id": "scale-performance",
+      "evidence_refs": ["confidential-sync", "b12-research-note"],
+      "experiment_ref": "scoped-reconciliation-prototype",
+      "option_id": "adopt-now",
+      "reason": "No measurement of Willow sync on this design's workloads exists, and the reconciliation protocol that would carry the load is itself a paused proposal; adopting now would be an unmeasured commitment.",
+      "status": "unknown"
+    },
+    {
+      "criterion_id": "signed-history-compat",
+      "evidence_refs": ["willow-data-model", "willow25-params", "repo-content-id"],
+      "option_id": "adopt-now",
+      "reason": "Willow authenticates each write through its own AuthorisationToken (Meadowcap under Willow'25), not through ID's signed envelopes, and Willow'25 fixes WILLIAM3 from the Bab specification as the payload hash where ID's ContentId is raw BLAKE3-256. Adopting Willow as the contract would replace ID's signed-history identity rather than carry it, and payload digests are not interchangeable without a mapping layer.",
+      "status": "unsupported"
+    },
+    {
+      "criterion_id": "cross-language-format-interop",
+      "evidence_refs": ["willow25-params", "confidential-sync"],
+      "option_id": "adopt-now",
+      "reason": "Only the data model page is marked Final. Willow'25 is a Proposal (as of 2025-05-17) and still finalising its strict Ed25519 validation rules, and the Confidential Sync page is a Proposal (as of 2025-11-21) whose design is paused and which says many of its designs are outdated. There is no stable wire protocol to interoperate against today.",
+      "status": "unsupported"
+    },
+    {
+      "criterion_id": "authority-boundary",
+      "evidence_refs": ["willow-data-model", "willow25-params", "versioned-design-s143"],
+      "option_id": "adopt-now",
+      "reason": "Under Willow'25 the namespace and subspace identifiers are themselves Ed25519 public keys and Meadowcap capabilities decide who may write, so identity and write authority are fused in the protocol. The design keeps actor identity separate from authority and keeps grants in its existing layer; adopting Willow moves that boundary into an external capability system.",
+      "status": "unsupported"
+    },
+    {
+      "criterion_id": "scoped-partial-reconciliation",
+      "evidence_refs": ["confidential-sync"],
+      "option_id": "adopt-now",
+      "reason": "Confidential Sync does describe areas of interest, 3d range-based set reconciliation of their intersections and resource limits through logical channels, but the page says design on it is paused in favour of the transport protocol, many of its designs are outdated and a new spec will be drafted. A paused, self-declared outdated proposal cannot be the dependency.",
+      "status": "unsupported"
+    },
+    {
+      "criterion_id": "data-model-history",
+      "evidence_refs": ["b12-research-note", "versioned-design-s143"],
+      "option_id": "borrow-range-reconciliation",
+      "reason": "Only the reconciliation idea is borrowed: ID keeps its own records, history and conflict report, and the adapter reconciles sets of record identities over declared ranges. Willow's prefix-pruning store semantics are not adopted, so no history is discarded.",
+      "status": "supported"
+    },
+    {
+      "criterion_id": "convergence",
+      "evidence_refs": ["confidential-sync", "versioned-design-s143"],
+      "option_id": "borrow-range-reconciliation",
+      "reason": "Range-based set reconciliation brings two peers to the same set of record identities inside the agreed area; deterministic state then comes from ID's own fold over that set, with conflicts reported rather than silently resolved, as the versioned design requires of any later adapter.",
+      "status": "supported"
+    },
+    {
+      "criterion_id": "scale-performance",
+      "evidence_refs": ["b12-research-note"],
+      "experiment_ref": "scoped-reconciliation-prototype",
+      "option_id": "borrow-range-reconciliation",
+      "reason": "Unmeasured; this option is defined by first prototyping scoped reconciliation and measuring wire, CPU and round trips on retention, deletion and tenant-scoped cases before any adoption, so the criterion is answered by the revisit gate rather than asserted now.",
+      "status": "unknown"
+    },
+    {
+      "criterion_id": "signed-history-compat",
+      "evidence_refs": ["versioned-design-s143", "b12-research-note"],
+      "option_id": "borrow-range-reconciliation",
+      "reason": "The adapter moves already-signed ID records and verifies them on ingest; signatures and conflict reports stay independent of the reconciliation layer, so signed history stays verifiable by construction.",
+      "status": "supported"
+    },
+    {
+      "criterion_id": "cross-language-format-interop",
+      "evidence_refs": ["confidential-sync", "b12-research-note"],
+      "option_id": "borrow-range-reconciliation",
+      "reason": "The adapter would be ID's own protocol, so interop is whatever ID specifies for it; nothing ties it to Willow's wire format, and whether the borrowed idea maps cleanly onto ID's record identities across the Rust and TypeScript runtimes is not yet shown.",
+      "status": "unknown"
+    },
+    {
+      "criterion_id": "authority-boundary",
+      "evidence_refs": ["versioned-design-s143"],
+      "option_id": "borrow-range-reconciliation",
+      "reason": "Read and write authority stay in the existing grant layer; the reconciliation adapter only decides which already-authorised records two peers exchange, and grants nothing by itself.",
+      "status": "supported"
+    },
+    {
+      "criterion_id": "scoped-partial-reconciliation",
+      "evidence_refs": ["confidential-sync", "b12-research-note"],
+      "experiment_ref": "scoped-reconciliation-prototype",
+      "option_id": "borrow-range-reconciliation",
+      "reason": "The concept (areas of interest, 3d range reconciliation, explicit resource limits) is documented, but it has not been prototyped against ID's scoping (graph, tenant, retention and deletion state); a prototype must show it bounds work per area before the criterion counts as met.",
+      "status": "unknown"
+    },
+    {
+      "criterion_id": "data-model-history",
+      "evidence_refs": ["versioned-design-s143"],
+      "option_id": "adopt-none",
+      "reason": "The current design's records, retained history and pre-merge conflict report are unchanged.",
+      "status": "supported"
+    },
+    {
+      "criterion_id": "convergence",
+      "evidence_refs": ["versioned-design-s143"],
+      "option_id": "adopt-none",
+      "reason": "Convergence stays with the existing deterministic fold and conflict-report-first sync; adopting none adds nothing and removes nothing.",
+      "status": "supported"
+    },
+    {
+      "criterion_id": "scale-performance",
+      "evidence_refs": ["versioned-design-s143", "b12-research-note"],
+      "option_id": "adopt-none",
+      "reason": "No unmeasured protocol is adopted; the versioned design records a complete 'adopt none' outcome as valid for the #9143 comparison until measurements justify another protocol.",
+      "status": "supported"
+    },
+    {
+      "criterion_id": "signed-history-compat",
+      "evidence_refs": ["versioned-design-s143"],
+      "option_id": "adopt-none",
+      "reason": "The signed-envelope layer is untouched.",
+      "status": "supported"
+    },
+    {
+      "criterion_id": "cross-language-format-interop",
+      "evidence_refs": ["b12-research-note"],
+      "option_id": "adopt-none",
+      "reason": "Adopting none gains no interoperability with Willow peers or tools; reaching the Willow ecosystem would need a separate bridge if that becomes a requirement.",
+      "status": "unsupported"
+    },
+    {
+      "criterion_id": "authority-boundary",
+      "evidence_refs": ["versioned-design-s143"],
+      "option_id": "adopt-none",
+      "reason": "The authority boundary is unchanged; no new component is introduced inside it.",
+      "status": "supported"
+    },
+    {
+      "criterion_id": "scoped-partial-reconciliation",
+      "evidence_refs": ["b12-research-note"],
+      "option_id": "adopt-none",
+      "reason": "Adopting none adds no scoped range reconciliation; partial sync stays whatever the current design already provides, and a demonstrated scale need would reopen the question.",
+      "status": "unsupported"
+    }
+  ],
+  "checked_at": "2026-11-19T02:27:00Z",
+  "criteria": [
+    {
+      "id": "data-model-history",
+      "question": "Does the option fit the data model and history the design needs (structured documents with inspectable change history)?"
+    },
+    {
+      "id": "convergence",
+      "question": "Does the option provide deterministic convergence for concurrent changes?"
+    },
+    {
+      "id": "scale-performance",
+      "question": "Is the option's scale/performance cost (memory, CPU, wire) established for representative workloads?"
+    },
+    {
+      "id": "signed-history-compat",
+      "question": "Is the option compatible with signed history (authenticated signer identity stays verifiable)?"
+    },
+    {
+      "id": "cross-language-format-interop",
+      "question": "Does the option interoperate across languages and formats (including the Rust core and the per-document sync protocol)?"
+    },
+    {
+      "id": "authority-boundary",
+      "question": "Does the option preserve the design's authority boundary (actor identity is not authority; grants stay in the existing layer)?"
+    },
+    {
+      "id": "scoped-partial-reconciliation",
+      "question": "Does the option give bounded, scoped partial reconciliation (sync a declared area rather than a whole namespace, with resource limits) that is specified and stable enough to depend on?"
+    }
+  ],
+  "decision": {
+    "outcome": "defer",
+    "reason": "Adopting Willow now is rejected: its store join prunes overwritten and prefix-deleted entries where the design needs retained history and a pre-merge conflict report, its write authority and identifiers are fused in Meadowcap and Ed25519 keys, its payload hash (WILLIAM3) differs from ID's raw BLAKE3-256 ContentId, and the only parts that would carry scoped sync (Willow'25 and Confidential Sync) are proposals, the latter paused and self-described as outdated. The conditional candidate is borrowing scoped 3d range-based reconciliation as an ID adapter over already-signed records, tested only against scoped retention, deletion and tenant cases and gated on the versioned-design evidence threshold; adopt-none remains the valid final result if no measured scale need appears. This preserves the contingent-tier trigger recorded on #10150 / S1.43."
+  },
+  "experiments": [
+    {
+      "checked_at": "2026-11-19T02:27:00Z",
+      "id": "scoped-reconciliation-prototype",
+      "method": "Prototype scoped range-based set reconciliation over ID record identities behind an adapter, then measure wire bytes, round trips and CPU per declared area on retention, deletion and tenant-scoped cases, and check that signatures and conflict reports survive unchanged, per the B12 note's conclusion. Planned only in this slice; no runs were performed, so no measurements are asserted.",
+      "status": "unmeasured"
+    }
+  ],
+  "limitations": [
+    "The validator checks structural completeness and traceability only, not factual truth; this artifact synthesizes the B12 note (sources checked 2026-11-12) plus a fresh re-read of the three Willow specification pages on 2026-11-19.",
+    "Only about the first 100,000 of roughly 130,000 characters of the Confidential Sync page were read on 2026-11-19; the status lines and protocol overview are at the top of the page, and nothing here depends on the unread tail.",
+    "No Willow implementation was compiled or run; maturity and interop findings rest on the specifications' own status lines, not on library behavior.",
+    "No measurements were run in this slice (contingent tier), so every scale assessment is unknown rather than estimated.",
+    "The WILLIAM3 versus raw BLAKE3-256 finding states only that the two named hashes differ in the specifications; whether a cheap mapping between them exists was not investigated."
+  ],
+  "options": [
+    {
+      "id": "adopt-now",
+      "label": "Adopt Willow now (data model, Willow'25 parameters and Confidential Sync) as the ID sync and storage contract"
+    },
+    {
+      "id": "borrow-range-reconciliation",
+      "label": "Defer: prototype Willow-style scoped 3d range-based reconciliation behind ID adapters, keeping ID's signed envelopes, ContentId and conflict reports"
+    },
+    {
+      "id": "adopt-none",
+      "label": "Adopt none: keep the current conflict-report-first sync without Willow"
+    }
+  ],
+  "question": "Against the shared CRDT criteria for #9143 (statement S1.43) plus scoped partial reconciliation, should ID/Atlas adopt Willow now as its sync and storage contract, prototype Willow-style scoped range reconciliation behind ID adapters, or adopt none?",
+  "report_kind": "research-matrix",
+  "research_scope": "crdt-willow",
+  "schema_version": 1,
+  "source_ledger": [
+    {
+      "accessed_at": "2026-11-19T02:27:00Z",
+      "id": "willow-data-model",
+      "reference": "https://willowprotocol.org/specs/data-model/",
+      "undated_reason": "Living specification page marked status Final, with no publication date shown. Re-read 2026-11-19: an Entry has namespace_id, subspace_id, path, timestamp (the claimed creation time, not verified), payload_length and payload_digest; an AuthorisedEntry pairs an Entry with an AuthorisationToken for which is_authorised_write holds, with Meadowcap recommended; a newer entry at a path prefix prunes older entries in the same subspace; the join of stores is order- and grouping-independent and forms a join semi-lattice (state-based CRDT)."
+    },
+    {
+      "accessed_at": "2026-11-19T02:27:00Z",
+      "id": "willow25-params",
+      "published_at": "2025-05-17T00:00:00Z",
+      "reference": "https://willowprotocol.org/specs/willow25/index.html",
+      "undated_reason": "Date taken from the page's status line, Proposal as of 2025-05-17. Re-read 2026-11-19: fixes Ed25519 signatures (strict validation rules still being finalised), WILLIAM3 from the Bab specification as the 32-byte hash, namespace and subspace IDs as Ed25519 public keys, Meadowcap authorisation, path limits of 4096, and Confidential Sync handshake parameters."
+    },
+    {
+      "accessed_at": "2026-11-19T02:27:00Z",
+      "id": "confidential-sync",
+      "published_at": "2025-11-21T00:00:00Z",
+      "reference": "https://willowprotocol.org/specs/confidential-sync/",
+      "undated_reason": "Date taken from the page's status line, Proposal as of 2025-11-21. Re-read 2026-11-19 (first 100,000 of about 130,000 characters): areas of interest synchronised by 3d range-based set reconciliation, resource limits via logical channels, read capabilities, private interest overlap; the page says design is paused while the authors focus on the transport protocol first, that many designs in it are outdated, and that a new Confidential Sync spec will be drafted."
+    },
+    {
+      "accessed_at": "2026-11-19T02:27:00Z",
+      "id": "b12-research-note",
+      "reference": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-b/B12-research-willow.md",
+      "undated_reason": "Repo research note for slice B12; its header records sources checked 2026-11-12. It scopes the slice (research-only, scope crdt-willow) and gives the three options and the conclusion this artifact formalizes."
+    },
+    {
+      "accessed_at": "2026-11-19T02:27:00Z",
+      "id": "versioned-design-s143",
+      "reference": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-b/versioned-design.md",
+      "undated_reason": "Repo versioned design record for the ID/Atlas summit, Part B. Its #9143 lines (S1.41-S1.46) set the shared CRDT comparison including Willow scoped reconciliation, state that a complete 'adopt none' result is valid, keep the conflict report preserved pre-merge, bar CRDT implementation before the evidence-based revisit threshold, and require any later adapter to consume signed operations without authenticating authorship."
+    },
+    {
+      "accessed_at": "2026-11-19T02:27:00Z",
+      "id": "repo-content-id",
+      "reference": "pkgs/id/crates/id-core/src/content_id.rs",
+      "undated_reason": "Repo source for ID's immutable exact-byte raw BLAKE3-256 ContentId (#10227), read 2026-11-19 on main; cited only to establish the hash ID payload identities use."
+    }
+  ]
+}

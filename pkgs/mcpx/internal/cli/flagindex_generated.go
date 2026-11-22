@@ -92,8 +92,8 @@ var handFlagIndex = map[string][]HandFlag{
 	"exec": {
 		{Name: "ns", Usage: "restrict the client to these namespaces (comma separated)"},
 		{Name: "runtime", Usage: "javascript runtime: auto, deno, bun, node, a name from script.runtimes, or a path"},
-		{Name: "language", Usage: "script language: auto, typescript, javascript, or python (default: script.language)"},
-		{Name: "timeout", Usage: "kill the script after this long (0 = no limit)"},
+		{Name: "language", Usage: "script language: auto, typescript, javascript, python, or roc (default: script.language)"},
+		{Name: "timeout", Usage: "kill the script after this long (default: exec.timeout; 0 = no limit)"},
 		{Name: "keep", Usage: "keep the generated client and script for inspection"},
 		{Name: "session", Usage: "session key (default: a fresh one per run)"},
 		{Name: "format", Usage: "log rendering: text, json, json-pretty, logfmt, compact, bare"},
@@ -221,8 +221,8 @@ var handFlagIndex = map[string][]HandFlag{
 	"run": {
 		{Name: "ns", Usage: "restrict the client to these namespaces (comma separated)"},
 		{Name: "runtime", Usage: "javascript runtime: auto, deno, bun, node, a name from script.runtimes, or a path"},
-		{Name: "language", Usage: "script language: auto, typescript, javascript, or python (default: script.language)"},
-		{Name: "timeout", Usage: "kill the script after this long (0 = no limit)"},
+		{Name: "language", Usage: "script language: auto, typescript, javascript, python, or roc (default: script.language)"},
+		{Name: "timeout", Usage: "kill the script after this long (default: exec.timeout; 0 = no limit)"},
 		{Name: "keep", Usage: "keep the generated client and script for inspection"},
 		{Name: "session", Usage: "session key (default: a fresh one per run)"},
 		{Name: "format", Usage: "log rendering: text, json, json-pretty, logfmt, compact, bare"},

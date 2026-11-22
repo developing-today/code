@@ -23,6 +23,7 @@ a usage error with exit 2.
 
 import argparse
 import base64
+import fcntl
 import json
 import os
 import subprocess
@@ -33,6 +34,7 @@ import urllib.error
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Any
+
 
 def _required_home() -> Path:
     """Home per the #5762 home-resolution contract (code#8221): a
@@ -188,6 +190,20 @@ LAUNCHED_BY_RECOVERY_ZERO_MESSAGE = "opencode-claimant-recovery:zero-message-del
 LAUNCHED_BY_RECOVERY_GONE_SESSION = "opencode-claimant-recovery:gone-session"
 
 
+# Where this process's mode came from (#10332): the file's path and
+# state, and the mtimes that let a later reader date a flip. Set by
+# read_mode(), written into every fires.jsonl entry by log_fire().
+_mode_source: "Dict[str, Any] | None" = None
+
+
+def _mtime(path: Path) -> "str | None":
+    """An ISO UTC mtime for path, or None when it cannot be read."""
+    try:
+        return datetime.fromtimestamp(path.stat().st_mtime, timezone.utc).isoformat()
+    except OSError:
+        return None
+
+
 def read_mode() -> str:
     """Read the execution mode from the mode file.
 
@@ -200,19 +216,40 @@ def read_mode() -> str:
     every such read logs a loud CLAIMANT-MODE-WARNING line, and the
     aggregator's host-health watchdog surfaces the same fact as a
     needs-attention tier item.
+
+    Every read also records where the mode came from (#10332) in
+    _mode_source, which log_fire() writes into fires.jsonl: the path,
+    whether the file was ok, missing, unreadable or invalid, the
+    file's mtime when it exists, and the state directory's mtime. A
+    deletion changes the directory's mtime, so when a fire reads
+    "missing", the directory mtime bounds when the file went.
     """
+    global _mode_source
+    source: Dict[str, Any] = {
+        "path": str(MODE_FILE),
+        "state": "ok",
+        "file_mtime": None,
+        "dir_mtime": _mtime(MODE_FILE.parent),
+        "pid": os.getpid(),
+    }
+    _mode_source = source
+
     if not MODE_FILE.exists():
+        source["state"] = "missing"
         print(
             f"CLAIMANT-MODE-WARNING (#10141): mode file {MODE_FILE} is MISSING "
             "- defaulting to shadow; dispatch will return mode_not_live and "
-            "stall until the file is restored with the intended mode.",
+            "stall until the file is restored with the intended mode. "
+            f"State directory last changed {source['dir_mtime']}.",
             file=sys.stderr,
         )
         return "shadow"
 
+    source["file_mtime"] = _mtime(MODE_FILE)
     try:
         raw = MODE_FILE.read_text()
     except Exception as exc:
+        source["state"] = "unreadable"
         print(
             f"CLAIMANT-MODE-WARNING (#10141): mode file {MODE_FILE} is "
             f"UNREADABLE ({exc}) - defaulting to shadow.",
@@ -222,6 +259,7 @@ def read_mode() -> str:
     mode = raw.strip().lower()
     if mode in ("shadow", "live"):
         return mode
+    source["state"] = "invalid"
     print(
         f"CLAIMANT-MODE-WARNING (#10141): mode file {MODE_FILE} content "
         f"{raw.strip()[:40]!r} is not live|shadow - defaulting to shadow.",
@@ -261,6 +299,7 @@ def log_fire(
     fire_entry = {
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "mode": mode,
+        "mode_source": _mode_source,
         "candidates_seen": candidates,
         "sessions_launched": launched,
         "cap_room": cap_room,
@@ -1117,9 +1156,7 @@ def launch_step(
                 # #8166: the provider wall is route-wide - no later
                 # launch this fire can succeed, and each attempt
                 # would burn shared provider rpm against the wall.
-                skips.append(
-                    {"task_id": candidate["id"], "reason": "provider_wall"}
-                )
+                skips.append({"task_id": candidate["id"], "reason": "provider_wall"})
                 continue
 
             if cap_room <= 0:
@@ -1271,10 +1308,18 @@ def launch_step(
                 )
 
                 if bind_result.returncode != 0:
-                    # Bind failed - delete session and skip. Record
-                    # WHY (#8042): bind's stderr names the exact
-                    # failed precondition (lease lapsed / ledger row
-                    # missing / already bound / task gone), and a
+                    # Bind failed - delete the session and skip. The
+                    # delete is not optional: bind refused, so this
+                    # session is bound to nothing, and leaving it on
+                    # the server orphans a created-but-unowned root
+                    # (and leaks a cap slot until it ages out). #8042
+                    # added the error text below; it must not drop
+                    # this cleanup (a rewrite of this branch removed
+                    # it once already).
+                    _delete_session(session_id)
+                    # Record WHY (#8042): bind's stderr names the
+                    # exact failed precondition (lease lapsed / ledger
+                    # row missing / already bound / task gone), and a
                     # repeat bind loop is undiagnosable without it.
                     # First non-empty line only, truncated — the bind
                     # verb's precondition texts carry no credentials.
@@ -1404,11 +1449,49 @@ Finish with a queue terminal verb (complete, park, block, or fail) carrying --wo
     return launched, skips
 
 
+def acquire_fire_lock():
+    """Take the single-instance fire lock, or return None if held (#8039).
+
+    Two overlapping fires (the scheduled task plus an ad-hoc run) each
+    computed cap_room from the same active-root count and could spend
+    the same free slots or race one candidate. An exclusive,
+    non-blocking flock on STATE_DIR/claimant.lock makes a second fire
+    exit at once. The lock is released when the returned file is closed,
+    or by the kernel when the process exits, so a crashed fire never
+    leaves a stale lock.
+    """
+    ensure_state_dir()
+    handle = (STATE_DIR / "claimant.lock").open("a")
+    try:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        handle.close()
+        return None
+    return handle
+
+
 def main():
     """Main entry point for the claimant/executor."""
     mode = read_mode()
+    lock = acquire_fire_lock()
+    if lock is None:
+        print("Another claimant fire is running. Exiting.")
+        log_fire(mode, None, [], None, [{"reason": "already_running"}])
+        return 0
+    try:
+        return _fire(mode)
+    finally:
+        lock.close()
 
-    print(f"OpenCode claimant starting in {mode} mode")
+
+def _fire(mode: str):
+    """One claimant fire, run under the single-instance lock."""
+    source = _mode_source or {}
+    print(
+        f"OpenCode claimant starting in {mode} mode "
+        f"(mode file {source.get('path', MODE_FILE)}: {source.get('state', 'unknown')}, "
+        f"modified {source.get('file_mtime')})"
+    )
 
     # Step 1: Supervision (always runs in live mode). Tasks it
     # recovers are eligible on the NEXT fire, not this one (#8038

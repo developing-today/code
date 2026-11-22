@@ -10,7 +10,9 @@ import sqlite3
 import unittest
 
 SRC = pathlib.Path(__file__).resolve().parents[1] / "src"
-RUST = (SRC / "turso_queue.rs").read_text()
+RUST = (SRC / "turso_queue.rs").read_text() + "".join(
+    p.read_text() for p in sorted((SRC / "turso_queue").glob("*.rs"))
+)
 
 
 def rust_string(s):

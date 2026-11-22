@@ -32,8 +32,8 @@
 // $XDG_STATE_HOME (default ~/.local/state) on listen.
 import fs from 'node:fs';
 import net from 'node:net';
-import os from 'node:os';
 import path from 'node:path';
+import { xdgStateHome } from './home-dir.mjs';
 import { parseProxyPort, parseProxyPortList } from './proxy-port.mjs';
 
 const LISTEN_PORT = parseProxyPort('RELAY_LISTEN_PORT', 0);
@@ -53,7 +53,7 @@ let preferred = TARGET_PORTS[0];
 const publishEndpoint = () => {
   try {
     const dir = path.join(
-      process.env.XDG_STATE_HOME || path.join(os.homedir(), '.local', 'state'),
+      xdgStateHome(process.env, 'proxy-relay (endpoint publication)'),
       NAME
     );
     fs.mkdirSync(dir, { recursive: true });

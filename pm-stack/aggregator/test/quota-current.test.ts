@@ -465,6 +465,57 @@ describe("overlayTursoUsage (#1049)", () => {
       ["storage", 1.053323, "gb", 21.066],
     ]);
   });
+  test("the card's plan label and limits follow the read's plan (#10436)", () => {
+    const at = iso(5 * 60_000);
+    const out = overlayTursoUsage(
+      [tursoSvc()],
+      file([
+        entry({
+          serviceId: "turso",
+          providerId: "turso",
+          source: "turso-api",
+          planLabel: "scaler",
+          measuredAt: at,
+          windows: [
+            tursoWin("storage", 10.92672, 45.528, at),
+            tursoWin("rows-read", 2_849_000_000, 2.849, at),
+            tursoWin("rows-written", 6_670_000, 6.67, at),
+            tursoWin("sync", 1.22112, 5.088, at),
+          ],
+        }),
+      ]),
+      NOW,
+    );
+    const svc = out[0];
+    expect(svc.plan).toBe("Scaler (live read)");
+    expect(svc.sourceNote).toContain("plan and limits from the read (scaler)");
+    expect(svc.metrics.map((m) => [m.id, m.limit, m.percent])).toEqual([
+      ["storage", 24, 45.528],
+      ["rows-read", 100_000_000_000, 2.849],
+      ["rows-written", 100_000_000, 6.67],
+      ["sync", 24, 5.088],
+      // Absent from the fresh read: kept as a stale dated value with its own limit.
+      ["databases", 100, 1],
+    ]);
+  });
+  test("a read without a plan keeps the record's label and the Starter limits", () => {
+    const at = iso(5 * 60_000);
+    const out = overlayTursoUsage(
+      [tursoSvc()],
+      file([
+        entry({
+          serviceId: "turso",
+          providerId: "turso",
+          source: "turso-api",
+          measuredAt: at,
+          windows: [tursoWin("storage", 1.053323, 21.066, at)],
+        }),
+      ]),
+      NOW,
+    );
+    expect(out[0].plan).toBe("Starter Free $0");
+    expect(out[0].metrics[0].limit).toBe(5);
+  });
   test("prototype-spelling Turso windows are ignored like unknown names", () => {
     const at = iso(5 * 60_000);
     const names = ["databases", "constructor", "__proto__", "toString", "hasOwnProperty", "valueOf", "unknown-window"];

@@ -37,6 +37,7 @@ records.
 - [Design: a Muse↔OpenClaw comms path that is not laptop SSH](../../doc/2026-10-29T12-09-49Z_design_openclaw_comms_path/2026-10-29T12-09-49Z_design_openclaw_comms_path.md)
 - [Refundable grants via pending transfers — premium tokens that survive a refund](../../doc/2026-10-29T12-10-00Z_design_refundable_grants_pending_transfers/2026-10-29T12-10-00Z_design_refundable_grants_pending_transfers.md)
 - [Design: currency as the centralised exception — the hosted edition's boundary to the currency service](../../doc/2026-10-29T12-20-00Z_design_currency_centralised_exception/2026-10-29T12-20-00Z_design_currency_centralised_exception.md)
+- [Hosted tenancy architecture — per-user Turso databases + a central tenancy DB (component E of #9078)](../../doc/2026-11-17T16-55-00Z_design_hosted-tenancy-architecture/2026-11-17T16-55-00Z_design_hosted-tenancy-architecture.md)
 - [Currency control plane — design: registry, account factory, gateway](../../doc/2026-10-29T12-42-21Z_design_currency_control_plane/2026-10-29T12-42-21Z_design_currency_control_plane.md)
 - [Design: ID app packaging — app manifest, folder layout, TUI/web parity](../../doc/2026-10-29T12-50-36Z_design_id_app_packaging/2026-10-29T12-50-36Z_design_id_app_packaging.md)
 - [One `/id-sync/1` handshake, and why serve's range flights moved to](../../doc/2026-10-29T16-21-00Z_design_id_sync_alpn_split/2026-10-29T16-21-00Z_design_id_sync_alpn_split.md)
@@ -56,6 +57,7 @@ records.
 - [Web listener bindings for `id serve`](../../doc/2026-11-02T11-47-29Z_design_web_listeners/2026-11-02T11-47-29Z_design_web_listeners.md)
 - [Petname anti-mimicry: Unicode UTS #39 confusable skeleton](../../doc/2026-11-02T12-47-00Z_design_petname_unicode_confusable_skeleton/2026-11-02T12-47-00Z_design_petname_unicode_confusable_skeleton.md)
 - [Design: task-placement framework v1 — decision rules and a shared-pool efficiency model](../../doc/2026-11-03T15-10-56Z_design_task-placement-framework-v1/2026-11-03T15-10-56Z_design_task-placement-framework-v1.md)
+- [C8 Atlas ingestion and error-driven investigation](../../doc/2026-11-22T01-48-21Z_design_c8_atlas_ingestion_investigation/2026-11-22T01-48-21Z_design_c8_atlas_ingestion_investigation.md)
 - [Design: TigerBeetle LedgerBackend binding (`tb_ledger`)](../../doc/2026-11-03T20-36-00Z_design_tigerbeetle_ledger_binding/2026-11-03T20-36-00Z_design_tigerbeetle_ledger_binding.md)
 - [Atlas as a Rust binary and a multi-client search service](../../doc/2026-11-04T08-07-13Z_design_atlas_binary_service/2026-11-04T08-07-13Z_design_atlas_binary_service.md)
 - [File listing provenance: origin node and upload time in List](../../doc/2026-11-04T10-46-17Z_design_listing_origin_and_upload_time/2026-11-04T10-46-17Z_design_listing_origin_and_upload_time.md)
@@ -90,7 +92,10 @@ records.
 
 ## Package architecture docs (living, with the code)
 
-- [id — architecture](../../pkgs/id/ARCHITECTURE.md)
+- [id — architecture](../../pkgs/id/ARCHITECTURE.md) (includes the public-vs-internal crate section)
+- [mcpx — MCP tool reference](../../pkgs/mcpx/docs/tool-reference.md)
+- [fleet — verb reference](../../pkgs/fleet/docs/verbs.md)
+- [pm-stack — aggregator routes](../../pm-stack/docs/routes.md)
 - Package docs folders: `pkgs/id/docs/`, `pkgs/mcpx/docs/` (see the
   documentation map in [`doc/README.md`](../../doc/README.md)).
 

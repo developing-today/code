@@ -346,8 +346,8 @@ impl SequenceFile {
     pub fn next_sequence(&self) -> std::io::Result<u64> {
         let next = self.last_issued()?.saturating_add(1).max(1);
         let tmp = self.path.with_extension("tmp");
-        std::fs::write(&tmp, next.to_string())?;
-        std::fs::rename(&tmp, &self.path)?;
+        crate::durable_write::write_durable(&self.path, &tmp, next.to_string().as_bytes())
+            .map_err(std::io::Error::other)?;
         Ok(next)
     }
 }

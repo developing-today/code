@@ -516,6 +516,13 @@
       "note": "reference (#144) and L2 (#146); generated, and linked from the book"
     },
     {
+      "path": "docs/tool-reference.md",
+      "chapter": null,
+      "role": "included",
+      "lines": 87,
+      "note": "API-level MCP tool reference (#6380 slice 3, #11190); linked from SUMMARY"
+    },
+    {
       "path": "docs/plugin-discovery.md",
       "chapter": "designs",
       "role": "chapter-source",

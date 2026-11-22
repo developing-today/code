@@ -24,8 +24,6 @@
 use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::{self, Receiver, Sender, SyncSender};
-use std::thread::{self, JoinHandle};
 
 use anyhow::{Context, Result, bail, ensure};
 
@@ -53,7 +51,7 @@ pub const MAX_JOURNAL_BYTES: u64 = 64 * 1024 * 1024;
 /// Append-only, fsynced JSON-lines journal.
 #[derive(Debug)]
 pub struct FileJournal {
-    writer: JournalWriter,
+    file: File,
     path: PathBuf,
     /// Set when a compaction left durability uncertain; appends then fail so
     /// no acknowledged event can be lost.
@@ -66,91 +64,74 @@ pub struct FileJournal {
     bytes: u64,
     /// The byte cap this journal enforces (see [`MAX_JOURNAL_BYTES`]).
     max_bytes: u64,
+    /// Lock on a stable sibling file. The journal itself is replaced by
+    /// compaction, so locking its inode would not protect the path lifetime.
+    /// Keep this last so the journal file is closed before ownership is
+    /// released.
+    _lock: File,
 }
 
-#[derive(Debug)]
-struct JournalWriter {
-    sender: Option<Sender<JournalWriterRequest>>,
-    thread: Option<JoinHandle<()>>,
-}
-
-#[derive(Debug)]
-enum JournalWriterRequest {
-    Append {
-        line: Vec<u8>,
-        reply: SyncSender<std::io::Result<()>>,
-    },
-    Replace {
-        file: File,
-        reply: SyncSender<()>,
-    },
-}
-
-impl JournalWriter {
-    fn new(file: File) -> Result<Self> {
-        let (sender, receiver) = mpsc::channel();
-        let thread = thread::Builder::new()
-            .name("world-journal-writer".to_owned())
-            .spawn(move || journal_writer_loop(file, receiver))
-            .context("spawn world journal writer")?;
-        Ok(Self {
-            sender: Some(sender),
-            thread: Some(thread),
-        })
-    }
-
-    fn append(&self, line: Vec<u8>) -> Result<()> {
-        let (reply, result) = mpsc::sync_channel(0);
-        self.send(JournalWriterRequest::Append { line, reply })?;
-        result
-            .recv()
-            .context("world journal writer stopped before append completed")?
-            .context("write and sync world journal")
-    }
-
-    fn replace(&self, file: File) -> Result<()> {
-        let (reply, result) = mpsc::sync_channel(0);
-        self.send(JournalWriterRequest::Replace { file, reply })?;
-        result
-            .recv()
-            .context("world journal writer stopped before replacing its file")
-    }
-
-    fn send(&self, request: JournalWriterRequest) -> Result<()> {
-        self.sender
-            .as_ref()
-            .context("world journal writer is stopped")?
-            .send(request)
-            .context("world journal writer stopped")
+/// Write `line` to the journal file and sync it durable — the whole
+/// durable cost of one append (one `write_all` + one `sync_data`).
+///
+/// The write+sync runs inline in the caller, under the same
+/// worker-parking guard the first #557 fix established: on a
+/// multi-thread runtime it runs under `block_in_place`, so the runtime
+/// hands this worker's other tasks to a replacement thread while the
+/// caller waits for durability; everywhere else (plain threads,
+/// `spawn_blocking`, current-thread test runtimes) it is direct.
+/// Without this, W runtime workers cap the whole hub at W appends per
+/// sync latency — the #557 many-worlds profile measured exactly that
+/// ceiling (4 workers / 46 ms ≈ 87 appends/s against 2,000 offered).
+///
+/// The journal used to hand each append to a dedicated writer thread
+/// over a channel and rendezvous on its reply. That hop bought
+/// nothing: the journal's only producer is its owning actor, which
+/// reaches it through `&mut` and cannot have a second append in flight
+/// while one waits for durability, so the writer's queue was empty at
+/// every dequeue by construction and each append paid a channel send,
+/// a thread wake, and a rendezvous reply around the same sync. Writing
+/// inline removes those hops (and one thread per world) with no
+/// durability or ordering change: an append is still acknowledged
+/// only after the sync that covers its bytes completes.
+fn sync_journal_write(file: &mut File, line: &[u8]) -> std::io::Result<()> {
+    if tokio::runtime::Handle::try_current()
+        .is_ok_and(|handle| handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread)
+    {
+        tokio::task::block_in_place(|| file.write_all(line).and_then(|()| file.sync_data()))
+    } else {
+        file.write_all(line).and_then(|()| file.sync_data())
     }
 }
 
-impl Drop for JournalWriter {
-    fn drop(&mut self) {
-        // Closing the channel lets the writer finish any queued request and
-        // exit before its file descriptor is released.
-        drop(self.sender.take());
-        if let Some(thread) = self.thread.take() {
-            let _ = thread.join();
+fn acquire_journal_lock(path: &Path) -> Result<File> {
+    let mut lock_path = path.as_os_str().to_owned();
+    lock_path.push(".lock");
+    let lock_path = PathBuf::from(lock_path);
+
+    let mut options = OpenOptions::new();
+    options.read(true).write(true).create(true).truncate(false);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    let lock = options
+        .open(&lock_path)
+        .with_context(|| format!("open world journal lock {}", lock_path.display()))?;
+    match lock.try_lock() {
+        Ok(()) => Ok(lock),
+        Err(std::fs::TryLockError::WouldBlock) => {
+            bail!(
+                "world journal {} is already open by another handle (lock {})",
+                path.display(),
+                lock_path.display()
+            )
         }
-    }
-}
-
-fn journal_writer_loop(mut file: File, receiver: Receiver<JournalWriterRequest>) {
-    while let Ok(request) = receiver.recv() {
-        match request {
-            JournalWriterRequest::Append { line, reply } => {
-                let result = file.write_all(&line).and_then(|()| file.sync_data());
-                let _ = reply.send(result);
-            }
-            JournalWriterRequest::Replace {
-                file: replacement,
-                reply,
-            } => {
-                file = replacement;
-                let _ = reply.send(());
-            }
-        }
+        Err(std::fs::TryLockError::Error(error)) => Err(error).with_context(|| {
+            format!(
+                "lock world journal {} via {}",
+                path.display(),
+                lock_path.display()
+            )
+        }),
     }
 }
 
@@ -183,6 +164,7 @@ impl FileJournal {
             std::fs::create_dir_all(parent)
                 .with_context(|| format!("create {}", parent.display()))?;
         }
+        let lock = acquire_journal_lock(path)?;
         let mut options = OpenOptions::new();
         options.read(true).append(true).create(true);
         #[cfg(unix)]
@@ -210,12 +192,13 @@ impl FileJournal {
             _ => JOURNAL_VERSION,
         };
         let mut journal = Self {
-            writer: JournalWriter::new(file)?,
+            file,
             path: path.to_owned(),
             broken: false,
             version,
             bytes: good_len,
             max_bytes,
+            _lock: lock,
         };
         if entries.is_empty() {
             let header = JournalEntry::Created {
@@ -371,7 +354,7 @@ impl WorldJournal for FileJournal {
             self.path.display(),
             self.max_bytes
         );
-        self.writer.append(line)?;
+        sync_journal_write(&mut self.file, &line).context("write and sync world journal")?;
         self.bytes = new_bytes;
         Ok(())
     }
@@ -411,9 +394,9 @@ impl WorldJournal for FileJournal {
             self.path.display(),
             self.max_bytes
         );
-        // JournalWriter::append is one write_all + one sync_data, so the
+        // A journal write is one write_all + one sync_data, so the
         // concatenated batch is durable after a single sync.
-        self.writer.append(batch)?;
+        sync_journal_write(&mut self.file, &batch).context("write and sync world journal")?;
         self.bytes = new_bytes;
         Ok(())
     }
@@ -501,6 +484,9 @@ impl WorldJournal for FileJournal {
             !self.broken,
             "world journal is unusable after a failed compaction"
         );
+        // One lifetime-held lock per journal path makes concurrent compaction
+        // of the same journal unreachable; the sibling temp can therefore be
+        // shared safely between sequential compactions.
         let tmp = self.path.with_extension("jsonl.tmp");
         // Build the replacement beside the journal; the live file is untouched
         // until the rename, so any failure before it leaves the old journal.
@@ -537,10 +523,7 @@ impl WorldJournal for FileJournal {
         // The new file is now the journal, and the open handle follows its
         // inode. If the directory entry cannot be made durable, a crash could
         // resurrect the old journal and lose later appends: refuse them.
-        if let Err(error) = self.writer.replace(file) {
-            self.broken = true;
-            return Err(error.context("replace world journal writer file"));
-        }
+        self.file = file;
         let synced = self.path.parent().map_or(Ok(()), |parent| {
             File::open(parent).and_then(|dir| dir.sync_all())
         });
@@ -1275,6 +1258,22 @@ mod tests {
         line
     }
 
+    #[test]
+    fn journal_rejects_a_second_live_handle_and_reopens_after_drop() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("journal.jsonl");
+        let (journal, _) = FileJournal::open(&path, "w").unwrap();
+
+        let error = FileJournal::open(&path, "w")
+            .expect_err("a second handle must not own the same journal");
+        let message = format!("{error:#}");
+        assert!(message.contains(&path.display().to_string()), "{message}");
+        assert!(message.contains("already open"), "{message}");
+
+        drop(journal);
+        FileJournal::open(&path, "w").expect("the lock is released when the handle drops");
+    }
+
     // #8239 group commit: a batch lands every entry in order, readable
     // back exactly, after the one concatenated write + sync.
     #[test]
@@ -1380,6 +1379,7 @@ mod tests {
             file_len <= 512,
             "the file never exceeds the cap: {file_len}"
         );
+        drop(journal);
         let (_journal, replayed) = FileJournal::open_with_max_bytes(&path, "w", 512).unwrap();
         assert_eq!(replayed.len(), 1 + appended);
     }
@@ -1430,6 +1430,7 @@ mod tests {
             std::fs::metadata(&path).unwrap().len() <= cap,
             "the file never exceeds the cap"
         );
+        drop(journal);
         let (_journal, replayed) = FileJournal::open_with_max_bytes(&path, "w", cap).unwrap();
         assert_eq!(
             replayed.len(),
@@ -1498,6 +1499,7 @@ mod tests {
             "the trim brings the journal back under the cap"
         );
         journal.append(&bulk).unwrap();
+        drop(journal);
         let (_journal, replayed) = FileJournal::open_with_max_bytes(&path, "w", cap).unwrap();
         assert_eq!(replayed.len(), trimmed.len() + 1, "writes resumed");
     }
@@ -1735,13 +1737,25 @@ mod tests {
         let receiver_key = SigningKey::from_bytes(&[81; 32]);
         let pinned_source = *receiver_key.verifying_key().as_bytes();
         let nonce = [19; crate::world::SESSION_NONCE_BYTES];
+        // The snapshot must carry the writer journal's own header version:
+        // issuing the spectator records its join time, which raises the
+        // header to JOURNAL_VERSION_JOIN_TIMES (#11960).
+        let header_version = match serde_json::from_slice::<JournalEntry>(
+            journal_bytes.split(|byte| *byte == b'\n').next().unwrap(),
+        )
+        .unwrap()
+        {
+            JournalEntry::Created { version, .. } => version,
+            other => panic!("writer journal must open with its header, got {other:?}"),
+        };
+        assert!(header_version >= JOURNAL_VERSION);
         let mut receiver =
             DurableReceiver::open(replica_dir.path(), "replica-offline", pinned_source).unwrap();
         receiver.begin_session(nonce);
         let snapshot = ReplicationEnvelope::snapshot(
             "replica-offline",
             pinned_source,
-            receiver.header_version().unwrap_or(JOURNAL_VERSION),
+            header_version,
             nonce,
             [0; 32],
             journal_bytes.clone(),
@@ -1757,7 +1771,7 @@ mod tests {
         let terminal = ReplicationEnvelope::terminal(
             "replica-offline",
             pinned_source,
-            JOURNAL_VERSION,
+            header_version,
             nonce,
             snapshot_cursor,
             previous,
@@ -1824,8 +1838,9 @@ mod tests {
     async fn offline_replica_serves_friend_delegation_from_directory_facts_without_writer() {
         use crate::directory::Actor;
         use crate::world::{
-            DurableReceiver, JOURNAL_VERSION, JournalEntry, ReplicationEnvelope,
-            SignedReplicationEnvelope, WorldCore, frame_digest, journal_entry_line,
+            DurableReceiver, JournalEntry, MAX_JOURNAL_VERSION as JOURNAL_VERSION,
+            ReplicationEnvelope, SignedReplicationEnvelope, WorldCore, frame_digest,
+            journal_entry_line,
         };
         use ed25519_dalek::SigningKey;
 
@@ -1989,9 +2004,9 @@ mod tests {
 
         use crate::directory::Actor;
         use crate::world::{
-            DurableReceiver, JOURNAL_VERSION, JournalEntry, ReplicationEnvelope,
-            SignedReplicationEnvelope, WorldCore, WorldEvent, WorldEventKind, frame_digest,
-            journal_entry_line,
+            DurableReceiver, JournalEntry, MAX_JOURNAL_VERSION as JOURNAL_VERSION,
+            ReplicationEnvelope, SignedReplicationEnvelope, WorldCore, WorldEvent, WorldEventKind,
+            frame_digest, journal_entry_line,
         };
 
         let mut writer_core = WorldCore::new(world_id, WorldLimits::default()).unwrap();
@@ -2680,6 +2695,7 @@ mod tests {
             .unwrap();
         journal
             .append(&JournalEntry::Issued {
+                issued_at: None,
                 participant,
                 digest: "00".repeat(32),
                 scopes: WorldScopes::GUEST.bits(),
@@ -2813,6 +2829,7 @@ mod tests {
         drop(FileJournal::open(&path, "w").unwrap());
         let created = std::fs::read(&path).unwrap();
         let revoked = serde_json::to_vec(&JournalEntry::Revoked {
+            revoked_at: None,
             participant_id: 1,
             by: None,
         })
@@ -2853,17 +2870,35 @@ mod tests {
     #[tokio::test]
     async fn a_journal_for_another_world_is_refused() {
         let dir = TempDir::new().unwrap();
+        // Capture the first world's handle so it can be shut down
+        // explicitly: dropping the service alone leaves its actor -
+        // and the actor's journal ownership (#8459) - alive, so the
+        // second open would be refused as a concurrent open instead
+        // of reaching the belongs-to check below.
+        let first_handle = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let captured = first_handle.clone();
         drop(
             open_world(
                 dir.path(),
                 "one",
                 WorldLimits::default(),
                 RuntimeLimits::default(),
-                service(None),
+                move |handle| {
+                    *captured.lock().unwrap() = Some(handle.clone());
+                    service(None)(handle)
+                },
             )
             .await
             .unwrap(),
         );
+        first_handle
+            .lock()
+            .unwrap()
+            .take()
+            .unwrap()
+            .shutdown()
+            .await
+            .unwrap();
         let err = open_world(
             dir.path(),
             "two",
@@ -3225,6 +3260,8 @@ mod tests {
             execution_profile: None,
             caps_ceiling: None,
             schedules: None,
+            kv: None,
+            blobs: None,
             transfers: None,
             lease: None,
             snapshot: "s".to_owned(),

@@ -31,6 +31,28 @@ System architecture for the `id` peer-to-peer file sharing CLI.
 └──────────────────────────────────────────────────────────────────┘
 ```
 
+## Public API and Crate Surface
+
+Crates in `pkgs/id/crates/` and the root `id` package, classified by
+dependents (checked against `Cargo.toml` and a repo-wide grep; no `id-*`
+crate is consumed outside `pkgs/id/`).
+
+| Crate | Classification | Notes |
+|-------|----------------|-------|
+| `id` (root, `src/`) | Public surface | The only crate whose `lib.rs` re-exports the API; the CLI and binaries build on it. |
+| `id-core` | Public surface (shared core) | Depended on by 10 crates. The root re-exports a subset (`abuse`, `access`, `connectivity`, `discovery`, `frames`, `holders`, `membership`, `rejection`, `residency`, `sync_method`, `tuple`, `waiting`, plus `KEY_FILE`, `CLIENT_KEY_FILE`, `SERVE_LOCK`, `is_node_id`). Modules not re-exported by `id` are internal to the workspace. |
+| `id-caps`, `id-store`, `id-events`, `id-groups`, `id-sync`, `id-worlds`, `id-directory`, `id-web` | Internal | Used only by sibling crates and the root. |
+| `id-cli` | Internal (binary) | Only the root depends on it. |
+| `id-native-shell` | Internal (app) | Not a default workspace member. |
+| `id-currency-registry`, `id-render` | Internal, no dependents | Candidates for removal or for documenting as unused. |
+
+Standalone examples and benchmarks (`examples/`, `benchmarks`) are not
+public API. Vendored crates (`vendor/p2panda-sync`, `vendor/p2panda-encryption`)
+are third-party code.
+
+Rustdoc coverage on public items is about 99% in `id-core` and the root
+crate. `missing_docs = "warn"` is set in both `Cargo.toml` files.
+
 ## Core Modules
 
 ### Entry Point (`main.rs`, `lib.rs`)

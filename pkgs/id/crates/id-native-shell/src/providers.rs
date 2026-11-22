@@ -191,12 +191,9 @@ impl FileReadExecutor {
         &self.root
     }
 
-    /// Resolve a request path against the root, enforcing the
-    /// design's path rules. The request path must be relative, must
-    /// contain no parent or root components, and its canonical form
-    /// must stay beneath the canonical root (which is what refuses
-    /// symlink escapes).
-    fn resolve(&self, requested: &str) -> Result<PathBuf, String> {
+    /// Check a request path's shape: it must be non-empty, relative,
+    /// and free of parent or root components.
+    fn relative_path(requested: &str) -> Result<&Path, String> {
         if requested.is_empty() {
             return Err(REFUSAL_INVALID_PATH.to_owned());
         }
@@ -212,15 +209,108 @@ impl FileReadExecutor {
                 }
             }
         }
-        let candidate = self.root.join(relative);
-        let canonical = candidate
+        Ok(relative)
+    }
+
+    /// Open `relative` beneath the root and return the open handle.
+    ///
+    /// On Linux the open is `openat2` with `RESOLVE_BENEATH`, relative
+    /// to a handle on the root directory, so the kernel refuses any
+    /// symlink or component that leaves the root at the moment of the
+    /// open. There is no check-then-open window to race. The returned
+    /// handle is the one that is validated and read.
+    ///
+    /// Fallback, used where `openat2` is unavailable (`ENOSYS`), where
+    /// a symlink targets an absolute path that `RESOLVE_BENEATH`
+    /// refuses (`EXDEV`, which in-root aliases may use and are still
+    /// served), or on non-Linux targets: canonicalize, require the
+    /// canonical path to stay beneath the root, then reopen the
+    /// canonical suffix with symlinks refused, or open the canonical
+    /// path directly where `openat2` does not exist.
+    fn open_within_root(&self, relative: &Path) -> Result<File, String> {
+        #[cfg(target_os = "linux")]
+        {
+            let root_dir = File::open(&self.root).map_err(|_| REFUSAL_IO.to_owned())?;
+            match open_beneath(
+                &root_dir,
+                relative,
+                libc::RESOLVE_BENEATH | libc::RESOLVE_NO_MAGICLINKS,
+            ) {
+                Ok(file) => return Ok(file),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    return Err(REFUSAL_NOT_FOUND.to_owned());
+                }
+                Err(error)
+                    if matches!(
+                        error.raw_os_error(),
+                        Some(libc::EXDEV | libc::ELOOP | libc::ENOSYS | libc::EPERM | libc::EAGAIN)
+                    ) => {}
+                Err(_) => return Err(REFUSAL_IO.to_owned()),
+            }
+        }
+        let canonical = self
+            .root
+            .join(relative)
             .canonicalize()
             .map_err(|_| REFUSAL_NOT_FOUND.to_owned())?;
-        if !canonical.starts_with(&self.root) {
-            return Err(REFUSAL_INVALID_PATH.to_owned());
-        }
-        Ok(canonical)
+        let suffix = canonical
+            .strip_prefix(&self.root)
+            .map_err(|_| REFUSAL_INVALID_PATH.to_owned())?;
+        #[cfg(target_os = "linux")]
+        let opened = File::open(&self.root)
+            .and_then(|root_dir| {
+                open_beneath(
+                    &root_dir,
+                    suffix,
+                    libc::RESOLVE_BENEATH | libc::RESOLVE_NO_MAGICLINKS | libc::RESOLVE_NO_SYMLINKS,
+                )
+            })
+            .or_else(|error| {
+                // A kernel without openat2 (before 5.6), or a seccomp
+                // filter that refuses it, gets the canonical open the
+                // non-Linux targets use, rather than refusing every read.
+                if matches!(error.raw_os_error(), Some(libc::ENOSYS | libc::EPERM)) {
+                    File::open(&canonical)
+                } else {
+                    Err(error)
+                }
+            });
+        #[cfg(not(target_os = "linux"))]
+        let opened = File::open(&canonical);
+        opened.map_err(|_| REFUSAL_IO.to_owned())
     }
+}
+
+/// Open `relative` beneath the directory handle `root_dir` with
+/// `openat2(2)`, using the given `RESOLVE_*` flags.
+#[cfg(target_os = "linux")]
+fn open_beneath(root_dir: &File, relative: &Path, resolve: u64) -> std::io::Result<File> {
+    use std::os::fd::{AsRawFd as _, FromRawFd as _};
+    use std::os::unix::ffi::OsStrExt as _;
+
+    let path = std::ffi::CString::new(relative.as_os_str().as_bytes())
+        .map_err(|_| std::io::Error::from(std::io::ErrorKind::InvalidInput))?;
+    // SAFETY: `open_how` is plain integers; all-zero is a valid value
+    // and every field the kernel reads is set below.
+    let mut how: libc::open_how = unsafe { std::mem::zeroed() };
+    how.flags = (libc::O_RDONLY | libc::O_CLOEXEC) as u64;
+    how.resolve = resolve;
+    // SAFETY: `path` is a valid NUL-terminated string, `how` outlives
+    // the call, and the size passed is exactly `size_of::<open_how>()`.
+    let fd = unsafe {
+        libc::syscall(
+            libc::SYS_openat2,
+            root_dir.as_raw_fd(),
+            path.as_ptr(),
+            std::ptr::from_ref(&how),
+            std::mem::size_of::<libc::open_how>(),
+        )
+    };
+    if fd < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: a non-negative return from `openat2` is a new, owned fd.
+    Ok(unsafe { File::from_raw_fd(fd as libc::c_int) })
 }
 
 impl ClientProviderExecutor for FileReadExecutor {
@@ -231,14 +321,15 @@ impl ClientProviderExecutor for FileReadExecutor {
         let Some(requested) = args["path"].as_str() else {
             return Err(REFUSAL_INVALID_PATH.to_owned());
         };
-        let path = self.resolve(requested)?;
-        let metadata = std::fs::metadata(&path).map_err(|_| REFUSAL_IO.to_owned())?;
+        let relative = Self::relative_path(requested)?;
+        let file = self.open_within_root(relative)?;
+        let metadata = file.metadata().map_err(|_| REFUSAL_IO.to_owned())?;
         if !metadata.is_file() {
             return Err(REFUSAL_NOT_A_FILE.to_owned());
         }
         // Read at most one byte past the bound: an over-bound file
-        // is refused whole, never silently truncated.
-        let file = File::open(&path).map_err(|_| REFUSAL_IO.to_owned())?;
+        // is refused whole, never silently truncated. The bytes come
+        // from the same handle that was validated above.
         let mut bytes = Vec::new();
         file.take(u64::from(max_bytes) + 1)
             .read_to_end(&mut bytes)
@@ -286,6 +377,11 @@ pub struct ProviderAdapter {
     grants: HashMap<(String, String), GrantState>,
     revoked: HashSet<(String, String)>,
     executors: HashMap<String, Box<dyn ClientProviderExecutor>>,
+    /// Executors bound to one world's grant (#11478): a resource the
+    /// local user picked for that world, such as a file-read root. A
+    /// world's own executor wins over the provider-wide one, and no
+    /// other world can reach or replace it.
+    world_executors: HashMap<(String, String), Box<dyn ClientProviderExecutor>>,
     audit: Vec<LocalAuditEntry>,
 }
 
@@ -294,6 +390,10 @@ impl std::fmt::Debug for ProviderAdapter {
         f.debug_struct("ProviderAdapter")
             .field("grants", &self.grants.len())
             .field("executors", &self.executors.keys().collect::<Vec<_>>())
+            .field(
+                "world_executors",
+                &self.world_executors.keys().collect::<Vec<_>>(),
+            )
             .field("audit_entries", &self.audit.len())
             .finish_non_exhaustive()
     }
@@ -308,11 +408,36 @@ impl ProviderAdapter {
         Self::default()
     }
 
-    /// Register the executor that serves one provider name. A
-    /// provider with an executor but no grant for a world is still
-    /// never offered or executed for that world.
+    /// Register the executor that serves one provider name for every
+    /// world that has no executor of its own (see
+    /// [`Self::register_world_executor`]). A provider with an executor
+    /// but no grant for a world is still never offered or executed for
+    /// that world.
     pub fn register_executor(&mut self, provider: &str, executor: Box<dyn ClientProviderExecutor>) {
         self.executors.insert(provider.to_owned(), executor);
+    }
+
+    /// Register the executor that serves `provider` for `world` only
+    /// (#11478). It wins over any provider-wide executor for that
+    /// world, and registering one for another world never changes it,
+    /// so a resource the local user granted to one world (a file-read
+    /// root) cannot be swapped out or reached by another world's grant.
+    pub fn register_world_executor(
+        &mut self,
+        world: &str,
+        provider: &str,
+        executor: Box<dyn ClientProviderExecutor>,
+    ) {
+        self.world_executors
+            .insert((world.to_owned(), provider.to_owned()), executor);
+    }
+
+    /// Whether `world` has an executor for `provider`: its own, or the
+    /// provider-wide one.
+    fn has_executor(&self, world: &str, provider: &str) -> bool {
+        self.world_executors
+            .contains_key(&(world.to_owned(), provider.to_owned()))
+            || self.executors.contains_key(provider)
     }
 
     /// Opt `provider` in for `world` with the given local bounds.
@@ -333,9 +458,11 @@ impl ProviderAdapter {
     }
 
     /// The step-5 opt-in for `client.file.read`: register the
-    /// [`FileReadExecutor`] rooted at `root` and grant it for
-    /// `world`, in one step, so the shipped shell's opt-in surface
-    /// cannot grant the provider without its executor or vice versa.
+    /// [`FileReadExecutor`] rooted at `root` for `world` alone and
+    /// grant it for `world`, in one step, so the shipped shell's
+    /// opt-in surface cannot grant the provider without its executor
+    /// or vice versa. Each world reads only the root granted to it: a
+    /// later grant for another world never changes this one (#11478).
     ///
     /// `disclosure_acknowledged` is the local user's explicit
     /// acknowledgment of the design's durability disclosure: bytes
@@ -362,16 +489,19 @@ impl ProviderAdapter {
             return Err(REFUSAL_DISCLOSURE_NOT_ACKNOWLEDGED.to_owned());
         }
         let executor = FileReadExecutor::new(root, true)?;
-        self.register_executor(CLIENT_FILE_READ_PROVIDER, Box::new(executor));
+        self.register_world_executor(world, CLIENT_FILE_READ_PROVIDER, Box::new(executor));
         self.grant(world, CLIENT_FILE_READ_PROVIDER, bounds);
         Ok(())
     }
 
     /// Revoke a grant, effective immediately: the provider leaves
     /// the world's offer set and the next request for it refuses
-    /// with [`REFUSAL_REVOKED`]. Returns whether a grant existed.
+    /// with [`REFUSAL_REVOKED`]. Any executor bound to that world's
+    /// grant is dropped with it, so a later bare [`Self::grant`] cannot
+    /// revive the old resource. Returns whether a grant existed.
     pub fn revoke(&mut self, world: &str, provider: &str) -> bool {
         let key = (world.to_owned(), provider.to_owned());
+        self.world_executors.remove(&key);
         let existed = self.grants.remove(&key).is_some();
         if existed {
             self.revoked.insert(key);
@@ -395,7 +525,7 @@ impl ProviderAdapter {
             .grants
             .keys()
             .filter(|(grant_world, provider)| {
-                grant_world == world && self.executors.contains_key(provider)
+                grant_world == world && self.has_executor(world, provider)
             })
             .map(|(_, provider)| provider.clone())
             .collect();
@@ -490,7 +620,7 @@ impl ProviderAdapter {
             self.grants.insert(key, state);
             return self.refuse(now_ms, world, &provider, &nonce, REFUSAL_BUSY);
         }
-        if !self.executors.contains_key(&provider) {
+        if !self.has_executor(world, &provider) {
             self.grants.insert(key, state);
             return self.refuse(now_ms, world, &provider, &nonce, REFUSAL_UNAVAILABLE);
         }
@@ -498,7 +628,11 @@ impl ProviderAdapter {
         state.in_flight += 1;
         self.grants.insert(key.clone(), state);
         let args = frame["args"].clone();
-        let result = match self.executors.get_mut(&provider) {
+        let executor = match self.world_executors.get_mut(&key) {
+            Some(executor) => Some(executor),
+            None => self.executors.get_mut(&provider),
+        };
+        let result = match executor {
             Some(executor) => executor.execute(&args, state.bounds.max_bytes),
             None => Err(REFUSAL_UNAVAILABLE.to_owned()),
         };
@@ -746,6 +880,24 @@ mod file_read_tests {
     }
 
     #[test]
+    fn replacement_after_shape_check_never_serves_outside_bytes() {
+        let (base, root) = temp_tree();
+        std::fs::write(root.join("swap.txt"), b"inside").unwrap();
+        let ex = executor(&root);
+        let relative = FileReadExecutor::relative_path("swap.txt").unwrap();
+
+        // Between the shape check and the open, the in-root name is
+        // replaced by a symlink to a file outside the root.
+        std::fs::remove_file(root.join("swap.txt")).unwrap();
+        std::os::unix::fs::symlink(base.join("outside.txt"), root.join("swap.txt")).unwrap();
+
+        assert_eq!(
+            ex.open_within_root(relative).err().as_deref(),
+            Some(REFUSAL_INVALID_PATH)
+        );
+    }
+
+    #[test]
     fn reads_files_beneath_the_root() {
         let (base, root) = temp_tree();
         let mut exec = executor(&root);
@@ -865,6 +1017,95 @@ mod file_read_tests {
         );
         assert_eq!(reply["ok"], true);
         assert_eq!(reply["result_hex"], json!(hex_encode(b"hello world")));
+        std::fs::remove_dir_all(base).ok();
+    }
+
+    /// #11478: two worlds granted `client.file.read` on one adapter,
+    /// each with its own root holding a distinct sentinel. Each world
+    /// reads only its own root, whichever grant came last.
+    #[test]
+    fn file_read_grants_for_two_worlds_keep_their_own_roots() {
+        let read = |adapter: &mut ProviderAdapter, world: &str| {
+            adapter.handle_request(
+                world,
+                &json!({
+                    "type": "provider_request",
+                    "nonce": format!("n-{world}"),
+                    "provider": CLIENT_FILE_READ_PROVIDER,
+                    "args": {"path": "sentinel.txt"},
+                    "deadline_ms": 5000,
+                }),
+                1_000,
+            )
+        };
+        for a_first in [true, false] {
+            let (base_a, root_a) = temp_tree();
+            let (base_b, root_b) = temp_tree();
+            std::fs::write(root_a.join("sentinel.txt"), b"root-a").unwrap();
+            std::fs::write(root_b.join("sentinel.txt"), b"root-b").unwrap();
+            let mut adapter = ProviderAdapter::new();
+            let grants = if a_first {
+                [("world-a", &root_a), ("world-b", &root_b)]
+            } else {
+                [("world-b", &root_b), ("world-a", &root_a)]
+            };
+            for (world, root) in grants {
+                adapter
+                    .grant_file_read(world, root.clone(), LocalBounds::DESIGN_DEFAULT, true)
+                    .unwrap();
+            }
+            let reply = read(&mut adapter, "world-a");
+            assert_eq!(reply["ok"], true, "a_first={a_first}: {reply}");
+            assert_eq!(
+                reply["result_hex"],
+                json!(hex_encode(b"root-a")),
+                "a_first={a_first}"
+            );
+            let reply = read(&mut adapter, "world-b");
+            assert_eq!(reply["ok"], true, "a_first={a_first}: {reply}");
+            assert_eq!(
+                reply["result_hex"],
+                json!(hex_encode(b"root-b")),
+                "a_first={a_first}"
+            );
+            // Both worlds still offer the provider.
+            assert!(adapter.offer_frame("world-a").is_some());
+            assert!(adapter.offer_frame("world-b").is_some());
+            std::fs::remove_dir_all(base_a).ok();
+            std::fs::remove_dir_all(base_b).ok();
+        }
+    }
+
+    /// Revoking a world's file-read grant drops the root bound to it,
+    /// so a later bare `grant` for that world cannot revive the old
+    /// root: with no executor the provider is not offered and a
+    /// request refuses as unavailable.
+    #[test]
+    fn revoke_drops_the_world_bound_root() {
+        let (base, root) = temp_tree();
+        let mut adapter = ProviderAdapter::new();
+        adapter
+            .grant_file_read("world-a", root, LocalBounds::DESIGN_DEFAULT, true)
+            .unwrap();
+        assert!(adapter.revoke("world-a", CLIENT_FILE_READ_PROVIDER));
+        adapter.grant(
+            "world-a",
+            CLIENT_FILE_READ_PROVIDER,
+            LocalBounds::DESIGN_DEFAULT,
+        );
+        assert_eq!(adapter.offer_frame("world-a"), None);
+        let reply = adapter.handle_request(
+            "world-a",
+            &json!({
+                "type": "provider_request",
+                "nonce": "ab12",
+                "provider": CLIENT_FILE_READ_PROVIDER,
+                "args": {"path": "notes.txt"},
+                "deadline_ms": 5000,
+            }),
+            1_000,
+        );
+        assert_eq!(reply["error"], REFUSAL_UNAVAILABLE);
         std::fs::remove_dir_all(base).ok();
     }
 }

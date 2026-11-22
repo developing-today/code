@@ -1,12 +1,20 @@
-//! Graph module root (slice 9110-02, #10160).
+//! Graph module root (slice 9110-02, #10160; wired for #12232).
 //!
-//! This root intentionally declares **no** child modules yet. The
-//! graph workstreams (program #9106 part A) add their own distinct
-//! child module files under this root as their slices land; the
-//! root itself is owned by 9110-02 and consumers do not edit it.
-//! Feature exports for graph modules are wired by slice 9110-09
-//! once the exact module outputs exist — nothing absent is
-//! declared or exported here.
+//! The child modules below are the graph workstreams of program #9106
+//! part A that have landed. A slice that adds a module file under this
+//! root declares it here in the same change, in name order:
+//! `.github/scripts/check-rust-module-reach.sh` fails when a source file
+//! is not reachable from its crate root. A module that does not exist
+//! yet is never declared.
+
+pub mod cross_signing;
+pub mod cursor;
+pub mod delegation;
+pub mod query;
+pub mod record;
+pub mod space_binding;
+pub mod term;
+pub mod version;
 
 /// Name of this module root, for registry/coverage tooling.
 pub const ROOT_NAME: &str = "graph";

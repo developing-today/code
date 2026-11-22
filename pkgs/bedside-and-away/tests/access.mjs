@@ -10,10 +10,14 @@ assert.equal(evaluateAccess({...ctx,role:'constructor',entityId:'item:a'}).allow
 assert.equal(evaluateAccess({...ctx,access:deny,entityId:'item:secret'}).allowed,false);
 const cfg=structuredClone(deny); cfg.policies['item:child']={inherit:['item:secret'],rules:[{effect:'allow',subject:{type:'group',id:'team'},actions:['read'],priority:10}]};
 assert.equal(evaluateAccess({...ctx,access:cfg,entityId:'item:child'}).allowed,false);
-cfg.policies['item:child'].rules[0].overrideDeny=true;
-assert.equal(evaluateAccess({...ctx,access:cfg,entityId:'item:child'}).allowed,true);
-cfg.policies['item:child'].rules[0].priority=100;
+cfg.policies['item:child'].rules[0].overrideDeny=true;cfg.policies['item:child'].rules[0].authority='admin';cfg.policies['item:child'].rules[0].priority=101;
+// Overrides are off by default (contract §11): a stored override rule is inert.
 assert.equal(evaluateAccess({...ctx,access:cfg,entityId:'item:child'}).allowed,false);
+assert.equal(evaluateAccess({...ctx,access:cfg,entityId:'item:child',priorityOverrides:true}).allowed,true);
+cfg.policies['item:child'].rules[0].priority=100;
+assert.equal(evaluateAccess({...ctx,access:cfg,entityId:'item:child',priorityOverrides:true}).allowed,false);
+cfg.policies['item:child'].rules[0].priority=101;delete cfg.policies['item:child'].rules[0].authority;
+assert.equal(evaluateAccess({...ctx,access:cfg,entityId:'item:child',priorityOverrides:true}).allowed,false);
 cfg.policies['item:secret'].inherit=['item:child'];
 assert.equal(evaluateAccess({...ctx,access:cfg,entityId:'item:child'}).allowed,false);
 assert.throws(()=>validateAccessConfig(cfg));

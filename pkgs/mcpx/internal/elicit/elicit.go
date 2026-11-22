@@ -91,9 +91,16 @@ const (
 
 // Request is a question awaiting an answer.
 type Request struct {
-	ID        string          `json:"id"`
-	Trace     string          `json:"trace,omitempty"`
-	Parent    string          `json:"parent,omitempty"`
+	ID     string `json:"id"`
+	Trace  string `json:"trace,omitempty"`
+	Parent string `json:"parent,omitempty"`
+	// Session is a correlation label, never an identity
+	// (docs/decisions/0007-elicitation-identity.md, rule 2). It is the
+	// session string the caller sent, stored, logged and searchable as
+	// supplied, and nothing verifies it. No code may branch
+	// authorization, visibility or answer acceptance on it: a question
+	// is addressed by its ID, and whoever can drive the daemon as its
+	// OS owner may see and answer it (rule 3).
 	Session   string          `json:"session,omitempty"`
 	Server    string          `json:"server,omitempty"`
 	Tool      string          `json:"tool,omitempty"`
@@ -337,6 +344,9 @@ func (b *Broker) Close() error { return b.db.Close() }
 const schema = `
 CREATE TABLE IF NOT EXISTS elicitations (
   id         TEXT PRIMARY KEY,
+  -- session is a correlation label as the caller sent it, never an
+  -- identity: it is indexed for listing and log search only, and keys
+  -- no answer or visibility decision (decision 0007, rule 2).
   trace      TEXT, parent TEXT, session TEXT,
   server     TEXT, tool   TEXT,
   mode       TEXT NOT NULL,
@@ -810,6 +820,11 @@ func (b *Broker) Lookup(id string) (Answer, bool, error) {
 
 // Filter narrows a listing.
 type Filter struct {
+	// Session narrows a listing to questions carrying that label, as a
+	// convenience for a caller that wants its own. It is not an access
+	// boundary: an empty Session lists every question, and Get,
+	// Respond and Lookup take an ID and ignore the label entirely
+	// (docs/decisions/0007-elicitation-identity.md).
 	Session  string
 	Audience Audience
 	State    State

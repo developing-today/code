@@ -53,19 +53,16 @@
 
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { homePath } from './home-dir.mjs';
 
-export const DEFAULT_TARGET = path.join(
-  os.homedir(),
-  'git',
-  'ai_recordings.jsonl'
-);
+export const defaultTarget = (env = process.env) =>
+  homePath(env, 'record (default AI_RECORDINGS_FILE)', 'git', 'ai_recordings.jsonl');
 
 export const resolveTarget = (env = process.env) => {
   const raw = env.AI_RECORDINGS_FILE;
-  return typeof raw === 'string' && raw.trim() !== '' ? raw : DEFAULT_TARGET;
+  return typeof raw === 'string' && raw.trim() !== '' ? raw : defaultTarget(env);
 };
 
 export const quarantinePathFor = (target) => `${target}.quarantine`;

@@ -636,8 +636,8 @@ func (a *App) runScript(ctx context.Context, args []string, inline bool) error {
 	rt := fs.String("runtime", "",
 		"javascript runtime: auto, deno, bun, node, a name from script.runtimes, or a path")
 	lang := fs.String("language", "",
-		"script language: auto, typescript, javascript, or python (default: script.language)")
-	timeout := fs.Duration("timeout", 0, "kill the script after this long (0 = no limit)")
+		"script language: auto, typescript, javascript, python, or roc (default: script.language)")
+	timeout := fs.Duration("timeout", 0, "kill the script after this long (default: exec.timeout; 0 = no limit)")
 	keep := fs.Bool("keep", false, "keep the generated client and script for inspection")
 	session := fs.String("session", "", "session key (default: a fresh one per run)")
 	format := fs.String("format", "", "log rendering: text, json, json-pretty, logfmt, compact, bare")
@@ -882,6 +882,13 @@ func (a *App) runScript(ctx context.Context, args []string, inline bool) error {
 	if _, given := scanFlag(fs, args, "language"); given {
 		languagePref = *lang
 	}
+	// exec.timeout bounds a script wherever it runs. --timeout, when given,
+	// still wins, including --timeout 0 for no limit; without it the setting
+	// applies here as it does on the daemon, where it was the only place it
+	// was read (docs/in-name-only.md).
+	if _, given := scanFlag(fs, args, "timeout"); !given {
+		*timeout = a.Settings().Duration("exec.timeout")
+	}
 
 	if elsewhere {
 		return a.execOnDaemon(ctx, c, fs, inline, ns, sessionKey, eo,
@@ -922,6 +929,9 @@ func (a *App) runScript(ctx context.Context, args []string, inline bool) error {
 	// and never fails the run -- a daemon without the route leaves clients
 	// empty and the run as it was.
 	clients := map[string]runner.Client{}
+	if roc, rocErr := c.ClientModuleLanguage(ctx, codegen.Roc.Name, ns, "", a.Profile); rocErr == nil && roc != clientSrc {
+		clients[codegen.Roc.Name] = runner.Client{Module: roc}
+	}
 	if py, pyerr := c.ClientModuleLanguage(ctx, codegen.Python.Name, ns, "", a.Profile); pyerr == nil && py != clientSrc {
 		// A daemon from before #1917 Phase 2 ignores ?language and answers
 		// with the TypeScript module; installing that as mcpx_client.py
@@ -1192,7 +1202,7 @@ func (a *App) runScript(ctx context.Context, args []string, inline bool) error {
 	if derr != nil {
 		return derr
 	}
-	svc := a.localService(store, c.Socket(), cfg)
+	svc := a.localService(store, c, cfg)
 	wire := execsvc.Options{
 		Session:   sessionKey,
 		Output:    eo.Output,
@@ -1332,6 +1342,15 @@ func runEnvelope(res *execsvc.Result, stdout string, logs []logging.Record, stre
 		values := make([]json.RawMessage, 0, len(streamed))
 		for _, v := range streamed {
 			values = append(values, v.Value)
+		}
+		// The service rewrites the emits it kept once the run ends:
+		// artifacts.interceptImages swaps an image or audio body for a
+		// resource_link to the stored artifact. The values collected live
+		// predate that, so taking them put the whole base64 body in the
+		// document beside the artifact meant to replace it. The service's
+		// copy is the same values in the same order, so prefer it.
+		if len(res.Emits) == len(values) {
+			values = res.Emits
 		}
 		env["results"] = values
 	}

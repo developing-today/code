@@ -554,6 +554,9 @@ fn journal_size_is_bounded_by_the_file_journal_byte_cap() {
         before,
         "a refused transaction writes nothing, not even its fitting prefix"
     );
+    // A journal is single-writer: release this handle's lock before the
+    // replay reopens the same file.
+    drop(journal);
     let (_reopened, replayed) =
         FileJournal::open_with_max_bytes(&path, "dos-journal", cap).unwrap();
     assert_eq!(replayed.len(), 1 + appended, "the accepted prefix replays");

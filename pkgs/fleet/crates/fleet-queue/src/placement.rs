@@ -130,9 +130,15 @@ pub struct Job {
     pub command: String,
     pub git_ref: String,
     pub runner: String,
+    pub platform: String,
+    pub container: Option<String>,
     pub surface_pin: Option<String>,
+    pub preferred_surface: Option<String>,
+    pub previous_run_id: Option<i64>,
+    pub previous_run_repo: Option<String>,
     pub push_nix_cache: bool,
     pub actions_cache: Option<String>,
+    pub actions_cache_restore_keys: Vec<String>,
     pub allow_paid_blacksmith: f64,
 }
 
@@ -143,9 +149,15 @@ impl Job {
             "command": self.command,
             "ref": self.git_ref,
             "runner": self.runner,
+            "platform": self.platform,
+            "container": self.container,
             "surface_pin": self.surface_pin,
+            "preferred_surface": self.preferred_surface,
+            "previous_run_id": self.previous_run_id,
+            "previous_run_repo": self.previous_run_repo,
             "push_nix_cache": self.push_nix_cache,
             "actions_cache": self.actions_cache,
+            "actions_cache_restore_keys": self.actions_cache_restore_keys,
             "allow_paid_blacksmith": self.allow_paid_blacksmith,
         })
     }
@@ -157,7 +169,8 @@ impl Job {
             let empty = v.is_null()
                 || v.as_str() == Some("")
                 || v.as_bool() == Some(false)
-                || v.as_f64() == Some(0.0);
+                || v.as_f64() == Some(0.0)
+                || v.as_array().is_some_and(|values| values.is_empty());
             if !empty {
                 out.insert(k.clone(), v.clone());
             }
@@ -176,6 +189,8 @@ impl Job {
 pub struct Ctx {
     pub owners: Value,
     pub owner_load: HashMap<String, (i64, i64)>, // owner -> (running, queued)
+    pub owner_last_dispatch: HashMap<String, i64>,
+    pub surface_last_dispatch: HashMap<String, i64>,
     pub owner_load_overridden: Vec<String>,
     pub load_read_errors: Vec<String>,
     pub laptop_busy: bool,
@@ -216,6 +231,14 @@ pub trait Gh {
             ))
         })
     }
+    /// The signed-in user's own token, for a surface whose registry
+    /// entry says `"dispatch_as": "user"`. Dispatching a workflow with
+    /// a token the fleet already holds is a routine operation
+    /// (FDR-0013), so a surface the App is not installed on is still
+    /// usable. None where no user token is available.
+    fn user_token(&self) -> Option<String> {
+        None
+    }
     fn api(&self, method: &str, path: &str, token: &str, body: Option<&Value>) -> R<(u16, Value)>;
     /// `gh codespace list --json name,repository,state`, parsed.
     fn codespace_list(&self) -> R<Vec<Value>>;
@@ -237,6 +260,35 @@ pub trait Gh {
 struct RealGh {
     agent: ureq::Agent,
     tokens: RefCell<HashMap<String, String>>,
+    /// The user's token, looked up at most once per run: a miss is
+    /// remembered too, so a cascade over several `dispatch_as: user`
+    /// surfaces does not repeat a slow lookup.
+    user: RefCell<Option<Option<String>>>,
+}
+
+/// The fleet-secrets name of the `gh` hosts file (the personal leg
+/// `fleet gh` uses).
+const USER_HOSTS_SECRET: &str = "github-cli.hosts-yml";
+
+/// The `oauth_token` value in gh's hosts.yml content. Line-shaped on
+/// purpose, like `fleet gh`'s own reader: the file is a small
+/// fixed-shape config.
+fn hosts_yml_token(hosts_yml: &str) -> Option<String> {
+    hosts_yml.lines().find_map(|line| {
+        let rest = line.trim().strip_prefix("oauth_token:")?;
+        let value = rest.trim().trim_matches('"').trim_matches('\'');
+        (!value.is_empty()).then(|| value.to_string())
+    })
+}
+
+/// The first usable token out of an ordered list of lookups; a
+/// lookup that yields only whitespace counts as a miss.
+fn first_token(lookups: &[&dyn Fn() -> Option<String>]) -> Option<String> {
+    lookups
+        .iter()
+        .filter_map(|lookup| lookup())
+        .map(|t| t.trim().to_string())
+        .find(|t| !t.is_empty())
 }
 
 impl RealGh {
@@ -248,6 +300,7 @@ impl RealGh {
             .into();
         RealGh {
             agent,
+            user: RefCell::new(None),
             tokens: RefCell::new(HashMap::new()),
         }
     }
@@ -267,6 +320,42 @@ fn home_dir() -> String {
 }
 
 impl Gh for RealGh {
+    /// Where the user's token comes from, cheapest first: the
+    /// environment, the seat's own `gh` login, then the fleet secrets
+    /// chain by name (the same hosts file `fleet gh` reads). The
+    /// value goes into Authorization headers only.
+    fn user_token(&self) -> Option<String> {
+        if let Some(known) = self.user.borrow().as_ref() {
+            return known.clone();
+        }
+        let from_env = || {
+            ["GH_TOKEN", "GITHUB_TOKEN"]
+                .iter()
+                .filter_map(|k| std::env::var(k).ok())
+                .find(|v| !v.trim().is_empty())
+        };
+        let from_gh = || {
+            let out = std::process::Command::new("gh")
+                .args(["auth", "token"])
+                .stderr(std::process::Stdio::null())
+                .output()
+                .ok()?;
+            out.status
+                .success()
+                .then(|| String::from_utf8_lossy(&out.stdout).to_string())
+        };
+        let from_secrets = || {
+            let config = fleet_config::Config::load().unwrap_or_default();
+            let hosts = fleet_secrets::Resolver::default_chain(&config)
+                .resolve(USER_HOSTS_SECRET)
+                .ok()?;
+            hosts_yml_token(hosts.expose())
+        };
+        let found = first_token(&[&from_env, &from_gh, &from_secrets]);
+        *self.user.borrow_mut() = Some(found.clone());
+        found
+    }
+
     fn mint_token(&self, repo: &str) -> Option<String> {
         if let Some(tok) = self.tokens.borrow().get(repo) {
             return Some(tok.clone());
@@ -370,6 +459,38 @@ fn surf_str<'a>(surface: &'a Value, key: &str) -> &'a str {
     surface.get(key).and_then(|v| v.as_str()).unwrap_or("")
 }
 
+/// Whether a surface dispatches with the user's own token instead of
+/// the App's installation token (registry field `dispatch_as`).
+fn dispatches_as_user(surface: &Value) -> bool {
+    surf_str(surface, "dispatch_as") == "user"
+}
+
+/// The token a surface's API calls use, when one is available: the
+/// user's for a `dispatch_as: user` surface, else the App's.
+fn surface_token(surface: &Value, gh: &dyn Gh) -> Option<String> {
+    if dispatches_as_user(surface) {
+        gh.user_token()
+    } else {
+        gh.mint_token(surf_str(surface, "repo"))
+    }
+}
+
+/// Why a surface has no token, for an eligibility reason or an error.
+fn no_token_reason(surface: &Value) -> String {
+    let repo = surf_str(surface, "repo");
+    if dispatches_as_user(surface) {
+        format!(
+            "{repo} dispatches as the user, and no user token is available here \
+             (GH_TOKEN, GITHUB_TOKEN or `gh auth token`)"
+        )
+    } else {
+        format!(
+            "app token cannot be minted for {repo} \u{2014} surface is \
+             unreachable by the App"
+        )
+    }
+}
+
 fn surf_targets(surface: &Value) -> Vec<String> {
     surface
         .get("targets")
@@ -380,6 +501,108 @@ fn surf_targets(surface: &Value) -> Vec<String> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+/// Target rules accept an exact owner/repo, a whole-repository star,
+/// or an owner-scoped owner/* rule. Owner matching is exact and the
+/// repository component must be a single non-empty path segment.
+fn target_matches(target: &str, repo: &str) -> bool {
+    if target == "*" {
+        return repo.split_once('/').is_some_and(|(owner, name)| {
+            !owner.is_empty() && !name.is_empty() && !name.contains('/')
+        });
+    }
+    if let Some(owner) = target.strip_suffix("/*") {
+        return repo.split_once('/').is_some_and(|(repo_owner, name)| {
+            repo_owner == owner && !name.is_empty() && !name.contains('/')
+        });
+    }
+    target == repo
+}
+
+fn surface_targets_job(surface: &Value, job: &Job) -> bool {
+    surf_targets(surface)
+        .iter()
+        .any(|target| target_matches(target, &job.repo))
+}
+
+fn valid_owner_repo(repo: &str) -> bool {
+    let Some((owner, name)) = repo.split_once('/') else {
+        return false;
+    };
+    let valid_part = |part: &str| {
+        !part.is_empty()
+            && part != "."
+            && part != ".."
+            && part
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))
+    };
+    valid_part(owner) && valid_part(name) && !name.contains('/')
+}
+
+/// A portable run reference names the Fleet runner repository and its
+/// GitHub Actions run ID. Unlike an fp_ handle, it is resolvable from
+/// any workspace with GitHub access and the same surface registry.
+fn parse_portable_run_reference(reference: &str) -> Option<(String, i64)> {
+    let (repo, raw_id) = reference.rsplit_once('#')?;
+    let run_id = raw_id.parse::<i64>().ok()?;
+    if !valid_owner_repo(repo) || run_id <= 0 {
+        return None;
+    }
+    Some((repo.to_string(), run_id))
+}
+
+fn resolve_portable_run_reference(reference: &str, registry: &Value, gh: &dyn Gh) -> R<Value> {
+    let (repo, run_id) = parse_portable_run_reference(reference).ok_or_else(|| {
+        Die(format!(
+            "invalid portable run reference {reference:?}; expected owner/repo#run_id"
+        ))
+    })?;
+    let surface = registry_surfaces(registry)
+        .into_iter()
+        .find(|surface| {
+            surf_str(surface, "repo") == repo
+                && matches!(surf_str(surface, "kind"), "github-actions" | "blacksmith")
+        })
+        .ok_or_else(|| {
+            Die(format!(
+                "{repo} is not a registered Fleet GitHub Actions runner repository"
+            ))
+        })?;
+    let token = surface_token(&surface, gh).ok_or_else(|| {
+        Die(format!(
+            "no GitHub token is available to read runner {repo}"
+        ))
+    })?;
+    let (status, run) = gh.api(
+        "GET",
+        &format!("/repos/{repo}/actions/runs/{run_id}"),
+        &token,
+        None,
+    )?;
+    if status != 200 {
+        return die(format!(
+            "cannot read Fleet run {reference} (GitHub API HTTP {status})"
+        ));
+    }
+    let run_url = run
+        .get("html_url")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("https://github.com/{repo}/actions/runs/{run_id}"));
+    Ok(json!({
+        "handle": reference,
+        "portable_id": reference,
+        "runner_repo": repo,
+        "run_id": run_id,
+        "run_url": run_url,
+        "surface": surf_str(&surface, "id"),
+        "surface_kind": surf_str(&surface, "kind"),
+        "state": map_run_state(&run),
+        "created_at": run.get("created_at").cloned().unwrap_or(Value::Null),
+        "updated_at": run.get("updated_at").cloned().unwrap_or(Value::Null),
+    }))
 }
 
 fn load_registry(path: &str) -> R<Value> {
@@ -655,8 +878,14 @@ fn base_eligible(surface: &Value, job: &Job) -> (bool, String) {
     if status != "active" {
         return (false, format!("surface status is '{status}', not 'active'"));
     }
-    let targets = surf_targets(surface);
-    if !targets.iter().any(|t| t == "*") && !targets.iter().any(|t| t == &job.repo) {
+    let dispatch_as = surf_str(surface, "dispatch_as");
+    if !matches!(dispatch_as, "" | "app" | "user") {
+        return (
+            false,
+            format!("surface dispatch_as is '{dispatch_as}', not 'app' or 'user'"),
+        );
+    }
+    if !surface_targets_job(surface, job) {
         return (
             false,
             format!("{} is not in this surface's targets", job.repo),
@@ -748,6 +977,50 @@ impl GithubActionsAdapter {
     /// input is sent only when it changes something (blacksmith) —
     /// upstream's fleet-run rejects unknown inputs.
     fn workflow_inputs(&self, job: &Job, dispatch_id: Option<&str>) -> Value {
+        if surf_str(&self.surface, "workflow") == "fleet-command.yml" {
+            let mut inputs = Map::new();
+            inputs.insert("repo".into(), json!(job.repo));
+            inputs.insert("command".into(), json!(job.command));
+            inputs.insert("runner".into(), json!(self.runner_name(job)));
+            inputs.insert("platform".into(), json!(job.platform));
+            if !job.git_ref.is_empty() {
+                inputs.insert("ref".into(), json!(job.git_ref));
+            }
+            if self.surface.get("container_input").and_then(Value::as_bool) == Some(true) {
+                if let Some(container) = &job.container {
+                    inputs.insert("container_image".into(), json!(container));
+                }
+            }
+            if let Some(cache) = &job.actions_cache {
+                let (key, path) = cache.split_once(':').unwrap_or((cache.as_str(), "."));
+                inputs.insert("actions_cache_key".into(), json!(key));
+                inputs.insert("actions_cache_path".into(), json!(path));
+                inputs.insert(
+                    "actions_cache_restore_keys".into(),
+                    json!(job.actions_cache_restore_keys.join("\n")),
+                );
+            }
+            if job.push_nix_cache {
+                inputs.insert("push_nix_cache".into(), json!(true));
+            }
+            if self
+                .surface
+                .get("previous_run_id_input")
+                .and_then(Value::as_bool)
+                == Some(true)
+            {
+                if let Some(run_id) = job.previous_run_id {
+                    inputs.insert("previous_run_id".into(), json!(run_id.to_string()));
+                }
+                if let Some(repo) = &job.previous_run_repo {
+                    inputs.insert("previous_run_repo".into(), json!(repo));
+                }
+            }
+            if let Some(id) = dispatch_id {
+                inputs.insert("dispatch_id".into(), json!(id));
+            }
+            return Value::Object(inputs);
+        }
         let mut entry = Map::new();
         entry.insert("repo".into(), json!(job.repo));
         entry.insert("command".into(), json!(job.command));
@@ -759,30 +1032,66 @@ impl GithubActionsAdapter {
             cache.insert("push_nix".into(), json!(true));
         }
         if let Some(ac) = &job.actions_cache {
-            let (key, _, path) = match ac.split_once(':') {
-                Some((k, p)) => (k, (), p),
-                None => (ac.as_str(), (), ""),
+            let (key, path) = match ac.split_once(':') {
+                Some((key, path)) => (key, path),
+                None => (ac.as_str(), "."),
             };
             cache.insert("actions_key".into(), json!(key));
+            cache.insert("actions_path".into(), json!(path));
+        }
+        if !job.actions_cache_restore_keys.is_empty() {
             cache.insert(
-                "actions_path".into(),
-                json!(if path.is_empty() { "." } else { path }),
+                "actions_restore_keys".into(),
+                json!(job.actions_cache_restore_keys),
             );
         }
+        let has_artifact_input = self
+            .surface
+            .get("previous_run_id_input")
+            .and_then(Value::as_bool)
+            == Some(true);
+        let has_platform_input =
+            self.surface.get("platform_input").and_then(Value::as_bool) == Some(true);
+        if has_artifact_input {
+            if let Some(run_id) = job.previous_run_id {
+                entry.insert("previous_run_id".into(), json!(run_id.to_string()));
+            }
+            if let Some(repo) = &job.previous_run_repo {
+                entry.insert("previous_run_repo".into(), json!(repo));
+            }
+        }
+        if has_platform_input {
+            entry.insert("platform".into(), json!(job.platform));
+        }
         let mut inputs = Map::new();
-        if !cache.is_empty() {
-            entry.insert("cache".into(), Value::Object(cache));
+        let needs_jobs = !cache.is_empty()
+            || (has_artifact_input && job.previous_run_id.is_some())
+            || (has_platform_input && job.platform != "linux");
+        if needs_jobs {
+            if !cache.is_empty() {
+                entry.insert("cache".into(), Value::Object(cache));
+            }
             inputs.insert(
                 "jobs".into(),
                 json!(Value::Array(vec![Value::Object(entry)]).to_string()),
             );
             // org-run.yml declares the top-level `repo` input
-            // required even when `jobs` is given (Codex P2 on
-            // PR #8325) — retain it alongside the jobs payload.
+            // required even when `jobs` is given — retain it.
             inputs.insert("repo".into(), json!(job.repo));
         } else {
             inputs.insert("repo".into(), json!(job.repo));
             inputs.insert("command".into(), json!(job.command));
+        }
+        if has_artifact_input {
+            if let Some(run_id) = job.previous_run_id {
+                inputs.insert("previous_run_id".into(), json!(run_id.to_string()));
+            }
+            if let Some(repo) = &job.previous_run_repo {
+                inputs.insert("previous_run_repo".into(), json!(repo));
+            }
+        }
+        if has_platform_input {
+            inputs.insert("platform".into(), json!(job.platform));
         }
         if surf_str(&self.surface, "workflow") == "org-run.yml" {
             // org-run's setup job defaults to a Blacksmith runner;
@@ -811,7 +1120,7 @@ impl GithubActionsAdapter {
         let s = &self.surface;
         let repo = surf_str(s, "repo").to_string();
         let workflow = surf_str(s, "workflow").to_string();
-        let token = gh.app_token(&repo)?;
+        let token = surface_token(s, gh).ok_or_else(|| Die(no_token_reason(s)))?;
         let dispatch_id = dispatch_id_for(s);
         let inputs = self.workflow_inputs(job, dispatch_id.as_deref());
         // Correlate the created run with THIS dispatch (Codex P1
@@ -914,7 +1223,7 @@ impl GithubActionsAdapter {
             }
         };
         let repo = surf_str(&self.surface, "repo");
-        let token = match gh.mint_token(repo) {
+        let token = match surface_token(&self.surface, gh) {
             Some(t) => t,
             None => {
                 return session
@@ -949,6 +1258,14 @@ impl Adapter for GithubActionsAdapter {
     }
     fn eligible(&self, job: &Job, ctx: &Ctx, gh: &dyn Gh) -> (bool, String) {
         let _ = ctx;
+        if job.platform == "macos"
+            && self.surface.get("platform_input").and_then(Value::as_bool) != Some(true)
+        {
+            return (
+                false,
+                "this surface workflow does not declare the macOS platform input".to_string(),
+            );
+        }
         let (ok, why) = base_eligible(&self.surface, job);
         if !ok {
             return (ok, why);
@@ -963,22 +1280,61 @@ impl Adapter for GithubActionsAdapter {
         // (Codex P2 on PR #8325): live token availability is part
         // of eligibility, so an inaccessible surface cannot win
         // the cascade and then abort at dispatch time.
-        let repo = surf_str(&self.surface, "repo");
-        if gh.mint_token(repo).is_none() {
-            return (
-                false,
-                format!(
-                    "app token cannot be minted for {repo} \u{2014} surface is \
-                     unreachable by the App"
-                ),
-            );
+        let token = match surface_token(&self.surface, gh) {
+            Some(token) => token,
+            None => return (false, no_token_reason(&self.surface)),
+        };
+        if self
+            .surface
+            .get("public_targets_only")
+            .and_then(Value::as_bool)
+            == Some(true)
+        {
+            match gh.api("GET", &format!("/repos/{}", job.repo), &token, None) {
+                Ok((200, target))
+                    if target.get("private").and_then(Value::as_bool) == Some(false) => {}
+                Ok((200, _)) => {
+                    return (
+                        false,
+                        "this surface has no private-repository checkout token; target is not verified public"
+                            .to_string(),
+                    );
+                }
+                Ok((status, _)) => {
+                    return (
+                        false,
+                        format!(
+                            "cannot verify public target {} on this surface (HTTP {status})",
+                            job.repo
+                        ),
+                    );
+                }
+                Err(error) => {
+                    return (
+                        false,
+                        format!("cannot verify public target {}: {}", job.repo, error.0),
+                    );
+                }
+            }
         }
         (true, "eligible".to_string())
     }
-    fn capacity(&self, _job: &Job, ctx: &Ctx) -> Capacity {
+    fn capacity(&self, job: &Job, ctx: &Ctx) -> Capacity {
         let owner = surf_str(&self.surface, "owner");
         let (running, queued) = ctx.owner_load.get(owner).copied().unwrap_or((0, 0));
-        let cap = ctx.owner_cap(owner);
+        let cap = if job.platform == "macos" {
+            // Count all host runs conservatively as potential macOS
+            // consumers so dispatch never oversubscribes the small pool.
+            let macos_cap = ctx
+                .owners
+                .get(owner)
+                .and_then(|value| value.get("concurrent_macos_cap"))
+                .and_then(Value::as_i64)
+                .unwrap_or(0);
+            ctx.owner_cap(owner).min(macos_cap)
+        } else {
+            ctx.owner_cap(owner)
+        };
         let active = running + queued;
         let free = (cap - active).max(0);
         Capacity {
@@ -1052,6 +1408,12 @@ impl Adapter for BlacksmithAdapter {
                 "Blacksmith is orgs-only; never the personal copy".to_string(),
             );
         }
+        if job.platform != "linux" {
+            return (
+                false,
+                "Blacksmith surfaces provide Linux runners only".to_string(),
+            );
+        }
         let (ok, why) = base_eligible(&self.inner.surface, job);
         if !ok {
             return (ok, why);
@@ -1059,15 +1421,8 @@ impl Adapter for BlacksmithAdapter {
         if job.runner == "github" {
             return (false, "job pins runner=github".to_string());
         }
-        let repo = surf_str(&self.inner.surface, "repo");
-        if gh.mint_token(repo).is_none() {
-            return (
-                false,
-                format!(
-                    "app token cannot be minted for {repo} \u{2014} surface is \
-                     unreachable by the App"
-                ),
-            );
+        if surface_token(&self.inner.surface, gh).is_none() {
+            return (false, no_token_reason(&self.inner.surface));
         }
         // The budget binds pinned surfaces too (Codex round-4 on
         // PR #8325): a --surface pin is a placement choice, not a
@@ -1145,7 +1500,15 @@ impl Adapter for CodespaceAdapter {
                     .to_string(),
             );
         }
-        if !ctx.laptop_busy {
+        if job.platform != "linux" {
+            return (
+                false,
+                "Codespaces provide Linux workspaces only".to_string(),
+            );
+        }
+        let explicitly_selected = job.surface_pin.as_deref() == Some(surf_str(&self.surface, "id"))
+            || job.preferred_surface.as_deref() == Some(surf_str(&self.surface, "id"));
+        if !ctx.laptop_busy && !explicitly_selected {
             return (
                 false,
                 "codespaces are the last resort: laptop is not marked \
@@ -1153,8 +1516,7 @@ impl Adapter for CodespaceAdapter {
                     .to_string(),
             );
         }
-        let targets = surf_targets(&self.surface);
-        if !targets.iter().any(|t| t == "*") && !targets.iter().any(|t| t == &job.repo) {
+        if !surface_targets_job(&self.surface, job) {
             return (
                 false,
                 format!("{} is not in this surface's targets", job.repo),
@@ -1338,8 +1700,13 @@ pub fn build_ctx(
 ) -> Ctx {
     let owners = registry.get("owners").cloned().unwrap_or(json!({}));
     let mut hosts: HashMap<String, Vec<String>> = HashMap::new();
+    // Host repos whose every API call uses the user's token.
+    let mut user_repos: std::collections::HashSet<String> = std::collections::HashSet::new();
     for s in registry_surfaces(registry) {
         let kind = surf_str(&s, "kind");
+        if dispatches_as_user(&s) {
+            user_repos.insert(surf_str(&s, "repo").to_string());
+        }
         if (kind == "github-actions" || kind == "blacksmith") && !surf_str(&s, "repo").is_empty() {
             let repos = hosts.entry(surf_str(&s, "owner").to_string()).or_default();
             let repo = surf_str(&s, "repo").to_string();
@@ -1362,11 +1729,16 @@ pub fn build_ctx(
         let mut running: i64 = 0;
         let mut queued: i64 = 0;
         for repo in repos {
-            let token = match gh.mint_token(repo) {
+            let minted = if user_repos.contains(repo) {
+                gh.user_token()
+            } else {
+                gh.mint_token(repo)
+            };
+            let token = match minted {
                 Some(t) => t,
                 None => {
                     read_errors.push(format!(
-                        "{repo}: app token unavailable (not covered) — load counted as 0"
+                        "{repo}: no token available (not covered) — load counted as 0"
                     ));
                     continue;
                 }
@@ -1402,6 +1774,33 @@ pub fn build_ctx(
         }
         owner_load.insert(owner.clone(), (running, queued));
     }
+    let mut owner_last_dispatch: HashMap<String, i64> = HashMap::new();
+    let mut surface_last_dispatch: HashMap<String, i64> = HashMap::new();
+    if let Some(sessions) = store.get("sessions").and_then(Value::as_object) {
+        for rec in sessions.values() {
+            let surface_id = rec.get("surface").and_then(Value::as_str).unwrap_or("");
+            let created = rec
+                .get("created_at")
+                .and_then(Value::as_str)
+                .and_then(parse_iso)
+                .unwrap_or(0);
+            if surface_id.is_empty() || created <= 0 {
+                continue;
+            }
+            let Some(surface) = find_surface(registry, surface_id) else {
+                continue;
+            };
+            let owner = surf_str(surface, "owner").to_string();
+            surface_last_dispatch
+                .entry(surface_id.to_string())
+                .and_modify(|latest| *latest = (*latest).max(created))
+                .or_insert(created);
+            owner_last_dispatch
+                .entry(owner)
+                .and_modify(|latest| *latest = (*latest).max(created))
+                .or_insert(created);
+        }
+    }
     let laptop_cfg = registry.get("laptop").cloned().unwrap_or(json!({}));
     let laptop_busy = laptop_busy_flag
         || laptop_cfg
@@ -1436,6 +1835,8 @@ pub fn build_ctx(
     Ctx {
         owners,
         owner_load,
+        owner_last_dispatch,
+        surface_last_dispatch,
         owner_load_overridden: overridden,
         load_read_errors: read_errors,
         laptop_busy,
@@ -1479,8 +1880,53 @@ pub fn decide(
         return Ok((adapter_for(&surface), reasoning));
     }
 
-    // Tier 1 — free GitHub-hosted Actions capacity, least-loaded first.
-    let mut tier1: Vec<(i64, String)> = Vec::new();
+    // Followups keep their previous host repo and cache while it
+    // remains healthy. A hard pin above always wins; this preference
+    // falls through when the owner is full or has a material backlog.
+    if let Some(preferred) = &job.preferred_surface {
+        if let Some(surface) = find_surface(registry, preferred) {
+            if let Some(ad) = adapters.get(preferred) {
+                let (ok, why) = ad.eligible(job, ctx, gh);
+                let cap = ad.capacity(job, ctx);
+                let owner = surf_str(surface, "owner");
+                let queued = ctx.owner_load.get(owner).map(|(_, q)| *q).unwrap_or(0);
+                let queue_threshold = surface
+                    .get("sticky_queue_threshold")
+                    .and_then(Value::as_i64)
+                    .unwrap_or(2)
+                    .max(1);
+                let has_capacity = cap
+                    .free_slots
+                    .map(|free| free > 0)
+                    .or_else(|| cap.remaining_total_minutes.map(|minutes| minutes > 0.0))
+                    .unwrap_or(true);
+                if ok && has_capacity && queued < queue_threshold {
+                    reasoning.push(format!(
+                        "followup affinity keeps {preferred}: {}",
+                        cap.summary
+                    ));
+                    return Ok((adapter_for(surface), reasoning));
+                }
+                reasoning.push(format!(
+                    "followup affinity released from {preferred}: eligible={ok},                      capacity={has_capacity}, queued={queued} (threshold {queue_threshold}); {why}"
+                ));
+            } else {
+                reasoning.push(format!(
+                    "followup affinity released from {preferred}: adapter is unavailable"
+                ));
+            }
+        } else {
+            reasoning.push(format!(
+                "followup affinity released from {preferred}: surface is no longer registered"
+            ));
+        }
+    }
+
+    // Tier 1 — free GitHub-hosted Actions capacity. Balance owners by
+    // live load first, then use the least-recently-used owner to
+    // distribute idle bursts evenly across accounts. Within an owner,
+    // prefer its Fleet runner repo so followups can reuse that cache.
+    let mut tier1: Vec<(i64, i64, i64, i64, String)> = Vec::new();
     for s in &surfaces {
         if surf_str(s, "kind") != "github-actions" {
             continue;
@@ -1496,15 +1942,32 @@ pub fn decide(
         reasoning.push(format!("tier1 candidate {id}: {}", cap.summary));
         if let Some(free) = cap.free_slots {
             if free > 0 {
-                tier1.push((free, id));
+                let owner = surf_str(s, "owner");
+                let (running, queued) = ctx.owner_load.get(owner).copied().unwrap_or((0, 0));
+                let load = running.saturating_add(queued);
+                let owner_last = ctx.owner_last_dispatch.get(owner).copied().unwrap_or(0);
+                let surface_last = ctx.surface_last_dispatch.get(&id).copied().unwrap_or(0);
+                let priority = s
+                    .get("selection_priority")
+                    .and_then(Value::as_i64)
+                    .unwrap_or(50);
+                tier1.push((load, owner_last, priority, surface_last, id));
+            } else {
+                reasoning.push(format!("tier1 unavailable {id}: no free account slots"));
             }
         }
     }
     if !tier1.is_empty() {
-        tier1.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
-        let sid = tier1[0].1.clone();
+        tier1.sort_by(|a, b| {
+            a.0.cmp(&b.0)
+                .then_with(|| a.1.cmp(&b.1))
+                .then_with(|| a.2.cmp(&b.2))
+                .then_with(|| a.3.cmp(&b.3))
+                .then_with(|| a.4.cmp(&b.4))
+        });
+        let sid = tier1[0].4.clone();
         reasoning.push(format!(
-            "tier1 pick {sid}: most free slots among eligible GitHub-hosted surfaces"
+            "tier1 pick {sid}: least-loaded eligible owner, with idle owners rotated by last dispatch"
         ));
         let surface = find_surface(registry, &sid).unwrap().clone();
         return Ok((adapter_for(&surface), reasoning));
@@ -1579,8 +2042,13 @@ fn refresh_session(store: &mut Value, handle: &str, registry: &Value, gh: &dyn G
         .get("surface")
         .and_then(|s| s.as_str())
         .map(str::to_string);
-    if let (Some(_), Some(sid)) = (run_id, surface_id) {
+    if let (Some(run_id), Some(sid)) = (run_id, surface_id) {
         if let Some(surface) = find_surface(registry, &sid) {
+            let runner_repo = surf_str(surface, "repo");
+            if !runner_repo.is_empty() {
+                rec["runner_repo"] = json!(runner_repo);
+                rec["portable_id"] = json!(format!("{runner_repo}#{run_id}"));
+            }
             if let Some(ad) = adapter_for(surface) {
                 let state = ad.status(&rec, gh);
                 if state != rec.get("state").and_then(|s| s.as_str()).unwrap_or("") {
@@ -1593,10 +2061,10 @@ fn refresh_session(store: &mut Value, handle: &str, registry: &Value, gh: &dyn G
                     && ["succeeded", "failed", "cancelled"].contains(&state.as_str())
                 {
                     let repo = surf_str(surface, "repo").to_string();
-                    if let Some(token) = gh.mint_token(&repo) {
+                    if let Some(token) = surface_token(surface, gh) {
                         if let Ok((200, run)) = gh.api(
                             "GET",
-                            &format!("/repos/{repo}/actions/runs/{}", run_id.unwrap()),
+                            &format!("/repos/{repo}/actions/runs/{run_id}"),
                             &token,
                             None,
                         ) {
@@ -1810,9 +2278,11 @@ fn blacksmith_reconcile_handles(store: &Value, registry: &Value) -> Vec<String> 
 }
 
 const DISPATCH_USAGE: &str = "usage: repo-queue dispatch --repo <owner/name> --command '<cmd>' \
-[--ref SHA] [--runner auto|github|blacksmith] [--surface ID] [--push-nix-cache] \
-[--actions-cache KEY:PATH] [--allow-paid-blacksmith MINUTES] [--laptop-busy] [--dispatch] \
-[--json] [--registry PATH]\nDry-run unless --dispatch; prints the placement decision.";
+[--ref REF] [--runner auto|github|blacksmith] [--platform linux|macos] [--container IMAGE] \
+[--surface ID] [--followup HANDLE|OWNER/REPO#RUN_ID] [--push-nix-cache] \
+[--actions-cache KEY:PATH] [--actions-cache-restore-key PREFIX]... \
+[--allow-paid-blacksmith MINUTES] \
+[--laptop-busy] [--dispatch] [--json] [--registry PATH]\nDry-run unless --dispatch; prints the placement decision.";
 
 fn run_dispatch(args: &[String]) -> R<i32> {
     let (cli, rest) = extract_common(args)?;
@@ -1820,9 +2290,13 @@ fn run_dispatch(args: &[String]) -> R<i32> {
     let mut command: Option<String> = None;
     let mut git_ref = String::new();
     let mut runner = "auto".to_string();
+    let mut platform = "linux".to_string();
+    let mut container: Option<String> = None;
     let mut surface_pin: Option<String> = None;
+    let mut followup_handle: Option<String> = None;
     let mut push_nix_cache = false;
     let mut actions_cache: Option<String> = None;
+    let mut actions_cache_restore_keys: Vec<String> = Vec::new();
     let mut allow_paid: f64 = 0.0;
     let mut laptop_busy_flag = false;
     let mut assume_owner_load = String::new();
@@ -1861,10 +2335,45 @@ fn run_dispatch(args: &[String]) -> R<i32> {
                 i += 1;
                 surface_pin = Some(need(&rest, i, "--surface")?);
             }
+            "--followup" => {
+                i += 1;
+                followup_handle = Some(need(&rest, i, "--followup")?);
+            }
+            "--platform" => {
+                i += 1;
+                platform = need(&rest, i, "--platform")?;
+                if !["linux", "macos"].contains(&platform.as_str()) {
+                    return die(format!("--platform must be linux|macos, got {platform}"));
+                }
+            }
+            "--macos" => platform = "macos".to_string(),
+            "--container" => {
+                i += 1;
+                let image = need(&rest, i, "--container")?;
+                if image.trim().is_empty() {
+                    return die("--container cannot be empty");
+                }
+                container = Some(image);
+            }
             "--push-nix-cache" => push_nix_cache = true,
             "--actions-cache" => {
                 i += 1;
-                actions_cache = Some(need(&rest, i, "--actions-cache")?);
+                let value = need(&rest, i, "--actions-cache")?;
+                let (key, cache_path) = value
+                    .split_once(':')
+                    .ok_or_else(|| Die("--actions-cache needs KEY:PATH".to_string()))?;
+                if key.trim().is_empty() || cache_path.trim().is_empty() {
+                    return die("--actions-cache needs a non-empty KEY and PATH");
+                }
+                actions_cache = Some(value);
+            }
+            "--actions-cache-restore-key" => {
+                i += 1;
+                let prefix = need(&rest, i, "--actions-cache-restore-key")?;
+                if prefix.trim().is_empty() {
+                    return die("--actions-cache-restore-key cannot be empty");
+                }
+                actions_cache_restore_keys.push(prefix);
             }
             "--allow-paid-blacksmith" => {
                 i += 1;
@@ -1895,14 +2404,29 @@ fn run_dispatch(args: &[String]) -> R<i32> {
         }
         i += 1;
     }
-    let job = Job {
-        repo: repo.ok_or_else(|| Die("--repo is required".to_string()))?,
+    if !actions_cache_restore_keys.is_empty() && actions_cache.is_none() {
+        return die("--actions-cache-restore-key requires --actions-cache");
+    }
+    let repo = repo.ok_or_else(|| Die("--repo is required".to_string()))?;
+    if !valid_owner_repo(&repo) {
+        return die(format!(
+            "--repo must be a single owner/repository name, got {repo:?}"
+        ));
+    }
+    let mut job = Job {
+        repo,
         command: command.ok_or_else(|| Die("--command is required".to_string()))?,
         git_ref,
         runner,
+        platform,
+        container,
         surface_pin,
+        preferred_surface: None,
+        previous_run_id: None,
+        previous_run_repo: None,
         push_nix_cache,
         actions_cache,
+        actions_cache_restore_keys,
         allow_paid_blacksmith: allow_paid,
     };
     let registry = registry_value(&cli)?;
@@ -1923,6 +2447,67 @@ fn run_dispatch(args: &[String]) -> R<i32> {
             }
             Ok(())
         });
+    }
+    if let Some(handle) = &followup_handle {
+        let previous = if parse_portable_run_reference(handle).is_some() {
+            resolve_portable_run_reference(handle, &registry, &gh)?
+        } else if dispatch {
+            with_store_lock(|| {
+                let mut store = load_store();
+                let previous = refresh_session(&mut store, handle, &registry, &gh)?;
+                save_store(&store)?;
+                Ok(previous)
+            })?
+        } else {
+            load_store()
+                .get("sessions")
+                .and_then(Value::as_object)
+                .and_then(|sessions| sessions.get(handle))
+                .cloned()
+                .ok_or_else(|| Die(format!(
+                    "--followup {handle}: no session with this handle in the local Fleet placement store"
+                )))?
+        };
+        let state = previous
+            .get("state")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown");
+        if dispatch
+            && previous.get("run_id").and_then(Value::as_i64).is_some()
+            && !["succeeded", "failed", "cancelled"].contains(&state)
+        {
+            return die(format!(
+                "--followup {handle}: previous run is still {state}; wait for a terminal result before downloading its output"
+            ));
+        }
+        if dispatch && state == "dispatched" {
+            return die(format!(
+                "--followup {handle}: previous dispatch has no correlated run yet; resolve its status before continuing"
+            ));
+        }
+        let previous_surface = previous
+            .get("surface")
+            .and_then(Value::as_str)
+            .filter(|surface| !surface.is_empty());
+        if let Some(surface_id) = previous_surface {
+            job.preferred_surface = Some(surface_id.to_string());
+            if let Some(run_id) = previous.get("run_id").and_then(Value::as_i64) {
+                let host_repo = previous
+                    .get("runner_repo")
+                    .and_then(Value::as_str)
+                    .filter(|repo| !repo.is_empty())
+                    .map(str::to_string)
+                    .or_else(|| {
+                        find_surface(&registry, surface_id)
+                            .map(|surface| surf_str(surface, "repo").to_string())
+                            .filter(|repo| !repo.is_empty())
+                    });
+                if let Some(host_repo) = host_repo {
+                    job.previous_run_id = Some(run_id);
+                    job.previous_run_repo = Some(host_repo);
+                }
+            }
+        }
     }
     let store = load_store();
     let ctx = build_ctx(
@@ -1991,11 +2576,21 @@ fn run_dispatch(args: &[String]) -> R<i32> {
             let surface = adapter.surface().clone();
             let sid = surf_str(&surface, "id").to_string();
             let kind = surf_str(&surface, "kind").to_string();
+            let runner_repo = surf_str(&surface, "repo").to_string();
             let mut rec = Map::new();
             rec.insert("handle".into(), json!(handle));
             rec.insert("job".into(), job.to_json());
             rec.insert("surface".into(), json!(sid));
             rec.insert("surface_kind".into(), json!(kind));
+            if !runner_repo.is_empty() {
+                rec.insert("runner_repo".into(), json!(runner_repo.clone()));
+            }
+            if let Some(run_id) = result.run_id {
+                rec.insert(
+                    "portable_id".into(),
+                    json!(format!("{runner_repo}#{run_id}")),
+                );
+            }
             rec.insert("decision_reasoning".into(), json!(reasoning));
             rec.insert(
                 "run_id".into(),
@@ -2049,6 +2644,15 @@ fn run_dispatch(args: &[String]) -> R<i32> {
             };
             commit_new_session(&Value::Object(rec), blacksmith_entry.as_ref())?;
             out.insert("handle".into(), json!(handle));
+            if let Some(run_id) = result.run_id {
+                if !runner_repo.is_empty() {
+                    out.insert("runner_repo".into(), json!(runner_repo));
+                    out.insert(
+                        "portable_id".into(),
+                        json!(format!("{runner_repo}#{run_id}")),
+                    );
+                }
+            }
             out.insert(
                 "run_id".into(),
                 result.run_id.map(Value::from).unwrap_or(Value::Null),
@@ -2063,7 +2667,7 @@ fn run_dispatch(args: &[String]) -> R<i32> {
     Ok(0)
 }
 
-const SESSION_USAGE: &str = "usage: repo-queue session <status|result|list> [HANDLE] \
+const SESSION_USAGE: &str = "usage: repo-queue session <status|result|list> [HANDLE|OWNER/REPO#RUN_ID] \
 [--mine] [--json] [--registry PATH]";
 
 fn run_session(args: &[String]) -> R<i32> {
@@ -2077,12 +2681,16 @@ fn run_session(args: &[String]) -> R<i32> {
                 .cloned()
                 .ok_or_else(|| Die(format!("session {sub} needs a HANDLE")))?;
             let registry = registry_value(&cli)?;
-            let rec = with_store_lock(|| {
-                let mut store = load_store();
-                let rec = refresh_session(&mut store, &handle, &registry, &gh)?;
-                save_store(&store)?;
-                Ok(rec)
-            })?;
+            let rec = if parse_portable_run_reference(&handle).is_some() {
+                resolve_portable_run_reference(&handle, &registry, &gh)?
+            } else {
+                with_store_lock(|| {
+                    let mut store = load_store();
+                    let rec = refresh_session(&mut store, &handle, &registry, &gh)?;
+                    save_store(&store)?;
+                    Ok(rec)
+                })?
+            };
             if sub == "status" {
                 print_out(&rec, cli.json, |r| {
                     format!(
@@ -2230,6 +2838,8 @@ mod tests {
         codespace_items: Vec<Value>,
         codespace_exit: i32,
         posts: RefCell<Vec<(String, Value)>>,
+        user_token: Option<String>,
+        post_tokens: RefCell<Vec<String>>,
     }
 
     impl Default for FakeGh {
@@ -2244,6 +2854,8 @@ mod tests {
                 codespace_items: Vec::new(),
                 codespace_exit: 0,
                 posts: RefCell::new(Vec::new()),
+                user_token: None,
+                post_tokens: RefCell::new(Vec::new()),
             }
         }
     }
@@ -2256,14 +2868,18 @@ mod tests {
                 None
             }
         }
+        fn user_token(&self) -> Option<String> {
+            self.user_token.clone()
+        }
         fn api(
             &self,
             method: &str,
             path: &str,
-            _token: &str,
+            token: &str,
             body: Option<&Value>,
         ) -> R<(u16, Value)> {
             if method == "POST" {
+                self.post_tokens.borrow_mut().push(token.to_string());
                 self.posts
                     .borrow_mut()
                     .push((path.to_string(), body.cloned().unwrap_or(Value::Null)));
@@ -2385,9 +3001,15 @@ mod tests {
             command: "nix build .#mcpx".to_string(),
             git_ref: String::new(),
             runner: "auto".to_string(),
+            platform: "linux".to_string(),
+            container: None,
             surface_pin: None,
+            preferred_surface: None,
+            previous_run_id: None,
+            previous_run_repo: None,
             push_nix_cache: false,
             actions_cache: None,
+            actions_cache_restore_keys: vec![],
             allow_paid_blacksmith: 0.0,
         }
     }
@@ -2396,6 +3018,8 @@ mod tests {
         Ctx {
             owners: registry()["owners"].clone(),
             owner_load: load.iter().map(|(k, v)| (k.to_string(), *v)).collect(),
+            owner_last_dispatch: HashMap::new(),
+            surface_last_dispatch: HashMap::new(),
             owner_load_overridden: vec![],
             load_read_errors: vec![],
             laptop_busy,
@@ -2410,20 +3034,37 @@ mod tests {
     }
 
     #[test]
-    fn tier1_picks_most_free_slots() {
+    fn tier1_balances_load_and_rotates_idle_owners() {
         let reg = registry();
         let gh = FakeGh::default();
-        // Personal copy has 40 free, org-run 20 free -> personal wins.
-        let c = ctx(
+        let mut c = ctx(
             &[("dezren39", (0, 0)), ("developing-today", (0, 0))],
             0.0,
             false,
         );
+        // A cold registry tie has a deterministic first choice.
         assert_eq!(
             pick(&reg, &job(), &c, &gh).as_deref(),
             Some("fleet-personal")
         );
-        // Personal saturated, org partially loaded -> org-run.
+        // Thereafter idle owners rotate even though their plan caps differ.
+        c.owner_last_dispatch.insert("dezren39".to_string(), 100);
+        assert_eq!(pick(&reg, &job(), &c, &gh).as_deref(), Some("org-run"));
+        c.owner_last_dispatch
+            .insert("developing-today".to_string(), 200);
+        assert_eq!(
+            pick(&reg, &job(), &c, &gh).as_deref(),
+            Some("fleet-personal")
+        );
+
+        // Live load beats the cap-size bias: the less-loaded account wins.
+        let c = ctx(
+            &[("dezren39", (5, 0)), ("developing-today", (1, 0))],
+            0.0,
+            false,
+        );
+        assert_eq!(pick(&reg, &job(), &c, &gh).as_deref(), Some("org-run"));
+        // A full personal account does not block the organization.
         let c = ctx(
             &[("dezren39", (40, 0)), ("developing-today", (5, 0))],
             0.0,
@@ -2965,7 +3606,14 @@ mod tests {
     fn embedded_registry_parses_and_has_org_run() {
         let reg = load_embedded_registry().unwrap();
         let org = find_surface(&reg, "org-run").expect("org-run in embedded registry");
-        assert!(surf_targets(org).contains(&"developing-today-forks/opencode".to_string()));
+        let org_job = job();
+        assert!(surface_targets_job(org, &org_job));
+        let mut fork_job = job();
+        fork_job.repo = "developing-today-forks/opencode".to_string();
+        let canonical_org = find_surface(&reg, "fleet-org").unwrap();
+        assert!(surface_targets_job(canonical_org, &fork_job));
+        let forks_runner = find_surface(&reg, "fleet-forks").unwrap();
+        assert!(surface_targets_job(forks_runner, &fork_job));
     }
 
     #[test]
@@ -2988,6 +3636,52 @@ mod tests {
         assert_eq!(
             handles,
             vec!["fp_done_unrec".to_string(), "fp_live".to_string()]
+        );
+    }
+
+    #[test]
+    fn portable_run_reference_parser_validates_repo_and_id() {
+        assert_eq!(
+            parse_portable_run_reference("developing-today/fleet#12345"),
+            Some(("developing-today/fleet".to_string(), 12345))
+        );
+        assert_eq!(
+            parse_portable_run_reference("developing-today/fleet#0"),
+            None
+        );
+        assert_eq!(parse_portable_run_reference("not-a-repo#12345"), None);
+        assert_eq!(
+            parse_portable_run_reference("developing-today/fleet#latest"),
+            None
+        );
+    }
+
+    #[test]
+    fn portable_run_reference_resolves_without_local_session_store() {
+        let reg = registry();
+        let reference = "developing-today/code#12345";
+        let gh = FakeGh {
+            runs_by_id: Map2::from([(
+                12345,
+                json!({
+                    "status": "completed",
+                    "conclusion": "success",
+                    "html_url": "https://github.com/developing-today/code/actions/runs/12345"
+                }),
+            )]),
+            ..Default::default()
+        };
+
+        let rec = resolve_portable_run_reference(reference, &reg, &gh).unwrap();
+
+        assert_eq!(rec["portable_id"], json!(reference));
+        assert_eq!(rec["runner_repo"], json!("developing-today/code"));
+        assert_eq!(rec["run_id"], json!(12345));
+        assert_eq!(rec["surface"], json!("org-run"));
+        assert_eq!(rec["state"], json!("succeeded"));
+        assert_eq!(
+            rec["run_url"],
+            json!("https://github.com/developing-today/code/actions/runs/12345")
         );
     }
 
@@ -3034,5 +3728,236 @@ mod tests {
         assert_eq!(back["sessions"]["fp_test"]["state"], json!("queued"));
         unsafe { std::env::remove_var("FLEET_PLACE_STATE") };
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ---- dispatch_as: user (FDR-0013) ----
+    //
+    // Oracle: the registry field's contract. A surface that says
+    // `dispatch_as: user` uses the user's token for eligibility and
+    // dispatch; every other surface keeps the App-only behaviour.
+
+    /// The personal fleet surface, re-declared as a fork the App is
+    /// not installed on, dispatching as the user.
+    fn user_surface() -> Value {
+        let reg = registry();
+        let mut surface = find_surface(&reg, "fleet-personal").unwrap().clone();
+        surface["id"] = json!("fleet-forks");
+        surface["dispatch_as"] = json!("user");
+        surface["app_installation"] = Value::Null;
+        surface
+    }
+
+    #[test]
+    fn hosts_yml_token_reads_the_oauth_token_line() {
+        // Oracle: gh's hosts.yml shape (a user block carrying
+        // oauth_token), the same fixture shape `fleet gh` tests use.
+        let yml = "github.com:\n    git_protocol: https\n    users:\n        someone:\n            oauth_token: TOKEN_VALUE\n    user: someone\n";
+        assert_eq!(hosts_yml_token(yml).as_deref(), Some("TOKEN_VALUE"));
+        assert_eq!(
+            hosts_yml_token("oauth_token: \"QUOTED\"\n").as_deref(),
+            Some("QUOTED")
+        );
+        // An empty value and a file without the line are misses.
+        assert_eq!(hosts_yml_token("oauth_token:\n"), None);
+        assert_eq!(hosts_yml_token("github.com:\n    user: someone\n"), None);
+    }
+
+    #[test]
+    fn first_token_takes_the_first_non_blank_lookup_in_order() {
+        let none = || None;
+        let blank = || Some("  \n".to_string());
+        let a = || Some(" a-token\n".to_string());
+        let b = || Some("b-token".to_string());
+        assert_eq!(
+            first_token(&[&none, &blank, &a, &b]).as_deref(),
+            Some("a-token")
+        );
+        assert_eq!(first_token(&[&b, &a]).as_deref(), Some("b-token"));
+        assert_eq!(first_token(&[&none, &blank]), None);
+        assert_eq!(first_token(&[]), None);
+    }
+
+    #[test]
+    fn a_user_dispatch_surface_is_eligible_and_posts_with_the_user_token() {
+        let surface = user_surface();
+        let ad = adapter_for(&surface).unwrap();
+        let gh = FakeGh {
+            // The App cannot mint for this repo at all.
+            tokens_ok: false,
+            user_token: Some("user-token".to_string()),
+            post_runs: vec![json!({
+                "id": 4242,
+                "html_url": "https://github.com/dezren39/fleet/actions/runs/4242",
+                "created_at": "2026-01-01T00:00:10Z"
+            })],
+            ..Default::default()
+        };
+        let c = ctx(&[("dezren39", (0, 0))], 0.0, false);
+        assert_eq!(ad.eligible(&job(), &c, &gh), (true, "eligible".to_string()));
+        let result = ad.dispatch(&job(), &gh).unwrap();
+        assert_eq!(result.run_id, Some(4242));
+        assert_eq!(gh.post_tokens.borrow().as_slice(), ["user-token"]);
+    }
+
+    #[test]
+    fn a_user_dispatch_surface_without_a_user_token_is_ineligible_and_says_why() {
+        let surface = user_surface();
+        let ad = adapter_for(&surface).unwrap();
+        let gh = FakeGh {
+            // An App token being available must not rescue it: the
+            // surface said which token it uses.
+            tokens_ok: true,
+            user_token: None,
+            ..Default::default()
+        };
+        let c = ctx(&[("dezren39", (0, 0))], 0.0, false);
+        let (ok, why) = ad.eligible(&job(), &c, &gh);
+        assert!(!ok);
+        assert!(why.contains("dispatches as the user"), "{why}");
+        let err = match ad.dispatch(&job(), &gh) {
+            Ok(_) => panic!("a surface with no token must not dispatch"),
+            Err(e) => e,
+        };
+        assert!(err.0.contains("no user token"), "{}", err.0);
+        assert!(gh.posts.borrow().is_empty());
+    }
+
+    #[test]
+    fn an_app_surface_never_falls_back_to_the_user_token() {
+        // Positive control for the two tests above: without the
+        // registry field, a user token changes nothing.
+        let reg = registry();
+        let surface = find_surface(&reg, "fleet-personal").unwrap().clone();
+        let ad = adapter_for(&surface).unwrap();
+        let gh = FakeGh {
+            tokens_ok: false,
+            user_token: Some("user-token".to_string()),
+            ..Default::default()
+        };
+        let c = ctx(&[("dezren39", (0, 0))], 0.0, false);
+        let (ok, why) = ad.eligible(&job(), &c, &gh);
+        assert!(!ok);
+        assert!(why.contains("unreachable by the App"), "{why}");
+    }
+
+    #[test]
+    fn an_unknown_dispatch_as_value_is_refused() {
+        let mut surface = user_surface();
+        surface["dispatch_as"] = json!("robot");
+        let ad = adapter_for(&surface).unwrap();
+        let gh = FakeGh {
+            user_token: Some("user-token".to_string()),
+            ..Default::default()
+        };
+        let c = ctx(&[("dezren39", (0, 0))], 0.0, false);
+        let (ok, why) = ad.eligible(&job(), &c, &gh);
+        assert!(!ok);
+        assert!(why.contains("not 'app' or 'user'"), "{why}");
+    }
+
+    #[test]
+    fn load_for_a_user_dispatch_host_is_read_with_the_user_token() {
+        let mut reg = registry();
+        reg["surfaces"] = json!([user_surface()]);
+        // No user token: the host's load cannot be read, and the
+        // context says so instead of counting it as zero silently.
+        let gh = FakeGh {
+            tokens_ok: true,
+            user_token: None,
+            ..Default::default()
+        };
+        let c = build_ctx(&reg, &json!({}), false, "", None, &gh);
+        assert_eq!(c.load_read_errors.len(), 1, "{:?}", c.load_read_errors);
+        assert!(c.load_read_errors[0].contains("dezren39/fleet"));
+        // With one, the read goes through.
+        let gh = FakeGh {
+            tokens_ok: false,
+            user_token: Some("user-token".to_string()),
+            ..Default::default()
+        };
+        let c = build_ctx(&reg, &json!({}), false, "", None, &gh);
+        assert!(c.load_read_errors.is_empty(), "{:?}", c.load_read_errors);
+    }
+    #[test]
+    fn owner_scoped_target_rules_are_exact_and_safe() {
+        assert!(target_matches(
+            "developing-today/*",
+            "developing-today/opencode"
+        ));
+        assert!(target_matches("dezren39/*", "dezren39/fleet"));
+        assert!(!target_matches(
+            "developing-today/*",
+            "developing-today-forks/opencode"
+        ));
+        assert!(!target_matches(
+            "developing-today/*",
+            "developing-today/a/b"
+        ));
+        assert!(!target_matches("*", "missing-owner"));
+        assert!(target_matches(
+            "developing-today/code",
+            "developing-today/code"
+        ));
+        assert!(!target_matches(
+            "developing-today/code",
+            "developing-today/other"
+        ));
+    }
+
+    #[test]
+    fn followup_affinity_keeps_surface_until_backlog_or_capacity_limit() {
+        let reg = registry();
+        let gh = FakeGh::default();
+        let mut j = job();
+        j.preferred_surface = Some("org-run".to_string());
+        let c = ctx(
+            &[("dezren39", (0, 0)), ("developing-today", (3, 0))],
+            0.0,
+            false,
+        );
+        assert_eq!(pick(&reg, &j, &c, &gh).as_deref(), Some("org-run"));
+
+        let c = ctx(
+            &[("dezren39", (0, 0)), ("developing-today", (20, 2))],
+            0.0,
+            false,
+        );
+        assert_eq!(pick(&reg, &j, &c, &gh).as_deref(), Some("fleet-personal"));
+    }
+
+    #[test]
+    fn workflow_inputs_carry_cache_restore_keys_and_previous_run() {
+        let mut j = job();
+        j.platform = "macos".to_string();
+        j.actions_cache = Some(
+            "rust-code-branch-hash:/root/.cargo/registry\n/root/.cargo/git\ntarget".to_string(),
+        );
+        j.actions_cache_restore_keys =
+            vec!["rust-code-branch-".to_string(), "rust-code-".to_string()];
+        j.previous_run_id = Some(1234);
+        j.previous_run_repo = Some("developing-today/fleet".to_string());
+        let mut surface = json!({
+            "id": "fleet-personal",
+            "kind": "github-actions",
+            "repo": "dezren39/fleet",
+            "workflow": "fleet-run.yml",
+            "previous_run_id_input": true,
+            "platform_input": true,
+        });
+        let adapter = GithubActionsAdapter {
+            surface: surface.take(),
+            force_runner: "github",
+        };
+        let inputs = adapter.workflow_inputs(&j, Some("fp_test"));
+        let jobs: Value = serde_json::from_str(inputs["jobs"].as_str().unwrap()).unwrap();
+        assert_eq!(jobs[0]["previous_run_id"], "1234");
+        assert_eq!(jobs[0]["previous_run_repo"], "developing-today/fleet");
+        assert_eq!(jobs[0]["platform"], "macos");
+        assert_eq!(
+            jobs[0]["cache"]["actions_restore_keys"][0],
+            "rust-code-branch-"
+        );
+        assert_eq!(jobs[0]["cache"]["actions_restore_keys"][1], "rust-code-");
+        assert_eq!(inputs["dispatch_id"], "fp_test");
     }
 }

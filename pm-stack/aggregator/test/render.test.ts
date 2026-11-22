@@ -150,6 +150,60 @@ describe("roadmap timeline", () => {
     expect(laneFor("2026-10-24").key).toBe("2026-Q4");
     expect(laneFor("Ongoing").key).toBe("ongoing");
   });
+  test("priorities view shows priority edges and release close-out cards", async () => {
+    const source = fixtureSource();
+    const rows: RoadmapRow[] = [
+      {
+        ...FIXTURE_ROADMAP[0],
+        title: "Later priority",
+        priority: "developing-today/code#90",
+        afterRefs: ["developing-today/code#80"],
+        releaseRef: "developing-today/code#100",
+      },
+      {
+        ...FIXTURE_ROADMAP[1],
+        title: "Earlier priority",
+        priority: "developing-today/code#10",
+        afterRefs: [],
+        releaseRef: null,
+      },
+    ];
+    const release = {
+      milestone: { title: "Program — release 1", dueOn: "2026-11-19", closedAt: "2026-11-19" },
+      kind: "release" as const,
+      releaseDate: "2026-11-19",
+      counts: {
+        issues: { closed: 2, carriedOver: 1, total: 3 },
+        designs: { closed: 1, carriedOver: 0, total: 1 },
+        epics: { closed: 1, carriedOver: 1, total: 2 },
+        total: { closed: 4, carriedOver: 2, total: 6 },
+      },
+      carriedOverEpics: ["developing-today/code#100"],
+      descriptionLine: "release snapshot",
+    };
+    const html = renderRoadmap(
+      rows,
+      new Map(),
+      source.provenance(),
+      "quarter",
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      "",
+      undefined,
+      undefined,
+      undefined,
+      null,
+      [release],
+      true,
+    );
+    expect(html.indexOf("Earlier priority")).toBeLessThan(html.indexOf("Later priority"));
+    expect(html).toContain("After:");
+    expect(html).toContain("Program — release 1");
+    expect(html).toContain("Carried-over epics:");
+  });
 });
 
 describe("horizon calendar-date validation (#1628)", () => {

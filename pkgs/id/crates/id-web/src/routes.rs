@@ -367,22 +367,11 @@ fn classify_tag(name: &str) -> (FileKind, Option<u64>) {
         }
     }
 
-    // Check for archive: "{name}.archive.{unix_timestamp}"
-    // Only an archive when the suffix actually parses as a unix
-    // timestamp (#2793) — the same rule #809 applied to the "auto-"
-    // prefix above. An ordinary file that merely contains ".archive."
-    // (notes.archive.txt) is Primary. No producer mints a non-numeric
-    // suffix: the archive claim path always formats a u64.
-    if let Some(pos) = name.rfind(".archive.") {
-        let ts_str = &name[pos + ".archive.".len()..];
-        // The producer's Display form is unsigned decimal digits only:
-        // parse::<u64>() would also accept a leading '+', a spelling no
-        // producer mints (#4329).
-        if !ts_str.is_empty() && ts_str.bytes().all(|b| b.is_ascii_digit()) {
-            if let Ok(ts) = ts_str.parse::<u64>() {
-                return (FileKind::Archive, Some(ts));
-            }
-        }
+    // Check for archive: "{name}.archive.{unix_timestamp}". The shared
+    // FileOps rule decides it, so the writer's reservation and this reader
+    // classify every name the same way (#2793, #4329, #11790).
+    if let Some(ts) = id_sync::fileops::archive_tag_timestamp(name) {
+        return (FileKind::Archive, Some(ts));
     }
 
     (FileKind::Primary, None)
@@ -669,6 +658,9 @@ fn create_router_inner(state: AppState) -> Router {
         }
         None => router.merge(super::world_ws::world_http_routes().with_state(world_state)),
     };
+    // The program gallery's read surface (#10003): 404 on every route
+    // unless the serving process wired a gallery in.
+    let router = router.merge(super::gallery::gallery_routes().with_state(state.gallery.clone()));
     let router = router
         .layer(DefaultBodyLimit::max(DEFAULT_BODY_LIMIT))
         .with_state(state.clone());
@@ -696,11 +688,10 @@ fn create_router_inner(state: AppState) -> Router {
 /// built with the default policy -- re-applying the listener
 /// policy here would double-guard the request, not widen it.
 ///
-/// Known limit: WebSocket upgrades under a mount do not complete,
-/// because the on-demand dispatch has no hyper upgrade handle to
-/// offer the world bridge; the program page and its HTTP surface
-/// serve normally. Dynamic publication *listeners* serve the same
-/// router through `axum::serve` directly and have no such limit.
+/// WebSocket sessions work under a mount (#11290): the request is
+/// rewritten in place, keeping its extensions, so the connection's
+/// hyper upgrade handle reaches the mounted world's bridge just as it
+/// does on a dedicated publication listener.
 async fn publication_mount_layer(
     State(state): State<AppState>,
     req: axum::http::Request<Body>,
@@ -1118,7 +1109,7 @@ async fn blob_handler(
     Query(query): Query<BlobQuery>,
 ) -> Response {
     // Parse the hash
-    let Ok(parsed_hash) = hash.parse::<iroh_blobs::Hash>() else {
+    let Ok(parsed_hash) = id_core::iroh_hash::parse_hash(&hash) else {
         return (StatusCode::BAD_REQUEST, "Invalid hash format").into_response();
     };
 
@@ -1877,8 +1868,7 @@ async fn get_file_name(store: &iroh_blobs::api::Store, hash: &str) -> Option<Str
 /// Returns the file content as bytes if found, or an HTML error message.
 async fn get_file_bytes(store: &iroh_blobs::api::Store, hash: &str) -> Result<Vec<u8>, String> {
     // Parse the hash
-    let hash = hash
-        .parse::<iroh_blobs::Hash>()
+    let hash = id_core::iroh_hash::parse_hash(hash)
         .map_err(|_err| "<p>Invalid hash format</p>".to_owned())?;
 
     // Read the blob content
@@ -2369,8 +2359,40 @@ mod save_publication_tests {
         // The current version is A's, untouched by B's refused save.
         let current = current_filename_hash(&state.store, "notes.md")
             .await
+            .unwrap()
             .unwrap();
         assert_eq!(current.to_string(), h2);
+    }
+
+    #[tokio::test]
+    async fn save_is_refused_when_the_current_version_cannot_be_read() {
+        // #12146: a tag-store read failure must not read as "no binding".
+        // That would skip the #8524 stale-save check and let the save
+        // supersede whatever the name points to.
+        let (mut state, _endpoint, _docs) = state().await;
+        state.save_limiter = SaveRateLimiter::new(Duration::ZERO);
+
+        let first = save(state.clone(), "notes.md", "original").await;
+        assert_eq!(first.status(), StatusCode::OK);
+        let h1 = response_json(first).await["hash"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+
+        state.store.shutdown().await.unwrap();
+        assert!(
+            current_filename_hash(&state.store, "notes.md")
+                .await
+                .is_err(),
+            "a store that cannot be read reports an error, not an unbound name"
+        );
+
+        let refused = save_based_on(state.clone(), "notes.md", "edit", &h1).await;
+        assert_eq!(refused.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(
+            response_json(refused).await["reason"],
+            "current_version_unavailable"
+        );
     }
 
     #[tokio::test]
@@ -2437,6 +2459,7 @@ mod save_publication_tests {
         .await;
         let current = current_filename_hash(&state.store, "notes.md")
             .await
+            .unwrap()
             .unwrap();
         assert_eq!(current.to_string(), winner_body["hash"].as_str().unwrap());
     }
@@ -2673,7 +2696,7 @@ mod upload_router_tests {
 
         // Mounting at runtime (no router rebuild) makes /prog serve
         // the mounted world's program surface.
-        state.publication_mounts.mount("arena", "/prog");
+        state.publication_mounts.mount("arena", "/prog").unwrap();
         let mounted = app
             .clone()
             .oneshot(Request::builder().uri("/prog").body(Body::empty()).unwrap())
@@ -2701,6 +2724,251 @@ mod upload_router_tests {
             .await
             .unwrap();
         assert_eq!(after.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn publication_mount_on_a_reserved_route_is_refused_and_explorer_still_answers() {
+        let (_, mut state, _dir, _endpoint, _docs) = router_with_state().await;
+        state.world = Some(hub_with_world("arena", Some("s3cret")));
+        let app = create_router(state.clone(), WebSecurity::default());
+
+        // Phase 4: /world is a reserved Explorer route, so the
+        // table refuses the mount instead of letting it shadow the
+        // Explorer page there.
+        let error = state
+            .publication_mounts
+            .mount("arena", "/world")
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("reserved Explorer route /world"), "{error}");
+        assert_eq!(state.publication_mounts.lookup("/world"), None);
+
+        // The Explorer world page still answers at /world.
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .uri("/world")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn publication_mount_session_round_trip_is_gated_by_the_world_admin_secret() {
+        let (_, mut state, _dir, _endpoint, _docs) = router_with_state().await;
+        state.world = Some(hub_with_world("arena", Some("s3cret")));
+        let app = create_router(state.clone(), WebSecurity::default());
+        state.publication_mounts.mount("arena", "/prog").unwrap();
+
+        let invite = |token: Option<&str>| {
+            let mut builder = Request::builder()
+                .method("POST")
+                .uri("/prog/api/world/invite")
+                .header("content-type", "application/json");
+            if let Some(token) = token {
+                builder = builder.header("x-world-admin-token", token);
+            }
+            builder
+                .body(Body::from("{\"display_name\":\"guest\"}"))
+                .unwrap()
+        };
+
+        // Unauthorized under the mount: no token, and a wrong token,
+        // are both refused by the mounted world's own gate — the
+        // mount adds no authority of its own and removes none.
+        for token in [None, Some("wrong")] {
+            let res = app.clone().oneshot(invite(token)).await.unwrap();
+            assert_eq!(res.status(), StatusCode::UNAUTHORIZED, "token {token:?}");
+        }
+
+        // Authorized under the mount: the world's admin secret mints
+        // the invite through the mount-scoped API URL — the session
+        // round-trip (refused anonymously, served with the secret)
+        // behaves exactly as it does on the program surface itself.
+        let res = app.clone().oneshot(invite(Some("s3cret"))).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = to_bytes(res.into_body(), usize::MAX).await.unwrap();
+        assert!(!body.is_empty());
+    }
+
+    /// #11290: a WebSocket session under a publication mount completes
+    /// over a real connection. The mount layer rewrites the request in
+    /// place, so the connection's upgrade handle travels with it to the
+    /// mounted world's bridge: an authorized join snapshots the mounted
+    /// world, and an invalid capability is refused by the world's own
+    /// session gate, exactly as on the program surface.
+    #[tokio::test]
+    async fn publication_mount_websocket_session_round_trips_over_a_real_connection() {
+        use futures_util::{SinkExt as _, StreamExt as _};
+        use tokio_tungstenite::tungstenite::Message as ClientMessage;
+
+        type Client = tokio_tungstenite::WebSocketStream<
+            tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+        >;
+        async fn next_frame(client: &mut Client) -> Option<serde_json::Value> {
+            match tokio::time::timeout(std::time::Duration::from_secs(30), client.next())
+                .await
+                .expect("timed out waiting for a world frame")
+            {
+                Some(Ok(ClientMessage::Text(text))) => Some(serde_json::from_str(&text).unwrap()),
+                _ => None,
+            }
+        }
+
+        let (_, mut state, _dir, _endpoint, _docs) = router_with_state().await;
+        state.world = Some(hub_with_world("arena", Some("s3cret")));
+        let app = create_router(state.clone(), WebSecurity::default());
+        state.publication_mounts.mount("arena", "/prog").unwrap();
+
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/prog/api/world/invite")
+                    .header("content-type", "application/json")
+                    .header("x-world-admin-token", "s3cret")
+                    .body(Body::from("{\"display_name\":\"guest\"}"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = to_bytes(res.into_body(), usize::MAX).await.unwrap();
+        let capability = serde_json::from_slice::<serde_json::Value>(&body).unwrap()["capability"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        // Authorized: the upgrade completes under the mount and the
+        // join reaches the mounted world.
+        let (mut client, _) =
+            tokio_tungstenite::connect_async(format!("ws://{addr}/prog/ws/world"))
+                .await
+                .unwrap();
+        client
+            .send(ClientMessage::Text(
+                serde_json::json!({"type": "join", "capability": capability})
+                    .to_string()
+                    .into(),
+            ))
+            .await
+            .unwrap();
+        let snapshot = next_frame(&mut client).await.unwrap();
+        assert_eq!(snapshot["snapshot"]["world_id"], "arena", "{snapshot}");
+
+        // Unauthorized: a capability the world never issued is refused
+        // by the world's own session gate; the mount grants nothing.
+        let (mut stranger, _) =
+            tokio_tungstenite::connect_async(format!("ws://{addr}/prog/ws/world"))
+                .await
+                .unwrap();
+        stranger
+            .send(ClientMessage::Text(
+                serde_json::json!({"type": "join", "capability": "not-a-capability"})
+                    .to_string()
+                    .into(),
+            ))
+            .await
+            .unwrap();
+        let refused = next_frame(&mut stranger).await;
+        assert!(
+            refused
+                .as_ref()
+                .is_none_or(|frame| frame.get("snapshot").is_none()),
+            "an invalid capability must not join: {refused:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn publication_mounts_isolate_sibling_worlds_at_the_router() {
+        let (_, mut state, _dir, _endpoint, _docs) = router_with_state().await;
+        let opener = id_worlds::world_hub::testing::MemoryOpener::new(false);
+        let dyn_opener: std::sync::Arc<dyn id_worlds::world_hub::WorldOpener> = opener.clone();
+        let hub = id_worlds::world_hub::WorldHub::new(
+            dyn_opener,
+            Some("admin".to_owned()),
+            "arena",
+            id_worlds::world_hub::HubLimits::default(),
+        );
+        hub.create("arena").await.unwrap();
+        hub.create("vault").await.unwrap();
+        state.world = Some(hub);
+        let app = create_router(state.clone(), WebSecurity::default());
+        state.publication_mounts.mount("arena", "/prog").unwrap();
+        state.publication_mounts.mount("vault", "/vault").unwrap();
+
+        // Each mount serves its own world's program page, and only
+        // its own: the page names the mounted world.
+        for (path, world) in [("/prog", "arena"), ("/vault", "vault")] {
+            let res = app
+                .clone()
+                .oneshot(Request::builder().uri(path).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(res.status(), StatusCode::OK, "{path}");
+            let body = to_bytes(res.into_body(), usize::MAX).await.unwrap();
+            let text = String::from_utf8_lossy(&body);
+            assert!(
+                text.contains(&format!("data-world-program=\"{world}\"")),
+                "{path}: {text}"
+            );
+        }
+
+        // A mount's scoped API refuses to name its sibling: the
+        // program bridge is pinned to the mounted world, so an
+        // invite naming the other world is refused through this
+        // mount — and served through the sibling's own mount.
+        let invite = |uri: &str, world: &str| {
+            Request::builder()
+                .method("POST")
+                .uri(uri)
+                .header("content-type", "application/json")
+                .header("x-world-admin-token", "admin")
+                .body(Body::from(format!(
+                    "{{\"display_name\":\"guest\",\"world\":\"{world}\"}}"
+                )))
+                .unwrap()
+        };
+        let res = app
+            .clone()
+            .oneshot(invite("/prog/api/world/invite", "vault"))
+            .await
+            .unwrap();
+        assert_eq!(
+            res.status(),
+            StatusCode::NOT_FOUND,
+            "invite vault via /prog"
+        );
+        let res = app
+            .clone()
+            .oneshot(invite("/vault/api/world/invite", "vault"))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK, "invite vault via /vault");
+
+        // A string-prefix sibling path is outside both mounts and
+        // reaches no program surface at all.
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/prog2")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]
@@ -3103,6 +3371,104 @@ mod upload_router_tests {
         assert!(state.seitan.is_verified(&uid));
     }
 
+    /// The `arena` world's own live directory, through its actor.
+    async fn seitan_world(state: &AppState) -> id_worlds::world_hub::WorldLease {
+        state
+            .world
+            .as_ref()
+            .unwrap()
+            .lease(Some("arena"), None)
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn seitan_admit_lands_in_the_live_world_directory() {
+        // #8538 (a)+(b): an account created in the world's own
+        // directory (not the server-config one) admits without
+        // `unknown_account`, and `AccountVerified` lands in the world's
+        // live directory, the one capability authorization consults.
+        let (app, state, _dir, _endpoint, _docs) =
+            seitan_app(crate::SeitanState::default(), false).await;
+        let uid = seitan_account_key();
+        {
+            let world = seitan_world(&state).await;
+            world
+                .service()
+                .world()
+                .apply_directory_entry(id_worlds::directory::DirectoryEntry::AccountKeyed {
+                    id: uid.clone(),
+                    name: "joiner".to_owned(),
+                })
+                .await
+                .unwrap();
+            assert_eq!(
+                world
+                    .service()
+                    .world()
+                    .directory_account(&uid)
+                    .await
+                    .unwrap(),
+                Some(false)
+            );
+        }
+        let token = id_directory::seitan::Token::generate();
+        let registered = seitan_register(&app, token.as_str(), Some("s3cret")).await;
+        assert_eq!(registered.status(), StatusCode::OK);
+        let proof = id_directory::seitan::accept::sign(&token, &uid, 1, seitan_now_ms()).unwrap();
+        let admitted = seitan_admit(&app, &proof).await;
+        assert_eq!(admitted.status(), StatusCode::OK);
+        let world = seitan_world(&state).await;
+        assert_eq!(
+            world
+                .service()
+                .world()
+                .directory_account(&uid)
+                .await
+                .unwrap(),
+            Some(true),
+            "AccountVerified must land in the live world directory"
+        );
+        assert!(!state.seitan.is_verified(&uid));
+    }
+
+    #[tokio::test]
+    async fn seitan_admit_for_an_account_in_both_directories_verifies_only_the_world() {
+        // #8538: when both directories hold the account, the world's
+        // live directory is authoritative and the only one appended
+        // to, so the two never disagree about which one admitted it.
+        let (app, state, _dir, _endpoint, _docs) =
+            seitan_app(crate::SeitanState::default(), true).await;
+        let uid = seitan_account_key();
+        seitan_world(&state)
+            .await
+            .service()
+            .world()
+            .apply_directory_entry(id_worlds::directory::DirectoryEntry::AccountKeyed {
+                id: uid.clone(),
+                name: "joiner".to_owned(),
+            })
+            .await
+            .unwrap();
+        let token = id_directory::seitan::Token::generate();
+        let registered = seitan_register(&app, token.as_str(), Some("s3cret")).await;
+        assert_eq!(registered.status(), StatusCode::OK);
+        let proof = id_directory::seitan::accept::sign(&token, &uid, 1, seitan_now_ms()).unwrap();
+        let admitted = seitan_admit(&app, &proof).await;
+        assert_eq!(admitted.status(), StatusCode::OK);
+        assert_eq!(
+            seitan_world(&state)
+                .await
+                .service()
+                .world()
+                .directory_account(&uid)
+                .await
+                .unwrap(),
+            Some(true)
+        );
+        assert!(!state.seitan.is_verified(&uid));
+    }
+
     #[tokio::test]
     async fn seitan_invite_registration_requires_the_admin_secret() {
         // Minting an invite without the admin secret (or with the
@@ -3225,6 +3591,19 @@ mod upload_router_tests {
         let headers = response.headers().clone();
         let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         (status, headers, bytes.to_vec())
+    }
+
+    // `iroh_blobs::Hash::from_str` panics on text that is not 52 or 64
+    // characters long; the blob route must answer 400 instead.
+    #[tokio::test]
+    async fn blob_route_rejects_malformed_hash_text_without_panicking() {
+        let (router, _dir, _endpoint, _docs) = router().await;
+        let full = iroh_blobs::Hash::new(b"x").to_string();
+        for bad in ["abc", &full[..63], &format!("{full}0"), &"z".repeat(64)] {
+            let (status, _, body) = get_blob(router.clone(), &format!("/blob/{bad}")).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{bad}");
+            assert_eq!(body, b"Invalid hash format", "{bad}");
+        }
     }
 
     fn header_str<'a>(headers: &'a axum::http::HeaderMap, name: &str) -> Option<&'a str> {
@@ -5110,6 +5489,20 @@ mod tests {
             assert_eq!(kind, FileKind::Primary, "{name}");
             assert!(ts.is_none(), "{name}");
         }
+    }
+
+    #[test]
+    fn test_classify_tag_archive_matches_writer_rule() {
+        // Regression (#11790): the reader must agree with the FileOps writer
+        // on empty-stem and u64-overflow archive suffixes.
+        for name in [".archive.5", "x.archive.18446744073709551616"] {
+            let (kind, ts) = classify_tag(name);
+            assert_eq!(kind, FileKind::Primary, "{name}");
+            assert!(ts.is_none(), "{name}");
+        }
+        let (kind, ts) = classify_tag("x.archive.18446744073709551615");
+        assert_eq!(kind, FileKind::Archive);
+        assert_eq!(ts, Some(u64::MAX));
     }
 
     #[test]

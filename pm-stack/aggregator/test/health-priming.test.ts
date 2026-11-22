@@ -20,6 +20,9 @@ interface HealthBody {
 let proc: Subprocess | undefined;
 let firstHealth: HealthBody | undefined;
 
+// #10467: starting the aggregator subprocess can take longer than bun's
+// default 5 s hook budget on a loaded machine; give the hook room to
+// reach its own readiness deadline and fail with that message instead.
 beforeAll(async () => {
   const dir = await mkdtemp(join(tmpdir(), "pm-health-"));
   const now = new Date().toISOString();
@@ -102,7 +105,7 @@ beforeAll(async () => {
     if (!firstHealth) await Bun.sleep(150);
   }
   expect(firstHealth).toBeDefined();
-});
+}, 60_000);
 
 afterAll(() => {
   proc?.kill();

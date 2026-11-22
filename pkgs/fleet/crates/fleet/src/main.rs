@@ -50,6 +50,8 @@ mod gh;
 
 #[cfg(feature = "gh")]
 mod gh_cache;
+mod gh_closure;
+mod invocation_ledger;
 
 #[allow(dead_code)]
 // the derivation runs in build.rs (which includes this module by path); the binary itself consumes only the baked FLEET_DERIVED_VERSION value, plus these unit tests
@@ -105,6 +107,12 @@ fn compiled_capabilities() -> CapabilitySet {
     }
     if cfg!(feature = "gh") {
         caps.insert(Capability::Gh);
+    }
+    if cfg!(feature = "bridge") {
+        caps.insert(Capability::Bridge);
+    }
+    if cfg!(feature = "agent") {
+        caps.insert(Capability::Agent);
     }
     caps
 }
@@ -390,6 +398,9 @@ fn print_domain_help(surface: &Surface, d: &Domain) {
             "secrets" => "included in this build",
             "search" => "included in this build",
             "proxy" => "included in this build",
+            "bridge" => "included in this build (options: fleet bridge <command> --help)",
+            "agent" => "included in this build (options: fleet agent --help)",
+            "shell" => "included in this build (options: fleet shell --help)",
             "serve" => {
                 "included in this build (queue-broker, secrets-broker, search and proxy roles)"
             }
@@ -846,12 +857,36 @@ fn run_domain(surface: &Surface, d: &Domain, args: &[String], invoked_as: &str) 
             if d.name == "secrets" {
                 return secrets::run(&surface.config, args);
             }
+            // developing-today/code#10796: the laptop-agent domain runs for
+            // real — the transport ladder and the verbs over the laptop daemon.
+            #[cfg(feature = "laptop-agent")]
+            if d.name == "laptop-agent" {
+                return fleet_laptop_agent::cli::run(&surface.config, args);
+            }
             // code#8887: the gh domain runs for real — the real
             // `gh` binary as a passthrough under the token
             // rotation (personal, then App installations).
             #[cfg(feature = "gh")]
             if d.name == "gh" {
                 return gh::run(&surface.config, args);
+            }
+            // The bridge domain runs for real: fleet mailboxes on the
+            // message bridge (central send/agents/log; agent
+            // hello/inbox/post/ack).
+            #[cfg(feature = "bridge")]
+            if d.name == "bridge" {
+                return fleet_bridge::run(&surface.config, args);
+            }
+            // The agent's front door: enrolment, the intake ladder and
+            // `fleet shell`. Both domains compose the verbs above
+            // through this same binary.
+            #[cfg(feature = "agent")]
+            if d.name == "agent" {
+                return fleet_agent::run(&surface.config, args);
+            }
+            #[cfg(feature = "agent")]
+            if d.name == "shell" {
+                return fleet_agent::run_shell(&surface.config, args);
             }
             // Step 5 (#5433): the search domain runs for real —
             // the atlas-search client surface over the live Atlas
@@ -1384,6 +1419,7 @@ fn restore_default_sigpipe() {
 fn restore_default_sigpipe() {}
 
 fn main() {
+    let started = std::time::Instant::now();
     restore_default_sigpipe();
     let argv: Vec<String> = std::env::args().collect();
     let invoked_as = argv
@@ -1400,40 +1436,46 @@ fn main() {
     // Config decides the disable table; a malformed config is a loud
     // error on every path (a silently ignored disable would defeat
     // the §7 incident lever).
-    let config = match fleet_config::Config::load() {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("{e}");
-            std::process::exit(EXIT_USAGE);
-        }
-    };
-
-    let code = if invoked_as == "fleet" {
-        let surface = Surface::new(None, config);
-        run_root(&surface, &args, &invoked_as)
-    } else if let Some(variant) = Variant::from_invocation_name(&invoked_as) {
-        // Refinement A: the hyphenated name narrows (never widens).
-        let surface = Surface::new(Some(variant), config);
-        run_root(&surface, &args, &invoked_as)
-    } else if let Some(route) = alias_route(&invoked_as) {
-        let surface = Surface::new(None, config);
-        let d = domain(route.domain).expect("registry aliases route to real domains");
-        let mut routed: Vec<String> = Vec::new();
-        if let Some(implied) = route.implied_arg {
-            routed.push(implied.to_string());
-        }
-        routed.extend(args);
-        run_domain(&surface, d, &routed, &invoked_as)
-    } else if is_known_invocation_name(&invoked_as) {
-        unreachable!("known names are handled above");
-    } else {
-        eprintln!(
-            "fleet: invoked under unknown name '{invoked_as}'; expected 'fleet', a variant \
+    let code = match fleet_config::Config::load() {
+        Ok(config) => {
+            if invoked_as == "fleet" {
+                let surface = Surface::new(None, config);
+                run_root(&surface, &args, &invoked_as)
+            } else if let Some(variant) = Variant::from_invocation_name(&invoked_as) {
+                // Refinement A: the hyphenated name narrows (never widens).
+                let surface = Surface::new(Some(variant), config);
+                run_root(&surface, &args, &invoked_as)
+            } else if let Some(route) = alias_route(&invoked_as) {
+                let surface = Surface::new(None, config);
+                let d = domain(route.domain).expect("registry aliases route to real domains");
+                let mut routed: Vec<String> = Vec::new();
+                if let Some(implied) = route.implied_arg {
+                    routed.push(implied.to_string());
+                }
+                routed.extend(args.iter().cloned());
+                run_domain(&surface, d, &routed, &invoked_as)
+            } else if is_known_invocation_name(&invoked_as) {
+                unreachable!("known names are handled above");
+            } else {
+                eprintln!(
+                    "fleet: invoked under unknown name '{invoked_as}'; expected 'fleet', a variant \
              name ('fleet-serve', 'fleet-connect'), or a known alias (repo-queue, queue-broker, \
              secrets-broker, laptop-agent, laptop-agent-broker, atlas-search)"
-        );
-        EXIT_USAGE
+                );
+                EXIT_USAGE
+            }
+        }
+        Err(e) => {
+            eprintln!("{e}");
+            EXIT_USAGE
+        }
     };
+    // Telemetry is local, payload-free and best-effort: failure to write
+    // the ledger must never alter the command's result.
+    let _ = invocation_ledger::append(
+        &invocation_ledger::path(),
+        &invocation_ledger::record(&invoked_as, &args, code, started.elapsed().as_millis()),
+    );
     std::process::exit(code);
 }
 

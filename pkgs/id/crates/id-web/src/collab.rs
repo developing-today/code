@@ -148,7 +148,10 @@ fn content_to_document(
     let doc = match mode {
         ContentMode::Rich => {
             // Already ProseMirror JSON - parse it directly
-            serde_json::from_str(&text).unwrap_or_else(|_| {
+            // A duplicated key would collapse to its last value here and
+            // differ from the bytes stored, so it falls back like any
+            // other unparseable content (#8794).
+            id_core::json_unique::parse_json_without_duplicate_keys(&text).unwrap_or_else(|_| {
                 serde_json::json!({
                     "type": "doc",
                     "content": [{"type": "paragraph"}]
@@ -168,6 +171,12 @@ fn content_to_document(
     };
 
     (doc, mode)
+}
+
+fn desynchronized_message(lost: u64) -> CollabMessage {
+    CollabMessage::Error {
+        error: format!("Session desynchronized: {lost} messages lost"),
+    }
 }
 
 /// A step in the `ProseMirror` document history.
@@ -1437,9 +1446,7 @@ async fn handle_collab_socket(
                     );
                     // Tell the client to reconnect for a fresh state.
                     // The client will close the WS → reconnect → get Init + catch-up.
-                    let error_msg = CollabMessage::Error {
-                        error: format!("Session desynchronized: {n} messages lost"),
-                    };
+                    let error_msg = desynchronized_message(n);
                     let mut sender = sender_for_broadcast.lock().await;
                     let _ = sender
                         .send(Message::Binary(error_msg.encode().into()))
@@ -2373,6 +2380,15 @@ mod tests {
         assert!(doc["content"].as_array().is_some());
     }
 
+    #[test]
+    fn rich_content_with_a_duplicated_key_falls_back_to_an_empty_document() {
+        let content = br#"{"type":"doc","type":"paragraph","content":[]}"#;
+        let (doc, mode) = content_to_document(Some(content), Some("note.pm.json"));
+        assert_eq!(mode, ContentMode::Rich);
+        assert_eq!(doc["type"], "doc");
+        assert_eq!(doc["content"][0]["type"], "paragraph");
+    }
+
     #[allow(clippy::unwrap_used)]
     #[test]
     fn test_content_to_document_markdown() {
@@ -2495,6 +2511,29 @@ mod tests {
                 assert!(error.contains("desynchronized"));
             }
             _ => panic!("Expected Error message"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_lagged_broadcast_produces_recoverable_desync_error() {
+        let (tx, mut rx) = broadcast::channel(1);
+        // Keep the receiver behind until the bounded channel has overwritten
+        // its first item; this induces Lagged deterministically, without sleeps.
+        tx.send(CollabMessage::CursorRemove { client_id: 1 })
+            .unwrap();
+        tx.send(CollabMessage::CursorRemove { client_id: 2 })
+            .unwrap();
+
+        let lost = match rx.recv().await {
+            Err(broadcast::error::RecvError::Lagged(lost)) => lost,
+            other => panic!("expected lagged receiver, got {other:?}"),
+        };
+        match desynchronized_message(lost) {
+            CollabMessage::Error { error } => {
+                assert_eq!(error, "Session desynchronized: 1 messages lost");
+                assert!(error.contains("desynchronized"));
+            }
+            other => panic!("expected recoverable error, got {other:?}"),
         }
     }
 

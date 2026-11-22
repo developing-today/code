@@ -559,6 +559,7 @@ fn push_field(out: &mut Vec<u8>, field: &[u8]) {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
 

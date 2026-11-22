@@ -17,7 +17,7 @@ import { AlertsStore, type NotificationSendRow } from "../src/alerts.ts";
 import { renderNotifications } from "../src/render.ts";
 import { JsonlNotificationHistory } from "../src/notification-history.ts";
 import type { Provenance } from "../src/model.ts";
-import type { SupabaseClient } from "../src/supabase.ts";
+import type { SqlClient } from "../src/sql-client.ts";
 
 const TASK_NOW = Date.parse("2026-11-03T18:00:00Z");
 
@@ -411,7 +411,7 @@ describe("rollupNotificationSends", () => {
 describe("AlertsStore.listSends", () => {
   test("reads the notification_sends ledger", async () => {
     const rows = [send({})];
-    const db: SupabaseClient = {
+    const db: SqlClient = {
       ref: "test",
       async query<T>(sql: string): Promise<T[]> {
         expect(sql).toContain("alerts.notification_sends");
