@@ -73,6 +73,12 @@ laptop: pm-console (../src/server.ts), reporting through ../src/sync.ts
   There is no shared secret, here or in the repository. A report is
   refused unless the signature verifies, its time is within two minutes
   of the edge's clock, and it is later than the last one accepted.
+  The path is open to anyone, since the laptop cannot sign in, and a
+  report may be megabytes: one that says it is too large, or is not
+  shaped like a report, is refused without being read, and an address
+  with twenty refused reports in a minute is refused unread until the
+  minute is out. A report the laptop signed that is merely wrong (an
+  old clock, a replay) is not held against its address.
 - **A phone** is whoever holds a token the edge issued after the owner
   approved it. The edge keeps only the token's hash.
 - **The laptop trusts the edge** for one thing: the held actions in the

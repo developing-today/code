@@ -57,6 +57,10 @@ export interface SyncRequest {
   v: 1;
   /** Milliseconds, later than every sync before it. */
   at: number;
+  /** The commit the host's console is running. The edge says it in its
+   * health answer, so whether a merge has reached the host can be seen
+   * from anywhere, without reaching the host. */
+  version?: string;
   config: EdgeConfig;
   /** Sections that changed since the edge last had them. */
   sections: SyncSection[];

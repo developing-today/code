@@ -84,6 +84,45 @@ export class Limiter {
   }
 }
 
+/** A limit counted apart for each sender: at most `max` in each window
+ * for one key. Senders not heard from lately are forgotten, so the table
+ * stays small whatever arrives. */
+export class KeyedLimiter {
+  private seen = new Map<string, { start: number; used: number }>();
+
+  constructor(
+    private max: number,
+    private windowMs: number,
+    private now: () => number = Date.now,
+    private keys = 2000,
+  ) {}
+
+  /** Count one against this key. */
+  count(key: string): void {
+    const t = this.now();
+    const entry = this.seen.get(key);
+    if (entry && t - entry.start < this.windowMs) {
+      entry.used++;
+      return;
+    }
+    if (this.seen.size >= this.keys) {
+      // Make room: first whatever has run out, then the oldest.
+      for (const [k, v] of this.seen) if (t - v.start >= this.windowMs) this.seen.delete(k);
+      for (const k of this.seen.keys()) {
+        if (this.seen.size < this.keys) break;
+        this.seen.delete(k);
+      }
+    }
+    this.seen.set(key, { start: t, used: 1 });
+  }
+
+  /** True once this key has used up its allowance for the window it is in. */
+  blocked(key: string): boolean {
+    const entry = this.seen.get(key);
+    return entry !== undefined && this.now() - entry.start < this.windowMs && entry.used >= this.max;
+  }
+}
+
 export class Devices {
   private store: Store | null = null;
 
