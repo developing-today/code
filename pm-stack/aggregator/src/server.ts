@@ -236,6 +236,7 @@ import { ItemHistoryStore } from "./item-history.ts";
 import { SloJournal, groupSamplesByFacet } from "./slo-journal.ts";
 import { sampleSloFacets } from "./slo-sampler.ts";
 import { SLO_DEFINITIONS, summarizeSloFacet, type SloFacetSummary } from "./slo.ts";
+import { watchdogHeartbeatLine, WATCHDOG_HEARTBEAT_INTERVAL_MS } from "./watchdog-heartbeat.ts";
 import { computeFlowAnalytics } from "./flow-analytics.ts";
 import {
   FORECAST_CONTRACT_VERSION,
@@ -4631,6 +4632,25 @@ if (cfg.source !== "fixtures") {
   void sampleSlo();
   const timer = setInterval(() => void sampleSlo(), SLO_SAMPLE_INTERVAL_MS);
   timer.unref?.();
+
+  // #9992: an independent page-health-push checker reads this append-only
+  // journal heartbeat. Keep its cadence independent from the one-minute SLO
+  // sample so two missed five-minute cycles have an unambiguous meaning.
+  let heartbeatWriting = false;
+  const writeWatchdogHeartbeat = async (): Promise<void> => {
+    if (heartbeatWriting) return;
+    heartbeatWriting = true;
+    try {
+      await sloJournal.append([watchdogHeartbeatLine(Date.now())]);
+    } catch (error) {
+      console.error(`[watchdog] WARNING: heartbeat append failed: ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      heartbeatWriting = false;
+    }
+  };
+  void writeWatchdogHeartbeat();
+  const heartbeatTimer = setInterval(() => void writeWatchdogHeartbeat(), WATCHDOG_HEARTBEAT_INTERVAL_MS);
+  heartbeatTimer.unref?.();
 }
 
 // The alert throat's engine (#3676): the ~60s delivery/escalation
