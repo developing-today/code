@@ -1164,6 +1164,21 @@ async fn joined<I: SessionIo>(
         .then_some(resume_token)
         .flatten()
         .filter(|token| token.len() <= MAX_RESUME_TOKEN_BYTES);
+    // A retained baseline also records the viewport that produced it. Restore
+    // that viewport before the first view consumes the one-shot resume token.
+    if let Some(resume) = view_state.pending_resume.as_deref() {
+        if let Some((width, height)) = service
+            .resume_baselines
+            .lock()
+            .await
+            .viewport_for(resume, participant_id)
+        {
+            viewport = Some(Viewport {
+                width: usize::from(width),
+                height: usize::from(height),
+            });
+        }
+    }
     // Binary patch negotiation (F12.11 phase 3, contract revision 12):
     // the client offered MessagePack patches and the transport carries
     // bytes, so patch frames go out as binary frames. Anything less —

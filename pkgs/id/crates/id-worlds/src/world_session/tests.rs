@@ -4255,27 +4255,38 @@ mod tests {
         }
 
         /// A 3x1 program: its default view is 3x1, a 2x1 viewport fits it to 2x1.
-        struct WideScreen;
+        struct WideScreen(Arc<AtomicU64>);
 
         impl crate::world::WorldProgram for WideScreen {
             fn view(&mut self, _viewer: &Participant) -> anyhow::Result<Option<String>> {
+                let first = if self.0.load(Ordering::Relaxed) == 0 {
+                    "a"
+                } else {
+                    "x"
+                };
                 Ok(Some(
-                    r#"{"kind":"screen","version":1,"width":3,"height":1,"rows":["abc"]}"#
-                        .to_owned(),
+                    serde_json::json!({
+                        "kind": "screen",
+                        "version": 1,
+                        "width": 3,
+                        "height": 1,
+                        "rows": [format!("{first}bc")],
+                    })
+                    .to_string(),
                 ))
             }
         }
 
         #[tokio::test]
-        async fn a_wrong_viewport_resume_token_falls_back_to_a_full_view() {
+        async fn a_resume_token_restores_the_viewport_before_catching_up() {
+            let step = Arc::new(AtomicU64::new(0));
             let world = WorldHandle::spawn_with_program(
                 WorldCore::new("lobby", WorldLimits::default()).unwrap(),
-                Box::new(WideScreen),
+                Box::new(WideScreen(Arc::clone(&step))),
             );
             let svc = WorldService::new(world.clone(), None);
             let (_, capability) = world.issue("player", WorldScopes::GUEST).await.unwrap();
 
-            // The token is issued for the 2x1 viewport this session resized to.
             let mut first = Peer::connect(svc.clone(), SessionConfig::default());
             first
                 .say(serde_json::json!({
@@ -4285,16 +4296,22 @@ mod tests {
                 }))
                 .await;
             assert_eq!(first.next().await.unwrap()["type"], "snapshot");
-            assert!(next_view(&mut first).await["patch"].is_null());
+            assert_eq!(screen_of(&next_view(&mut first).await).width, 3);
+
+            // The token is issued for the 2x1 viewport this session resized to.
             first
                 .say(serde_json::json!({"type": "resize", "width": 2, "height": 1}))
                 .await;
             let resized = next_view(&mut first).await;
-            assert_eq!(screen_of(&resized).width, 2);
+            let base = screen_of(&resized);
+            assert_eq!(base.width, 2);
             let token = resized["resume_token"].as_str().unwrap().to_owned();
+            let base_revision = resized["view_revision"].as_u64().unwrap();
 
-            // Reconnecting without that viewport asks for the default 3x1
-            // view: the retained baseline is the wrong shape, so it is a miss.
+            // The next session restores that viewport before rendering and
+            // consuming the resume token; without the restore the retained
+            // baseline is the wrong shape and the resume is a miss.
+            step.store(1, Ordering::Relaxed);
             let mut resumed = Peer::connect(svc, SessionConfig::default());
             resumed
                 .say(serde_json::json!({
@@ -4305,16 +4322,21 @@ mod tests {
                 }))
                 .await;
             assert_eq!(resumed.next().await.unwrap()["type"], "snapshot");
-            let view = next_view(&mut resumed).await;
+            let catch_up = next_view(&mut resumed).await;
             assert!(
-                view["patch"].is_null(),
-                "a wrong-viewport token gets a full view: {view}"
+                !catch_up["patch"].is_null(),
+                "a retained viewport token yields a catch-up patch: {catch_up}"
             );
-            assert_eq!(screen_of(&view).width, 3);
-            assert!(
-                view["resume_token"].is_string(),
-                "the full view issues a token for the new viewport"
-            );
+            assert_eq!(catch_up["base_view_revision"].as_u64(), Some(base_revision));
+            let patch = serde_json::from_value::<crate::world_presentation::ScreenPatch>(
+                catch_up["patch"].clone(),
+            )
+            .unwrap();
+            let applied = patch
+                .apply(&base)
+                .expect("the catch-up patch uses its retained base");
+            assert_eq!(applied.width, 2);
+            assert_eq!(applied.cells[0].symbol, "x");
         }
 
         #[tokio::test]
