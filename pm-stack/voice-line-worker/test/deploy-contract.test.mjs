@@ -11,6 +11,7 @@ import {
   parseVersionItems,
   versionForTag,
   versionMatchesProvenance,
+  uploadRunMatchesProvenance,
   validatePromotionInputs,
 } from "../src/deploy-contract.mjs";
 
@@ -61,6 +62,23 @@ test("requires exact version tag and message provenance for promotion", () => {
     id: "spoofed",
     annotations: { "workers/tag": `git-${sha}-r12345-a1`, "workers/message": `git ${sha}` },
   }, sha, "12345", "2"), false);
+});
+
+test("accepts only a successful main upload run for the exact commit and attempt", () => {
+  const sha = "a".repeat(40);
+  const run = {
+    path: ".github/workflows/voice-line-worker-deploy.yml@main",
+    event: "workflow_dispatch",
+    head_branch: "main",
+    head_sha: sha,
+    run_attempt: 2,
+    status: "completed",
+    conclusion: "success",
+  };
+  assert.equal(uploadRunMatchesProvenance(run, sha, "2"), true);
+  assert.equal(uploadRunMatchesProvenance({ ...run, path: ".github/workflows/other.yml@main" }, sha, "2"), false);
+  assert.equal(uploadRunMatchesProvenance({ ...run, conclusion: "failure" }, sha, "2"), false);
+  assert.equal(uploadRunMatchesProvenance(run, sha, "1"), false);
 });
 
 test("accepts API deployable versions and refuses absent versions", () => {

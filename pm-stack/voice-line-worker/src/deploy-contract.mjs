@@ -82,6 +82,16 @@ export function versionMatchesProvenance(version, sha, runId, runAttempt) {
   return tag === `git-${sha}-r${runId}-a${runAttempt}` && message === `git ${sha}`;
 }
 
+export function uploadRunMatchesProvenance(run, sha, runAttempt) {
+  return run?.path === ".github/workflows/voice-line-worker-deploy.yml@main"
+    && run.event === "workflow_dispatch"
+    && run.head_branch === "main"
+    && run.head_sha?.toLowerCase() === sha.toLowerCase()
+    && String(run.run_attempt) === runAttempt
+    && run.status === "completed"
+    && run.conclusion === "success";
+}
+
 export function validatePromotionInputs({ versionId, sourceSha, uploadRunId, uploadRunAttempt, expectedCurrentVersionId }) {
   if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(versionId)) {
     throw new Error("version_id must be a Cloudflare Version UUID");

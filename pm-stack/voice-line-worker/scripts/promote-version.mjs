@@ -11,6 +11,7 @@ import {
   deploymentIsFullRollout,
   parseDeploymentItems,
   parseVersionItems,
+  uploadRunMatchesProvenance,
   validatePromotionInputs,
   versionMatchesProvenance,
 } from "../src/deploy-contract.mjs";
@@ -42,13 +43,7 @@ const uploadRunResponse = await fetch(
 );
 if (!uploadRunResponse.ok) throw new Error(`upload-run provenance check failed with HTTP ${uploadRunResponse.status}`);
 const uploadRun = await uploadRunResponse.json();
-if (uploadRun.path !== ".github/workflows/voice-line-worker-deploy.yml"
-  || uploadRun.event !== "workflow_dispatch"
-  || uploadRun.head_branch !== "main"
-  || uploadRun.head_sha?.toLowerCase() !== sourceSha
-  || String(uploadRun.run_attempt) !== uploadRunAttempt
-  || uploadRun.status !== "completed"
-  || uploadRun.conclusion !== "success") {
+if (!uploadRunMatchesProvenance(uploadRun, sourceSha, uploadRunAttempt)) {
   throw new Error("the referenced upload run is not a successful main-branch upload of this exact source SHA and attempt");
 }
 
