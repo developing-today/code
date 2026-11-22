@@ -1273,6 +1273,7 @@ impl WorldActor {
             "blob.get" => self.execute_blob_get(&request.args),
             "blob.delete" => self.execute_blob_delete(&request.args),
             "http.fetch" => self.execute_http_fetch(&request.args),
+            "notify" => self.execute_notify(&request.args),
             "schedule.at" => self.execute_schedule_at(&request.args),
             "schedule.cancel" => self.execute_schedule_cancel(&request.args),
             _ => Err(CapError::unknown()),
@@ -1913,6 +1914,48 @@ impl WorldActor {
             "body": super::super::blob_encode(&outcome.body),
             "body_bytes": outcome.body.len(),
         }))
+    }
+
+    /// `notify` (#1062): a user-visible outbound notification,
+    /// committed to the world's event stream as a `Notification`
+    /// event. The core check refuses an oversized or
+    /// empty-after-sanitizing text and an exhausted rate window
+    /// before anything is committed; the attempt is then recorded
+    /// (a notification whose commit fails spends the budget too)
+    /// and the event is journaled before the result is delivered,
+    /// in the `chat.say` discipline — so a sent notification is a
+    /// durable fact of the world's history, and the stale-wants
+    /// rule keeps it at-most-once across a reopen.
+    pub(super) fn execute_notify(
+        &mut self,
+        args: &serde_json::Value,
+    ) -> Result<serde_json::Value, CapError> {
+        let Some(text) = args.get("text").and_then(serde_json::Value::as_str) else {
+            return Err(CapError::bad_args());
+        };
+        if let Err(error) = self.core.check_notify(text) {
+            tracing::debug!("world {}: notify refused: {error:#}", self.core.world_id);
+            return Err(CapError::bad_args_with(format!("{error:#}")));
+        }
+        self.core.note_notify_attempt();
+        match self.core.prepare_notification(text) {
+            Ok(event) => {
+                if self
+                    .persist(JournalEntry::Committed {
+                        event: event.clone(),
+                    })
+                    .is_err()
+                {
+                    return Err(CapError::failed());
+                }
+                if self.core.commit_prepared(event.clone()).is_err() {
+                    return Err(CapError::failed());
+                }
+                let _ = self.event_sender.send(event.clone());
+                Ok(serde_json::json!({"sequence": event.sequence}))
+            }
+            Err(_) => Err(CapError::bad_args()),
+        }
     }
 
     /// `chat.say` commits a host chat line; its result is the new sequence.

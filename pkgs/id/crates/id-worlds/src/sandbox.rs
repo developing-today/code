@@ -835,8 +835,11 @@ impl crate::world::WorldProgram for WorldInstance {
             crate::world::WorldEventKind::System { event } => {
                 Self::update(self, 0, event.as_bytes())
             }
+            // A notification is addressed to the world's users, not
+            // to the program that originated it (#1062).
             crate::world::WorldEventKind::Chat(_)
-            | crate::world::WorldEventKind::ProgramInstalled { .. } => Ok(()),
+            | crate::world::WorldEventKind::ProgramInstalled { .. }
+            | crate::world::WorldEventKind::Notification { .. } => Ok(()),
         }
     }
 
