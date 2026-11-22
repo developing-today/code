@@ -448,7 +448,10 @@ def shepherd_packet(repo: str, pr: dict, checked_at: str) -> dict:
             "kind": "pr_shepherd",
             "repo": repo,
             "queue": None,  # filled by the caller with the pilot queue
-            "prs": [pr_number],
+            # PR references, not bare numbers: the queue validator
+            # requires every prs element to be an object with a
+            # positive-integer `number` (#5549).
+            "prs": [{"number": pr_number, "url": pr_url, "title": title}],
             "pr": {
                 "number": pr_number,
                 "url": pr_url,
