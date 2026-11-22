@@ -169,7 +169,9 @@ pub struct NoteRecord {
     /// The note's stable ID: the ID of its `note.create` event. It is not any later
     /// revision's ID, and it does not depend on a filename or alias.
     pub id: Hash,
-    /// Every revision of the note, in revision ID order. The first is the create.
+    /// Every revision of the note, in revision ID order. The create is
+    /// the revision whose ID is the note's ID — not necessarily the
+    /// first: a later revision's ID may sort before the note's ID.
     pub revisions: Vec<RevisionRecord>,
     /// The revisions no other revision names as a parent, in ID order. Concurrent
     /// revisions are all heads until an explicit merge revision names them.

@@ -71,7 +71,9 @@ use super::markdown::{
 use id_core::frames::MAX_FRAME_BYTES;
 use id_core::waiting::AuthorKey;
 use id_store::documents::{DocumentError, DocumentRef};
-use id_store::note_checkpoints::{CheckpointError, GroupRoles, NoteAccess, NoteCheckpoints};
+use id_store::note_checkpoints::{
+    CheckpointError, GroupRoles, NoteAccess, NoteCheckpoints, NotePolicyRecord,
+};
 use id_store::notes::{AppliedNote, NoteRecord};
 use p2panda_core::Hash;
 
@@ -571,7 +573,10 @@ impl CollabState {
     /// events — the restart/sync entry (#3819): the events are the
     /// durable state, and the rebuilt log folds to the heads the live
     /// log had. The events are validated as a whole; a set that does
-    /// not fold leaves the current log untouched.
+    /// not fold leaves the current log untouched. Policies do NOT
+    /// travel with the events: seed them alongside with
+    /// [`Self::seed_note_policies`], or the rebuilt log treats every
+    /// note as public.
     ///
     /// # Errors
     ///
@@ -584,9 +589,42 @@ impl CollabState {
 
     /// The applied note events in the checkpoint log, in the order
     /// they were recorded: persist or sync these and
-    /// [`Self::seed_note_events`] rebuilds the rest.
+    /// [`Self::seed_note_events`] rebuilds the rest. Persist
+    /// [`Self::note_policies`] alongside them — the events alone
+    /// rebuild every note as public.
     pub async fn note_events(&self) -> Vec<AppliedNote> {
         self.note_log.lock().await.events().to_vec()
+    }
+
+    /// The effective access policy of every note in the checkpoint
+    /// log, in note ID order (#3819): the durable form of the
+    /// policies, to persist alongside [`Self::note_events`] and
+    /// re-state with [`Self::seed_note_policies`] after a rebuild.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CheckpointError`] when the recorded events do not
+    /// fold (a log built through this type's methods does not).
+    pub async fn note_policies(&self) -> Result<Vec<NotePolicyRecord>, CheckpointError> {
+        self.note_log.lock().await.policies()
+    }
+
+    /// Re-states policies after a rebuild from events (the
+    /// restart/sync path): each record replaces the note's policy.
+    /// Seed the events first — a record for a note the log does not
+    /// have is refused — and treat a refusal as a failed restart,
+    /// never as a note silently reopened to public.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CheckpointError::UnknownNote`] for a record naming
+    /// a note with no create event in the log, and
+    /// [`CheckpointError::Note`] for a record naming the wrong owner.
+    pub async fn seed_note_policies(
+        &self,
+        policies: Vec<NotePolicyRecord>,
+    ) -> Result<(), CheckpointError> {
+        self.note_log.lock().await.seed_policies(policies)
     }
 
     /// The current heads of a note in the checkpoint log.
@@ -2822,6 +2860,115 @@ mod tests {
             .unwrap();
         assert_eq!(chained.revisions.len(), 2);
         assert_eq!(chained.revisions[1].parents, heads_before);
+    }
+
+    #[tokio::test]
+    async fn test_note_policies_survive_a_restart_rebuild() {
+        use id_store::note_checkpoints::{GroupRoles, NoteGrant, NotePrincipal, NoteRole};
+
+        // Author 5 is a Write member of group 9; author 6 is not.
+        fn group_roles() -> GroupRoles {
+            GroupRoles::new(|group, member| {
+                if group == Hash::from_bytes([9u8; 32]) && member == [5u8; 32] {
+                    Some(NoteRole::Write)
+                } else {
+                    None
+                }
+            })
+        }
+
+        // The owner creates the note, then scopes it to one
+        // write-grant user and one write-grant group.
+        let note = Hash::from_bytes([41u8; 32]);
+        let key = note_session_key(&note);
+        let owner: AuthorKey = [7u8; 32];
+        let granted: AuthorKey = [8u8; 32];
+        let member: AuthorKey = [5u8; 32];
+        let stranger: AuthorKey = [9u8; 32];
+        let live = CollabState::new().with_note_group_roles(group_roles());
+        live.get_or_create_for_note(&note, "", Some(b"# First"), Some("n.md"))
+            .await;
+        live.publish_note_checkpoint(&key, owner).await.unwrap();
+        live.set_note_access(
+            note,
+            owner,
+            NoteAccess::Scoped(vec![
+                NoteGrant {
+                    principal: NotePrincipal::User(granted),
+                    role: NoteRole::Write,
+                },
+                NoteGrant {
+                    principal: NotePrincipal::Group(Hash::from_bytes([9u8; 32])),
+                    role: NoteRole::Write,
+                },
+            ]),
+        )
+        .await
+        .unwrap();
+
+        // Restart: the events and the policies, in that order.
+        let events = live.note_events().await;
+        let policies = live.note_policies().await.unwrap();
+        let restarted = CollabState::new().with_note_group_roles(group_roles());
+        restarted.seed_note_events(events).await.unwrap();
+        restarted.seed_note_policies(policies).await.unwrap();
+
+        // The boundary holds after the restart: the granted user and
+        // the group member chain on; the stranger is refused and the
+        // refusal records nothing.
+        let doc = restarted
+            .get_or_create_for_note(&note, "", Some(b"# Second"), Some("n.md"))
+            .await;
+        let chained = restarted
+            .publish_note_checkpoint(&key, granted)
+            .await
+            .unwrap();
+        assert_eq!(chained.revisions.len(), 2);
+        *doc.doc.write().await = plain_text_to_prosemirror("# Third");
+        let chained = restarted
+            .publish_note_checkpoint(&key, member)
+            .await
+            .unwrap();
+        assert_eq!(chained.revisions.len(), 3);
+
+        *doc.doc.write().await = plain_text_to_prosemirror("# Nope");
+        let err = restarted
+            .publish_note_checkpoint(&key, stranger)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(
+                err,
+                PublishCheckpointError::Checkpoint(CheckpointError::NotAuthorized { .. })
+            ),
+            "a stranger's publication is refused after the restart: {err}"
+        );
+        assert_eq!(
+            restarted.note_events().await.len(),
+            3,
+            "the refusal recorded nothing"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_seed_note_policies_before_events_is_refused() {
+        // Policies name notes; a policy for a note the log has no
+        // create event for is a failed restart, never a note
+        // silently reopened to public.
+        let note = Hash::from_bytes([43u8; 32]);
+        let key = note_session_key(&note);
+        let owner: AuthorKey = [7u8; 32];
+        let live = CollabState::new();
+        live.get_or_create_for_note(&note, "", Some(b"# First"), Some("n.md"))
+            .await;
+        live.publish_note_checkpoint(&key, owner).await.unwrap();
+        let policies = live.note_policies().await.unwrap();
+
+        let restarted = CollabState::new();
+        assert!(matches!(
+            restarted.seed_note_policies(policies).await.unwrap_err(),
+            CheckpointError::UnknownNote(_)
+        ));
     }
 
     #[tokio::test]
