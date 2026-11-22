@@ -95,6 +95,15 @@ pub struct Inventory {
 }
 
 impl Inventory {
+    /// An inventory assembled from its parts, as a peer's inventory is
+    /// when it arrives over the wire: the summary named the objects
+    /// and their digests, the exchange listed the ids of the diverged
+    /// ones, and the sets of the agreed objects are the holder's own
+    /// (equal digests cover equal sets).
+    pub fn from_object_versions(objects: BTreeMap<ObjectId, BTreeSet<EventId>>) -> Self {
+        Self { objects }
+    }
+
     /// The versions held for one object.
     pub fn versions(&self, object_id: &ObjectId) -> Option<&BTreeSet<EventId>> {
         self.objects.get(object_id)
