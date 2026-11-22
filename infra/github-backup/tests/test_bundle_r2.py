@@ -55,6 +55,7 @@ class BundleR2Tests(unittest.TestCase):
                 with patch.object(bundle_r2, "_run_rclone", side_effect=self._local_rclone(root, calls, readbacks)):
                     result = bundle_r2.upload_repo("owner/repo", root, "supabase-backups")
             expected_head = git("--git-dir", mirror, "rev-parse", "HEAD").stdout.strip()
+            self.assertFalse(os.path.exists(calls[0][1]), "verified local staging bundle is removed")
 
         self.assertEqual(result["status"], "ok")
         self.assertEqual(len(calls), 2)
@@ -65,7 +66,6 @@ class BundleR2Tests(unittest.TestCase):
             result["head"], expected_head
         )
         self.assertEqual(readbacks, [result["sha256"]])
-        self.assertFalse(os.path.exists(calls[0][1]), "verified local staging bundle is removed")
         self.assertIn(result["head"] + "-" + result["sha256"], result["remote"])
 
     def test_remote_byte_mismatch_is_reported_after_upload(self):
