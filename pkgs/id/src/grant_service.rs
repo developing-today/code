@@ -161,6 +161,11 @@ pub struct GrantRecord {
     pub void_transfer_id: TransferId,
     /// Attestation that caused a successful pending-hold void.
     pub voided_by_attestation: Option<String>,
+    /// Applicable attestation observed after the pending transfer had
+    /// already posted. Phase 4 must process this through clawback; it is
+    /// not evidence that a void succeeded.
+    #[serde(default)]
+    pub post_then_clawback_attestation: Option<String>,
     pub registered_at: u64,
     /// When the grant entered PendingHold (confirm step), if it has.
     pub pending_since: Option<u64>,
@@ -355,6 +360,11 @@ impl GrantStore {
     pub fn restore(snapshot: StoreSnapshot) -> Result<Self, RestoreError> {
         let mut seen = std::collections::HashSet::with_capacity(snapshot.grants.len());
         for grant in &snapshot.grants {
+            if grant.state == GrantState::Active {
+                return Err(RestoreError::ActiveStateUnsupported {
+                    grant_id: grant.grant_id.clone(),
+                });
+            }
             if !seen.insert(grant.grant_id.as_str()) {
                 return Err(RestoreError::DuplicateGrantId {
                     grant_id: grant.grant_id.clone(),
@@ -382,6 +392,9 @@ impl GrantStore {
 pub enum RestoreError {
     /// The snapshot contains multiple records with the same grant ID.
     DuplicateGrantId { grant_id: String },
+    /// Phase 3 has no clawback engine, so it cannot restore an
+    /// Active-state grant that may be spendable.
+    ActiveStateUnsupported { grant_id: String },
 }
 
 /// Why an intent write did not happen.
@@ -836,6 +849,7 @@ impl<'a, L: LedgerBackend> RegistrationService<'a, L> {
             transfer_id: transfer_id_for_grant(&request.grant_id),
             void_transfer_id: void_transfer_id_for_grant(&request.grant_id),
             voided_by_attestation: None,
+            post_then_clawback_attestation: None,
             registered_at: request.now,
             pending_since: None,
             expires_at: cfg
@@ -1048,7 +1062,8 @@ impl<'a, L: LedgerBackend> RegistrationService<'a, L> {
                         })) => {
                             if let Some(record) = self.store.grants.get_mut(&grant.grant_id) {
                                 record.posted_transfer_id = Some(resolution_id);
-                                record.voided_by_attestation = Some(event.attestation_id.clone());
+                                record.post_then_clawback_attestation =
+                                    Some(event.attestation_id.clone());
                             }
                             report.posted_with_adverse_for_phase4 += 1;
                         }
@@ -2077,6 +2092,40 @@ mod tests {
     }
 
     #[test]
+    fn posted_lost_race_records_clawback_attestation_not_successful_void() {
+        let v = verifier();
+        let adverse = no_adverse();
+        let mut svc = service(&v, &adverse);
+        svc.config.get_mut("steam").unwrap().window = WindowSnapshot {
+            refund_window_secs: 10,
+            posting_grace_secs: 4,
+        };
+        svc.register(&request("grant-post-race", "AAAAA-11111-BBBBB", 1_000))
+            .unwrap();
+
+        // The clean sweep wins the ledger race; a later applicable
+        // attestation cannot void the already-posted transfer.
+        assert_eq!(svc.sweep_pending_holds(1_012).posted_or_recovered, 1);
+        *adverse.event.borrow_mut() = Some(AdverseEvent {
+            kind: "refund_executed".to_string(),
+            attestation_id: "attestation-after-post".to_string(),
+            grant_ids: vec!["grant-post-race".to_string()],
+            fingerprints: Vec::new(),
+        });
+
+        let report = svc.sweep_pending_holds(1_013);
+        assert_eq!(report.posted_with_adverse_for_phase4, 1);
+        let grant = svc.store().grant("grant-post-race").unwrap();
+        assert_eq!(grant.state, GrantState::PendingHold);
+        assert_eq!(grant.voided_by_attestation, None);
+        assert_eq!(
+            grant.post_then_clawback_attestation.as_deref(),
+            Some("attestation-after-post")
+        );
+        assert!(grant.posted_transfer_id.is_some());
+    }
+
+    #[test]
     fn sweep_ignores_adverse_event_scoped_to_another_purchase() {
         let v = verifier();
         let adverse = AdverseStub {
@@ -2310,14 +2359,22 @@ mod tests {
         );
         assert_eq!(svc.store().snapshot().grants, before);
 
-        // A listed move on the same grant still works.
+        // Phase 3 has no activation/clawback path, even though posting
+        // the underlying ledger transfer is permitted into custody.
+        let err = svc
+            .store
+            .transition("grant-1", GrantState::Active)
+            .unwrap_err();
         assert_eq!(
-            svc.store.transition("grant-1", GrantState::Active),
-            Ok(GrantState::Active)
+            err,
+            TransitionError::Refused {
+                from: GrantState::PendingHold,
+                to: GrantState::Active
+            }
         );
         assert_eq!(
             svc.store().grant("grant-1").unwrap().state,
-            GrantState::Active
+            GrantState::PendingHold
         );
     }
 
@@ -2380,6 +2437,13 @@ mod tests {
         assert!(matches!(
             GrantStore::restore(duplicate_snapshot),
             Err(RestoreError::DuplicateGrantId { grant_id }) if grant_id == "grant-1"
+        ));
+
+        let mut active_snapshot = snapshot.clone();
+        active_snapshot.grants[0].state = GrantState::Active;
+        assert!(matches!(
+            GrantStore::restore(active_snapshot),
+            Err(RestoreError::ActiveStateUnsupported { grant_id }) if grant_id == "grant-1"
         ));
 
         let restored = GrantStore::restore(snapshot).unwrap();
