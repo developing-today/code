@@ -160,6 +160,18 @@ async function readEvents(file: string): Promise<ReportRecordEvent[]> {
   return text.split("\n").filter((line) => line.trim()).map(parseEvent).filter((event): event is ReportRecordEvent => event !== null);
 }
 
+/** Keep a torn final JSONL fragment from swallowing the next acknowledged event. */
+async function terminateTornTail(file: string): Promise<void> {
+  let text: string;
+  try {
+    text = await readFile(file, "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+    throw error;
+  }
+  if (text.length > 0 && !text.endsWith("\n")) await appendFile(file, "\n", "utf8");
+}
+
 // Serialize writes in this process, as decision-events.ts does. A future
 // multi-process adapter can replace this seam without changing record callers.
 const appendChains = new Map<string, Promise<unknown>>();
@@ -189,6 +201,7 @@ export async function appendReportRecord(file: string, record: ReportRecord): Pr
       return { inserted: false, record: existing };
     }
     await mkdir(dirname(file), { recursive: true });
+    await terminateTornTail(file);
     const event: ReportRecordEvent = {
       eventId: record.id,
       type: "report.generated",
@@ -242,6 +255,8 @@ export async function appendReportSnapshot(
   };
   return serializeAppend(file, async () => {
     const events = await readEvents(file);
+    const generated = events.find((event) => event.type === "report.generated" && event.record?.id === record.id)?.record;
+    if (generated && !sameRecordContent(generated, record)) throw new ReportRecordConflictError(record.id);
     const existing = events.find((event) => event.type === "report.snapshot" && event.snapshot?.id === snapshot.id)?.snapshot;
     if (existing) {
       if (existing.reportRecordId !== snapshot.reportRecordId || !sameRecordContent(existing.record, snapshot.record)) {
@@ -250,6 +265,7 @@ export async function appendReportSnapshot(
       return { inserted: false, snapshot: existing };
     }
     await mkdir(dirname(file), { recursive: true });
+    await terminateTornTail(file);
     const event: ReportRecordEvent = {
       eventId: snapshot.id,
       type: "report.snapshot",

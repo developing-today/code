@@ -111,6 +111,8 @@ describe("C7 canonical report records", () => {
       blocks: [{ ...input.blocks[0]!, text: "Silently changed prose." }],
     }, "2026-11-22T05:46:01.000Z");
     await expect(appendReportRecord(file, conflictingRecord)).rejects.toBeInstanceOf(ReportRecordConflictError);
+    await expect(appendReportSnapshot(file, conflictingRecord, "2026-11-22T14:00:00.000Z"))
+      .rejects.toBeInstanceOf(ReportRecordConflictError);
     expect((await readReportRecords(file))[0]?.blocks[0]?.text).toBe("Original prose.");
 
     const snapshot = await appendReportSnapshot(file, record, "2026-11-22T14:00:00.000Z");
@@ -125,6 +127,34 @@ describe("C7 canonical report records", () => {
     await expect(appendReportSnapshot(file, mutatedSnapshotSource, "2026-11-22T14:00:00.000Z"))
       .rejects.toBeInstanceOf(ReportRecordConflictError);
     expect((await readReportSnapshots(file))[0]?.record.blocks[0]?.text).toBe("Original prose.");
+  });
+
+  test("keeps later appends readable after a torn trailing JSONL fragment", async () => {
+    const file = await storePath();
+    const record = makeReportRecord({
+      period: {
+        id: "daily:2026-11-21:America/Chicago",
+        kind: "daily",
+        timezone: "America/Chicago",
+        periodStart: "2026-11-21T06:00:00.000Z",
+        periodEnd: "2026-11-22T06:00:00.000Z",
+        softCloseAt: "2026-11-22T14:00:00.000Z",
+      },
+      asOf: "2026-11-22T05:45:00.000Z",
+      templateVersion: "daily-v1",
+      sourceCursor: "source-event-42",
+      sources: [{ id: "source-event-42", uri: "gh:issue/12349", observedAt: "2026-11-22T05:40:00.000Z" }],
+      blocks: [{ id: "change-12349", text: "Recovered append.", relatedAt: "2026-11-22T05:40:00.000Z" }],
+    }, "2026-11-22T05:45:01.000Z");
+
+    await Bun.write(file, '{"eventId":"interrupted"');
+    expect((await appendReportRecord(file, record)).inserted).toBe(true);
+    expect(await readReportRecords(file)).toEqual([record]);
+
+    await Bun.write(file, `${await readFile(file, "utf8")}{"eventId":"interrupted-snapshot"`);
+    expect((await appendReportSnapshot(file, record, "2026-11-22T14:00:00.000Z")).inserted).toBe(true);
+    expect(await readReportSnapshots(file)).toHaveLength(1);
+    expect(await readReportRecords(file)).toEqual([record]);
   });
 
   test("allows ordinary edits only before soft close and the documented append forms after it", () => {
