@@ -1220,6 +1220,7 @@ fn a_leased_cargo_run_preserves_the_callers_stdin() {
     ));
     let tools = home.join("tools");
     let workspace = home.join("workspace");
+    std::fs::create_dir_all(&tools).unwrap();
     std::fs::create_dir_all(&workspace).unwrap();
     std::fs::write(workspace.join("Cargo.toml"), "[workspace]\nmembers = []\n").unwrap();
 
