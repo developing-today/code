@@ -438,10 +438,18 @@ impl NodeB {
             .unwrap();
         let stdout = child.stdout.take().unwrap();
         let (tx, rx) = std::sync::mpsc::channel();
+        // The harness prints around the child's banner (a leading
+        // blank line, the result line at the end), so scan for the
+        // banner — and keep draining for the child's whole life, or
+        // its next print meets a broken pipe.
         std::thread::spawn(move || {
-            let mut lines = BufReader::new(stdout).lines();
-            if let Some(Ok(line)) = lines.next() {
-                let _ = tx.send(line);
+            let mut sent = false;
+            for line in BufReader::new(stdout).lines() {
+                let Ok(line) = line else { break };
+                if !sent && line.starts_with("READY ") {
+                    let _ = tx.send(line);
+                    sent = true;
+                }
             }
         });
         let ready = tokio::task::spawn_blocking(move || {
