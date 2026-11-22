@@ -70,8 +70,9 @@ if [ "$1" = "cargo" ] && [ -z "$target_dir" ]; then
       continue
     fi
     case "$arg" in
-      --config|-Z) skip_value=true ;;
-      build|check|test|bench|clippy|run|install|doc|rustc|nextest)
+      --config|-Z|--manifest-path) skip_value=true ;;
+      --manifest-path=*) ;;
+      build|check|test|bench|clippy|run|install|doc|rustc|nextest|fix|package|publish)
         cargo_action=$arg
         break
         ;;
@@ -92,13 +93,40 @@ if [ "$1" = "cargo" ] && [ -z "$target_dir" ]; then
         ;;
     esac
 
-    manifest=$(cargo locate-project --workspace --message-format plain 2>/dev/null || true)
+    manifest_arg=""
+    need_manifest=false
+    for arg in "$@"; do
+      [ "$arg" = "--" ] && break
+      if [ "$need_manifest" = true ]; then
+        manifest_arg=$arg
+        break
+      fi
+      case "$arg" in
+        --manifest-path) need_manifest=true ;;
+        --manifest-path=*) manifest_arg=${arg#--manifest-path=} ; break ;;
+      esac
+    done
+
+    if [ -n "$manifest_arg" ]; then
+      case "$manifest_arg" in
+        /*) manifest_path=$manifest_arg ;;
+        *) manifest_path="$PWD/$manifest_arg" ;;
+      esac
+      manifest=$(cargo locate-project --workspace --message-format plain --manifest-path "$manifest_path" 2>/dev/null || true)
+    else
+      manifest=$(cargo locate-project --workspace --message-format plain 2>/dev/null || true)
+    fi
+
     if [ -n "$manifest" ]; then
       workspace=$(dirname -- "$manifest")
+      workspace_real=$(cd "$workspace" 2>/dev/null && pwd -P) || workspace_real=""
+      cwd_real=$(pwd -P)
       repo=$(printf '%s\n' "$workspace" | sed -n 's#^.*/pkgs/\([^/]*\).*#\1#p')
       if [ -z "$repo" ]; then repo=$(basename -- "$workspace"); fi
     else
       repo=$(basename -- "$PWD")
+      workspace_real=""
+      cwd_real=$(pwd -P)
     fi
     repo=$(printf '%s' "$repo" | tr -c 'A-Za-z0-9._-' '_')
 
@@ -106,8 +134,13 @@ if [ "$1" = "cargo" ] && [ -z "$target_dir" ]; then
       broker="$HOME/tools/cargo-target-broker"
       if [ -x "$broker" ]; then
         echo "fleet-build-lock: leasing $repo/$profile Cargo target" >&2
-        # The lock fd remains open across exec, so this one heavy-build
-        # slot is held until Cargo exits and the broker checks in its lease.
+        # For --manifest-path outside the caller's current workspace, clean
+        # the selected workspace while keeping Cargo's original cwd intact.
+        if [ -n "$workspace_real" ] && [[ "$cwd_real/" != "$workspace_real/"* ]]; then
+          exec "$broker" exec --repo "$repo" --profile "$profile" --workspace-cwd "$workspace_real" --wait 900 -- "$@"
+        fi
+        # The lock fd remains open across exec; the broker checks in the lease
+        # only after the Cargo process exits.
         exec "$broker" exec --repo "$repo" --profile "$profile" --wait 900 -- "$@"
       fi
 
