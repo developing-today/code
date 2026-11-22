@@ -461,10 +461,7 @@ impl WorldInstance {
 
     /// Substitute the burn budget this guest's calls are admitted
     /// against, replacing the process-wide shared default.
-    pub fn set_burn_budget(
-        &mut self,
-        budget: std::sync::Arc<crate::guest_burn::GuestBurnBudget>,
-    ) {
+    pub fn set_burn_budget(&mut self, budget: std::sync::Arc<crate::guest_burn::GuestBurnBudget>) {
         self.burn_budget = budget;
     }
 
@@ -496,14 +493,13 @@ impl WorldInstance {
             let result = call(instance);
             (result, permit)
         };
-        let (result, permit) =
-            if tokio::runtime::Handle::try_current().is_ok_and(|handle| {
-                handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread
-            }) {
-                tokio::task::block_in_place(|| admitted(self))
-            } else {
-                admitted(self)
-            };
+        let (result, permit) = if tokio::runtime::Handle::try_current().is_ok_and(|handle| {
+            handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread
+        }) {
+            tokio::task::block_in_place(|| admitted(self))
+        } else {
+            admitted(self)
+        };
         self.active_permit = Some(permit);
         result
     }

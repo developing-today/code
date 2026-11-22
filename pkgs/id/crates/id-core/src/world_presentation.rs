@@ -1514,15 +1514,18 @@ mod tests {
     #[test]
     fn screen_codec_matches_versioned_messagepack_golden_vector() {
         let golden = [
-            0x82, 0xa7, b'v', b'e', b'r', b's', b'i', b'o', b'n', 0x01, 0xa5, b'p', b'a',
-            b't', b'c', b'h', 0x84, 0xa7, b'v', b'e', b'r', b's', b'i', b'o', b'n', 0x01,
-            0xa5, b'w', b'i', b'd', b't', b'h', 0x02, 0xa6, b'h', b'e', b'i', b'g', b'h',
-            b't', 0x01, 0xa4, b'r', b'u', b'n', b's', 0x90,
+            0x82, 0xa7, b'v', b'e', b'r', b's', b'i', b'o', b'n', 0x01, 0xa5, b'p', b'a', b't',
+            b'c', b'h', 0x84, 0xa7, b'v', b'e', b'r', b's', b'i', b'o', b'n', 0x01, 0xa5, b'w',
+            b'i', b'd', b't', b'h', 0x02, 0xa6, b'h', b'e', b'i', b'g', b'h', b't', 0x01, 0xa4,
+            b'r', b'u', b'n', b's', 0x90,
         ];
 
         let encoded = crate::screen_codec::encode_patch(&codec_patch()).unwrap();
         assert_eq!(encoded, golden);
-        assert_eq!(crate::screen_codec::decode_patch(&golden).unwrap(), codec_patch());
+        assert_eq!(
+            crate::screen_codec::decode_patch(&golden).unwrap(),
+            codec_patch()
+        );
     }
 
     #[test]

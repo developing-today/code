@@ -80,9 +80,9 @@ pub mod test_forgeries;
 #[cfg(feature = "world")]
 pub mod petname;
 #[cfg(feature = "world")]
-pub mod world_presentation;
-#[cfg(feature = "world")]
 pub mod screen_codec;
+#[cfg(feature = "world")]
+pub mod world_presentation;
 
 #[cfg(feature = "web")]
 pub mod qr;

@@ -1024,7 +1024,11 @@ mod archive_owner_read_tests {
     async fn delete_preserves_legacy_shaped_archive_owned_by_another_file() {
         let env = env_with_archive_reference().await;
         let archive = "a.archive.5";
-        env.store.tags().set("a", Hash::from([2; 32])).await.unwrap();
+        env.store
+            .tags()
+            .set("a", Hash::from([2; 32]))
+            .await
+            .unwrap();
         env.store
             .tags()
             .set(archive, Hash::from([3; 32]))
@@ -1054,7 +1058,11 @@ mod archive_owner_read_tests {
     async fn delete_keeps_removing_unattributed_legacy_archive_by_name() {
         let env = env_with_archive_reference().await;
         let archive = "a.archive.5";
-        env.store.tags().set("a", Hash::from([2; 32])).await.unwrap();
+        env.store
+            .tags()
+            .set("a", Hash::from([2; 32]))
+            .await
+            .unwrap();
         env.store
             .tags()
             .set(archive, Hash::from([3; 32]))
