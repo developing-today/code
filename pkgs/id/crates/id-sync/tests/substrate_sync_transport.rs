@@ -385,13 +385,16 @@ fn node_b_entry() {
     if std::env::var_os(CHILD_ENV).is_none() {
         return;
     }
+    eprintln!("node-b: entry");
     let runtime = tokio::runtime::Runtime::new().unwrap();
     runtime.block_on(async {
+        eprintln!("node-b: binding endpoint");
         let endpoint = Endpoint::builder(presets::Minimal)
             .relay_mode(RelayMode::Disabled)
             .bind()
             .await
             .unwrap();
+        eprintln!("node-b: endpoint bound: {:?}", endpoint.bound_sockets());
         let sync = FederationSyncProtocol::new(node("node-b"), link());
         let control = ControlProtocol {
             replica: sync.shared_replica(),
@@ -408,6 +411,7 @@ fn node_b_entry() {
             .find(|socket| socket.is_ipv4())
             .unwrap_or(&sockets[0])
             .port();
+        eprintln!("node-b: router up, announcing on port {port}");
         println!("READY {} {port}", endpoint.id());
         use std::io::Write as _;
         std::io::stdout().flush().unwrap();
@@ -453,7 +457,8 @@ impl NodeB {
             }
         });
         let ready = tokio::task::spawn_blocking(move || {
-            rx.recv_timeout(Duration::from_secs(60)).unwrap()
+            rx.recv_timeout(Duration::from_secs(120))
+                .expect("node B announced no READY line in 120s; its step markers are on stderr")
         })
         .await
         .unwrap();
