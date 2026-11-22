@@ -42,9 +42,10 @@
 # pm-dispatch's env files are external the same way:
 # ~/pm-stack/dispatch/.env (rendered by pm-stack/dispatch/install.sh
 # from the same SOPS file — it carries the GitHub App material and the
-# fleet Supabase config: supabase_url + supabase_service_role_key for
-# muse-dev2) and ~/secrets/dispatch.env (operator-only secrets that
-# are not in SOPS: DISPATCH_API_TOKEN). install.sh remains the env
+# queue broker URL; the queue itself is the Turso-backed fleet queue
+# broker, reached with the token in ~/.config/queue-broker/token) and
+# ~/secrets/dispatch.env
+# (operator-only secrets that are not in SOPS: DISPATCH_API_TOKEN). install.sh remains the env
 # renderer and the fallback installer; this module owns the unit
 # lifecycle.
 #
@@ -247,6 +248,10 @@ in
           };
           Service = {
             Type = "simple";
+            # The management plane has to answer while the fleet is
+            # compiling (load average 75 on 16 cores, 2026-11-22): under
+            # contention this unit gets nine times a default unit's share.
+            CPUWeight = 900;
             # Every state file is env-pinned below or in the .env
             # file; the state dir as cwd makes any unpinned cwd
             # default in the config land in state too, never in a
@@ -328,6 +333,10 @@ in
           };
           Service = {
             Type = "simple";
+            # The management plane has to answer while the fleet is
+            # compiling (load average 75 on 16 cores, 2026-11-22): under
+            # contention this unit gets nine times a default unit's share.
+            CPUWeight = 900;
             # The app has no cwd-relative access of its own (its
             # paths come from the env files below); the deployment
             # dir stays as cwd because that is where its rendered
@@ -347,12 +356,13 @@ in
             ExecStart = "${sigtermWitness}/bin/sigterm-witness --log ${disState}/sigterm-witness.log ${pmDispatch}/bin/pm-dispatch";
             # The env files stay outside the module, exactly like the
             # aggregator's: install.sh renders the sops-derived file
-            # (GitHub App + Supabase config), and the operator file is
+            # (GitHub App + queue broker URL), and the operator file is
             # laptop-only (DISPATCH_API_TOKEN). The "-" keeps the hand
             # unit's semantics — a missing operator file degrades the
             # service instead of crash-looping it. systemd applies the
-            # files in order, so the operator file wins on a collision:
-            # it must never carry SUPABASE_* lines (install.sh warns).
+            # files in order, so the operator file wins on a collision.
+            # The build version in
+            # /health comes from the package wrapper, not these files.
             EnvironmentFile = [
               "${stackDir}/dispatch/.env"
               "-${home}/secrets/dispatch.env"
@@ -511,6 +521,10 @@ in
           };
           Service = {
             Type = "simple";
+            # The management plane has to answer while the fleet is
+            # compiling (load average 75 on 16 cores, 2026-11-22): under
+            # contention this unit gets nine times a default unit's share.
+            CPUWeight = 900;
             WorkingDirectory = "${stackDir}";
             # tunnel.token is rendered by the pm-kaneo deploy flow
             # (deploy.sh) from the same SOPS secret as the old

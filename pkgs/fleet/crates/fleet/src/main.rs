@@ -108,6 +108,12 @@ fn compiled_capabilities() -> CapabilitySet {
     if cfg!(feature = "gh") {
         caps.insert(Capability::Gh);
     }
+    if cfg!(feature = "bridge") {
+        caps.insert(Capability::Bridge);
+    }
+    if cfg!(feature = "agent") {
+        caps.insert(Capability::Agent);
+    }
     caps
 }
 
@@ -392,6 +398,9 @@ fn print_domain_help(surface: &Surface, d: &Domain) {
             "secrets" => "included in this build",
             "search" => "included in this build",
             "proxy" => "included in this build",
+            "bridge" => "included in this build (options: fleet bridge <command> --help)",
+            "agent" => "included in this build (options: fleet agent --help)",
+            "shell" => "included in this build (options: fleet shell --help)",
             "serve" => {
                 "included in this build (queue-broker, secrets-broker, search and proxy roles)"
             }
@@ -860,6 +869,24 @@ fn run_domain(surface: &Surface, d: &Domain, args: &[String], invoked_as: &str) 
             #[cfg(feature = "gh")]
             if d.name == "gh" {
                 return gh::run(&surface.config, args);
+            }
+            // The bridge domain runs for real: fleet mailboxes on the
+            // message bridge (central send/agents/log; agent
+            // hello/inbox/post/ack).
+            #[cfg(feature = "bridge")]
+            if d.name == "bridge" {
+                return fleet_bridge::run(&surface.config, args);
+            }
+            // The agent's front door: enrolment, the intake ladder and
+            // `fleet shell`. Both domains compose the verbs above
+            // through this same binary.
+            #[cfg(feature = "agent")]
+            if d.name == "agent" {
+                return fleet_agent::run(&surface.config, args);
+            }
+            #[cfg(feature = "agent")]
+            if d.name == "shell" {
+                return fleet_agent::run_shell(&surface.config, args);
             }
             // Step 5 (#5433): the search domain runs for real —
             // the atlas-search client surface over the live Atlas

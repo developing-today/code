@@ -35,6 +35,19 @@ query, result, meta}`.
 - `GET /v1/cache/inspect?query=..&k=..` — gated; DO metadata
   readback (embedding presence/dims/validity, result presence,
   hit count, timings). The proof/audit surface.
+- `POST /v1/cache/purge` `{query, k?}` — gated with the same
+  `GATE_TOKEN`; removes exactly that normalized query/config cache
+  entry. The query key is a SHA-256 digest, so per-prefix purge
+  cannot enumerate matching entries without a separate index and is
+  intentionally not provided.
+
+## Deferred cache policy triggers (#6805)
+
+- Add corpus generation to the cache key at the first same-space
+  re-ingest that changes more than 5% of chunks, or on a user-visible
+  stale-result complaint.
+- Add an LRU sweeper when there are 10,000 cached queries or 1 GB of
+  aggregate cache storage. Until then, entries have no TTL.
 
 ## Secrets (names only; set with `wrangler secret put`)
 

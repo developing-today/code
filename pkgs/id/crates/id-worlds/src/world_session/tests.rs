@@ -10,8 +10,8 @@ mod tests {
     use crate::directory::{Actor, Level, Member};
     use crate::directory_auth::sign_request;
     use crate::world::{
-        Participant, WorldCore, WorldEvent, WorldHandle, WorldLimits, WorldScopes, hex_encode,
-        unix_ms,
+        Participant, WorldCore, WorldEvent, WorldEventKind, WorldHandle, WorldLimits, WorldScopes,
+        hex_encode, unix_ms,
     };
     use crate::world_compile::Compiler;
     use crate::world_hub::WorldHub;
@@ -186,7 +186,10 @@ mod tests {
                                 "form_id": "session-form",
                                 "title": "Profile",
                                 "fields": [{"kind":"text","id":"name","label":"Name","required":true,"max_length":32}],
-                                "actions": [{"id":"submit","label":"Save"}]
+                                "actions": [
+                                    {"id":"submit","label":"Save"},
+                                    {"id":"cancel","label":"Cancel","kind":"cancel"}
+                                ]
                             }
                         }
                     }]
@@ -224,7 +227,10 @@ mod tests {
                     "presentation_token": token,
                     "title": "Profile",
                     "fields": [{"kind":"text","id":"name","label":"Name","required":true,"max_length":32}],
-                    "actions": [{"id":"submit","label":"Save"}]
+                    "actions": [
+                        {"id":"submit","label":"Save"},
+                        {"id":"cancel","label":"Cancel","kind":"cancel"}
+                    ]
                 })
                 .to_string(),
             ))
@@ -292,6 +298,204 @@ mod tests {
         assert_eq!(ack["ok"], true);
         assert_eq!(results.lock().unwrap()[0]["values"]["name"], "Ada");
         peer.close().await;
+    }
+
+    #[tokio::test]
+    async fn test_joined_form_cancel_result_frame_uses_session_auth_and_reaches_program() {
+        let mut core = WorldCore::new("lobby", WorldLimits::default()).unwrap();
+        core.ledger.set_granted(BTreeSet::from([
+            "form.present".to_owned(),
+            "form.result".to_owned(),
+        ]));
+        let form_token = Arc::new(std::sync::Mutex::new(None));
+        let results = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let world = WorldHandle::spawn_with_device_manifest(
+            core,
+            Box::new(FormSessionProgram {
+                token: Arc::clone(&form_token),
+                results: Arc::clone(&results),
+            }),
+            Some(WorldHandle::host_device_manifest()),
+        );
+        let (_, capability) = world.issue("Ada", WorldScopes::GUEST).await.unwrap();
+        let mut peer = Peer::connect(WorldService::new(world, None), SessionConfig::default());
+        peer.say(serde_json::json!({
+            "type": "join",
+            "capability": capability.expose(),
+        }))
+        .await;
+        assert_eq!(peer.next().await.unwrap()["type"], "snapshot");
+        let view = peer.next().await.unwrap();
+        assert_eq!(view["type"], "view");
+        let presentation_token = view["surface"]["presentation_token"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+
+        peer.say(serde_json::json!({
+            "type": "form_result",
+            "form_id": "session-form",
+            "presentation_token": presentation_token,
+            "action": "cancel",
+            "values": {},
+        }))
+        .await;
+        let ack = peer.next().await.unwrap();
+        assert_eq!(ack["type"], "form_result_status");
+        assert_eq!(ack["ok"], true);
+        assert_eq!(results.lock().unwrap()[0]["action"], "cancel");
+        peer.close().await;
+    }
+
+    #[derive(Default)]
+    struct SessionFormGateState {
+        input_received: bool,
+        presentation_result: Option<serde_json::Value>,
+    }
+
+    struct SessionFormGateProgram {
+        state: Arc<std::sync::Mutex<SessionFormGateState>>,
+    }
+
+    impl crate::world::WorldProgram for SessionFormGateProgram {
+        fn wants(&mut self) -> anyhow::Result<Option<String>> {
+            if !self.state.lock().unwrap().input_received {
+                return Ok(None);
+            }
+            Ok(Some(
+                serde_json::json!({
+                    "requests": [{
+                        "id": "present-from-session-input",
+                        "cap": "form.present",
+                        "args": {
+                            "form_id": "session-gated-form",
+                            "form": {
+                                "version": 1,
+                                "form_id": "session-gated-form",
+                                "title": "Profile",
+                                "fields": [{"kind":"text","id":"name","label":"Name","required":true,"max_length":32}],
+                                "actions": [{"id":"submit","label":"Save"}]
+                            }
+                        }
+                    }]
+                })
+                .to_string(),
+            ))
+        }
+
+        fn update(&mut self, event: &WorldEvent) -> anyhow::Result<()> {
+            match &event.kind {
+                WorldEventKind::Input { .. } => {
+                    self.state.lock().unwrap().input_received = true;
+                }
+                WorldEventKind::System { event } => {
+                    let value: serde_json::Value = serde_json::from_str(event)?;
+                    if value["id"] == "present-from-session-input" {
+                        self.state.lock().unwrap().presentation_result = Some(value);
+                    }
+                }
+                _ => {}
+            }
+            Ok(())
+        }
+
+        fn view(&mut self, _viewer: &Participant) -> anyhow::Result<Option<String>> {
+            let state = self.state.lock().unwrap();
+            let Some(result) = &state.presentation_result else {
+                return Ok(None);
+            };
+            if result["ok"] == true {
+                return Ok(Some(
+                    serde_json::json!({
+                        "kind": "form",
+                        "version": 1,
+                        "form_id": "session-gated-form",
+                        "presentation_token": result["value"]["presentation_token"],
+                        "title": "Profile",
+                        "fields": [{"kind":"text","id":"name","label":"Name","required":true,"max_length":32}],
+                        "actions": [{"id":"submit","label":"Save"}]
+                    })
+                    .to_string(),
+                ));
+            }
+            Ok(Some(
+                serde_json::json!({
+                    "status": "refused",
+                    "error": result["error"],
+                    "reason": result["reason"],
+                })
+                .to_string(),
+            ))
+        }
+    }
+
+    async fn session_form_gate_view(device_input: serde_json::Value) -> serde_json::Value {
+        let mut core = WorldCore::new("lobby", WorldLimits::default()).unwrap();
+        core.ledger.set_granted(BTreeSet::from([
+            "form.present".to_owned(),
+            "form.result".to_owned(),
+        ]));
+        let state = Arc::new(std::sync::Mutex::new(SessionFormGateState::default()));
+        let world = WorldHandle::spawn_with_device_manifest(
+            core,
+            Box::new(SessionFormGateProgram {
+                state: Arc::clone(&state),
+            }),
+            Some(WorldHandle::host_device_manifest()),
+        );
+        let (_, capability) = world.issue("Ada", WorldScopes::GUEST).await.unwrap();
+        let mut peer = Peer::connect(WorldService::new(world, None), SessionConfig::default());
+        peer.say(serde_json::json!({
+            "type": "join",
+            "capability": capability.expose(),
+            "device_input": device_input,
+        }))
+        .await;
+        assert_eq!(peer.next().await.unwrap()["type"], "snapshot");
+
+        // The join's device_input is session metadata, carried by this
+        // authenticated input into actor execution and form.present.
+        peer.say(serde_json::json!({
+            "type": "input",
+            "data_hex": "00",
+        }))
+        .await;
+        loop {
+            let frame = peer.next().await.unwrap();
+            if frame["type"] == "view" {
+                peer.close().await;
+                return serde_json::from_str(frame["data"].as_str().unwrap()).unwrap();
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn joined_form_uses_capable_presenter_even_when_host_is_headless() {
+        let view = session_form_gate_view(serde_json::json!({
+            "keys": 128,
+            "text_entry": "keyboard",
+            "encoder": false,
+            "pointer": true,
+        }))
+        .await;
+
+        assert_eq!(view["kind"], "form");
+        assert_eq!(view["form_id"], "session-gated-form");
+    }
+
+    #[tokio::test]
+    async fn joined_form_refuses_presenter_without_text_entry() {
+        let view = session_form_gate_view(serde_json::json!({
+            "keys": 0,
+            "text_entry": "none",
+            "encoder": false,
+            "pointer": false,
+        }))
+        .await;
+
+        assert_eq!(view["status"], "refused");
+        assert_eq!(view["error"], "bad_args");
+        assert_eq!(view["reason"], "text_entry_unavailable");
     }
 
     #[tokio::test(start_paused = true)]
@@ -3774,7 +3978,7 @@ mod tests {
         assert!(
             entries.iter().any(|entry| matches!(
                 entry,
-                crate::world::JournalEntry::Revoked { participant_id, by: Some(by) }
+                crate::world::JournalEntry::Revoked { participant_id, by: Some(by), .. }
                 if *participant_id == victim.id && *by == moderator.id
             )),
             "revoke must be journal-attributed to the moderator: {entries:?}"

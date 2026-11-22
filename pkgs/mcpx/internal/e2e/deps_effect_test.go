@@ -106,3 +106,36 @@ func TestPathsDepsExtendsManifestDiscovery(t *testing.T) {
 		t.Fatalf("paths.deps should bring the lib manifest into resolution, got out=%q err=%v", out, err)
 	}
 }
+
+// deps.autoInstall: a bun runtime receives the environment-selected install
+// policy as an argument, without actually fetching any package.
+func TestDepsAutoInstallSelectsTheBunInstallPolicyFromTheEnvironment(t *testing.T) {
+	e := newEnv(t, oneServer)
+	argsFile := filepath.Join(e.dir, "bun-args")
+	bun := filepath.Join(e.dir, "bun-probe")
+	script := "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$MCPX_PROBE_ARGS\"\n"
+	if err := os.WriteFile(bun, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	e.setenv("MCPX_PROBE_ARGS=" + argsFile)
+	e.setenv(`MCPX_SCRIPT_RUNTIMES={"engine":{"kind":"bun","bin":` + jsonQuote(bun) + `}}`)
+	e.setenv("MCPX_DEPS_PACKAGES=probe@1.0.0")
+
+	for _, tc := range []struct{ policy, want string }{
+		{"off", "--no-install"},
+		{"fallback", "--install=fallback"},
+		{"always", "--install=auto"},
+	} {
+		t.Run(tc.policy, func(t *testing.T) {
+			e.setenv("MCPX_DEPS_AUTO_INSTALL=" + tc.policy)
+			e.run("exec", "--runtime", "engine", `console.log("ran")`)
+			got, err := os.ReadFile(argsFile)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(string(got), tc.want) {
+				t.Fatalf("deps.autoInstall=%s should pass %s to bun, got args:\n%s", tc.policy, tc.want, got)
+			}
+		})
+	}
+}

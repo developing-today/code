@@ -498,7 +498,7 @@ func (r *Registry) confirmDestructiveFor(ctx context.Context, p *pool.Pool, serv
 	if script != nil {
 		found = &mcpclient.Tool{Name: tool, Annotations: ScriptAnnotations(*script)}
 	} else {
-		all, _, at := p.CachedSchemas()
+		all, at, _ := policySchemas(ctx, p)
 		if at.IsZero() {
 			// Never read, or invalidated by a list_changed. Deciding from an
 			// empty or stale list would let the call through unasked -- which
@@ -659,8 +659,8 @@ func (r *Registry) applyWritePolicyFor(ctx context.Context, p *pool.Pool, server
 			// (Codex P2 on PR #8317).
 			return policy.Decision{}, false
 		}
-		tools, _, at := p.CachedSchemas()
-		if at.IsZero() || p.SchemaExpired() {
+		tools, at, expired := policySchemas(ctx, p)
+		if at.IsZero() || expired {
 			fresh, _, err := p.RefreshSchemasFor(ctx, r.resolvedFor(p, cc))
 			if err != nil {
 				ledgerRefusal = ErrUnknownOutcome{Record: record,
@@ -747,8 +747,8 @@ func (r *Registry) applyWritePolicyFor(ctx context.Context, p *pool.Pool, server
 	if script != nil {
 		class = policy.Classify(ScriptAnnotations(*script))
 	} else {
-		all, _, at := p.CachedSchemas()
-		if at.IsZero() || p.SchemaExpired() {
+		all, at, expired := policySchemas(ctx, p)
+		if at.IsZero() || expired {
 			fresh, _, err := p.RefreshSchemasFor(ctx, r.resolvedFor(p, cc))
 			if err != nil {
 				return false, ErrNotConfirmed{Tool: p.Namespace() + "." + tool,
@@ -1026,6 +1026,9 @@ func (s *Server) execScript(ctx context.Context, source, session string) (*ExecR
 		// source chose it (#1917 Phase 2); the same options the runner
 		// itself would derive reach one from daemon callers.
 		Clients: map[string]runner.Client{
+			codegen.Roc.Name: {
+				Module: codegen.RocModule(nss, s.endpoint, session),
+			},
 			codegen.Python.Name: {
 				Module:  codegen.PythonModule(nss, s.endpoint, session),
 				Globals: codegen.PythonGlobals(nss),

@@ -636,7 +636,7 @@ func (a *App) runScript(ctx context.Context, args []string, inline bool) error {
 	rt := fs.String("runtime", "",
 		"javascript runtime: auto, deno, bun, node, a name from script.runtimes, or a path")
 	lang := fs.String("language", "",
-		"script language: auto, typescript, javascript, or python (default: script.language)")
+		"script language: auto, typescript, javascript, python, or roc (default: script.language)")
 	timeout := fs.Duration("timeout", 0, "kill the script after this long (default: exec.timeout; 0 = no limit)")
 	keep := fs.Bool("keep", false, "keep the generated client and script for inspection")
 	session := fs.String("session", "", "session key (default: a fresh one per run)")
@@ -929,6 +929,9 @@ func (a *App) runScript(ctx context.Context, args []string, inline bool) error {
 	// and never fails the run -- a daemon without the route leaves clients
 	// empty and the run as it was.
 	clients := map[string]runner.Client{}
+	if roc, rocErr := c.ClientModuleLanguage(ctx, codegen.Roc.Name, ns, "", a.Profile); rocErr == nil && roc != clientSrc {
+		clients[codegen.Roc.Name] = runner.Client{Module: roc}
+	}
 	if py, pyerr := c.ClientModuleLanguage(ctx, codegen.Python.Name, ns, "", a.Profile); pyerr == nil && py != clientSrc {
 		// A daemon from before #1917 Phase 2 ignores ?language and answers
 		// with the TypeScript module; installing that as mcpx_client.py
@@ -1199,7 +1202,7 @@ func (a *App) runScript(ctx context.Context, args []string, inline bool) error {
 	if derr != nil {
 		return derr
 	}
-	svc := a.localService(store, c.Socket(), cfg)
+	svc := a.localService(store, c, cfg)
 	wire := execsvc.Options{
 		Session:   sessionKey,
 		Output:    eo.Output,

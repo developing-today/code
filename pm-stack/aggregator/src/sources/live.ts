@@ -23,11 +23,12 @@ import {
   poolAvailableFromFeed,
   poolFromFeed,
   projectAuditFromFeed,
+  designBoardsFromFeed,
   type FleetFeed,
   type SectionDiagnosis,
 } from "../feed.ts";
 import type { RepoCensus } from "../coverage.ts";
-import { isSessionRecord, mergeRecords, recordFromSessionEntry } from "../registry.ts";
+import { isSessionRecord, mergeRecords, migrateRegistryProvenance, recordFromSessionEntry } from "../registry.ts";
 import type { NewStreamEvent } from "../events.ts";
 import type { FreshnessInput } from "../freshness.ts";
 import {
@@ -56,7 +57,6 @@ import { summarizeDns } from "../dns.ts";
 import {
   applyCloudflareExport,
   applyPaygSettlements,
-  applySupabaseExport,
   extractCharges,
   extractPaygLines,
   extractSaasServices,
@@ -64,12 +64,19 @@ import {
   extractUninstrumentedServices,
 } from "../saas-extract.ts";
 import { mergeChargeRows } from "../charges-collect.ts";
-import type { CloudflareExportDoc, SupabaseExportDoc } from "../saas-extract.ts";
+import type { CloudflareExportDoc } from "../saas-extract.ts";
 import { poolItemToGhItem } from "../projects.ts";
 import { createNeedsDrewSweeper, type NeedsDrewCensus } from "../needs-drew.ts";
 import { INITIAL_STANDING_AUTO, sanitizeTierItemExtensions, withUserFallbacks } from "../tier-items.ts";
 import { assembleWorkItems } from "../work-items.ts";
-import { overlayQuotaCurrent, overlayTursoUsage, readQuotaCurrentFile } from "../quota-current.ts";
+import {
+  overlayQuotaCurrent,
+  overlayTursoUsage,
+  readQuotaCurrentFile,
+  readQuotaHeartbeatFile,
+  latestQuotaHeartbeat,
+  overlayStandaloneQuotaHeartbeat,
+} from "../quota-current.ts";
 import { SnapshotStore, type SnapshotsRemote } from "../snapshots.ts";
 import { gristDocUrl, kaneoTaskUrl } from "../service-links.ts";
 import { fixtureSource } from "./fixtures.ts";
@@ -881,6 +888,9 @@ export function liveSource(
   cfg: Config,
   opts?: {
     standingAuto?: () => Promise<boolean>;
+    // C3 health hook (#9571): fired when the laptop's OpenCode session
+    // map cannot be read on an aggregator tick. Fire-and-forget.
+    onLaptopUnreachable?: (detail: string) => void;
     onEvent?: (event: NewStreamEvent) => void;
     hasEvent?: (kind: string, ref: string) => Promise<boolean>;
     // The handler's return is the ingestion acknowledgment (#3321,
@@ -911,7 +921,7 @@ export function liveSource(
     // reissue an undated delivery id that dedupe would discard.
     seenActivityIds?: (source: string) => Promise<readonly string[]> | readonly string[];
     /** #6815: usage-snapshot backend. Set only when
-     *  PM_AGG_STORE_BACKEND=supabase; otherwise the local snapshot
+     *  PM_AGG_STORE_BACKEND=turso; otherwise the local snapshot
      *  directory is the store (the dev/test and rollback path). */
     snapshotRemote?: SnapshotsRemote;
   },
@@ -1375,6 +1385,7 @@ export function liveSource(
           laptopCache = { value: mapped, at: Date.now() };
         } else {
           laptopFailureAt = Date.now();
+          opts?.onLaptopUnreachable?.("laptop OpenCode session map unreachable on aggregator tick");
         }
         return mapped;
       })().finally(() => {
@@ -1448,13 +1459,17 @@ export function liveSource(
   // is the aggregator's own data (like comments.json); a failed write
   // never breaks the read.
   let registryStore: SessionRecord[] | null = null;
+  let registryNeedsPersist = false;
   let registryWriteChain: Promise<void> = Promise.resolve();
   let registryWriteSeq = 0;
   async function loadRegistryStore(): Promise<SessionRecord[]> {
     if (registryStore) return registryStore;
     try {
       const parsed: unknown = JSON.parse(await readFile(cfg.registryFile, "utf8"));
-      registryStore = Array.isArray(parsed) ? parsed.filter(isSessionRecord) : [];
+      const loaded = Array.isArray(parsed) ? parsed.filter(isSessionRecord) : [];
+      const migration = migrateRegistryProvenance(loaded);
+      registryStore = migration.records;
+      registryNeedsPersist = migration.changed;
     } catch {
       registryStore = [];
     }
@@ -1462,8 +1477,9 @@ export function liveSource(
   }
   async function mergeIntoRegistry(incoming: SessionRecord[]): Promise<SessionRecord[]> {
     const current = await loadRegistryStore();
-    const merged = mergeRecords(current, incoming);
-    const changed = merged.length !== current.length || merged.some((r, i) => r !== current[i]);
+    const preparedIncoming = migrateRegistryProvenance(incoming).records;
+    const merged = mergeRecords(current, preparedIncoming);
+    const changed = registryNeedsPersist || merged.length !== current.length || merged.some((r, i) => r !== current[i]);
     // #1739: the session registry merge is one of the event log's
     // writers — a session entering the registry is a session outcome
     // in the cross-stack stream. Fire-and-forget: the callback the
@@ -1500,6 +1516,7 @@ export function liveSource(
       registryWriteChain = write.catch(() => {});
       try {
         await write;
+        registryNeedsPersist = false;
       } catch {
         /* durability is best-effort; the in-memory merge still serves */
       }
@@ -1513,8 +1530,13 @@ export function liveSource(
   // PR #4695): a pool the gatherer now reports healthy must clear its
   // walled/high-usage actions on the usage strip too.
   async function overlayCurrent(base: QuotaView): Promise<QuotaView> {
+    const standalone = await readQuotaHeartbeatFile(cfg.quotaHeartbeatFile);
     const res = await readQuotaCurrentFile(cfg.quotaCurrentFile);
-    if (res.verdict === "ok" && res.file) return overlayQuotaCurrent(base, res.file);
+    if (res.verdict === "ok" && res.file)
+      return overlayQuotaCurrent(base, {
+        ...res.file,
+        heartbeat: latestQuotaHeartbeat(res.file.heartbeat, standalone)!,
+      });
     if (res.verdict === "transport") {
       console.error(
         `[quota] WARNING: quota-current read transport failure (${res.error ?? "unknown"}) — base view stands (#10816)`,
@@ -1524,7 +1546,7 @@ export function liveSource(
         `[quota] WARNING: quota-current file unparseable (${res.error ?? "unknown"}) — base view stands (#10816)`,
       );
     }
-    return base;
+    return standalone ? overlayStandaloneQuotaHeartbeat(base, standalone) : base;
   }
 
   // #9920: the read-only fleet-queue collector — POST /health +
@@ -1795,6 +1817,9 @@ export function liveSource(
       const feed = await getFeed();
       return poolAvailableFromFeed(feed);
     },
+    async designBoards() {
+      return designBoardsFromFeed(await getFeed());
+    },
     async projectAudit() {
       const feed = await getFeed();
       return projectAuditFromFeed(feed);
@@ -1883,10 +1908,11 @@ export function liveSource(
         provenance.quota = "fixtures (no fleet feed file yet)";
         view = await fix.quota();
       }
+      const standalone = await readQuotaHeartbeatFile(cfg.quotaHeartbeatFile);
       try {
         const res = await readQuotaCurrentFile(cfg.quotaCurrentFile);
         if (res.verdict === "ok" && res.file) {
-          const file = res.file;
+          const file = { ...res.file, heartbeat: latestQuotaHeartbeat(res.file.heartbeat, standalone)! };
           provenance.quota += ` · gatherer ${file.generatedAt}`;
           const sanitized = file.sanitized;
           if (sanitized && sanitized.droppedProviders + sanitized.droppedWindows > 0) {
@@ -1907,6 +1933,10 @@ export function liveSource(
         }
       } catch {
         /* no gatherer file (or unreadable): base view stands */
+      }
+      if (standalone) {
+        provenance.quota += ` · gatherer tick ${standalone.tickAt}`;
+        return overlayStandaloneQuotaHeartbeat(view, standalone);
       }
       return view;
     },
@@ -1943,13 +1973,6 @@ export function liveSource(
               domainCount: feed.dns.entries.length,
             }
           : null;
-      // The Supabase export overlay applies to BOTH service sources:
-      // the collector's feed.saas cards are built with plain
-      // extractSaasServices, so without this the fresh export would be
-      // ignored exactly when the fleet collector is operating (#1050).
-      const supabaseExport = await readFile(cfg.supabaseExportFile, "utf8")
-        .then((text) => JSON.parse(text) as SupabaseExportDoc)
-        .catch(() => null);
       // Charges evidence + unmatched-charge flags (#3124): computed
       // once, before the branch. The feed's charge data is not a
       // byproduct of the saas section, so every return path below
@@ -1992,7 +2015,7 @@ export function liveSource(
           .then((text) => JSON.parse(text) as CloudflareExportDoc)
           .catch(() => null);
         const partial = {
-          services: applySupabaseExport(applyCloudflareExport(feed.saas, cfExport), supabaseExport),
+          services: applyCloudflareExport(feed.saas, cfExport),
           uninstrumentedServices,
           // #1056: feed lines are built by the collector without
           // settlements — reconcile them against local history here,
@@ -2034,7 +2057,7 @@ export function liveSource(
         // full-row equality would display it twice; automatic
         // evidence (the feed rows) takes precedence.
         const partial = {
-          services: applySupabaseExport(applyCloudflareExport(extractSaasServices(doc), cfExport), supabaseExport),
+          services: applyCloudflareExport(extractSaasServices(doc), cfExport),
           uninstrumentedServices,
           payg: extractPaygLines(doc, registryText, { settlements: Object.values(history).flat() }),
           charges: mergeChargeRows(feedCharges, extractCharges(doc, registryText)),
@@ -2256,7 +2279,7 @@ export function liveSource(
     },
     async aa(batch?: string | null): Promise<AaFeedSection | null> {
       // AA cost explorer: the section rides the fleet feed, read from
-      // Supabase ainventory by the collector. Its absent form is a real
+      // Turso ainventory tables by the collector. Its absent form is a real
       // section (the page renders the reason); a missing section means
       // the collector has not embedded one yet.
       const feed = await getFeed();
@@ -2394,7 +2417,7 @@ export function liveSource(
         provenance.registry = `live (${merged.length} session records · ${incoming.length} from the latest feed · feed ${feed ? feedAgeText(feed.generatedAt) : "absent"})${droppedNote}`;
         return merged;
       }
-      const store = await loadRegistryStore();
+      const store = await mergeIntoRegistry([]);
       lastRegistryMergedCount = store.length;
       provenance.registry = `store only (no live registry source reachable)${droppedNote}`;
       return store;

@@ -47,6 +47,7 @@ fn issued(id: u64, parent: Option<u64>, subject: Option<&str>) -> JournalEntry {
         uses: None,
         used: 0,
         subject: subject.map(str::to_owned),
+        issued_at: None,
     }
 }
 
@@ -54,6 +55,44 @@ fn revoked(id: u64) -> JournalEntry {
     JournalEntry::Revoked {
         participant_id: id,
         by: None,
+        revoked_at: None,
+    }
+}
+
+/// An `Issued` entry stamped at `at` (journal version 12, #11960).
+fn issued_at(id: u64, at: u64) -> JournalEntry {
+    let JournalEntry::Issued {
+        participant,
+        digest,
+        scopes,
+        parent,
+        expires_at,
+        uses,
+        used,
+        subject,
+        ..
+    } = issued(id, None, None)
+    else {
+        unreachable!()
+    };
+    JournalEntry::Issued {
+        participant,
+        digest,
+        scopes,
+        parent,
+        expires_at,
+        uses,
+        used,
+        subject,
+        issued_at: Some(at),
+    }
+}
+
+fn revoked_at(id: u64, at: u64) -> JournalEntry {
+    JournalEntry::Revoked {
+        participant_id: id,
+        by: None,
+        revoked_at: Some(at),
     }
 }
 
@@ -456,5 +495,195 @@ proptest! {
         prop_assert!(report.joins.recent.len() <= ReportLimits::default().sample_limit);
         let again = run(&bytes).unwrap();
         prop_assert_eq!(serde_json::to_string(&report).unwrap(), serde_json::to_string(&again).unwrap());
+    }
+}
+
+// #11960: join and revoke times. The window is [1_799_000_000_000,
+// 1_800_000_000_000); `BEFORE` and `INSIDE` fall either side of its start.
+const BEFORE: u64 = 1_798_000_000_000;
+const INSIDE: u64 = 1_799_500_000_000;
+
+#[test]
+fn timed_joins_give_exact_window_counts_and_since() {
+    let v = crate::world::JOURNAL_VERSION_JOIN_TIMES;
+    let report = run(&jsonl(&[
+        header(v),
+        issued_at(1, BEFORE),
+        issued_at(2, INSIDE),
+        issued_at(3, INSIDE + 1),
+        revoked_at(2, INSIDE + 2),
+        revoked_at(1, BEFORE + 1),
+    ]))
+    .unwrap();
+    let joins = &report.joins;
+    assert_eq!(joins.count, 3);
+    assert_eq!(joins.untimed, 0);
+    assert_eq!(joins.in_window, Measured::Known(2));
+    assert_eq!(joins.available_since, Measured::Known(BEFORE));
+    assert!(joins.in_window_complete);
+    assert_eq!(joins.revoked_in_window, Measured::Known(1));
+    assert_eq!(joins.revoked_untimed, 0);
+    assert_eq!(joins.recent[0].issued_at_unix_ms, Some(INSIDE + 1));
+    assert_eq!(joins.recent[1].revoked_at_unix_ms, Some(INSIDE + 2));
+    // The window's end is exclusive and its start inclusive.
+    let mut edge = request();
+    edge.window = ReportWindow {
+        from_unix_ms: INSIDE,
+        to_unix_ms: INSIDE + 1,
+    };
+    let bytes = jsonl(&[header(v), issued_at(1, INSIDE), issued_at(2, INSIDE + 1)]);
+    let report = project(Cursor::new(bytes), &edge, None).unwrap();
+    assert_eq!(report.joins.in_window, Measured::Known(1));
+}
+
+// #12041 oracle: an untimed revocation may belong to any requested window,
+// so a timed subset (including zero) cannot establish a complete count.
+#[test]
+fn mixed_revocation_times_never_report_a_complete_window_count() {
+    let v = crate::world::JOURNAL_VERSION_JOIN_TIMES;
+    for timed_at in [INSIDE, BEFORE, request().window.to_unix_ms] {
+        let report = run(&jsonl(&[
+            header(v),
+            issued(1, None, None),
+            issued_at(2, BEFORE),
+            revoked(1),
+            revoked_at(2, timed_at),
+        ]))
+        .unwrap();
+        assert_eq!(report.joins.revoked, 2);
+        assert_eq!(report.joins.revoked_untimed, 1);
+        assert_eq!(
+            report.joins.revoked_in_window,
+            Measured::Unavailable(UnavailableReason::RevokeTimeNotRecorded),
+            "timed revocation at {timed_at} does not date the untimed one"
+        );
+    }
+}
+
+#[test]
+fn complete_revocation_times_keep_known_window_counts() {
+    let v = crate::world::JOURNAL_VERSION_JOIN_TIMES;
+    let window = request().window;
+    let report = run(&jsonl(&[
+        header(v),
+        issued_at(1, BEFORE),
+        issued_at(2, BEFORE),
+        issued_at(3, BEFORE),
+        revoked_at(1, BEFORE),
+        revoked_at(2, window.from_unix_ms),
+        revoked_at(3, window.to_unix_ms),
+    ]))
+    .unwrap();
+    assert_eq!(report.joins.revoked_in_window, Measured::Known(1));
+    assert_eq!(report.joins.revoked_untimed, 0);
+    // Untimed joins are irrelevant when nobody has been revoked.
+    let none = run(&jsonl(&[header(v), issued(1, None, None)])).unwrap();
+    assert_eq!(none.joins.revoked_in_window, Measured::Known(0));
+    assert_eq!(none.joins.revoked_untimed, 0);
+}
+
+#[test]
+fn joins_from_before_the_upgrade_stay_untimed_and_mark_the_window_incomplete() {
+    let v = crate::world::JOURNAL_VERSION_JOIN_TIMES;
+    let report = run(&jsonl(&[
+        header(v),
+        issued(1, None, None),
+        issued(2, None, None),
+        revoked(2),
+        issued_at(3, INSIDE),
+        issued_at(4, INSIDE + 5),
+    ]))
+    .unwrap();
+    let joins = &report.joins;
+    assert_eq!(joins.untimed, 2);
+    // Every join after the last untimed one carries a time.
+    assert_eq!(joins.available_since, Measured::Known(INSIDE));
+    assert_eq!(joins.in_window, Measured::Known(2));
+    // The window starts before `available_since`, where untimed joins sit.
+    assert!(!joins.in_window_complete);
+    assert_eq!(
+        joins.revoked_in_window.reason(),
+        Some(UnavailableReason::RevokeTimeNotRecorded)
+    );
+    assert_eq!(joins.revoked_untimed, 1);
+    let json = serde_json::to_value(&report).unwrap();
+    let recent = &json["joins"]["recent"];
+    assert_eq!(recent[3]["issued_at_unix_ms"], serde_json::Value::Null);
+    assert_eq!(recent[0]["issued_at_unix_ms"], INSIDE + 5);
+    assert_eq!(check_schema_version(&json), Ok(OWNER_REPORT_SCHEMA_VERSION));
+}
+
+#[test]
+fn an_untimed_join_after_timed_ones_moves_available_since() {
+    let v = crate::world::JOURNAL_VERSION_JOIN_TIMES;
+    let report = run(&jsonl(&[
+        header(v),
+        issued_at(1, BEFORE),
+        issued(2, None, None),
+        issued_at(3, INSIDE),
+    ]))
+    .unwrap();
+    assert_eq!(report.joins.available_since, Measured::Known(INSIDE));
+    assert_eq!(report.joins.in_window, Measured::Known(1));
+    assert!(!report.joins.in_window_complete);
+}
+
+#[test]
+fn no_joins_is_a_measured_zero_with_no_since() {
+    let report = run(&jsonl(&[header(1)])).unwrap();
+    assert_eq!(report.joins.in_window, Measured::Known(0));
+    assert_eq!(
+        report.joins.available_since.reason(),
+        Some(UnavailableReason::NoJoins)
+    );
+    assert_eq!(report.joins.revoked_in_window, Measured::Known(0));
+}
+
+#[test]
+fn a_timed_entry_under_an_older_header_is_refused() {
+    let error = run(&jsonl(&[
+        header(crate::world::JOURNAL_VERSION_PROGRAM_BUNDLE),
+        issued_at(1, INSIDE),
+    ]))
+    .unwrap_err();
+    assert!(
+        matches!(error, OwnerReportError::EntryNewerThanHeader { line: 2, required } if required == crate::world::JOURNAL_VERSION_JOIN_TIMES),
+        "{error}"
+    );
+}
+
+proptest! {
+    /// Window counts agree with a direct count over the generated times,
+    /// and untimed joins are never counted as zero-time joins.
+    #[test]
+    fn window_counts_match_a_direct_count(
+        times in proptest::collection::vec(proptest::option::of(0_u64..10_000), 0..40),
+        from in 0_u64..10_000,
+        span in 0_u64..10_000,
+    ) {
+        let v = crate::world::JOURNAL_VERSION_JOIN_TIMES;
+        let mut entries = vec![header(v)];
+        for (i, at) in times.iter().enumerate() {
+            let id = i as u64 + 1;
+            entries.push(at.map_or_else(|| issued(id, None, None), |at| issued_at(id, at)));
+        }
+        let mut req = request();
+        req.window = ReportWindow { from_unix_ms: from, to_unix_ms: from + span };
+        let report = project(Cursor::new(jsonl(&entries)), &req, None).unwrap();
+        let expected = times.iter().filter(|t| t.is_some_and(|t| t >= from && t < from + span)).count() as u64;
+        let untimed = times.iter().filter(|t| t.is_none()).count() as u64;
+        prop_assert_eq!(report.joins.untimed, untimed);
+        let last_untimed = times.iter().rposition(Option::is_none);
+        let after: Vec<u64> = times[last_untimed.map_or(0, |i| i + 1)..].iter().flatten().copied().collect();
+        if times.is_empty() {
+            prop_assert_eq!(report.joins.in_window.clone(), Measured::Known(0));
+        } else if after.is_empty() {
+            prop_assert_eq!(report.joins.in_window.reason(), Some(UnavailableReason::JoinTimeNotRecorded));
+        } else {
+            let since = *after.iter().min().unwrap();
+            prop_assert_eq!(report.joins.available_since.clone(), Measured::Known(since));
+            prop_assert_eq!(report.joins.in_window.clone(), Measured::Known(expected));
+            prop_assert_eq!(report.joins.in_window_complete, from >= since);
+        }
     }
 }

@@ -45,6 +45,14 @@
  *   unparseable      an endpoint answered something whose shape this
  *                    parser does not recognise. Exit 6.
  *   fetch-failed     network/other error inside the page. Exit 7.
+ *   no-subscription  the team has no active Muse Code subscription: the
+ *                    subscription-quota endpoint answers an empty object
+ *                    and the billing banner is the subscription upsell
+ *                    (first seen 2026-11-21, after the plan ended). There
+ *                    is no quota to read, so this is a valid reading of
+ *                    "nothing to measure", not drift. Exit 0, so the
+ *                    timer unit does not sit failed; the document still
+ *                    carries no windows or values.
  * "laptop-unreachable" is deliberately NOT produced here: if the
  * laptop is down nothing runs, so consumers derive it from the age of
  * latest.json (> 2 ticks = > 30 min without a fresh document).
@@ -71,6 +79,19 @@ export class ExportError extends Error {
 const round2 = (n) => Math.round(n * 100) / 100;
 const MIN_EPOCH_SECONDS = 1_577_836_800; // 2020-01-01T00:00:00Z
 const MAX_EPOCH_SECONDS = 4_102_444_800; // 2100-01-01T00:00:00Z
+
+/** The team has no active subscription: subscription-quota answers an
+ * empty object (no subscription_quota, nothing else) and the billing
+ * banner is the subscription upsell. Both must hold; any other missing
+ * quota stays "unparseable" so real shape drift still fails closed. */
+export function detectNoSubscription(quota, banner) {
+  const emptyQuota =
+    quota !== null && typeof quota === "object" && !Array.isArray(quota) && Object.keys(quota).length === 0;
+  return emptyQuota && banner?.kind === "subscription_upsell";
+}
+
+export const NO_SUBSCRIPTION_DETAIL =
+  "no active Muse Code subscription on this team: subscription-quota is empty and the billing banner offers a subscription";
 
 /** Parse a subscription-quota payload into export windows. Throws on
  * any shape drift — fail-closed, never partial zeros. The one tolerated
@@ -612,6 +633,9 @@ export async function run({ cdpPort = 19222, outDir, teamId = DEFAULT_TEAM_ID, p
       bodies = await fetchQuotaPayloads(client, teamParam ?? teamId);
     } finally {
       client.close();
+    }
+    if (detectNoSubscription(bodies.quota, bodies.banner)) {
+      throw new ExportError("no-subscription", 0, NO_SUBSCRIPTION_DETAIL, recovery);
     }
     const parsed = parseSubscriptionQuota(bodies.quota);
     const freeCreditsUsd = parseBillingBanner(bodies.banner);

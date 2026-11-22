@@ -83,11 +83,18 @@ let
   # standalone artifact until the proxy step's shim dir (design
   # note §4) supersedes the hand-maintained symlinks.
   fleetToolchain = (pkgs.extend (import inputs.id-rust-overlay)).rust-bin.fromRustupToolchainFile ../../pkgs/fleet/rust-toolchain.toml;
+  # Crane's dependency derivation keeps Fleet's registry compile lane
+  # reusable across source changes, using the same pinned Rust toolchain.
+  fleetCraneLib = (inputs.crane.mkLib pkgs).overrideToolchain fleetToolchain;
   fleetPkgs = pkgs.callPackage ../../pkgs/fleet {
     rustPlatform = pkgs.makeRustPlatform {
       cargo = fleetToolchain;
       rustc = fleetToolchain;
     };
+    craneLib = fleetCraneLib;
+    # The fleet Rust workspace has a dedicated CI test workflow. Avoid
+    # compiling its test binaries as part of every system activation.
+    doCheck = false;
     sourceRev = inputs.self.rev or "dirty";
   };
   # Upstream prebuilt release binaries for tools where nixpkgs trails upstream.
@@ -131,8 +138,11 @@ let
   # Hidden-shell auth hook (1Password service account, Cloudflare).
   # Same derivation nixos/agent-auth uses, so the BASH_ENV paths agree.
   agent-shell-env = pkgs.callPackage ../../pkgs/agent-shell-env { };
-  # mcpx MCP gateway and Code Mode execution runner.
-  mcpx = pkgs.callPackage ../../pkgs/mcpx/package.nix { };
+  # mcpx MCP gateway and Code Mode execution runner. Its standalone package
+  # still runs Go checks; profile rebuilds skip the separate test phase.
+  mcpx = pkgs.callPackage ../../pkgs/mcpx/package.nix {
+    doCheck = false;
+  };
   # The cascade's opencode build -- openchamber's nested opencode
   # input, which is exactly the derivation services.opencode.package
   # defaults to (the fork's module wrapper mkDefaults the fork
@@ -1174,6 +1184,17 @@ in
   # EnvironmentFile at every server start — it is never stored in this
   # repo or the Nix store. The quota gatherer reads the same file (see
   # nixos/services/pm-stack) so its `opencode quota` refresh works too.
+  # Helper-only unit changes must not interrupt the server (#10639).
+  # Home Manager still reloads the unit; the activation below owns build
+  # changes explicitly, using only the serving package's store path as key.
+  systemd.user.services.opencode.Unit."X-RestartIfChanged" = false;
+  home.activation.opencodeDeploy = lib.hm.dag.entryAfter [ "reloadSystemd" ] ''
+    run ${pkgs.bash}/bin/bash ${./opencode-deploy.sh} \
+      '${opencodeCascade}' \
+      "''${XDG_STATE_HOME:-$HOME/.local/state}/opencode/deployed-build" \
+      '${pkgs.systemd}/bin/systemctl' /proc
+  '';
+
   systemd.user.services.opencode.Service = {
     ExecStartPre = toString (
       pkgs.writeShellScript "opencode-env-key-materialize" ''

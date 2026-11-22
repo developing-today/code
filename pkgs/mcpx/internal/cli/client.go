@@ -234,7 +234,12 @@ func NewClient(paths daemon.Paths, configPath string) *Client {
 // so pointing it at a real address costs nothing in code and was only ever
 // prevented by the dialler being hardcoded.
 func NewClientAt(paths daemon.Paths, configPath, endpoint string) *Client {
-	set := clientSettings()
+	return NewClientAtWithSettings(paths, configPath, endpoint, clientSettings())
+}
+
+// NewClientAtWithSettings targets a specific daemon with an explicit setting
+// view. It is also the seam for callers that already resolved client settings.
+func NewClientAtWithSettings(paths daemon.Paths, configPath, endpoint string, set *settings.Set) *Client {
 	c := &Client{paths: paths, cfg: configPath, set: set,
 		callSettings: callHeader(set),
 		endpoint:     strings.TrimRight(endpoint, "/")}
@@ -1270,10 +1275,8 @@ func (c *Client) Stream(ctx context.Context, f events.Filter, fn func(events.Eve
 		streamClient := &http.Client{Transport: c.hc.Transport}
 		resp, err := streamClient.Do(req)
 		if err != nil {
-			select {
-			case <-ctx.Done():
+			if !waitForEventReconnect(ctx, c.set.Duration("events.reconnect")) {
 				return ctx.Err()
-			case <-time.After(c.set.Duration("events.reconnect")):
 			}
 			continue
 		}
@@ -1298,6 +1301,20 @@ func (c *Client) Stream(ctx context.Context, f events.Filter, fn func(events.Eve
 			}
 		}
 		_ = resp.Body.Close()
+		if !waitForEventReconnect(ctx, c.set.Duration("events.reconnect")) {
+			return ctx.Err()
+		}
 	}
 	return ctx.Err()
+}
+
+func waitForEventReconnect(ctx context.Context, delay time.Duration) bool {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	}
 }

@@ -1,3 +1,4 @@
+import { renderDesignBoards, type BoardSnapshot } from "./design-boards.ts";
 // Pure HTML rendering. Every view function takes already-assembled data and
 // returns a full HTML string — nothing here does I/O, which keeps the smoke
 // tests cheap (render from fixtures and assert on output).
@@ -25,6 +26,7 @@ import {
 } from "./derive.ts";
 import type { RoadmapReconciliation } from "./roadmap-reconcile.ts";
 import type { RoadmapAnnotation } from "./roadmap-annotations.ts";
+import type { ReleaseSnapshot } from "./releases.ts";
 import { diffCoverage, staleIssueState, type CoverageSnapshotFile } from "./coverage.ts";
 import { DIGEST_SECTION_LIMIT, type Digest, type DigestKind } from "./digest.ts";
 import { registryQueryString, type RegistryView } from "./registry-view.ts";
@@ -61,7 +63,7 @@ import {
   scoreEdges,
 } from "./assets/aa-explorer-computations.js";
 import { summarizeDns } from "./dns.ts";
-import type { NeedsDrewCensus } from "./needs-drew.ts";
+import { needsDrewWait, type NeedsDrewCensus, type NeedsDrewItem } from "./needs-drew.ts";
 import type { Incident, IncidentEvent, PushSubscriptionRow } from "./alerts.ts";
 import type { NotificationRollup } from "./notifications.ts";
 import { NOTIFICATION_CLASS_DEFAULTS, NOTIFICATION_CLASSES } from "./notifications.ts";
@@ -162,7 +164,7 @@ import {
 } from "./status-taxonomy.ts";
 import type { ConflictEntry, ConflictInbox } from "./conflicts.ts";
 import { buildItemBrief, type ItemBrief } from "./brief.ts";
-import { buildEpicRollups, isEpicChildDone, type EpicRollup } from "./epics.ts";
+import { buildEpicRollups, isEpicChildDone, uniqueProjectItemsByRef, type EpicRollup } from "./epics.ts";
 import { spendCardHtml, unattributedSpendHtml, type SpendCardsView } from "./spend-cards.ts";
 import { effortWeight, handsLine, summarizeWeights, weightedLine } from "./weights.ts";
 import { blockedSummary, depthLayout, hasGraphEdges } from "./graph.ts";
@@ -693,17 +695,22 @@ export function commentBadge(objectRef: string, counts?: Map<string, number | Co
   return ` <a class="badge" href="/discuss/${encodeURIComponent(objectRef)}" title="${esc(title)}">💬${n ? ` ${n}` : ""}${queued}</a>`;
 }
 
-export function authorBadge(a: DashAuthor): string {
+export function authorBadge(a: DashAuthor, linkedIdentity?: { source: string; id: string }): string {
   const cls = a.kind === "drew" ? "drew" : a.kind === "muse" ? "Muse" : "agent";
   const link = a.sessionId
     ? ` <a href="/sessions?id=${encodeURIComponent(a.sessionId)}#${encodeURIComponent(a.sessionId)}" class="muted">session</a>`
     : "";
-  return `<span class="badge ${cls}">${esc(a.label)}</span>${link}`;
+  const linked = linkedIdentity
+    ? ` <a href="/sessions?id=${encodeURIComponent(linkedIdentity.id)}#${encodeURIComponent(linkedIdentity.id)}" class="muted" title="Owner-confirmed display link">linked identity</a>`
+    : "";
+  return `<span class="badge ${cls}">${esc(a.label)}</span>${link}${linked}`;
 }
 
 export function dashCommentHtml(c: DashComment, showObject = false): string {
   const verificationChip =
-    c.authorVerified === true ? `<span class="badge">verified</span>` : `<span class="badge">unverified</span>`;
+    c.provenance === "verified"
+      ? `<span class="badge">verified identity</span>`
+      : `<span class="badge">asserted-legacy — author is a claim</span>`;
   const kindChip =
     c.kind === "message"
       ? `<span class="badge msg">✉ message to Muse</span> <span class="muted">${c.triageState === "triaged" ? "triaged by the orchestrator" : "awaiting triage"}</span>`
@@ -717,7 +724,7 @@ export function dashCommentHtml(c: DashComment, showObject = false): string {
           }</span>`
         : `<span class="badge">note</span>`;
   const obj = showObject ? ` <span class="muted">on <code>${esc(c.objectRef)}</code></span>` : "";
-  return `<div class="cmt ${esc(c.kind)}">${authorBadge(c.author)} ${verificationChip} ${kindChip}${obj}<br>${esc(c.body)}<br><span class="muted">${fmtDate(c.createdAt)}</span></div>`;
+  return `<div class="cmt ${esc(c.kind)}">${authorBadge(c.author, c.linkedIdentity)} ${verificationChip} ${kindChip}${obj}<br>${esc(c.body)}<br><span class="muted">${fmtDate(c.createdAt)}</span></div>`;
 }
 
 export interface CommentFormOpts {
@@ -1780,7 +1787,7 @@ export function buildRoadmapDrill(
 ): Map<string, RoadmapDrill> {
   const epicByRow = new Map(reconciliation.matched.map((m) => [m.row.subject, m.epic] as const));
   const childrenByEpic = new Map<string, ProjectPoolItem[]>();
-  for (const item of pool) {
+  for (const item of uniqueProjectItemsByRef(pool)) {
     if (!item.epicRef) continue;
     const list = childrenByEpic.get(item.epicRef) ?? [];
     list.push(item);
@@ -1856,6 +1863,8 @@ function roadmapCard(
   briefs?: Map<RefKey, ItemBrief>,
   forecasts?: Map<RefKey, ForecastContract[]>,
   spend?: SpendCardsView | null,
+  epicRollups?: Map<string, EpicRollup>,
+  showRowNotes = false,
 ): string {
   const refs = allRefs([row]);
   const refBadges = refs
@@ -1867,6 +1876,11 @@ function roadmapCard(
   const grist = row.gristUrl ? ` <a class="badge" href="${esc(row.gristUrl)}">Grist ↗</a>` : "";
   const repoFile = row.fileUrl ? ` <a class="badge" href="${esc(row.fileUrl)}">Repo file ↗</a>` : "";
   const expansion = drill ? roadmapDrilldown(drill, row, forecasts, spend) : "";
+  // The program timeline has no drill map; keep its Notes visible without
+  // duplicating the same text when a card already has a drilldown.
+  const rowNotes = showRowNotes && !drill && row.notes.trim() ? `<p class="notes">${esc(row.notes)}</p>` : "";
+  const epicRollup = epicRollups?.get(row.subject);
+  const rollupHtml = epicRollup ? epicRollupHtml(epicRollup) : "";
   const notes = annotations?.get(row.subject) ?? [];
   const annotationHtml = notes.length
     ? `<div class="roadmap-annotations">${notes.map(roadmapAnnotationHtml).join("")}</div>`
@@ -1892,7 +1906,7 @@ function roadmapCard(
       }
     }
   }
-  return `<div class="card"><a href="/item/${encodeURIComponent(row.subject)}">${esc(row.title)}</a>${cmt}<br><span class="badge ${esc(row.status.toLowerCase().replace(/[^a-z]/g, "-"))}">${esc(row.status)}</span> <span class="muted">${esc(row.area)} · ${esc(row.horizon)}</span>${horizonWarning}${statusClash}${refBadges}${grist}${repoFile}${annotationHtml}${expansion}${briefPanels}</div>`;
+  return `<div class="card"><a href="/item/${encodeURIComponent(row.subject)}">${esc(row.title)}</a>${cmt}<br><span class="badge ${esc(row.status.toLowerCase().replace(/[^a-z]/g, "-"))}">${esc(row.status)}</span> <span class="muted">${esc(row.area)} · ${esc(row.horizon)}</span>${horizonWarning}${statusClash}${refBadges}${grist}${repoFile}${rollupHtml}${annotationHtml}${rowNotes}${expansion}${briefPanels}</div>`;
 }
 
 function roadmapAnnotationHtml(annotation: RoadmapAnnotation): string {
@@ -1908,6 +1922,7 @@ function timelineTable(
   briefs?: Map<RefKey, ItemBrief>,
   forecasts?: Map<RefKey, ForecastContract[]>,
   spend?: SpendCardsView | null,
+  options?: { epicRollups?: Map<string, EpicRollup>; showRowNotes?: boolean },
 ): string {
   const head = `<tr><th scope="col">Theme</th>${tl.lanes.map((l) => `<th scope="col">${esc(l.label)}</th>`).join("")}</tr>`;
   const body = tl.themes
@@ -1917,7 +1932,7 @@ function timelineTable(
       const cells = tl.lanes
         .map((lane) => {
           const rs = tl.cells.get(theme)?.get(lane.key) ?? [];
-          return `<td class="tl-cell">${rs.map((r) => roadmapCard(r, items, counts, drill?.get(r.subject), annotations, briefs, forecasts, spend)).join("")}</td>`;
+          return `<td class="tl-cell">${rs.map((r) => roadmapCard(r, items, counts, drill?.get(r.subject), annotations, briefs, forecasts, spend, options?.epicRollups, options?.showRowNotes)).join("")}</td>`;
         })
         .join("");
       return `<tr><th scope="row">${esc(theme)} <span class="muted theme-rollup">(${done}/${themeRows.length} done)</span></th>${cells}</tr>`;
@@ -1941,6 +1956,8 @@ export function renderRoadmap(
   forecasts?: Map<RefKey, ForecastContract[]>,
   flowAnalytics?: FlowAnalytics,
   spend?: SpendCardsView | null,
+  releases: ReleaseSnapshot[] = [],
+  prioritiesView = false,
 ): string {
   // #1144: when the Grist rows and the Project's Kind=Epic pool items
   // disagree, say so on the page itself — drift the reader can see,
@@ -1951,16 +1968,40 @@ export function renderRoadmap(
       : reconciliation && reconciliation.drift > 0
         ? `<div class="flag">Roadmap drift: ${reconciliation.unmatchedRows.length} Grist row${reconciliation.unmatchedRows.length === 1 ? "" : "s"} with no matching Project epic · ${reconciliation.unmatchedEpics.length} Project epic${reconciliation.unmatchedEpics.length === 1 ? "" : "s"} with no roadmap row (#1144 — the two roadmap sources disagree; both lists are in <a href="/api/roadmap.json">/api/roadmap.json</a>).</div>`
         : "";
-  const chips = GRAINS.map(
+  const chips = `${GRAINS.map(
     ([g, label]) =>
       `<a href="/roadmap?h=${g}${viewQuery ? `&${viewQuery}` : ""}"${g === grain ? ' class="active"' : ""}>${label}</a>`,
-  ).join("");
+  ).join("")} <a href="/roadmap?view=priorities"${prioritiesView ? ' class="active"' : ""}>Priorities</a>`;
   const invalidHorizons = rows.filter((row) => row.horizonError);
   const horizonFlag = invalidHorizons.length
     ? `<div class="flag">${invalidHorizons.length} roadmap row${invalidHorizons.length === 1 ? " has" : "s have"} an invalid Horizon value. Original values are preserved and marked on their cards; correct them in Grist using the documented Horizon grammar.</div>`
     : "";
   let body: string;
-  if (grain === "quarter") {
+  if (prioritiesView) {
+    const ordered = [...rows].sort((a, b) => {
+      const rank = (row: RoadmapRow) => {
+        const match = /#(\d+)$/.exec(row.priority ?? "");
+        return match ? Number(match[1]) : Number.MAX_SAFE_INTEGER;
+      };
+      return rank(a) - rank(b) || a.title.localeCompare(b.title);
+    });
+    body = ordered.length
+      ? ordered
+          .map((row) => {
+            const priority = row.priority
+              ? `<span class="badge src">Priority <a href="${esc(refUrl(row.priority))}">${esc(row.priority)}</a></span>`
+              : '<span class="badge stale">No priority link</span>';
+            const after = row.afterRefs?.length
+              ? `<span class="muted">After: ${row.afterRefs.map((ref) => `<a href="${esc(refUrl(ref))}">${esc(ref)}</a>`).join(", ")}</span>`
+              : '<span class="muted">No predecessor recorded</span>';
+            const release = row.releaseRef
+              ? `<span class="badge src">Release <a href="${esc(refUrl(row.releaseRef))}">${esc(row.releaseRef)}</a></span>`
+              : '<span class="muted">No release linked</span>';
+            return `<div class="card priority-row"><strong><a href="/item/${encodeURIComponent(row.subject)}">${esc(row.title)}</a></strong><br>${priority} ${release}<br>${after}<br><span class="muted">${esc(row.area)} · ${esc(row.horizon)} · ${esc(row.status)}</span></div>`;
+          })
+          .join("")
+      : '<p class="muted">No priority rows in the current roadmap source.</p>';
+  } else if (grain === "quarter") {
     body = timelineTable(buildTimeline(rows), items, counts, drill, annotations, briefs, forecasts, spend);
   } else if (grain === "month") {
     body = timelineTable(monthTimeline(rows), items, counts, drill, annotations, briefs, forecasts, spend);
@@ -2000,9 +2041,20 @@ export function renderRoadmap(
           .join("")
       : '<p class="muted">No roadmap rows.</p>';
   }
+  const releaseCards = releases
+    .filter((release) => release.kind === "release")
+    .map((release) => {
+      const counts = release.counts;
+      const carried = release.carriedOverEpics.length
+        ? `<p>Carried-over epics: ${release.carriedOverEpics.map((ref) => `<a href="${esc(refUrl(ref))}">${esc(ref)}</a>`).join(", ")}</p>`
+        : '<p class="muted">No carried-over epics.</p>';
+      return `<article class="card release-card"><h3>${esc(release.milestone.title)}</h3><p>Date: <strong>${esc(release.releaseDate ?? "date not set")}</strong></p><p>Issues: ${counts.issues.closed}/${counts.issues.total} closed · Designs: ${counts.designs.closed}/${counts.designs.total} closed · Epics: ${counts.epics.closed}/${counts.epics.total} closed</p>${carried}<p class="muted">${esc(release.descriptionLine)}</p></article>`;
+    })
+    .join("");
+  const releasesHtml = `<section class="release-snapshots"><h2>Releases</h2>${releaseCards || '<p class="muted">No release close-out snapshots are available.</p>'}<p><a href="/api/releases.json">Releases JSON</a></p></section>`;
   return layout(
     "Roadmap",
-    `<h1>Roadmap</h1><p class="muted">Grist's <em>Program roadmap</em> table at every grain — one data model, switchable horizon. Rows with a calendar date land on their day; quarter-labelled rows stay at quarter grain. Every row remains visible at every grain.</p><div class="chips">${chips}</div>${driftFlag}${horizonFlag}${body}${spend?.unattributed ? unattributedSpendHtml(spend.unattributed) : ""}${flowAnalytics ? flowChartsHtml(flowAnalytics) : ""}`,
+    `<h1>Roadmap</h1><p class="muted">Grist's <em>Program roadmap</em> table at every grain — one data model, switchable horizon. Rows with a calendar date land on their day; quarter-labelled rows stay at quarter grain. Every row remains visible at every grain.</p><div class="chips">${chips}</div>${driftFlag}${horizonFlag}${body}${releasesHtml}${spend?.unattributed ? unattributedSpendHtml(spend.unattributed) : ""}${flowAnalytics ? flowChartsHtml(flowAnalytics) : ""}`,
     provenance,
     "/roadmap",
     "",
@@ -2030,6 +2082,8 @@ export interface ItemExtras {
   serviceLinks?: ItemServiceLink[];
   /** Present when this item's Project-pool entry is an epic. */
   epicRollup?: EpicRollup;
+  /** Honest chain summary derived from the live Project pool. */
+  genealogySentence?: string;
   /** Project-pool briefs for linked refs (#1279). */
   briefs?: Map<RefKey, ItemBrief>;
   /** Real ready-for-agent dispatch state for explicitly labelled linked issues. */
@@ -2168,7 +2222,7 @@ export function renderItem(
     : "";
   return layout(
     title,
-    `<h1>${esc(title)}</h1><p class="muted">subject: <code>${esc(subject)}</code></p>${epicRollup}${svcLinks}${dispatchSection}${stripHtml(items, links)}
+    `<h1>${esc(title)}</h1><p class="muted">subject: <code>${esc(subject)}</code></p>${extras?.genealogySentence ? `<p class="genealogy">${esc(extras.genealogySentence)}</p>` : ""}${epicRollup}${svcLinks}${dispatchSection}${stripHtml(items, links)}
 ${
   extras?.briefs
     ? briefPanelsForRefs(
@@ -2213,7 +2267,11 @@ export function sessionRecordLine(
   const badges = actionBadgesHtml(act?.actions);
   const controls =
     act?.identities && sessionRecordIsLive(r) ? sessionActionsHtml(r.id, r.source, { identities: act.identities }) : "";
-  return `<div class="card session-record-line" id="${esc(r.id)}"><strong>${esc(r.label)}</strong> <span class="badge src">${esc(r.source)}</span> <span class="badge agent">${esc(r.agentLabel)}</span>${badges}<br><span class="muted session-record-meta">${esc(r.id)} · ${esc(r.status)}${r.model ? ` · ${esc(r.model)}` : ""} · started ${fmtDate(r.startedAt)} · last seen ${fmtDate(r.lastSeenAt)}${tokens}${parent}${refs}</span>${controls}</div>`;
+  const provenance =
+    r.provenance === "verified"
+      ? `<span class="badge">verified identity</span>`
+      : `<span class="badge">asserted-legacy — identity is a claim</span>`;
+  return `<div class="card session-record-line" id="${esc(r.id)}"><strong>${esc(r.label)}</strong> <span class="badge src">${esc(r.source)}</span> <span class="badge agent">${esc(r.agentLabel)}</span> ${provenance}${badges}<br><span class="muted session-record-meta">${esc(r.id)} · ${esc(r.status)}${r.model ? ` · ${esc(r.model)}` : ""} · started ${fmtDate(r.startedAt)} · last seen ${fmtDate(r.lastSeenAt)}${tokens}${parent}${refs}</span>${controls}</div>`;
 }
 
 // --- Quota view (#851) + Usage & billing hub (design 2026-10-25) -----------
@@ -2569,6 +2627,7 @@ export function renderQuota(
 ${credentialLifecycle}
 ${providerAuthSection}
 ${quotaRefreshHtml(refresh, view.gatherer?.generatedAt ?? null)}
+${view.gatherer ? `<p class="muted">Gatherer tick: ${view.gatherer.tickAt ? fmtCentral(view.gatherer.tickAt) : "unknown"} · ${view.gatherer.ok ? "ok" : "failed"}${view.gatherer.tickAt && Date.now() - Date.parse(view.gatherer.tickAt) > 20 * 60_000 ? " · stale" : ""}${view.gatherer.durationMs != null ? ` · ${esc(view.gatherer.durationMs)} ms` : ""}${view.gatherer.error ? ` · ${esc(view.gatherer.error)}` : ""}</p>` : ""}
 <h2>Pools</h2>${pools}
 ${analytics ? analyticsSectionHtml(analytics, display) : ""}
 ${burnAndChoices}`,
@@ -2614,6 +2673,7 @@ ${attentionStripHtml(usage)}
 ${credentialLifecycle}
 ${providerAuthSection}
 ${quotaRefreshHtml(refresh, view.gatherer?.generatedAt ?? null)}
+${view.gatherer ? `<p class="muted">Gatherer tick: ${view.gatherer.tickAt ? fmtCentral(view.gatherer.tickAt) : "unknown"} · ${view.gatherer.ok ? "ok" : "failed"}${view.gatherer.tickAt && Date.now() - Date.parse(view.gatherer.tickAt) > 20 * 60_000 ? " · stale" : ""}${view.gatherer.durationMs != null ? ` · ${esc(view.gatherer.durationMs)} ms` : ""}${view.gatherer.error ? ` · ${esc(view.gatherer.error)}` : ""}</p>` : ""}
 <h2>Token quotas</h2>${pools}
 ${analytics ? analyticsSectionHtml(analytics, display) : ""}
 ${paygCardHtml(usage)}
@@ -3380,19 +3440,41 @@ export function needsDrewCensusHtml(census: NeedsDrewCensus | null | undefined):
         })
         .join("; ")}. The list below may be missing items from those sources.</div>`
     : "";
-  const rows = census.items.length
-    ? `<ul>${census.items
-        .map(
-          (i) =>
-            `<li><a href="${esc(i.url)}">${esc(i.ref)}</a> ${i.kind === "pr" ? "(PR) " : ""}${esc(i.title)} — ${i.needsLabels
-              .map((l) => `<code>${esc(l)}</code>`)
-              .join(
-                " ",
-              )} — ${i.reason ? esc(i.reason) : "no reason recorded on the item — open it for context"} <span class="muted">(updated ${esc(i.updatedAt)})</span></li>`,
+  // FDR-0013: only hands items and review requests are the owner's.
+  // A choice an agent parked on the owner is fleet work, listed apart
+  // so the page never presents it as waiting on him.
+  const hands = census.items.filter((i) => needsDrewWait(i) === "hands");
+  const review = census.items.filter((i) => needsDrewWait(i) === "review");
+  const parked = census.items.filter((i) => needsDrewWait(i) === "agent-decides");
+  const line = (i: NeedsDrewItem, note: string): string =>
+    `<li><a href="${esc(i.url)}">${esc(i.ref)}</a> ${i.kind === "pr" ? "(PR) " : ""}${esc(i.title)} — ${i.needsLabels
+      .map((l) => `<code>${esc(l)}</code>`)
+      .join(" ")} — ${note} <span class="muted">(updated ${esc(i.updatedAt)})</span></li>`;
+  const reasonOf = (i: NeedsDrewItem): string =>
+    i.reason ? esc(i.reason) : "no reason recorded on the item — open it for context";
+  const answered = census.complete ? "" : " in the sources that answered";
+  const handsRows = hands.length
+    ? `<ul>${hands
+        .map((i) =>
+          line(
+            i,
+            `<strong>${esc(i.hands?.kind ?? "hands")}</strong>: ${
+              i.hands?.action ? esc(i.hands.action) : "the item states the one action"
+            }`,
+          ),
         )
         .join("")}</ul>`
-    : `<p class="muted">No open items carry user/review or user/escalated right now${census.complete ? "" : " in the sources that answered"}.</p>`;
-  return `<h2 id="needs-drew-census">Needs Drew — GitHub label census (${census.items.length})</h2><p class="muted">Every open issue and PR carrying <code>user/review</code> or <code>user/escalated</code> across the four repos (#1226). The labels are the system of record; this view reads them and never writes them. Census taken ${esc(census.fetchedAt)}${census.complete ? "" : " — incomplete, see below"}. Machine form: <a href="/api/needs-drew.json">/api/needs-drew.json</a>.</p>${failureNote}${rows}`;
+    : `<p class="muted">No open item needs a person's hands right now${answered}.</p>`;
+  const reviewRows = review.length
+    ? `<ul>${review.map((i) => line(i, reasonOf(i))).join("")}</ul>`
+    : `<p class="muted">No open item carries user/review right now${answered}.</p>`;
+  const parkedRows = parked.length
+    ? `<p class="muted">An agent parked each of these on the owner without a hands action. They do not wait on him: an agent decides, records the decision on the item and continues (FDR-0013). This count should fall to zero.</p><ul>${parked
+        .map((i) => line(i, reasonOf(i)))
+        .join("")}</ul>`
+    : `<p class="muted">Nothing is parked on the owner by an agent${answered}.</p>`;
+  const rows = `<h3 id="needs-drew-hands">Needs a person's hands (${hands.length})</h3>${handsRows}<h3 id="needs-drew-review">Review requested (${review.length})</h3>${reviewRows}<h3 id="needs-drew-parked">Parked on the owner by an agent — fleet work (${parked.length})</h3>${parkedRows}`;
+  return `<h2 id="needs-drew-census">Needs Drew — GitHub label census (${hands.length + review.length})</h2><p class="muted">Every open issue and PR carrying <code>user/review</code> or <code>user/escalated</code> across the four repos (#1226), split by how it waits. The count in the heading is hands items and review requests only. The labels are the system of record; this view reads them and never writes them. Census taken ${esc(census.fetchedAt)}${census.complete ? "" : " — incomplete, see below"}. Machine form: <a href="/api/needs-drew.json">/api/needs-drew.json</a>.</p>${failureNote}${rows}`;
 }
 
 /**
@@ -3702,25 +3784,26 @@ function todayHealthStrip(health: HealthView | null, quota: QuotaView, quotaUnav
           : `orchestrator ${compactAge(orchestration.ageMs)}`
         : `orchestrator ${orchestration.state}`;
 
-  const quotaErrors = quota.gatherer
-    ? quota.gatherer.providers.filter((provider) => provider.state === "error").length
-    : quota.pools.filter((pool) => pool.state === "error" || pool.freshness?.state === "error").length;
-  const quotaState =
-    quotaUnavailable || (!quota.gatherer && quota.pools.length === 0)
-      ? "unknown"
-      : quotaErrors
-        ? "warn"
-        : quota.gatherer?.ok === false
-          ? "unknown"
-          : "ok";
-  const quotaText =
-    quotaUnavailable || (!quota.gatherer && quota.pools.length === 0)
-      ? "quota unknown"
-      : quotaErrors
-        ? `quota errors ${quotaErrors}`
-        : quota.gatherer?.ok === false
-          ? "quota reads unknown"
-          : "quota reads OK";
+  const heartbeatOnly = quota.gatherer?.source === "standalone-heartbeat";
+  const poolErrors = quota.pools.filter((pool) => pool.state === "error" || pool.freshness?.state === "error");
+  const providerErrors = quota.gatherer?.providers.filter((provider) => provider.state === "error") ?? [];
+  // A standalone tick is not a replacement quota measurement. Preserve base
+  // pool failures and include heartbeat failures, deduplicating known services.
+  const quotaErrors = heartbeatOnly
+    ? new Set([...poolErrors.map((pool) => pool.id), ...providerErrors.map((provider) => provider.serviceId)]).size
+    : quota.gatherer
+      ? providerErrors.length
+      : poolErrors.length;
+  const quotaUnknown =
+    quotaUnavailable || ((!quota.gatherer || heartbeatOnly) && quota.pools.length === 0 && quotaErrors === 0);
+  const quotaState = quotaUnknown ? "unknown" : quotaErrors ? "warn" : quota.gatherer?.ok === false ? "unknown" : "ok";
+  const quotaText = quotaUnknown
+    ? "quota unknown"
+    : quotaErrors
+      ? `quota errors ${quotaErrors}`
+      : quota.gatherer?.ok === false
+        ? "quota reads unknown"
+        : "quota reads OK";
 
   const items = [
     { text: stackText, state: stackState, href: "/health", title: "Stack service health" },
@@ -6055,7 +6138,7 @@ export function renderAa(section: AaFeedSection | null, provenance: Provenance, 
   if (!section) {
     return layout(
       "Cost Explorer",
-      `<h1>Cost Explorer</h1><div class="banner">The AA data has not reached the dashboard yet — the fleet-feed collector reads it from Supabase (ainventory), and no AA section is in the current feed. The data of record is the ainventory import; this page only renders it.</div>`,
+      `<h1>Cost Explorer</h1><div class="banner">The AA data has not reached the dashboard yet — the fleet-feed collector reads it from the Turso fleet-platform store (ainventory), and no AA section is in the current feed. The data of record is the ainventory import; this page only renders it.</div>`,
       provenance,
       "/aa",
       "",
@@ -6816,11 +6899,11 @@ export function projectsBodyHtml(
   const areaWeights = areas
     .map((a) => {
       const items = pool.filter((p) => p.area === a);
-      const w = summarizeWeights(items);
+      const w = summarizeWeights(uniqueProjectItemsByRef(items));
       return `<div class="card"><strong>${esc(a)}</strong> — ${esc(weightedLine(w))}<br><span class="muted">${esc(handsLine(w))}</span></div>`;
     })
     .join("");
-  const shownWeights = summarizeWeights(shown);
+  const shownWeights = summarizeWeights(uniqueProjectItemsByRef(shown));
   const epicRollups = buildEpicRollups(pool);
   const cards = shown
     .map((p) => {
@@ -6914,7 +6997,7 @@ export function projectsBodyHtml(
         ]
       : []),
   ].join("")}</div>
-${opts.audit && opts.audit.totalItems > pool.length ? `<div class="banner">Board total ${opts.audit.totalItems} items; this pool renders ${pool.length} linked issue/PR items. ${opts.audit.totalItems - pool.length} board item${opts.audit.totalItems - pool.length === 1 ? " is" : "s are"} draft or unlinked (no issue/PR to link to) and not rendered as cards \u2014 counted in the audit in <a href="/api/projects.json">/api/projects.json</a>, never silently dropped.</div>` : ""}
+${opts.audit && (opts.audit.poolTotalItems ?? opts.audit.totalItems) > pool.length ? `<div class="banner">Board total ${opts.audit.poolTotalItems ?? opts.audit.totalItems} items; this pool renders ${pool.length} linked issue/PR items. ${(opts.audit.poolTotalItems ?? opts.audit.totalItems) - pool.length} board item${(opts.audit.poolTotalItems ?? opts.audit.totalItems) - pool.length === 1 ? " is" : "s are"} draft or unlinked (no issue/PR to link to) and not rendered as cards \u2014 counted in the audit in <a href="/api/projects.json">/api/projects.json</a>, never silently dropped.</div>` : ""}
 ${shown.length !== pool.length ? `<p class="muted">Filters show ${shown.length} of ${pool.length} pool items.</p>` : ""}
 ${unsetCount > 0 ? `<div class="banner">${unsetCount} pool item${unsetCount === 1 ? "" : "s"} carry no Area — they belong to no project page until Area is set on the Project. Setting Area is the orchestrator's reconciliation job; this count keeps the gap visible. <a href="${base}?area=${encodeURIComponent(UNSET_AREA)}">View the (unset) bucket →</a></div>` : ""}
 ${coverageSectionHtml(opts.coverage)}
@@ -6938,6 +7021,7 @@ export function renderProjects(
     kind?: string | null;
     /** Project #4 audit snapshot (#1208): reconciles the rendered pool count against the board total (draft/unlinked caveat). */
     audit?: ProjectAudit | null;
+    designBoards?: BoardSnapshot[];
     orchestration?: OrchestrationSection | null;
     detail?: ProvenanceDetail;
     actionsByObject?: Map<string, DashAction[]>;
@@ -6952,6 +7036,7 @@ export function renderProjects(
   return layout(
     "Projects",
     `<h1>Projects — GitHub Project pool</h1>
+${renderDesignBoards(opts.designBoards ?? [])}
 ${projectsBodyHtml(pool, opts)}`,
     provenance,
     "/projects",
@@ -7043,6 +7128,7 @@ export function renderProgram(
     status?: string | null;
     kind?: string | null;
     audit?: ProjectAudit | null;
+    designBoards?: BoardSnapshot[];
     coverage?: CoverageSnapshotFile | null;
     orchestration?: OrchestrationSection | null;
     actionsByObject?: Map<string, DashAction[]>;
@@ -7076,6 +7162,7 @@ ${projectsBodyHtml(poolSection.pool, { area: poolSection.area, status: poolSecti
 <h2>Projects</h2>
 <div class="board">${cards || '<p class="muted">No projects configured.</p>'}</div>
 ${unsetHtml}
+${renderDesignBoards(poolSection?.designBoards ?? [])}
 <h2>Live status</h2>
 <p class="muted">Derived at request time from the Project pool and the latest orchestration section — not written by hand.</p>
 ${poolSummaryHtml(live)}
@@ -7803,15 +7890,16 @@ export function renderProgramProject(
   } else if (!detail.roadmapRows.length) {
     roadmapHtml = `<div class="banner">No roadmap rows with area <code>${esc(config.roadmapArea)}</code> in the current source.</div>`;
   } else {
-    const rows = detail.roadmapRows
-      .map((r) => {
-        const links = r.links
-          .map((l) => `<a class="badge src" href="${esc(refUrl(l.ref))}">${esc(l.ref)}</a>`)
-          .join(" ");
-        return `<div class="card"><strong>${esc(r.title)}</strong><br><span class="badge src">${esc(r.status)}</span> <span class="badge src">${esc(r.horizon)}</span>${links ? ` ${links}` : ""}${r.notes ? `<br><span class="muted">${esc(r.notes)}</span>` : ""}<br><span class="muted"><a href="/discuss/${encodeURIComponent(r.subject)}">💬 comments</a> · <a href="/roadmap">roadmap</a></span></div>`;
-      })
-      .join("");
-    roadmapHtml = `<p class="muted">${detail.roadmapRows.length} row${detail.roadmapRows.length === 1 ? "" : "s"} with area <code>${esc(config.roadmapArea)}</code> in Grist's Program roadmap.</p>${rows}`;
+    const rollups = buildEpicRollups(epicPool);
+    const rowRollups = new Map<string, EpicRollup>();
+    for (const row of detail.roadmapRows) {
+      const epic = row.links
+        .map((link) => epicPool.find((item) => item.ref === link.ref && item.kind === "Epic"))
+        .find(Boolean);
+      const rollup = epic ? rollups.get(epic.ref) : undefined;
+      if (rollup) rowRollups.set(row.subject, rollup);
+    }
+    roadmapHtml = `<p class="muted">${detail.roadmapRows.length} row${detail.roadmapRows.length === 1 ? "" : "s"} with area <code>${esc(config.roadmapArea)}</code> in Grist's Program roadmap. Timeline lanes and drill-downs use the shared roadmap renderer; epic rollups are per matched row.</p>${timelineTable(buildTimeline(detail.roadmapRows), items, undefined, undefined, undefined, undefined, undefined, undefined, { epicRollups: rowRollups, showRowNotes: true })}`;
   }
 
   const repoCardsHtml = detail.repoCards.length
@@ -7936,7 +8024,7 @@ export function renderAlerts(view: AlertsPageView, provenance: Provenance, vapid
   if (!view.available) {
     return layout(
       "Alerts",
-      `<h1>Alerts</h1><p class="muted">The alerts ledger (Supabase <code>alerts</code> schema) is unreachable from this process right now — intake, delivery, and ack are paused with it. The rest of the dashboard is unaffected.</p>`,
+      `<h1>Alerts</h1><p class="muted">The alerts ledger (Turso fleet-platform <code>alerts_*</code> tables) is unreachable from this process right now — intake, delivery, and ack are paused with it. The rest of the dashboard is unaffected.</p>`,
       provenance,
       "/alerts",
     );
@@ -8160,7 +8248,7 @@ export function renderNotificationPreferences(
   if (!view.available) {
     return layout(
       "Notification preferences",
-      `<h1>Notification preferences</h1><p class="muted">The alerts ledger (Supabase <code>alerts</code> schema) is unreachable from this process right now — subscription preferences cannot be read or saved until it is back. The rest of the dashboard is unaffected.</p>`,
+      `<h1>Notification preferences</h1><p class="muted">The alerts ledger (Turso fleet-platform <code>alerts_*</code> tables) is unreachable from this process right now — subscription preferences cannot be read or saved until it is back. The rest of the dashboard is unaffected.</p>`,
       provenance,
       "/alerts/preferences",
     );
@@ -8331,7 +8419,7 @@ export function renderNotifications(view: NotificationsPageView, provenance: Pro
   if (!view.available || !view.rollup) {
     return layout(
       "Notifications",
-      `<h1>Notifications</h1><p class="muted">The notification send ledger (Supabase <code>alerts.notification_sends</code>) is unreachable from this process right now — the roll-up is paused with it. The rest of the dashboard is unaffected.</p>`,
+      `<h1>Notifications</h1><p class="muted">The notification send ledger (Turso fleet-platform <code>alerts_notification_sends</code>) is unreachable from this process right now — the roll-up is paused with it. The rest of the dashboard is unaffected.</p>`,
       provenance,
       "/notifications",
     );

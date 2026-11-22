@@ -3,7 +3,7 @@
 // not an arbitrary PostgreSQL query translator. Literals become typed args
 // BEFORE rewriting syntax, so user text/JSON can never be rewritten as SQL.
 import { resolveBwsSecret } from "./secrets.ts";
-import type { SupabaseClient } from "./supabase.ts";
+import type { SqlClient } from "./sql-client.ts";
 import { DECISION_EVENTS_TURSO_URL, DECISION_EVENTS_TURSO_TOKEN_NAME } from "./decision-events-sync.ts";
 
 export type StoreArg = { type: "text"; value: string };
@@ -95,7 +95,7 @@ export function decodeStoreRow(row: Record<string, unknown>): Record<string, unk
   );
 }
 
-export function createTursoStoreClient(url: string, token: string, fetchFn: typeof fetch = fetch): SupabaseClient {
+export function createTursoStoreClient(url: string, token: string, fetchFn: typeof fetch = fetch): SqlClient {
   const endpoint = new URL(url.replace(/^libsql:/, "https:"));
   if (endpoint.protocol !== "https:" || endpoint.username || endpoint.password)
     throw new Error("invalid Turso store URL");
@@ -140,8 +140,8 @@ export function createTursoStoreClient(url: string, token: string, fetchFn: type
   };
 }
 
-export function createTursoStoreGetter(resolveSecret = resolveBwsSecret): () => Promise<SupabaseClient | null> {
-  let cached: Promise<SupabaseClient | null> | null = null;
+export function createTursoStoreGetter(resolveSecret = resolveBwsSecret): () => Promise<SqlClient | null> {
+  let cached: Promise<SqlClient | null> | null = null;
   return () => {
     if (!cached) {
       const pending = (async () => {

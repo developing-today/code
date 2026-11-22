@@ -72,7 +72,7 @@ describe("resolveOrchestrationDocument", () => {
     const res = await resolveOrchestrationDocument({
       source: "db",
       readDb: async () => {
-        throw new Error("Supabase query failed (HTTP 503)");
+        throw new Error("Turso store query failed (HTTP 503)");
       },
       readFile: async () => fileDoc,
       validate,
@@ -101,7 +101,7 @@ describe("resolveOrchestrationDocument", () => {
     const res = await resolveOrchestrationDocument({
       source: "db",
       readDb: async () => {
-        throw new Error("no Supabase management token available (bws)");
+        throw new Error("no Turso store token available (bws)");
       },
       readFile: async () => {
         throw enoent;
@@ -110,7 +110,7 @@ describe("resolveOrchestrationDocument", () => {
     });
     expect(res.document).toBeNull();
     expect(res.source).toBeNull();
-    expect(res.dbError).toContain("management token");
+    expect(res.dbError).toContain("store token");
     expect(res.fileMissing).toBe(true);
   });
 

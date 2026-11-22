@@ -16,10 +16,14 @@
 //!   issued or delegated. Compaction rewrites every capability ever
 //!   issued (revoked ones with their `Revoked` entry), so the count is
 //!   complete across checkpoints.
-//! - No journal entry records *when* a capability was issued, so the
-//!   join time, the earliest answerable time and any count inside a time
-//!   window are [`UnavailableReason::JoinTimeNotRecorded`], never zero.
-//!   Recording them is a journal-format change, out of this scope.
+//! - Since journal version 12 ([`crate::world::JOURNAL_VERSION_JOIN_TIMES`],
+//!   #11960) an `Issued` entry carries `issued_at` and a `Revoked` entry
+//!   carries `revoked_at`. Joins and revokes from before that carry no
+//!   time and are reported as such, never as zero. `available_since` is
+//!   the earliest time from which every later join carries one; a window
+//!   that starts before it is counted but marked incomplete. A journal
+//!   with no timed join at all reports join times as
+//!   [`UnavailableReason::JoinTimeNotRecorded`].
 //! - Live membership and program activity come only from a running
 //!   world: [`OwnerReport::with_live`] fills them from a [`LiveSnapshot`]
 //!   (#11775), and without one they are unavailable. Program activity is
@@ -52,6 +56,11 @@ pub const OWNER_REPORT_SCHEMA_VERSION: u32 = 1;
 pub enum UnavailableReason {
     /// The journal records no time for a capability's issue.
     JoinTimeNotRecorded,
+    /// Capabilities were revoked, and the journal records no time for any
+    /// of those revokes.
+    RevokeTimeNotRecorded,
+    /// No one has joined, so there is no join time to start from.
+    NoJoins,
     /// No live participant snapshot was supplied (the world is not
     /// running, or the caller did not ask it).
     LiveStateNotProvided,
@@ -67,6 +76,10 @@ impl UnavailableReason {
     pub const fn describe(self) -> &'static str {
         match self {
             Self::JoinTimeNotRecorded => "the journal does not record when anyone joined",
+            Self::RevokeTimeNotRecorded => {
+                "the journal does not record when all revocations occurred"
+            }
+            Self::NoJoins => "no one has joined yet",
             Self::LiveStateNotProvided => "no live snapshot (the world is not running here)",
             Self::ProgramRunsNotRecorded => "program runs are not recorded by this journal",
             Self::StorageNotMeasured => "storage was not measured",
@@ -195,6 +208,12 @@ pub struct JoinSample {
     pub delegated: bool,
     /// Whether the capability has since been revoked.
     pub revoked: bool,
+    /// When the capability was issued (Unix ms); `null` when the journal
+    /// entry predates recorded times.
+    pub issued_at_unix_ms: Option<u64>,
+    /// When it was revoked (Unix ms); `null` while active or when no time
+    /// was recorded.
+    pub revoked_at_unix_ms: Option<u64>,
 }
 
 /// Durable join facts.
@@ -216,8 +235,19 @@ pub struct JoinsSection {
     pub inherited_from_fork: Option<u64>,
     /// Joins inside the requested window.
     pub in_window: Measured<u64>,
-    /// Earliest time from which joins are answerable.
+    /// Whether `in_window` covers the whole window: false when the window
+    /// starts before `available_since`, where untimed joins may belong.
+    pub in_window_complete: bool,
+    /// Earliest time from which joins are answerable: every join after it
+    /// in the journal carries a time.
     pub available_since: Measured<u64>,
+    /// Joins whose entry carries no time (issued before times were
+    /// recorded).
+    pub untimed: u64,
+    /// Revokes inside the requested window; unavailable if any revoke lacks a time.
+    pub revoked_in_window: Measured<u64>,
+    /// Revoked participants whose revoke carries no time.
+    pub revoked_untimed: u64,
     /// Whether every join in the journal was counted.
     pub complete: bool,
     /// The most recent joins, newest first, at most
@@ -434,6 +464,8 @@ pub fn check_schema_version(report: &serde_json::Value) -> Result<u32, Option<u6
 struct ParticipantFlags {
     delegated: bool,
     revoked: bool,
+    issued_at: Option<u64>,
+    revoked_at: Option<u64>,
 }
 
 /// Read one line of at most `max` bytes. `Ok(None)` at end of input;
@@ -491,6 +523,8 @@ pub fn project<R: BufRead>(
     let mut subjects: BTreeSet<String> = BTreeSet::new();
     let mut recent: VecDeque<u64> = VecDeque::with_capacity(limits.sample_limit);
     let mut inherited_from_fork = None;
+    // Earliest join time after the last join without one (#11960).
+    let mut timed_since: Option<u64> = None;
     let mut over_limit = false;
     let mut buf = Vec::new();
     let mut line = 0_u64;
@@ -536,6 +570,7 @@ pub fn project<R: BufRead>(
                 participant,
                 parent,
                 subject,
+                issued_at,
                 ..
             } => {
                 if participants.contains_key(&participant.id) {
@@ -550,8 +585,11 @@ pub fn project<R: BufRead>(
                     ParticipantFlags {
                         delegated: parent.is_some(),
                         revoked: false,
+                        issued_at,
+                        revoked_at: None,
                     },
                 );
+                timed_since = issued_at.map(|at| timed_since.map_or(at, |since| since.min(at)));
                 if let Some(subject) = subject {
                     subjects.insert(subject);
                 }
@@ -562,9 +600,14 @@ pub fn project<R: BufRead>(
                     recent.push_back(participant.id);
                 }
             }
-            JournalEntry::Revoked { participant_id, .. } => {
+            JournalEntry::Revoked {
+                participant_id,
+                revoked_at,
+                ..
+            } => {
                 if let Some(flags) = participants.get_mut(&participant_id) {
                     flags.revoked = true;
+                    flags.revoked_at = revoked_at;
                 }
             }
             JournalEntry::Forked { from_world_id, .. } => {
@@ -588,9 +631,54 @@ pub fn project<R: BufRead>(
                 participant_id: *id,
                 delegated: flags.delegated,
                 revoked: flags.revoked,
+                issued_at_unix_ms: flags.issued_at,
+                revoked_at_unix_ms: flags.revoked_at,
             }
         })
         .collect();
+    let in_range = |at: Option<u64>| {
+        at.is_some_and(|at| (window.from_unix_ms..window.to_unix_ms).contains(&at))
+    };
+    let untimed = participants
+        .values()
+        .filter(|f| f.issued_at.is_none())
+        .count() as u64;
+    let (in_window, in_window_complete, available_since) = match timed_since {
+        _ if count == 0 => (
+            Measured::Known(0),
+            true,
+            Measured::Unavailable(UnavailableReason::NoJoins),
+        ),
+        Some(since) => (
+            Measured::Known(
+                participants
+                    .values()
+                    .filter(|f| in_range(f.issued_at))
+                    .count() as u64,
+            ),
+            window.from_unix_ms >= since,
+            Measured::Known(since),
+        ),
+        None => (
+            Measured::Unavailable(UnavailableReason::JoinTimeNotRecorded),
+            false,
+            Measured::Unavailable(UnavailableReason::JoinTimeNotRecorded),
+        ),
+    };
+    let revoked_timed = participants
+        .values()
+        .filter(|f| f.revoked && f.revoked_at.is_some())
+        .count() as u64;
+    let revoked_in_window = if revoked_timed < revoked {
+        Measured::Unavailable(UnavailableReason::RevokeTimeNotRecorded)
+    } else {
+        Measured::Known(
+            participants
+                .values()
+                .filter(|f| f.revoked && in_range(f.revoked_at))
+                .count() as u64,
+        )
+    };
     let joins = JoinsSection {
         count,
         host_issued: count - delegated,
@@ -598,8 +686,12 @@ pub fn project<R: BufRead>(
         revoked,
         distinct_subjects: subjects.len() as u64,
         inherited_from_fork,
-        in_window: Measured::Unavailable(UnavailableReason::JoinTimeNotRecorded),
-        available_since: Measured::Unavailable(UnavailableReason::JoinTimeNotRecorded),
+        in_window,
+        in_window_complete,
+        available_since,
+        untimed,
+        revoked_in_window,
+        revoked_untimed: revoked - revoked_timed,
         complete: !over_limit && !coverage.torn_tail,
         recent,
     };

@@ -2,10 +2,8 @@
 //! error class (#6450 posture, enacted on Drew's 2026-11-06 ruling:
 //! "formalized client backoff on 57014", pass-2 proposal item 3).
 //!
-//! One policy, used by both ends of the queue path so lanes stop
-//! improvising their own retry shapes:
-//! - the queue-broker's PostgREST caller (queue_broker::State), and
-//! - the repo-queue client's broker caller (client::call).
+//! One policy, used by the repo-queue client's broker caller
+//! (client::call) so lanes stop improvising their own retry shapes.
 //!
 //! Retryable class: the PostgreSQL statement-timeout code `57014`
 //! ("canceling statement due to statement timeout") and PostgREST's

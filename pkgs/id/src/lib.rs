@@ -278,6 +278,8 @@ pub use id_store::search;
 pub use id_store::session_checkpoint;
 pub use id_store::store;
 #[cfg(feature = "sandbox")]
+pub use id_worlds::guest_burn;
+#[cfg(feature = "sandbox")]
 pub use id_worlds::sandbox;
 #[cfg(feature = "world")]
 pub use id_worlds::shell_contract;
@@ -348,9 +350,10 @@ pub use id_web as web;
 
 // Re-export commonly used types for convenience
 pub use discovery::{
-    ANNOUNCE_INTERVAL, DEFAULT_TOPIC, DEFAULT_TOPIC_SECRET, Defaults, MAX_PEER_NAME_BYTES,
-    MAX_PEERS, PeerAnnouncement, PeerDiscovery, PeerInfo, ResolvedConfig, STALE_CHECK_INTERVAL,
-    STALE_THRESHOLD, defaults, parse_defaults, resolve_config,
+    ANNOUNCE_INTERVAL, DEFAULT_TOPIC, DEFAULT_TOPIC_SECRET, Defaults, DefaultsMode,
+    DefaultsProvenance, DefaultsSource, MAX_PEER_NAME_BYTES, MAX_PEERS, PeerAnnouncement,
+    PeerDiscovery, PeerInfo, ResolvedConfig, STALE_CHECK_INTERVAL, STALE_THRESHOLD, defaults,
+    defaults_provenance, resolve_config,
 };
 pub use id_cli::cli::{Cli, Command, KeyCommand, KeysetCommand, TagCommand};
 pub use id_cli::commands::{

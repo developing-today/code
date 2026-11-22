@@ -26,6 +26,7 @@
   stdenv,
   makeBinaryWrapper,
   installShellFiles,
+  tini,
   doCheck ? true,
   # The OCI image runs exactly this binary plus its explicitly selected
   # JavaScript runtime; it must not inherit the workstation wrapper's full
@@ -64,7 +65,7 @@ buildMcpxGoModule {
       !(base == "bin" || base == "result" || lib.hasPrefix "result-" base || base == "mcpx-client.ts");
   };
 
-  # Eleven direct Go dependencies.
+  # Twelve direct Go dependencies, including pty for the PTY-backed e2e test.
   #
   # modernc.org/sqlite backs the log index. It is a pure-Go translation rather
   # than the usual mattn driver, because a cgo driver would make this
@@ -101,7 +102,7 @@ buildMcpxGoModule {
   #
   # Everything else -- the MCP client, the process pools, the JSON Schema to
   # TypeScript compiler, the CLI -- is standard library.
-  vendorHash = "sha256-xif8jcKtFei4vd7bh8way+KnHS6O0I/JFxrTMyVlTKo=";
+  vendorHash = "sha256-WixeikMvYYYvvOssmUiVqlglEprQjP2p1pMXpkOLTME=";
 
   subPackages = [ "cmd/mcpx" ];
 
@@ -160,7 +161,8 @@ buildMcpxGoModule {
     nodejs
     python3
     git
-  ];
+  ]
+  ++ lib.optionals stdenv.hostPlatform.isLinux [ tini ];
   # ops.gen.ts is generated from the /v1 table (internal/api's
   # PluginTS) but checked in, because the TypeScript plugin consumes
   # it from the source tree. Regenerate it here, in the build tree,
@@ -182,17 +184,6 @@ buildMcpxGoModule {
         # rendering and byte comparisons over the committed docs;
         # they spawn no runtimes, daemons or sockets, so they run in
         # this checkPhase like every package not listed below.
-        # internal/e2e spawns real script subprocess trees and the build
-        # sandbox has no init reaping them: they pile up as zombies and the
-        # package burns its whole 30m timeout (#2686). It runs in CI on
-        # main instead.
-        "internal/e2e"
-        # internal/settings asserts the process environment is exactly
-        # what the code sets (TestNoUndeclaredEnvRead,
-        # TestTheScriptEnvironmentIsWhatTheCodeSets); the stdenv builder
-        # environment makes that untrue in the sandbox (#2686). It runs in
-        # CI on main instead.
-        "internal/settings"
         # internal/cli drives the real CLI, daemon and adapter
         # subprocesses and hangs waiting on them in the build sandbox: on
         # 2026-10-30 it burned its whole 30m timeout with no failing test
@@ -204,12 +195,6 @@ buildMcpxGoModule {
         # OS deploy is not the gate for that desync; it runs in CI on
         # main, which is where the fix lands.
         "internal/conformance"
-        # internal/defaults fails on main itself right now:
-        # TestNoPackageRedeclaresADefault flags a const added in
-        # internal/execsvc without a defaults.json entry (#2686). Same
-        # reasoning as internal/conformance above: interim exclusion,
-        # tracked in CI on main.
-        "internal/defaults"
       ];
       # The Linux-only takeover/handoff tests (#418): they exercise
       # /proc and systemd-mainpid mechanics that do not exist on
@@ -243,7 +228,11 @@ buildMcpxGoModule {
       # (400ms TTL, 200ms margin) on a loaded builder. Darwin: the
       # skip list above. Everywhere else: the plain command.
       goTestCmd =
-        "go test "
+        # Tini runs outside the test binary as a child subreaper. It adopts
+        # and reaps orphaned descendants from e2e subprocess trees without
+        # competing with Go's exec.Cmd.Wait for children the tests own.
+        lib.optionalString stdenv.hostPlatform.isLinux "tini -s -- "
+        + "go test "
         + lib.optionalString stdenv.hostPlatform.isLinux "-p 1 "
         + "-timeout 30m "
         + lib.optionalString stdenv.hostPlatform.isDarwin "-skip='${darwinSkip}' "

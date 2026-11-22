@@ -13,7 +13,7 @@
 //! role picks the broker's Unix socket when it answers; an absent
 //! or stale socket keeps the session-proxy route, and a failed
 //! UDS attempt falls back to it within the same call.
-//! No Bitwarden fetch, no direct Supabase access. Exit 3 means the
+//! No Bitwarden fetch, no direct database access. Exit 3 means the
 //! broker path itself is unavailable.
 //!
 //! Entry points: the fleet binary's queue domain and the standalone
@@ -81,6 +81,7 @@ pub fn run(args: &[String]) -> i32 {
         "verify-disposition" => cmd_verify_disposition(rest),
         "timeline" => cmd_timeline("timeline", rest),
         "history" => cmd_timeline("history", rest),
+        "show" => cmd_show(rest),
         "models" => cmd_models(rest),
         "health" => cmd_health(rest),
         "signal" => cmd_signal(rest),
@@ -192,6 +193,28 @@ mod tests {
         ]);
         let ids: Vec<i64> = out.iter().map(|e| e.id).collect();
         assert_eq!(ids, vec![1, 3, 4]);
+    }
+
+    #[test]
+    fn show_history_uses_history_event_fields_and_is_a_tail() {
+        let event = |id, trigger: &str| TimelineEvent {
+            id,
+            kind: "claimed".to_string(),
+            session_id: Some("ses_example".to_string()),
+            provider: Some("opencode-route".to_string()),
+            model: Some("workhorse".to_string()),
+            variant: Some("medium".to_string()),
+            trigger: Some(trigger.to_string()),
+            created_at: format!("2026-11-21T00:00:{id:02}Z"),
+            created_us: id * 1_000_000,
+        };
+        let events = vec![event(1, "claim"), event(2, "resume")];
+        let tail = &events[events.len().saturating_sub(1)..];
+        assert_eq!(tail[0].id, 2);
+        assert_eq!(
+            format_timeline_event(&tail[0]),
+            "2026-11-21T00:00:02Z  claimed  session=ses_example  opencode-route/workhorse#medium  (resume)"
+        );
     }
 
     #[test]
@@ -1190,10 +1213,6 @@ mod tests {
         // limit is below the matching count says so; an exhaustive
         // listing reports completeness; an unknown total is null,
         // never a fabricated zero.
-        assert_eq!(content_range_total("0-49/237"), Some(237));
-        assert_eq!(content_range_total("*/0"), Some(0));
-        assert_eq!(content_range_total("0-49/*"), None);
-        assert_eq!(content_range_total("garbage"), None);
         let rows = json!([{"id": 1}, {"id": 2}]);
         let limited = list_envelope(rows.clone(), Some(5), 0);
         assert_eq!(limited["total"], json!(5));

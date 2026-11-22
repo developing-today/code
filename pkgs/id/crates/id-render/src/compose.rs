@@ -391,25 +391,25 @@ fn pick_winner<'a, I>(
 where
     I: Iterator<Item = &'a (String, Specificity)>,
 {
-    let mut best: Option<&(String, Specificity)> = None;
-    for cand in candidates {
-        match best {
-            None => best = Some(cand),
-            Some(cur) if cand.1 > cur.1 => best = Some(cand),
-            Some(cur) if cand.1 == cur.1 && cand.0 != cur.0 => {
-                return Err(BuildError::new(
-                    format!(
-                        "same-specificity tie on <{path}> property `{property}` in {layer_name}: `{}` vs `{}` — ties are build errors, never resolved by declaration order (#5854 §6a)",
-                        cur.0, cand.0
-                    ),
-                    span.line,
-                    span.col,
-                ));
-            }
-            _ => {}
-        }
+    let all: Vec<&(String, Specificity)> = candidates.collect();
+    let Some(top) = all.iter().map(|c| c.1).max() else {
+        return Ok(None);
+    };
+    let mut at_top = all.iter().copied().filter(|c| c.1 == top);
+    let first = at_top.next();
+    if let Some(first) = first
+        && let Some(rival) = at_top.find(|c| c.0 != first.0)
+    {
+        return Err(BuildError::new(
+            format!(
+                "same-specificity tie on <{path}> property `{property}` in {layer_name}: `{}` vs `{}` — ties are build errors, never resolved by declaration order (#5854 §6a)",
+                first.0, rival.0
+            ),
+            span.line,
+            span.col,
+        ));
     }
-    Ok(best)
+    Ok(first)
 }
 
 /// Stage 3 of the #5855 pipeline: compose a validated document

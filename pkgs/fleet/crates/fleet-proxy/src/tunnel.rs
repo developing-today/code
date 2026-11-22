@@ -169,10 +169,19 @@ fn base64_encode(data: &[u8]) -> String {
     out
 }
 
-/// Parse the egress endpoint from the `HTTPS_PROXY` env var. The
-/// error strings name shapes only — never the URL (it carries the
-/// credential).
+/// Parse the tailnet egress endpoint: the seat's recorded tailnet
+/// proxy when it has one ([`fleet_config::tailnet_https_proxy`],
+/// #12555), else the `HTTPS_PROXY` env var. A process started from
+/// a sandbox shell carries the platform egress proxy in
+/// `HTTPS_PROXY`, and tailnet tunnels through it fail while the
+/// process looks healthy; the Cloudflare leg
+/// ([`egress_from_env_url_port`]) keeps using that ambient proxy.
+/// The error strings name shapes only — never the URL (it carries
+/// the credential).
 pub fn egress_from_env(proxy_port: u16) -> Result<Egress, String> {
+    if let Some(raw) = fleet_config::tailnet_https_proxy() {
+        return egress_from_url(&raw, proxy_port);
+    }
     let raw = std::env::var("HTTPS_PROXY")
         .map_err(|_| "HTTPS_PROXY must be set (runtime proxy env)".to_string())?;
     egress_from_url(&raw, proxy_port)

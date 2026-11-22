@@ -26,6 +26,7 @@ import {
   queuedComments,
   validateNewComment,
 } from "./comments.ts";
+import { PROMPT_STATUSES, PromptsStore, validateNewPrompt, type PromptStatus } from "./prompts.ts";
 import type { SavedView, ViewFilters, ViewItemLike } from "./views.ts";
 import { ViewsStore, filtersFromQuery, itemMatchesView, ownerKey } from "./views.ts";
 import { filterBoardForView, filterRoadmapForView, fragBoardUrl, linkedLike } from "./board-view.ts";
@@ -49,6 +50,7 @@ import { GithubHotListConsumer, unconfiguredGithubStatus } from "./github-hot-li
 import { RoadmapAnnotationsStore, validateNewRoadmapAnnotation } from "./roadmap-annotations.ts";
 import { createAccessAuthorEnforcer, enforceAccessAuthor } from "./access-identity.ts";
 import { IdentityRegistryStore, identityMappingAuditEvent, validateIdentityMapping } from "./identity-registry.ts";
+import { healthHookAuditEvent } from "./health-hook-audit-event.ts";
 import {
   computeCoverage,
   CoverageSnapshotStore,
@@ -58,7 +60,7 @@ import {
 } from "./coverage.ts";
 import { loadConfig } from "./config.ts";
 import { getTursoStoreClient } from "./turso-stores.ts";
-import { createSupabaseRemotes } from "./remote-stores.ts";
+import { createTursoRemotes } from "./remote-stores.ts";
 import { itemServiceLinks } from "./service-links.ts";
 import { loadFeed } from "./feed.ts";
 import { AA_PLAN_FACTS, sectionPoolIdsFromConfig } from "./aa.ts";
@@ -107,6 +109,7 @@ import {
   type DecisionEventInput,
 } from "./decision-events.ts";
 import { listStackHealthDown, readStackHealthStates, setStackHealth, validateStackHealth } from "./stack-health.ts";
+import { validateHealthHook, type HealthHookRecord } from "./health-hook.ts";
 import {
   buildHealth,
   pageRenderHealth,
@@ -142,6 +145,7 @@ import { SpendRollupStore } from "./spend-rollups.ts";
 import { buildSpendCards, type SpendCardsView } from "./spend-cards.ts";
 import { buildProgramData, programRefs } from "./program.ts";
 import { buildReleaseSnapshots } from "./releases.ts";
+import { deriveGenealogy, enrichRoadmapRows } from "./genealogy.ts";
 import {
   PROJECT_CONFIGS,
   allProjectRefs,
@@ -221,6 +225,7 @@ import {
 } from "./notifications.ts";
 import { readJsonBody } from "./request-body.ts";
 import { parseRegistryQuery, queryRegistry } from "./registry-view.ts";
+import { addConsoleShortcut } from "./console-gate.ts";
 import { searchWork } from "./search-view.ts";
 import type { Source } from "./source.ts";
 import { fixtureSource } from "./sources/fixtures.ts";
@@ -235,6 +240,7 @@ import { SloJournal, groupSamplesByFacet } from "./slo-journal.ts";
 import { sampleSloFacets } from "./slo-sampler.ts";
 import { SLO_DEFINITIONS, summarizeSloFacet, type SloFacetSummary } from "./slo.ts";
 import { computeFlowAnalytics } from "./flow-analytics.ts";
+import { fireOpenCodeWorkingHook } from "./health-hook-fire.ts";
 import {
   FORECAST_CONTRACT_VERSION,
   quotaForecastContract,
@@ -260,6 +266,7 @@ const cfg = loadConfig();
 // the first request after a deploy serves it instead of a 503.
 const dashboardResponseWithinDeadline = createDashboardResponseDeadline({ persistDir: cfg.lastGoodDir });
 const commentsStore = new CommentsStore(cfg.commentsFile);
+const promptsStore = new PromptsStore(cfg.promptsFile);
 const roadmapAnnotationsStore = new RoadmapAnnotationsStore(cfg.roadmapAnnotationsFile);
 const coverageStore = new CoverageSnapshotStore(cfg.coverageSnapshotFile);
 const itemHistoryStore = new ItemHistoryStore(cfg.itemHistoryFile);
@@ -348,15 +355,10 @@ async function coverageSnapshot(
   return next;
 }
 // #6815: the four formerly laptop-local stores (actions, activity
-// ingestion, usage snapshots, aa-last-good) move to muse-dev2 when
-// PM_AGG_STORE_BACKEND=supabase. Exactly one backend is active: with
+// ingestion, usage snapshots, aa-last-good) live in Turso when
+// PM_AGG_STORE_BACKEND=turso. Exactly one backend is active: with
 // "file" (the default) no remote exists and no database call is made.
-const storeRemotes =
-  cfg.storeBackend === "turso"
-    ? createSupabaseRemotes(getTursoStoreClient)
-    : cfg.storeBackend === "supabase"
-      ? createSupabaseRemotes()
-      : null;
+const storeRemotes = cfg.storeBackend === "turso" ? createTursoRemotes(getTursoStoreClient) : null;
 const actionsStore = new ActionsStore(cfg.actionsFile, undefined, storeRemotes?.actions);
 const viewsStore = new ViewsStore(cfg.viewsFile);
 const eventsStore = new EventsStore(cfg.eventsFile);
@@ -485,6 +487,9 @@ function pickSource(): Source {
         onSourceGap: recordSourceGap,
         seenActivityIds: (source) => activityStore.seenIds(source),
         snapshotRemote: storeRemotes?.usage,
+        onLaptopUnreachable: (detail) => {
+          fireOpenCodeWorkingHook("aggregator-tick", detail);
+        },
       })
     : fixtureSource();
 }
@@ -2226,6 +2231,30 @@ async function handler(req: Request): Promise<Response> {
     }
   }
 
+  if (req.method === "POST" && path === "/api/prompt") {
+    const parsed = validateNewPrompt(await readJsonBody(req).catch(() => null));
+    if (!parsed.ok) return json({ error: parsed.error }, 400);
+    try {
+      return json({ prompt: await promptsStore.add(parsed.value) }, 201);
+    } catch (err) {
+      return json({ error: `prompt persistence failed: ${err instanceof Error ? err.message : err}` }, 500);
+    }
+  }
+  if (req.method === "GET" && path === "/api/prompt") {
+    const status = url.searchParams.get("status");
+    const page = url.searchParams.get("page") ?? undefined;
+    const filter = {
+      page,
+      status: PROMPT_STATUSES.includes(status as PromptStatus) ? (status as PromptStatus) : undefined,
+    };
+    return json({ prompts: await promptsStore.list(filter) });
+  }
+  if (req.method === "GET" && path.startsWith("/api/prompt/")) {
+    const id = decodeURIComponent(path.slice("/api/prompt/".length));
+    const prompt = await promptsStore.get(id);
+    if (!prompt) return json({ error: "prompt not found" }, 404);
+    return json({ id: prompt.id, status: prompt.status, answer: prompt.answer, error: prompt.error });
+  }
   if (req.method === "POST" && path === "/api/comments") {
     try {
       const parsed = validateNewComment(await readJsonBody(req));
@@ -2784,6 +2813,8 @@ async function handler(req: Request): Promise<Response> {
     // the same way — the Roadmap charts render exactly this object.
     const flowAnalytics = computeFlowAnalytics(await itemHistoryStore.readAll().catch(() => []));
     const spendCards = await loadSpendCards();
+    const releaseSnapshots = buildReleaseSnapshots(pool);
+    const prioritiesView = url.searchParams.get("view") === "priorities";
     const g = url.searchParams.get("h") ?? "quarter";
     const grain: RoadmapGrain = GRAINS.has(g) ? (g as RoadmapGrain) : "quarter";
     const resolved = await resolveView(url);
@@ -2817,6 +2848,8 @@ async function handler(req: Request): Promise<Response> {
           forecasts,
           flowAnalytics,
           spendCards,
+          releaseSnapshots,
+          prioritiesView,
         ),
       );
     }
@@ -2842,6 +2875,8 @@ async function handler(req: Request): Promise<Response> {
         forecasts,
         flowAnalytics,
         spendCards,
+        releaseSnapshots,
+        prioritiesView,
       ),
     );
   }
@@ -3137,6 +3172,7 @@ async function handler(req: Request): Promise<Response> {
       // its state resolved, but only expose briefs for the visible items.
       briefs: Object.fromEntries([...briefs].filter(([ref]) => outRefs.has(ref))),
       audit,
+      designBoards: source.designBoards ? await source.designBoards().catch(() => []) : [],
       coverage: coverage.current,
       coverageBaseline: coverage.baseline,
     });
@@ -3166,6 +3202,7 @@ async function handler(req: Request): Promise<Response> {
     const data = {
       ...buildProgramData(items, viewPool, orchestration),
       projects: buildProjectSummaries(PROJECT_CONFIGS, viewPool, rows),
+      designBoards: source.designBoards ? await source.designBoards().catch(() => []) : [],
     };
     if (path === "/api/program.json") return json(data);
     const coverage = await coverageSnapshot(census, pool, poolAvailable);
@@ -3180,6 +3217,7 @@ async function handler(req: Request): Promise<Response> {
     return html(
       renderProgram(data, items, prov(), provDetail(), {
         pool: viewPool,
+        designBoards: data.designBoards,
         area: url.searchParams.get("area"),
         status: url.searchParams.get("status"),
         kind: url.searchParams.get("kind"),
@@ -3392,10 +3430,24 @@ async function handler(req: Request): Promise<Response> {
   }
   if (path === "/api/roadmap.json") {
     const { rows, items, reconciliation } = await roadmapContext();
+    const pool = await source.projects().catch(() => [] as ProjectPoolItem[]);
+    const genealogyRows = enrichRoadmapRows(rows, pool);
+    if (url.searchParams.get("view") === "priorities") {
+      genealogyRows.sort((a, b) => {
+        const rank = (row: typeof a) => {
+          const match = /#(\d+)$/.exec(row.priority ?? "");
+          return match ? Number(match[1]) : Number.MAX_SAFE_INTEGER;
+        };
+        return rank(a) - rank(b) || a.title.localeCompare(b.title);
+      });
+    }
     const resolved = await resolveView(url);
     if (!resolved) {
       const annotatedRows = await Promise.all(
-        rows.map(async (row) => ({ ...row, annotations: await roadmapAnnotationsStore.forObject(row.subject) })),
+        genealogyRows.map(async (row) => ({
+          ...row,
+          annotations: await roadmapAnnotationsStore.forObject(row.subject),
+        })),
       );
       return json({
         rows: annotatedRows,
@@ -3404,14 +3456,16 @@ async function handler(req: Request): Promise<Response> {
         annotationAliases: await roadmapAnnotationsStore.aliasEntries(),
       });
     }
-    const pool = await source.projects().catch(() => [] as ProjectPoolItem[]);
     const poolByRef = new Map(pool.map((p) => [p.ref, p]));
     // #8723: the same rule as the HTML twin -- items linked from a
     // kept row ship even when they fail the view themselves.
     const { rows: keptRows, items: keptItemMap } = filterRoadmapForView(rows, items, poolByRef, resolved.filters);
     const keptItems = [...keptItemMap.values()];
     const annotatedKeptRows = await Promise.all(
-      keptRows.map(async (row) => ({ ...row, annotations: await roadmapAnnotationsStore.forObject(row.subject) })),
+      enrichRoadmapRows(keptRows, pool).map(async (row) => ({
+        ...row,
+        annotations: await roadmapAnnotationsStore.forObject(row.subject),
+      })),
     );
     return json({
       rows: annotatedKeptRows,
@@ -3649,20 +3703,41 @@ async function handler(req: Request): Promise<Response> {
       const rawBody: unknown = await readJsonBody(req);
       const parsed = validateNewIncident(rawBody);
       if (!parsed.ok) return json({ error: parsed.error }, 400);
-      const { incident, created } = await store.postIncident(parsed.value);
-      const status = created ? 201 : 200;
-      // #8568/#8766 producer extensions: exactly one of needsDrew /
-      // stackHealth / decisionSet may ride an incident post. The incident insert
-      // above is unchanged; a VALIDATION failure of an extension is a
-      // 400 (the poster's bug should be loud at the poster), while a
-      // store failure is logged and never fails the incident post.
       const ext =
         rawBody && typeof rawBody === "object" && !Array.isArray(rawBody) ? (rawBody as Record<string, unknown>) : {};
       const hasNeedsDrew = ext.needsDrew !== undefined;
       const hasStackHealth = ext.stackHealth !== undefined;
       const hasDecisionSet = ext.decisionSet !== undefined;
+      const hasHealthHook = ext.healthHook !== undefined;
+      // #12602 (#12599 decision b): the healthHook extension carries the
+      // full C3 incident record to the alerts ledger. It is gated and
+      // validated BEFORE the incident insert, unlike the extensions
+      // below, because a valid record rides the insert onto the opened
+      // event's detail; a malformed one is a 400 naming the field,
+      // before anything is stored.
+      let healthHook: HealthHookRecord | undefined;
+      if (hasHealthHook) {
+        if (parsed.value.source !== "health-hook") {
+          return json({ error: 'healthHook extension is only accepted for source "health-hook"' }, 400);
+        }
+        const hv = validateHealthHook(ext.healthHook);
+        if (!hv.ok) return json({ error: hv.error }, 400);
+        healthHook = hv.value;
+      }
+      const { incident, created } = await store.postIncident(parsed.value, healthHook ? { healthHook } : undefined);
+      const status = created ? 201 : 200;
+      // #8568/#8766 producer extensions: exactly one of needsDrew /
+      // stackHealth / decisionSet may ride an incident post; #12602 adds
+      // healthHook, which may co-ride with stackHealth (health-hook
+      // source only, gated above) and with nothing else. A VALIDATION
+      // failure of an extension is a 400 (the poster's bug should be
+      // loud at the poster), while a store failure is logged and never
+      // fails the incident post.
       if ([hasNeedsDrew, hasStackHealth, hasDecisionSet].filter(Boolean).length > 1) {
         return json({ error: "needsDrew, stackHealth and decisionSet extensions are mutually exclusive" }, 400);
+      }
+      if (hasHealthHook && (hasNeedsDrew || hasDecisionSet)) {
+        return json({ error: "healthHook extension may only co-ride with stackHealth" }, 400);
       }
       if (hasNeedsDrew) {
         const v = validateNeedsDrew(ext.needsDrew);
@@ -3684,8 +3759,26 @@ async function handler(req: Request): Promise<Response> {
         if (!v.ok) return json({ error: v.error }, 400);
         try {
           await setStackHealth(cfg.stackHealthFile, v.value);
+          const auditEvent = healthHookAuditEvent({
+            title: parsed.value.title,
+            source: parsed.value.source,
+            stackHealth: v.value,
+          });
+          if (auditEvent) {
+            try {
+              await eventsStore.record(auditEvent);
+            } catch (err) {
+              console.error(`alerts intake: health-hook audit append failed (${err instanceof Error ? err.message : "error"})`);
+            }
+          }
           if (v.value.state === "up") {
-            await store.closeOpenIncidentByKey(parsed.value.source, parsed.value.key);
+            // #12602: a healthHook recovery record rides the closed
+            // event's detail of the incident it closes.
+            await store.closeOpenIncidentByKey(
+              parsed.value.source,
+              parsed.value.key,
+              healthHook?.state === "up" ? { healthHook } : undefined,
+            );
           }
           requestAlertTick();
         } catch (err) {
@@ -4177,6 +4270,20 @@ async function handler(req: Request): Promise<Response> {
     if (!result.incident) return json({ error: "no such incident", id }, 404);
     return json({ incident: result.incident, transitioned: result.transitioned });
   }
+  // Per-incident read (#12602): the incident plus its full ledger
+  // event history — C6's detail path for the healthHook incident
+  // records stored on the opened/closed event details.
+  const alertReadMatch = /^\/api\/alerts\/([\w-]+)$/.exec(path);
+  if (req.method === "GET" && alertReadMatch) {
+    const id = alertReadMatch[1];
+    if (!UUID_RE.test(id)) return json({ error: "incident id must be a uuid" }, 400);
+    const store = await getAlertsStore();
+    if (!store) return json({ error: "alerts store unavailable" }, 503);
+    const incident = await store.getIncident(id);
+    if (!incident) return json({ error: "no such incident", id }, 404);
+    const events = await store.listIncidentEvents(id);
+    return json({ incident, events });
+  }
   if (path === "/alerts" || path === "/api/alerts.json") {
     const store = await getAlertsStore();
     if (!store) {
@@ -4353,6 +4460,7 @@ async function handler(req: Request): Promise<Response> {
       // #1154: when one of the item's refs is in the Project pool, the
       // item page carries the status-request control for that pool item.
       const pooled = pool.find((p) => refs.includes(p.ref));
+      const genealogy = pooled ? deriveGenealogy(pooled, pool) : null;
       const epicRollup = pooled?.kind === "Epic" ? buildEpicRollups(pool).get(pooled.ref) : undefined;
       const dispatchStates = await readyAgentDispatchStates(items);
       if (itemJsonMatch) {
@@ -4360,6 +4468,7 @@ async function handler(req: Request): Promise<Response> {
           subject,
           linkedItems: [...items.values()],
           dispatchStates,
+          ...(genealogy ? { ancestors: genealogy.ancestors, release: genealogy.release } : {}),
         });
       }
       const extras = {
@@ -4380,6 +4489,7 @@ async function handler(req: Request): Promise<Response> {
             }
           : {}),
         ...(epicRollup ? { epicRollup } : {}),
+        ...(genealogy ? { genealogySentence: genealogy.sentence } : {}),
         briefs,
         ...(dispatchStates.length ? { dispatchStates } : {}),
         activity: {
@@ -4430,7 +4540,8 @@ async function fetchHandler(req: Request): Promise<Response> {
       recordRender(route, res.status < 400);
     }
   }
-  return res;
+  const publicHost = process.env.PM_AGG_CONSOLE_HOST?.trim() || "pm.security.cab";
+  return addConsoleShortcut(res, req, publicHost);
 }
 
 // One server per bind address (PM_AGG_HOSTS). Deployment on the

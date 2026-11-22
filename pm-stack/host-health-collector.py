@@ -62,6 +62,7 @@ SHOW_PROPS = [
     "ActiveState",
     "SubState",
     "Result",
+    "ExecMainCode",
     "ExecMainStatus",
     "ExecMainExitTimestamp",
     "InactiveEnterTimestamp",
@@ -105,8 +106,54 @@ def iso_from_systemd(value):
     if not m:
         return None
     parts = tuple(int(g) for g in m.groups())
-    epoch = time.mktime(parts + (0, 0, -1))
-    return datetime.fromtimestamp(epoch, timezone.utc).isoformat()
+    try:
+        datetime(*parts)  # mktime may normalize an invalid calendar date.
+        epoch = time.mktime(parts + (0, 0, -1))
+        return datetime.fromtimestamp(epoch, timezone.utc).isoformat()
+    except (ValueError, OverflowError, OSError):
+        return None
+
+
+def systemd_int(value):
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def completed_outcome(props, record):
+    """Return only an evidenced unit outcome and successful exit time."""
+    result = props.get("Result") or None
+    if result != "success":
+        # A definitive failure may concern a step other than the main process.
+        return result, None
+
+    exited_at = iso_from_systemd(props.get("ExecMainExitTimestamp"))
+    if not exited_at:
+        return None, None
+
+    active = record["activeState"]
+    if active == "activating":
+        # Result resets at retry start. Only a retained exit strictly before
+        # the start state tells us about a previous run. A later transition
+        # such as start-post can follow this attempt's main exit. Equal
+        # timestamps are ambiguous at systemctl's display granularity.
+        changed_at = record["stateChangedAt"]
+        if record["subState"] != "start" or not changed_at or exited_at >= changed_at:
+            return None, None
+    elif active != "inactive" and (active, record["subState"]) != ("active", "exited"):
+        return None, None
+
+    code = systemd_int(props.get("ExecMainCode"))
+    status = record["execMainStatus"]
+    if status is None or status < 0:
+        return None, None
+    # systemd exposes Linux wait codes: CLD_EXITED, CLD_KILLED, CLD_DUMPED.
+    if code == 1:
+        return ("success", exited_at) if status == 0 else ("exit-code", None)
+    if status > 0 and code in (2, 3):
+        return ("signal" if code == 2 else "core-dump"), None
+    return None, None
 
 
 def show_unit(unit):
@@ -126,29 +173,15 @@ def show_unit(unit):
         props[key.strip()] = val.strip()
     if not props.get("Id"):
         return {"state": "unknown", "detail": "unit not found"}
-    result = props.get("Result") or None
-    try:
-        exec_status = int(props.get("ExecMainStatus") or 0)
-    except ValueError:
-        exec_status = None
     record = {
         "activeState": props.get("ActiveState") or "unknown",
         "subState": props.get("SubState") or None,
-        "result": result,
-        "execMainStatus": exec_status,
+        "execMainStatus": systemd_int(props.get("ExecMainStatus")),
         "stateChangedAt": iso_from_systemd(props.get("StateChangeTimestamp")),
         "activeEnterAt": iso_from_systemd(props.get("ActiveEnterTimestamp")),
         "inactiveEnterAt": iso_from_systemd(props.get("InactiveEnterTimestamp")),
     }
-    # Last success: for a oneshot that finished cleanly, inactive-enter
-    # is its completion time; only trust it while Result says success.
-    if result == "success":
-        record["lastSuccessAt"] = (
-            iso_from_systemd(props.get("ExecMainExitTimestamp"))
-            or record["inactiveEnterAt"]
-        )
-    else:
-        record["lastSuccessAt"] = None
+    record["result"], record["lastSuccessAt"] = completed_outcome(props, record)
     return record
 
 

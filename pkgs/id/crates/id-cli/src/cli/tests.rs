@@ -278,7 +278,6 @@ fn test_cli_parse_serve() {
                 topic_secret,
                 no_default_bootstrap,
                 no_default_topic,
-                replace_defaults,
                 no_mdns,
                 iroh_port,
                 bind,
@@ -312,7 +311,6 @@ fn test_cli_parse_serve() {
             assert!(topic_secret.is_none());
             assert!(!no_default_bootstrap);
             assert!(!no_default_topic);
-            assert!(!replace_defaults);
             assert!(!no_mdns);
             assert_eq!(iroh_port, 0);
             // Security defaults: loopback only, no token, nobody extra may write.
@@ -356,7 +354,6 @@ fn test_cli_parse_serve_with_flags() {
                 topic_secret,
                 no_default_bootstrap,
                 no_default_topic,
-                replace_defaults,
                 no_mdns,
                 iroh_port,
                 ..
@@ -371,7 +368,6 @@ fn test_cli_parse_serve_with_flags() {
             assert!(topic_secret.is_none());
             assert!(!no_default_bootstrap);
             assert!(!no_default_topic);
-            assert!(!replace_defaults);
             assert!(!no_mdns);
             assert_eq!(iroh_port, 0);
         }
@@ -816,7 +812,6 @@ fn test_cli_parse_peers_default() {
             topic_secret,
             no_default_bootstrap,
             no_default_topic,
-            replace_defaults,
             no_relay,
             no_mdns,
             node,
@@ -832,7 +827,6 @@ fn test_cli_parse_peers_default() {
             assert!(topic_secret.is_none());
             assert!(!no_default_bootstrap);
             assert!(!no_default_topic);
-            assert!(!replace_defaults);
             assert!(!no_relay);
             assert!(!no_mdns);
             assert!(node.is_none());
@@ -1456,6 +1450,12 @@ fn test_cli_parse_serve_no_gossip() {
 }
 
 #[test]
+fn test_cli_serve_gossip_overrides_are_explicit_and_mutually_exclusive() {
+    assert!(Cli::try_parse_from(["id", "serve", "--gossip"]).is_ok());
+    assert!(Cli::try_parse_from(["id", "serve", "--gossip", "--no-gossip"]).is_err());
+}
+
+#[test]
 fn test_cli_parse_serve_no_default_bootstrap() {
     let cli = Cli::parse_from(["id", "serve", "--no-default-bootstrap"]);
     match cli.command {
@@ -1485,17 +1485,8 @@ fn test_cli_parse_serve_no_default_topic() {
 }
 
 #[test]
-fn test_cli_parse_serve_replace_defaults() {
-    let cli = Cli::parse_from(["id", "serve", "--replace-defaults"]);
-    match cli.command {
-        Some(Command::Serve(args)) => {
-            let ServeArgs {
-                replace_defaults, ..
-            } = args;
-            assert!(replace_defaults);
-        }
-        _ => panic!("Expected Serve command"),
-    }
+fn test_cli_rejects_serve_replace_defaults() {
+    assert!(Cli::try_parse_from(["id", "serve", "--replace-defaults"]).is_err());
 }
 
 #[test]
@@ -1506,7 +1497,6 @@ fn test_cli_parse_serve_all_new_flags() {
         "--no-gossip",
         "--no-default-bootstrap",
         "--no-default-topic",
-        "--replace-defaults",
         "--no-mdns",
     ]);
     match cli.command {
@@ -1515,14 +1505,12 @@ fn test_cli_parse_serve_all_new_flags() {
                 no_gossip,
                 no_default_bootstrap,
                 no_default_topic,
-                replace_defaults,
                 no_mdns,
                 ..
             } = args;
             assert!(no_gossip);
             assert!(no_default_bootstrap);
             assert!(no_default_topic);
-            assert!(replace_defaults);
             assert!(no_mdns);
         }
         _ => panic!("Expected Serve command"),
@@ -1557,16 +1545,8 @@ fn test_cli_parse_peers_no_default_topic() {
 }
 
 #[test]
-fn test_cli_parse_peers_replace_defaults() {
-    let cli = Cli::parse_from(["id", "peers", "--gossip", "--replace-defaults"]);
-    match cli.command {
-        Some(Command::Peers {
-            replace_defaults, ..
-        }) => {
-            assert!(replace_defaults);
-        }
-        _ => panic!("Expected Peers command"),
-    }
+fn test_cli_rejects_peers_replace_defaults() {
+    assert!(Cli::try_parse_from(["id", "peers", "--gossip", "--replace-defaults"]).is_err());
 }
 
 #[test]

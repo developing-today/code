@@ -3,6 +3,7 @@ import { Database } from "bun:sqlite";
 import {
   aaPayloadSql,
   AA_BATCH_INDEX_SQL,
+  AA_MEASUREMENTS_SQL,
   AA_PRICES_SQL,
   assertAaNumericInputs,
   aaRankingValuesSql,
@@ -16,7 +17,7 @@ test("Turso AA preserves workbook metrics, boolean JSON and historical batches",
   db.exec(`create table ainventory_sources(id integer,name text,kind text,import_batch text,imported_at text,drive_modified_at text);
  create table ainventory_ingest_batches(id text,ran_at text,inserted_counts text);
  create table ainventory_sheet_rows(import_batch text,sheet_name text,row_index integer,data text);
- create table ainventory_measurement_events(ingest_batch_id text,source_kind text,ingested_at text,model_name text,benchmark text,effort text,value_num real,cost_per_task_usd real,output_tps real,metric text,benchmark_version text,raw text);
+ create table ainventory_measurement_events(id integer,ingest_batch_id text,source_kind text,ingested_at text,source_date text,model_variant_key text,model_name text,benchmark text,effort text,value_num real,cost_per_task_usd real,output_tps real,metric text,benchmark_version text,raw text);
  create table ainventory_price_events(id integer,model_id text,model_name text,model_variant_key text,provider text,input_usd_per_1m real,output_usd_per_1m real,cached_input_usd_per_1m real,cache_write_usd_per_1m real,context_min_tokens integer,context_max_tokens integer,window_kind text,effective_date text,source_date text,ingested_at text);`);
   const old = "11111111-1111-1111-1111-111111111111",
     latest = "22222222-2222-2222-2222-222222222222";
@@ -61,15 +62,68 @@ test("Turso AA preserves workbook metrics, boolean JSON and historical batches",
     row("Threshold_Metrics", 2, ["test", "model", "v1", "2", "40"]);
   }
   db.query("insert into ainventory_ingest_batches values(?,?,?)").run(latest, "2026-11-11T00:00:00Z", '{"rows":3}');
+  db.query("insert into ainventory_sheet_rows values(?,?,?,?)").run(old, "Test_Runs", 2, '{"cells":["test","model"]}');
+  for (const [benchmark, metric, raw] of [
+    ["AA Intelligence Index v1", "intelligence_index", "{}"],
+    ["Artificial Analysis Coding Agent Index v1", "cai_index_score", '{"benchmark_version":"v1"}'],
+  ]) {
+    db.query("insert into ainventory_measurement_events values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)").run(
+      benchmark.startsWith("AA Intelligence") ? 1 : 2,
+      old,
+      "workbook-import",
+      "2026-11-10T01:00:00Z",
+      "2026-11-09",
+      "model",
+      "model",
+      benchmark,
+      "high",
+      50,
+      2,
+      100,
+      metric,
+      null,
+      raw,
+    );
+  }
+  db.query("insert into ainventory_measurement_events values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)").run(
+    3, latest, "aa", "2026-11-12T01:00:00Z", "2026-11-12", "model", "model", "AA Intelligence Index",
+    "high", 75, 1, 150, "intelligence_index", null, "{}",
+  );
+  db.query("insert into ainventory_measurement_events values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)").run(
+    4, latest, "aa", "2026-11-12T01:00:00Z", "2026-11-12", "model", "model", "Artificial Analysis Coding Agent Index",
+    "high", 75, 1, 150, "cai_index_score", "v2", '{"benchmark_version":"v2"}',
+  );
+  db.exec(
+    "insert into ainventory_price_events(id,model_name,provider,input_usd_per_1m,effective_date) values(1,'model','p',1,'2026-01-01'),(2,'model','p',2,'2026-11-01');",
+  );
   const run = (sql: string) => {
     const stmt = storeStatement(sql);
     const r = db.query(stmt.sql).get(...stmt.args.map((a) => a.value)) as any;
     return JSON.parse(Object.values(r)[0] as string);
   };
   const a = run(aaPayloadSql(old)),
-    b = run(aaPayloadSql(null));
+    b = run(aaPayloadSql(null)),
+    current = run(aaPayloadSql(latest, true));
+  for (const key of ["sources", "rankings", "thresholds", "configs", "testRunRows", "cai", "prices"])
+    expect(Array.isArray(a[key])).toBe(true);
+  expect(a.configs).toHaveLength(1);
+  expect(a.testRunRows).toHaveLength(1);
+  expect(a.cai).toHaveLength(1);
+  expect(a.prices).toHaveLength(1);
+  expect(current.configs[0].intelligence).toBe(75);
+  expect(current.cai[0].score).toBe(75);
+  expect(b.configs[0].intelligence).toBe(50);
+  expect(b.cai[0].score).toBe(50);
+  const measurementStmt = storeStatement(AA_MEASUREMENTS_SQL);
+  const measurementRow = db.query(measurementStmt.sql).get(...measurementStmt.args.map((a) => a.value)) as {
+    configs: string;
+    cai: string;
+  };
+  expect(JSON.parse(measurementRow.configs)[0].intelligence).toBe(75);
+  expect(JSON.parse(measurementRow.cai)[0].score).toBe(75);
   expect(rankAaValues(db.query(aaRankingValuesSql(old)).all() as any[])).toEqual(a.rankings);
   expect(Object.keys(aaSectionQueries(old))).toHaveLength(8);
+  expect(Object.keys(aaSectionQueries(latest, true))).toHaveLength(8);
   expect(a.batch).toBe(old);
   expect(b.batch).toBe(latest);
   expect(a.rankings[0].rawScore).toBe(50);
@@ -80,10 +134,6 @@ test("Turso AA preserves workbook metrics, boolean JSON and historical batches",
   expect(a.thresholds[0].usable).toBe(true);
   expect(a.thresholds[0].usdPerUsablePoint).toBeCloseTo(2 / 11);
   expect(run(AA_BATCH_INDEX_SQL)[0].insertedCounts).toEqual({ rows: 3 });
-  expect(run(AA_PRICES_SQL)).toEqual([]);
-  db.exec(
-    `insert into ainventory_price_events(id,model_name,provider,input_usd_per_1m,effective_date) values(1,'model','p',1,'2026-01-01'),(2,'model','p',2,'2026-11-01');`,
-  );
   expect(run(AA_PRICES_SQL)[0].inputPer1M).toBe(2);
   db.close();
 });

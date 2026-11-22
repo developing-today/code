@@ -80,7 +80,6 @@ cold-store status                                     # counts, cold bytes, last
 cold-store sync-manifest                              # push the local manifest into D1
 cold-store sync-manifest --dry-run                    # ... or just print the statement counts
 cold-store backup-d1                                  # export the D1 manifest DB into db-backups/d1/
-cold-store backup-supabase                            # file the newest Supabase dump from R2 into db-backups/supabase/
 cold-store evict-scan                                 # dry-run: which R2 objects are safe to evict? (never deletes)
 cold-store evict --apply                              # delete the evictable ones (each re-verified first)
 cold-store prune-backups                              # retention plan (dry-run)
@@ -111,19 +110,17 @@ not marked `uploading`.
 
 Database dumps are a separate, simpler class: single self-describing files,
 uploaded **unbundled** into `db-backups/<db>/` under the app-owned root
-(`ensure-folders` creates the `supabase/`, `turso/`, and `d1/` subfolders,
+(`ensure-folders` creates the `turso/` and `d1/` subfolders,
 idempotently). Files land with dated names —
 `<db>-<YYYYMMDDTHHMMSSZ>-<basename>` — and every upload writes a
 `backup-upload` row to the transfer ledger.
 
 ```sh
-cold-store put-backup supabase pgdump-2026-10-26.sql.zst   # prints the Drive file id
+cold-store put-backup d1 d1-export-2026-10-26.sql          # prints the Drive file id
 cold-store list-backups                                    # all DBs, newest first
 cold-store list-backups --db turso
 cold-store backup-d1                                       # export the D1 manifest DB itself
                                                            # (REST query API) and file it under d1/
-cold-store backup-supabase                                 # file the newest R2 Supabase dump
-                                                           # under supabase/ (see "R2" below)
 cold-store get-backup d1 d1-<...>-cold-store-manifest-export.sql ./restored.sql
 ```
 
@@ -169,8 +166,6 @@ pipefail`, no secrets stored or echoed — credentials arrive via the
 environment only):
 
 - `scripts/nightly-backup.sh` — the nightly run: `backup-d1`, then
-  `backup-supabase` (only when both R2 credentials are set; a skip
-  notice is printed otherwise — never an error), then
   `scripts/export-turso.sh`, then `prune-backups --apply`, then
   `sync-manifest`, then `status`. Steps are isolated: a failing step
   never starves the steps after it — every step is attempted, each
@@ -179,9 +174,7 @@ environment only):
   any step failed (guarded skips are not failures). Requires
   `CLOUDFLARE_API_TOKEN` in the environment
   (materialize from Bitwarden into the cron env);
-  `R2_ACCESS_KEY_ID` / `R2_SECRET_ACCESS_KEY` are optional (they gate
-  the Supabase step), as is `TURSO_PLATFORM_API_TOKEN` (it gates the
-  Turso step).
+  `TURSO_PLATFORM_API_TOKEN` is optional (it gates the Turso step).
 - `scripts/export-turso.sh` — the Turso step: discovers every
   database in the Turso organization through the Platform API (no
   `turso` CLI needed), mints a per-database auth token, downloads
@@ -189,9 +182,13 @@ environment only):
   `/dump`, rebuilds it into a standalone SQLite file (filed only
   when `PRAGMA integrity_check` passes), gzips it, and files it
   with `put-backup turso`. Each dump download allows
-  `TURSO_DUMP_MAX_TIME_SECONDS` seconds (default 1800; a large
-  database's dump is ~500 MB of SQL and outgrew the old fixed 300 s
-  cap) and gets one whole-request retry on transport failure. When
+  `TURSO_DUMP_MAX_TIME_SECONDS` seconds (default 3600; atlas's dump
+  passed 10 GB of SQL by 2026-11-20) and gets retries on transport
+  failure. The whole step keeps inside
+  `TURSO_EXPORT_DEADLINE_SECONDS` (default 10800): no database starts
+  once it is spent, so the nightly's later steps still run. The
+  databases named in `TURSO_EXPORT_LAST` (default `atlas`) go last,
+  so a slow one cannot keep the others from being filed. When
   `TURSO_PLATFORM_API_TOKEN` is
   unset it prints a one-line skip notice and exits 0 — the nightly
   run never fails for a missing Turso setup — but a database that
@@ -214,50 +211,27 @@ environment only):
   and a final verdict; exits non-zero on any failure. Requires
   `REHYDRATOR_API_KEY` and `CLOUDFLARE_API_TOKEN` in the environment.
 
-## R2: Supabase filings and the eviction trial
+## R2: the eviction trial
 
-The `supabase-backups` R2 bucket is wired in both directions: the
-nightly job files its newest dump into Drive, and the reaper can evict
+The `supabase-backups` R2 bucket (a legacy bucket name; Turso is the
+database store) is the eviction trial bucket: the reaper can evict
 bucket objects the cold store provably holds. Access is a minimal
 stdlib S3 client (SigV4) at the account's R2 host, with bucket-scoped
-credentials from the environment only — materialize from Bitwarden,
-never store:
+credentials from the environment only — materialize from Bitwarden
+(`cloudflare.r2-backups-access-key-id` /
+`cloudflare.r2-backups-secret-access-key`), never store. The host
+defaults to the account's `*.r2.cloudflarestorage.com` endpoint
+(override with `COLD_STORE_R2_HOST`; tests stub the whole base with
+`COLD_STORE_S3_BASE`).
 
-```sh
-R2_ACCESS_KEY_ID=<from Bitwarden: cloudflare.r2-backups-access-key-id> \
-R2_SECRET_ACCESS_KEY=<from Bitwarden: cloudflare.r2-backups-secret-access-key> \
-  cold-store backup-supabase
-```
-
-The host defaults to the account's `*.r2.cloudflarestorage.com`
-endpoint (override with `COLD_STORE_R2_HOST`; tests stub the whole
-base with `COLD_STORE_S3_BASE`).
-
-### backup-supabase
-
-Lists the bucket (paginated ListObjectsV2), picks the **newest backup
-object by LastModified** — `pg/muse-dev/manifest.json` excluded; it is
-the backup system's own index, not a dump — downloads it, and files it
-via `put-backup` as a `supabase` backup. The download is verified
-against the response's Content-Length, and a truncated body (observed
-live through this sandbox's egress proxy) retries the whole GET, up
-to 3 attempts. Filing is point-in-time, like `backup-d1`: unchanged
-content is filed again, and the command prints the content sha256 so
-the duplication is visible rather than silent.
-
-If urllib still cannot deliver the object whole, the download falls
-back to **one `curl` attempt** (curl does its own SigV4 signing via
-`--aws-sigv4` and reads the proxy from the environment). Why: through
-this sandbox's egress proxy, small responses truncate only
-intermittently — retries absorb those — but multi-megabyte responses
-truncate _systematically_ (live: every attempt cut at exactly
-409,600 bytes), and curl is immune; the Supabase backup tooling
-established the same replay-with-curl precedent, and the reaper
-already shells out to a CLI for compression (`zstd`). The curl body
-gets the same byte-count verification (the listing's size, or a HEAD
-Content-Length when the caller has none), credentials are scrubbed
-from any error text, and a missing or failing curl surfaces as a
-named `ColdStoreError`, never a traceback.
+Object downloads (`s3_get_object`) are verified against the response's
+Content-Length; a truncated body retries the whole GET, up to 3
+attempts, then falls back to **one `curl` attempt** (curl does its own
+SigV4 signing via `--aws-sigv4`), because multi-megabyte responses
+truncate systematically through this sandbox's egress proxy while curl
+is immune. The curl body gets the same byte-count verification,
+credentials are scrubbed from any error text, and a missing or failing
+curl surfaces as a named `ColdStoreError`, never a traceback.
 
 ### Eviction
 

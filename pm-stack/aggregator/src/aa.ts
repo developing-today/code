@@ -1,5 +1,5 @@
-// The AA cost explorer as data. The source of record is the Supabase
-// `ainventory` schema (the AA import: v_rankings,
+// The AA cost explorer as data. The source of record is the Turso
+// `ainventory_*` tables (the AA import: v_rankings,
 // v_threshold_metrics, measurement_events (the canonical benchmark
 // store, code#4401), and the Test_Runs data in sheet_rows, read
 // through v_latest_import_batch where the store carries batch identity). The collector
@@ -26,7 +26,7 @@ import { isIsoDate } from "./validate.ts";
 import { antigravityPoolForModel, serviceIdFor } from "./quota-gather-map.ts";
 
 // --- scalar coercion ---------------------------------------------------------
-// The Supabase Management API serializes numeric columns as JSON
+// The store's JSON sections can carry numeric columns as JSON
 // strings, so every number crosses a coercion gate here; anything
 // unparseable becomes null ("not measured"), never 0.
 //
@@ -410,15 +410,36 @@ interface MetricRow {
 /** Non-dominated keys on one axis pair (both axes "lower wins" after
  * the caller's sign flips). Rows missing either axis never qualify. */
 function paretoKeys(rows: MetricRow[], pick: (r: MetricRow) => [number, number] | null): Set<string> {
-  const pts = rows
+  const picked = rows
     .map((r) => ({ key: r.key, xy: pick(r) }))
     .filter((p): p is { key: string; xy: [number, number] } => p.xy !== null);
   const out = new Set<string>();
-  for (const p of pts) {
-    const dominated = pts.some(
-      (q) => q !== p && q.xy[0] <= p.xy[0] && q.xy[1] <= p.xy[1] && (q.xy[0] < p.xy[0] || q.xy[1] < p.xy[1]),
-    );
-    if (!dominated) out.add(p.key);
+  // A NaN coordinate is incomparable under the old <= dominance rule.
+  const pts = picked.filter((p) => {
+    if (Number.isNaN(p.xy[0]) || Number.isNaN(p.xy[1])) {
+      out.add(p.key);
+      return false;
+    }
+    return true;
+  });
+  // Sort once, then sweep equal-x groups: only the lowest y in a group can
+  // survive, unless a strictly lower-x group already has an equal/better y.
+  // This replaces the previous all-pairs dominance scan with O(n log n).
+  const compare = (a: number, b: number) => (a < b ? -1 : a > b ? 1 : 0);
+  pts.sort((a, b) => compare(a.xy[0], b.xy[0]) || compare(a.xy[1], b.xy[1]));
+  let bestY = Number.POSITIVE_INFINITY;
+  let hasPreviousX = false;
+  for (let start = 0; start < pts.length;) {
+    let end = start + 1;
+    const x = pts[start].xy[0];
+    while (end < pts.length && pts[end].xy[0] === x) end++;
+    const groupMinY = pts[start].xy[1];
+    if (!hasPreviousX || bestY > groupMinY) {
+      for (let i = start; i < end && pts[i].xy[1] === groupMinY; i++) out.add(pts[i].key);
+    }
+    bestY = Math.min(bestY, groupMinY);
+    hasPreviousX = true;
+    start = end;
   }
   return out;
 }
@@ -1056,7 +1077,7 @@ export function aaCatalogFromConfig(
 
 // --- section assembly + validation ---------------------------------------------
 
-/** The collector's raw Supabase payload (one jsonb object; snake-case
+/** The collector's raw store payload (one JSON object; snake-case
  * keys are renamed to the section's camelCase by the SQL itself). */
 export interface AaRawPayload {
   batch?: unknown;
@@ -1199,12 +1220,12 @@ function sheetRowsFromRaw(v: unknown): SheetRow[] {
 }
 
 /**
- * Assemble the feed section from the Supabase payload + the repo's
+ * Assemble the feed section from the store payload + the repo's
  * opencode config text (null/unparseable = coverage omitted, stated in
  * the section by its absence). Returns null when the payload is not
  * recognizably the AA data — the collector degrades to the absent form.
  */
-export function aaSectionFromSupabase(
+export function aaSectionFromPayload(
   raw: AaRawPayload,
   opencodeConfigText: string | null,
   generatedAt: string,

@@ -1,18 +1,17 @@
 /**
- * github-ci Worker (#5693) — the GitHub webhook receiver, re-homed
- * off the Supabase Edge Function of the same name (ACTIVE v8).
+ * github-ci Worker (#5693) — the GitHub webhook receiver; all writes
+ * go to Turso.
  *
  * Gate: HMAC-SHA256 over the raw body, X-Hub-Signature-256 header,
- * verified with Web Crypto against GITHUB_WEBHOOK_SECRET — the same
- * semantics as the Edge Function (which ran verify_jwt=false; the
- * HMAC is the gate).
+ * verified with Web Crypto against GITHUB_WEBHOOK_SECRET (the HMAC is
+ * the gate).
  *
- * Behavior (parity with the Edge Function, minus Postgres):
+ * Behavior:
  * - workflow_run (any repo): INSERT OR IGNORE into Turso
  *   fleet-platform ci_events ONLY, id unset (dedupe_key is the
  *   identity), v4 ingest policy: completed runs only, conclusion
  *   != skipped, raw payload kept only for failures. Fatal on
- *   failure (500 -> GitHub retries), as the EF's PG insert was.
+ *   failure (500 -> GitHub retries).
  * - Fleet repos only:
  *   - push: advance agent_repo_snapshots.head_sha in fleet-queue
  *     (default-branch pushes only), stamp fetch_source='webhook',

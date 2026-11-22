@@ -12,10 +12,12 @@ cold_store.py's _curl_fetch established for #983.
 """
 
 import os
+import signal
 import stat
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -43,6 +45,11 @@ for a in "$@"; do
   case "${a}" in http*) url="${a}" ;; esac
   prev="${a}"
 done
+if [[ "${url}" == */dump && -n "${STUB_DUMP_SLEEP:-}" ]]; then
+  # A dump that hangs, so a test can stop the run mid-download.
+  : > "${cap}/dump-started"
+  sleep "${STUB_DUMP_SLEEP}"
+fi
 if [[ "${url}" == */dump ]]; then
   # STUB_DUMP_FAIL_FIRST=N: the first N dump downloads fail the way
   # the 2026-11-17 run did (server closes the stream mid-transfer).
@@ -58,12 +65,19 @@ fi
 body=""
 case "${url}" in
   */auth/tokens) body='{"jwt":"__JWT__"}' ;;
-  */dump) body='BEGIN TRANSACTION;
+  */dump)
+    if [[ -n "${STUB_DUMP_BODY_FILE:-}" ]]; then
+      body="$(cat "${STUB_DUMP_BODY_FILE}")"
+    else
+      body='BEGIN TRANSACTION;
 CREATE TABLE t (x INTEGER);
 INSERT INTO t VALUES (1);
 COMMIT;
-' ;;
-  *) body='{"databases":[{"Name":"db1","Hostname":"db1.example.test"}]}' ;;
+'
+    fi ;;
+  *)
+    body='{"databases":[{"Name":"db1","Hostname":"db1.example.test"}]}'
+    if [[ -n "${STUB_DB_LIST:-}" ]]; then body="${STUB_DB_LIST}"; fi ;;
 esac
 if [[ -n "${out}" ]]; then
   printf '%s' "${body}" > "${out}"
@@ -157,7 +171,7 @@ class TestExportTursoArgv(unittest.TestCase):
         result = self.run_script()
         self.assertEqual(result.returncode, 0, result.stderr)
         lines = self.dump_argv_lines()
-        self.assertEqual(lines[lines.index("--max-time") + 1], "1800")
+        self.assertEqual(lines[lines.index("--max-time") + 1], "3600")
         self.assertEqual(lines[lines.index("--retry") + 1], "3")
         self.assertEqual(lines[lines.index("--retry-delay") + 1], "30")
         self.assertIn("--retry-all-errors", lines)
@@ -185,6 +199,88 @@ class TestExportTursoArgv(unittest.TestCase):
         self.assertIn("1 of 1 database(s) FAILED", result.stderr)
         self.assertEqual(self.dump_calls(), 2)
         self.assertFalse((self.capture / "cold-store.log").exists())
+
+    def test_rebuild_failure_names_the_repeated_statement(self):
+        # #12000: the atlas dump repeated a vec-table row and the rebuild
+        # stopped on its primary key; the dump is deleted afterwards, so
+        # the failure itself must say what the statement was.
+        body = self.capture.parent / "dup.sql"
+        body.write_text(
+            "BEGIN TRANSACTION;\n"
+            "CREATE TABLE vec (chunk_id INTEGER PRIMARY KEY, v BLOB);\n"
+            "INSERT INTO vec VALUES(1,X'00');\n"
+            "INSERT INTO vec VALUES(2,X'01');\n"
+            "INSERT INTO vec VALUES(1,X'00');\n"
+            "COMMIT;\n"
+        )
+        env = {**self.env, "STUB_DUMP_BODY_FILE": str(body)}
+        result = self.run_script(env=env)
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn("UNIQUE constraint failed: vec.chunk_id", result.stderr)
+        self.assertIn(
+            "line 5: INSERT into vec; 2 identical statement(s) (first at line 3);"
+            " 2 INSERT(s) share its first value",
+            result.stderr,
+        )
+        self.assertNotIn("X'00'", result.stderr.split("UNIQUE")[1])
+
+    def test_table_dumped_twice_identically_is_filed_once(self):
+        # #12000: libsql's /dump emitted the atlas vec table whole, then
+        # whole again; the exact repeat is dropped and the export files.
+        block = (
+            "CREATE TABLE IF NOT EXISTS vec (chunk_id INTEGER PRIMARY KEY, v BLOB);\n"
+            "INSERT INTO vec VALUES(1,X'00');\n"
+            "INSERT INTO vec VALUES(2,X'01');\n"
+        )
+        body = self.capture.parent / "repeat.sql"
+        body.write_text("BEGIN TRANSACTION;\n" + block + block + "COMMIT;\n")
+        env = {**self.env, "STUB_DUMP_BODY_FILE": str(body)}
+        result = self.run_script(env=env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(
+            "dropped a repeated copy of table vec (2 rows identical to the first copy)",
+            result.stderr,
+        )
+        self.assertIn("put-backup", (self.capture / "cold-store.log").read_text())
+
+    def test_table_dumped_twice_with_different_rows_fails(self):
+        create = (
+            "CREATE TABLE IF NOT EXISTS vec (chunk_id INTEGER PRIMARY KEY, v BLOB);\n"
+        )
+        body = self.capture.parent / "conflict.sql"
+        body.write_text(
+            "BEGIN TRANSACTION;\n"
+            + create
+            + "INSERT INTO vec VALUES(1,X'00');\n"
+            + create
+            + "INSERT INTO vec VALUES(1,X'01');\n"
+            + "COMMIT;\n"
+        )
+        env = {**self.env, "STUB_DUMP_BODY_FILE": str(body)}
+        result = self.run_script(env=env)
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn("dumped twice with different rows", result.stderr)
+        self.assertIn("db1: dump repair filter failed", result.stderr)
+        self.assertFalse((self.capture / "cold-store.log").exists())
+
+    def test_libsql_vector_index_is_recorded_and_the_export_files(self):
+        # #12000: stock sqlite3 has no libsql_vector_idx, so the dump's
+        # CREATE INDEX for a vector index killed the rebuild at the end.
+        body = self.capture.parent / "vector.sql"
+        body.write_text(
+            "BEGIN TRANSACTION;\n"
+            "CREATE TABLE IF NOT EXISTS vec (chunk_id INTEGER PRIMARY KEY, v F32_BLOB(1));\n"
+            "INSERT INTO vec VALUES(1,X'0000803f');\n"
+            "CREATE TABLE IF NOT EXISTS vec_idx_shadow (index_key INTEGER, data BLOB, PRIMARY KEY (index_key));\n"
+            "INSERT INTO vec_idx_shadow VALUES(1,X'00');\n"
+            "CREATE INDEX vec_idx ON vec (libsql_vector_idx(v));\n"
+            "COMMIT;\n"
+        )
+        env = {**self.env, "STUB_DUMP_BODY_FILE": str(body)}
+        result = self.run_script(env=env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("kept libsql vector index vec_idx", result.stderr)
+        self.assertIn("put-backup", (self.capture / "cold-store.log").read_text())
 
     def test_retry_pass_delay_must_be_an_integer(self):
         env = {**self.env, "TURSO_DUMP_RETRY_PASS_DELAY_SECONDS": "soon"}
@@ -254,6 +350,118 @@ class TestExportTursoArgv(unittest.TestCase):
         self.assertTrue(Path(f"{work}.lock").exists())
         # ... and the directory itself is gone after a clean exit,
         # stale leftovers included.
+        self.assertFalse(work.exists())
+
+    def dump_urls(self):
+        urls = []
+        for argv_log in sorted(
+            self.capture.glob("argv-*.log"), key=lambda p: int(p.stem.split("-")[1])
+        ):
+            urls += [
+                line
+                for line in argv_log.read_text().splitlines()
+                if line.startswith("http://dump.test/")
+            ]
+        return urls
+
+    def test_atlas_is_exported_after_every_other_database(self):
+        # 2026-11-20: atlas, first in the list, was still downloading at
+        # the service timeout and none of the other 49 were filed.
+        listing = (
+            '{"databases":['
+            '{"Name":"atlas","Hostname":"atlas.example.test"},'
+            '{"Name":"db1","Hostname":"db1.example.test"},'
+            '{"Name":"db2","Hostname":"db2.example.test"}]}'
+        )
+        result = self.run_script(env={**self.env, "STUB_DB_LIST": listing})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("all 3 database(s) filed", result.stdout)
+        self.assertEqual(
+            self.dump_urls(),
+            [
+                "http://dump.test/db1/dump",
+                "http://dump.test/db2/dump",
+                "http://dump.test/atlas/dump",
+            ],
+        )
+
+    def test_export_last_empty_keeps_the_list_order(self):
+        listing = (
+            '{"databases":['
+            '{"Name":"atlas","Hostname":"atlas.example.test"},'
+            '{"Name":"db1","Hostname":"db1.example.test"}]}'
+        )
+        env = {**self.env, "STUB_DB_LIST": listing, "TURSO_EXPORT_LAST": ""}
+        result = self.run_script(env=env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            self.dump_urls(),
+            ["http://dump.test/atlas/dump", "http://dump.test/db1/dump"],
+        )
+
+    def test_dump_attempts_are_clamped_to_the_run_deadline(self):
+        env = {**self.env, "TURSO_EXPORT_DEADLINE_SECONDS": "600"}
+        result = self.run_script(env=env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        lines = self.dump_argv_lines()
+        max_time = int(lines[lines.index("--max-time") + 1])
+        retry_max = int(lines[lines.index("--retry-max-time") + 1])
+        self.assertTrue(590 <= max_time <= 600, max_time)
+        self.assertTrue(590 <= retry_max <= 600, retry_max)
+
+    def test_no_database_starts_once_the_deadline_is_reached(self):
+        env = {**self.env, "TURSO_EXPORT_DEADLINE_SECONDS": "30"}
+        result = self.run_script(env=env)
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn("db1: not started", result.stderr)
+        self.assertIn("1 of 1 database(s) FAILED", result.stderr)
+        self.assertEqual(self.dump_calls(), 0)
+
+    def test_deadline_must_be_a_positive_integer(self):
+        for bad in ("0", "abc", ""):
+            with self.subTest(bad=bad):
+                env = {**self.env, "TURSO_EXPORT_DEADLINE_SECONDS": bad}
+                result = self.run_script(env=env)
+                if bad == "":
+                    # unset-or-empty falls back to the default
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                else:
+                    self.assertEqual(result.returncode, 1)
+                    self.assertIn("TURSO_EXPORT_DEADLINE_SECONDS", result.stderr)
+
+    def test_sigterm_mid_download_removes_the_private_scratch(self):
+        # systemd's start timeout sends SIGTERM to the whole unit; on
+        # 2026-11-20 that left 10 GB of atlas dump and a minted token
+        # in /tmp. The scratch is 0700 and a TERM still cleans it up.
+        work = Path(self.tmp.name) / "named-work"
+        env = {
+            **self.env,
+            "EXPORT_TURSO_WORK_DIR": str(work),
+            "STUB_DUMP_SLEEP": "30",
+        }
+        proc = subprocess.Popen(
+            ["bash", str(SCRIPT)],
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            start_new_session=True,
+        )
+        try:
+            started = self.capture / "dump-started"
+            for _ in range(200):
+                if started.exists():
+                    break
+                time.sleep(0.05)
+            self.assertTrue(started.exists(), "the dump never started")
+            self.assertEqual(stat.S_IMODE(work.stat().st_mode), 0o700)
+            os.killpg(proc.pid, signal.SIGTERM)
+            proc.communicate(timeout=20)
+        finally:
+            if proc.poll() is None:
+                os.killpg(proc.pid, signal.SIGKILL)
+                proc.communicate()
+        self.assertEqual(proc.returncode, 143)
         self.assertFalse(work.exists())
 
 

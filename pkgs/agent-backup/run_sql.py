@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
-"""Run a SQL file against the Turso DB `fleet-mirror` (repointed
-2026-11-06 from muse-dev2 Supabase; PG version kept as run_sql_pg.py).
+"""Run a SQL file against the Turso DB `fleet-mirror` (Turso is the store).
 Usage: run_sql.py <sql-file>
 
 The job's SQL files are written in the old PG dialect; this runner

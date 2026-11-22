@@ -1,20 +1,23 @@
-// Supabase-backed implementations of the four remote store interfaces
-// added in #6815. They speak the same Management API SQL client as the
-// alerts ledger (src/supabase.ts) and write only the tables from
+// Turso-backed implementations of the four remote store interfaces
+// added in #6815. They speak the shared SqlClient contract
+// (src/sql-client.ts), served by the Turso store client
+// (src/turso-stores.ts), and write only the tables from
 // shared-schema/migrations/20261116_0001_aggregator_remote_stores.up.sql
-// plus the pre-existing public.agg_actions contract (20261105_0001).
+// plus the pre-existing agg_actions contract (20261105_0001). The SQL
+// below is written once and translated to SQLite by storeStatement().
 //
-// The caller selects these only when PM_AGG_STORE_BACKEND=supabase. A
+// The caller selects these only when PM_AGG_STORE_BACKEND=turso. A
 // missing client is an error here: silently writing a local canonical
 // copy would recreate exactly the laptop-only state #6815 removes.
 import { ACTION_STATES, type ActionsRemote, type DashAction } from "./actions.ts";
 import type { ActivityRemote, ActivitySourceStatus, GapRecord, IngestionFile, SourceCheckpoint } from "./activity.ts";
-import type { DocumentRemote } from "./aa-last-good.ts";
+import type { AppendOnlyDocumentRemote, DocumentRemote } from "./aa-last-good.ts";
 import type { SnapshotsRemote } from "./snapshots.ts";
 import type { SnapshotRecord } from "./model.ts";
 import { snapshotKey } from "./snapshots.ts";
 import { storeWriterIdentity } from "./store-backend.ts";
-import { getSupabaseClient, sqlJson, sqlStr, type SupabaseClient } from "./supabase.ts";
+import { sqlJson, sqlStr, type SqlClient } from "./sql-client.ts";
+import { getTursoStoreClient } from "./turso-stores.ts";
 
 export interface StoreRemotes {
   actions: ActionsRemote;
@@ -23,7 +26,7 @@ export interface StoreRemotes {
   aaLastGood: DocumentRemote;
 }
 
-type GetClient = () => Promise<SupabaseClient | null>;
+type GetClient = () => Promise<SqlClient | null>;
 
 const WRITE_CHUNK = 200;
 
@@ -33,12 +36,12 @@ function chunks<T>(rows: readonly T[], size = WRITE_CHUNK): T[][] {
   return out;
 }
 
-async function requireClient(getClient: GetClient): Promise<SupabaseClient> {
+async function requireClient(getClient: GetClient): Promise<SqlClient> {
   const db = await getClient();
   if (!db) {
     throw new Error(
-      "PM_AGG_STORE_BACKEND=supabase but the Supabase client is unavailable " +
-        "(management token or project ref missing); refusing to fall back to a local canonical copy",
+      "PM_AGG_STORE_BACKEND=turso but the Turso store client is unavailable " +
+        "(store token missing); refusing to fall back to a local canonical copy",
     );
   }
   return db;
@@ -133,7 +136,7 @@ export function actionFromRow(row: Record<string, unknown>): DashAction {
   return action;
 }
 
-export function createSupabaseActionsRemote(getClient: GetClient = getSupabaseClient): ActionsRemote {
+export function createTursoActionsRemote(getClient: GetClient = getTursoStoreClient): ActionsRemote {
   return {
     async loadAll(): Promise<DashAction[]> {
       const db = await requireClient(getClient);
@@ -167,7 +170,7 @@ export function createSupabaseActionsRemote(getClient: GetClient = getSupabaseCl
 // activity-ingestion.json -> public.agg_activity_ingestion + gaps
 // ---------------------------------------------------------------------
 
-export function createSupabaseActivityRemote(getClient: GetClient = getSupabaseClient): ActivityRemote {
+export function createTursoActivityRemote(getClient: GetClient = getTursoStoreClient): ActivityRemote {
   return {
     async load(): Promise<IngestionFile | null> {
       const db = await requireClient(getClient);
@@ -282,7 +285,7 @@ export function snapshotRowValues(r: SnapshotRecord): string {
   );
 }
 
-export function createSupabaseSnapshotsRemote(getClient: GetClient = getSupabaseClient): SnapshotsRemote {
+export function createTursoSnapshotsRemote(getClient: GetClient = getTursoStoreClient): SnapshotsRemote {
   return {
     async readAll(): Promise<SnapshotRecord[]> {
       const db = await requireClient(getClient);
@@ -312,13 +315,13 @@ export function createSupabaseSnapshotsRemote(getClient: GetClient = getSupabase
 }
 
 // ---------------------------------------------------------------------
-// aa-last-good.json -> public.agg_store_documents
+// namespaced PM documents -> public.agg_store_documents
 // ---------------------------------------------------------------------
 
-export function createSupabaseDocumentRemote(
-  getClient: GetClient = getSupabaseClient,
+export function createTursoDocumentRemote(
+  getClient: GetClient = getTursoStoreClient,
   writer: string = storeWriterIdentity(),
-): DocumentRemote {
+): DocumentRemote & AppendOnlyDocumentRemote {
   return {
     async load(store: string): Promise<{ version: number; document: unknown } | null> {
       const db = await requireClient(getClient);
@@ -339,17 +342,36 @@ export function createSupabaseDocumentRemote(
           `writer = excluded.writer, updated_at = now()`,
       );
     },
+
+    async insertIfAbsent(store: string, version: number, document: unknown): Promise<boolean> {
+      const db = await requireClient(getClient);
+      const rows = await db.query<Record<string, unknown>>(
+        `insert into public.agg_store_documents (store, version, document, writer, updated_at) ` +
+          `values (${sqlStr(store)}, ${version}, ${sqlJson(document)}, ${sqlStr(writer)}, now()) ` +
+          `on conflict (store) do nothing returning store`,
+      );
+      return rows.length > 0;
+    },
+
+    async listPrefix(prefix: string): Promise<Array<{ store: string; version: number; document: unknown }>> {
+      const db = await requireClient(getClient);
+      return db.query<{ store: string; version: number; document: unknown }>(
+        `select store, version, document from public.agg_store_documents ` +
+          `where substr(store, 1, length(${sqlStr(prefix)})) = ${sqlStr(prefix)} ` +
+          `order by store asc`,
+      );
+    },
   };
 }
 
-export function createSupabaseRemotes(
-  getClient: GetClient = getSupabaseClient,
+export function createTursoRemotes(
+  getClient: GetClient = getTursoStoreClient,
   writer: string = storeWriterIdentity(),
 ): StoreRemotes {
   return {
-    actions: createSupabaseActionsRemote(getClient),
-    activity: createSupabaseActivityRemote(getClient),
-    usage: createSupabaseSnapshotsRemote(getClient),
-    aaLastGood: createSupabaseDocumentRemote(getClient, writer),
+    actions: createTursoActionsRemote(getClient),
+    activity: createTursoActivityRemote(getClient),
+    usage: createTursoSnapshotsRemote(getClient),
+    aaLastGood: createTursoDocumentRemote(getClient, writer),
   };
 }

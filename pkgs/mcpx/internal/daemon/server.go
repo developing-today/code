@@ -99,8 +99,9 @@ type Server struct {
 	httpServing sync.WaitGroup
 	// tcpLn and unixLn are *connListener once Listen has run. They are the
 	// daemon's only accept path, so a handover can see every connection.
-	tcpLn  net.Listener
-	unixLn net.Listener
+	tcpLn              net.Listener
+	tcpSocketActivated bool
+	unixLn             net.Listener
 	// tsnetLn is set only when daemon.tsnet.hostname names a tailnet
 	// identity for this daemon (#1967); nil on every daemon that did not
 	// ask for one.
@@ -399,13 +400,14 @@ func (s *Server) Listen(tcpPort int) error {
 	if host == "" {
 		host = s.set.String("daemon.address")
 	}
-	tcpLn, err := tcpTransport{address: net.JoinHostPort(host, strconv.Itoa(tcpPort))}.Listen()
+	tcpLn, socketActivated, err := tcpTransport{address: net.JoinHostPort(host, strconv.Itoa(tcpPort))}.listen()
 	if err != nil {
 		_ = unixLn.Close()
 		return err
 	}
 	s.unixLn = newConnListener(unixLn, &s.conns, nil)
 	s.tcpLn = newConnListener(tcpLn, &s.conns, nil)
+	s.tcpSocketActivated = socketActivated
 	// An identity listener, when one is named: the same API on the
 	// daemon's tailnet, reachable by name from another network. A
 	// failure here is fatal to Listen — a daemon that was asked for a
@@ -918,6 +920,8 @@ func (s *Server) routes(mux *http.ServeMux) {
 	s.route(mux, "GET /v1/client.ts", s.handleClient)
 	s.route(mux, "GET /v1/globals.d.ts", s.handleGlobals)
 	s.route(mux, "POST /v1/call", s.handleCall)
+	s.route(mux, "POST /v1/calls/{run}", s.handleCallHistoryBegin)
+	s.route(mux, "GET /v1/calls/{run}", s.handleCallHistorySnapshot)
 	s.route(mux, "POST /v1/batch", s.handleBatch)
 	s.route(mux, "POST /v1/resource", s.handleResource)
 	s.route(mux, "POST /v1/session/release", s.handleRelease)
@@ -1155,10 +1159,12 @@ func (s *Server) scriptLanguage(w http.ResponseWriter, r *http.Request) (codegen
 }
 
 type callReq struct {
-	Server  string             `json:"server"`
-	Tool    string             `json:"tool"`
-	Args    json.RawMessage    `json:"args"`
-	Context config.CallContext `json:"context"`
+	LazySelector string             `json:"lazySelector,omitempty"`
+	LazyLanguage string             `json:"lazyLanguage,omitempty"`
+	Server       string             `json:"server"`
+	Tool         string             `json:"tool"`
+	Args         json.RawMessage    `json:"args"`
+	Context      config.CallContext `json:"context"`
 	// Session is the shorthand a caller may send instead of a full context.
 	Session string `json:"session"`
 	// Task, when present, asks for a handle now and the result later.
@@ -1222,6 +1228,12 @@ func (s *Server) handleCall(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, errors.New("server and tool are required"))
 		return
 	}
+	if req.LazyLanguage != "" {
+		if _, valid := codegen.GeneratedToolName(req.LazyLanguage, ""); !valid || req.Task != nil {
+			writeErr(w, 400, errors.New("lazyLanguage requires typescript or python and synchronous/reporting calls"))
+			return
+		}
+	}
 	cc := callContext(r, req.Context, req.Session)
 
 	var args any = map[string]any{}
@@ -1277,6 +1289,8 @@ func (s *Server) handleCall(w http.ResponseWriter, r *http.Request) {
 		// A dry run's calls are answered synthetically and never
 		// reach a server (#1927).
 		res, dryRun = syn, true
+	} else if req.LazyLanguage != "" {
+		res, err = s.reg.CallGenerated(ctx, "", req.LazyLanguage, req.Server, req.Tool, cc, args, req.LazySelector)
 	} else {
 		res, err = s.reg.Call(ctx, req.Server, req.Tool, cc, args)
 	}
@@ -1626,6 +1640,12 @@ var signalSelf = func(sig os.Signal) error {
 }
 
 func (s *Server) handleDaemonRestart(w http.ResponseWriter, _ *http.Request) {
+	// In-place exec cannot request the listening descriptor again. Reject
+	// before draining so the daemon stays up; systemd owns this lifecycle.
+	if s.tcpSocketActivated {
+		writeJSON(w, http.StatusConflict, map[string]any{"error": "socket-activated daemon must be restarted through systemd"})
+		return
+	}
 	writeJSON(w, 200, map[string]any{"status": "restarting"})
 	go func() {
 		time.Sleep(defaults.DaemonRestartSettle)
@@ -1937,6 +1957,26 @@ func (s *Server) handleLogRecord(w http.ResponseWriter, r *http.Request) {
 func (s *Server) callRegistry() *execsvc.CallRegistry {
 	s.callOnce.Do(func() { s.calls = execsvc.NewCallRegistry() })
 	return s.calls
+}
+
+func (s *Server) handleCallHistoryBegin(w http.ResponseWriter, r *http.Request) {
+	runID := r.PathValue("run")
+	if runID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "run id is required"})
+		return
+	}
+	s.callRegistry().BeginHistory(runID)
+	writeJSON(w, http.StatusOK, map[string]any{"available": true})
+}
+
+func (s *Server) handleCallHistorySnapshot(w http.ResponseWriter, r *http.Request) {
+	runID := r.PathValue("run")
+	calls, ok, truncated := s.callRegistry().History(runID)
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]any{"error": "call history is unavailable or expired"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"available": true, "truncated": truncated, "calls": calls})
 }
 
 // reportCallFrame tells the exec stream that is running this call, if

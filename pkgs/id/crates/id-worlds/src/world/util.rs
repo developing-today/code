@@ -49,6 +49,30 @@ pub fn publish_records(
     });
 }
 
+/// The content address of a blob (#1062): the iroh-blobs hash of the
+/// content in its canonical lowercase-hex spelling — the same
+/// address the node's iroh-blobs store gives the same bytes
+/// (`world_records` addresses stored content with `Hash::new` too).
+pub(crate) fn blob_id(data: &[u8]) -> String {
+    iroh_blobs::Hash::new(data).to_string()
+}
+
+/// Base64 encoding of blob content (#1062): content travels inside
+/// JSON strings on the wire and in the journal, so it rides as text
+/// in both.
+pub(crate) fn blob_encode(data: &[u8]) -> String {
+    use base64::Engine as _;
+    base64::engine::general_purpose::STANDARD.encode(data)
+}
+
+/// Inverse of [`blob_encode`]; `None` on malformed base64.
+pub(crate) fn blob_decode(encoded: &str) -> Option<Vec<u8>> {
+    use base64::Engine as _;
+    base64::engine::general_purpose::STANDARD
+        .decode(encoded)
+        .ok()
+}
+
 /// Lower-case hex decoding of an arbitrary-length byte string, the
 /// inverse of [`hex_encode`]. `None` on odd length or a non-hex digit.
 pub(crate) fn hex_decode(encoded: &str) -> Option<Vec<u8>> {

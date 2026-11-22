@@ -31,6 +31,9 @@ func TestTypeScriptIsTheDefaultLanguage(t *testing.T) {
 	} else if l, _ := Lookup("python"); l.ClientFile != "mcpx_client.py" || l.ScriptExt != ".py" {
 		t.Fatalf("python entry = %+v, want mcpx_client.py / .py", l)
 	}
+	if roc, ok := Lookup("roc"); !ok || roc.ClientFile != "Mcpx.roc" || roc.ScriptExt != ".roc" {
+		t.Fatalf("Roc entry = %+v, found=%v", roc, ok)
+	}
 }
 
 func TestTypeScriptFileNamesMatchTheRunnerContract(t *testing.T) {

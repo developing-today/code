@@ -10,6 +10,7 @@
 // publishes the counts and lists, so the check is a tracked output of
 // every roadmap read, not a report somebody has to remember to run.
 import type { ProjectPoolItem, RoadmapRow } from "./model.ts";
+import { uniqueEpicItemsByRef } from "./epics.ts";
 
 export interface RoadmapMatch {
   row: RoadmapRow;
@@ -42,7 +43,7 @@ export function normalizeTitle(title: string): string {
 }
 
 export function reconcileRoadmap(rows: RoadmapRow[], pool: ProjectPoolItem[]): RoadmapReconciliation {
-  const epics = pool.filter((p) => p.kind === "Epic");
+  const epics = uniqueEpicItemsByRef(pool);
   const epicByRef = new Map(epics.map((e) => [e.ref, e] as const));
   const used = new Set<string>();
   const matched: RoadmapMatch[] = [];
@@ -82,13 +83,26 @@ export function reconcileRoadmap(rows: RoadmapRow[], pool: ProjectPoolItem[]): R
   }
 
   const unmatchedEpics = epics.filter((e) => !used.has(e.ref));
-  return { availability: "available", matched, unmatchedRows, unmatchedEpics, drift: unmatchedRows.length + unmatchedEpics.length };
+  return {
+    availability: "available",
+    matched,
+    unmatchedRows,
+    unmatchedEpics,
+    drift: unmatchedRows.length + unmatchedEpics.length,
+  };
 }
 
 /** The reconciliation when either side was not successfully read:
  *  no matches, no unmatched lists, no drift — just the reason. */
 export function unavailableRoadmapReconciliation(reason: string): RoadmapReconciliation {
-  return { availability: "unavailable", unavailableReason: reason, matched: [], unmatchedRows: [], unmatchedEpics: [], drift: 0 };
+  return {
+    availability: "unavailable",
+    unavailableReason: reason,
+    matched: [],
+    unmatchedRows: [],
+    unmatchedEpics: [],
+    drift: 0,
+  };
 }
 
 /** The published shape for /api/roadmap.json: counts plus both lists. */

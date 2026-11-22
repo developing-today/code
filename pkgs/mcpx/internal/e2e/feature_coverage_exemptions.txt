@@ -16,10 +16,7 @@
 setting	daemon.inlineStartPoll	no integration-test exercise yet; burn-down #8468 (settings daemon family); needs an EffectProbes entry + e2e test
 setting	daemon.tsnet.hostname	no integration-test exercise yet; burn-down #8468 (settings daemon family); needs an EffectProbes entry + e2e test
 setting	daemon.tsnetUpTimeout	no integration-test exercise yet; burn-down #8468 (settings daemon family); needs an EffectProbes entry + e2e test
-setting	http.idleConnTimeout	no integration-test exercise yet; burn-down #8469 (settings http-transport family); needs an EffectProbes entry + e2e test
-setting	http.idleConns	no integration-test exercise yet; burn-down #8469 (settings http-transport family); needs an EffectProbes entry + e2e test
-setting	http.remoteIdleConns	no integration-test exercise yet; burn-down #8469 (settings http-transport family); needs an EffectProbes entry + e2e test
-setting	http.streamBufferInit	no integration-test exercise yet; burn-down #8469 (settings http-transport family); needs an EffectProbes entry + e2e test
+setting	http.streamBufferInit	allocation-capacity hint only; output and line ceiling are unchanged, so allocation size has no stable e2e behavior oracle
 setting	script.checkOnError	no integration-test exercise yet; burn-down #8474 (settings script family); needs an EffectProbes entry + e2e test
 setting	script.importsCrossProject	no integration-test exercise yet; burn-down #8474 (settings script family); needs an EffectProbes entry + e2e test
 setting	script.importsNetwork	no integration-test exercise yet; burn-down #8474 (settings script family); needs an EffectProbes entry + e2e test
@@ -38,8 +35,4 @@ setting	plugin.instructions	no integration-test exercise yet; burn-down #8472 (s
 setting	plugin.remember	no integration-test exercise yet; burn-down #8472 (settings plugin family); needs an EffectProbes entry + e2e test
 setting	plugin.toolTiming	no integration-test exercise yet; burn-down #8472 (settings plugin family); needs an EffectProbes entry + e2e test
 setting	plugin.tools	no integration-test exercise yet; burn-down #8472 (settings plugin family); needs an EffectProbes entry + e2e test
-setting	output.color	no integration-test exercise yet; burn-down #8467 (settings core-paths family); needs an EffectProbes entry + e2e test
 setting	embeddings.wasmPath	no integration-test exercise yet; burn-down #8471 (settings model-ai family); needs an EffectProbes entry + e2e test
-setting	deps.autoInstall	no integration-test exercise yet; burn-down #8470 (settings long-tail families); needs an EffectProbes entry + e2e test
-setting	events.reconnect	no integration-test exercise yet; burn-down #8470 (settings long-tail families); needs an EffectProbes entry + e2e test
-setting	retention.stickyWindow	no integration-test exercise yet; burn-down #8470 (settings long-tail families); needs an EffectProbes entry + e2e test

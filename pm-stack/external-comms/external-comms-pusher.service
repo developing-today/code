@@ -1,5 +1,5 @@
 [Unit]
-Description=External-comms ledger pusher — drain the send-time outbox into Supabase agent.external_comms
+Description=External-comms ledger pusher — drain the send-time outbox into Turso fleet-platform agent_external_comms
 After=network-online.target secrets-broker.service
 Wants=secrets-broker.service
 

@@ -1,0 +1,15 @@
+{
+  "name": "pm-console-edge",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "The Cloudflare Worker that serves the PM app in front of the host.",
+  "scripts": {
+    "build": "node build.mjs",
+    "check": "node build.mjs && wrangler deploy --dry-run --outdir .wrangler/dry",
+    "dev": "node build.mjs && wrangler dev --port 8799"
+  },
+  "devDependencies": {
+    "wrangler": "4.166.0"
+  }
+}

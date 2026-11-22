@@ -3,7 +3,7 @@
 // default, except the default Source: implicit fixtures require the
 // explicit PM_AGG_DEV=1 switch (#1195).
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
 import { parseStoreBackend, type StoreBackendKind } from "./store-backend.ts";
 
 const s = (v: string | undefined, d: string): string => (v && v.trim() !== "" ? v.trim() : d);
@@ -38,8 +38,8 @@ function parseAggregatorHosts(value: string | undefined): string[] {
 }
 
 export interface Config {
-  /** #6815: where the four Supabase-migrated stores live. "file" is the
-   *  dev/test path and rollback target; "supabase" is the deployed
+  /** #6815: where the four remote-capable stores live. "file" is the
+   *  dev/test path and rollback target; "turso" is the deployed
    *  canonical backend. Exactly one is active — never both. */
   storeBackend: StoreBackendKind;
   /** Default Source: "live" when PM_AGG_SOURCE=live; "fixtures" when
@@ -54,6 +54,7 @@ export interface Config {
   feedFile: string;
   /** Dashboard comments store (#906 §2) — the aggregator's own writable data. */
   commentsFile: string;
+  promptsFile: string;
   /** Append-only roadmap annotation store (#1284), separate from comments. */
   roadmapAnnotationsFile: string;
   /** Checkout of developing-today/code on the aggregator host; the
@@ -122,15 +123,13 @@ export interface Config {
   /** Tracker of evaluated free services without automated quota cards (#1172). */
   freeServicesTrackerFile: string;
   cloudflareExportFile: string;
-  /** The Supabase usage exporter's document (#1050): the gathered live read
-   * preferred over the quota view's Supabase prose when fresh. */
-  supabaseExportFile: string;
   /** The provider quota registry; the hub's second dated-read source
    * (billing incidents) for the same fallback path. */
   quotaRegistryFile: string;
   /** The quota gatherer's latest-state file (#1151), written into the
    * aggregator's own data dir by scripts/gather-quota.ts. */
   quotaCurrentFile: string;
+  quotaHeartbeatFile: string;
   /** The deployed OpenCode config (.opencode/opencode.jsonc of the
    * code repo): the section-risk join (#8882) reads its model_routes
    * leaf sets from here. */
@@ -214,6 +213,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     hosts: parseAggregatorHosts(env.PM_AGG_HOSTS),
     feedFile: s(env.PM_AGG_FEED_FILE, join(process.cwd(), "fleet-feed.json")),
     commentsFile: s(env.PM_AGG_COMMENTS_FILE, join(process.cwd(), "comments.json")),
+    promptsFile: s(env.PM_AGG_PROMPTS_FILE, join(process.cwd(), "prompts.json")),
     roadmapAnnotationsFile: s(env.PM_AGG_ROADMAP_ANNOTATIONS_FILE, join(process.cwd(), "roadmap-annotations.json")),
     codeCheckout: s(env.PM_AGG_CODE_CHECKOUT, join(homedir(), "git", "code")),
     nixCheckout: s(env.PM_AGG_NIX_CHECKOUT, join(homedir(), "code", "dezren39-nix")),
@@ -279,12 +279,18 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
       join(homedir(), "hatch-personal/workspace/ai-subscriptions/free-services-to-check.md"),
     ),
     cloudflareExportFile: s(env.PM_AGG_CLOUDFLARE_EXPORT, join(homedir(), "atlas/cloudflare-export/latest.json")),
-    supabaseExportFile: s(env.PM_AGG_SUPABASE_EXPORT, join(homedir(), "atlas/supabase-export/latest.json")),
     quotaRegistryFile: s(
       env.PM_AGG_QUOTA_REGISTRY,
       join(homedir(), "workspace/goals/keep-the-four-repos-healthy/hidden_files/provider-quota-registry.md"),
     ),
     quotaCurrentFile: s(env.PM_AGG_QUOTA_CURRENT_FILE, join(process.cwd(), "quota-current.json")),
+    quotaHeartbeatFile: s(
+      env.PM_AGG_QUOTA_HEARTBEAT_FILE,
+      join(
+        dirname(s(env.PM_AGG_QUOTA_CURRENT_FILE, join(process.cwd(), "quota-current.json"))),
+        "quota-gatherer-heartbeat.json",
+      ),
+    ),
     opencodeConfigFile: s(
       env.PM_AGG_OPENCODE_CONFIG_FILE,
       join(homedir(), "git", "code", ".opencode", "opencode.jsonc"),

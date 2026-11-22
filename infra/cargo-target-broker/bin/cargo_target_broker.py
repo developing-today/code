@@ -98,6 +98,59 @@ def make_key(repo: str, profile: str) -> str:
     return f"{repo_name}-{sanitize(profile)}-r{digest}"
 
 
+def workspace_cleanup_cwd(override: str | None) -> Path:
+    """Resolve the workspace used for pool cleanup without changing command cwd."""
+    return Path(override).expanduser().resolve() if override else Path.cwd()
+
+
+def clean_workspace_artifacts(target_dir: Path, cwd: Path) -> None:
+    """Remove checkout-sensitive workspace outputs before reusing a pool dir.
+
+    Cargo's package clean preserves dependency artifacts while removing the
+    selected workspace packages' outputs. Fail closed: returning a dirty
+    pooled dir could let relative dep-info paths accept another checkout's
+    workspace artifacts as fresh.
+    """
+    try:
+        metadata = subprocess.run(
+            ["cargo", "metadata", "--no-deps", "--format-version", "1"],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        data = json.loads(metadata.stdout)
+        member_ids = set(data["workspace_members"])
+        package_names = [
+            package["name"]
+            for package in data["packages"]
+            if package["id"] in member_ids
+        ]
+        workspace_root = Path(data["workspace_root"])
+        if not package_names or not (workspace_root / "Cargo.toml").is_file():
+            raise RuntimeError("cargo metadata did not identify a workspace to clean")
+        command = [
+            "cargo",
+            "clean",
+            "--manifest-path",
+            str(workspace_root / "Cargo.toml"),
+        ]
+        for package in package_names:
+            command.extend(["--package", package])
+        env = dict(os.environ)
+        env["CARGO_TARGET_DIR"] = str(target_dir)
+        subprocess.run(command, cwd=workspace_root, env=env, check=True)
+    except (
+        OSError,
+        subprocess.CalledProcessError,
+        KeyError,
+        TypeError,
+        ValueError,
+    ) as exc:
+        message = f"could not safely clean pooled workspace artifacts: {exc}"
+        raise RuntimeError(message) from exc
+
+
 @dataclass
 class DirRow:
     id: int
@@ -510,6 +563,11 @@ def main(argv: list[str] | None = None) -> int:
     )
     p_co.add_argument("--holder", default=None)
     p_co.add_argument(
+        "--workspace-cwd",
+        default=None,
+        help="workspace directory to clean; Cargo still runs from the caller's cwd",
+    )
+    p_co.add_argument(
         "--wait",
         type=int,
         default=0,
@@ -525,6 +583,11 @@ def main(argv: list[str] | None = None) -> int:
     p_ex.add_argument("--repo", required=True)
     p_ex.add_argument("--profile", default="dev")
     p_ex.add_argument("--holder", default=None)
+    p_ex.add_argument(
+        "--workspace-cwd",
+        default=None,
+        help="workspace directory to clean; Cargo still runs from the caller's cwd",
+    )
     p_ex.add_argument("--wait", type=int, default=0)
     p_ex.add_argument("cmd", nargs=argparse.REMAINDER)
 
@@ -583,6 +646,15 @@ def main(argv: list[str] | None = None) -> int:
             )
             return 3
         row, lease_id, warm = got
+        try:
+            clean_workspace_artifacts(
+                row.path, workspace_cleanup_cwd(args.workspace_cwd)
+            )
+        except RuntimeError as exc:
+            with broker:
+                broker.checkin(lease_id, None)
+            eprint(f"target-broker: {exc}")
+            return 1
         if args.verb == "checkout":
             if args.json:
                 print(

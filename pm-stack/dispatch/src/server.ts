@@ -48,6 +48,7 @@ import {
 import { annotateLaunch } from "./launch_annotations.ts";
 import { GitHubClient } from "./github.ts";
 import { OpenCodeClient, OpenCodeError } from "./opencode.ts";
+import { createDispatchWorktree, worktreeNotice } from "./worktree.ts";
 
 const cfg: Config = loadConfig();
 // #9028: the queue client talks to the fleet queue broker. Its token
@@ -179,12 +180,29 @@ async function launchSession(
   warnings: string[],
   failureContext: LaunchFailureContext,
 ): Promise<string> {
+  // code#12213: never run a dispatched session in the primary clone.
+  // A worktree failure throws here, before any session exists, so the
+  // launch fails and the task is cancelled like any pre-session error.
+  let sessionDirectory = directory;
+  let notice = "";
+  if (cfg.worktreeRoot) {
+    const primary = resolveSessionDirectory("bearer", req.repo, undefined, REPO_DIRS);
+    const wt = await createDispatchWorktree({
+      primary,
+      requestedDirectory: directory,
+      root: cfg.worktreeRoot,
+      repo: req.repo,
+      taskId: task.id,
+    });
+    sessionDirectory = wt.directory;
+    notice = `\n${worktreeNotice(wt.worktree, primary)}`;
+  }
   const session = await opencode.createSession({
-    directory,
+    directory: sessionDirectory,
     title: req.title ?? titleFromPrompt(req.prompt),
     model: req.model,
   });
-  const prefix = `[dispatch] Queue task #${task.id} · Issue ${issue ? issue.url : "none"} · Repo ${req.repo}`;
+  const prefix = `[dispatch] Queue task #${task.id} · Issue ${issue ? issue.url : "none"} · Repo ${req.repo}${notice}`;
   await withCreatedSession(session.id, failureContext, async () => {
     await opencode.sendPrompt(session.id, `${prefix}\n\n${req.prompt}`);
 

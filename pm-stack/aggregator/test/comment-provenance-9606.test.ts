@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { commentProvenance, CommentsStore } from "../src/comments.ts";
@@ -36,14 +36,14 @@ describe("comment provenance (#9606)", () => {
       expect(reloaded.find((c) => c.id === verified.id)?.provenance).toBe("verified");
     }));
 
-  test("pre-marker records load unchanged and read as asserted-legacy", () =>
+  test("pre-marker records are migrated once without changing author strings", () =>
     withDir(async (dir) => {
       const file = join(dir, "comments.json");
       const legacy = {
         id: "dc-legacy",
         objectRef: "gh:developing-today/code#941",
         kind: "message",
-        author: { ...AUTHOR },
+        author: { ...AUTHOR, label: "  Drew 👋  " },
         authorVerified: false,
         body: "written before provenance existed",
         createdAt: "2026-11-01T00:00:00.000Z",
@@ -52,10 +52,13 @@ describe("comment provenance (#9606)", () => {
       writeFileSync(file, JSON.stringify({ version: 1, comments: [legacy] }));
       const [loaded] = await new CommentsStore(file).all();
       expect(loaded?.id).toBe("dc-legacy");
-      // Not rewritten (the design keeps history as written)...
-      expect(loaded?.provenance).toBeUndefined();
-      // ...but never mistaken for a verified author.
+      expect(loaded?.provenance).toBe("asserted-legacy");
+      expect(loaded?.author.label).toBe("  Drew 👋  ");
       expect(commentProvenance(loaded!)).toBe("asserted-legacy");
+      const migratedBytes = readFileSync(file, "utf8");
+      expect(JSON.parse(migratedBytes).comments[0].author.label).toBe("  Drew 👋  ");
+      await new CommentsStore(file).all();
+      expect(readFileSync(file, "utf8")).toBe(migratedBytes);
     }));
 
   test("a record claiming an unknown provenance is not loaded as a valid comment", () =>

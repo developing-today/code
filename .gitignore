@@ -25,6 +25,7 @@ out
 **/out
 result*
 **/result*
+/mcpx-images*
 !test/result*
 !**/test/result*
 !tests/result*
