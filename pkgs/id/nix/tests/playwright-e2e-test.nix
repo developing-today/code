@@ -162,6 +162,15 @@ in
     # times out dumps the server instance's journal and listeners into the
     # test log before failing — a readiness failure should show WHY the
     # server did not answer, not just that curl kept refusing (#1374).
+    #
+    # The handler catches BaseException, not Exception: the test driver's
+    # RequestedAssertionFailed (what wait_until_succeeds raises on timeout)
+    # derives from BaseException in the current driver, precisely so that
+    # blanket Exception handlers cannot swallow test failures. An
+    # except-Exception version of this helper was exercised in a scratch
+    # VM run and the dump never fired; the BaseException form is what the
+    # scratch run validated. The failure is always re-raised — the dump
+    # only observes it.
     SERVER_READY_TIMEOUT = 900  # seconds; the driver's former implicit bound
 
     def wait_for_http(client, server, unit, url):
@@ -169,7 +178,7 @@ in
             client.wait_until_succeeds(
                 f"curl -sf {url}", timeout=SERVER_READY_TIMEOUT
             )
-        except Exception:
+        except BaseException:
             try:
                 server.execute(
                     f"echo 'readiness timeout: {url} never answered; "
@@ -177,7 +186,7 @@ in
                     f"journalctl -u {unit} --no-pager -n 100; "
                     "ss -ltnp"
                 )
-            except Exception:
+            except BaseException:
                 pass
             raise
 
