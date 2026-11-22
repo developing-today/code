@@ -909,6 +909,7 @@ mod tests {
             envelope: Vec::<EnvelopeLine>::new(),
             embed_usd: 0.0,
             embedding_ledger_ref: Some("ledger-row-batch-fixture".to_owned()),
+            embedding_ledger: None,
             embed_usd_median: None,
         };
         let first = run_once_with_staging(
@@ -990,6 +991,7 @@ mod tests {
             envelope: Vec::new(),
             embed_usd: 0.0,
             embedding_ledger_ref: None,
+            embedding_ledger: None,
             embed_usd_median: None,
         };
         let conn = Connection::open_in_memory().expect("open unprovisioned staging DB");
