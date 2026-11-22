@@ -70,12 +70,15 @@ if [ "$1" = "cargo" ] && [ -z "$target_dir" ]; then
       continue
     fi
     case "$arg" in
-      --config|-Z|--manifest-path) skip_value=true ;;
-      --manifest-path=*) ;;
+      --config|-Z|--manifest-path|--color) skip_value=true ;;
+      --manifest-path=*|--config=*|--color=*|-Z*) ;;
       build|check|test|bench|clippy|run|install|doc|rustc|nextest|fix|package|publish)
         cargo_action=$arg
         break
         ;;
+      +*) ;; # `cargo +toolchain <command>`
+      --locked|--offline|--frozen|--quiet|--verbose|-q|-v|-vv|-vvv) ;;
+      *) break ;; # Only the first Cargo subcommand is authoritative.
     esac
   done
 
