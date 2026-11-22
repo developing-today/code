@@ -165,7 +165,8 @@ completed Fleet-owned `gh issue|pr close|reopen` also resolves the session
 identity for its closure record, so a live marker is effective there even when
 the parent environment did not carry the id. Create-path
 `provenance.session_id` (tracked separately by #9073) remains outside this
-checkpoint.
+checkpoint. A malformed inherited session ID causes supported domain
+invocations and `fleet init` to exit with code 2 before starting work.
 
 ## Versioning — derived per-app versions (#8566; policy #5790)
 
