@@ -6,6 +6,8 @@ import { deriveEpicClosureGateFacts, evaluateEpicClosureGate } from "../src/epic
 import { fetchNativeSubissueTree } from "../src/epic-subtree.ts";
 import type { RefKey } from "../src/model.ts";
 
+const ROOT_STATE_QUERY = `query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){issue(number:$number){state}}}`;
+
 function parseArgs(args: string[]): RefKey[] {
   const roots: RefKey[] = [];
   for (let i = 0; i < args.length; i += 1) {
@@ -31,6 +33,33 @@ function tokenFromEnvironmentOrGh(): string {
   return token;
 }
 
+async function fetchRootState(root: RefKey, token: string): Promise<"OPEN" | "CLOSED"> {
+  const match = /^([^/]+)\/([^#]+)#([1-9][0-9]*)$/.exec(root);
+  if (!match) throw new Error(`invalid root issue ref: ${root}`);
+  const response = await fetch("https://api.github.com/graphql", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json",
+      "User-Agent": "pm-fleet-closure-gate",
+    },
+    body: JSON.stringify({
+      query: ROOT_STATE_QUERY,
+      variables: { owner: match[1], name: match[2], number: Number(match[3]) },
+    }),
+    signal: AbortSignal.timeout(20_000),
+  });
+  if (!response.ok) throw new Error(`github GraphQL HTTP ${response.status} reading root ${root}`);
+  const body = await response.json() as {
+    errors?: unknown;
+    data?: { repository?: { issue?: { state?: string } | null } | null };
+  };
+  const state = body.data?.repository?.issue?.state;
+  if (body.errors || (state !== "OPEN" && state !== "CLOSED"))
+    throw new Error(`github GraphQL returned incomplete root state for ${root}`);
+  return state;
+}
+
 const CONDITION_TEXT = {
   source_incomplete: "complete native subtree facts unavailable",
   designs_incomplete: "subtree has unfinished designs not explicitly Drew-gated",
@@ -44,11 +73,15 @@ async function main(): Promise<void> {
   const token = tokenFromEnvironmentOrGh();
   const reports = [];
   for (const root of roots) {
-    const descendants = await fetchNativeSubissueTree(root, token);
+    const [rootState, descendants] = await Promise.all([
+      fetchRootState(root, token),
+      fetchNativeSubissueTree(root, token),
+    ]);
     const facts = deriveEpicClosureGateFacts(root, descendants);
     const gate = evaluateEpicClosureGate(facts);
     reports.push({
       root,
+      rootState,
       descendants: descendants.length,
       factsComplete: facts.factsComplete,
       closable: gate.closable,
