@@ -52,7 +52,9 @@ test("activity arrays and document JSON round trip", async () => {
   expect(await doc.load("test")).toEqual({ version: 1, document: { quotes: "::jsonb now()", a: [1, true] } });
   const event = { eventId: "report:stable", type: "report.generated", ts: "2026-11-22T00:00:00.000Z" };
   expect(await doc.insertIfAbsent("c7-report:v1:generated:stable", 1, event)).toBe(true);
-  expect(await doc.insertIfAbsent("c7-report:v1:generated:stable", 1, { ...event, ts: "2026-11-22T00:01:00.000Z" })).toBe(false);
+  expect(
+    await doc.insertIfAbsent("c7-report:v1:generated:stable", 1, { ...event, ts: "2026-11-22T00:01:00.000Z" }),
+  ).toBe(false);
   expect(await doc.listPrefix("c7-report:v1:")).toEqual([
     { store: "c7-report:v1:generated:stable", version: 1, document: event },
   ]);

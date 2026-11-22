@@ -278,6 +278,8 @@ pub use id_store::search;
 pub use id_store::session_checkpoint;
 pub use id_store::store;
 #[cfg(feature = "sandbox")]
+pub use id_worlds::guest_burn;
+#[cfg(feature = "sandbox")]
 pub use id_worlds::sandbox;
 #[cfg(feature = "world")]
 pub use id_worlds::shell_contract;

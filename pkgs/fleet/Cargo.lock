@@ -586,6 +586,7 @@ dependencies = [
 name = "fleet"
 version = "0.1.0"
 dependencies = [
+ "base64 0.23.1",
  "fleet-agent",
  "fleet-bridge",
  "fleet-config",

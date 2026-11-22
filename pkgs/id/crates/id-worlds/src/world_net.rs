@@ -417,9 +417,12 @@ impl StreamIo {
                         .await;
                         if admitted {
                             match read_frame_body(&mut recv, len).await {
-                                Ok(body) => match String::from_utf8(body) {
-                                    Ok(text) => Inbound::Text(text),
-                                    Err(_) => Inbound::Unsupported,
+                                Ok(body) => match crate::frames::unmark_binary_frame(&body) {
+                                    Some(payload) => Inbound::Bytes(payload.to_vec()),
+                                    None => match String::from_utf8(body) {
+                                        Ok(text) => Inbound::Text(text),
+                                        Err(_) => Inbound::Unsupported,
+                                    },
                                 },
                                 Err(_) => Inbound::Closed,
                             }
@@ -476,6 +479,27 @@ impl SessionIo for StreamIo {
             return false;
         }
         write_frame(&mut self.send, frame.as_bytes()).await.is_ok()
+    }
+
+    fn supports_bytes(&self) -> bool {
+        true
+    }
+
+    async fn send_bytes(&mut self, frame: Vec<u8>) -> bool {
+        // Same charge and envelope as a text frame; the body carries
+        // the binary marker so the peer's reader reports it as bytes.
+        let body = crate::frames::mark_binary_frame(&frame);
+        let admitted = charge_frame_with_backpressure(
+            &self.abuse,
+            self.remote,
+            self.authorized.load(Ordering::Acquire),
+            body.len(),
+        )
+        .await;
+        if !admitted {
+            return false;
+        }
+        write_frame(&mut self.send, &body).await.is_ok()
     }
 
     fn mark_authorized(&mut self) {

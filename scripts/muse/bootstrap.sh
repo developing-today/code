@@ -390,25 +390,76 @@ elif want tailnet; then
   if ! tailscale --socket="$TS_SOCK" status >/dev/null 2>&1; then
     MODE=userspace
     if [ -c /dev/net/tun ] && { [ "$(id -u)" = 0 ] || [ -n "$SUDO" ]; }; then MODE=kernel; fi
-    if pgrep -f -- "--state=$TS_STATE/tailscaled.state" >/dev/null 2>&1; then
-      MODE=$(cat "$TS_STATE/mode" 2>/dev/null || echo "$MODE") # daemon alive, only logged out
-    elif [ "$MODE" = kernel ]; then
-      rm -f "$TS_SOCK" # a recycle leaves the old socket file on the durable volume
-      $SUDO setsid nohup "$BIN/tailscaled" --state="$TS_STATE/tailscaled.state" --socket="$TS_SOCK" \
-        >"$TS_STATE/tailscaled.log" 2>&1 </dev/null &
-    else
+    # A mode a previous run recorded has already proven itself on
+    # this host; let it override the probe. In the muse sandbox the
+    # probe picks kernel (a TUN device exists and we run as root)
+    # but creating the interface is forbidden, so every cold start
+    # burned ~11s on a doomed kernel daemon before the userspace
+    # fallback — time the 2026-11-22 05:25 keeper restart did not
+    # have under load.
+    RECORDED_MODE=$(cat "$TS_STATE/mode" 2>/dev/null || echo "")
+    [ "$RECORDED_MODE" = userspace ] && MODE=userspace
+    ts_backend() { "$BIN/tailscale" --socket="$TS_SOCK" status --json 2>/dev/null |
+      python3 -c 'import json,sys; print(json.load(sys.stdin).get("BackendState",""))' 2>/dev/null || true; }
+    ts_alive() { pgrep -f -- "--state=$TS_STATE/tailscaled.state" >/dev/null 2>&1; }
+    # Rotate, never truncate: the previous daemon's log is the only
+    # evidence when a start fails (the 2026-11-22 05:25 attempt's log
+    # was destroyed by the next start's `>`). A recycle also leaves the
+    # old socket file on the durable volume, where it could pass for a
+    # live daemon.
+    ts_fresh_start() {
       rm -f "$TS_SOCK"
+      if [ -f "$TS_STATE/tailscaled.log" ]; then mv "$TS_STATE/tailscaled.log" "$TS_STATE/tailscaled.log.prev"; fi
+    }
+    ts_start_userspace() {
+      ts_fresh_start
       setsid nohup "$BIN/tailscaled" --tun=userspace-networking --state="$TS_STATE/tailscaled.state" \
         --socket="$TS_SOCK" --outbound-http-proxy-listen=127.0.0.1:3130 \
         >"$TS_STATE/tailscaled.log" 2>&1 </dev/null &
+    }
+    if ts_alive; then
+      MODE=$(cat "$TS_STATE/mode" 2>/dev/null || echo "$MODE") # daemon alive, only logged out
+    elif [ "$MODE" = kernel ]; then
+      ts_fresh_start
+      $SUDO setsid nohup "$BIN/tailscaled" --state="$TS_STATE/tailscaled.state" --socket="$TS_SOCK" \
+        >"$TS_STATE/tailscaled.log" 2>&1 </dev/null &
+      # The probe can pick kernel where creating the TUN interface is
+      # still forbidden (#12427): the daemon then exits during engine
+      # setup, possibly after its socket file appeared. Count the
+      # kernel start as up only once the daemon reports a backend
+      # state (the backend exists only after the engine does) and is
+      # still alive a moment later; otherwise fall back to userspace.
+      kernel_up=""
+      for _ in $(seq 1 20); do
+        ts_alive || break
+        grep -q 'tstun.New' "$TS_STATE/tailscaled.log" 2>/dev/null && break
+        if [ -n "$(ts_backend)" ]; then
+          sleep 2
+          ts_alive && ! grep -q 'tstun.New' "$TS_STATE/tailscaled.log" 2>/dev/null && kernel_up=1
+          break
+        fi
+        sleep 1
+      done
+      if [ -z "$kernel_up" ]; then
+        say "tailnet: the kernel TUN daemon did not come up (see $TS_STATE/tailscaled.log.prev); falling back to userspace networking"
+        $SUDO pkill -f -- "--state=$TS_STATE/tailscaled.state" 2>/dev/null || true
+        for _ in 1 2 3 4 5; do ts_alive || break; sleep 1; done
+        MODE=userspace
+        ts_start_userspace
+      fi
+    else
+      ts_start_userspace
     fi
     echo "$MODE" >"$TS_STATE/mode"
     # The node key in $TS_STATE survives a recycle, so after a restart
     # tailscaled logs itself back in; the auth key is only for a new node.
-    ts_backend() { "$BIN/tailscale" --socket="$TS_SOCK" status --json 2>/dev/null |
-      python3 -c 'import json,sys; print(json.load(sys.stdin).get("BackendState",""))' 2>/dev/null || true; }
     state=""
-    for _ in $(seq 1 30); do
+    # 60 iterations, not 30: each poll spawns tailscale + python3,
+    # and under sandbox CPU contention (concurrent lane builds) a
+    # single poll can take several seconds — 30 polls elapsed
+    # before a healthy daemon reached Running in the 2026-11-22
+    # 05:25 restart, and the phase died on the auth-key path.
+    for _ in $(seq 1 60); do
       state=$(ts_backend)
       case "$state" in Running | NeedsLogin | NoState | Stopped) [ "$state" = NoState ] || break ;; esac
       sleep 1
@@ -456,6 +507,10 @@ PY
   if [ "$MODE" = userspace ]; then
     echo 'export HTTPS_PROXY=http://127.0.0.1:3130' >"$TS_STATE/fleet-proxy.env"
     say "tailnet: userspace mode; start fleet proxy with HTTPS_PROXY from $TS_STATE/fleet-proxy.env"
+  else
+    # Fleet's tailnet tunnels prefer this file over the ambient proxy,
+    # so a kernel-mode seat must not keep one from an earlier run.
+    rm -f "$TS_STATE/fleet-proxy.env"
   fi
   EFFECTIVE_HOSTNAME=$("$BIN/tailscale" --socket="$TS_SOCK" status --json 2>/dev/null |
     python3 -c 'import json,sys; print(json.load(sys.stdin).get("Self",{}).get("HostName",""))' 2>/dev/null || true)

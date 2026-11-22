@@ -48,6 +48,24 @@ dedupe-keyed merge-watch packet per PR instead, whose job is the
 refresh the branch, merge, or close with a salvage note. Fixtures
 carry the PR set under a top-level `"pulls": {"owner/repo": [...]}`.
 
+Ready-PR shepherd fallback (#12280): the stale-PR warden is the
+merge sweep, but a sweep that depends on one scheduled job fails
+silently when that job stops running — exactly what happened in
+November 2026, when the warden's live job vanished in an environment
+recovery and ready PRs sat unmerged for days. So this reconciliation
+also diffs the repo's ready (non-draft) PRs against live queue tasks:
+the broker `/coverage` call carries the PR numbers and answers which
+of them a LIVE task names (the warden's `pr` dedupe key or the
+merge-watch key — done/cancelled tasks are not coverage, same rule
+as issues). In `--import` mode, any ready PR older than 6 hours with
+no live task naming it gets one `pr_shepherd` packet under the
+warden's own dedupe key, so the warden and this fallback dedupe onto
+a single live task whichever files first. A PR already receiving a
+merge-watch packet this run is not double-filed. Fixtures carry the
+broker's PR answer as `"uncovered_pulls": [{"number": n}]` inside
+each repo's coverage object; a fixture without it treats every PR as
+uncovered (the pre-#12280 fixture semantics).
+
 Exit codes: 0 = run completed (uncovered may be > 0 in observe mode),
 2 = configuration/usage error, 3 = a fetch or broker call failed (the
 report names which; a failure never masquerades as "0 uncovered").
@@ -153,7 +171,7 @@ def fetch_open_prs(repo: str, gh: str = "gh") -> list[dict]:
         "--paginate",
         f"repos/{repo}/pulls?state=open&per_page=100",
         "--jq",
-        '.[] | {number, title, body: ((.body // "") | .[0:2000]), head: {ref: .head.ref}}',
+        '.[] | {number, title, body: ((.body // "") | .[0:2000]), head: {ref: .head.ref}, draft: .draft, created_at: .created_at}',
     ]
     try:
         out = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
@@ -217,8 +235,15 @@ def broker_coverage(
     queue: str,
     repo: str,
     issues: list[dict],
+    pulls: list[dict] | None = None,
 ) -> dict:
-    body = json.dumps({"queue": queue, "repo": repo, "issues": issues}).encode()
+    request: dict = {"queue": queue, "repo": repo, "issues": issues}
+    if pulls is not None:
+        # #12280: the broker answers PR coverage (covered_pulls /
+        # uncovered_pulls) for the PR numbers it is given, under the
+        # same live-task rule as issues.
+        request["pulls"] = [{"number": pr["number"]} for pr in pulls]
+    body = json.dumps(request).encode()
     req = urllib.request.Request(
         broker_url.rstrip("/") + "/coverage",
         data=body,
@@ -391,6 +416,144 @@ def merge_watch_packet(repo: str, issue: dict, pr: dict, checked_at: str) -> dic
     }
 
 
+def shepherd_packet(repo: str, pr: dict, checked_at: str) -> dict:
+    """One `pr_shepherd` packet for a ready PR no live task names (#12280).
+
+    Keyed with the stale-PR warden's own dedupe key
+    (`repo-health:v1:pr:<repo>:pr:<n>`), so this fallback and the
+    warden dedupe onto a single live task whichever files first. The
+    done rule is the warden's, stated in the packet: the task is done
+    only when the PR is merged or closed with a reason.
+    """
+    pr_number = pr["number"]
+    pr_url = f"https://github.com/{repo}/pull/{pr_number}"
+    title = pr.get("title") or f"PR {pr_number}"
+    return {
+        "title": f"Shepherd ready PR #{pr_number}: {title}"[:180],
+        "body": (
+            f"Filed by the standing queue coverage reconciliation (#12280 "
+            f"fallback): {pr_url} is a ready (non-draft) PR older than 6 hours "
+            "with no live task naming it — the fallback for when the stale-PR "
+            "warden has not run. Shepherd it to a finish: answer or fix every "
+            "review finding, re-check mergeability against current main, "
+            "refresh the branch if the change is still desired, and merge it "
+            "when verified — or close it with a reason (salvage note per "
+            "protocol §8) if main has superseded it. This task is done only "
+            "when the PR is merged or closed with a reason recorded."
+        ),
+        "priority": 40,
+        "dedupe_key": f"repo-health:v1:pr:{repo}:pr:{pr_number}",
+        "payload": {
+            "schema": "repo-task/v1",
+            "kind": "pr_shepherd",
+            "repo": repo,
+            "queue": None,  # filled by the caller with the pilot queue
+            # PR references, not bare numbers: the queue validator
+            # requires every prs element to be an object with a
+            # positive-integer `number` (#5549).
+            "prs": [{"number": pr_number, "url": pr_url, "title": title}],
+            "pr": {
+                "number": pr_number,
+                "url": pr_url,
+                "title": title,
+                "branch": pr.get("branch")
+                or ((pr.get("head") or {}).get("ref") or ""),
+                "state_checked_at": checked_at,
+            },
+            "problem": (
+                "A ready PR with no live task naming it has no owner for its "
+                "review findings or its merge, so it sits until the branch "
+                "drifts into conflict. The stale-PR warden normally files "
+                "this task; the coverage reconciliation is its fallback "
+                "(#12280)."
+            ),
+            "evidence": [
+                f"Coverage reconciliation {checked_at}: PR #{pr_number} is "
+                "ready (non-draft), older than 6 hours, and no live task "
+                "names it",
+                pr_url,
+            ],
+            "acceptance": [
+                "Every review finding on the PR is answered or fixed",
+                "Mergeability re-checked against current main immediately before merging",
+                "The PR is merged when verified, OR closed with a reason recorded (salvage note per protocol §8 if superseded)",
+                "The PR's change is NOT re-implemented by a fresh task",
+            ],
+            "tests": [
+                "Merge / mergeable verdict recorded on the task; if merged, the PR's closing-keyword disposition of its issue is verified",
+            ],
+            "scope": {
+                "include": [f"Shepherd existing PR {repo}#{pr_number} to merged or closed-with-reason"],
+                "exclude": [
+                    "Re-implementing the PR's change",
+                    "Unrelated issues, pull requests, or repositories",
+                ],
+            },
+            "risk": {"level": "low", "flags": ["pr-shepherd-fallback"]},
+            "priority_reason": (
+                "Warden parity (40): a ready PR older than 6 hours with no "
+                "live owner, filed by coverage reconciliation (#12280)."
+            ),
+            "timebox_minutes": 45,
+            "max_attempts": 4,
+            "context_refs": [pr_url],
+            "dedupe": {
+                "checked_at": checked_at,
+                "basis": "Ready-PR shepherd fallback (#12280): ready PR older than 6h with no live task naming it at check time; warden dedupe key, so the warden and this fallback share one live task per PR.",
+            },
+        },
+    }
+
+
+# A ready PR becomes a shepherd candidate once it is this old. Six
+# hours matches #12280's done-when: long enough that a producing lane
+# has had its chance to own the merge, short enough that the branch
+# has not drifted far.
+SHEPHERD_MIN_AGE_HOURS = 6
+
+
+def _parse_ts(value: str) -> datetime:
+    return datetime.fromisoformat(value.replace("Z", "+00:00"))
+
+
+def ready_shepherd_candidates(
+    pulls: list[dict],
+    uncovered_pull_numbers: set[int],
+    watch_pull_numbers: set[int],
+    checked_at: str,
+) -> list[dict]:
+    """Ready PRs the fallback files a shepherd for (#12280).
+
+    Oracle: the issue's done-when — a `pr_shepherd` task exists for
+    each ready PR older than 6 hours, checked by the queue store
+    against `gh pr list`. A PR qualifies iff it is non-draft, its
+    created_at is at least SHEPHERD_MIN_AGE_HOURS before the check,
+    the broker's live-task diff names no live task for it (it is in
+    `uncovered_pull_numbers`), and it is not already receiving a
+    merge-watch packet this run. A PR whose draft state or age cannot
+    be proven from the enumeration is never filed on — the same
+    fail-closed rule as the fetch paths.
+    """
+    now = _parse_ts(checked_at)
+    candidates: list[dict] = []
+    for pr in pulls:
+        number = pr.get("number")
+        if number not in uncovered_pull_numbers:
+            continue
+        if number in watch_pull_numbers:
+            continue
+        if pr.get("draft") is not False:
+            continue
+        created = pr.get("created_at")
+        if not created:
+            continue
+        age = now - _parse_ts(created)
+        if age.total_seconds() < SHEPHERD_MIN_AGE_HOURS * 3600:
+            continue
+        candidates.append(pr)
+    return candidates
+
+
 def enqueue_packet(
     packet: dict,
     queue: str,
@@ -408,7 +571,9 @@ def enqueue_packet(
     """
     payload = packet["payload"]
     repo_slug = payload["repo"].replace("/", "-")
-    number = payload["issue"]["number"]
+    # Issue packets key the temp file on the issue; PR packets
+    # (merge-watch, shepherd) key it on the PR.
+    number = (payload.get("issue") or payload["pr"])["number"]
     fd, tmp_name = tempfile.mkstemp(
         prefix=f"coverage-{repo_slug}-{number}-",
         suffix=".json",
@@ -470,10 +635,13 @@ def render_report(
     total_imported = sum(r["imported"] for r in results)
     total_pr = sum(r.get("pr_covered", 0) for r in results)
     total_watch = sum(r.get("watch_imported", 0) for r in results)
+    total_shepherd = sum(len(r.get("shepherd_candidates", [])) for r in results)
+    total_shepherd_imported = sum(r.get("shepherd_imported", 0) for r in results)
     lines += [
         "",
         f"**Total uncovered: {total_uncovered}** · imported this run: {total_imported}",
         f"Open-PR covered (#4951): {total_pr} · merge-watch imported this run: {total_watch}",
+        f"Ready-PR shepherd candidates (#12280): {total_shepherd} · shepherd imported this run: {total_shepherd_imported}",
         "",
     ]
     if errors:
@@ -496,6 +664,17 @@ def render_report(
         lines += ["## Uncovered issues", ""]
         for r, i in uncovered_any:
             lines.append(f"- {r['repo']}#{i['number']} — {i.get('title', '')}")
+        lines.append("")
+    shepherd_any = [
+        (r, p) for r in results for p in r.get("shepherd_candidates", [])
+    ]
+    if shepherd_any:
+        lines += [
+            "## Ready PRs with no live task — shepherd candidates (#12280)",
+            "",
+        ]
+        for r, p in shepherd_any:
+            lines.append(f"- {r['repo']}#{p['number']} — {p.get('title', '')}")
         lines.append("")
     return "\n".join(lines)
 
@@ -568,8 +747,10 @@ def main(argv: list[str] | None = None) -> int:
                 pulls = (fixture.get("pulls") or {}).get(repo, [])
             else:
                 issues = fetch_open_issues(repo)
-                cov = broker_coverage(args.broker_url, token, queue, repo, issues)
                 pulls = fetch_open_prs(repo)
+                cov = broker_coverage(
+                    args.broker_url, token, queue, repo, issues, pulls
+                )
         except (FetchError, KeyError) as exc:
             errors.append(str(exc))
             continue
@@ -612,6 +793,54 @@ def main(argv: list[str] | None = None) -> int:
                         f"merge-watch enqueue failed for {repo}#{issue['number']}: {detail}"
                     )
 
+        # #12280: ready PRs older than 6h with no live task naming
+        # them get a warden-keyed shepherd packet. The broker's PR
+        # diff is the authority on "live task naming it"; a live-mode
+        # answer without a PR section means the broker predates the
+        # PR half — an error, never a licence to file blind.
+        if fixture:
+            fixture_uncovered = cov.get("uncovered_pulls")
+            uncovered_pull_numbers = (
+                {p["number"] for p in fixture_uncovered}
+                if fixture_uncovered is not None
+                else {pr["number"] for pr in pulls}
+            )
+            pr_diff_known = True
+        else:
+            live_uncovered = cov.get("uncovered_pulls")
+            pr_diff_known = live_uncovered is not None
+            uncovered_pull_numbers = (
+                {p["number"] for p in live_uncovered} if pr_diff_known else set()
+            )
+            if not pr_diff_known:
+                errors.append(
+                    f"broker /coverage returned no PR coverage for {queue}: "
+                    "ready-PR shepherd fallback skipped for this repo"
+                )
+        shepherd_candidates = (
+            ready_shepherd_candidates(
+                pulls,
+                uncovered_pull_numbers,
+                {i["pr"]["number"] for i in pr_covered},
+                checked_at,
+            )
+            if pr_diff_known
+            else []
+        )
+        shepherd_imported = 0
+        if do_import and shepherd_candidates:
+            for pr in shepherd_candidates:
+                packet = shepherd_packet(repo, pr, checked_at)
+                ok, detail = enqueue_packet(
+                    packet, queue, args.fleet, args.broker_url, args.token_file
+                )
+                if ok:
+                    shepherd_imported += 1
+                else:
+                    errors.append(
+                        f"shepherd enqueue failed for {repo}#{pr['number']}: {detail}"
+                    )
+
         results.append(
             {
                 "repo": repo,
@@ -623,6 +852,8 @@ def main(argv: list[str] | None = None) -> int:
                 "uncovered": len(uncovered),
                 "imported": imported,
                 "watch_imported": watch_imported,
+                "shepherd_candidates": shepherd_candidates,
+                "shepherd_imported": shepherd_imported,
                 "uncovered_issues": uncovered,
             }
         )

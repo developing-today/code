@@ -52,6 +52,15 @@ export interface Config {
   /** The signed APK the console hands to the signed-in owner, if the
    * file exists. */
   androidApk: string;
+  /** Where linked phones are kept (hashes of their tokens, never the tokens). */
+  devicesFile: string;
+  /** The public address the edge answers on (https, no path), or null
+   * when this host is not behind one and reports to nobody. */
+  edgeUrl: string | null;
+  /** This host's key pair for signing what it reports to the edge. */
+  edgeKeyFile: string;
+  /** What became of each action the edge held for this host. */
+  edgeDoneFile: string;
   /** The dashboard's decision-set store: the questions waiting on the
    * owner, and the per-set tokens that authorise an answer. */
   decisionsFile: string;
@@ -193,6 +202,31 @@ export function readConfig(
     dashboardUrl = parsed.origin;
   }
 
+  let edgeUrl: string | null = env.PM_CONSOLE_EDGE_URL ?? null;
+  if (edgeUrl === "") edgeUrl = null;
+  if (edgeUrl !== null) {
+    let parsed: URL | null = null;
+    try {
+      parsed = new URL(edgeUrl);
+    } catch {
+      // reported below
+    }
+    if (
+      !parsed ||
+      parsed.protocol !== "https:" ||
+      parsed.pathname !== "/" ||
+      parsed.search !== "" ||
+      parsed.hash !== "" ||
+      parsed.username !== "" ||
+      parsed.password !== ""
+    ) {
+      throw new ConfigError(
+        `PM_CONSOLE_EDGE_URL: expected https://<host> with no path, got ${JSON.stringify(edgeUrl)}`,
+      );
+    }
+    edgeUrl = parsed.origin;
+  }
+
   return {
     port: port(env, "PM_CONSOLE_PORT", 4872),
     bind,
@@ -218,6 +252,10 @@ export function readConfig(
     androidPackage: env.PM_CONSOLE_ANDROID_PACKAGE ?? "today.developing.pmconsole",
     androidFingerprints: fingerprints,
     androidApk: env.PM_CONSOLE_ANDROID_APK ?? `${home}/.local/state/pm-console/android/pm-console.apk`,
+    devicesFile: env.PM_CONSOLE_DEVICES_FILE ?? `${home}/.local/state/pm-console/devices.json`,
+    edgeUrl,
+    edgeKeyFile: env.PM_CONSOLE_EDGE_KEY_FILE ?? `${home}/.local/state/pm-console/edge-key.json`,
+    edgeDoneFile: env.PM_CONSOLE_EDGE_DONE_FILE ?? `${home}/.local/state/pm-console/edge-done.json`,
     decisionsFile: env.PM_CONSOLE_DECISIONS_FILE ?? `${home}/.local/state/pm-aggregator/decisions.json`,
     promptLabel: env.PM_CONSOLE_PROMPT_LABEL ?? "owner/prompt",
     needsRepos: list(env, "PM_CONSOLE_NEEDS_REPOS", [

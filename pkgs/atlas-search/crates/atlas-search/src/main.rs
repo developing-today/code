@@ -31,13 +31,14 @@ use atlas_core::filters::{Filters, split_csv};
 use atlas_core::shards::{ShardedBackend, TierCeiling, open_from_spec};
 use atlas_core::turso::{TURSO_HOST, resolve_turso_token};
 use atlas_core::{
-    AtlasEmbedder, CachingEmbedder, Error as CoreError, FeedbackInput, FixedEmbedder,
-    JsonlFeedbackSink, JsonlTraceSink, LocalBackend, QueryEmbedder, QueryEmbeddingCache,
-    SearchBackend, SearchMode, SearchOptions, TraceContext, TraceDocument, TursoBackend,
-    VectorBackend, Vote, aggregate_traces, feedback_for, ingest_traces, load_feedback_dir,
-    load_feedback_refs, load_feedback_votes, load_query_feedback_votes, load_query_requesters,
-    normalise_records, record_feedback, run_get_chunk, run_retention, run_search_traced,
-    search_traces, valid_civil_date, weekly_report, write_normalised, write_report,
+    AtlasEmbedder, CachingEmbedder, DisclosureContext, Error as CoreError, FeedbackInput,
+    FixedEmbedder, JsonlFeedbackSink, JsonlTraceSink, LocalBackend, QueryEmbedder,
+    QueryEmbeddingCache, SearchBackend, SearchMode, SearchOptions, TraceContext, TraceDocument,
+    TursoBackend, VectorBackend, Vote, aggregate_traces, feedback_for, ingest_traces,
+    load_feedback_dir, load_feedback_refs, load_feedback_votes, load_query_feedback_votes,
+    load_query_requesters, normalise_records, record_feedback, run_get_chunk_with_context,
+    run_retention, run_search_traced, search_traces, valid_civil_date, weekly_report,
+    write_normalised, write_report,
 };
 use atlas_proto::{
     FilterSpec, QueryVariant, SearchMode as ProtoSearchMode, SearchParametersV1, SearchRequest,
@@ -365,6 +366,9 @@ struct SearchArgs {
     /// ceiling in shareable<personal<local-only<secret-bearing (default personal; secret-bearing must be spelled out)
     #[arg(long, default_value = "personal")]
     max_sensitivity: String,
+    /// disclosure context of the destination surface (#12404): fleet-internal (default; this CLI serves fleet surfaces), hosted-per-user, public-surface, or local-owner. The context ceiling intersects --max-sensitivity; neither widens the other, and excluded content is never served
+    #[arg(long, default_value = "fleet-internal")]
+    context: String,
     /// roll chunk hits up to sessions (score = best chunk, plus hit count)
     #[arg(long)]
     group_by_session: bool,
@@ -445,6 +449,9 @@ struct GetChunkArgs {
     chunk_id: i64,
     #[arg(long, default_value_t = 0)]
     neighbors: i64,
+    /// disclosure context of the destination surface (#12404): local-owner (default; this is the owner's explicit-id tool), fleet-internal, hosted-per-user, or public-surface
+    #[arg(long, default_value = "local-owner")]
+    context: String,
     /// human-readable output instead of JSON
     #[arg(long)]
     text: bool,
@@ -462,6 +469,29 @@ fn map_err(e: CoreError) -> CliError {
         CoreError::Fatal(m) => (2, m),
         CoreError::Backend(m) | CoreError::Embed(m) => (1, m),
     }
+}
+
+/// Resolve a `--context` value (#12404). An unknown context is
+/// a usage error (exit 2), never a silent default: the caller
+/// stated a destination, and guessing at it could widen
+/// disclosure. (The wire protocol's absent/unknown rule —
+/// fail closed to public-surface — applies to requests that
+/// arrive without a stated context, not to a CLI flag the user
+/// typed.)
+fn parse_context(value: &str) -> Result<DisclosureContext, CliError> {
+    DisclosureContext::from_name(value).ok_or_else(|| {
+        (
+            2,
+            format!(
+                "invalid --context {value:?}: expected one of {}",
+                DisclosureContext::all()
+                    .iter()
+                    .map(|c| c.name())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+        )
+    })
 }
 
 /// get-chunk's not-found is the Python's one `die(..., code=1)`.
@@ -746,6 +776,7 @@ fn proto_search_request(args: &SearchArgs) -> SearchRequest {
             VectorBackendChoice::IndexFixed => ProtoVectorBackend::IndexFixed,
         },
         page_limit: None,
+        context: Some(args.context.clone()),
     }
 }
 
@@ -899,6 +930,9 @@ fn cmd_search(args: SearchArgs) -> Result<(), CliError> {
     parameters_from_args(&args)
         .validate(expand)
         .map_err(|m| (2, m))?;
+    // The disclosure context validates up front too (#12404),
+    // so a bad value fails identically on every path.
+    let context = parse_context(&args.context)?;
     let mut note: Option<String> = None;
     // The shard fan-out is standalone-only: the service does not
     // honor it yet, so a via-service answer would silently come
@@ -960,6 +994,7 @@ fn cmd_search(args: SearchArgs) -> Result<(), CliError> {
             VectorBackendChoice::IndexFixed => VectorBackend::IndexFixed,
         },
         parameters: parameters_from_args(&args),
+        context,
     };
     // Trace capture (issue #9973): every executed search persists
     // an atlas-query-trace/v1 record and returns its query_id in
@@ -985,11 +1020,12 @@ fn cmd_search(args: SearchArgs) -> Result<(), CliError> {
 
 fn cmd_get_chunk(args: GetChunkArgs) -> Result<(), CliError> {
     let neighbors = count("--neighbors", args.neighbors, 0, Some(100))?;
+    let context = parse_context(&args.context)?;
     let note = via_service_note_get_chunk(&args.backend);
     // The Python's get-chunk takes no vector args: pick_backend
     // sees the defaults (getattr fallbacks in its main()).
     let backend = pick_backend(&args.backend, atlas_core::DEFAULT_VEC_TABLE, 0)?;
-    let mut out = run_get_chunk(backend.as_ref(), args.chunk_id, neighbors)
+    let mut out = run_get_chunk_with_context(backend.as_ref(), args.chunk_id, neighbors, context)
         .map_err(|e| map_get_chunk_err(e, args.chunk_id))?;
     if let Some(note) = note {
         push_note(&mut out, note);

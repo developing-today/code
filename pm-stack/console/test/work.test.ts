@@ -505,6 +505,48 @@ describe("what the owner asks for in his own words", () => {
     await expect(work.askReply({ issue: "12501/comments", text: "x" })).rejects.toThrow(OpError);
   });
 
+  test("a custom enqueue hook takes the queue task instead of the laptop's command", async () => {
+    const w = world({
+      commands: (argv) =>
+        argv.includes(`repos/${REPO}/issues`) ? JSON.stringify({ number: 12501, html_url: "https://x/12501" }) : "{}",
+    });
+    const work = new Work(w.ops, undefined, () => new Date("2026-11-22T06:00:00Z"));
+    const held: unknown[] = [];
+    const hook = async (packet: unknown) => {
+      held.push(packet);
+      return { code: 0, stdout: "", stderr: "" };
+    };
+    // A new prompt: the issue is filed at once, the task goes to the hook.
+    expect(await work.ask({ text: "Do the docs" }, hook)).toEqual({
+      issue: 12501,
+      url: "https://x/12501",
+      queued: true,
+    });
+    expect(held).toHaveLength(1);
+    expect(held[0]).toEqual(
+      promptPacket(REPO, "repo-health-code-pilot", 12501, "Do the docs", "2026-11-22T06:00:00.000Z"),
+    );
+    expect(w.calls.some((c) => c.argv[1] === "queue")).toBe(false);
+    // A reply: the comment is posted at once, the task goes to the hook.
+    const issue = (state: string, labels: string[]) =>
+      JSON.stringify({ state, labels: labels.map((name) => ({ name })) });
+    const r = world({
+      commands: (argv) =>
+        argv[3] === `repos/${REPO}/issues/12501` ? issue("open", ["owner/prompt"]) : JSON.stringify({ id: 777 }),
+    });
+    const replyWork = new Work(r.ops, undefined, () => new Date("2026-11-22T06:00:00Z"));
+    expect(await replyWork.askReply({ issue: 12501, text: "also do the docs" }, hook)).toEqual({
+      issue: 12501,
+      queued: true,
+    });
+    expect(held).toHaveLength(2);
+    expect(held[1]).toMatchObject({
+      priority: 10,
+      dedupe_key: `repo-health:v1:triage:${REPO}:issue:12501`,
+    });
+    expect(r.calls.some((c) => c.argv[1] === "queue")).toBe(false);
+  });
+
   test("each prompt shows where it stands", async () => {
     const found = (n: number, state: string, comments: number) => ({
       number: n,
@@ -556,25 +598,49 @@ describe("what the owner asks for in his own words", () => {
       [5, "waiting", null, "words 5", []],
     ]);
     expect(asks[3].replies[1].text).toBe("and I say");
-    // A long thread is read from its last page, and a bot that only links
-    // the issue somewhere else is not the fleet answering.
+    // A long thread is read from its last page backwards until six replies
+    // are in hand, and a bot that only links the issue somewhere else is
+    // not the fleet answering.
+    const real = (n: number) => ({ body: `reply ${n}`, created_at: "2026-11-22T02:00:00Z", user: { type: "User" } });
+    const bot = {
+      body: "[CODE-1](https://kaneo.example/task/1)",
+      created_at: "2026-11-22T02:01:00Z",
+      user: { type: "Bot" },
+    };
+    const pages: Record<string, unknown[]> = {
+      // 250 comments: the last page holds one answer and a bot's link, the page before it the rest.
+      "7:3": [real(201), bot],
+      "7:2": [real(101), real(102), real(103), real(104), real(105), real(106), real(107)],
+      "7:1": [real(1)],
+      // 101 comments: the answer is the last comment of page 1, and page 2 is only the bot.
+      "8:2": [bot],
+      "8:1": [real(99), real(100)],
+    };
     const long = world({
-      commands: (argv) =>
-        argv[3].includes("/issues?labels=")
-          ? JSON.stringify([found(7, "open", 250)])
-          : JSON.stringify([
-              { body: "the real answer", created_at: "2026-11-22T02:00:00Z", user: { type: "User" } },
-              {
-                body: "[CODE-1](https://kaneo.example/task/1)",
-                created_at: "2026-11-22T02:01:00Z",
-                user: { type: "Bot" },
-              },
-            ]),
+      commands: (argv) => {
+        if (argv[3].includes("/issues?labels=")) return JSON.stringify([found(7, "open", 250), found(8, "open", 101)]);
+        const m = /issues\/(\d+)\/comments\?per_page=100&page=(\d+)$/.exec(argv[3]);
+        return JSON.stringify(m ? (pages[`${m[1]}:${m[2]}`] ?? []) : []);
+      },
     });
-    const [thread] = await new Work(long.ops).asks();
-    expect(long.gh()[1]).toEqual([`repos/${REPO}/issues/7/comments?per_page=100&page=3`]);
-    expect(thread.replies.map((r) => r.text)).toEqual(["the real answer"]);
-    expect(thread.status).toBe("answered");
+    const [deep, boundary] = await new Work(long.ops).asks();
+    expect(long.gh().slice(1)).toEqual([
+      [`repos/${REPO}/issues/7/comments?per_page=100&page=3`],
+      [`repos/${REPO}/issues/7/comments?per_page=100&page=2`],
+      [`repos/${REPO}/issues/8/comments?per_page=100&page=2`],
+      [`repos/${REPO}/issues/8/comments?per_page=100&page=1`],
+    ]);
+    // Six replies, oldest first, across the page boundary; the bot's link is not one of them.
+    expect(deep.replies.map((r) => r.text)).toEqual([
+      "reply 103",
+      "reply 104",
+      "reply 105",
+      "reply 106",
+      "reply 107",
+      "reply 201",
+    ]);
+    expect(boundary.replies.map((r) => r.text)).toEqual(["reply 99", "reply 100"]);
+    expect([deep.status, boundary.status]).toEqual(["answered", "answered"]);
     // Threads are read again only when the issue has changed.
     await work.asks();
     expect(commentReads).toBe(3);
@@ -702,7 +768,7 @@ describe("the interface's endpoints", () => {
       docs,
       actions: actions(w.ops, work),
       identify: async () => {
-        if (who === "owner") return { via: "cloudflare-access", email: "drewrypope@gmail.com" };
+        if (who === "owner") return { via: "cloudflare-access", email: "owner@example.com" };
         throw new (await import("../src/auth.ts")).AuthError(401, "sign-in required");
       },
       audit: async (e) => {
