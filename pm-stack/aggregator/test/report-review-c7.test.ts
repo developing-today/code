@@ -48,6 +48,24 @@ describe("C7 report review UI", () => {
     expect(html).not.toContain("Record resolution");
   });
 
+  test("shows restricted late-operation controls only after a report is closed", () => {
+    const closed = record("closed", "Frozen prose.", "2026-11-21T13:00:00.000Z");
+    const beforeClose = renderReportReview([], 1, new Date("2026-11-21T13:59:00.000Z"), [closed]);
+    expect(beforeClose).not.toContain("<form data-report-late-update");
+
+    const afterClose = renderReportReview([], 1, new Date("2026-11-21T14:00:00.000Z"), [closed]);
+    for (const operation of ["quote", "append", "banner", "event-log"]) {
+      expect(afterClose).toContain(`value="${operation}"`);
+    }
+    expect(afterClose).not.toContain('value="feedback"');
+    expect(afterClose).toContain("<form data-report-late-update");
+    expect(afterClose).toContain("/api/reports/late-update");
+    expect(afterClose).toContain("Append late update");
+
+    const finalized = renderReportReview([], 1, new Date("2026-11-21T14:00:00.000Z"), [closed], new Set([closed.period.id]));
+    expect(finalized).toContain('value="feedback"');
+  });
+
   test("renders a blank-line deletion differently from an absent diff side", () => {
     const stored = record("stored", "a\n\nb\nold", "2026-11-21T13:00:00.000Z");
     const rendered = record("rendered", "a\nb\nnew", "2026-11-21T14:00:00.000Z");

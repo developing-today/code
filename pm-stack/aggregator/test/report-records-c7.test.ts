@@ -8,6 +8,7 @@ import {
   appendReportSnapshot,
   appendReportSnapshotCorrection,
   appendReportBlockConflictResolution,
+  appendReportLateUpdate,
   assertReportUpdateAllowed,
   defaultReportRecordsFile,
   makeReportRecord,
@@ -279,6 +280,103 @@ describe("C7 canonical report records", () => {
     );
     expect(() => assertReportUpdateAllowed(period, "append", "2026-11-22T14:00:00.000Z")).not.toThrow();
     expect(() => assertReportUpdateAllowed(period, "event-log", "2026-11-23T00:00:00.000Z")).not.toThrow();
+  });
+
+  test("applies each permitted late operation as an append-only report version", async () => {
+    const file = await storePath();
+    const record = makeReportRecord({
+      period: {
+        id: "daily:2026-11-21:America/Chicago",
+        kind: "daily",
+        timezone: "America/Chicago",
+        periodStart: "2026-11-21T06:00:00.000Z",
+        periodEnd: "2026-11-22T06:00:00.000Z",
+        softCloseAt: "2026-11-22T14:00:00.000Z",
+      },
+      asOf: "2026-11-22T05:45:00.000Z",
+      templateVersion: "daily-v1",
+      sourceCursor: "closed-report",
+      sources: [],
+      blocks: [{ id: "summary", text: "Frozen report prose.", relatedAt: "2026-11-22T05:40:00.000Z" }],
+    }, "2026-11-22T13:59:00.000Z");
+    await appendReportRecord(file, record);
+    await expect(appendReportLateUpdate(file, record, "feedback", {
+      id: "premature-feedback",
+      text: "Feedback before finalization.",
+      relatedAt: "2026-11-22T14:00:00.000Z",
+    }, "2026-11-22T14:00:01.000Z")).rejects.toThrow(/requires a finalized snapshot/);
+    await appendReportSnapshot(file, record, "2026-11-22T14:00:00.000Z");
+
+    const operations = ["quote", "append", "banner", "event-log", "feedback"] as const;
+    let current = record;
+    for (const [index, operation] of operations.entries()) {
+      const result = await appendReportLateUpdate(file, current, operation, {
+        id: `late-${operation}`,
+        text: `${operation} added after close`,
+        relatedAt: `2026-11-22T14:0${index}:00.000Z`,
+      }, `2026-11-22T14:0${index}:01.000Z`, operation === "quote" ? {
+        id: "late-source",
+        uri: "gh:issue/12350",
+        observedAt: "2026-11-22T14:00:00.000Z",
+      } : undefined);
+      expect(result.inserted).toBe(true);
+      expect(result.record.blocks.some((block) => block.id === `late-${operation}` && block.updateOperation === operation)).toBe(true);
+      current = result.record;
+    }
+
+    expect(current.blocks[0]?.id).toBe("late-banner");
+    expect((await readReportRecords(file))).toHaveLength(operations.length + 1);
+    expect((await readCurrentReportRecords(file))[0]).toEqual(current);
+    expect((await readReportRecords(file))[0]?.blocks[0]?.text).toBe("Frozen report prose.");
+
+    const retry = await appendReportLateUpdate(file, record, "quote", {
+      id: "late-quote",
+      text: "quote added after close",
+      relatedAt: "2026-11-22T14:00:00.000Z",
+    }, "2026-11-22T14:10:00.000Z", {
+      id: "late-source",
+      uri: "gh:issue/12350",
+      observedAt: "2026-11-22T14:00:00.000Z",
+    });
+    expect(retry.inserted).toBe(false);
+    expect(retry.record.generatedAt).toBe("2026-11-22T14:00:01.000Z");
+
+    const earlierEvent = await appendReportLateUpdate(file, current, "event-log", {
+      id: "late-event-earlier",
+      text: "Earlier chronological event.",
+      relatedAt: "2026-11-22T14:02:30.000Z",
+    }, "2026-11-22T14:11:00.000Z");
+    const eventIds = earlierEvent.record.blocks.filter((block) => block.updateOperation === "event-log").map((block) => block.id);
+    expect(eventIds).toEqual(["late-event-earlier", "late-event-log"]);
+  });
+
+  test("rejects a full report rewrite after soft close while allowing an initial report", async () => {
+    const file = await storePath();
+    const period = {
+      id: "daily:2026-11-21:America/Chicago",
+      kind: "daily" as const,
+      timezone: "America/Chicago" as const,
+      periodStart: "2026-11-21T06:00:00.000Z",
+      periodEnd: "2026-11-22T06:00:00.000Z",
+      softCloseAt: "2026-11-22T14:00:00.000Z",
+    };
+    const first = makeReportRecord({
+      period,
+      asOf: "2026-11-22T05:45:00.000Z",
+      templateVersion: "daily-v1",
+      sourceCursor: "first-after-close",
+      sources: [],
+      blocks: [{ id: "summary", text: "Initial report.", relatedAt: "2026-11-22T05:40:00.000Z" }],
+    }, "2026-11-22T14:00:01.000Z");
+    await appendReportRecord(file, first);
+    const rewrite = makeReportRecord({
+      ...first,
+      sourceCursor: "rewrite-after-close",
+      blocks: [{ id: "summary", text: "Rewritten closed prose.", relatedAt: "2026-11-22T05:40:00.000Z" }],
+    }, "2026-11-22T14:01:00.000Z");
+
+    await expect(appendReportRecord(file, rewrite)).rejects.toThrow(/not allowed after soft close/);
+    expect(await readCurrentReportRecords(file)).toEqual([first]);
   });
 
   test("keeps prior cursor versions while projecting the latest and flags substantive block conflicts", async () => {

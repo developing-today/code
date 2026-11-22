@@ -240,11 +240,15 @@ import { SLO_DEFINITIONS, summarizeSloFacet, type SloFacetSummary } from "./slo.
 import { computeFlowAnalytics } from "./flow-analytics.ts";
 import {
   appendReportBlockConflictResolution,
+  appendReportLateUpdate,
   compareReportBlock,
   defaultReportRecordsFile,
   ReportRecordConflictError,
   readReportRecords,
+  readReportSnapshots,
   selectCurrentReportRecords,
+  type ReportLateUpdateOperation,
+  type ReportRecordSource,
 } from "./report-records.ts";
 import { renderReportReview, reportBlockReviews } from "./report-review.ts";
 import {
@@ -2115,6 +2119,7 @@ async function handler(req: Request): Promise<Response> {
   if (req.method === "GET" && (path === "/reports" || path === "/api/reports.json")) {
     try {
       const records = await readReportRecords(reportRecordsLocation);
+      const snapshots = await readReportSnapshots(reportRecordsLocation);
       const current = selectCurrentReportRecords(records);
       if (path === "/api/reports.json") {
         return json({
@@ -2128,7 +2133,13 @@ async function handler(req: Request): Promise<Response> {
           })),
         });
       }
-      return html(renderReportReview(reportBlockReviews(records, current), records.length));
+      return html(renderReportReview(
+        reportBlockReviews(records, current),
+        records.length,
+        new Date(),
+        current,
+        new Set(snapshots.map((snapshot) => snapshot.record.period.id)),
+      ));
     } catch {
       if (path === "/api/reports.json") return json({ error: "report records unavailable" }, 503);
       return html(`<h1>Report review unavailable</h1><p>Could not read retained report records.</p>`, 503);
@@ -2204,6 +2215,66 @@ async function handler(req: Request): Promise<Response> {
       const status = error instanceof ReportRecordConflictError || message.startsWith("stale report block comparison:")
         ? 409
         : /^(report block comparison|compared report record|resolvedAt must be later|report operation |(?:stored|rendered|edited|combined) report block resolution)/.test(message)
+          ? 400
+          : 500;
+      return json({ error: message }, status);
+    }
+  }
+
+  if (req.method === "POST" && path === "/api/reports/late-update") {
+    const access = await enforceAccessAuthor(req, { kind: "drew", id: "drew", label: "Drew" });
+    if (!access.ok || !access.verified || access.author.kind !== "drew") {
+      return json({ error: "verified Access owner required" }, 403);
+    }
+    let body: Record<string, unknown>;
+    try {
+      const parsed = await readJsonBody(req);
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return json({ error: "invalid late update body" }, 400);
+      body = parsed as Record<string, unknown>;
+    } catch {
+      return json({ error: "invalid late update body" }, 400);
+    }
+    const reportRecordId = typeof body.reportRecordId === "string" ? body.reportRecordId : "";
+    const operation = body.operation;
+    const blockId = typeof body.blockId === "string" ? body.blockId : "";
+    const text = typeof body.text === "string" ? body.text : "";
+    const relatedAt = typeof body.relatedAt === "string" ? body.relatedAt : "";
+    const lateOperations = ["quote", "append", "banner", "event-log", "feedback"];
+    if (!reportRecordId || !blockId || !text.trim() || !relatedAt || typeof operation !== "string" || !lateOperations.includes(operation)) {
+      return json({ error: "reportRecordId, a permitted operation, blockId, text and relatedAt are required" }, 400);
+    }
+    let source: ReportRecordSource | undefined;
+    if (body.source !== undefined) {
+      if (!body.source || typeof body.source !== "object" || Array.isArray(body.source)) return json({ error: "invalid late update source" }, 400);
+      const candidate = body.source as Record<string, unknown>;
+      if (typeof candidate.id !== "string" || typeof candidate.uri !== "string" || typeof candidate.observedAt !== "string") {
+        return json({ error: "late update source requires id, uri and observedAt" }, 400);
+      }
+      source = { id: candidate.id, uri: candidate.uri, observedAt: candidate.observedAt };
+    }
+    let records;
+    try {
+      records = await readReportRecords(reportRecordsLocation);
+    } catch {
+      return json({ error: "report records unavailable" }, 503);
+    }
+    const current = records.find((record) => record.id === reportRecordId);
+    if (!current) return json({ error: "unknown report record" }, 404);
+    try {
+      const result = await appendReportLateUpdate(
+        reportRecordsLocation,
+        current,
+        operation as ReportLateUpdateOperation,
+        { id: blockId, text, relatedAt },
+        new Date().toISOString(),
+        source,
+      );
+      return json({ inserted: result.inserted, record: result.record });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "late report update failed";
+      const status = error instanceof ReportRecordConflictError || message.startsWith("stale report block comparison:")
+        ? 409
+        : /^(report operation |quote report update|feedback report update|each late report update|block relatedAt|source observedAt|late update source|duplicate report block)/.test(message)
           ? 400
           : 500;
       return json({ error: message }, status);

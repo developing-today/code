@@ -21,6 +21,7 @@ export interface ReportRecordBlock {
   links?: string[];
   importance?: ReportPeriodKind[];
   classification?: "implemented" | "cancelled" | "duplicate" | "in-progress" | "blocked" | "queued";
+  updateOperation?: ReportLateUpdateOperation;
   resolution?: {
     sourceRecordId: string;
     comparedRecordId?: string;
@@ -51,6 +52,7 @@ export function defaultReportRecordsFile(env: Record<string, string | undefined>
 
 const REPORT_UPDATE_OPERATIONS = ["edit", "replace", "quote", "append", "banner", "event-log", "feedback"] as const;
 export type ReportUpdateOperation = (typeof REPORT_UPDATE_OPERATIONS)[number];
+export type ReportLateUpdateOperation = Extract<ReportUpdateOperation, "quote" | "append" | "banner" | "event-log" | "feedback">;
 const REPORT_PERIOD_KINDS = ["daily", "weekly", "monthly", "quarterly", "annual"] as const;
 const REPORT_CLASSIFICATIONS = ["implemented", "cancelled", "duplicate", "in-progress", "blocked", "queued"] as const;
 
@@ -160,6 +162,9 @@ export function makeReportRecord(input: ReportRecordInput, generatedAt = new Dat
     }
     if (block.classification && (!block.links || block.links.length === 0)) {
       throw new Error(`classified activity block ${block.id} must link its members`);
+    }
+    if (block.updateOperation && !ALLOWED_AFTER_SOFT_CLOSE.has(block.updateOperation)) {
+      throw new Error(`report block ${block.id} has an invalid late update operation`);
     }
     if (block.resolution) {
       if (!block.resolution.sourceRecordId.trim() || !["stored", "rendered", "edited", "combined"].includes(block.resolution.strategy)) {
@@ -534,6 +539,7 @@ async function appendReportRecordUnlocked(
   location: ReportRecordLocation,
   record: ReportRecord,
   expectedPreviousRecordId?: string,
+  operation: ReportUpdateOperation = "replace",
 ): Promise<AppendReportRecordResult> {
   assertCanonicalRecord(record);
   let events: ReportRecordEvent[];
@@ -552,6 +558,7 @@ async function appendReportRecordUnlocked(
     if (previous && Date.parse(record.generatedAt) <= Date.parse(previous.generatedAt)) {
       throw new Error("stale report block comparison: report timestamp does not advance the current record");
     }
+    if (previous) assertReportUpdateAllowed(record.period, operation, record.generatedAt);
     await claimRemoteRecord(location, record);
     const claimedRecord = await claimCurrentReportTransition(location, previous, record);
     const event: ReportRecordEvent = {
@@ -579,6 +586,7 @@ async function appendReportRecordUnlocked(
   if (previous && Date.parse(record.generatedAt) <= Date.parse(previous.generatedAt)) {
     throw new Error("stale report block comparison: report timestamp does not advance the current record");
   }
+  if (previous) assertReportUpdateAllowed(record.period, operation, record.generatedAt);
   const claimedRecord = await claimCurrentReportTransition(location, previous, record);
   await mkdir(dirname(location), { recursive: true });
   await terminateTornTail(location);
@@ -603,6 +611,63 @@ function currentReportRecord(events: ReportRecordEvent[], candidate: ReportRecor
 
 export async function appendReportRecord(location: ReportRecordLocation, record: ReportRecord): Promise<AppendReportRecordResult> {
   return serializeLocationAppend(location, () => appendReportRecordUnlocked(location, record));
+}
+
+/** Append one explicitly permitted late operation without replacing prior prose.
+ * The generated record is a new version, and the operation tag and optional
+ * source remain in its immutable block history. */
+export async function appendReportLateUpdate(
+  location: ReportRecordLocation,
+  current: ReportRecord,
+  operation: ReportLateUpdateOperation,
+  block: ReportRecordBlock,
+  at: string,
+  source?: ReportRecordSource,
+): Promise<AppendReportRecordResult> {
+  assertCanonicalRecord(current);
+  assertReportUpdateAllowed(current.period, operation, at);
+  if (!block.id.trim() || !block.text.trim()) throw new Error("each late report update requires block id and text");
+  requireIsoDate(block.relatedAt, "block relatedAt");
+  if (operation === "quote" && !source) throw new Error("quote report update requires a source and date");
+  if (operation === "feedback") {
+    const events = await readLocationEvents(location);
+    if (!events.some((event) => event.type === "report.snapshot" && event.snapshot?.record.period.id === current.period.id)) {
+      throw new Error("feedback report update requires a finalized snapshot");
+    }
+  }
+  if (source && (!source.id.trim() || !source.uri.trim())) throw new Error("late update source requires id and uri");
+  if (source) requireIsoDate(source.observedAt, "source observedAt");
+  if (current.blocks.some((item) => item.id === block.id)) throw new Error(`duplicate report block id: ${block.id}`);
+
+  const links = [...new Set([...(block.links ?? []), ...(source ? [source.uri] : [])])].sort();
+  const updateBlock: ReportRecordBlock = { ...structuredClone(block), links, updateOperation: operation };
+  const blocks = structuredClone(current.blocks);
+  if (operation === "banner") {
+    blocks.unshift(updateBlock);
+  } else if (operation === "event-log") {
+    const nextEvent = blocks.findIndex((item) => item.updateOperation === "event-log" && item.relatedAt > updateBlock.relatedAt);
+    if (nextEvent < 0) blocks.push(updateBlock);
+    else blocks.splice(nextEvent, 0, updateBlock);
+  } else {
+    blocks.push(updateBlock);
+  }
+  const sources = [...current.sources];
+  if (source) {
+    const existing = sources.find((item) => item.id === source.id);
+    if (existing && canonicalJson(existing) !== canonicalJson(source)) throw new ReportRecordConflictError(source.id);
+    if (!existing) sources.push(structuredClone(source));
+  }
+  const intent = canonicalJson({ operation, block: updateBlock, source: source ?? null });
+  const sourceCursor = `late:${current.id}:${createHash("sha256").update(intent).digest("hex")}`;
+  const candidate = makeReportRecord({
+    period: current.period,
+    asOf: current.asOf,
+    templateVersion: current.templateVersion,
+    sourceCursor,
+    sources,
+    blocks,
+  }, at);
+  return serializeLocationAppend(location, () => appendReportRecordUnlocked(location, candidate, current.id, operation));
 }
 
 /** Read the latest record per stable ID in append order (currently one per key). */
