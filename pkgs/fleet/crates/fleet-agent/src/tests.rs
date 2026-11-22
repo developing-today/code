@@ -1468,6 +1468,7 @@ fn fleet_build_lock_routes_manifest_selected_cargo_through_the_target_broker() {
         &cargo,
         r#"#!/bin/sh
 if [ "$1" = locate-project ]; then
+  [ "${MOCK_NO_WORKSPACE:-0}" = 1 ] && exit 1
   shift
   while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -1580,6 +1581,38 @@ printf '%s|%s|%s|%s\n' "$PWD" "$CARGO_TARGET_DIR" "$CARGO_BUILD_JOBS" "$*" > "$H
         );
     }
 
+    let no_workspace = std::process::Command::new("/bin/bash")
+        .arg(&lock_script)
+        .args(["cargo", "install", "some-crate"])
+        .env("HOME", &home)
+        .env("MOCK_NO_WORKSPACE", "1")
+        .env(
+            "PATH",
+            format!(
+                "{}:{}",
+                tools.display(),
+                std::env::var("PATH").unwrap_or_default()
+            ),
+        )
+        .env_remove("CARGO_TARGET_DIR")
+        .current_dir(&caller)
+        .output()
+        .unwrap();
+    assert!(
+        no_workspace.status.success(),
+        "{}",
+        String::from_utf8_lossy(&no_workspace.stderr)
+    );
+    assert_eq!(
+        std::fs::read_to_string(home.join("broker.log")).unwrap(),
+        initial_broker_log,
+        "a registry install outside a workspace must bypass workspace cleanup"
+    );
+    assert_eq!(
+        std::fs::read_to_string(home.join("cargo.log")).unwrap(),
+        format!("{}||2|install some-crate\\n", caller.display())
+    );
+
     for (args, expected_profile) in [
         (vec!["cargo", "+1.84.1", "test"], "test"),
         (
@@ -1682,6 +1715,7 @@ fn a_manifest_selected_compound_build_leases_the_target_and_keeps_the_caller_cwd
         &cargo,
         r#"#!/bin/sh
 if [ "$1" = locate-project ]; then
+  [ "${MOCK_NO_WORKSPACE:-0}" = 1 ] && exit 1
   shift
   while [ "$#" -gt 0 ]; do
     case "$1" in
