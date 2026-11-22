@@ -1329,6 +1329,7 @@ fn a_leased_cargo_run_preserves_the_callers_stdin() {
                 std::env::var("PATH").unwrap_or_default()
             ),
         )
+        .current_dir(&home)
         .env_remove("CARGO_TARGET_DIR")
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::null())
@@ -1612,7 +1613,7 @@ printf '%s|%s|%s|%s\n' "$PWD" "$CARGO_TARGET_DIR" "$CARGO_BUILD_JOBS" "$*" > "$H
     );
     assert_eq!(
         std::fs::read_to_string(home.join("cargo.log")).unwrap(),
-        format!("{}||2|install some-crate\\n", caller.display())
+        format!("{}||2|install some-crate\n", caller.display())
     );
 
     let path_install = std::process::Command::new("/bin/bash")
@@ -1640,7 +1641,7 @@ printf '%s|%s|%s|%s\n' "$PWD" "$CARGO_TARGET_DIR" "$CARGO_BUILD_JOBS" "$*" > "$H
     assert_eq!(
         std::fs::read_to_string(home.join("broker.log")).unwrap(),
         format!(
-            "exec --repo id --profile release --workspace-cwd {} --wait 900 -- cargo install --path {}\\n",
+            "exec --repo id --profile release --workspace-cwd {} --wait 900 -- cargo install --path {}\n",
             workspace.display(),
             workspace.display()
         )
@@ -1648,7 +1649,7 @@ printf '%s|%s|%s|%s\n' "$PWD" "$CARGO_TARGET_DIR" "$CARGO_BUILD_JOBS" "$*" > "$H
     assert_eq!(
         std::fs::read_to_string(home.join("cargo.log")).unwrap(),
         format!(
-            "{}|{}|2|install --path {}\\n",
+            "{}|{}|2|install --path {}\n",
             caller.display(),
             home.join("leased-target").display(),
             workspace.display()
