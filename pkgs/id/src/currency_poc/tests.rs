@@ -1809,6 +1809,70 @@ fn live_posted_conversion_legs_findable_by_user_data_128() {
 #[cfg(feature = "currency-poc-tb")]
 #[test]
 #[ignore = "requires the pinned tigerbeetle binary (TIGERBEETLE_POC_BINARY or PATH)"]
+fn live_pending_transfers_create_post_void_and_report_authoritative_state() {
+    use super::ledger::{PendingTransfer, PendingTransferState};
+    let cluster = TestCluster::start(30029).expect("cluster starts");
+    let mut ledger = TigerBeetleLedger::connect(&cluster.address).expect("connect");
+    for id in [91_001, 91_002, 91_003, 91_004, 91_005, 91_006] {
+        let result = ledger.create_accounts(&[account(id, SRC, false)]);
+        assert!(result[0].is_ok(), "account {id} created: {result:?}");
+    }
+    let pending = |id, debit, credit| PendingTransfer {
+        id,
+        debit_account_id: debit,
+        credit_account_id: credit,
+        amount: 700,
+        ledger: SRC,
+        user_data_128: id,
+        code: 7,
+        timeout_secs: 600,
+    };
+    let post_id = 91_101;
+    assert_eq!(
+        ledger.create_pending_transfer(&pending(post_id, 91_001, 91_002)),
+        Ok(())
+    );
+    assert_eq!(
+        ledger.try_pending_transfer_state(post_id).unwrap(),
+        Some(PendingTransferState::Pending)
+    );
+    assert_eq!(ledger.post_pending_transfer(post_id, 91_201), Ok(()));
+    assert_eq!(
+        ledger.try_pending_transfer_state(post_id).unwrap(),
+        Some(PendingTransferState::Posted {
+            resolution_id: 91_201
+        })
+    );
+    assert_eq!(ledger.account_balance(91_002).unwrap().credits_posted, 700);
+
+    let void_id = 91_102;
+    assert_eq!(
+        ledger.create_pending_transfer(&pending(void_id, 91_003, 91_004)),
+        Ok(())
+    );
+    assert_eq!(ledger.void_pending_transfer(void_id, 91_202), Ok(()));
+    assert_eq!(
+        ledger.try_pending_transfer_state(void_id).unwrap(),
+        Some(PendingTransferState::Voided {
+            resolution_id: 91_202
+        })
+    );
+    assert_eq!(ledger.account_balance(91_004).unwrap().credits_posted, 0);
+
+    let timeout_id = 91_103;
+    let mut expiring = pending(timeout_id, 91_005, 91_006);
+    expiring.timeout_secs = 1;
+    assert_eq!(ledger.create_pending_transfer(&expiring), Ok(()));
+    std::thread::sleep(std::time::Duration::from_secs(3));
+    assert_eq!(
+        ledger.try_pending_transfer_state(timeout_id).unwrap(),
+        Some(PendingTransferState::Expired)
+    );
+}
+
+#[cfg(feature = "currency-poc-tb")]
+#[test]
+#[ignore = "requires the pinned tigerbeetle binary (TIGERBEETLE_POC_BINARY or PATH)"]
 fn live_atomic_failure_moves_nothing() {
     let (_cluster, mut executor) = live_executor(30022);
     let mut record = executor.prepare(&request()).expect("intent prepared");
