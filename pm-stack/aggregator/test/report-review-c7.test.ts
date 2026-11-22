@@ -33,5 +33,19 @@ describe("C7 report review UI", () => {
     }
     expect(html).toContain('name="strategy-0" value="stored" required');
     expect(html).toContain("Show indexed change");
+    expect(html).toContain("((strategy.value==='edited'||strategy.value==='combined')?{resolvedText:text}:{})");
+  });
+
+  test("does not re-offer historical alternatives after a block has been resolved", () => {
+    const stored = record("stored", "Human wording.", "2026-11-21T13:00:00.000Z");
+    const rendered = record("rendered", "Generated wording.", "2026-11-21T14:00:00.000Z");
+    const resolved = record("resolved", "Human wording.", "2026-11-21T15:00:00.000Z");
+    resolved.blocks[0].resolution = {
+      sourceRecordId: stored.id,
+      strategy: "stored",
+      resolvedAt: resolved.generatedAt,
+    };
+
+    expect(reportBlockReviews([stored, rendered, resolved], [resolved])).toHaveLength(0);
   });
 });

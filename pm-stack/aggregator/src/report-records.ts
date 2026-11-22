@@ -495,6 +495,13 @@ export async function appendReportBlockConflictResolution(
     assertCanonicalRecord(record);
     requireIsoDate(resolvedAt, "resolvedAt");
     assertReportUpdateAllowed(record.period, "edit", resolvedAt);
+    const persistedSource = (await readReportRecords(location)).find((candidate) => candidate.id === record.id);
+    if (!persistedSource || !sameRecordContent(persistedSource, record)) {
+      throw new Error("stale report block comparison: supplied source differs from its persisted record");
+    }
+    if (Date.parse(resolvedAt) <= Date.parse(record.generatedAt)) {
+      throw new Error("resolvedAt must be later than the source record to preserve causal ordering");
+    }
     if (!comparison.conflict || !reportBlockConflict(comparison.storedText, comparison.renderedText)) {
       throw new Error("report block comparison does not contain a conflict");
     }
@@ -531,7 +538,13 @@ export async function appendReportBlockConflictResolution(
       blocks,
     }, resolvedAt);
     const previousResolution = (await readReportRecords(location)).find((candidate) => candidate.id === resolvedRecord.id);
-    if (previousResolution) return appendReportRecordUnlocked(location, resolvedRecord);
+    if (previousResolution) {
+      const previousBlock = previousResolution.blocks.find((block) => block.id === blockId);
+      if (previousBlock?.text !== text || previousBlock.resolution?.sourceRecordId !== record.id || previousBlock.resolution.strategy !== strategy) {
+        throw new ReportRecordConflictError(resolvedRecord.id);
+      }
+      return { inserted: false, record: previousResolution };
+    }
 
     const latest = (await readCurrentReportRecords(location)).find(
       (candidate) => candidate.period.id === record.period.id && candidate.templateVersion === record.templateVersion,

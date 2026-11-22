@@ -272,6 +272,49 @@ describe("C7 canonical report records", () => {
     expect(compareReportBlock("same  prose", "same\nprose").conflict).toBe(false);
   });
 
+  test("property: line diff hunks preserve both inputs with minimal edits (independent LCS oracle)", () => {
+    // Deterministic generated sequences exercise repeats, insertions, deletions,
+    // and whitespace-only equivalence without making failures irreproducible.
+    let seed = 0x5eed1234;
+    const next = (max: number) => {
+      seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+      return seed % max;
+    };
+    const alphabet = ["alpha", "beta", "gamma", "delta", "alpha ", " beta"];
+    const lcsLength = (left: string[], right: string[]): number => {
+      const table = Array.from({ length: left.length + 1 }, () => new Uint16Array(right.length + 1));
+      for (let i = left.length - 1; i >= 0; i--) {
+        for (let j = right.length - 1; j >= 0; j--) {
+          table[i]![j] = left[i] === right[j] ? table[i + 1]![j + 1]! + 1 : Math.max(table[i + 1]![j]!, table[i]![j + 1]!);
+        }
+      }
+      return table[0]![0]!;
+    };
+
+    for (let sample = 0; sample < 2000; sample++) {
+      const left = Array.from({ length: next(9) + 1 }, () => alphabet[next(alphabet.length)]!);
+      const right = Array.from({ length: next(9) + 1 }, () => alphabet[next(alphabet.length)]!);
+      const stored = left.join("\n");
+      const rendered = right.join("\n");
+      const comparison = compareReportBlock(stored, rendered);
+      if (stored.replace(/\s+/g, " ").trim() === rendered.replace(/\s+/g, " ").trim()) continue;
+      const changedLines = comparison.hunks.reduce((count, hunk) =>
+        count + (hunk.before === "" ? 0 : hunk.before.split("\n").length) + (hunk.after === "" ? 0 : hunk.after.split("\n").length), 0);
+      // Oracle: for line sequences, a shortest edit script has n+m-2*LCS edits.
+      expect(comparison.conflict).toBe(true);
+      expect(comparison.storedText).toBe(stored);
+      expect(comparison.renderedText).toBe(rendered);
+      expect(changedLines).toBe(left.length + right.length - 2 * lcsLength(left, right));
+    }
+  });
+
+  test("bounded-work fallback retains both complete inputs in one truthful hunk", () => {
+    const stored = Array.from({ length: 450 }, (_, index) => `stored-${index}`).join("\n");
+    const rendered = Array.from({ length: 450 }, (_, index) => `rendered-${index}`).join("\n");
+    const comparison = compareReportBlock(stored, rendered);
+    expect(comparison.hunks).toEqual([{ before: stored, after: rendered }]);
+  });
+
   test("resolves either side by appending a version and leaves the frozen snapshot unchanged", async () => {
     const file = await storePath();
     const record = makeReportRecord({
@@ -322,10 +365,75 @@ describe("C7 canonical report records", () => {
       "change-1",
       comparison,
       "rendered",
-      "2026-11-22T13:59:59.000Z",
+      "2026-11-22T13:59:58.000Z",
     );
     expect(repeated.inserted).toBe(false);
     expect(await readReportRecords(file)).toEqual([record, resolved.record]);
+  });
+
+  test("rejects a same-ID predecessor with changed content and preserves retry timestamps", async () => {
+    const file = await storePath();
+    const canonical = makeReportRecord({
+      period: {
+        id: "daily:2026-11-21:America/Chicago",
+        kind: "daily",
+        timezone: "America/Chicago",
+        periodStart: "2026-11-21T06:00:00.000Z",
+        periodEnd: "2026-11-22T06:00:00.000Z",
+        softCloseAt: "2026-11-22T14:00:00.000Z",
+      },
+      asOf: "2026-11-22T05:45:00.000Z",
+      templateVersion: "daily-v1",
+      sourceCursor: "cursor-predecessor-content",
+      sources: [],
+      blocks: [
+        { id: "change-1", text: "Target wording.", relatedAt: "2026-11-22T05:40:00.000Z" },
+        { id: "change-2", text: "Other canonical wording.", relatedAt: "2026-11-22T05:40:00.000Z" },
+      ],
+    }, "2026-11-22T05:45:01.000Z");
+    await appendReportRecord(file, canonical);
+    const altered = makeReportRecord({
+      ...canonical,
+      blocks: [canonical.blocks[0]!, { ...canonical.blocks[1]!, text: "Tampered unrelated wording." }],
+    }, canonical.generatedAt);
+
+    await expect(appendReportBlockConflictResolution(
+      file,
+      altered,
+      "change-1",
+      compareReportBlock("Target wording.", "Rendered wording."),
+      "rendered",
+      "2026-11-22T13:00:00.000Z",
+    )).rejects.toThrow(/supplied source differs/);
+    expect(await readReportRecords(file)).toEqual([canonical]);
+  });
+
+  test("requires resolution event time to follow its predecessor", async () => {
+    const file = await storePath();
+    const record = makeReportRecord({
+      period: {
+        id: "daily:2026-11-21:America/Chicago",
+        kind: "daily",
+        timezone: "America/Chicago",
+        periodStart: "2026-11-21T06:00:00.000Z",
+        periodEnd: "2026-11-22T06:00:00.000Z",
+        softCloseAt: "2026-11-22T14:00:00.000Z",
+      },
+      asOf: "2026-11-22T05:45:00.000Z",
+      templateVersion: "daily-v1",
+      sourceCursor: "cursor-resolution-order",
+      sources: [],
+      blocks: [{ id: "change-1", text: "Stored.", relatedAt: "2026-11-22T05:40:00.000Z" }],
+    }, "2026-11-22T05:45:01.000Z");
+    await appendReportRecord(file, record);
+    await expect(appendReportBlockConflictResolution(
+      file,
+      record,
+      "change-1",
+      compareReportBlock("Stored.", "Rendered."),
+      "rendered",
+      record.generatedAt,
+    )).rejects.toThrow(/later than the source record/);
   });
 
   test("accepts an edited or reviewer-combined block as an append-only resolution", async () => {

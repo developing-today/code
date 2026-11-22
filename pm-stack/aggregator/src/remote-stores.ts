@@ -23,7 +23,7 @@ export interface StoreRemotes {
   actions: ActionsRemote;
   activity: ActivityRemote;
   usage: SnapshotsRemote;
-  aaLastGood: DocumentRemote;
+  aaLastGood: DocumentRemote & AppendOnlyDocumentRemote;
 }
 
 type GetClient = () => Promise<SqlClient | null>;
