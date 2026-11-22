@@ -72,12 +72,13 @@ pub const PRIORITY_SCALE: [i64; 7] = [10, 20, 30, 40, 50, 70, 90];
 /// read back at 15/25. task_from_packet performs the selection.
 pub const EXPEDITE_PRIORITY: i64 = 15;
 pub const NEXT_UP_PRIORITY: i64 = 25;
-pub const KINDS: [&str; 5] = [
+pub const KINDS: [&str; 6] = [
     "pr_shepherd",
     "triage",
     "small_fix",
     "ci_investigation",
     "second_pass",
+    "feature_slice",
 ];
 // Both the old and the current names of the two repos that moved to the
 // developing-today-forks org (2026-11-04) stay allowlisted: in-flight queue
@@ -104,7 +105,8 @@ pr:          repo-health:v1:pr:<repo>:pr:<n>\n\
 pr-set:      repo-health:v1:pr-set:<repo>:<n>-<n>[-...] (sorted)\n\
 set:         repo-health:v1:set:<origin issue>:owed:<repo>\n\
 maintenance: repo-health:v1:maintenance:<repo>:<kind>:<YYYY-Www>\n\
-second-pass: repo-health:v1:second-pass:<repo>:<issue>:pass-<n>";
+second-pass: repo-health:v1:second-pass:<repo>:<issue>:pass-<n>\n\
+slice:       repo-health:v1:slice:<repo>:issue:<n>:slice-<k>";
 
 fn manual_schema_errors(p: &Value) -> Vec<String> {
     let mut errs = Vec::new();
@@ -294,6 +296,7 @@ fn manual_schema_errors(p: &Value) -> Vec<String> {
         );
     }
     errs.extend(review_errors(p));
+    errs.extend(slice_errors(p));
     errs
 }
 
@@ -385,6 +388,72 @@ fn review_errors(p: &Value) -> Vec<String> {
 }
 
 /// Python-style repr for the one message that embeds a value.
+/// The slice payload block (#12233 F2c decision record): required for
+/// kind feature_slice, and shape-checked whenever a packet of any kind
+/// carries one. The plan's four required fields — parent issue, the
+/// criterion it moves, the done-check command, owned paths — plus the
+/// slice ordinal that keys the dedupe identity. A slice with no done
+/// check is rejected here, in the enqueue code path: a slice nobody
+/// can verify is how large issues collect verdicts instead of code.
+fn slice_errors(p: &Value) -> Vec<String> {
+    let mut errs = Vec::new();
+    let kind = p.get("kind").and_then(|k| k.as_str()).unwrap_or("");
+    let slice = p.get("slice");
+    if kind != "feature_slice" && slice.is_none() {
+        return errs;
+    }
+    let Some(slice) = slice.and_then(|s| s.as_object()) else {
+        errs.push("payload.slice: required object for kind feature_slice (#12233 F2c)".to_string());
+        return errs;
+    };
+    let parent = match slice.get("parent_issue") {
+        Some(Value::Number(n)) if n.as_i64().is_some_and(|v| v >= 1) => n.as_i64(),
+        _ => {
+            errs.push("payload.slice.parent_issue: must be a positive integer".to_string());
+            None
+        }
+    };
+    match slice.get("number") {
+        Some(Value::Number(n)) if n.as_i64().is_some_and(|v| v >= 1) => {}
+        _ => errs.push("payload.slice.number: must be a positive integer".to_string()),
+    }
+    // The packet's issue IS the parent issue (decision record point
+    // 2): broker coverage and the F2b verdict rules keep operating on
+    // the one issue identity, so a slice block naming a different
+    // parent than the packet's issue is a contradiction, not a slice.
+    if let (Some(parent), Some(ino)) = (
+        parent,
+        p.get("issue")
+            .and_then(|i| i.get("number"))
+            .and_then(|n| n.as_i64()),
+    ) {
+        if parent != ino {
+            errs.push(format!(
+                "payload.slice.parent_issue: {parent} does not match payload.issue.number {ino}"
+            ));
+        }
+    }
+    for f in ["criterion", "done_check"] {
+        match slice.get(f) {
+            Some(Value::String(s)) if !s.is_empty() => {}
+            _ => errs.push(format!(
+                "payload.slice.{f}: required non-empty string for feature_slice packets"
+            )),
+        }
+    }
+    match slice.get("owned_paths") {
+        Some(Value::Array(a))
+            if !a.is_empty()
+                && a.iter()
+                    .all(|s| matches!(s, Value::String(v) if !v.is_empty())) => {}
+        _ => errs.push(
+            "payload.slice.owned_paths: required non-empty list of non-empty path strings for feature_slice packets"
+                .to_string(),
+        ),
+    }
+    errs
+}
+
 fn python_repr(v: Option<&Value>) -> String {
     match v {
         None | Some(Value::Null) => "None".to_string(),
@@ -399,8 +468,9 @@ pub struct DedupeMatch {
     pub num: Option<i64>,
     pub nums: Option<Vec<i64>>,
     pub origin: Option<i64>,
-    /// The commissioned pass for the second-pass family (#2310);
-    /// None for every other family.
+    /// The commissioned pass for the second-pass family (#2310), or
+    /// the slice ordinal for the slice family (#12233 F2c); None for
+    /// every other family.
     pub pass: Option<i64>,
 }
 
@@ -452,6 +522,7 @@ fn match_dedupe(key: &str) -> Option<DedupeMatch> {
         "pr",
         "maintenance",
         "second-pass",
+        "slice",
     ] {
         let Some(after) = rest.strip_prefix(&format!("{fam}:")) else {
             continue;
@@ -491,6 +562,27 @@ fn match_dedupe(key: &str) -> Option<DedupeMatch> {
                                 origin: None,
                                 pass: Some(pass),
                             });
+                        }
+                    }
+                }
+                "slice" => {
+                    // repo-health:v1:slice:<repo>:issue:<n>:slice-<k>
+                    // (#12233 F2c): one live packet per (parent issue,
+                    // slice ordinal) by construction.
+                    if let Some(rest) = tail.strip_prefix("issue:") {
+                        if let Some((issue_s, slice_s)) = rest.split_once(":slice-") {
+                            if let (Some(num), Some(slice_no)) =
+                                (canonical_number(issue_s), canonical_number(slice_s))
+                            {
+                                return Some(DedupeMatch {
+                                    family: fam.into(),
+                                    repo: repo.to_string(),
+                                    num: Some(num),
+                                    nums: None,
+                                    origin: None,
+                                    pass: Some(slice_no),
+                                });
+                            }
                         }
                     }
                 }
@@ -592,6 +684,7 @@ fn kind_families(kind: &str) -> Option<&'static [&'static str]> {
         "pr_shepherd" => Some(&["pr", "pr-set", "set"]),
         "ci_investigation" => Some(&["fix", "triage", "pr"]),
         "second_pass" => Some(&["second-pass"]),
+        "feature_slice" => Some(&["slice"]),
         _ => None,
     }
 }
@@ -708,6 +801,40 @@ fn dedupe_errors(packet: &Value, payload: &Value) -> Vec<String> {
                 None => {
                     errors.push(format!(
                         "packet.dedupe_key: family 'second-pass' requires payload.review.pass {key_pass} matching the key pass, but the payload carries no review.pass"
+                    ));
+                }
+            }
+        }
+        "slice" => {
+            let n = m.num.unwrap_or(0);
+            match issue_no {
+                Some(ino) if n != ino => {
+                    errors.push(format!(
+                        "packet.dedupe_key: issue {n} in key does not match payload.issue.number {ino}"
+                    ));
+                }
+                Some(_) => {}
+                None => {
+                    errors.push(format!(
+                        "packet.dedupe_key: family 'slice' requires payload.issue.number {n} matching the key issue, but the payload carries no issue.number (#6446)"
+                    ));
+                }
+            }
+            let key_slice = m.pass.unwrap_or(0);
+            let slice_no = payload
+                .get("slice")
+                .and_then(|s| s.get("number"))
+                .and_then(|v| v.as_i64());
+            match slice_no {
+                Some(sn) if sn != key_slice => {
+                    errors.push(format!(
+                        "packet.dedupe_key: slice {key_slice} in key does not match payload.slice.number {sn}"
+                    ));
+                }
+                Some(_) => {}
+                None => {
+                    errors.push(format!(
+                        "packet.dedupe_key: family 'slice' requires payload.slice.number {key_slice} matching the key slice, but the payload carries no slice.number"
                     ));
                 }
             }
@@ -2369,6 +2496,171 @@ mod tests {
                 "repo-health:v1:fix:developing-today/code:issue:2310",
                 "second_pass",
                 json!({"issue": {"number": 2310}}),
+            )
+            .is_empty()
+        );
+    }
+
+    fn feature_slice_payload(slice: serde_json::Value) -> Value {
+        let mut payload = payload_with(json!({"issue": {"number": 1062}}));
+        let obj = payload.as_object_mut().expect("payload object");
+        obj.insert("kind".to_string(), json!("feature_slice"));
+        obj.insert("slice".to_string(), slice);
+        payload
+    }
+
+    fn valid_slice() -> serde_json::Value {
+        json!({
+            "parent_issue": 1062,
+            "number": 1,
+            "criterion": "kv provider: a world can put a value and get it back",
+            "done_check": "cargo test -p id-caps kv",
+            "owned_paths": ["pkgs/id/crates/id-caps/src/kv.rs"],
+        })
+    }
+
+    #[test]
+    fn feature_slice_packet_validates() {
+        let packet = json!({
+            "title": "Slice 1 of #1062: kv provider put/get",
+            "priority": 20,
+            "dedupe_key": "repo-health:v1:slice:developing-today/code:issue:1062:slice-1",
+            "payload": feature_slice_payload(valid_slice()),
+        });
+        let (errors, _warnings) = validate_packet(&packet);
+        assert!(
+            errors.is_empty(),
+            "well-formed feature_slice packet must validate; got {errors:?}"
+        );
+        // The done-test's claim half: the validated packet converts to
+        // the task row the claim path consumes, carrying the slice
+        // kind — claim and completion are kind-agnostic over this row
+        // (#12233 F2c decision record, point 5).
+        let task = task_from_packet(&packet, "repo-queue");
+        assert_eq!(task.pointer("/payload/kind"), Some(&json!("feature_slice")));
+        assert_eq!(
+            task.get("dedupe_key"),
+            Some(&json!(
+                "repo-health:v1:slice:developing-today/code:issue:1062:slice-1"
+            ))
+        );
+    }
+
+    #[test]
+    fn feature_slice_rejects_missing_done_check() {
+        // The plan's F2c done-test: a slice packet with no done check
+        // is rejected at enqueue.
+        let mut slice = valid_slice();
+        slice.as_object_mut().unwrap().remove("done_check");
+        let errors = manual_schema_errors(&feature_slice_payload(slice));
+        assert!(
+            errors.iter().any(|e| e.contains("slice.done_check")),
+            "missing done_check must be rejected; got {errors:?}"
+        );
+    }
+
+    #[test]
+    fn feature_slice_rejects_empty_done_check() {
+        let mut slice = valid_slice();
+        slice["done_check"] = json!("");
+        let errors = manual_schema_errors(&feature_slice_payload(slice));
+        assert!(
+            errors.iter().any(|e| e.contains("slice.done_check")),
+            "empty done_check must be rejected; got {errors:?}"
+        );
+    }
+
+    #[test]
+    fn feature_slice_requires_the_slice_block() {
+        let mut payload = payload_with(json!({"issue": {"number": 1062}}));
+        payload
+            .as_object_mut()
+            .unwrap()
+            .insert("kind".to_string(), json!("feature_slice"));
+        let errors = manual_schema_errors(&payload);
+        assert!(
+            errors.iter().any(|e| e.contains("payload.slice")),
+            "feature_slice without a slice block must be rejected; got {errors:?}"
+        );
+    }
+
+    #[test]
+    fn feature_slice_rejects_missing_criterion() {
+        let mut slice = valid_slice();
+        slice.as_object_mut().unwrap().remove("criterion");
+        let errors = manual_schema_errors(&feature_slice_payload(slice));
+        assert!(
+            errors.iter().any(|e| e.contains("slice.criterion")),
+            "missing criterion must be rejected; got {errors:?}"
+        );
+    }
+
+    #[test]
+    fn feature_slice_rejects_empty_owned_paths() {
+        let mut slice = valid_slice();
+        slice["owned_paths"] = json!([]);
+        let errors = manual_schema_errors(&feature_slice_payload(slice));
+        assert!(
+            errors.iter().any(|e| e.contains("slice.owned_paths")),
+            "empty owned_paths must be rejected; got {errors:?}"
+        );
+    }
+
+    #[test]
+    fn feature_slice_rejects_parent_mismatch() {
+        let mut slice = valid_slice();
+        slice["parent_issue"] = json!(999);
+        let errors = manual_schema_errors(&feature_slice_payload(slice));
+        assert!(
+            errors.iter().any(|e| e.contains("slice.parent_issue")),
+            "parent_issue disagreeing with issue.number must be rejected; got {errors:?}"
+        );
+    }
+
+    #[test]
+    fn feature_slice_dedupe_family_matches_issue_and_slice() {
+        let identity = json!({"issue": {"number": 1062}, "slice": {"number": 1}});
+        assert!(
+            dedupe_errs(
+                "repo-health:v1:slice:developing-today/code:issue:1062:slice-1",
+                "feature_slice",
+                identity.clone(),
+            )
+            .is_empty()
+        );
+        // Same (parent, slice ordinal) is the same key by
+        // construction: re-enqueueing a slice collides on it instead
+        // of double-scheduling the slice.
+        let m = match_dedupe("repo-health:v1:slice:developing-today/code:issue:1062:slice-1")
+            .expect("slice key parses");
+        assert_eq!(m.family, "slice");
+        assert_eq!(m.num, Some(1062));
+        assert_eq!(m.pass, Some(1));
+        // Ordinal disagreement between key and payload is an error.
+        let errors = dedupe_errs(
+            "repo-health:v1:slice:developing-today/code:issue:1062:slice-2",
+            "feature_slice",
+            identity,
+        );
+        assert!(
+            errors.iter().any(|e| e.contains("slice 2 in key")),
+            "key slice ordinal must match slice.number; got {errors:?}"
+        );
+        // The slice family is not valid for other kinds, and other
+        // families are not valid for feature_slice.
+        assert!(
+            !dedupe_errs(
+                "repo-health:v1:slice:developing-today/code:issue:1062:slice-1",
+                "small_fix",
+                json!({"issue": {"number": 1062}}),
+            )
+            .is_empty()
+        );
+        assert!(
+            !dedupe_errs(
+                "repo-health:v1:fix:developing-today/code:issue:1062",
+                "feature_slice",
+                json!({"issue": {"number": 1062}, "slice": {"number": 1}}),
             )
             .is_empty()
         );
