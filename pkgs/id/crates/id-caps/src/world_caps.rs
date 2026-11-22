@@ -2941,6 +2941,88 @@ mod tests {
         }
     }
 
+    mod http_fetch_allowlist_properties {
+        //! Property tests for the `http.fetch` allowlist's port rule
+        //! (#12659). The oracle is the rule itself: an entry with a
+        //! port admits exactly that port, a bare host admits exactly
+        //! the scheme's default port, and an entry whose port suffix
+        //! is not a valid port admits nothing.
+        use super::super::http_fetch_entry_admits;
+        use proptest::prelude::*;
+
+        fn host() -> impl Strategy<Value = String> {
+            prop_oneof![
+                "[a-z][a-z0-9]{0,8}(\\.[a-z][a-z0-9]{0,8}){0,2}",
+                (any::<u8>(), any::<u8>(), any::<u8>(), any::<u8>())
+                    .prop_map(|(a, b, c, d)| format!("{a}.{b}.{c}.{d}")),
+                // Nonzero groups keep the spelling canonical, the
+                // form the URL parser gives back.
+                (1u16.., 1u16..).prop_map(|(a, b)| format!("[2001:db8::{a:x}:{b:x}]")),
+            ]
+        }
+
+        fn scheme() -> impl Strategy<Value = (&'static str, u16)> {
+            prop_oneof![Just(("http", 80u16)), Just(("https", 443u16))]
+        }
+
+        proptest! {
+            #[test]
+            fn a_port_entry_admits_exactly_its_port(
+                host in host(),
+                (scheme, _default) in scheme(),
+                listed in 1u16..,
+                requested in 1u16..,
+            ) {
+                let entry = format!("{host}:{listed}");
+                let url = format!("{scheme}://{host}:{requested}/x");
+                prop_assert_eq!(http_fetch_entry_admits(&entry, &url), listed == requested);
+            }
+
+            #[test]
+            fn a_bare_entry_admits_exactly_the_default_port(
+                host in host(),
+                (scheme, default) in scheme(),
+                requested in 1u16..,
+            ) {
+                let url = format!("{scheme}://{host}:{requested}/x");
+                prop_assert_eq!(http_fetch_entry_admits(&host, &url), requested == default);
+                let unported = format!("{scheme}://{host}/x");
+                prop_assert!(http_fetch_entry_admits(&host, &unported));
+            }
+
+            #[test]
+            fn a_malformed_port_suffix_admits_nothing(
+                host in host(),
+                (scheme, _default) in scheme(),
+                suffix in prop_oneof![
+                    Just(String::new()),
+                    (65_536u32..10_000_000).prop_map(|port| port.to_string()),
+                ],
+                requested in 1u16..,
+            ) {
+                let entry = format!("{host}:{suffix}");
+                let ported = format!("{scheme}://{host}:{requested}/x");
+                let unported = format!("{scheme}://{host}/x");
+                prop_assert!(!http_fetch_entry_admits(&entry, &ported));
+                prop_assert!(!http_fetch_entry_admits(&entry, &unported));
+            }
+
+            #[test]
+            fn another_host_is_never_admitted(
+                listed in host(),
+                requested in host(),
+                (scheme, _default) in scheme(),
+                port in 1u16..,
+            ) {
+                prop_assume!(listed != requested);
+                let url = format!("{scheme}://{requested}:{port}/x");
+                let ported_entry = format!("{listed}:{port}");
+                prop_assert!(!http_fetch_entry_admits(&listed, &url));
+                prop_assert!(!http_fetch_entry_admits(&ported_entry, &url));
+            }
+        }
+    }
+
     #[test]
     fn notify_is_registered_but_off_by_default() {
         // The provider exists in the catalog (an operator can name

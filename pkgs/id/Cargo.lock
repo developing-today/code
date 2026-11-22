@@ -4823,6 +4823,7 @@ dependencies = [
  "anyhow",
  "ed25519-dalek 3.0.0",
  "id-core",
+ "proptest",
  "serde",
  "serde_json",
  "sha2 0.11.1",
