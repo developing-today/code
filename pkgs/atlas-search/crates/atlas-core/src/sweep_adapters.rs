@@ -108,6 +108,143 @@ pub fn discover_reports(
     Ok(items)
 }
 
+/// Discover Atlas weekly statistics artifacts. Files are grouped by the
+/// `report_day` in their JSON payload; when more than one artifact names
+/// the same period, only the newest complete file is marked final. Draft
+/// and `.tmp` files are never read, and the caller remains responsible
+/// for sensitivity classification.
+pub fn discover_statistics_reports(
+    root: &Path,
+    mut classify_sensitivity: impl FnMut(&Path) -> Tier,
+) -> Result<Vec<DiscoveredItem>> {
+    let root = std::fs::canonicalize(root).map_err(|e| {
+        Error::backend(format!(
+            "sweep statistics: resolving root {}: {e}",
+            root.display()
+        ))
+    })?;
+    let mut files = Vec::new();
+    collect_report_files(&root, &mut files)?;
+    files.retain(|path| {
+        let name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or_default();
+        name.starts_with("atlas-statistics-report-")
+            && (name.ends_with(".jsonl") || name.ends_with(".jsonl.tmp"))
+    });
+    files.sort();
+
+    let mut candidates = Vec::with_capacity(files.len());
+    for path in files {
+        let source_ref = path.to_string_lossy().into_owned();
+        let sensitivity = classify_sensitivity(&path);
+        let partial_write = path.extension().is_some_and(|ext| ext == "tmp");
+        let metadata = std::fs::symlink_metadata(&path).map_err(|e| {
+            Error::backend(format!("sweep statistics: stat {}: {e}", path.display()))
+        })?;
+        if !metadata.is_file() || metadata.file_type().is_symlink() {
+            continue;
+        }
+        let modified = metadata.modified().unwrap_or(std::time::UNIX_EPOCH);
+        let mut bytes = metadata.len();
+        let must_not_read = sensitivity == Tier::Secret || partial_write || bytes > OVERSIZE_BYTES;
+        let (text, content_address, report_day) = if must_not_read {
+            (String::new(), None, None)
+        } else {
+            let file = open_report_file(&path, &root)?;
+            let opened_metadata = file.metadata().map_err(|e| {
+                Error::backend(format!(
+                    "sweep statistics: stat opened file {}: {e}",
+                    path.display()
+                ))
+            })?;
+            if !opened_metadata.is_file() {
+                continue;
+            }
+            bytes = opened_metadata.len();
+            if bytes > OVERSIZE_BYTES {
+                (String::new(), None, None)
+            } else {
+                let mut bounded = file.take(OVERSIZE_BYTES + 1);
+                let mut contents = Vec::with_capacity(bytes as usize);
+                bounded.read_to_end(&mut contents).map_err(|e| {
+                    Error::backend(format!("sweep statistics: reading {}: {e}", path.display()))
+                })?;
+                bytes = contents.len() as u64;
+                if bytes > OVERSIZE_BYTES {
+                    (String::new(), None, None)
+                } else {
+                    let text = String::from_utf8(contents).map_err(|e| {
+                        Error::backend(format!(
+                            "sweep statistics: decoding {} as UTF-8: {e}",
+                            path.display()
+                        ))
+                    })?;
+                    let record: serde_json::Value =
+                        serde_json::from_str(text.trim()).map_err(|e| {
+                            Error::backend(format!(
+                                "sweep statistics: parsing {}: {e}",
+                                path.display()
+                            ))
+                        })?;
+                    let schema = record.get("schema").and_then(|v| v.as_str());
+                    let report_day = record.get("report_day").and_then(|v| v.as_str());
+                    if schema != Some(crate::trace_stats::REPORT_SCHEMA) || report_day.is_none() {
+                        return Err(Error::fatal(format!(
+                            "sweep statistics: {} is not a recognized statistics report",
+                            path.display()
+                        )));
+                    }
+                    let content_address = blake3::hash(text.as_bytes()).to_hex().to_string();
+                    (text, Some(content_address), report_day.map(str::to_owned))
+                }
+            }
+        };
+        candidates.push((
+            DiscoveredItem {
+                facts: CandidateFacts {
+                    source_ref,
+                    bytes,
+                    content_address,
+                    secret_tier: sensitivity == Tier::Secret,
+                    final_version: false,
+                    partial_write,
+                    ..CandidateFacts::default()
+                },
+                text,
+                sensitivity,
+            },
+            report_day,
+            modified,
+        ));
+    }
+
+    let mut newest_by_period =
+        std::collections::HashMap::<String, (usize, std::time::SystemTime)>::new();
+    for (index, (_, day, modified)) in candidates.iter().enumerate() {
+        let Some(day) = day else {
+            continue;
+        };
+        let replace = newest_by_period.get(day).map_or(true, |(current, at)| {
+            *modified > *at || (*modified == *at && index > *current)
+        });
+        if replace {
+            newest_by_period.insert(day.to_owned(), (index, *modified));
+        }
+    }
+    let mut items = Vec::with_capacity(candidates.len());
+    for (index, (mut item, day, _)) in candidates.into_iter().enumerate() {
+        if let Some(day) = day {
+            item.facts.final_version = newest_by_period
+                .get(&day)
+                .is_some_and(|(newest_index, _)| index == *newest_index);
+        }
+        items.push(item);
+    }
+    Ok(items)
+}
+
 fn open_report_file(path: &Path, root: &Path) -> Result<std::fs::File> {
     use std::os::unix::fs::OpenOptionsExt;
     let file = std::fs::OpenOptions::new()
@@ -239,6 +376,78 @@ mod tests {
         );
         let _ = std::fs::remove_dir_all(&root);
         let _ = std::fs::remove_file(&outside);
+    }
+
+    /// Oracle: the newest complete statistics artifact per report period
+    /// is final; older copies are superseded and partial files are not read.
+    #[test]
+    fn statistics_discovery_marks_one_final_per_period() {
+        let root =
+            std::env::temp_dir().join(format!("atlas-statistics-adapter-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("fixture dir");
+        std::fs::create_dir_all(root.join("a")).expect("older fixture dir");
+        std::fs::create_dir_all(root.join("z")).expect("nested fixture dir");
+        let record = |detail: &str| {
+            serde_json::json!({
+                "schema": crate::trace_stats::REPORT_SCHEMA,
+                "report_day": "2026-11-21",
+                "detail": detail
+            })
+            .to_string()
+        };
+        std::fs::write(
+            root.join("a/atlas-statistics-report-2026-11-21.jsonl"),
+            record("older"),
+        )
+        .expect("older report");
+        std::fs::write(
+            root.join("z/atlas-statistics-report-2026-11-21.jsonl"),
+            record("final"),
+        )
+        .expect("final report");
+        std::fs::write(
+            root.join("atlas-statistics-report-2026-11-21.jsonl.tmp"),
+            "not complete json",
+        )
+        .expect("partial report");
+
+        let items = discover_statistics_reports(&root, |_| Tier::Internal)
+            .expect("discover statistics reports");
+        assert_eq!(items.len(), 3);
+        let final_item = items
+            .iter()
+            .find(|item| {
+                item.facts
+                    .source_ref
+                    .ends_with("/z/atlas-statistics-report-2026-11-21.jsonl")
+            })
+            .expect("deterministic tie winner");
+        assert!(final_item.facts.final_version);
+        assert_eq!(
+            filter_candidate(SourceClass::Statistics, &final_item.facts, &HashSet::new()),
+            FilterOutcome::Accept
+        );
+        let superseded = items
+            .iter()
+            .find(|item| {
+                item.facts
+                    .source_ref
+                    .ends_with("/a/atlas-statistics-report-2026-11-21.jsonl")
+            })
+            .expect("older report");
+        assert!(!superseded.facts.final_version);
+        assert_eq!(
+            filter_candidate(SourceClass::Statistics, &superseded.facts, &HashSet::new()),
+            FilterOutcome::Reject(ReasonCode::SupersededVersion)
+        );
+        let partial = items
+            .iter()
+            .find(|item| item.facts.partial_write)
+            .expect("partial report");
+        assert!(partial.text.is_empty(), "partial content is never read");
+        assert!(!partial.facts.final_version);
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// Oracle: the fixture's final report yields one database row
