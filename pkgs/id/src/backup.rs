@@ -31,7 +31,8 @@
 //!   epoch_be)` over the record's current epoch): the ciphertext and
 //!   counters are dropped and only the tombstone remains, so replaying
 //!   the pre-delete signed upload cannot resurrect the backup. Account
-//!   deletion purges the tombstone itself.
+//!   deletion purges the tombstone but retains a generation floor, so
+//!   the exact signed upload remains refused after purge.
 //! - Restore bookkeeping (#5033 item 5, interim rule): a
 //!   download-for-restore increments `restore_epoch` and emits a
 //!   notification for every bound device; the restored key is not
@@ -178,6 +179,8 @@ pub enum BackupError {
     /// The backup was deleted and this upload's epoch does not exceed
     /// the tombstone's final epoch — a replay, not a new backup.
     Tombstoned { final_epoch: u64 },
+    /// Account deletion permanently disabled uploads for this identity key.
+    Purged,
     /// The per-identity download budget is exhausted; retry after the
     /// given number of milliseconds.
     DownloadBudgetExceeded { retry_after_ms: u64 },
@@ -200,6 +203,7 @@ impl fmt::Display for BackupError {
                 f,
                 "backup was deleted at epoch {final_epoch}; replayed uploads cannot resurrect it"
             ),
+            Self::Purged => write!(f, "backup uploads are disabled after account deletion"),
             Self::DownloadBudgetExceeded { retry_after_ms } => write!(
                 f,
                 "download budget exceeded; retry after {retry_after_ms} ms"
@@ -640,6 +644,12 @@ impl BackupStore {
                 record.epoch = epoch;
             }
             None => {
+                // `generations` deliberately survives tombstone purge. A
+                // previously-created identity with no entry is therefore a
+                // purged account, not an authorized first upload.
+                if self.generation(&hash) > 0 {
+                    return Err(BackupError::Purged);
+                }
                 self.bump_generation(&hash);
                 self.entries.insert(
                     hash,
@@ -1343,6 +1353,32 @@ mod tests {
         // Account deletion purges the tombstone.
         assert!(store.purge_tombstone(&public));
         assert_eq!(store.download(&public, 10_000), Err(BackupError::NotFound));
+    }
+
+    #[test]
+    fn purged_backup_rejects_replay_but_new_identity_can_create_backup() {
+        let (mut store, signing, public, envelope) = uploaded_store();
+        let delete_sig = sign_delete(&signing, 1);
+        store.delete(&public, &delete_sig).unwrap();
+        assert!(store.purge_tombstone(&public));
+
+        let replay_sig = sign_upload(&signing, &envelope, 1).unwrap();
+        assert_eq!(
+            store.upload(&public, &envelope, 1, &replay_sig, 9_999),
+            Err(BackupError::Purged)
+        );
+        assert!(store.record(&public).is_none());
+        assert_eq!(store.download(&public, 10_000), Err(BackupError::NotFound));
+
+        // A separately authorized identity generation has a new public key
+        // and therefore does not inherit the deleted identity's purge marker.
+        let (new_signing, new_public, new_secret) = identity(12);
+        let new_envelope = envelope_for(&new_secret);
+        let new_sig = sign_upload(&new_signing, &new_envelope, 1).unwrap();
+        store
+            .upload(&new_public, &new_envelope, 1, &new_sig, 11_000)
+            .unwrap();
+        assert!(store.record(&new_public).is_some());
     }
 
     #[test]
