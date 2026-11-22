@@ -403,6 +403,7 @@ pub(super) fn cmd_show(rest: &[String]) -> i32 {
     }
     println!("task {task_id}");
     for key in [
+        "title",
         "status",
         "kind",
         "queue",
@@ -411,10 +412,12 @@ pub(super) fn cmd_show(rest: &[String]) -> i32 {
         "max_attempts",
         "worker_id",
         "lease_until",
+        "park_kind",
         "wait_kind",
         "ready_condition",
         "not_before",
         "blocker",
+        "last_error",
         "lane_id",
         "lane_reason",
         "platform",
@@ -426,13 +429,33 @@ pub(super) fn cmd_show(rest: &[String]) -> i32 {
         "pr",
         "progress",
     ] {
-        if let Some(value) = task.get(key) {
+        let payload = task.get("payload");
+        let progress = task.get("progress");
+        let value = task.get(key).or_else(|| match key {
+            "kind" => payload.and_then(|p| p.get("kind")),
+            "issue" | "pr" => payload.and_then(|p| p.get(key)),
+            "blocker" | "lane_reason" | "wait_kind" | "ready_condition" => {
+                progress.and_then(|p| p.get(key))
+            }
+            _ => None,
+        });
+        if let Some(value) = value {
             println!("{key}: {}", value);
         }
     }
+    if let Some(checkpoint) = task.get("progress").and_then(|p| p.get("last_checkpoint")) {
+        println!("latest_checkpoint: {checkpoint}");
+    }
+    if let Some(note) = task.get("progress").and_then(|p| {
+        p.get("last_checkpoint")
+            .and_then(|c| c.get("note"))
+            .or_else(|| p.get("note"))
+    }) {
+        println!("latest_checkpoint_note: {note}");
+    }
     println!("history ({} most recent events):", history.len());
     for event in history {
-        println!("{}  {}", event.created_at, event.kind);
+        println!("{}", format_timeline_event(event));
     }
     0
 }
@@ -832,6 +855,25 @@ pub(super) fn collapse_timeline(events: Vec<TimelineEvent>) -> Vec<TimelineEvent
     out
 }
 
+/// Keep the human event representation identical between `history`
+/// and the bounded history shown by `show`.
+pub(super) fn format_timeline_event(ev: &TimelineEvent) -> String {
+    let mut line = format!("{}  {}", ev.created_at, ev.kind);
+    if let Some(sid) = &ev.session_id {
+        line += &format!("  session={sid}");
+    }
+    if let Some(provider) = &ev.provider {
+        line += &format!("  {provider}/{}", ev.model.as_deref().unwrap_or("?"));
+        if let Some(variant) = &ev.variant {
+            line += &format!("#{variant}");
+        }
+    }
+    if let Some(trigger) = &ev.trigger {
+        line += &format!("  ({trigger})");
+    }
+    line
+}
+
 /// #9046 oracle: pair session_bound -> session_unbound per
 /// session into windows (session, start, end-or-None), in the
 /// order the windows close (open bindings last) — the windows
@@ -976,20 +1018,7 @@ pub(super) fn cmd_timeline(verb: &str, rest: &[String]) -> i32 {
         return 0;
     }
     for ev in &events {
-        let mut line = format!("{}  {}", ev.created_at, ev.kind);
-        if let Some(sid) = &ev.session_id {
-            line += &format!("  session={sid}");
-        }
-        if let Some(p) = &ev.provider {
-            line += &format!("  {p}/{}", ev.model.as_deref().unwrap_or("?"));
-            if let Some(v) = &ev.variant {
-                line += &format!("#{v}");
-            }
-        }
-        if let Some(t) = &ev.trigger {
-            line += &format!("  ({t})");
-        }
-        println!("{line}");
+        println!("{}", format_timeline_event(ev));
     }
     // The join: exact resolved models per binding window, from
     // the session's raw route_attempt rows (laptop-local,

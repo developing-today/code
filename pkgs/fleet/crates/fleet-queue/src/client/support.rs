@@ -289,6 +289,9 @@ pub(crate) fn usage(verb: &str) -> &'static str {
         "history" => {
             "usage: repo-queue history <task-id> [--worker <id>] [--json]\n\nAlias of timeline: shows a task's event timeline."
         }
+        "show" => {
+            "usage: repo-queue show <task-id> [--limit <n>] [--json]\n\nShows one task's current details and recent history."
+        }
         "models" => {
             "usage: repo-queue models [--days <n>] [--json]\n\nRolls up serving-model stamps."
         }

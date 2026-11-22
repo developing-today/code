@@ -196,6 +196,28 @@ mod tests {
     }
 
     #[test]
+    fn show_history_uses_history_event_fields_and_is_a_tail() {
+        let event = |id, trigger: &str| TimelineEvent {
+            id,
+            kind: "claimed".to_string(),
+            session_id: Some("ses_example".to_string()),
+            provider: Some("opencode-route".to_string()),
+            model: Some("workhorse".to_string()),
+            variant: Some("medium".to_string()),
+            trigger: Some(trigger.to_string()),
+            created_at: format!("2026-11-21T00:00:{id:02}Z"),
+            created_us: id * 1_000_000,
+        };
+        let events = vec![event(1, "claim"), event(2, "resume")];
+        let tail = &events[events.len().saturating_sub(1)..];
+        assert_eq!(tail[0].id, 2);
+        assert_eq!(
+            format_timeline_event(&tail[0]),
+            "2026-11-21T00:00:02Z  claimed  session=ses_example  opencode-route/workhorse#medium  (resume)"
+        );
+    }
+
+    #[test]
     fn bare_claim_refuses_and_intent_claims_pass_8606() {
         // #8606 oracle: the zero-intent claim shape that fired
         // five times during CLI probing refuses; every documented
