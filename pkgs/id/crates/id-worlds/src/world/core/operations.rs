@@ -52,6 +52,95 @@ impl WorldCore {
         })
     }
 
+    /// Prepare a host-authored notification event as participant 0
+    /// (#1062): the `notify` provider's committed event, in the
+    /// [`prepare_system_chat`](Self::prepare_system_chat) mould —
+    /// same byte bound (the world's `chat_bytes` limit), same
+    /// sanitizer, same refusal of a text that sanitizes away to
+    /// nothing. The event is a `Notification`, not a `Chat`: it
+    /// never enters chat history, and the join projection shows
+    /// it to every participant.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the text is empty, oversized, or entirely sanitized away.
+    pub(crate) fn prepare_notification(&self, text: &str) -> Result<WorldEvent> {
+        ensure!(
+            text.len() <= self.limits.chat_bytes,
+            "notification exceeds {} bytes",
+            self.limits.chat_bytes
+        );
+        let text = sanitize_chat(text);
+        ensure!(!text.is_empty(), "notification must not be empty");
+        Ok(WorldEvent {
+            sequence: self
+                .sequence
+                .checked_add(1)
+                .context("world event sequence exhausted")?,
+            participant_id: 0,
+            kind: WorldEventKind::Notification { text },
+        })
+    }
+
+    /// Whether a `notify` of `text` may be attempted (#1062). The
+    /// error says why; the program sees only `bad_args`. Two
+    /// refusals, in order: the text's form (the
+    /// [`prepare_notification`](Self::prepare_notification) rule —
+    /// the `chat_bytes` bound, sanitized, non-empty) and the
+    /// rolling rate window. Checking spends nothing: the executor
+    /// records the attempt with
+    /// [`note_notify_attempt`](Self::note_notify_attempt) once the
+    /// check passes, so a refused notification costs no budget
+    /// and an attempted one always does.
+    ///
+    /// # Errors
+    ///
+    /// An oversized or empty-after-sanitizing text, or a rate
+    /// window already holding `MAX_NOTIFY_BURST` attempts.
+    pub(crate) fn check_notify(&self, text: &str) -> Result<()> {
+        ensure!(
+            text.len() <= self.limits.chat_bytes,
+            "notification exceeds {} bytes",
+            self.limits.chat_bytes
+        );
+        ensure!(
+            !sanitize_chat(text).is_empty(),
+            "notification must not be empty"
+        );
+        let now = self.clock.now_ms();
+        let window_start = now.saturating_sub(crate::world_caps::NOTIFY_RATE_WINDOW_MS);
+        let recent = self
+            .notify_attempts
+            .iter()
+            .filter(|attempt| **attempt > window_start)
+            .count();
+        ensure!(
+            recent < crate::world_caps::MAX_NOTIFY_BURST,
+            "notify rate exceeds {} attempts per {} ms",
+            crate::world_caps::MAX_NOTIFY_BURST,
+            crate::world_caps::NOTIFY_RATE_WINDOW_MS
+        );
+        Ok(())
+    }
+
+    /// Record one `notify` attempt against the rate window,
+    /// pruning attempts the window has aged out. Called by the
+    /// executor after [`check_notify`](Self::check_notify) passes
+    /// and before the event is committed, so a notification whose
+    /// commit then fails spends the budget too.
+    pub(crate) fn note_notify_attempt(&mut self) {
+        let now = self.clock.now_ms();
+        let window_start = now.saturating_sub(crate::world_caps::NOTIFY_RATE_WINDOW_MS);
+        while self
+            .notify_attempts
+            .front()
+            .is_some_and(|attempt| *attempt <= window_start)
+        {
+            self.notify_attempts.pop_front();
+        }
+        self.notify_attempts.push_back(now);
+    }
+
     /// Whether a `schedule.at` for `id` may be pended, given the host clock
     /// `now_ms`. The error says why; the program sees only `bad_args`.
     ///
@@ -179,6 +268,65 @@ impl WorldCore {
             crate::world_caps::MAX_BLOB_TOTAL_BYTES
         );
         Ok(())
+    }
+
+    /// Whether an `http.fetch` of `url` may be attempted (#1062),
+    /// and the normalized host it would connect to. The error says
+    /// why; the program sees only `bad_args`. Three refusals, in
+    /// order: the URL's form (the `id-caps` rule), the admin
+    /// allowlist (`limits.http_fetch_hosts`, exact match on the
+    /// normalized host — no wildcards, no implied subdomains), and
+    /// the rolling rate window. Checking spends nothing: the
+    /// executor records the attempt with
+    /// [`note_http_fetch_attempt`](Self::note_http_fetch_attempt)
+    /// once the check passes, so a refused fetch costs no budget
+    /// and an attempted one always does.
+    ///
+    /// # Errors
+    ///
+    /// A malformed URL, a host outside the allowlist, or a rate
+    /// window already holding `MAX_HTTP_FETCH_BURST` attempts.
+    pub(crate) fn check_http_fetch(&self, url: &str) -> Result<String> {
+        let host = crate::world_caps::validate_http_fetch_url(url)?;
+        ensure!(
+            self.limits
+                .http_fetch_hosts
+                .iter()
+                .any(|listed| crate::world_caps::normalize_http_fetch_host(listed) == host),
+            "http fetch host {host} is not in the allowlist"
+        );
+        let now = self.clock.now_ms();
+        let window_start = now.saturating_sub(crate::world_caps::HTTP_FETCH_RATE_WINDOW_MS);
+        let recent = self
+            .http_fetch_attempts
+            .iter()
+            .filter(|attempt| **attempt > window_start)
+            .count();
+        ensure!(
+            recent < crate::world_caps::MAX_HTTP_FETCH_BURST,
+            "http fetch rate exceeds {} attempts per {} ms",
+            crate::world_caps::MAX_HTTP_FETCH_BURST,
+            crate::world_caps::HTTP_FETCH_RATE_WINDOW_MS
+        );
+        Ok(host)
+    }
+
+    /// Record one `http.fetch` attempt against the rate window,
+    /// pruning attempts the window has aged out. Called by the
+    /// executor after [`check_http_fetch`](Self::check_http_fetch)
+    /// passes and before any connection is made, so failed fetches
+    /// spend the budget too.
+    pub(crate) fn note_http_fetch_attempt(&mut self) {
+        let now = self.clock.now_ms();
+        let window_start = now.saturating_sub(crate::world_caps::HTTP_FETCH_RATE_WINDOW_MS);
+        while self
+            .http_fetch_attempts
+            .front()
+            .is_some_and(|attempt| *attempt <= window_start)
+        {
+            self.http_fetch_attempts.pop_front();
+        }
+        self.http_fetch_attempts.push_back(now);
     }
 
     /// Apply one fire of a pending schedule: re-arm it in place while
