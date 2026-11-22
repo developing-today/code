@@ -62,6 +62,21 @@
 //! too. A persisted report id the replay never rebuilt is
 //! [`RecordStoreError::ReportDiverged`], never a silent heal.
 //!
+//! # The transport, composed
+//!
+//! The exchange also runs over the wire (B2(c),
+//! `super::exchange_net`). [`StoredReplica::reconcile_remote_with`]
+//! is the initiator half: it runs the remote exchange against the
+//! wrapped replica and persists at the exchange's end, from the
+//! exchange's own outcomes — the versions this node admitted in the
+//! backward transfer, under the responder's name as source — with
+//! the same rollback discipline as [`StoredReplica::reconcile_with`].
+//! [`ServingNode`] is the responder half: it holds the replica
+//! behind the exchange protocol and persists each session's
+//! admissions (reported by the protocol's session observer) at the
+//! session's end, versions first and changed reports after, in one
+//! index update per session.
+//!
 //! # Scope limits
 //!
 //! - Refusals are not persisted. A refused version is refused
@@ -76,14 +91,18 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use id_core::content_id::raw_content_id;
 use id_core::id_shape::{ContentId, HashProfile};
 use id_store::content_store::{BlobBackend, ContentStore, ContentStoreConfig, ContentStoreError};
+use iroh::{Endpoint, EndpointAddr};
 use iroh_blobs::Hash;
 use iroh_blobs::api::blobs::Blobs;
 use iroh_blobs::store::fs::FsStore;
+use tokio::sync::{Mutex as TokioMutex, mpsc};
 
+use super::exchange_net::{ExchangeProtocol, SessionAdmissions, reconcile_remote_named};
 use super::slices::b07_conflict_report::{
     ConflictReport, ConflictStore, IngestError, IngestOutcome, ReportId, ReportStatus,
     StoredReport, VersionRef,
@@ -147,6 +166,10 @@ pub enum RecordStoreError {
     Io(std::io::Error),
     /// Opening the on-disk blob backend failed.
     Backend(String),
+    /// A remote exchange (see
+    /// [`StoredReplica::reconcile_remote_with`]) failed before its
+    /// write-through point; nothing was persisted.
+    Exchange(String),
     /// Stored bytes are not the record they were written as.
     Decode(&'static str),
     /// The index names content the backend does not hold.
@@ -170,6 +193,7 @@ impl fmt::Display for RecordStoreError {
             Self::Content(error) => write!(f, "content store failed: {error}"),
             Self::Io(error) => write!(f, "record store io failed: {error}"),
             Self::Backend(error) => write!(f, "blob backend failed: {error}"),
+            Self::Exchange(error) => write!(f, "remote exchange failed: {error}"),
             Self::Decode(what) => write!(f, "stored record does not decode: {what}"),
             Self::MissingContent(digest) => {
                 write!(f, "index names missing content {}", hex32(digest))
@@ -861,6 +885,57 @@ impl<B: BlobBackend + Sync> Drop for ExchangeRollback<'_, B> {
     }
 }
 
+/// Restore this node's side if a remote exchange is dropped or
+/// fails before its write-through point commits. The responder's
+/// side is the responder's own affair: it persists (or loses) what
+/// it admitted under its own discipline, and a later exchange
+/// re-offers whatever this node's rollback forgot.
+struct RemoteRollback<'a, B: BlobBackend + Sync> {
+    stored: &'a mut StoredReplica<B>,
+    saved_replica: Option<Replica>,
+    saved_index: Option<Index>,
+}
+
+impl<'a, B: BlobBackend + Sync> RemoteRollback<'a, B> {
+    fn new(stored: &'a mut StoredReplica<B>) -> Self {
+        Self {
+            saved_replica: Some(stored.replica.clone()),
+            saved_index: Some(stored.node.checkpoint()),
+            stored,
+        }
+    }
+
+    fn commit(mut self) {
+        self.saved_replica = None;
+        self.saved_index = None;
+    }
+}
+
+impl<B: BlobBackend + Sync> std::ops::Deref for RemoteRollback<'_, B> {
+    type Target = StoredReplica<B>;
+
+    fn deref(&self) -> &Self::Target {
+        self.stored
+    }
+}
+
+impl<B: BlobBackend + Sync> std::ops::DerefMut for RemoteRollback<'_, B> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.stored
+    }
+}
+
+impl<B: BlobBackend + Sync> Drop for RemoteRollback<'_, B> {
+    fn drop(&mut self) {
+        if let Some(replica) = self.saved_replica.take() {
+            self.stored.replica = replica;
+        }
+        if let Some(index) = self.saved_index.take() {
+            self.stored.node.restore(index);
+        }
+    }
+}
+
 /// A stored replica over the production on-disk backend.
 pub type DiskReplica = StoredReplica<FsBlobs>;
 
@@ -1069,6 +1144,59 @@ impl<B: BlobBackend + Sync> StoredReplica<B> {
         Ok(exchange)
     }
 
+    /// Run one exchange with the replica at `target` over the
+    /// transport (B2(c), `super::exchange_net`), then persist what
+    /// this node admitted during it — the backward transfer's
+    /// versions, from the exchange's own outcomes, under the
+    /// responder's name as source — and every report that changed.
+    /// The responder persists its own admissions on its side (see
+    /// [`ServingNode`]). When the exchange or persisting fails, or
+    /// this future is cancelled, this node's side is rolled back —
+    /// replica and index return to what they had, and the exchange
+    /// can run again — so a half-persisted exchange never leaves
+    /// this node holding a version its log lost.
+    ///
+    /// # Errors
+    ///
+    /// [`RecordStoreError::Exchange`] when the session fails;
+    /// a store error when an admitted version (or a report it
+    /// changed) could not be written.
+    pub async fn reconcile_remote_with(
+        &mut self,
+        endpoint: &Endpoint,
+        target: impl Into<EndpointAddr>,
+        config: &SyncScopeConfig,
+        now: LogicalTime,
+    ) -> Result<Exchange, RecordStoreError> {
+        let mut rollback = RemoteRollback::new(self);
+        let before = rollback.report_snapshot();
+        let (exchange, remote_name) = reconcile_remote_named(
+            endpoint,
+            target,
+            &mut rollback.replica,
+            config,
+            now,
+        )
+        .await
+        .map_err(|error| RecordStoreError::Exchange(error.to_string()))?;
+        let persisted = async {
+            for (event_id, outcome) in &exchange.backward.outcomes {
+                if outcome.is_ok() {
+                    rollback
+                        .persist_exchange_admission(event_id, &remote_name, now)
+                        .await?;
+                }
+            }
+            rollback.persist_reports_since(&before).await?;
+            rollback.node.flush_index()?;
+            Ok::<(), RecordStoreError>(())
+        }
+        .await;
+        persisted?;
+        rollback.commit();
+        Ok(exchange)
+    }
+
     async fn persist_exchange_admission(
         &mut self,
         event_id: &EventId,
@@ -1198,6 +1326,152 @@ impl DiskReplica {
     /// When the underlying store refuses to shut down.
     pub async fn shutdown(&self) -> Result<(), RecordStoreError> {
         self.node.content().backend().shutdown().await
+    }
+}
+
+/// A stored node serving federation exchanges: the responder half
+/// of the composition of the on-disk store (B2(b)) with the
+/// transport (B2(c)). The replica sits behind the exchange
+/// protocol's lock; each session's admissions come back over the
+/// channel [`ServingNode::protocol`] hands out, and the node's
+/// owner persists them with [`ServingNode::persist_session`] —
+/// versions first, then every report that changed since the last
+/// persisted snapshot, in one index update per session, the same
+/// write-through shape as [`StoredReplica::persist_admission`].
+///
+/// A session whose admissions are never persisted is the serving
+/// form of a crash between an admission and its write: the
+/// versions live only in memory, and anti-entropy re-sends them
+/// after a restart. Persisting late is safe for the same reason —
+/// a session's admissions are persisted with the session's own
+/// logical time, so replay reproduces the admission exactly.
+#[derive(Debug, Clone)]
+pub struct ServingNode<B> {
+    replica: Arc<TokioMutex<Replica>>,
+    node: Arc<TokioMutex<NodeStore<B>>>,
+    reports: Arc<TokioMutex<BTreeMap<ReportId, StoredReport>>>,
+}
+
+impl<B: BlobBackend + Sync> ServingNode<B> {
+    /// Open a serving node: replay `node`'s records into `replica`
+    /// (as [`StoredReplica::open`]), then hold the rebuilt replica
+    /// and the store behind the locks the protocol and the owner
+    /// share.
+    ///
+    /// # Errors
+    ///
+    /// As [`StoredReplica::open`].
+    pub async fn open(node: NodeStore<B>, replica: Replica) -> Result<Self, RecordStoreError> {
+        let stored = StoredReplica::open(node, replica).await?;
+        Ok(Self::from_stored(stored))
+    }
+
+    fn from_stored(stored: StoredReplica<B>) -> Self {
+        let StoredReplica { replica, node } = stored;
+        let reports = replica
+            .store()
+            .reports()
+            .map(|(id, report)| (*id, report.clone()))
+            .collect();
+        Self {
+            replica: Arc::new(TokioMutex::new(replica)),
+            node: Arc::new(TokioMutex::new(node)),
+            reports: Arc::new(TokioMutex::new(reports)),
+        }
+    }
+
+    /// The exchange protocol handler for this node, and the
+    /// receiver its session admissions arrive on. Register the
+    /// handler with the router; drain the receiver with
+    /// [`ServingNode::persist_session`] for as long as the node
+    /// serves.
+    pub fn protocol(&self) -> (ExchangeProtocol, mpsc::UnboundedReceiver<SessionAdmissions>) {
+        let (send, receive) = mpsc::unbounded_channel();
+        let observer = Arc::new(move |admissions: SessionAdmissions| {
+            // The receiver lives as long as the node serves; a send
+            // that fails means the owner stopped draining, and the
+            // admissions are lost the way a crash loses them (see
+            // the type's docs) — never a reason to fail the session.
+            let _ = send.send(admissions);
+        });
+        (
+            ExchangeProtocol::with_observer(self.replica.clone(), observer),
+            receive,
+        )
+    }
+
+    /// Persist one session's admissions: the version records for
+    /// what the session admitted (in admission order, under the
+    /// initiator's name as source, at the session's logical time),
+    /// then a record for every report that changed since the last
+    /// persisted snapshot, published in one index update.
+    ///
+    /// # Errors
+    ///
+    /// On a content-store or index failure. What was staged before
+    /// the failure reaches disk only at a later session's index
+    /// update; a crash before that loses it, as the type's docs
+    /// describe.
+    pub async fn persist_session(
+        &self,
+        admissions: &SessionAdmissions,
+    ) -> Result<(), RecordStoreError> {
+        let mut node = self.node.lock().await;
+        {
+            let replica = self.replica.lock().await;
+            for event_id in &admissions.admitted {
+                if let Some(envelope) = replica.envelope(event_id).cloned() {
+                    node.append_version(&VersionRecord {
+                        envelope,
+                        path: IngressPath::Internal,
+                        source: admissions.initiator.clone(),
+                        admitted_at: admissions.now,
+                    })
+                    .await?;
+                }
+            }
+        }
+        let current: BTreeMap<ReportId, StoredReport> = {
+            let replica = self.replica.lock().await;
+            replica
+                .store()
+                .reports()
+                .map(|(id, report)| (*id, report.clone()))
+                .collect()
+        };
+        let mut snapshot = self.reports.lock().await;
+        for (report_id, report) in &current {
+            if snapshot.get(report_id) != Some(report) {
+                node.put_report(report).await?;
+            }
+        }
+        node.flush_index()?;
+        *snapshot = current;
+        Ok(())
+    }
+}
+
+impl ServingNode<FsBlobs> {
+    /// Open the serving node whose directory is `dir` (see
+    /// [`DiskReplica::open_dir`]).
+    ///
+    /// # Errors
+    ///
+    /// As [`DiskReplica::open_dir`].
+    pub async fn open_dir(dir: &Path, replica: Replica) -> Result<Self, RecordStoreError> {
+        let stored = DiskReplica::open_dir(dir, replica).await?;
+        Ok(Self::from_stored(stored))
+    }
+
+    /// Shut the node's blob store down, releasing its database so
+    /// the directory can be reopened (see
+    /// [`StoredReplica::shutdown`]).
+    ///
+    /// # Errors
+    ///
+    /// When the underlying store refuses to shut down.
+    pub async fn shutdown(&self) -> Result<(), RecordStoreError> {
+        self.node.lock().await.content().backend().shutdown().await
     }
 }
 

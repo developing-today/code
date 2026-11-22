@@ -567,6 +567,22 @@ pub async fn reconcile_remote(
     config: &SyncScopeConfig,
     now: LogicalTime,
 ) -> Result<Exchange> {
+    Ok(reconcile_remote_named(endpoint, target, local, config, now)
+        .await?
+        .0)
+}
+
+/// [`reconcile_remote`], additionally returning the responder
+/// replica's name — the source label for what the session admitted
+/// here, which a storing initiator records with the versions it
+/// persists (see `record_store::StoredReplica::reconcile_remote_with`).
+pub async fn reconcile_remote_named(
+    endpoint: &Endpoint,
+    target: impl Into<EndpointAddr>,
+    local: &mut Replica,
+    config: &SyncScopeConfig,
+    now: LogicalTime,
+) -> Result<(Exchange, String)> {
     let local_inventory = local.inventory();
     let local_summary: BTreeMap<ObjectId, Digest32> = local_inventory.summary();
     let local_refused: BTreeSet<EventId> = local.refused().keys().copied().collect();
@@ -654,27 +670,67 @@ pub async fn reconcile_remote(
         offer: server.offer.into(),
         outcomes: backward_outcomes,
     };
-    Ok(Exchange {
-        divergence,
-        forward,
-        backward,
-    })
+    Ok((
+        Exchange {
+            divergence,
+            forward,
+            backward,
+        },
+        remote_name,
+    ))
+}
+
+/// The versions one responder session admitted from its initiator.
+/// Reported to the session observer (see
+/// [`ExchangeProtocol::with_observer`]) once the session's
+/// transfers are computed and before its reply is written, so a
+/// responder that keeps its replica on disk can persist the
+/// admissions as part of the session, not after it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionAdmissions {
+    /// The initiator replica's name: the source the admitted
+    /// versions arrived from.
+    pub initiator: String,
+    /// The session's logical time: when the versions were admitted.
+    pub now: LogicalTime,
+    /// The admitted versions' event ids, in admission order.
+    pub admitted: Vec<EventId>,
 }
 
 /// Accepts federation exchanges over iroh. Register with
 /// `Router::builder(..).accept(EXCHANGE_ALPN, ExchangeProtocol::new(replica))`.
 /// The replica is shared with the node's owner, which produces and
 /// reads through the same lock between sessions.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct ExchangeProtocol {
     replica: Arc<Mutex<Replica>>,
+    observer: Option<Arc<dyn Fn(SessionAdmissions) + Send + Sync>>,
 }
 
 impl ExchangeProtocol {
     /// Serve exchanges for `replica`.
     #[must_use]
     pub const fn new(replica: Arc<Mutex<Replica>>) -> Self {
-        Self { replica }
+        Self {
+            replica,
+            observer: None,
+        }
+    }
+
+    /// Serve exchanges for `replica`, reporting each session's
+    /// admissions to `observer` (see [`SessionAdmissions`]). The
+    /// observer is called synchronously, once per session, and must
+    /// not block: hand the admissions to the node's own writer (a
+    /// channel, a queue) and return.
+    #[must_use]
+    pub fn with_observer(
+        replica: Arc<Mutex<Replica>>,
+        observer: Arc<dyn Fn(SessionAdmissions) + Send + Sync>,
+    ) -> Self {
+        Self {
+            replica,
+            observer: Some(observer),
+        }
     }
 }
 
@@ -730,7 +786,7 @@ impl ExchangeProtocol {
         // this replica admitted from elsewhere meanwhile.
         let remote_inventory =
             assemble_inventory(&own_inventory, &own_summary, &hello_summary, &transfer.ids);
-        let server = {
+        let (server, admitted) = {
             let mut replica = self.replica.lock().await;
             // The responder's offer is computed before the initiator's
             // versions are admitted, in the same critical section, so
@@ -753,11 +809,15 @@ impl ExchangeProtocol {
                 .refused_by_remote
                 .retain(|event_id| own_inventory.contains(event_id));
             let mut outcomes = Vec::new();
+            let mut admitted = Vec::new();
             for wire in transfer.versions {
                 let envelope: Envelope = wire.into();
                 let event_id = envelope.event_id;
                 let result =
                     replica.receive(IngressPath::Internal, &envelope, &hello.name, hello.now);
+                if result.is_ok() {
+                    admitted.push(event_id);
+                }
                 outcomes.push((event_id, to_wire_outcome(&result)));
             }
             let versions: Vec<WireEnvelope> = offer
@@ -766,12 +826,25 @@ impl ExchangeProtocol {
                 .filter_map(|event_id| replica.envelope(event_id))
                 .map(WireEnvelope::from)
                 .collect();
-            ServerTransfer {
-                outcomes,
-                offer: WireOffer::from(&offer),
-                versions,
-            }
+            (
+                ServerTransfer {
+                    outcomes,
+                    offer: WireOffer::from(&offer),
+                    versions,
+                },
+                admitted,
+            )
         };
+        // The session's admissions are final and the replica lock
+        // is released: report them before the reply is written, so
+        // a storing responder persists them as part of this session.
+        if let Some(observer) = &self.observer {
+            observer(SessionAdmissions {
+                initiator: hello.name.clone(),
+                now: hello.now,
+                admitted,
+            });
+        }
         write_frame(send, &serde_json::to_vec(&server)?).await?;
         send.finish().context("finishing the transfer reply")?;
         Ok(())
