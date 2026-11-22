@@ -697,16 +697,23 @@ impl ExchangeProtocol {
         let hello_summary: BTreeMap<ObjectId, Digest32> = hello.summary.iter().copied().collect();
         let hello_refused: BTreeSet<EventId> = hello.refused.iter().copied().collect();
 
-        let mut replica = self.replica.lock().await;
-        let own_inventory = replica.inventory();
-        let own_summary: BTreeMap<ObjectId, Digest32> = own_inventory.summary();
-        let own_refused: BTreeSet<EventId> = replica.refused().keys().copied().collect();
-        let diverged = diverged_objects(&own_summary, &hello_summary);
-        let reply = HelloReply {
-            name: replica.name().to_owned(),
-            summary: summary_of(&own_inventory),
-            refused: own_refused.iter().copied().collect(),
-            ids: ids_of(&own_inventory, &diverged),
+        // The replica lock is held only while reading or changing the
+        // replica, never across a wait on the peer: a peer that stalls
+        // after the hello must not hold up other sessions on this
+        // replica for the length of the session timeout (#12636).
+        let (own_inventory, own_summary, reply) = {
+            let replica = self.replica.lock().await;
+            let own_inventory = replica.inventory();
+            let own_summary: BTreeMap<ObjectId, Digest32> = own_inventory.summary();
+            let own_refused: BTreeSet<EventId> = replica.refused().keys().copied().collect();
+            let diverged = diverged_objects(&own_summary, &hello_summary);
+            let reply = HelloReply {
+                name: replica.name().to_owned(),
+                summary: summary_of(&own_inventory),
+                refused: own_refused.iter().copied().collect(),
+                ids: ids_of(&own_inventory, &diverged),
+            };
+            (own_inventory, own_summary, reply)
         };
         write_frame(send, &serde_json::to_vec(&reply)?).await?;
 
@@ -716,29 +723,54 @@ impl ExchangeProtocol {
         let transfer: ClientTransfer =
             crate::checked_json::from_slice_unique(&frame).context("malformed transfer")?;
 
-        // The responder's offer is computed from the pre-exchange
-        // inventories, before the initiator's versions are admitted —
-        // the rule that keeps the two offers independent.
+        // The initiator's inventory as it stood at the hello: its
+        // summary, its ids for the objects that diverged from this
+        // replica's hello-time inventory, and that inventory for the
+        // objects that agreed. It describes the initiator whatever
+        // this replica admitted from elsewhere meanwhile.
         let remote_inventory =
             assemble_inventory(&own_inventory, &own_summary, &hello_summary, &transfer.ids);
-        let offer = replica.offer(&remote_inventory, &hello_refused, &config, hello.now);
-        let mut outcomes = Vec::new();
-        for wire in transfer.versions {
-            let envelope: Envelope = wire.into();
-            let event_id = envelope.event_id;
-            let result = replica.receive(IngressPath::Internal, &envelope, &hello.name, hello.now);
-            outcomes.push((event_id, to_wire_outcome(&result)));
-        }
-        let versions: Vec<WireEnvelope> = offer
-            .send
-            .iter()
-            .filter_map(|event_id| replica.envelope(event_id))
-            .map(WireEnvelope::from)
-            .collect();
-        let server = ServerTransfer {
-            outcomes,
-            offer: WireOffer::from(&offer),
-            versions,
+        let server = {
+            let mut replica = self.replica.lock().await;
+            // The responder's offer is computed before the initiator's
+            // versions are admitted, in the same critical section, so
+            // nothing this session receives can change what it offers —
+            // the rule that keeps the two offers independent.
+            let mut offer = replica.offer(&remote_inventory, &hello_refused, &config, hello.now);
+            // Only versions this replica held at the hello are offered,
+            // as when the lock covered the whole session. A version
+            // admitted from elsewhere during the peer wait can be newer
+            // than the session's logical time; sent now, the initiator
+            // would refuse it for timing and remember the refusal, so it
+            // waits for a later exchange instead.
+            offer
+                .send
+                .retain(|event_id| own_inventory.contains(event_id));
+            offer
+                .withheld
+                .retain(|(event_id, _)| own_inventory.contains(event_id));
+            offer
+                .refused_by_remote
+                .retain(|event_id| own_inventory.contains(event_id));
+            let mut outcomes = Vec::new();
+            for wire in transfer.versions {
+                let envelope: Envelope = wire.into();
+                let event_id = envelope.event_id;
+                let result =
+                    replica.receive(IngressPath::Internal, &envelope, &hello.name, hello.now);
+                outcomes.push((event_id, to_wire_outcome(&result)));
+            }
+            let versions: Vec<WireEnvelope> = offer
+                .send
+                .iter()
+                .filter_map(|event_id| replica.envelope(event_id))
+                .map(WireEnvelope::from)
+                .collect();
+            ServerTransfer {
+                outcomes,
+                offer: WireOffer::from(&offer),
+                versions,
+            }
         };
         write_frame(send, &serde_json::to_vec(&server)?).await?;
         send.finish().context("finishing the transfer reply")?;
