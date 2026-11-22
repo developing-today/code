@@ -95,6 +95,25 @@ pub fn qvec_json(qvec: &[f32]) -> String {
 /// tests replay recorded fixtures through a fake.
 pub trait PipelineTransport {
     fn pipeline(&self, stmts: &[Stmt]) -> Result<Vec<Vec<Row>>>;
+
+    /// Execute a pipeline and return optional per-result row meters. The
+    /// default preserves compatibility with transports without meters.
+    fn pipeline_metered(
+        &self,
+        stmts: &[Stmt],
+    ) -> Result<(Vec<Vec<Row>>, Vec<Option<StatementUsage>>)> {
+        let rows = self.pipeline(stmts)?;
+        let usage = vec![None; rows.len()];
+        Ok((rows, usage))
+    }
+}
+
+/// Per-statement Turso scan/write counters. Missing or malformed counters
+/// remain unknown rather than being reported as zero.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StatementUsage {
+    pub rows_read: Option<u64>,
+    pub rows_written: Option<u64>,
 }
 
 pub struct HttpTransport {
@@ -116,10 +135,8 @@ impl HttpTransport {
             token,
         }
     }
-}
 
-impl PipelineTransport for HttpTransport {
-    fn pipeline(&self, stmts: &[Stmt]) -> Result<Vec<Vec<Row>>> {
+    fn pipeline_response(&self, stmts: &[Stmt]) -> Result<Json> {
         let mut requests: Vec<Json> = stmts
             .iter()
             .map(|s| {
@@ -153,57 +170,84 @@ impl PipelineTransport for HttpTransport {
                 "turso backend: HTTP {status}: {snippet}"
             )));
         }
-        let out: Json = serde_json::from_str(&text)
-            .map_err(|e| Error::backend(format!("turso backend: bad JSON: {e}")))?;
-        let mut results = Vec::new();
-        for res in out
-            .get("results")
+        serde_json::from_str(&text)
+            .map_err(|e| Error::backend(format!("turso backend: bad JSON: {e}")))
+    }
+}
+
+impl PipelineTransport for HttpTransport {
+    fn pipeline(&self, stmts: &[Stmt]) -> Result<Vec<Vec<Row>>> {
+        let out = self.pipeline_response(stmts)?;
+        Ok(parse_pipeline_response(&out)?.0)
+    }
+
+    fn pipeline_metered(
+        &self,
+        stmts: &[Stmt],
+    ) -> Result<(Vec<Vec<Row>>, Vec<Option<StatementUsage>>)> {
+        let out = self.pipeline_response(stmts)?;
+        parse_pipeline_response(&out)
+    }
+}
+
+fn parse_pipeline_response(out: &Json) -> Result<(Vec<Vec<Row>>, Vec<Option<StatementUsage>>)> {
+    let mut results = Vec::new();
+    let mut usage = Vec::new();
+    for res in out
+        .get("results")
+        .and_then(Json::as_array)
+        .into_iter()
+        .flatten()
+    {
+        if res.get("type").and_then(Json::as_str) == Some("error") {
+            let msg = res
+                .get("error")
+                .and_then(|e| e.get("message"))
+                .and_then(Json::as_str)
+                .unwrap_or("");
+            return Err(Error::fatal(format!("turso backend: SQL error: {msg}")));
+        }
+        let Some(result) = res
+            .get("response")
+            .and_then(|r| r.get("result"))
+            .filter(|r| !r.is_null())
+        else {
+            continue;
+        };
+        let rows_read = result.get("rows_read").and_then(Json::as_u64);
+        let rows_written = result.get("rows_written").and_then(Json::as_u64);
+        let meter = (result.get("rows_read").is_some() || result.get("rows_written").is_some())
+            .then_some(StatementUsage {
+                rows_read,
+                rows_written,
+            });
+        let cols: Vec<String> = result
+            .get("cols")
             .and_then(Json::as_array)
-            .into_iter()
-            .flatten()
-        {
-            if res.get("type").and_then(Json::as_str) == Some("error") {
-                let msg = res
-                    .get("error")
-                    .and_then(|e| e.get("message"))
-                    .and_then(Json::as_str)
-                    .unwrap_or("");
-                return Err(Error::fatal(format!("turso backend: SQL error: {msg}")));
-            }
-            let Some(result) = res
-                .get("response")
-                .and_then(|r| r.get("result"))
-                .filter(|r| !r.is_null())
-            else {
-                continue;
-            };
-            let cols: Vec<String> = result
-                .get("cols")
-                .and_then(Json::as_array)
-                .map(|cs| {
-                    cs.iter()
-                        .filter_map(|c| c.get("name").and_then(Json::as_str).map(str::to_string))
-                        .collect()
-                })
-                .unwrap_or_default();
-            let mut rows = Vec::new();
-            if let Some(raw_rows) = result.get("rows").and_then(Json::as_array) {
-                for raw in raw_rows {
-                    let mut pairs = Vec::new();
-                    if let Some(cells) = raw.as_array() {
-                        for (i, cell) in cells.iter().enumerate() {
-                            if let Some(name) = cols.get(i) {
-                                pairs.push((name.clone(), hrana_val(cell)));
-                            }
+            .map(|cs| {
+                cs.iter()
+                    .filter_map(|c| c.get("name").and_then(Json::as_str).map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let mut rows = Vec::new();
+        if let Some(raw_rows) = result.get("rows").and_then(Json::as_array) {
+            for raw in raw_rows {
+                let mut pairs = Vec::new();
+                if let Some(cells) = raw.as_array() {
+                    for (i, cell) in cells.iter().enumerate() {
+                        if let Some(name) = cols.get(i) {
+                            pairs.push((name.clone(), hrana_val(cell)));
                         }
                     }
-                    rows.push(Row::new(pairs));
                 }
+                rows.push(Row::new(pairs));
             }
-            results.push(rows);
         }
-        Ok(results)
+        results.push(rows);
+        usage.push(meter);
     }
+    Ok((results, usage))
 }
 
 // ------------------------------------------------------------- token ----
@@ -825,6 +869,68 @@ mod tests {
             Value::text("x")
         );
         assert_eq!(hrana_val(&Json::Null), Value::Null);
+    }
+
+    #[test]
+    fn pipeline_response_captures_optional_per_statement_usage() {
+        let response = json!({
+            "results": [
+                {"type":"ok","response":{"type":"execute","result":{
+                    "cols":[{"name":"n"}],
+                    "rows":[[{"type":"integer","value":"1"}]],
+                    "rows_read":17,
+                    "rows_written":3
+                }}},
+                {"type":"ok","response":{"type":"execute","result":null}},
+                {"type":"ok","response":{"type":"execute","result":{
+                    "cols":[],"rows":[],"rows_read":"unknown"
+                }}}
+            ]
+        });
+
+        let (rows, usage) = parse_pipeline_response(&response).unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0][0].get("n"), Some(&Value::Integer(1)));
+        assert_eq!(usage.len(), 2);
+        assert_eq!(
+            usage[0],
+            Some(StatementUsage {
+                rows_read: Some(17),
+                rows_written: Some(3)
+            })
+        );
+        assert_eq!(
+            usage[1],
+            Some(StatementUsage {
+                rows_read: None,
+                rows_written: None
+            })
+        );
+    }
+
+    #[test]
+    fn pipeline_transport_default_reports_unknown_usage_not_zero() {
+        let transport = ManifestStub {
+            present: false,
+            rows: Vec::new(),
+            fail_rows: false,
+        };
+        let (rows, usage) = transport
+            .pipeline_metered(&[Stmt::new("SELECT count(*) FROM sqlite_master", vec![])])
+            .unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(usage, vec![None]);
+    }
+
+    #[test]
+    fn pipeline_usage_error_result_stays_a_query_error() {
+        let response = json!({
+            "results": [{
+                "type": "error",
+                "error": {"message": "fixture SQL failure"}
+            }]
+        });
+        assert!(parse_pipeline_response(&response).is_err());
     }
 
     /// Stub pipeline serving a canned manifest surface: presence
