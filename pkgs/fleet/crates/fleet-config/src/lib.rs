@@ -771,14 +771,14 @@ pub fn parse_tailnet_proxy_env(text: &str) -> Option<String> {
     })
 }
 
-/// The tailnet proxy a broker this process auto-spawns must use
-/// (#12555): the first readable [`TAILNET_PROXY_ENV_FILE`] among
-/// [`tailnet_proxy_env_candidates`] that sets `HTTPS_PROXY`. A
-/// spawned broker otherwise inherits the caller's ambient
-/// `HTTPS_PROXY`, which in a sandbox shell is the platform egress
-/// proxy, and every tailnet tunnel it opens then fails while the
-/// broker looks alive. `None` (no file, as on a kernel-mode seat)
-/// leaves the ambient env as it is.
+/// The seat's recorded tailnet proxy (#12555): the first readable
+/// [`TAILNET_PROXY_ENV_FILE`] among [`tailnet_proxy_env_candidates`]
+/// that sets `HTTPS_PROXY`. Tailnet tunnels use it in place of the
+/// caller's ambient `HTTPS_PROXY`, which in a sandbox shell is the
+/// platform egress proxy: a broker started from there otherwise
+/// opens every tailnet tunnel through the wrong proxy while it looks
+/// alive. `None` (no file, as on a kernel-mode seat) leaves the
+/// ambient env in charge.
 pub fn tailnet_https_proxy() -> Option<String> {
     let agent = std::env::var("FLEET_AGENT").ok();
     tailnet_proxy_env_candidates(

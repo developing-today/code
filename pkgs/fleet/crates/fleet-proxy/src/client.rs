@@ -213,12 +213,6 @@ fn spawn_serve(config: &Config) -> Result<(), ClientError> {
             ClientError::Transport(format!("broker.log: {e}"))
         })?))
         .stderr(std::process::Stdio::from(log));
-    // The broker's tailnet tunnels go through tailscaled's proxy as
-    // the seat recorded it, not whatever proxy this caller's shell
-    // carries (#12555).
-    if let Some(proxy) = fleet_config::tailnet_https_proxy() {
-        cmd.env("HTTPS_PROXY", proxy);
-    }
     unsafe {
         cmd.pre_exec(|| {
             // Detach from the caller's session, exactly like the

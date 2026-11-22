@@ -457,18 +457,12 @@ pub(super) fn spawn_broker() {
         Err(_) => (std::process::Stdio::null(), std::process::Stdio::null()),
     };
     let (program, prefix_args) = broker_program();
-    let mut cmd = std::process::Command::new(program);
-    cmd.args(prefix_args)
+    let _ = std::process::Command::new(program)
+        .args(prefix_args)
         .stdout(out)
         .stderr(err)
-        .stdin(std::process::Stdio::null());
-    // The broker's tailnet tunnels go through tailscaled's proxy as
-    // the seat recorded it, not whatever proxy this caller's shell
-    // carries (#12555).
-    if let Some(proxy) = fleet_config::tailnet_https_proxy() {
-        cmd.env("HTTPS_PROXY", proxy);
-    }
-    let _ = cmd.spawn();
+        .stdin(std::process::Stdio::null())
+        .spawn();
     for _ in 0..50 {
         if std::path::Path::new(&broker_sock()).exists() {
             // Give the listener a moment to accept.
