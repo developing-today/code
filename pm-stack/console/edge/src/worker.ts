@@ -16,6 +16,12 @@ interface Env {
   ASSETS: { fetch(request: Request): Promise<Response> };
   PUBLIC_HOST: string;
   VERSION?: string;
+  /** What the edge may do itself while the laptop is away. The tokens
+   * are Worker secrets, put there by scripts/expose.py --edge-direct;
+   * the flag is the explicit opt-in, off unless set to `on`. */
+  GITHUB_TOKEN?: string;
+  QUEUE_TOKEN?: string;
+  EDGE_DIRECT?: string;
   /** Local development only: where the host is, when it is not simply
    * behind this hostname's route. Never set where this is deployed. */
   HOST_ORIGIN?: string;
@@ -34,6 +40,12 @@ export class PmEdge extends DurableObject<Env> {
         delete: async (key) => {
           await ctx.storage.delete(key);
         },
+      },
+      direct: {
+        enabled: env.EDGE_DIRECT === "on",
+        githubToken: env.GITHUB_TOKEN,
+        queueToken: env.QUEUE_TOKEN,
+        fetchImpl: fetch,
       },
       setAlarm: (at) => ctx.storage.setAlarm(at),
     });

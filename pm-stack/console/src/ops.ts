@@ -4,9 +4,12 @@
 // services through `systemctl --user`. Nothing here builds a shell
 // command line: each call is an argument vector, and text a person
 // typed travels on stdin or as a single argument.
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+//
+// The edge Worker imports this module and runs Ops with stand-ins for
+// `run` and `fetch`, so nothing this module needs at load time may come
+// from the filesystem: node:fs is imported lazily inside enqueue(), the
+// one method that touches the disk, and the expose script's path is
+// resolved inside expose().
 import type { Config } from "./config.ts";
 import { OpError } from "./errors.ts";
 
@@ -163,9 +166,6 @@ function id(value: unknown, name: string): number {
   if (!/^[1-9][0-9]{0,9}$/.test(s)) throw new OpError(400, `${name}: not a positive number`);
   return Number(s);
 }
-
-/** scripts/expose.py, beside this package's sources. */
-const EXPOSE = join(import.meta.dir, "..", "scripts", "expose.py");
 
 export class Ops {
   private queueToken: string | null = null;
@@ -398,6 +398,11 @@ export class Ops {
   /** Hand one packet to the queue. `fleet queue enqueue` reads a packet
    * file, not stdin, so the packet lives in a private file for the call. */
   async enqueue(packet: unknown): Promise<RunResult> {
+    // The filesystem is the laptop's only: this import is lazy so the
+    // edge Worker, which never calls this, can import this module.
+    const { mkdtempSync, rmSync, writeFileSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
     const dir = mkdtempSync(join(tmpdir(), "pm-console-"));
     const file = join(dir, "packet.json");
     try {
@@ -479,8 +484,12 @@ export class Ops {
   /** The script that keeps the public address as declared. It is the one
    * place that talks to the sign-in gate, so sign-in is read and changed
    * through it. */
-  private expose(args: string[], stdin?: string) {
-    return this.run(["python3", EXPOSE, ...args], { stdin, timeoutMs: 120_000 });
+  private async expose(args: string[], stdin?: string) {
+    // Resolved here, not at load: the edge imports this module and never
+    // calls this, and import.meta.dir is the laptop's.
+    const { join } = await import("node:path");
+    const script = join(import.meta.dir, "..", "scripts", "expose.py");
+    return this.run(["python3", script, ...args], { stdin, timeoutMs: 120_000 });
   }
 
   /** Which sign-in methods are on, and what Google has to be told to

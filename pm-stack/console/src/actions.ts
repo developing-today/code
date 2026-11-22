@@ -9,7 +9,7 @@ import type { Docs } from "./docs.ts";
 import { OpError } from "./errors.ts";
 import type { Ops } from "./ops.ts";
 import type { Push } from "./push.ts";
-import type { Work } from "./work.ts";
+import { promptPacket, type Work } from "./work.ts";
 
 type Args = Record<string, unknown>;
 export interface Action {
@@ -69,6 +69,27 @@ export function actions(ops: Ops, work: Work, push?: Push, devices?: Devices): R
     "ask.send": { run: (a) => work.ask(a), touch: ["asks", "board"], audit: () => ({}) },
     "ask.reply": { run: (a) => work.askReply(a), touch: ["asks", "board"], audit: ids("issue") },
     "ask.close": { run: (a) => work.askClose(a), touch: ["asks"], audit: ids("issue") },
+    // The second half of a prompt the edge filed while the laptop was
+    // away: the issue already exists, so only its queue task is left.
+    // The edge holds this, never the whole ask, so the issue is never
+    // filed twice. The arguments are checked again here: the edge is
+    // trusted for the held actions it sends, and a bad one is refused
+    // rather than enqueued.
+    "prompt.enqueue": {
+      run: async (a) => {
+        const issue = Number(a.issue);
+        if (!Number.isSafeInteger(issue) || issue <= 0) throw new OpError(400, "issue: a positive whole number");
+        if (typeof a.text !== "string" || a.text.trim() === "" || a.text.length > 8000)
+          throw new OpError(400, "text: required, at most 8000 characters");
+        if (typeof a.at !== "string" || a.at === "") throw new OpError(400, "at: required");
+        const queued = await ops.enqueue(
+          promptPacket(ops.cfg.repo, ops.cfg.queue, issue, a.text, a.at),
+        );
+        return { issue, queued: queued.code === 0 };
+      },
+      touch: ["board"],
+      audit: ids("issue"),
+    },
     "question.answer": {
       run: (a) => work.answer(a),
       touch: ["questions", "questionCount"],
