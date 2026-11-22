@@ -285,3 +285,6 @@ or infrastructure; or retiring Desktop Commander. Resolve real account/rule/post
 IDs, verified email, runner ownership, Nix paths, certificate fingerprint and
 pilot UTC window into a final diff first. Seek approval for that exact diff,
 starting with the credential-free network smoke; do not request blanket access.
+
+Read-only account/runner discovery and the separate smoke approval gate are in
+[DISCOVERY.md](DISCOVERY.md).

@@ -88,3 +88,19 @@ not a security certification.
 
 Follow the README's rollout/rollback gates. Keep the PR a draft and keep the
 fallback until owner-approved end-to-end laptop acceptance is complete.
+
+## Routing-smoke follow-up (2026-11-22)
+
+The separate `smoke.mjs` has three real Miniflare RPC acceptance tests: constant
+success without credentials/storage, ordinary HTTP and route/context/credential
+header denials, and disabled/invalid/expired/future/overlong-window denials.
+The test oracle is the fixed response or exact denial status. It never calls
+AMD, Cloudflare or an origin. Independent review corrected the exported entrypoint
+to Cloudflare's required `GatewayMiddleware` and added rejection of accidental
+bridge credential headers. `wrangler.smoke.jsonc` dry run bundles 1.96 KiB
+(0.98 KiB gzip), with only disabled non-secret configuration variables.
+
+The final commit is tested again after committing; exact SHA and command results
+are recorded in the draft PR checkpoint to avoid a self-referential commit hash.
+Read-only discovery and the unapproved, metadata-blocked ten-minute smoke packet
+are in DISCOVERY.md. Proxy routing readiness is not private-host reachability.
