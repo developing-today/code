@@ -274,8 +274,10 @@ if [ -z "$CARGO_TARGET_DIR" ]; then
                   ''|*[!0-9]*) ;;
                   *)
                     if [ "$lane_interrupted" = true ]; then
+                      # laptop-agent escalates the outer process group
+                      # after 2 seconds; kill this detached group first.
                       grace=0
-                      while kill -0 -- "-$worker_pgid" 2>/dev/null && [ "$grace" -lt 50 ]; do
+                      while kill -0 -- "-$worker_pgid" 2>/dev/null && [ "$grace" -lt 10 ]; do
                         sleep 0.1
                         grace=$((grace + 1))
                       done
@@ -321,10 +323,14 @@ if [ -z "$CARGO_TARGET_DIR" ]; then
               fi
               exit "$code"
             }
+            pending_signal=""
+            queue_signal() { pending_signal=$1; }
             trap cleanup_lane EXIT
-            trap 'interrupt_lane HUP 129' HUP
-            trap 'interrupt_lane INT 130' INT
-            trap 'interrupt_lane TERM 143' TERM
+            # Queue signals during worker launch so the PID and process-group
+            # record are installed before cleanup starts.
+            trap 'queue_signal HUP' HUP
+            trap 'queue_signal INT' INT
+            trap 'queue_signal TERM' TERM
             # Preserve the caller's input for noninteractive shells, which
             # otherwise give background jobs /dev/null on stdin.
             exec 9<&0
@@ -343,6 +349,14 @@ if [ -z "$CARGO_TARGET_DIR" ]; then
               sh -c 'trap '\''rc=$?; trap - EXIT; wait || :; exit "$rc"'\'' EXIT; eval "$1"' sh "$command_text" <&9 &
               worker_pid=$!
             fi
+            trap 'interrupt_lane HUP 129' HUP
+            trap 'interrupt_lane INT 130' INT
+            trap 'interrupt_lane TERM 143' TERM
+            case "$pending_signal" in
+              HUP) interrupt_lane HUP 129 ;;
+              INT) interrupt_lane INT 130 ;;
+              TERM) interrupt_lane TERM 143 ;;
+            esac
             wait "$worker_pid"
             status=$?
             exit "$status"
