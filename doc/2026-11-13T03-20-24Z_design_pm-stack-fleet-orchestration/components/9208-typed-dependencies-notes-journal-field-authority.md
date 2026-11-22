@@ -115,6 +115,57 @@ Correction semantics: source journal event remains immutable. User-facing note `
 
 For each Fleet write record authenticated actor identity and type, lane/worker/runtime, session ID, work ID, active lifecycle/fence/version, operation/outbox ID, request origin, timestamp, and upstream source/creator if known. Record hostname/PID/IP only if approved privacy/security policy and existing schema require; no indiscriminate PII expansion. Every mutation has a provenance quality (`verified`, `partial`, `unknown`) and reason. For mirrored remote effects, map exact operation ID and returned remote resource ID; bot username alone is never session attribution. Session start/cursor refs should be recorded with checkpoints but owned by #9206/#9207 interfaces.
 
+### 3.3.1 JRN-01 event envelope and correction example (proposal)
+
+The following is a logical contract, not a claim about the current `events` table or an approved migration. It makes the minimum facts needed to audit one journal append explicit; the owning storage contract may choose different column names while preserving these semantics.
+
+```json
+{
+  "event_id": "evt-opaque-id",
+  "work": { "authority_id": "local", "work_id": "842" },
+  "sequence": "18",
+  "schema_version": 1,
+  "kind": "note.corrected",
+  "occurred_at": "authority timestamp",
+  "provenance": {
+    "principal_ref": "authenticated-principal-ref",
+    "principal_type": "agent",
+    "actor_ref": "worker-or-human-ref",
+    "session_ref": "opaque-session-ref",
+    "fence_or_revision": "current lifecycle fence",
+    "operation_id": "idempotency/operation-ref",
+    "source_ref": "command, imported resource, or prior event"
+  },
+  "visibility": "private",
+  "supersedes_event_id": "evt-17",
+  "before": { "note_ref": "note-17", "content_digest": "digest-of-prior-value" },
+  "after": { "note_ref": "note-18", "content": "Corrected finding" }
+}
+```
+
+Sequence and revision values are canonical decimal strings on shared wire boundaries. The authenticated principal is established by the receiving service, never copied from a caller-supplied `actor_ref`; `principal_ref` may be absent only for imported/legacy observations, which must then carry `provenance_quality: partial|unknown` and a reason. Do not put credentials or private note contents in public events. If payload retention or redaction policy prevents retaining the prior bytes, preserve the prior event identity and the authorized redaction/tombstone evidence rather than rewriting its history.
+
+Correction oracle: append event 18 with `supersedes_event_id=17`; event 17 remains addressable and unchanged. A current-note projection selects the latest valid correction in that work stream, while an audit view returns both events and their provenance. Retrying the same authorized operation ID is idempotent and must not allocate a second logical correction. If append fails, neither the event nor its current projection advances; sequence 19 must not be consumed and later exposed as a gap. This contract does not promise complete work-state replay: only fields with proven event coverage may be reconstructed.
+
+### 3.3.2 JRN-01 allocated-requirement crosswalk
+
+The 20 IDs allocated by the JRN-01 packet are accounted for below. “Consumes” means the journal contract contributes evidence or a boundary; it does not take ownership of the broader CLI, lifecycle, hydration, dependency, authority, or external-adapter requirements. Those owners remain the cited neighboring components. This distinction prevents requirement allocation from being mistaken for authorization to implement every allocated surface in this design-only slice.
+
+| Allocated ID(s) | JRN-01 design anchor | What this slice specifies / boundary |
+| --- | --- | --- |
+| C-R005, C-R107, C-R108 | §3.2 event kinds and operation/source refs; §8 golden contract oracle; #9206 command-interface | Journal records can be reached by the shared CLI and use its envelope; command inventory, parsing, and CLI registration remain #9206-owned, not delivered here. |
+| C-R009, H-R001, H-R014 | §3.2 event kinds; §3.4 checkpoint refs; #9206 lifecycle, #9207 hydration, #9209 operation receipts | Journal is one component in the coordinated lifecycle/hydration/outbox track; no end-to-end workflow or cursor implementation is claimed. |
+| C-R126 | §§3.1–3.3; §8 privacy oracle | Private Fleet notes and journal history are separate from public GitHub comments; corrections append and visibility is explicit. |
+| H-R017, H-R024, H-R031 | §3.2 event envelope; §3.3 provenance; §3.4 checkpoint refs; #9206 command-interface | Preserve source command/schema compatibility and provenance references where journal events consume them; the complete command inventory and acceptance suite remain owned by #9206/#9198. |
+| O-R022, O-R023 | §§3.2, 3.4; #9206 lifecycle and #9207 hydration | Journal events may reference work identity and cursor/checkpoint evidence; do not create another queue, hydration store, or command router. |
+| O-R031, O-R033 | §§3.2–3.4 and §4 field-authority table | Event history distinguishes private notes, lifecycle facts, external observations, and authorized projections; no automatic mirroring or full-state reconstruction. |
+| P-R009, P-R013 | §3.2 event model; §3.3.1 append/correction example; #9206 shared contract | Preserve work identity, version/sequence, provenance, and before/after evidence; shared serialization and broad orchestration remain with their owning slices. |
+| P-R017 | §3.3.1 correction oracle; §8 atomicity and privacy oracles | A correction supersedes without rewriting prior history; public/private projection and authority constraints remain explicit. |
+| P-R027 | §§3.2–3.4; §8 golden contract oracle | Event and checkpoint references carry bounded identity, provenance, visibility, and cursor/commit context; this does not assert the broader runtime workflow is implemented. |
+| P-R052, P-R067 | §§3.1–3.3; §4 authority table; §8 privacy and migration oracles | Keep metadata/authority facts distinct from private note content and public discussion; adapter conformance, deployment, and live evidence remain separate. |
+
+The exact allocated set is `C-R005, C-R009, C-R107, C-R108, C-R126, H-R001, H-R014, H-R017, H-R024, H-R031, O-R022, O-R023, O-R031, O-R033, P-R009, P-R013, P-R017, P-R027, P-R052, P-R067`, matching `issues/bodies/JRN-01.md`. Crosswalk references are design traceability only; the packet’s separately stated prerequisites, migration audit, implementation tests, deployment, and live acceptance remain gates for later work.
+
 ### 3.4 Checkpoint/handoff data boundary
 
 Checkpoints are durable, append-only snapshots/references useful to resume; not transcripts. Suggested fields: objective; completed steps; outstanding work; important paths; branch + commit/head SHA; test run and passed/pending/failed details; hard blockers and edge IDs; activity cursor refs; hydration generation/hash; suggested next action; session/worker ownership; created time. A checkpoint references private notes and source artifacts but preserves their visibility. Handoff records old/new owner when known and lease release/takeover result, never marks work completed. Editing checkpoint summary adds superseding version. #9206 owns checkpoint command and lifecycle; #9207 cursor/generation contract; #9209 operation receipt references. This design does not duplicate their implementations.
