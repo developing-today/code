@@ -16,10 +16,19 @@
 # reached. The rule for a new module: declare it in its parent in the
 # change that adds the file.
 #
+# Roots come from the manifest: `[lib] path`, each `[[bin]] path`, and
+# the conventional src/lib.rs, src/main.rs and src/bin/* (the last two
+# only while `autobins` is not false). A crate with source files and no
+# root this check can find fails by name rather than passing unread.
+#
+# A `mod x;` written inside a `macro_rules!` definition is not followed:
+# the definition compiles nothing, and what an invocation expands to
+# cannot be read from the text. Declare the module outside the macro.
+#
 # Usage: check-rust-module-reach.sh [REPO_ROOT [PACKAGE_DIR...]]
 #   PACKAGE_DIR defaults to pkgs/id and pkgs/fleet, relative to REPO_ROOT.
-# Exit: 0 = every file is reached; 1 = unreached files (named on stdout);
-#       2 = a package directory holds no crate.
+# Exit: 0 = every file is reached; 1 = unreached files or a crate with no
+#       root (named on stdout); 2 = a package directory holds no crate.
 set -euo pipefail
 
 ROOT="${1:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
@@ -28,6 +37,7 @@ shift || true
 exec python3 -I - "$ROOT" "$@" <<'PYEOF'
 import re
 import sys
+import tomllib
 from pathlib import Path
 
 root = Path(sys.argv[1])
@@ -90,6 +100,32 @@ def mask(text):
     return "".join(out), strings
 
 
+MACRO_DEF = re.compile(r"\bmacro_rules\s*!\s*[A-Za-z_][A-Za-z0-9_]*\s*([({\[])")
+CLOSER = {"(": ")", "{": "}", "[": "]"}
+
+
+def drop_macro_definitions(text):
+    """Blank the body of every `macro_rules!` definition (newlines kept).
+    Comments and strings are already masked, so delimiters balance."""
+    out, i = [], 0
+    while True:
+        m = MACRO_DEF.search(text, i)
+        if not m:
+            out.append(text[i:])
+            return "".join(out)
+        opener = m.group(1)
+        depth, j = 1, m.end()
+        while j < len(text) and depth:
+            if text[j] == opener:
+                depth += 1
+            elif text[j] == CLOSER[opener]:
+                depth -= 1
+            j += 1
+        out.append(text[i : m.start()])
+        out.append("\n" * text.count("\n", m.start(), j))
+        i = j
+
+
 TOKEN = re.compile(
     r"""
     (?P<attrs>(?:\#\s*!?\[(?:[^\[\]]|\[[^\[\]]*\])*\]\s*)*)
@@ -120,6 +156,7 @@ def walk(path, reached, missing, top=False):
         text, strings = mask(path.read_text(encoding="utf-8", errors="replace"))
     except OSError:
         return
+    text = drop_macro_definitions(text)
     # A bin target at src/bin/x.rs is a crate root: its modules sit beside it.
     base = path.parent if top else children_dir(path)
     stack = []  # inline modules: (directory before entering, brace depth)
@@ -138,15 +175,16 @@ def walk(path, reached, missing, top=False):
         else:
             name = m.group("name").removeprefix("r#")
             attr = PATH_ATTR.search(m.group("attrs") or "")
+            # Rust resolves a path attribute from the file's own
+            # directory, or, inside an inline module, from that inline
+            # module's directory.
+            origin = base if stack else path.parent
             if m.group("end") == "{":
                 stack.append((base, depth))
                 depth += 1
-                base = (path.parent / strings[int(attr.group(1))]) if attr else base / name
+                base = (origin / strings[int(attr.group(1))]) if attr else base / name
                 continue
             if attr:
-                # Rust resolves a path attribute from the file's own
-                # directory, or from the inline module's directory.
-                origin = base if stack else path.parent
                 candidates = [origin / strings[int(attr.group(1))]]
             else:
                 candidates = [base / (name + ".rs"), base / name / "mod.rs"]
@@ -176,7 +214,37 @@ def crates(package):
     return sorted(found)
 
 
+def crate_roots(crate):
+    """The files rustc starts from for this crate's src/ targets."""
+    src = crate / "src"
+    try:
+        manifest = tomllib.loads((crate / "Cargo.toml").read_text(encoding="utf-8"))
+    except (OSError, tomllib.TOMLDecodeError):
+        manifest = {}
+    package = manifest.get("package") if isinstance(manifest.get("package"), dict) else {}
+    roots = []
+    lib = manifest.get("lib") if isinstance(manifest.get("lib"), dict) else {}
+    lib_path = crate / lib["path"] if isinstance(lib.get("path"), str) else src / "lib.rs"
+    if lib_path.exists():
+        roots.append(lib_path)
+    for kind in ("bin", "example", "bench", "test"):
+        for target in manifest.get(kind) or []:
+            if isinstance(target, dict) and isinstance(target.get("path"), str):
+                declared = crate / target["path"]
+                if declared.exists():
+                    roots.append(declared)
+    if package.get("autobins", True) is not False:
+        if (src / "main.rs").exists():
+            roots.append(src / "main.rs")
+        bindir = src / "bin"
+        if bindir.is_dir():
+            roots += sorted(bindir.glob("*.rs")) + sorted(bindir.glob("*/main.rs"))
+    # Only roots inside src/ start a walk of src/.
+    return [r for r in roots if src.resolve() in r.resolve().parents]
+
+
 problems = []
+rootless = []
 total_files = 0
 total_crates = 0
 for package in packages:
@@ -187,11 +255,10 @@ for package in packages:
         sys.exit(2)
     for crate in found:
         src = crate / "src"
-        roots = [p for p in (src / "lib.rs", src / "main.rs") if p.exists()]
-        bindir = src / "bin"
-        if bindir.is_dir():
-            roots += sorted(bindir.glob("*.rs")) + sorted(bindir.glob("*/main.rs"))
+        roots = crate_roots(crate)
         if not roots:
+            if any(src.rglob("*.rs")):
+                rootless.append(crate.relative_to(root).as_posix())
             continue
         total_crates += 1
         reached, missing = set(), []
@@ -202,6 +269,11 @@ for package in packages:
             if f.resolve() not in reached:
                 problems.append(f.relative_to(root).as_posix())
 
+for crate in rootless:
+    print(
+        f"NOROOT {crate}: source files under src/ but no crate root found "
+        "(src/lib.rs, src/main.rs, src/bin/*, or a [lib] or [[bin]] path in Cargo.toml)"
+    )
 if problems:
     for p in problems:
         print(f"UNREACHED {p}: no `mod` declaration compiles this file into its crate")
@@ -210,6 +282,7 @@ if problems:
         "Declare each in its parent module (lib.rs, mod.rs or the file named after its directory) "
         "in the change that adds it, or move test-only code under tests/."
     )
+if problems or rootless:
     sys.exit(1)
 print(f"rust-module-reach: OK ({total_files} files in {total_crates} crates, all reached)")
 PYEOF

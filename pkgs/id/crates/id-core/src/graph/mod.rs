@@ -3,7 +3,7 @@
 //! The child modules below are the graph workstreams of program #9106
 //! part A that have landed. A slice that adds a module file under this
 //! root declares it here in the same change, in name order:
-//! `.github/scripts/check-id-module-reach.sh` fails when a source file
+//! `.github/scripts/check-rust-module-reach.sh` fails when a source file
 //! is not reachable from its crate root. A module that does not exist
 //! yet is never declared.
 

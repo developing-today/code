@@ -7,7 +7,7 @@
 //!
 //! The modules declared below are the slices that have landed. A slice
 //! that adds its module file declares it here in the same change, in
-//! registry order: `.github/scripts/check-id-module-reach.sh` fails when
+//! registry order: `.github/scripts/check-rust-module-reach.sh` fails when
 //! a source file is not reachable from its crate root. A slice whose
 //! file does not exist yet is in the registry and is never declared.
 

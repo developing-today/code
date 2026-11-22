@@ -152,7 +152,115 @@ if grep -q "UNREACHED pkgs/demo/a/src/outer/leaf.rs" "$TMP/out.txt"; then
 fi
 echo "pass: the inline module's own child is reached"
 
-# --- 6. A package directory with no crate is a usage error, not a pass.
+# --- 6. A path attribute on an inline module is resolved from the file's
+#        directory at the top level and from the enclosing inline module's
+#        directory when nested.
+T="$TMP/inline_path"
+crate "$T" a
+put "$T/pkgs/demo/a/src/lib.rs" <<'EOF'
+mod outer {
+    #[path = "alternate"]
+    mod inner {
+        mod leaf;
+    }
+}
+#[path = "elsewhere"]
+mod top {
+    mod leaf;
+}
+mod from_file;
+EOF
+put "$T/pkgs/demo/a/src/outer/alternate/leaf.rs" <<<"// reached through outer and the path attribute"
+put "$T/pkgs/demo/a/src/elsewhere/leaf.rs" <<<"// reached from the file's directory"
+put "$T/pkgs/demo/a/src/from_file.rs" <<'EOF'
+#[path = "beside_file"]
+mod inline {
+    mod leaf;
+}
+EOF
+put "$T/pkgs/demo/a/src/beside_file/leaf.rs" <<<"// a file module's inline path starts at the file's directory"
+put "$T/pkgs/demo/a/src/alternate/leaf.rs" <<<"// not where rustc looks for outer::inner::leaf"
+expect_fail "$T" "a nested inline path attribute keeps the enclosing directory" pkgs/demo/a/src/alternate/leaf.rs
+if grep -q "UNREACHED pkgs/demo/a/src/\(outer\|elsewhere\|beside_file\)/" "$TMP/out.txt"; then
+  echo "FAIL: a file rustc compiles was reported"
+  cat "$TMP/out.txt"
+  exit 1
+fi
+echo "pass: files reached through inline path attributes are not reported"
+
+# --- 7. A declaration inside a macro_rules! definition is not followed.
+T="$TMP/macro"
+crate "$T" a
+put "$T/pkgs/demo/a/src/lib.rs" <<'EOF'
+macro_rules! never_called {
+    () => {
+        mod in_braces;
+    };
+}
+macro_rules! parens (
+    () => { mod in_parens; };
+);
+pub mod after_the_macros;
+EOF
+for f in in_braces in_parens after_the_macros; do put "$T/pkgs/demo/a/src/$f.rs" <<<"// $f"; done
+expect_fail "$T" "declarations inside macro_rules! definitions do not count" \
+  pkgs/demo/a/src/in_braces.rs pkgs/demo/a/src/in_parens.rs
+if grep -q "UNREACHED pkgs/demo/a/src/after_the_macros.rs" "$TMP/out.txt"; then
+  echo "FAIL: a declaration after a macro definition was lost"
+  exit 1
+fi
+echo "pass: a declaration after the macro definitions is still followed"
+
+# --- 8. Roots come from the manifest.
+T="$TMP/manifest"
+# [lib] path: the root is not src/lib.rs.
+put "$T/pkgs/demo/libpath/Cargo.toml" <<'EOF'
+[package]
+name = "libpath"
+[lib]
+path = "src/entry.rs"
+EOF
+put "$T/pkgs/demo/libpath/src/entry.rs" <<<"mod wired;"
+put "$T/pkgs/demo/libpath/src/wired.rs" <<<"// wired"
+put "$T/pkgs/demo/libpath/src/orphan.rs" <<<"// never declared"
+# autobins = false: only the listed bin is a root.
+put "$T/pkgs/demo/nobins/Cargo.toml" <<'EOF'
+[package]
+name = "nobins"
+autobins = false
+[[bin]]
+name = "listed"
+path = "src/bin/listed.rs"
+EOF
+put "$T/pkgs/demo/nobins/src/lib.rs" <<<"// lib"
+put "$T/pkgs/demo/nobins/src/bin/listed.rs" <<<"// a listed bin"
+put "$T/pkgs/demo/nobins/src/bin/unlisted.rs" <<<"// not a target while autobins is off"
+expect_fail "$T" "roots are read from [lib] path and autobins" \
+  pkgs/demo/libpath/src/orphan.rs pkgs/demo/nobins/src/bin/unlisted.rs
+for reached in libpath/src/entry.rs libpath/src/wired.rs nobins/src/bin/listed.rs nobins/src/lib.rs; do
+  if grep -q "UNREACHED pkgs/demo/$reached" "$TMP/out.txt"; then
+    echo "FAIL: $reached was reported"
+    exit 1
+  fi
+done
+echo "pass: manifest-declared roots and their modules are reached"
+
+# --- 9. A crate whose root cannot be found fails by name; it is not skipped.
+T="$TMP/rootless"
+crate "$T" a
+put "$T/pkgs/demo/a/src/not_a_root.rs" <<<"// no lib.rs, no main.rs, nothing in the manifest"
+set +e
+bash "$SCRIPT" "$T" pkgs/demo >"$TMP/rootless.out"
+rc=$?
+set -e
+if [ "$rc" -ne 1 ] || ! grep -q "^NOROOT pkgs/demo/a:" "$TMP/rootless.out"; then
+  echo "FAIL: a crate with no root: expected exit 1 and a NOROOT line, got $rc"
+  cat "$TMP/rootless.out"
+  exit 1
+fi
+echo "pass: a crate with source files and no root fails by name"
+
+# --- 10. A package directory with no crate is a usage error, not a pass.
 mkdir -p "$TMP/empty/pkgs/demo"
 set +e
 bash "$SCRIPT" "$TMP/empty" pkgs/demo >"$TMP/empty.out"
