@@ -5,10 +5,9 @@
 // one of his prompts, something new needs his hands, new questions
 // arrived, a unit failed. The first pass only takes stock, so turning
 // notifications on never sets off a flood about things already there.
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
-import { dirname } from "node:path";
 import type { Docs } from "./docs.ts";
 import type { Class, Push } from "./push.ts";
+import type { Store } from "./store.ts";
 
 export interface Seen {
   primed: boolean;
@@ -120,13 +119,13 @@ export class Notifier {
   constructor(
     private docs: Docs,
     private push: Push,
-    private file: string,
+    private store: Store,
   ) {}
 
   private async load(): Promise<Seen> {
     if (this.seen) return this.seen;
     try {
-      this.seen = { ...NOTHING_SEEN, ...(JSON.parse(await readFile(this.file, "utf8")) as Seen) };
+      this.seen = { ...NOTHING_SEEN, ...(JSON.parse((await this.store.read()) ?? "") as Seen) };
     } catch {
       this.seen = NOTHING_SEEN;
     }
@@ -143,11 +142,10 @@ export class Notifier {
       const now = Object.fromEntries(WATCHED.map((n) => [n, this.docs.good(n)])) as State;
       const { messages, seen } = changes(await this.load(), now);
       for (const m of messages) await this.push.send(m.cls, m);
+      // Written down only when it differs: most passes find nothing new.
+      const before = JSON.stringify(this.seen);
       this.seen = seen;
-      await mkdir(dirname(this.file), { recursive: true, mode: 0o700 });
-      const tmp = `${this.file}.tmp-${process.pid}`;
-      await writeFile(tmp, JSON.stringify(seen), { mode: 0o600 });
-      await rename(tmp, this.file);
+      if (JSON.stringify(seen) !== before) await this.store.write(JSON.stringify(seen));
       return messages.length;
     } finally {
       this.busy = false;

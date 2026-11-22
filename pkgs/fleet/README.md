@@ -80,7 +80,9 @@ crates/fleet-queue/         the queue domain (step 2): the repo-queue
                             Its src/bin/ builds the standalone
                             repo-queue / queue-broker / secrets-broker
                             artifacts (the `fleet-brokers` package):
-                            the migration's rollback inventory.
+                            the migration's rollback inventory. Remote
+                            build/test dispatch runbook:
+                            doc/agents/remote-build-and-test.md.
 crates/fleet-search/        the search domain (step 5): the
                             atlas-search CLIENT surface over the
                             live Atlas service's job protocol —

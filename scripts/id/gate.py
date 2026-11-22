@@ -8,13 +8,16 @@ Design record (issue #12229, "What to build" step 2):
   large enough that ten batches cover a week of id PRs.
 - **What runs.** One command per batch: ``cargo check --workspace``
   for pkgs/id, then ``cargo test`` for the union of the crates the
-  batch's PRs affect (per ``affected-crates.py``). Commands run on
-  the fleet build host through ``fleet shell --build``; this module
-  only plans them and records their results, it never runs them.
+  batch's PRs affect (per ``affected-crates.py``). Commands run
+  inside pkgs/id's own nix dev shell (``nix develop`` of the
+  candidate's pkgs/id flake, which wires the wayland/X11 system
+  libraries); the fleet build shell lacks those libraries and made
+  batch 1 infrastructure-red (#12229).
 - **Red batch.** Bisected by halving (``find_culprits``): a subset
   that stays red is split until each red PR is isolated. Green
   sub-batches merge; a red PR leaves the batch and goes back to its
-  author with the failing command from the log.
+  author with the failing command from the log. Green PRs use GitHub's
+  ``--merge`` strategy to preserve PR ancestry.
 - **Switching it off.** ``ID_GATE_OFF=1`` in the environment, or
   ``enabled=False`` / ``--off`` here, plans no batches. Nightly CI
   is unchanged either way (issue decision D2's undo path).
@@ -26,6 +29,7 @@ Design record (issue #12229, "What to build" step 2):
 Usage:
   python3 scripts/id/gate.py plan --prs 101,102,103 [--batch-size 5] [--off]
   python3 scripts/id/gate.py bisect --batch 101,102,103 --red 102
+  python3 scripts/id/gate.py run --batch 1 --prs 12470
   python3 scripts/id/gate.py log --file gate-log.jsonl --batch 1 \
       --prs 101,102 --command "cargo check --workspace" --result green
 """
@@ -35,7 +39,9 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import subprocess
 import sys
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Iterable, Mapping, Sequence
@@ -44,6 +50,8 @@ from typing import Callable, Iterable, Mapping, Sequence
 DEFAULT_BATCH_SIZE = 5
 OFF_ENV = "ID_GATE_OFF"
 MANIFEST = "pkgs/id/Cargo.toml"
+REPO_ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_LOG_PATH = REPO_ROOT / "scripts/id/gate-log.jsonl"
 
 
 def gate_enabled() -> bool:
@@ -130,6 +138,106 @@ def read_log(path: Path) -> list[dict[str, object]]:
     ]
 
 
+def _run_git(args: list[str], *, cwd: Path | None = None, **_: object) -> str:
+    result = subprocess.run(["git", *args], cwd=cwd, check=True, text=True,
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    return result.stdout.strip()
+
+
+def _run_gh(args: list[str], *, cwd: Path | None = None, **_: object) -> str:
+    result = subprocess.run(["gh", *args], cwd=cwd, check=True, text=True,
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    return result.stdout.strip()
+
+
+def _run_devshell(command: str, *, cwd: Path | None = None, **_: object) -> int:
+    """Run one batch command inside pkgs/id's own nix dev shell.
+
+    Batch 1 (#12229) ran under ``fleet shell --build`` and died in the
+    wayland-sys build script: that shell lacks the wayland client
+    libraries. pkgs/id's flake wires them (``pkgs/id/nix-common.nix``),
+    so the batch command — recorded verbatim in the gate log — runs
+    unchanged, from the candidate root, inside ``nix develop`` of the
+    candidate's pkgs/id. The manual re-evaluation of batch 1's candidate
+    in exactly this shell is the green reference run.
+    """
+    root = cwd if cwd is not None else REPO_ROOT
+    argv = [
+        "nix", "--extra-experimental-features", "nix-command flakes",
+        "develop", str(root / "pkgs" / "id"),
+        "--command", "bash", "-c", command,
+    ]
+    result = subprocess.run(argv, cwd=root)
+    return result.returncode
+
+
+def run_batch(
+    prs: Sequence[int], batch: int, *, affected: Mapping[int, Iterable[str]] | None = None,
+    log_path: Path = DEFAULT_LOG_PATH, repo: Path = REPO_ROOT,
+    git: Callable[..., str] = _run_git,
+    shell: Callable[..., int] = _run_devshell,
+    gh: Callable[..., str] = _run_gh,
+) -> str:
+    """Build and gate one ordered batch. Command seams make the driver unit-testable."""
+    if gate_enabled():
+        return "off"
+    if not prs:
+        raise ValueError("a batch must contain at least one PR")
+    git(["fetch", "origin", "main"], cwd=repo)
+    affected_by_pr: dict[int, Iterable[str]] = dict(affected or {})
+
+    def evaluate(subset: list[int], number: int) -> bool:
+        # Each verdict is assembled from current main, never from a prior probe.
+        with tempfile.TemporaryDirectory(prefix="id-gate-") as temp:
+            candidate = Path(temp) / "candidate"
+            git(["worktree", "add", "--detach", str(candidate), "origin/main"], cwd=repo)
+            try:
+                for pr in subset:
+                    data = json.loads(gh(["pr", "view", str(pr), "--json", "headRefOid"], cwd=repo))
+                    oid = data["headRefOid"]
+                    git(["fetch", "origin", f"refs/pull/{pr}/head"], cwd=candidate)
+                    git(["merge", "--no-ff", "--no-edit", "FETCH_HEAD"], cwd=candidate)
+                    if pr not in affected_by_pr:
+                        paths = git(["diff", "--name-only", f"origin/main...{oid}"], cwd=repo)
+                        selector = candidate / "scripts/id/affected-crates.py"
+                        selected = subprocess.run(
+                            [sys.executable, str(selector), "-"], cwd=candidate,
+                            input=paths, text=True, check=True,
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                        ).stdout.splitlines()
+                        affected_by_pr[pr] = selected
+                command = batch_command(subset, affected_by_pr)
+                result = shell(command, cwd=candidate, prs=subset)
+                verdict = result == 0
+                append_log(log_path, log_record(number, subset, command,
+                                                "green" if verdict else "red"))
+                return verdict
+            finally:
+                git(["worktree", "remove", "--force", str(candidate)], cwd=repo)
+
+    root_red = False
+
+    def is_red(subset: list[int]) -> bool:
+        nonlocal root_red
+        verdict = not evaluate(subset, batch)
+        if subset == list(prs):
+            root_red = verdict
+        return verdict
+
+    red = find_culprits(prs, is_red)
+    # Preserve safety if a failure only appears from an interaction between
+    # PRs and every proper subset happens to pass: leave the whole set open.
+    if root_red and not red:
+        red = list(prs)
+    green = [pr for pr in prs if pr not in set(red)]
+
+    # `gh pr merge --merge` creates the durable merge commit and marks each
+    # source PR merged; each accepted PR is applied in the same order tested.
+    for pr in green:
+        gh(["pr", "merge", str(pr), "--merge"], cwd=repo)
+    return "red" if red else "green"
+
+
 def _prs(text: str) -> list[int]:
     return [int(part) for part in text.split(",") if part.strip()]
 
@@ -154,9 +262,17 @@ def main(argv: list[str] | None = None) -> int:
     log.add_argument("--command", required=True)
     log.add_argument("--result", required=True, choices=("green", "red"))
 
+    run = sub.add_parser("run", help="assemble, test, and merge one planned batch")
+    run.add_argument("--batch", type=int, required=True)
+    run.add_argument("--prs", required=True, help="comma-separated PR numbers, in merge order")
+    run.add_argument("--log", default=str(DEFAULT_LOG_PATH), help="JSONL batch log path")
+
     args = parser.parse_args(argv)
 
-    if args.command == "plan":
+    if args.command == "run":
+        result = run_batch(_prs(args.prs), args.batch, log_path=Path(args.log))
+        print(json.dumps({"batch": args.batch, "prs": _prs(args.prs), "result": result}))
+    elif args.command == "plan":
         batches = plan_batches(
             _prs(args.prs), batch_size=args.batch_size, enabled=not args.off
         )

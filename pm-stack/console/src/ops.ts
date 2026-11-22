@@ -8,6 +8,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Config } from "./config.ts";
+import { OpError } from "./errors.ts";
 
 export interface RunResult {
   code: number;
@@ -23,14 +24,7 @@ export type Row = Record<string, string | number | null>;
 /** Queue priorities, most urgent first (the queue's design scale). */
 export const PRIORITY_SCALE = [10, 20, 30, 40, 50, 70, 90] as const;
 
-export class OpError extends Error {
-  constructor(
-    public status: 400 | 404 | 409 | 502,
-    message: string,
-  ) {
-    super(message);
-  }
-}
+export { OpError };
 
 export const realRun: Run = async (argv, opts = {}) => {
   const proc = Bun.spawn(argv, {
@@ -169,6 +163,9 @@ function id(value: unknown, name: string): number {
   if (!/^[1-9][0-9]{0,9}$/.test(s)) throw new OpError(400, `${name}: not a positive number`);
   return Number(s);
 }
+
+/** scripts/expose.py, beside this package's sources. */
+const EXPOSE = join(import.meta.dir, "..", "scripts", "expose.py");
 
 export class Ops {
   private queueToken: string | null = null;
@@ -475,6 +472,64 @@ export class Ops {
     argv.push("-");
     await this.must(argv, { stdin: text(body, "text", 16_000) });
     return { to: targets, command: command === true };
+  }
+
+  // ---- sign-in ------------------------------------------------------------
+
+  /** The script that keeps the public address as declared. It is the one
+   * place that talks to the sign-in gate, so sign-in is read and changed
+   * through it. */
+  private expose(args: string[], stdin?: string) {
+    return this.run(["python3", EXPOSE, ...args], { stdin, timeoutMs: 120_000 });
+  }
+
+  /** Which sign-in methods are on, and what Google has to be told to
+   * let this gate use it. */
+  async signin() {
+    const r = await this.expose(["--status"]);
+    let status: { google?: unknown; pin?: unknown; team?: unknown } | null = null;
+    try {
+      status = JSON.parse(r.stdout.trim().split("\n").pop() ?? "");
+    } catch {
+      status = null;
+    }
+    if (r.code !== 0 || !status || typeof status.team !== "string" || !/^[a-z0-9.-]+$/.test(status.team)) {
+      throw new OpError(502, "could not read the sign-in settings from Cloudflare");
+    }
+    return {
+      google: status.google === true,
+      pin: status.pin === true,
+      // What goes into the Google client: where sign-ins come from, and
+      // where Google sends them back.
+      origin: `https://${status.team}`,
+      redirect: `https://${status.team}/cdn-cgi/access/callback`,
+    };
+  }
+
+  /** Turn Google sign-in on with an OAuth client the owner made. The two
+   * values go to the script on its standard input and from there to
+   * Cloudflare; they are not kept here, logged, or returned. */
+  async googleSignin(clientId: unknown, clientSecret: unknown) {
+    const id = text(clientId, "client ID", 200);
+    const value = text(clientSecret, "client secret", 200);
+    if (!/^[0-9]+-[0-9a-z]+\.apps\.googleusercontent\.com$/.test(id)) {
+      throw new OpError(400, "client ID: one from Google ends in .apps.googleusercontent.com");
+    }
+    if (!/^[\x21-\x7e]{8,200}$/.test(value)) throw new OpError(400, "client secret: not a client secret");
+    const r = await this.expose(["--google-stdin"], `${id}\n${value}\n`);
+    // What the script prints is never one of the two values, but nothing
+    // is passed on that could hold one.
+    const said = `${r.stdout}\n${r.stderr}`
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((line) => line && !line.includes(value) && !line.includes(id));
+    if (r.code !== 0) {
+      throw new OpError(
+        502,
+        `Google sign-in was not turned on: ${(said.pop() ?? "the setup script failed").slice(0, 300)}`,
+      );
+    }
+    return { google: true, changed: said.filter((line) => line.startsWith("changed: ")).map((line) => line.slice(9)) };
   }
 
   // ---- services ----------------------------------------------------------

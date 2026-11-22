@@ -1,0 +1,35 @@
+{
+  // The Worker in front of pm.security.cab: the app, its state,
+  // notifications and the phone widget, served from Cloudflare.
+  //
+  // Deployed by the pm-console-edge-deploy workflow (wrangler deploy).
+  // It has no route here on purpose: scripts/expose.py on the host puts
+  // the hostname's route on it once it answers its health check, and can
+  // take the route away again, which is the whole rollback.
+  "name": "pm-console-edge",
+  "main": "src/worker.ts",
+  "compatibility_date": "2026-10-01",
+  "compatibility_flags": ["nodejs_compat"],
+  // The workers.dev address answers the health check and the public
+  // files only: every other path needs the owner's sign-in token, which
+  // is only issued for the routed hostname.
+  "workers_dev": true,
+  "preview_urls": false,
+  "observability": { "enabled": true },
+  "vars": { "PUBLIC_HOST": "pm.security.cab" },
+  // The app's files, put together by build.mjs. Every request reaches
+  // the Worker first; it serves a file only after checking who asks.
+  "assets": {
+    "directory": "./dist",
+    "binding": "ASSETS",
+    "run_worker_first": true,
+    "html_handling": "none",
+    "not_found_handling": "none"
+  },
+  // One object holds the state: the copy of what the host last
+  // reported, what is held for it, notification subscriptions and keys,
+  // linked phones. No secrets are configured: every key it uses it made
+  // itself, or was published by the host.
+  "durable_objects": { "bindings": [{ "name": "PM", "class_name": "PmEdge" }] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["PmEdge"] }]
+}

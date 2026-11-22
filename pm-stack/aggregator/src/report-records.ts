@@ -6,7 +6,7 @@ import { appendFile, mkdir, readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import type { AppendOnlyDocumentRemote } from "./aa-last-good.ts";
-import { dailyReportPeriod, type DailyReportPeriod } from "./report-periods.ts";
+import { reportPeriod, type ReportPeriod, type ReportPeriodKind } from "./report-periods.ts";
 
 export interface ReportRecordSource {
   id: string;
@@ -19,10 +19,12 @@ export interface ReportRecordBlock {
   text: string;
   relatedAt: string;
   links?: string[];
+  importance?: ReportPeriodKind[];
+  classification?: "implemented" | "cancelled" | "duplicate" | "in-progress" | "blocked" | "queued";
 }
 
 export interface ReportRecordInput {
-  period: DailyReportPeriod;
+  period: ReportPeriod;
   asOf: string;
   templateVersion: string;
   sourceCursor: string;
@@ -43,11 +45,13 @@ export function defaultReportRecordsFile(env: Record<string, string | undefined>
 
 const REPORT_UPDATE_OPERATIONS = ["edit", "replace", "quote", "append", "banner", "event-log", "feedback"] as const;
 export type ReportUpdateOperation = (typeof REPORT_UPDATE_OPERATIONS)[number];
+const REPORT_PERIOD_KINDS = ["daily", "weekly", "monthly", "quarterly", "annual"] as const;
+const REPORT_CLASSIFICATIONS = ["implemented", "cancelled", "duplicate", "in-progress", "blocked", "queued"] as const;
 
 const ALLOWED_AFTER_SOFT_CLOSE: ReadonlySet<ReportUpdateOperation> = new Set(["quote", "append", "banner", "event-log", "feedback"]);
 
 /** Enforce the report's soft-close allowlist; the close instant is exclusive. */
-export function assertReportUpdateAllowed(period: DailyReportPeriod, operation: ReportUpdateOperation, at: string): void {
+export function assertReportUpdateAllowed(period: ReportPeriod, operation: ReportUpdateOperation, at: string): void {
   requireIsoDate(at, "update time");
   if (!(REPORT_UPDATE_OPERATIONS as readonly string[]).includes(operation)) throw new Error(`unknown report operation: ${operation}`);
   if (Date.parse(at) < Date.parse(period.softCloseAt)) return;
@@ -92,10 +96,15 @@ export function makeReportRecord(input: ReportRecordInput, generatedAt = new Dat
   if (!input.templateVersion.trim()) throw new Error("templateVersion is required");
   if (!input.sourceCursor.trim()) throw new Error("sourceCursor is required");
   if (input.period.timezone !== "America/Chicago") throw new Error("report period must use America/Chicago");
-  const date = /^daily:(\d{4}-\d{2}-\d{2}):America\/Chicago$/.exec(input.period.id)?.[1];
-  const canonicalPeriod = date ? dailyReportPeriod(date) : null;
+  const match = /^(daily|weekly|monthly|quarterly|annual):(.+):America\/Chicago$/.exec(input.period.id);
+  const kind = match?.[1] as ReportPeriodKind | undefined;
+  const identity = match?.[2];
+  let canonicalPeriod: ReportPeriod | null = null;
+  if (kind && identity) {
+    try { canonicalPeriod = reportPeriod(kind, identity); } catch { /* common validation error below */ }
+  }
   if (!canonicalPeriod || input.period.kind !== canonicalPeriod.kind || input.period.periodStart !== canonicalPeriod.periodStart || input.period.periodEnd !== canonicalPeriod.periodEnd || input.period.softCloseAt !== canonicalPeriod.softCloseAt) {
-    throw new Error("period must be a canonical dailyReportPeriod value");
+    throw new Error("period must be a canonical C7 reportPeriod value");
   }
   if (Date.parse(input.asOf) < Date.parse(input.period.periodStart) || Date.parse(input.asOf) >= Date.parse(input.period.periodEnd)) {
     throw new Error("asOf must fall within the report period");
@@ -111,6 +120,18 @@ export function makeReportRecord(input: ReportRecordInput, generatedAt = new Dat
     if (blockIds.has(block.id)) throw new Error(`duplicate report block id: ${block.id}`);
     blockIds.add(block.id);
     requireIsoDate(block.relatedAt, "block relatedAt");
+    if (block.importance && (!Array.isArray(block.importance) || block.importance.some((kind) => !(REPORT_PERIOD_KINDS as readonly string[]).includes(kind)) || new Set(block.importance).size !== block.importance.length)) {
+      throw new Error(`report block ${block.id} has invalid importance levels`);
+    }
+    if (block.classification && !(REPORT_CLASSIFICATIONS as readonly string[]).includes(block.classification)) {
+      throw new Error(`report block ${block.id} has an invalid activity classification`);
+    }
+    if (block.classification && (!block.links || block.links.length === 0)) {
+      throw new Error(`classified activity block ${block.id} must link its members`);
+    }
+    if (block.links && (!Array.isArray(block.links) || block.links.some((link) => typeof link !== "string" || !link.trim()))) {
+      throw new Error(`report block ${block.id} has invalid links`);
+    }
   }
   return { ...structuredClone(input), id: reportRecordId(input), generatedAt };
 }

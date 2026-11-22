@@ -785,6 +785,7 @@ mod tests {
                     caps_ceiling: None,
                     schedules: None,
                     kv: None,
+                    blobs: None,
                     transfers: Some(vec![receipt.clone()]),
                     lease: None,
                     snapshot: "snapshot".to_owned(),
@@ -1198,6 +1199,7 @@ mod tests {
                 caps_ceiling: None,
                 schedules: None,
                 kv: None,
+                blobs: None,
                 transfers: None,
                 lease: None,
                 snapshot: "s".to_owned(),
@@ -1278,6 +1280,7 @@ mod tests {
                     caps_ceiling: None,
                     schedules: None,
                     kv: None,
+                    blobs: None,
                     transfers: None,
                     lease: None,
                     snapshot: "s".to_owned(),
@@ -1463,6 +1466,7 @@ mod tests {
                 caps_ceiling: None,
                 schedules: None,
                 kv: None,
+                blobs: None,
                 transfers: Some(transfers),
                 lease: None,
                 snapshot: "state".to_owned(),
@@ -1530,6 +1534,7 @@ mod tests {
             caps_ceiling: None,
             schedules: None,
             kv: None,
+            blobs: None,
             transfers: None,
             lease: None,
             admin_history: None,
@@ -1696,8 +1701,10 @@ mod tests {
         // wiring, code#1068), version 9 for signed play (#4346) and
         // version 8 for recurring schedules (#1355); the lease entries
         // still require exactly 7.
-        // Version 12 (#11960) records join and revoke times.
-        assert_eq!(MAX_JOURNAL_VERSION, JOURNAL_VERSION_JOIN_TIMES);
+        // Version 12 (#11960) records join and revoke times, version
+        // 13 the kv store entries and version 14 the blob store
+        // entries (both #1062).
+        assert_eq!(MAX_JOURNAL_VERSION, JOURNAL_VERSION_BLOB);
         // A checkpoint carrying a non-bootstrap lease also requires
         // version 7; one without a lease keeps its existing version.
         let mut lease = WriteLease::bootstrap();
@@ -1713,6 +1720,7 @@ mod tests {
             caps_ceiling: None,
             schedules: None,
             kv: None,
+            blobs: None,
             transfers: None,
             lease,
             snapshot: "s".to_owned(),
@@ -2400,6 +2408,7 @@ mod tests {
             caps_ceiling: None,
             schedules: None,
             kv: None,
+            blobs: None,
             transfers: None,
             lease: None,
             snapshot: "s".to_owned(),
@@ -2420,6 +2429,7 @@ mod tests {
             caps_ceiling: None,
             schedules: None,
             kv: None,
+            blobs: None,
             transfers: None,
             lease: None,
             snapshot: "s".to_owned(),
@@ -3710,6 +3720,7 @@ mod tests {
             caps_ceiling: None,
             schedules: None,
             kv: None,
+            blobs: None,
             transfers: None,
             snapshot: "snapshot".to_owned(),
             events,
@@ -10426,6 +10437,7 @@ mod schedule_tests {
             caps_ceiling: None,
             schedules: None,
             kv,
+            blobs: None,
             transfers: None,
             lease: None,
             snapshot: "s".to_owned(),
@@ -10466,6 +10478,15 @@ mod schedule_tests {
             },
         ];
         assert!(WorldCore::restore("w", WorldLimits::default(), bad_key).is_err());
+        // A journal value must contain the JSON encoding promised by KvSet.
+        let malformed_json = [
+            header(),
+            JournalEntry::KvSet {
+                key: "a".to_owned(),
+                value: "{\"x\":".to_owned(),
+            },
+        ];
+        assert!(WorldCore::restore("w", WorldLimits::default(), malformed_json).is_err());
         // A value past the serialized cap.
         let big_value = [
             header(),
@@ -10481,6 +10502,401 @@ mod schedule_tests {
             entries.push(JournalEntry::KvSet {
                 key: format!("k{index}"),
                 value: "1".to_owned(),
+            });
+        }
+        assert!(WorldCore::restore("w", WorldLimits::default(), entries).is_err());
+    }
+
+    // ---- F12.5 blob provider (#1062) ----
+
+    #[test]
+    fn blob_bounds_refuse_each_violation_with_a_reason() {
+        let core = world(8);
+        let hash = blob_id(b"content");
+        assert!(core.check_blob_put(&hash, 7).is_ok());
+        assert!(
+            core.check_blob_put(&blob_id(b"max"), crate::world_caps::MAX_BLOB_BYTES)
+                .is_ok()
+        );
+        let error = core.check_blob_put("not-a-hash", 4).unwrap_err();
+        assert!(error.to_string().contains("blob hash"), "{error}");
+        let error = core
+            .check_blob_put(&hash, crate::world_caps::MAX_BLOB_BYTES + 1)
+            .unwrap_err();
+        assert!(error.to_string().contains("blob exceeds"), "{error}");
+
+        // Entry cap: a new blob is refused at the cap; re-putting
+        // content the world already holds is not — it is a no-op.
+        let mut full = world(8);
+        for index in 0..crate::world_caps::MAX_BLOBS {
+            let content = vec![index as u8];
+            full.blobs.insert(blob_id(&content), content);
+        }
+        assert!(
+            full.check_blob_put(&blob_id(&[0u8]), 1).is_ok(),
+            "a re-put at capacity fits: it frees no slot because it takes none"
+        );
+        let error = full.check_blob_put(&blob_id(b"one-more"), 8).unwrap_err();
+        assert!(error.to_string().contains("blobs"), "{error}");
+
+        // Total byte cap: 64 maximal blobs exactly fill it; one more
+        // byte under a new address is refused, a re-put is not.
+        let mut store = world(8);
+        for index in 0..64u8 {
+            let content = vec![index; crate::world_caps::MAX_BLOB_BYTES];
+            store.blobs.insert(blob_id(&content), content);
+        }
+        assert_eq!(store.blob_bytes(), crate::world_caps::MAX_BLOB_TOTAL_BYTES);
+        assert!(
+            store
+                .check_blob_put(&blob_id(&vec![0u8; crate::world_caps::MAX_BLOB_BYTES]), 4)
+                .is_ok(),
+            "a re-put at the total cap fits: it charges nothing new"
+        );
+        let error = store.check_blob_put(&blob_id(b"overflow"), 8).unwrap_err();
+        assert!(error.to_string().contains("total bytes"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn blob_put_get_delete_round_trip_through_the_actor() {
+        let (mut actor, _clock, token, journal) = scheduling_actor(
+            "blob-round-trip",
+            &["blob.put", "blob.get", "blob.delete"],
+            false,
+        );
+        let data = blob_encode(b"hello blob");
+        let hash = blob_id(b"hello blob");
+        ask(
+            &mut actor,
+            &token,
+            serde_json::json!({"requests": [
+                {"id": "p1", "cap": "blob.put", "args": {"data": data}},
+            ]}),
+        )
+        .await;
+        let written = schedule_result(&actor, "p1").unwrap();
+        assert_eq!(written["ok"], true, "{written}");
+        assert_eq!(written["value"]["hash"], hash, "{written}");
+        assert_eq!(written["value"]["size"], 10, "{written}");
+        assert_eq!(actor.core.blobs[&hash], b"hello blob");
+        ask(
+            &mut actor,
+            &token,
+            serde_json::json!({"requests": [
+                {"id": "p2", "cap": "blob.put", "args": {"data": data}},
+                {"id": "g1", "cap": "blob.get", "args": {"hash": hash}},
+                {"id": "g2", "cap": "blob.get", "args": {"hash": blob_id(b"never stored")}},
+                {"id": "g3", "cap": "blob.get", "args": {"hash": "not-a-hash"}},
+                {"id": "p3", "cap": "blob.put", "args": {"data": "!!! not base64 !!!"}},
+            ]}),
+        )
+        .await;
+        let again = schedule_result(&actor, "p2").unwrap();
+        assert_eq!(again["ok"], true, "{again}");
+        assert_eq!(again["value"]["hash"], hash, "{again}");
+        let read = schedule_result(&actor, "g1").unwrap();
+        assert_eq!(read["value"]["data"], data, "{read}");
+        let missing = schedule_result(&actor, "g2").unwrap();
+        assert_eq!(
+            missing["value"]["data"],
+            serde_json::Value::Null,
+            "{missing}"
+        );
+        assert_eq!(
+            schedule_result(&actor, "g3").unwrap()["error"],
+            "bad_args",
+            "a malformed hash is refused"
+        );
+        assert_eq!(
+            schedule_result(&actor, "p3").unwrap()["error"],
+            "bad_args",
+            "malformed base64 is refused"
+        );
+        ask(
+            &mut actor,
+            &token,
+            serde_json::json!({"requests": [
+                {"id": "d1", "cap": "blob.delete", "args": {"hash": hash}},
+            ]}),
+        )
+        .await;
+        let deleted = schedule_result(&actor, "d1").unwrap();
+        assert_eq!(deleted["value"]["deleted"], true, "{deleted}");
+        ask(
+            &mut actor,
+            &token,
+            serde_json::json!({"requests": [
+                {"id": "g4", "cap": "blob.get", "args": {"hash": hash}},
+                {"id": "d2", "cap": "blob.delete", "args": {"hash": hash}},
+            ]}),
+        )
+        .await;
+        let gone = schedule_result(&actor, "g4").unwrap();
+        assert_eq!(gone["value"]["data"], serde_json::Value::Null, "{gone}");
+        let deleted_again = schedule_result(&actor, "d2").unwrap();
+        assert_eq!(deleted_again["value"]["deleted"], false, "{deleted_again}");
+        let entries = journal.entries();
+        assert_eq!(
+            entries
+                .iter()
+                .filter(|entry| matches!(entry, JournalEntry::BlobStored { .. }))
+                .count(),
+            1,
+            "two puts of one content journal one entry"
+        );
+        assert_eq!(
+            entries
+                .iter()
+                .filter(|entry| matches!(entry, JournalEntry::BlobRemoved { .. }))
+                .count(),
+            1,
+            "deleting an absent blob journals nothing"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_ungranted_blob_write_is_refused_and_counted() {
+        let (mut actor, _clock, token, journal) = scheduling_actor("blob-refused", &[], false);
+        ask(
+            &mut actor,
+            &token,
+            serde_json::json!({"requests": [
+                {"id": "p1", "cap": "blob.put", "args": {"data": blob_encode(b"content")}},
+            ]}),
+        )
+        .await;
+        assert_eq!(
+            schedule_result(&actor, "p1").unwrap()["error"],
+            "cap_denied"
+        );
+        assert!(
+            actor.core.ledger.usage()["blob.put"].denied > 0,
+            "{:?}",
+            actor.core.ledger.usage()
+        );
+        assert!(
+            actor.core.blobs.is_empty(),
+            "a refused write stores nothing"
+        );
+        assert!(
+            journal
+                .entries()
+                .iter()
+                .all(|entry| !matches!(entry, JournalEntry::BlobStored { .. })),
+            "a refused write journals nothing"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_blob_write_outside_the_ceiling_is_refused_and_stores_nothing() {
+        let (mut actor, _clock, token, journal) =
+            scheduling_actor("blob-ceiling", &["blob.put"], false);
+        let (reply, response) = tokio::sync::oneshot::channel();
+        actor
+            .handle(WorldCommand::SetCapsCeiling {
+                ceiling: vec!["time.now".to_owned()],
+                reply,
+            })
+            .await;
+        let _ = response.await.unwrap().unwrap();
+        actor.after_change().await;
+        ask(
+            &mut actor,
+            &token,
+            serde_json::json!({"requests": [
+                {"id": "p1", "cap": "blob.put", "args": {"data": blob_encode(b"content")}},
+            ]}),
+        )
+        .await;
+        assert_eq!(
+            schedule_result(&actor, "p1").unwrap()["error"],
+            "outside_ceiling"
+        );
+        assert!(
+            actor.core.ledger.usage()["blob.put"].denied > 0,
+            "{:?}",
+            actor.core.ledger.usage()
+        );
+        assert!(
+            actor.core.blobs.is_empty(),
+            "a ceiling-refused write stores nothing"
+        );
+        assert!(
+            journal
+                .entries()
+                .iter()
+                .all(|entry| !matches!(entry, JournalEntry::BlobStored { .. })),
+            "a ceiling-refused write journals nothing"
+        );
+    }
+
+    #[test]
+    fn blob_entries_replay_and_survive_compaction() {
+        let header = || JournalEntry::Created {
+            world_id: "w".to_owned(),
+            version: JOURNAL_VERSION_BLOB,
+        };
+        let stored = |content: &[u8]| JournalEntry::BlobStored {
+            hash: blob_id(content),
+            data: blob_encode(content),
+        };
+        assert_eq!(
+            journal_version_required_by(&stored(b"a")),
+            JOURNAL_VERSION_BLOB
+        );
+        let restored = WorldCore::restore(
+            "w",
+            WorldLimits::default(),
+            [
+                header(),
+                stored(b"alpha"),
+                stored(b"beta"),
+                JournalEntry::BlobRemoved {
+                    hash: blob_id(b"beta"),
+                },
+            ],
+        )
+        .unwrap();
+        assert_eq!(restored.core.blobs.len(), 1);
+        assert_eq!(restored.core.blobs[&blob_id(b"alpha")], b"alpha");
+        // A remove of a blob that is not stored refuses the restore.
+        let bad = [
+            header(),
+            JournalEntry::BlobRemoved {
+                hash: blob_id(b"ghost"),
+            },
+        ];
+        assert!(WorldCore::restore("w", WorldLimits::default(), bad).is_err());
+        // Content that does not hash to its stated address refuses
+        // the restore: the journal is self-verifying.
+        let tampered = [
+            header(),
+            JournalEntry::BlobStored {
+                hash: blob_id(b"alpha"),
+                data: blob_encode(b"forged"),
+            },
+        ];
+        assert!(WorldCore::restore("w", WorldLimits::default(), tampered).is_err());
+        // Content that is not base64 at all refuses it too.
+        let garbled = [
+            header(),
+            JournalEntry::BlobStored {
+                hash: blob_id(b"alpha"),
+                data: "!!! not base64 !!!".to_owned(),
+            },
+        ];
+        assert!(WorldCore::restore("w", WorldLimits::default(), garbled).is_err());
+        // Compaction: a core carrying blobs re-emits them before its
+        // checkpoint, so a restored core sees the same set.
+        let mut core = world(8);
+        core.active_module_hash = Some("h".to_owned());
+        core.blobs.insert(blob_id(b"alpha"), b"alpha".to_vec());
+        core.blobs.insert(blob_id(b"gamma"), b"gamma".to_vec());
+        let entries = core.checkpoint_entries("state".to_owned()).unwrap();
+        assert!(
+            entries.contains(&stored(b"alpha")),
+            "a compacted journal keeps the blob entry"
+        );
+        let restored = WorldCore::restore("test-world", WorldLimits::default(), entries).unwrap();
+        assert_eq!(restored.core.blobs, core.blobs);
+    }
+
+    #[test]
+    fn a_checkpoint_that_disagrees_with_its_blob_index_is_refused() {
+        let header = || JournalEntry::Created {
+            world_id: "w".to_owned(),
+            version: JOURNAL_VERSION_BLOB,
+        };
+        let stored = || JournalEntry::BlobStored {
+            hash: blob_id(b"alpha"),
+            data: blob_encode(b"alpha"),
+        };
+        let checkpoint = |blobs: Option<Vec<CheckpointBlobEntry>>| JournalEntry::Checkpoint {
+            sequence: 0,
+            module_hash: "h".to_owned(),
+            seed: 1,
+            provenance: None,
+            execution_profile: None,
+            caps_ceiling: None,
+            schedules: None,
+            kv: None,
+            blobs,
+            transfers: None,
+            lease: None,
+            snapshot: "s".to_owned(),
+            events: Vec::new(),
+            admin_history: None,
+            open_presence: None,
+        };
+        let declared = || CheckpointBlobEntry {
+            hash: blob_id(b"alpha"),
+            size: 5,
+        };
+        let agreed = [header(), stored(), checkpoint(Some(vec![declared()]))];
+        assert!(WorldCore::restore("w", WorldLimits::default(), agreed).is_ok());
+        let omitted = [header(), stored(), checkpoint(None)];
+        assert!(WorldCore::restore("w", WorldLimits::default(), omitted).is_err());
+        let unwritten = [header(), checkpoint(Some(vec![declared()]))];
+        assert!(WorldCore::restore("w", WorldLimits::default(), unwritten).is_err());
+        let wrong_size = [
+            header(),
+            stored(),
+            checkpoint(Some(vec![CheckpointBlobEntry {
+                hash: blob_id(b"alpha"),
+                size: 4,
+            }])),
+        ];
+        assert!(WorldCore::restore("w", WorldLimits::default(), wrong_size).is_err());
+        let duplicated = [
+            header(),
+            stored(),
+            checkpoint(Some(vec![declared(), declared()])),
+        ];
+        assert!(WorldCore::restore("w", WorldLimits::default(), duplicated).is_err());
+    }
+
+    #[test]
+    fn a_journal_past_the_blob_bounds_is_refused() {
+        let header = || JournalEntry::Created {
+            world_id: "w".to_owned(),
+            version: JOURNAL_VERSION_BLOB,
+        };
+        // A hash the writer would never accept.
+        let bad_hash = [
+            header(),
+            JournalEntry::BlobStored {
+                hash: "not-a-hash".to_owned(),
+                data: blob_encode(b"a"),
+            },
+        ];
+        assert!(WorldCore::restore("w", WorldLimits::default(), bad_hash).is_err());
+        // A blob past the content cap, under its true address.
+        let big = vec![7u8; crate::world_caps::MAX_BLOB_BYTES + 1];
+        let big_blob = [
+            header(),
+            JournalEntry::BlobStored {
+                hash: blob_id(&big),
+                data: blob_encode(&big),
+            },
+        ];
+        assert!(WorldCore::restore("w", WorldLimits::default(), big_blob).is_err());
+        // More blobs than the set may hold.
+        let mut entries = vec![header()];
+        for index in 0..=crate::world_caps::MAX_BLOBS {
+            let content = (index as u32).to_le_bytes();
+            entries.push(JournalEntry::BlobStored {
+                hash: blob_id(&content),
+                data: blob_encode(&content),
+            });
+        }
+        assert!(WorldCore::restore("w", WorldLimits::default(), entries).is_err());
+        // More content in total than the set may hold.
+        let mut entries = vec![header()];
+        for index in 0..65u8 {
+            let content = vec![index; crate::world_caps::MAX_BLOB_BYTES];
+            entries.push(JournalEntry::BlobStored {
+                hash: blob_id(&content),
+                data: blob_encode(&content),
             });
         }
         assert!(WorldCore::restore("w", WorldLimits::default(), entries).is_err());
@@ -10963,6 +11379,7 @@ mod schedule_tests {
             caps_ceiling: None,
             schedules,
             kv: None,
+            blobs: None,
             transfers: None,
             lease: None,
             snapshot: "s".to_owned(),
