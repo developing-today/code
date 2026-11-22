@@ -21,7 +21,7 @@ ROOT_RE = re.compile(r"^[^/#]+/[^/#]+#[1-9][0-9]*$")
 
 
 def parse_args(argv):
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     parser.add_argument(
         "--root",
         action="append",

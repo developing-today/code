@@ -88,6 +88,50 @@ export interface EpicReparentPlan {
   labelsToApply: string[];
 }
 
+/** Update the canonical issue-body metadata while preserving all unrelated fields and links. */
+export function setHistoricalParentMetadata(
+  body: string,
+  parentRef: RefKey,
+  present: boolean,
+  recordedAt = new Date().toISOString().slice(0, 10),
+): string {
+  const markers = /<!--\s*pm-metadata:start\s*-->[\s\S]*?<!--\s*pm-metadata:end\s*-->/;
+  const existing = markers.exec(body)?.[0];
+  let metadata: Record<string, unknown> = { pm_meta: 1, links: [] };
+  if (existing) {
+    const json = /```json\s*([\s\S]*?)```/i.exec(existing)?.[1];
+    if (!json) throw new Error("existing PM metadata block has no JSON payload");
+    const parsed: unknown = JSON.parse(json);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
+      throw new Error("existing PM metadata JSON must be an object");
+    const links = (parsed as { links?: unknown }).links;
+    if (!Array.isArray(links)) throw new Error("existing PM metadata links must be an array");
+    metadata = parsed as Record<string, unknown>;
+  }
+  const links = metadata.links as unknown[];
+  const [repo, rawNumber] = parentRef.split("#");
+  const number = Number(rawNumber);
+  const isParentLink = (link: unknown) => {
+    if (!link || typeof link !== "object") return false;
+    const record = link as { relation?: unknown; target?: { repo?: unknown; number?: unknown } };
+    return record.relation === "parent" && record.target?.repo === repo && record.target.number === number;
+  };
+  const nextLinks = links.filter((link) => !(isParentLink(link) && (link as { status?: unknown }).status === "historical"));
+  if (present)
+    nextLinks.push({
+      target: { repo, number },
+      relation: "parent",
+      status: "historical",
+      until: recordedAt,
+      reason: "reparent-on-close",
+    });
+  metadata.links = nextLinks;
+  const block = `<!-- pm-metadata:start -->\n\`\`\`json\n${JSON.stringify(metadata, null, 2)}\n\`\`\`\n<!-- pm-metadata:end -->`;
+  if (existing) return body.replace(existing, block);
+  if (!present) return body;
+  return `${body}${body ? "\n\n" : ""}${block}\n`;
+}
+
 /** Build the exact label set for a move; only the primary-parent label is replaced. */
 export function planEpicReparent(
   child: ReparentIssue,
@@ -114,12 +158,17 @@ export function planEpicReparent(
 }
 
 export interface ReparentGateway {
-  readChild(ref: RefKey): Promise<ReparentIssue>;
-  isOpenEpic(ref: RefKey): Promise<boolean>;
+  /** Live reads, not values reused from destination planning. */
+  readChildLive(ref: RefKey): Promise<ReparentIssue>;
+  isOpenEpicLive(ref: RefKey): Promise<boolean>;
   /** Atomically re-point the native sub-issue edge (GitHub replaceParent). */
   replaceNativeParent(child: RefKey, oldParent: RefKey | null, newParent: RefKey): Promise<void>;
+  /** Remove a newly-created native edge when compensating a child that had no parent. */
+  removeNativeParent(child: RefKey, parent: RefKey): Promise<void>;
   /** Set the exact planned labels after verifying the plan's expected label set. */
   replaceLabels(child: RefKey, labels: readonly string[]): Promise<void>;
+  recordHistoricalParent(child: RefKey, parent: RefKey): Promise<void>;
+  removeHistoricalParent(child: RefKey, parent: RefKey): Promise<void>;
   addComment(ref: RefKey, body: string): Promise<void>;
 }
 
@@ -129,18 +178,47 @@ export async function applyEpicReparent(
   closingEpicRef: RefKey,
   gateway: ReparentGateway,
 ): Promise<void> {
-  const child = await gateway.readChild(plan.ref);
+  const child = await gateway.readChildLive(plan.ref);
   if (child.state !== "OPEN") throw new Error(`child is not open: ${plan.ref}`);
   if (child.parentRef !== plan.oldParentRef)
     throw new Error(`child parent changed since plan was made: ${plan.ref}`);
   const labels = [...new Set(child.labels)].sort();
   if (JSON.stringify(labels) !== JSON.stringify(plan.expectedLabels))
     throw new Error(`child labels changed since plan was made: ${plan.ref}`);
-  if (!(await gateway.isOpenEpic(plan.newParentRef)))
+  if (!(await gateway.isOpenEpicLive(plan.newParentRef)))
     throw new Error(`destination is not an open epic: ${plan.newParentRef}`);
 
-  await gateway.replaceNativeParent(plan.ref, plan.oldParentRef, plan.newParentRef);
-  await gateway.replaceLabels(plan.ref, plan.labelsToApply);
+  try {
+    await gateway.replaceNativeParent(plan.ref, plan.oldParentRef, plan.newParentRef);
+    await gateway.replaceLabels(plan.ref, plan.labelsToApply);
+    if (plan.oldParentRef)
+      await gateway.recordHistoricalParent(plan.ref, plan.oldParentRef);
+  } catch (cause) {
+    const compensationErrors: unknown[] = [];
+    if (plan.oldParentRef) {
+      try {
+        await gateway.removeHistoricalParent(plan.ref, plan.oldParentRef);
+      } catch (error) {
+        compensationErrors.push(error);
+      }
+    }
+    try {
+      await gateway.replaceLabels(plan.ref, plan.expectedLabels);
+    } catch (error) {
+      compensationErrors.push(error);
+    }
+    try {
+      if (plan.oldParentRef)
+        await gateway.replaceNativeParent(plan.ref, plan.newParentRef, plan.oldParentRef);
+      else
+        await gateway.removeNativeParent(plan.ref, plan.newParentRef);
+    } catch (error) {
+      compensationErrors.push(error);
+    }
+    if (compensationErrors.length)
+      throw new AggregateError([cause, ...compensationErrors], "re-parent failed and compensation was incomplete");
+    throw cause;
+  }
   const note = `Re-parented from ${plan.oldParentRef ?? "(no parent)"} to ${plan.newParentRef} as part of closing ${closingEpicRef}; labels were preserved except for the primary-parent marker.`;
   await gateway.addComment(plan.ref, note);
   await gateway.addComment(closingEpicRef, note);

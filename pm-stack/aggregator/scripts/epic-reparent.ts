@@ -5,6 +5,7 @@
 import {
   applyEpicReparent,
   planEpicReparent,
+  setHistoricalParentMetadata,
   selectReparentDestination,
   type ReparentEpic,
   type ReparentGateway,
@@ -76,10 +77,11 @@ function tokenFromEnvironmentOrGh(): string {
   return token;
 }
 
-const ISSUE_QUERY = `query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){issue(number:$number){id number state url labels(first:100){totalCount nodes{name}} parent{number repository{nameWithOwner}}}}}`;
+const ISSUE_QUERY = `query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){issue(number:$number){id number state url body labels(first:100){totalCount nodes{name}} parent{number repository{nameWithOwner}}}}}`;
 const ADD_PARENT = `mutation($parent:ID!,$child:ID!){addSubIssue(input:{issueId:$parent,subIssueId:$child,replaceParent:true}){issue{id}}}`;
+const REMOVE_PARENT = `mutation($parent:ID!,$child:ID!){removeSubIssue(input:{issueId:$parent,subIssueId:$child}){issue{id}}}`;
 
-interface IssueRecord extends ReparentIssue { id: string; url: string; }
+interface IssueRecord extends ReparentIssue { id: string; url: string; body: string; }
 
 function splitRef(ref: RefKey): { owner: string; name: string; number: number } {
   const match = /^([^/]+)\/([^#]+)#([1-9][0-9]*)$/.exec(ref);
@@ -99,9 +101,9 @@ async function main(): Promise<void> {
     if (!response.ok || body?.errors) throw new Error(`GitHub request failed (${response.status})${body?.message ? `: ${body.message}` : ""}`);
     return body;
   };
-  const fetchIssue = async (ref: RefKey): Promise<IssueRecord> => {
+  const fetchIssue = async (ref: RefKey, fresh = false): Promise<IssueRecord> => {
     const cached = cache.get(ref);
-    if (cached) return cached;
+    if (!fresh && cached) return cached;
     const location = splitRef(ref);
     const responseBody = await request("https://api.github.com/graphql", {
       method: "POST",
@@ -117,6 +119,7 @@ async function main(): Promise<void> {
             number?: number;
             state?: string;
             url?: string;
+            body?: string;
             labels?: { totalCount?: number; nodes?: { name?: string }[] };
             parent?: { number?: number; repository?: { nameWithOwner?: string } } | null;
           } | null;
@@ -125,7 +128,7 @@ async function main(): Promise<void> {
     };
     const issue = body.data?.repository?.issue;
     const labels = issue?.labels?.nodes;
-    if (!issue?.id || !issue.url || !Array.isArray(labels) || labels.length !== issue.labels?.totalCount || labels.some((label) => typeof label.name !== "string"))
+    if (!issue?.id || !issue.url || typeof issue.body !== "string" || !Array.isArray(labels) || labels.length !== issue.labels?.totalCount || labels.some((label) => typeof label.name !== "string"))
       throw new Error(`incomplete issue metadata for ${ref}`);
     if (issue.state !== "OPEN" && issue.state !== "CLOSED") throw new Error(`unknown state for ${ref}`);
     const parentRef = issue.parent?.repository?.nameWithOwner && issue.parent.number
@@ -142,6 +145,7 @@ async function main(): Promise<void> {
     const record: IssueRecord = {
       id: issue.id,
       url: issue.url,
+      body: issue.body,
       ref,
       parentRef,
       state: issue.state,
@@ -173,18 +177,28 @@ async function main(): Promise<void> {
   if (!args.apply) return;
 
   const gateway: ReparentGateway = {
-    readChild: async (ref) => fetchIssue(ref),
-    isOpenEpic: async (ref) => {
-      const candidate = await fetchIssue(ref);
+    readChildLive: async (ref) => fetchIssue(ref, true),
+    isOpenEpicLive: async (ref) => {
+      const candidate = await fetchIssue(ref, true);
       return candidate.state === "OPEN" && candidate.labels.includes("epic");
     },
     replaceNativeParent: async (_child, _oldParent, newParent) => {
-      const target = await fetchIssue(newParent);
-      const subissue = await fetchIssue(args.child);
+      const target = await fetchIssue(newParent, true);
+      const subissue = await fetchIssue(args.child, true);
       await request("https://api.github.com/graphql", {
         method: "POST",
         headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json", "User-Agent": "pm-fleet-epic-reparent" },
         body: JSON.stringify({ query: ADD_PARENT, variables: { parent: target.id, child: subissue.id } }),
+        signal: AbortSignal.timeout(20_000),
+      });
+    },
+    removeNativeParent: async (child, parent) => {
+      const target = await fetchIssue(parent, true);
+      const subissue = await fetchIssue(child, true);
+      await request("https://api.github.com/graphql", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json", "User-Agent": "pm-fleet-epic-reparent" },
+        body: JSON.stringify({ query: REMOVE_PARENT, variables: { parent: target.id, child: subissue.id } }),
         signal: AbortSignal.timeout(20_000),
       });
     },
@@ -197,6 +211,12 @@ async function main(): Promise<void> {
         signal: AbortSignal.timeout(20_000),
       });
     },
+    recordHistoricalParent: async (ref, parent) => {
+      await writeHistoricalParent(ref, parent, true);
+    },
+    removeHistoricalParent: async (ref, parent) => {
+      await writeHistoricalParent(ref, parent, false);
+    },
     addComment: async (ref, body) => {
       const location = splitRef(ref);
       await request(`https://api.github.com/repos/${location.owner}/${location.name}/issues/${location.number}/comments`, {
@@ -207,6 +227,18 @@ async function main(): Promise<void> {
       });
     },
   };
+  async function writeHistoricalParent(ref: RefKey, parent: RefKey, present: boolean): Promise<void> {
+    const issue = await fetchIssue(ref, true);
+    const body = setHistoricalParentMetadata(issue.body, parent, present);
+    if (body === issue.body) return;
+    const location = splitRef(ref);
+    await request(`https://api.github.com/repos/${location.owner}/${location.name}/issues/${location.number}`, {
+      method: "PATCH",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json", "User-Agent": "pm-fleet-epic-reparent", "X-GitHub-Api-Version": "2022-11-28" },
+      body: JSON.stringify({ body }),
+      signal: AbortSignal.timeout(20_000),
+    });
+  }
   await applyEpicReparent(plan, args.closingEpic, gateway);
 }
 
