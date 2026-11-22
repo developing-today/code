@@ -6,4 +6,3 @@ Wants=network-online.target
 [Service]
 Type=oneshot
 ExecStart=/usr/bin/env python3 __GB_DIR__/bin/fetch_mirrors.py
-WorkingDirectory=%h/backups/github
