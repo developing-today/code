@@ -4,6 +4,7 @@
 //! worktree root. It is not shared through the common Git directory, so each
 //! worktree retains its own active session association.
 
+#[cfg(feature = "opencode-probe")]
 use base64::Engine;
 use std::path::{Path, PathBuf};
 
@@ -170,6 +171,7 @@ fn resolve_marker(
 
 /// Best-effort liveness check against the local OpenCode server. An
 /// unavailable server is not proof that the recorded session is live.
+#[cfg(feature = "opencode-probe")]
 fn session_is_live(session_id: &str) -> bool {
     let base = resolve_opencode_base_url(
         std::env::var("OPENCODE_URL").ok().as_deref(),
@@ -194,6 +196,15 @@ fn session_is_live(session_id: &str) -> bool {
     session_record_is_live(&body, session_id)
 }
 
+/// Without the `opencode-probe` feature (the connect variant) there is
+/// no HTTP client to ask, so a recorded session counts as not live:
+/// the same answer an unreachable OpenCode server gives.
+#[cfg(not(feature = "opencode-probe"))]
+fn session_is_live(_session_id: &str) -> bool {
+    false
+}
+
+#[cfg(feature = "opencode-probe")]
 fn resolve_opencode_base_url(env_url: Option<&str>, env_server_url: Option<&str>) -> String {
     [env_url, env_server_url]
         .into_iter()
@@ -204,6 +215,7 @@ fn resolve_opencode_base_url(env_url: Option<&str>, env_server_url: Option<&str>
         .to_owned()
 }
 
+#[cfg(feature = "opencode-probe")]
 fn resolve_opencode_auth_file(env_file: Option<&str>, home: &str) -> String {
     env_file
         .map(str::trim)
@@ -212,6 +224,7 @@ fn resolve_opencode_auth_file(env_file: Option<&str>, home: &str) -> String {
         .unwrap_or_else(|| format!("{home}/.local/state/opencode/service-prod.json"))
 }
 
+#[cfg(feature = "opencode-probe")]
 fn opencode_basic_auth(password: &str) -> String {
     format!(
         "Basic {}",
@@ -219,6 +232,7 @@ fn opencode_basic_auth(password: &str) -> String {
     )
 }
 
+#[cfg(feature = "opencode-probe")]
 fn opencode_password() -> Option<String> {
     let home = std::env::var("HOME")
         .ok()
@@ -230,6 +244,7 @@ fn opencode_password() -> Option<String> {
     state.get("password")?.as_str().map(str::to_owned)
 }
 
+#[cfg(feature = "opencode-probe")]
 fn session_record_is_live(body: &str, session_id: &str) -> bool {
     let Ok(value) = serde_json::from_str::<serde_json::Value>(body) else {
         return false;
@@ -314,6 +329,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "opencode-probe")]
     #[test]
     fn opencode_url_resolution_matches_fleet_queue_contract() {
         assert_eq!(
@@ -485,6 +501,7 @@ mod tests {
         assert!(!invoked);
     }
 
+    #[cfg(feature = "opencode-probe")]
     #[test]
     fn session_record_requires_matching_non_archived_json() {
         assert!(session_record_is_live(
