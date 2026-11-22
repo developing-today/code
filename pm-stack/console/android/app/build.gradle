@@ -4,7 +4,8 @@
 // app uses what only an installed app has: it receives shared and
 // selected text, starts dictation with the phone's own recogniser from
 // a shortcut or a quick-settings tile, offers its main screens on a long
-// press of the icon, and shows the site's notifications as its own.
+// press of the icon, shows the site's notifications as its own, and puts
+// a widget on the home screen that reads a short summary by itself.
 plugins {
     id 'com.android.application'
 }
@@ -20,12 +21,13 @@ android {
         applicationId 'today.developing.pmconsole'
         minSdk 24
         targetSdk 34
-        versionCode 2
-        versionName '0.2.0'
+        versionCode 3
+        versionName '0.3.0'
         manifestPlaceholders = [hostName: 'pm.security.cab', defaultUrl: "${site}/console/"]
         // The app's half of the link to the site. The site's half is
         // /.well-known/assetlinks.json, served by pm-console.
         resValue 'string', 'console_url', "${site}/console/"
+        resValue 'string', 'site_url', "${site}"
         resValue 'string', 'asset_statements', "[{\\\"relation\\\": [\\\"delegate_permission/common.handle_all_urls\\\"], \\\"target\\\": {\\\"namespace\\\": \\\"web\\\", \\\"site\\\": \\\"${site}\\\"}}]"
     }
 

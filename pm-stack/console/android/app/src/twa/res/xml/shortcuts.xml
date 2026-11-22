@@ -19,9 +19,8 @@
         android:shortcutLongLabel="@string/sc_ask_long"
         android:shortcutShortLabel="@string/sc_ask">
         <intent
-            android:action="android.intent.action.VIEW"
-            android:data="https://pm.security.cab/console/#ask"
-            android:targetClass="com.google.androidbrowserhelper.trusted.LauncherActivity"
+            android:action="today.developing.pmconsole.OPEN_ASK"
+            android:targetClass="today.developing.pmconsole.OpenActivity"
             android:targetPackage="today.developing.pmconsole" />
     </shortcut>
     <shortcut
@@ -31,9 +30,8 @@
         android:shortcutLongLabel="@string/sc_needs_long"
         android:shortcutShortLabel="@string/sc_needs">
         <intent
-            android:action="android.intent.action.VIEW"
-            android:data="https://pm.security.cab/console/#needs"
-            android:targetClass="com.google.androidbrowserhelper.trusted.LauncherActivity"
+            android:action="today.developing.pmconsole.OPEN_NEEDS"
+            android:targetClass="today.developing.pmconsole.OpenActivity"
             android:targetPackage="today.developing.pmconsole" />
     </shortcut>
     <shortcut
@@ -43,9 +41,8 @@
         android:shortcutLongLabel="@string/sc_now_long"
         android:shortcutShortLabel="@string/sc_now">
         <intent
-            android:action="android.intent.action.VIEW"
-            android:data="https://pm.security.cab/console/#now"
-            android:targetClass="com.google.androidbrowserhelper.trusted.LauncherActivity"
+            android:action="today.developing.pmconsole.OPEN_NOW"
+            android:targetClass="today.developing.pmconsole.OpenActivity"
             android:targetPackage="today.developing.pmconsole" />
     </shortcut>
 </shortcuts>

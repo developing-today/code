@@ -3,6 +3,10 @@
     <string name="app_name">PM Console</string>
     <string name="share_label">Ask the fleet</string>
     <string name="tile_label">Ask the fleet</string>
+    <plurals name="tile_needs">
+        <item quantity="one">%d thing needs you</item>
+        <item quantity="other">%d things need you</item>
+    </plurals>
     <string name="dictate_prompt">Say what you want the fleet to do</string>
     <string name="sc_dictate">Dictate</string>
     <string name="sc_dictate_long">Say what you want</string>
@@ -12,4 +16,22 @@
     <string name="sc_needs_long">What needs me</string>
     <string name="sc_now">Now</string>
     <string name="sc_now_long">What is in progress</string>
+    <string name="widget_title">PM</string>
+    <string name="widget_label">PM status</string>
+    <string name="widget_description">In progress, queued next and what needs you, with the task being worked on now.</string>
+    <string name="widget_next">Next</string>
+    <string name="widget_refresh">Read again</string>
+    <string name="widget_unlinked">Tap to link this phone, so the counts can show here.</string>
+    <string name="widget_waiting">Waiting for you to approve this phone in the app. Tap to open it.</string>
+    <string name="widget_loading">Linked. Reading the fleet…</string>
+    <string name="widget_step">Next step: %1$s</string>
+    <string name="widget_next_up">Nothing in progress. Next: %1$s</string>
+    <string name="widget_idle">Nothing in progress or queued.</string>
+    <plurals name="widget_replies">
+        <item quantity="one">%d reply to what you asked</item>
+        <item quantity="other">%d replies to what you asked</item>
+    </plurals>
+    <string name="link_done">This phone is linked. The widget is up to date.</string>
+    <string name="link_waiting">Not approved yet. Open the app and approve this phone.</string>
+    <string name="link_failed">Could not reach the fleet. Try again in a moment.</string>
 </resources>
