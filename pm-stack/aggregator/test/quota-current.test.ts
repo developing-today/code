@@ -1375,6 +1375,37 @@ describe("shell-pool stale/retained path (#6942)", () => {
     expect(cline.freshness).toEqual({ measuredAt: iso(5 * 60_000), source: "openchamber-quota", state: "stale" });
     expect(cline.windows[0].percent).toBe(69); // dated read, not the retained gatherer value
   });
+
+  test("meta retained errored-leg read replaces its fallback windows but stays stale (#9358)", () => {
+    const f = legErrorFile([
+      entry({
+        providerId: "_muse",
+        serviceId: "meta",
+        source: "opencode-quota",
+        measuredAt: iso(45 * 60_000),
+        retainedFromFailedTick: iso(4 * 60_000),
+        windows: [win("5h", 0, iso(45 * 60_000)), win("weekly", 100, iso(45 * 60_000))],
+      }),
+    ]);
+    f.heartbeat.perProvider = { _muse: { state: "error", ms: 12, rows: 1, error: LEG_ERROR } };
+    const view = baseView();
+    view.pools.find((p) => p.id === "meta")!.windows = [
+      { name: "weekly", unit: "other", limit: 100, used: 98, percent: 98, resetsAt: null },
+    ];
+
+    const out = overlayQuotaCurrent(view, f, NOW);
+    const meta = out.pools.find((p) => p.id === "meta")!;
+    expect(meta.windows.map((w) => [w.name, w.percent])).toEqual([
+      ["5-hour", 0],
+      ["weekly", 100],
+    ]);
+    expect(meta.freshness).toEqual({
+      measuredAt: iso(45 * 60_000),
+      source: "opencode-quota",
+      state: "stale",
+    });
+    expect(meta.state).toBe("stale");
+  });
 });
 
 describe("spec-pool retained path with dead base windows (#7033)", () => {

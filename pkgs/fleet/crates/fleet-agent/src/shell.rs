@@ -27,9 +27,9 @@ Run COMMAND where builds belong, or open a shell there with no COMMAND.
 
   --target auto|laptop|codespace|local   where (default: auto)
   --codespace NAME                       which codespace (default: the first available)
-  --cwd DIR                              directory to run in
-  --build                                a heavy build: take a fleet-build-lock slot on
-                                         the laptop and allow an hour instead of two minutes
+  --cwd DIR                              directory to run in (Cargo workspace for shared lane)
+  --build                                a heavy build: take a fleet-build-lock slot;
+                                          Cargo workspaces use a shared target lane
   --timeout SECS                         how long a laptop command may run
   --detach                               start it as a laptop job and return its id
                                          (follow with: fleet laptop-agent poll JOB --wait N)
@@ -210,22 +210,336 @@ pub struct Options {
     pub detach: bool,
 }
 
-/// The whole command, run by a shell beneath the build lock. The lock
-/// wrapper execs one program with its arguments, so a command with
-/// `cd`, `&&` or a pipe has to be one shell's argument: otherwise only
-/// its first word would hold the slot.
+/// Commands that compile through Cargo use the target broker. "just" and
+/// "make" stay conservative because their recipes can hide Cargo builds.
+fn may_invoke_cargo(command: &str) -> bool {
+    const COMPILE_ACTIONS: &[&str] = &[
+        "build",
+        "check",
+        "test",
+        "bench",
+        "clippy",
+        "run",
+        "install",
+        "doc",
+        "rustc",
+        "nextest",
+        "fix",
+        "package",
+        "publish",
+    ];
+    const CARGO_FLAGS: &[&str] = &[
+        "--locked",
+        "--offline",
+        "--frozen",
+        "--quiet",
+        "--verbose",
+        "-q",
+        "-v",
+    ];
+    let words: Vec<_> = command
+        .split(|ch: char| {
+            !(ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '+' | '.' | '=' | '/'))
+        })
+        .filter(|word| !word.is_empty())
+        .collect();
+
+    for (index, word) in words.iter().enumerate() {
+        if matches!(*word, "just" | "make") {
+            return true;
+        }
+        if *word != "cargo" && !word.ends_with("/cargo") {
+            continue;
+        }
+
+        let mut next = index + 1;
+        while let Some(arg) = words.get(next).copied() {
+            if matches!(arg, "--config" | "--color" | "-Z" | "--manifest-path") {
+                next += 2;
+                continue;
+            }
+            if arg.starts_with('+')
+                || arg.starts_with("-Z")
+                || arg.starts_with("-v")
+                || CARGO_FLAGS.contains(&arg)
+                || arg.starts_with("--config=")
+                || arg.starts_with("--color=")
+                || arg.starts_with("--manifest-path=")
+            {
+                next += 1;
+                continue;
+            }
+            if COMPILE_ACTIONS.contains(&arg) {
+                return true;
+            }
+            // A non-compiling Cargo subcommand must not hide a later build
+            // in the same shell command (for example fmt && test).
+            break;
+        }
+    }
+    false
+}
+
+/// Keep the whole shell command under one build-lock slot while leasing a
+/// shared target directory for its Cargo work. The caller's cwd matters:
+/// laptop-agent applies --cwd before starting this command, and the broker
+/// cleans only that workspace's artifacts.
+fn broker_aware_shell(command: &str) -> String {
+    let profile = if command
+        .split(|ch: char| !(ch.is_ascii_alphanumeric() || ch == '-'))
+        .any(|word| matches!(word, "test" | "bench"))
+    {
+        "test"
+    } else if command
+        .split_ascii_whitespace()
+        .any(|word| word == "--release")
+        || (command
+            .split(|ch: char| !(ch.is_ascii_alphanumeric() || ch == '-'))
+            .any(|word| word == "install")
+            && !command
+                .split_ascii_whitespace()
+                .any(|word| word == "--debug"))
+    {
+        // cargo install uses the release profile by default.
+        "release"
+    } else {
+        "dev"
+    };
+    let script = r#"command_text=__COMMAND__
+broker="$HOME/tools/cargo-target-broker"
+if [ -z "$CARGO_TARGET_DIR" ]; then
+  manifest_arg=$(python3 -c '
+import shlex, sys
+try:
+    words = shlex.split(sys.argv[1])
+except ValueError:
+    raise SystemExit(0)
+separators = {";", "&&", "||", "|", "&"}
+for index, word in enumerate(words):
+    if word != "cargo" and not word.endswith("/cargo"):
+        continue
+    index += 1
+    while index < len(words) and words[index] not in separators:
+        token = words[index]
+        if token == "--manifest-path" and index + 1 < len(words):
+            print(words[index + 1])
+            raise SystemExit(0)
+        if token.startswith("--manifest-path="):
+            print(token.split("=", 1)[1])
+            raise SystemExit(0)
+        if token == "--path" and index + 1 < len(words):
+            source = words[index + 1]
+            print(source if source.endswith("Cargo.toml") else source.rstrip("/") + "/Cargo.toml")
+            raise SystemExit(0)
+        if token.startswith("--path="):
+            source = token.split("=", 1)[1]
+            print(source if source.endswith("Cargo.toml") else source.rstrip("/") + "/Cargo.toml")
+            raise SystemExit(0)
+        index += 1
+' "$command_text" 2>/dev/null)
+  if [ -n "$manifest_arg" ]; then
+    case "$manifest_arg" in
+      /*) manifest_path=$manifest_arg ;;
+      *) manifest_path="$PWD/$manifest_arg" ;;
+    esac
+    manifest=$(cargo locate-project --workspace --message-format plain --manifest-path "$manifest_path" 2>/dev/null || true)
+  else
+    manifest=$(cargo locate-project --workspace --message-format plain 2>/dev/null || true)
+  fi
+  if [ -n "$manifest" ]; then
+    root=$(dirname -- "$manifest")
+    workspace_real=$(cd "$root" 2>/dev/null && pwd -P) || workspace_real=""
+    cwd_real=$(pwd -P)
+    repo=$(printf '%s\n' "$root" | sed -n 's#^.*/pkgs/\([^/]*\).*#\1#p')
+    if [ -z "$repo" ]; then repo=$(basename -- "$root"); fi
+    repo=$(printf '%s' "$repo" | tr -c 'A-Za-z0-9._-' '_')
+    if [ -n "$repo" ]; then
+      if [ -x "$broker" ]; then
+        case "$cwd_real/" in
+          "$workspace_real/"*) outside_workspace=false ;;
+          *) outside_workspace=true ;;
+        esac
+        if [ "$outside_workspace" = true ]; then
+          lease=$("$broker" checkout --repo "$repo" --profile __PROFILE__ --workspace-cwd "$workspace_real" --wait 900 --json 2>/dev/null) || lease=""
+        else
+          lease=$("$broker" checkout --repo "$repo" --profile __PROFILE__ --wait 900 --json 2>/dev/null) || lease=""
+        fi
+        if [ -n "$lease" ]; then
+          target=$(printf '%s' "$lease" | python3 -c 'import json,sys; print(json.load(sys.stdin)["path"])' 2>/dev/null) || target=""
+          lease_id=$(printf '%s' "$lease" | python3 -c 'import json,sys; print(json.load(sys.stdin)["lease"])' 2>/dev/null) || lease_id=""
+          if [ -n "$target" ] && [ -n "$lease_id" ]; then
+            export CARGO_TARGET_DIR="$target"
+            worker_pid=""
+            lane_interrupted=false
+            tmp_root="$TMPDIR"
+            if [ -z "$tmp_root" ]; then tmp_root=/tmp; fi
+            group_file=$(mktemp "$tmp_root/fleet-cargo-group.XXXXXX" 2>/dev/null) || group_file=""
+            cleanup_lane() {
+              status=$?
+              trap - EXIT HUP INT TERM
+              if [ "$lane_interrupted" = true ] && [ -n "$group_file" ] && [ ! -s "$group_file" ]; then
+                attempts=0
+                while [ "$attempts" -lt 10 ] && [ ! -s "$group_file" ]; do
+                  sleep 0.05
+                  attempts=$((attempts + 1))
+                done
+              fi
+              if [ -n "$group_file" ] && [ -s "$group_file" ]; then
+                worker_pgid=$(cat "$group_file" 2>/dev/null || :)
+                case "$worker_pgid" in
+                  ''|*[!0-9]*) ;;
+                  *)
+                    if [ "$lane_interrupted" = true ]; then
+                      # laptop-agent escalates the outer process group
+                      # after 2 seconds; kill this detached group first.
+                      grace=0
+                      while kill -0 "-$worker_pgid" 2>/dev/null && [ "$grace" -lt 10 ]; do
+                        sleep 0.1
+                        grace=$((grace + 1))
+                      done
+                      if kill -0 -- "-$worker_pgid" 2>/dev/null; then
+                        echo "fleet shell: terminating unresponsive build process group" >&2
+                        kill -KILL "-$worker_pgid" 2>/dev/null || :
+                        if [ -n "$worker_pid" ]; then kill -KILL "$worker_pid" 2>/dev/null || :; fi
+                      fi
+                    fi
+                    if [ -n "$worker_pid" ]; then
+                      wait "$worker_pid" >/dev/null 2>&1 || :
+                    fi
+                    while kill -0 -- "-$worker_pgid" 2>/dev/null; do sleep 0.05; done
+                    ;;
+                esac
+              elif [ -n "$worker_pid" ]; then
+                wait "$worker_pid" >/dev/null 2>&1 || :
+              fi
+              if [ -n "$group_file" ]; then rm -f "$group_file"; fi
+              "$broker" checkin --lease "$lease_id" >/dev/null 2>&1 || :
+              exit "$status"
+            }
+            interrupt_lane() {
+              signal=$1
+              code=$2
+              lane_interrupted=true
+              if [ -n "$group_file" ] && [ ! -s "$group_file" ]; then
+                attempts=0
+                while [ "$attempts" -lt 10 ] && [ ! -s "$group_file" ]; do
+                  sleep 0.05
+                  attempts=$((attempts + 1))
+                done
+              fi
+              if [ -n "$group_file" ] && [ -s "$group_file" ]; then
+                worker_pgid=$(cat "$group_file" 2>/dev/null || :)
+                case "$worker_pgid" in
+                  ''|*[!0-9]*) ;;
+                  *) kill -"$signal" "-$worker_pgid" 2>/dev/null || : ;;
+                esac
+              fi
+              if [ -n "$worker_pid" ]; then
+                kill -"$signal" "$worker_pid" 2>/dev/null || :
+              fi
+              exit "$code"
+            }
+            pending_signal=""
+            queue_signal() { pending_signal=$1; }
+            trap cleanup_lane EXIT
+            # Queue signals during worker launch so the PID and process-group
+            # record are installed before cleanup starts.
+            trap 'queue_signal HUP' HUP
+            trap 'queue_signal INT' INT
+            trap 'queue_signal TERM' TERM
+            # Preserve the caller's input for noninteractive shells, which
+            # otherwise give background jobs /dev/null on stdin.
+            exec 9<&0
+            if command -v setsid >/dev/null 2>&1 && [ -n "$group_file" ]; then
+              # Disable job control so setsid does not fork: the background
+              # PID is then also the new session/process-group ID.
+              set +m
+              setsid sh -c 'eval "$1"' sh "$command_text" <&9 &
+              worker_pid=$!
+              printf '%s\n' "$worker_pid" > "$group_file"
+              # A private process group lets the parent hold the lane until
+              # descendants exit, even if the command ends with exec.
+            else
+              # Keep the shell's normal background-job wait behavior where
+              # setsid is unavailable; supported Fleet build hosts ship it.
+              sh -c 'trap '\''rc=$?; trap - EXIT; wait || :; exit "$rc"'\'' EXIT; eval "$1"' sh "$command_text" <&9 &
+              worker_pid=$!
+            fi
+            trap 'interrupt_lane HUP 129' HUP
+            trap 'interrupt_lane INT 130' INT
+            trap 'interrupt_lane TERM 143' TERM
+            case "$pending_signal" in
+              HUP) interrupt_lane HUP 129 ;;
+              INT) interrupt_lane INT 130 ;;
+              TERM) interrupt_lane TERM 143 ;;
+            esac
+            wait "$worker_pid"
+            status=$?
+            exit "$status"
+          fi
+          if [ -n "$lease_id" ]; then
+            "$broker" checkin --lease "$lease_id" >/dev/null 2>&1 || :
+          fi
+        fi
+      fi
+      CARGO_TARGET_DIR="$HOME/build-cache/$repo"
+      mkdir -p "$CARGO_TARGET_DIR"
+      export CARGO_TARGET_DIR
+      echo "fleet shell: broker unavailable; using shared fallback $CARGO_TARGET_DIR" >&2
+    fi
+  fi
+fi
+exec sh -c "$command_text"
+"#;
+    let script = script
+        .replace("__PROFILE__", profile)
+        .replace("__COMMAND__", &sh_quote_always(command));
+    format!("sh -c {}", sh_quote_always(&script))
+}
+
+/// Run the command through one build-lock slot. Cargo commands also lease
+/// their workspace target, including when Cargo is the first command.
 fn under_build_lock(command: &str) -> String {
-    format!("{BUILD_LOCK} sh -c {}", sh_quote_always(command))
+    if may_invoke_cargo(command) {
+        format!("{BUILD_LOCK} {}", broker_aware_shell(command))
+    } else {
+        // The command input is shell text, so keep shell built-ins such as
+        // exit, :, and ulimit inside a shell in every target mode.
+        format!("{BUILD_LOCK} sh -c {}", sh_quote_always(command))
+    }
 }
 
 /// A build on this host: under the build lock where this host has one
 /// (the laptop does), and plainly, with a note, where it does not.
-fn local_build_line(command: &str) -> String {
-    let quoted = sh_quote_always(command);
+fn local_build_line(command: &str, cwd: Option<&str>) -> String {
+    let change_dir = cwd
+        .map(|dir| format!("cd {} || exit $?; ", sh_quote(dir)))
+        .unwrap_or_default();
+    let locked = under_build_lock(command);
+    let fallback = if may_invoke_cargo(command) {
+        broker_aware_shell(command)
+    } else {
+        format!("sh -c {}", sh_quote_always(command))
+    };
     format!(
-        "if [ -x {BUILD_LOCK} ]; then exec {BUILD_LOCK} sh -c {quoted}; fi; \
-         echo 'fleet shell: this host has no build lock; running without one' >&2; \
-         exec sh -c {quoted}"
+        "{change_dir}if [ -x {BUILD_LOCK} ]; then exec {locked}; fi; echo 'fleet shell: this host has no build lock; running without one' >&2; exec {fallback}"
+    )
+}
+
+/// A codespace can use the same path when its fleet tools are installed.
+/// If it lacks the lock, try the target broker directly and report the gap.
+fn codespace_build_line(command: &str, cwd: Option<&str>) -> String {
+    let change_dir = cwd
+        .map(|dir| format!("cd {} || exit $?; ", sh_quote(dir)))
+        .unwrap_or_default();
+    let locked = under_build_lock(command);
+    let fallback = if may_invoke_cargo(command) {
+        broker_aware_shell(command)
+    } else {
+        format!("sh -c {}", sh_quote_always(command))
+    };
+    format!(
+        "{change_dir}if [ -x {BUILD_LOCK} ]; then exec {locked}; fi; echo 'fleet shell: this host has no build lock; running without one' >&2; exec {fallback}"
     )
 }
 
@@ -248,14 +562,13 @@ pub fn plan(target: Target, because: String, words: &[String], opts: &Options) -
                         "--detach starts a laptop job; it needs --target laptop",
                     ));
                 }
-                let line = match &opts.cwd {
-                    Some(dir) => format!("cd {} && {command}", sh_quote(dir)),
-                    None => command,
-                };
                 let line = if opts.build {
-                    local_build_line(&line)
+                    local_build_line(&command, opts.cwd.as_deref())
                 } else {
-                    line
+                    match &opts.cwd {
+                        Some(dir) => format!("cd {} && {command}", sh_quote(dir)),
+                        None => command,
+                    }
                 };
                 ("sh".to_string(), vec!["-lc".to_string(), line])
             }
@@ -297,9 +610,13 @@ pub fn plan(target: Target, because: String, words: &[String], opts: &Options) -
             }
             let mut args = argv(&["codespace", "ssh", "-c", name]);
             if !interactive {
-                let line = match &opts.cwd {
-                    Some(dir) => format!("cd {} && {command}", sh_quote(dir)),
-                    None => command,
+                let line = if opts.build {
+                    codespace_build_line(&command, opts.cwd.as_deref())
+                } else {
+                    match &opts.cwd {
+                        Some(dir) => format!("cd {} && {command}", sh_quote(dir)),
+                        None => command,
+                    }
                 };
                 args.push("--".to_string());
                 args.push(line);

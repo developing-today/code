@@ -28,9 +28,10 @@ of exactly this kind of state machine.
 
 `src/watchdog-escalation.ts` — the **rung-4 hand-off** (#6033): plans the
 deduped queue-task + incident-issue effects behind injected effectors,
-records the refs on the incident, plans recovery (comment + close +
-complete), and renders the NEEDS DREW surfacing line (immediate when
-human-blocked, after 24 h unresolved otherwise). The hand-off creates
+records the refs on the incident, plans recovery comments without
+disposing of the issue or queue task, and renders the NEEDS DREW
+surfacing line (immediate when human-blocked, after 24 h unresolved
+otherwise). The hand-off creates
 the incident issue **first**: fleet queue validation only accepts a
 `small_fix` packet whose fix-family dedupe key names an existing issue
 (`repo-health:v1:fix:<repo>:issue:<n>`, payload.issue.number matching),
@@ -100,7 +101,7 @@ challenge, quiet-when-healthy).
 `test/watchdog.test.ts` covers the entry point end to end against a
 scratch tree: the same four acceptance fixtures driven through `runTick`
 (the ladder walk escalates exactly once and dedupes on later ticks;
-recovery comments/closes/completes the hand-off), cross-invocation
+recovery comments without disposing of the hand-off), cross-invocation
 persistence (every tick re-reads the state file from disk — the #5928
 oracle), the classification of missing-document / stale-read / dead-CDP
 observations, and the adapter loader's defect handling.
