@@ -1502,7 +1502,7 @@ printf '%s|%s|%s|%s\n' "$PWD" "$CARGO_TARGET_DIR" "$CARGO_BUILD_JOBS" "$*" > "$H
     let lock_script =
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fleet-build-lock");
     let manifest = workspace.join("Cargo.toml").display().to_string();
-    let output = std::process::Command::new("/bin/bash")
+    let output = std::process::Command::new("bash")
         .arg(&lock_script)
         .args([
             "cargo",
@@ -1557,7 +1557,7 @@ printf '%s|%s|%s|%s\n' "$PWD" "$CARGO_TARGET_DIR" "$CARGO_BUILD_JOBS" "$*" > "$H
         vec!["cargo", "help", "build"],
         vec!["cargo", "fmt", "--package", "test"],
     ] {
-        let output = std::process::Command::new("/bin/bash")
+        let output = std::process::Command::new("bash")
             .arg(&lock_script)
             .args(args)
             .env("HOME", &home)
@@ -1584,7 +1584,7 @@ printf '%s|%s|%s|%s\n' "$PWD" "$CARGO_TARGET_DIR" "$CARGO_BUILD_JOBS" "$*" > "$H
         );
     }
 
-    let no_workspace = std::process::Command::new("/bin/bash")
+    let no_workspace = std::process::Command::new("bash")
         .arg(&lock_script)
         .args(["cargo", "install", "some-crate"])
         .env("HOME", &home)
@@ -1616,7 +1616,7 @@ printf '%s|%s|%s|%s\n' "$PWD" "$CARGO_TARGET_DIR" "$CARGO_BUILD_JOBS" "$*" > "$H
         format!("{}||2|install some-crate\n", caller.display())
     );
 
-    let path_install = std::process::Command::new("/bin/bash")
+    let path_install = std::process::Command::new("bash")
         .arg(&lock_script)
         .args(["cargo", "install", "--path"])
         .arg(&workspace)
@@ -1663,7 +1663,7 @@ printf '%s|%s|%s|%s\n' "$PWD" "$CARGO_TARGET_DIR" "$CARGO_BUILD_JOBS" "$*" > "$H
             "dev",
         ),
     ] {
-        let output = std::process::Command::new("/bin/bash")
+        let output = std::process::Command::new("bash")
             .arg(&lock_script)
             .args(&args)
             .env("HOME", &home)
