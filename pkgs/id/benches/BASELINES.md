@@ -371,6 +371,32 @@ recorded rather than reported as acceptance. The matching measurement
 is appended to `baseline.txt`; the existing baselines above are
 unchanged.
 
+## Fuel-spin isolation on the CI runner — noise-dominated, no verdict (2026-11-22, #1067)
+
+Machine class: `ci-runner` (GitHub-hosted ubuntu-24.04 via the
+fleet-run workflow; 4 visible CPUs, so the full profile runs with
+3 spinners). Four runs of the exact full profile (3 s phases,
+100 commands/s, 20,000,000 spin fuel), two on `main` (`c9fbfa0`) and
+two on the #1067 blocking-context branch (`780ddbe`, guest calls
+under `tokio::task::block_in_place`):
+
+```text
+bench fuel_spin_isolation unit=ms_per_command victim_p99_ms_calm=1.425 victim_p99_ms_spinning=3.562 ratio=2.500 spins=545 (main, run 45024947483)
+bench fuel_spin_isolation unit=ms_per_command victim_p99_ms_calm=2.372 victim_p99_ms_spinning=5.147 ratio=2.170 spins=1591 (branch, run 45024947483)
+bench fuel_spin_isolation unit=ms_per_command victim_p99_ms_calm=1.731 victim_p99_ms_spinning=6.693 ratio=3.867 spins=543 (branch, run 45027312468)
+bench fuel_spin_isolation unit=ms_per_command victim_p99_ms_calm=1.439 victim_p99_ms_spinning=83.794 ratio=58.228 spins=525 (main, run 45027312468)
+```
+
+Identical code on this venue produced ratios of 2.500 and 58.228 —
+the spinning-phase p99 over 300 samples on shared 4-vCPU runners is
+dominated by neighbour noise, and the calm p99 varies by ~65%
+between legs. This venue and profile therefore cannot decide
+whether a change moves the ratio; a before/after pair has to run on
+the reference machine class above (16 threads, 15 spinners), where
+the 2.517 baseline was recorded. These lines are recorded so the
+next #1067 worker does not spend runner time re-learning it; they
+are not a baseline and nothing here is appended to `baseline.txt`.
+
 ## Benchmark matrix results bundle (#5896)
 
 The four loadgen-core workloads (`journal_append_fsync`,
@@ -418,3 +444,44 @@ are smoke evidence only and are never committed as baselines. The
 async workloads (`many_worlds`, `fuel_spin_isolation`) are not
 matrix cells yet — their pacing is the loadgen record's later
 executor steps — and keep their legacy lines above.
+
+## Second-pass review: inline journal write (2026-11-22, sandbox)
+
+A second pass over the event path audited the remaining seams (see
+the PR for the full audit). One structural change: `FileJournal` no
+longer hands each append to a dedicated writer thread over a channel
+and rendezvous on its reply; it owns its `File` and writes inline
+under the same `block_in_place` guard as the first fix. The writer
+thread's queue was empty at every dequeue by construction — the
+journal's only producer is its owning actor, rendezvous-blocked
+until the in-flight append is durable — so the hop bought nothing,
+and removing it also removes one thread per world. No durability or
+ordering change.
+
+Sandbox venue, TMPDIR on btrfs, full size (1,000 idle / 100 active,
+20 ev/s, 10 s). The sandbox is shared and its load swung widely
+between runs (recorded per run); latency percentiles swung ±2× with
+ambient load while the mechanism metric (journal append mean)
+stayed in one band. The change is **not measurable in this venue**:
+append means overlap across runs, and no run shows a regression
+attributable to it. `baseline.txt` is untouched (it carries the
+reference machine class).
+
+- Baseline (a968bf0f0), load avg 8.5 at start:
+  `journal_append_mean_us=52713`, p50 580.966 ms, p99 1,455.158 ms,
+  1,733.8 completed/s.
+- Inline write, back-to-back after it, load avg 2.2 at start:
+  `journal_append_mean_us=58407`, p50 1,270.688 ms, p99 2,735.997 ms,
+  1,549.4 completed/s (a load burst during the load phase; the wake
+  percentiles moved while `input_ack_p50` stayed flat at ~63 ms in
+  both runs).
+- Inline write, earlier run the same day at load avg ~1.4–4.6:
+  `journal_append_mean_us=47713`, p50 109.730 ms, p99 1,003.589 ms,
+  1,825.6 completed/s.
+- Baseline under the day's heaviest contention (load avg ~11–14):
+  `journal_append_mean_us=236445`, p99 37,764.450 ms, 411.8
+  completed/s — recorded to show the venue's noise band, not as a
+  comparison point.
+
+All runs: `queue_depth_max=0`, checkpoints/evicted/reopened
+100/100/100.
