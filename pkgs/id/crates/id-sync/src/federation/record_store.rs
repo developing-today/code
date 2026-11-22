@@ -1827,12 +1827,12 @@ mod tests {
         #[test]
         fn report_record_codec_round_trips_generated(stored in stored_report_strategy()) {
             let decoded = decode_stored_report(&encode_stored_report(&stored)).unwrap();
-            prop_assert_eq!(decoded, stored);
             prop_assert_eq!(decoded.report.report_id(), stored.report.report_id());
             prop_assert_eq!(
                 decoded.report.canonical_bytes(),
                 stored.report.canonical_bytes()
             );
+            prop_assert_eq!(decoded, stored);
         }
 
         /// Oracle: the in-memory [`Replica`] is the model — a
