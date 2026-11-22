@@ -78,6 +78,24 @@
 //! [`HTTP_FETCH_RATE_WINDOW_MS`]. A fetch is an effect, not world
 //! state: it journals nothing, and replay never sees one.
 //!
+//! `notify` (#1062, F12.5) is one request, `{"text":T}`, answered
+//! with `{"sequence":N}`: a user-visible outbound notification,
+//! committed to the world's event stream as a `Notification`
+//! event (host-authored, participant 0) and broadcast to the
+//! world's sessions — not a chat line: it never enters chat
+//! history, and the join projection shows it to every participant,
+//! not only chat readers. Like `http.fetch` it is **off by
+//! default** ([`DefaultCeiling::Excluded`]); unlike a fetch its
+//! target is fixed — the world's own users — so there is no
+//! allowlist, and the volume control is a rate bound instead:
+//! at most [`MAX_NOTIFY_BURST`] attempts per
+//! [`NOTIFY_RATE_WINDOW_MS`] per world. The text takes the
+//! `chat.say` bound (the world's `chat_bytes` limit) and the chat
+//! sanitizer. The notification is journaled before its result is
+//! delivered, as the ordinary committed event it is, so it
+//! survives restarts at its sequence and is never delivered twice
+//! across a reopen.
+//!
 //! The server answers each new request with
 //! `{"cap":"result","id":"r1","ok":true,"value":...}` (or `"ok":false` with an
 //! `"error"`), and each subscription with its own events
@@ -521,6 +539,21 @@ const HTTP_FETCH_BOUNDS: &[ProviderBound] = &[
     ProviderBound::IdentifierBytes(MAX_HTTP_FETCH_URL_BYTES),
     ProviderBound::ResponseBytes(MAX_HTTP_FETCH_RESPONSE_BYTES),
 ];
+/// Argument schema for `notify`: one required `text` — the
+/// `chat.say` argument. A notification is one bounded line; a
+/// title or level is not part of the v1 shape.
+const NOTIFY_ARGUMENTS: &[ProviderArgument] = &[ProviderArgument {
+    name: "text",
+    value_type: ArgumentType::String,
+    required: true,
+}];
+/// Bounds for `notify`: argument bytes plus the world chat byte
+/// limit — the bound the host applies to its own user-visible
+/// lines, declared exactly as `chat.say` declares it.
+const NOTIFY_BOUNDS: &[ProviderBound] = &[
+    ProviderBound::ArgsBytes(MAX_ARGS_BYTES),
+    ProviderBound::WorldLimit("chat_bytes"),
+];
 /// Bounds for `schedule.at`: argument bytes, id bytes, pending cap, and horizon.
 const SCHEDULE_AT_BOUNDS: &[ProviderBound] = &[
     ProviderBound::ArgsBytes(MAX_ARGS_BYTES),
@@ -725,6 +758,22 @@ define_provider_registry! {
         kind: ProviderKind::Request,
         argument_schema: ArgumentSchema::JsonObject(HTTP_FETCH_ARGUMENTS),
         bounds: HTTP_FETCH_BOUNDS,
+        required_scope: RequiredScope::Join,
+        default_ceiling: DefaultCeiling::Excluded,
+    },
+    // The F12.5 `notify` provider (#1062): a user-visible outbound
+    // notification, committed to the world's event stream as a
+    // `Notification` event. Outward-facing like `http.fetch` — its
+    // effect lands on users who asked it nothing — so it is off by
+    // default, excluded from every default ceiling, and the
+    // executor rate-limits it per world. Its target is fixed (the
+    // world's own users), so there is no allowlist gate. Every use
+    // still passes the grant/ceiling decision and its audit entry.
+    "notify" => {
+        version: 1,
+        kind: ProviderKind::Request,
+        argument_schema: ArgumentSchema::JsonObject(NOTIFY_ARGUMENTS),
+        bounds: NOTIFY_BOUNDS,
         required_scope: RequiredScope::Join,
         default_ceiling: DefaultCeiling::Excluded,
     },
@@ -1205,6 +1254,21 @@ pub const MAX_HTTP_FETCH_BURST: usize = 10;
 /// endpoint every six seconds while capping its worst-case actor
 /// occupancy at ten timeouts per minute.
 pub const HTTP_FETCH_RATE_WINDOW_MS: u64 = 60_000;
+
+/// Most `notify` attempts one world may make per rate window.
+/// Attempts are counted when made — once the check passes, before
+/// the event is committed — because the bound is on interruptions
+/// attempted, not on notifications that happened to commit.
+pub const MAX_NOTIFY_BURST: usize = 5;
+/// The `notify` rate window, in milliseconds: the `http.fetch`
+/// window at half its burst. A fetch is invisible to users; a
+/// notification interrupts every one of them and occupies a slot
+/// in the retained event window, so it is costlier per use. A
+/// burst of [`MAX_NOTIFY_BURST`] per minute is a sustained one
+/// notification per twelve seconds — room for event-driven
+/// alerts, and a program that needs a faster channel to users
+/// already has `chat.say` under its own abuse limits.
+pub const NOTIFY_RATE_WINDOW_MS: u64 = 60_000;
 /// Largest page of records served over the session protocol and the
 /// host view, in bytes. Cap results are not served this way: a
 /// `records.read` result is delivered through `result_event` and is
@@ -2786,6 +2850,24 @@ mod tests {
     }
 
     #[test]
+    fn notify_is_registered_but_off_by_default() {
+        // The provider exists in the catalog (an operator can name
+        // it in a ceiling) but joins no default ceiling: the
+        // registry half of the #1062 off-by-default rule. The rate
+        // half is the executor's.
+        assert!(catalog_names().contains("notify"));
+        assert!(!default_ceiling_names().contains("notify"));
+        let manifest = PROVIDER_REGISTRY.get("notify").unwrap();
+        assert_eq!(manifest.default_ceiling, DefaultCeiling::Excluded);
+        assert_eq!(manifest.required_scope, RequiredScope::Join);
+        assert!(
+            manifest
+                .bounds
+                .contains(&ProviderBound::WorldLimit("chat_bytes"))
+        );
+    }
+
+    #[test]
     fn http_fetch_is_registered_but_off_by_default() {
         // The provider exists in the catalog (an operator can name
         // it in a ceiling) but joins no default ceiling: the
@@ -2974,6 +3056,7 @@ mod tests {
                 "blob.get",
                 "blob.delete",
                 "http.fetch",
+                "notify",
                 "schedule.at",
                 "schedule.cancel",
                 "world.info",
@@ -3048,12 +3131,16 @@ mod tests {
         // http.fetch (#1062) is Excluded for the same reason: an
         // outward-facing provider joins no default ceiling, and its
         // executor additionally enforces the admin host allowlist.
+        // notify (#1062) is Excluded likewise: an outward-facing
+        // provider whose effect lands on the world's users, with a
+        // per-world rate bound in its executor instead of a list.
         let excluded_from_ceiling = names(&[
             "loc.position",
             "loc.watch",
             "speech.transcribe",
             "speech.capture",
             "http.fetch",
+            "notify",
             CLIENT_FILE_READ_NAME,
         ]);
         #[cfg(feature = "test-provider")]
