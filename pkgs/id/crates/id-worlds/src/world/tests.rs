@@ -9736,6 +9736,7 @@ mod schedule_tests {
                 token: token.clone(),
                 input: document.to_string().into_bytes(),
                 session_id: None,
+                device_input: None,
                 signed_move: None,
                 reply,
             })
@@ -9836,6 +9837,7 @@ mod schedule_tests {
                 token: token.clone(),
                 input: input.to_vec(),
                 session_id: None,
+                device_input: None,
                 signed_move: None,
                 reply,
             });
@@ -9927,6 +9929,7 @@ mod schedule_tests {
                     token: token.clone(),
                     input: b"{}".to_vec(),
                     session_id: Some(session_id),
+                    device_input: None,
                     signed_move: None,
                     reply,
                 })

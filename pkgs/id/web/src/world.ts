@@ -617,6 +617,12 @@ function initWorld(): void {
           after: cursor || null,
           world: selectedWorld(),
           screen_patches: true,
+          device_input: {
+            keys: 128,
+            encoder: false,
+            pointer: true,
+            text_entry: "keyboard",
+          },
         }),
       );
       sendViewport();
