@@ -254,6 +254,10 @@ fn may_invoke_cargo(command: &str) -> bool {
 
         let mut next = index + 1;
         while let Some(arg) = words.get(next).copied() {
+            if matches!(arg, "--config" | "--color" | "-Z") {
+                next += 2;
+                continue;
+            }
             if arg.starts_with('+')
                 || arg.starts_with("-Z")
                 || arg.starts_with("-v")
@@ -262,10 +266,6 @@ fn may_invoke_cargo(command: &str) -> bool {
                 || arg.starts_with("--color=")
             {
                 next += 1;
-                continue;
-            }
-            if matches!(arg, "--config" | "--color" | "-Z") {
-                next += 2;
                 continue;
             }
             return COMPILE_ACTIONS.contains(&arg);
