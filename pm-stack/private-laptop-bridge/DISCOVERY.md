@@ -177,23 +177,50 @@ must independently confirm full account ID/ownership and existence of the exact
 Worker named by that GitHub Environment, then verify the resulting token cannot
 read or edit another Worker. No target was probed in this work session.
 
-If a Worker is absent, its first creation is a **separate owner-reviewed
-bootstrap**, because Cloudflare requires Workers product-level Admin to create a
-new Worker and per-Worker Editor cannot be granted until the Worker exists. A
-candidate owner-operated bootstrap for the bridge is `cf deploy --mode bridge`
-from this reviewed commit, using the selected Cloudflare owner/admin identity.
-It creates and deploys the first version together, so require an explicit review
-of the resolved Build Output and resources first: the Worker must be
-`ENABLED=false`, have no routes/workers.dev/previews, and the only resource
-creation must be the intended SQLite Durable Object class. Stop if `cf deploy`
-shows any other binding/resource or if the account/target is not positively
-identified. The smoke Worker requires its own reviewed first deployment. These
-are documented commands/plans only; no bootstrap was run. Do not create or store
-a Workers-product/whole-account token in GitHub. After bootstrap, provision the
-account-owned **Individual Workers → Editor** token for that one exact existing
-Worker. The smoke Worker and DO bridge have separate GitHub environments/tokens
-so each credential names only one Worker. The bridge environment also cannot
-modify Gateway policies; those use a separate approval and administrative path.
+There is no permitted bootstrap path in this release workflow. The exact
+`cf@1.0.0-rc.1` package is pinned in the lockfile and contains the
+`@cloudflare/deploy-helpers@0.27.2` versions-upload checks. They reject a
+missing Worker with “You cannot upload a new version of a Worker that does not
+yet exist” before the Versions API upload. The Cloudflare Workers deployment
+docs likewise state that the first upload must use a deploy command. This task
+allows only an initial Versions upload, so do not substitute `cf deploy`,
+Wrangler deploy, a direct API request, or a separate create workflow. The
+existing-Worker precheck and the CLI both fail closed if either exact target is
+absent. No bootstrap command was run or added.
+
+The real bridge has an additional Versions API constraint. Its Build Output
+declares `PrivateLaptopBridge` as a new SQLite Durable Object export and binds
+`BRIDGE` to that export. The pinned upload helper rejects pending Durable Object
+migrations because Versions upload cannot apply them. It also handles
+`ACTOR_BINDING_DEPENDS_ON_EXPORT_CODE` with the explicit explanation that
+declarative exports are reconciled only when a version is deployed, so a
+namespace for an unprovisioned export cannot exist at upload time. Therefore
+the bridge can use this Versions-only release path only if an owner has already
+verified that the exact existing `private-laptop-bridge-staging` Worker owns a
+created SQLite `PrivateLaptopBridge` namespace and has completed the `v1`
+migration, with no pending migration. The `BRIDGE` binding namespace ID must
+match that same Worker namespace. The smoke Worker has no Durable Object and
+still must already exist.
+
+`staging-preflight.json` is currently intentionally unverified and empty. CI
+checks only validate a future owner-supplied read-only snapshot; the new contract
+tests reject a missing Worker, mismatched namespace/class/Worker, an uncreated
+export, a different migration tag, and pending migrations. An offline `cf
+workers versions create --prebuilt --dry-run` does not exercise these remote
+checks: the pinned helper skips API preflight on dry-run, and dry-run builds can
+prove only the local Build Output. No live Worker, namespace, migration, route,
+Gateway, or Cloudflare account was queried in this session. If the exact target
+or completed namespace state is absent or cannot be proven, this workflow has
+no allowed path forward; stop for Drew to decide whether the release scope
+should change.
+
+Do not create or store a Workers-product/whole-account token in GitHub. If the
+required targets and bridge namespace are already in place and independently
+verified, routine CI uses separate account-owned **Individual Workers → Editor**
+tokens, each restricted to one exact existing Worker. The smoke Worker and DO
+bridge use separate GitHub environments/tokens. The bridge environment cannot
+modify Gateway policies; those use a separate approval and administrative
+path.
 
 Offline results on the current follow-up commit (recorded in the PR): Node 24.22.0 + cf 1.0.0-rc.1 + Wrangler
 4.166.0; both smoke and `--mode bridge` pass `cf build` and the corresponding
@@ -208,3 +235,5 @@ existence, deployment, Gateway routing or laptop readiness.
 
 
 Official references: [cf 1.0.0-rc.1 changelog](https://developers.cloudflare.com/changelog/post/2026-11-17-release-candidate/), [cf project builds and prebuilt uploads](https://developers.cloudflare.com/cf/projects/), and [Workers individual resource Editor permissions](https://developers.cloudflare.com/workers/authorization/workers/).
+
+Pinned implementation references: [cf 1.0.0-rc.1 package](https://www.npmjs.com/package/cf/v/1.0.0-rc.1), [its version-upload JSON shape](https://github.com/cloudflare/workers-sdk/blob/%40cloudflare/deploy-helpers%400.27.2/packages/deploy-helpers/src/deploy/versions-upload.ts#L98-L116), [output-file-only behavior](https://github.com/cloudflare/workers-sdk/blob/%40cloudflare/deploy-helpers%400.27.2/packages/workers-utils/src/output.ts#L7-L26), the [missing-Worker Versions guard](https://github.com/cloudflare/workers-sdk/blob/%40cloudflare/deploy-helpers%400.27.2/packages/deploy-helpers/src/deploy/helpers/validate-worker-props.ts#L290-L301), [dry-run API-check skip](https://github.com/cloudflare/workers-sdk/blob/%40cloudflare/deploy-helpers%400.27.2/packages/deploy-helpers/src/deploy/helpers/validate-worker-props.ts#L135-L159), [pending-migration rejection](https://github.com/cloudflare/workers-sdk/blob/%40cloudflare/deploy-helpers%400.27.2/packages/deploy-helpers/src/deploy/versions-upload.ts#L171-L193), and [unprovisioned DO export rejection](https://github.com/cloudflare/workers-sdk/blob/%40cloudflare/deploy-helpers%400.27.2/packages/deploy-helpers/src/deploy/versions-upload.ts#L378-L396). Cloudflare's [deployment management docs](https://developers.cloudflare.com/workers/versions-and-deployments/deployment-management/) separately specify first-upload and DO lifecycle constraints.

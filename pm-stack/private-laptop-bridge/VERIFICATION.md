@@ -127,3 +127,48 @@ vars; bundle was 17.84 KiB (5.31 KiB gzip). Smoke was 1.96 KiB (0.98 KiB gzip).
 Nine targeted tests passed (3 binding/release config, 3 Gateway RPC, 3 smoke).
 The workflow YAML and all embedded shell blocks passed local parsing. This is
 not evidence of target existence or a live Cloudflare deployment.
+
+## Versions-only release and bridge namespace preflight
+
+The lockfile pins `cf@1.0.0-rc.1`. Its installed package metadata records
+`@cloudflare/deploy-helpers@0.27.2`, and its bundled Versions upload code
+contains the missing-Worker rejection, the pending-DO-migration rejection, and
+the API error handler for a binding to an export that has not yet been
+provisioned. It states that declarative exports are reconciled when the version
+is deployed. Cloudflare's [deployment management docs](https://developers.cloudflare.com/workers/versions-and-deployments/deployment-management/)
+also require a deploy command for the first upload and for lifecycle-changing
+DO exports/migrations. Current scope permits only Versions uploads, so the
+workflow has no first-Worker bootstrap fallback and refuses absent Workers.
+
+The pinned `cf workers versions create` record is written to
+`WRANGLER_OUTPUT_FILE_PATH`, not stdout; the workflow sets that path, clears it
+first, and parses the single `version-upload` JSON record. The parser requires
+`type: "version-upload"`, schema `version: 1`, the exact `worker_name`, and a
+server-returned UUID `version_id`. Its `worker_tag` field is the stable Worker
+identity, not the source commit. The workflow verifies the full source SHA and
+provenance digest on that exact UUID's version annotations in the exact Worker
+version list.
+
+The separate `Versions release proof` test accepts a synthetic snapshot only
+when the bridge Worker already exists and its `BRIDGE` binding matches the same
+Worker's created SQLite `PrivateLaptopBridge` namespace at completed migration
+`v1`. It separately rejects absent Workers, namespace/class/Worker mismatches,
+an uncreated export, a different migration tag, and pending migrations. The
+smoke preflight requires its existing Worker but no DO. The tracked staging
+proof remains `verified: false`; these tests validate the fail-closed gate and
+do not assert live account state.
+
+After adding these tests, the focused local command
+`node --test --test-reporter=spec release-contract.test.mjs deployment-config.test.mjs smoke.test.mjs gateway.test.mjs`
+passed 19/19 under Node 24.22.0. Both `cf build` variants and both
+`cf workers versions create --prebuilt --dry-run` variants were rerun; the
+effective Build Output checks passed for the smoke and bridge targets. Dry-run
+output confirms the bridge declares its `BRIDGE` Durable Object export and
+disabled placeholders, but the pinned helper skips API checks during dry-run,
+so this cannot validate missing-Worker or live namespace behavior. No upload,
+deployment, promotion, account query, or secret use occurred. The local build
+printed a proxy-environment warning; this should not be taken as proof of
+network isolation.
+
+The workflow YAML parsed with PyYAML and all embedded `run:` blocks passed
+`bash -n` after substituting GitHub expressions. `actionlint` was unavailable.

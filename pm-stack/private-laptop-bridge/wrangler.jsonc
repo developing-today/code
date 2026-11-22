@@ -4,6 +4,8 @@
   "compatibility_date": "2026-07-30",
   "workers_dev": false,
   "preview_urls": false,
+  "limits": {"cpu_ms": 10},
+  "observability": {"enabled": false},
   "vars": {"ENABLED": "false"},
   "durable_objects": {"bindings": [{"name": "BRIDGE", "class_name": "PrivateLaptopBridge"}]},
   "migrations": [{"tag": "v1", "new_sqlite_classes": ["PrivateLaptopBridge"]}]

@@ -6,6 +6,8 @@
   "compatibility_date": "2026-07-30",
   "workers_dev": false,
   "preview_urls": false,
+  "limits": {"cpu_ms": 10},
+  "observability": {"enabled": false},
   "routes": [],
   "vars": {
     "ENABLED": "false",
