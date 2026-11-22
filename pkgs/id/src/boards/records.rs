@@ -851,3 +851,192 @@ mod note_anchor_tests {
         assert_eq!(decoded.note_view, None);
     }
 }
+
+#[cfg(test)]
+mod note_projection_properties {
+    //! Generated coverage for the note embed and reply-anchor projections:
+    //! a resolved passage keeps its section and quote, an orphan keeps
+    //! its original version and passage, and a live view keeps every
+    //! concurrent head.
+
+    use proptest::prelude::*;
+
+    use super::*;
+
+    fn hash(ch: char) -> ArtifactHash {
+        ArtifactHash::new(ch.to_string().repeat(64)).unwrap()
+    }
+
+    /// Hashes from a small alphabet, so generated values often collide.
+    fn small_hash() -> impl Strategy<Value = ArtifactHash> {
+        prop::sample::select(vec!['1', '2', '3']).prop_map(hash)
+    }
+
+    fn selector() -> impl Strategy<Value = NotePassageSelector> {
+        (
+            prop::sample::select(vec!["intro", "body"]),
+            0_u64..6,
+            0_u64..4,
+            small_hash(),
+        )
+            .prop_map(
+                |(section, start_byte, len, quote_hash)| NotePassageSelector {
+                    section_id: section.to_owned(),
+                    start_byte,
+                    end_byte: start_byte + len,
+                    quote_hash,
+                },
+            )
+    }
+
+    fn passage() -> impl Strategy<Value = NotePassage> {
+        selector().prop_map(|selector| NotePassage {
+            section_id: selector.section_id,
+            start_byte: selector.start_byte,
+            end_byte: selector.end_byte,
+            quote_hash: selector.quote_hash,
+        })
+    }
+
+    fn anchor() -> impl Strategy<Value = NoteAnchor> {
+        prop::option::weighted(0.8, selector()).prop_map(|passage| NoteAnchor {
+            object: hash('a'),
+            version: hash('b'),
+            passage,
+        })
+    }
+
+    fn head() -> impl Strategy<Value = NoteHead> {
+        (small_hash(), small_hash(), any::<bool>()).prop_map(
+            |(revision, content_hash, descends_from_pin)| NoteHead {
+                revision,
+                content_hash,
+                descends_from_pin,
+            },
+        )
+    }
+
+    fn note_ref() -> NoteRef {
+        NoteRef {
+            object: hash('a'),
+            home_server: "https://notes.example".into(),
+            pinned_version: hash('1'),
+            pinned_content_hash: hash('1'),
+            sharer: "d".repeat(64),
+        }
+    }
+
+    fn as_selector(passage: &NotePassage) -> NotePassageSelector {
+        NotePassageSelector {
+            section_id: passage.section_id.clone(),
+            start_byte: passage.start_byte,
+            end_byte: passage.end_byte,
+            quote_hash: passage.quote_hash.clone(),
+        }
+    }
+
+    proptest! {
+        #[test]
+        fn anchor_resolution_never_substitutes_other_text(
+            anchor in anchor(),
+            passages in prop::collection::vec(passage(), 0..8),
+        ) {
+            let resolution = resolve_note_anchor(&anchor, &passages);
+            let Some(wanted) = &anchor.passage else {
+                prop_assert_eq!(resolution, NoteAnchorResolution::WholeNote);
+                return Ok(());
+            };
+            let same_quote: Vec<NotePassageSelector> = passages
+                .iter()
+                .map(as_selector)
+                .filter(|p| p.section_id == wanted.section_id && p.quote_hash == wanted.quote_hash)
+                .collect();
+            match resolution {
+                NoteAnchorResolution::Exact(found) => {
+                    prop_assert_eq!(&found, wanted);
+                    prop_assert!(same_quote.contains(&found));
+                }
+                NoteAnchorResolution::Relocated(found) => {
+                    prop_assert_eq!(&found.section_id, &wanted.section_id);
+                    prop_assert_eq!(&found.quote_hash, &wanted.quote_hash);
+                    prop_assert!(same_quote.contains(&found));
+                    prop_assert!(!same_quote.contains(wanted));
+                    let earliest = same_quote.iter().map(|p| p.start_byte).min();
+                    prop_assert_eq!(Some(found.start_byte), earliest);
+                }
+                NoteAnchorResolution::Orphaned => prop_assert!(same_quote.is_empty()),
+                NoteAnchorResolution::WholeNote => {
+                    prop_assert!(false, "a passage anchor resolved as the whole note");
+                }
+            }
+        }
+
+        #[test]
+        fn reply_presentation_keeps_orphans_on_their_version(
+            anchor in anchor(),
+            passages in prop::collection::vec(passage(), 0..8),
+            current in small_hash(),
+        ) {
+            let resolution = resolve_note_anchor(&anchor, &passages);
+            let shown = present_note_reply(&anchor, &current, &resolution);
+            match &resolution {
+                NoteAnchorResolution::Orphaned => {
+                    prop_assert!(shown.orphaned);
+                    prop_assert_eq!(&shown.version, &anchor.version);
+                    prop_assert_eq!(&shown.passage, &anchor.passage);
+                }
+                NoteAnchorResolution::Exact(found) | NoteAnchorResolution::Relocated(found) => {
+                    prop_assert!(!shown.orphaned);
+                    prop_assert_eq!(&shown.version, &current);
+                    prop_assert_eq!(shown.passage.as_ref(), Some(found));
+                }
+                NoteAnchorResolution::WholeNote => {
+                    prop_assert!(!shown.orphaned);
+                    prop_assert_eq!(&shown.version, &current);
+                    prop_assert_eq!(&shown.passage, &None);
+                }
+            }
+        }
+
+        #[test]
+        fn embed_presentation_keeps_every_live_head(
+            heads in prop::collection::vec(head(), 0..5),
+            pinned_view in any::<bool>(),
+        ) {
+            let note_ref = note_ref();
+            let view = if pinned_view { NoteEmbedView::Pinned } else { NoteEmbedView::Live };
+            let resolution = resolve_note_embed(&note_ref, &heads);
+            let shown = present_note_embed(&note_ref, Some(view), &resolution);
+
+            prop_assert_eq!(shown.preferred_view, view);
+            prop_assert_eq!(
+                shown.changed_since_posted,
+                heads.iter().any(|h| {
+                    h.revision != note_ref.pinned_version
+                        || h.content_hash != note_ref.pinned_content_hash
+                })
+            );
+            if pinned_view || heads.is_empty() {
+                prop_assert_eq!(shown.displayed_view, NoteEmbedView::Pinned);
+                prop_assert_eq!(
+                    shown.target,
+                    NoteEmbedTarget::Pinned {
+                        version: note_ref.pinned_version.clone(),
+                        content_hash: note_ref.pinned_content_hash.clone(),
+                    }
+                );
+                return Ok(());
+            }
+            prop_assert_eq!(shown.displayed_view, NoteEmbedView::Live);
+            let shown_heads = match shown.target {
+                NoteEmbedTarget::Live(head) => vec![head],
+                NoteEmbedTarget::LiveCandidates(heads) => heads,
+                NoteEmbedTarget::Pinned { .. } => {
+                    prop_assert!(false, "an available live view fell back to the pin");
+                    unreachable!()
+                }
+            };
+            prop_assert_eq!(shown_heads, heads);
+        }
+    }
+}
