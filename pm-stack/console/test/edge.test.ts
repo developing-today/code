@@ -255,6 +255,7 @@ async function setup() {
       keys,
       done,
       docs: hostDocs,
+      phones: hostDeps.phones!.devices,
       config: async () => edgeConfig,
       run: heldRunner(hostDeps),
       fetchImpl: (async (url: string, init: RequestInit) => {
@@ -713,6 +714,7 @@ describe("actions", () => {
       ),
       done: memoryStore(JSON.stringify(done)),
       docs: w.hostDocs,
+      phones: w.hostDeps.phones!.devices,
       config: async () => w.edgeConfig,
       run: heldRunner(w.hostDeps),
       fetchImpl: (async (url: string, init: RequestInit) =>
@@ -1179,7 +1181,11 @@ describe("notifications and phones, from the edge", () => {
       new Request(`https://${HOST}/console/device/link`, { method: "POST", body: JSON.stringify({ verifier }) }),
       w.io,
     );
-    const { token } = (await linked.json()) as { token: string };
+    const { token, id } = (await linked.json()) as { token: string; id: string };
+    // Phone identity crosses only the signed sync as a hash; the host can
+    // validate the token locally after an edge/host endpoint switch.
+    await w.link.now.once();
+    expect((await w.hostDeps.phones!.devices.check(token))?.name).toBe("Pocket");
     const read = await route(
       new Request(`https://${HOST}/console/device/summary`, { headers: { authorization: `Bearer ${token}` } }),
       w.io,
@@ -1192,6 +1198,7 @@ describe("notifications and phones, from the edge", () => {
     expect(await (await w.browse("/console/api/devices")).json()).toEqual([
       expect.objectContaining({ name: "Pocket" }),
     ]);
+    expect(JSON.stringify(await w.hostDeps.phones!.devices.links())).not.toContain(token);
     // Linked phones live at the edge and survive its restart; the token is not in its storage.
     expect(JSON.stringify([...w.stored.entries()])).not.toContain(token);
     w.edge.now = w.makeEdge();
@@ -1201,5 +1208,28 @@ describe("notifications and phones, from the edge", () => {
     );
     expect(after.status).toBe(200);
     expect(w.hostSaw).toEqual([]);
+    await w.act("device.remove", { id });
+    await w.link.now.once();
+    expect(await w.hostDeps.phones!.devices.check(token)).toBeNull();
+  });
+
+  test("a host-linked phone survives the edge cutover and an owner removal reaches both stores", async () => {
+    const w = await setup();
+    await w.hostReads();
+    const verifier = "h".repeat(43);
+    const challenge = Buffer.from(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier))).toString(
+      "base64url",
+    );
+    await w.hostDeps.phones!.devices.approve({ challenge, name: "Host phone" });
+    const linked = await w.hostDeps.phones!.devices.link(verifier);
+    expect(linked).not.toBeNull();
+    await w.link.now.once();
+    expect((await w.edge.now.phones.devices.check(linked!.token))?.name).toBe("Host phone");
+    expect(JSON.stringify(await w.edge.now.phones.devices.links())).not.toContain(linked!.token);
+
+    await w.hostDeps.phones!.devices.remove({ id: linked!.id });
+    await w.link.now.once();
+    expect(await w.edge.now.phones.devices.check(linked!.token)).toBeNull();
+    expect(await w.hostDeps.phones!.devices.check(linked!.token)).toBeNull();
   });
 });

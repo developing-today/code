@@ -119,6 +119,43 @@ describe("linking a phone", () => {
     }
   });
 
+  test("phone-link sync merges hashes and propagates owner removals without transmitting tokens", async () => {
+    const owner = store();
+    const other = store();
+    try {
+      await owner.devices.approve({ challenge: hashOf(VERIFIER), name: "Pocket" });
+      const linked = await owner.devices.link(VERIFIER);
+      const token = linked!.token;
+      const snapshot = await owner.devices.links();
+      expect(JSON.stringify(snapshot)).not.toContain(token);
+      expect(snapshot.devices).toEqual([
+        expect.objectContaining({ id: linked!.id, name: "Pocket", hash: expect.any(String) }),
+      ]);
+      await other.devices.mergeLinks(snapshot);
+      expect((await other.devices.check(token))?.name).toBe("Pocket");
+
+      await owner.devices.remove({ id: linked!.id });
+      await other.devices.mergeLinks(await owner.devices.links());
+      expect(await other.devices.check(token)).toBeNull();
+      // A stale pre-removal report cannot resurrect an owner-removed phone.
+      await other.devices.mergeLinks(snapshot);
+      expect(await other.devices.check(token)).toBeNull();
+    } finally {
+      owner.done();
+      other.done();
+    }
+  });
+
+  test("malformed link snapshots are ignored", async () => {
+    const s = store();
+    try {
+      await s.devices.mergeLinks({ devices: [{ id: "bad", hash: "raw-token", name: "x", createdAt: "y", seenAt: null }], removed: "bad" });
+      expect(await s.devices.links()).toEqual({ devices: [], removed: [] });
+    } finally {
+      s.done();
+    }
+  });
+
   test("no more than eight phones, and no more than four requests waiting", async () => {
     const s = store();
     try {
