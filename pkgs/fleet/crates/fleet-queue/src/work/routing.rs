@@ -184,18 +184,26 @@ pub trait CoordinationReplica {
         lane: &str,
         lease_seconds: i64,
     ) -> Result<ReplicaClaim, ReplicaError>;
-    /// Extend the lease the caller holds on `task_id`.
+    /// Extend the lease the caller holds on `task_id`. The caller is
+    /// identified by (`worker`, `lane`): lanes share one worker
+    /// (`repo-worker-code`), so the worker alone cannot tell a foreign
+    /// lane's heartbeat from the owning lane's — the cloud
+    /// implementation enforces the same boundary through `claimed_by`
+    /// and `foreign_lane_claim` (`turso_queue/lifecycle.rs`).
     fn heartbeat(
         &mut self,
         task_id: i64,
         worker: &str,
+        lane: &str,
         lease_seconds: i64,
     ) -> Result<(), ReplicaError>;
-    /// Record progress on a task the caller holds.
+    /// Record progress on a task the caller holds, identified the same
+    /// way as [`CoordinationReplica::heartbeat`].
     fn checkpoint(
         &mut self,
         task_id: i64,
         worker: &str,
+        lane: &str,
         progress: &str,
     ) -> Result<(), ReplicaError>;
     /// Push local state to the cloud and reconcile. A claim honored
@@ -251,15 +259,15 @@ impl MemoryReplica {
         }
     }
 
-    fn require_held(&self, task_id: i64, worker: &str) -> Result<(), ReplicaError> {
+    fn require_held(&self, task_id: i64, worker: &str, lane: &str) -> Result<(), ReplicaError> {
         match self.live_claim(task_id) {
-            Some(claim) if claim.worker == worker => Ok(()),
+            Some(claim) if claim.worker == worker && claim.lane == lane => Ok(()),
             Some(claim) => Err(ReplicaError::NotHeld(format!(
-                "task {task_id} is held by {}, not {worker}",
-                claim.worker
+                "task {task_id} is held by {} on lane {}, not {worker} on lane {lane}",
+                claim.worker, claim.lane
             ))),
             None => Err(ReplicaError::NotHeld(format!(
-                "task {task_id} is not held by {worker}"
+                "task {task_id} is not held by {worker} on lane {lane}"
             ))),
         }
     }
@@ -294,9 +302,10 @@ impl CoordinationReplica for MemoryReplica {
         &mut self,
         task_id: i64,
         worker: &str,
+        lane: &str,
         lease_seconds: i64,
     ) -> Result<(), ReplicaError> {
-        self.require_held(task_id, worker)?;
+        self.require_held(task_id, worker, lane)?;
         self.expiries.insert(task_id, self.now_unix + lease_seconds);
         Ok(())
     }
@@ -305,9 +314,10 @@ impl CoordinationReplica for MemoryReplica {
         &mut self,
         task_id: i64,
         worker: &str,
+        lane: &str,
         progress: &str,
     ) -> Result<(), ReplicaError> {
-        self.require_held(task_id, worker)?;
+        self.require_held(task_id, worker, lane)?;
         self.checkpoints.insert(task_id, progress.to_string());
         Ok(())
     }
@@ -336,10 +346,13 @@ impl CoordinationReplica for MemoryReplica {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use super::{
-        CoordinationReplica, DbRoute, LegAvailability, MemoryReplica, Mode, ReplicaError,
-        ROUTE_ORDER, mode_line, route_for,
+        CoordinationReplica, DbRoute, DoubleClaim, LegAvailability, MemoryReplica, Mode,
+        ReconcileReport, ReplicaClaim, ReplicaError, ROUTE_ORDER, mode_line, route_for,
     };
+    use proptest::{prop_assert, prop_assert_eq, proptest};
 
     #[test]
     fn route_order_prefers_cloud_when_database_is_up() {
@@ -443,8 +456,10 @@ mod tests {
         let claim = replica.claim(7, "worker-a", "lane-x", 300).unwrap();
         assert_eq!(claim.task_id, 7);
         assert_eq!(claim.lease_seconds, 300);
-        replica.heartbeat(7, "worker-a", 600).unwrap();
-        replica.checkpoint(7, "worker-a", "half done").unwrap();
+        replica.heartbeat(7, "worker-a", "lane-x", 600).unwrap();
+        replica
+            .checkpoint(7, "worker-a", "lane-x", "half done")
+            .unwrap();
         let report = replica.sync_up().unwrap();
         assert_eq!(report.synced_claims, vec![7]);
         assert!(report.zero_lost());
@@ -475,10 +490,182 @@ mod tests {
     fn memory_replica_heartbeat_requires_holding_the_lease() {
         let mut replica = MemoryReplica::new(1_000);
         replica.claim(7, "worker-a", "lane-x", 300).unwrap();
-        let err = replica.heartbeat(7, "worker-b", 300).unwrap_err();
+        let err = replica.heartbeat(7, "worker-b", "lane-y", 300).unwrap_err();
         assert!(matches!(err, ReplicaError::NotHeld(_)));
-        let err = replica.heartbeat(9, "worker-a", 300).unwrap_err();
+        let err = replica.heartbeat(9, "worker-a", "lane-x", 300).unwrap_err();
         assert!(matches!(err, ReplicaError::NotHeld(_)));
+    }
+
+    #[test]
+    fn memory_replica_heartbeat_and_checkpoint_require_the_owning_lane() {
+        // Lanes share one worker (repo-worker-code): the owning lane's
+        // heartbeat/checkpoint succeed, a foreign lane's fail even with
+        // the same worker, so one lane cannot extend another lane's
+        // lease or overwrite its checkpoint.
+        let mut replica = MemoryReplica::new(1_000);
+        replica.claim(7, "worker-a", "lane-x", 300).unwrap();
+        let err = replica.heartbeat(7, "worker-a", "lane-y", 300).unwrap_err();
+        assert!(matches!(err, ReplicaError::NotHeld(_)));
+        let err = replica
+            .checkpoint(7, "worker-a", "lane-y", "half done")
+            .unwrap_err();
+        assert!(matches!(err, ReplicaError::NotHeld(_)));
+        replica.heartbeat(7, "worker-a", "lane-x", 600).unwrap();
+        replica
+            .checkpoint(7, "worker-a", "lane-x", "half done")
+            .unwrap();
+    }
+
+    /// Reference model for the replica state machine: claims keyed by
+    /// task with (worker, lane, expiry), checkpoints, and the injected
+    /// cloud view. It mirrors the contract `MemoryReplica` implements —
+    /// including that `sync_up` reports every recorded claim, live or
+    /// expired — so the generated test below checks the implementation
+    /// against an explicit oracle rather than fixed examples.
+    #[derive(Debug, Default)]
+    struct ModelReplica {
+        now_unix: i64,
+        claims: HashMap<i64, (String, String, i64)>,
+        checkpoints: HashMap<i64, String>,
+        cloud_claims: HashMap<i64, String>,
+    }
+
+    impl ModelReplica {
+        fn live(&self, task_id: i64) -> Option<&(String, String, i64)> {
+            self.claims
+                .get(&task_id)
+                .filter(|(_, _, expiry)| *expiry > self.now_unix)
+        }
+
+        fn claim(&mut self, task_id: i64, worker: &str, lane: &str, lease: i64) -> bool {
+            if self.live(task_id).is_some() {
+                return false;
+            }
+            self.claims.insert(
+                task_id,
+                (worker.to_string(), lane.to_string(), self.now_unix + lease),
+            );
+            true
+        }
+
+        fn held_by(&self, task_id: i64, worker: &str, lane: &str) -> bool {
+            matches!(self.live(task_id), Some((w, l, _)) if w == worker && l == lane)
+        }
+
+        fn heartbeat(&mut self, task_id: i64, worker: &str, lane: &str, lease: i64) -> bool {
+            if !self.held_by(task_id, worker, lane) {
+                return false;
+            }
+            self.claims.get_mut(&task_id).unwrap().2 = self.now_unix + lease;
+            true
+        }
+
+        fn checkpoint(&mut self, task_id: i64, worker: &str, lane: &str, progress: &str) -> bool {
+            if !self.held_by(task_id, worker, lane) {
+                return false;
+            }
+            self.checkpoints.insert(task_id, progress.to_string());
+            true
+        }
+
+        fn sync_up(&mut self) -> ReconcileReport {
+            let mut report = ReconcileReport::default();
+            let mut task_ids: Vec<i64> = self.claims.keys().copied().collect();
+            task_ids.sort_unstable();
+            for task_id in task_ids {
+                let (worker, _, _) = &self.claims[&task_id];
+                match self.cloud_claims.get(&task_id) {
+                    Some(cloud_worker) if cloud_worker != worker => {
+                        report.double_claims.push(DoubleClaim {
+                            task_id,
+                            local_worker: worker.clone(),
+                            cloud_worker: cloud_worker.clone(),
+                        });
+                    }
+                    _ => report.synced_claims.push(task_id),
+                }
+            }
+            self.cloud_claims.clear();
+            report
+        }
+    }
+
+    proptest! {
+        #[test]
+        fn memory_replica_matches_model_over_generated_sequences(
+            ops in proptest::prop::collection::vec(
+                (0..6u8, 1..4i64, 0..2usize, 0..2usize, 0..2i64, 1000..2000i64),
+                1..40,
+            ),
+        ) {
+            // Generated operation sequences with the model above as the
+            // oracle: single-writer, lease-expiry, lane isolation, and
+            // reconciliation (including expiry crossings and repeated
+            // syncs) are checked on every step, not just on examples.
+            // Op kinds: 0 claim, 1 heartbeat, 2 checkpoint, 3 sync_up,
+            // 4 inject a cloud claim, 5 move the clock.
+            let workers = ["worker-a", "worker-b"];
+            let lanes = ["lane-x", "lane-y"];
+            let leases = [60i64, 300];
+            let progresses = ["half done", "done"];
+            let mut replica = MemoryReplica::new(1_000);
+            let mut model = ModelReplica {
+                now_unix: 1_000,
+                ..Default::default()
+            };
+            for (kind, task_id, worker_idx, lane_idx, choice, now) in ops {
+                let worker = workers[worker_idx];
+                let lane = lanes[lane_idx];
+                match kind {
+                    0 => {
+                        let lease = leases[choice as usize];
+                        let got = replica.claim(task_id, worker, lane, lease);
+                        let want = model.claim(task_id, worker, lane, lease);
+                        prop_assert_eq!(got.is_ok(), want);
+                        if let Ok(claim) = got {
+                            prop_assert_eq!(claim, ReplicaClaim {
+                                task_id,
+                                worker: worker.to_string(),
+                                lane: lane.to_string(),
+                                lease_seconds: lease,
+                            });
+                        }
+                    }
+                    1 => {
+                        let lease = leases[choice as usize];
+                        let got = replica.heartbeat(task_id, worker, lane, lease);
+                        let want = model.heartbeat(task_id, worker, lane, lease);
+                        prop_assert_eq!(got.is_ok(), want);
+                    }
+                    2 => {
+                        let progress = progresses[choice as usize];
+                        let got = replica.checkpoint(task_id, worker, lane, progress);
+                        let want = model.checkpoint(task_id, worker, lane, progress);
+                        prop_assert_eq!(got.is_ok(), want);
+                    }
+                    3 => {
+                        let got = replica.sync_up().unwrap();
+                        let want = model.sync_up();
+                        prop_assert!(got.zero_lost());
+                        prop_assert_eq!(got, want);
+                    }
+                    4 => {
+                        replica.inject_cloud_claim(task_id, worker);
+                        model.cloud_claims.insert(task_id, worker.to_string());
+                    }
+                    _ => {
+                        replica.set_now(now);
+                        model.now_unix = now;
+                    }
+                }
+            }
+            // A final reconciliation must agree too, so divergent
+            // state cannot hide behind matching per-step outcomes.
+            let got = replica.sync_up().unwrap();
+            let want = model.sync_up();
+            prop_assert!(got.zero_lost());
+            prop_assert_eq!(got, want);
+        }
     }
 
     #[test]
