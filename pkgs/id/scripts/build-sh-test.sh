@@ -212,6 +212,39 @@ after="$(wc -l <"$tmp/cargo.log")"
 grep -q 'up to date' shared-uptodate.out ||
   fail "shared-target exact match did not report 'up to date'"
 
+# ── Shared target path ──────────────────────────────────────────────
+# fleet shell --build sets CARGO_TARGET_DIR to a broker lease. The helper
+# must inspect and mark the binary there rather than a stale local target/.
+shared="$tmp/shared-target"
+mkdir -p "$shared/debug" "$shared/release"
+rm -f target/debug/id
+before="$(wc -l <"$tmp/cargo.log")"
+CARGO_TARGET_DIR="$shared" bash ./build.sh lib debug >shared.out 2>shared.err || {
+  cat shared.err >&2
+  fail "shared-target lib debug exited non-zero"
+}
+after="$(wc -l <"$tmp/cargo.log")"
+[ "$after" -eq "$((before + 1))" ] ||
+  fail "shared target did not invoke cargo exactly once"
+[ -f "$shared/debug/id" ] ||
+  fail "shared target did not place the binary under CARGO_TARGET_DIR"
+[ "$(cat "$shared/.build-variant")" = "lib" ] ||
+  fail "shared target did not place the variant marker under CARGO_TARGET_DIR"
+[ ! -e target/debug/id ] ||
+  fail "shared target unexpectedly wrote a local target/debug/id"
+
+# Exact match on the leased target must still avoid recompiling.
+before="$after"
+CARGO_TARGET_DIR="$shared" bash ./build.sh lib debug >shared-uptodate.out 2>shared-uptodate.err || {
+  cat shared-uptodate.err >&2
+  fail "shared-target exact match exited non-zero"
+}
+after="$(wc -l <"$tmp/cargo.log")"
+[ "$before" = "$after" ] ||
+  fail "shared-target exact match invoked cargo"
+grep -q 'up to date' shared-uptodate.out ||
+  fail "shared-target exact match did not report 'up to date'"
+
 # ── Teardown: manifest/source rebuild path (#6883/#6869 fixed form) ─
 # Not part of the arg-contract case; keep the file ending stable.
 echo "build-sh tests passed"
