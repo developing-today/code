@@ -698,6 +698,7 @@ pub async fn open_world(
         None => Box::new(EmptyProgram),
         Some(spec) => match restore_program(
             &modules,
+            world_id,
             spec,
             &restored.replay,
             restored.core.execution_profile().resolve(runtime)?,
@@ -936,6 +937,7 @@ async fn open_replica_impl(
         None => Box::new(EmptyProgram),
         Some(spec) => match restore_program(
             &modules,
+            world_id,
             spec,
             &restored.replay,
             core.execution_profile().resolve(runtime)?,
@@ -1180,11 +1182,13 @@ impl WorldProgram for EmptyProgram {}
 /// start from the checkpoint snapshot when the journal has one.
 async fn restore_program(
     modules: &ModuleDir,
+    world_id: &str,
     spec: &crate::world::RestoredProgram,
     replay: &[crate::world::WorldEvent],
     runtime: crate::world_limits::RuntimeLimits,
 ) -> Result<(Box<dyn WorldProgram>, Vec<u8>)> {
     let modules = modules.clone();
+    let world_id = world_id.to_owned();
     let spec = spec.clone();
     let replay = replay.to_vec();
     tokio::task::spawn_blocking(move || {
@@ -1203,6 +1207,12 @@ async fn restore_program(
             {
                 let mut guest =
                     crate::sandbox::Sandbox::compile(&wasm, runtime.sandbox)?.instantiate(seed)?;
+                // Charge this world's burns to its world id, against
+                // the hub's configured burn budget (#1067).
+                guest.set_charge_key(world_id.clone());
+                guest.set_burn_budget(crate::guest_burn::GuestBurnBudget::shared_for(
+                    runtime.guest_burn_concurrency,
+                ));
                 if let Some(snapshot) = &spec.snapshot {
                     guest
                         .restore(snapshot.as_bytes())

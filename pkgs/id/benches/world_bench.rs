@@ -48,7 +48,13 @@
 //!   line attributing each phase's victim latency: the driver's wake
 //!   lateness versus the input acknowledgement wait, plus the victim
 //!   actor's own journal-append and command latency histograms, so a run
-//!   shows where the spinning phase's added latency sits.
+//!   shows where the spinning phase's added latency sits. Since the
+//!   admission slice (#1067 slice 2) the profile line also carries the
+//!   guest burn budget's counters (bound, in-flight high-water mark,
+//!   and the victim key's admissions and waits); setting
+//!   `ID_BENCH_GUEST_BURN_CONCURRENCY` runs the workload's guests on a
+//!   dedicated budget of that size instead of the shared default, for
+//!   sizing experiments.
 //! - `bot_battle` (design only, not runnable yet) — a deterministic, mixed-
 //!   strategy territory workload for N=2/4/8 users is specified in
 //!   `../../../doc/2026-11-06T00-50-21Z_design_dynamic_world_tick_cost/`; its current-
@@ -79,6 +85,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, ensure};
+use id::guest_burn::GuestBurnBudget;
 use id::sandbox::{Sandbox, SandboxLimits};
 use id::world::{
     CapabilityBounds, JoinCapability, JournalEntry, WorldCore, WorldEvent, WorldEventKind,
@@ -727,8 +734,41 @@ fn spawn_guest_world(
     })
 }
 
+/// The burn budget the fuel-spin worlds draw from when the
+/// operator sets `ID_BENCH_GUEST_BURN_CONCURRENCY` (a dedicated
+/// budget of that size, for sizing experiments); `None` leaves the
+/// guests on the process-wide shared default, the production
+/// shape. Read once per process.
+fn bench_burn_budget() -> Option<Arc<GuestBurnBudget>> {
+    static BUDGET: std::sync::OnceLock<Option<Arc<GuestBurnBudget>>> =
+        std::sync::OnceLock::new();
+    BUDGET
+        .get_or_init(|| {
+            std::env::var("ID_BENCH_GUEST_BURN_CONCURRENCY")
+                .ok()
+                .and_then(|value| value.parse::<usize>().ok())
+                .filter(|size| *size > 0)
+                .map(|size| Arc::new(GuestBurnBudget::new(size)))
+        })
+        .clone()
+}
+
+/// The budget the fuel-spin profile line reports: the dedicated
+/// bench budget when one is set, else the shared default the
+/// guests actually used.
+fn report_burn_budget() -> Arc<GuestBurnBudget> {
+    bench_burn_budget().unwrap_or_else(GuestBurnBudget::shared)
+}
+
 fn counter_program() -> Result<Box<dyn WorldProgram>> {
-    let guest = Sandbox::compile(COUNTER_WASM, SandboxLimits::default())?.instantiate(1)?;
+    let mut guest = Sandbox::compile(COUNTER_WASM, SandboxLimits::default())?.instantiate(1)?;
+    // The victim's burn charge accumulates under one key across the
+    // whole run (#1067 admission): it is the light key the fairness
+    // rule protects, so it must not re-key per call.
+    guest.set_charge_key("fuel-spin-victim".to_owned());
+    if let Some(budget) = bench_burn_budget() {
+        guest.set_burn_budget(budget);
+    }
     Ok(Box::new(guest))
 }
 
@@ -758,7 +798,15 @@ async fn spin_worlds(
 ) -> Result<u64> {
     let mut spins = 0u64;
     while !stop.load(Ordering::Relaxed) && Instant::now() < hard_deadline {
-        let guest = sandbox.instantiate(spins)?;
+        let mut guest = sandbox.instantiate(spins)?;
+        // Charge every spin of this worker to the worker's key, not
+        // to a fresh per-instance key: the spinner's attained burn
+        // must persist across its re-instantiations, or the fairness
+        // rule cannot see that this key just burned (#1067).
+        guest.set_charge_key(format!("fuel-spin-{worker}"));
+        if let Some(budget) = bench_burn_budget() {
+            guest.set_burn_budget(budget);
+        }
         let world = spawn_guest_world(
             &format!("fuel-spin-{worker}-{spins}"),
             "bench-spinner",
@@ -967,8 +1015,12 @@ async fn bench_fuel_spin_isolation(worker_threads: usize, quick: bool) -> Result
         &metrics_after_spinning.command_latency,
         &metrics_after_calm.command_latency,
     );
+    // The burn budget's counters over the whole run (#1067 slice 2):
+    // whether admission engaged at all, and whether the victim's
+    // calls ever had to wait for a burn permit.
+    let burn_snapshot = report_burn_budget().snapshot();
     println!(
-        "profile fuel_spin_isolation calm_wake_p99_ms={:.3} calm_input_ack_p99_ms={:.3} spinning_wake_p99_ms={:.3} spinning_input_ack_p99_ms={:.3} calm_journal_appends={} calm_journal_append_mean_us={} calm_journal_append_p99_us={} spinning_journal_appends={} spinning_journal_append_mean_us={} spinning_journal_append_p99_us={} calm_command_mean_us={} calm_command_p99_us={} spinning_command_mean_us={} spinning_command_p99_us={} victim_queue_depth_max={} victim_checkpoints={}",
+        "profile fuel_spin_isolation calm_wake_p99_ms={:.3} calm_input_ack_p99_ms={:.3} spinning_wake_p99_ms={:.3} spinning_input_ack_p99_ms={:.3} calm_journal_appends={} calm_journal_append_mean_us={} calm_journal_append_p99_us={} spinning_journal_appends={} spinning_journal_append_mean_us={} spinning_journal_append_p99_us={} calm_command_mean_us={} calm_command_p99_us={} spinning_command_mean_us={} spinning_command_p99_us={} victim_queue_depth_max={} victim_checkpoints={} guest_burn_max_concurrent={} guest_burn_in_flight_max={} victim_burn_admitted={} victim_burn_waits={}",
         percentile(&calm_wake, 0.99),
         percentile(&calm_ack, 0.99),
         percentile(&spinning_wake, 0.99),
@@ -987,6 +1039,16 @@ async fn bench_fuel_spin_isolation(worker_threads: usize, quick: bool) -> Result
         metrics_after_spinning
             .checkpoints_total
             .saturating_sub(metrics_start.checkpoints_total),
+        burn_snapshot.max_concurrent,
+        burn_snapshot.in_flight_max,
+        burn_snapshot
+            .keys
+            .get("fuel-spin-victim")
+            .map_or(0, |charge| charge.admitted),
+        burn_snapshot
+            .keys
+            .get("fuel-spin-victim")
+            .map_or(0, |charge| charge.waits),
     );
     let _ = victim.handle.shutdown().await;
     Ok(())
