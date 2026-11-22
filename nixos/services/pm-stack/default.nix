@@ -248,6 +248,10 @@ in
           };
           Service = {
             Type = "simple";
+            # The management plane has to answer while the fleet is
+            # compiling (load average 75 on 16 cores, 2026-11-22): under
+            # contention this unit gets nine times a default unit's share.
+            CPUWeight = 900;
             # Every state file is env-pinned below or in the .env
             # file; the state dir as cwd makes any unpinned cwd
             # default in the config land in state too, never in a
@@ -329,6 +333,10 @@ in
           };
           Service = {
             Type = "simple";
+            # The management plane has to answer while the fleet is
+            # compiling (load average 75 on 16 cores, 2026-11-22): under
+            # contention this unit gets nine times a default unit's share.
+            CPUWeight = 900;
             # The app has no cwd-relative access of its own (its
             # paths come from the env files below); the deployment
             # dir stays as cwd because that is where its rendered
@@ -513,6 +521,10 @@ in
           };
           Service = {
             Type = "simple";
+            # The management plane has to answer while the fleet is
+            # compiling (load average 75 on 16 cores, 2026-11-22): under
+            # contention this unit gets nine times a default unit's share.
+            CPUWeight = 900;
             WorkingDirectory = "${stackDir}";
             # tunnel.token is rendered by the pm-kaneo deploy flow
             # (deploy.sh) from the same SOPS secret as the old

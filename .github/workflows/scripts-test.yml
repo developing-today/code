@@ -58,6 +58,11 @@ jobs:
         run: |
           test -f scripts/fleet/flow-report/test_flow_report.py
           python3 -I -m unittest discover -s scripts/fleet/flow-report -p 'test_flow_report.py' -v
+      - name: Run graph encoding bake-off report check (#10219)
+        run: |
+          test -f doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-a-graph/test_validate_real_encoding_bakeoff.py
+          python3 -I -m unittest discover -s doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-a-graph -p 'test_validate_real_encoding_bakeoff.py' -v
+          python3 -I doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-a-graph/validate_real_encoding_bakeoff.py --check-committed
       - name: Run queue transport alert contract tests (#6369)
         run: |
           test -f scripts/fleet/queue-transport-alert/test_check_transport.py

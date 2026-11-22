@@ -26,6 +26,7 @@
 //! of FDR-0012 keep an issue out.
 
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 
 use crate::shortlist::{self, Entry, rank_of};
 use crate::{
@@ -340,6 +341,47 @@ fn tried(list: &mut Vec<Value>, rung: &str, result: &str, why: impl Into<String>
     list.push(json!({"rung": rung, "result": result, "why": why.into()}));
 }
 
+/// The queue validates lane IDs as a known family plus a lowercase
+/// alphabetic suffix. Preserve a full lane ID supplied as the agent
+/// name; otherwise give a standalone agent an unfiltered `any-*` lane.
+pub(super) fn default_lane(agent: &str) -> String {
+    let families = [
+        "code",
+        "any",
+        "not-code",
+        "opencode",
+        "openchamber",
+        "nix",
+        "darwin-nix",
+    ];
+    let is_lane = agent.rsplit_once('-').is_some_and(|(family, suffix)| {
+        families.contains(&family)
+            && !suffix.is_empty()
+            && suffix.bytes().all(|b| b.is_ascii_lowercase())
+    });
+    if is_lane {
+        return agent.to_string();
+    }
+    // Lane rows are bound to their first worker, so two worker names
+    // that normalize to the same slug must still get different lanes.
+    // Keep 128 digest bits encoded as letters (two a-p letters per byte).
+    let digest = Sha256::digest(agent.as_bytes());
+    let digest_suffix: String = digest[..16]
+        .iter()
+        .flat_map(|byte| [b'a' + (byte >> 4), b'a' + (byte & 0x0f)])
+        .map(char::from)
+        .collect();
+    let slug: String = agent
+        .chars()
+        .filter(|c| c.is_ascii_lowercase())
+        .take(20)
+        .collect();
+    format!(
+        "any-{}{digest_suffix}",
+        if slug.is_empty() { "agent" } else { &slug }
+    )
+}
+
 /// How many listed entries in a row may turn out stale in one run
 /// before the shortlist rung gives way to the priority rung.
 const MAX_STALE_ENTRIES: usize = 5;
@@ -384,7 +426,7 @@ pub fn next(world: &dyn World, args: &[String]) -> R<(Value, i32)> {
     let agent = check_name("--agent", &agent)?;
     let lane = match a.last("--lane") {
         Some(l) => check_name("--lane", &l)?,
-        None => agent.clone(),
+        None => default_lane(&agent),
     };
     let repo = check_repo(&a.last("--repo").unwrap_or_else(|| DEFAULT_REPO.to_string()))?;
     let low_water = a
@@ -399,7 +441,7 @@ pub fn next(world: &dyn World, args: &[String]) -> R<(Value, i32)> {
             carried.push_str(&format!(" {flag} {}", crate::shell::sh_quote(&value)));
         }
     }
-    let again = format!("fleet agent next --agent {agent}{carried}");
+    let again = format!("fleet agent next --agent {agent} --lane {lane}{carried}");
     let mut log: Vec<Value> = Vec::new();
     let answer = |rung: &str, task: Value, then: Vec<String>, log: Vec<Value>| {
         (

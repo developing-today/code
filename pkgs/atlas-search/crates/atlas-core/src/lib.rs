@@ -43,6 +43,7 @@ pub mod github_comments;
 pub mod join;
 pub mod local;
 pub mod manifest;
+pub mod owner_inventory;
 pub mod search;
 pub mod shards;
 pub mod shingles;
@@ -97,6 +98,9 @@ pub use local::LocalBackend;
 pub use manifest::{
     LoadedManifest, Manifest, ManifestRow, ManifestSource, builtin_manifest, load_manifest,
     parse_manifest_rows,
+};
+pub use owner_inventory::{
+    INVENTORY_FORMAT, OwnerInventory, OwnerInventoryFinding, PatternClass, SECRET_REFERENCE_ENV,
 };
 pub use search::{
     BackendBranchExecutor, BranchPoolExecutor, SearchMode, SearchOptions, TraceJob, run_get_chunk,
