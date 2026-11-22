@@ -764,6 +764,18 @@
       "status": "mapped"
     },
     {
+      "id": "pm-stack.console",
+      "paths": ["pm-stack/console/test/*.test.ts"],
+      "invocation": "cd pm-stack/console && bun test",
+      "venue": {
+        "workflow": ".github/workflows/pm-stack-tests.yml",
+        "job_step": "Test console",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped"
+    },
+    {
       "id": "pm-stack.dispatch",
       "paths": ["pm-stack/dispatch/test/*.test.ts"],
       "invocation": "cd pm-stack/dispatch && bun test",
