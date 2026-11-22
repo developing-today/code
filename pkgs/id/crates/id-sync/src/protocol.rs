@@ -2806,6 +2806,7 @@ mod publication_control_tests {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod find_storage_error_tests {
     use super::MetaProtocol;
 
