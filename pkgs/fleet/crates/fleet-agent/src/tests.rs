@@ -1037,8 +1037,44 @@ fn a_build_takes_a_lock_slot_and_an_hour() {
             "3600",
             "--shell",
             "--",
-            "~/tools/fleet-build-lock sh -c 'cargo test -p id-core'",
+            "~/tools/fleet-build-lock cargo test -p id-core",
         ])
+    );
+}
+
+#[test]
+fn a_single_string_cargo_command_uses_the_shared_target_lane() {
+    let plan = shell::plan(
+        Target::Laptop,
+        "test".into(),
+        &words(&["cargo test -p 'id core'"]),
+        &Options {
+            build: true,
+            ..opts()
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        plan.args.last().unwrap(),
+        "~/tools/fleet-build-lock cargo test -p 'id core'"
+    );
+}
+
+#[test]
+fn a_build_with_environment_assignment_keeps_shell_semantics() {
+    let plan = shell::plan(
+        Target::Laptop,
+        "test".into(),
+        &words(&["RUST_LOG=debug cargo test"]),
+        &Options {
+            build: true,
+            ..opts()
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        plan.args.last().unwrap(),
+        "~/tools/fleet-build-lock sh -c 'RUST_LOG=debug cargo test'"
     );
 }
 
@@ -1122,7 +1158,39 @@ fn a_local_build_runs_every_part_of_the_command_under_the_lock() {
     );
     assert_eq!(String::from_utf8_lossy(&out.stdout), "first\nsecond\n");
     let log = std::fs::read_to_string(home.join("lock.log")).unwrap();
-    assert_eq!(log, "sh\n-c\ncd 'work dir' && echo first && echo second\n");
+    assert_eq!(log, "sh\n-c\necho first && echo second\n");
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[test]
+fn a_local_direct_build_enters_the_lock_after_selecting_its_workspace() {
+    let home = home_with_a_recording_lock();
+    std::fs::create_dir_all(home.join("work dir")).unwrap();
+    let plan = shell::plan(
+        Target::Local,
+        "test".into(),
+        &words(&["pwd"]),
+        &Options {
+            cwd: Some("work dir".into()),
+            build: true,
+            ..opts()
+        },
+    )
+    .unwrap();
+    let out = run_local_plan(&home, &plan);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        format!("{}\n", home.join("work dir").display())
+    );
+    assert_eq!(
+        std::fs::read_to_string(home.join("lock.log")).unwrap(),
+        "pwd\n"
+    );
     let _ = std::fs::remove_dir_all(&home);
 }
 
@@ -1342,10 +1410,7 @@ fn shell_runs_the_plan_or_prints_it() {
     match printed {
         shell::Done::Printed(plan) => {
             assert_eq!(plan["target"], "laptop");
-            assert_eq!(
-                plan["args"][6],
-                "~/tools/fleet-build-lock sh -c 'cargo check'"
-            );
+            assert_eq!(plan["args"][6], "~/tools/fleet-build-lock cargo check");
         }
         shell::Done::Ran(_) => panic!("--print must not run"),
     }

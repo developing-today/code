@@ -83,11 +83,18 @@ let
   # standalone artifact until the proxy step's shim dir (design
   # note §4) supersedes the hand-maintained symlinks.
   fleetToolchain = (pkgs.extend (import inputs.id-rust-overlay)).rust-bin.fromRustupToolchainFile ../../pkgs/fleet/rust-toolchain.toml;
+  # Crane's dependency derivation keeps Fleet's registry compile lane
+  # reusable across source changes, using the same pinned Rust toolchain.
+  fleetCraneLib = (inputs.crane.mkLib pkgs).overrideToolchain fleetToolchain;
   fleetPkgs = pkgs.callPackage ../../pkgs/fleet {
     rustPlatform = pkgs.makeRustPlatform {
       cargo = fleetToolchain;
       rustc = fleetToolchain;
     };
+    craneLib = fleetCraneLib;
+    # The fleet Rust workspace has a dedicated CI test workflow. Avoid
+    # compiling its test binaries as part of every system activation.
+    doCheck = false;
     sourceRev = inputs.self.rev or "dirty";
   };
   # Upstream prebuilt release binaries for tools where nixpkgs trails upstream.
