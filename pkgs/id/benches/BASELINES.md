@@ -371,6 +371,119 @@ recorded rather than reported as acceptance. The matching measurement
 is appended to `baseline.txt`; the existing baselines above are
 unchanged.
 
+## Fuel-spin isolation profile (#1067, F12.10 slice 1)
+
+The measurement above recorded the gap but not where the spinning
+phase's added latency sits. The workload now attributes each phase
+(the #1067 slice-1 instrumentation): the victim driver records the
+same sample split as `many_worlds` — deadline-to-acknowledgement,
+driver wake lateness, input acknowledgement wait — and the bench
+differences the victim actor's own journal-append and command
+latency histograms across each phase from its metrics snapshots.
+Producing command (laptop, reference machine; the bench binary was
+built through `~/tools/fleet-build-lock cargo bench --bench
+world_bench --no-run` at main `63f9558b9` plus the instrumentation):
+
+```text
+./target/release/deps/world_bench-<hash> --only fuel_spin_isolation
+```
+
+Fresh gap measurement at unmodified main `63f9558b9` first (same
+command, laptop under heavy shared fleet load, load average ~17–30):
+victim p99 calm 2.239 ms, spinning 38.168 ms, ratio 17.043,
+`target_met=false`, 1,473 spins — the gap is load-sensitive and was
+wider under this load than in the 2026-11-10 reference run (2.517);
+no profile line exists at base. Two attributed runs with the
+instrumentation (load averages ~20–24 and ~16–23):
+
+```text
+bench fuel_spin_isolation unit=ms_per_command median=2.992 min=0.222 reps=1 victim_p99_ms_calm=1.894 victim_p99_ms_spinning=21.924 ratio=11.575 target_ratio=1.10 target_met=false calm_samples=300 spinning_samples=300 spins=1059 spinners=15 phase_ms=3000 commands_per_second=100 spin_fuel=20000000 calm_elapsed_secs=3.041 spinning_elapsed_secs=3.139
+profile fuel_spin_isolation calm_wake_p99_ms=1.795 calm_input_ack_p99_ms=0.201 spinning_wake_p99_ms=18.929 spinning_input_ack_p99_ms=5.086 calm_journal_appends=0 calm_journal_append_mean_us=0 calm_journal_append_p99_us=0 spinning_journal_appends=0 spinning_journal_append_mean_us=0 spinning_journal_append_p99_us=0 calm_command_mean_us=55 calm_command_p99_us=100 spinning_command_mean_us=130 spinning_command_p99_us=2000 victim_queue_depth_max=0 victim_checkpoints=0
+bench fuel_spin_isolation unit=ms_per_command median=2.470 min=0.273 reps=1 victim_p99_ms_calm=1.904 victim_p99_ms_spinning=13.114 ratio=6.888 target_ratio=1.10 target_met=false calm_samples=300 spinning_samples=300 spins=1822 spinners=15 phase_ms=3000 commands_per_second=100 spin_fuel=20000000 calm_elapsed_secs=3.042 spinning_elapsed_secs=3.116
+profile fuel_spin_isolation calm_wake_p99_ms=1.822 calm_input_ack_p99_ms=0.179 spinning_wake_p99_ms=13.092 spinning_input_ack_p99_ms=4.007 calm_journal_appends=0 calm_journal_append_mean_us=0 calm_journal_append_p99_us=0 spinning_journal_appends=0 spinning_journal_append_mean_us=0 spinning_journal_append_p99_us=0 calm_command_mean_us=48 calm_command_p99_us=500 spinning_command_mean_us=64 spinning_command_p99_us=500 victim_queue_depth_max=0 victim_checkpoints=0
+```
+
+Where the spinning phase's victim p99 goes (component percentiles
+are diagnostic and do not add to the combined percentile, as with
+`many_worlds`):
+
+1. **Driver wake lateness — essentially the whole tail.** Spinning
+   wake p99 was 18.929 ms of a 21.924 ms end-to-end p99 in run 1
+   (~86%) and 13.092 ms of 13.114 ms in run 2 (~100%): the task
+   submitting the victim's inputs cannot get a runtime worker to
+   make the call. The 15 spinners run synchronous, fuel-limited
+   guest calls on the shared multi-thread runtime, so every worker
+   is occupied for the length of each burn.
+2. **Input acknowledgement wait — second, same cause.** Spinning
+   ack p99 rose from ~0.2 ms calm to 5.086 / 4.007 ms: the victim's
+   actor task is itself a task on the same starved runtime, so it
+   is polled late even though its work is nearly free.
+3. **The victim's own service — negligible.** Its actor command
+   latency averaged 55 µs calm vs 130 / 64 µs spinning (bucketed
+   p99 at most 2,000 µs), its queue depth never exceeded 0, and it
+   recorded no journal appends in either phase (the bench victim
+   runs without a journal store), so none of the gap is journal or
+   storage service.
+
+This is the #557 disease in a second form: there, actor tasks
+*parked* workers on a blocking journal wait (fixed by
+`block_in_place`, #12499); here, guest execution *burns* workers
+with CPU-bound synchronous calls, so the remedy is placement, not
+unparking — guest calls must run where they cannot starve the
+runtime (dedicated execution threads or a bounded blocking pool),
+and bounding how many guests burn concurrently is the first piece
+of the fair scheduler itself. Next slice, in the form the profile
+supports: after that PR, the same command's profile line shows the
+spinning wake p99 within ~2× of the calm wake p99 at the same load,
+with the `many_worlds` numbers re-measured for regressions. The
+first run's bench and profile lines are appended to `baseline.txt`;
+the 2026-11-10 reference line is unchanged (the ratios above were
+taken under heavier load and are not comparable to it).
+
+### Post-#12571 check: the placement fix measured on the reference machine
+
+While this slice was in flight, the placement fix the profile names
+landed separately as #12571 (guest calls run under
+`tokio::task::block_in_place`, `run_guest_call` in `sandbox.rs`),
+merged explicitly "awaiting reference-machine bench", and the
+CI-runner section below records that the 4-vCPU runner venue cannot
+decide it. This branch merged main forward, so the same instrumented
+bench now measures the fix on the reference machine. Two
+back-to-back pre/post pairs at light ambient load (load average
+~3–10 and falling, same command, full profile; pre = this
+instrumentation at `63f9558b9`, post = the merged tree):
+
+```text
+bench fuel_spin_isolation unit=ms_per_command median=1.952 min=0.177 reps=1 victim_p99_ms_calm=1.504 victim_p99_ms_spinning=9.100 ratio=6.049 target_ratio=1.10 target_met=false calm_samples=300 spinning_samples=300 spins=2227 spinners=15 phase_ms=3000 commands_per_second=100 spin_fuel=20000000 calm_elapsed_secs=3.041 spinning_elapsed_secs=3.109
+profile fuel_spin_isolation calm_wake_p99_ms=1.396 calm_input_ack_p99_ms=0.151 spinning_wake_p99_ms=6.546 spinning_input_ack_p99_ms=3.963 calm_journal_appends=0 calm_journal_append_mean_us=0 calm_journal_append_p99_us=0 spinning_journal_appends=0 spinning_journal_append_mean_us=0 spinning_journal_append_p99_us=0 calm_command_mean_us=39 calm_command_p99_us=100 spinning_command_mean_us=67 spinning_command_p99_us=2000 victim_queue_depth_max=0 victim_checkpoints=0
+bench fuel_spin_isolation unit=ms_per_command median=2.771 min=0.482 reps=1 victim_p99_ms_calm=2.157 victim_p99_ms_spinning=14.725 ratio=6.826 target_ratio=1.10 target_met=false calm_samples=300 spinning_samples=300 spins=2222 spinners=15 phase_ms=3000 commands_per_second=100 spin_fuel=20000000 calm_elapsed_secs=3.041 spinning_elapsed_secs=3.112
+profile fuel_spin_isolation calm_wake_p99_ms=2.065 calm_input_ack_p99_ms=0.188 spinning_wake_p99_ms=5.931 spinning_input_ack_p99_ms=12.983 calm_journal_appends=0 calm_journal_append_mean_us=0 calm_journal_append_p99_us=0 spinning_journal_appends=0 spinning_journal_append_mean_us=0 spinning_journal_append_p99_us=0 calm_command_mean_us=53 calm_command_p99_us=500 spinning_command_mean_us=1651 spinning_command_p99_us=50000 victim_queue_depth_max=0 victim_checkpoints=0
+bench fuel_spin_isolation unit=ms_per_command median=2.394 min=0.429 reps=1 victim_p99_ms_calm=1.695 victim_p99_ms_spinning=11.377 ratio=6.711 target_ratio=1.10 target_met=false calm_samples=300 spinning_samples=300 spins=1315 spinners=15 phase_ms=3000 commands_per_second=100 spin_fuel=20000000 calm_elapsed_secs=3.041 spinning_elapsed_secs=3.119
+profile fuel_spin_isolation calm_wake_p99_ms=1.587 calm_input_ack_p99_ms=0.357 spinning_wake_p99_ms=9.292 spinning_input_ack_p99_ms=6.456 calm_journal_appends=0 calm_journal_append_mean_us=0 calm_journal_append_p99_us=0 spinning_journal_appends=0 spinning_journal_append_mean_us=0 spinning_journal_append_p99_us=0 calm_command_mean_us=53 calm_command_p99_us=100 spinning_command_mean_us=103 spinning_command_p99_us=2000 victim_queue_depth_max=0 victim_checkpoints=0
+bench fuel_spin_isolation unit=ms_per_command median=4.077 min=1.073 reps=1 victim_p99_ms_calm=3.913 victim_p99_ms_spinning=23.811 ratio=6.085 target_ratio=1.10 target_met=false calm_samples=300 spinning_samples=300 spins=2132 spinners=15 phase_ms=3000 commands_per_second=100 spin_fuel=20000000 calm_elapsed_secs=3.041 spinning_elapsed_secs=3.108
+profile fuel_spin_isolation calm_wake_p99_ms=2.356 calm_input_ack_p99_ms=1.756 spinning_wake_p99_ms=14.086 spinning_input_ack_p99_ms=17.242 calm_journal_appends=0 calm_journal_append_mean_us=0 calm_journal_append_p99_us=0 spinning_journal_appends=0 spinning_journal_append_mean_us=0 spinning_journal_append_p99_us=0 calm_command_mean_us=118 calm_command_p99_us=2000 spinning_command_mean_us=2191 spinning_command_p99_us=50000 victim_queue_depth_max=0 victim_checkpoints=0
+```
+
+Verdict: **the placement fix does not move the ratio on the
+reference machine, and it taxes the victim's own calls.** Ratios
+are indistinguishable (pre 6.049 / 6.711, post 6.826 / 6.085), the
+wake tail persists both ways, and the ack p99 worsens post-fix
+(3.963 / 6.456 → 12.983 / 17.242 ms) because the victim's own guest
+calls now pay the blocking-context round trip under core
+saturation: victim command mean in the spinning phase rose from
+67 / 103 µs pre-fix to 1,651 / 2,191 µs post-fix (~20×), its
+bucketed p99 from 2,000 to 50,000 µs, in both pairs. Placement
+cannot create CPU — 15 burns still saturate 16 cores, now from
+blocking threads — and per-call `block_in_place` charges every
+world, victim included, for the migration. The lever the profile
+now supports is admission: bound how many guest calls burn
+concurrently (with the bound charged per world/account, which is
+also the quota hook), so cores remain for everyone else. Next
+slice in that form: after that PR, the same command's profile line
+shows the spinning ratio below 2 at comparable load, with the
+victim's spinning command mean back at its pre-#12571 level. The
+first pair's lines are appended to `baseline.txt`.
+
 ## Fuel-spin isolation on the CI runner — noise-dominated, no verdict (2026-11-22, #1067)
 
 Machine class: `ci-runner` (GitHub-hosted ubuntu-24.04 via the
