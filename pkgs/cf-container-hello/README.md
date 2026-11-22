@@ -63,19 +63,20 @@ npm test   # python3 -m unittest discover -s test -p "test_*.py"
 This package keeps its standalone `cf-container-hello` Worker identity. The
 `HelloContainer` and `HelloLite` bindings use Cloudflare's official
 `hello-world:v1` image, already present in the Cloudflare registry. There is
-no locally built image to upload. `npm run publish-image` records that image
-reference without changing the registry. `npm run publish-image` uses the
-pinned Cloudflare `cf@1.0.0-beta.20 workers versions create` command to upload
-a Worker version without activating it. Then activate that specific version
-with `npm run deploy -- activate --version <id>`. The manual workflow exposes
-these as separate operations and accepts the uploaded version ID for activate.
+no locally built image to upload. `npm run publish-image` uses the pinned
+Cloudflare `cf@1.0.0-beta.20 workers versions create` command to upload a
+Worker version tagged with the commit SHA, without activating it. Then activate
+that specific version with `npm run deploy -- activate --version <id>`. The
+manual workflow verifies that version's tag matches the current main commit,
+then reads back deployments to confirm the version serves at 100%.
 Use `--dry-run` on publish-image to validate locally without an upload;
 activation dry-run makes no API call.
 
 The workflow's manual `operation` input offers `test`, `publish-image`, and
 `activate` as separate choices. Both upload and activation use the pinned cf
-CLI and the `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` repository
-secrets. The uploaded image reference remains the official hello-world image;
+CLI and the `CF_CONTAINER_HELLO_API_TOKEN` secret in the protected
+`cf-container-hello` environment. The uploaded image reference remains the
+official hello-world image;
 this flow versions the Worker bundle, it does not publish an OCI image.
 
 `test/test_probe_hardening.py` pins the #955 regression: the production

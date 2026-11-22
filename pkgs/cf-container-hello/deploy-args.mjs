@@ -20,6 +20,9 @@ export function parseArgs(argv) {
     if (arg === "--version" && command === "activate" && version === null) {
       const value = args[i + 1];
       if (!value || value.startsWith("-")) throw new Error(`--version needs an id\n${USAGE}`);
+      if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value)) {
+        throw new Error(`--version must be a UUID\n${USAGE}`);
+      }
       version = value;
       i += 1;
       continue;
