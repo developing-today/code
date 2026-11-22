@@ -130,6 +130,7 @@ fn fixture_db(tag: &str) -> PathBuf {
     let labels = [
         ("sA", "chat", "[\"nixos\"]", "[\"atlas\"]", "personal", "high"),
         ("sB", "code", "[\"rust\"]", "[\"atlas\"]", "shareable", "high"),
+        ("sD", "chat", "[\"nixos\"]", "[\"atlas\"]", "local-only", "high"),
         ("sE", "chat", "[\"personal-life\"]", "[]", "personal", "high"),
         ("sF", "chat", "[]", "[\"atlas\"]", "bogus-value", "high"),
         ("sG", "chat", "[]", "[\"atlas\"]", "personal", "low"),
@@ -440,7 +441,7 @@ fn schema_v2_with_rename() -> SchemaDoc {
         "version": 2,
         "sections": {
             "sensitivity_values": {
-                "values": ["shareable", "personal", "local-only", "secret-bearing"],
+                "values": ["shareable", "personal", "secret-bearing"],
                 "order": "shareable < personal < local-only < secret-bearing",
                 "missing_or_invalid": "secret-bearing",
                 "renames": {"local-only": "personal"}
