@@ -1131,6 +1131,7 @@ fn a_background_cargo_build_holds_its_target_lease_until_exit() {
     let home = home_with_a_recording_lock();
     let tools = home.join("tools");
     let workspace = home.join("workspace");
+    std::fs::create_dir_all(&tools).unwrap();
     std::fs::create_dir_all(&workspace).unwrap();
     std::fs::write(workspace.join("Cargo.toml"), "[workspace]\nmembers = []\n").unwrap();
 
