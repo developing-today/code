@@ -4,7 +4,10 @@
 // so a thread survives feed republishes. Storage is one JSON file in
 // the aggregator's data directory (PM_AGG_COMMENTS_FILE); writes are
 // atomic (temp file + rename) and the in-memory copy is authoritative
-// for the process.
+// for the process. Under PM_AGG_STORE_BACKEND=turso the store instead
+// reads/writes public.shared_comments through a CommentsRemote
+// (#1744 Move 1) and the file is never touched — exactly one backend
+// is active, as with the #6815 stores.
 //
 // Trust model: comment writes bind a privileged Drew/Muse author to the
 // operator token `pm-aggregator.comments-operator-token`. Until that
@@ -44,6 +47,19 @@ import { isNonEmptyString, isRecord, parseIsoDate } from "./validate.ts";
 export interface CommentsFile {
   version: 1;
   comments: DashComment[];
+}
+
+/** #1744 (Move 1, step 2): the remote backing store for dashboard
+ *  comments, implemented over public.shared_comments by
+ *  createTursoCommentsRemote in remote-stores.ts. Mirrors the
+ *  ActionsRemote contract from #6815: the store keeps the in-memory
+ *  copy authoritative for the process and persists the full record
+ *  set; state transitions ride the same rows, history is never
+ *  deleted. */
+export interface CommentsRemote {
+  loadAll(): Promise<DashComment[]>;
+  /** Upsert the store's full current record set. */
+  saveAll(comments: readonly DashComment[]): Promise<void>;
 }
 
 // Result URLs are rendered as link hrefs on the dashboard (#950):
@@ -231,6 +247,10 @@ export class CommentsStore {
   constructor(
     private readonly file: string,
     private readonly archive: StoreArchive = archiveStoreBytes,
+    /** #1744: when set, the store uses this backend instead of the
+     *  file. The file is then never read or written (no dual write),
+     *  exactly as with the #6815 stores. */
+    private readonly remote?: CommentsRemote,
   ) {}
 
   // The load is memoized as a single promise (#1509): the old
@@ -243,6 +263,11 @@ export class CommentsStore {
   }
 
   private async doLoad(): Promise<void> {
+    if (this.remote) {
+      this.comments = await this.remote.loadAll();
+      this.fileExtras = {};
+      return;
+    }
     // #1452: a missing file is the only silent empty start ("no store
     // yet"). An unparseable or wrongly-shaped file is NOT an empty
     // store: it is the append-only audit history, so quarantine the
@@ -366,6 +391,10 @@ export class CommentsStore {
   // does not poison the chain for later writes.
   private persist(): Promise<void> {
     const run = this.writeChain.then(async () => {
+      if (this.remote) {
+        await this.remote.saveAll([...this.comments]);
+        return;
+      }
       const data = { ...this.fileExtras, version: 1 as const, comments: this.comments };
       await mkdir(dirname(this.file), { recursive: true });
       const tmp = `${this.file}.tmp-${process.pid}-${++this.writeSeq}`;

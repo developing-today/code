@@ -600,7 +600,7 @@ of silently showing canned data. `bun run dev` sets the switch for you.
 | `PM_AGG_ACTIONS_FILE`      | `./actions.json`                                             | Dashboard action store (#1152/#1154/#1156) — aggregator-local; created on first action                                                                                                                 |
 | `PM_AGG_REGISTRY_FILE`     | `./registry.json`                                            | Durable session identity registry (#906) — merged records persist across restarts                                                                                                                      |
 | `PM_AGG_ACTIVITY_FILE`     | `~/.local/state/pm-aggregator/activity-ingestion.json`       | Activity-ingestion store (#3321) — per-source checkpoints, dedupe seen sets, source status, and gap records for watchdog/Kaneo/GitHub writers                                                          |
-| `PM_AGG_STORE_BACKEND`     | `file`                                                       | Backing store for the four #6815 stores: `file` (local JSON, dev/test/rollback) or `turso` (canonical in Turso). Any other value refuses to start; see "Store backend" below                           |
+| `PM_AGG_STORE_BACKEND`     | `file`                                                       | Backing store for the #6815 stores plus dashboard comments (#1744): `file` (local JSON, dev/test/rollback) or `turso` (canonical in Turso). Any other value refuses to start; see "Store backend" below |
 | `PM_AGG_STORE_WRITER`      | `pm-aggregator.service`                                      | Writer identity recorded on remote rows (`agg_store_documents.writer`), so the single writer of a store is visible in the data                                                                         |
 | `BWS_BIN`                  | first of `/run/current-system/sw/bin/bws`, `~/tools/bin/bws` | Bitwarden Secrets Manager binary used to resolve the Turso store token by NAME only                                                                                                                    |
 | `BWS_ACCESS_TOKEN_FILE`    | `~/.config/bws/access-token`                                 | Machine-account access token file for `bws`; never logged, never rendered into the archive                                                                                                             |
@@ -653,7 +653,8 @@ projector never received and pre-hot-list history remain unsupported.
 ### Store backend: Turso (#6815)
 
 Four stores that used to live only as laptop-local JSON under the
-aggregator's state dir are canonical in Turso. The
+aggregator's state dir are canonical in Turso. Dashboard comments
+joined the same switch under #1744 (Move 1, step 2). The
 `PM_AGG_STORE_BACKEND` switch picks exactly one active backend:
 
 | Store              | `file` backend                                           | `turso` backend                                |
@@ -662,6 +663,7 @@ aggregator's state dir are canonical in Turso. The
 | Activity ingestion | `activity-ingestion.json` (`PM_AGG_ACTIVITY_FILE`)       | `agg_activity_ingestion` + `agg_activity_gaps` |
 | Usage snapshots    | `snapshots/usage-YYYY-MM.jsonl` (`PM_AGG_SNAPSHOTS_DIR`) | `agg_usage_snapshots`                          |
 | AA last-good       | `aa-last-good.json` (collector)                          | `agg_store_documents` key `aa-last-good`       |
+| Dashboard comments | `comments.json` (`PM_AGG_COMMENTS_FILE`)                 | `shared_comments` (contract `20261122_0001`)   |
 
 Rules the implementation holds to:
 
@@ -677,13 +679,14 @@ Rules the implementation holds to:
   (`PM_AGG_STORE_WRITER`). Rows carry that identity.
 - **Local files are a cache.** With `turso` active, any remaining
   local copy (`actions.json`, `activity-ingestion.json`,
-  `snapshots/`, `aa-last-good.json`) is a rebuildable cache, not the
+  `snapshots/`, `aa-last-good.json`, `comments.json`) is a rebuildable cache, not the
   source of truth: a fresh state dir boots empty and reconstructs from
   Turso (covered by `test/store-remote-backends.test.ts`).
 - **Schema is consumed, not redesigned.** `agg_actions` follows the
   #3142 contract in migration `20261105_0001`; the additive
   `20261116_0001_aggregator_remote_stores` adds the activity, snapshot
-  and document tables. Those PostgreSQL files are the contract; the
+  and document tables, and `20261122_0001_shared_comments` (#1744) adds
+  the comments table. Those PostgreSQL files are the contract; the
   live Turso tables mirror them, and `src/turso-stores.ts`
   (`storeStatement`) translates the statements in
   `src/remote-stores.ts` to SQLite.
