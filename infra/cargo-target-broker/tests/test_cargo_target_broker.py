@@ -117,7 +117,9 @@ class EvictionTest(unittest.TestCase):
 
 
 class WorkspaceArtifactCleanupTest(unittest.TestCase):
-    def test_checkout_option_cleans_selected_workspace_but_keeps_caller_cwd(self) -> None:
+    def test_checkout_option_cleans_selected_workspace_but_keeps_caller_cwd(
+        self,
+    ) -> None:
         workspace = Path(tempfile.mkdtemp(prefix="ctb-selected-workspace-"))
         self.addCleanup(shutil.rmtree, workspace, ignore_errors=True)
         target = workspace.parent / "leased-target"
