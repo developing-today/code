@@ -1,4 +1,4 @@
-//! Grant service — phase 2 (#2723, spec #2254): `grant_keys` storage,
+//! Grant service — phases 2–3 (#2723, spec #2254): `grant_keys` storage,
 //! the §2.3 registration flow, and the §2.5 intent-first creation
 //! protocol over the currency PoC [`LedgerBackend`] seam.
 //!
@@ -51,20 +51,18 @@
 //! grantee: during PendingHold the value sits in the service's
 //! custody, the grantee's spendable balance is untouched, and an
 //! adverse event at confirm leaves the money in the hold account,
-//! not with the grantee. The §1.3 post flow (a later phase) moves
-//! hold → grantee under its own deterministic transfer id; the
-//! §1.4 void flow moves hold → issuer. When the seam grows native
+//! not with the grantee. The §1.3 post flow (deferred until phase 4)
+//! moves hold → grantee under its own deterministic transfer id; the
+//! §1.4 pending-hold void flow moves hold → issuer. When the seam grows native
 //! two-phase transfers, the hold account is where the pending
 //! transfer's credit leg lands instead — the grant-facing
 //! guarantees (nothing spendable during the hold; resolution moves
 //! the value exactly once) do not change.
 //!
-//! Scope limits, per the phase packet: the pending hold's two-phase
-//! post/void resolution (§1.3/§1.4, scheduler sweep) is a later
-//! phase — this phase creates the hold transfer and records the
-//! §1.2 window snapshot + timeout on the grant record; it does not
-//! post, void, or activate anything, and no path here enables
-//! Active-state grants (spec §10: not before §4 exists).
+//! Scope limits: phase 3 adds the deterministic adverse-event void for
+//! PendingHold (§1.4). Clean posting and scheduler sweeps are deferred
+//! to phase 4. No path here enables Active-state grants (spec §10: not
+//! before §4 exists).
 
 use std::collections::HashMap;
 
@@ -163,6 +161,11 @@ pub struct GrantRecord {
     /// Deterministic ledger transfer id (§2.5 step 1), derived from
     /// `grant_id` — the intent IS this id, so retries are identities.
     pub transfer_id: TransferId,
+    /// Transfer moving the held value to the issuer if an adverse event
+    /// arrives while PendingHold. Its deterministic id makes retries safe.
+    pub void_transfer_id: TransferId,
+    /// Attestation that caused a successful pending-hold void.
+    pub voided_by_attestation: Option<String>,
     pub registered_at: u64,
     /// When the grant entered PendingHold (confirm step), if it has.
     pub pending_since: Option<u64>,
@@ -405,6 +408,26 @@ pub fn transfer_id_for_grant(grant_id: &str) -> TransferId {
     derive_id(b"id-grant-transfer-v1", grant_id)
 }
 
+/// Deterministic resolution-transfer ids, separated from the initial hold.
+pub fn void_transfer_id_for_grant(grant_id: &str) -> TransferId {
+    derive_id(b"id-grant-void-transfer-v1", grant_id)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LifecycleOutcome {
+    Voided,
+    AlreadyVoided,
+    NoAdverseEvent,
+    BlockedByAdverseEvent(AdverseEvent),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LifecycleError {
+    UnknownGrant { grant_id: String },
+    WrongState { state: GrantState },
+    Ledger(TransferError),
+}
+
 /// The service-owned hold account for a currency (see the
 /// module's hold model): every registration transfer for the
 /// currency credits this account, and §1's resolution flows move
@@ -590,6 +613,136 @@ impl<'a, L: LedgerBackend> RegistrationService<'a, L> {
         &self.ledger
     }
 
+    /// Void a PendingHold on an applicable adverse attestation. The
+    /// deterministic compensating transfer returns held value to issuer.
+    pub fn void_pending(&mut self, grant_id: &str) -> Result<LifecycleOutcome, LifecycleError> {
+        let grant =
+            self.store
+                .grant(grant_id)
+                .cloned()
+                .ok_or_else(|| LifecycleError::UnknownGrant {
+                    grant_id: grant_id.to_string(),
+                })?;
+        match grant.state {
+            GrantState::Revoked if grant.voided_by_attestation.is_some() => {
+                return Ok(LifecycleOutcome::AlreadyVoided);
+            }
+            GrantState::Revoked => {
+                return Err(LifecycleError::WrongState { state: grant.state });
+            }
+            GrantState::PendingHold => {}
+            state => return Err(LifecycleError::WrongState { state }),
+        }
+        if let Some(outcome) = self.recover_existing_resolution(&grant)? {
+            return Ok(outcome);
+        }
+        let Some(event) = self.adverse.adverse_event_for(&grant) else {
+            return Ok(LifecycleOutcome::NoAdverseEvent);
+        };
+        let issuer = self
+            .config
+            .get(&grant.storefront_id)
+            .map(|cfg| cfg.issuer_account)
+            .ok_or(LifecycleError::WrongState { state: grant.state })?;
+        self.ensure_resolution_accounts(grant.hold_account, issuer, grant.currency_ledger)
+            .map_err(LifecycleError::Ledger)?;
+        self.submit_resolution_transfer(Transfer {
+            id: grant.void_transfer_id,
+            debit_account_id: grant.hold_account,
+            credit_account_id: issuer,
+            amount: grant.amount,
+            ledger: grant.currency_ledger,
+            user_data_128: grant.transfer_id,
+            code: 5,
+            linked: false,
+        })?;
+        self.store
+            .transition(grant_id, GrantState::Revoked)
+            .map_err(|_| LifecycleError::WrongState { state: grant.state })?;
+        if let Some(record) = self.store.grants.get_mut(grant_id) {
+            record.voided_by_attestation = Some(event.attestation_id);
+        }
+        Ok(LifecycleOutcome::Voided)
+    }
+
+    /// Heal a crash after a void transfer posted but before its
+    /// grant-state update.
+    fn recover_existing_resolution(
+        &mut self,
+        grant: &GrantRecord,
+    ) -> Result<Option<LifecycleOutcome>, LifecycleError> {
+        let voided = self
+            .ledger
+            .try_lookup_transfer(grant.void_transfer_id)
+            .map_err(|_| LifecycleError::Ledger(TransferError::BackendFailure))?;
+        match voided {
+            Some(_) => {
+                self.store
+                    .transition(&grant.grant_id, GrantState::Revoked)
+                    .map_err(|_| LifecycleError::WrongState { state: grant.state })?;
+                if let Some(record) = self.store.grants.get_mut(&grant.grant_id) {
+                    record.voided_by_attestation = self
+                        .adverse
+                        .adverse_event_for(grant)
+                        .map(|event| event.attestation_id);
+                }
+                Ok(Some(LifecycleOutcome::AlreadyVoided))
+            }
+            None => Ok(None),
+        }
+    }
+
+    fn ensure_resolution_accounts(
+        &mut self,
+        hold: AccountId,
+        destination: AccountId,
+        ledger: u32,
+    ) -> Result<(), TransferError> {
+        let hold_account = Account {
+            id: hold,
+            ledger,
+            code: 3,
+            flags: crate::currency_poc::ledger::AccountFlags {
+                debits_must_not_exceed_credits: true,
+                credits_must_not_exceed_debits: false,
+            },
+        };
+        match self
+            .ledger
+            .create_accounts(&[hold_account])
+            .into_iter()
+            .next()
+        {
+            Some(Ok(())) | Some(Err(AccountError::Exists)) => {}
+            _ => return Err(TransferError::BackendFailure),
+        }
+        match self.ledger.try_lookup_account(destination) {
+            Ok(Some(_)) => {}
+            Ok(None) => {
+                let account = Account {
+                    id: destination,
+                    ledger,
+                    code: 4,
+                    flags: Default::default(),
+                };
+                match self.ledger.create_accounts(&[account]).into_iter().next() {
+                    Some(Ok(())) | Some(Err(AccountError::Exists)) => {}
+                    _ => return Err(TransferError::BackendFailure),
+                }
+            }
+            Err(_) => return Err(TransferError::BackendFailure),
+        }
+        Ok(())
+    }
+
+    fn submit_resolution_transfer(&mut self, transfer: Transfer) -> Result<(), LifecycleError> {
+        match self.ledger.create_transfers(&[transfer]).into_iter().next() {
+            Some(Ok(())) | Some(Err(TransferError::Exists)) => Ok(()),
+            Some(Err(error)) => Err(LifecycleError::Ledger(error)),
+            None => Err(LifecycleError::Ledger(TransferError::BackendFailure)),
+        }
+    }
+
     /// Run one §2.3 registration. Steps in order: verify (before
     /// anything is recorded) → publisher-revocation + one-grant
     /// enforcement inside the intent write → ledger transfer →
@@ -647,6 +800,8 @@ impl<'a, L: LedgerBackend> RegistrationService<'a, L> {
             state: GrantState::Presented,
             hold_account: hold_account_for(terms.currency_ledger),
             transfer_id: transfer_id_for_grant(&request.grant_id),
+            void_transfer_id: void_transfer_id_for_grant(&request.grant_id),
+            voided_by_attestation: None,
             registered_at: request.now,
             pending_since: None,
         };
@@ -732,7 +887,10 @@ impl<'a, L: LedgerBackend> RegistrationService<'a, L> {
                 id: grant.hold_account,
                 ledger: grant.currency_ledger,
                 code: 3,
-                flags: Default::default(),
+                flags: crate::currency_poc::ledger::AccountFlags {
+                    debits_must_not_exceed_credits: true,
+                    credits_must_not_exceed_debits: false,
+                },
             },
         ];
         for result in self.ledger.create_accounts(&accounts) {
@@ -935,6 +1093,173 @@ mod tests {
         AdverseStub {
             event: RefCell::new(None),
         }
+    }
+
+    #[test]
+    fn adverse_pending_hold_is_voided_to_issuer_idempotently() {
+        let v = verifier();
+        let adverse = no_adverse();
+        let mut svc = service(&v, &adverse);
+        svc.register(&request("grant-void", "AAAAA-11111-BBBBB", 1_000))
+            .unwrap();
+        *adverse.event.borrow_mut() = Some(AdverseEvent {
+            kind: "refund_executed".to_string(),
+            attestation_id: "attestation-1".to_string(),
+        });
+
+        let result = svc.void_pending("grant-void").unwrap();
+        assert_eq!(result, LifecycleOutcome::Voided);
+        let grant = svc.store().grant("grant-void").unwrap();
+        assert_eq!(grant.state, GrantState::Revoked);
+        assert_eq!(
+            grant.voided_by_attestation.as_deref(),
+            Some("attestation-1")
+        );
+        let void_transfer = svc
+            .ledger()
+            .lookup_transfer(void_transfer_id_for_grant("grant-void"))
+            .unwrap();
+        assert_eq!(void_transfer.debit_account_id, hold_account_for(LEDGER_ID));
+        assert_eq!(
+            void_transfer.credit_account_id,
+            account_id_for("issuer", LEDGER_ID)
+        );
+        assert_eq!(void_transfer.amount, AMOUNT);
+
+        assert_eq!(
+            svc.void_pending("grant-void").unwrap(),
+            LifecycleOutcome::AlreadyVoided
+        );
+        assert_eq!(
+            svc.ledger()
+                .lookup_transfer(void_transfer_id_for_grant("grant-void"))
+                .unwrap()
+                .id,
+            void_transfer.id
+        );
+    }
+
+    #[test]
+    fn pending_hold_without_adverse_event_is_not_resolved() {
+        let v = verifier();
+        let adverse = no_adverse();
+        let mut svc = service(&v, &adverse);
+        svc.register(&request("grant-no-event", "AAAAA-11111-BBBBB", 1_000))
+            .unwrap();
+
+        assert_eq!(
+            svc.void_pending("grant-no-event").unwrap(),
+            LifecycleOutcome::NoAdverseEvent
+        );
+        let grant = svc.store().grant("grant-no-event").unwrap();
+        assert_eq!(grant.state, GrantState::PendingHold);
+        assert_eq!(grant.voided_by_attestation, None);
+        assert!(
+            svc.ledger()
+                .lookup_transfer(void_transfer_id_for_grant("grant-no-event"))
+                .is_none()
+        );
+        assert_eq!(
+            svc.ledger()
+                .account_balance(hold_account_for(LEDGER_ID))
+                .unwrap()
+                .credits_posted,
+            AMOUNT
+        );
+    }
+
+    /// Ledger wrapper: a void transfer is applied but its response is
+    /// lost, exercising the resolution retry/recovery crash window.
+    struct LoseVoidResponse {
+        inner: InMemoryLedger,
+        lost: bool,
+    }
+
+    impl LedgerBackend for LoseVoidResponse {
+        fn create_accounts(&mut self, accounts: &[Account]) -> Vec<Result<(), AccountError>> {
+            self.inner.create_accounts(accounts)
+        }
+
+        fn create_transfers(&mut self, batch: &[Transfer]) -> Vec<Result<(), TransferError>> {
+            let results = self.inner.create_transfers(batch);
+            if !self.lost && batch.iter().any(|transfer| transfer.code == 5) {
+                self.lost = true;
+                return results
+                    .into_iter()
+                    .map(|_| Err(TransferError::BackendFailure))
+                    .collect();
+            }
+            results
+        }
+
+        fn try_lookup_transfer(&self, id: TransferId) -> anyhow::Result<Option<Transfer>> {
+            self.inner.try_lookup_transfer(id)
+        }
+
+        fn try_lookup_account(&self, id: AccountId) -> anyhow::Result<Option<Account>> {
+            self.inner.try_lookup_account(id)
+        }
+
+        fn try_account_balance(
+            &self,
+            id: AccountId,
+        ) -> anyhow::Result<Option<crate::currency_poc::ledger::AccountBalance>> {
+            self.inner.try_account_balance(id)
+        }
+
+        fn try_transfers_with_user_data_128(&self, value: u128) -> anyhow::Result<Vec<Transfer>> {
+            self.inner.try_transfers_with_user_data_128(value)
+        }
+    }
+
+    #[test]
+    fn lost_void_response_recovers_without_a_second_transfer() {
+        let v = verifier();
+        let adverse = no_adverse();
+        let ledger = LoseVoidResponse {
+            inner: InMemoryLedger::new(),
+            lost: false,
+        };
+        let mut svc = RegistrationService::new(GrantStore::new(), ledger, config(), &v, &adverse);
+        svc.register(&request("grant-lost-void", "AAAAA-11111-BBBBB", 1_000))
+            .unwrap();
+        *adverse.event.borrow_mut() = Some(AdverseEvent {
+            kind: "refund_executed".to_string(),
+            attestation_id: "attestation-lost-response".to_string(),
+        });
+
+        assert_eq!(
+            svc.void_pending("grant-lost-void"),
+            Err(LifecycleError::Ledger(TransferError::BackendFailure))
+        );
+        assert_eq!(
+            svc.store().grant("grant-lost-void").unwrap().state,
+            GrantState::PendingHold
+        );
+        assert_eq!(
+            svc.void_pending("grant-lost-void").unwrap(),
+            LifecycleOutcome::AlreadyVoided
+        );
+        let grant = svc.store().grant("grant-lost-void").unwrap();
+        assert_eq!(grant.state, GrantState::Revoked);
+        assert_eq!(
+            grant.voided_by_attestation.as_deref(),
+            Some("attestation-lost-response")
+        );
+        let void_transfer = svc
+            .ledger()
+            .inner
+            .lookup_transfer(void_transfer_id_for_grant("grant-lost-void"))
+            .unwrap();
+        assert_eq!(void_transfer.amount, AMOUNT);
+        assert_eq!(
+            svc.ledger()
+                .inner
+                .account_balance(account_id_for("issuer", LEDGER_ID))
+                .unwrap()
+                .credits_posted,
+            AMOUNT
+        );
     }
 
     #[test]
