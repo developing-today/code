@@ -37,6 +37,7 @@ fleet-bridge = { workspace = true, optional = true }
 # working-seat client, so full only.
 fleet-agent = { workspace = true, optional = true }
 serde_json = { workspace = true }
+base64 = "0.23"
 # The gh domain (code#8887) mints App installation tokens over the
 # GitHub API; same ureq pin as fleet-queue/fleet-search (rustls, no
 # native-tls). Only the JSON-free surface is needed: bodies are read
@@ -44,7 +45,7 @@ serde_json = { workspace = true }
 ureq = { version = "3", default-features = false, features = [
   "rustls",
   "platform-verifier",
-], optional = true }
+] }
 # Direct dep for the SIGPIPE disposition reset in main (#5569);
 # already in the workspace lockfile as a transitive dependency.
 [target.'cfg(unix)'.dependencies]
@@ -107,7 +108,7 @@ secrets = ["dep:fleet-secrets"]
 # The gh passthrough (code#8887): a working-seat client tool, so
 # full only — the serve build's daemons shell out to it externally
 # if ever needed, it is not a daemon role.
-gh = ["dep:fleet-secrets", "dep:ureq"]
+gh = ["dep:fleet-secrets"]
 laptop-agent = ["dep:fleet-secrets", "dep:fleet-laptop-agent"]
 # Fleet messaging through the message bridge: central sends messages or
 # commands; agents read, answer and ack. Full only (a client, not a role).
