@@ -1573,24 +1573,40 @@ fn a_local_build_runs_every_part_of_the_command_under_the_lock() {
 }
 
 #[test]
-fn a_compound_cargo_build_leases_and_returns_one_workspace_target() {
+fn a_manifest_selected_compound_build_leases_the_target_and_keeps_the_caller_cwd() {
     let home = home_with_a_recording_lock();
     let tools = home.join("tools");
-    let workspace = home.join("workspace");
+    let workspace = home.join("code/pkgs/id");
+    let caller = home.join("caller");
     std::fs::create_dir_all(&workspace).unwrap();
+    std::fs::create_dir_all(&caller).unwrap();
     std::fs::write(workspace.join("Cargo.toml"), "[workspace]\nmembers = []\n").unwrap();
 
     let cargo = tools.join("cargo");
     std::fs::write(
         &cargo,
-        "#!/bin/sh\nif [ \"$1\" = locate-project ]; then printf '%s/Cargo.toml\\n' \"$PWD\"; exit 0; fi\nprintf '%s|%s\\n' \"$CARGO_TARGET_DIR\" \"$*\" >> \"$HOME/cargo.log\"\n",
+        r#"#!/bin/sh
+if [ "$1" = locate-project ]; then
+  shift
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --manifest-path) shift; printf '%s\n' "$1"; exit 0 ;;
+      --manifest-path=*) printf '%s\n' "${1#--manifest-path=}"; exit 0 ;;
+    esac
+    shift
+  done
+  printf '%s/Cargo.toml\n' "$PWD"
+  exit 0
+fi
+printf '%s|%s|%s\n' "$PWD" "$CARGO_TARGET_DIR" "$*" >> "$HOME/cargo.log"
+"#,
     )
     .unwrap();
     let broker = tools.join("cargo-target-broker");
     std::fs::write(
         &broker,
         format!(
-            "#!/bin/sh\ncase \"$1\" in checkout) printf '{{\"path\":\"{}\",\"lease\":\"lease-1\"}}\\n' ;; checkin) printf '%s\\n' \"$*\" >> \"$HOME/broker.log\" ;; esac\n",
+            "#!/bin/sh\ncase \"$1\" in checkout) printf '%s\\n' \"$*\" >> \"$HOME/broker.log\"; printf '{{\\"path\\":\\"{}\\",\\"lease\\":\\"lease-1\\"}}\\n' ;; checkin) printf '%s\\n' \"$*\" >> \"$HOME/broker.log\" ;; esac\n",
             home.join("target").display()
         ),
     )
@@ -1600,12 +1616,16 @@ fn a_compound_cargo_build_leases_and_returns_one_workspace_target() {
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
 
+    let manifest = "../code/pkgs/id/Cargo.toml";
+    let command = format!(
+        "cargo test --manifest-path {manifest} && cargo check --manifest-path {manifest}"
+    );
     let plan = shell::plan(
         Target::Local,
         "test".into(),
-        &words(&["cargo test && cargo check"]),
+        &words(&[command.as_str()]),
         &Options {
-            cwd: Some("workspace".into()),
+            cwd: Some("caller".into()),
             build: true,
             ..opts()
         },
@@ -1618,14 +1638,19 @@ fn a_compound_cargo_build_leases_and_returns_one_workspace_target() {
         String::from_utf8_lossy(&out.stderr)
     );
     let expected = format!(
-        "{}|test\n{}|check\n",
+        "{}|{}|test --manifest-path {manifest}\n{}|{}|check --manifest-path {manifest}\n",
+        caller.display(),
         home.join("target").display(),
+        caller.display(),
         home.join("target").display()
     );
     assert_eq!(std::fs::read_to_string(home.join("cargo.log")).unwrap(), expected);
     assert_eq!(
         std::fs::read_to_string(home.join("broker.log")).unwrap(),
-        "checkin --lease lease-1\n"
+        format!(
+            "checkout --repo id --profile test --workspace-cwd {} --wait 900 --json\ncheckin --lease lease-1\n",
+            workspace.display()
+        )
     );
     let _ = std::fs::remove_dir_all(&home);
 }
