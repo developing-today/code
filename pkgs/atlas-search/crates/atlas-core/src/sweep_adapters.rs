@@ -908,6 +908,7 @@ mod tests {
             },
             envelope: Vec::<EnvelopeLine>::new(),
             embed_usd: 0.0,
+            embedding_ledger_ref: Some("ledger-row-batch-fixture".to_owned()),
             embed_usd_median: None,
         };
         let first = run_once_with_staging(
@@ -919,6 +920,16 @@ mod tests {
         )
         .expect("first fixture run");
         assert_eq!(first.report.as_ref().expect("report").items_accepted, 1);
+        assert_eq!(
+            first
+                .report
+                .as_ref()
+                .expect("report")
+                .embedding_ledger_ref
+                .as_deref(),
+            Some("ledger-row-batch-fixture")
+        );
+        assert_eq!(load_state(&state_dir).expect("state").manifest.len(), 2);
         assert!(first.records.iter().any(|record| {
             record.outcome == "held" && record.source_ref.ends_with("partial.md.tmp")
         }));
@@ -932,6 +943,7 @@ mod tests {
         )
         .expect("retry fixture run");
         assert_eq!(retry.report.as_ref().expect("report").items_rejected, 1);
+        assert_eq!(load_state(&state_dir).expect("state").manifest.len(), 4);
         assert!(retry.records.iter().any(|record| {
             record.reason_code.as_deref() == Some("duplicate-content")
                 && record.source_ref.ends_with("final.md")
@@ -977,6 +989,7 @@ mod tests {
             },
             envelope: Vec::new(),
             embed_usd: 0.0,
+            embedding_ledger_ref: None,
             embed_usd_median: None,
         };
         let conn = Connection::open_in_memory().expect("open unprovisioned staging DB");

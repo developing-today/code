@@ -456,6 +456,10 @@ pub struct RunReportRow {
     pub chunks_reused: u64,
     pub tokens_embedded: u64,
     pub embed_model: Option<String>,
+    /// Optional key of the matching #6058 ledger row. The ledger is
+    /// emitted at the embed/publish gate; this runner never invents one.
+    #[serde(default)]
+    pub embedding_ledger_ref: Option<String>,
     pub embed_usd: f64,
     pub tgt_read_rows: u64,
     pub tgt_write_rows: u64,
@@ -485,6 +489,10 @@ pub struct SweepState {
     pub throttled_last: BTreeSet<String>,
     /// Recent report rows, oldest first, capped at MAX_REPORT_ROWS.
     pub last_reports: Vec<RunReportRow>,
+    /// Durable manifest for completed runs, oldest first. Records are
+    /// append-only and retain the source-level decision audit trail.
+    #[serde(default)]
+    pub manifest: Vec<ManifestRecord>,
 }
 
 /// The (source class, host) key used for locks and pause state.
@@ -621,6 +629,10 @@ pub struct RunRequest {
     pub envelope: Vec<EnvelopeLine>,
     #[serde(default)]
     pub embed_usd: f64,
+    /// Existing #6058 ledger row key, if embedding already emitted one.
+    /// `batch_id` remains the stable join key when the ledger is absent.
+    #[serde(default)]
+    pub embedding_ledger_ref: Option<String>,
     pub embed_usd_median: Option<f64>,
 }
 
@@ -677,6 +689,7 @@ pub fn run_once_with_landing(
         tgt_read_rows: req.measurements.tgt_read_rows,
         tgt_write_rows: req.measurements.tgt_write_rows,
         embed_usd: req.embed_usd,
+        embedding_ledger_ref: req.embedding_ledger_ref.clone(),
         ..RunReportRow::default()
     };
     let finish = |state: &SweepState,
@@ -686,6 +699,7 @@ pub fn run_once_with_landing(
                   alerts: Vec<String>|
      -> Result<RunOutcome> {
         let mut state = state.clone();
+        state.manifest.extend(records.iter().cloned());
         state.last_reports.push(report.clone());
         if state.last_reports.len() > MAX_REPORT_ROWS {
             let excess = state.last_reports.len() - MAX_REPORT_ROWS;
@@ -1123,6 +1137,7 @@ mod tests {
             },
             envelope: Vec::new(),
             embed_usd: 0.0,
+            embedding_ledger_ref: None,
             embed_usd_median: None,
         }
     }

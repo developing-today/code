@@ -49,6 +49,7 @@ pub mod shingles;
 pub mod stage;
 pub mod sweep;
 pub mod sweep_adapters;
+pub mod sweep_probe;
 pub mod trace;
 pub mod trace_ingest;
 pub mod trace_stats;
