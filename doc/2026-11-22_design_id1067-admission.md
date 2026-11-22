@@ -153,4 +153,10 @@ plus unit tests for the budget itself: the bound is never
 exceeded, charges are attributed per key and settled with actual
 spend (allowance when unsettled), grant order prefers the
 least-attained key over an earlier-arriving burn-heavy key, and
-two guests sharing a budget of one serialize their burns.
+two guests sharing a budget of one serialize their burns. The
+bench's profile line carries the budget's counters (bound,
+in-flight high-water mark, the victim key's admissions and
+waits) so a run shows whether admission engaged and whether the
+victim ever waited; `ID_BENCH_GUEST_BURN_CONCURRENCY` runs the
+workload's guests on a dedicated budget of a chosen size instead
+of the shared default, for sizing experiments.
