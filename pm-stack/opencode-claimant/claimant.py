@@ -281,6 +281,7 @@ def log_fire(
     skips: List[Dict],
     health: "str | None" = None,
     provider_wall: "Dict | None" = None,
+    hand_back: "Dict | None" = None,
 ) -> None:
     """Append a fire log entry to fires.jsonl.
 
@@ -306,6 +307,7 @@ def log_fire(
         "skips": skips,
         "queue_health": health,
         "provider_wall": provider_wall,
+        "hand_back": hand_back,
     }
 
     with FIRES_FILE.open("a") as f:
@@ -1062,6 +1064,178 @@ def _post_launch_agent_note(task_id, session_id, candidate, packet) -> bool:
     return result.returncode == 0
 
 
+HANDBACK_REASON_CLASS = "executor-saturated"
+
+HANDBACK_PARK_REASON = (
+    "executor-saturated: the opencode session cap is saturated "
+    f"({CONCURRENCY_CAP} active sessions), so no slot was available "
+    "this round; handed back by opencode-claimant (#1187) - releases "
+    "when capacity returns (the queue wake verb) or on an owner's "
+    "explicit order; a Claude lane can still claim it if urgent"
+)
+
+
+def _claim_for_handback(candidate) -> bool:
+    """Targeted-claim one candidate as the claimant so the
+    hand-back park has a live claim to act on (the broker's park
+    verb only parks a task its caller holds). True iff the claim
+    answer names this candidate's id - a claim that lands on a
+    different row, or no row, hands nothing back."""
+    argv = [str(REPO_QUEUE_CMD), "claim"]
+    if candidate.get("queue"):
+        argv += ["--queue", str(candidate["queue"])]
+    argv += [
+        "--worker",
+        CLAIMANT_WORKER,
+        "--platform",
+        "openchamber",
+        "--task",
+        str(candidate["id"]),
+    ]
+    try:
+        result = subprocess.run(argv, capture_output=True, text=True, timeout=15)
+        data = json.loads(result.stdout) if result.stdout.strip() else None
+    except Exception:
+        return False
+    return isinstance(data, dict) and data.get("id") == candidate["id"]
+
+
+def _park_handback(task_id) -> bool:
+    """Park a claimed task as a capacity wait: reason class
+    `executor-saturated` (#1187) plus the broker's capacity
+    ready-condition, which floors the wait at the capacity scale
+    and lets the pick take the task early when a slot frees -
+    the hand-back is a pause with a named release, not a failure."""
+    try:
+        result = subprocess.run(
+            [
+                str(REPO_QUEUE_CMD),
+                "park",
+                str(task_id),
+                "--worker",
+                CLAIMANT_WORKER,
+                "--reason",
+                HANDBACK_PARK_REASON,
+                "--ready-condition",
+                json.dumps({"kind": "capacity"}),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+    except Exception:
+        return False
+    return result.returncode == 0
+
+
+def _post_handback_agent_note(task_id, candidate) -> bool:
+    """Post the agent-note:v1 handed-back note on the task's issue
+    (#1187: a hand-back is noted on the issue, never only in the
+    local fire log). Mirrors _post_launch_agent_note's repo/issue
+    resolution and failure contract: a failed note never undoes
+    the park - the caller records it in the hand-back record.
+    Returns True iff the post is confirmed by the gh CLI's exit
+    code."""
+    packet = candidate.get("packet") if isinstance(candidate.get("packet"), dict) else {}
+    repo = packet.get("repo") or ""
+    issue_no = candidate.get("issue_number")
+    if issue_no is None and isinstance(packet.get("issue"), dict):
+        issue_no = packet["issue"].get("number")
+    if issue_no is None:
+        raw_issue = candidate.get("issue") or ""
+        digits = "".join(ch for ch in str(raw_issue) if ch.isdigit())
+        issue_no = digits or None
+    if not repo or not issue_no:
+        return False
+    note = (
+        "<!-- agent-note:v1 agent=opencode-claimant state=handed back "
+        f"task={task_id} -->\n\n"
+        f"Agent note - handed back: queue task {task_id} was handed "
+        "back by the opencode claimant (#1187): the opencode session "
+        f"cap is saturated ({CONCURRENCY_CAP} active sessions), so no "
+        "slot was available this round. The task is parked with reason "
+        "`executor-saturated` and a capacity ready-condition - it "
+        "releases when capacity returns (the queue's `wake` verb) or "
+        "on an owner's explicit order. Saturation is a success state, "
+        "not a failure: a Claude lane can still claim the task if "
+        "urgent."
+    )
+    try:
+        result = subprocess.run(
+            [
+                "gh",
+                "issue",
+                "comment",
+                str(int(str(issue_no).lstrip("#"))),
+                "--repo",
+                str(repo),
+                "--body",
+                note,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+    except Exception:
+        return False
+    return result.returncode == 0
+
+
+def hand_back_step(mode, candidates, exclude_task_ids=None):
+    """Hand-back (#1187 criterion 2): when the cap step finds the
+    location saturated with launchable candidates waiting, hand
+    the NEXT candidate back within the same fire - claim it, park
+    it as an `executor-saturated` capacity wait, and note it on
+    its issue - instead of leaving it silently queued with the
+    only record in the local fire log.
+
+    Live mode only: shadow fires mutate nothing and return None,
+    as do fires with no launchable candidate waiting. The
+    candidate is the first launchable one in the fire-start
+    snapshot (launch_step's filter), skipping any task this
+    fire's supervision recovered (next-fire-only, #8038 item 7).
+    One hand-back per fire: the criterion is the next candidate,
+    and a park per candidate per fire would churn the queue.
+    Returns the hand-back record for the fire log."""
+    if mode != "live":
+        return None
+    excluded = set(exclude_task_ids or ())
+    candidate = None
+    for c in candidates or []:
+        if (
+            c.get("lane") == "opencode"
+            and not c.get("session_id")
+            and c.get("stage") in ("handed_off", "launch_failed")
+            and c.get("id") not in excluded
+        ):
+            candidate = c
+            break
+    if candidate is None:
+        return None
+    task_id = candidate["id"]
+    if not _claim_for_handback(candidate):
+        return {
+            "task_id": task_id,
+            "parked": False,
+            "noted": False,
+            "reason": "handback_claim_failed",
+        }
+    if not _park_handback(task_id):
+        return {
+            "task_id": task_id,
+            "parked": False,
+            "noted": False,
+            "reason": "handback_park_failed",
+        }
+    noted = _post_handback_agent_note(task_id, candidate)
+    return {
+        "task_id": task_id,
+        "parked": True,
+        "noted": noted,
+        "reason": HANDBACK_REASON_CLASS,
+    }
+
+
 def launch_step(
     mode: str,
     cap_room: int,
@@ -1564,6 +1738,13 @@ def _fire(mode: str):
 
     if cap_room <= 0:
         print(f"Cap saturated ({CONCURRENCY_CAP} active sessions). Exiting.")
+        # #1187 criterion 2: saturation is reported on the task and
+        # its issue, never only in this log - hand the next waiting
+        # candidate back (live mode only; the step itself refuses
+        # every other mode).
+        hand_back = hand_back_step(
+            mode, fire_candidates, exclude_task_ids=recovered_ids
+        )
         log_fire(
             mode,
             fire_candidates,
@@ -1571,6 +1752,7 @@ def _fire(mode: str):
             cap_room,
             [{"reason": "cap_saturated"}],
             health=fire_health,
+            hand_back=hand_back,
         )
         return 0
 
