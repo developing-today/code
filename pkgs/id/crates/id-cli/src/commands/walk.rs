@@ -349,7 +349,7 @@ pub async fn read_record(dir: &Path, address: &str) -> anyhow::Result<ReadView> 
 
     let dispatch = ProfileDispatch::default();
     let header = VersionHeader::decode(&served.payload)
-        .map_err(|error| anyhow::anyhow!("the serving version's header does not decode: {error:?}"))?;
+        .ok_or_else(|| anyhow::anyhow!("the serving version's header does not decode"))?;
     dispatch
         .verify_bytes(named, &header.body)
         .map_err(|_| anyhow::anyhow!("the served bytes are not the bytes the address names"))?;
