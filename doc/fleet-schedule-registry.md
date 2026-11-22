@@ -82,10 +82,13 @@ marked disabled per the inclusion policy now stated in the Surface
 
 Surface 2b re-verified 2026-11-21 by queue task 9170: enabled the
 existing read-only `opencode-quota-freshness-summary.timer` as the
-low-risk OpenCode scheduled-task pilot for issue #2232. The initial
-scheduled firing and log check are pending verification on #2232; the
-timer is left enabled for its hourly cadence. Surface 2b now has 39
-enabled rows.
+low-risk OpenCode scheduled-task pilot for issue #2232. The first
+service invocation exposed a missing Python directory in the user unit's
+explicit `PATH`; adding `/etc/profiles/per-user/user/bin` fixed it. A
+manual service start then completed with exit 0 at 2026-11-21 19:05 CST
+and wrote `latest.log` plus `history.jsonl`. The timer remains enabled;
+verification of its next scheduled hourly firing is pending on #2232.
+Surface 2b now has 39 enabled rows.
 
 Surface 5 added 2026-11-18 for issue #11805 from `dezren39/darwin-nix`
 main at `6af58a6`: every `StartCalendarInterval` / `StartInterval` in
