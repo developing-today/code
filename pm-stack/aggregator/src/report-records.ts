@@ -400,14 +400,19 @@ async function claimCurrentReportTransition(
   const identity = JSON.stringify([periodId, templateVersion, previousRecordId]);
   const digest = createHash("sha256").update(identity).digest("hex");
   const claim = { periodId, templateVersion, previousRecordId, record: candidate };
-  const assertWinner = (stored: unknown): ReportRecord => {
+  const assertWinner = async (stored: unknown): Promise<ReportRecord> => {
     if (!isObject(stored) || stored.periodId !== periodId || stored.templateVersion !== templateVersion ||
         stored.previousRecordId !== previousRecordId || !isObject(stored.record) ||
         typeof stored.record.id !== "string") {
       throw new Error(`report current-head claim is malformed: ${periodId}/${templateVersion}`);
     }
     const winner = stored.record as unknown as ReportRecord;
+    assertCanonicalRecord(winner);
+    if (winner.period.id !== periodId || winner.templateVersion !== templateVersion) {
+      throw new Error(`report current-head claim is malformed: ${periodId}/${templateVersion}`);
+    }
     if (winner.id !== candidate.id || !sameRecordContent(winner, candidate)) {
+      await recoverClaimedReportRecord(location, winner);
       throw new Error("stale report block comparison: report record is no longer current");
     }
     return winner;
@@ -453,6 +458,30 @@ async function appendDocumentEvent(
   const existing = parseDocumentEvent(stored.document);
   if (!sameReportEvent(existing, event)) throw new ReportRecordConflictError(event.eventId);
   return { inserted: false, event: existing };
+}
+
+/** Finish a durable head winner whose claim was written before its event append failed. */
+async function recoverClaimedReportRecord(location: ReportRecordLocation, record: ReportRecord): Promise<void> {
+  const event: ReportRecordEvent = {
+    eventId: record.id,
+    type: "report.generated",
+    record,
+    ts: record.generatedAt,
+  };
+  if (typeof location !== "string") {
+    await appendDocumentEvent(location, event);
+    return;
+  }
+
+  const events = await readEvents(location);
+  const existing = events.find((item) => item.type === "report.generated" && item.record?.id === record.id)?.record;
+  if (existing) {
+    if (!sameRecordContent(existing, record)) throw new ReportRecordConflictError(record.id);
+    return;
+  }
+  await mkdir(dirname(location), { recursive: true });
+  await terminateTornTail(location);
+  await appendFile(location, `${JSON.stringify(event)}\n`, "utf8");
 }
 
 /** Keep a torn final JSONL fragment from swallowing the next acknowledged event. */

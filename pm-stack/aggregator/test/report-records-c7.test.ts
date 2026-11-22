@@ -725,6 +725,63 @@ describe("C7 canonical report records", () => {
     expect(await readCurrentReportRecords(firstClient)).toHaveLength(1);
   });
 
+  test("a later generation recovers a claimed record after its event append failed", async () => {
+    const documents = new Map<string, unknown>();
+    let failNextGenerationEvent = false;
+    const remote: AppendOnlyDocumentRemote = {
+      async load(store) {
+        return documents.has(store) ? { version: 1, document: structuredClone(documents.get(store)) } : null;
+      },
+      async insertIfAbsent(store, _version, document) {
+        const eventRecord = (document as { record?: { sourceCursor?: string } }).record;
+        if (store.startsWith("c7-report:v1:report.generated:") &&
+            eventRecord?.sourceCursor === "generation-a" && failNextGenerationEvent) {
+          failNextGenerationEvent = false;
+          throw new Error("simulated event-store interruption");
+        }
+        if (documents.has(store)) return false;
+        documents.set(store, structuredClone(document));
+        return true;
+      },
+      async listPrefix(prefix) {
+        return [...documents.entries()]
+          .filter(([store]) => store.startsWith(prefix))
+          .map(([store, document]) => ({ store, version: 1, document: structuredClone(document) }));
+      },
+    };
+    const input = {
+      period: {
+        id: "daily:2026-11-21:America/Chicago",
+        kind: "daily" as const,
+        timezone: "America/Chicago" as const,
+        periodStart: "2026-11-21T06:00:00.000Z",
+        periodEnd: "2026-11-22T06:00:00.000Z",
+        softCloseAt: "2026-11-22T14:00:00.000Z",
+      },
+      asOf: "2026-11-22T05:45:00.000Z",
+      templateVersion: "daily-v1",
+      sources: [],
+      blocks: [{ id: "block", text: "generation", relatedAt: "2026-11-22T05:40:00.000Z" }],
+    };
+    const original = makeReportRecord({ ...input, sourceCursor: "original" }, "2026-11-22T05:45:01.000Z");
+    const generationA = makeReportRecord({ ...input, sourceCursor: "generation-a" }, "2026-11-22T05:46:01.000Z");
+    const generationB = makeReportRecord({ ...input, sourceCursor: "generation-b" }, "2026-11-22T05:46:02.000Z");
+    await appendReportRecord(remote, original);
+    failNextGenerationEvent = true;
+    await expect(appendReportRecord(remote, generationA)).rejects.toThrow("simulated event-store interruption");
+
+    await expect(appendReportRecord(remote, generationB)).rejects.toThrow("no longer current");
+    expect((await readCurrentReportRecords(remote))[0]?.id).toBe(generationA.id);
+    expect(await readReportRecords(remote)).toHaveLength(2);
+
+    const generationBAfterRecovery = makeReportRecord(
+      { ...input, sourceCursor: "generation-b" },
+      "2026-11-22T05:46:03.000Z",
+    );
+    await appendReportRecord(remote, generationBAfterRecovery);
+    expect((await readCurrentReportRecords(remote))[0]?.id).toBe(generationBAfterRecovery.id);
+  });
+
   test("remote current-head claim arbitrates a generation against a resolution", async () => {
     const documents = new Map<string, unknown>();
     const remote = (): AppendOnlyDocumentRemote => ({
