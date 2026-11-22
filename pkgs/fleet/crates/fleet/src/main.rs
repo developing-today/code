@@ -52,6 +52,7 @@ mod gh;
 mod gh_cache;
 mod gh_closure;
 mod invocation_ledger;
+mod session_state;
 
 #[allow(dead_code)]
 // the derivation runs in build.rs (which includes this module by path); the binary itself consumes only the baked FLEET_DERIVED_VERSION value, plus these unit tests
@@ -1432,6 +1433,21 @@ fn main() {
         })
         .unwrap_or_else(|| "fleet".to_string());
     let args: Vec<String> = argv.iter().skip(1).cloned().collect();
+
+    // OpenCode supplies OPENCODE_SESSION_ID to tools. Mirror it into
+    // Fleet's stable child-process variable and persist the association
+    // at the current worktree root so later bare invocations can recover it.
+    let explicit_session_id = args
+        .windows(2)
+        .find_map(|pair| (pair[0] == "--session-id").then_some(pair[1].as_str()))
+        .or_else(|| {
+            args.iter()
+                .find_map(|arg| arg.strip_prefix("--session-id="))
+        });
+    if let Err(message) = session_state::initialize(explicit_session_id) {
+        eprintln!("fleet: {message}");
+        std::process::exit(EXIT_USAGE);
+    }
 
     // Config decides the disable table; a malformed config is a loud
     // error on every path (a silently ignored disable would defeat

@@ -134,6 +134,19 @@ default.nix                 the four variant packages (see below)
 smoke.sh                    per-variant smoke suite (post-build)
 ```
 
+## Session identity in worktrees (#9075)
+
+Fleet mirrors the active `OPENCODE_SESSION_ID` into `FLEET_SESSION_ID` for
+Fleet's child processes. At the root of each Git worktree it records that
+identity in the plain-text `.fleet-session-id` pwd-file. This is worktree-local
+(not in the common Git directory), so linked worktrees can track different
+sessions. When resolving a session identity, Fleet uses an explicit
+`--session-id` argument first, then `FLEET_SESSION_ID` (or
+`OPENCODE_SESSION_ID`), then `.fleet-session-id`. A pwd-file value is accepted
+only when the local OpenCode server confirms the session still exists; an
+ended or unverifiable session is reported as stale and is never silently used.
+Remove a stale marker or invoke Fleet from a new active session to refresh it.
+
 ## Versioning — derived per-app versions (#8566; policy #5790)
 
 A fleet binary's version is **derived, never hand-maintained**. The

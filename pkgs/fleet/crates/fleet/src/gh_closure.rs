@@ -217,15 +217,27 @@ pub struct Binding {
 
 impl Binding {
     pub fn from_env() -> Binding {
-        let get = |k: &str| std::env::var(k).ok().filter(|v| !v.is_empty());
+        let get = |k: &str| {
+            std::env::var(k)
+                .ok()
+                .map(|value| value.trim().to_owned())
+                .filter(|value| !value.is_empty())
+        };
         Binding {
             worker: get("FLEET_WORKER"),
             lane: get("FLEET_LANE"),
             task_id: get("FLEET_TASK_ID"),
-            session_id: get("OPENCODE_SESSION_ID").or_else(|| get("FLEET_SESSION_ID")),
+            // `session_state::initialize` writes the chosen identity here,
+            // including explicit CLI overrides, so provenance follows the
+            // same explicit > env > worktree-marker resolution as commands.
+            session_id: preferred_session_id(get("FLEET_SESSION_ID"), get("OPENCODE_SESSION_ID")),
             user: get("USER"),
         }
     }
+}
+
+fn preferred_session_id(fleet: Option<String>, opencode: Option<String>) -> Option<String> {
+    fleet.or(opencode)
 }
 
 pub fn log_path() -> PathBuf {
@@ -391,6 +403,18 @@ mod tests {
         assert_eq!(r["at_unix"], 1700000000u64);
         assert_eq!(r["binding"]["task_id"], "20372");
         assert!(r["binding"]["run_id"].is_null());
+    }
+
+    #[test]
+    fn resolved_fleet_session_id_precedes_opencode_for_provenance() {
+        assert_eq!(
+            preferred_session_id(Some("ses_explicit".into()), Some("ses_open".into())),
+            Some("ses_explicit".into())
+        );
+        assert_eq!(
+            preferred_session_id(None, Some("ses_open".into())),
+            Some("ses_open".into())
+        );
     }
 
     #[test]
