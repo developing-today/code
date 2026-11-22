@@ -156,10 +156,47 @@ in
     # (nightly 40457980141: curl exit code 7 ~53s after VM start).
     # wait_until_succeeds retries until success or its timeout, covering
     # virtual-network/firewall bring-up skew.
-    chromium_client.wait_until_succeeds("curl -sf http://chromium_server:4173/")
-    chromium_client.wait_until_succeeds("curl -sf http://chromium_server:4175/")
-    firefox_client.wait_until_succeeds("curl -sf http://firefox_server:4174/")
-    firefox_client.wait_until_succeeds("curl -sf http://firefox_server:4176/")
+    #
+    # The retry bound is named explicitly (SERVER_READY_TIMEOUT) instead of
+    # riding the test driver's implicit default, and a probe that still
+    # times out dumps the server instance's journal and listeners into the
+    # test log before failing — a readiness failure should show WHY the
+    # server did not answer, not just that curl kept refusing (#1374).
+    SERVER_READY_TIMEOUT = 900  # seconds; the driver's former implicit bound
+
+    def wait_for_http(client, server, unit, url):
+        try:
+            client.wait_until_succeeds(
+                f"curl -sf {url}", timeout=SERVER_READY_TIMEOUT
+            )
+        except Exception:
+            try:
+                server.execute(
+                    f"echo 'readiness timeout: {url} never answered; "
+                    f"{unit} journal and listeners follow'; "
+                    f"journalctl -u {unit} --no-pager -n 100; "
+                    "ss -ltnp"
+                )
+            except Exception:
+                pass
+            raise
+
+    wait_for_http(
+        chromium_client, chromium_server,
+        "id-primary.service", "http://chromium_server:4173/"
+    )
+    wait_for_http(
+        chromium_client, chromium_server,
+        "id-secondary.service", "http://chromium_server:4175/"
+    )
+    wait_for_http(
+        firefox_client, firefox_server,
+        "id-primary.service", "http://firefox_server:4174/"
+    )
+    wait_for_http(
+        firefox_client, firefox_server,
+        "id-secondary.service", "http://firefox_server:4176/"
+    )
 
     # ── Helper: copy test runner to writable dir and run Playwright ────────
     # The e2eTestRunner is a read-only nix store path; Playwright needs to
