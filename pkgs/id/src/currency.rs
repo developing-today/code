@@ -46,6 +46,10 @@ pub mod fold;
 /// Issuer snapshots over the fold: balance roots, frontier, recomputation.
 pub mod snapshot;
 
+/// Graph-native app-facing currency client. The ledger-backed client is
+/// intentionally separate and remains gated on the currency gateway.
+pub mod client;
+
 /// The currency gateway's signed request envelope (#2319).
 #[cfg(feature = "world")]
 pub mod gateway;
