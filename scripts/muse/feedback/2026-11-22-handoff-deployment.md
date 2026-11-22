@@ -19,6 +19,7 @@
 1. Deploy helper initially expected `~/.config/bitwarden/access-token`; the laptop stores its BWS token at `~/.config/bws/access-token`. The deploy helper now accepts either location, and the BWS secret token value was not printed.
 2. First Wrangler attempt reported `The entry-point file at "worker/src/index.js" was not found.` The config path was corrected to `src/index.js`; redeploy uploaded the Worker successfully.
 3. The first secret upload immediately after the initial Worker upload returned `This Worker does not exist on your account.` Retrying the idempotent deploy completed successfully and installed both secrets.
+4. URL creation with Python’s default User-Agent returned Cloudflare HTTP 403 / error 1010. A request with the named generator User-Agent succeeded; the generator now sends that explicit User-Agent. The real credential handoff was created for Xaltha and was not printed to any repository file.
 
 ## Script or repository changes
 
