@@ -114,6 +114,20 @@ class EvictionTest(unittest.TestCase):
 
 
 class WorkspaceArtifactCleanupTest(unittest.TestCase):
+    def test_workspace_override_is_resolved_without_changing_caller_cwd(self) -> None:
+        workspace = Path(tempfile.mkdtemp(prefix="ctb-workspace-"))
+        try:
+            self.assertEqual(
+                broker_mod.workspace_cleanup_cwd(str(workspace)),
+                workspace.resolve(),
+            )
+            self.assertEqual(
+                broker_mod.workspace_cleanup_cwd(None),
+                Path.cwd(),
+            )
+        finally:
+            shutil.rmtree(workspace, ignore_errors=True)
+
     def test_lease_cleanup_removes_workspace_packages_but_keeps_deps(self) -> None:
         target = Path("/pool/code-test")
         metadata = {
