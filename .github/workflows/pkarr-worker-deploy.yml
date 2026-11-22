@@ -13,12 +13,17 @@ on:
           - upload
           - promote
       version_id:
-        description: Required for promote; version ID from a successful upload
+        description: Required for promote; ID printed by the successful upload run
+        type: string
+        required: false
+      upload_run_id:
+        description: Required for promote; run ID of successful trusted upload
         type: string
         required: false
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
   group: pkarr-worker-production
@@ -41,6 +46,7 @@ jobs:
         env:
           OPERATION: ${{ inputs.operation }}
           VERSION_ID: ${{ inputs.version_id }}
+          UPLOAD_RUN_ID: ${{ inputs.upload_run_id }}
         run: |
           if [[ "$OPERATION" == promote && -z "$VERSION_ID" ]]; then
             echo 'version_id is required for promotion' >&2
@@ -50,33 +56,80 @@ jobs:
             echo 'version_id must be empty for upload' >&2
             exit 2
           fi
+          if [[ "$OPERATION" == promote && ! "$UPLOAD_RUN_ID" =~ ^[0-9]+$ ]]; then
+            echo 'a successful upload_run_id is required for promotion' >&2
+            exit 2
+          fi
       - name: Install locked dependencies
         working-directory: pkgs/pkarr-worker
         run: npm ci --ignore-scripts --no-audit --no-fund
       - name: Verify pinned cf CLI
         working-directory: pkgs/pkarr-worker
         run: test "$(./node_modules/.bin/cf --version)" = "cf 1.0.0-beta.32"
+      - name: Prepare cf Build Output
+        if: inputs.operation == 'upload'
+        working-directory: pkgs/pkarr-worker
+        run: ./node_modules/.bin/cf -q build
       - name: Upload candidate version
         if: inputs.operation == 'upload'
         working-directory: pkgs/pkarr-worker
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.PKARR_WORKER_CLOUDFLARE_API_TOKEN }}
         run: |
           sha="$GITHUB_SHA"
           tag="git-${sha:0:12}"
           ./node_modules/.bin/cf -q workers versions create --worker pkarr --tag "$tag" --message "deploy $sha via GitHub Actions"
+          response="$(curl --fail --silent --show-error \
+            -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+            "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/scripts/pkarr/versions?per_page=100")"
+          version_id="$(echo "$response" | jq -er --arg tag "$tag" '[.result.items[] | select(.annotations["workers/tag"] == $tag)] | sort_by(.metadata.created_on) | last | .id')"
+          printf 'Uploaded version ID: %s\nUpload run ID: %s\nSource SHA: %s\n' "$version_id" "$GITHUB_RUN_ID" "$GITHUB_SHA" >> "$GITHUB_STEP_SUMMARY"
+          jq -n --arg version_id "$version_id" --arg run_id "$GITHUB_RUN_ID" --arg sha "$GITHUB_SHA" '{version_id:$version_id,run_id:$run_id,sha:$sha}' > "$RUNNER_TEMP/pkarr-upload.json"
+      - name: Save upload provenance
+        if: inputs.operation == 'upload'
+        uses: actions/upload-artifact@v6
+        with:
+          name: pkarr-upload-${{ github.run_id }}
+          path: ${{ runner.temp }}/pkarr-upload.json
+          if-no-files-found: error
+          retention-days: 7
+      - name: Download referenced upload provenance
+        if: inputs.operation == 'promote'
+        uses: actions/download-artifact@v7
+        with:
+          name: pkarr-upload-${{ inputs.upload_run_id }}
+          path: ${{ runner.temp }}/upload
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          run-id: ${{ inputs.upload_run_id }}
+      - name: Verify trusted upload run provenance
+        if: inputs.operation == 'promote'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          UPLOAD_RUN_ID: ${{ inputs.upload_run_id }}
+        run: |
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$UPLOAD_RUN_ID" |
+            jq -e --arg sha "$GITHUB_SHA" '.path == ".github/workflows/pkarr-worker-deploy.yml" and .event == "workflow_dispatch" and .head_branch == "main" and .head_sha == $sha and .status == "completed" and .conclusion == "success"' >/dev/null
       - name: Promote existing version
         if: inputs.operation == 'promote'
         working-directory: pkgs/pkarr-worker
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.PKARR_WORKER_CLOUDFLARE_API_TOKEN }}
           VERSION_ID: ${{ inputs.version_id }}
+          UPLOAD_RUN_ID: ${{ inputs.upload_run_id }}
         run: |
+          jq -e --arg id "$VERSION_ID" --arg run "$UPLOAD_RUN_ID" --arg sha "$GITHUB_SHA" \
+            '.version_id == $id and .run_id == $run and .sha == $sha' "$RUNNER_TEMP/upload/pkarr-upload.json" >/dev/null
           response="$(curl --fail --silent --show-error \
             -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
             "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/scripts/pkarr/versions?deployable=true")"
           echo "$response" | jq -e --arg id "$VERSION_ID" '(.result.items // .result // []) | any(.id == $id)' >/dev/null
+          current="$(./node_modules/.bin/cf -q workers deployments list --worker pkarr)"
+          echo "$current" | jq -e '(.result.items // .result // .deployments // .) | type == "array" and length > 0' >/dev/null
+          echo "$current" | jq -r '(.result.items // .result // .deployments // .) | sort_by(.metadata.created_on // .created_on) | last | .versions[] | "Pre-promotion serving version: " + .version_id + " at " + (.percentage|tostring) + "%"' >> "$GITHUB_STEP_SUMMARY"
           versions="$(jq -cn --arg id "$VERSION_ID" '[{version_id:$id,percentage:100}]')"
           ./node_modules/.bin/cf -q workers deployments create --worker pkarr --strategy percentage --versions "$versions"
+          deployments="$(./node_modules/.bin/cf -q workers deployments list --worker pkarr)"
+          echo "$deployments" | jq -e --arg id "$VERSION_ID" '(.result.items // .result // .deployments // .) | sort_by(.metadata.created_on // .created_on) | last | .versions | (length == 1 and .[0].version_id == $id and (.[0].percentage | tonumber) == 100)' >/dev/null
+          curl --fail --silent --show-error https://pkarr.developing-today.workers.dev/healthz | grep -Fxq ok
