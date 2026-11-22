@@ -13,6 +13,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 
 import bundle_cold
 from ghb_common import RUN_TIMEOUT_SECONDS, backup_root, load_plan, mirror_path
@@ -46,7 +47,11 @@ def upload_repo(repo, root, bucket):
         raise ValueError(f"{repo} is not in the backup plan")
 
     mirror = mirror_path(root, repo)
-    bundle = os.path.join(root, "cold-bundles", *parts[:-1], parts[-1] + ".bundle")
+    bundle_dir = os.path.join(root, "cold-bundles", *parts[:-1])
+    os.makedirs(bundle_dir, exist_ok=True)
+    fd, bundle = tempfile.mkstemp(prefix=parts[-1] + ".", suffix=".bundle", dir=bundle_dir)
+    os.close(fd)
+    os.unlink(bundle)
     result = bundle_cold.create_bundle(mirror, bundle)
     digest = hashlib.sha256()
     with open(bundle, "rb") as artifact:
@@ -60,7 +65,18 @@ def upload_repo(repo, root, bucket):
         f"{result['head']}-{bundle_sha256}.bundle"
     )
     _run_rclone(["copyto", bundle, remote])
-    _run_rclone(["check", bundle, remote, "--download"])
+    fd, readback = tempfile.mkstemp(prefix=".r2-readback-", dir=bundle_dir)
+    os.close(fd)
+    try:
+        _run_rclone(["copyto", remote, readback])
+        downloaded = hashlib.sha256()
+        with open(readback, "rb") as artifact:
+            for chunk in iter(lambda: artifact.read(1024 * 1024), b""):
+                downloaded.update(chunk)
+        if downloaded.hexdigest() != bundle_sha256:
+            raise RuntimeError(f"downloaded R2 bundle SHA-256 does not match: {remote}")
+    finally:
+        os.unlink(readback)
     return {**result, "remote": remote, "sha256": bundle_sha256}
 
 
