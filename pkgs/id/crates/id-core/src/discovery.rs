@@ -162,6 +162,12 @@ pub enum DefaultsSource {
     File,
 }
 
+// The file is embedded at build time and the test
+// `embedded_defaults_are_valid_and_have_provenance` parses it, so a
+// failure here is a build defect. Stopping is the safe outcome: a
+// binary must not start with network defaults other than the ones it
+// was built to report.
+#[allow(clippy::panic)]
 static PARSED_DEFAULTS: LazyLock<(Defaults, DefaultsProvenance)> = LazyLock::new(|| {
     parse_embedded_defaults(DEFAULTS_JSON).unwrap_or_else(|error| panic!("{error:#}"))
 });
