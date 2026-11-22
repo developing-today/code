@@ -20,6 +20,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/developing-today/code/pkgs/mcpx/internal/cli"
+	"github.com/developing-today/code/pkgs/mcpx/internal/daemon"
+	"github.com/developing-today/code/pkgs/mcpx/internal/events"
 	"github.com/developing-today/code/pkgs/mcpx/internal/settings"
 	"github.com/developing-today/code/pkgs/mcpx/internal/testsupport"
 )
@@ -68,6 +71,7 @@ var implementedEffectProbes = map[string]string{
 	"registry.maxPages":                  "TestTheRegistryPageCapSaysItStoppedEarly",
 	"registry.url":                       "TestRegistryPageSizeChangesWhatTheCLIAsksFor",
 	"deps.source":                        "TestDepsSourceNoneDropsTheManifestLayer",
+	"deps.autoInstall":                   "TestDepsAutoInstallSelectsTheBunInstallPolicyFromTheEnvironment",
 	"deps.manifest":                      "TestDepsManifestNamesTheManifestResolutionReads",
 	"deps.packages":                      "TestDepsPackagesPinContradictingTheManifestFailsTheRun",
 	"paths.deps":                         "TestPathsDepsExtendsManifestDiscovery",
@@ -106,6 +110,7 @@ var implementedEffectProbes = map[string]string{
 	"protoTasks.maxPerRequestor":         "TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment",
 	"protoTasks.perMinute":               "TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment",
 	"events.history":                     "TestEventsHistoryBoundsTheReplay",
+	"events.reconnect":                   "TestEventsReconnectWaitsForTheConfiguredDelay",
 	"script.checkOnUnsupported":          "TestScriptCheckOnUnsupportedDecidesWhatANonDenoCheckDoes",
 	"daemon.takeoverTimeout":             "TestDaemonTakeoverTimeoutBoundsTheHandoverFromTheEnvironment",
 	"daemon.socketProbeTimeout":          "TestDaemonSocketProbeTimeoutDecidesWhetherALiveSocketIsStale",
@@ -234,6 +239,7 @@ var implementedEffectProbes = map[string]string{
 	"catalog.budget":                     "TestCatalogBudgetFitsTheSignatures",
 	"catalog.bias":                       "TestCatalogBiasPicksWhatATightBudgetShows",
 	"catalog.pinnedTools":                "TestCatalogPinnedToolsAlwaysListInReactiveMode",
+	"retention.stickyWindow":             "TestRetentionStickyWindowExpiresReactiveTools",
 	"retention.maxTools":                 "TestRetentionMaxToolsCapsTheReactiveWorkingSet",
 	"diagnose.history":                   "TestDiagnoseHistoryCapsRecordedSchemaChanges",
 	"diagnose.preflight":                 "TestDiagnosePreflightStopsAMismatchedScript",
@@ -287,6 +293,7 @@ var effectProbeFuncs = map[string]func(*testing.T){
 	"TestStrictUnknownKeysRefusesATypo":                                              TestStrictUnknownKeysRefusesATypo,
 	"TestTheRegistryPageCapSaysItStoppedEarly":                                       TestTheRegistryPageCapSaysItStoppedEarly,
 	"TestDepsSourceNoneDropsTheManifestLayer":                                        TestDepsSourceNoneDropsTheManifestLayer,
+	"TestDepsAutoInstallSelectsTheBunInstallPolicyFromTheEnvironment":                TestDepsAutoInstallSelectsTheBunInstallPolicyFromTheEnvironment,
 	"TestDepsManifestNamesTheManifestResolutionReads":                                TestDepsManifestNamesTheManifestResolutionReads,
 	"TestDepsPackagesPinContradictingTheManifestFailsTheRun":                         TestDepsPackagesPinContradictingTheManifestFailsTheRun,
 	"TestPathsDepsExtendsManifestDiscovery":                                          TestPathsDepsExtendsManifestDiscovery,
@@ -324,6 +331,7 @@ var effectProbeFuncs = map[string]func(*testing.T){
 	"TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment":             TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment,
 	"TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment":                      TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment,
 	"TestEventsHistoryBoundsTheReplay":                                               TestEventsHistoryBoundsTheReplay,
+	"TestEventsReconnectWaitsForTheConfiguredDelay":                                  TestEventsReconnectWaitsForTheConfiguredDelay,
 	"TestScriptCheckOnUnsupportedDecidesWhatANonDenoCheckDoes":                       TestScriptCheckOnUnsupportedDecidesWhatANonDenoCheckDoes,
 	"TestDaemonTakeoverTimeoutBoundsTheHandoverFromTheEnvironment":                   TestDaemonTakeoverTimeoutBoundsTheHandoverFromTheEnvironment,
 	"TestDaemonSocketProbeTimeoutDecidesWhetherALiveSocketIsStale":                   TestDaemonSocketProbeTimeoutDecidesWhetherALiveSocketIsStale,
@@ -448,6 +456,7 @@ var effectProbeFuncs = map[string]func(*testing.T){
 	"TestCatalogBudgetFitsTheSignatures":                                             TestCatalogBudgetFitsTheSignatures,
 	"TestCatalogBiasPicksWhatATightBudgetShows":                                      TestCatalogBiasPicksWhatATightBudgetShows,
 	"TestCatalogPinnedToolsAlwaysListInReactiveMode":                                 TestCatalogPinnedToolsAlwaysListInReactiveMode,
+	"TestRetentionStickyWindowExpiresReactiveTools":                                  TestRetentionStickyWindowExpiresReactiveTools,
 	"TestRetentionMaxToolsCapsTheReactiveWorkingSet":                                 TestRetentionMaxToolsCapsTheReactiveWorkingSet,
 	"TestDiagnoseHistoryCapsRecordedSchemaChanges":                                   TestDiagnoseHistoryCapsRecordedSchemaChanges,
 	"TestDiagnosePreflightStopsAMismatchedScript":                                    TestDiagnosePreflightStopsAMismatchedScript,
@@ -1686,6 +1695,108 @@ func TestEventsHistoryBoundsTheReplay(t *testing.T) {
 	}
 }
 
+// TestEventsReconnectWaitsForTheConfiguredDelay drives the real client
+// against a local endpoint that drops its first connection and serves an
+// event on the retry. The accepted-connection timestamps are the oracle:
+// events.reconnect must delay the second attempt without relying on a daemon
+// restart or a network service.
+func TestEventsReconnectWaitsForTheConfiguredDelay(t *testing.T) {
+	const delay = 200 * time.Millisecond
+	recordSettingProbes(t)
+	t.Setenv("MCPX_EVENTS_RECONNECT", delay.String())
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+	accepted := make(chan time.Time, 2)
+	serveErr := make(chan error, 1)
+	go func() {
+		for attempt := 0; attempt < 2; attempt++ {
+			conn, err := ln.Accept()
+			if err != nil {
+				serveErr <- err
+				return
+			}
+			accepted <- time.Now()
+			body := fmt.Sprintf("id: %d\ndata: {\"seq\":%d,\"kind\":\"call.finished\"}\n\n", attempt+1, attempt+1)
+			_, err = fmt.Fprintf(conn, "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s", len(body), body)
+			_ = conn.Close()
+			if err != nil {
+				serveErr <- err
+			}
+		}
+	}()
+
+	paths := daemon.PathsAt(t.TempDir(), t.TempDir())
+	configPath := filepath.Join(t.TempDir(), ".mcpx.json")
+	if err := os.WriteFile(configPath, []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	app := &cli.App{ConfigPath: configPath}
+	// The CLI installs its App as the plumbing source before constructing
+	// clients. Use the same settings path here so NewClientAt resolves the
+	// user-supplied environment value instead of receiving an injected set.
+	cli.SetPlumbingSource(app)
+	t.Cleanup(func() { cli.SetPlumbingSource(nil) })
+	if got := app.Settings().Duration("events.reconnect"); got != delay {
+		t.Fatalf("resolved events.reconnect = %s, want environment value %s", got, delay)
+	}
+	c := cli.NewClientAt(paths, configPath, "http://"+ln.Addr().String())
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	eventsSeen := make(chan events.Event, 1)
+	streamDone := make(chan error, 1)
+	go func() {
+		streamDone <- c.Stream(ctx, events.Filter{}, func(event events.Event) {
+			eventsSeen <- event
+			if event.Seq == 2 {
+				cancel()
+			}
+		})
+	}()
+
+	var first, second time.Time
+	select {
+	case first = <-accepted:
+	case err := <-serveErr:
+		t.Fatal(err)
+	case <-time.After(3 * time.Second):
+		t.Fatal("client did not make its initial event-stream connection")
+	}
+	select {
+	case second = <-accepted:
+	case err := <-serveErr:
+		t.Fatal(err)
+	case <-time.After(3 * time.Second):
+		t.Fatal("client did not retry the dropped event-stream connection")
+	}
+	if elapsed := second.Sub(first); elapsed < delay*3/4 || elapsed >= time.Second {
+		t.Fatalf("events.reconnect=%s should delay a dropped stream (and differ from the 2s default); second connection arrived after %s", delay, elapsed)
+	}
+	select {
+	case event := <-eventsSeen:
+		if event.Kind != events.CallFinished || event.Seq != 1 {
+			t.Fatalf("retry delivered unexpected event kind %q", event.Kind)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("client did not process the event delivered on the first stream")
+	}
+	select {
+	case event := <-eventsSeen:
+		if event.Kind != events.CallFinished || event.Seq != 2 {
+			t.Fatalf("reconnected stream delivered unexpected event: %+v", event)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("client did not process the event delivered on reconnect")
+	}
+	select {
+	case <-streamDone:
+	case <-time.After(3 * time.Second):
+		t.Fatal("event stream did not stop after cancellation")
+	}
+}
+
 // churnedSchemaServer starts a daemon over the schema fixture and flips
 // demo.create_issue's schema three times, so the catalog history has three
 // recorded changes to keep or trim. env pairs reach the daemon at start.
@@ -1765,6 +1876,12 @@ func reactiveTools(t *testing.T, e *env, query string) map[string]bool {
 
 // servedTools is reactiveTools for any `mcpx serve` arguments.
 func servedTools(t *testing.T, e *env, query string, args ...string) map[string]bool {
+	return servedToolsAfterRequests(t, e, []string{query}, 5, 0, args...)
+}
+
+// servedToolsAfterRequests activates each query in one reactive session,
+// optionally pausing before the final tools/list request.
+func servedToolsAfterRequests(t *testing.T, e *env, queries []string, limit int, pause time.Duration, args ...string) map[string]bool {
 	t.Helper()
 	cmd := exec.Command(e.mcpx, append([]string{"serve"}, args...)...)
 	cmd.Dir = e.dir
@@ -1808,9 +1925,15 @@ func servedTools(t *testing.T, e *env, query string, args ...string) map[string]
 		}
 	}
 	rpc("initialize", map[string]any{})
-	if query != "" {
+	for _, query := range queries {
+		if query == "" {
+			continue
+		}
 		rpc("tools/call", map[string]any{"name": "request_tools",
-			"arguments": map[string]any{"query": query, "limit": 5}})
+			"arguments": map[string]any{"query": query, "limit": limit}})
+	}
+	if pause > 0 {
+		time.Sleep(pause)
 	}
 	var list struct {
 		Tools []struct {
@@ -1825,6 +1948,39 @@ func servedTools(t *testing.T, e *env, query string, args ...string) map[string]
 		names[tool.Name] = true
 	}
 	return names
+}
+
+// TestRetentionStickyWindowExpiresReactiveTools is the effect probe for
+// retention.stickyWindow: a tool requested within the configured window stays
+// listed, while an older requested tool disappears after the window expires.
+func TestRetentionStickyWindowExpiresReactiveTools(t *testing.T) {
+	const pause = 50 * time.Millisecond
+	retained := func(names map[string]bool) int {
+		n := 0
+		for name := range names {
+			if name != "request_tools" && name != "batch_call" {
+				n++
+			}
+		}
+		return n
+	}
+
+	serve := func(window string) map[string]bool {
+		e := newEnv(t, oneServer)
+		e.run("ls")
+		e.setenv("MCPX_RETENTION_STICKY_WINDOW=" + window)
+		return servedToolsAfterRequests(t, e, []string{"echo"}, 5, pause, "--mode", "reactive")
+	}
+
+	withinWindow := serve("1h")
+	if n := retained(withinWindow); n != 5 {
+		t.Errorf("a request inside retention.stickyWindow should keep all 5 requested tools listed; kept %d: %v", n, withinWindow)
+	}
+
+	expired := serve("20ms")
+	if n := retained(expired); n != 0 {
+		t.Errorf("an expired request should no longer list the requested tools; kept %d: %v", n, expired)
+	}
 }
 
 // TestCatalogPinnedToolsAlwaysListInReactiveMode is the effect probe for
@@ -2074,6 +2230,38 @@ func logFiles(t *testing.T, dir string) []string {
 	return out
 }
 
+// rotatedLogFiles excludes the per-day active files. A run that crosses
+// midnight can legitimately leave one active file for each day, while
+// logging.keep applies only to timestamp-suffixed rotations.
+func rotatedLogFiles(t *testing.T, dir string) []string {
+	t.Helper()
+	var out []string
+	for _, name := range logFiles(t, dir) {
+		stem := strings.TrimSuffix(name, ".jsonl")
+		if len(stem) > len("mcpx-2006-01-02") {
+			out = append(out, name)
+		}
+	}
+	return out
+}
+
+func TestRotatedLogFilesIgnoresDailyActiveFiles(t *testing.T) {
+	dir := t.TempDir()
+	for _, name := range []string{
+		"mcpx-2026-11-21.jsonl",
+		"mcpx-2026-11-22.jsonl",
+		"mcpx-2026-11-22-031602.jsonl",
+	} {
+		if err := os.WriteFile(filepath.Join(dir, name), nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got := rotatedLogFiles(t, dir)
+	if len(got) != 1 || got[0] != "mcpx-2026-11-22-031602.jsonl" {
+		t.Fatalf("rotated log list = %v, want only the timestamp-suffixed rotation", got)
+	}
+}
+
 // TestLoggingLevelShowsDebugRecords is the effect probe for logging.level:
 // a script's debug record is hidden at the default level and shown at debug.
 func TestLoggingLevelShowsDebugRecords(t *testing.T) {
@@ -2172,11 +2360,11 @@ func hasIPv4NetworkInterface() bool {
 // logging.maxLines: the default keeps one file, and one line per file
 // rotates into several.
 func TestLoggingMaxLinesRotatesTheFile(t *testing.T) {
-	if _, dir, _ := loggedRun(t); len(logFiles(t, dir)) != 1 {
-		t.Errorf("the default logging.maxLines should keep one file: %v", logFiles(t, dir))
+	if _, dir, _ := loggedRun(t); len(rotatedLogFiles(t, dir)) != 0 {
+		t.Errorf("the default logging.maxLines should not rotate: %v", rotatedLogFiles(t, dir))
 	}
-	if _, dir, _ := loggedRun(t, "MCPX_LOGGING_MAX_LINES=1"); len(logFiles(t, dir)) < 3 {
-		t.Errorf("logging.maxLines=1 should rotate into several files: %v", logFiles(t, dir))
+	if _, dir, _ := loggedRun(t, "MCPX_LOGGING_MAX_LINES=1"); len(rotatedLogFiles(t, dir)) < 3 {
+		t.Errorf("logging.maxLines=1 should rotate into several files: %v", rotatedLogFiles(t, dir))
 	}
 }
 
@@ -2184,11 +2372,11 @@ func TestLoggingMaxLinesRotatesTheFile(t *testing.T) {
 // logging.maxBytes: the default keeps one file, and a 10-byte bound
 // rotates into several.
 func TestLoggingMaxBytesRotatesTheFile(t *testing.T) {
-	if _, dir, _ := loggedRun(t); len(logFiles(t, dir)) != 1 {
-		t.Errorf("the default logging.maxBytes should keep one file: %v", logFiles(t, dir))
+	if _, dir, _ := loggedRun(t); len(rotatedLogFiles(t, dir)) != 0 {
+		t.Errorf("the default logging.maxBytes should not rotate: %v", rotatedLogFiles(t, dir))
 	}
-	if _, dir, _ := loggedRun(t, "MCPX_LOGGING_MAX_BYTES=10"); len(logFiles(t, dir)) < 3 {
-		t.Errorf("logging.maxBytes=10 should rotate into several files: %v", logFiles(t, dir))
+	if _, dir, _ := loggedRun(t, "MCPX_LOGGING_MAX_BYTES=10"); len(rotatedLogFiles(t, dir)) < 3 {
+		t.Errorf("logging.maxBytes=10 should rotate into several files: %v", rotatedLogFiles(t, dir))
 	}
 }
 
@@ -2196,11 +2384,11 @@ func TestLoggingMaxBytesRotatesTheFile(t *testing.T) {
 // rotating every line keeps many rotated files at the default, and at most
 // one besides the live file at keep=1.
 func TestLoggingKeepPrunesRotatedFiles(t *testing.T) {
-	if _, dir, _ := loggedRun(t, "MCPX_LOGGING_MAX_LINES=1"); len(logFiles(t, dir)) < 3 {
-		t.Errorf("the default logging.keep should keep several rotated files: %v", logFiles(t, dir))
+	if _, dir, _ := loggedRun(t, "MCPX_LOGGING_MAX_LINES=1"); len(rotatedLogFiles(t, dir)) < 3 {
+		t.Errorf("the default logging.keep should keep several rotated files: %v", rotatedLogFiles(t, dir))
 	}
-	if _, dir, _ := loggedRun(t, "MCPX_LOGGING_MAX_LINES=1", "MCPX_LOGGING_KEEP=1"); len(logFiles(t, dir)) > 2 {
-		t.Errorf("logging.keep=1 should prune to one rotated file: %v", logFiles(t, dir))
+	if _, dir, _ := loggedRun(t, "MCPX_LOGGING_MAX_LINES=1", "MCPX_LOGGING_KEEP=1"); len(rotatedLogFiles(t, dir)) != 1 {
+		t.Errorf("logging.keep=1 should prune to one rotated file: %v", rotatedLogFiles(t, dir))
 	}
 }
 
