@@ -77,6 +77,7 @@ def main():
             "Authorization": "Bearer " + admin_token,
             "Content-Type": "application/json",
             "Cache-Control": "no-store",
+            "User-Agent": "muse-agent-handoff-generator/1.0",
         },
         method="POST",
     )
