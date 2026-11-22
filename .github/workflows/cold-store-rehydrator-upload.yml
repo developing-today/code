@@ -1,0 +1,88 @@
+name: cold-store-rehydrator upload
+
+# Upload only an immutable preview version. Production traffic is changed
+# only by cold-store-rehydrator-promote after this run's preview is reviewed.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cold-store-rehydrator-cloudflare
+  cancel-in-progress: false
+
+jobs:
+  upload:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    environment: cold-store-rehydrator-production
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.12"
+
+      - name: Install zstd for local Worker proofs
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y zstd
+
+      - name: Set up Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: "24.22.0"
+
+      - name: Run Worker tests
+        working-directory: pkgs/cold-store-reaper/worker
+        run: |
+          npm ci
+          npm test
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
+
+      - name: Set up Nix cache
+        uses: DeterminateSystems/magic-nix-cache-action@84c0677f58dcedf3b91f8223ce36a9ea5b3c84b7 # v15
+
+      - name: Build the pinned bundle, cf CLI, and deploy app
+        run: nix build --impure .#coldStoreRehydrator .#coldStoreRehydratorDeploy --print-build-logs
+
+      - name: Upload and stage the Worker version
+        id: upload
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: nix run --impure .#coldStoreRehydratorDeploy
+
+      - name: Verify staged preview parity
+        env:
+          PREVIEW_URL: ${{ steps.upload.outputs.preview_url }}
+        run: |
+          test -n "$PREVIEW_URL"
+          curl --fail --silent --show-error --retry 8 --retry-all-errors --retry-delay 5 "$PREVIEW_URL/health" | jq -e '.ok == true'
+          status=$(curl --silent --output /dev/null --write-out '%{http_code}' "$PREVIEW_URL/fetch/0000000000000000000000000000000000000000000000000000000000000000")
+          test "$status" = 401
+          echo "Preview parity passed: /health is healthy and unauthenticated /fetch is rejected." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Save the reviewed version reference
+        env:
+          VERSION_ID: ${{ steps.upload.outputs.version_id }}
+          WORKER_SHA: ${{ steps.upload.outputs.worker_sha }}
+          PREVIEW_URL: ${{ steps.upload.outputs.preview_url }}
+        run: |
+          jq -n --arg version_id "$VERSION_ID" --arg worker_sha "$WORKER_SHA" --arg preview_url "$PREVIEW_URL" \
+            '{version_id:$version_id, worker_sha:$worker_sha, preview_url:$preview_url}' > "$RUNNER_TEMP/cold-store-rehydrator-version.json"
+          cat "$RUNNER_TEMP/cold-store-rehydrator-version.json" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload version reference artifact
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: cold-store-rehydrator-version
+          path: ${{ runner.temp }}/cold-store-rehydrator-version.json
+          if-no-files-found: error
+          retention-days: 30

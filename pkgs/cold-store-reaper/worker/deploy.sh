@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# Deploys the cold-store-rehydrator Worker via the wrangler versions
-# flow (see deploy.mjs). Pass --dry-run to validate without deploying,
-# or --deploy-version <id> to create a deployment at an existing
-# version (the rollback path).
+# Uploads a staged cold-store-rehydrator version with `cf`, without
+# changing production traffic. Use --deploy-version <id> only after
+# staged parity is verified. GitHub Actions supplies its protected
+# environment credentials directly; no Bitwarden/SOPS reads occur here.
 set -euo pipefail
-cd "$(dirname "${BASH_SOURCE[0]}")"
+script_dir=${BASH_SOURCE[0]%/*}
+if [ "$script_dir" = "${BASH_SOURCE[0]}" ]; then script_dir=.; fi
+cd "$script_dir"
+# Strictly validate the whole command line before credentials are loaded.
+CSR_CHECK_ARGS_ONLY=1 node deploy.mjs "$@"
 repo_root=$(git rev-parse --show-toplevel)
-# shellcheck source=/dev/null
-source "${repo_root}/lib/bitwarden-env.sh" >/dev/null
-CLOUDFLARE_ACCOUNT_ID=$(sops decrypt --extract '["cloudflare_account_id"]' "${repo_root}/secrets/sops/common/cloudflare.yaml")
-export CLOUDFLARE_ACCOUNT_ID
 exec node deploy.mjs "$@"

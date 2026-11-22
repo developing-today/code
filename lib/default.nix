@@ -864,7 +864,7 @@ let
         id-mail-deploy = mkApp idMailDeploy "Deploy the mail Worker from this checkout (needs Bitwarden and sops access)";
         pkarr-deploy = mkApp pkarrDeploy "Deploy the pkarr Worker via the cf versions flow (needs Bitwarden and sops access)";
         developing-today-backup-deploy = mkApp developingTodayBackupDeploy "Deploy the developing-today-backup Worker (github-backup webhook receiver) via the wrangler versions flow (needs Bitwarden and sops access)";
-        cold-store-rehydrator-deploy = mkApp coldStoreRehydratorDeploy "Deploy the cold-store-rehydrator Worker from its flake bundle via the wrangler versions flow (needs Bitwarden and sops access)";
+        cold-store-rehydrator-deploy = mkApp coldStoreRehydratorDeploy "Upload and stage the cold-store-rehydrator Worker via cf; explicit version promotion requires staged parity";
         lab-ops-hub-deploy = mkApp labOpsHubDeploy "Deploy the lab-ops-hub Worker and push its crawler container image as one command (needs Bitwarden and sops access)";
         cf-container-hello-deploy = mkApp cfContainerHelloDeploy "Deploy the cf-container-hello Worker from its flake package (needs Bitwarden and sops access)";
         queue-transport-alert-deploy = mkApp queueTransportAlertDeploy "Deploy the queue-transport-alert Worker (broker outage alert, code#6369) from its flake package via the cf versions flow (needs Bitwarden and sops access)";

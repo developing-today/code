@@ -47,10 +47,11 @@ test/run-local-proof.mjs   npm test: packs a real bundle with the Python
                            decoder that is tested)
 dist/worker.js    esbuild bundle — local build output; the deploy
                   artifact is the flake package build (package.nix)
-wrangler.toml     binding configuration the deploy app stages with
-                  the built bundle (ids are not secrets)
+wrangler.toml     local-development binding configuration
+cloudflare.config.ts  deployment configuration, parity-tested against
+                      wrangler.toml for the deployed bindings/migration
 package.nix       the bundle as a flake package (lockfile-pinned deps)
-deploy.sh/.mjs    the deploy app: wrangler versions flow (see Deploy)
+deploy.sh/.mjs    the deploy app: cf Workers Versions API upload/promote
 ```
 
 ## Build
@@ -65,28 +66,36 @@ Commit `package.json`, `package-lock.json`, and `src/` together. The
 committed `dist/` is a convenience copy for local inspection only —
 deploys upload the flake-built bundle, never the committed one.
 
-## Deploy (the deploy app — issue #5767 phase 2)
+## Deploy (GitHub Actions, staged first)
 
-```sh
-nix run .#cold-store-rehydrator-deploy            # upload + deploy HEAD
-nix run .#cold-store-rehydrator-deploy -- --dry-run
-nix run .#cold-store-rehydrator-deploy -- --deploy-version <id>   # rollback
-```
+The `cold-store-rehydrator-upload` workflow builds the lockfile-pinned
+bundle, uploads a git-SHA-tagged version using the repository-pinned `cf`
+binary, assigns a unique preview alias, and checks the preview endpoints.
+It does not create a production deployment or change the existing route.
+Review the successful upload run's preview URL and confirm `/health` is
+healthy and unauthenticated `/fetch/<sha>` still returns `401` before
+running `cold-store-rehydrator-promote`.
 
-The deploy app (deploy.sh + deploy.mjs, registered as the
-`cold-store-rehydrator` target of the `deploy` CLI) replaces the old
-manual REST PUT of the committed bundle: it stages the flake-built
-bundle (`nix build .#cold-store-rehydrator`) with `wrangler.toml`,
-uploads it as a git-SHA-tagged version through the wrangler versions
-flow, creates the deployment at 100%, and (re)sets the Worker's
-secrets from Bitwarden by name — `REHYDRATOR_API_KEY`
-(`cold-store.rehydrator-api-key`), `GOOGLE_CLIENT_ID`,
-`GOOGLE_CLIENT_SECRET`, `GOOGLE_REFRESH_TOKEN`
-(`google.cold-store-reaper.client-id` / `.client-secret` /
-`.refresh-token`; the Google pair/refresh token are the same grant
-the reaper uses). The D1/DO bindings and the `BundleFlight` migration
-come from `wrangler.toml`. The manual REST PUT remains possible in an
-emergency but is no longer the deploy path.
+Promotion is a separate, manually dispatched workflow. It downloads the
+version record from a successful upload run and deploys that version at
+100% only after the operator attests that staged parity was reviewed. The
+script also refuses versions missing the existing secret binding names;
+secret values are never read by the workflow. The D1 and Durable Object
+bindings, the existing SQLite `BundleFlight` class, and the original
+`workers.dev` route are retained in `cloudflare.config.ts`; a local test
+checks the binding/migration fields against `wrangler.toml`.
+
+Both workflows require the protected GitHub environment
+`cold-store-rehydrator-production`, with environment secrets
+`CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`. The token should be
+scoped to this Worker and only the Workers Scripts read/edit permissions
+needed for versions and deployments. Configure required reviewers on the
+environment before enabling the workflow. Jobs are limited to `main`, use
+`contents: read` (and `actions: read` only to fetch the successful upload
+artifact), and have no pull-request trigger. A direct local invocation
+with no arguments also uploads/stages only and requires
+`CLOUDFLARE_API_TOKEN` plus `CLOUDFLARE_ACCOUNT_ID` in the environment;
+`--deploy-version <id>` is the explicit promotion/rollback operation.
 
 Until `sync-manifest` has run at least once against a manifest containing
 verified bundles, every `/fetch/<sha>` is a well-formed 404.
