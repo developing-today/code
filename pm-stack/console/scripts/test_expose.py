@@ -144,10 +144,16 @@ class Machine:
         return self.running
 
 
-def run(account, home, *args, machine=None, owner=OWNER, stdin=None):
+def run(account, home, *args, machine=None, owner=OWNER, stdin=None, secrets=None, wrangler_path=None):
     """One run of the script. What it printed is left in account.printed."""
     argv = ["expose.py", *(["--owner", owner] if owner else []), *args]
     machine = machine or Machine()
+    real_which = expose.shutil.which
+
+    def secret(name):
+        if secrets is not None and name in secrets:
+            return secrets[name]
+        return "token" if name.startswith("cloudflare.") else ""
 
     def health(url):
         if account.health_misses > 0:
@@ -162,10 +168,11 @@ def run(account, home, *args, machine=None, owner=OWNER, stdin=None):
 
     with (
         mock.patch.object(expose, "Cloudflare", lambda token, check: account),
+        mock.patch.object(expose, "secret", secret),
         mock.patch.object(
-            expose,
-            "secret",
-            lambda name: "token" if name.startswith("cloudflare.") else "",
+            expose.shutil,
+            "which",
+            lambda cmd, *a, **k: wrangler_path if wrangler_path is not None else real_which(cmd, *a, **k),
         ),
         mock.patch.object(expose.pathlib.Path, "home", lambda: pathlib.Path(home)),
         mock.patch.object(expose.subprocess, "run", machine.systemctl),
@@ -504,6 +511,69 @@ class Expose(unittest.TestCase):
             [(f"{HOST}/*", expose.WORKER)],
         )
         self.assertEqual(self.env()["PM_CONSOLE_EDGE_URL"], f"https://{HOST}")
+
+    def test_direct_choice_is_remembered_only_after_it_is_applied(self):
+        account = Account()
+        run(account, self.home)
+        marker = pathlib.Path(self.home) / ".local/state/pm-console/edge-direct"
+        fake = pathlib.Path(self.home) / "wrangler"
+        fake.write_text("#!/bin/sh\n")
+        # The tokens cannot be read here: the run fails, and nothing is
+        # remembered, so a later run still tries to turn direct mode on.
+        with self.assertRaisesRegex(SystemExit, "is not readable here"):
+            run(account, self.home, "--edge-direct", "on", wrangler_path=str(fake))
+        self.assertFalse(marker.exists())
+        # Readable now: the tokens are uploaded and the choice is remembered.
+        secrets = {
+            expose.GITHUB_TOKEN_SECRET: "gh-test",
+            expose.QUEUE_TOKEN_DEFAULT: "queue-test",
+        }
+        machine = Machine()
+        self.assertEqual(
+            run(
+                account,
+                self.home,
+                "--edge-direct",
+                "on",
+                machine=machine,
+                secrets=secrets,
+                wrangler_path=str(fake),
+            ),
+            0,
+        )
+        self.assertEqual(marker.read_text().strip(), "on")
+        self.assertEqual(machine.commands.count("put"), 3)
+        # A later run with the same choice uploads nothing again.
+        machine = Machine()
+        self.assertEqual(
+            run(
+                account,
+                self.home,
+                "--edge-direct",
+                "on",
+                machine=machine,
+                secrets=secrets,
+                wrangler_path=str(fake),
+            ),
+            0,
+        )
+        self.assertEqual(account.changes, [])
+        self.assertNotIn("put", machine.commands)
+        # Turning it off is remembered the same way, once the Worker has it.
+        self.assertEqual(
+            run(
+                account,
+                self.home,
+                "--edge-direct",
+                "off",
+                machine=machine,
+                secrets=secrets,
+                wrangler_path=str(fake),
+            ),
+            0,
+        )
+        self.assertEqual(marker.read_text().strip(), "off")
+        self.assertEqual(machine.commands.count("put"), 1)
 
     def test_another_workers_route_on_the_hostname_is_left_alone(self):
         for foreign in (

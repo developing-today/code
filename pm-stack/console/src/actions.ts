@@ -82,10 +82,20 @@ export function actions(ops: Ops, work: Work, push?: Push, devices?: Devices): R
         if (typeof a.text !== "string" || a.text.trim() === "" || a.text.length > 8000)
           throw new OpError(400, "text: required, at most 8000 characters");
         if (typeof a.at !== "string" || a.at === "") throw new OpError(400, "at: required");
+        // A failed enqueue is thrown, not answered as "not queued": this
+        // runs late, so nobody is listening for the answer, and a
+        // `queued: false` would be recorded done and the held prompt
+        // acknowledged as sent with no queue task behind it.
         const queued = await ops.enqueue(
           promptPacket(ops.cfg.repo, ops.cfg.queue, issue, a.text, a.at),
         );
-        return { issue, queued: queued.code === 0 };
+        if (queued.code !== 0) {
+          throw new OpError(
+            502,
+            `the queue task could not be filed: ${(queued.stderr || queued.stdout || "the queue did not answer").trim().slice(0, 200)}`,
+          );
+        }
+        return { issue, queued: true };
       },
       touch: ["board"],
       audit: ids("issue"),

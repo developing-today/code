@@ -89,6 +89,9 @@ async function ghApi(
     headers: {
       accept: "application/vnd.github+json",
       authorization: `Bearer ${token}`,
+      // The Workers runtime supplies no User-Agent of its own, and
+      // GitHub requires one: without it every direct call is refused.
+      "user-agent": "pm-console-edge",
       "x-github-api-version": "2022-11-28",
       ...(body === undefined ? {} : { "content-type": "application/json" }),
     },

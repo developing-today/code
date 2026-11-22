@@ -19,7 +19,7 @@ import { clearJwksCache, identify } from "../src/auth.ts";
 import { readConfig } from "../src/config.ts";
 import { Devices, Limiter } from "../src/devices.ts";
 import { Docs } from "../src/docs.ts";
-import { type EdgeConfig, keyId, newKeyPair, sign } from "../src/edge-proto.ts";
+import { type EdgeConfig, edgeConfig as parseEdgeConfig, keyId, newKeyPair, sign } from "../src/edge-proto.ts";
 import { OpError } from "../src/errors.ts";
 import { Ops } from "../src/ops.ts";
 import { type Deps, handle, heldRunner, marked } from "../src/server.ts";
@@ -339,10 +339,14 @@ async function setup(options: { direct?: boolean } = {}) {
     }
     throw new Error(`unexpected GitHub call ${method} ${url}`);
   };
+  /** The direct source, made to fail by a test that turns it on. */
+  const directDown = { on: false };
   const directFetch = (async (
     url: string,
     init: { method?: string; headers?: Record<string, string>; body?: string },
   ) => {
+    // Made to fail by a test: the direct source is down, not the data.
+    if (directDown.on) throw new Error("the direct source is down");
     const u = String(url);
     const method = init?.method ?? "GET";
     if (u.startsWith("https://api.github.com/")) {
@@ -661,6 +665,7 @@ async function setup(options: { direct?: boolean } = {}) {
     table,
     access,
     edgeConfig,
+    directDown,
     githubCalls,
     queueCalls,
     ghIssues,
@@ -1712,5 +1717,82 @@ describe("direct reads and writes while the host is away", () => {
     expect(d.ran).toEqual([{ kind: "issue.comment", args: { issue: 14, text: "now" } }]);
     expect(d.githubCalls).toEqual([]);
     expect(d.queueCalls).toEqual([]);
+  });
+
+  test("a config stored before direct mode still serves the offline app, without acting itself", async () => {
+    const w = await setup({ direct: true });
+    await w.hostReads();
+    await w.link.now.once();
+    // What an older Worker stored: the same settings, without the fields
+    // direct mode added. That shape still validates, with those empty.
+    const legacy = { ...w.edgeConfig } as Record<string, unknown>;
+    delete legacy.queueDbUrl;
+    delete legacy.queueTokenName;
+    delete legacy.promptLabel;
+    delete legacy.needsRepos;
+    expect(parseEdgeConfig(legacy)).toMatchObject({
+      repo: w.edgeConfig.repo,
+      queueDbUrl: "",
+      queueTokenName: "",
+      promptLabel: "",
+      needsRepos: [],
+    });
+    w.stored.set("cfg", legacy);
+    w.edge.now = w.makeEdge();
+    // The laptop is out of reach: the app is still served from the
+    // mirror, not relayed to a host that cannot answer.
+    w.net.hostUp = false;
+    w.net.edgeUp = false;
+    const { res, doc } = await w.core();
+    expect(res.status).toBe(200);
+    expect(doc.board).toEqual(w.data.board);
+    expect(doc.asks).toEqual([]);
+    expect(w.githubCalls).toEqual([]);
+    expect(w.queueCalls).toEqual([]);
+    const health = (await (await w.browse("/console/health", { token: null })).json()) as Record<string, unknown>;
+    expect(health.configured).toBe(true);
+    expect(health.directReady).toBe(false);
+  });
+
+  test("a notification about a directly read reply is sent, and the fresh read is not overwritten", async () => {
+    const w = await setup({ direct: true });
+    const phone = await browser();
+    await w.hostReads();
+    await w.link.now.once();
+    // Subscribing primes the notifier on the host's last copy: no replies yet.
+    expect((await w.act("push.on", { subscription: phone.subscription, label: "Pocket" })).status).toBe(200);
+    expect(w.pushes).toHaveLength(0);
+    // The laptop goes quiet; the next read comes from GitHub, where the
+    // fleet has since answered prompt #201.
+    w.net.hostUp = false;
+    w.net.edgeUp = false;
+    w.now.t += 60_000;
+    const { doc } = await w.core();
+    const asked = doc.asks.find((a: { issue: number }) => a.issue === 201) as {
+      replies: { you: boolean; at: string; text: string }[];
+    };
+    expect(asked.replies).toEqual([
+      { you: false, at: "2026-11-22T12:31:00", text: "Done: the docs are updated." },
+    ]);
+    // The notifier saw that fresh reply, not the mirror's empty asks.
+    expect(w.pushes).toHaveLength(1);
+    expect(JSON.parse(await phone.open(w.pushes[0].body)).title).toBe("The fleet replied on #201");
+  });
+
+  test("after a restart, a failed first direct read still shows the mirrored copy", async () => {
+    const w = await setup({ direct: true });
+    await w.hostReads();
+    await w.link.now.once();
+    // The edge restarts: nothing is in memory, but the mirror is durable.
+    w.edge.now = w.makeEdge();
+    w.directDown.on = true;
+    w.net.hostUp = false;
+    w.net.edgeUp = false;
+    w.now.t += 60_000;
+    const { doc } = await w.core();
+    expect(doc.board).toEqual(w.data.board);
+    expect(doc.asks).toEqual([]);
+    expect(doc.health.board).toEqual({ ok: false, error: expect.stringContaining("the direct source is down") });
+    expect(doc.health.asks.ok).toBe(false);
   });
 });

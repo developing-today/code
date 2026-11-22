@@ -52,6 +52,9 @@ describe("the edge's run: GitHub through REST", () => {
     expect(h.calls[0].init.method).toBe("GET");
     expect(h.calls[0].init.headers.authorization).toBe("Bearer gh-test");
     expect(h.calls[0].init.headers["x-github-api-version"]).toBe("2022-11-28");
+    // The Workers runtime supplies no User-Agent of its own, and GitHub
+    // requires one: the call must carry this program's.
+    expect(h.calls[0].init.headers["user-agent"]).toBe("pm-console-edge");
     expect(out).toEqual({ code: 0, stdout: "[{\"number\":1}]", stderr: "" });
   });
 

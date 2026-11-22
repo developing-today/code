@@ -24,7 +24,10 @@ import type { Issuer } from "./config.ts";
  * fields are what the edge needs to read and write by itself while the
  * laptop is away: where the queue store is and which token opens it, how
  * the owner's prompts are marked, and which repositories hold his
- * needs-me items. */
+ * needs-me items. They are absent from configs stored or reported
+ * before direct mode existed: those still validate, with the fields
+ * empty, and direct capabilities stay off until a config carries them
+ * (see Edge.directConfigReady). */
 export interface EdgeConfig {
   owners: string[];
   certNames: string[];
@@ -200,10 +203,12 @@ export function edgeConfig(value: unknown): EdgeConfig | null {
     });
   }
   if (typeof v.repo !== "string" || typeof v.queue !== "string" || typeof v.androidPackage !== "string") return null;
-  if (typeof v.queueDbUrl !== "string" || !/^https:\/\//.test(v.queueDbUrl)) return null;
-  if (typeof v.queueTokenName !== "string" || v.queueTokenName === "") return null;
-  if (typeof v.promptLabel !== "string" || v.promptLabel === "") return null;
-  if (!strings(v.needsRepos)) return null;
+  // The direct fields: present ones must be well-formed, absent ones
+  // are a config from before direct mode, which still validates.
+  if (v.queueDbUrl !== undefined && (typeof v.queueDbUrl !== "string" || !/^https:\/\//.test(v.queueDbUrl))) return null;
+  if (v.queueTokenName !== undefined && typeof v.queueTokenName !== "string") return null;
+  if (v.promptLabel !== undefined && typeof v.promptLabel !== "string") return null;
+  if (v.needsRepos !== undefined && !strings(v.needsRepos)) return null;
   return {
     owners: v.owners.map((o) => o.toLowerCase()),
     certNames: v.certNames,
@@ -213,9 +218,9 @@ export function edgeConfig(value: unknown): EdgeConfig | null {
     androidPackage: v.androidPackage,
     androidFingerprints: v.androidFingerprints,
     androidApp: v.androidApp === true,
-    queueDbUrl: v.queueDbUrl,
-    queueTokenName: v.queueTokenName,
-    promptLabel: v.promptLabel,
-    needsRepos: v.needsRepos,
+    queueDbUrl: typeof v.queueDbUrl === "string" ? v.queueDbUrl : "",
+    queueTokenName: typeof v.queueTokenName === "string" ? v.queueTokenName : "",
+    promptLabel: typeof v.promptLabel === "string" ? v.promptLabel : "",
+    needsRepos: strings(v.needsRepos) ? v.needsRepos : [],
   };
 }

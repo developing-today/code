@@ -262,13 +262,17 @@ def ensure_edge_direct(
     or turn the opt-in off. Nothing is uploaded on a run that does not
     change the choice, so the timer's runs leave the secrets alone.
     A secret is read by name through `fleet secrets get` and piped to
-    `wrangler secret put`; it is never printed or written to a file."""
+    `wrangler secret put`; it is never printed or written to a file.
+    The choice is remembered only after the Worker has it: a run that
+    fails part-way leaves the old marker, so the next run tries again
+    instead of assuming the mode is already set."""
     state = env.parent
     # Read what is remembered before the choice overwrites it: only a
-    # change uploads anything.
+    # change uploads anything. Nothing is written here: the marker moves
+    # only once the remote changes below have succeeded.
     marker = state / "edge-direct"
     current = marker.exists() and marker.read_text().strip() == "on"
-    wanted = direct_choice(state, choice, keep=not check)
+    wanted = direct_choice(state, choice, keep=False)
     if wanted == current:
         return
     if wanted:
@@ -316,6 +320,11 @@ def ensure_edge_direct(
     else:
         # The tokens stay, inert without the opt-in; only the flag moves.
         put("EDGE_DIRECT", "off")
+    # The Worker has the change now, so the choice is remembered; a
+    # failure above raises before this line and leaves the old marker.
+    if choice is not None:
+        state.mkdir(parents=True, exist_ok=True, mode=0o700)
+        marker.write_text(choice + "\n")
 
 
 def worker_ready(cf: Cloudflare, account: str, host: str) -> bool:

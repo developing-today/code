@@ -340,14 +340,21 @@ export class Edge {
   }
 
   /** May act itself right now: capable, and the laptop known quiet. */
-  private directReady(): boolean {
-    return this.directCapable() && this.directQuiet();
+  private directReady(cfg: EdgeConfig | null): boolean {
+    return this.directCapable() && this.directConfigReady(cfg) && this.directQuiet();
+  }
+
+  /** The config carries what direct mode needs: a config stored or
+   * reported before direct mode existed has these empty, and the edge
+   * serves the offline app from it without acting itself. */
+  private directConfigReady(cfg: EdgeConfig | null): boolean {
+    return cfg !== null && cfg.queueDbUrl !== "" && cfg.queueTokenName !== "" && cfg.promptLabel !== "";
   }
 
   /** The laptop's own classes, wired for the edge. Null while the
    * capability is not there. */
   private directClasses(cfg: EdgeConfig | null): ReturnType<typeof directClasses> | null {
-    if (cfg === null || !this.directCapable()) return null;
+    if (cfg === null || !this.directCapable() || !this.directConfigReady(cfg)) return null;
     return directClasses(cfg, {
       githubToken: this.direct?.githubToken,
       queueToken: this.direct?.queueToken,
@@ -367,6 +374,10 @@ export class Edge {
     this.directAt.set(name, now);
     const direct = this.directClasses(cfg);
     if (!direct) return;
+    // After a restart the in-memory sections are empty even though the
+    // durable mirror holds the host's last copy: load it first, so a
+    // failed first read keeps last-good data instead of nothing.
+    if (this.docs.good(name) === null) await this.docs.refresh(name);
     try {
       this.docs.record(name, await directRead(name, direct.ops, direct.work), now);
     } catch (error) {
@@ -377,11 +388,15 @@ export class Edge {
   /** The sections of one document that the edge reads itself, when it may. */
   private async directRefresh(doc: DocName): Promise<void> {
     const names = doc === "core" ? ["board", "asks"] : doc === "ops" ? ["prs", "priorities"] : [];
-    if (names.length === 0 || !this.directReady()) return;
+    if (names.length === 0) return;
     const cfg = await this.config();
+    if (!this.directReady(cfg)) return;
     for (const name of names) await this.directReadSection(name, cfg);
-    if (names.some((n) => WATCHED.includes(n))) {
-      await this.notifier.tick().catch(() => {});
+    // The notifier is told of the sections just read directly, so its
+    // refresh does not reload the laptop's mirror over them.
+    const watched = names.filter((n) => WATCHED.includes(n));
+    if (watched.length > 0) {
+      await this.notifier.tick(watched).catch(() => {});
     }
   }
 
@@ -464,7 +479,12 @@ export class Edge {
         }
       }
       if (action.touch.some((n) => WATCHED.includes(n))) {
-        await this.notifier.tick().catch(() => {});
+        // The sections just read directly are not reloaded from the
+        // laptop's mirror by the notifier's refresh.
+        const refreshed = action.touch.filter(
+          (n) => (DIRECT_READ_SECTIONS as readonly string[]).includes(n) && WATCHED.includes(n),
+        );
+        await this.notifier.tick(refreshed).catch(() => {});
       }
       return json({ ok: true, result });
     } catch (error) {
@@ -677,7 +697,10 @@ export class Edge {
         directEnabled: this.direct?.enabled === true,
         githubTokenConfigured: Boolean(this.direct?.githubToken),
         queueTokenConfigured: Boolean(this.direct?.queueToken),
-        directReady: this.directCapable(),
+        // Ready to act itself once the laptop is quiet: the switch and
+        // tokens are here, and the config carries what direct mode
+        // needs. The quiet gate itself is not part of this answer.
+        directReady: this.directCapable() && this.directConfigReady(cfg),
         selfCheck: this.selfCheckResult,
         hostSeen: this.hostSeen || null,
         // Since this object last started: requests it answered as the
@@ -785,7 +808,7 @@ export class Edge {
         // runs here, through the laptop's own classes, and is never
         // sent to the laptop — so the laptop cannot do it a second
         // time. Otherwise it is the host's to do, as before.
-        if ((DIRECT_ACTIONS as readonly string[]).includes(kind) && this.directReady()) {
+        if ((DIRECT_ACTIONS as readonly string[]).includes(kind) && this.directReady(cfg)) {
           return await this.directAct(kind, args as Record<string, unknown>, by, who.via);
         }
         // The host's to do. The stateless part relays it, and if the
