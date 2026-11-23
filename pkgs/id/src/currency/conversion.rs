@@ -402,12 +402,16 @@ pub struct VerifiedConversion {
 }
 
 /// Gateway-side usage accounting: the volume posted against
-/// each authorisation. This is the state `remaining_volume` is
-/// computed from; it is committed only for posted conversions
-/// (#2063 §2.4) and never by verification.
+/// each authorisation. `authorisation_id` is scoped to its
+/// issuer (#2290), so the book is keyed by the
+/// `(issuer, authorisation_id)` pair: two issuers may hold the
+/// same number without sharing a bucket (#13698). This is the
+/// state `remaining_volume` is computed from; it is committed
+/// only for posted conversions (#2063 §2.4) and never by
+/// verification.
 #[derive(Clone, Debug, Default)]
 pub struct ConversionUsage {
-    posted: BTreeMap<u128, u128>,
+    posted: BTreeMap<(IssuerId, u128), u128>,
 }
 
 impl ConversionUsage {
@@ -417,19 +421,29 @@ impl ConversionUsage {
         Self::default()
     }
 
-    /// The volume already posted against `authorisation_id`.
+    /// The volume already posted against `authorisation_id`
+    /// for `issuer`.
     #[must_use]
-    pub fn used_volume(&self, authorisation_id: u128) -> u128 {
-        self.posted.get(&authorisation_id).copied().unwrap_or(0)
+    pub fn used_volume(&self, issuer: &IssuerId, authorisation_id: u128) -> u128 {
+        self.posted
+            .get(&(*issuer, authorisation_id))
+            .copied()
+            .unwrap_or(0)
     }
 
     /// Commit `amount` of posted volume against
-    /// `authorisation_id`. Called by the execution layer when a
-    /// conversion posts — never for a refused or failed one.
-    pub fn record_posted(&mut self, authorisation_id: u128, amount: u128) {
-        let used = self.used_volume(authorisation_id);
+    /// `authorisation_id` for `issuer`. Called by the execution
+    /// layer when a conversion posts — never for a refused or
+    /// failed one.
+    pub fn record_posted(
+        &mut self,
+        issuer: &IssuerId,
+        authorisation_id: u128,
+        amount: u128,
+    ) {
+        let used = self.used_volume(issuer, authorisation_id);
         self.posted
-            .insert(authorisation_id, used.saturating_add(amount));
+            .insert((*issuer, authorisation_id), used.saturating_add(amount));
     }
 }
 
@@ -456,8 +470,14 @@ impl ConversionVerifier {
 
     /// Commit posted volume (execution layer only; see
     /// [`ConversionUsage::record_posted`]).
-    pub fn record_posted(&mut self, authorisation_id: u128, amount: u128) {
-        self.usage.record_posted(authorisation_id, amount);
+    pub fn record_posted(
+        &mut self,
+        issuer: &IssuerId,
+        authorisation_id: u128,
+        amount: u128,
+    ) {
+        self.usage
+            .record_posted(issuer, authorisation_id, amount);
     }
 
     /// Verify one conversion submission, composing the checks
@@ -570,7 +590,11 @@ impl ConversionVerifier {
                 max_amount: authorisation.max_amount,
             });
         }
-        let used = self.usage.used_volume(submission.authorisation_id);
+        // Usage is keyed by the folded authorisation's issuer:
+        // authorisation_id is scoped to its issuer (#13698).
+        let used = self
+            .usage
+            .used_volume(&authorisation.issuer_id, submission.authorisation_id);
         let remaining_volume = authorisation.total_cap.saturating_sub(used);
         if submission.amount > remaining_volume {
             return Err(FailedPreSubmit::CapExhausted { remaining_volume });
@@ -689,8 +713,21 @@ mod tests {
         }
     }
 
+    fn authorisation_for(signing_key: &SigningKey) -> RateAuthorisation {
+        let mut auth = authorisation();
+        auth.issuer_id = super::super::issuer_id(signing_key);
+        auth
+    }
+
     fn presented_auth(auth: &RateAuthorisation) -> PresentedObject {
-        let event = sign_authorisation(&lp_key(), 0, None, auth, vec![]).unwrap();
+        presented_auth_signed(&lp_key(), auth)
+    }
+
+    fn presented_auth_signed(
+        signing_key: &SigningKey,
+        auth: &RateAuthorisation,
+    ) -> PresentedObject {
+        let event = sign_authorisation(signing_key, 0, None, auth, vec![]).unwrap();
         PresentedObject {
             event,
             body: auth.body().unwrap(),
@@ -708,7 +745,11 @@ mod tests {
     /// The factory binding record for the LP on one ledger,
     /// derived exactly as the account factory derives it.
     fn factory_binding(ledger_id: u32) -> BindingRecord {
-        let owner = hex_encode(&super::super::issuer_id(&lp_key()));
+        factory_binding_for(&lp_key(), ledger_id)
+    }
+
+    fn factory_binding_for(signing_key: &SigningKey, ledger_id: u32) -> BindingRecord {
+        let owner = hex_encode(&super::super::issuer_id(signing_key));
         let spec = account_spec(ledger_id, AccountKind::Liquidity, &owner, "");
         BindingRecord {
             account_id: spec.id,
@@ -722,25 +763,36 @@ mod tests {
     /// A control-plane view where the LP is a registered
     /// liquidity holder with both accounts bound and open.
     fn eligible_control() -> FixedConversionControl {
-        let issuer = super::super::issuer_id(&lp_key());
+        eligible_control_for(&lp_key())
+    }
+
+    fn eligible_control_for(signing_key: &SigningKey) -> FixedConversionControl {
+        let issuer = super::super::issuer_id(signing_key);
         let mut control = FixedConversionControl::new();
         control.set_tier(&issuer, "ABC", "123", LpTier::RegisteredLiquidityHolder);
-        control.set_binding(&issuer, "ABC", factory_binding(SOURCE_LEDGER_ID));
-        control.set_binding(&issuer, "123", factory_binding(DEST_LEDGER_ID));
+        control.set_binding(&issuer, "ABC", factory_binding_for(signing_key, SOURCE_LEDGER_ID));
+        control.set_binding(&issuer, "123", factory_binding_for(signing_key, DEST_LEDGER_ID));
         control
     }
 
     /// A submission that passes every check against
     /// [`eligible_control`].
     fn valid_submission() -> ConversionSubmission {
+        submission_for(&lp_key())
+    }
+
+    fn submission_for(signing_key: &SigningKey) -> ConversionSubmission {
         ConversionSubmission {
             authorisation_id: 7,
-            issuer: super::super::issuer_id(&lp_key()),
+            issuer: super::super::issuer_id(signing_key),
             caller: super::super::issuer_id(&caller_key()),
-            authorisations: vec![presented_auth(&authorisation())],
+            authorisations: vec![presented_auth_signed(
+                signing_key,
+                &authorisation_for(signing_key),
+            )],
             revokes: vec![],
-            source_account: factory_binding(SOURCE_LEDGER_ID).account_id,
-            dest_account: factory_binding(DEST_LEDGER_ID).account_id,
+            source_account: factory_binding_for(signing_key, SOURCE_LEDGER_ID).account_id,
+            dest_account: factory_binding_for(signing_key, DEST_LEDGER_ID).account_id,
             amount: 100,
             now: NOW,
         }
@@ -758,7 +810,9 @@ mod tests {
         expected: &FailedPreSubmit,
     ) {
         let ledger = InMemoryLedger::default();
-        let used_before = verifier.usage().used_volume(submission.authorisation_id);
+        let used_before = verifier
+            .usage()
+            .used_volume(&submission.issuer, submission.authorisation_id);
         let error = verifier
             .verify(control, submission)
             .expect_err("submission must be refused pre-flight");
@@ -769,7 +823,9 @@ mod tests {
         );
         assert_eq!(error.disposition(), "FAILED_PRE_SUBMIT");
         assert_eq!(
-            verifier.usage().used_volume(submission.authorisation_id),
+            verifier
+                .usage()
+                .used_volume(&submission.issuer, submission.authorisation_id),
             used_before,
             "a refused submission must not commit usage"
         );
@@ -803,17 +859,50 @@ mod tests {
         assert_eq!(verified.dest_amount, 81);
         assert_eq!(verified.remaining_volume, 1_000_000 - 100);
         // Verification alone commits no usage.
-        assert_eq!(verifier.usage().used_volume(7), 0);
+        assert_eq!(
+            verifier
+                .usage()
+                .used_volume(&super::super::issuer_id(&lp_key()), 7),
+            0
+        );
     }
 
     #[test]
     fn posted_usage_reduces_remaining_volume() {
         let mut verifier = ConversionVerifier::new();
-        verifier.record_posted(7, 400_000);
+        verifier.record_posted(&super::super::issuer_id(&lp_key()), 7, 400_000);
         let verified = verifier
             .verify(&eligible_control(), &valid_submission())
             .unwrap();
         assert_eq!(verified.remaining_volume, 1_000_000 - 400_000 - 100);
+    }
+
+    #[test]
+    fn posted_usage_is_scoped_to_issuer() {
+        // Oracle: #13698 — authorisation_id is scoped to its
+        // issuer, so one LP exhausting id 7 must not refuse
+        // another LP's untouched authorisation 7.
+        let mut verifier = ConversionVerifier::new();
+        let issuer_a = super::super::issuer_id(&lp_key());
+        let issuer_b = super::super::issuer_id(&other_key());
+        verifier.record_posted(&issuer_a, 7, 1_000_000);
+        // B's authorisation 7 still verifies with its full cap.
+        let verified_b = verifier
+            .verify(&eligible_control_for(&other_key()), &submission_for(&other_key()))
+            .unwrap();
+        assert_eq!(verified_b.remaining_volume, 1_000_000 - 100);
+        // The books are separate: only A's bucket is full.
+        assert_eq!(verifier.usage().used_volume(&issuer_a, 7), 1_000_000);
+        assert_eq!(verifier.usage().used_volume(&issuer_b, 7), 0);
+        // And A remains capped.
+        assert_pre_submit(
+            &verifier,
+            &eligible_control(),
+            &valid_submission(),
+            &FailedPreSubmit::CapExhausted {
+                remaining_volume: 0,
+            },
+        );
     }
 
     #[test]
@@ -995,7 +1084,7 @@ mod tests {
         // Oracle: #3801 acceptance — cap-exhausted, zero ledger
         // writes. Posted volume leaves less than the amount.
         let mut verifier = ConversionVerifier::new();
-        verifier.record_posted(7, 1_000_000 - 50);
+        verifier.record_posted(&super::super::issuer_id(&lp_key()), 7, 1_000_000 - 50);
         assert_pre_submit(
             &verifier,
             &eligible_control(),
