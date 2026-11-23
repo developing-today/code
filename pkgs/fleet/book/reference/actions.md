@@ -34,8 +34,8 @@ partitioned from the broker):
 ## Commands
 
 - `fleet actions exec start --repo OWNER/REPO --timeout S
-  [--max-lifespan S] [--ref R] [--target-repo OWNER/REPO]
-  [--hide-logs] [--detach] [--broker-url URL]` — open, claim
+[--max-lifespan S] [--ref R] [--target-repo OWNER/REPO]
+[--hide-logs] [--detach] [--broker-url URL]` — open, claim
   (the #13765 coordinator claim is attempted first; while those
   verbs are not live the session proceeds on the singular path
   and the output names it via `placement_path`), dispatch, bind,

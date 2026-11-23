@@ -311,7 +311,6 @@ standalone artifact).
 
 Use `fleet laptop-agent --help` for exact forms. This daemon interface is distinct from `fleet queue dispatch --surface laptop`, which currently records a handoff and does not execute arbitrary laptop commands.
 
-
 ## The laptop route forms — `laptop`, `commander`, `http`, `ssh` (#13717)
 
 The codified matrix for reaching the laptop: tier 0, 3 methods × 2
@@ -324,16 +323,16 @@ literal recipes in the laptop mechanics doc, not here.
 
 ## `laptop` — tier T0, the generic tiered command
 
-| Verb                                                             | Purpose                                                                 |
-| ---------------------------------------------------------------- | ----------------------------------------------------------------------- |
-| `tiers`                                                          | Print the codified form table (T0–T7) and the composition doctrine.     |
+| Verb                                                              | Purpose                                                                                                                                                                   |
+| ----------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `tiers`                                                           | Print the codified form table (T0–T7) and the composition doctrine.                                                                                                       |
 | `exec [--form T1\|T2\|T3] [--timeout SECS] [--cwd DIR] -- CMD...` | Walk T1 → T2 → T3 (or one pinned tier), advancing only when a tier fails to serve; reports the serving tier. `--timeout` is per attempt and always applies (default 120). |
 
 ## `commander` — tier T1 (commander/fleet)
 
-| Verb                                          | Purpose                                                                 |
-| --------------------------------------------- | ----------------------------------------------------------------------- |
-| `health`                                      | Initialize an MCP session, run `hostname`, report latency as JSON.      |
+| Verb                                          | Purpose                                                                                                                                                                                                                                                                |
+| --------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `health`                                      | Initialize an MCP session, run `hostname`, report latency as JSON.                                                                                                                                                                                                     |
 | `exec [--cwd DIR] [--timeout SECS] -- CMD...` | Run a command line on the laptop through the Desktop Commander MCP endpoint; the remote exit code propagates. The bearer is resolved from the secrets broker by name at call time; spawned processes are polled to completion or force-terminated (timeout exits 124). |
 
 ## `http` — tier T2 (http/fleet)
@@ -345,23 +344,24 @@ set mirrors `laptop-agent`'s; the difference is the contract —
 this domain is the route-form surface, `laptop-agent` is the
 daemon's general client.
 
-| Verb                                                    | Purpose                                            |
-| ------------------------------------------------------- | -------------------------------------------------- |
-| `health`                                                | Check daemon reachability through the HTTP ladder. |
-| `jobs`                                                  | List daemon jobs.                                  |
-| `kill JOB`                                              | Stop a daemon job.                                 |
+| Verb                                                    | Purpose                                                                              |
+| ------------------------------------------------------- | ------------------------------------------------------------------------------------ |
+| `health`                                                | Check daemon reachability through the HTTP ladder.                                   |
+| `jobs`                                                  | List daemon jobs.                                                                    |
+| `kill JOB`                                              | Stop a daemon job.                                                                   |
 | `exec [--cwd DIR] [--timeout SECS] [--shell] -- CMD...` | Execute a guarded command and wait; exit codes propagate (daemon timeout exits 124). |
-| `run [--cwd DIR] [--shell] -- CMD...`                   | Submit a guarded command as a job.                 |
-| `poll JOB [--wait SECS]`                                | Read a job result or wait for it to finish.        |
-| `fetch REMOTE_PATH LOCAL_PATH`                          | Fetch a file from the laptop.                      |
+| `run [--cwd DIR] [--shell] -- CMD...`                   | Submit a guarded command as a job.                                                   |
+| `poll JOB [--wait SECS]`                                | Read a job result or wait for it to finish.                                          |
+| `fetch REMOTE_PATH LOCAL_PATH`                          | Fetch a file from the laptop.                                                        |
 
 ## `ssh` — tier T3 (ssh/fleet)
 
-| Verb                                          | Purpose                                                                 |
-| --------------------------------------------- | ----------------------------------------------------------------------- |
-| `health`                                      | Run `hostname` over ssh; exit 0 iff the host answers.                   |
+| Verb                                          | Purpose                                                                                                                                                                                                                           |
+| --------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `health`                                      | Run `hostname` over ssh; exit 0 iff the host answers.                                                                                                                                                                             |
 | `exec [--cwd DIR] [--timeout SECS] -- CMD...` | Run a command line over ssh under the binary-owned client contract (pinned host key, proxy CONNECT, fleet-owned multiplex master); the remote exit code propagates; the binary deadline exits 124. ssh's own failure exit is 255. |
-| `close`                                       | Tear down the fleet-owned multiplex master, if any.                     |
+| `close`                                       | Tear down the fleet-owned multiplex master, if any.                                                                                                                                                                               |
+
 ## `actions` — live exec sessions in Actions runners
 
 `fleet actions exec start --repo OWNER/REPO --timeout S

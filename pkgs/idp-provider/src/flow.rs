@@ -24,15 +24,15 @@ use crate::audit::AuditLog;
 use crate::doors::PendingDoor;
 use crate::identities::IdentityStore;
 use crate::registry::{
-    now_unix, random_b64url, url_encode, verify_credential, ProviderConfig, LOCAL_DOOR_PROVIDER,
+    LOCAL_DOOR_PROVIDER, ProviderConfig, now_unix, random_b64url, url_encode, verify_credential,
 };
 use crate::signing::TokenSigner;
 use crate::upstream::DoorRuntime;
 use axum::{
-    extract::{Form, Query, State},
-    http::{header, HeaderMap, StatusCode},
-    response::{Html, IntoResponse, Response},
     Json,
+    extract::{Form, Query, State},
+    http::{HeaderMap, StatusCode, header},
+    response::{Html, IntoResponse, Response},
 };
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
@@ -185,7 +185,7 @@ pub(crate) fn validate_authorize_request(
                 StatusCode::BAD_REQUEST,
                 "invalid_client",
                 "unknown client_id",
-            ))
+            ));
         }
     };
     let redirect_uri = p.redirect_uri.clone().unwrap_or_default();
@@ -282,7 +282,7 @@ pub(crate) fn issue_code(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "server_error",
                 "code store unavailable",
-            ))
+            ));
         }
     }
     if flow
@@ -520,7 +520,7 @@ pub async fn token(State(st): State<crate::AppState>, Form(p): Form<TokenParams>
                 StatusCode::SERVICE_UNAVAILABLE,
                 "server_error",
                 "token flow is not configured on this provider instance",
-            )
+            );
         }
     };
     let client_id = p.client_id.clone().unwrap_or_default();
@@ -547,7 +547,7 @@ pub async fn token(State(st): State<crate::AppState>, Form(p): Form<TokenParams>
                     StatusCode::INTERNAL_SERVER_ERROR,
                     "server_error",
                     "code store unavailable",
-                )
+                );
             }
         };
         codes.remove(&code)
@@ -564,7 +564,7 @@ pub async fn token(State(st): State<crate::AppState>, Form(p): Form<TokenParams>
                 StatusCode::BAD_REQUEST,
                 "invalid_grant",
                 "authorization code is unknown, expired, or already used",
-            )
+            );
         }
     };
     let identity = record.identity_key.clone();
@@ -653,7 +653,7 @@ pub async fn token(State(st): State<crate::AppState>, Form(p): Form<TokenParams>
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "server_error",
                 "token signing failed",
-            )
+            );
         }
     };
     if flow
@@ -685,7 +685,7 @@ pub async fn userinfo(State(st): State<crate::AppState>, headers: HeaderMap) -> 
                 StatusCode::SERVICE_UNAVAILABLE,
                 "server_error",
                 "userinfo is not configured on this provider instance",
-            )
+            );
         }
     };
     let token_value = headers
@@ -699,7 +699,7 @@ pub async fn userinfo(State(st): State<crate::AppState>, headers: HeaderMap) -> 
                 StatusCode::UNAUTHORIZED,
                 "invalid_token",
                 "a Bearer <redacted> token is required",
-            )
+            );
         }
     };
     let claims = match flow.signer.verify_jwt(token_value) {

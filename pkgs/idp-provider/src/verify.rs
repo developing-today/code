@@ -20,20 +20,20 @@
 //! `role-gated-app` example serves it; other apps copy the shape.
 
 use axum::extract::State;
-use axum::http::{header, HeaderMap, StatusCode};
+use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use base64::{engine::general_purpose::URL_SAFE_NO_PAD as B64URL, Engine as _};
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD as B64URL};
 use rsa::pkcs1v15::{Signature, VerifyingKey};
 use rsa::signature::Verifier;
 use rsa::{BigUint, RsaPublicKey};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use sha2::Sha256;
 use std::sync::Arc;
 
-use crate::registry::now_unix;
 use crate::Jwks;
+use crate::registry::now_unix;
 
 /// A verified access token: the claims an app may act on.
 #[derive(Debug, Clone)]

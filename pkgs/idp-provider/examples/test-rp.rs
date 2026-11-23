@@ -21,7 +21,7 @@
 //! the discovery fetch to the userinfo response, so it excludes
 //! process startup.
 
-use base64::{engine::general_purpose::URL_SAFE_NO_PAD as B64URL, Engine as _};
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD as B64URL};
 use idp_provider::{b64url, registry::random_b64url};
 use rsa::pkcs1v15::{Signature, VerifyingKey};
 use rsa::signature::Verifier;

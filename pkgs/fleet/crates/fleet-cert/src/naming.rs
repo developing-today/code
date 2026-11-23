@@ -51,7 +51,11 @@ impl GenerationPartition {
     /// Subject-CN tail (§24.4): partition before generation, CN ends
     /// in `G<integer>` — e.g. `A G1`.
     pub fn cn_tail(&self) -> String {
-        format!("{} G{}", self.partition.to_ascii_uppercase(), self.generation)
+        format!(
+            "{} G{}",
+            self.partition.to_ascii_uppercase(),
+            self.generation
+        )
     }
 
     /// Parse a machine id like `g4b` (case-insensitive).
@@ -59,7 +63,9 @@ impl GenerationPartition {
         let text = input.trim().to_ascii_lowercase();
         let digits: String = text
             .strip_prefix('g')
-            .ok_or_else(|| CertError::usage(format!("generation id '{input}' must start with 'g'")))?
+            .ok_or_else(|| {
+                CertError::usage(format!("generation id '{input}' must start with 'g'"))
+            })?
             .chars()
             .take_while(|c| c.is_ascii_digit())
             .collect();
@@ -157,10 +163,7 @@ mod tests {
         assert_eq!(gp.partition, "b");
         assert_eq!(gp.machine_id(), "g4b");
         assert_eq!(gp.cn_tail(), "B G4");
-        assert_eq!(
-            GenerationPartition::initial().machine_id(),
-            "g1a"
-        );
+        assert_eq!(GenerationPartition::initial().machine_id(), "g1a");
         assert!(GenerationPartition::parse_machine_id("4b").is_err());
         assert!(GenerationPartition::parse_machine_id("g0a").is_err());
         assert!(GenerationPartition::parse_machine_id("g1").is_err());
@@ -186,7 +189,10 @@ mod tests {
     #[test]
     fn slugs() {
         assert_eq!(slugify("Internal Web").unwrap(), "internal-web");
-        assert_eq!(slugify("developing.today LLC").unwrap(), "developing-today-llc");
+        assert_eq!(
+            slugify("developing.today LLC").unwrap(),
+            "developing-today-llc"
+        );
         assert_eq!(slugify("  Base  ").unwrap(), "base");
         assert!(slugify("!!!").is_err());
     }

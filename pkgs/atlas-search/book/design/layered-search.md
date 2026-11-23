@@ -6,7 +6,7 @@ Source: written from `pkgs/atlas-search/crates/atlas-core/src/search.rs`, `fusio
 
 ## The idea: the embedding is the base, not the whole
 
-Atlas's dense signal comes from one embedding model, Snowflake `snowflake-arctic-embed-m-v2.0` (768 dimensions) — see [Embeddings: Snowflake Arctic and the parity contract](../concepts/embeddings.md). "More search characteristics on top of Snowflake" means treating that vector as the *base signal* and layering complementary signals over it, each of which catches failures the layer below misses:
+Atlas's dense signal comes from one embedding model, Snowflake `snowflake-arctic-embed-m-v2.0` (768 dimensions) — see [Embeddings: Snowflake Arctic and the parity contract](../concepts/embeddings.md). "More search characteristics on top of Snowflake" means treating that vector as the _base signal_ and layering complementary signals over it, each of which catches failures the layer below misses:
 
 1. **Lexical** — BM25 over full-text search (FTS5). Exact on identifiers, error codes, names and rare strings; blind to paraphrase.
 2. **Dense** — the Arctic vector. Handles paraphrase and cross-lingual queries; weak on exactly the rare tokens the lexical leg is best at.
@@ -30,7 +30,7 @@ Atlas's query side already supports the mechanics — a query vector can be trun
 
 ## The in-between signal: learned sparse (SPLADE)
 
-SPLADE (learned sparse retrieval) is a BERT-style model whose output is a weight for every term in a ~30k-term vocabulary, including terms *not present* in the text: a chunk about a "connection reset" also lights up for *drop* and *socket*. The result is still a sparse vector served from an ordinary inverted index, so it keeps BM25's infrastructure and exact-match behaviour while recovering much of dense retrieval's paraphrase handling.
+SPLADE (learned sparse retrieval) is a BERT-style model whose output is a weight for every term in a ~30k-term vocabulary, including terms _not present_ in the text: a chunk about a "connection reset" also lights up for _drop_ and _socket_. The result is still a sparse vector served from an ordinary inverted index, so it keeps BM25's infrastructure and exact-match behaviour while recovering much of dense retrieval's paraphrase handling.
 
 In this design SPLADE is a third retrieval leg, fused by rank with the existing two:
 
@@ -38,7 +38,7 @@ In this design SPLADE is a third retrieval leg, fused by rank with the existing 
 - at query time the sparse leg returns its own ranked pool, and reciprocal rank fusion (RRF) merges three lists instead of two;
 - BGE-M3's sparse head (§ "The second-embedder decision") is the alternative source of the same signal, if that evaluation favours it — the leg's place in the pipeline is identical either way.
 
-Adoption is gated, not assumed. The failure taxonomy from the golden set has to show paraphrase-miss failures that *both* existing legs miss; if it does not, the leg is cost without benefit. See "What exists today" for SPLADE's current gate status: it has never been gated.
+Adoption is gated, not assumed. The failure taxonomy from the golden set has to show paraphrase-miss failures that _both_ existing legs miss; if it does not, the leg is cost without benefit. See "What exists today" for SPLADE's current gate status: it has never been gated.
 
 ## The mid-stage: late interaction (ColBERT) over the top ~100
 
@@ -48,12 +48,12 @@ That cost profile decides its placement: **a mid-stage over the top ~100 fused c
 
 ## Metadata is routing, never a post-filter
 
-A filter applied *after* retrieval — take the top `k`, then discard what does not match — starves recall: the retriever returns `k` results, the filter throws most of them away, and the relevant item at rank `k + 1` never surfaces. Worse, in Atlas one of the "filters" is the sensitivity tier, which is a **security boundary**: a tier check that is merely post-hoc is a leak waiting for the one consumer path that forgets it.
+A filter applied _after_ retrieval — take the top `k`, then discard what does not match — starves recall: the retriever returns `k` results, the filter throws most of them away, and the relevant item at rank `k + 1` never surfaces. Worse, in Atlas one of the "filters" is the sensitivity tier, which is a **security boundary**: a tier check that is merely post-hoc is a leak waiting for the one consumer path that forgets it.
 
 So in this design, metadata — source, kind, topic, project, client, time range, and above all sensitivity tier and the caller's ceiling — is part of the query plan:
 
 - **Pre-filter inside the retrieval layer.** Each leg's query is constructed with the permitted set already applied, so every candidate any leg returns is already permitted. (This is the direction the shipped code already takes for the ceiling and filters — see "What exists today".)
-- **Partition and route.** Where the corpus is physically partitioned — per-tier shards, per-source collections — the planner routes the query to the partitions it is allowed and intended to search, and filtering becomes routing. A query that cannot touch the secret tier is never *sent* to the secret partition, rather than sent and trimmed afterwards.
+- **Partition and route.** Where the corpus is physically partitioned — per-tier shards, per-source collections — the planner routes the query to the partitions it is allowed and intended to search, and filtering becomes routing. A query that cannot touch the secret tier is never _sent_ to the secret partition, rather than sent and trimmed afterwards.
 - **Over-fetch where the engine forces it.** An approximate index that cannot filter internally (the DiskANN path below) is queried deeper than the pool size, the survivors are joined against the permitted set, and the over-fetch factor is tuned per filter selectivity and validated on the golden set — the permitted-set check still happens inside the retrieval layer, before fusion, never in a consumer.
 
 ## Behavioural signals

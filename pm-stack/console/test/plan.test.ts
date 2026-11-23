@@ -934,7 +934,11 @@ describe("over HTTP", () => {
     const { d, w } = served((c) =>
       c.path.includes("/issues?labels=") ? [] : c.path.includes("/contents/") ? { content: "" } : { items: [] },
     );
-    const caps = (await (await handle(get("/console/api/roadmaps"), d)).json()) as { id: string; title: string; file: string | null }[];
+    const caps = (await (await handle(get("/console/api/roadmaps"), d)).json()) as {
+      id: string;
+      title: string;
+      file: string | null;
+    }[];
     expect(caps.slice(0, 4)).toEqual([
       { id: "id", title: "id", file: "planning/roadmaps/id.md" },
       { id: "fleet", title: "Fleet", file: null },

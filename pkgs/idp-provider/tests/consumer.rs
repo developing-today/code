@@ -11,14 +11,14 @@
 //! account).
 
 use axum::body::Body;
-use axum::http::{header, Request, StatusCode};
+use axum::http::{Request, StatusCode, header};
 use idp_provider::audit::AuditLog;
 use idp_provider::flow::FlowState;
 use idp_provider::identities::IdentityStore;
-use idp_provider::registry::{now_unix, url_encode, Account, Client, Identity, ProviderConfig};
+use idp_provider::registry::{Account, Client, Identity, ProviderConfig, now_unix, url_encode};
 use idp_provider::signing::TokenSigner;
-use idp_provider::verify::{reference_app, TokenVerifier};
-use idp_provider::{b64url, build_app_with_flow, Config, Jwk, Jwks};
+use idp_provider::verify::{TokenVerifier, reference_app};
+use idp_provider::{Config, Jwk, Jwks, b64url, build_app_with_flow};
 use rand_core::OsRng;
 use rsa::traits::PublicKeyParts;
 use rsa::{RsaPrivateKey, RsaPublicKey};

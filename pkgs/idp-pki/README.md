@@ -41,13 +41,13 @@ and `issued/<name>/` for leaves.
 
 ## Chosen defaults
 
-| Thing | Choice | Why |
-| --- | --- | --- |
-| Root CA | EC P-384, SHA-384, 7300 days (20 y), pathlen 1 | Long-lived trust anchor; P-384 is the modern, widely accepted CA curve |
-| Issuing CA | EC P-384, SHA-384, 3650 days (10 y), pathlen 0 | Shorter than the root so the working CA can be rotated without touching the anchor |
-| server / client leaves | EC P-256, 730 days | Fast, modern leaf keys; two-year private-CA lifetime |
-| saml-signing / oidc-signing leaves | RSA 2048, 1095 days | RS256/RSASSA is the most widely accepted signing profile in SAML and OIDC consumer stacks |
-| Key encryption | AES-256-CBC, passphrase from `IDP_CA_PASSPHRASE` | Passphrase is never taken from argv and never printed |
+| Thing                              | Choice                                           | Why                                                                                       |
+| ---------------------------------- | ------------------------------------------------ | ----------------------------------------------------------------------------------------- |
+| Root CA                            | EC P-384, SHA-384, 7300 days (20 y), pathlen 1   | Long-lived trust anchor; P-384 is the modern, widely accepted CA curve                    |
+| Issuing CA                         | EC P-384, SHA-384, 3650 days (10 y), pathlen 0   | Shorter than the root so the working CA can be rotated without touching the anchor        |
+| server / client leaves             | EC P-256, 730 days                               | Fast, modern leaf keys; two-year private-CA lifetime                                      |
+| saml-signing / oidc-signing leaves | RSA 2048, 1095 days                              | RS256/RSASSA is the most widely accepted signing profile in SAML and OIDC consumer stacks |
+| Key encryption                     | AES-256-CBC, passphrase from `IDP_CA_PASSPHRASE` | Passphrase is never taken from argv and never printed                                     |
 
 ## Key handling
 

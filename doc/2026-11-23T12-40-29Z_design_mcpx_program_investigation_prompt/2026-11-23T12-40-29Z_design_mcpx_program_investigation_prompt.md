@@ -44,23 +44,23 @@ the disagreements between them).
   Phase 3 [#9963](https://github.com/developing-today/code/issues/9963). When no daemon runs,
   the CLI starts one inline and polls readiness on the `daemon.inlineStartPoll` interval.
 - **Config system**: a typed settings registry — **241 distinct setting paths** (193 public
-  + 48 internal/plumbing — the registry `mcpx config --schema --plumbing` prints;
-  an earlier census figure of 252 counted `Path:` literals across the whole settings
-  tree, test fixtures included, and is superseded), each
-  reachable via config file, environment, and `mcpx settings`, with resolved-value
-  provenance. The registry carries an **effect-probe contract**: every setting has a named
-  e2e probe proving it changes behaviour, or a written exemption; the exemption count is
-  ratcheted (`EffectExemptionPin`) and can only shrink, only in the PR that adds the
-  replacing probe. **The exemption tail is exactly 5 settings** (verified 2026-11-23;
-  `EffectExemptionPin` = 5):
-  `daemon.inlineStartPoll`, `daemon.tsnet.hostname`, `daemon.tsnetUpTimeout`,
-  `http.streamBufferInit`, `embeddings.wasmPath` — they wait on harness shapes:
-  a controllable tailnet, a timing-observable inline-start harness, an allocation oracle,
-  an in-tree embed-exporting wasm fixture. Three further settings the first census
-  listed in the tail — `plugin.instructions`, `plugin.disabledTools`,
-  `protoTasks.cancelGrace` — gained their e2e probes on 2026-11-23 (PRs #13345,
-  #13370, #13361; #8473 closed) and are no longer exempt. Coverage burn-downs:
-  #8465, #8469 (blocked), #8471 (parked), #8472, #8473.
+  - 48 internal/plumbing — the registry `mcpx config --schema --plumbing` prints;
+    an earlier census figure of 252 counted `Path:` literals across the whole settings
+    tree, test fixtures included, and is superseded), each
+    reachable via config file, environment, and `mcpx settings`, with resolved-value
+    provenance. The registry carries an **effect-probe contract**: every setting has a named
+    e2e probe proving it changes behaviour, or a written exemption; the exemption count is
+    ratcheted (`EffectExemptionPin`) and can only shrink, only in the PR that adds the
+    replacing probe. **The exemption tail is exactly 5 settings** (verified 2026-11-23;
+    `EffectExemptionPin` = 5):
+    `daemon.inlineStartPoll`, `daemon.tsnet.hostname`, `daemon.tsnetUpTimeout`,
+    `http.streamBufferInit`, `embeddings.wasmPath` — they wait on harness shapes:
+    a controllable tailnet, a timing-observable inline-start harness, an allocation oracle,
+    an in-tree embed-exporting wasm fixture. Three further settings the first census
+    listed in the tail — `plugin.instructions`, `plugin.disabledTools`,
+    `protoTasks.cancelGrace` — gained their e2e probes on 2026-11-23 (PRs #13345,
+    #13370, #13361; #8473 closed) and are no longer exempt. Coverage burn-downs:
+    #8465, #8469 (blocked), #8471 (parked), #8472, #8473.
 - **The book exists and is the Pages root**: `pkgs/mcpx/docs/` (mdBook, `.#mcpx-docs`,
   siteUrl argument) — 84 SUMMARY chapters, 120 markdown files, ~288k words including the
   package-local archives (`decisions/`, `changes/`, `compare/`, `spec/`). It deploys via
@@ -98,6 +98,7 @@ the disagreements between them).
 ## 2. Drew's directions (the next-steps agenda — design all of it, build what's unblocked)
 
 ### A. Server onboarding and lifecycle
+
 Make adding a server a designed, boring path end to end: declaration shapes (stdio
 command, remote URL, adapter-wrapped CLI #11147/`adapters.allowBare` + cwd, OpenAPI-derived
 `api` servers, plugins, registry finds), credential resolution (in-memory `mcpx secrets`,
@@ -109,6 +110,7 @@ of a front end whose children never notice. Cover multi-daemon machines (`mcpx d
 and the systemd/socket-activation posture.
 
 ### B. Per-client policy and capability ceilings
+
 mcpx is where every client's reach is actually decided, but today policy is scattered
 (rate limits and elicitation in `proto.*`, write policy, autonomy levels). Design **one
 per-client policy model**: client identity (harness, seat, session), a capability
@@ -124,6 +126,7 @@ declared (settings, config, per-server manifest), how elicitation binds user ide
 ceiling model so it survives either answer; don't pre-build multi-tenancy.
 
 ### C. Remote and hosted servers as versioned deployments
+
 The Atlas server is the template: a hosted MCP server shipped as a versioned Cloudflare
 deployment and wired into mcpx by URL. Generalize it: how a remote server is declared,
 versioned, health-checked, and rolled back from the mcpx side; OAuth authorization for
@@ -133,6 +136,7 @@ Close the release-channel gap on mcpx itself (#9900 → #1881): the install chan
 docs promise must be channels that exist.
 
 ### D. Config-system completion — burn the exemption tail to zero
+
 The ratchet only moves one way; finish it. For each of the 5 exempt settings, design
 the probe (or, where a setting is a pure allocation hint like `http.streamBufferInit`,
 the contract decision that reclassifies it honestly — an exemption with a permanent
@@ -149,6 +153,7 @@ the remaining burn-downs (#8465 CLI running group, #8469, #8471) and the test-ve
 blockers (#2686, #10330) that decide how much of this CI can see.
 
 ### E. Daemon lifecycle, transports, and reach
+
 Beyond §A's supervisor: tsnet as a first-class reach (a daemon on the tailnet,
 reachable from any seat — the `stdio-proxy`/ssh pattern generalized), inline-start
 semantics, stream buffering as a designed contract (#4375: one bounded response-read
@@ -158,6 +163,7 @@ failure shapes. Every bound in the daemon should be a setting with a probe (§D)
 no magic numbers with a comment.
 
 ### F. Observability and the event record
+
 mcpx already keeps events, logs, stats, and feedback (`mcpx feedback`, the event
 store, logstore). Design the coherent observability story: one event record for
 every tool call (client, ceiling decision, latency, bytes, refusal reason), stats
@@ -166,6 +172,7 @@ something that consumes it, and the dashboard as the live view of the same recor
 not three partial systems. This is also the audit substrate §B's policy model needs.
 
 ### G. Library and embedding use
+
 mcpx's parts should be usable without the daemon: the public Go API (`pkg/client`
 today), the C ABI / WASM / mcpx-as-its-own-upstream programme (#1877), the
 harness-free plugin core with per-harness adapters (#1861), and embedding the
@@ -174,6 +181,7 @@ library surface (what is public, what is internal, what stability is promised),
 with embedding examples taken from real call sites.
 
 ### H. The integration surface: mcpx ↔ fleet ↔ Atlas ↔ ID
+
 - **fleet**: land the design-mill line (#10389 one fleet surface, #10390 pass-through
   subcommands + endpoint/credential resolution, #10393 MCP everywhere — namespaces,
   fan-out, remote graph, #10405 transitive capability purity). `fleet` verbs should
@@ -191,6 +199,7 @@ with embedding examples taken from real call sites.
   the plugin core (#1861).
 
 ### I. The model layer and the AI surface
+
 Settle where the model comes from (#1891, #1925 — blocked): the provider layer mcpx
 owns, model profiles, the `prompt` command's contract, the OpenAI-compatible
 `proxy`, and life after MCP Sampling's deprecation. Include administration by intent
@@ -199,6 +208,7 @@ the request repair ladder (#1927), and lifecycle hooks on exec (#1929) — these
 one AI-surface design, currently four issues.
 
 ### J. Book extension, issue map, and the living record
+
 1. **Extend the mcpx book** (it exists — do not rebuild it): first run the missing
    **mechanical coverage audit** — every CLI command and flag, every one of the 241
    settings (with default + provenance + probe/exemption status), every transport,

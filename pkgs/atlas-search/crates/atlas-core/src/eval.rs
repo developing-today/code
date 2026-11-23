@@ -1039,10 +1039,12 @@ mod tests {
         }));
         let unscored = evaluate(&d, Split::Dev).unwrap();
         assert_eq!(unscored.signals[0].queries_scored, 0);
-        assert!(select_best_signal(&unscored, Metric::Ndcg10)
-            .unwrap_err()
-            .to_string()
-            .contains("no scored development queries"));
+        assert!(
+            select_best_signal(&unscored, Metric::Ndcg10)
+                .unwrap_err()
+                .to_string()
+                .contains("no scored development queries")
+        );
 
         d.qrels[0].grade = 1;
         let judged = evaluate(&d, Split::Dev).unwrap();
@@ -1628,13 +1630,11 @@ mod tests {
         assert!(err.to_string().contains("forbids"), "{err}");
 
         let mut dup_forbidden = base.clone();
-        dup_forbidden["queries"][0]["forbidden"] =
-            serde_json::json!(["secret-1", "secret-1"]);
+        dup_forbidden["queries"][0]["forbidden"] = serde_json::json!(["secret-1", "secret-1"]);
         assert!(EvalData::from_json(&dup_forbidden.to_string()).is_err());
 
         let mut dup_corpus = base.clone();
-        dup_corpus["queries"][0]["corpora"] =
-            serde_json::json!(["agent-memory", "agent-memory"]);
+        dup_corpus["queries"][0]["corpora"] = serde_json::json!(["agent-memory", "agent-memory"]);
         assert!(EvalData::from_json(&dup_corpus.to_string()).is_err());
 
         let mut dup_doc = base.clone();

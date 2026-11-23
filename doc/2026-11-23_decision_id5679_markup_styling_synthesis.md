@@ -48,7 +48,7 @@
 - **Related settled contract, not part of this synthesis:**
   [#5858](https://github.com/developing-today/code/issues/5858)
   (portable theme format & precedence, from #5680;
-  `doc/2026-11-10_design_id5858.md`) owns the signed portable *board*
+  `doc/2026-11-10_design_id5858.md`) owns the signed portable _board_
   theme object and its per-token precedence (viewer accessibility >
   viewer preference > post > board > platform default). That is a
   different cascade over a different artefact: it resolves which
@@ -69,24 +69,24 @@
 
 ## Decision summary — the settled contract in one table
 
-| Question | Settled answer (record of decision) |
-| --- | --- |
-| Layers | Two: raw HTML/CSS always supported, never gated; semantic markup is an addition, admitted raw only inside explicit `<raw>` regions (#5849 §3) |
-| Semantic syntax | HTML-shaped source from a closed registry; quoted attributes only; no presentation attributes (#5849 §2) |
-| Element set | Closed v1 registry of **32 elements** — document/structure, inline text, forms/actions, application chrome; every element renderable on all three targets, none web-only (#5849 §§4–5) |
-| Accessibility | Role, accessible-name source, state set, and keyboard contract are properties of the element kind, checked at build time (#5849 §6) |
-| Binding | Fixed slots (`bind`, `items`, `show`, `disabled-when`, `action`, `on-*`) whose values are **names** in the programme's state/action tables — no expressions, no target-specific code (#5849 §8) |
-| Style assertions | (dimension, role-value) pairs in one `assert` slot per element; closed dimension set (tone, emphasis, density, text, gap, pad, corner, elevation); **no raw values in content** (#5850 §§2–6) |
-| Style vocabulary | Named colour/typography/state/spacing roles with per-target values in theme files; every role defined for light/dark/high-contrast or explicitly marked inherit (#5850 §§3–6) |
-| Cascade | **Platform defaults → theme/token values → semantic assertions → override map (style, then presentation) → raw CSS (web only)**, per property, deterministic, source order never a tiebreaker in layers 1–4 (#5854 §2; ratified §4 below) |
-| Platform conflicts | **Platform wins for behaviour and accessibility; assertion wins for identity, subject to platform clamps** — every clamp/substitution/default reported by tooling (#5850 §8, #5852 §4; ratified §4 below) |
-| Unmapped assertions | **Warning, never silent**: coverage tooling reports "no mapping on this target; platform/layer default used" (#5850 §9, #5852 §3.1, #5854 §6, #5855 §3.3) |
-| Web rendering | Element kind → fixed DOM element; assertion → Tailwind utilities generated from `theme.extend` keys; raw CSS is layer 5 per-property via cascade layers, never `!important` (#5851 §§2–5) |
-| Native rendering | Element kind → OS-standard control (Mac/Windows/GNOME tables); assertions change only what the platform exposes; presentation overrides never apply to native standard controls (#5852 §§2–4, #5853 §4) |
-| Custom GUI rendering | Wholly custom presentations are **presentation overrides** in the target's override map: asset or registered drawn renderer, full state coverage or build error, standard rendering always the fallback (#5853 §2) |
-| Per-target customisation | Theme/token files, override maps, three distinct asset mechanisms, conditional blocks (target-fact predicates only, embellishment only, evaluated before the cascade); per-target page copies forbidden (#5854 §§3–5) |
-| Pipeline | Hybrid, compile-time-dominant: parse → validate → compose → lower per target → emit artefact + JSON report; mapping tables are lowering *data*; runtime only binds state and instantiates (#5855 §2) |
-| Conformance | Versioned golden corpus per target — DOM/class expectations (web), control-kind + accessibility-tree expectations (native/GUI); pixels are never the gate (#5855 §3) |
+| Question                 | Settled answer (record of decision)                                                                                                                                                                                                       |
+| ------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Layers                   | Two: raw HTML/CSS always supported, never gated; semantic markup is an addition, admitted raw only inside explicit `<raw>` regions (#5849 §3)                                                                                             |
+| Semantic syntax          | HTML-shaped source from a closed registry; quoted attributes only; no presentation attributes (#5849 §2)                                                                                                                                  |
+| Element set              | Closed v1 registry of **32 elements** — document/structure, inline text, forms/actions, application chrome; every element renderable on all three targets, none web-only (#5849 §§4–5)                                                    |
+| Accessibility            | Role, accessible-name source, state set, and keyboard contract are properties of the element kind, checked at build time (#5849 §6)                                                                                                       |
+| Binding                  | Fixed slots (`bind`, `items`, `show`, `disabled-when`, `action`, `on-*`) whose values are **names** in the programme's state/action tables — no expressions, no target-specific code (#5849 §8)                                           |
+| Style assertions         | (dimension, role-value) pairs in one `assert` slot per element; closed dimension set (tone, emphasis, density, text, gap, pad, corner, elevation); **no raw values in content** (#5850 §§2–6)                                             |
+| Style vocabulary         | Named colour/typography/state/spacing roles with per-target values in theme files; every role defined for light/dark/high-contrast or explicitly marked inherit (#5850 §§3–6)                                                             |
+| Cascade                  | **Platform defaults → theme/token values → semantic assertions → override map (style, then presentation) → raw CSS (web only)**, per property, deterministic, source order never a tiebreaker in layers 1–4 (#5854 §2; ratified §4 below) |
+| Platform conflicts       | **Platform wins for behaviour and accessibility; assertion wins for identity, subject to platform clamps** — every clamp/substitution/default reported by tooling (#5850 §8, #5852 §4; ratified §4 below)                                 |
+| Unmapped assertions      | **Warning, never silent**: coverage tooling reports "no mapping on this target; platform/layer default used" (#5850 §9, #5852 §3.1, #5854 §6, #5855 §3.3)                                                                                 |
+| Web rendering            | Element kind → fixed DOM element; assertion → Tailwind utilities generated from `theme.extend` keys; raw CSS is layer 5 per-property via cascade layers, never `!important` (#5851 §§2–5)                                                 |
+| Native rendering         | Element kind → OS-standard control (Mac/Windows/GNOME tables); assertions change only what the platform exposes; presentation overrides never apply to native standard controls (#5852 §§2–4, #5853 §4)                                   |
+| Custom GUI rendering     | Wholly custom presentations are **presentation overrides** in the target's override map: asset or registered drawn renderer, full state coverage or build error, standard rendering always the fallback (#5853 §2)                        |
+| Per-target customisation | Theme/token files, override maps, three distinct asset mechanisms, conditional blocks (target-fact predicates only, embellishment only, evaluated before the cascade); per-target page copies forbidden (#5854 §§3–5)                     |
+| Pipeline                 | Hybrid, compile-time-dominant: parse → validate → compose → lower per target → emit artefact + JSON report; mapping tables are lowering _data_; runtime only binds state and instantiates (#5855 §2)                                      |
+| Conformance              | Versioned golden corpus per target — DOM/class expectations (web), control-kind + accessibility-tree expectations (native/GUI); pixels are never the gate (#5855 §3)                                                                      |
 
 ## 1. The model in one view
 
@@ -152,11 +152,11 @@ the parent stated: native targets look native.
 - **Colour roles.** Surface (base/raised/sunken/overlay/inverse),
   content (primary/secondary/muted/inverse/link), accent +
   accent-content, status pairs (success/warning/danger/info, colour
-  + surface tint), border (subtle/strong/focus). State colours are
-  derived by the target unless a theme overrides the state token
-  (#5850 §3).
+  - surface tint), border (subtle/strong/focus). State colours are
+    derived by the target unless a theme overrides the state token
+    (#5850 §3).
 - **Typography roles.** display, heading, body, body-small, caption,
-  label, code, link — bundles of typeface *category*, modular-scale
+  label, code, link — bundles of typeface _category_, modular-scale
   step, weight role, and line-height role; platform text scaling
   applies to the scale as a whole (#5850 §4).
 - **States.** hover, focus-visible, active, selected, disabled,
@@ -366,13 +366,13 @@ invariant (§8.6).
    registry names from this record on.
 3. **The #5858 seam.** #5858's per-token precedence (viewer
    accessibility > viewer preference > post > board > platform
-   default) orders *theme-supplying layers for board objects*; §5's
-   cascade orders *composition layers for programme rendering*.
+   default) orders _theme-supplying layers for board objects_; §5's
+   cascade orders _composition layers for programme rendering_.
    They operate at different points — #5858 resolves which values
    are supplied, #5854 resolves how supplied values compose — and
    #5858's record already frames its token contract as input to
    this family's mapping records. No term in one cascade is
-   redefined by the other. If a future programme renders *as* board
+   redefined by the other. If a future programme renders _as_ board
    content and both apply to the same token, the composition order
    is: #5858's cascade resolves the token's value first; that value
    then enters §5's layer 2. This sentence is this record's only
@@ -388,14 +388,14 @@ invariant (§8.6).
 
 ## 10. Disposition of the parent's open questions
 
-| #5679 open question | Disposition |
-| --- | --- |
-| Syntax home: HTML-like tags, Markdown-adjacent, or s-expression/DSL? | **Settled** — HTML-shaped tags from a closed registry (#5849 §2; alternatives rejected §12) |
-| How large is the v1 element set; which GUI concepts are in v1 vs deferred? | **Settled** — 32 elements; menus, tabs, master-detail, toolbars, sidebars, settings in; the deferred list and its reasons are #5849 §9 |
-| Tailwind as the web rendering: pinned version? Are generated classes author-visible/editable? | **Carried forward** as OQ-1 (§11) — #5851 binds role names, not a Tailwind version, and is deliberately agnostic |
-| Unmapped assertion: silent platform-default or build-time warning? | **Settled** — warning, never silent (§4) |
-| Raw HTML on native targets: webview, subset translation, or author fallback — per element class? | **Settled in shape, one table outstanding** — the rule is author-supplied fallback content or target webview embedding per element class, never outranking the accessibility contract (#5854 §2.3); webview is rejected as *the* native rendering (#5852 §6). The per-class table itself was assigned to the mapping records but not enumerated in them — carried forward as OQ-2 (§11) |
-| Who owns token values for OS-adaptive dark/high-contrast — programme theme or OS? | **Settled** — OS/user owns mode selection; the theme owns the values for every mode (§4) |
+| #5679 open question                                                                              | Disposition                                                                                                                                                                                                                                                                                                                                                                             |
+| ------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Syntax home: HTML-like tags, Markdown-adjacent, or s-expression/DSL?                             | **Settled** — HTML-shaped tags from a closed registry (#5849 §2; alternatives rejected §12)                                                                                                                                                                                                                                                                                             |
+| How large is the v1 element set; which GUI concepts are in v1 vs deferred?                       | **Settled** — 32 elements; menus, tabs, master-detail, toolbars, sidebars, settings in; the deferred list and its reasons are #5849 §9                                                                                                                                                                                                                                                  |
+| Tailwind as the web rendering: pinned version? Are generated classes author-visible/editable?    | **Carried forward** as OQ-1 (§11) — #5851 binds role names, not a Tailwind version, and is deliberately agnostic                                                                                                                                                                                                                                                                        |
+| Unmapped assertion: silent platform-default or build-time warning?                               | **Settled** — warning, never silent (§4)                                                                                                                                                                                                                                                                                                                                                |
+| Raw HTML on native targets: webview, subset translation, or author fallback — per element class? | **Settled in shape, one table outstanding** — the rule is author-supplied fallback content or target webview embedding per element class, never outranking the accessibility contract (#5854 §2.3); webview is rejected as _the_ native rendering (#5852 §6). The per-class table itself was assigned to the mapping records but not enumerated in them — carried forward as OQ-2 (§11) |
+| Who owns token values for OS-adaptive dark/high-contrast — programme theme or OS?                | **Settled** — OS/user owns mode selection; the theme owns the values for every mode (§4)                                                                                                                                                                                                                                                                                                |
 
 ## 11. Open questions carried forward (named, with owners)
 
@@ -408,7 +408,7 @@ invariant (§8.6).
   names to theme keys, not to a Tailwind release.
 - **OQ-2 — Per-element-class raw-HTML degradation table.** For each
   raw-HTML construct class: author fallback, webview embedding, or
-  subset translation, per target. The *rules* are settled (§10);
+  subset translation, per target. The _rules_ are settled (§10);
   the table is mapping data the #5851/#5852 records assigned but
   did not enumerate. Owner: the native/GUI lowering implementation
   work, which must produce it as table data under #5855's

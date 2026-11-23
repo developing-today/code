@@ -11,13 +11,13 @@
 //! verify-against-JWKS check of the crate's signing path.
 
 use axum::body::Body;
-use axum::http::{header, Request, StatusCode};
-use base64::{engine::general_purpose::URL_SAFE_NO_PAD as B64URL, Engine as _};
+use axum::http::{Request, StatusCode, header};
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD as B64URL};
 use idp_provider::audit::AuditLog;
 use idp_provider::flow::FlowState;
 use idp_provider::registry::{Account, Client, Identity, ProviderConfig};
 use idp_provider::signing::TokenSigner;
-use idp_provider::{b64url, build_app_with_flow, Config, Jwk, Jwks};
+use idp_provider::{Config, Jwk, Jwks, b64url, build_app_with_flow};
 use rand_core::OsRng;
 use rsa::pkcs1v15::{Signature, VerifyingKey};
 use rsa::signature::Verifier;
@@ -300,9 +300,11 @@ async fn full_code_pkce_loop_with_role_claims_and_userinfo() {
     assert!(entries.iter().any(|e| e.endpoint == "authorize"
         && e.outcome == "allowed"
         && e.identity == "devtoday-local:drew"));
-    assert!(entries
-        .iter()
-        .any(|e| e.endpoint == "token" && e.outcome == "allowed"));
+    assert!(
+        entries
+            .iter()
+            .any(|e| e.endpoint == "token" && e.outcome == "allowed")
+    );
 }
 
 #[tokio::test]

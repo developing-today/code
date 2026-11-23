@@ -19,7 +19,7 @@
 //! the provider mints (the test-rp example completes a loop and
 //! userinfo shows the claims; curl works too).
 
-use idp_provider::verify::{reference_app, TokenVerifier};
+use idp_provider::verify::{TokenVerifier, reference_app};
 use std::sync::Arc;
 
 #[tokio::main]

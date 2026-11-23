@@ -33,7 +33,7 @@ SSO never rebinds an id key (#2060).
   consumers check roles server-side.
 - One account row (the owner) with linked external identities;
   roles live on the account, not the door. The stand-up door is the
-  design's *devtoday local* identity: `GET /authorize` with valid
+  design's _devtoday local_ identity: `GET /authorize` with valid
   client parameters serves a login form that POSTs back to
   `/authorize`; the presented credential is verified against a
   PBKDF2-HMAC-SHA256 hash held in the **on-host** provider config
@@ -83,27 +83,27 @@ gate and is configured by environment alone (`APP_ISSUER`,
 from the provider's real loop, including the read-only denial.
 
 Cloudflare Access and this provider compose rather than
-compete: Access decides who can *reach* an app, the IdP token
-decides what the app lets them *do*. For the PM stack, the
+compete: Access decides who can _reach_ an app, the IdP token
+decides what the app lets them _do_. For the PM stack, the
 #9608 break-glass owner token remains the path when the IdP
 itself is down.
 
 ## Configuration (environment)
 
-| Variable | Default | Meaning |
-| --- | --- | --- |
-| `IDP_PROVIDER_ISSUER` | `http://127.0.0.1:8911` | Issuer URL used in discovery and endpoint URLs. |
-| `IDP_PROVIDER_BIND` | `127.0.0.1:8911` | Listen address. |
-| `IDP_PROVIDER_OIDC_CERT` | `pkgs/idp-pki/trust/oidc-signing.crt.pem` (relative to the repo checkout) | Path to the OIDC signing certificate PEM the JWKS is built from. |
-| `IDP_PROVIDER_OIDC_CERTS` | _(unset)_ | Comma-separated certificate list for the JWKS (Slice 5 rollover); overrides `IDP_PROVIDER_OIDC_CERT` when set. |
-| `IDP_PROVIDER_OIDC_KEYS` | _(unset)_ | Comma-separated signing-key list, parallel to `IDP_PROVIDER_OIDC_CERTS`; overrides `IDP_PROVIDER_OIDC_KEY` when set. |
-| `IDP_PROVIDER_OIDC_ACTIVE_KID` | _(first certificate's kid)_ | Which key in the set signs new tokens; the rest still verify. |
-| `IDP_PROVIDER_CONFIG` | _(unset)_ | Path to the provider registry config JSON. Unset = public-only mode (discovery + JWKS; flow endpoints refuse service). |
-| `IDP_PROVIDER_OIDC_KEY` | _(unset)_ | Path to the encrypted Slice 2 OIDC private key. Required when `IDP_PROVIDER_CONFIG` is set. |
-| `IDP_CA_PASSPHRASE` | _(unset)_ | Passphrase for the signing key, in process memory only (vault name `idp.ca-passphrase`). Required when `IDP_PROVIDER_CONFIG` is set. Never logged, never written to disk by the provider. |
-| `IDP_PROVIDER_AUDIT_DB` | _(registry config's `audit_db_path`, else in-memory)_ | Append-only audit SQLite path override. |
-| `IDP_PROVIDER_IDENTITY_DB` | _(registry config's `identity_db_path`, else in-memory)_ | Identity store (#13415) SQLite path override. |
-| `IDP_GITHUB_CLIENT_SECRET` / `IDP_GOOGLE_CLIENT_SECRET` / `IDP_MICROSOFT_CLIENT_SECRET` | _(unset)_ | Federated-door client secrets, in process memory only (vault names `idp.github.client-secret` / `idp.google.client-secret` / `idp.microsoft.client-secret`). A door whose secret is unset stays disabled. |
+| Variable                                                                                | Default                                                                   | Meaning                                                                                                                                                                                                   |
+| --------------------------------------------------------------------------------------- | ------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `IDP_PROVIDER_ISSUER`                                                                   | `http://127.0.0.1:8911`                                                   | Issuer URL used in discovery and endpoint URLs.                                                                                                                                                           |
+| `IDP_PROVIDER_BIND`                                                                     | `127.0.0.1:8911`                                                          | Listen address.                                                                                                                                                                                           |
+| `IDP_PROVIDER_OIDC_CERT`                                                                | `pkgs/idp-pki/trust/oidc-signing.crt.pem` (relative to the repo checkout) | Path to the OIDC signing certificate PEM the JWKS is built from.                                                                                                                                          |
+| `IDP_PROVIDER_OIDC_CERTS`                                                               | _(unset)_                                                                 | Comma-separated certificate list for the JWKS (Slice 5 rollover); overrides `IDP_PROVIDER_OIDC_CERT` when set.                                                                                            |
+| `IDP_PROVIDER_OIDC_KEYS`                                                                | _(unset)_                                                                 | Comma-separated signing-key list, parallel to `IDP_PROVIDER_OIDC_CERTS`; overrides `IDP_PROVIDER_OIDC_KEY` when set.                                                                                      |
+| `IDP_PROVIDER_OIDC_ACTIVE_KID`                                                          | _(first certificate's kid)_                                               | Which key in the set signs new tokens; the rest still verify.                                                                                                                                             |
+| `IDP_PROVIDER_CONFIG`                                                                   | _(unset)_                                                                 | Path to the provider registry config JSON. Unset = public-only mode (discovery + JWKS; flow endpoints refuse service).                                                                                    |
+| `IDP_PROVIDER_OIDC_KEY`                                                                 | _(unset)_                                                                 | Path to the encrypted Slice 2 OIDC private key. Required when `IDP_PROVIDER_CONFIG` is set.                                                                                                               |
+| `IDP_CA_PASSPHRASE`                                                                     | _(unset)_                                                                 | Passphrase for the signing key, in process memory only (vault name `idp.ca-passphrase`). Required when `IDP_PROVIDER_CONFIG` is set. Never logged, never written to disk by the provider.                 |
+| `IDP_PROVIDER_AUDIT_DB`                                                                 | _(registry config's `audit_db_path`, else in-memory)_                     | Append-only audit SQLite path override.                                                                                                                                                                   |
+| `IDP_PROVIDER_IDENTITY_DB`                                                              | _(registry config's `identity_db_path`, else in-memory)_                  | Identity store (#13415) SQLite path override.                                                                                                                                                             |
+| `IDP_GITHUB_CLIENT_SECRET` / `IDP_GOOGLE_CLIENT_SECRET` / `IDP_MICROSOFT_CLIENT_SECRET` | _(unset)_                                                                 | Federated-door client secrets, in process memory only (vault names `idp.github.client-secret` / `idp.google.client-secret` / `idp.microsoft.client-secret`). A door whose secret is unset stays disabled. |
 
 ## Endpoints
 
@@ -141,7 +141,7 @@ upstream code, and verifies the upstream identity:
   fetched; the subject is the numeric user `id`.
 
 The deny-by-default allowlist is then enforced in the provider,
-exactly as for the local door, and a code of *our own* is minted
+exactly as for the local door, and a code of _our own_ is minted
 into the same code store — a door login's tokens are
 indistinguishable from a local login's (same account `sub`, same
 role claims). Door client secrets are never in the config file:
@@ -166,16 +166,16 @@ hard-deleted while the account lives.
 
 - An allowlisted identity arriving at a door for the first time is
   **linked by that login** (actor `door-login`); the event lands in
-  the identity history *and* the audit record.
+  the identity history _and_ the audit record.
 - An operator unlinks with `idp-provider unlink <provider>
-  <subject>` (relink: `link`; inspect: `links`). An unlinked
+<subject>` (relink: `link`; inspect: `links`). An unlinked
   identity's door login is denied (`identity_unlinked`, audited) —
   a login never silently undoes an unlink — while the account
   stays reachable via the other doors.
 
 ## Key rollover (Slice 5)
 
-The signer is a *set* of keys, one per published certificate.
+The signer is a _set_ of keys, one per published certificate.
 Configure the set with `IDP_PROVIDER_OIDC_CERTS` /
 `IDP_PROVIDER_OIDC_KEYS` (comma-separated, parallel lists);
 the JWKS publishes every certificate, new tokens are signed

@@ -17,11 +17,11 @@ assert_eq!(vectors[0].len(), 768);
 
 The model is Snowflake `snowflake-arctic-embed-m-v2.0`, at the pinned revision `95c2741480856aa9666782eb4afe11959938017f`. The crate itself carries no model-id string constant — identity strings live one layer up, in atlas-core (`DEFAULT_MODEL = "Snowflake/snowflake-arctic-embed-m-v2.0"`) and in the Gate A fixture provenance. What the crate pins is the snapshot layout `load` expects, and the numeric constants:
 
-| Constant | Value | Meaning |
-|---|---|---|
-| `MODEL_CONTEXT` | `8192` | the model's real context length, in tokens |
-| `EMBED_DIM` | `768` | output width, full width — no Matryoshka truncation (dimension-shortening) happens in this crate; width selection is a caller's concern |
-| `PAD_ID` | `0` | the token id used for batch padding |
+| Constant        | Value  | Meaning                                                                                                                                 |
+| --------------- | ------ | --------------------------------------------------------------------------------------------------------------------------------------- |
+| `MODEL_CONTEXT` | `8192` | the model's real context length, in tokens                                                                                              |
+| `EMBED_DIM`     | `768`  | output width, full width — no Matryoshka truncation (dimension-shortening) happens in this crate; width selection is a caller's concern |
+| `PAD_ID`        | `0`    | the token id used for batch padding                                                                                                     |
 
 A model snapshot directory must contain `tokenizer.json` at its root and `onnx/model.onnx`, the fp32 graph. The pinned files are hash-verified at install time by the `fetch-model` verb: `onnx/model.onnx` has SHA-256 `c0c53d7f49a2db60761b92b7bbf5be87a7b3cf5d92dbbd7f1b5028bd5a40aa39` and `tokenizer.json` has SHA-256 `f1cc44ad7faaeec47241864835473fd5403f2da94673f3f764a77ebcb0a803ec`. For how the snapshot gets onto a machine, see [Configuration and environment](../reference/configuration.md).
 
@@ -29,14 +29,14 @@ A model snapshot directory must contain `tokenizer.json` at its root and `onnx/m
 
 The whole surface is one struct, three entry points around it, one helper, and one error type.
 
-| Entry point | Shape | Meaning |
-|---|---|---|
-| `Embedder::load(model_dir, ort_lib)` | `(&Path, &Path) -> Result<Embedder>` | load the tokenizer and ONNX session eagerly, with the recorded corpus-pass thread counts (intra-op 8, inter-op 2) |
-| `Embedder::load_with_threads(model_dir, ort_lib, intra, inter)` | `(…, usize, usize) -> Result<Embedder>` | same, with explicit ONNX Runtime thread counts |
-| `Embedder::tokenize(&self, text)` | `(&str) -> Result<Vec<u32>>` | token ids for one text, with special tokens added, no truncation, no padding |
-| `Embedder::embed(&mut self, texts)` | `(&[&str]) -> Result<Vec<[f32; 768]>>` | document-mode embedding: prompt-free (see below) |
-| `Embedder::embed_ids(&mut self, id_lists)` | `(&[Vec<u32>]) -> Result<Vec<[f32; 768]>>` | the core path: embed pre-tokenized inputs; batch composition never changes a vector |
-| `pairwise_sum_f32(a)` | `(&[f32]) -> f32` | NumPy's pairwise summation, replicated bit-for-bit (block size 128, 8-way unrolled accumulators) |
+| Entry point                                                     | Shape                                      | Meaning                                                                                                           |
+| --------------------------------------------------------------- | ------------------------------------------ | ----------------------------------------------------------------------------------------------------------------- |
+| `Embedder::load(model_dir, ort_lib)`                            | `(&Path, &Path) -> Result<Embedder>`       | load the tokenizer and ONNX session eagerly, with the recorded corpus-pass thread counts (intra-op 8, inter-op 2) |
+| `Embedder::load_with_threads(model_dir, ort_lib, intra, inter)` | `(…, usize, usize) -> Result<Embedder>`    | same, with explicit ONNX Runtime thread counts                                                                    |
+| `Embedder::tokenize(&self, text)`                               | `(&str) -> Result<Vec<u32>>`               | token ids for one text, with special tokens added, no truncation, no padding                                      |
+| `Embedder::embed(&mut self, texts)`                             | `(&[&str]) -> Result<Vec<[f32; 768]>>`     | document-mode embedding: prompt-free (see below)                                                                  |
+| `Embedder::embed_ids(&mut self, id_lists)`                      | `(&[Vec<u32>]) -> Result<Vec<[f32; 768]>>` | the core path: embed pre-tokenized inputs; batch composition never changes a vector                               |
+| `pairwise_sum_f32(a)`                                           | `(&[f32]) -> f32`                          | NumPy's pairwise summation, replicated bit-for-bit (block size 128, 8-way unrolled accumulators)                  |
 
 An `Embedder` holds one ONNX `Session`, the model's `Tokenizer`, and the ORT `Environment` for the session's lifetime. Construction is explicit and eager — there is no lazy loading inside the crate; serve mode's lazy, once-only initialisation is the caller's once-cell, and because ONNX sessions take `&mut self`, callers share an embedder behind a mutex. Loading a session costs roughly 1.6 GB of resident memory, which is why it is shared state rather than per-request state.
 
@@ -115,13 +115,13 @@ Each returned vector is a `[f32; 768]`, L2-normalized, document-side (no `query:
 
 The crate's `Error` enum is the complete failure vocabulary; there are no panics on bad input and no partial results.
 
-| Variant | When |
-|---|---|
-| `Ort(String)` | ONNX Runtime failed to load, or the session run failed |
-| `Tokenizer(String)` | the tokenizer failed to load, or tokenization failed |
-| `TooLong { tokens }` | an input exceeds the 8192-token context |
-| `EmptyBatch` | `embed` / `embed_ids` was called with no inputs |
-| `EmptyEntry { index }` | the entry at `index` tokenized to nothing |
-| `BadShape(Vec&lt;i64&gt;)` | session output 0 was not `[batch, seq, 768]` |
+| Variant                    | When                                                   |
+| -------------------------- | ------------------------------------------------------ |
+| `Ort(String)`              | ONNX Runtime failed to load, or the session run failed |
+| `Tokenizer(String)`        | the tokenizer failed to load, or tokenization failed   |
+| `TooLong { tokens }`       | an input exceeds the 8192-token context                |
+| `EmptyBatch`               | `embed` / `embed_ids` was called with no inputs        |
+| `EmptyEntry { index }`     | the entry at `index` tokenized to nothing              |
+| `BadShape(Vec&lt;i64&gt;)` | session output 0 was not `[batch, seq, 768]`           |
 
 One layer up, atlas-core wraps embedding failures as its own `Error::Embed(String)`, alongside `Fatal` and `Backend` — so a search caller sees one error type for the whole engine. As a library, `atlas-embed` has no exit codes; exit-code mapping belongs to the binaries built on it. The wire types its vectors travel in are covered in [atlas-proto: the wire contract](atlas-proto.md).

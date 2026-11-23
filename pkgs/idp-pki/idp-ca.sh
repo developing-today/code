@@ -46,7 +46,10 @@ Commands:
 EOF
 }
 
-die() { echo "idp-ca: $*" >&2; exit 1; }
+die() {
+  echo "idp-ca: $*" >&2
+  exit 1
+}
 
 need_pass() {
   if [ -z "${IDP_CA_PASSPHRASE:-}" ]; then
@@ -56,16 +59,16 @@ need_pass() {
 
 ca_dir() {
   case "$1" in
-    root) printf '%s\n' "$CA_HOME/root" ;;
-    issuing) printf '%s\n' "$CA_HOME/issuing" ;;
-    *) die "unknown CA: $1 (want root|issuing)" ;;
+  root) printf '%s\n' "$CA_HOME/root" ;;
+  issuing) printf '%s\n' "$CA_HOME/issuing" ;;
+  *) die "unknown CA: $1 (want root|issuing)" ;;
   esac
 }
 
 write_ca_config() {
   # $1 = ca dir, $2 = default digest
   local dir="$1"
-  cat > "$dir/openssl.cnf" <<EOF
+  cat >"$dir/openssl.cnf" <<EOF
 [ ca ]
 default_ca = CA_default
 
@@ -98,50 +101,50 @@ setup_ca_dir() {
   local dir="$1" md="$2"
   mkdir -p "$dir/certs"
   chmod 700 "$dir"
-  : > "$dir/index.txt"
-  printf '1000\n' > "$dir/serial"
-  printf '1000\n' > "$dir/crlnumber"
+  : >"$dir/index.txt"
+  printf '1000\n' >"$dir/serial"
+  printf '1000\n' >"$dir/crlnumber"
   write_ca_config "$dir" "$md"
 }
 
 extfile() {
   # $1 = profile; writes an extension file to stdout
   case "$1" in
-    issuing)
-      cat <<'EOF'
+  issuing)
+    cat <<'EOF'
 basicConstraints = critical, CA:true, pathlen:0
 keyUsage = critical, keyCertSign, cRLSign
 subjectKeyIdentifier = hash
 authorityKeyIdentifier = keyid:always, issuer
 EOF
-      ;;
-    server)
-      cat <<'EOF'
+    ;;
+  server)
+    cat <<'EOF'
 basicConstraints = critical, CA:false
 keyUsage = critical, digitalSignature
 extendedKeyUsage = serverAuth
 subjectKeyIdentifier = hash
 authorityKeyIdentifier = keyid, issuer
 EOF
-      ;;
-    client)
-      cat <<'EOF'
+    ;;
+  client)
+    cat <<'EOF'
 basicConstraints = critical, CA:false
 keyUsage = critical, digitalSignature
 extendedKeyUsage = clientAuth
 subjectKeyIdentifier = hash
 authorityKeyIdentifier = keyid, issuer
 EOF
-      ;;
-    signing)
-      cat <<'EOF'
+    ;;
+  signing)
+    cat <<'EOF'
 basicConstraints = critical, CA:false
 keyUsage = critical, digitalSignature, nonRepudiation
 subjectKeyIdentifier = hash
 authorityKeyIdentifier = keyid, issuer
 EOF
-      ;;
-    *) die "unknown extension profile: $1" ;;
+    ;;
+  *) die "unknown extension profile: $1" ;;
   esac
 }
 
@@ -149,9 +152,15 @@ cmd_init_root() {
   local cn="Developing Today IdP Root CA" days=7300
   while [ $# -gt 0 ]; do
     case "$1" in
-      --cn) cn="$2"; shift 2 ;;
-      --days) days="$2"; shift 2 ;;
-      *) die "init-root: unknown option $1" ;;
+    --cn)
+      cn="$2"
+      shift 2
+      ;;
+    --days)
+      days="$2"
+      shift 2
+      ;;
+    *) die "init-root: unknown option $1" ;;
     esac
   done
   need_pass
@@ -177,9 +186,15 @@ cmd_create_intermediate() {
   local cn="Developing Today IdP Issuing CA" days=3650
   while [ $# -gt 0 ]; do
     case "$1" in
-      --cn) cn="$2"; shift 2 ;;
-      --days) days="$2"; shift 2 ;;
-      *) die "create-intermediate: unknown option $1" ;;
+    --cn)
+      cn="$2"
+      shift 2
+      ;;
+    --days)
+      days="$2"
+      shift 2
+      ;;
+    *) die "create-intermediate: unknown option $1" ;;
     esac
   done
   need_pass
@@ -195,12 +210,12 @@ cmd_create_intermediate() {
   openssl req -new -key "$dir/ca.key" -passin env:IDP_CA_PASSPHRASE \
     -subj "/CN=$cn/O=$ORG_DEFAULT" -out "$dir/ca.csr"
   ext="$(mktemp)"
-  extfile issuing > "$ext"
+  extfile issuing >"$ext"
   openssl ca -config "$root_dir/openssl.cnf" -batch -notext \
     -passin env:IDP_CA_PASSPHRASE \
     -extfile "$ext" -in "$dir/ca.csr" -out "$dir/ca.crt" -days "$days"
   rm -f "$ext" "$dir/ca.csr"
-  cat "$dir/ca.crt" "$root_dir/ca.crt" > "$dir/chain.pem"
+  cat "$dir/ca.crt" "$root_dir/ca.crt" >"$dir/chain.pem"
   cmd_gencrl issuing
   echo "issuing CA created"
   cmd_inspect --cert "$dir/ca.crt"
@@ -210,12 +225,27 @@ cmd_issue_leaf() {
   local profile="" name="" cn="" days="" sans=()
   while [ $# -gt 0 ]; do
     case "$1" in
-      --profile) profile="$2"; shift 2 ;;
-      --name) name="$2"; shift 2 ;;
-      --cn) cn="$2"; shift 2 ;;
-      --san) sans+=("$2"); shift 2 ;;
-      --days) days="$2"; shift 2 ;;
-      *) die "issue-leaf: unknown option $1" ;;
+    --profile)
+      profile="$2"
+      shift 2
+      ;;
+    --name)
+      name="$2"
+      shift 2
+      ;;
+    --cn)
+      cn="$2"
+      shift 2
+      ;;
+    --san)
+      sans+=("$2")
+      shift 2
+      ;;
+    --days)
+      days="$2"
+      shift 2
+      ;;
+    *) die "issue-leaf: unknown option $1" ;;
     esac
   done
   [ -n "$profile" ] || die "issue-leaf: --profile is required"
@@ -228,11 +258,27 @@ cmd_issue_leaf() {
   out="$CA_HOME/issued/$name"
   [ -e "$out" ] && die "leaf already exists: $out"
   case "$profile" in
-    server) keyalg="EC"; extprofile="server"; days="${days:-730}" ;;
-    client) keyalg="EC"; extprofile="client"; days="${days:-730}" ;;
-    saml-signing) keyalg="RSA"; extprofile="signing"; days="${days:-1095}" ;;
-    oidc-signing) keyalg="RSA"; extprofile="signing"; days="${days:-1095}" ;;
-    *) die "issue-leaf: unknown profile $profile" ;;
+  server)
+    keyalg="EC"
+    extprofile="server"
+    days="${days:-730}"
+    ;;
+  client)
+    keyalg="EC"
+    extprofile="client"
+    days="${days:-730}"
+    ;;
+  saml-signing)
+    keyalg="RSA"
+    extprofile="signing"
+    days="${days:-1095}"
+    ;;
+  oidc-signing)
+    keyalg="RSA"
+    extprofile="signing"
+    days="${days:-1095}"
+    ;;
+  *) die "issue-leaf: unknown profile $profile" ;;
   esac
   if [ "$profile" = "server" ] && [ "${#sans[@]}" -eq 0 ]; then
     sans=("DNS:$cn")
@@ -250,17 +296,17 @@ cmd_issue_leaf() {
   openssl req -new -key "$out/$name.key" -passin env:IDP_CA_PASSPHRASE \
     -subj "/CN=$cn/O=$ORG_DEFAULT" -out "$out/$name.csr"
   ext="$(mktemp)"
-  extfile "$extprofile" > "$ext"
+  extfile "$extprofile" >"$ext"
   if [ "${#sans[@]}" -gt 0 ]; then
     local joined
     joined="$(printf '%s,' "${sans[@]}")"
-    printf 'subjectAltName = %s\n' "${joined%,}" >> "$ext"
+    printf 'subjectAltName = %s\n' "${joined%,}" >>"$ext"
   fi
   openssl ca -config "$dir/openssl.cnf" -batch -notext \
     -passin env:IDP_CA_PASSPHRASE \
     -extfile "$ext" -in "$out/$name.csr" -out "$out/$name.crt" -days "$days"
   rm -f "$ext" "$out/$name.csr"
-  cat "$out/$name.crt" "$dir/ca.crt" > "$out/$name.chain.pem"
+  cat "$out/$name.crt" "$dir/ca.crt" >"$out/$name.chain.pem"
   echo "leaf issued: profile=$profile name=$name days=$days"
   cmd_inspect --cert "$out/$name.crt"
 }
@@ -269,8 +315,11 @@ cmd_revoke() {
   local name=""
   while [ $# -gt 0 ]; do
     case "$1" in
-      --name) name="$2"; shift 2 ;;
-      *) die "revoke: unknown option $1" ;;
+    --name)
+      name="$2"
+      shift 2
+      ;;
+    *) die "revoke: unknown option $1" ;;
     esac
   done
   [ -n "$name" ] || die "revoke: --name is required"
@@ -288,9 +337,15 @@ cmd_gencrl() {
   local which="issuing"
   while [ $# -gt 0 ]; do
     case "$1" in
-      --ca) which="$2"; shift 2 ;;
-      root|issuing) which="$1"; shift ;;
-      *) die "gencrl: unknown option $1" ;;
+    --ca)
+      which="$2"
+      shift 2
+      ;;
+    root | issuing)
+      which="$1"
+      shift
+      ;;
+    *) die "gencrl: unknown option $1" ;;
     esac
   done
   need_pass
@@ -305,8 +360,11 @@ cmd_inspect() {
   local cert=""
   while [ $# -gt 0 ]; do
     case "$1" in
-      --cert) cert="$2"; shift 2 ;;
-      *) die "inspect: unknown option $1" ;;
+    --cert)
+      cert="$2"
+      shift 2
+      ;;
+    *) die "inspect: unknown option $1" ;;
     esac
   done
   if [ -n "$cert" ]; then
@@ -327,9 +385,15 @@ cmd_verify_chain() {
   local leaf="" with_crl=0
   while [ $# -gt 0 ]; do
     case "$1" in
-      --leaf) leaf="$2"; shift 2 ;;
-      --with-crl) with_crl=1; shift ;;
-      *) die "verify-chain: unknown option $1" ;;
+    --leaf)
+      leaf="$2"
+      shift 2
+      ;;
+    --with-crl)
+      with_crl=1
+      shift
+      ;;
+    *) die "verify-chain: unknown option $1" ;;
     esac
   done
   local root_dir dir
@@ -341,7 +405,7 @@ cmd_verify_chain() {
     if [ "$with_crl" -eq 1 ]; then
       local store
       store="$(mktemp)"
-      cat "$root_dir/ca.crt" "$dir/ca.crt" "$root_dir/crl.pem" "$dir/crl.pem" > "$store"
+      cat "$root_dir/ca.crt" "$dir/ca.crt" "$root_dir/crl.pem" "$dir/crl.pem" >"$store"
       echo "-- leaf against chain, with CRL check:"
       openssl verify -crl_check -CAfile "$store" -untrusted "$dir/ca.crt" "$leaf"
       rm -f "$store"
@@ -373,16 +437,16 @@ main() {
   local cmd="${1:-}"
   if [ $# -gt 0 ]; then shift; fi
   case "$cmd" in
-    init-root) cmd_init_root "$@" ;;
-    create-intermediate) cmd_create_intermediate "$@" ;;
-    issue-leaf) cmd_issue_leaf "$@" ;;
-    revoke) cmd_revoke "$@" ;;
-    gencrl) cmd_gencrl "$@" ;;
-    inspect) cmd_inspect "$@" ;;
-    verify-chain) cmd_verify_chain "$@" ;;
-    status) cmd_status "$@" ;;
-    ""|-h|--help|help) usage ;;
-    *) die "unknown command: $cmd (try 'idp-ca help')" ;;
+  init-root) cmd_init_root "$@" ;;
+  create-intermediate) cmd_create_intermediate "$@" ;;
+  issue-leaf) cmd_issue_leaf "$@" ;;
+  revoke) cmd_revoke "$@" ;;
+  gencrl) cmd_gencrl "$@" ;;
+  inspect) cmd_inspect "$@" ;;
+  verify-chain) cmd_verify_chain "$@" ;;
+  status) cmd_status "$@" ;;
+  "" | -h | --help | help) usage ;;
+  *) die "unknown command: $cmd (try 'idp-ca help')" ;;
   esac
 }
 

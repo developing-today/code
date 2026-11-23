@@ -395,11 +395,23 @@ test("what a form on a plan screen sends is the owner's words and only the choic
 });
 
 test("a change form names a phase only when moving, and a name only when adding under", () => {
-  expect(changeAsked({ action: "move", to: "now", itemTitle: "left over from before" }) as { action: string; to?: string; title?: string }).toEqual({
+  expect(
+    changeAsked({ action: "move", to: "now", itemTitle: "left over from before" }) as {
+      action: string;
+      to?: string;
+      title?: string;
+    },
+  ).toEqual({
     action: "move",
     to: "now",
   });
-  expect(changeAsked({ action: "add-under", to: "now", itemTitle: "Tiles" }) as { action: string; to?: string; title?: string }).toEqual({
+  expect(
+    changeAsked({ action: "add-under", to: "now", itemTitle: "Tiles" }) as {
+      action: string;
+      to?: string;
+      title?: string;
+    },
+  ).toEqual({
     action: "add-under",
     title: "Tiles",
   });

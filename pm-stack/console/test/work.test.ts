@@ -1026,7 +1026,9 @@ describe("the interface's endpoints", () => {
     expect(await second.json()).toEqual({ ok: true, result: { task: 21016, priority: 10 }, again: true });
     expect(moves()).toBe(1);
     // Its record of what was done carries the name, once.
-    const core = (await (await handle(get("/console/api/doc/core"), d)).json()) as { acts: { id: string; status: string }[] };
+    const core = (await (await handle(get("/console/api/doc/core"), d)).json()) as {
+      acts: { id: string; status: string }[];
+    };
     expect(core.acts.map((a: { id: string; status: string }) => [a.id, a.status])).toEqual([[id, "done"]]);
     // With nowhere to write names down, an action is done as often as it is asked: as it always was.
     const bare = deps();
@@ -1232,7 +1234,9 @@ describe("the interface's endpoints", () => {
       ["need.comment", "done", { ref: `${REPO}#5` }],
     ]);
     expect(JSON.stringify(audited)).not.toContain("private words");
-    const core = (await (await handle(get("/console/api/doc/core"), d)).json()) as { acts: { kind: string; status: string }[] };
+    const core = (await (await handle(get("/console/api/doc/core"), d)).json()) as {
+      acts: { kind: string; status: string }[];
+    };
     expect(core.acts.map((a: { kind: string; status: string }) => [a.kind, a.status])).toEqual([
       ["need.comment", "done"],
       ["task.move", "done"],
@@ -1250,7 +1254,9 @@ describe("the interface's endpoints", () => {
       expect((await handle(post("/console/api/act", body), d)).status).toBe(400);
     }
     expect(w.calls.length).toBe(before);
-    const failed = ((await (await handle(get("/console/api/doc/core"), d)).json()) as { acts: { kind: string; status: string }[] }).acts[0];
+    const failed = (
+      (await (await handle(get("/console/api/doc/core"), d)).json()) as { acts: { kind: string; status: string }[] }
+    ).acts[0];
     expect([failed.kind, failed.status]).toEqual(["task.move", "failed"]);
     await expect(perform(actions(w.ops, new Work(w.ops)), deps().docs, "__proto__", {})).rejects.toThrow(
       /not an action/,

@@ -153,7 +153,13 @@ laptop = ["commander", "http", "ssh"]
 # The actions domain (#13774): live exec sessions inside Actions
 # runners — seat verbs over the queue client, the runner-side
 # agent, and the R2 egress helper (SigV4 over sha2). Full only.
-actions = ["dep:fleet-secrets", "dep:fleet-queue", "fleet-queue/client", "dep:ureq", "dep:sha2"]
+actions = [
+  "dep:fleet-secrets",
+  "dep:fleet-queue",
+  "fleet-queue/client",
+  "dep:ureq",
+  "dep:sha2",
+]
 # Ask the local OpenCode server whether a worktree's recorded session
 # is live before reusing it (session_state.rs). In full and serve;
 # never in connect, where ureq+rustls would break the D7 2 MiB gate

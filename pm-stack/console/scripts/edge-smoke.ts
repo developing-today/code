@@ -342,11 +342,7 @@ try {
         (platform.workers ?? []).some((w) => w.name === "pm-console-edge"),
       `${(platform.workers ?? []).length} workers, checked ${platform.checked}; host saw ${seen.join(", ")}`,
     );
-    check(
-      "and no machine was asked for it",
-      !seen.some((path) => path.includes("/api/platform")),
-      seen.join(", "),
-    );
+    check("and no machine was asked for it", !seen.some((path) => path.includes("/api/platform")), seen.join(", "));
     // Someone to tell: a device takes notifications (its service is a
     // known one and its key a real point; nothing is sent to it in
     // this run unless the clock's news is worth sending).
@@ -354,16 +350,19 @@ try {
       "sign",
       "verify",
     ])) as CryptoKeyPair;
-    const devicePoint = Buffer.from((await crypto.subtle.exportKey("raw", devicePair.publicKey)) as ArrayBuffer).toString(
-      "base64url",
-    );
+    const devicePoint = Buffer.from(
+      (await crypto.subtle.exportKey("raw", devicePair.publicKey)) as ArrayBuffer,
+    ).toString("base64url");
     const subscribed = (await (
       await actAsOwner(
         "push.on",
         {
           subscription: {
             endpoint: "https://fcm.googleapis.com/fcm/send/smoke-run",
-            keys: { p256dh: devicePoint, auth: Buffer.from(crypto.getRandomValues(new Uint8Array(16))).toString("base64url") },
+            keys: {
+              p256dh: devicePoint,
+              auth: Buffer.from(crypto.getRandomValues(new Uint8Array(16))).toString("base64url"),
+            },
           },
           label: "smoke",
         },
@@ -450,7 +449,9 @@ try {
   // With the host gone, what may be done late is held here instead of
   // lost: signed in, it can be seen waiting and taken back.
   const heldId = "33333333-3333-4333-8333-333333333333";
-  const heldAnswer = (await (await actAsOwner("message.send", { to: "smoke", text: "held by the smoke run" }, heldId)).json()) as {
+  const heldAnswer = (await (
+    await actAsOwner("message.send", { to: "smoke", text: "held by the smoke run" }, heldId)
+  ).json()) as {
     ok?: boolean;
     held?: boolean;
   };

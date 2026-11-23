@@ -34,10 +34,7 @@ describe("mcpx Worker proxy", () => {
   it("answers /healthz without touching the bridge", async () => {
     const bridge = vi.fn();
     vi.stubGlobal("fetch", bridge);
-    const res = await worker.fetch(
-      new Request("https://mcpx.security.cab/healthz"),
-      env,
-    );
+    const res = await worker.fetch(new Request("https://mcpx.security.cab/healthz"), env);
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ ok: true, service: "mcpx" });
     expect(bridge).not.toHaveBeenCalled();
@@ -78,10 +75,7 @@ describe("mcpx Worker proxy", () => {
     expect(res.headers.get("mcp-session-id")).toBe("session-123");
 
     expect(bridge).toHaveBeenCalledTimes(1);
-    const [calledUrl, calledInit] = bridge.mock.calls[0] as unknown as [
-      URL,
-      RequestInit,
-    ];
+    const [calledUrl, calledInit] = bridge.mock.calls[0] as unknown as [URL, RequestInit];
     expect(String(calledUrl)).toBe("https://mcpx-link.security.cab/mcp");
     const sent = new Headers(calledInit.headers);
     expect(sent.get("cf-access-client-id")).toBe("bridge-id.access");
@@ -92,14 +86,10 @@ describe("mcpx Worker proxy", () => {
 
   it("404s unknown paths", async () => {
     vi.stubGlobal("fetch", vi.fn());
-    const res = await worker.fetch(
-      new Request("https://mcpx.security.cab/nope"),
-      env,
-    );
+    const res = await worker.fetch(new Request("https://mcpx.security.cab/nope"), env);
     expect(res.status).toBe(404);
   });
 });
-
 
 function bareRequest(path: string, authorization?: string): Request {
   const headers: Record<string, string> = {
@@ -148,10 +138,7 @@ describe("bare-path equivalence", () => {
 
   it("consumes the ns selector and forwards other query parameters", async () => {
     const bridge = stubBridge();
-    const res = await worker.fetch(
-      bareRequest("/mcp?ns=readonly&x=1", "Bearer machine-bearer-for-tests"),
-      env,
-    );
+    const res = await worker.fetch(bareRequest("/mcp?ns=readonly&x=1", "Bearer machine-bearer-for-tests"), env);
     expect(res.status).toBe(200);
     const [calledUrl] = bridge.mock.calls[0] as unknown as [URL, RequestInit];
     expect(String(calledUrl)).toBe("https://mcpx-link.security.cab/mcp?x=1");
@@ -159,10 +146,7 @@ describe("bare-path equivalence", () => {
 
   it("bare / with a selector still lands on upstream /mcp", async () => {
     const bridge = stubBridge();
-    const res = await worker.fetch(
-      bareRequest("/?ns=readonly", "Bearer machine-bearer-for-tests"),
-      env,
-    );
+    const res = await worker.fetch(bareRequest("/?ns=readonly", "Bearer machine-bearer-for-tests"), env);
     expect(res.status).toBe(200);
     const [calledUrl] = bridge.mock.calls[0] as unknown as [URL, RequestInit];
     expect(String(calledUrl)).toBe("https://mcpx-link.security.cab/mcp");

@@ -14,20 +14,20 @@
 //! without its client secret denies at start.
 
 use axum::{
+    Json, Router,
     extract::{Form, Query, State},
-    http::{header, HeaderMap, StatusCode},
+    http::{HeaderMap, StatusCode, header},
     response::{IntoResponse, Response},
     routing::{get, post},
-    Json, Router,
 };
-use base64::{engine::general_purpose::URL_SAFE_NO_PAD as B64URL, Engine as _};
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD as B64URL};
 use idp_provider::audit::AuditLog;
 use idp_provider::flow::FlowState;
 use idp_provider::identities::IdentityStore;
-use idp_provider::registry::{now_unix, Account, Client, Identity, ProviderConfig, UpstreamDoor};
+use idp_provider::registry::{Account, Client, Identity, ProviderConfig, UpstreamDoor, now_unix};
 use idp_provider::signing::TokenSigner;
 use idp_provider::upstream::DoorRuntime;
-use idp_provider::{b64url, build_app_with_flow, Config, Jwk, Jwks};
+use idp_provider::{Config, Jwk, Jwks, b64url, build_app_with_flow};
 use rand_core::OsRng;
 use rsa::pkcs1v15::{Signature, VerifyingKey};
 use rsa::signature::Verifier;
@@ -595,10 +595,11 @@ async fn unlinked_identity_denied_but_account_reachable_via_local_door() {
     assert_eq!(resp.status(), 302);
     let _ = exchange_and_verify(&h, &location(&resp)).await;
     // Operator unlinks the Google door.
-    assert!(h
-        .identities
-        .unlink("google", GOOGLE_SUB, "operator-cli")
-        .unwrap());
+    assert!(
+        h.identities
+            .unlink("google", GOOGLE_SUB, "operator-cli")
+            .unwrap()
+    );
     // The door now denies, with the history intact.
     let resp = drive_door(&h, "google").await;
     assert_eq!(resp.status(), 403);
@@ -617,12 +618,16 @@ async fn unlinked_identity_denied_but_account_reachable_via_local_door() {
     assert_eq!(row.status, "unlinked");
     assert!(row.unlinked_at.is_some());
     let events = h.identities.events().unwrap();
-    assert!(events
-        .iter()
-        .any(|e| e.event == "link" && e.provider == "google"));
-    assert!(events
-        .iter()
-        .any(|e| e.event == "unlink" && e.provider == "google"));
+    assert!(
+        events
+            .iter()
+            .any(|e| e.event == "link" && e.provider == "google")
+    );
+    assert!(
+        events
+            .iter()
+            .any(|e| e.event == "unlink" && e.provider == "google")
+    );
 
     // The account is still reachable via the local door.
     let (verifier, challenge) = pkce();

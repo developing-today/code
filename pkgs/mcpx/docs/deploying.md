@@ -38,12 +38,12 @@ Each book is built with its own `siteUrl`, because mdBook bakes
 the base path into its generated pages (with the wrong one, the
 404 page points its assets at the domain root and breaks):
 
-| book  | sources                  | siteUrl       | served at                                  |
-| ----- | ------------------------ | ------------- | ------------------------------------------ |
-| mcpx  | `pkgs/mcpx/docs`         | `/code/`      | `https://developing-today.github.io/code/` |
-| fleet | `pkgs/fleet/book`        | `/code/fleet/`  | `…/code/fleet/`  |
-| Atlas | `pkgs/atlas-search/book` | `/code/atlas/`  | `…/code/atlas/`  |
-| ID    | `pkgs/id/book`           | `/code/id/`     | `…/code/id/`     |
+| book  | sources                  | siteUrl        | served at                                  |
+| ----- | ------------------------ | -------------- | ------------------------------------------ |
+| mcpx  | `pkgs/mcpx/docs`         | `/code/`       | `https://developing-today.github.io/code/` |
+| fleet | `pkgs/fleet/book`        | `/code/fleet/` | `…/code/fleet/`                            |
+| Atlas | `pkgs/atlas-search/book` | `/code/atlas/` | `…/code/atlas/`                            |
+| ID    | `pkgs/id/book`           | `/code/id/`    | `…/code/id/`                               |
 
 The mcpx book sits at the root because it was there first — it
 is the site's original book (#1939, #1941), and the others
@@ -68,7 +68,7 @@ mdBook, with two gates inside the build:
   and history disclosures into the pages;
 - **docs-twins** then emits the agent surface — a `.html.md`
   twin for every page, plus `llms.txt` and `llms-full.txt` —
-  and the build *fails* if any page lacks a current twin
+  and the build _fails_ if any page lacks a current twin
   (#1947). The deploy job asserts the twins are present in the
   staged site as well.
 

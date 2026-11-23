@@ -2097,10 +2097,7 @@ fn run_session(args: &[String]) -> R<i32> {
                 let rec = with_store_lock(|| {
                     let mut store = load_store();
                     if let Some(m) = &mirrored {
-                        let local = store
-                            .get("sessions")
-                            .and_then(|s| s.get(&handle))
-                            .cloned();
+                        let local = store.get("sessions").and_then(|s| s.get(&handle)).cloned();
                         if let Some(winner) = remote::pick_session(local, Some(m.clone())) {
                             if let Some(sessions) = store["sessions"].as_object_mut() {
                                 sessions.insert(handle.clone(), winner);
@@ -3131,7 +3128,10 @@ mod tests {
         };
         commit_new_session(&rec, None, &up).unwrap();
         assert_eq!(up.puts.borrow().as_slice(), &[rec.clone()]);
-        assert_eq!(load_store()["sessions"]["fp_mirror"]["state"], json!("queued"));
+        assert_eq!(
+            load_store()["sessions"]["fp_mirror"]["state"],
+            json!("queued")
+        );
         let down = RecordingRemote {
             puts: RefCell::new(Vec::new()),
             fail: true,
@@ -3142,7 +3142,10 @@ mod tests {
             &down,
         )
         .unwrap();
-        assert_eq!(load_store()["sessions"]["fp_offline"]["state"], json!("queued"));
+        assert_eq!(
+            load_store()["sessions"]["fp_offline"]["state"],
+            json!("queued")
+        );
         unsafe { std::env::remove_var("FLEET_PLACE_STATE") };
         let _ = std::fs::remove_dir_all(&dir);
     }

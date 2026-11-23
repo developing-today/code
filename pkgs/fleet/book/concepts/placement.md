@@ -133,7 +133,7 @@ with `status=queued` — the run lists themselves are never enumerated. Tier-1
 load per owner is `running + queued`, summed across its host repos. Failures
 are soft but never silent: no token, a non-200, a transport error, or a
 200 whose body lacks a valid `total_count` makes that repo/status read
-*missing* rather than zero, adds a `load_read_errors` entry (surfaced in
+_missing_ rather than zero, adds a `load_read_errors` entry (surfaced in
 the dispatch output when non-empty), and is recorded in the owner's load
 coverage. Coverage is one of `measured` (every required read returned a
 count), `partial` (some did), `unknown` (none did), or `simulated` (an

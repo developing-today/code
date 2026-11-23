@@ -40,8 +40,8 @@ d="$TMP/clean"
 make_fixtures "$d"
 if out="$("$BASH_BIN" "$CHECK" --units-dir "$d/units" --containers-file "$d/containers.txt" 2>&1)"; then
   case "$out" in
-    FENCED:*) pass 'all writers stopped reports FENCED' ;;
-    *) fail "all writers stopped reports FENCED (got: $out)" ;;
+  FENCED:*) pass 'all writers stopped reports FENCED' ;;
+  *) fail "all writers stopped reports FENCED (got: $out)" ;;
   esac
 else
   fail "all writers stopped reports FENCED (exit $?, got: $out)"
@@ -54,7 +54,7 @@ printf 'pm-grist running\n' >"$d/containers.txt"
 if out="$("$BASH_BIN" "$CHECK" --units-dir "$d/units" --containers-file "$d/containers.txt" 2>&1)"; then
   fail "running container reports UNFENCED (exit 0, got: $out)"
 else
-  if [ "$?" -eq 1 ] && [[ "$out" == UNFENCED:*container:pm-grist* ]]; then
+  if [ "$?" -eq 1 ] && [[ $out == UNFENCED:*container:pm-grist* ]]; then
     pass 'running container reports UNFENCED and names the writer'
   else
     fail "running container reports UNFENCED and names the writer (got: $out)"
@@ -68,7 +68,7 @@ printf 'active' >"$d/units/docker-pm-pad.service"
 if out="$("$BASH_BIN" "$CHECK" --units-dir "$d/units" --containers-file "$d/containers.txt" 2>&1)"; then
   fail "active unit reports UNFENCED (exit 0, got: $out)"
 else
-  if [ "$?" -eq 1 ] && [[ "$out" == UNFENCED:*unit:docker-pm-pad.service* ]]; then
+  if [ "$?" -eq 1 ] && [[ $out == UNFENCED:*unit:docker-pm-pad.service* ]]; then
     pass 'active unit reports UNFENCED and names the writer'
   else
     fail "active unit reports UNFENCED and names the writer (got: $out)"
@@ -79,7 +79,7 @@ fi
 if out="$("$BASH_BIN" "$CHECK" --units-dir "$TMP/no-such-dir" --containers-file "$TMP/no-such-file" 2>&1)"; then
   fail "unreadable fixtures fail closed (exit 0, got: $out)"
 else
-  if [ "$?" -eq 1 ] && [[ "$out" == UNFENCED:* ]]; then
+  if [ "$?" -eq 1 ] && [[ $out == UNFENCED:* ]]; then
     pass 'unreadable fixtures fail closed as UNFENCED'
   else
     fail "unreadable fixtures fail closed as UNFENCED (got: $out)"
@@ -89,8 +89,8 @@ fi
 # 5. Oracle: unreachable old host is fenced by definition (exit 0).
 if out="$("$BASH_BIN" "$CHECK" --unreachable 2>&1)"; then
   case "$out" in
-    FENCED:*) pass 'unreachable host reports FENCED by definition' ;;
-    *) fail "unreachable host reports FENCED by definition (got: $out)" ;;
+  FENCED:*) pass 'unreachable host reports FENCED by definition' ;;
+  *) fail "unreachable host reports FENCED by definition (got: $out)" ;;
   esac
 else
   fail "unreachable host reports FENCED by definition (exit $?, got: $out)"
@@ -115,8 +115,8 @@ d="$TMP/equals-form"
 make_fixtures "$d"
 if out="$("$BASH_BIN" "$CHECK" --units-dir="$d/units" --containers-file="$d/containers.txt" 2>&1)"; then
   case "$out" in
-    FENCED:*) pass '--opt=value form works identically' ;;
-    *) fail "--opt=value form works identically (got: $out)" ;;
+  FENCED:*) pass '--opt=value form works identically' ;;
+  *) fail "--opt=value form works identically (got: $out)" ;;
   esac
 else
   fail "--opt=value form works identically (exit $?, got: $out)"

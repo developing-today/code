@@ -53,17 +53,9 @@ import type { Severity } from "./alerts.ts";
 
 // --- The prediction record (design §1), as consumed here -----------
 
-export type ForecastPredictionKind =
-  | "pool_exhaustion"
-  | "downtime_window"
-  | "reset_duration"
-  | "model_plan_arrival";
+export type ForecastPredictionKind = "pool_exhaustion" | "downtime_window" | "reset_duration" | "model_plan_arrival";
 
-export type ForecastPredictionState =
-  | "predicted"
-  | "insufficient_history"
-  | "no_basis"
-  | "adjustment_unavailable";
+export type ForecastPredictionState = "predicted" | "insufficient_history" | "no_basis" | "adjustment_unavailable";
 
 /** The C4 prediction record (design §1). Only the fields the alert
  * path reads are required here; producers write the full record. */
@@ -110,11 +102,7 @@ export interface ForecastAlertFinding {
   detail: Record<string, unknown>;
 }
 
-export type ForecastAlertEvaluationState =
-  | "fired"
-  | "silent"
-  | "already-alerted"
-  | "unevaluable";
+export type ForecastAlertEvaluationState = "fired" | "silent" | "already-alerted" | "unevaluable";
 
 /** The per-record verdict row: how a reader tells a real all-clear
  * ("silent", reason named) from a record that could not be judged
@@ -199,10 +187,7 @@ export function evaluateForecastAlerts(input: ForecastAlertInput): ForecastAlert
 
     // Honesty states are published answers, not alertable input.
     if (r.state !== "predicted") {
-      verdict(
-        "silent",
-        `prediction state ${r.state}${r.state_reason ? `: ${r.state_reason}` : ""}`,
-      );
+      verdict("silent", `prediction state ${r.state}${r.state_reason ? `: ${r.state_reason}` : ""}`);
       continue;
     }
 
@@ -213,10 +198,7 @@ export function evaluateForecastAlerts(input: ForecastAlertInput): ForecastAlert
     }
     if (r.kind === "pool_exhaustion") {
       if (!r.subject.pool || !input.workhorsePools.has(r.subject.pool)) {
-        verdict(
-          "silent",
-          "ordinary wall: subject pool does not serve the workhorse section (S3.15 selectivity)",
-        );
+        verdict("silent", "ordinary wall: subject pool does not serve the workhorse section (S3.15 selectivity)");
         continue;
       }
     }

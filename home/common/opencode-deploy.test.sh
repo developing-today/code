@@ -88,7 +88,7 @@ stop_line="$(grep -nFx -- '--user stop opencode.service' "$log" | cut -d: -f1 ||
 socket_line="$(grep -nFx -- '--user start opencode.socket' "$log" | cut -d: -f1 || true)"
 start_line="$(grep -nE -- '--user (start|restart) opencode\.service' "$log" | tail -n1 | cut -d: -f1 || true)"
 if [[ -z $stop_line || -z $socket_line || -z $start_line ]] ||
-  (( stop_line >= socket_line || socket_line >= start_line )); then
+  ((stop_line >= socket_line || socket_line >= start_line)); then
   echo 'FAIL: socket handover did not stop service, start socket, then start service' >&2
   cat "$log" >&2
   exit 1

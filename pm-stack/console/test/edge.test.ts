@@ -803,7 +803,13 @@ async function setup(options: { direct?: boolean } = {}) {
   /** Each report the host sent, as it read. */
   const reports: { sections: { name: string }[]; have: Record<string, unknown> }[] = [];
   /** The signed Android build on the host, if any, and how often it was read to be sent. */
-  const build: { bytes: Uint8Array<ArrayBuffer> | null; at: number; reads: number; corrupt: boolean; unreadable: boolean } = {
+  const build: {
+    bytes: Uint8Array<ArrayBuffer> | null;
+    at: number;
+    reads: number;
+    corrupt: boolean;
+    unreadable: boolean;
+  } = {
     bytes: null,
     at: 0,
     reads: 0,
@@ -3738,7 +3744,11 @@ describe("the edge does the core itself", () => {
       about: { issue: 301 },
       rank: "expedite",
     });
-    expect(((await note.json()) as { result: Record<string, unknown> }).result).toMatchObject({ issue: 301, commented: true, queued: true });
+    expect(((await note.json()) as { result: Record<string, unknown> }).result).toMatchObject({
+      issue: 301,
+      commented: true,
+      queued: true,
+    });
     expect((w.ghComments[301] ?? []).some((c) => c.body.startsWith("do this first\n\n---\n"))).toBe(true);
     expect(w.ghLabels[301]).toEqual(["owner/intake", "expedite"]);
     // As a session: the owner's prompt, with the routing labels added.
@@ -3748,7 +3758,11 @@ describe("the edge does the core itself", () => {
       text: "pick these up first",
       mode: "session",
     });
-    expect(((await session.json()) as { result: Record<string, unknown> }).result).toMatchObject({ issue: 501, commented: false, queued: true });
+    expect(((await session.json()) as { result: Record<string, unknown> }).result).toMatchObject({
+      issue: 501,
+      commented: false,
+      queued: true,
+    });
     expect(w.ghLabels[501]).toEqual(["owner/prompt", "expedite", "source/human", "owner/intake", "app/fleet"]);
     // Three tasks wait for a machine, each as the action that builds it there.
     const at = new Date(w.now.t).toISOString();

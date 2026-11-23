@@ -141,11 +141,7 @@ export default {
 // path is always /mcp (bare-path equivalence), the caller's own
 // credentials are swapped for the Worker's bridge egress token, and
 // the `ns` selector parameter is consumed here, never forwarded.
-export async function proxyMcp(
-  request: Request,
-  env: Env,
-  selector: FilterSelector,
-): Promise<Response> {
+export async function proxyMcp(request: Request, env: Env, selector: FilterSelector): Promise<Response> {
   const url = new URL(request.url);
   const upstreamParams = new URLSearchParams(url.search);
   upstreamParams.delete("ns");
@@ -179,9 +175,7 @@ export async function proxyMcp(
       rejected = gate.rejected;
       // Every element was rejected: answer here, call nothing upstream.
       if (allowed.length === 0) {
-        const body = gate.batch
-          ? JSON.stringify(rejected)
-          : JSON.stringify(rejected[0] ?? jsonRpcError(null));
+        const body = gate.batch ? JSON.stringify(rejected) : JSON.stringify(rejected[0] ?? jsonRpcError(null));
         headers.delete("content-length");
         headers.delete("content-type");
         return new Response(body, {

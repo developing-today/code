@@ -27,7 +27,7 @@
   (degraded Turso→Drive leg, PITR as sole protection, Delete
   Protection still off) is named on #1516 (comment 7107336806).
 - **The orphan restic repo is not orphaned:** `~/backups/restic/
-  laptop-state/` is written by `laptop-state-backup` (#1849), verified
+laptop-state/` is written by `laptop-state-backup` (#1849), verified
   producing snapshots 2026-11-16.
 - **Existing legs** (all in `nixos/home/laptop-backups.nix`): atlas-
   backup (canonical atlas DB → laptop + R2 + Drive, daily),
@@ -40,13 +40,13 @@
   completion check added by PR #10988.
 - **D1 exists in the fleet:** the `fleet-queue-backup` D1 database
   (#8584) receives the fleet-queue Turso export on a daily timer. That
-  direction (Turso → D1) is a backup *target* choice for one database;
+  direction (Turso → D1) is a backup _target_ choice for one database;
   the D1 side itself has no backup home yet — §6 covers it.
 - **The OpenCode session DB has no off-laptop backup** (21.37 GB,
   ~5.1 GB zstd, measured 2026-11-12). Its economics research is #9094
   (open); the mesh leg is #13462, gated on it.
 - **Gap this design closes:** the only every-database leg is a nightly
-  *full* export to a *single* store (Drive). There is no delta-efficient
+  _full_ export to a _single_ store (Drive). There is no delta-efficient
   leg, no R2/laptop copy of the general Turso fleet, and no scheduled
   restore verification for most stores.
 
@@ -59,16 +59,16 @@ sha256 hashes — the manifest is what restore verification checks
 against). Snapshots carry tags `db=<name>` and `class=<A|B>` so
 retention and verification select per database.
 
-| Source | Leg | Store | Retention |
-|---|---|---|---|
-| Turso DBs, class A (platform) | restic backup of stream-zstd export, weekly staggered | R2 repo `restic-turso-mesh` | keep-daily 7 / keep-weekly 8 / keep-monthly 12, per-DB tags |
-| Turso DBs, class B (general) | restic backup of stream-zstd export, 14-day rotation | R2 repo `restic-turso-mesh` | same |
-| R2 mesh repo | `restic copy`, nightly after ingest | laptop-local mesh repo | mirrors the R2 snapshot set exactly |
-| R2 mesh repo | `restic copy`, nightly after ingest (changed packs only) | Google Drive mesh repo | mirrors the R2 snapshot set exactly |
-| D1 databases (in scope, §6) | weekly export → import, wholesale replace | dedicated Turso home DB (`d1-backup-<name>`), which is itself class B | Turso PITR 30d + the home's own mesh snapshots |
-| Laptop-local DBs (qualifying, §6) | weekly export → import, wholesale replace | dedicated Turso home DB (`laptop-backup-<name>`), itself class B | same |
-| Embedding / shard stores | ride their parent DB's leg (Turso-resident) or a named file-level restic leg for non-Turso stores | R2 mesh repo + copies | same as parent class |
-| OpenCode session DB | scheme per #9094 (full / zstd / restic-delta) | Google Drive + laptop archive location | per #9094's costing |
+| Source                            | Leg                                                                                               | Store                                                                 | Retention                                                   |
+| --------------------------------- | ------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------- | ----------------------------------------------------------- |
+| Turso DBs, class A (platform)     | restic backup of stream-zstd export, weekly staggered                                             | R2 repo `restic-turso-mesh`                                           | keep-daily 7 / keep-weekly 8 / keep-monthly 12, per-DB tags |
+| Turso DBs, class B (general)      | restic backup of stream-zstd export, 14-day rotation                                              | R2 repo `restic-turso-mesh`                                           | same                                                        |
+| R2 mesh repo                      | `restic copy`, nightly after ingest                                                               | laptop-local mesh repo                                                | mirrors the R2 snapshot set exactly                         |
+| R2 mesh repo                      | `restic copy`, nightly after ingest (changed packs only)                                          | Google Drive mesh repo                                                | mirrors the R2 snapshot set exactly                         |
+| D1 databases (in scope, §6)       | weekly export → import, wholesale replace                                                         | dedicated Turso home DB (`d1-backup-<name>`), which is itself class B | Turso PITR 30d + the home's own mesh snapshots              |
+| Laptop-local DBs (qualifying, §6) | weekly export → import, wholesale replace                                                         | dedicated Turso home DB (`laptop-backup-<name>`), itself class B      | same                                                        |
+| Embedding / shard stores          | ride their parent DB's leg (Turso-resident) or a named file-level restic leg for non-Turso stores | R2 mesh repo + copies                                                 | same as parent class                                        |
+| OpenCode session DB               | scheme per #9094 (full / zstd / restic-delta)                                                     | Google Drive + laptop archive location                                | per #9094's costing                                         |
 
 Every store can rebuild any other: R2, laptop, and Drive hold the same
 mesh snapshot set (§5's copy discipline), and the Turso homes are
@@ -169,7 +169,7 @@ live elsewhere and gives each a leg or a recorded exclusion.
   window (Delete Protection now makes deletion a deliberate act, but
   a deliberate act can still be a mistake), Turso account/plan loss,
   and corruption old enough that the operator wants a pre-corruption
-  *snapshot* rather than a point-in-time roll.
+  _snapshot_ rather than a point-in-time roll.
 - **Age > 30 days — the restic chain is the only protection.** PITR
   has expired; restore granularity is the retention ladder's (weekly
   to ~2 months, monthly to ~a year). That thinning is accepted
@@ -209,16 +209,16 @@ at least quarterly) plus the watchdog's mesh reporting.
 
 ## 10. Granular implementation issues filed
 
-| Leg / class | Issue |
-|---|---|
-| Class A — platform DBs → R2 restic deltas | #13455 |
-| Class B — general DBs → R2, 14-day rotation | #13456 |
-| Replication — R2 → laptop, R2 → Drive | #13457 |
-| Class D — D1 exports → Turso homes | #13458 |
-| Class E — laptop-local DBs → Turso homes | #13459 |
+| Leg / class                                   | Issue  |
+| --------------------------------------------- | ------ |
+| Class A — platform DBs → R2 restic deltas     | #13455 |
+| Class B — general DBs → R2, 14-day rotation   | #13456 |
+| Replication — R2 → laptop, R2 → Drive         | #13457 |
+| Class D — D1 exports → Turso homes            | #13458 |
+| Class E — laptop-local DBs → Turso homes      | #13459 |
 | Embeds — coverage + no-re-embed restore proof | #13461 |
-| Class F — OpenCode DB (gated on #9094) | #13462 |
-| Restore-verification rotation + watchdog | #13463 |
+| Class F — OpenCode DB (gated on #9094)        | #13462 |
+| Restore-verification rotation + watchdog      | #13463 |
 
 Each carries a restore-verification acceptance step, per #9093's
 acceptance list.

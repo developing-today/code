@@ -11,7 +11,10 @@ description = "The `fleet cert` domain: PKI/X.509 roots, issuers, leaves, chains
 # signing for every registered algorithm, ML-DSA-44 included (RFC 9881
 # identifiers, via the aws-lc-rs backend — the ring backend has no
 # ML-DSA). Certificates produced here verify in OpenSSL 3.5+.
-rcgen = { version = "0.14.10", default-features = false, features = ["aws_lc_rs", "pem"] }
+rcgen = { version = "0.14.10", default-features = false, features = [
+  "aws_lc_rs",
+  "pem",
+] }
 # Direct aws-lc-rs link for chain signature verification (all five
 # registered algorithms, ML-DSA-44 included) — the same backend rcgen
 # signs with, so verify semantics match the signer.

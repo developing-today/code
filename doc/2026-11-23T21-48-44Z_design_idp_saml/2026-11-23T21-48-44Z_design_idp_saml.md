@@ -10,7 +10,7 @@
 The minimal provider (`pkgs/idp-provider`) speaks OIDC today: one
 account row, four roles from the parent design #1253 (`owner`,
 `orchestrator`, `agent`, `read-only`), a deny-by-default allowlist,
-and an append-only audit log of allowed *and* denied events. Slice 2
+and an append-only audit log of allowed _and_ denied events. Slice 2
 of the PKI (`pkgs/idp-pki`) already issued a dedicated SAML signing
 key in anticipation of this work — serial 1002, certificate at
 `pkgs/idp-pki/trust/saml-signing.crt.pem`, encrypted private key
@@ -21,7 +21,7 @@ account model, or a separate product beside the provider (the
 composed-model evaluation on #13658 settled that shape: the
 minimal provider is the core).
 
-What SAML is *for* here: the long tail of applications that speak
+What SAML is _for_ here: the long tail of applications that speak
 SAML 2.0 and not OIDC. Until a concrete SP is named, this is
 capability-building, sequenced design → core → conformance →
 first real SP.
@@ -31,19 +31,19 @@ first real SP.
 Candidates evaluated from their own repositories and registries on
 2026-11-23:
 
-| Candidate | State | XML signature handling | IdP side | Notes |
-|---|---|---|---|---|
-| **samael** (njaremko/samael, crates.io) | v0.0.22, MIT, actively maintained (commits through 2026-07), ~46k crate downloads, 109 stars | libxmlsec via the default `xmlsec` feature (libxml2/libxmlsec1 C libraries) | Yes — SP and IdP roles, SP- and IdP-initiated SSO, metadata types | Oldest Rust SAML library; SP-first heritage, so its IdP surface is the less exercised half |
-| **`saml`** (crates.io) | v0.1.0 **pre-release**; its own README: APIs "subject to change until v1.0" | Pure Rust reimplementation (quick-xml + RustCrypto), structural XSW resistance, interop corpus from Okta/Entra/Auth0/Google/OneLogin/Keycloak/ADFS/Shibboleth fixtures | Yes, plus a proxy role | Best architecture on paper; not yet a stable dependency. MSRV 1.91 |
-| **saml-rs** (terminaloutcomes) / **risaml** fork | saml-rs is a one-author project ("doing SAML things, terribly", aimed at Kanidm); risaml is a young maintained fork (from saml-rs 0.5.0) with a typed `Saml<Idp>` facade | Delegated to bergshamra (RustCrypto or aws-lc backends) | Yes | Modern API shape, but the lineage is the youngest of the three |
-| Hand-rolled XML-DSig in the provider | — | Would be ours | — | **Rejected outright** (below) |
+| Candidate                                        | State                                                                                                                                                                    | XML signature handling                                                                                                                                                 | IdP side                                                          | Notes                                                                                      |
+| ------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------- | ------------------------------------------------------------------------------------------ |
+| **samael** (njaremko/samael, crates.io)          | v0.0.22, MIT, actively maintained (commits through 2026-07), ~46k crate downloads, 109 stars                                                                             | libxmlsec via the default `xmlsec` feature (libxml2/libxmlsec1 C libraries)                                                                                            | Yes — SP and IdP roles, SP- and IdP-initiated SSO, metadata types | Oldest Rust SAML library; SP-first heritage, so its IdP surface is the less exercised half |
+| **`saml`** (crates.io)                           | v0.1.0 **pre-release**; its own README: APIs "subject to change until v1.0"                                                                                              | Pure Rust reimplementation (quick-xml + RustCrypto), structural XSW resistance, interop corpus from Okta/Entra/Auth0/Google/OneLogin/Keycloak/ADFS/Shibboleth fixtures | Yes, plus a proxy role                                            | Best architecture on paper; not yet a stable dependency. MSRV 1.91                         |
+| **saml-rs** (terminaloutcomes) / **risaml** fork | saml-rs is a one-author project ("doing SAML things, terribly", aimed at Kanidm); risaml is a young maintained fork (from saml-rs 0.5.0) with a typed `Saml<Idp>` facade | Delegated to bergshamra (RustCrypto or aws-lc backends)                                                                                                                | Yes                                                               | Modern API shape, but the lineage is the youngest of the three                             |
+| Hand-rolled XML-DSig in the provider             | —                                                                                                                                                                        | Would be ours                                                                                                                                                          | —                                                                 | **Rejected outright** (below)                                                              |
 
 **Hand-rolled is rejected** for the reason the OIDC side's
 minimalism does not generalize: JWS verification is a b64 decode
 and one RSA check, but XML-DSig involves canonicalization,
 reference resolution, and signature-wrapping defenses — the exact
 class of protocol machinery where a subtle bug is a silent
-authentication bypass. The provider stays minimal in *surface*,
+authentication bypass. The provider stays minimal in _surface_,
 not in re-implementing XML cryptography.
 
 **Decision: samael**, pinned to an exact version, for the first
@@ -55,7 +55,7 @@ the crate names samael types). Rationale:
   years of history, actively maintained, both-roles, and backed
   for its signature work by **libxmlsec** — the implementation
   the wider SAML ecosystem (including the test harnesses in §6)
-  validates against. For a *first interop proof*, the signature
+  validates against. For a _first interop proof_, the signature
   stack's battle-testing outweighs dependency purity.
 - The costs are known and accepted: a native libxmlsec
   dependency in the provider's build closure (the Nix packaging
@@ -111,7 +111,7 @@ the crate names samael types). Rationale:
 - **Signed assertions: mandatory** (both assertion and response
   signed, §3). **Signed AuthnRequests: accepted, not required**
   by default — many SPs cannot sign; a per-SP flag can require
-  it. When an AuthnRequest *is* signed and the SP has a
+  it. When an AuthnRequest _is_ signed and the SP has a
   registered certificate, the signature must verify or the
   request is denied and audited.
 - **Assertion encryption: not in the first slices.** Assertions

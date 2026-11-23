@@ -71,4 +71,5 @@ The D1 -> Turso home leg's code, weekly units, and hermetic tests
 are in this directory; the home database itself is provisioned in
 that issue's live leg (create `d1-backup-fleet-queue-backup`, mint
 its token into the vault, install the units, first verified import
-+ drill), which is recorded on #13458.
+
+- drill), which is recorded on #13458.
