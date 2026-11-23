@@ -819,6 +819,16 @@ impl TursoBackend {
             .unwrap())
     }
 
+    /// #13146: several statements in one pipeline request (the
+    /// placement-sync batch insert). Same per-statement results as
+    /// repeated `exec` calls, one round trip.
+    pub(crate) fn exec_batch(
+        &self,
+        stmts: &[(&str, Vec<Arg>)],
+    ) -> Result<Vec<StmtResult>, TErr> {
+        self.pipeline(stmts)
+    }
+
     /// Rows of one SELECT as JSON objects, with the given TEXT
     /// columns parsed back into JSON values.
     pub(crate) fn query_objs(
@@ -976,7 +986,7 @@ impl Clone for Arg {
     }
 }
 
-pub(crate) const SCHEMA: [&str; 17] = [
+pub(crate) const SCHEMA: [&str; 19] = [
     "CREATE TABLE IF NOT EXISTS tasks (\
         id INTEGER PRIMARY KEY AUTOINCREMENT, \
         queue TEXT NOT NULL, title TEXT, body TEXT, \
@@ -1050,6 +1060,18 @@ pub(crate) const SCHEMA: [&str; 17] = [
     // #8582 increment 2: the merge-intent table, DDL of record in
     // the pure core module.
     crate::merge_intent::MERGE_INTENT_DDL,
+    // #13146: placement session records — the designed home for the
+    // fleet-place session store (intake DDL in
+    // doc/placement-intake/placement.md, carried into the Turso
+    // backend). `record` holds the full session JSON — the client
+    // record shape is the contract; the scalar columns are
+    // extractions for list/filter queries.
+    "CREATE TABLE IF NOT EXISTS placement_sessions (\
+        handle TEXT PRIMARY KEY, record TEXT NOT NULL DEFAULT '{}', \
+        state TEXT, surface TEXT, submitted_by TEXT, run_id INTEGER, \
+        created_at TEXT NOT NULL, updated_at TEXT NOT NULL)",
+    "CREATE INDEX IF NOT EXISTS placement_sessions_created \
+        ON placement_sessions(created_at)",
 ];
 
 // ---------------------------------------------------------------------------
