@@ -14,6 +14,7 @@ pub mod cursor;
 pub mod delegation;
 pub mod query;
 pub mod record;
+pub mod social;
 pub mod space_binding;
 pub mod term;
 pub mod version;
