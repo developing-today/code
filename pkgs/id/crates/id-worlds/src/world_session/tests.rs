@@ -4571,7 +4571,7 @@ mod tests {
                     let mut line = String::with_capacity(120);
                     for col in 0..120 {
                         let byte = if step >= 2 && row >= 47 {
-                            b"#"
+                            b'#'
                         } else {
                             ALPHABET[(row * 7 + col * 13) % ALPHABET.len()]
                         };
