@@ -122,6 +122,39 @@ Whether the sweep's removal is its permanent retirement or a pause
 is the endgame decision still open on #2138. The Surface 1 header
 count is stale until that recount, as above.
 
+Surface 1 amended 2026-11-22 by Felix (Muse sandbox seat) for issue
+#2313: the `pr-diff-review` and `pr-diff-review-b` charters are
+amended for Stage B of the review loop (design #2025 §8). Decision
+D1 — amend the pr-diff-review charter to permit verdict notes and
+second-pass enqueueing — was approved in principle by Drewry on
+2026-11-11, and Stage B itself was approved by Drewry on 2026-11-22
+(decision note on #2313), on the Stage A record: 34 shadow verdicts
+(accept 73.5% / accept-with-followups 17.6% / second-pass 8.8% /
+reject 0%), no inflation flag, exit report posted 2026-11-14. As
+amended, for pull requests under epic #2055 only, both jobs issue
+live verdicts under the design §3 vocabulary: they post verdict
+notes (lifecycle-protocol §2 verdict footer), apply the `review/*`
+labels, merge on accept under the standing merge criteria, close on
+reject per §3, and enqueue `second_pass` packets — the cap (2),
+gap-shrink, and cap-escalation rules of §7.2 apply from day one.
+Outside epic #2055 both jobs remain file-issues-only; the Stage A
+shadow section is retired (its window closed 2026-11-13).
+Supporting landings: #2310 (`second_pass` kind + §5.2 payload
+validation in fleet-queue), #2311 (`review/*` labels on all four
+repos; the lifecycle-protocol verdict amendment adopted via
+hatch-personal PR #53), #2314 (second-pass brief template), and
+#2312's monitor checks (PR #10676; the fleet-monitor invocation
+wiring is that issue's remaining line, owned by the fleet-monitor
+job's definition). Application remainder: the two job bodies are
+the charter text and live in hatch-personal (the
+keep-the-four-repos-healthy goal's `crons/hourly/pr-diff-review__interval@2h.md`
+and `crons/hourly/pr-diff-review-b__interval@2h.md`); the amended
+text is to be committed there and applied to the live jobs via
+cron.update by the main seat, per the hatch-personal cron workflow.
+Until that application lands, the jobs still run the Stage A text
+and issue no live verdicts. The Surface 1 header count is
+unchanged.
+
 ## Surface 1 — Muse cron (131 jobs at 2026-11-03 full count; +2 rows since — see Verification)
 
 | id                                        | title                                                                                             | cadence                       | state    | owner / scope                                                              | prompt/brief pointer                                                                                                                                                               | budget       | kill criteria | created      | last review |
@@ -220,8 +253,8 @@ count is stale until that recount, as above.
 | `pool-quota-steward`                      | Pool quota & config steward — hourly pool balance, change ledger, impact follow-up                | `interval@1h`                 | enabled  | goal:keep-the-four-repos-healthy                                           | `/home/hatch/workspace/goals/keep-the-four-repos-healthy/crons/hourly/pool-quota-steward__interval@1h.md`                                                                          | not recorded | not recorded  | not recorded | 2026-11-03  |
 | `porkbun-account-nudge`                   | Porkbun second account nudge (weekly)                                                             | `weekly@Mon-09:12:00`         | enabled  | goal:second-porkbun-account-file-api-access-for-the-drewrypope-com-group   | `/home/hatch/workspace/goals/second-porkbun-account-file-api-access-for-the-drewrypope-com-group/crons/weekly/porkbun-account-nudge__weekly@Mon-09:12:00.md`                       | not recorded | not recorded  | not recorded | 2026-11-03  |
 | `pr-comment-review`                       | PR comment review → issues for unaddressed validated findings (every 4h)                          | `interval@4h`                 | enabled  | goal:keep-the-four-repos-healthy                                           | `/home/hatch/workspace/goals/keep-the-four-repos-healthy/crons/hourly/pr-comment-review__interval@4h.md`                                                                           | not recorded | not recorded  | not recorded | 2026-11-03  |
-| `pr-diff-review`                          | PR commit/diff review → issues from findings (hourly, up to 15 reviewed / 10 filed)               | `interval@2h`                 | enabled  | goal:keep-the-four-repos-healthy                                           | `/home/hatch/workspace/goals/keep-the-four-repos-healthy/crons/hourly/pr-diff-review__interval@2h.md`                                                                              | not recorded | not recorded  | not recorded | 2026-11-03  |
-| `pr-diff-review-b`                        | PR commit/diff review — Lane B (offset rotation, up to 15 reviewed / 10 filed)                    | `interval@2h`                 | enabled  | goal:keep-the-four-repos-healthy                                           | `/home/hatch/workspace/goals/keep-the-four-repos-healthy/crons/hourly/pr-diff-review-b__interval@2h.md`                                                                            | not recorded | not recorded  | not recorded | 2026-11-03  |
+| `pr-diff-review`                          | PR commit/diff review → issues from findings + review-loop Stage B live verdicts on epic #2055 PRs (up to 15 reviewed / 10 filed)               | `interval@2h`                 | enabled  | goal:keep-the-four-repos-healthy                                           | `/home/hatch/workspace/goals/keep-the-four-repos-healthy/crons/hourly/pr-diff-review__interval@2h.md`                                                                              | not recorded | not recorded  | not recorded | 2026-11-22  |
+| `pr-diff-review-b`                        | PR commit/diff review — Lane B (offset rotation, up to 15 reviewed / 10 filed) + review-loop Stage B live verdicts on epic #2055 PRs                    | `interval@2h`                 | enabled  | goal:keep-the-four-repos-healthy                                           | `/home/hatch/workspace/goals/keep-the-four-repos-healthy/crons/hourly/pr-diff-review-b__interval@2h.md`                                                                            | not recorded | not recorded  | not recorded | 2026-11-22  |
 | `profile-image`                           |                                                                                                   | `interval@168h`               | enabled  | —                                                                          | `/home/hatch/workspace/system-cron.d/hourly/profile-image__interval@168h.md`                                                                                                       | not recorded | not recorded  | not recorded | 2026-11-03  |
 | `program-tending`                         | Program tending — daily roadmaps, epics, projects, stalled PR check-ins                           | `daily@09:12:00`              | enabled  | goal:keep-the-four-repos-healthy                                           | `/home/hatch/workspace/goals/keep-the-four-repos-healthy/crons/daily/program-tending__daily@09:12:00.md`                                                                           | not recorded | not recorded  | not recorded | 2026-11-03  |
 | `repo-design-architect`                   | Design architect — non-code repos design pass every 12h (register + design issues)                | `interval@12h`                | enabled  | goal:keep-the-four-repos-healthy                                           | `/home/hatch/workspace/goals/keep-the-four-repos-healthy/crons/hourly/repo-design-architect__interval@12h.md`                                                                      | not recorded | not recorded  | not recorded | 2026-11-03  |
@@ -362,6 +395,20 @@ it targeted the retired sandbox collector. The drill script is laptop-only
 sandbox's installed-unit state still requires the operator audit linked from
 issue #1319.
 
+### 2c. Sandbox systemd system timers (1 listed)
+
+The sandbox's system-scope timers (the sandbox has no user bus). A listed
+timer here is a deploy target (design §4.4): its units are rendered with
+its deploy generation and re-linked into `/etc/systemd/system` after
+every recycle by the generic deploy-target restorer (code#5770) — there
+is no per-service installer. The sandbox's other installed units are not
+deploy targets yet and remain inventoried by the operator audit linked
+from issue #1319.
+
+| timer unit             | cadence spec                                            | activates                | owner / scope                                              | budget       | kill criteria | created    | last review |
+| ---------------------- | ------------------------------------------------------- | ------------------------ | ---------------------------------------------------------- | ------------ | ------------- | ---------- | ----------- |
+| `quota-recorder.timer` | `OnCalendar=*:0/5` (Persistent=true, RandomizedDelaySec=20) | `quota-recorder.service` | sandbox (system systemd; deploy target `quota-recorder`, code#5770) | not recorded | not recorded  | 2026-10-28 | 2026-11-22  |
+
 ## Surface 3 — Jules schedules (1 entry, retired)
 
 | name/id                     | repo/scope            | cadence                  | prompt (summary; verbatim in #2265)                                                                                                                                                                                                                 | budget expectation                                      | owner                           | kill criteria                                                                                  | created     | last review | state                                                                                                                                                |
@@ -372,7 +419,7 @@ issue #1319.
 the surface is retained in this registry so a future Jules schedule,
 if one is ever created, lands here in the same pass.
 
-## Surface 4 — GitHub Actions schedules (2 entries)
+## Surface 4 — GitHub Actions schedules (3 entries)
 
 Scheduled workflows in this repo (`.github/workflows/*` with a
 `schedule:` trigger). This surface was added 2026-11-05 with its first
@@ -385,6 +432,7 @@ review, not silently normalised.
 | ----------------------------------------------------------------------- | --------------------- | ------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- | ------------- | ---------------------------------------------------------------------------------------- | ------------ | -------------------------------------------------------------------------------------------------------- | ---------- | ----------- |
 | `bws-freshness` (`.github/workflows/bws-freshness.yml`)                 | developing-today/code | `23 6 * * *` (daily 06:23 UTC) + `workflow_dispatch`    | enabled (fixture tests); live check gated off pending a secure credentialed runner (`BWS_FRESHNESS_ENABLED`)                                       | issue #5451   | `.github/workflows/bws-freshness.yml`; check implementation `lib/bws-to-sops.sh --check` | not recorded | Disable the schedule if the fixture tests fail on main repeatedly or the drift-issue automation misfires | 2026-11-05 | 2026-11-05  |
 | `dispatch-health-probe` (`.github/workflows/dispatch-health-probe.yml`) | developing-today/code | `*/30 * * * *` (every 30 min UTC) + `workflow_dispatch` | enabled; outside probe of dispatch.security.cab — opens/updates one `meta/dispatch-probe` alert issue on failure, comments + closes it on recovery | issue #6992   | `.github/workflows/dispatch-health-probe.yml`                                            | not recorded | Disable the schedule if the probe misfires (repeated false alerts) or dispatch.security.cab is retired   | 2026-11-11 | 2026-11-11  |
+| `fleet-sync-probe` (`.github/workflows/fleet-sync-probe.yml`) | developing-today/code | `30 14 * * *` (daily 14:30 UTC) + `workflow_dispatch` | enabled; judges each fork's sync-upstream freshness (successful scheduled run within 30h, no failed latest run) and opens/updates one `meta/fleet-sync-probe` alert issue on failure, comments + closes it on recovery | issue #12235 | `.github/workflows/fleet-sync-probe.yml`; probe `scripts/fleet/fleet-sync-probe.py` | not recorded | Disable the schedule if the probe misfires (repeated false alerts) or sync-upstream is retired | 2026-11-22 | 2026-11-22  |
 
 ## Surface 5 — Mac launchd jobs (3 entries)
 

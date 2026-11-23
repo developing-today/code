@@ -171,3 +171,51 @@ One change nobody asked for: the contact handed to push services with
 every notification was the owner's address. It is now the project's
 page. Delivery does not depend on it, and an address has no reason to
 travel to Google or Mozilla with each message.
+
+## 2026-11-23T00:20Z Update: the owner's switch, the report's limits, the build's copy
+
+Direct mode (the edge reading and acting by itself while the laptop is
+away) was built by the fleet in #12579 and deployed switched off. What
+was added around it since:
+
+- **The switch is the owner's, in the app** (#12712). More, Laptop away
+  says what the mode covers and what turning it on hands over: the
+  repository automation token and the queue store token, as secrets of
+  the Worker. It runs `expose.py --edge-direct` on the laptop, where
+  the tokens are. The script now sends them through Cloudflare's API
+  rather than a tool that had to be installed; turning the mode off
+  takes them away again; an attempt that fails part-way leaves the
+  Worker holding nothing; a mode that is on gets back what the Worker
+  has lost; and runs take turns, so the timer cannot undo what the app
+  is doing.
+- **Reports are refused unread** when they say they are too large or
+  are not shaped like a report, and an address with twenty refused
+  reports in a minute is refused unread until the minute is out
+  (#12715). A report the laptop signed that is merely wrong is not held
+  against its address.
+- **The edge says which commit the laptop runs** (`hostVersion` in
+  `/console/health`, #12715). That a merge has reached the laptop can
+  be seen from anywhere. It was first used to confirm exactly that when
+  the session had no other way to look at the laptop.
+- **A unit that keeps failing on its timer is reported**, once, with
+  what it is for, and so is its mending (#12719). This is what was
+  missing when `pm-git-sync` failed for two hours unseen.
+- **The signed Android build is kept at the edge**, sent once per
+  build in the laptop's report and kept only if it matches its
+  fingerprint. The download is served from that copy when it is the
+  newest build or the laptop is away.
+
+Still open, and why:
+
+- Direct mode is off until the owner turns it on. Its check against
+  the real queue store and GitHub runs when it is turned on and shows
+  on the same screen; the five-minute laptop-away check in #12518 has
+  not been done.
+- A rebuild commit that changes `flake.lock` still leaves the laptop's
+  `main` ahead and behind at once (#12520). It is now reported within
+  five minutes instead of never; carrying the commit to `main` without
+  a person is not built, because it has to be tried on the laptop.
+- The deploy still uses `wrangler deploy`. The `cf` release flow is
+  staged in #12561 and needs two protected environments with their own
+  tokens before it can run.
+- The Android project is still on androidbrowserhelper 2.5.0.

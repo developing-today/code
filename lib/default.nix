@@ -1585,6 +1585,7 @@ let
               grep -q "queue-transport-alert" list.txt
               grep -q "message-bridge" list.txt
               grep -q "secrets-broker" list.txt
+              grep -q "quota-recorder" list.txt
               grep -q "session-proxy" list.txt
               grep -q "mcpx" list.txt
               grep -q "laptop" list.txt
@@ -1625,6 +1626,15 @@ let
             }
             ''
               python3 ${../pkgs/deploy/test_deploy_slice3.py} ${../pkgs/deploy/deploy.py}
+              mkdir -p $out
+            '';
+        deploy-slice4-tests =
+          pkgs.runCommandLocal "check-deploy-slice4-tests"
+            {
+              nativeBuildInputs = [ pkgs.python3 ];
+            }
+            ''
+              python3 ${../pkgs/deploy/test_deploy_slice4.py} ${../pkgs/deploy/deploy.py} ${../pkgs/deploy/restore.py}
               mkdir -p $out
             '';
         deploy-argv =

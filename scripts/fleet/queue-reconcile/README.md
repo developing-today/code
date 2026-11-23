@@ -60,6 +60,17 @@ packet's done rule: merged, or closed with a reason recorded. A PR
 already receiving a merge-watch packet in the same run is not
 double-filed.
 
+**Verdict coverage (#12233 F2b):** the broker diff only knows tasks,
+so `check_coverage.py` also reads the recorded verdict on an
+`effort/l` or `effort/m` issue it would otherwise call uncovered.
+When the issue's newest agent note is a triage verdict with a
+recorded verdict token and a valid resume condition
+(`resume=<slice_landed|dependency_closed>:<number>`), the verdict
+note is the park record for the triage disposition: the issue is
+covered and gets no new triage packet. The decision record with the
+full rules is on #12233; `pm-stack/lane-guard/lane_guard.py
+coverage` applies the same rules to a single issue.
+
 ## Running it
 
 ```bash

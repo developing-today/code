@@ -89,6 +89,16 @@
 //     the reading rows. Fail-soft on the same terms: a forecast
 //     failure never fails the tick and the previous forecast
 //     stands and ages.
+//   - quota-shadow-placement.json beside quota-current.json, plus
+//     one appended line per tick in
+//     quota-shadow-placement-history.jsonl beside it — the Stage-3
+//     shadow placement record (#12697, design D3): the
+//     forecast-informed ordering logged beside the live ordering
+//     as a per-decision diff record, projected by
+//     src/quota-shadow-placement.ts from this tick's entries + the
+//     forecast product. SHADOW ONLY: no live path reads it; the
+//     live ordering is computed from the measured entries alone.
+//     Fail-soft on the same terms as the forecast.
 //
 // Fail-soft contract: if the subcommand cannot be run or its output
 // cannot be parsed, the tick writes a heartbeat carrying the error
@@ -108,6 +118,9 @@
 //      cap; the subcommand self-limits per provider),
 //      QUOTA_CURRENT_PATH, QUOTA_HEARTBEAT_PATH, QUOTA_FORECAST_PATH
 //      (default: quota-forecast.json beside QUOTA_CURRENT_PATH),
+//      QUOTA_SHADOW_PLACEMENT_PATH / QUOTA_SHADOW_PLACEMENT_HISTORY_PATH
+//      (defaults: quota-shadow-placement.json /
+//      quota-shadow-placement-history.jsonl beside QUOTA_CURRENT_PATH),
 //      QUOTA_GATHERER_STATE_PATH, QUOTA_SNAPSHOTS_DIR (./snapshots),
 //      USAGE_SNAPSHOT_OUTBOX_PATH,
 //      QUOTA_GATHER_CONCURRENCY (retained for interface stability;
@@ -154,7 +167,8 @@ import { ensureLibDependencies } from "../src/lib-deps.ts";
 import { loadOpenChamberLib, resolveLibDir as resolveOpenChamberLib } from "../src/openchamber-lib.ts";
 import { readProviderAuthAlerts } from "../src/provider-auth-alerts.ts";
 import { projectPoolState } from "../src/pool-state.ts";
-import { buildForecastLedgerRows, buildQuotaForecast } from "../src/quota-forecast.ts";
+import { buildForecastLedgerRows, buildQuotaForecast, type QuotaForecastFile } from "../src/quota-forecast.ts";
+import { buildShadowPlacement } from "../src/quota-shadow-placement.ts";
 import { renewMetaSession } from "../src/meta-renewal.ts";
 import { classEnabled, getAlertsStore } from "../src/alerts.ts";
 import { sendPush, type PushTarget } from "../src/push.ts";
@@ -189,6 +203,13 @@ const poolStatePath = process.env.POOL_STATE_PATH ?? join(HOME, ".local/state/op
 // #12695: the Stage-3 forecast product, beside quota-current.json
 // (design D1: same directory, same fail-soft posture).
 const forecastPath = process.env.QUOTA_FORECAST_PATH ?? join(dirname(currentPath), "quota-forecast.json");
+// #12697: the Stage-3 shadow placement record (design D3), beside
+// quota-current.json like the forecast: the latest diff record plus
+// the append-only history the weekly review (S7) scores.
+const shadowPlacementPath =
+  process.env.QUOTA_SHADOW_PLACEMENT_PATH ?? join(dirname(currentPath), "quota-shadow-placement.json");
+const shadowPlacementHistoryPath =
+  process.env.QUOTA_SHADOW_PLACEMENT_HISTORY_PATH ?? join(dirname(currentPath), "quota-shadow-placement-history.jsonl");
 /** Strict millisecond parse for boot-time env (#2835 env-number contract):
  * digits only, 1..2^31-1, else fail naming the variable and the value
  * instead of coercing NaN/negative/huge values into a fetch deadline. */
@@ -1137,9 +1158,10 @@ async function main(): Promise<number> {
   // write: any failure logs and the tick still succeeds; the
   // previous forecast stands and ages, exactly as a failed tick
   // leaves the previous quota-current.json standing.
+  let forecast: QuotaForecastFile | null = null;
   try {
     const stored = await new SnapshotStore(snapshotsDir).readAll().catch((): SnapshotRecord[] => []);
-    const forecast = buildQuotaForecast(file, [...stored, ...fresh], new Date(tickAt));
+    forecast = buildQuotaForecast(file, [...stored, ...fresh], new Date(tickAt));
     await writeAtomic(forecastPath, JSON.stringify(forecast, null, 2) + "\n");
     const forecastRows = buildForecastLedgerRows(forecast, tickAt);
     await writeTursoForecastRecords(forecastRows, tickAt);
@@ -1150,6 +1172,30 @@ async function main(): Promise<number> {
   } catch (err) {
     console.error(
       `quota-gatherer: forecast failed-soft: ${safeProviderReason(err instanceof Error ? err.message : String(err))}`,
+    );
+  }
+
+  // Stage-3 S3 (#12697, design D3): the shadow placement record —
+  // the forecast-informed ordering logged beside the live ordering
+  // as a per-decision diff record (src/quota-shadow-placement.ts),
+  // written as the latest-state file plus one appended line per
+  // tick in the history JSONL the weekly review (S7) scores.
+  // SHADOW ONLY: no live path reads the record, and it is computed
+  // after every live output above is already written; a null
+  // forecast (the block above failed) still yields a record, with
+  // the shadow ordering equal to the live one. Fail-soft like the
+  // forecast write: any failure logs and the tick still succeeds.
+  try {
+    const shadow = buildShadowPlacement(file, forecast, new Date(tickAt));
+    await writeAtomic(shadowPlacementPath, JSON.stringify(shadow, null, 2) + "\n");
+    await mkdir(dirname(shadowPlacementHistoryPath), { recursive: true });
+    await appendFile(shadowPlacementHistoryPath, JSON.stringify(shadow) + "\n", "utf8");
+    console.log(
+      `quota-gatherer: shadow placement wrote ${shadow.summary.pools} pools, ${shadow.summary.demotedByForecast} forecast demotions (shadow only) -> ${shadowPlacementPath}`,
+    );
+  } catch (err) {
+    console.error(
+      `quota-gatherer: shadow placement failed-soft: ${safeProviderReason(err instanceof Error ? err.message : String(err))}`,
     );
   }
 
