@@ -523,9 +523,9 @@ impl RoleRegistry {
     }
 
     /// Record the audit event for one operation, whatever the
-    /// outcome, and return it.
+    /// outcome: append it to the registry log and return it.
     fn record_event(
-        &self,
+        &mut self,
         kind: &'static str,
         role: &str,
         agent: Option<AgentId>,
@@ -537,7 +537,7 @@ impl RoleRegistry {
             Ok(()) => "executed".to_owned(),
             Err(refusal) => format!("refused:{}", refusal.code()),
         };
-        RoleConfigEvent {
+        let recorded = RoleConfigEvent {
             kind,
             actor: actor.to_owned(),
             world: self.world.clone(),
@@ -545,7 +545,9 @@ impl RoleRegistry {
             agent: agent.map(|id| id.to_hex()),
             outcome,
             at: now,
-        }
+        };
+        self.events.push(recorded.clone());
+        recorded
     }
 }
 
@@ -698,6 +700,27 @@ mod tests {
             .collect();
         assert_eq!(names, vec![agent(1).to_hex(), agent(2).to_hex()]);
         assert_eq!(registry.list_grants().len(), 2);
+
+        // The registry log itself carries every operation above —
+        // grants and revokes, refusals included — in order.
+        let logged: Vec<(&str, &str)> = registry
+            .events()
+            .iter()
+            .map(|event| (event.kind, event.outcome.as_str()))
+            .collect();
+        assert_eq!(
+            logged,
+            vec![
+                (EVENT_ROLE_CREATE, "executed"),
+                (EVENT_ROLE_GRANT, "refused:unknown_role"),
+                (EVENT_ROLE_GRANT, "executed"),
+                (EVENT_ROLE_GRANT, "refused:already_granted"),
+                (EVENT_ROLE_REVOKE, "executed"),
+                (EVENT_ROLE_REVOKE, "refused:unknown_grant"),
+                (EVENT_ROLE_GRANT, "executed"),
+                (EVENT_ROLE_GRANT, "executed"),
+            ]
+        );
     }
 
     /// Oracle §2.1: starter roles are plain definitions a world can
