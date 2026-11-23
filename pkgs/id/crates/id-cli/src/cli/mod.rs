@@ -109,7 +109,6 @@ pub mod claim;
 pub mod doc;
 pub mod gallery;
 pub mod groups;
-#[cfg(feature = "sandbox")]
 pub mod match_audit;
 pub mod tag;
 pub mod walk;
@@ -120,7 +119,6 @@ pub use claim::{ClaimCommand, ClaimScope};
 pub use doc::DocCommand;
 pub use gallery::{GalleryArgs, GalleryCommand};
 pub use groups::{DelegateArgs, GroupCommand, GroupRemoveMode, GroupTemplate, RevokeArgs};
-#[cfg(feature = "sandbox")]
 pub use match_audit::MatchAuditCommand;
 pub use tag::TagCommand;
 pub use walk::WalkCommand;
@@ -402,7 +400,10 @@ pub struct ServeArgs {
     /// Gossip topic name for peer discovery.
     ///
     /// All servers on the same topic can discover each other.
-    /// Default: "id-peer-discovery-v1" (public network).
+    /// A stock serve reads its topic from `defaults.json` first;
+    /// the hardcoded constant "id-peer-discovery-v1" (public network)
+    /// is only the fallback, used when `defaults.json` supplies no
+    /// topic or `--no-default-topic` is passed.
     /// Use a custom topic for private networks.
     #[arg(long)]
     pub topic: Option<String>,
@@ -410,7 +411,10 @@ pub struct ServeArgs {
     ///
     /// Used to encrypt DHT bootstrap records. Only nodes with
     /// the same secret can discover each other via DHT.
-    /// Default: "id-public-discovery-v1" (public network).
+    /// A stock serve reads its secret from `defaults.json` first;
+    /// the hardcoded constant "id-public-discovery-v1" (public
+    /// network) is only the fallback, used when `defaults.json`
+    /// supplies no secret or `--no-default-topic` is passed.
     #[arg(long)]
     pub topic_secret: Option<String>,
     /// Skip default bootstrap node IDs from `defaults.json`.
@@ -774,7 +778,7 @@ pub enum Command {
         /// are sent to that remote node.
         #[arg(required = false)]
         files: Vec<String>,
-        /// Read content from stdin instead of file paths.
+        /// Read content from stdin instead of file paths (requires exactly one name argument).
         ///
         /// Requires exactly one name argument for the stored content.
         #[arg(long, visible_alias = "data", conflicts_with = "stdin")]
@@ -1191,6 +1195,9 @@ pub enum Command {
         /// - `tag`: each match with its query
         /// - `group`: matches grouped by query
         /// - `union`: deduplicated by hash
+        ///
+        /// The command-line default is `tag`; the REPL's `find`
+        /// defaults to `union` instead.
         #[arg(long, default_value = "tag", value_parser = ["tag", "group", "union"])]
         format: String,
         /// Return only the first N matches (default 1 if no number given).
@@ -1269,7 +1276,10 @@ pub enum Command {
         /// Output directory for `--all`.
         #[arg(long)]
         dir: Option<String>,
-        /// Output format: tag, group, or union.
+        /// Output format: tag (default), group, or union.
+        ///
+        /// The command-line default is `tag`; the REPL's `search`
+        /// defaults to `union` instead.
         #[arg(long, default_value = "tag", value_parser = ["tag", "group", "union"])]
         format: String,
         /// Return only the first N matches (default 1 if no number given).
@@ -1387,7 +1397,6 @@ pub enum Command {
     /// posture and operator tags, all on the public transparency list.
     Gallery(GalleryArgs),
     /// Export and verify signed match-audit v0 logs.
-    #[cfg(feature = "sandbox")]
     #[command(subcommand)]
     MatchAudit(MatchAuditCommand),
     /// The #9106 walking skeleton, driven by hand: stored nodes,
@@ -1395,7 +1404,7 @@ pub enum Command {
     /// federation exchange protocol, conflict reports (#12232).
     #[command(subcommand)]
     Walk(WalkCommand),
-    /// Groups: create, show the policy, add, remove, set roles, list, and join (P6.7a).
+    /// Groups: create, show the policy, add, remove, set roles, and list (P6.7a).
     ///
     /// Each action records one event in the group log and prints one line, or one JSON object with
     /// `--json`. A refused action exits non-zero, and its event stays in the log.
@@ -1604,7 +1613,11 @@ pub enum Command {
         bootstrap: Vec<String>,
         /// Gossip topic name for peer discovery.
         ///
-        /// Default: "id-peer-discovery-v1" (public network).
+        /// A stock invocation reads its topic from `defaults.json`
+        /// first; the hardcoded constant "id-peer-discovery-v1"
+        /// (public network) is only the fallback, used when
+        /// `defaults.json` supplies no topic or `--no-default-topic`
+        /// is passed.
         /// Use a custom topic for private networks.
         #[arg(long)]
         topic: Option<String>,

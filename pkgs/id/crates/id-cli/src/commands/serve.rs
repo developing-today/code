@@ -22,14 +22,14 @@
 //! │         │     └───────────┘ └───────────┘                    │
 //! │         │                                                    │
 //! │         ▼                                                    │
-//! │  Lock File: .id-serve-lock                                   │
+//! │  Lock File: .iroh-serve.lock                                 │
 //! │  - Node ID, PID, Socket addresses                            │
 //! └─────────────────────────────────────────────────────────────┘
 //! ```
 //!
 //! # Lock File Protocol
 //!
-//! The serve process creates a lock file (`.id-serve-lock`) containing:
+//! The serve process creates a lock file (`.iroh-serve.lock`) containing:
 //! 1. Node ID (line 1)
 //! 2. Process ID (line 2)
 //! 3. Socket addresses (remaining lines)

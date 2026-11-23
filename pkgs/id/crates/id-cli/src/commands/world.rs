@@ -641,6 +641,10 @@ pub async fn cmd_world(command: WorldCommand) -> Result<()> {
         } => {
             bail!("--check and --check-suite cannot be combined");
         }
+        #[cfg(not(feature = "sandbox"))]
+        WorldCommand::Measure(_) => {
+            bail!("this build has no sandbox support")
+        }
         #[cfg(feature = "sandbox")]
         WorldCommand::Measure(args) => {
             let crate::cli::WorldMeasureArgs {
@@ -759,6 +763,10 @@ pub async fn cmd_world(command: WorldCommand) -> Result<()> {
             ))
             .await
         }
+        #[cfg(not(feature = "sandbox"))]
+        WorldCommand::Replay(_) => {
+            bail!("this build has no sandbox support")
+        }
         #[cfg(feature = "sandbox")]
         WorldCommand::Replay(args) => {
             let crate::cli::WorldReplayArgs {
@@ -770,6 +778,10 @@ pub async fn cmd_world(command: WorldCommand) -> Result<()> {
             } = args;
             replay_fixture(&module, &fixture, seed, allow_partial)
         }
+        #[cfg(not(feature = "sandbox"))]
+        WorldCommand::Verify(_) => {
+            bail!("this build has no sandbox support")
+        }
         #[cfg(feature = "sandbox")]
         WorldCommand::Verify(args) => {
             let crate::cli::WorldVerifyArgs {
@@ -780,6 +792,10 @@ pub async fn cmd_world(command: WorldCommand) -> Result<()> {
                 ..
             } = args;
             verify_fixture(&module, &fixture, seed, allow_partial)
+        }
+        #[cfg(not(feature = "sandbox"))]
+        WorldCommand::Dev(_) => {
+            bail!("this build has no sandbox support")
         }
         #[cfg(feature = "sandbox")]
         WorldCommand::Dev(args) => {
