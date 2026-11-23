@@ -28,6 +28,14 @@ from pathlib import Path
 
 FIELDS = ("fee_amount", "fee_period", "window", "limit", "reset", "status")
 
+# The plan-store Effect schema only admits monthly/yearly/once, while
+# the tracker vocabulary is month/year (#13375). Normalise the store
+# leg to the tracker vocabulary at load, so the diff compares the same
+# fact instead of reporting the spelling as permanent drift. Values
+# outside the map (e.g. "once", or anything new) pass through
+# untouched, so a genuinely new period still reports drift.
+STORE_PERIOD_TO_TRACKER = {"monthly": "month", "yearly": "year"}
+
 
 def load_store(path):
     p = Path(path)
@@ -38,11 +46,12 @@ def load_store(path):
     for plan in d.get("plans", []):
         quotas = plan.get("quotas") or [{}]
         q = quotas[0]
+        fee = plan.get("fee") or {}
         rows[plan["id"]] = {
             "plan": plan.get("plan") or plan["id"],
             "provider": plan.get("providerID"),
-            "fee_amount": (plan.get("fee") or {}).get("amount"),
-            "fee_period": (plan.get("fee") or {}).get("period"),
+            "fee_amount": fee.get("amount"),
+            "fee_period": STORE_PERIOD_TO_TRACKER.get(fee.get("period"), fee.get("period")),
             "window": q.get("windowHours"),
             "limit": q.get("limit"),
             "reset": q.get("resetRule"),
