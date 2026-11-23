@@ -255,6 +255,7 @@ it is — a valid world capability, minted by the host's admin with
 | `world`        |                                | Mint invites for, and join, multiplayer worlds          |
 | `gallery`      |                                | Administer a program gallery directory                  |
 | `match-audit`  |                                | Export and verify signed match-audit v0 logs            |
+| `walk`         |                                | The #9106 walking skeleton, driven by hand (stored nodes, sync, reports) |
 | `group`        |                                | Groups: create, policy, add, remove, roles, join        |
 | `delegate`     |                                | Grant a delegate a scope in a group                     |
 | `revoke`       |                                | Revoke a delegation by its grant event ID               |
