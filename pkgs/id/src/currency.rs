@@ -55,6 +55,12 @@ pub mod gateway;
 #[cfg(feature = "world")]
 pub mod gateway_poc;
 
+/// F4 reconciliation and supply audit over the composed gateway:
+/// graph ↔ registry ↔ ledger drift, reported, never repaired
+/// (#2320, design section 7.3).
+#[cfg(feature = "world")]
+pub mod reconcile;
+
 /// The event kind carrying a rate authorisation body.
 pub const RATE_AUTHORISATION_KIND: &str = "currency.rate_authorisation";
 
