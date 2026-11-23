@@ -1949,36 +1949,43 @@ mod tests {
             "got {error:?}",
         );
 
-        // The minter set was rebuilt: Bob (never granted) is
-        // refused as a non-minter, while Alice (granted in the
-        // previous life) passes authorization and is refused
-        // later, at the graph check — her issue object is not
-        // issuer-signed (PoC write-up item 12 stands).
-        let attempts = [
-            (
-                fx.bob.device_key.clone(),
-                fx.bob.account_key.clone(),
-                fx.bob.account.clone(),
-                false,
-                9_u128,
-            ),
+        // The minter set was rebuilt. Issue objects are
+        // issuer-signed by construction (the graph refuses any
+        // other signer at signing time — PoC write-up item 12),
+        // so the observable difference is at authorization: Bob
+        // (never granted) presenting a valid issuer-signed issue
+        // object is refused as a non-minter, while Alice
+        // (granted in the previous life) presenting the same
+        // class of object issues successfully.
+        for (device_key, account, is_minter, client_request_id) in [
+            (fx.bob.device_key.clone(), fx.bob.account.clone(), false, 9_u128),
             (
                 fx.alice.device_key.clone(),
-                fx.alice.account_key.clone(),
                 fx.alice.account.clone(),
                 true,
                 10_u128,
             ),
-        ];
-        for (device_key, account_key, account, is_minter, client_request_id) in attempts {
+        ] {
+            let recipient_key = if is_minter {
+                &fx.alice.account_key
+            } else {
+                &fx.bob.account_key
+            };
             let token = TokenIssue {
                 currency: currency.compact_hash(),
                 amount: 10,
-                to: issuer_id(&account_key),
+                to: issuer_id(recipient_key),
                 memo: None,
             };
-            let event = sign_issue(&account_key, 0, None, &currency, &token, vec![])
-                .expect("minter attempt signs");
+            let event = sign_issue(
+                &fx.issuer.account_key,
+                2,
+                Some(issue_event.id),
+                &currency,
+                &token,
+                vec![],
+            )
+            .expect("minter attempt signs");
             let body = token.body().expect("body");
             let request = CurrencyRequest {
                 client_request_id,
@@ -1988,17 +1995,15 @@ mod tests {
                     to: account,
                 }),
             };
-            let error = send(&mut fx, &device_key, &request, Some((&event, &body)))
-                .expect_err("minter attempt cannot complete");
+            let outcome = send(&mut fx, &device_key, &request, Some((&event, &body)));
             if is_minter {
-                assert!(
-                    matches!(error, ServiceError::GraphMismatch(_)),
-                    "the granted minter passes authorization, got {error:?}",
-                );
+                outcome.expect("the granted minter issues after restart");
+                assert_eq!(fx.svc.holder_balance(&key, &fx.alice.account), Some(100));
             } else {
+                let error = outcome.expect_err("the ungranted account is refused");
                 assert!(
                     matches!(error, ServiceError::Gateway(GatewayError::NotAMinter)),
-                    "the ungranted account is refused as non-minter, got {error:?}",
+                    "got {error:?}",
                 );
             }
         }
@@ -2047,7 +2052,11 @@ mod tests {
 
         // The other half of the window: a Recorded intent whose
         // transfer never reached the ledger. Written directly to
-        // the store, exactly as the crashed process left it.
+        // the store, exactly as the crashed process left it. A
+        // normal transfer first, so Bob's ledger account exists
+        // (the crashed process had ensured it before recording).
+        transfer_alice_to_bob(&mut fx, &currency, 8, 5, 0, None).expect("first transfer posts");
+        assert_eq!(fx.svc.holder_balance(&key, &fx.bob.account), Some(5));
         let token = TokenTransfer {
             currency: currency.compact_hash(),
             amount: 25,
@@ -2107,8 +2116,8 @@ mod tests {
         let recovered =
             send(&mut fx, &device_key, &request, Some((&event, &body))).expect("recovery posts");
         assert!(verify_receipt(&fx.gateway_vk, &recovered));
-        assert_eq!(fx.svc.holder_balance(&key, &fx.alice.account), Some(75));
-        assert_eq!(fx.svc.holder_balance(&key, &fx.bob.account), Some(25));
+        assert_eq!(fx.svc.holder_balance(&key, &fx.alice.account), Some(70));
+        assert_eq!(fx.svc.holder_balance(&key, &fx.bob.account), Some(30));
         let stored = store_handle(&dir).all().expect("intents read");
         let intent = stored.iter().find(|i| i.idempotency == idem).expect("intent");
         assert_eq!(intent.state, IntentState::Posted);
@@ -2280,7 +2289,7 @@ mod tests {
     #[test]
     fn authorization_refusals_write_no_intent() {
         let mut fx = fixture_with(InMemoryLedger::default(), InMemoryIntentStore::new());
-        let (_register, currency, _definition) = registered(&mut fx);
+        let (_register, currency, definition) = registered(&mut fx);
         let key = *currency.compact_hash().as_bytes();
         let count = |fx: &Fixture<InMemoryLedger, InMemoryIntentStore>| {
             fx.svc.intents().all().expect("intents read").len()
@@ -2294,8 +2303,15 @@ mod tests {
             to: issuer_id(&fx.mallory.account_key),
             memo: None,
         };
-        let event = sign_issue(&fx.issuer.account_key, 1, None, &currency, &token, vec![])
-            .expect("issue signs");
+        let event = sign_issue(
+            &fx.issuer.account_key,
+            1,
+            Some(definition.id),
+            &currency,
+            &token,
+            vec![],
+        )
+        .expect("issue signs");
         let body = token.body().expect("body");
         let request = CurrencyRequest {
             client_request_id: 2,
@@ -2322,8 +2338,15 @@ mod tests {
             to: issuer_id(&fx.alice.account_key),
             memo: None,
         };
-        let event = sign_issue(&fx.issuer.account_key, 1, None, &currency, &token, vec![])
-            .expect("issue signs");
+        let event = sign_issue(
+            &fx.issuer.account_key,
+            1,
+            Some(definition.id),
+            &currency,
+            &token,
+            vec![],
+        )
+        .expect("issue signs");
         let body = token.body().expect("body");
         let request = CurrencyRequest {
             client_request_id: 3,
