@@ -213,7 +213,13 @@ impl CoordinationReplica for SqliteReplica {
                  ON CONFLICT(task_id) DO UPDATE SET worker = excluded.worker,
                      lane = excluded.lane, lease_seconds = excluded.lease_seconds,
                      expiry_unix = excluded.expiry_unix",
-                params![task_id, worker, lane, lease_seconds, self.now_unix + lease_seconds],
+                params![
+                    task_id,
+                    worker,
+                    lane,
+                    lease_seconds,
+                    self.now_unix + lease_seconds
+                ],
             )
             .map_err(|e| unavailable("record local claim", e))?;
         Ok(ReplicaClaim {
@@ -516,9 +522,7 @@ mod tests {
     #[test]
     fn sqlite_replica_double_claim_distinguishes_lanes_sharing_a_worker() {
         let (mut replica, local, cloud) = open_replica("doublelane", 1_000);
-        replica
-            .claim(7, "repo-worker-code", "code-h", 300)
-            .unwrap();
+        replica.claim(7, "repo-worker-code", "code-h", 300).unwrap();
         replica
             .inject_cloud_claim(7, "repo-worker-code", "code-i")
             .unwrap();

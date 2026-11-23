@@ -717,9 +717,7 @@ class VerdictCoverageTest(unittest.TestCase):
         def fake_run(cmd, **kw):
             seen.append(cmd)
             if "/issues/" in " ".join(cmd):
-                return sp.CompletedProcess(
-                    cmd, 0, stdout="closed\n", stderr=""
-                )
+                return sp.CompletedProcess(cmd, 0, stdout="closed\n", stderr="")
             return sp.CompletedProcess(
                 cmd,
                 0,
@@ -730,9 +728,7 @@ class VerdictCoverageTest(unittest.TestCase):
         with unittest.mock.patch.object(
             check_coverage.subprocess, "run", side_effect=fake_run
         ):
-            state = check_coverage.fetch_resume_state(
-                REPO, "dependency_closed:539"
-            )
+            state = check_coverage.fetch_resume_state(REPO, "dependency_closed:539")
             self.assertEqual(state, "closed")
             self.assertTrue(
                 check_coverage.resolve_resume(REPO, "dependency_closed:539")

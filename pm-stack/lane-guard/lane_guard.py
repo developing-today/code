@@ -207,6 +207,8 @@ def parse_resume(raw) -> str | None:
     if kind not in RESUME_KINDS:
         return None
     return f"{kind}:{m.group(2)}"
+
+
 # Lanes write notes free-form; these map the words they use to states.
 _STATE_WORDS = (
     (
@@ -301,8 +303,13 @@ def parse_note(body: str) -> dict | None:
     return note
 
 
-def note_header(task: str, state: str, verdict: str | None = None,
-                body: str | None = None, resume: str | None = None) -> str:
+def note_header(
+    task: str,
+    state: str,
+    verdict: str | None = None,
+    body: str | None = None,
+    resume: str | None = None,
+) -> str:
     """Canonical first line for a lane's agent note, so later dedupe
     checks parse it exactly. A triage note passes its verdict so the
     next lane's check can match it, and — when the issue body is
@@ -375,7 +382,9 @@ def _is_verdict_request(state, verdict) -> bool:
     return state in VERDICT_STATES or _norm_state(state) in VERDICT_STATES
 
 
-def _verdict_note_verdict(comments, state, verdict, changes, now, body=None, resume=None) -> dict:
+def _verdict_note_verdict(
+    comments, state, verdict, changes, now, body=None, resume=None
+) -> dict:
     """The verdict path of note_verdict (#12233 F2a): a triage verdict
     is skipped when the newest agent note already records the same
     verdict — for any task id, however long ago — and nothing has
@@ -471,8 +480,14 @@ def _verdict_note_verdict(comments, state, verdict, changes, now, body=None, res
 
 
 def note_verdict(
-    comments: list, task: str, state: str, now=None, verdict=None, changes=(),
-    body=None, resume=None,
+    comments: list,
+    task: str,
+    state: str,
+    now=None,
+    verdict=None,
+    changes=(),
+    body=None,
+    resume=None,
 ) -> dict:
     """Should a note of `state` for queue `task` be posted, given the
     item's comments (oldest first, REST shape: body, created_at,
@@ -492,7 +507,9 @@ def note_verdict(
     task = str(task).lstrip("#")
     verdict = _norm_verdict(verdict) if verdict else None
     if _is_verdict_request(state, verdict):
-        return _verdict_note_verdict(comments, state, verdict, changes, now, body, resume)
+        return _verdict_note_verdict(
+            comments, state, verdict, changes, now, body, resume
+        )
     if state not in {s.replace("-", "_") for s in QUIET_STATES}:
         return {"post": True, "reason": f"progress state {state} always posts"}
 
@@ -530,7 +547,9 @@ def note_verdict(
 # --- verdict coverage (#12233 F2b) ---------------------------------------
 
 
-def coverage_verdict(item: dict, comments: list, changes=(), resume_fulfilled=None) -> dict:
+def coverage_verdict(
+    item: dict, comments: list, changes=(), resume_fulfilled=None
+) -> dict:
     """Is this issue covered by a recorded triage verdict?
 
     The F2b decision record on #12233: an open `effort/l` or
@@ -677,9 +696,7 @@ def main(argv=None, gh=_gh_json, now=None) -> int:
         "a verdict note with a valid condition covers the issue "
         "for coverage (F2b)",
     )
-    c = sub.add_parser(
-        "coverage", help="is this issue covered by a recorded verdict?"
-    )
+    c = sub.add_parser("coverage", help="is this issue covered by a recorded verdict?")
     c.add_argument("--repo", required=True)
     c.add_argument("--issue", required=True, type=int)
     args = ap.parse_args(argv)
@@ -759,7 +776,11 @@ def main(argv=None, gh=_gh_json, now=None) -> int:
                 body=body,
             )
             verdict["header"] = note_header(
-                args.task, args.state, verdict=args.verdict, body=body, resume=args.resume
+                args.task,
+                args.state,
+                verdict=args.verdict,
+                body=body,
+                resume=args.resume,
             )
             code = EXIT_GO if verdict["post"] else EXIT_STOP
     except (

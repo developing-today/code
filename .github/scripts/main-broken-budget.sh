@@ -93,8 +93,8 @@ candidates=$(jq -r '[.[] | select([.labels[].name] | index("queue/queued"))
 for n in $candidates; do
   # Decided? A previous grant/exhaust/release leaves an
   # agent-note naming the holder transition.
-  bodies=$(gh api "repos/$GH_REPO/issues/$n/comments?per_page=100" 2>/dev/null \
-    | jq -r '.[].body // empty' || true)
+  bodies=$(gh api "repos/$GH_REPO/issues/$n/comments?per_page=100" 2>/dev/null |
+    jq -r '.[].body // empty' || true)
   if grep -q 'holder: dispatch' <<<"$bodies" ||
     grep -q 'remediation budget exhausted' <<<"$bodies" ||
     grep -q 'released by chain' <<<"$bodies"; then

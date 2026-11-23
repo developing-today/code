@@ -365,13 +365,7 @@ export function scoreWindowSeries(args: {
         continue;
       }
       const predicted = proj.wallsBeforeReset;
-      const outcome: ForecastOutcome = predicted
-        ? walledAt !== null
-          ? "tp"
-          : "fp"
-        : walledAt !== null
-          ? "fn"
-          : "tn";
+      const outcome: ForecastOutcome = predicted ? (walledAt !== null ? "tp" : "fp") : walledAt !== null ? "fn" : "tn";
       const errorMin =
         outcome === "tp" && proj.projectedWallAt !== null && walledAt !== null
           ? (proj.projectedWallAt - walledAt) / 60_000
@@ -413,7 +407,9 @@ function quantile(sorted: number[], q: number): number {
   const base = Math.floor(pos);
   const rest = pos - base;
   const next = sorted[base + 1];
-  return next !== undefined ? (sorted[base] as number) + rest * (next - (sorted[base] as number)) : (sorted[base] as number);
+  return next !== undefined
+    ? (sorted[base] as number) + rest * (next - (sorted[base] as number))
+    : (sorted[base] as number);
 }
 
 export function errorDistribution(errorsMin: readonly number[]): ErrorDistribution | null {
@@ -483,11 +479,7 @@ export interface ForecastAccuracyLedger {
   pools: PoolBaseline[];
 }
 
-function baselineFromScoring(
-  window: string,
-  pointsCount: number,
-  scoring: WindowScoring,
-): WindowBaseline {
+function baselineFromScoring(window: string, pointsCount: number, scoring: WindowScoring): WindowBaseline {
   const tp = scoring.facts.filter((f) => f.outcome === "tp").length;
   const fp = scoring.facts.filter((f) => f.outcome === "fp").length;
   const fn = scoring.facts.filter((f) => f.outcome === "fn").length;
@@ -505,7 +497,9 @@ function baselineFromScoring(
   }
   const scored = tp + fp + fn + tn;
   if (scoring.periodsScored > 0 && scored === 0) {
-    reasons.push("every issued forecast was insufficient-history — the pace was never measurable in a completed period");
+    reasons.push(
+      "every issued forecast was insufficient-history — the pace was never measurable in a completed period",
+    );
   }
   const precision = tp + fp > 0 ? Math.round((tp / (tp + fp)) * 1000) / 1000 : null;
   const recall = tp + fn > 0 ? Math.round((tp / (tp + fn)) * 1000) / 1000 : null;
@@ -669,7 +663,9 @@ export function renderBacktestReport(ledger: ForecastAccuracyLedger): string {
   lines.push("");
   lines.push("## Per-pool calibration (rollup over windows)");
   lines.push("");
-  lines.push("| pool | scoreable | periods (scored/walled) | forecasts (scored/insufficient) | precision | recall | wall error (projected − realized) |");
+  lines.push(
+    "| pool | scoreable | periods (scored/walled) | forecasts (scored/insufficient) | precision | recall | wall error (projected − realized) |",
+  );
   lines.push("|---|---|---|---|---|---|---|");
   for (const p of ledger.pools) {
     const r = p.rollup;
@@ -696,7 +692,9 @@ export function renderBacktestReport(ledger: ForecastAccuracyLedger): string {
       if (w.periodsTotal === 0 && w.forecastsIssued === 0 && !w.unscoreableReasons.length) continue;
       lines.push(
         `- **${w.window}** — scoreable: ${w.scoreable ? "yes" : "NO"}; periods scored ${w.periodsScored} (walled ${w.periodsWalled}, open ${w.periodsOpen}, no-reset ${w.periodsNoReset}); forecasts scored ${w.forecastsScored} (TP ${w.tp} / FP ${w.fp} / FN ${w.fn} / TN ${w.tn}), insufficient ${w.forecastsInsufficient}, detections ${w.detectionsWhileWalled}; precision ${fmtMetric(w.precision)}, recall ${fmtMetric(w.recall)}; wall error ${fmtErr(w.wallErrorMin)}; first-call lead ${
-          w.firstCallLeadMin ? `median ${w.firstCallLeadMin.medianMin}m over ${w.firstCallLeadMin.count} walled periods` : "—"
+          w.firstCallLeadMin
+            ? `median ${w.firstCallLeadMin.medianMin}m over ${w.firstCallLeadMin.count} walled periods`
+            : "—"
         }`,
       );
       for (const reason of w.unscoreableReasons) lines.push(`  - note: ${reason}`);

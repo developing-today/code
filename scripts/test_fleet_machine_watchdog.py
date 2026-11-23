@@ -32,8 +32,12 @@ PRIOR = {"source": "watchdog", "last_seen": "2026-11-22T19:00:00Z", "status": "h
 def record():
     return {
         "id": "amd-6",
-        "capacity": {"max_sessions": 12, "cpu_cores": 16, "ram_gb": 123,
-                     "worktree_disk_gb": 3372},
+        "capacity": {
+            "max_sessions": 12,
+            "cpu_cores": 16,
+            "ram_gb": 123,
+            "worktree_disk_gb": 3372,
+        },
     }
 
 
@@ -50,13 +54,27 @@ def facts(**overrides):
     return base
 
 
-QUEUE_OK = ({"task_id": 21084, "queue": "repo-health-code-pilot",
-             "worker": "repo-worker-code", "completed_at": "2026-11-22T19:12:00Z"}, None)
+QUEUE_OK = (
+    {
+        "task_id": 21084,
+        "queue": "repo-health-code-pilot",
+        "worker": "repo-worker-code",
+        "completed_at": "2026-11-22T19:12:00Z",
+    },
+    None,
+)
 
 
 def build(f, terr=None, queue=QUEUE_OK, prior=None):
-    return watchdog.build_health(record(), f, terr, queue[0], queue[1],
-                                 NOW, prior if prior is not None else PRIOR)
+    return watchdog.build_health(
+        record(),
+        f,
+        terr,
+        queue[0],
+        queue[1],
+        NOW,
+        prior if prior is not None else PRIOR,
+    )
 
 
 class BuildHealthTests(unittest.TestCase):
@@ -104,9 +122,13 @@ class BuildHealthTests(unittest.TestCase):
             self.assertIn("timed out", health["checks"][name]["reason"])
 
     def test_unrunnable_gating_check_blocks_healthy(self):
-        health = build(facts(sessions_listed=None,
-                             sessions_active=None,
-                             sessions_error="attach API HTTP 503"))
+        health = build(
+            facts(
+                sessions_listed=None,
+                sessions_active=None,
+                sessions_error="attach API HTTP 503",
+            )
+        )
         self.assertEqual(health["checks"]["sessions"]["state"], "unknown")
         self.assertEqual(health["status"], "unknown")
         # The machine WAS seen; only its health is unearned.

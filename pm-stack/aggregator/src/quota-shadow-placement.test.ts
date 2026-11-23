@@ -149,19 +149,15 @@ describe("shadow ordering (forecast-adjusted, logged only)", () => {
   test("a pool projected to wall before its reset is demoted before the caution zone", () => {
     const current = fivePools();
     const fc = forecast([
-      forecastPool(
-        "_claude",
-        "anthropic:claude-pro",
-        [
-          forecastWindow({
-            state: "projected",
-            wallsBeforeReset: true,
-            projectedWallAt: NOW_MS + 5 * HOUR,
-            durationUntilWallMs: 5 * HOUR,
-            pctNow: 40,
-          }),
-        ],
-      ),
+      forecastPool("_claude", "anthropic:claude-pro", [
+        forecastWindow({
+          state: "projected",
+          wallsBeforeReset: true,
+          projectedWallAt: NOW_MS + 5 * HOUR,
+          durationUntilWallMs: 5 * HOUR,
+          pctNow: 40,
+        }),
+      ]),
     ]);
     const record = buildShadowPlacement(current, fc, NOW);
     // Live ordering untouched by the forecast.

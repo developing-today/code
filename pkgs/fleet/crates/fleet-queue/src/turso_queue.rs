@@ -2760,8 +2760,7 @@ mod tests {
         // fix, needs no verified disposition: the parent issue stays
         // open while slices land, so an open parent with no
         // disposition is not a rejection.
-        let evidence =
-            json!({"pr_url": "https://github.com/developing-today/code/pull/12570"});
+        let evidence = json!({"pr_url": "https://github.com/developing-today/code/pull/12570"});
         assert!(gate(&slice, &evidence).is_ok());
         assert!(
             gate_with(&slice, Some(1062), false, &[], &evidence).is_ok(),

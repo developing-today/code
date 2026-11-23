@@ -63,7 +63,7 @@ A new `id-worlds` module, `account_charge`, owns the model:
      call carries no caller identity at this layer (see
      "What the funnel can see" below), so its charge is attributed
      to the world itself, visibly, in the budget's per-account
-     counters. Nothing is silently charged to a *different*
+     counters. Nothing is silently charged to a _different_
      account; the bucket is the world's own name.
 
 The resolution inputs are installed on `WorldInstance` by the
@@ -124,12 +124,12 @@ settle):
   its bound waits; it is never rejected. It also cannot deadlock
   the pool or starve other accounts: grant eligibility is
   per-waiter — a waiter is grantable only when both bounds have
-  room for *its* account — so one account's saturated bound queues
+  room for _its_ account — so one account's saturated bound queues
   only that account's calls while other accounts' waiters remain
   grantable. Every admitted call is fuel-bounded, so every permit
   returns and every queue drains.
 - **Fairness extends per account**: grant order is least attained
-  service by *account* first (settled fuel, same one-second
+  service by _account_ first (settled fuel, same one-second
   half-life decay), then by charge key, then arrival. Within one
   account this reduces to the slice-2 order; across accounts, an
   account that has burned heavily queues behind one that has
@@ -144,8 +144,8 @@ settle):
 
 The per-account bound follows the `RuntimeLimits` pattern:
 `RuntimeLimits::guest_burn_per_account_concurrency` (CLI
-`--world-guest-burn-per-account-concurrency`), `0` meaning *no
-per-account bound* — the default, so an unconfigured hub runs
+`--world-guest-burn-per-account-concurrency`), `0` meaning _no
+per-account bound_ — the default, so an unconfigured hub runs
 exactly the slice-2 admission. A nonzero value is applied to the
 shared budget by `restore_program`, next to the existing
 `guest_burn_concurrency` wiring.

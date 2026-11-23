@@ -12,7 +12,7 @@ names); this repo record is the reviewed copy Drew's review reads.
 Basis, and the inputs this record must answer rather than restate:
 
 - Issue #1177 itself: four components (pace forecasting driving
-  placement *before* caution zones; automatic pool re-weighting
+  placement _before_ caution zones; automatic pool re-weighting
   **proposals as repo PRs, never silent config edits**, with forecast
   evidence attached; anomaly detection — burn spikes, adapter schema
   drift, vendor plan changes — wired to the evidence-baseline diff
@@ -50,7 +50,7 @@ it consumes `quota-current` today: first in **shadow** (the
 forecast-informed ordering logged beside the live ordering, no
 effect), then live through the **existing** admission verdicts (a
 projected wall before reset, beyond a margin, yields `pace_hold` for
-new placement — demotion *before* the ≥85% caution zone, never a
+new placement — demotion _before_ the ≥85% caution zone, never a
 hard close on a forecast). A weekly **proposal generator** turns
 persistent forecast evidence into route-config **PRs** with the
 evidence attached — the only path by which Stage 3 ever changes
@@ -93,7 +93,7 @@ Read off the live laptop aggregator and `origin/main` on 2026-11-22:
   shadow. `quota-current.ts` overlays freshness: fresh-ok wins, stale
   or errored entries surface as state, never as current values.
   `quota-exhaustion.ts` handles realized exhaustion. What none of
-  them take as input is a *projection*: admission today reacts at
+  them take as input is a _projection_: admission today reacts at
   measured thresholds (caution ≥85%, wall at 100%).
 - **The babysitter already consumes a per-pool projection.**
   `pool-state.json` (PR #12689, #1338) projects each tick into the
@@ -177,7 +177,7 @@ from the same readings and writes:
 
 **Decision D2: the forecast model in v1 is the existing pace math,
 unchanged.** `quota-analytics.ts`'s least-squares same-period slope
-with its tolerance for reset jitter and its honesty states *is* the
+with its tolerance for reset jitter and its honesty states _is_ the
 v1 forecaster. Stage 3's work is the product, the consumers, and the
 accuracy ledger — the things that make any model, including this
 one, safe to act on. A better model is a §7 output (proposed with
@@ -185,7 +185,7 @@ accuracy evidence), not a v1 input.
 
 **Freshness contract:** a forecast is consumable only while its
 underlying reading is fresh by the `quota-current.ts` overlay rules.
-A stale forecast degrades to *no forecast* — consumers fall back to
+A stale forecast degrades to _no forecast_ — consumers fall back to
 today's measured-threshold behaviour. This is the stale-read
 doctrine applied to predictions: unknown is not closed, and a
 prediction is never stronger than the reading behind it.
@@ -195,7 +195,7 @@ prediction is never stronger than the reading behind it.
 **Decision D3: shadow first, for at least one week, on the S2
 score.** The forecast-informed ordering — burn-by-expiry ordering
 adjusted so a pool projected to wall before its reset is demoted in
-the ordering *before* it reaches the caution zone — is computed at
+the ordering _before_ it reaches the caution zone — is computed at
 the same points the live ordering is computed (admission/claimant
 path) and logged beside it as a per-decision diff record. The live
 ordering is untouched. The week's diffs are scored against realized
@@ -213,8 +213,8 @@ placement on that pool. Everything about the rollout copies the
 stack's existing postures: one named pool first; a backend-style
 flag whose default is today's behaviour and whose flip back is the
 whole rollback (the `PM_AGG_STORE_BACKEND` pattern); `pace_hold` is
-a hold on *new* placement, never a stop of running work and never a
-pool closure — at a *measured* 100% the existing wall rules apply,
+a hold on _new_ placement, never a stop of running work and never a
+pool closure — at a _measured_ 100% the existing wall rules apply,
 unchanged. Margin and pool are configuration, set from the S2
 calibration, and changed only via §5's proposal mechanism once live.
 
@@ -234,7 +234,7 @@ configuration except the PR, and no merge rights; merge authority
 stays where it is (Felix/Drew). This is #1177's hard rule ("never
 silent config edits") made structural rather than procedural.
 
-**Gate:** a proposal *class* (e.g. margin changes) becomes routine
+**Gate:** a proposal _class_ (e.g. margin changes) becomes routine
 only after passing #1342's controlled A/B for that class; before
 that, each proposal is individual and Drew-visible in the weekly
 report. The generator's first PR is generated, not hand-written —
@@ -262,7 +262,7 @@ record of detail, per the #12599 ruling). Detectors:
   recorded shape, or a parse falling into the framework's fail-closed
   `unparseable` state. The gatherer's adapters already fail closed
   (previous value ages, never zeros); the detector's job is to make
-  the *drift itself* a finding at first occurrence, not after the
+  the _drift itself_ a finding at first occurrence, not after the
   aged value goes stale.
 - **Vendor plan change:** a window's `limit` (the snapshot records'
   denominator) changes between consecutive records for the same
@@ -298,7 +298,7 @@ cannot decay into a report nobody acts on.
 ## 8. Alternatives considered
 
 - **A. Forecast inside the fork's quota subcommand.** Rejected: the
-  subcommand is the single *read* source (#6125/#6127, and #2490
+  subcommand is the single _read_ source (#6125/#6127, and #2490
   keeps the read path unified); forecasting is a PM-stack product
   over history the fork does not hold (the snapshot store and ledger
   live aggregator-side). Putting the model in the reader would fork
@@ -317,7 +317,7 @@ cannot decay into a report nobody acts on.
   S2 possible.
 - **D. Direct config edits by the proposal generator, with a log.**
   Rejected outright: #1177's hard rule. A log of silent edits is
-  still silent edits; the PR *is* the review surface.
+  still silent edits; the PR _is_ the review surface.
 - **E. Revive the silent steward/meta-reviewer jobs as the weekly
   review.** Rejected: their restore-or-retire is Drew's separate
   decision (#1334), their scope is daily model/route audit (Stage
@@ -331,15 +331,15 @@ self-tuning quota operations. Children in priority order; each is
 independently landable, and each names its acceptance evidence in
 its own body:
 
-| # | Slice | Issue | Lands |
-|---|-------|-------|-------|
-| S1 | Forecast product: per-tick `quota-forecast.json` + ledger rows (D1, D2) | #12695 | P0 |
-| S2 | Accuracy ledger + backtest harness over the snapshot store, rename-join as code (§2) | #12696 | P0 |
-| S3 | Shadow placement: forecast ordering logged beside live ordering (D3) | #12697 | P1 |
-| S4 | Live forecast-driven admission: `pace_hold` from projection, one pool, flagged (D4) | #12698 | P1 |
-| S5 | Anomaly detectors: burn spike / schema drift / plan change (D6) | #12699 | P1 |
-| S6 | Re-weighting proposal generator: evidence-packed PRs, PR-only write path (D5) | #12700 | P2 |
-| S7 | Weekly accuracy review job + schedule-registry entry (D7) | #12701 | P2 |
+| #   | Slice                                                                                | Issue  | Lands |
+| --- | ------------------------------------------------------------------------------------ | ------ | ----- |
+| S1  | Forecast product: per-tick `quota-forecast.json` + ledger rows (D1, D2)              | #12695 | P0    |
+| S2  | Accuracy ledger + backtest harness over the snapshot store, rename-join as code (§2) | #12696 | P0    |
+| S3  | Shadow placement: forecast ordering logged beside live ordering (D3)                 | #12697 | P1    |
+| S4  | Live forecast-driven admission: `pace_hold` from projection, one pool, flagged (D4)  | #12698 | P1    |
+| S5  | Anomaly detectors: burn spike / schema drift / plan change (D6)                      | #12699 | P1    |
+| S6  | Re-weighting proposal generator: evidence-packed PRs, PR-only write path (D5)        | #12700 | P2    |
+| S7  | Weekly accuracy review job + schedule-registry entry (D7)                            | #12701 | P2    |
 
 Dependency shape: S2 needs S1's forecast shape (its backtest can
 proceed against the analytics math directly, so the two can run in
