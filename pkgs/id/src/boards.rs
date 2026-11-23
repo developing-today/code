@@ -7227,7 +7227,12 @@ mod tests {
         assert_eq!(embeds.len(), 1);
         assert_eq!(embeds[0].0, post_hash);
         assert_eq!(embeds[0].1, &note_ref);
-        assert_eq!(graph.note_backlinks(&note_object), vec![post_hash.clone()]);
+        // Backlinks are the union over all three edge kinds: the plain
+        // post sits in the same thread as the sharing post, so it
+        // carries a discusses edge to the note and backlinks it too.
+        let mut expected_backlinks = vec![post_hash.clone(), plain_hash.clone()];
+        expected_backlinks.sort();
+        assert_eq!(graph.note_backlinks(&note_object), expected_backlinks);
         assert!(
             graph
                 .note_backlinks(&ArtifactHash::new("d".repeat(64)).unwrap())
