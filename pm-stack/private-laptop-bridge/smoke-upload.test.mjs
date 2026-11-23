@@ -145,7 +145,7 @@ function builtSmokeFixture() {
     END_MS: { type: 'text', value: '' },
   };
   return {
-    buildConfig: { producer: { name: 'wrangler', version: '4.166.0' }, buildContext: { isPreview: false } },
+    buildConfig: { producer: { name: 'wrangler', version: '4.166.0' }, buildContext: { isPreview: false, mode: '' } },
     workerNames: ['default'],
     bundleFiles: ['smoke.js', 'smoke.js.map'],
     workerConfig: {
@@ -159,6 +159,18 @@ function builtSmokeFixture() {
 test('effective Build Output contract excludes routes, domains, triggers, previews, DOs, and extra executable modules', () => {
   const fixture = builtSmokeFixture();
   assert.equal(assertPrebuiltSmokePayload(fixture), true);
+  for (const mutate of [
+    f => { f.buildConfig.buildContext.mode = 'development'; },
+    f => { f.buildConfig.buildContext.isPreview = true; },
+    f => { f.buildConfig.buildContext.extra = 'synthetic-secret-value'; },
+  ]) {
+    const invalid = builtSmokeFixture(); mutate(invalid);
+    assert.throws(() => assertPrebuiltSmokePayload(invalid), error => {
+      assert.match(error.message, /sanitized metadata=/);
+      assert.doesNotMatch(error.message, /synthetic-secret-value/);
+      return true;
+    });
+  }
   for (const mutate of [
     f => { f.workerConfig.domains = [{ hostname: 'public.invalid' }]; },
     f => { f.workerConfig.triggers = [{ cron: '*/1 * * * *' }]; },

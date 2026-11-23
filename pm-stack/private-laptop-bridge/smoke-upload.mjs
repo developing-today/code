@@ -161,12 +161,32 @@ export function assertNoTargetOverrides(environment = process.env) {
   return true;
 }
 
+function sanitizedBuildMetadata(buildConfig) {
+  const types = value => value && typeof value === 'object' && !Array.isArray(value)
+    ? Object.fromEntries(Object.entries(value).map(([key, item]) => [key, item === null ? 'null' : Array.isArray(item) ? 'array' : typeof item]))
+    : typeof value;
+  const context = buildConfig?.buildContext;
+  const mode = context?.mode;
+  return JSON.stringify({
+    rootKeys: buildConfig && typeof buildConfig === 'object' && !Array.isArray(buildConfig) ? Object.keys(buildConfig).sort() : [],
+    rootTypes: types(buildConfig),
+    producerKeys: buildConfig?.producer && typeof buildConfig.producer === 'object' && !Array.isArray(buildConfig.producer) ? Object.keys(buildConfig.producer).sort() : [],
+    producerTypes: types(buildConfig?.producer),
+    producerName: buildConfig?.producer?.name === 'wrangler' ? 'wrangler' : '<other>',
+    producerVersion: buildConfig?.producer?.version === '4.166.0' ? '4.166.0' : '<other>',
+    buildContextKeys: context && typeof context === 'object' && !Array.isArray(context) ? Object.keys(context).sort() : [],
+    buildContextTypes: types(context),
+    isPreview: typeof context?.isPreview === 'boolean' ? context.isPreview : '<non-boolean>',
+    mode: mode === '' ? '<empty>' : mode === 'production' || mode === 'development' ? mode : '<other>',
+  });
+}
+
 export function assertPrebuiltSmokePayload({ buildConfig, workerConfig, workerNames, bundleFiles }) {
   const exactKeys = (value, expected) => value && typeof value === 'object' && !Array.isArray(value) && same(Object.keys(value).sort(), [...expected].sort());
   if (!exactKeys(buildConfig, ['producer', 'buildContext']) || !exactKeys(buildConfig.producer, ['name', 'version']) ||
       buildConfig.producer.name !== 'wrangler' || buildConfig.producer.version !== '4.166.0' ||
-      !exactKeys(buildConfig.buildContext, ['isPreview']) || buildConfig.buildContext.isPreview !== false) {
-    fail('prebuilt Build Output producer or context is not the pinned non-preview build');
+      !exactKeys(buildConfig.buildContext, ['isPreview', 'mode']) || buildConfig.buildContext.isPreview !== false || buildConfig.buildContext.mode !== '') {
+    fail(`prebuilt Build Output producer or context is not the pinned non-preview build; sanitized metadata=${sanitizedBuildMetadata(buildConfig)}`);
   }
   if (!Array.isArray(workerNames) || workerNames.length !== 1 || workerNames[0] !== 'default') fail('prebuilt Build Output must contain only its default Worker');
   const expectedWorkerKeys = ['name','compatibilityDate','domains','triggers','limits','observability','workersDev','previewUrls','env','manifest'];
