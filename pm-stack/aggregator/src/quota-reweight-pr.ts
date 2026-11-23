@@ -41,11 +41,7 @@ export class ProposalPrError extends Error {}
 export const PROPOSAL_BRANCH_PREFIX = "quota-proposal/";
 
 export type CommandResult = { code: number; stdout: string; stderr: string };
-export type CommandRunner = (
-  cmd: string,
-  args: string[],
-  opts: { cwd: string },
-) => Promise<CommandResult>;
+export type CommandRunner = (cmd: string, args: string[], opts: { cwd: string }) => Promise<CommandResult>;
 
 /** The real runner: execFile, no shell, so an argument can never
  * smuggle a second command. */
@@ -99,9 +95,7 @@ export function assertGitAllowed(args: readonly string[]): void {
     );
   }
   if (sub === "worktree" && rest[0] !== "add") {
-    throw new ProposalPrError(
-      `refused git invocation 'git ${args.join(" ")}': only 'worktree add' is allowed`,
-    );
+    throw new ProposalPrError(`refused git invocation 'git ${args.join(" ")}': only 'worktree add' is allowed`);
   }
   if (sub === "push") {
     const target = rest[rest.length - 1] ?? "";
@@ -116,12 +110,7 @@ export function assertGitAllowed(args: readonly string[]): void {
 
 /** Run one command through the choke point: validate, then run,
  * then require success. */
-async function runChecked(
-  runner: CommandRunner,
-  cmd: string,
-  args: string[],
-  cwd: string,
-): Promise<CommandResult> {
+async function runChecked(runner: CommandRunner, cmd: string, args: string[], cwd: string): Promise<CommandResult> {
   if (cmd.endsWith("gh") || cmd === "gh") assertGhAllowed(args);
   else if (cmd.endsWith("git") || cmd === "git") assertGitAllowed(args);
   else throw new ProposalPrError(`refused command '${cmd}': the generator runs only gh and git`);
@@ -138,7 +127,10 @@ async function runChecked(
  * become path segments and '->' becomes '-to-', so the branch is
  * a valid ref and the key is recoverable from it. */
 export function proposalBranch(key: string): string {
-  const slug = key.replace(/:/g, "/").replace(/->/g, "-to-").replace(/[^a-zA-Z0-9._/-]/g, "-");
+  const slug = key
+    .replace(/:/g, "/")
+    .replace(/->/g, "-to-")
+    .replace(/[^a-zA-Z0-9._/-]/g, "-");
   return `${PROPOSAL_BRANCH_PREFIX}${slug}`;
 }
 
@@ -210,12 +202,7 @@ export async function openProposalPr(args: {
   await runChecked(args.runner, git, ["fetch", "origin", base], args.repoRoot);
   const wtDir = join(args.scratchDir, branch.replace(/\//g, "-"));
   await mkdir(args.scratchDir, { recursive: true });
-  await runChecked(
-    args.runner,
-    git,
-    ["worktree", "add", "-b", branch, wtDir, `origin/${base}`],
-    args.repoRoot,
-  );
+  await runChecked(args.runner, git, ["worktree", "add", "-b", branch, wtDir, `origin/${base}`], args.repoRoot);
   const targetPath = join(wtDir, args.proposal.target.file);
   const content = await readFile(targetPath, "utf8");
   await writeFile(targetPath, applyProposalEdit(content, args.proposal));
@@ -239,18 +226,7 @@ export async function openProposalPr(args: {
   const pr = await runChecked(
     args.runner,
     args.ghPath,
-    [
-      "pr",
-      "create",
-      "--base",
-      base,
-      "--head",
-      branch,
-      "--title",
-      args.proposal.title,
-      "--body-file",
-      packPath,
-    ],
+    ["pr", "create", "--base", base, "--head", branch, "--title", args.proposal.title, "--body-file", packPath],
     args.repoRoot,
   );
   const url = pr.stdout.trim().split("\n").filter(Boolean).pop() ?? "";

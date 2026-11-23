@@ -979,10 +979,12 @@ pub(crate) fn gate_completion(
             // delivered slice alone — no verified disposition, so
             // the parent issue may stay open while slices land.
             if evidence_ref(result).is_none() {
-                return Err("complete_task: feature_slice completion requires an evidence \
+                return Err(
+                    "complete_task: feature_slice completion requires an evidence \
                      reference on the result (merged PR, commit, or \
                      verified-closure note); the task remains claimed"
-                    .to_string());
+                        .to_string(),
+                );
             }
             Ok(None)
         }

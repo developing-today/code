@@ -58,11 +58,7 @@
 //
 // Pure functions over plain values — no I/O, no clock reads except
 // through arguments. The tick and the replay CLI do the file work.
-import {
-  PROJECTION_PERIOD_TOLERANCE_MS,
-  projectWindow,
-  type PctPoint,
-} from "./quota-analytics.ts";
+import { PROJECTION_PERIOD_TOLERANCE_MS, projectWindow, type PctPoint } from "./quota-analytics.ts";
 import {
   FORECAST_POOLS,
   FORECAST_WINDOW_METRICS,
@@ -247,7 +243,10 @@ export function observeFieldSet(
     if (count >= removalConfirm) removed.push(f);
     else absent[f] = count;
   }
-  const nextFields = prior.fields.filter((f) => !removed.includes(f)).concat(added).sort();
+  const nextFields = prior.fields
+    .filter((f) => !removed.includes(f))
+    .concat(added)
+    .sort();
   if (added.length || removed.length) {
     events.push({ kind: "shape-changed", added, removed, fields: nextFields });
   }
@@ -617,7 +616,13 @@ function fieldSetFindings(args: {
         window: args.window,
         severity: "warning",
         title: `${args.detector === "schema-drift" ? "adapter schema drift" : "vendor plan change"}: ${args.serviceId} ${args.subject} changed (${parts.join("; ")})`,
-        baseline: `recorded ${args.subject}: ${ev.fields.filter((f) => !ev.added.includes(f)).concat(ev.removed).sort().join(", ") || "(empty)"}`,
+        baseline: `recorded ${args.subject}: ${
+          ev.fields
+            .filter((f) => !ev.added.includes(f))
+            .concat(ev.removed)
+            .sort()
+            .join(", ") || "(empty)"
+        }`,
         observed: `${args.subject} now: ${ev.fields.join(", ") || "(empty)"} — ${parts.join("; ")}`,
         detail: { added: ev.added, removed: ev.removed },
       });
@@ -653,10 +658,7 @@ export const PLAN_WINDOW_REPLAY_REMOVAL_CONFIRM_DAYS = 3;
  * fires nor updates the recorded limit. The first non-null limit
  * establishes the baseline silently (it rides in the state, and
  * the evaluation surface is the caller's per-service rollup). */
-export function observeLimitRecord(
-  limits: Record<string, number>,
-  record: SnapshotRecord,
-): AnomalyFinding | null {
+export function observeLimitRecord(limits: Record<string, number>, record: SnapshotRecord): AnomalyFinding | null {
   if (record.limit === null || record.limit === undefined) return null;
   const key = `${record.serviceId}|${record.metricId}`;
   const prior = limits[key];
@@ -727,9 +729,12 @@ export function isAnomalyStateFile(v: unknown): v is AnomalyStateFile {
   return (
     s.version === 1 &&
     typeof s.updatedAt === "string" &&
-    typeof s.shapes === "object" && s.shapes !== null &&
-    typeof s.limits === "object" && s.limits !== null &&
-    typeof s.poolWindows === "object" && s.poolWindows !== null &&
+    typeof s.shapes === "object" &&
+    s.shapes !== null &&
+    typeof s.limits === "object" &&
+    s.limits !== null &&
+    typeof s.poolWindows === "object" &&
+    s.poolWindows !== null &&
     Array.isArray(s.firedKeys)
   );
 }
@@ -906,7 +911,9 @@ export function runAnomalyReplay(
     }
   }
 
-  findings.sort((a, b) => a.at.localeCompare(b.at) || a.detector.localeCompare(b.detector) || a.key.localeCompare(b.key));
+  findings.sort(
+    (a, b) => a.at.localeCompare(b.at) || a.detector.localeCompare(b.detector) || a.key.localeCompare(b.key),
+  );
   return { findings, evaluations };
 }
 

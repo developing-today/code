@@ -495,7 +495,7 @@ def fetch_issue_verdict(repo: str, number: int, gh: str = "gh") -> dict:
         "--paginate",
         f"repos/{repo}/issues/{number}/comments?per_page=100",
         "--jq",
-        '.[] | {body, created_at, user: {type: .user.type}}',
+        ".[] | {body, created_at, user: {type: .user.type}}",
     ]
     try:
         out = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
@@ -1036,9 +1036,7 @@ def render_report(
     total_shepherd = sum(len(r.get("shepherd_candidates", [])) for r in results)
     total_shepherd_imported = sum(r.get("shepherd_imported", 0) for r in results)
     total_unread = sum(len(r.get("verdict_unread_issues", [])) for r in results)
-    total_fulfilled = sum(
-        len(r.get("resume_fulfilled_issues", [])) for r in results
-    )
+    total_fulfilled = sum(len(r.get("resume_fulfilled_issues", [])) for r in results)
     total_stale = sum(len(r.get("stale_issues", [])) for r in results)
     lines += [
         "",
@@ -1104,9 +1102,7 @@ def render_report(
                 f"({pr.get('branch') or 'branch unknown'})"
             )
         lines.append("")
-    verdict_any = [
-        (r, i) for r in results for i in r.get("verdict_covered_issues", [])
-    ]
+    verdict_any = [(r, i) for r in results for i in r.get("verdict_covered_issues", [])]
     if verdict_any:
         lines += [
             "## Covered by a recorded verdict — parked, no triage packet (#12233 F2b)",

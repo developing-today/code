@@ -47,7 +47,13 @@ import yaml
 STATES = {"declared", "joining", "active", "draining", "retired"}
 ROLES = {"execution", "lab-cluster", "both"}
 HEALTH_STATUSES = {"healthy", "degraded", "unreachable", "unknown"}
-HEALTH_CHECKS = {"reachable", "load_headroom", "disk_headroom", "sessions", "last_queue_job"}
+HEALTH_CHECKS = {
+    "reachable",
+    "load_headroom",
+    "disk_headroom",
+    "sessions",
+    "last_queue_job",
+}
 CHECK_STATES = {"ok", "failed", "unknown"}
 CAPABILITIES = {"queue_worker", "opencode_sessions", "builds", "gpu"}
 SECRET_CLASS = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
@@ -93,15 +99,25 @@ def validate(doc):
             errors.append(f"{where}: state {rec['state']!r} not in {sorted(STATES)}")
         roles = rec["roles"]
         if not isinstance(roles, list) or not roles or not set(roles) <= ROLES:
-            errors.append(f"{where}: roles {roles!r} must be a non-empty subset of {sorted(ROLES)}")
+            errors.append(
+                f"{where}: roles {roles!r} must be a non-empty subset of {sorted(ROLES)}"
+            )
         elif "both" in roles and len(roles) > 1:
-            errors.append(f"{where}: `both` is a standalone marker (§0), not combinable")
+            errors.append(
+                f"{where}: `both` is a standalone marker (§0), not combinable"
+            )
         access = rec["access"]
-        if not isinstance(access, dict) or not access.get("ssh") or not access.get("opencode_server"):
+        if (
+            not isinstance(access, dict)
+            or not access.get("ssh")
+            or not access.get("opencode_server")
+        ):
             errors.append(f"{where}: access must name ssh and opencode_server")
         caps = rec["capabilities"]
         if not isinstance(caps, dict) or set(caps) != CAPABILITIES:
-            errors.append(f"{where}: capabilities must be exactly {sorted(CAPABILITIES)}")
+            errors.append(
+                f"{where}: capabilities must be exactly {sorted(CAPABILITIES)}"
+            )
         elif not all(isinstance(v, bool) for v in caps.values()):
             errors.append(f"{where}: capability values must be booleans")
         capacity = rec["capacity"]
@@ -109,18 +125,32 @@ def validate(doc):
             errors.append(f"{where}: capacity must be a mapping")
         elif rec["state"] == "active":
             for key in ("cpu_cores", "ram_gb", "worktree_disk_gb"):
-                if not isinstance(capacity.get(key), (int, float)) or capacity[key] <= 0:
-                    errors.append(f"{where}: active machine must declare positive capacity.{key}")
-            if not isinstance(capacity.get("max_sessions"), int) or capacity["max_sessions"] <= 0:
-                errors.append(f"{where}: active machine must declare positive capacity.max_sessions")
+                if (
+                    not isinstance(capacity.get(key), (int, float))
+                    or capacity[key] <= 0
+                ):
+                    errors.append(
+                        f"{where}: active machine must declare positive capacity.{key}"
+                    )
+            if (
+                not isinstance(capacity.get("max_sessions"), int)
+                or capacity["max_sessions"] <= 0
+            ):
+                errors.append(
+                    f"{where}: active machine must declare positive capacity.max_sessions"
+                )
         secrets = rec["secrets"]
         if not isinstance(secrets, list) or not all(
             isinstance(s, str) and SECRET_CLASS.match(s) for s in secrets
         ):
-            errors.append(f"{where}: secrets must be secret CLASS names only (§1.6 slugs)")
+            errors.append(
+                f"{where}: secrets must be secret CLASS names only (§1.6 slugs)"
+            )
         health = rec["health"]
         if not isinstance(health, dict) or health.get("status") not in HEALTH_STATUSES:
-            errors.append(f"{where}: health.status must be one of {sorted(HEALTH_STATUSES)}")
+            errors.append(
+                f"{where}: health.status must be one of {sorted(HEALTH_STATUSES)}"
+            )
         elif not health.get("source"):
             errors.append(f"{where}: health.source must name who reports (§1.5)")
         if isinstance(health, dict):
@@ -156,7 +186,10 @@ def _health_earned_errors(where, health):
             for name, entry in checks.items():
                 if name == "reported_at":
                     continue
-                if not isinstance(entry, dict) or entry.get("state") not in CHECK_STATES:
+                if (
+                    not isinstance(entry, dict)
+                    or entry.get("state") not in CHECK_STATES
+                ):
                     errors.append(
                         f"{where}: health.checks.{name} must be a mapping "
                         f"with state in {sorted(CHECK_STATES)}"

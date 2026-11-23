@@ -171,7 +171,9 @@ def parse_iso(text):
     if not isinstance(text, str):
         return None
     try:
-        return datetime.strptime(text, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+        return datetime.strptime(text, "%Y-%m-%dT%H:%M:%SZ").replace(
+            tzinfo=timezone.utc
+        )
     except ValueError:
         return None
 
@@ -202,8 +204,10 @@ def run_probe(record, transport, fleet_cmd, now):
         try:
             proc = subprocess.run(
                 [sys.executable, "-c", PROBE_PY],
-                capture_output=True, text=True,
-                timeout=PROBE_TIMEOUT_SECONDS, env=local_env,
+                capture_output=True,
+                text=True,
+                timeout=PROBE_TIMEOUT_SECONDS,
+                env=local_env,
             )
         except (OSError, subprocess.TimeoutExpired) as exc:
             return None, f"local probe failed to run: {exc}"
@@ -214,7 +218,9 @@ def run_probe(record, transport, fleet_cmd, now):
         try:
             proc = subprocess.run(
                 fleet_cmd + ["shell", "--", "bash", "-lc", remote],
-                capture_output=True, text=True, timeout=PROBE_TIMEOUT_SECONDS,
+                capture_output=True,
+                text=True,
+                timeout=PROBE_TIMEOUT_SECONDS,
             )
         except (OSError, subprocess.TimeoutExpired) as exc:
             return None, f"fleet shell transport failed: {exc}"
@@ -253,7 +259,8 @@ def queue_last_done(db, settings_path):
     status, body = req(
         "POST",
         f"https://api.turso.tech/v1/organizations/{org}/databases/{db}/auth/tokens",
-        platform, {},
+        platform,
+        {},
     )
     if status is None:
         return None, f"queue store unreachable at token mint: {body}"
@@ -266,8 +273,10 @@ def queue_last_done(db, settings_path):
         "ORDER BY completed_at DESC LIMIT 1"
     )
     status, body = req(
-        "POST", f"https://{db}-{org}.aws-us-east-1.turso.io/v2/pipeline",
-        dbtok, {"requests": [{"type": "execute", "stmt": {"sql": sql}}, {"type": "close"}]},
+        "POST",
+        f"https://{db}-{org}.aws-us-east-1.turso.io/v2/pipeline",
+        dbtok,
+        {"requests": [{"type": "execute", "stmt": {"sql": sql}}, {"type": "close"}]},
     )
     if status is None:
         return None, f"queue store unreachable at query: {body}"
@@ -278,13 +287,19 @@ def queue_last_done(db, settings_path):
         if not rows:
             return None, "queue store holds no done tasks"
         vals = [c.get("value") for c in rows[0]]
-        return {"task_id": vals[0], "queue": vals[1], "worker": vals[2],
-                "completed_at": vals[3]}, None
+        return {
+            "task_id": vals[0],
+            "queue": vals[1],
+            "worker": vals[2],
+            "completed_at": vals[3],
+        }, None
     except (KeyError, IndexError, TypeError, ValueError) as exc:
         return None, f"queue store reply unparsable: {exc}"
 
 
-def build_health(record, facts, transport_error, queue_result, queue_error, now, prior_health):
+def build_health(
+    record, facts, transport_error, queue_result, queue_error, now, prior_health
+):
     """Compute the new health block from probe facts. Pure; unit-tested."""
     checks = {"reported_at": iso(now)}
     if transport_error is not None:
@@ -292,13 +307,20 @@ def build_health(record, facts, transport_error, queue_result, queue_error, now,
             checks[name] = {"state": "unknown", "reason": transport_error}
         status = "unknown"
         last_seen = prior_health.get("last_seen")
-        return {"source": "watchdog", "last_seen": last_seen,
-                "status": status, "checks": checks}
+        return {
+            "source": "watchdog",
+            "last_seen": last_seen,
+            "status": status,
+            "checks": checks,
+        }
 
     ssh_ok = bool(facts.get("ssh"))
     server_http = facts.get("opencode_server_http")
-    reachable = {"state": "ok" if (ssh_ok and server_http is not None) else "failed",
-                 "ssh": ssh_ok, "opencode_server_http": server_http}
+    reachable = {
+        "state": "ok" if (ssh_ok and server_http is not None) else "failed",
+        "ssh": ssh_ok,
+        "opencode_server_http": server_http,
+    }
     checks["reachable"] = reachable
 
     cores = record["capacity"].get("cpu_cores") or 0
@@ -307,7 +329,9 @@ def build_health(record, facts, transport_error, queue_result, queue_error, now,
         ratio = round(load15 / cores, 3)
         checks["load_headroom"] = {
             "state": "ok" if ratio <= LOAD15_PER_CORE_MAX else "failed",
-            "load15": facts["load"][2], "cpu_cores": cores, "load15_per_core": ratio,
+            "load15": facts["load"][2],
+            "cpu_cores": cores,
+            "load15_per_core": ratio,
         }
     else:
         checks["load_headroom"] = {
@@ -319,12 +343,15 @@ def build_health(record, facts, transport_error, queue_result, queue_error, now,
         disk = facts["disk"]
         checks["disk_headroom"] = {
             "state": "ok" if disk["free_pct"] >= DISK_FREE_MIN_PCT else "failed",
-            "volume": "worktree (home)", "total_gb": disk["total_gb"],
-            "free_gb": disk["free_gb"], "free_pct": disk["free_pct"],
+            "volume": "worktree (home)",
+            "total_gb": disk["total_gb"],
+            "free_gb": disk["free_gb"],
+            "free_pct": disk["free_pct"],
         }
     else:
         checks["disk_headroom"] = {
-            "state": "unknown", "reason": facts.get("disk_error") or "no disk reading",
+            "state": "unknown",
+            "reason": facts.get("disk_error") or "no disk reading",
         }
 
     cap = record["capacity"].get("max_sessions") or 0
@@ -333,7 +360,8 @@ def build_health(record, facts, transport_error, queue_result, queue_error, now,
             "state": "ok",
             "listed": facts["sessions_listed"],
             "active_within_cadence": facts.get("sessions_active"),
-            "max_sessions": cap, "source": "openchamber attach api",
+            "max_sessions": cap,
+            "source": "openchamber attach api",
         }
     else:
         checks["sessions"] = {
@@ -357,8 +385,12 @@ def build_health(record, facts, transport_error, queue_result, queue_error, now,
     else:
         status = "healthy"
     last_seen = iso(now) if seen else prior_health.get("last_seen")
-    return {"source": "watchdog", "last_seen": last_seen,
-            "status": status, "checks": checks}
+    return {
+        "source": "watchdog",
+        "last_seen": last_seen,
+        "status": status,
+        "checks": checks,
+    }
 
 
 def render_health_block(health):
@@ -413,21 +445,39 @@ def main(argv=None):
     )
     parser.add_argument("registry", help="path to the fleet machine registry YAML")
     parser.add_argument("--machine", help="only this machine id (default: all records)")
-    parser.add_argument("--transport", choices=["fleet-shell", "local"],
-                        default="fleet-shell",
-                        help="how probes reach the machine (default: fleet-shell)")
-    parser.add_argument("--fleet", default=None,
-                        help="fleet binary for the fleet-shell transport "
-                             "(default: `fleet` on PATH, else ~/tools/fleet)")
-    parser.add_argument("--queue-db", default="fleet-queue",
-                        help="Turso database holding the fleet queue (default: fleet-queue)")
-    parser.add_argument("--turso-settings", default="~/.config/turso/settings.json",
-                        help="Turso platform settings file for the queue read")
-    parser.add_argument("--now", default=None,
-                        help="evaluation time, ISO-8601 UTC (default: now); "
-                             "exists so runs are reproducible and testable")
-    parser.add_argument("--dry-run", action="store_true",
-                        help="print the health blocks that would be written; change nothing")
+    parser.add_argument(
+        "--transport",
+        choices=["fleet-shell", "local"],
+        default="fleet-shell",
+        help="how probes reach the machine (default: fleet-shell)",
+    )
+    parser.add_argument(
+        "--fleet",
+        default=None,
+        help="fleet binary for the fleet-shell transport "
+        "(default: `fleet` on PATH, else ~/tools/fleet)",
+    )
+    parser.add_argument(
+        "--queue-db",
+        default="fleet-queue",
+        help="Turso database holding the fleet queue (default: fleet-queue)",
+    )
+    parser.add_argument(
+        "--turso-settings",
+        default="~/.config/turso/settings.json",
+        help="Turso platform settings file for the queue read",
+    )
+    parser.add_argument(
+        "--now",
+        default=None,
+        help="evaluation time, ISO-8601 UTC (default: now); "
+        "exists so runs are reproducible and testable",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="print the health blocks that would be written; change nothing",
+    )
     args = parser.parse_args(argv)
 
     now = parse_iso(args.now) if args.now else datetime.now(timezone.utc)
@@ -436,7 +486,9 @@ def main(argv=None):
 
     fleet_cmd = []
     if args.transport == "fleet-shell":
-        fleet_path = args.fleet or shutil.which("fleet") or os.path.expanduser("~/tools/fleet")
+        fleet_path = (
+            args.fleet or shutil.which("fleet") or os.path.expanduser("~/tools/fleet")
+        )
         fleet_cmd = [fleet_path]
 
     try:
@@ -449,17 +501,21 @@ def main(argv=None):
     errors = validator.validate(doc)
     if errors:
         for err in errors:
-            print(f"error: registry invalid before watchdog run: {err}", file=sys.stderr)
+            print(
+                f"error: registry invalid before watchdog run: {err}", file=sys.stderr
+            )
         return 1
 
-    targets = [r for r in doc["machines"]
-               if args.machine is None or r["id"] == args.machine]
+    targets = [
+        r for r in doc["machines"] if args.machine is None or r["id"] == args.machine
+    ]
     if not targets:
         print(f"error: machine {args.machine!r} not in registry", file=sys.stderr)
         return 1
 
     queue_result, queue_error = queue_last_done(
-        args.queue_db, os.path.expanduser(args.turso_settings))
+        args.queue_db, os.path.expanduser(args.turso_settings)
+    )
 
     text = original
     for record in targets:
@@ -468,14 +524,23 @@ def main(argv=None):
             print(f"{record['id']}: retired — skipped")
             continue
         facts, transport_error = run_probe(record, args.transport, fleet_cmd, now)
-        health = build_health(record, facts, transport_error,
-                              queue_result, queue_error, now,
-                              record.get("health") or {})
+        health = build_health(
+            record,
+            facts,
+            transport_error,
+            queue_result,
+            queue_error,
+            now,
+            record.get("health") or {},
+        )
         view = placement_view(health, now)
         summary = ", ".join(
-            f"{name}={health['checks'][name]['state']}" for name in ALL_CHECKS)
-        print(f"{record['id']}: status={health['status']} placement={view} "
-              f"last_seen={health['last_seen']} [{summary}]")
+            f"{name}={health['checks'][name]['state']}" for name in ALL_CHECKS
+        )
+        print(
+            f"{record['id']}: status={health['status']} placement={view} "
+            f"last_seen={health['last_seen']} [{summary}]"
+        )
         if args.dry_run:
             print("\n".join(render_health_block(health)))
             continue
@@ -487,8 +552,10 @@ def main(argv=None):
     errors = validator.validate(new_doc)
     if errors:
         for err in errors:
-            print(f"error: watchdog write would invalidate the registry: {err}",
-                  file=sys.stderr)
+            print(
+                f"error: watchdog write would invalidate the registry: {err}",
+                file=sys.stderr,
+            )
         return 1
     with open(args.registry, "w", encoding="utf-8") as fh:
         fh.write(text)

@@ -314,10 +314,7 @@ function isHeadroom(w: WindowBaseline): boolean {
   return true;
 }
 
-function forecastSummaryFor(
-  forecast: QuotaForecastFile | null,
-  serviceIds: readonly string[],
-): string {
+function forecastSummaryFor(forecast: QuotaForecastFile | null, serviceIds: readonly string[]): string {
   if (!forecast) {
     return "no forecast file supplied to this run (the accuracy ledger alone grounds the proposal; the live forecast's current projections join the pack when the generator runs against the aggregator state dir)";
   }
@@ -338,11 +335,7 @@ function forecastSummaryFor(
     : `forecast ${forecast.generatedAt}: no rows for the grounding pools`;
 }
 
-function shadowSummaryFor(
-  shadow: ShadowPlacementRecord | null,
-  changeClass: string,
-  nearPctCurrent: number,
-): string {
+function shadowSummaryFor(shadow: ShadowPlacementRecord | null, changeClass: string, nearPctCurrent: number): string {
   if (!shadow) {
     return (
       `no shadow record supplied to this run (the ${changeClass} class is the one S3 shadows; ` +
@@ -442,7 +435,9 @@ function poolWeightProposals(args: {
       });
       continue;
     }
-    const newLine = line.replace(fromEntry, `"${from.member}": ${fromNew}`).replace(toEntry, `"${to.member}": ${toNew}`);
+    const newLine = line
+      .replace(fromEntry, `"${from.member}": ${fromNew}`)
+      .replace(toEntry, `"${to.member}": ${toNew}`);
     const rows = [evidenceRow(from.pool.pool, from.window), evidenceRow(to.pool.pool, to.window)];
     proposals.push({
       key: `pool-weight:${route.routeId}:${from.member}:${fromOld}->${fromNew}`,
@@ -508,9 +503,7 @@ function cautionMarginProposal(args: {
     if (w) weekly.push({ pool, window: w });
   }
   args.examined.push(`weekly baselines: ${weekly.length} pools carry one`);
-  const considered = weekly.filter(
-    ({ window: w }) => w.scoreable && w.forecastsScored >= MIN_SCORED_FORECASTS,
-  );
+  const considered = weekly.filter(({ window: w }) => w.scoreable && w.forecastsScored >= MIN_SCORED_FORECASTS);
   // The step direction comes from the sign of the grounding
   // pools' median signed wall error — never from the word
   // "margin": NEAR_PCT is the measured percent at which a pool
@@ -564,9 +557,7 @@ function cautionMarginProposal(args: {
         ? "late"
         : null;
   const grounding = direction === "early" ? early : direction === "late" ? late : [];
-  const anchors = grounding.filter(
-    ({ window: w }) => w.precision !== null && w.precision >= LATE_WALL_PRECISION_MIN,
-  );
+  const anchors = grounding.filter(({ window: w }) => w.precision !== null && w.precision >= LATE_WALL_PRECISION_MIN);
   args.examined.push(
     `caution-margin: ${considered.length} weekly baselines over the volume gate, ` +
       `${early.length} qualifying early-wall, ${late.length} qualifying late-wall` +
@@ -584,7 +575,9 @@ function cautionMarginProposal(args: {
         reason: "counter-evidence-present",
         detail:
           `weekly walls arrive early in ${early.map((q) => q.pool.pool).join(", ")} but late in ` +
-          `${counterTo("early").map((c) => c.pool.pool).join(", ")}; a global margin change is not grounded while the ` +
+          `${counterTo("early")
+            .map((c) => c.pool.pool)
+            .join(", ")}; a global margin change is not grounded while the ` +
           `calibration disagrees with itself.`,
       });
     } else if (late.length > 0 && counterTo("late").length > 0) {
@@ -593,7 +586,9 @@ function cautionMarginProposal(args: {
         reason: "counter-evidence-present",
         detail:
           `weekly walls arrive late in ${late.map((q) => q.pool.pool).join(", ")} but early in ` +
-          `${counterTo("late").map((c) => c.pool.pool).join(", ")}; a global margin change is not grounded while the ` +
+          `${counterTo("late")
+            .map((c) => c.pool.pool)
+            .join(", ")}; a global margin change is not grounded while the ` +
           `calibration disagrees with itself.`,
       });
     }
@@ -629,7 +624,8 @@ function cautionMarginProposal(args: {
         ? `proposal(quota-plane): lower the caution threshold NEAR_PCT ${from} → ${to} — pools enter caution at a lower measured percent (weekly walls arrive systematically early)`
         : `proposal(quota-plane): raise the caution threshold NEAR_PCT ${from} → ${to} — pools enter caution at a higher measured percent (weekly walls arrive systematically late)`,
     target: {
-      description: "the caution margin NEAR_PCT (derive.ts), the threshold at which a pool enters the caution/near tier",
+      description:
+        "the caution margin NEAR_PCT (derive.ts), the threshold at which a pool enters the caution/near tier",
       file: "pm-stack/aggregator/src/derive.ts",
       find: `export const NEAR_PCT = ${from};`,
       replace: `export const NEAR_PCT = ${to};`,
@@ -802,9 +798,7 @@ export function renderRunReport(run: ReweightRun, generatedAt: string): string {
     "",
     `## Evidence gaps (${run.gaps.length})`,
     "",
-    ...(run.gaps.length
-      ? run.gaps.map((g) => `- **${g.scope}** [\`${g.reason}\`]: ${g.detail}`)
-      : ["- none"]),
+    ...(run.gaps.length ? run.gaps.map((g) => `- **${g.scope}** [\`${g.reason}\`]: ${g.detail}`) : ["- none"]),
     "",
   ];
   return lines.join("\n");

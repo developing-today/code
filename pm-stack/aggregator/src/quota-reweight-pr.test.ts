@@ -66,7 +66,9 @@ describe("gh allowlist", () => {
 describe("git allowlist", () => {
   test("permits fetch, worktree add, add, commit, and push to a proposal branch", () => {
     expect(() => assertGitAllowed(["fetch", "origin", "main"])).not.toThrow();
-    expect(() => assertGitAllowed(["worktree", "add", "-b", "quota-proposal/x", "/tmp/wt", "origin/main"])).not.toThrow();
+    expect(() =>
+      assertGitAllowed(["worktree", "add", "-b", "quota-proposal/x", "/tmp/wt", "origin/main"]),
+    ).not.toThrow();
     expect(() => assertGitAllowed(["add", "--", "file.ts"])).not.toThrow();
     expect(() => assertGitAllowed(["commit", "-m", "msg"])).not.toThrow();
     expect(() => assertGitAllowed(["push", "origin", "quota-proposal/caution-margin/NEAR_PCT/85-to-90"])).not.toThrow();
@@ -107,7 +109,8 @@ describe("openProposalPr over a fake runner", () => {
   function fakeRunner(calls: { cmd: string; args: string[] }[], prListStdout = "[]"): CommandRunner {
     return async (cmd, args): Promise<CommandResult> => {
       calls.push({ cmd, args: [...args] });
-      if (cmd.endsWith("gh") && args[0] === "pr" && args[1] === "list") return { code: 0, stdout: prListStdout, stderr: "" };
+      if (cmd.endsWith("gh") && args[0] === "pr" && args[1] === "list")
+        return { code: 0, stdout: prListStdout, stderr: "" };
       if (cmd.endsWith("gh") && args[0] === "pr" && args[1] === "create")
         return { code: 0, stdout: "https://github.com/developing-today/code/pull/99999\n", stderr: "" };
       return { code: 0, stdout: "", stderr: "" };

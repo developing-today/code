@@ -199,7 +199,17 @@ describe("entry shape builders (oracle: the gatherer's parse, quota-gather-map.t
 
 describe("plan change (oracle: design §6 — the denominator and the window set)", () => {
   const rec = (ts: string, limit: number | null, metricId = "storage", serviceId = "turso"): SnapshotRecord =>
-    ({ ts, serviceId, metricId, value: 3, unit: "gb", limit, resetsAt: null, source: "api", observedBy: "test" }) as SnapshotRecord;
+    ({
+      ts,
+      serviceId,
+      metricId,
+      value: 3,
+      unit: "gb",
+      limit,
+      resetsAt: null,
+      source: "api",
+      observedBy: "test",
+    }) as SnapshotRecord;
 
   test("a limit change fires once with from/to; null limits neither fire nor re-baseline", () => {
     const limits: Record<string, number> = {};
@@ -225,7 +235,13 @@ describe("plan change (oracle: design §6 — the denominator and the window set
 });
 
 describe("replay + tick runners", () => {
-  function pctRec(ts: string, serviceId: string, metricId: string, value: number, limit: number | null = 100): SnapshotRecord {
+  function pctRec(
+    ts: string,
+    serviceId: string,
+    metricId: string,
+    value: number,
+    limit: number | null = 100,
+  ): SnapshotRecord {
     return {
       ts,
       serviceId,
@@ -241,14 +257,32 @@ describe("replay + tick runners", () => {
 
   test("replay: a planted limit change and a steady pool — the change fires, the pool's burn evaluation is a measured silence", () => {
     const records: SnapshotRecord[] = [
-      { ts: "2026-11-01T00:00:00.000Z", serviceId: "turso", metricId: "storage", value: 3, unit: "gb", limit: 5, resetsAt: null, source: "api", observedBy: "test" } as SnapshotRecord,
-      { ts: "2026-11-02T00:00:00.000Z", serviceId: "turso", metricId: "storage", value: 4, unit: "gb", limit: 24, resetsAt: null, source: "api", observedBy: "test" } as SnapshotRecord,
+      {
+        ts: "2026-11-01T00:00:00.000Z",
+        serviceId: "turso",
+        metricId: "storage",
+        value: 3,
+        unit: "gb",
+        limit: 5,
+        resetsAt: null,
+        source: "api",
+        observedBy: "test",
+      } as SnapshotRecord,
+      {
+        ts: "2026-11-02T00:00:00.000Z",
+        serviceId: "turso",
+        metricId: "storage",
+        value: 4,
+        unit: "gb",
+        limit: 24,
+        resetsAt: null,
+        source: "api",
+        observedBy: "test",
+      } as SnapshotRecord,
     ];
     const start = Date.parse("2026-11-01T00:00:00.000Z");
     for (let k = 0; k <= 96 * 4; k++) {
-      records.push(
-        pctRec(new Date(start + k * 900_000).toISOString(), "meta", "5h", 5 + 0.5 * (k / 4)),
-      );
+      records.push(pctRec(new Date(start + k * 900_000).toISOString(), "meta", "5h", 5 + 0.5 * (k / 4)));
     }
     const { findings, evaluations } = runAnomalyReplay(records);
     const plan = findings.filter((f) => f.detector === "plan-change");

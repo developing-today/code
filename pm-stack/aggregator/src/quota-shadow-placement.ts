@@ -189,7 +189,8 @@ function measurePool(providerId: string, entries: QuotaCurrentEntry[], nowMs: nu
         w.pctOfLimit > percent ||
         (w.pctOfLimit === percent &&
           ((Number.isFinite(resetMs) ? resetMs : Infinity) < bindingResetMs ||
-            ((Number.isFinite(resetMs) ? resetMs : Infinity) === bindingResetMs && (bindingWindow === null || w.name < bindingWindow))));
+            ((Number.isFinite(resetMs) ? resetMs : Infinity) === bindingResetMs &&
+              (bindingWindow === null || w.name < bindingWindow))));
       if (better) {
         percent = w.pctOfLimit;
         bindingWindow = w.name;
@@ -255,10 +256,10 @@ function groupByProvider(current: QuotaCurrentFile): Map<string, QuotaCurrentEnt
  */
 export function liveOrderingFor(current: QuotaCurrentFile, now = new Date()): string[] {
   const nowMs = now.getTime();
-  const measured = [...groupByProvider(current)].map(([providerId, entries]) => measurePool(providerId, entries, nowMs));
-  return measured
-    .sort((a, b) => comparePools(a, (p) => p.tier, b))
-    .map((p) => p.providerId);
+  const measured = [...groupByProvider(current)].map(([providerId, entries]) =>
+    measurePool(providerId, entries, nowMs),
+  );
+  return measured.sort((a, b) => comparePools(a, (p) => p.tier, b)).map((p) => p.providerId);
 }
 
 /** The S2 exclusion: the bare opencode-go pool's monthly series is
@@ -297,7 +298,8 @@ function considerForecast(
           nowMs - measuredMs > QUOTA_CURRENT_FRESH_MS
         ) {
           consumed = false;
-          exclusion = "stale forecast: the underlying reading is outside the quota-current freshness bound — a stale forecast degrades to no forecast";
+          exclusion =
+            "stale forecast: the underlying reading is outside the quota-current freshness bound — a stale forecast degrades to no forecast";
         }
       }
       inputs.push({
@@ -369,7 +371,8 @@ export function buildShadowPlacement(
     const demotedByForecast = considered.demote && pool.tier === "open";
     const reasons: string[] = [];
     if (demotedByForecast) reasons.push(...considered.demoteReasons);
-    else if (sr < lr) reasons.push("relative movement: a pool ranked above this pool in the live ordering was demoted by the forecast");
+    else if (sr < lr)
+      reasons.push("relative movement: a pool ranked above this pool in the live ordering was demoted by the forecast");
     else if (sr > lr) reasons.push("relative movement: the forecast demotions reordered the tiers around this pool");
     return {
       providerId: pool.providerId,

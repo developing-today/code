@@ -1,5 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import { buildPacket, canonicalDedupeKey, dispatchDedupeKey, issueDispatchDedupeKey, validatePayload } from "../src/packet.ts";
+import {
+  buildPacket,
+  canonicalDedupeKey,
+  dispatchDedupeKey,
+  issueDispatchDedupeKey,
+  validatePayload,
+} from "../src/packet.ts";
 
 const caller = { type: "bearer" } as const;
 
