@@ -64,7 +64,9 @@ use crate::world_session::{
 use crate::world_session::{
     Inbound, SessionConfig, SessionIo, encode_hex, run_session, run_session_with,
 };
-use crate::world_terminal::{PROBE_QUERIES, PROBE_TIMEOUT, ProbeDemux, TierPresenter};
+use crate::world_terminal::{
+    PROBE_QUERIES, PROBE_TIMEOUT, ProbeDemux, ProbeOutcome, TierPresenter,
+};
 
 /// File, beside the other server keys, that holds the SSH host key.
 pub const SSH_HOST_KEY_FILE: &str = ".ssh-host-key";
@@ -172,6 +174,23 @@ const MAX_VIEWPORT_WIDTH: u32 = 500;
 /// Tallest viewport a `resize` frame may name (shell contract v1).
 const MAX_VIEWPORT_HEIGHT: u32 = 200;
 
+/// Adapter-local options for the world SSH server.
+///
+/// Every option defaults to the legacy behavior; an option is a rollout
+/// safeguard for the operator, not a capability claim — a session only
+/// changes behavior when its own terminal proves support at runtime.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SshServeOptions {
+    /// Opt raw sessions into `kitty-disambiguate-v1` negotiation (#787
+    /// Slice E): on a session whose terminal reported kitty keyboard
+    /// support to the F13.4 startup probe, push the disambiguation flag,
+    /// verify it took effect, and frame input into complete key tokens.
+    /// The operator opts in only for worlds compiled with the extended
+    /// Key module (or an equivalent decoder); older compiled guests must
+    /// stay on the default, where input keeps its legacy chunk semantics.
+    pub kitty_keyboard: bool,
+}
+
 /// Serve SSH connections until the listener fails.
 pub async fn serve(
     listener: TcpListener,
@@ -179,7 +198,19 @@ pub async fn serve(
     host_key: PrivateKey,
     blobs: iroh_blobs::api::Store,
 ) -> std::io::Result<()> {
-    serve_limited(listener, hub, host_key, blobs, MAX_CONNECTIONS).await
+    serve_with_options(listener, hub, host_key, blobs, SshServeOptions::default()).await
+}
+
+/// Serve SSH connections with explicit adapter options, until the
+/// listener fails.
+pub async fn serve_with_options(
+    listener: TcpListener,
+    hub: WorldHub,
+    host_key: PrivateKey,
+    blobs: iroh_blobs::api::Store,
+    options: SshServeOptions,
+) -> std::io::Result<()> {
+    serve_limited(listener, hub, host_key, blobs, MAX_CONNECTIONS, options).await
 }
 
 async fn serve_limited(
@@ -188,6 +219,7 @@ async fn serve_limited(
     host_key: PrivateKey,
     blobs: iroh_blobs::api::Store,
     max_connections: usize,
+    options: SshServeOptions,
 ) -> std::io::Result<()> {
     let config = Arc::new(Config {
         keys: vec![host_key],
@@ -200,6 +232,7 @@ async fn serve_limited(
         hub,
         blobs,
         connections: Arc::new(Semaphore::new(max_connections)),
+        options,
     };
     server.run_on_socket(config, &listener).await
 }
@@ -274,6 +307,7 @@ struct SshServer {
     hub: WorldHub,
     blobs: iroh_blobs::api::Store,
     connections: Arc<Semaphore>,
+    options: SshServeOptions,
 }
 
 impl Server for SshServer {
@@ -290,6 +324,7 @@ impl Server for SshServer {
             dropped_input: Arc::new(AtomicUsize::new(0)),
             exec: None,
             exec_backlog: Arc::new(AtomicUsize::new(0)),
+            options: self.options,
         }
     }
 }
@@ -325,6 +360,8 @@ struct SshClient {
     exec: Option<mpsc::UnboundedSender<Vec<u8>>>,
     /// Bytes queued on `exec` and not yet read by the session.
     exec_backlog: Arc<AtomicUsize>,
+    /// Adapter options the server was started with, handed to each shell.
+    options: SshServeOptions,
 }
 
 enum SshInputFrame {
@@ -572,6 +609,11 @@ impl Handler for SshClient {
             previous_screen: None,
             probe_tty,
             probe: None,
+            probe_outcome: None,
+            kitty_opt_in: self.options.kitty_keyboard,
+            kitty: kitty::KittyKeyboard::new(),
+            kitty_drop_baseline: 0,
+            kitty_verify_deadline: None,
             presenter: None,
             active_form: None,
             form_line: Vec::new(),
@@ -592,6 +634,7 @@ impl Handler for SshClient {
             io.enter_alt_screen().await;
             io.start_terminal_probe().await;
             run_session_with(&hub, &mut io, config).await;
+            io.restore_kitty_keyboard().await;
             if io.errored {
                 tokio::time::sleep(REFUSED_SHELL_DELAY).await;
             }
@@ -832,6 +875,21 @@ struct SshIo {
     probe_tty: bool,
     /// Bounded startup probe state while the reply window is open.
     probe: Option<SshProbe>,
+    /// The probe's outcome, retained when its window closed so the raw
+    /// input path can act on the detected kitty keyboard support after
+    /// the held pre-activation bytes have drained (Slice E of #787).
+    probe_outcome: Option<ProbeOutcome>,
+    /// Server opt-in for kitty keyboard negotiation (#787 Slice E). Raw
+    /// sessions only; command and explorer sessions never negotiate.
+    kitty_opt_in: bool,
+    /// Kitty activation state for this connection (#787 Slice E).
+    kitty: kitty::KittyKeyboard,
+    /// Dropped-input counter value when kitty verification began; growth
+    /// past it while engaged means the transport lost bytes the assembler
+    /// never saw, which is fatal to the active stream.
+    kitty_drop_baseline: usize,
+    /// Absolute deadline for the outstanding kitty flags verification.
+    kitty_verify_deadline: Option<tokio::time::Instant>,
     /// Tier presenter selected when the startup probe closed (F13.4).
     /// Absent until then, and for callers that never probed: those keep
     /// the pre-F13.4 rendering path exactly.
@@ -854,6 +912,15 @@ struct SshIo {
     retry_form_token: Option<(String, String, String)>,
     /// Encoded answer retained across cancellation of `recv` while echoing input.
     pending_form_answer: Option<String>,
+}
+
+/// One unit of raw input read while kitty framing is engaged (#787
+/// Slice E): a complete key token (or, just after a fallback, one legacy
+/// chunk), a resize, or the end of the stream.
+enum KittyRead {
+    Token(Vec<u8>),
+    Resize(SshInputFrame),
+    Closed,
 }
 
 /// The one startup probe window of a raw SSH session.
@@ -907,6 +974,7 @@ fn prepend_dropped_input_notice(counter: &AtomicUsize, out: &mut Vec<u8>) -> Opt
 
 mod form_io;
 mod form_prompt;
+mod kitty;
 use form_io::{
     FormBytes, FormInputProgress, consume_form_input, discard_form_input_line,
     discard_form_lf_after_cr, form_closed_aliases, form_retry_alias, form_view_is_unchanged,
@@ -935,7 +1003,7 @@ impl SshIo {
                 self.discarding_form_line = false;
                 return None;
             }
-            match recv_bytes_through_probe(&mut self.frames, &mut self.probe).await {
+            match self.recv_form_bytes().await {
                 FormBytes::Bytes(bytes) => self.form_backlog.extend(bytes),
                 FormBytes::Resize(resize) => {
                     self.previous_screen = None;
@@ -952,7 +1020,7 @@ impl SshIo {
             if discard_form_lf_after_cr(&mut self.form_backlog, &mut self.form_after_cr) {
                 return None;
             }
-            match recv_bytes_through_probe(&mut self.frames, &mut self.probe).await {
+            match self.recv_form_bytes().await {
                 FormBytes::Bytes(bytes) => self.form_backlog.extend(bytes),
                 FormBytes::Resize(resize) => {
                     self.previous_screen = None;
@@ -982,7 +1050,7 @@ impl SshIo {
                 continue;
             }
             if self.form_backlog.is_empty() {
-                match recv_bytes_through_probe(&mut self.frames, &mut self.probe).await {
+                match self.recv_form_bytes().await {
                     FormBytes::Bytes(bytes) => self.form_backlog.extend(bytes),
                     FormBytes::Resize(resize) => {
                         self.previous_screen = None;
@@ -1133,7 +1201,179 @@ impl SshIo {
             "terminal capability probe closed; tier presenter selected"
         );
         self.presenter = Some(TierPresenter::from_outcome(&outcome));
+        // Retained for the raw input path: kitty activation (Slice E of
+        // #787) reads the detected support from here once the held
+        // pre-activation bytes below have drained as legacy input.
+        self.probe_outcome = Some(outcome);
         probe.demux.expire()
+    }
+
+    /// Whether kitty activation may begin on this connection: the server
+    /// opted in, the startup probe has closed with uncontradicted kitty
+    /// keyboard support, and no held tokens are still draining.
+    fn kitty_may_activate(&self) -> bool {
+        self.kitty_opt_in
+            && !self.kitty.is_engaged()
+            && !self.kitty.has_held_tokens()
+            && self.probe.is_none()
+            && self
+                .probe_outcome
+                .as_ref()
+                .is_some_and(|outcome| outcome.profile.kitty_keyboard && !outcome.conflicted)
+    }
+
+    /// Begin kitty activation when [`Self::kitty_may_activate`] holds:
+    /// write the profile push and the flags query as one burst. A failed
+    /// write retires the opt-in for this session — the terminal never saw
+    /// a push, so no pop is owed and input stays legacy.
+    async fn maybe_begin_kitty(&mut self) {
+        if !self.kitty_may_activate() {
+            return;
+        }
+        let mut burst = Vec::with_capacity(kitty::KITTY_PUSH.len() + kitty::KITTY_QUERY.len());
+        burst.extend_from_slice(kitty::KITTY_PUSH);
+        burst.extend_from_slice(kitty::KITTY_QUERY);
+        if self.handle.data(self.channel, burst).await.is_err() {
+            self.kitty_opt_in = false;
+            return;
+        }
+        self.kitty_drop_baseline = self.dropped_input.load(Ordering::Relaxed);
+        self.kitty_verify_deadline = Some(tokio::time::Instant::now() + kitty::VERIFY_TIMEOUT);
+        self.kitty.begin_verify();
+    }
+
+    /// Pop the owned kitty push, if one is outstanding. Best effort, like
+    /// every terminal restore: a dead transport cannot guarantee delivery.
+    async fn pop_kitty(&mut self) {
+        if !self.kitty.pushed() {
+            return;
+        }
+        let _ = self.handle.data(self.channel, kitty::KITTY_POP).await;
+        self.kitty.pop_written();
+    }
+
+    /// Abandon kitty activation after a failed or unanswered verification:
+    /// pop the owned push and fall back to legacy input. Held tokens stay
+    /// queued and drain as legacy frames — their bytes are untouched. The
+    /// opt-in retires with the fallback: one negotiation attempt per
+    /// connection, never a push/retry loop against a terminal that has
+    /// already answered (or refused to).
+    async fn kitty_fallback(&mut self) {
+        self.kitty_opt_in = false;
+        self.kitty_verify_deadline = None;
+        self.pop_kitty().await;
+        self.kitty.fallback();
+        tracing::debug!("kitty keyboard verification failed; session stays on legacy input");
+    }
+
+    /// Session teardown: restore the terminal's keyboard mode by popping
+    /// exactly the push this session owns, if any (#787 Slice E). Runs on
+    /// every exit path of the raw session — normal return, refused join,
+    /// error and cancellation all funnel through the spawn that calls
+    /// this — before the alternate screen is left.
+    async fn restore_kitty_keyboard(&mut self) {
+        self.pop_kitty().await;
+        self.kitty.reset();
+    }
+
+    /// Read the next unit of raw input while kitty is engaged.
+    ///
+    /// Verification answers are consumed by the assembler's filter and
+    /// never surface here; a failed or timed-out verification pops the
+    /// push and this call continues on the legacy path, so the caller
+    /// always gets the next input unit (or closure) exactly once.
+    async fn kitty_next(&mut self) -> KittyRead {
+        loop {
+            if let Some(token) = self.kitty.take_token() {
+                return KittyRead::Token(token);
+            }
+            if !self.kitty.is_engaged() {
+                // A fallback drained its held tokens: read one legacy
+                // chunk so this call still returns the next input unit.
+                return match self.frames.recv().await {
+                    Some(SshInputFrame::Bytes(bytes)) => KittyRead::Token(bytes),
+                    Some(resize @ SshInputFrame::Resize(..)) => KittyRead::Resize(resize),
+                    None => KittyRead::Closed,
+                };
+            }
+            // Queue loss is fatal while engaged: bytes the assembler never
+            // saw leave a gap no resynchronisation can repair (design
+            // §4.2). The counter is shared with the russh handler, so only
+            // growth past the activation baseline is this stream's loss.
+            if self.dropped_input.load(Ordering::Relaxed) > self.kitty_drop_baseline {
+                let error = self.kitty.queue_lost();
+                tracing::warn!("world ssh kitty input: {error}; ending session");
+                return KittyRead::Closed;
+            }
+            let verifying = self.kitty.phase() == kitty::KittyPhase::Verifying;
+            let wake = match (verifying, self.kitty.has_partial_token()) {
+                (true, _) => self.kitty_verify_deadline,
+                (false, true) => Some(
+                    tokio::time::Instant::now() + crate::input_framing::INCOMPLETE_TOKEN_DEADLINE,
+                ),
+                (false, false) => None,
+            };
+            let received = match wake {
+                Some(deadline) => tokio::select! {
+                    frame = self.frames.recv() => Some(frame),
+                    () = tokio::time::sleep_until(deadline) => None,
+                },
+                None => Some(self.frames.recv().await),
+            };
+            match received {
+                Some(Some(SshInputFrame::Bytes(bytes))) => {
+                    if let Err(error) = self.kitty.feed(&bytes, std::time::Instant::now()) {
+                        tracing::warn!("world ssh kitty input: {error}; ending session");
+                        return KittyRead::Closed;
+                    }
+                    if self.kitty.verify_failed() {
+                        self.kitty_fallback().await;
+                    }
+                }
+                Some(Some(resize @ SshInputFrame::Resize(..))) => {
+                    return KittyRead::Resize(resize);
+                }
+                Some(None) => {
+                    if let Err(error) = self.kitty.finish() {
+                        tracing::warn!(
+                            "world ssh kitty input: {error}; ending session at end of input"
+                        );
+                    }
+                    return KittyRead::Closed;
+                }
+                None => {
+                    // A wake deadline passed with no new bytes.
+                    if verifying
+                        && self
+                            .kitty_verify_deadline
+                            .is_some_and(|deadline| tokio::time::Instant::now() >= deadline)
+                    {
+                        self.kitty_verify_deadline = None;
+                        self.kitty_fallback().await;
+                    } else if let Err(error) =
+                        self.kitty.check_token_deadline(std::time::Instant::now())
+                    {
+                        tracing::warn!("world ssh kitty input: {error}; ending session");
+                        return KittyRead::Closed;
+                    }
+                }
+            }
+        }
+    }
+
+    /// Fetch the next form-path byte unit: through the kitty assembler
+    /// while it is engaged (form answers are terminal input too, and the
+    /// stream must not desynchronise around them), otherwise through the
+    /// probe-aware legacy fetch.
+    async fn recv_form_bytes(&mut self) -> FormBytes {
+        if self.kitty.is_engaged() {
+            return match self.kitty_next().await {
+                KittyRead::Token(bytes) => FormBytes::Bytes(bytes),
+                KittyRead::Resize(resize) => FormBytes::Resize(resize),
+                KittyRead::Closed => FormBytes::Closed,
+            };
+        }
+        recv_bytes_through_probe(&mut self.frames, &mut self.probe, &mut self.probe_outcome).await
     }
 }
 
@@ -1170,43 +1410,84 @@ impl SessionIo for SshIo {
             return self.recv_form_answer().await;
         }
         match self.mode {
-            ShellMode::Raw => loop {
-                let Some(deadline) = self.probe.as_ref().map(|probe| probe.deadline) else {
-                    return self
-                        .frames
-                        .recv()
-                        .await
-                        .map_or(Inbound::Closed, |input| Inbound::Text(raw_frame(&input)));
-                };
-                // Cancel-safe: the probe stays in place across the await, and
-                // bytes received in an earlier call are held in its demux.
-                let received = tokio::select! {
-                    frame = self.frames.recv() => Some(frame),
-                    () = tokio::time::sleep_until(deadline) => None,
-                };
-                match received {
-                    Some(Some(SshInputFrame::Bytes(bytes))) => {
-                        let input = self
-                            .probe
-                            .as_mut()
-                            .map_or_else(Vec::new, |probe| probe.demux.push(&bytes));
-                        if !input.is_empty() {
-                            return Inbound::Text(raw_frame(&SshInputFrame::Bytes(input)));
+            ShellMode::Raw => {
+                // Kitty activation (#787 Slice E): once the probe has
+                // closed with detected support on an opted-in server,
+                // begin negotiation; while engaged, input arrives as
+                // framed key tokens. Tokens held by a verification
+                // fallback drain first, as legacy frames, bytes untouched.
+                self.maybe_begin_kitty().await;
+                if self.kitty.is_engaged() {
+                    return match self.kitty_next().await {
+                        KittyRead::Token(bytes) => {
+                            Inbound::Text(raw_frame(&SshInputFrame::Bytes(bytes)))
                         }
-                    }
-                    Some(Some(resize @ SshInputFrame::Resize(..))) => {
-                        self.previous_screen = None;
-                        return Inbound::Text(raw_frame(&resize));
-                    }
-                    Some(None) => return Inbound::Closed,
-                    None => {
-                        let held = self.close_terminal_probe();
-                        if !held.is_empty() {
-                            return Inbound::Text(raw_frame(&SshInputFrame::Bytes(held)));
+                        KittyRead::Resize(resize) => {
+                            self.previous_screen = None;
+                            Inbound::Text(raw_frame(&resize))
+                        }
+                        KittyRead::Closed => Inbound::Closed,
+                    };
+                }
+                if let Some(token) = self.kitty.take_token() {
+                    return Inbound::Text(raw_frame(&SshInputFrame::Bytes(token)));
+                }
+                loop {
+                    let Some(deadline) = self.probe.as_ref().map(|probe| probe.deadline) else {
+                        return self
+                            .frames
+                            .recv()
+                            .await
+                            .map_or(Inbound::Closed, |input| Inbound::Text(raw_frame(&input)));
+                    };
+                    // Cancel-safe: the probe stays in place across the await, and
+                    // bytes received in an earlier call are held in its demux.
+                    let received = tokio::select! {
+                        frame = self.frames.recv() => Some(frame),
+                        () = tokio::time::sleep_until(deadline) => None,
+                    };
+                    match received {
+                        Some(Some(SshInputFrame::Bytes(bytes))) => {
+                            let input = self
+                                .probe
+                                .as_mut()
+                                .map_or_else(Vec::new, |probe| probe.demux.push(&bytes));
+                            if !input.is_empty() {
+                                return Inbound::Text(raw_frame(&SshInputFrame::Bytes(input)));
+                            }
+                        }
+                        Some(Some(resize @ SshInputFrame::Resize(..))) => {
+                            self.previous_screen = None;
+                            return Inbound::Text(raw_frame(&resize));
+                        }
+                        Some(None) => return Inbound::Closed,
+                        None => {
+                            let held = self.close_terminal_probe();
+                            if !held.is_empty() {
+                                return Inbound::Text(raw_frame(&SshInputFrame::Bytes(held)));
+                            }
+                            // The probe has just closed, so kitty
+                            // activation may newly hold (Slice E): check
+                            // before the next iteration parks on a bare
+                            // frame read, or the push would wait for
+                            // input that is itself waiting on the push.
+                            self.maybe_begin_kitty().await;
+                            if self.kitty.is_engaged() {
+                                return match self.kitty_next().await {
+                                    KittyRead::Token(bytes) => {
+                                        Inbound::Text(raw_frame(&SshInputFrame::Bytes(bytes)))
+                                    }
+                                    KittyRead::Resize(resize) => {
+                                        self.previous_screen = None;
+                                        Inbound::Text(raw_frame(&resize))
+                                    }
+                                    KittyRead::Closed => Inbound::Closed,
+                                };
+                            }
                         }
                     }
                 }
-            },
+            }
             ShellMode::Command => loop {
                 if let Some(command) = self.commands.pop_front() {
                     if let Some(frame) = command_frame(&command, &self.capability) {
@@ -2504,6 +2785,15 @@ mod tests {
         blobs: iroh_blobs::api::Store,
         max_connections: usize,
     ) -> (u16, tokio::task::JoinHandle<std::io::Result<()>>) {
+        start_with_options(hub, blobs, max_connections, SshServeOptions::default()).await
+    }
+
+    async fn start_with_options(
+        hub: WorldHub,
+        blobs: iroh_blobs::api::Store,
+        max_connections: usize,
+        options: SshServeOptions,
+    ) -> (u16, tokio::task::JoinHandle<std::io::Result<()>>) {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
         let host_key = PrivateKey::random(&mut rand::rng(), Algorithm::Ed25519).unwrap();
@@ -2515,6 +2805,7 @@ mod tests {
                 host_key,
                 blobs,
                 max_connections,
+                options,
             )),
         )
     }
@@ -2780,10 +3071,15 @@ mod tests {
         terminal: &mut vt100::Parser,
         needle: &str,
     ) {
-        let _ = read_until_bytes(channel, terminal, needle).await;
+        let _ = read_until_screen_bytes(channel, terminal, needle).await;
     }
 
-    async fn read_until_bytes(
+    /// Read channel output, feeding the terminal, until the rendered
+    /// screen contains `needle`; panics on timeout or close. Returns the
+    /// raw bytes received along the way. Distinct from
+    /// `read_until_bytes`, which matches the raw byte stream and never
+    /// panics.
+    async fn read_until_screen_bytes(
         channel: &mut Channel<client::Msg>,
         terminal: &mut vt100::Parser,
         needle: &str,
@@ -2949,6 +3245,297 @@ mod tests {
             b"jk".to_vec(),
             "only user keys belong in world input"
         );
+        server.abort();
+    }
+
+    /// A lobby world with an event subscription and a join capability:
+    /// the kitty tests' stage (#787 Slice E).
+    async fn kitty_stage(
+        hub: &WorldHub,
+        name: &str,
+    ) -> (
+        tokio::sync::broadcast::Receiver<crate::world::WorldEvent>,
+        String,
+    ) {
+        let world = hub
+            .lease(None, Some("admin"))
+            .await
+            .unwrap()
+            .service()
+            .world()
+            .clone();
+        let events = world.subscribe();
+        let invite = hub
+            .lease(None, Some("admin"))
+            .await
+            .unwrap()
+            .service()
+            .invite(Some("admin"), name.to_owned(), None, None)
+            .await
+            .unwrap();
+        let capability = serde_json::to_value(invite).unwrap()["capability"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        (events, capability)
+    }
+
+    fn count_bytes(bytes: &[u8], needle: &[u8]) -> usize {
+        bytes
+            .windows(needle.len())
+            .filter(|window| *window == needle)
+            .count()
+    }
+
+    /// Read channel output until `needle` appears or the timeout lapses;
+    /// returns everything read either way.
+    async fn read_until_bytes(
+        channel: &mut Channel<client::Msg>,
+        needle: &[u8],
+        timeout: Duration,
+    ) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        let _ = tokio::time::timeout(timeout, async {
+            while count_bytes(&bytes, needle) == 0 {
+                match channel.wait().await {
+                    Some(ChannelMsg::Data { data }) => bytes.extend_from_slice(&data),
+                    Some(_) => {}
+                    None => break,
+                }
+            }
+        })
+        .await;
+        bytes
+    }
+
+    /// Collect the next `want` world Input events (fewer on timeout).
+    async fn collect_inputs(
+        events: &mut tokio::sync::broadcast::Receiver<crate::world::WorldEvent>,
+        want: usize,
+    ) -> Vec<Vec<u8>> {
+        let mut inputs = Vec::new();
+        let _ = tokio::time::timeout(Duration::from_secs(10), async {
+            while inputs.len() < want {
+                match events.recv().await {
+                    Ok(event) => {
+                        if let crate::world::WorldEventKind::Input(bytes) = event.kind {
+                            inputs.push(bytes);
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+        })
+        .await;
+        inputs
+    }
+
+    #[tokio::test]
+    async fn kitty_opt_in_negotiates_verifies_and_frames_split_input() {
+        let hub = lobby_hub();
+        let (mut events, capability) = kitty_stage(&hub, "ssh-kitty").await;
+        let (port, server) = start_with_options(
+            hub,
+            test_store(),
+            MAX_CONNECTIONS,
+            SshServeOptions {
+                kitty_keyboard: true,
+            },
+        )
+        .await;
+        let session = connect(port, &capability).await;
+        let mut channel = shell(&session).await;
+
+        // The F13.4 probe runs first; answer that the terminal speaks the
+        // kitty keyboard protocol (flags currently 0).
+        let probed = read_until_bytes(&mut channel, PROBE_QUERIES, Duration::from_secs(10)).await;
+        assert_eq!(count_bytes(&probed, PROBE_QUERIES), 1);
+        channel.data(b"\x1b[?0u".as_slice()).await.unwrap();
+
+        // Detection precedes negotiation: only now may the push + verify
+        // query burst appear, exactly once.
+        let burst =
+            read_until_bytes(&mut channel, kitty::KITTY_PUSH, Duration::from_secs(10)).await;
+        assert_eq!(
+            count_bytes(&burst, b"\x1b[>1u\x1b[?u"),
+            1,
+            "one push + verify burst after detection"
+        );
+        // The terminal applies the push and reports the flag back.
+        channel.data(b"\x1b[?1u".as_slice()).await.unwrap();
+
+        // A kitty key split across transport chunks, then Escape, Alt+x
+        // and a plain key: four complete tokens, in order, with the
+        // verification reply nowhere in world input.
+        channel.data(b"\x1b[97;".as_slice()).await.unwrap();
+        channel.data(b"5u".as_slice()).await.unwrap();
+        channel.data(b"\x1b[27u".as_slice()).await.unwrap();
+        channel.data(b"\x1b[120;3u".as_slice()).await.unwrap();
+        channel.data(b"z".as_slice()).await.unwrap();
+        let inputs = collect_inputs(&mut events, 4).await;
+        assert_eq!(
+            inputs,
+            vec![
+                b"\x1b[97;5u".to_vec(),
+                b"\x1b[27u".to_vec(),
+                b"\x1b[120;3u".to_vec(),
+                b"z".to_vec(),
+            ],
+            "framed tokens, distinct Escape vs Alt, no reply bytes journaled"
+        );
+
+        // Teardown pops exactly the owned push before the channel closes.
+        channel.eof().await.unwrap();
+        let mut tail = Vec::new();
+        let _ = tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                match channel.wait().await {
+                    Some(ChannelMsg::Data { data }) => tail.extend_from_slice(&data),
+                    Some(_) => {}
+                    None => break,
+                }
+            }
+        })
+        .await;
+        assert_eq!(
+            count_bytes(&tail, kitty::KITTY_POP),
+            1,
+            "one pop restores the terminal on exit"
+        );
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn kitty_opt_in_falls_back_when_the_push_does_not_take() {
+        let hub = lobby_hub();
+        let (mut events, capability) = kitty_stage(&hub, "ssh-kitty-fallback").await;
+        let (port, server) = start_with_options(
+            hub,
+            test_store(),
+            MAX_CONNECTIONS,
+            SshServeOptions {
+                kitty_keyboard: true,
+            },
+        )
+        .await;
+        let session = connect(port, &capability).await;
+        let mut channel = shell(&session).await;
+
+        read_until_bytes(&mut channel, PROBE_QUERIES, Duration::from_secs(10)).await;
+        channel.data(b"\x1b[?0u".as_slice()).await.unwrap();
+        read_until_bytes(&mut channel, kitty::KITTY_PUSH, Duration::from_secs(10)).await;
+
+        // A key typed during verification is held, then the flags answer
+        // says the push did not take: the session must pop and fall back.
+        channel.data(b"q".as_slice()).await.unwrap();
+        channel.data(b"\x1b[?0u".as_slice()).await.unwrap();
+        let popped =
+            read_until_bytes(&mut channel, kitty::KITTY_POP, Duration::from_secs(10)).await;
+        assert_eq!(
+            count_bytes(&popped, kitty::KITTY_POP),
+            1,
+            "failed push is popped"
+        );
+
+        // The held key is delivered with its bytes untouched, and later
+        // input keeps legacy chunk semantics.
+        assert_eq!(collect_inputs(&mut events, 1).await, vec![b"q".to_vec()]);
+        channel.data(b"hi".as_slice()).await.unwrap();
+        assert_eq!(collect_inputs(&mut events, 1).await, vec![b"hi".to_vec()]);
+
+        // And the fallback is final for this connection: no second push.
+        let mut heard = Vec::new();
+        let _ = tokio::time::timeout(Duration::from_millis(700), async {
+            loop {
+                match channel.wait().await {
+                    Some(ChannelMsg::Data { data }) => heard.extend_from_slice(&data),
+                    Some(_) => {}
+                    None => break,
+                }
+            }
+        })
+        .await;
+        assert_eq!(
+            count_bytes(&heard, kitty::KITTY_PUSH),
+            0,
+            "a refused terminal is not renegotiated"
+        );
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn kitty_stays_off_without_the_server_opt_in() {
+        let hub = lobby_hub();
+        let (mut events, capability) = kitty_stage(&hub, "ssh-kitty-default").await;
+        let (port, server) = start(hub).await;
+        let session = connect(port, &capability).await;
+        let mut channel = shell(&session).await;
+
+        read_until_bytes(&mut channel, PROBE_QUERIES, Duration::from_secs(10)).await;
+        // The terminal would support kitty — but the default is legacy.
+        channel.data(b"\x1b[?0u".as_slice()).await.unwrap();
+        let mut heard = Vec::new();
+        let _ = tokio::time::timeout(Duration::from_millis(1200), async {
+            loop {
+                match channel.wait().await {
+                    Some(ChannelMsg::Data { data }) => heard.extend_from_slice(&data),
+                    Some(_) => {}
+                    None => break,
+                }
+            }
+        })
+        .await;
+        assert_eq!(
+            count_bytes(&heard, kitty::KITTY_PUSH),
+            0,
+            "no negotiation without the opt-in"
+        );
+        channel.data(b"\x1b[97;5u".as_slice()).await.unwrap();
+        assert_eq!(
+            collect_inputs(&mut events, 1).await,
+            vec![b"\x1b[97;5u".to_vec()],
+            "legacy chunk forwarding is unchanged"
+        );
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn kitty_stays_off_when_the_terminal_reports_no_support() {
+        let hub = lobby_hub();
+        let (mut events, capability) = kitty_stage(&hub, "ssh-kitty-unsupported").await;
+        let (port, server) = start_with_options(
+            hub,
+            test_store(),
+            MAX_CONNECTIONS,
+            SshServeOptions {
+                kitty_keyboard: true,
+            },
+        )
+        .await;
+        let session = connect(port, &capability).await;
+        let mut channel = shell(&session).await;
+
+        read_until_bytes(&mut channel, PROBE_QUERIES, Duration::from_secs(10)).await;
+        // Only a cursor-position reply: no kitty keyboard evidence.
+        channel.data(b"\x1b[12;40R".as_slice()).await.unwrap();
+        let mut heard = Vec::new();
+        let _ = tokio::time::timeout(Duration::from_millis(1200), async {
+            loop {
+                match channel.wait().await {
+                    Some(ChannelMsg::Data { data }) => heard.extend_from_slice(&data),
+                    Some(_) => {}
+                    None => break,
+                }
+            }
+        })
+        .await;
+        assert_eq!(
+            count_bytes(&heard, kitty::KITTY_PUSH),
+            0,
+            "no push on an unsupported terminal"
+        );
+        channel.data(b"ab".as_slice()).await.unwrap();
+        assert_eq!(collect_inputs(&mut events, 1).await, vec![b"ab".to_vec()]);
         server.abort();
     }
 
@@ -3382,6 +3969,7 @@ mod tests {
             host_key,
             test_store(),
             MAX_CONNECTIONS,
+            SshServeOptions::default(),
         ));
         TwoTransports {
             world,
@@ -3935,7 +4523,7 @@ mod tests {
         tx.send(SshInputFrame::Bytes(b"{\"action\":\"submit\"}\n".to_vec()))
             .await
             .unwrap();
-        match recv_bytes_through_probe(&mut rx, &mut probe).await {
+        match recv_bytes_through_probe(&mut rx, &mut probe, &mut None).await {
             FormBytes::Bytes(bytes) => {
                 assert_eq!(bytes, b"{\"action\":\"submit\"}\n".to_vec())
             }
@@ -3956,7 +4544,7 @@ mod tests {
         tx2.send(SshInputFrame::Bytes(b"\x1b[".to_vec()))
             .await
             .unwrap();
-        match recv_bytes_through_probe(&mut rx2, &mut probe2).await {
+        match recv_bytes_through_probe(&mut rx2, &mut probe2, &mut None).await {
             FormBytes::Bytes(bytes) => assert_eq!(bytes, b"\x1b[".to_vec()),
             _ => panic!("expected held bytes at probe expiry"),
         }
@@ -4430,15 +5018,15 @@ mod tests {
         let session = connect(port, &capability).await;
         let mut channel = shell(&session).await;
         let mut terminal = vt100::Parser::default();
-        let initial = read_until_bytes(&mut channel, &mut terminal, "count=0").await;
+        let initial = read_until_screen_bytes(&mut channel, &mut terminal, "count=0").await;
         assert!(initial.windows(3).any(|window| window == b"[2J"));
         channel.data(&b"inc"[..]).await.unwrap();
         // The initial PTY resize may still be queued after the first view and
         // correctly forces one more full repaint. Consume that recovery frame
         // before checking a stable, consecutive update.
-        let _resize_recovery = read_until_bytes(&mut channel, &mut terminal, "count=1").await;
+        let _resize_recovery = read_until_screen_bytes(&mut channel, &mut terminal, "count=1").await;
         channel.data(&b"inc"[..]).await.unwrap();
-        let update = read_until_bytes(&mut channel, &mut terminal, "count=2").await;
+        let update = read_until_screen_bytes(&mut channel, &mut terminal, "count=2").await;
         assert!(
             !update.windows(3).any(|window| window == b"[2J"),
             "subsequent screen update should not clear and repaint the terminal"

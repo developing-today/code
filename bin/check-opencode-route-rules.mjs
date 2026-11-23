@@ -15,6 +15,14 @@ import { isMeteredModel } from './check-opencode-metered-providers.mjs';
 export const DEFAULT_CONFIG = '.opencode/opencode.jsonc';
 export const REQUIRED_TIERS = ['scout', 'workhorse', 'specialist', 'summit'];
 
+// Purpose designations (code#13675, 2026-11-23): closed vocabularies
+// for the top-level model_designations registry and for pool-level
+// "purpose" fields on model_routes entries (absent purpose = chat).
+export const DESIGNATION_PURPOSES = [
+  'chat', 'decision', 'embed', 'rerank', 'recommend', 'transcribe', 'speak', 'guard',
+];
+export const DESIGNATION_CAPABILITIES = ['visual', 'pdf', 'audio-in', 'audio-bidir', 'tts', 'stt'];
+
 // Class-level fallback layout (Drew 2026-11-13; full table in
 // .opencode/route-fallbacks.md). Semantics: a class route's own regular
 // chain always runs first and completely; the fallback targets appended
@@ -465,6 +473,96 @@ export function inspectRouteRules(config) {
   }
   for (const issue of inspectFallbackLayout(modelRoutes, CLASS_FALLBACKS, reportedCycleKeys)) {
     addIssue(issue);
+  }
+
+  // Purpose designations (code#13675, 2026-11-23): walk EVERY pool in
+  // model_routes (not only the four tiers), resolving targets with the
+  // same resolver as the tier pass (provider-route expansion and
+  // instanceOf catalog following included), and enforce:
+  // (a) a leaf whose model id has a designation must have the pool's
+  //     purpose in its purposes list;
+  // (b) purposes/capabilities values (designation entries and pool
+  //     purpose fields) must be in the closed vocabularies above;
+  // (c) a model designated without chat must never resolve into a
+  //     chat-purpose pool -- rule (a) applied to chat pools, which
+  //     mechanises the systemone decision-only convention.
+  const designations = activeMap(config, 'model_designations');
+  if (designations !== undefined && designations !== null) {
+    if (!isObject(designations)) {
+      addIssue('designation: "model_designations" must be an object keyed by bare model id');
+    } else {
+      const purposeSet = new Set(DESIGNATION_PURPOSES);
+      const capabilitySet = new Set(DESIGNATION_CAPABILITIES);
+      for (const [modelId, entry] of Object.entries(designations)) {
+        if (!isObject(entry)) {
+          addIssue(`designation: model "${modelId}" designation must be an object with purposes/capabilities lists`);
+          continue;
+        }
+        if (!Array.isArray(entry.purposes) || entry.purposes.length === 0) {
+          addIssue(`designation: model "${modelId}" must declare a non-empty purposes list`);
+        } else {
+          for (const purpose of entry.purposes) {
+            if (!purposeSet.has(purpose)) {
+              addIssue(
+                `designation: model "${modelId}" has unknown purpose ${JSON.stringify(purpose)} (closed vocabulary: ${DESIGNATION_PURPOSES.join(', ')})`,
+              );
+            }
+          }
+        }
+        if (entry.source !== undefined && (typeof entry.source !== 'string' || entry.source.trim().length === 0)) {
+          addIssue(`designation: model "${modelId}" source must be a non-empty string naming its asserting source`);
+        }
+        if (entry.capabilities !== undefined) {
+          if (!Array.isArray(entry.capabilities)) {
+            addIssue(`designation: model "${modelId}" capabilities must be a list`);
+          } else {
+            for (const capability of entry.capabilities) {
+              if (!capabilitySet.has(capability)) {
+                addIssue(
+                  `designation: model "${modelId}" has unknown capability ${JSON.stringify(capability)} (closed vocabulary: ${DESIGNATION_CAPABILITIES.join(', ')})`,
+                );
+              }
+            }
+          }
+        }
+      }
+
+      if (isObject(modelRoutes)) {
+        // Resolving non-tier pools can surface ordinary resolver
+        // findings (missing tracked models, windows, cycles) that the
+        // tier pass deliberately does not judge for pools it never
+        // reaches. This pass judges designations only, so resolver
+        // findings first raised here are pruned below; designation
+        // findings keep the "designation:" prefix.
+        const issuesBeforeWalk = new Set(issues);
+        for (const [poolName, route] of Object.entries(modelRoutes)) {
+          if (!isObject(route)) continue;
+          const poolPurpose = route.purpose ?? 'chat';
+          if (!purposeSet.has(poolPurpose)) {
+            addIssue(
+              `designation: pool "${poolName}" declares unknown purpose ${JSON.stringify(route.purpose)} (closed vocabulary: ${DESIGNATION_PURPOSES.join(', ')})`,
+            );
+            continue;
+          }
+          const candidates = resolve(`opencode-route/${poolName}`, null, poolName, poolName, [], new Set());
+          for (const candidate of candidates) {
+            const entry = designations[candidate.model];
+            if (!isObject(entry) || !Array.isArray(entry.purposes)) continue;
+            if (!entry.purposes.includes(poolPurpose)) {
+              addIssue(
+                `designation: model "${candidate.model}" is designated for [${entry.purposes.join(', ')}] but resolves into pool "${poolName}" (purpose "${poolPurpose}") via ${candidate.trace}`,
+              );
+            }
+          }
+        }
+        for (let index = issues.length - 1; index >= 0; index -= 1) {
+          if (!issuesBeforeWalk.has(issues[index]) && !issues[index].startsWith('designation:')) {
+            issueSet.delete(issues[index]);
+            issues.splice(index, 1);
+          }
+        }
+      }
+    }
   }
 
   return { tiers, issues };

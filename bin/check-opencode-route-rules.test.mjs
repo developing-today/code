@@ -293,3 +293,102 @@ test('fallback escalation walk fires when the chain loops without reaching speci
     `expected an escalation walk issue, got: ${JSON.stringify(issues)}`,
   );
 });
+// --- purpose designations (code#13675, 2026-11-23) ---
+
+function configWithDesignations() {
+  const config = configWith();
+  config.model_designations = {
+    'decision-bot': { purposes: ['decision'] },
+    'embed-bot': { purposes: ['embed'] },
+    'stt-bot': { purposes: ['transcribe'], capabilities: ['stt', 'audio-in'] },
+  };
+  const routes = config.experimental.model_routes;
+  routes.deciders = { purpose: 'decision', targets: ['free/decision-bot#low'] };
+  routes.embedders = { purpose: 'embed', targets: ['free/embed-bot#low'] };
+  routes.transcribers = { purpose: 'transcribe', targets: ['free/stt-bot#low'] };
+  return config;
+}
+
+test('designated models pass when seated only in pools of their purpose', () => {
+  const result = inspectRouteRules(configWithDesignations());
+  assert.deepEqual(result.issues, []);
+});
+
+test('designation rule fires when a designated model is seated in a pool of another purpose', () => {
+  const config = configWithDesignations();
+  config.experimental.model_routes.embedders.targets = ['free/decision-bot#low'];
+  const issues = inspectRouteRules(config).issues;
+  assert.ok(
+    issues.some((issue) => issue.includes('designation:') && issue.includes('"decision-bot"') && issue.includes('"embedders"')),
+    `expected a designation issue for decision-bot in embedders, got: ${JSON.stringify(issues)}`,
+  );
+});
+
+test('a model designated without chat never resolves into a chat-purpose pool (systemone convention)', () => {
+  const config = configWithDesignations();
+  // scout is a chat-purpose tier (no purpose field = chat).
+  config.experimental.model_routes.scout.targets = ['good/model#low', 'free/embed-bot#low'];
+  const issues = inspectRouteRules(config).issues;
+  assert.ok(
+    issues.some((issue) => issue.includes('designation:') && issue.includes('"embed-bot"') && issue.includes('"scout"') && issue.includes('purpose "chat"')),
+    `expected a designation issue for embed-bot in scout, got: ${JSON.stringify(issues)}`,
+  );
+});
+
+test('designation rule follows provider-route expansion into pools', () => {
+  const config = configWithDesignations();
+  config.provider.good.models['decision-bot'] = { variants: { low: {} } };
+  config.experimental.model_routes.deciders.targets = ['plan/decision-bot#low'];
+  assert.deepEqual(inspectRouteRules(config).issues, []);
+  config.experimental.model_routes.workhorse.targets = ['plan/decision-bot#low'];
+  const issues = inspectRouteRules(config).issues;
+  assert.ok(
+    issues.some((issue) => issue.includes('designation:') && issue.includes('"decision-bot"') && issue.includes('"workhorse"')),
+    `expected a designation issue for decision-bot in workhorse, got: ${JSON.stringify(issues)}`,
+  );
+});
+
+test('unknown designation purposes and capabilities are flagged', () => {
+  const config = configWithDesignations();
+  config.model_designations['decision-bot'] = { purposes: ['decision', 'fly'] };
+  config.model_designations['stt-bot'] = { purposes: ['transcribe'], capabilities: ['stt', 'wings'] };
+  const issues = inspectRouteRules(config).issues;
+  assert.ok(issues.some((issue) => issue.includes('unknown purpose "fly"')), `got: ${JSON.stringify(issues)}`);
+  assert.ok(issues.some((issue) => issue.includes('unknown capability "wings"')), `got: ${JSON.stringify(issues)}`);
+});
+
+test('an unknown pool purpose is flagged', () => {
+  const config = configWithDesignations();
+  config.experimental.model_routes.deciders.purpose = 'teleport';
+  const issues = inspectRouteRules(config).issues;
+  assert.ok(
+    issues.some((issue) => issue.includes('designation:') && issue.includes('"deciders"') && issue.includes('unknown purpose "teleport"')),
+    `expected an unknown-purpose issue for deciders, got: ${JSON.stringify(issues)}`,
+  );
+});
+
+test('designations may also live under experimental like the other route maps', () => {
+  const config = configWithDesignations();
+  config.experimental.model_designations = config.model_designations;
+  delete config.model_designations;
+  config.experimental.model_routes.scout.targets = ['good/model#low', 'free/decision-bot#low'];
+  const issues = inspectRouteRules(config).issues;
+  assert.ok(
+    issues.some((issue) => issue.includes('designation:') && issue.includes('"decision-bot"') && issue.includes('"scout"')),
+    `expected a designation issue via experimental.model_designations, got: ${JSON.stringify(issues)}`,
+  );
+});
+
+test('designation source, when present, must be a non-empty string', () => {
+  const config = configWithDesignations();
+  config.model_designations['decision-bot'] = { purposes: ['decision'], source: 'models.dev' };
+  assert.deepEqual(inspectRouteRules(config).issues, []);
+  config.model_designations['decision-bot'] = { purposes: ['decision'], source: '' };
+  const issues = inspectRouteRules(config).issues;
+  assert.ok(
+    issues.some((issue) => issue.includes('designation:') && issue.includes('"decision-bot"') && issue.includes('source must be a non-empty string')),
+    `expected a source validation issue, got: ${JSON.stringify(issues)}`,
+  );
+  config.model_designations['decision-bot'] = { purposes: ['decision'], source: 42 };
+  assert.ok(inspectRouteRules(config).issues.some((issue) => issue.includes('source must be a non-empty string')));
+});
