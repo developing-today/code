@@ -79,6 +79,8 @@ pub struct CandidateEvidence {
     pub candidate_id: ContentId,
     /// Issuer that supplied this projection evidence.
     pub issuer: [u8; 32],
+    /// Namespace/tenant scope authorized for this evidence.
+    pub scope: String,
     /// Aggregate popularity value declared by policy.
     pub popularity: u64,
     /// Whether this candidate belongs to the caller's interaction cohort.
@@ -117,13 +119,14 @@ impl CandidateEvidence {
 
 impl LensEvidence {
     /// Whether this value represents verified presence that remains valid
-    /// for the supplied scope and logical time.
+    /// for the supplied scope and logical time. The observation must have
+    /// already happened (`observed_at <= now`) and remain unexpired.
     #[must_use]
     pub fn proves_present_in(&self, scope: &str, now: u64) -> bool {
         matches!(
             self,
-            Self::VerifiedPresence { scope: evidence_scope, valid_until, .. }
-                if evidence_scope == scope && now <= *valid_until
+            Self::VerifiedPresence { scope: evidence_scope, observed_at, valid_until, .. }
+                if evidence_scope == scope && *observed_at <= now && now <= *valid_until
         )
     }
 }
@@ -147,7 +150,8 @@ pub fn project<'a>(
 ) -> Result<Vec<&'a NameCandidate>, NameCandidateError> {
     let mut evidence_by_candidate = BTreeMap::<ContentId, Vec<&CandidateEvidence>>::new();
     for item in evidence {
-        if context.authorized_evidence_issuers.contains(&item.issuer) {
+        if context.authorized_evidence_issuers.contains(&item.issuer) && item.scope == context.scope
+        {
             evidence_by_candidate
                 .entry(item.candidate_id)
                 .or_default()
@@ -201,7 +205,12 @@ pub fn project<'a>(
                 0
             }
         };
-        ranked.push((score, *candidate.signer(), *candidate_id.digest(), candidate));
+        ranked.push((
+            score,
+            *candidate.signer(),
+            *candidate_id.digest(),
+            candidate,
+        ));
     }
 
     ranked.sort_by(|left, right| {
