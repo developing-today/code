@@ -9,7 +9,8 @@
 use std::path::PathBuf;
 
 use atlas_core::source_registry::{
-    ensure_source_registry, locators_for_root, register_locator, register_source_root, source_root,
+    ensure_source_registry, locators_for_root, register_locator, register_source_root,
+    resolve_source, source_root,
 };
 use rusqlite::{Connection, params};
 
@@ -248,6 +249,33 @@ fn locators_resolve_under_their_root() {
             .base_locator,
         "laptop-extracts/sandbox-agents"
     );
+}
+
+#[test]
+fn registered_locator_resolves_to_its_root_and_unknown_is_none() {
+    let (_path, conn) = temp_db("resolve-source");
+    register_source_root(&conn, "code-repo", "developing-today/code@aaaa", T1).unwrap();
+    register_source_root(&conn, "extracts", "laptop-extracts/sandbox-agents", T1).unwrap();
+    let loc = "developing-today/code:doc/notes.md@aaaa";
+    register_locator(&conn, "code-repo", loc, T1).unwrap();
+
+    let resolved = resolve_source(&conn, loc)
+        .unwrap()
+        .expect("registered locator resolves");
+    assert_eq!(resolved.root_id, "code-repo");
+    assert_eq!(resolved.base_locator, "developing-today/code@aaaa");
+    assert_eq!(resolved.locator, loc);
+
+    // Unknown locators resolve to None, never an error — and the
+    // lookup leaves the registry untouched.
+    assert!(
+        resolve_source(&conn, "developing-today/code:nope.md@aaaa")
+            .unwrap()
+            .is_none()
+    );
+    assert!(resolve_source(&conn, "never-registered").unwrap().is_none());
+    assert_eq!(count(&conn, "source_roots"), 2);
+    assert_eq!(count(&conn, "source_locators"), 1);
 }
 
 #[test]
