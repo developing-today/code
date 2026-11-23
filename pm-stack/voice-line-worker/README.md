@@ -50,13 +50,12 @@ The checked-in `wrangler.toml` remains the local-development configuration.
 Production changes use the pinned Cloudflare `cf` CLI and separate upload and
 promotion workflows. Uploading creates an immutable Workers Version and does
 not change traffic. Promotion is an explicit, separately approved operation.
-From this directory, on Node.js 24.22+:
+The workflows stage their pinned cf/Build Output toolchain from `ci/` in a
+disposable directory. This does not replace the package, lockfile, or
+`wrangler.toml` used by the existing operator commands.
 
-```sh
-npm run cf:build
-```
-
-Run uploads through the manual GitHub Actions workflow rather than locally.
+Use the manual GitHub Actions workflow for version uploads once both protected
+environments are configured.
 It creates a version tagged with the full source SHA, upload run ID, and
 attempt, with the full source SHA in its message. Its receipt binds the UUID
 reported by cf to the Worker, an account fingerprint, and the upload attempt;
@@ -106,6 +105,13 @@ environment approval passes.
 
 No voice call or health request is part of either workflow; promotion verifies
 the Cloudflare deployment read-back only.
+
+### Existing operator path
+
+If the protected release workflows are not ready, the existing, manually
+authorized operator path is still `bun run deploy` from this directory.
+That runs the locked Wrangler against `wrangler.toml` and changes serving
+traffic. It is not a substitute for approving a production deployment.
 
 Deploy needs (account-side, one time):
 

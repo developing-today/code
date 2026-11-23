@@ -95,8 +95,18 @@ jobs:
 
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
 
-      - name: Install worker dependencies
+      - name: Stage the pinned CI toolchain without replacing operator files
         working-directory: pm-stack/voice-line-worker
+        run: |
+          set -euo pipefail
+          mkdir -p -- .cloudflare
+          mkdir -m 700 -- .cloudflare/voice-line-release
+          install -m 644 -- ci/package.json ci/bun.lock .cloudflare/voice-line-release/
+          cp -R -- src scripts test cloudflare.config.ts tsconfig.json .cloudflare/voice-line-release/
+          install -m 644 -- ci/deployment-config.check.mjs .cloudflare/voice-line-release/test/deployment-config.test.mjs
+
+      - name: Install worker dependencies
+        working-directory: pm-stack/voice-line-worker/.cloudflare/voice-line-release
         run: bun install --frozen-lockfile --ignore-scripts
 
       - name: Validate receipt selector
@@ -115,7 +125,7 @@ jobs:
           path: ${{ runner.temp }}/voice-line-receipt
 
       - name: Verify exact candidate provenance and serving version, then promote
-        working-directory: pm-stack/voice-line-worker
+        working-directory: pm-stack/voice-line-worker/.cloudflare/voice-line-release
         run: npm run promote
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_VOICE_LINE_PROMOTION_TOKEN }}
