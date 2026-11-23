@@ -15,7 +15,8 @@
     "provenance:check": "bun run scripts/check-provenance-matrix.ts",
     "typecheck": "bunx tsc --noEmit",
     "build:css": "tailwindcss -i src/ui.css -o src/assets/app.css",
-    "proposals:quota-reweight": "bun run scripts/quota-reweight-proposals.ts"
+    "proposals:quota-reweight": "bun run scripts/quota-reweight-proposals.ts",
+    "review:quota-weekly": "bun run scripts/quota-weekly-review.ts"
   },
   "devDependencies": {
     "@playwright/test": "1.64.0",

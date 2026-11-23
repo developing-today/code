@@ -738,6 +738,7 @@ let
       genericPythonRuntime = pkgs.callPackage ../pkgs/generic-containers/python-runtime.nix { };
       mcpxDocs = pkgs.callPackage ../pkgs/mcpx/docs.nix { };
       fleetDocs = pkgs.callPackage ../pkgs/fleet/docs.nix { };
+      atlasDocs = pkgs.callPackage ../pkgs/atlas-search/docs.nix { };
       mcpxRealServers = pkgs.callPackage ../pkgs/mcpx/real-servers.nix { };
       idMailDeploy = pkgs.callPackage ../nixos/services/id-mail/worker/deploy.nix { };
       pkarrDeploy = pkgs.callPackage ../pkgs/pkarr-worker/deploy.nix {
@@ -791,6 +792,7 @@ let
           ;
         mcpx-docs = mcpxDocs;
         fleet-docs = fleetDocs;
+        atlas-docs = atlasDocs;
         mcpx-real-servers = mcpxRealServers;
         mcpx-container = mcpxContainer;
         identity-image = identityImage;

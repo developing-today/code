@@ -1,0 +1,88 @@
+# Design: search integration for fleet and ID
+
+> **Design — not shipped behaviour.** This chapter describes work that is designed and tracked, not behaviour that works today. Nothing in this chapter should be read as a description of the current `fleet search`, service, or ID query path. Tracking: master prompt §2F in the Atlas programme investigation; fleet integration under [#8983](https://github.com/developing-today/code/issues/8983) and [#9092](https://github.com/developing-today/code/issues/9092); ID integration under [#6062](https://github.com/developing-today/code/issues/6062), projectors [#11182](https://github.com/developing-today/code/issues/11182)–[#11186](https://github.com/developing-today/code/issues/11186), and [#9109](https://github.com/developing-today/code/issues/9109) Part C. The grounding section at the end — [What exists today](#what-exists-today) — is the only part of this chapter that describes shipped behaviour.
+
+Source: `pkgs/fleet/crates/fleet-search/src/cli.rs`, `pkgs/atlas-search/crates/atlas-core/src/search.rs`, `pkgs/atlas-search/crates/atlas-proto/query-parameters-v1.json`, and the ID–Atlas summit design `doc/2026-11-13T03-40-00Z_design_id-atlas-summit/` under https://github.com/developing-today/code/blob/main/pkgs/fleet/crates/fleet-search/src/cli.rs — provenance only; this chapter is complete without following it.
+
+Atlas is one retrieval core with several consumers. Two consumers matter most for the next phase of work, and they need different things from the same core. The fleet — the system that dispatches and runs agent work in lanes (a lane is one running agent session working one queue item) — needs search that is fresh, cheap to call many times, and usable when the network path to the laptop is down. ID — Drew's identity and object-graph system — needs Atlas to be its search and embeddings layer: the place ID content is vectorised, indexed, and queried. This chapter designs both integrations. They share the retrieval core and the sensitivity machinery described in [Sensitivity tiers and client ceilings](../concepts/sensitivity.md) and [Retrieval: hybrid full-text and vector search](../concepts/retrieval.md); neither integration gets a private copy of either.
+
+## Fleet: freshness is the fix
+
+`fleet search` is live today. Its problem is not the query path — it is the corpus behind it. The canonical counts consumers see are frozen at the 2026-10-31 publish (18,325 sessions / 122,124 messages / 107,639 chunks) while the store has since grown, and ingestion is still manual and script-driven. An agent that searches before starting work and finds nothing may be looking at a stale corpus, not at an absence of prior work. That is the single largest consumer-facing gap recorded in the consumer survey, and no amount of ranking work fixes it.
+
+So the fleet-facing fix is freshness first, in the sense of [Design: automatic ingest of all sources](automatic-ingest.md): continuous ingest with an ingest watermark (a monotonically advancing marker of how far ingest has processed each source) that the search layer can read. Once the watermark exists, three fleet-specific pieces become possible.
+
+### Result caching keyed by index version
+
+Today the Worker's per-query cache is retained indefinitely with no TTL or eviction — see [Design: MCP and programmatic access, next steps](access-evolution.md) for the cache fix that belongs to the access workstream. The fleet service path needs its own, stricter rule: a cached result is valid only for the index version it was computed against.
+
+The design keys every fleet result cache entry by index version — the corpus generation derived from the ingest watermark — alongside the fields the cache key already pins (normalised query, result depth `k`, sensitivity ceiling, disclosure context, embedding model revision, and vector table). When ingest advances the index version, old entries are simply never hit again: they are orphaned by the key change, not deleted by a sweeper racing in-flight queries. A caller that needs the newest corpus passes the existing no-cache bypass; a caller that can tolerate the previous generation gets the cache hit. The staleness window is therefore explicit and bounded by ingest cadence, rather than indefinite and invisible.
+
+### Batch search for lanes
+
+A lane rarely asks one question. At startup it asks several — prior decisions on this issue, prior sessions touching this file, the runbook for this failure — and a fleet running many lanes at once asks them in bursts. Calling the single-query path once per question pays the embedding, fan-out, and round-trip cost every time, and makes lane startup latency the sum of its questions.
+
+The design adds a batch search operation to the service: one request carrying several independent queries, each with its own filters and ceiling-checked identity, executed against one index version, returning one result envelope per query in request order. Batching shares what can be shared — the index-version read, the connection, and, where queries repeat across lanes, the result cache — without merging the queries themselves. Each query in a batch is still ceiling-enforced inside its own branch queries, never post-ranking, and each produces its own trace record so the evaluation programme (see [Design: the standing evaluation programme](evaluation-programme.md)) can attribute quality per query, not per batch. Batch is an efficiency surface, not a new retrieval semantic: a batch of one is the single-query path.
+
+### Offline fallback via libSQL embedded replicas
+
+A lane on the sandbox or on a machine that has lost its path to the laptop service currently falls back to a standalone search or fails. The design gives the fleet an offline fallback built on libSQL embedded replicas: a local replica of the search database that libSQL keeps in sync with the remote primary when connectivity exists and serves reads locally when it does not.
+
+The reason this route is available to Atlas — and the reason it is the designed route — is how Atlas stores vectors. Atlas vectors are native libSQL values in the monolith and shards, and native vectors behave identically in a local embedded replica and in the remote database: the same vector table, the same distance functions, the same query shapes. An embedded replica is therefore not a degraded export; it is the same index, read locally. The alternative route, sqlite-vec (a SQLite extension providing a separate vector store beside the relational data), cannot offer that identity: vectors would live in a second store with its own sync, its own consistency story, and its own divergence from the canonical index. The design takes the embedded-replica route precisely because it avoids a second vector store.
+
+The fallback is read-only and freshness-labelled. A result served from a replica carries the index version of that replica, so the caller — and the trace — can see how stale the answer may be. When connectivity returns and the replica syncs forward, the version advances and cached results keyed to the old version stop being served, by the same keying rule as above. Secret-tier handling does not change offline: a replica holds only what its identity is permitted to hold, and ceiling enforcement still happens inside the branch queries against the replica's own data.
+
+### Search-quality telemetry from real lane queries
+
+Fleet lanes are Atlas's largest source of real queries, and today almost none of that signal returns to the quality loop. Feedback capture exists (`atlas-feedback/v1` — append-only thumbs votes keyed to query and chunk identity), and query traces are captured (`atlas-query-trace/v1`), but no ranking consumer reads the aggregated feedback, and the golden set was built offline rather than harvested from production runs.
+
+The design closes that loop on the fleet side. Every lane search — single, batched, service, or replica — emits its trace with the index version, the surfaces and signals that produced each result, and any feedback the lane records. A periodic mining pass, owned by the evaluation programme, promotes recurring real lane queries and their judged outcomes into the golden set, with the harvesting discipline described in [Design: the standing evaluation programme](evaluation-programme.md). Fleet search quality is then measured on the queries the fleet actually asks, not only on queries invented for an offline set. That is what makes the freshness, caching, and fallback work above verifiable: each change is gated on the same golden set the telemetry feeds.
+
+## ID: Atlas as the search and embeddings layer
+
+The two programmes meet here. ID holds objects — identities, files, versions, attestations, ingest runs, and the relations between them — in its own graph. ID does not have a search engine of its own, and the design does not give it one. Atlas is ID's search and embeddings layer: ID content is chunked, classified, embedded, and indexed by Atlas's pipeline, and ID queries run over Atlas's retrieval core. The coordination point is the ID programme's own investigation; this chapter records the Atlas side of the contract.
+
+### The #6062 publication format
+
+The first deliverable is the publication format tracked as [#6062](https://github.com/developing-today/code/issues/6062): the format in which Atlas objects and their provenance publish into the ID graph. In the design, what publishes is not raw chunk text but the object structure Atlas already maintains — files, versions, chunks and spans, and ingest runs, each with its identity and writer set — together with provenance and lineage relations mapped into ID's relation vocabulary. The PROV-lite relations named in the #6062 record are `wasRevisionOf`, `specializationOf`, `wasDerivedFrom`, `wasGeneratedBy`, and `wasAttributedTo`.
+
+One decision the format must state explicitly, per object kind, is which side is canonical: canonical-in-Atlas or canonical-in-graph. Search indexing needs a stable answer — Atlas indexes what Atlas holds, and the graph references it — while graph traversal needs the converse for objects ID owns. The publication format is where that line is drawn, once, rather than re-decided by each projector. The shared ground that already exists is narrow but real: the content-hash v1 test vectors are shared between `pkgs/atlas-search/test-vectors/` and `pkgs/id/test-vectors/`, so both sides already agree on how content identity is computed.
+
+### The projectors #11182–#11186, built and running
+
+Publication is performed by projectors — processes that read Atlas state and emit the corresponding ID-graph objects and relations. The projector set is filed as five issues, all open and unstarted at the time of writing:
+
+- [#11182](https://github.com/developing-today/code/issues/11182) — the projector for versions, files, and relations emission.
+- [#11183](https://github.com/developing-today/code/issues/11183) — the projector for attestations and ingest runs.
+- [#11184](https://github.com/developing-today/code/issues/11184) — projector operations: run logging, replay, and backfill.
+- [#11185](https://github.com/developing-today/code/issues/11185) — consumer view presets: the packaged views over the published graph that ID consumers actually query.
+- [#11186](https://github.com/developing-today/code/issues/11186) — the conformance audit: a check that what the projectors emitted conforms to the #6062 format.
+
+The design target is the whole set built and running — not the format alone, and not one projector alone. A format with no running projectors publishes nothing; projectors with no conformance audit drift silently. Replay and backfill (#11184) are part of the target, not later polish, because the first publication is necessarily a backfill over the existing corpus, and every format revision after that is a replay.
+
+### #9109 Part C: storage economics, graph search, recommendations
+
+[#9109](https://github.com/developing-today/code/issues/9109) Part C is the programme-level statement of the ID side, and it has three parts.
+
+First, storage economics: the substrate ID search would run on. The work benchmarks latency and characteristics across D1, R2, laptop redb, and laptop Turso at various shard levels, and covers the D1 tenant hot cache (the [#9134](https://github.com/developing-today/code/issues/9134) chain — see [Roadmap and issue map](roadmap-and-issue-map.md) for its gated state) and tenant store placement. Search design that ignores where the bytes live produces latency numbers nobody can reproduce; Part C measures the substrate before the query surface is promised on top of it.
+
+Second, ID search over the graph. Once ID content is vectorised (next section) and Atlas objects are published into the graph (#6062, above), a query can combine both directions: text and vector search over the content, and traversal over the graph relations the content participates in. A search for a file's history, for example, is a graph walk seeded by a retrieval hit, not a keyword search over filenames. The retrieval core stays Atlas's; the graph expansion happens in ID, over published relations, under the same sensitivity ceilings.
+
+Third, recommendations. Part C names the recommendation surfaces for ID content — recommendations as stored objects with per-class retention, served by one fan-out worker with a Durable Object accumulating a "next 10". That design is shared with Atlas's own recommender and is covered in [Design: the single-user recommender](recommender.md); the ID integration consumes it rather than building a second one.
+
+### Automatic vectorisation of ID content
+
+None of the above works until ID content is in the index. The design vectorises ID content automatically, through the same staging, classification, and promotion pipeline every other source uses — classification before promotion, never after, and tier enforcement in the retrieval layer. New or changed ID objects are chunked, embedded, and indexed without a manual ingest run, under the continuous-ingest shape of [Design: automatic ingest of all sources](automatic-ingest.md).
+
+The embedder is Snowflake Arctic Embed m-v2.0 (768 dimensions; see [Embeddings: Snowflake Arctic and the parity contract](../concepts/embeddings.md)) plus the second embedder from the [#9092](https://github.com/developing-today/code/issues/9092) evaluation — BGE-M3, Voyage, and others are candidates there, explicitly not pre-picked. ID content must therefore carry per-corpus model identity from the start: vectors are tagged with the model that produced them, mixed embedders coexist in one corpus without a flag-day re-embed, and any model change follows the migration discipline of shadow index and cutover on evaluation result, not on completion. Secret-tier ID content follows the standing absolute rule: secret text is never sent to a hosted embedder.
+
+### What this creates
+
+ID has no live query path today. There is no ID-side search surface, no running projector, and no vectorised ID corpus to query. This workstream creates that path end to end: vectorisation puts ID content in the index, the #6062 format and the #11182–#11186 projectors publish Atlas structure into the graph, and Part C's graph search gives ID a query surface that is Atlas retrieval plus graph traversal. Until those pieces land, any statement about "ID search" is a statement about this design, not about a working system.
+
+## What exists today
+
+- `fleet search` is live: a flag-for-flag port of the atlas-search client with a byte-parity guard, routing via the laptop service for sandbox seats (identity `sandbox-scripts`, ceiling `personal`) and standalone for the laptop seat (identity `drew-cli`, ceiling `secret-bearing`). Its filters, modes, and flags are covered in [fleet search and fleet serve search](../reference/fleet-search.md) and summarised in [Consumers: fleet, agents, memory and ID](../concepts/consumers.md).
+- The corpus behind it is stale: canonical counts are frozen at the 2026-10-31 publish, ingestion is manual and script-driven, and the continuous-ingestion programme [#9097](https://github.com/developing-today/code/issues/9097) (Workstream E) is open and blocked. No index-version-keyed result cache, no batch search operation, and no embedded-replica offline fallback exist today.
+- Feedback capture (`atlas-feedback/v1`) and query traces (`atlas-query-trace/v1`) exist in `atlas-core`. No ranking consumer reads the aggregated feedback today.
+- On the ID side: [#6062](https://github.com/developing-today/code/issues/6062) is open and design-only; projectors [#11182](https://github.com/developing-today/code/issues/11182)–[#11186](https://github.com/developing-today/code/issues/11186) are all open and unstarted; [#9109](https://github.com/developing-today/code/issues/9109) Part C is an open epic slice. The only shared code ground is the content-hash v1 test vectors held in both `pkgs/atlas-search/test-vectors/` and `pkgs/id/test-vectors/`. ID has no live query path today.
