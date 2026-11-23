@@ -1742,6 +1742,15 @@ describe("actions", () => {
       note: "Not sent: taken back before a machine took it.",
     });
     expect(doc.edge.held).toBe(1);
+    // The device that sent it never heard it was kept, and offers it
+    // again under its name: it is told it was taken back. It is not
+    // kept a second time, and no machine is handed it.
+    const offered = await w.act("task.move", { task: 21016, to: "first" }, kept);
+    expect([offered.status, await offered.json()]).toEqual([
+      410,
+      { error: "This was taken back before a machine took it.", again: true },
+    ]);
+    expect((await machines()).held.map((h) => h.kind)).toEqual(["message.send"]);
     // Taken back twice, or something that was never waiting: said as that.
     const again = await w.act("held.drop", { id: kept });
     expect([again.status, await again.json()]).toEqual([
@@ -1758,6 +1767,10 @@ describe("actions", () => {
     await w.link.now.once();
     const back = await machines();
     expect([back.machines[0].quiet, back.held]).toEqual([false, []]);
+    // Offered once more with the machine back: still taken back, and still not done.
+    const late = await w.act("task.move", { task: 21016, to: "first" }, kept);
+    expect(late.status).toBe(410);
+    expect(w.ran.map((r) => r.kind)).toEqual(["message.send"]);
   });
 
   test("machines: a console older than the saying is a machine that has not said what it can do; one that says nonsense, the same", async () => {

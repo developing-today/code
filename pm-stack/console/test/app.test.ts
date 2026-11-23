@@ -27,6 +27,7 @@ import {
   levelHeadings,
   listed,
   machineSaid,
+  machinesMark,
   phaseHeading,
   prCheck,
   runSaid,
@@ -822,4 +823,54 @@ test("a machine, as the Machines screen says it: what only it reports and does, 
     "a and b",
     "a, b and c",
   ]);
+});
+
+test("the Machines screen is drawn again when what it shows has changed, and not for a report that changed nothing", () => {
+  const now = Date.parse("2026-11-23T12:00:00Z");
+  const machine = {
+    name: "nixos",
+    seen: now - 5_000,
+    quiet: false,
+    version: "0123abcd4567",
+    actions: ["a.b"],
+    sections: ["board"],
+  };
+  const answer = (more: Record<string, unknown> = {}) => ({
+    served: "edge",
+    platform: { primary: true, actions: ["ask.send"], sections: ["board"], refused: [] },
+    machines: [machine],
+    held: [{ id: "h1", kind: "task.move" }],
+    ...more,
+  });
+  const mark = machinesMark(answer(), now);
+  // Another report from a machine that is still reporting changes nothing that is shown.
+  expect(machinesMark(answer({ machines: [{ ...machine, seen: now }] }), now + 5_000)).toBe(mark);
+  // Each of these does.
+  for (const [why, changed] of [
+    ["it went quiet", answer({ machines: [{ ...machine, quiet: true }] })],
+    ["it runs another commit", answer({ machines: [{ ...machine, version: "fedcba987654" }] })],
+    ["it can do something more", answer({ machines: [{ ...machine, actions: ["a.b", "c.d"] }] })],
+    ["it is called something else", answer({ machines: [{ ...machine, name: "amd" }] })],
+    ["there is another", answer({ machines: [machine, { ...machine, name: "amd" }] })],
+    ["there is none", answer({ machines: [] })],
+    ["something else waits", answer({ held: [{ id: "h1" }, { id: "h2" }] })],
+    ["nothing waits", answer({ held: [] })],
+    [
+      "the platform stopped doing the core",
+      answer({ platform: { primary: false, actions: [], sections: [], refused: [] } }),
+    ],
+    [
+      "the platform was turned away for something",
+      answer({ platform: { primary: true, actions: [], sections: ["board"], refused: ["pr.merge"] } }),
+    ],
+    ["nothing is in front any more", answer({ platform: null })],
+  ] as const) {
+    expect([why, machinesMark(changed, now) === mark]).toEqual([why, false]);
+  }
+  // Gone quiet, it is drawn again as the minutes pass (the screen says how long), not with every look.
+  const quiet = answer({ machines: [{ ...machine, quiet: true, seen: now - 90_000 }] });
+  expect(machinesMark(quiet, now + 20_000)).toBe(machinesMark(quiet, now));
+  expect(machinesMark(quiet, now + 60_000)).not.toBe(machinesMark(quiet, now));
+  // An answer that is not one is not a crash.
+  expect(machinesMark(null, now)).toBe(machinesMark({}, now));
 });

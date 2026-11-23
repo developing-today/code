@@ -2090,10 +2090,33 @@ export function machineSaid(machine, platform, now = Date.now()) {
   };
 }
 
+/** What the Machines screen shows that can change with nothing else
+ * changing: who is reporting, what the platform does itself, what
+ * waits. When a machine was last heard from changes with every report
+ * and is left out, except by the minute once it has gone quiet (the
+ * screen says for how long). The screen is drawn again when this is
+ * no longer what it was drawn from. */
+export function machinesMark(m, now = Date.now()) {
+  return JSON.stringify({
+    platform: m?.platform ? [m.platform.primary, m.platform.refused, m.platform.actions.length, m.platform.sections.length] : null,
+    machines: (m?.machines || []).map((x) => [
+      x.name,
+      x.quiet,
+      x.version,
+      (x.actions || []).length,
+      (x.sections || []).length,
+      x.quiet && x.seen ? Math.floor((now - x.seen) / 60_000) : 0,
+    ]),
+    held: (m?.held || []).map((item) => item.id),
+  });
+}
+let machinesDrawn = "";
+
 /** Machines: the platform's own part, each machine that reports and
  * what only it can do, and what waits for one. */
 async function viewMachines() {
   const m = await api("machines");
+  machinesDrawn = machinesMark(m);
   const platform = m.platform;
   const held = Array.isArray(m.held) ? m.held : [];
   const takeBack = async (item, e) => {
@@ -2961,6 +2984,14 @@ async function refresh(force) {
     changed = await loadDoc("core");
     loadError = "";
     if (extra) changed = (await loadDoc(extra)) || changed;
+    // The Machines screen is drawn from an answer of its own, which can
+    // change with nothing else changing (a machine goes quiet, or comes
+    // back as it was). While that screen is open it is asked again, and
+    // the screen is drawn again when it says something else.
+    if (name === "more/machines") {
+      const now = await api("machines").catch(() => null);
+      if (now && machinesMark(now) !== machinesDrawn) changed = true;
+    }
     // An old copy means the laptop has just been told someone is
     // looking: look again shortly, a few times, instead of waiting out
     // the full interval.

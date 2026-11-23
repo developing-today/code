@@ -400,6 +400,17 @@ export class Edge {
           }
           const [gone] = held.splice(at, 1);
           await this.saveHeld();
+          // Under its name it is over. A device that never heard it was
+          // kept offers it again: it is told it was taken back, and it
+          // is neither kept again nor handed to a machine.
+          await this.kv.put(`a:${gone.id}`, {
+            at: this.now(),
+            kind: gone.kind,
+            state: "done",
+            status: 410,
+            body: { error: "This was taken back before a machine took it." },
+          } satisfies Acted);
+          await this.actedIndex(gone.id);
           await this.logAct({
             id: gone.id,
             kind: gone.kind,

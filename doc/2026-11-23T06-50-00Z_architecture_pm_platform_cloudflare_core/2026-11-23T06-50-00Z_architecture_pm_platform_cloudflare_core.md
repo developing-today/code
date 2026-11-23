@@ -589,7 +589,14 @@ What this does not do yet, and is filed: a second machine under its own
 key; each action sent to a machine that can do it (today there is one,
 so "a machine" is "the machine"); what is held kept per machine.
 
-Checked: 350 tests under bun. 24 planted faults in the new code, all
+Review found two faults, both real. Taken back, an action could be
+kept again when a device that never heard it was kept offered it again:
+taking back now ends the name, and the offer is answered "taken back".
+And the screen did not notice a machine going quiet unless something
+else changed: it now asks again while it is open, and is drawn again
+when what it shows has changed.
+
+Checked: 351 tests under bun. 28 planted faults in the new code, all
 caught. In a real Chrome against both demos, light and dark: the
 screen with nothing in front of the machine and with the edge in front;
 something held while the machine is out of reach, listed in the owner's

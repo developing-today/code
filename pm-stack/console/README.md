@@ -198,7 +198,11 @@ More, Machines shows:
 - **What waits for a machine**: everything the owner did that is held
   until one is back, oldest first, each with "Take back" (`held.drop`).
   Taken back, it is recorded as not sent under its name, so the device
-  that sent it shows it under "could not be done".
+  that sent it shows it under "could not be done"; offered again by a
+  device that never heard it was kept, it stays taken back.
+
+The screen keeps itself current while it is open: a machine going
+quiet or coming back, or something new waiting, draws it again.
 
 The edge answers that screen itself, so it is there with every machine
 away. Served straight from a machine, the machine answers with itself.
