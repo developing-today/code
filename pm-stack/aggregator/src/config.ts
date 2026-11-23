@@ -71,6 +71,8 @@ export interface Config {
   eventsFile: string;
   /** Identity-to-role registry (#9604), separate from the session registry. */
   identityRegistryFile: string;
+  /** Shared HS256 secret used only to mint short-lived brokered-write tokens. */
+  stackTokenSecret: string | null;
   /** Break-glass owner token store (#9608) — written only by the local
    * owner CLI (scripts/issue-break-glass-token.ts); hashes only. */
   breakGlassFile: string;
@@ -227,6 +229,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
       env.PM_AGG_IDENTITY_REGISTRY_FILE,
       join(homedir(), ".local", "state", "pm-aggregator", "identity-registry.json"),
     ),
+    stackTokenSecret: env.PM_AGG_STACK_TOKEN_SECRET?.trim() || null,
     breakGlassFile: s(
       env.PM_AGG_BREAK_GLASS_FILE,
       join(homedir(), ".local", "state", "pm-aggregator", "break-glass-tokens.json"),
