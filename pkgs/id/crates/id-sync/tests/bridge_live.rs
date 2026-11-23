@@ -376,11 +376,18 @@ async fn live_native_against_hosted_bridge_converges_both_directions() {
     expected_after.extend(originals(&a_extra));
 
     let mut dialer = BridgeDialer::new(binding.clone(), id_key.clone());
+    // The connect error carries its cause chain: an upgrade
+    // refusal (the harness or the DO answering 4xx) reads very
+    // differently from a dropped connection, and the next failure
+    // needs that distinction.
     let mut transport =
-        tokio::time::timeout(Duration::from_secs(SESSION_TIMEOUT_SECS), connect(&ws_url))
+        match tokio::time::timeout(Duration::from_secs(SESSION_TIMEOUT_SECS), connect(&ws_url))
             .await
-            .unwrap()
-            .unwrap();
+        {
+            Ok(Ok(transport)) => transport,
+            Ok(Err(err)) => panic!("live bridge ws connect failed: {err:#}"),
+            Err(_) => panic!("live bridge ws connect timed out after {SESSION_TIMEOUT_SECS}s"),
+        };
     let result = tokio::time::timeout(
         Duration::from_secs(SESSION_TIMEOUT_SECS),
         dialer.sync(&mut store_a, &mut transport, now),
