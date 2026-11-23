@@ -280,6 +280,12 @@ pub enum ExportError {
     /// The manifest names a different binding or key than the
     /// binding record it travels with.
     ManifestBindingMismatch,
+    /// The manifest's §7 client-side-encryption choice differs from
+    /// the binding record's. The flag can only change by
+    /// re-encrypting via export/import, so an export whose halves
+    /// disagree does not describe one stored data set (§6.2 step 1,
+    /// §7).
+    CseChoiceMismatch,
     /// The manifest signature does not verify (against the user's
     /// root key, or the service key for an `unkeyed_export`).
     ManifestSignatureInvalid,
@@ -328,6 +334,12 @@ impl std::fmt::Display for ExportError {
                 write!(
                     f,
                     "manifest does not name the binding record it travels with"
+                )
+            }
+            Self::CseChoiceMismatch => {
+                write!(
+                    f,
+                    "manifest's client-side-encryption choice differs from the binding record's"
                 )
             }
             Self::ManifestSignatureInvalid => {
@@ -517,6 +529,17 @@ pub fn verify_import(
         &manifest.signature,
     ) {
         return Err(ExportError::ManifestSignatureInvalid);
+    }
+    // Step 1, §7: the manifest's CSE choice is part of naming the
+    // binding's stored state. It is covered by the manifest
+    // signature (canonical_bytes), and the binding record's own
+    // flag is attested by the service; disagreement means the two
+    // halves do not describe one stored data set — an export
+    // stating the wrong choice misdirects every downstream reader
+    // of the payloads (§7: the flag changes only by re-encrypting
+    // via export/import).
+    if manifest.client_side_encryption != binding.client_side_encryption {
+        return Err(ExportError::CseChoiceMismatch);
     }
 
     // Step 2: the binding chain. The transcript is reconstructed
@@ -739,6 +762,60 @@ mod tests {
         assert!(!export.manifest.client_side_encryption);
         let verified = verify_import(&export, false).unwrap();
         assert!(!verified.client_side_encryption);
+    }
+
+    #[test]
+    fn manifest_cse_choice_mismatching_the_binding_is_refused() {
+        // §7: the flag can only change by re-encrypting via
+        // export/import, so a manifest stating a different choice
+        // than the binding record it travels with does not name
+        // that binding (§6.2 step 1). Stating encryption under a
+        // binding that stored plaintext would decrypt wrong;
+        // stating plaintext under an encrypted binding downgrades
+        // opaque payloads — the import refuses, and ingests
+        // nothing.
+        let (_svc, mut export) = sample_export(Some(false));
+        assert!(!export.binding.client_side_encryption);
+        export.manifest.client_side_encryption = true;
+        // Re-sign so only the choice rule can fail: this is the
+        // misassembled pair (or the re-signed forgery), not a
+        // tampered manifest.
+        export.manifest.signature = hex_encode(
+            &root_key(21)
+                .sign(&export.manifest.canonical_bytes())
+                .to_bytes(),
+        );
+        assert_eq!(
+            verify_import(&export, false),
+            Err(ExportError::CseChoiceMismatch)
+        );
+        // The other direction — CSE binding claimed as plaintext —
+        // is refused the same way.
+        let (_svc, mut cse_export) = sample_export(None);
+        assert!(cse_export.binding.client_side_encryption);
+        cse_export.manifest.client_side_encryption = false;
+        cse_export.manifest.signature = hex_encode(
+            &root_key(21)
+                .sign(&cse_export.manifest.canonical_bytes())
+                .to_bytes(),
+        );
+        assert_eq!(
+            verify_import(&cse_export, false),
+            Err(ExportError::CseChoiceMismatch)
+        );
+    }
+
+    #[test]
+    fn flipping_the_manifest_cse_flag_without_resigning_is_refused() {
+        // The CSE choice is inside the manifest's canonical bytes,
+        // so a flag flip without the key fails the signature first
+        // — the choice is authenticated, not decorative.
+        let (_svc, mut export) = sample_export(None);
+        export.manifest.client_side_encryption = false;
+        assert_eq!(
+            verify_import(&export, false),
+            Err(ExportError::ManifestSignatureInvalid)
+        );
     }
 
     #[test]
