@@ -408,6 +408,43 @@ mod tests {
     }
 
     #[test]
+    fn test_a_rebuild_keeps_a_note_with_no_policy_falling_through() {
+        // The #12751 + #3819 composition: a note with no recorded
+        // policy falls through to the user default on the live log,
+        // and still does after a restart rebuild — the policies
+        // snapshot carries no record for it, so seeding it back
+        // must not invent a Public entry that would close the
+        // fall-through at the object level.
+        let mut log = NoteCheckpoints::new();
+        log.create(hash(10), author(1), content(b"plain")).unwrap();
+        let defaults = ReadDefaults::user(NoteAccess::Scoped(vec![]));
+        let rebuilt = NoteCheckpoints::from_events_with_policies(
+            log.events().to_vec(),
+            log.policies().unwrap(),
+        )
+        .unwrap();
+        assert!(rebuilt.policies().unwrap().is_empty());
+        assert!(!may_read(
+            &rebuilt,
+            hash(10),
+            author(2),
+            &GroupRoles::none(),
+            &defaults
+        ));
+        assert!(may_read(
+            &rebuilt,
+            hash(10),
+            author(1),
+            &GroupRoles::none(),
+            &defaults
+        ));
+        assert_eq!(
+            resolve_for(&rebuilt, hash(10), &defaults).unwrap().level,
+            ReadLevel::UserDefault
+        );
+    }
+
+    #[test]
     fn test_a_note_with_no_policy_and_no_user_default_falls_to_the_server_default() {
         let mut log = NoteCheckpoints::new();
         log.create(hash(10), author(1), content(b"plain")).unwrap();
