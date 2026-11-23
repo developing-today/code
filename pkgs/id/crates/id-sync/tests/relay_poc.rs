@@ -394,7 +394,8 @@ async fn five_node_bridge_delivery_with_latency() {
         assert_eq!(d.protocol.forwarded() as u64, sequence + 1);
     }
     eprintln!(
-        "poc relay latencies over {LATENCY_MESSAGES} messages: direct A->B median {:?}, bridged A->D->E median {:?}",
+        "poc relay latencies over {LATENCY_MESSAGES} messages: \
+         direct A->B median {:?}, bridged A->D->E median {:?}",
         median(direct),
         median(bridged)
     );
