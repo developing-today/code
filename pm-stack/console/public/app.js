@@ -331,6 +331,17 @@ function flushOutbox() {
 async function submit(kind, args) {
   if (!Outbox) return { state: "refused", note: "This page cannot send that." };
   const entry = Outbox.make(kind, args, Date.now());
+  // Under the lock a send of what is waiting takes (here or in the
+  // service worker): while this is written down and not yet answered,
+  // nothing else may take it for something left waiting and send it too.
+  // (If one did, the platform would still do it once; the owner would
+  // be told twice.)
+  const work = () => submitNow(entry);
+  return navigator.locks?.request ? navigator.locks.request("pm-outbox", work) : work();
+}
+
+async function submitNow(entry) {
+  const { kind } = entry;
   // What needs a connection by its nature is not written down.
   let keeps = Outbox.rule(kind) !== "now" && outbox !== null;
   if (keeps) {
@@ -2022,10 +2033,10 @@ async function viewDevice() {
   const forget = async (e) => {
     e.target.disabled = true;
     const worker = (await navigator.serviceWorker?.ready.catch(() => null))?.active;
+    e.target.disabled = false;
     if (!worker) return toast("Nothing is kept: this browser has not set the app up to work offline.", true);
     worker.postMessage({ type: "forget" });
     toast("Forgotten. It keeps again from the next thing you look at.");
-    e.target.disabled = false;
   };
   // Before a flight: read every screen once, so the device has a copy
   // of each. One at a time, and unhurried: some of it is searched for.
