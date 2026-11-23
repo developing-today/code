@@ -3,15 +3,29 @@
 //   cd edge && node build.mjs && npx wrangler dev --port 8799 \
 //     --var PUBLIC_HOST:localhost --var HOST_ORIGIN:http://127.0.0.1:4898 --var VERSION:smoke \
 //     --var EDGE_DIRECT:on --var GITHUB_TOKEN:smoke-github --var QUEUE_TOKEN:smoke-queue \
-//     --var GITHUB_API_ORIGIN:http://127.0.0.1:4898/github --var QUEUE_DB_ORIGIN:http://127.0.0.1:4898/queue
+//     --var GITHUB_API_ORIGIN:http://127.0.0.1:4898/github --var QUEUE_DB_ORIGIN:http://127.0.0.1:4898/queue \
+//     --var OWN_CLOCK_MS:2000 --var KEYS_FROM:https://smoke.invalid/jwks --var KEYS_TO:http://127.0.0.1:4898/jwks
 //   SMOKE_PRIMARY=1 bun run scripts/edge-smoke.ts            (in another shell)
 //
 // It starts a host on port 4898 with made-up state and this repo's real
-// handler and link, then checks what can be checked without a sign-in
-// issuer: the Worker starts, serves its public files, takes the host's
-// signed report (fetching the host's key through the "tunnel"), keeps a
-// section too large for one stored value, leaves an unsigned caller to
-// the host, and answers a phone that is not linked.
+// handler and link, then checks: the Worker starts, serves its public
+// files, takes the host's signed report (fetching the host's key
+// through the "tunnel"), keeps a section too large for one stored
+// value, leaves an unsigned caller to the host, and answers a phone
+// that is not linked.
+//
+// The sign-in is this run's own too: a key made here, whose public half
+// the stand-in serves as the issuer's key set (the Worker is started
+// with KEYS_FROM/KEYS_TO, above, so its fetch of the issuer's https
+// key-set address lands on the stand-in), so the run can sign the
+// owner's token itself (as scripts/edge-demo.ts does) and check what
+// only a signed-in caller reaches, in this runtime: who the edge says
+// is calling, an action done once under a name and answered again from
+// the record, the platform read, an alarm the object sets firing and
+// doing its work, and -- with the host gone -- an action held for a
+// machine, listed by the machines read, and taken back. The clock's
+// minute is shortened for the run (OWN_CLOCK_MS, above) so the alarm
+// can be watched without waiting it out.
 //
 // Started as above, the Worker does the core itself, and the same port
 // stands in for GitHub's API (/github) and the queue store (/queue): its
@@ -19,6 +33,8 @@
 // Worker's own fetch, and has to come back good. SMOKE_PRIMARY=1 says
 // that is what was started, so that leaving the flags off is a failure
 // and not a quiet skip.
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { identify } from "../src/auth.ts";
 import { readConfig } from "../src/config.ts";
 import { Devices, Limiter } from "../src/devices.ts";
@@ -36,13 +52,34 @@ const EDGE = process.env.EDGE ?? "http://localhost:8799";
 const cfg = readConfig({ HOME: "/tmp/pm-edge-smoke", PM_CONSOLE_OWNER_EMAILS: "owner@example.com" });
 cfg.issuers = [
   {
-    name: "cloudflare-access",
-    issuer: "https://smoke.cloudflareaccess.com",
-    jwksUri: "https://smoke.cloudflareaccess.com/cdn-cgi/access/certs",
+    name: "smoke-sign-in",
+    issuer: "https://smoke.invalid",
+    jwksUri: "https://smoke.invalid/jwks",
     audience: "smoke",
     source: "access",
   },
 ];
+// A sign-in issuer made here: the stand-in below serves the public
+// half as the issuer's key set, and this signs the owner's token.
+const pair = (await crypto.subtle.generateKey(
+  { name: "RSASSA-PKCS1-v1_5", modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: "SHA-256" },
+  true,
+  ["sign", "verify"],
+)) as CryptoKeyPair;
+const jwk = { ...(await crypto.subtle.exportKey("jwk", pair.publicKey)), kid: "smoke" };
+const part = (value: unknown) => Buffer.from(JSON.stringify(value)).toString("base64url");
+async function ownerToken(): Promise<string> {
+  const now = Math.floor(Date.now() / 1000);
+  const signed = `${part({ alg: "RS256", kid: "smoke" })}.${part({
+    iss: "https://smoke.invalid",
+    aud: ["smoke"],
+    exp: now + 3600,
+    iat: now,
+    email: "owner@example.com",
+  })}`;
+  const sig = await crypto.subtle.sign("RSASSA-PKCS1-v1_5", pair.privateKey, new TextEncoder().encode(signed));
+  return `${signed}.${Buffer.from(sig).toString("base64url")}`;
+}
 const big = { open: Array.from({ length: 5000 }, (_, i) => ({ qid: `q${i}`, question: "Why? ".repeat(80) })) };
 const data: Record<string, unknown> = {
   board: { counts: { claimed: 2, queued: 1 }, now: [{ id: 1, title: "Smoke task" }], next: [], blocked: [] },
@@ -102,6 +139,7 @@ const server = Bun.serve({
   port: 4898,
   fetch: async (req, srv) => {
     const url = new URL(req.url);
+    if (url.pathname === "/jwks") return Response.json({ keys: [jwk] });
     if (url.pathname.startsWith("/github/")) {
       const path = url.pathname.slice("/github/".length);
       outside.push({
@@ -110,6 +148,15 @@ const server = Bun.serve({
         auth: req.headers.get("authorization"),
         agent: req.headers.get("user-agent"),
       });
+      if (path.endsWith("/contents/pm-stack/platform/workers.json")) {
+        // The platform read's list, served as GitHub serves a file.
+        return Response.json({
+          content: Buffer.from(readFileSync(join(import.meta.dir, "..", "..", "platform", "workers.json"))).toString(
+            "base64",
+          ),
+        });
+      }
+      if (path.includes("/actions/workflows/")) return Response.json({ workflow_runs: [] });
       if (path.endsWith("/pulls")) {
         return Response.json([
           {
@@ -155,6 +202,17 @@ const check = (name: string, ok: boolean, detail = "") => {
 };
 const get = (path: string, headers: Record<string, string> = {}) =>
   fetch(`${EDGE}${path}`, { headers, redirect: "manual" });
+const asOwner = async (path: string) => get(path, { "cf-access-jwt-assertion": await ownerToken() });
+const actAsOwner = async (kind: string, args: Record<string, unknown>, id?: string) =>
+  fetch(`${EDGE}/console/api/act`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-pm-console": "1",
+      "cf-access-jwt-assertion": await ownerToken(),
+    },
+    body: JSON.stringify(id === undefined ? { kind, args } : { kind, args, id }),
+  });
 
 try {
   const before = (await (await get("/console/health")).json()) as Record<string, unknown>;
@@ -245,6 +303,92 @@ try {
       JSON.stringify(second?.owns) === JSON.stringify(["board", "prs", "priorities", "asks"]),
       JSON.stringify(second?.owns),
     );
+
+    // Signed in with this run's own token: what only the owner
+    // reaches, checked in this runtime rather than under bun.
+    const me = (await (await asOwner("/console/api/me")).json()) as Record<string, unknown>;
+    check(
+      "signed in with the run's own token, the edge says who is calling",
+      me.email === "owner@example.com" && me.edge === true,
+      JSON.stringify(me),
+    );
+    const onceId = "11111111-1111-4111-8111-111111111111";
+    const didFirst = (await (await actAsOwner("push.class", { class: "trouble", on: false }, onceId)).json()) as {
+      result?: Record<string, boolean>;
+      again?: boolean;
+    };
+    const didAgain = (await (await actAsOwner("push.class", { class: "trouble", on: false }, onceId)).json()) as {
+      result?: Record<string, boolean>;
+      again?: boolean;
+    };
+    check(
+      "an action under a name is done once, and its second arrival is answered from the record",
+      didFirst.result?.trouble === false &&
+        didFirst.again !== true &&
+        didAgain.again === true &&
+        didAgain.result?.trouble === false,
+      `first ${JSON.stringify(didFirst)}, again ${JSON.stringify(didAgain)}`,
+    );
+    seen.length = 0;
+    const platform = (await (await asOwner("/console/api/platform")).json()) as {
+      checked?: string;
+      malformed?: number;
+      workers?: { name: string }[];
+    };
+    check(
+      "the platform read is answered here, from the repository's own list",
+      platform.malformed === 0 &&
+        typeof platform.checked === "string" &&
+        (platform.workers ?? []).some((w) => w.name === "pm-console-edge"),
+      `${(platform.workers ?? []).length} workers, checked ${platform.checked}; host saw ${seen.join(", ")}`,
+    );
+    check(
+      "and no machine was asked for it",
+      !seen.some((path) => path.includes("/api/platform")),
+      seen.join(", "),
+    );
+    // Someone to tell: a device takes notifications (its service is a
+    // known one and its key a real point; nothing is sent to it in
+    // this run unless the clock's news is worth sending).
+    const devicePair = (await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, [
+      "sign",
+      "verify",
+    ])) as CryptoKeyPair;
+    const devicePoint = Buffer.from((await crypto.subtle.exportKey("raw", devicePair.publicKey)) as ArrayBuffer).toString(
+      "base64url",
+    );
+    const subscribed = (await (
+      await actAsOwner(
+        "push.on",
+        {
+          subscription: {
+            endpoint: "https://fcm.googleapis.com/fcm/send/smoke-run",
+            keys: { p256dh: devicePoint, auth: Buffer.from(crypto.getRandomValues(new Uint8Array(16))).toString("base64url") },
+          },
+          label: "smoke",
+        },
+        "22222222-2222-4222-8222-222222222222",
+      )
+    ).json()) as { result?: { devices?: number } };
+    check("a device takes notifications", subscribed.result?.devices === 1, JSON.stringify(subscribed));
+    // The clock starts itself when a document is read. Its interval
+    // is the run's shortened one, and the board goes stale half a
+    // minute in: an alarm that fires and does its work reads the
+    // board from GitHub again, here, with nobody asking.
+    const board = await asOwner("/console/api/doc/core");
+    check("the state is read signed in", board.status === 200, String(board.status));
+    await new Promise((resolve) => setTimeout(resolve, 3000));
+    const readsBefore = outside.filter((o) => o.to === "github").length;
+    let readsAfter = readsBefore;
+    for (let waited = 0; waited < 75 && readsAfter <= readsBefore; waited += 2) {
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+      readsAfter = outside.filter((o) => o.to === "github").length;
+    }
+    check(
+      "an alarm the object set fired and did its work: what the owner is told about was read again, unasked",
+      readsAfter > readsBefore,
+      `${readsBefore} reads of GitHub before, ${readsAfter} after waiting`,
+    );
   } else {
     console.log("skip the Worker was not started to do the core itself (see the top of this file)");
   }
@@ -303,6 +447,33 @@ try {
   );
   const still = (await (await get("/console/health")).json()) as Record<string, unknown>;
   check("the edge itself is still up", still.ok === true && Number(still.deferred) >= 3, JSON.stringify(still));
+  // With the host gone, what may be done late is held here instead of
+  // lost: signed in, it can be seen waiting and taken back.
+  const heldId = "33333333-3333-4333-8333-333333333333";
+  const heldAnswer = (await (await actAsOwner("message.send", { to: "smoke", text: "held by the smoke run" }, heldId)).json()) as {
+    ok?: boolean;
+    held?: boolean;
+  };
+  check(
+    "with the host gone, an action that may be done late is held, not lost",
+    heldAnswer.ok === true && heldAnswer.held === true,
+    JSON.stringify(heldAnswer),
+  );
+  const machines = (await (await asOwner("/console/api/machines")).json()) as {
+    held?: { id: string; kind: string }[];
+  };
+  check(
+    "the machines read lists it as waiting for a machine",
+    (machines.held ?? []).some((h) => h.id === heldId && h.kind === "message.send"),
+    JSON.stringify(machines.held),
+  );
+  const dropped = await actAsOwner("held.drop", { id: heldId }, "44444444-4444-4444-8444-444444444444");
+  const machinesAfter = (await (await asOwner("/console/api/machines")).json()) as { held?: { id: string }[] };
+  check(
+    "and it can be taken back",
+    dropped.status === 200 && !(machinesAfter.held ?? []).some((h) => h.id === heldId),
+    `drop ${dropped.status}; still waiting ${JSON.stringify(machinesAfter.held)}`,
+  );
   // The Android app's release is read from GitHub itself, in this
   // runtime, over the real network. There may be none, and GitHub may
   // not answer a runner: either is said as null, and neither is a

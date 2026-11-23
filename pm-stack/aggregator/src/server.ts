@@ -247,6 +247,7 @@ import {
 } from "./alerts.ts";
 import { recordSwProbe, sendPush, swProbeSummary, VAPID_PUBLIC_KEY } from "./push.ts";
 import { notifyPromptCompletion, promptCompletionTransition } from "./prompt-notify.ts";
+import { requestNotifyRelaySubscriptionSync, startNotifyRelay } from "./notify-relay.ts";
 import { resolveBwsSecret, resolveBwsSecretLookup } from "./secrets.ts";
 import { openMetadataStore, type EpicSlugMap, type IngestionItem } from "./metadata-ingestion.ts";
 import { createMetadataWebhookHandler } from "./webhook-listener.ts";
@@ -4476,7 +4477,9 @@ async function handler(req: Request, remoteAddress?: string): Promise<Response> 
       try {
         const parsed = validateNewSubscription(await readJsonBody(req));
         if (!parsed.ok) return json({ error: parsed.error }, 400);
-        return json({ subscription: toPublicSubscription(await store.upsertSubscription(parsed.value)) }, 201);
+        const row = await store.upsertSubscription(parsed.value);
+        requestNotifyRelaySubscriptionSync();
+        return json({ subscription: toPublicSubscription(row) }, 201);
       } catch (err) {
         return json({ error: `invalid subscription: ${err instanceof Error ? err.message : err}` }, 400);
       }
@@ -4486,6 +4489,7 @@ async function handler(req: Request, remoteAddress?: string): Promise<Response> 
         const body = (await readJsonBody(req)) as { endpoint?: unknown };
         if (typeof body.endpoint !== "string") return json({ error: "endpoint required" }, 400);
         const deleted = await store.deleteSubscription(body.endpoint);
+        if (deleted) requestNotifyRelaySubscriptionSync();
         return deleted ? json({ deleted: true }) : json({ error: "no such subscription" }, 404);
       } catch (err) {
         return json({ error: `invalid delete: ${err instanceof Error ? err.message : err}` }, 400);
@@ -5748,3 +5752,11 @@ startAlertEngine(cfg, async (): Promise<NotificationSnapshot> => {
     stackHealthStates,
   };
 });
+
+// The notify relay's laptop half (#8569 Phase 2 step 1): ~60s
+// heartbeats to the pm-notify edge Durable Object + the
+// subscription mirror that authorizes its sends. A no-op until
+// PM_AGG_NOTIFY_RELAY_URL is set (the deploy is a separate leg),
+// and fail-soft once running — the edge is a mirror of this
+// stack, never a dependency of it.
+startNotifyRelay(cfg, () => getAlertsStore());
