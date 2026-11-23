@@ -264,6 +264,25 @@ fn promotion_splits_a_chunk_that_exceeds_the_model_context() {
             "piece fits: {piece:?}"
         );
     }
+    let spans = conn
+        .prepare("SELECT span_start, span_end FROM chunk_occurrences ORDER BY shard_chunk_id")
+        .unwrap()
+        .query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)))
+        .unwrap()
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .unwrap();
+    assert_eq!(
+        spans.len(),
+        rows.len(),
+        "each split piece has an occurrence"
+    );
+    let mut offset = 0;
+    for ((start, end), piece) in spans.iter().zip(&rows) {
+        assert_eq!(*start, offset, "source spans are contiguous");
+        assert_eq!(*end - *start, piece.len() as i64, "span covers exact bytes");
+        offset = *end;
+    }
+    assert_eq!(offset, text.len() as i64, "spans cover the original item");
 }
 
 #[test]
@@ -331,4 +350,89 @@ fn promotion_keeps_pieces_and_items_with_identical_text() {
     for joined in by_source.values() {
         assert_eq!(joined, text);
     }
+}
+
+#[test]
+fn promotion_records_chunk_occurrences_for_identical_text() {
+    // #3125 rule 3: every chunk records every place it was found.
+    // Two items staging byte-identical text must promote to two
+    // shard chunks with distinct shard-unique content_hashes AND
+    // one occurrence row each sharing the canonical text hash, so
+    // the duplication link is recorded instead of silently lost.
+    // Oracle: SHA-256 of the staged text (content identity); row
+    // count and shared canonical hash are the acceptance signal.
+    let dir = temp_dir("occurrences");
+    let registry = Registry::open(&dir.join("registry.db")).unwrap();
+    let db = dir.join("unit.db");
+    registry
+        .provision(&db, "task-occ", "repo-worker-code", Tier::Internal, NOW)
+        .unwrap();
+    let text = "dns shared block\n";
+    for path in ["infra/dns/a.yaml", "infra/dns/b.yaml"] {
+        let entry = ArtifactEntry {
+            kind: "config".into(),
+            repo: "developing-today/code".into(),
+            path: path.into(),
+            commit_sha: "abc".into(),
+            language: "yaml".into(),
+            sensitivity: Tier::Internal,
+            text: text.into(),
+        };
+        stage_artifact_in_db(&db, "task-occ", &entry, NOW).unwrap();
+    }
+
+    let shard_dir = dir.join("shards");
+    let report = embed_unit_into_shard(
+        &registry,
+        "task-occ",
+        &shard_dir,
+        "codeconfig",
+        &KeywordEmbedder,
+        NOW,
+    )
+    .unwrap();
+    assert_eq!(report.chunks, 2, "both occurrences kept as chunks");
+
+    let conn = rusqlite::Connection::open(&report.shard_path).unwrap();
+    let mut stmt = conn
+        .prepare(
+            "SELECT shard_chunk_id, canonical_hash, source, span_start, span_end, observed_at \
+             FROM chunk_occurrences ORDER BY shard_chunk_id",
+        )
+        .unwrap();
+    let rows = stmt
+        .query_map([], |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, i64>(3)?,
+                r.get::<_, i64>(4)?,
+                r.get::<_, String>(5)?,
+            ))
+        })
+        .unwrap()
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .unwrap();
+    assert_eq!(rows.len(), 2, "one occurrence row per chunk");
+    assert_eq!(rows[0].0, 1);
+    assert_eq!(rows[1].0, 2);
+    assert_eq!(
+        rows[0].1, rows[1].1,
+        "identical texts share the canonical hash"
+    );
+    assert_ne!(rows[0].2, rows[1].2, "occurrences record distinct sources");
+    for row in &rows {
+        assert_eq!((row.3, row.4), (0, text.len() as i64));
+        assert_eq!(row.5, NOW, "observed_at is the staged observation time");
+    }
+
+    // The shard-unique content_hashes differ (UNIQUE constraint),
+    // but the canonical hashes agree with SHA-256 of the text.
+    use sha2::{Digest, Sha256};
+    let want: String = Sha256::digest(text.as_bytes())
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    assert_eq!(rows[0].1, want, "canonical hash is SHA-256 of the text");
 }
