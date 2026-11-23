@@ -206,6 +206,16 @@ export const PAGES: PageDef[] = [
     nav: "dropdown",
   },
   {
+    id: "chat",
+    title: "Chat",
+    route: "/chat",
+    api: "/api/prompt/threads",
+    blurb:
+      "The prompt chat/session surface (#10035): every prompt submission in its thread — reply, cross-references, archive — plus the unread count behind the nav badge.",
+    group: "work",
+    nav: "dropdown",
+  },
+  {
     id: "program",
     title: "Program status",
     route: "/program",
