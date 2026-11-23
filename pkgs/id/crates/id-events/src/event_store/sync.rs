@@ -1239,6 +1239,7 @@ mod tests {
             author: *key.verifying_key().as_bytes(),
             after: vec![],
             group: Some(group),
+            at: None,
             body: GroupBody::Device(DeviceOp::Add {
                 device: *signer(72).verifying_key().as_bytes(),
                 scope: GroupRole::Admin,
