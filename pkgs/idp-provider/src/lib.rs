@@ -1,31 +1,61 @@
 //! idp-provider — minimal OIDC provider (Slice 3 of #13658, implements
-//! #13409). This first step serves OIDC discovery and a JWKS built at
-//! startup from the REAL Slice 2 signing certificate published by
-//! pkgs/idp-pki (serial 1001). Only the PUBLIC certificate is used
-//! here; no private key material is read by this slice.
+//! #13409). Step 1 served OIDC discovery and a JWKS built at startup
+//! from the REAL Slice 2 signing certificate published by
+//! pkgs/idp-pki (serial 1001). Step 2 adds the rest of the plan's
+//! surface — `GET/POST /authorize`, `POST /token`, `GET /userinfo` —
+//! completing the authorization-code + PKCE (S256) flow, signed
+//! RS256 with the Slice 2 OIDC private key.
 //!
 //! The JWKS `kid` is the certificate's SHA-256 thumbprint in
 //! base64url form — the `x5t#S256` convention recorded on #13686 — so
-//! relying parties can pin either form.
+//! relying parties can pin either form. The private key is loaded
+//! from its on-host path under `IDP_CA_HOME` and decrypted in memory
+//! only (passphrase via the process environment, fetched by the
+//! launcher from the vault by name); it is never copied into the
+//! repo or any config file, and there is no provider-local key
+//! generation, ever.
+//!
+//! Standing constraints: no pkgs/id keypair custody in the login
+//! path; SSO never rebinds an id key (#2060).
 
+pub mod audit;
+pub mod flow;
+pub mod registry;
+pub mod signing;
+
+use audit::AuditLog;
 use axum::{routing::get, Json, Router};
 use base64::{engine::general_purpose::STANDARD as B64_STD, Engine as _};
 use der::Decode;
+use flow::FlowState;
 use pkcs1::DecodeRsaPublicKey;
 use rsa::{traits::PublicKeyParts, RsaPublicKey};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::path::PathBuf;
+use std::sync::Arc;
 use x509_cert::Certificate;
 
 pub const DEFAULT_ISSUER: &str = "http://127.0.0.1:8911";
 pub const DEFAULT_BIND: &str = "127.0.0.1:8911";
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct Config {
     pub issuer: String,
     pub bind: String,
     pub oidc_cert_path: PathBuf,
+    /// Path to the provider registry config JSON (clients, account
+    /// row, allowlist, credential hash). When unset, the provider
+    /// runs public-only (discovery + JWKS) and the flow endpoints
+    /// refuse service.
+    pub provider_config_path: Option<PathBuf>,
+    /// Path to the passphrase-encrypted Slice 2 OIDC private key
+    /// (on-host, under `IDP_CA_HOME`). Required when a provider
+    /// registry config is set.
+    pub signing_key_path: Option<PathBuf>,
+    /// Audit DB path override (else the registry config's
+    /// `audit_db_path`, else in-memory).
+    pub audit_db_path: Option<PathBuf>,
 }
 
 impl Config {
@@ -36,10 +66,20 @@ impl Config {
         let oidc_cert_path = std::env::var("IDP_PROVIDER_OIDC_CERT")
             .map(PathBuf::from)
             .unwrap_or_else(|_| default_cert_path());
+        let provider_config_path = std::env::var("IDP_PROVIDER_CONFIG").map(PathBuf::from).ok();
+        let signing_key_path = std::env::var("IDP_PROVIDER_OIDC_KEY")
+            .map(PathBuf::from)
+            .ok();
+        let audit_db_path = std::env::var("IDP_PROVIDER_AUDIT_DB")
+            .map(PathBuf::from)
+            .ok();
         Config {
             issuer: issuer.trim_end_matches('/').to_string(),
             bind,
             oidc_cert_path,
+            provider_config_path,
+            signing_key_path,
+            audit_db_path,
         }
     }
 }
@@ -126,6 +166,9 @@ pub fn jwks_from_cert_pem(pem: &str) -> Result<Jwks, String> {
 pub struct AppState {
     pub config: Config,
     pub jwks: Jwks,
+    /// The authorize/token/userinfo flow state; `None` in
+    /// public-only mode (no registry config supplied).
+    pub flow: Option<Arc<FlowState>>,
 }
 
 #[derive(Serialize)]
@@ -144,7 +187,11 @@ struct Discovery {
 }
 
 pub fn build_app(config: Config, jwks: Jwks) -> Router {
-    let state = AppState { config, jwks };
+    build_app_with_flow(config, jwks, None)
+}
+
+pub fn build_app_with_flow(config: Config, jwks: Jwks, flow: Option<Arc<FlowState>>) -> Router {
+    let state = AppState { config, jwks, flow };
     Router::new()
         .route(
             "/healthz",
@@ -179,10 +226,23 @@ pub fn build_app(config: Config, jwks: Jwks) -> Router {
                 },
             ),
         )
+        .route(
+            "/authorize",
+            get(flow::authorize_get).post(flow::authorize_post),
+        )
+        .route("/token", axum::routing::post(flow::token))
+        .route("/userinfo", get(flow::userinfo))
         .with_state(state)
 }
 
-/// Load the configured cert, build the JWKS, and return the app.
+/// Load the configured cert, build the JWKS, assemble the flow state
+/// when a registry config is configured, and return the app.
+///
+/// Fail-closed rules: when a registry config IS configured, the
+/// signing key path and the `IDP_CA_PASSPHRASE` environment value
+/// (in process memory only) are required, and the loaded key MUST
+/// match the published certificate behind the JWKS — any failure is
+/// a startup error, never a degraded provider.
 pub fn app_from_config(config: Config) -> Result<Router, String> {
     let pem = std::fs::read_to_string(&config.oidc_cert_path).map_err(|e| {
         format!(
@@ -191,5 +251,41 @@ pub fn app_from_config(config: Config) -> Result<Router, String> {
         )
     })?;
     let jwks = jwks_from_cert_pem(&pem)?;
-    Ok(build_app(config, jwks))
+
+    let flow = match &config.provider_config_path {
+        None => None,
+        Some(cfg_path) => {
+            let registry = registry::ProviderConfig::load(cfg_path)?;
+            let key_path = config
+                .signing_key_path
+                .clone()
+                .ok_or("IDP_PROVIDER_OIDC_KEY is required when IDP_PROVIDER_CONFIG is set")?;
+            let passphrase = std::env::var("IDP_CA_PASSPHRASE").map_err(|_| {
+                "IDP_CA_PASSPHRASE is not set (the launcher fetches it from the vault by name into process memory)"
+            })?;
+            let key = signing::load_signing_key(&key_path, &passphrase)?;
+            let signer = signing::TokenSigner::new(key, jwks.keys[0].kid.clone());
+            // Prove the loaded private key is the published cert's
+            // key before serving anything.
+            let (n, e) = signer.public_components();
+            if b64url(&n) != jwks.keys[0].n || b64url(&e) != jwks.keys[0].e {
+                return Err(
+                    "loaded signing key does not match the published OIDC signing certificate"
+                        .to_string(),
+                );
+            }
+            let audit_path = config
+                .audit_db_path
+                .clone()
+                .or_else(|| registry.audit_db_path.clone());
+            let audit = Arc::new(AuditLog::open(audit_path.as_deref())?);
+            Some(Arc::new(FlowState::new(
+                registry,
+                signer,
+                audit,
+                config.issuer.clone(),
+            )))
+        }
+    };
+    Ok(build_app_with_flow(config, jwks, flow))
 }
