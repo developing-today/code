@@ -198,6 +198,18 @@ pub fn post_needs_drew_to(url: &str, token: &str, nd: &BlockNeedsDrew) -> Result
     Ok(answer)
 }
 
+/// Post an already-built plain (non-needs-drew) alert body to the
+/// throat at `url` (#9177: the closed-bound detective's alert
+/// carries no needsDrew object — the aggregator owns the receiving
+/// side for both shapes). Reuses [`post_json`], so the transport
+/// and error contract match the needs-drew raise exactly; the
+/// caller resolves `token` the same way (by name, through
+/// fleet-secrets) and the throat dedupes by (source, key) either
+/// way. Ok(()) on any 2xx; Err names the status only.
+pub fn post_plain_alert_to(url: &str, token: &str, body: &Value) -> Result<(), String> {
+    post_json(url, token, body).map(|_| ())
+}
+
 /// Parse the snake_case `needs_drew` object the /block body
 /// carries (the shape cmd_block sends and the broker receives):
 /// {ledger_id, question, context?, options?, links?}, with

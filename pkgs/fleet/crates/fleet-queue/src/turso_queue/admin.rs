@@ -1310,7 +1310,7 @@ pub(crate) fn verb_list(t: &TursoBackend, req: &Value) -> Value {
     let select = if rich {
         "id, queue, title, priority, status, dedupe_key, created_at, not_before, \
          worker_id, claimed_at, lease_until, lane_id, platform, attempts, max_attempts, \
-         claim_provider, claim_model, claim_variant, progress, payload, \
+         claim_provider, claim_model, claim_variant, claim_session_id, progress, payload, \
          blocked_deps, dep_next_recheck_at, dep_blocked_until"
     } else {
         "id, queue, title, priority, status, dedupe_key, created_at, not_before, platform"

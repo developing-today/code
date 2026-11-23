@@ -105,9 +105,22 @@
 //!                       beating fleet config's `[gh]` table
 //!   FLEET_GH_CACHE_BIND bind address for `cache-serve`
 //!                       (default 127.0.0.1:4802)
+//!
+//! Close guard (#9177): `issue close` and `issue edit` with an
+//! `--add-label status:done` are refused when the queue broker has a
+//! claimed or parked task bound to that repo#issue, unless the bound
+//! task's completion record (a `fleet-closure/v1` close record
+//! carrying its task id) is presented with
+//! `--completion-record <path>` — a wrapper-only flag, stripped
+//! before gh runs. An issue without a live bound task is unaffected.
+//! A guard refusal exits 2 and never reaches the token rotation.
+//! The queue query fails open (a broker outage must not block every
+//! close — the queue sweep's detective check is the net), and a
+//! build without the queue client skips the guard the same way.
 
 use crate::gh_cache;
 use crate::gh_closure;
+use crate::gh_guard;
 use fleet_config::{Config, DEFAULT_GH_CACHE_PORT};
 use fleet_secrets::Resolver;
 use std::io::Write;
@@ -1457,7 +1470,24 @@ pub fn run(config: &Config, args: &[String]) -> i32 {
     if args.first().is_some_and(|a| a == "closures") {
         return run_closures(&args[1..]);
     }
-    let intent = match gh_closure::parse(args) {
+    let guard_intent = match gh_guard::parse(args) {
+        Ok(intent) => intent,
+        Err(e) => {
+            eprintln!("{e}");
+            return EXIT_USAGE;
+        }
+    };
+    if let Some(intent) = &guard_intent {
+        if let Err(e) = gh_guard::check(intent) {
+            eprintln!("fleet gh close guard: {e}");
+            return EXIT_USAGE;
+        }
+    }
+    let parsed_args = guard_intent
+        .as_ref()
+        .map(|intent| intent.gh_args.as_slice())
+        .unwrap_or(args);
+    let intent = match gh_closure::parse(parsed_args) {
         Ok(intent) => intent,
         Err(e) => {
             eprintln!("{e}");
@@ -1466,7 +1496,7 @@ pub fn run(config: &Config, args: &[String]) -> i32 {
     };
     let call_args = match &intent {
         Some(i) => i.gh_args_with_reason(),
-        None => args.clone(),
+        None => parsed_args.to_vec(),
     };
     let gh_bin = std::env::var("FLEET_GH_BIN").unwrap_or_else(|_| "gh".to_string());
     let sources = rotation(&call_args);

@@ -1511,7 +1511,41 @@ pub(crate) fn verb_sweep(t: &TursoBackend, req: &Value) -> Value {
         if let Some(s) = quarantine_summary {
             out["quarantine_recheck"] = s;
         }
-        if expired > 0 || do_revalidate || do_prune || dep_checked > 0 || quarantine_checked > 0 {
+        // #9177: the closed-bound detective rides the sweep too —
+        // the same minutely timer already POSTs /sweep, so every
+        // bound (session-stamped claimed|parked) task gets its
+        // issue read on GitHub once per cycle and crossed with the
+        // closure log; a closed issue without the bound task's
+        // completion record raises one throat alert. Opt out per
+        // call: closed_bound=false. The detective never fails the
+        // sweep: its errors (store, unreadable log) are reported
+        // inside its own summary and the cycle continues.
+        let closed_bound_summary = if req_bool(req, "closed_bound").unwrap_or(true) {
+            match run_closed_bound_checks(
+                t,
+                req_i64(req, "closed_bound_limit").unwrap_or(200),
+            ) {
+                Ok(s) => Some(s),
+                Err(e) => Some(json!({"error": e})),
+            }
+        } else {
+            None
+        };
+        let closed_bound_missing = closed_bound_summary
+            .as_ref()
+            .and_then(|s| s.get("missing_record"))
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0);
+        if let Some(s) = closed_bound_summary {
+            out["closed_bound"] = s;
+        }
+        if expired > 0
+            || do_revalidate
+            || do_prune
+            || dep_checked > 0
+            || quarantine_checked > 0
+            || closed_bound_missing > 0
+        {
             event(t, Some("fleet-sweeper"), None, "sweep", &out)?;
         }
         Ok(out)

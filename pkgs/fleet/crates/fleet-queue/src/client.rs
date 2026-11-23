@@ -100,6 +100,53 @@ pub fn run(args: &[String]) -> i32 {
     }
 }
 
+/// #9177 close-guard lookup: every `claimed` and `parked` task row
+/// (the statuses whose live binding makes an issue's close or
+/// status:done write a guarded one), across all queues, in the
+/// rich /list form that carries each row's `payload` and
+/// `dedupe_key` for client-side issue matching. Paged exactly like
+/// `repo-queue list`. Library-shaped — never prints, never exits:
+/// Err means the broker path was unavailable and the caller owns
+/// the fail-open decision (fleet gh's standing rule: the guard
+/// fails open, the sweep's detective check is the net).
+///
+/// A rejected client token still exits 3 from the session-proxy
+/// leg, exactly like any queue verb: an auth wall is a wall, not a
+/// fail-open condition.
+pub fn guard_rows(limit: i64) -> Result<Vec<Value>, String> {
+    let limit = validate_list_limit(limit).map_err(|e| e)?;
+    let mut rows: Vec<Value> = Vec::new();
+    for status in ["claimed", "parked"] {
+        for (offset, page_limit) in list_pages(limit) {
+            let resp = call_result(
+                "/list",
+                &json!({
+                    "rich": true,
+                    "status": status,
+                    "limit": page_limit,
+                    "offset": offset,
+                }),
+            )
+            .map_err(|(_, msg)| msg)?;
+            if resp.get("ok").and_then(|o| o.as_bool()) != Some(true) {
+                let msg = resp
+                    .get("error")
+                    .and_then(|e| e.as_str())
+                    .unwrap_or("queue-broker /list error")
+                    .to_string();
+                return Err(msg);
+            }
+            let page = list_rows(&resp)?;
+            let short_page = (page.len() as i64) < page_limit;
+            rows.extend(page);
+            if short_page {
+                break;
+            }
+        }
+    }
+    Ok(rows)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
