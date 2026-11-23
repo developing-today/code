@@ -203,6 +203,7 @@ class TestMuseBootstrapCheckOp(unittest.TestCase):
             "ln",
             "cp",
             "stat",
+            "timeout",
         ):
             resolved = shutil.which(name)
             if resolved:
