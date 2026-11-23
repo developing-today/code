@@ -1466,6 +1466,24 @@ impl SessionIo for SshIo {
                             if !held.is_empty() {
                                 return Inbound::Text(raw_frame(&SshInputFrame::Bytes(held)));
                             }
+                            // The probe has just closed, so kitty
+                            // activation may newly hold (Slice E): check
+                            // before the next iteration parks on a bare
+                            // frame read, or the push would wait for
+                            // input that is itself waiting on the push.
+                            self.maybe_begin_kitty().await;
+                            if self.kitty.is_engaged() {
+                                return match self.kitty_next().await {
+                                    KittyRead::Token(bytes) => {
+                                        Inbound::Text(raw_frame(&SshInputFrame::Bytes(bytes)))
+                                    }
+                                    KittyRead::Resize(resize) => {
+                                        self.previous_screen = None;
+                                        Inbound::Text(raw_frame(&resize))
+                                    }
+                                    KittyRead::Closed => Inbound::Closed,
+                                };
+                            }
                         }
                     }
                 }
