@@ -899,9 +899,21 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 		// text script never prepares (CheckImportsText resolves no
 		// graph), so only file runs reach the wiring.
 		if opts.File != "" {
-			release, perr := pointRunAtPreparedEnv(runCtx, opts, rt.Kind, rep.Prepared, workDir, depsFileLinkLocked)
+			release, pflags, perr := pointRunAtPreparedEnv(runCtx, opts, rt.Kind, rep.Prepared, workDir, depsFileLinkLocked)
 			if perr != nil {
 				return nil, perr
+			}
+			if len(pflags) > 0 {
+				// The Deno form of the wiring speaks in flags
+				// (--import-map), spliced before the script path
+				// exactly as the deps block's flags are.
+				inner := rt.Args
+				rt.Args = func(script string) []string {
+					a := inner(script)
+					out := append([]string{}, a[:len(a)-1]...)
+					out = append(out, pflags...)
+					return append(out, a[len(a)-1])
+				}
 			}
 			if release != nil {
 				defer release()
@@ -1224,14 +1236,19 @@ func linkNodeModules(scriptDir, workDir string) error {
 	return nil
 }
 
-// pointRunAtPreparedEnv points a Node or Bun file run at the
-// environment stage 3 of #1915 prepared for its resolved imports: the
+// pointRunAtPreparedEnv points a file run at the environment stage
+// 3 of #1915 prepared for its resolved imports, in the form its
+// runtime consumes. Node and Bun take the node_modules form: the
 // prepared entry's node_modules is linked beside the script, where
 // the runtime's resolution looks for it -- the same placement the
-// declared-dependency set gets from linkDepsForFileRun. The returned
-// function releases what the wiring holds (the script directory's
-// lock, unless the deps block already holds it, and the cache lease)
-// and is deferred by Run, so both are held until the process exits.
+// declared-dependency set gets from linkDepsForFileRun. Deno takes
+// the import-map form (pointDenoRunAtPreparedEnv), rendered from the
+// same entry and passed with --import-map. The returned function
+// releases what the wiring holds (the script directory's lock,
+// unless the deps block already holds it, and the cache lease) and
+// is deferred by Run, so both are held until the process exits; the
+// returned flags, when any, are spliced into the run's arguments by
+// Run the same way the deps block's flags are.
 //
 // When the run prepared no environment -- report mode, an empty
 // resolved set, or no graph to resolve -- the wiring instead removes
@@ -1243,21 +1260,22 @@ func linkNodeModules(scriptDir, workDir string) error {
 // fall-back: prepare reported success, so running on without the
 // environment would surface the same missing packages as a runtime
 // module error -- the failure shape the pipeline exists to replace.
-func pointRunAtPreparedEnv(ctx context.Context, opts Options, kind string, prepared *preflight.PreparedSet, workDir string, alreadyLocked bool) (func(), error) {
+func pointRunAtPreparedEnv(ctx context.Context, opts Options, kind string, prepared *preflight.PreparedSet, workDir string, alreadyLocked bool) (func(), []string, error) {
+	if kind == KindDeno {
+		return pointDenoRunAtPreparedEnv(prepared, workDir)
+	}
 	if kind != KindNode && kind != KindBun {
-		// The prepared environment is in node_modules form; Deno's
-		// import-map form is a later slice of #1915.
-		return nil, nil
+		return nil, nil, nil
 	}
 	abs, err := filepath.Abs(opts.File)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	scriptDir := filepath.Dir(abs)
 	if prepared == nil || prepared.Dir == "" {
 		if alreadyLocked {
 			removePreparedLink(scriptDir)
-			return nil, nil
+			return nil, nil, nil
 		}
 		// The removal is a link change like any other: take the
 		// directory's lock and hold it for the run, so a concurrent
@@ -1265,14 +1283,14 @@ func pointRunAtPreparedEnv(ctx context.Context, opts Options, kind string, prepa
 		// run -- or have its own link removed from under it.
 		unlock, lerr := lockScriptDirs(ctx, scriptDir)
 		if lerr != nil {
-			return nil, preflightErr(ctx, lerr)
+			return nil, nil, preflightErr(ctx, lerr)
 		}
 		removePreparedLink(scriptDir)
-		return unlock, nil
+		return unlock, nil, nil
 	}
 	modules := filepath.Join(prepared.Dir, "node_modules")
 	if st, serr := os.Stat(modules); serr != nil || !st.IsDir() {
-		return nil, fmt.Errorf("imports: the prepared dependency environment at %s has no node_modules to run against", prepared.Dir)
+		return nil, nil, fmt.Errorf("imports: the prepared dependency environment at %s has no node_modules to run against", prepared.Dir)
 	}
 	// Lease the cache entry for the run's lifetime so pruning cannot
 	// delete it from under a live exec (#1908) -- the same lease the
@@ -1297,16 +1315,16 @@ func pointRunAtPreparedEnv(ctx context.Context, opts Options, kind string, prepa
 		unlock, lerr := lockScriptDirs(ctx, scriptDir)
 		if lerr != nil {
 			release()
-			return nil, preflightErr(ctx, lerr)
+			return nil, nil, preflightErr(ctx, lerr)
 		}
 		inner := release
 		release = func() { unlock(); inner() }
 	}
 	if lerr := linkPreparedNodeModules(scriptDir, prepared.Dir, workDir); lerr != nil {
 		release()
-		return nil, fmt.Errorf("imports: link the prepared environment beside the script: %w", lerr)
+		return nil, nil, fmt.Errorf("imports: link the prepared environment beside the script: %w", lerr)
 	}
-	return release, nil
+	return release, nil, nil
 }
 
 // linkPreparedNodeModules symlinks a prepared environment's
