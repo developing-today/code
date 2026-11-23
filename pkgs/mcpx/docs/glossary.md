@@ -68,10 +68,10 @@ one itself and polls for readiness (the poll interval is
 calls `<namespace>.<tool>(…)`.
 
 **operation** — one entry in the daemon's `/v1` operation
-table (`internal/api.Ops`): a method, a path, and where each
-parameter travels. The CLI commands, the MCP tools, the
-OpenAPI document and the Go client are all derived from this
-one table. See [Parity](./parity.md).
+table (`api.Ops` in `internal/api/ops.go`): a method, a path,
+and where each parameter travels. The CLI commands, the MCP
+tools, the OpenAPI document and the Go client are all derived
+from this one table. See [Parity](./parity.md).
 
 **parity** — the property that the four derived surfaces
 agree, because they are generated from the same declarations;
