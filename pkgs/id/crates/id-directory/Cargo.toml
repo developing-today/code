@@ -32,6 +32,7 @@ id-sync = { path = "../id-sync", default-features = false }
 iroh-tickets = "1"
 libc = "0.2"
 p2panda-core = { git = "https://github.com/p2panda/p2panda", rev = "da80c05b95269926bf58121cf6a2d3dd5ca41dfc" }
+postcard = { version = "1", features = ["alloc"] }
 rand = "0.10"
 rmp-serde = "1"
 scrypt = "0.12"
