@@ -23,6 +23,7 @@ import { buildHealthDocument } from "./health.ts";
 import { routes as ingestionRoutes } from "./routes/ingestion.ts";
 import { routes as queryRoutes } from "./routes/query.ts";
 import { routes as queueRoutes } from "./routes/queue.ts";
+import { routes as sessionRoutes } from "./routes/sessions.ts";
 import { routes as stampingRoutes } from "./routes/stamping.ts";
 import { routes as syncRoutes } from "./routes/sync.ts";
 
@@ -65,6 +66,7 @@ const META_ROUTES: RouteDef[] = [
 
 export const ROUTES: RouteDef[] = [
   ...META_ROUTES,
+  ...sessionRoutes,
   ...stampingRoutes,
   ...queryRoutes,
   ...queueRoutes,
