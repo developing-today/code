@@ -208,7 +208,12 @@ the Android app alike (which is the same site in Chrome).
   never came is safe: Cloudflare keeps the names it did (a week, three
   hundred), and a machine keeps its own (`src/named.ts`). A name is
   taken by one arrival at a time: a second one while the first is still
-  being done is told so, and asks again.
+  being done is told so, and asks again. And a name keeps to the side
+  that first took it, Cloudflare or a machine, whichever would be
+  chosen for it later.
+- **"Sent" means recorded.** An answer the platform took and did not
+  record (a question that was settled in the meantime) is not counted
+  as sent: it is listed under "could not be done", with why.
 - **In the order it was done.** Something done now goes behind whatever
   is already waiting, oldest first, and is not sent ahead of it. Two
   about the same thing (an issue ranked twice, a task moved twice) keep

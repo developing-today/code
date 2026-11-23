@@ -480,7 +480,22 @@ found three more of the same kinds. All are fixed in the same change.
   with no cache at all (a browser that gives the site no storage) the
   worker installs and answers as if it kept nothing.
 
-Checked: 339 tests under bun, the keeper's 25. 40 planted faults in
+A second review of those fixes found two more, both real:
+
+- **A name could be done once on each side.** Which side does a kind
+  can change (the edge is turned away for an hour, then takes it
+  back). An action given to the laptop, its answer lost, and sent again
+  after the change was done again by the edge, which had no record of
+  the name; and the other way about. The edge now writes down a name
+  it hands to a machine as given, and looks a name up before choosing
+  a side: a name keeps to the side that first took it.
+- **A refused answer was counted as sent.** An answer to a question
+  settled in the meantime comes back as a success that says "not
+  recorded". Sent from what the device kept, it was marked sent. It is
+  now "could not be done", with why, as the laptop already says of one
+  it does late.
+
+Checked: 341 tests under bun, the keeper's 25. 46 planted faults in
 the new code, all caught (two more were planted and found to change
 nothing: each is behind a second guard). In a real Chrome against both
 demos: the offline flow, light

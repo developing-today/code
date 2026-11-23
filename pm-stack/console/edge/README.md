@@ -344,6 +344,15 @@ open nothing.
   waits once. A name is taken by one arrival at a time, here and on the
   laptop, before anything else is waited for: of two that arrive
   together one does it and the other is told it is being done.
+- A name keeps to the side that first took it. What the edge hands to
+  a machine it writes down as given, under the name; sent again, it
+  goes to a machine again, even if the edge would do that kind itself
+  by then, and what the edge did is answered from the edge's record
+  even if it would hand that kind over by then. Chosen afresh each
+  time, a name whose answer was lost while the choice changed could be
+  done once on each side. The cost: something that may not be done
+  late, given to a machine that then cannot be reached, stays the
+  machine's (the edge cannot know whether it was done).
 - What is done late is done in the order the owner did it. An action
   that may be held goes behind an earlier one about the same thing (the
   same issue, task, reference or set of questions) that a machine has

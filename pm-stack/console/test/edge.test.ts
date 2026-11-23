@@ -3239,12 +3239,81 @@ describe("the edge does the core itself", () => {
     w.ghRefuses.push((method, url) => method === "PUT" && url.includes("/merge"));
     const first = await w.act("pr.merge", { pr: 55 }, id);
     expect(await first.json()).toMatchObject({ ok: true, result: { merged: 55 } });
-    // Nothing was done here, so nothing is written down here under the name ...
-    expect(w.stored.has(`a:${id}`)).toBe(false);
+    // Nothing was done here: what is written down under the name is
+    // that it was given to a machine ...
+    expect(w.stored.get(`a:${id}`)).toMatchObject({ kind: "pr.merge", state: "given" });
     // ... and sent again, it goes to the laptop, which knows it did it.
     const second = await w.act("pr.merge", { pr: 55 }, id);
     expect(await second.json()).toMatchObject({ ok: true, result: { merged: 55 }, again: true });
     expect(w.ran).toEqual([{ kind: "pr.merge", args: { pr: 55 } }]);
+    // Noted once in the list of names, though it was noted twice.
+    expect((w.stored.get("acted") as { id: string }[]).filter((e) => e.id === id)).toHaveLength(1);
+  });
+
+  test("a name keeps to the side that first took it: given to the laptop, it is not done here later, and done here, it is not given to the laptop later", async () => {
+    const w = await primary();
+    const merge = (method: string, url: string) => method === "PUT" && url.includes("/merge");
+    const comment = (method: string, url: string) => method === "POST" && /\/issues\/\d+\/comments$/.test(url);
+    const posted = () => w.githubCalls.filter((c) => comment(c.method, c.url)).length;
+    // This side is turned away for comments, so one goes to the laptop,
+    // which posts it; and its answer is lost on the way back.
+    w.ghRefuses.push(comment);
+    const given = "0d000000-0000-4000-8000-000000000001";
+    w.net.loseAnswer = true;
+    const first = await w.act("issue.comment", { issue: 7, text: "once, by the laptop" }, given);
+    w.net.loseAnswer = false;
+    expect(await first.json()).toMatchObject({ ok: true, held: true });
+    expect(w.ran.filter((r) => r.kind === "issue.comment")).toHaveLength(1);
+    const before = posted();
+    // The token is put right and this side takes comments back.
+    w.ghRefuses.length = 0;
+    expect((await w.act("edge.retry", {})).status).toBe(200);
+    expect(((await (await w.browse("/console/health")).json()) as { refused: string[] }).refused).toEqual([]);
+    // The device never heard, and sends the comment again under its name.
+    // It is the laptop's: this side does not post it.
+    const again = await w.act("issue.comment", { issue: 7, text: "once, by the laptop" }, given);
+    expect(await again.json()).toMatchObject({ ok: true });
+    expect(posted()).toBe(before);
+    expect(w.ran.filter((r) => r.kind === "issue.comment")).toHaveLength(1);
+    // A new comment, under a new name, is this side's again.
+    const fresh = await w.act("issue.comment", { issue: 7, text: "a new one" }, "0d000000-0000-4000-8000-000000000002");
+    expect(await fresh.json()).toMatchObject({ ok: true });
+    expect(posted()).toBe(before + 1);
+    expect(w.ran.filter((r) => r.kind === "issue.comment")).toHaveLength(1);
+
+    // Something that may not be done late, given to the laptop the same
+    // way: its answer lost, the device is told it is not known ...
+    w.ghRefuses.push(merge);
+    const merged = "0d000000-0000-4000-8000-000000000003";
+    w.net.loseAnswer = true;
+    const lost = await w.act("pr.merge", { pr: 55 }, merged);
+    w.net.loseAnswer = false;
+    expect(lost.status).toBe(503);
+    expect(w.ran.filter((r) => r.kind === "pr.merge")).toHaveLength(1);
+    w.ghRefuses.length = 0;
+    await w.act("edge.retry", {});
+    // ... and asking again under the name reaches the laptop, which
+    // says it merged it. This side never asks GitHub to merge.
+    const asked = await w.act("pr.merge", { pr: 55 }, merged);
+    expect(await asked.json()).toMatchObject({ ok: true, result: { merged: 55 }, again: true });
+    expect(w.ghMerged).toEqual([]);
+    expect(w.ran.filter((r) => r.kind === "pr.merge")).toHaveLength(1);
+
+    // The other way about: done here, then this side is turned away for
+    // the kind. The name is still answered from here, and the laptop is
+    // not asked to do it.
+    const here = "0d000000-0000-4000-8000-000000000004";
+    const done = await w.act("issue.rank", { issue: 301, rank: "next" }, here);
+    expect(await done.json()).toMatchObject({ ok: true });
+    w.ghRefuses.push((method) => method !== "GET");
+    const turned = await w.act("issue.rank", { issue: 201, rank: "next" }, "0d000000-0000-4000-8000-000000000005");
+    expect(turned.status).not.toBe(200);
+    expect(((await (await w.browse("/console/health")).json()) as { refused: string[] }).refused).toContain(
+      "issue.rank",
+    );
+    const repeat = await w.act("issue.rank", { issue: 301, rank: "next" }, here);
+    expect(await repeat.json()).toMatchObject({ ok: true, again: true });
+    expect(w.ran.filter((r) => r.kind === "issue.rank")).toEqual([]);
   });
 
   test("the names remembered here are bounded: the oldest are forgotten, and an answer too long to keep is kept as how it went", async () => {

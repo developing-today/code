@@ -184,7 +184,9 @@ const ACTED_BODY_CHARS = 4000;
 interface Acted {
   at: number;
   kind: string;
-  state: "running" | "done";
+  /** "given": handed to a machine under this name. Nothing was done
+   * here, and only the machine knows what became of it. */
+  state: "running" | "done" | "given";
   status?: number;
   body?: Record<string, unknown>;
 }
@@ -1533,11 +1535,21 @@ export class Edge {
         // console's own classes, and is never sent to a machine, so no
         // machine can do it a second time. Otherwise it is a machine's
         // to do.
-        if (
-          (DIRECT_ACTIONS as readonly string[]).includes(kind) &&
-          this.primary(cfg) &&
-          !this.refusedKinds().includes(kind)
-        ) {
+        // A name keeps to the side that first took it, whatever would
+        // be chosen for it today. What this side did is answered from
+        // its record; what was given to a machine goes to a machine
+        // again, which has its own. Chosen afresh each time, a name
+        // whose answer was lost while the choice changed (this side was
+        // turned away for an hour, say) would be done once on each side.
+        const before = id === null ? null : (((await this.kv.get(`a:${id}`)) as Acted | undefined) ?? null);
+        const given = before?.state === "given";
+        const here =
+          before !== null
+            ? !given
+            : (DIRECT_ACTIONS as readonly string[]).includes(kind) &&
+              this.primary(cfg) &&
+              !this.refusedKinds().includes(kind);
+        if (here) {
           try {
             return await this.once(id, kind, () =>
               this.directAct(kind, args as Record<string, unknown>, by, who.via, id),
@@ -1546,6 +1558,11 @@ export class Edge {
             // Refused here before anything was done: a machine's, below.
             if (!(error instanceof HandOver)) throw error;
           }
+        }
+        // Written down as a machine's before it goes anywhere.
+        if (id !== null && !given) {
+          await this.kv.put(`a:${id}`, { at: this.now(), kind, state: "given" } satisfies Acted);
+          await this.actedIndex(id);
         }
         // What may be done late goes behind anything already waiting
         // for a machine that is about the same thing. Sent straight to
@@ -1646,7 +1663,11 @@ export class Edge {
   /** Note a name as used, and forget the ones that are too old or too many. */
   private async actedIndex(id: string): Promise<void> {
     const now = this.now();
-    const index = ((await this.kv.get("acted")) as { id: string; at: number }[] | undefined) ?? [];
+    // Once in the list, however often it is noted (a name given to a
+    // machine after this side was turned away is noted twice).
+    const index = (((await this.kv.get("acted")) as { id: string; at: number }[] | undefined) ?? []).filter(
+      (entry) => entry.id !== id,
+    );
     index.push({ id, at: now });
     const keep = index.filter((entry) => now - entry.at < ACTED_FOR_MS).slice(-ACTED_KEPT);
     const kept = new Set(keep.map((entry) => entry.id));

@@ -166,9 +166,24 @@
       return { state: "waiting", note: "Sign in again to send this.", stop: true, signin: true };
     }
     if (status === 200 && body.ok === true) {
-      return body.held === true
-        ? { state: "held", note: "Kept for the laptop, which will do it when it is back.", result: null }
-        : { state: "done", note: "", result: body.result ?? null };
+      if (body.held === true) {
+        return { state: "held", note: "Kept for the laptop, which will do it when it is back.", result: null };
+      }
+      // Taken, and answered "not recorded" without an error: an answer
+      // to a question that was settled in the meantime. That is not
+      // "sent", and it is said as what it is (the laptop says the same
+      // of one it does late).
+      const refused = Array.isArray(body.result?.refused) ? body.result.refused : [];
+      if (refused.length > 0) {
+        const why = String(refused[0]?.why ?? "no reason given");
+        const applied = Number(body.result?.applied) || 0;
+        return {
+          state: "failed",
+          note: applied > 0 ? `${applied} recorded, ${refused.length} not recorded: ${why}` : `Not recorded: ${why}`,
+          result: body.result,
+        };
+      }
+      return { state: "done", note: "", result: body.result ?? null };
     }
     const why = typeof body.error === "string" && body.error !== "" ? body.error : `http ${status}`;
     // Being done right now under this name: ask again shortly.

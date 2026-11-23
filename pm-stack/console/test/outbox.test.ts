@@ -221,6 +221,45 @@ test("what each kind of answer does to an entry", () => {
   }
 });
 
+test("an answer the platform took and did not record is not counted as sent", async () => {
+  // The question was settled before the answer kept on the device got there.
+  const settled = { applied: 0, refused: [{ qid: "q1", why: "already-resolved" }] };
+  expect(O.classify({ status: 200, body: { ok: true, result: settled } })).toEqual({
+    state: "failed",
+    note: "Not recorded: already-resolved",
+    result: settled,
+  });
+  // Some of a set recorded, some not: said as both.
+  const part = { applied: 2, refused: [{ qid: "q3", why: "already-resolved" }, { qid: "q4" }] };
+  expect(O.classify({ status: 200, body: { ok: true, result: part } })).toMatchObject({
+    state: "failed",
+    note: "2 recorded, 2 not recorded: already-resolved",
+  });
+  expect(O.classify({ status: 200, body: { ok: true, result: { applied: 0, refused: [{}] } } }).note).toBe(
+    "Not recorded: no reason given",
+  );
+  // Answered again from the platform's record, it is said the same.
+  expect(O.classify({ status: 200, body: { ok: true, result: settled, again: true } }).state).toBe("failed");
+  // Nothing refused is plain success, whatever else the result says.
+  for (const result of [{ applied: 1, refused: [] }, { applied: 1 }, { refused: "no" }, null, "text", 7]) {
+    expect([result, O.classify({ status: 200, body: { ok: true, result } }).state]).toEqual([result, "done"]);
+  }
+  // Sent from what was kept: it ends as "could not be done", with why, and is said so.
+  const store = O.memoryStore();
+  await store.put(O.make("question.answer", { set: "s1", qid: "q1", option: "a" }, T0));
+  await store.put(O.make("ask.send", { text: "x" }, T0 + 1));
+  const out = await O.flush(
+    store,
+    async (e) => (e.kind === "question.answer" ? { status: 200, body: { ok: true, result: settled } } : ok()),
+    () => T0 + 2,
+  );
+  expect(out.changed.map((e) => [e.kind, e.state, e.note])).toEqual([
+    ["question.answer", "failed", "Not recorded: already-resolved"],
+    ["ask.send", "done", ""],
+  ]);
+  expect(O.summary(await store.all())).toMatchObject({ failed: 1, done: 1, open: 1 });
+});
+
 test("a timely action is sent by itself only while it is fresh, or once the owner has looked again", () => {
   const merge = O.make("pr.merge", { pr: 55 }, T0);
   expect(O.due(merge, T0)).toBe(true);
