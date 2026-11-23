@@ -36,10 +36,11 @@
 //! to leave, even parked or out of budget), it is charged nothing, and
 //! it is still audited.
 //!
-//! `program.invoke` arrives with spike step 5. The policy point
-//! already enforces its allowlist and charges its quota axis; until
-//! the bridge grows the tool, an admitted invoke ends as an audited
-//! bridge refusal (`UnknownTool`), charged like any admitted attempt.
+//! `program.invoke` (spike step 5, section 4.6) runs through the
+//! same order: the allowlist is its ceiling leg, the program axis is
+//! charged before execution, and the bridge translates an admitted
+//! invoke into the single `input` frame that carries it — one
+//! invocation per call, no chaining.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -121,13 +122,14 @@ impl Quota {
 }
 
 /// The charge one admitted action costs, by tool: every action costs
-/// one tool call; the frame-shaped tools cost one frame;
-/// `program.invoke` costs one program invocation.
+/// one tool call; the frame-shaped tools (join, subscribe, chat, and
+/// the program invocation's `input` frame) cost one frame;
+/// `program.invoke` additionally costs one program invocation.
 fn charge_for(tool: &str) -> Quota {
     Quota {
         frames: u64::from(matches!(
             tool,
-            "world.join" | "screen.subscribe" | "chat.post"
+            "world.join" | "screen.subscribe" | "chat.post" | "program.invoke"
         )),
         tool_calls: 1,
         program_invocations: u64::from(tool == "program.invoke"),
@@ -1139,21 +1141,20 @@ mod tests {
             })
         ));
         assert_eq!(session.spend().program_invocations, 0);
-        // Inside the allowlist: admitted and charged; the v1 bridge
-        // has no such tool yet (spike step 5), so the attempt ends
-        // as an audited bridge refusal with the charge standing.
-        assert!(matches!(
-            session.act("program.invoke", &json!({ "program": "scorekeeper" })),
-            PolicyOutcome::Refused(PolicyRefusal {
-                kind: RefusalKind::Bridge,
-                ..
-            })
-        ));
+        // Inside the allowlist: admitted, charged on the program
+        // axis, and executed — the bridge translates the invoke into
+        // the single `input` frame that carries it (spike step 5).
+        assert_eq!(
+            session.act(
+                "program.invoke",
+                &json!({ "program": "scorekeeper", "object": "board", "arguments": "4" })
+            ),
+            PolicyOutcome::Executed(ToolAction::SendFrame(
+                json!({ "type": "input", "data_hex": "34" })
+            ))
+        );
         assert_eq!(session.spend().program_invocations, 1);
-        assert!(matches!(
-            last_outcome(&session),
-            AuditOutcome::RefusedBridge { .. }
-        ));
+        assert!(matches!(last_outcome(&session), AuditOutcome::Executed));
         assert_eq!(
             session.audit_events().last().unwrap().object.as_deref(),
             Some("scorekeeper")
