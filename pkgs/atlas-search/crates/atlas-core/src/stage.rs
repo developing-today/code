@@ -327,7 +327,7 @@ pub fn chunk_artifact_text(text: &str) -> Vec<String> {
     chunks
 }
 
-fn sha256_hex(text: &str) -> String {
+pub(crate) fn sha256_hex(text: &str) -> String {
     use sha2::{Digest, Sha256};
     let digest = Sha256::digest(text.as_bytes());
     digest.iter().map(|b| format!("{b:02x}")).collect()
@@ -1216,7 +1216,7 @@ fn ensure_registry(conn: &Connection) -> Result<()> {
         .map_err(|e| Error::backend(format!("registry: applying v1 DDL: {e}")))
 }
 
-fn open(path: &Path) -> Result<Connection> {
+pub(crate) fn open(path: &Path) -> Result<Connection> {
     Connection::open(path)
         .map_err(|e| Error::backend(format!("staging: opening {}: {e}", path.display())))
 }
