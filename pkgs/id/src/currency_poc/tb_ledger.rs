@@ -157,6 +157,9 @@ fn to_tb_account(account: &Account) -> std::result::Result<tb::Account, AccountE
     if account.flags.credits_must_not_exceed_debits {
         flags = flags | tb::AccountFlags::CreditsMustNotExceedDebits;
     }
+    if account.flags.history {
+        flags = flags | tb::AccountFlags::History;
+    }
     Ok(tb::Account {
         id: account.id,
         ledger: account.ledger,
@@ -178,6 +181,7 @@ fn from_tb_account(account: &tb::Account, code: u16) -> Account {
             credits_must_not_exceed_debits: account.flags.0
                 & tb::AccountFlags::CreditsMustNotExceedDebits.0
                 != 0,
+            history: account.flags.0 & tb::AccountFlags::History.0 != 0,
         },
     }
 }

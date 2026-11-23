@@ -4766,6 +4766,7 @@ dependencies = [
  "id-cli",
  "id-config",
  "id-core",
+ "id-currency-registry",
  "id-directory",
  "id-events",
  "id-groups",
