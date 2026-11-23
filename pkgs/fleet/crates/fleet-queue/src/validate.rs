@@ -64,28 +64,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 pub const PRIORITY_SCALE: [i64; 7] = [10, 20, 30, 40, 50, 70, 90];
 /// #7030: Drew's ratified label bands (ratified 2026-11-07): an issue
-/// carrying the     use proptest::prelude::*;
-
-    #[test]
-    fn issue_dispatch_dedupe_preserves_identity() {
-        assert!(match_dedupe("main-broken-run-45018365692-dispatch-create").is_none());
-        let base = "repo-health:v1:fix:developing-today/code:issue:12527";
-        for key in [base.to_string(), format!("{base}:dispatch:01234567"), format!("{base}:dispatch:0123456789abcdef")] {
-            let mut packet = json!({
-                "title": "MCPX repair",
-                "priority": 40,
-                "dedupe_key": key,
-                "payload": payload_with(json!({"issue": {"number": 12527}, "kind": "small_fix"})),
-            });
-            assert!(validate_packet(&packet).0.is_empty(), "{:?}", validate_packet(&packet).0);
-            packet["payload"]["issue"]["number"] = json!(12528);
-            assert!(validate_packet(&packet).0.iter().any(|e| e.contains("does not match payload.issue.number")));
-        }
-        for suffix in ["", "ab", "0123456g", "0123456789abcdef0", "00000000:extra"] {
-            assert!(match_dedupe(&format!("{base}:dispatch:{suffix}")).is_none());
-        }
-    }
-expedite` label queues at priority 15 (the 10–20
+/// carrying the `expedite` label queues at priority 15 (the 10–20
 /// band) and one carrying `next-up` at 25 (the 20–30 band). These are
 /// the ratified *stored* values — deliberately not on PRIORITY_SCALE,
 /// which constrains what a packet may state; the broker claims by
@@ -1253,7 +1232,28 @@ pub fn task_from_packet(packet: &Value, queue: &str) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-`
+    use proptest::prelude::*;
+
+    #[test]
+    fn issue_dispatch_dedupe_preserves_identity() {
+        assert!(match_dedupe("main-broken-run-45018365692-dispatch-create").is_none());
+        let base = "repo-health:v1:fix:developing-today/code:issue:12527";
+        for key in [base.to_string(), format!("{base}:dispatch:01234567"), format!("{base}:dispatch:0123456789abcdef")] {
+            let mut packet = json!({
+                "title": "MCPX repair",
+                "priority": 40,
+                "dedupe_key": key,
+                "payload": payload_with(json!({"issue": {"number": 12527}, "kind": "small_fix"})),
+            });
+            assert!(validate_packet(&packet).0.is_empty(), "{:?}", validate_packet(&packet).0);
+            packet["payload"]["issue"]["number"] = json!(12528);
+            assert!(validate_packet(&packet).0.iter().any(|e| e.contains("does not match payload.issue.number")));
+        }
+        for suffix in ["", "ab", "0123456g", "0123456789abcdef0", "00000000:extra"] {
+            assert!(match_dedupe(&format!("{base}:dispatch:{suffix}")).is_none());
+        }
+    }
+
     #[test]
     fn packet_max_attempts_validation_and_selection() {
         let payload = payload_with(json!({"issue": {"number": 6423}}));
