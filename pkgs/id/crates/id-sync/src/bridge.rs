@@ -1312,6 +1312,25 @@ mod tests {
         assert!(resumed.withholding.is_empty());
         assert!(resumed.token.is_some());
         assert!(resumed.acks.is_empty());
+
+        // A distinct empty native store must pull the hosted events,
+        // proving convergence in the hosted-to-native direction too.
+        let (_pull_dir, mut pull_store) = open_store();
+        let mut pull_dialer = BridgeDialer::new(BINDING, dalek_key(9));
+        let mut transport = connect(&url).await.unwrap();
+        let pulled = pull_dialer
+            .sync(&mut pull_store, &mut transport, NOW_MS)
+            .await
+            .unwrap();
+        assert!(pulled.withholding.is_empty());
+        assert_eq!(pulled.acks.iter().map(|ack| ack.refused).sum::<u64>(), 0);
+        assert_eq!(pull_store.bridge_sync_entries().unwrap().len(), 3);
+        assert_eq!(
+            pull_store
+                .bridge_chain_next_seq(dalek_key(9).verifying_key().as_bytes())
+                .unwrap(),
+            3
+        );
     }
 
     #[tokio::test]
