@@ -58,7 +58,7 @@ def exercise(directory, cli):
     scratch = directory / "forbidden-output"
     for target in ("outside-fixture/name", "dezren39/../repos", "dezren39/%2e%2e",
                    "developing-today/name?query=1", "developing-today-forks/.."):
-        invalid = subprocess.run([str(CLI), "--repo", target, "--state", str(state),
+        invalid = subprocess.run([str(cli), "--repo", target, "--state", str(state),
                                   "--out", str(scratch)], env=env, capture_output=True)
         assert invalid.returncode == 1 and b"permitted" in invalid.stderr
         assert not scratch.exists()
