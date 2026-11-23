@@ -20,10 +20,11 @@
 //   doors[]      — the component-C front doors of design §3.1 and their
 //                  skeleton state.
 //
-// Skeleton truth: the route modules for the hosted doors are compiled
-// in, but no door carries business logic in this slice, so no native
-// domain is available yet and both capability lists are empty. Each
-// filling issue flips its domain to available as it lands.
+// Truth, kept current per door: the route modules for the hosted
+// doors are compiled in; a domain reports available only when its
+// filling issue has landed the business logic. The stamping create
+// path (#12585) made the hosted-transformed `gh` domain available;
+// the remaining doors are still stubs, and the document says so.
 
 import { SERVICE_NAME, type HostedConfig } from "./config.ts";
 
@@ -31,10 +32,12 @@ export interface HostedDoor {
   id: string;
   routes: string[];
   fillingIssue: string;
+  /** "live" once the filling issue landed the door's logic. */
+  state?: "live" | "stub";
 }
 
 export const HOSTED_DOORS: HostedDoor[] = [
-  { id: "stamping", routes: ["POST /v1/stamps"], fillingIssue: "#12585" },
+  { id: "stamping", routes: ["POST /v1/stamps"], fillingIssue: "#12585", state: "live" },
   { id: "query", routes: ["GET /v1/query", "POST /v1/query"], fillingIssue: "#12587" },
   { id: "queue", routes: ["POST /v1/queue"], fillingIssue: "#12589" },
   { id: "ingestion", routes: ["POST /v1/ingestion/github"], fillingIssue: "#12590" },
@@ -48,6 +51,8 @@ interface NativeDomain {
   capabilities: string[];
   hosted: string;
   fillingIssue?: string;
+  /** True once the filling issue landed this domain at the door. */
+  available?: boolean;
 }
 
 // Name / summary / aliases / capabilities verbatim from
@@ -103,6 +108,7 @@ const NATIVE_DOMAINS: NativeDomain[] = [
     capabilities: ["gh"],
     hosted: "hosted-transformed",
     fillingIssue: "#12585",
+    available: true,
   },
   {
     name: "bridge",
@@ -142,6 +148,9 @@ const NATIVE_DOMAINS: NativeDomain[] = [
 ];
 
 export function buildCapabilitiesDocument(config: HostedConfig): Record<string, unknown> {
+  const availableCapabilities = NATIVE_DOMAINS.filter((d) => d.available).flatMap(
+    (d) => d.capabilities,
+  );
   return {
     build: {
       name: SERVICE_NAME,
@@ -150,22 +159,22 @@ export function buildCapabilitiesDocument(config: HostedConfig): Record<string, 
       profile: "hosted",
       edition: "hosted",
     },
-    capabilities: [],
-    compiled_capabilities: [],
+    capabilities: availableCapabilities,
+    compiled_capabilities: availableCapabilities,
     domains: NATIVE_DOMAINS.map((d) => ({
       name: d.name,
       summary: d.summary,
       aliases: d.aliases,
       capabilities: d.capabilities,
-      available: false,
-      state: "not-in-build",
+      available: d.available ?? false,
+      state: d.available ? "available" : "not-in-build",
       hosted: d.hosted,
       ...(d.fillingIssue ? { filling_issue: d.fillingIssue } : {}),
     })),
     doors: HOSTED_DOORS.map((d) => ({
       id: d.id,
       routes: d.routes,
-      state: "stub",
+      state: d.state ?? "stub",
       filling_issue: d.fillingIssue,
     })),
   };

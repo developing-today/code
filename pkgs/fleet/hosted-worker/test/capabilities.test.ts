@@ -1,8 +1,9 @@
 // Health + capabilities tests (#12583). Oracle: the native
 // `fleet capabilities` document shape (fleet-registry / print_capabilities)
 // for the mirrored fields, and the design §2 dispositions for the
-// hosted values. The skeleton must be truthful: route modules exist,
-// no door carries business logic yet, so nothing reports available.
+// hosted values. The document must be truthful: a domain reports
+// available only when its filling issue landed — so far only the
+// hosted-transformed `gh` domain, via the stamping door (#12585).
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
@@ -60,14 +61,21 @@ test("capabilities mirrors the native shape with hosted values", async () => {
     assert.equal(typeof d.summary, "string");
     assert.ok(Array.isArray(d.aliases));
     assert.ok(Array.isArray(d.capabilities));
-    // Skeleton truth: no business domain is available at this door yet.
-    assert.equal(d.available, false, `${d.name} must not report available in the skeleton`);
+    if (d.name === "gh") continue; // asserted below: landed by #12585
+    // Truth: no other business domain is available at this door yet.
+    assert.equal(d.available, false, `${d.name} must not report available yet`);
     assert.equal(d.state, "not-in-build");
   }
 
   const byName = new Map(doc.domains.map((d) => [d.name, d]));
   assert.equal(byName.get("gh")?.hosted, "hosted-transformed");
   assert.equal(byName.get("gh")?.filling_issue, "#12585");
+  // #12585 landed the hosted gh create path (through the stamping
+  // door): the domain reports available and its capability is listed.
+  assert.equal(byName.get("gh")?.available, true);
+  assert.equal(byName.get("gh")?.state, "available");
+  assert.deepEqual(doc.capabilities, ["gh"]);
+  assert.deepEqual(doc.compiled_capabilities, ["gh"]);
   assert.equal(byName.get("queue")?.hosted, "hosted-front-door");
   assert.equal(byName.get("queue")?.filling_issue, "#12589");
   assert.equal(byName.get("secrets")?.hosted, "native-only");
@@ -84,4 +92,7 @@ test("capabilities mirrors the native shape with hosted values", async () => {
       ["sync", "#12591"],
     ],
   );
+  const doorById = new Map(doc.doors.map((d) => [d.id, d]));
+  assert.equal(doorById.get("stamping")?.state, "live");
+  assert.equal(doorById.get("query")?.state, "stub");
 });

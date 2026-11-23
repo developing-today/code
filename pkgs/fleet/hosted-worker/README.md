@@ -60,23 +60,47 @@ the service skeleton from #12583; each door is filled by its own issue.
   supplied identity is persisted for a later bare invocation.
   `test/session-parity.test.ts` runs the case table transcribed from
   the native resolver's own tests against it.
+- **Stamping create path** (`src/routes/stamping.ts`,
+  `src/metadata.ts`, `src/stamping.ts`, `src/github.ts`, #12585;
+  design §3.1, §5): `POST /v1/stamps` is the hosted world's only
+  stamping authority. It parses any pm-metadata block in the caller's
+  body (#9060 §12 format; a malformed block refuses the create),
+  stamps every fleet-owned provenance field from service sources
+  only — service clock, queue record, session registry, validated
+  token — overwriting caller-supplied provenance values wholesale,
+  preserves caller-owned fields (`direct_parent`, `links`, `lineage`)
+  exactly (injecting required-field defaults when absent), signs the
+  provenance (#12586), creates the GitHub item through the hosted
+  rotation point, and inserts the full record (full Metadata JSON +
+  extracted keys) into the metadata store in the same request. A
+  failed insert leaves the GitHub item intact and is reported in the
+  response (`metadata_inserted: false`) for ingestion to heal.
+  Unconfigured signing fails closed (503) before any write.
+- **GitHub rotation point** (`src/github.ts`, #12585): the fleet
+  App's installation-token rotation, held as Worker secrets
+  (`GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY_PKCS8`,
+  `GITHUB_APP_INSTALLATION_IDS` — configuration by name only).
+  Installation tokens are minted from an App JWT (RS256, WebCrypto)
+  and cached; rate-limit and permission refusals fail over to the
+  next installation, the native #8887 rule. Callers never see a
+  GitHub token, and there is no raw passthrough: every hosted GitHub
+  write goes through a verb that can stamp.
 - **Health + capabilities** (`src/health.ts`, `src/capabilities.ts`):
   public identity surface. `/capabilities` mirrors the native
   `fleet capabilities` JSON shape — same `build` / `capabilities` /
   `compiled_capabilities` / `domains` fields, native registry values —
   with hosted additions (`domains[].hosted` disposition from design
-  §2, `filling_issue`, and a `doors` list). In this skeleton no
-  business domain reports available: the doors are stubs, and the
-  document says so.
+  §2, `filling_issue`, and a `doors` list). A domain reports
+  available only when its filling issue landed: so far the
+  hosted-transformed `gh` domain, via the stamping door.
 
 ## What is a stub
 
-Every door route authenticates, then answers `501 not_implemented`
-naming the issue that fills it:
+The remaining door routes authenticate, then answer
+`501 not_implemented` naming the issue that fills them:
 
 | Door      | Routes                                  | Filled by |
 | --------- | --------------------------------------- | --------- |
-| stamping  | `POST /v1/stamps`                       | #12585    |
 | query     | `GET|POST /v1/query`                    | #12587    |
 | queue     | `POST /v1/queue`                        | #12589    |
 | ingestion | `POST /v1/ingestion/github`             | #12590    |
@@ -102,6 +126,22 @@ so it does not appear in the capabilities `doors` list.
   (`FixtureSessionRegistry`; the worker entry holds one instance at
   module scope). A DB-backed implementation replaces it behind the
   same interface.
+- **Metadata store**: the create path's insert target is #9074's
+  metadata DB, which does not exist yet, so `MetadataStore`
+  (`src/stamping.ts`) is an interface with a fixture in-memory
+  implementation, wired like the session registry. A Turso-backed
+  store replaces it behind the same interface.
+- **Queue record source**: queue facts (queue id, scheduled start,
+  pickup / work-start times) come from the queue record behind the
+  `QueueRecordSource` seam (`src/stamping.ts`). The queue front door
+  (#12589) owns claim records and wires the real source; until then
+  the Worker wires none and queue fields stamp null (the design §5
+  rule for work that is not queue-originated).
+- **GitHub writer**: `GitHubWriter` (`src/github.ts`) is the seam
+  between the stamping route and the write itself. The Worker wires
+  the App rotation writer when fleet App configuration is present
+  and the fixture writer otherwise (local/dev semantics — this
+  package is not deployed).
 
 ## Develop
 

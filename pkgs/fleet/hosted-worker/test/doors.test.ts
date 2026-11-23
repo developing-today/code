@@ -1,8 +1,10 @@
 // Door route-module tests (#12583). Oracle: design §3.1 — one Worker,
 // route modules for the five component-C front doors over the shared
-// plumbing. In the skeleton every door route exists, refuses the
-// unauthenticated (401), and stubs 501 naming its filling issue for an
-// authenticated caller; unknown paths are a plain 404.
+// plumbing. Every door route exists and refuses the unauthenticated
+// (401); the doors still awaiting their filling issue stub 501 naming
+// it for an authenticated caller; unknown paths are a plain 404. The
+// stamping door left the stub table when #12585 landed it — its
+// behaviour is covered by test/stamping.test.ts.
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
@@ -22,6 +24,8 @@ const DOOR_ROUTES: { method: string; path: string; fillingIssue: string }[] = [
   { method: "POST", path: "/v1/sync/queue-github", fillingIssue: "#12591" },
 ];
 
+const STUB_ROUTES = DOOR_ROUTES.filter((r) => r.path !== "/v1/stamps");
+
 test("every door route refuses an unauthenticated request", async () => {
   for (const r of DOOR_ROUTES) {
     const res = await dispatch(
@@ -32,8 +36,8 @@ test("every door route refuses an unauthenticated request", async () => {
   }
 });
 
-test("every door route stubs 501 naming its filling issue for an authenticated caller", async () => {
-  for (const r of DOOR_ROUTES) {
+test("every unfilled door route stubs 501 naming its filling issue for an authenticated caller", async () => {
+  for (const r of STUB_ROUTES) {
     const res = await dispatch(bearerReq(r.path, token, { method: r.method }), h.deps);
     assert.equal(res.status, 501, `${r.method} ${r.path} with a valid token`);
     const body = (await res.json()) as { error: string; message: string };

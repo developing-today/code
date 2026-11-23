@@ -31,9 +31,9 @@ test("a valid RP token resolves to the tenancy binding_id", async () => {
   assert.deepEqual(ctx.roles, ["owner"]);
 });
 
-test("a valid RP token passes auth on a door route (door then stubs 501)", async () => {
+test("a valid RP token passes auth on a door route (a stub door then answers 501)", async () => {
   const token = await h.sign(h.rpPayload());
-  const res = await dispatch(bearerReq("/v1/stamps", token, { method: "POST" }), h.deps);
+  const res = await dispatch(bearerReq("/v1/queue", token, { method: "POST" }), h.deps);
   assert.equal(res.status, 501);
   const body = (await res.json()) as { error: string };
   assert.equal(body.error, "not_implemented");
@@ -101,8 +101,11 @@ test("an agent credential without lane/session claims is refused", async () => {
 });
 
 test("a service token resolves on its scoped doors and is refused outside them", async () => {
+  // The fixture token is scoped to stamping + query; the query door
+  // still stubs, so an in-scope call answers 501 (past the scope
+  // check), while the unscoped queue door refuses at the check.
   const inScope = await dispatch(
-    bearerReq("/v1/stamps", SERVICE_TOKEN, { method: "POST" }),
+    bearerReq("/v1/query", SERVICE_TOKEN, { method: "POST" }),
     h.deps,
   );
   assert.equal(inScope.status, 501);
@@ -154,7 +157,7 @@ test("a cross-tenant assertion header fails closed (service caller)", async () =
 test("a binding header that agrees with the credential is not a refusal", async () => {
   const token = await h.sign(h.rpPayload());
   const res = await dispatch(
-    bearerReq("/v1/stamps", token, {
+    bearerReq("/v1/queue", token, {
       method: "POST",
       headers: { "x-binding-id": BINDING_A },
     }),
