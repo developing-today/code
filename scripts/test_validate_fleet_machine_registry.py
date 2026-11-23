@@ -102,5 +102,88 @@ class RegistryShapeTests(unittest.TestCase):
         self.assertTrue(validator.validate(doc_with(rec)))
 
 
+def earned_health(status="healthy"):
+    """A health block as the watchdog writes it: status + checks record."""
+    return {
+        "source": "watchdog",
+        "last_seen": "2026-11-22T19:00:00Z",
+        "status": status,
+        "checks": {
+            "reported_at": "2026-11-22T19:00:00Z",
+            "reachable": {"state": "ok", "ssh": True, "opencode_server_http": 200},
+            "load_headroom": {"state": "ok", "load15": 6.0, "cpu_cores": 16},
+            "disk_headroom": {"state": "ok", "free_pct": 42.0},
+            "sessions": {"state": "ok", "listed": 50, "active_within_cadence": 3},
+            "last_queue_job": {"state": "ok", "task_id": 21084},
+        },
+    }
+
+
+class HealthEarningTests(unittest.TestCase):
+    """Oracle: §1.5 — health is a watchdog-written cache; a hand-written
+    pass is fabricated and must fail validation."""
+
+    def test_watchdog_written_health_passes(self):
+        rec = valid_record()
+        rec["health"] = earned_health()
+        self.assertEqual(validator.validate(doc_with(rec)), [])
+
+    def test_bare_handwritten_healthy_fails(self):
+        rec = valid_record()
+        rec["health"] = {"source": "watchdog", "last_seen": None, "status": "healthy"}
+        errors = validator.validate(doc_with(rec))
+        self.assertTrue(any("fabricated pass" in e for e in errors), errors)
+
+    def test_status_with_last_seen_but_no_checks_fails(self):
+        rec = valid_record()
+        rec["health"] = {
+            "source": "watchdog",
+            "last_seen": "2026-11-22T19:00:00Z",
+            "status": "healthy",
+        }
+        self.assertTrue(validator.validate(doc_with(rec)))
+
+    def test_last_seen_without_checks_fails_even_when_unknown(self):
+        rec = valid_record()
+        rec["health"] = {
+            "source": "watchdog",
+            "last_seen": "2026-11-22T19:00:00Z",
+            "status": "unknown",
+        }
+        self.assertTrue(validator.validate(doc_with(rec)))
+
+    def test_partial_checks_record_fails(self):
+        rec = valid_record()
+        health = earned_health()
+        del health["checks"]["sessions"]
+        rec["health"] = health
+        self.assertTrue(validator.validate(doc_with(rec)))
+
+    def test_unparseable_last_seen_fails(self):
+        rec = valid_record()
+        health = earned_health()
+        health["last_seen"] = "yesterday-ish"
+        rec["health"] = health
+        self.assertTrue(validator.validate(doc_with(rec)))
+
+    def test_check_with_bad_state_fails(self):
+        rec = valid_record()
+        health = earned_health()
+        health["checks"]["reachable"] = {"state": "probably"}
+        rec["health"] = health
+        self.assertTrue(validator.validate(doc_with(rec)))
+
+    def test_unreachable_with_checks_record_passes(self):
+        # An earned negative is valid health data, not a shape error.
+        rec = valid_record()
+        health = earned_health(status="unreachable")
+        health["last_seen"] = "2026-11-22T18:00:00Z"  # last sighting stands
+        health["checks"]["reachable"] = {
+            "state": "failed", "ssh": True, "opencode_server_http": None,
+        }
+        rec["health"] = health
+        self.assertEqual(validator.validate(doc_with(rec)), [])
+
+
 if __name__ == "__main__":
     unittest.main()
