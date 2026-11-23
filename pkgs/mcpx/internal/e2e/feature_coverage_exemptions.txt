@@ -22,7 +22,6 @@ setting	plugin.binArgs	no integration-test exercise yet; burn-down #8472 (settin
 setting	plugin.daemonTools	no integration-test exercise yet; burn-down #8472 (settings plugin family); needs an EffectProbes entry + e2e test
 setting	plugin.disabledTools	no integration-test exercise yet; burn-down #8472 (settings plugin family); needs an EffectProbes entry + e2e test
 setting	plugin.discoveryRetry	no integration-test exercise yet; burn-down #8472 (settings plugin family); needs an EffectProbes entry + e2e test
-setting	plugin.env	no integration-test exercise yet; burn-down #8472 (settings plugin family); needs an EffectProbes entry + e2e test
 setting	plugin.headless	no integration-test exercise yet; burn-down #8472 (settings plugin family); needs an EffectProbes entry + e2e test
 setting	plugin.instructions	no integration-test exercise yet; burn-down #8472 (settings plugin family); needs an EffectProbes entry + e2e test
 setting	plugin.remember	no integration-test exercise yet; burn-down #8472 (settings plugin family); needs an EffectProbes entry + e2e test
