@@ -164,6 +164,13 @@ export class Docs {
     return s && s.goodAt > 0 ? s.data : null;
   }
 
+  /** When that data was read from its source, or 0 if it never was. A
+   * read that failed since does not move it: the data is still the last
+   * good copy, and this is how old that copy is. */
+  goodAt(name: string): number {
+    return this.sections.get(name)?.goodAt ?? 0;
+  }
+
   /** Sections brought up to date for a caller that asks rarely (a
    * phone's widget): stale ones are read again and waited for, up to
    * `waitMs`. It does not count as someone looking, so it does not keep

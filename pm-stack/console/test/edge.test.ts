@@ -1555,6 +1555,44 @@ describe("the host's report is the host's", () => {
 });
 
 describe("notifications and phones, from the edge", () => {
+  test("a unit that stays failed is reported from the edge, though every report reads the same", async () => {
+    const w = await setup();
+    const phone = await browser();
+    const units = [
+      { unit: "pm-git-sync.service", active: "inactive", description: "keep the checkout on main" },
+      { unit: "pm-git-sync.timer", active: "active" },
+    ];
+    w.data.services = units;
+    const round = async (ms: number) => {
+      w.now.t += ms;
+      await w.hostReads();
+      return w.link.now.once();
+    };
+    await round(0);
+    await w.act("push.on", { subscription: phone.subscription, label: "Pocket" });
+    await round(11_000);
+    const before = w.pushes.length;
+    // It starts failing, and from then on the host's reports all say the same thing.
+    units[0].active = "failed";
+    await round(11_000);
+    for (let i = 0; i < 9; i++) await round(30_000);
+    expect(w.pushes.length).toBe(before); // four and a half minutes: not yet
+    await round(30_000);
+    await round(30_000);
+    expect(w.pushes.length).toBe(before + 1);
+    expect(JSON.parse(await phone.open(w.pushes[before].body))).toMatchObject({
+      title: "A unit keeps failing",
+      url: "/console/#more/services",
+    });
+    // Said once, and its mending is said once.
+    for (let i = 0; i < 4; i++) await round(30_000);
+    expect(w.pushes.length).toBe(before + 1);
+    units[0].active = "inactive";
+    await round(30_000);
+    expect(w.pushes.length).toBe(before + 2);
+    expect(JSON.parse(await phone.open(w.pushes[before + 1].body)).title).toBe("A unit is working again");
+  });
+
   test("a subscribed device is told of a reply, and once that the host has gone quiet and that it is back", async () => {
     const w = await setup();
     const phone = await browser();
