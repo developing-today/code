@@ -386,23 +386,19 @@ fn run_search_impl(
     let mut permitted: std::collections::HashSet<i64> = std::collections::HashSet::new();
     let mut withheld = 0usize;
     for e in &ranked {
-        match all_details.get(&e.chunk_id) {
-            Some(d) => {
-                let class = chunk_classification(d.eff_sensitivity.as_deref());
-                if opts
-                    .context
-                    .permits_with_grant(class, filters.max_sensitivity)
-                {
-                    permitted.insert(e.chunk_id);
-                } else {
-                    withheld += 1;
-                }
+        // No detail row: the candidate renders nowhere (the
+        // flat/grouped paths already skip it), and it is not a
+        // disclosure decision, so it is not counted as withheld.
+        if let Some(d) = all_details.get(&e.chunk_id) {
+            let class = chunk_classification(d.eff_sensitivity.as_deref());
+            if opts
+                .context
+                .permits_with_grant(class, filters.max_sensitivity)
+            {
+                permitted.insert(e.chunk_id);
+            } else {
+                withheld += 1;
             }
-            // No detail row: the candidate renders nowhere
-            // (the flat/grouped paths already skip it), and it
-            // is not a disclosure decision, so it is not
-            // counted as withheld.
-            None => {}
         }
     }
     if withheld > 0 {
@@ -587,10 +583,10 @@ fn collect_served(v: Option<&Json>, acc: &mut Vec<i64>) {
             }
         }
         Some(Json::Object(map)) => {
-            if let Some(id) = map.get("chunk_id").and_then(Json::as_i64) {
-                if !acc.contains(&id) {
-                    acc.push(id);
-                }
+            if let Some(id) = map.get("chunk_id").and_then(Json::as_i64)
+                && !acc.contains(&id)
+            {
+                acc.push(id);
             }
             for val in map.values() {
                 if val.is_array() {

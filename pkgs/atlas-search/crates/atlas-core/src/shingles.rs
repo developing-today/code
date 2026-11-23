@@ -262,7 +262,7 @@ pub struct RescoreReport {
 /// (deterministic). Entries beyond `depth` are untouched and keep
 /// their fused order after the union.
 pub fn rescore_fused(
-    entries: &mut Vec<FusedEntry>,
+    entries: &mut [FusedEntry],
     query: &ShingleSet,
     sets: &HashMap<i64, ShingleSet>,
     depth: usize,

@@ -150,12 +150,11 @@ pub struct MergeManifest {
 /// database reports `_schema_version = 1` and exactly
 /// [`STAGE_V1_TABLES`].
 pub fn provision_staging_db(path: &Path) -> Result<()> {
-    if let Some(parent) = path.parent() {
-        if !parent.as_os_str().is_empty() {
-            std::fs::create_dir_all(parent).map_err(|e| {
-                Error::backend(format!("staging: creating {}: {e}", parent.display()))
-            })?;
-        }
+    if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| Error::backend(format!("staging: creating {}: {e}", parent.display())))?;
     }
     let conn = open(path)?;
     let existing = user_tables(&conn)?;
@@ -715,12 +714,12 @@ impl Registry {
     /// Open (creating if needed) a registry at `path` and ensure its
     /// v1 table exists.
     pub fn open(path: &Path) -> Result<Registry> {
-        if let Some(parent) = path.parent() {
-            if !parent.as_os_str().is_empty() {
-                std::fs::create_dir_all(parent).map_err(|e| {
-                    Error::backend(format!("registry: creating {}: {e}", parent.display()))
-                })?;
-            }
+        if let Some(parent) = path.parent()
+            && !parent.as_os_str().is_empty()
+        {
+            std::fs::create_dir_all(parent).map_err(|e| {
+                Error::backend(format!("registry: creating {}: {e}", parent.display()))
+            })?;
         }
         let conn = open(path)?;
         ensure_registry(&conn)?;

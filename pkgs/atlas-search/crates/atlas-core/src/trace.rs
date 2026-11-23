@@ -340,10 +340,10 @@ pub fn build_trace_record(
         // in the producing shard's atlas_manifest, or null when
         // the candidate carries no manifest provenance.
         let candidate_model = pools.candidate_models.get(&e.chunk_id);
-        if let Some(m) = candidate_model {
-            if !distinct_models.contains(m) {
-                distinct_models.push(m.clone());
-            }
+        if let Some(m) = candidate_model
+            && !distinct_models.contains(m)
+        {
+            distinct_models.push(m.clone());
         }
         r.insert(
             "embedding_model".into(),
