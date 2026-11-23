@@ -96,7 +96,7 @@ reason. The bytes survived; the provenance did not.
 
 Issue #3125 — the provenance registry, content-addressed extracts, and
 multi-database vector resolution programme — is the corrective. Its rules,
-set by Drew on 2026-10-31, are: keep all data (only byte-identical duplicates
+set by the user on 2026-10-31, are: keep all data (only byte-identical duplicates
 are cleaned; backups are kept); keep backups *and* plain extracts for every
 corpus; and record, for every chunk, *every* place it was found. That last
 rule is the `chunk_occurrences` table: one row per occurrence, mapping a

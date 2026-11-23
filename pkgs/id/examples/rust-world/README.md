@@ -22,7 +22,7 @@ conformance suite (`pkgs/id/src/sandbox.rs`).
 ## Component model / WIT
 
 F12.8 also asks for a Wasm component-model / WIT evaluation. That
-decision is **not** taken here: it is a Drew-owned direction for #1065
+decision is **not** taken here: it is a user-owned direction for #1065
 (recorded on the issue), and this SDK deliberately targets the landed
 ABI v1 module contract so the Rust SDK is usable today. Nothing in the
 SDK's helper APIs depends on the raw module boundary, so a future

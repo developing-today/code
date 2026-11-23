@@ -2,8 +2,8 @@
 
 Source: https://github.com/developing-today/code/blob/main/pkgs/atlas-search/crates/atlas-core/src/filters.rs, https://github.com/developing-today/code/blob/main/pkgs/atlas-search/crates/atlas-core/src/disclosure.rs, https://github.com/developing-today/code/blob/main/pkgs/atlas-search/crates/atlas-core/src/manifest.rs, https://github.com/developing-today/code/blob/main/pkgs/atlas-search/crates/atlas-core/src/shards/mod.rs, https://github.com/developing-today/code/blob/main/pkgs/atlas-search/worker/src/space.ts
 
-Atlas holds Drew's own conversations, notes, and working records, and it
-serves them to callers that are not equally trusted: Drew himself, his
+Atlas holds the user's own conversations, notes, and working records, and it
+serves them to callers that are not equally trusted: the user himself, his
 agents, and hosted surfaces reachable from outside the laptop. Sensitivity
 is therefore not a label for tidiness — it is the access-control model, and
 it is enforced by the server, inside the search queries, before anything is
@@ -82,14 +82,14 @@ identities in service today:
 
 | Client identity | Who it is | Ceiling cap |
 |---|---|---|
-| `drew-cli` | Drew's own CLI on the laptop | `secret-bearing` |
+| `drew-cli` | The user's own CLI on the laptop | `secret-bearing` |
 | `sandbox-scripts` | Muse lanes and scripts on the sandbox seat, via the tailnet | `personal` |
 | `cf-worker` | The Cloudflare Worker, calling the service | `personal` |
 
-The design of record's v1 client set matches this shape: Drew's CLI is the
+The design of record's v1 client set matches this shape: the user's CLI is the
 only identity capped above `personal`; OpenChamber sessions and fork /
 OpenCode agents were likewise specified at `personal`. Raising a cap is a
-local edit to the service configuration by Drew — there is no request a
+local edit to the service configuration by the user — there is no request a
 client can make that raises its own cap.
 
 Enforcement happens at three depths, so that no single layer's failure is
@@ -158,7 +158,7 @@ deleted after the scan.
 
 **The Layer-1 review (#10412, closed).** The scan's candidates were then
 reviewed one by one: 47 candidate chunks carrying 67 findings, plus 45
-candidate messages, each ruled on and the review closed under Drew's
+candidate messages, each ruled on and the review closed under the user's
 2026-11-22 Atlas order. It is a review record, not a design statement —
 its value to this chapter is that the secret tier's membership has had a
 human-scale pass over its boundary cases, not only automated scans.
@@ -185,7 +185,7 @@ most restrictive tier.
 
 Embedding is the one step that would ordinarily send text to an outside
 service, so it has its own rule: **secret text is never sent to a hosted
-embedder.** Atlas's production embedder runs in-process on Drew's hardware,
+embedder.** Atlas's production embedder runs in-process on the user's hardware,
 which satisfies the rule for the corpus as built; the rule's teeth are in
 ingest. Until a dedicated local secret-tier embedder lands (#6059, designed
 but not built), secret-tier source classes are held out of automated
@@ -207,7 +207,7 @@ caller is *served* from those stores, but the physical placement boundary
 The remediation is filed (#12406: inventory, a verified destination copy
 and re-embed, a visibility switch, replica and cache purge, trace-safe
 tombstones, and post-run absence checks), but the threshold decision —
-purge the monolith copies, or reclassify — is **Drew's, and it is
+purge the monolith copies, or reclassify — is **the user's, and it is
 undecided**. This book records the defect and the options; it does not
 pick one. Any claim that Atlas's tier boundary fully holds should be read
 with #8479 attached until that decision is made and the migration has run.

@@ -29,5 +29,5 @@ id serve --world --world-admin-token "$WORLD_ADMIN" --world-module counter.wasm
 The module has no Wasm imports and exports the full Plaza ABI v1
 surface (see `../roc-world/ABI.md`). The remaining F12.8 scope — the
 second SDK (AssemblyScript vs Zig) and the component-model/WIT
-direction — stays open on #1065 as Drew-owned decisions; this example
+direction — stays open on #1065 as user-owned decisions; this example
 covers the Rust SDK slice only.

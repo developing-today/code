@@ -106,7 +106,7 @@ and that interop claims for it are forbidden until it is.
 ### `onnxruntime/` — the vendored runtime
 
 A small Nix package (`default.nix`, plus a musl patch) vendoring the pinned
-ONNX Runtime release in-tree (code#6765, Drew's ruling 2026-11-08) rather
+ONNX Runtime release in-tree (code#6765, the user's ruling 2026-11-08) rather
 than taking the ambient nixpkgs version: the corpus and the Gate A fixtures
 were embedded and certified under that release, so the library the binary
 loads must be the same one. The main package compiles in

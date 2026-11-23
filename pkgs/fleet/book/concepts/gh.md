@@ -48,7 +48,7 @@ App):
    owner: `developing-today`.
 4. **Personal** — the user's `gh` OAuth token, parsed out of the broker
    secret named `github-cli.hosts-yml` (the hosts.yml file itself, stored
-   by name; the parser extracts its `oauth_token`). Tried **last** (Drew,
+   by name; the parser extracts its `oauth_token`). Tried **last** (the user,
    2026-11-23): the personal credential is the final fallback, not the
    first identity used.
 

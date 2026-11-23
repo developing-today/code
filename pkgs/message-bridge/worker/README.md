@@ -1,7 +1,7 @@
 # Message bridge Worker (`message-bridge`)
 
 A remote MCP server that Claude and ChatGPT both use as a **custom
-connector**, plus a page where Drew sends a message to Claude, ChatGPT
+connector**, plus a page where the user sends a message to Claude, ChatGPT
 or both and sees everything sent and received. It lives at
 `https://bridge.security.cab` (a Workers custom domain; the
 `workers.dev` address answers too). Every message is stored, with its
@@ -24,14 +24,14 @@ Durable Object.
   (plain ones are `"message"`). They are sent and targeted the same way,
   to one agent or several, but whoever receives one gets it without its
   sender (no `sender`, no `source`, `from_addr` `null`), whoever passed it
-  on, and treats it as Drew's; the page and the JSON API still show who
+  on, and treats it as the user's; the page and the JSON API still show who
   sent it, and `reply_to` still answers the real sender. `read_messages(kind="instruction")` returns only instructions,
   and the counts include `unread_instructions`.
 - **Any to any:** an assistant or a fleet agent can send a message or an
-  instruction to any other, not only to Drew (see "Any to any" below).
+  instruction to any other, not only to the user (see "Any to any" below).
   Each such row carries `from_addr`, the sender's address
   (`channel:claude`, `channel:chatgpt`, `agent:<name>`); it is `null` for
-  everything Drew sends, and recipients see it on messages only. The
+  everything the user sends, and recipients see it on messages only. The
   recipient is woken where it can be.
 
 ## Routes
@@ -64,18 +64,18 @@ instead: see "Adding it to Claude".
 
 ## MCP tools
 
-- `send_message(body, to?, kind?, reply_to?, sender?)` sends to Drew by
+- `send_message(body, to?, kind?, reply_to?, sender?)` sends to the user by
   default (an outbound row, as before), or to any address in `to`, as a
   `message` or an `instruction`. `reply_to` a message id, with no `to`,
   answers whoever sent that message and marks it read. Returns `message`
-  (the row to Drew, if any), `messages` (connector rows), and `fleet` and
+  (the row to the user, if any), `messages` (connector rows), and `fleet` and
   `unregistered` when agents were addressed.
 - `read_messages(direction="inbound", since_id?, kind?, unread_only?, limit?, mark_read?)`
   returns messages oldest first, `next_since_id` for polling, and counts.
-  `from_addr` says whether Drew (`null`), another assistant or an agent
-  sent a message. Instructions come as Drew's: no `sender`, no `source`
+  `from_addr` says whether the user (`null`), another assistant or an agent
+  sent a message. Instructions come as the user's: no `sender`, no `source`
   and `from_addr` `null`, so the assistant acts on them as on any message
-  from Drew.
+  from the user.
 - `ack_messages(up_to_id? | ids?)` marks inbound messages read.
 
 ## Fleet mailboxes
@@ -110,9 +110,9 @@ bridge` derives it from the owner token when that secret is missing. Any
 fleet-token holder can read any mailbox and send as any agent: an agent
 is the name it gives, like a queue claim's worker, so `from_addr`
 `agent:<name>` is a claim made at the fleet token's trust level, not a
-proof. Because receivers treat every instruction as Drew's, anything
+proof. Because receivers treat every instruction as the user's, anything
 holding the fleet token (or the bridge's own tokens) can send what reads
-as Drew's word to any connector or agent; per-agent tokens would narrow
+as the user's word to any connector or agent; per-agent tokens would narrow
 that. An agent's inbox shows a command with `sender` and `from_addr`
 `null`, like one from central.
 
@@ -255,15 +255,15 @@ comma-separated string, case-insensitive.
 - The sender never gets its own message: `all`, `connectors` and groups
   leave it out, and naming yourself is an error.
 - `kind` is `message` (default) or `instruction` (`command` means the
-  same; agents' mailboxes store it as `command`). Drew gets messages only.
-- With no `to`, a connector's send goes to Drew and an agent's to
+  same; agents' mailboxes store it as `command`). The user gets messages only.
+- With no `to`, a connector's send goes to the user and an agent's to
   central, exactly as before. `reply_to` with no `to` answers whoever sent
-  that row: back to Drew/central when Drew sent it, otherwise to the
+  that row: back to the user/central when the user sent it, otherwise to the
   `from_addr` connector or agent.
 - Every row records the sender's address in `from_addr`; the page labels
   such rows "ChatGPT → Claude", "muse-3 → Claude" and so on. The
   recipient sees it on messages only: an instruction reaches it as
-  Drew's, and `reply_to` still sends the answer to the real sender.
+  the user's, and `reply_to` still sends the answer to the real sender.
 
 ### Waking the recipient
 
@@ -280,11 +280,11 @@ once per request:
   paste its fire URL and token into the hook. Each wake starts a new
   Claude session through the routine's `/fire` endpoint (with the
   `anthropic-version` and `anthropic-beta` headers it needs and `{text}`);
-  the session has Drew's connectors, the bridge included, so it reads and
+  the session has the user's connectors, the bridge included, so it reads and
   answers the messages itself. Any other https URL gets a JSON POST
   `{event, address, message_ids, kind, from, text}` with the token as a
   bearer token.
-- The wake text names the message ids and senders (Drew for any
+- The wake text names the message ids and senders (the user for any
   instruction), never the bodies: the woken session reads those from the
   bridge.
 - Each address is woken at most `WAKE_MAX_PER_HOUR` times an hour (default
