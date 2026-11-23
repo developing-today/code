@@ -1833,6 +1833,7 @@ let
         make-mcpx-overlay
         make-mcpx-modules
         make-pm-stack
+        make-archer-slack
         make-laptop-backups-checks
         make-fleet
         make-deploy
