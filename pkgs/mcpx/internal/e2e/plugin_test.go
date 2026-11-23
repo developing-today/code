@@ -429,3 +429,42 @@ func TestPluginHeadlessSuppressesToastsFromTheEnvironment(t *testing.T) {
 		t.Fatalf("the plugin.headless probe did not report a clean run:\n%s", out)
 	}
 }
+
+// TestPluginInstructionsAppendsTheContextParagraphFromTheEnvironment
+// is the effect probe for plugin.instructions (#8472; the effect
+// guard is #1971).
+//
+// The setting's whole effect lives in the opencode plugin host: it
+// is the opt-in that adds mcpx's session-context paragraph to the
+// model's system prompt — the v2 setup's session "context" hook
+// calls appendContextOnce only when the resolved option is on
+// (plugin/opencode/v2/index.ts), and the paragraph is paid help, so
+// it stays off unless asked for. No Go caller produces the system
+// prompt, so the probe drives the host the way the plugin suite
+// does — bun, the real setupMcpxV2 with a stub context — and the
+// bun cases in plugin/opencode/v2/instructions.test.ts assert the
+// observable with/without difference: unset and explicit false
+// append nothing; true appends the paragraph, once per system
+// array; another truthy spelling appends it too; and the host
+// option beats the environment in both directions. The cases set
+// the setting the way a user would — MCPX_PLUGIN_INSTRUCTIONS
+// through resolveOptions, or the host option. A run that skipped
+// the cases is a run that did not check what this probe exists to
+// check, so skips fail it, as in
+// TestPluginHeadlessSuppressesToastsFromTheEnvironment.
+func TestPluginInstructionsAppendsTheContextParagraphFromTheEnvironment(t *testing.T) {
+	bun := testsupport.RequireBinary(t, "bun")
+	recordSettingProbes(t)
+	cmd := exec.Command(bun, "test", "plugin/opencode/v2/instructions.test.ts")
+	cmd.Dir = repoRoot(t)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("bun test plugin/opencode/v2/instructions.test.ts: %v\n%s", err, out)
+	}
+	if strings.Contains(string(out), " skip") && !strings.Contains(string(out), " 0 skip") {
+		t.Fatalf("the plugin.instructions probe cases were skipped:\n%s", out)
+	}
+	if !strings.Contains(string(out), " 0 fail") {
+		t.Fatalf("the plugin.instructions probe did not report a clean run:\n%s", out)
+	}
+}
