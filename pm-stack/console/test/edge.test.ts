@@ -1391,6 +1391,48 @@ describe("the Android build", () => {
     expect((await download(w)).bytes).toEqual(apk(2, 900_000));
   });
 
+  test("after the edge restarts, a laptop that is there is still asked for its newer build", async () => {
+    const w = await setup();
+    await w.hostReads();
+    w.build.bytes = apk(1);
+    w.build.at = w.now.t;
+    await report(w);
+    await report(w);
+    // A newer build is announced, and the edge restarts before it has a copy.
+    w.build.bytes = apk(2);
+    w.build.at = w.now.t + 500;
+    await report(w);
+    w.edge.now = w.makeEdge();
+    w.hostSaw.length = 0;
+    const got = await download(w);
+    // The laptop reported seconds ago: the download is its newest build, not the older copy.
+    expect(w.hostSaw).toEqual(["GET /console/pm-console.apk"]);
+    expect(got.bytes).not.toEqual(apk(1));
+  });
+
+  test("a build and large sections that will not fit one report go in two, and both arrive", async () => {
+    const w = await setup();
+    await w.hostReads();
+    await report(w);
+    // Nearly the largest build that is carried, and three megabytes of questions changed at once.
+    w.build.bytes = apk(5, 4_900_000);
+    w.build.at = w.now.t;
+    await report(w); // described; the edge asks for it
+    w.data.questions = { sets: [{ id: "big", text: "q".repeat(3_000_000) }] };
+    w.now.t += 11_000;
+    await w.hostReads();
+    // Every report from here is accepted: none is refused as too large.
+    const answers = [await report(w), await report(w), await report(w)];
+    expect(answers.every((answer) => answer?.ok === true)).toBe(true);
+    expect((w.stored.get("apk") as { size: number }).size).toBe(4_900_000);
+    // And the questions arrived whole, in the report after the build's.
+    const pieces = (w.stored.get("m:questions") as { chunks: number } | undefined)?.chunks ?? 0;
+    expect(pieces).toBeGreaterThan(1);
+    let text = "";
+    for (let i = 0; i < pieces; i++) text += String(w.stored.get(`m:questions:${i}`));
+    expect(JSON.parse(text).sets[0].text.length).toBe(3_000_000);
+  });
+
   test("a build that is not the one described is not kept, and one too large is not sent", async () => {
     const w = await setup();
     await w.hostReads();

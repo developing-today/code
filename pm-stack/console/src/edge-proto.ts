@@ -106,6 +106,11 @@ export interface ApkReport {
 
 /** The largest Android build that is carried in a report. */
 export const APK_LIMIT = 5 * 1024 * 1024;
+/** What the host keeps a report under, with room to spare below what
+ * the edge refuses as too large (8 MiB). A report that would carry the
+ * build past this carries the build alone, and the sections follow in
+ * the next one. */
+export const REPORT_ROOM = 7.5 * 1024 * 1024;
 
 /** A build's description as a report may give it, or null. */
 export function apkReport(value: unknown): ApkReport | null {

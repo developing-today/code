@@ -904,7 +904,10 @@ export class Edge {
     }
     if (method === "GET" && rest === "pm-console.apk") {
       // The newest build is the laptop's. The copy here is served when
-      // it is that build, or when the laptop is not there to ask.
+      // it is that build, or when the laptop is not there to ask. After
+      // a restart, when the laptop was last heard from has to be read
+      // back first, or it would look as if it never had been.
+      await this.ready();
       const kept = await this.apkKept();
       const latest = await this.apkLatest();
       const quiet = this.now() - (this.hostSeen ?? 0) >= HOST_QUIET_MS;

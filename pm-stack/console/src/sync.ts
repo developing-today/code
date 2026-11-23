@@ -12,6 +12,7 @@
 import type { Docs } from "./docs.ts";
 import {
   APK_LIMIT,
+  type ApkReport,
   type EdgeConfig,
   type Held,
   HOLDABLE,
@@ -20,6 +21,7 @@ import {
   type PublicKey,
   type PhoneLinks,
   publicKey,
+  REPORT_ROOM,
   type SyncRequest,
   type SyncResponse,
   sign,
@@ -186,21 +188,23 @@ export class EdgeLink {
     try {
       const pair = await this.keys();
       const snapshot = this.o.docs.snapshot();
-      const sections = snapshot.filter((s) => this.sent.get(s.name) !== s.hash || this.want.has(s.name));
+      let sections = snapshot.filter((s) => this.sent.get(s.name) !== s.hash || this.want.has(s.name));
       const acks = [...this.acks];
       const at = Math.max(this.now(), this.lastAt + 1);
       // The Android build: always what it is, and the build itself only
       // when the edge has said it lacks this one.
       const build = (await this.o.apk?.().catch(() => null)) ?? null;
-      const apk =
-        build && build.size <= APK_LIMIT
-          ? {
-              sha256: build.sha256,
-              size: build.size,
-              at: build.at,
-              ...(this.want.has("apk") ? { data: Buffer.from(await build.read()).toString("base64") } : {}),
-            }
-          : null;
+      const apk: ApkReport | null =
+        build && build.size <= APK_LIMIT ? { sha256: build.sha256, size: build.size, at: build.at } : null;
+      if (apk && build && this.want.has("apk")) {
+        apk.data = Buffer.from(await build.read()).toString("base64");
+        // The build and large sections together could pass what the edge
+        // takes in one report, and a report refused as too large would be
+        // built the same way again and again. So the build goes alone
+        // then; the sections are not marked sent and follow next time.
+        const others = sections.reduce((sum, s) => sum + JSON.stringify(s.data).length, 0);
+        if (apk.data.length + others > REPORT_ROOM) sections = [];
+      }
       const message: SyncRequest & { acts: unknown } = {
         v: 1,
         at,
