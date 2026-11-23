@@ -19,7 +19,7 @@ code cited in it and editing its cells, then change the commit above.
 each upstream negotiated. It does not report whether mcpx implements a feature
 correctly, and nothing generates that side yet.
 
-Columns. **srv→<rev>**: a host of that revision connected to mcpx.
+Columns. **srv→&lt;rev&gt;**: a host of that revision connected to mcpx.
 **cli→legacy**: mcpx connected to an upstream speaking 2025-03-26 to
 2025-11-25 (mcpx offers 2025-11-25). **cli→modern**: mcpx connected to a
 2026-07-28 upstream. The register column links the area file holding the

@@ -94,7 +94,7 @@ Status column: **mcpx @ 05c78b2**. Legend and citation conventions: [../README.m
   or setup function."
 - **Detail.** v2 validates with Effect Schema `Struct({id: String, effect|setup: function})`; `id` is mandatory and
   duplicate ids fail (`v2:packages/core/src/plugin/supervisor.ts:108`).
-- **Sources.** `v1:packages/plugin/src/index.ts:74` "export type Plugin = (input: PluginInput, options?: PluginOptions) => Promise<Hooks>"; `v2:packages/core/src/plugin/module.ts:60`; `v2:packages/core/src/plugin/module.ts:111`; `v2:packages/plugin/src/promise/plugin.ts:58`; `v2:packages/plugin/src/promise/plugin.ts:60`
+- **Sources.** `v1:packages/plugin/src/index.ts:74` "export type Plugin = (input: PluginInput, options?: PluginOptions) => Promise&lt;Hooks&gt;"; `v2:packages/core/src/plugin/module.ts:60`; `v2:packages/core/src/plugin/module.ts:111`; `v2:packages/plugin/src/promise/plugin.ts:58`; `v2:packages/plugin/src/promise/plugin.ts:60`
 
 ## PLG-03 v1 legacy loader calls every export of a plugin file
 
@@ -176,7 +176,7 @@ Status column: **mcpx @ 05c78b2**. Legend and citation conventions: [../README.m
 - **Effort.** S.
 - **Risk.** Low: module-level state (mcpx's `sessions` cache, the chosen daemon) resets on every v2 reload.
 - **Detail.** v2's Bun source loader scans imports with `Bun.Transpiler` to decide what to watch.
-- **Sources.** `v1:packages/plugin/src/index.ts:223` "dispose?: () => Promise<void>"; `v2:packages/plugin/src/promise/plugin.ts:60`; `v2:packages/core/src/plugin/module.ts:22`; `v2:packages/plugin/src/source.bun.ts:27`
+- **Sources.** `v1:packages/plugin/src/index.ts:223` "dispose?: () => Promise&lt;void&gt;"; `v2:packages/plugin/src/promise/plugin.ts:60`; `v2:packages/core/src/plugin/module.ts:22`; `v2:packages/plugin/src/source.bun.ts:27`
 
 ## PLG-09 Plugin instance per directory vs per Location
 
@@ -296,7 +296,7 @@ Status column: **mcpx @ 05c78b2**. Legend and citation conventions: [../README.m
 - **Detail.** v1 request preparation re-joins extra system entries into one message when a plugin pushes more than one
   (`v1:packages/opencode/src/session/llm/request.ts:74`). The v2 analogue is `session.hook("context")`, whose `system` is
   `Array<SystemPart>` (`{type: "text", text}`): the shape mcpx pushes, on a different key (PLG-17).
-- **Sources.** `v1:packages/plugin/src/index.ts:291`; `v1:packages/opencode/src/session/llm/request.ts:69`; `v1:packages/opencode/src/agent/agent.ts:381`; `plugin/opencode/mcpx-session.ts:745` "const parts = (output as any)?.parts"; `v2:packages/plugin/src/promise/session.ts:28` "system: Array<SystemPart>"
+- **Sources.** `v1:packages/plugin/src/index.ts:291`; `v1:packages/opencode/src/session/llm/request.ts:69`; `v1:packages/opencode/src/agent/agent.ts:381`; `plugin/opencode/mcpx-session.ts:745` "const parts = (output as any)?.parts"; `v2:packages/plugin/src/promise/session.ts:28` "system: Array&lt;SystemPart&gt;"
 
 ## PLG-17 v2 `session.hook("context")` edits system, messages, tools
 
@@ -463,7 +463,7 @@ options: {namespace, codemode, permission, pinned}, description, input, output, 
 - **Detail.** `docs/opencode-plugin.md:272` lists "a tool with a permission prompt (server plugin, v1 and v2)"; v2's tool
   context has no `ask`. v2 plugin tools are gated only by wholly-disabling permission rules on
   `options.permission ?? name`.
-- **Sources.** `v1:packages/plugin/src/tool.ts:19` "ask(input: AskInput): Promise<void>"; `v1:packages/opencode/src/tool/registry.ts:150`; `v2:packages/schema/src/tool.ts:14`; `v2:packages/core/src/tool.ts:225`; `docs/opencode-plugin.md:272`
+- **Sources.** `v1:packages/plugin/src/tool.ts:19` "ask(input: AskInput): Promise&lt;void&gt;"; `v1:packages/opencode/src/tool/registry.ts:150`; `v2:packages/schema/src/tool.ts:14`; `v2:packages/core/src/tool.ts:225`; `docs/opencode-plugin.md:272`
 
 ## PLG-29 Toast from a server plugin
 
