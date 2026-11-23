@@ -207,3 +207,39 @@ func TestPluginEnvLevelChangesShellEnvFromTheEnvironment(t *testing.T) {
 		t.Fatalf("the plugin.env probe did not report a clean run:\n%s", out)
 	}
 }
+
+// TestPluginDaemonToolsAreOfferedFromTheEnvironment is the effect
+// probe for plugin.daemonTools (#8472; the effect guard is #1971).
+//
+// The setting's whole effect lives in the opencode plugin host: it
+// gates whether the session offers the three daemon tools
+// (mcpx_daemon_status, mcpx_daemon_select, mcpx_daemon_forget). The
+// resolution is a tri-state — the plugin option first, then
+// MCPX_PLUGIN_DAEMON_TOOLS parsed as a truthy value, then a fallback
+// to the main plugin.tools switch or an ambiguous discovery — and
+// "auto", the registry default, decides nothing on the first two
+// rungs. No Go caller offers those tools, so the probe drives the
+// host the way the plugin suite does — bun, the real session plugin,
+// options resolved from the environment — and the bun cases in
+// plugin/opencode/mcpx/daemon-tools.test.ts assert the observable
+// with/without differences in the returned tool map, with daemon
+// discovery isolated to empty state directories so the fallback arm
+// is deterministic. A run that skipped the cases is a run that did
+// not check what this probe exists to check, so skips fail it, as
+// in TestThePluginSuiteRunsAgainstARealDaemon.
+func TestPluginDaemonToolsAreOfferedFromTheEnvironment(t *testing.T) {
+	bun := testsupport.RequireBinary(t, "bun")
+	recordSettingProbes(t)
+	cmd := exec.Command(bun, "test", "plugin/opencode/mcpx/daemon-tools.test.ts")
+	cmd.Dir = repoRoot(t)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("bun test plugin/opencode/mcpx/daemon-tools.test.ts: %v\n%s", err, out)
+	}
+	if strings.Contains(string(out), " skip") && !strings.Contains(string(out), " 0 skip") {
+		t.Fatalf("the plugin.daemonTools probe cases were skipped:\n%s", out)
+	}
+	if !strings.Contains(string(out), " 0 fail") {
+		t.Fatalf("the plugin.daemonTools probe did not report a clean run:\n%s", out)
+	}
+}
