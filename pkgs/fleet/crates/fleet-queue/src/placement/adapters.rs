@@ -149,6 +149,11 @@ impl GithubActionsAdapter {
             inputs.insert("command".into(), json!(job.command));
             inputs.insert("runner".into(), json!(self.runner_name(job)));
             inputs.insert("platform".into(), json!(job.platform));
+            // Issue #13178 gap 2: the workflow declares timeout_minutes
+            // (5-120, default 60) and applies it as the run timeout;
+            // placement always sends an explicit value so a dispatch is
+            // never silently capped at the workflow default.
+            inputs.insert("timeout_minutes".into(), json!(job.timeout_minutes));
             if !job.git_ref.is_empty() {
                 inputs.insert("ref".into(), json!(job.git_ref));
             }
