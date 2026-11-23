@@ -7,6 +7,7 @@
   ...
 }:
 let
+  opencodeServerPort = 13420;
   # Local proxy ports, each defined ONCE. Each value flows to the systemd
   # user service that binds it, to the shell session (<NAME>_PROXY_PORT),
   # and — for the proxies opencode talks to — into opencode.jsonc's
@@ -1173,6 +1174,23 @@ in
   # Home Manager still reloads the unit; the activation below owns build
   # changes explicitly, using only the serving package's store path as key.
   systemd.user.services.opencode.Unit."X-RestartIfChanged" = false;
+  # The package launcher forwards TERM from the systemd main process to the
+  # serving child. With the default control-group kill mode, systemd also
+  # signals that child directly, so one stop becomes two TERM deliveries and
+  # the fork's second-TERM drain escape ends the grace window early (#10639).
+  # Signal only the launcher; it forwards exactly one TERM to the child.
+  systemd.user.services.opencode.Service.KillMode = "process";
+  # Keep the listening port outside the server process so it survives a
+  # service handover. The OpenCode fork adopts systemd's fd 3 via
+  # LISTEN_FDS/LISTEN_PID; the socket is enabled through sockets.target.
+  systemd.user.sockets.opencode = {
+    Unit.Description = "OpenCode server listener (handover-safe)";
+    Socket = {
+      ListenStream = "127.0.0.1:${toString opencodeServerPort}";
+      Service = "opencode.service";
+    };
+    Install.WantedBy = [ "sockets.target" ];
+  };
   home.activation.opencodeDeploy = lib.hm.dag.entryAfter [ "reloadSystemd" ] ''
     run ${pkgs.bash}/bin/bash ${./opencode-deploy.sh} \
       '${opencodeCascade}' \
