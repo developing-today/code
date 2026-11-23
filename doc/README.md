@@ -22,7 +22,9 @@ This page says where each kind of document lives in this repository and how it c
 
   They change in place, through PRs.
 
-- **Package docs.** A component's living docs stay with its code and change with it. Examples: [`pkgs/id/ARCHITECTURE.md`](../pkgs/id/ARCHITECTURE.md), [`pkgs/id/AGENTS.md`](../pkgs/id/AGENTS.md), [`pkgs/id/TODO.md`](../pkgs/id/TODO.md), [`pkgs/mcpx/docs/`](../pkgs/mcpx/docs/) and [`pkgs/mcpx/TODO.md`](../pkgs/mcpx/TODO.md).
+- **Package docs.** A component's living docs stay with its code and change with it. Examples: [`pkgs/id/ARCHITECTURE.md`](../pkgs/id/ARCHITECTURE.md), [`pkgs/id/AGENTS.md`](../pkgs/id/AGENTS.md), [`pkgs/id/book/`](../pkgs/id/book/) and [`pkgs/mcpx/docs/`](../pkgs/mcpx/docs/).
+
+  `TODO.md` files are not living docs: `pkgs/id/TODO.md` says of itself that it is idle future planning that must not ground decisions, so it is not cited as a component's documentation.
 - **Agent skills.** `.agents/skills/` holds the workflow lifecycle skills and the shared skills. `.opencode/skills/` holds the OpenCode skill set.
 
 ## Research packages

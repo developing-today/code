@@ -1,3 +1,11 @@
+> **Status: earliest ID concept sketch, superseded.** Despite the filename, this
+> is not an earlier README for the package. It is the first scratch sketch of the
+> ID type model (types, details, characteristics, namespaces and identifiers),
+> kept as history; [`README.md`](README.md) is the package's front door. Its
+> access model is superseded by the capability system that shipped, described in
+> [`book/concepts/capabilities.md`](book/concepts/capabilities.md). Do not treat
+> any spelling here as the shipped surface.
+
 # TypeCharacteristics
 
 # TypeDetails

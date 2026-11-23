@@ -381,11 +381,11 @@ test-web-typecheck:
 roc-test:
     bash scripts/roc-test.sh
 
-# Run nix flake check (27 sandboxed checks: lint, test, E2E, NixOS VM tests, VM Playwright)
+# Run nix flake check (all sandboxed checks: lint, test, E2E, NixOS VM tests, VM Playwright)
 [group('test')]
 test-nix:
     nix flake check
-    @echo "✓ nix flake check passed (27 checks — runs everything)"
+    @echo "✓ nix flake check passed (all checks — runs everything)"
 alias check-nix := test-nix
 alias nix-check := test-nix
 
