@@ -1,0 +1,34 @@
+name: Initialize empty private laptop bridge smoke Worker
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: private-laptop-bridge-smoke-init
+  cancel-in-progress: false
+
+jobs:
+  initialize:
+    if: github.repository == 'developing-today/code' && github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch'
+    environment: cloudflare-smoke-bootstrap
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24.22.0
+      - name: Run offline bootstrap contract tests
+        run: node --test --test-reporter=spec pm-stack/private-laptop-bridge/bootstrap-smoke.test.mjs
+      - name: Create only the fixed empty Worker and verify it read-only
+        env:
+          CF_SMOKE_INIT_ACCOUNT_ID: ${{ secrets.CF_SMOKE_INIT_ACCOUNT_ID }}
+          CF_SMOKE_INIT_WRITE_TOKEN: ${{ secrets.CF_SMOKE_INIT_WRITE_TOKEN }}
+          CF_SMOKE_INIT_READ_TOKEN: ${{ secrets.CF_SMOKE_INIT_READ_TOKEN }}
+        run: node pm-stack/private-laptop-bridge/bootstrap-smoke.mjs

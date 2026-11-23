@@ -202,30 +202,38 @@ never been deployed. Sources: [Create Worker API](https://developers.cloudflare.
 [Upload Worker API](https://developers.cloudflare.com/api/resources/workers/subresources/scripts/methods/update/),
 [Cloudflare's create/deploy API notes](https://developers.cloudflare.com/workers/platform/infrastructure-as-code/).
 
-No init workflow or provider action was run. The metadata create API accepts
-`Workers Admin` or `Workers Scripts Write`; it does not list the planned
-per-Worker Editor permission. Account-wide create credentials cannot be put
-into the repository's Actions environment under the instruction against broad
-token disclosure. The current environment's protection and credentials were
-not read or changed. Moreover, proving that no route refers to this new name
-requires enumerating all account zones (`Zone Read`) and their routes
-(`Workers Metadata Read-Only` or `Workers Routes Read`, plus `Zone Read`; see
-[route API](https://developers.cloudflare.com/api/resources/workers/subresources/routes/methods/list/)
-and [zone API](https://developers.cloudflare.com/api/resources/zones/methods/list/));
-the narrow Worker credential cannot prove this, and those scopes were not granted. The
-`workflow_dispatch` workflow is not on the default branch yet, so its required
-main-only admission cannot be exercised from this draft. No secret, provider
-setting, route, version, or deployment was changed, and no smoke version upload
-was attempted. The bootstrap path remains blocked pending a credential and
-read-only proof arrangement that satisfy these scope limits.
+The init action and dependency-minimal verifier are implemented in the draft;
+no init workflow or provider action was run. The write token required by the
+official Create Worker endpoint is short-lived `Workers Scripts Write`,
+separate from the routine per-Worker Editor credential. The dedicated protected
+environment is `cloudflare-smoke-bootstrap` with environment-only secrets
+`CF_SMOKE_INIT_ACCOUNT_ID`, `CF_SMOKE_INIT_WRITE_TOKEN`, and
+`CF_SMOKE_INIT_READ_TOKEN`. The last token requires Worker metadata/version/
+deployment read, `Zone Read`, and `Workers Metadata Read-Only` for the complete
+route scan. The workflow checks required secrets and the account suffix before
+network calls; the script uses the read-only token for every GET and the write
+token only for its single metadata-create POST. The environment and credentials
+were not read or changed. Because `workflow_dispatch` must be on the default
+branch before it can run, this draft cannot dispatch it yet; no merge or
+dispatch was attempted. No Cloudflare resource or setting was changed, and no
+smoke version upload was attempted.
+
+The script covers synthetic missing/existing target, exact target/account,
+authorization failure, public/preview/domain exposure, route conflict,
+create/readback identity mismatch, empty versus non-empty version/deployment
+history, and missing credential behavior. Its only provider write path is the
+one exact Beta `POST /workers/workers` call; it never updates, deletes, uploads
+code, creates a version/deployment, or changes routes/settings. Cloudflare's
+[Sep. 2025 New Workers API changelog](https://developers.cloudflare.com/changelog/post/2025-09-03-new-workers-api/)
+supports creating the metadata Worker then using the returned name for the
+legacy deployment API. The exact pinned `cf workers versions create` cold-start
+path remains deliberately separate and unverified; no live or CLI upload was
+attempted.
 
 One further compatibility question remains unproven: the metadata creation
-endpoint is in the Beta Workers API and its versions path uses immutable
-`worker_id` (`/workers/workers/{worker_id}/versions`); pinned `cf` uses the
-separate Scripts API path keyed by `script_name`
-(`/workers/scripts/{script_name}/versions`). The published [Workers API
-reference](https://developers.cloudflare.com/api/resources/workers/) does not
-document that a Beta Worker created with the metadata endpoint is recognized
-as a Script by `cf`'s precheck and upload path. This is an API-surface inference,
-not an observed provider result. It must be resolved in a synthetic or otherwise
-approved environment before any smoke init/upload attempt.
+endpoint is in the Beta Workers API and its version path uses Worker ID
+(`/workers/workers/{worker_id}/versions`); pinned `cf` uses the Scripts API
+path keyed by `script_name` (`/workers/scripts/{script_name}/versions`). The
+changelog demonstrates cross-surface identity for deployments but not the
+pinned `cf` cold version upload. This remains unverified and is not inferred
+from a synthetic API fixture.

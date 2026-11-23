@@ -197,39 +197,47 @@ deployed. Sources: [Create Worker API](https://developers.cloudflare.com/api/res
 [Script Upload API](https://developers.cloudflare.com/api/resources/workers/subresources/scripts/methods/update/),
 [Workers deployment behavior](https://developers.cloudflare.com/workers/platform/infrastructure-as-code/).
 
-**The init workflow is blocked and was not added or dispatched.** Cloudflare's
-Create Worker API accepts `Workers Admin` or `Workers Scripts Write`; the
-existing planned per-Worker Editor token for `cloudflare-staging-smoke` is not
-one of those permissions and cannot create an absent Worker. Those documented
-permissions are account-level, not scoped by the API to this single future
-Worker. No protected, separately scoped bootstrap credential or verified
-GitHub environment configuration is available in this repo. Reusing or
-widening the routine Worker token, adding an account-wide credential to Actions,
-or referencing an unverified new GitHub environment would violate the stated
-boundary. GitHub admits `workflow_dispatch` only after the workflow exists on
-the default branch ([GitHub's `workflow_dispatch` docs](https://docs.github.com/actions/managing-workflow-runs/manually-running-a-workflow));
-a PR branch cannot run the requested main-only job. No such merge or dispatch
-was attempted.
+**The separate smoke init workflow is implemented but not dispatched.**
+[`private-laptop-bridge-smoke-init.yml`](../../.github/workflows/private-laptop-bridge-smoke-init.yml)
+has no inputs, accepts only the protected default-branch `workflow_dispatch`
+context, checks out the dispatch SHA (no caller-selected ref), and hard-codes
+`private-laptop-bridge-smoke`. It uses the dedicated `cloudflare-smoke-bootstrap`
+environment, not the routine release environment. The pinned Node script uses
+only built-in APIs. It checks account ID suffix `cbfa`, inventories all account
+zones and routes, and is idempotent: a safe existing empty Worker is verified
+without writing; an absent Worker gets one metadata-only Beta Create Worker
+POST; any mismatch fails without repair or retry. Read-only verification then
+requires disabled `workers.dev` and preview URLs, null `deployed_on`, no
+versions, no deployments, no custom domains and no account route targeting the
+name. The only write is that one POST; this workflow contains no code or
+Versions upload step.
 
-The requested route absence proof also needs account zone/route inventory:
-the Worker metadata response includes domain/reference details but does not
-provide an authoritative list of Workers routes, and the Routes API is
-zone-scoped. Cloudflare documents `Workers Metadata Read-Only` or `Workers
-Routes Read` for route listing and `Zone Read` for enumerating zones ([route
-API](https://developers.cloudflare.com/api/resources/workers/subresources/routes/methods/list/),
+The environment must be configured and protected on `main` before a dispatch:
+required reviewer approval, self-review disabled, and environment-only secrets
+`CF_SMOKE_INIT_ACCOUNT_ID`, `CF_SMOKE_INIT_WRITE_TOKEN`, and
+`CF_SMOKE_INIT_READ_TOKEN`. The write token must be short-lived and limited to
+Cloudflare `Workers Scripts Write` (the Create Worker endpoint's minimum
+documented write permission); it is separate from the routine
+`cloudflare-staging-smoke` Individual Workers Editor credential. The read-only
+token must cover Worker metadata/version/deployment read, `Zone Read`, and
+`Workers Metadata Read-Only` for complete route enumeration. Missing or
+unauthorized credentials fail before any create. No GitHub environment or
+secret was read, created, or changed here. GitHub requires the workflow to be
+on the default branch before `workflow_dispatch` can run ([GitHub docs](https://docs.github.com/actions/managing-workflow-runs/manually-running-a-workflow));
+the draft PR cannot yet run it. No merge or dispatch was attempted.
+
+The route check uses Cloudflare's paginated account zone list and zone-scoped
+Worker Routes API, failing closed if any page or route read is unavailable
+([route API](https://developers.cloudflare.com/api/resources/workers/subresources/routes/methods/list/),
 [zone API](https://developers.cloudflare.com/api/resources/zones/methods/list/)).
-The current narrow Worker token cannot prove that no stale route in any account
-zone names this Worker. Therefore there is no safe check-then-create-and-verify
-sequence to run with the currently approved credentials.
-There is also an API compatibility proof missing: the metadata create endpoint
-is in Cloudflare's Beta Workers API (`/workers/workers/{worker_id}/versions`),
-while the pinned `cf workers versions create` uses the Scripts API
-(`/workers/scripts/{script_name}/versions`). The official API reference
-documents both surfaces separately and does not state that creating a Beta
-Worker makes it an existing Script for the pinned `cf` precheck/upload path.
-This is an inference from the published endpoint surfaces, not a live result.
-The existing-Worker precheck and pinned `cf@1.0.0-rc.1` Versions upload still
-fail closed for a missing target. No init or Versions upload was run.
+The [Sep. 2025 New Workers API changelog](https://developers.cloudflare.com/changelog/post/2025-09-03-new-workers-api/)
+explicitly demonstrates metadata-only Worker creation, Beta Worker version
+creation by returned ID, and the legacy `/scripts/{name}/deployments` API using
+the returned Worker name. This supports resource identity across the new Worker
+and legacy deployment APIs. It does not document the pinned `cf` Scripts
+Versions upload cold-start path. That compatibility remains a separate check:
+`cf` can be run only after the init action has successfully completed, and this
+work did not dispatch either action or access Cloudflare.
 
 The real bridge has an additional Versions API constraint. Its Build Output
 declares `PrivateLaptopBridge` as a new SQLite Durable Object export and binds
