@@ -167,6 +167,7 @@ Folders are named `<UTC datetime>_<kind>_<name>`. The kinds in use are `feature`
 - [Capability classes for the post-#5999 registrations](2026-11-23T07-06-00Z_design_id_capability_class_assignments/2026-11-23T07-06-00Z_design_id_capability_class_assignments.md) (PROPOSED design pass for #13004: class assignments for the sixteen names #12982 left as CLASS_UNKNOWN — eight new classes, world.records extended to the kv/blob reads, cap.none for device.info — with the implementation slice gated on ratification)
 
 Two names break the pattern. They stay as they are because other documents link to them: `2026-03-23T00:00:00Z_feature_file_list_ui/` has colons in its name, and `2026-10-14T10-18-19Z_design_p7_2_cloudflare_workers.md` is a file, not a folder.
+- [Atlas investigation research corpus](2026-11-23T23-45-44Z_research_atlas-investigation/2026-11-23T23-45-44Z_research_atlas-investigation.md) — the 2026-11-23 research behind the Atlas programme investigation (#13241): system state, sources and consumers, search technology.
 
 ## Legacy places
 
