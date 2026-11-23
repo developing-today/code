@@ -218,7 +218,7 @@ impl GraphLog {
         ))
     }
 
-    fn record(&mut self, event: &Event, body: &[u8]) -> u128 {
+    pub(crate) fn record(&mut self, event: &Event, body: &[u8]) -> u128 {
         let stamp = Self::stamp_of(event);
         self.events.insert(stamp, event.clone());
         self.bodies.insert(stamp, body.to_vec());
@@ -313,12 +313,30 @@ fn u128_hex(value: u128) -> String {
 }
 
 /// The F3 authorization view over the F1 registry (write-up
-/// items 1 and 5).
-struct RegistryView<'a> {
+/// items 1 and 5). Shared with the production gateway service
+/// ([`super::gateway_service`]) so the two compositions read the
+/// registry identically.
+pub(crate) struct RegistryView<'a> {
     registry: &'a Registry<InMemoryStore>,
     currency_ids: &'a BTreeMap<[u8; 32], String>,
     minters: &'a BTreeMap<String, HashSet<String>>,
     issued: &'a BTreeMap<String, u128>,
+}
+
+impl<'a> RegistryView<'a> {
+    pub(crate) fn new(
+        registry: &'a Registry<InMemoryStore>,
+        currency_ids: &'a BTreeMap<[u8; 32], String>,
+        minters: &'a BTreeMap<String, HashSet<String>>,
+        issued: &'a BTreeMap<String, u128>,
+    ) -> Self {
+        Self {
+            registry,
+            currency_ids,
+            minters,
+            issued,
+        }
+    }
 }
 
 impl CurrencyRegistry for RegistryView<'_> {
@@ -343,8 +361,14 @@ impl CurrencyRegistry for RegistryView<'_> {
 
 /// The F2 factory's cluster seam over the #2289 ledger seam
 /// (write-up item 7).
-struct BackendCluster<'a, B: LedgerBackend> {
+pub(crate) struct BackendCluster<'a, B: LedgerBackend> {
     backend: &'a mut B,
+}
+
+impl<'a, B: LedgerBackend> BackendCluster<'a, B> {
+    pub(crate) fn new(backend: &'a mut B) -> Self {
+        Self { backend }
+    }
 }
 
 impl<B: LedgerBackend> AccountCluster for BackendCluster<'_, B> {
@@ -836,21 +860,31 @@ impl<B: LedgerBackend> GatewayPoc<B> {
     }
 
     fn sign_receipt(&self, receipt: Receipt) -> Result<SignedReceipt, PocError> {
-        let body = receipt.body()?;
-        let signature = self.gateway_key.sign(&receipt_message(&body));
-        Ok(SignedReceipt {
-            receipt,
-            body,
-            signature,
-        })
+        sign_receipt_with(&self.gateway_key, receipt)
     }
+}
+
+/// Sign a receipt with a gateway key (the production gateway
+/// service signs its receipts through the same scheme, so a
+/// receipt verifies identically whichever composition issued it).
+pub(crate) fn sign_receipt_with(
+    key: &ed25519_dalek::SigningKey,
+    receipt: Receipt,
+) -> Result<SignedReceipt, PocError> {
+    let body = receipt.body()?;
+    let signature = key.sign(&receipt_message(&body));
+    Ok(SignedReceipt {
+        receipt,
+        body,
+        signature,
+    })
 }
 
 /// Verify a presented graph event for a write op: its bytes must
 /// decode (signature and canonical form), its kind must be the
 /// op's kind, its payload hash must commit to the presented body,
 /// and its author must be `expected_author` (an account id, hex).
-fn check_event(
+pub(crate) fn check_event(
     event: &Event,
     body: &[u8],
     kind: &str,
@@ -870,7 +904,7 @@ fn check_event(
 }
 
 /// The PoC's `currency_id` minting scheme (write-up item 2).
-fn mint_currency_id(issuer: &str, op: &RegisterCurrency) -> String {
+pub(crate) fn mint_currency_id(issuer: &str, op: &RegisterCurrency) -> String {
     let mut hasher = blake3::Hasher::new();
     hasher.update(b"id.currency.poc.currency-id.v1");
     hasher.update(issuer.as_bytes());
