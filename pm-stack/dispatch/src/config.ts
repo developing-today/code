@@ -83,6 +83,14 @@ export interface Config {
    * SWEEP_SECONDS, default 900; "off" disables the timer — the
    * failure-path cleanup still runs). code#12217. */
   worktreeSweepSeconds: number | null;
+  /** Whether session launch checks the monthly placement guard (#2732). */
+  placementGuardEnabled: boolean;
+  /** The packaged placement-record executable. */
+  placementRecordExecutable: string;
+  /** Policy-of-record YAML passed to placement-record. */
+  placementPolicyFile: string;
+  /** Quota gatherer's latest quota-current.json snapshot. */
+  quotaCurrentFile: string;
 }
 
 export function loadConfig(env: Record<string, string | undefined> = process.env): Config {
@@ -145,5 +153,9 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
       }
       return Number(v);
     })(),
+    placementGuardEnabled: /^(1|true|yes)$/i.test(env.PM_DISPATCH_PLACEMENT_GUARD?.trim() ?? ""),
+    placementRecordExecutable: s(env.PM_DISPATCH_PLACEMENT_RECORD, "placement-record"),
+    placementPolicyFile: s(env.PM_DISPATCH_PLACEMENT_POLICY, ""),
+    quotaCurrentFile: s(env.QUOTA_CURRENT_PATH, join(homedir(), ".local", "state", "pm-aggregator", "quota-current.json")),
   };
 }

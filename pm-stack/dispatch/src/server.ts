@@ -51,6 +51,7 @@ import { GitHubClient } from "./github.ts";
 import { OpenCodeClient, OpenCodeError } from "./opencode.ts";
 import { createDispatchWorktree, worktreeNotice } from "./worktree.ts";
 import { WorktreeRegistry, cleanupDispatchWorktree, sweepDispatchWorktrees } from "./worktree_cleanup.ts";
+import { enforcePlacementGuard } from "./placement-guard.ts";
 
 const cfg: Config = loadConfig();
 // #9028: the queue client talks to the fleet queue broker. Its token
@@ -268,6 +269,21 @@ async function launchSession(
   failureContext: LaunchFailureContext,
   log: LaunchLog,
 ): Promise<string> {
+  // Enforce the monthly guard before creating a worktree or seating a
+  // session. A refusal is a pre-commit launch failure: the caller's
+  // existing compensation path cancels the enqueued task and records the
+  // reason on its tracking issue.
+  const guardedPool = enforcePlacementGuard(
+    {
+      enabled: cfg.placementGuardEnabled,
+      executable: cfg.placementRecordExecutable,
+      policyFile: cfg.placementPolicyFile,
+      quotaCurrentFile: cfg.quotaCurrentFile,
+    },
+    { taskId: task.id, repo: req.repo, model: req.model },
+  );
+  if (guardedPool) log.leg("placement");
+
   // code#12213: never run a dispatched session in the primary clone.
   // A worktree failure throws here, before any session exists, so the
   // launch fails and the task is cancelled like any pre-session error.

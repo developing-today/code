@@ -66,6 +66,16 @@ Repo <repo>` so the session knows its tracking ids.
 5. Comment the task/session ids on the issue; label it `queue/claimed` +
    `work/assigned`.
 
+Before step 3, the packaged service runs `placement-record` for explicit
+`opencode-go` and `cline-pass` model hints. It reads the policy shipped with
+the package and the quota gatherer's `QUOTA_CURRENT_PATH` snapshot (default
+`~/.local/state/pm-aggregator/quota-current.json`). A refusal is written to
+the dispatcher journal verbatim and fails the pre-commit launch, so the
+existing failure path cancels the queue task and records the reason on its
+issue before any worktree or OpenCode session is created. Requests with no
+model hint or a provider outside those two mappings are not covered by this
+slice; the remaining model-to-pool map is still needed for full rollout.
+
 Stage/failure semantics (design #2668): step 4's claim PATCH is the
 launch's commit point. Steps before it are pre-commit — a failure
 cancels the task and fails the launch. Step 5 is post-commit: the
