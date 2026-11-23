@@ -71,7 +71,7 @@ jobs:
           fi
           bun test
 
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@v7.1.0
         with:
           node-version: 24
 
@@ -291,7 +291,7 @@ jobs:
       # finding on PR #6928, verified against the suite at lines
       # 52-68 of opencode-usage-export.test.mjs.)
       - name: Set up Node 24 for the quota exporter suites
-        uses: actions/setup-node@v7
+        uses: actions/setup-node@v7.1.0
         with:
           node-version: 24
 
