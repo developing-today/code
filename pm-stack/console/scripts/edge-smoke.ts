@@ -408,22 +408,25 @@ try {
     // few seconds. The time is kept to in this runtime: until it comes
     // the Worker asks GitHub for nothing counted by the hour, and then
     // it asks again.
-    spent.until = Math.ceil(Date.now() / 1000) + 4;
+    spent.until = Math.ceil(Date.now() / 1000) + 8;
     const quietTo = spent.until * 1000;
     const turned = await asOwner("/console/api/platform");
     await turned.text();
     spent.until = 0;
     const until = (await githubSaid())?.quiet.core ?? null;
-    const askedBy = outside.filter((call) => call.to === "github").length;
+    // (Searches are counted apart by GitHub, and are not what was spent:
+    // only what draws on the hour is looked at.)
+    const hourly = () => outside.filter((call) => call.to === "github" && !call.path.startsWith("search/")).length;
+    const askedBy = hourly();
     // GitHub would answer now, and is not asked: not for this read, and
     // not by anything else the Worker does meanwhile.
     const held = await asOwner("/console/api/platform");
     await held.text();
     check(
       "turned away with the hour used up, the Worker keeps to the time GitHub gave and asks it nothing more",
-      until === quietTo && outside.filter((call) => call.to === "github").length === askedBy,
+      until === quietTo && hourly() === askedBy,
       `quiet until ${until}, GitHub said ${quietTo}; the read answered ${turned.status}, then ${held.status}; ${
-        outside.filter((call) => call.to === "github").length - askedBy
+        hourly() - askedBy
       } calls while quiet`,
     );
     await new Promise((resolve) => setTimeout(resolve, Math.max(0, (until ?? 0) - Date.now()) + 400));
@@ -431,9 +434,9 @@ try {
     check(
       "and when the time has come it asks again, and reads the list",
       (back.workers ?? []).some((w) => w.name === "pm-console-edge") &&
-        outside.filter((call) => call.to === "github").length > askedBy &&
+        hourly() > askedBy &&
         (await githubSaid())?.quiet.core === null,
-      `${(back.workers ?? []).length} workers; ${outside.filter((call) => call.to === "github").length - askedBy} more calls`,
+      `${(back.workers ?? []).length} workers; ${hourly() - askedBy} more calls`,
     );
     // Someone to tell: a device takes notifications (its service is a
     // known one and its key a real point; nothing is sent to it in

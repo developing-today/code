@@ -532,16 +532,20 @@ function notices(doc, only = null) {
 }
 
 /** What is said of each list a screen shows that could not be read
- * just now: why, and how old the copy shown in its place is. `only`
- * names the lists a screen shows, where it does not show all of the
- * document's: it is told of those alone. */
+ * just now: why, and how old the copy shown in its place is (by when
+ * that copy was read, `good`, not by when reading was last tried).
+ * `only` names the lists a screen shows, where it does not show all of
+ * the document's: it is told of those alone.
+ * @param {{ health?: Record<string, { ok: boolean, error: string | null }>, read?: Record<string, string | null>, good?: Record<string, string | null> } | null | undefined} doc
+ * @param {string[] | null} [only]
+ * @param {number} [now] */
 export function unreadSaid(doc, only = null, now = Date.now()) {
   const out = [];
   for (const [name, s] of Object.entries(doc?.health || {})) {
     if (only && !only.includes(name)) continue;
     if (s.ok || !s.error) continue;
     const what = name === "services" ? "the machine's units" : SECTION_SAID[name] || name;
-    const read = doc.read?.[name] ? `, read ${ago(doc.read[name], now)}` : "";
+    const read = doc?.good?.[name] ? `, read ${ago(doc.good[name], now)}` : "";
     out.push(`Could not read ${what} just now: ${whySaid(s.error, now)}. Showing the last good copy${read}.`);
   }
   return out;

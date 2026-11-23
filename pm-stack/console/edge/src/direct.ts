@@ -295,10 +295,13 @@ async function ghApi(
   // The body is read as JSON and written back out, so an empty answer
   // (a 204) stays empty and an error body keeps its own words for the
   // caller.
+  let whole = true;
   const text = await (async () => {
     try {
       return JSON.stringify(await res.json());
     } catch {
+      // No body (a 204), or one that could not be read to its end.
+      whole = false;
       return "";
     }
   })();
@@ -336,8 +339,11 @@ async function ghApi(
     return { code: 1, stdout: "", stderr: until === undefined ? why : `${askAgainSaid(until)}${why}` };
   }
   if (!write && memory) {
+    // Kept only if it arrived whole. A body cut off part-way is an
+    // empty answer this once; kept under GitHub's tag it would be the
+    // answer every time GitHub said "not modified" after.
     const etag = res.headers?.get("etag") ?? null;
-    if (etag) memory.set(url, { etag, text });
+    if (etag && whole) memory.set(url, { etag, text });
     else memory.delete(url);
   }
   return { code: 0, stdout: text, stderr: "" };

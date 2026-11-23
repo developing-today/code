@@ -1024,7 +1024,14 @@ test("each list that could not be read is said on the screens that show it, with
       // Not read, and no reason given: nothing is made up for it.
       more: { ok: false, error: null },
     },
+    // When each was last tried: just now, and failing. Not how old what is shown is.
     read: {
+      prs: new Date(now - 20_000).toISOString(),
+      agents: new Date(now - 20_000).toISOString(),
+      services: new Date(now - 20_000).toISOString(),
+    },
+    // When what is shown of each was read.
+    good: {
       prs: new Date(now - 12 * 60_000).toISOString(),
       agents: null,
       services: new Date(now - 2 * 3600_000).toISOString(),
@@ -1044,6 +1051,11 @@ test("each list that could not be read is said on the screens that show it, with
   ]);
   expect(unreadSaid(doc, ["priorities"], now)).toEqual([]);
   expect(unreadSaid(doc, ["agents", "services"], now)).toHaveLength(2);
+  // A copy of the document from before it said when each list was read (one kept on a
+  // device) gives no age, and none is made up from when reading was last tried.
+  expect(unreadSaid({ health: doc.health, read: doc.read }, ["prs"], now)).toEqual([
+    `Could not read pull requests just now: ${hour}. Showing the last good copy.`,
+  ]);
   // A document with nothing wrong, or none yet, says nothing.
   expect(unreadSaid({ health: { prs: { ok: true, error: null } } }, null, now)).toEqual([]);
   for (const none of [null, undefined, {}]) expect(unreadSaid(none, ["prs"], now)).toEqual([]);

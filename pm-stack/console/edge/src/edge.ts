@@ -965,17 +965,24 @@ export class Edge {
   /** Whether this side's token was turned away in a call since number
    * `from` (of these services only, if any are named), and if so for
    * how long what was being done is left to a machine: an hour when it
-   * may not do the thing (401, 403); when it was only calling too
-   * often, until the time GitHub gave for asking again, and a few
-   * minutes where it gave none or a nearer one. Calls made at the same
+   * may not do the thing (401, 403), and a few minutes when it was
+   * only calling too often. A section read from named services is
+   * left until the time GitHub gave for asking again, where it gave a
+   * further one: nothing would be read before then, and claiming the
+   * section back every few minutes only to give it up again would have
+   * a machine stop and start sending its copy. Calls made at the same
    * time by something else are counted too: that can only hand a
    * machine something this side could have done, never keep from it
-   * what this side cannot. */
+   * what this side cannot. Which is why an action (no services named)
+   * is only ever left for the few minutes: one that failed for a
+   * reason of its own, beside a call held back for the hour, is not
+   * then a machine's for the hour. */
   private away(from: number, to?: Outward["to"][]): number | null {
     const mine = this.outward.filter((call) => call.n > from && (to === undefined || to.includes(call.to)));
     if (mine.some((call) => (call.status === 401 || call.status === 403) && !call.limited)) return REFUSED_FOR_MS;
     const limited = mine.filter((call) => call.limited);
     if (limited.length === 0) return null;
+    if (to === undefined) return LIMITED_FOR_MS;
     const until = Math.max(0, ...limited.map((call) => call.until ?? 0));
     return Math.min(QUIET_MOST_MS, Math.max(LIMITED_FOR_MS, until - this.now()));
   }

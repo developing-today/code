@@ -355,10 +355,12 @@ function tagging(options: { memory?: boolean; start?: number } = {}) {
   const lists: Record<string, { rev: number; body: unknown }> = {};
   const calls: { method: string; url: string; tag: string | null }[] = [];
   const seen: Outward[] = [];
-  const state: { limited: Record<string, string> | null; tags: boolean; status: number | null } = {
+  const state: { limited: Record<string, string> | null; tags: boolean; status: number | null; cut: boolean } = {
     limited: null,
     tags: true,
     status: null,
+    // The connection drops while a good answer's body is being read.
+    cut: false,
   };
   const clock = { t: options.start ?? Date.UTC(2026, 10, 23, 17, 0, 0) };
   const fetchImpl = (async (url: string, init: { method: string; headers: Record<string, string> }) => {
@@ -381,7 +383,15 @@ function tagging(options: { memory?: boolean; start?: number } = {}) {
     if (state.tags && init.headers["if-none-match"] === etag) {
       return { ok: false, status: 304, headers: new Headers({ etag }), json: async () => JSON.parse("") };
     }
-    return { ok: true, status: 200, headers: new Headers(state.tags ? { etag } : {}), json: async () => list.body };
+    return {
+      ok: true,
+      status: 200,
+      headers: new Headers(state.tags ? { etag } : {}),
+      json: async () => {
+        if (state.cut) throw new TypeError("terminated");
+        return list.body;
+      },
+    };
   }) as unknown as Fetch;
   const memory = options.memory === false ? undefined : githubMemory();
   const run = edgeRun(
@@ -478,6 +488,32 @@ describe("what the edge remembers of GitHub", () => {
     await plain.api(PULLS);
     expect(plain.calls.map((call) => call.tag)).toEqual([null, null]);
     expect(plain.seen.map((call) => call.status)).toEqual([200, 200]);
+  });
+
+  test("an answer cut off part-way is not kept under its tag: the next read is a full one, and gets the list", async () => {
+    const g = tagging();
+    // The list is read whole, and kept.
+    expect((await g.api(PULLS)).stdout).toBe('[{"number":1}]');
+    // It changes, and the connection drops while the new one is being read: this once the
+    // answer is an empty one (as it was before anything was kept), and nothing is kept of it.
+    g.change(at(PULLS), [{ number: 1 }, { number: 2 }]);
+    g.state.cut = true;
+    expect(await g.api(PULLS)).toEqual({ code: 0, stdout: "", stderr: "" });
+    expect(g.memory?.size()).toBe(0);
+    // So the next read carries no tag, GitHub cannot say "not modified" of an answer this
+    // side never had, and the list comes whole.
+    g.state.cut = false;
+    expect((await g.api(PULLS)).stdout).toBe('[{"number":1},{"number":2}]');
+    expect(g.calls.map((call) => call.tag)).toEqual([null, 'W/"1"', null]);
+    expect((await g.api(PULLS)).stdout).toBe('[{"number":1},{"number":2}]');
+    expect(g.calls[3].tag).toBe('W/"2"');
+    // Cut off on the very first read: the same.
+    const fresh = tagging();
+    fresh.state.cut = true;
+    expect(await fresh.api(ISSUES)).toEqual({ code: 0, stdout: "", stderr: "" });
+    fresh.state.cut = false;
+    expect((await fresh.api(ISSUES)).stdout).toBe('[{"number":1}]');
+    expect(fresh.calls.map((call) => call.tag)).toEqual([null, null]);
   });
 
   test("turned away for calling too often with a time to ask again: the time is told, said at the front of why, and nothing is asked until it has come", async () => {

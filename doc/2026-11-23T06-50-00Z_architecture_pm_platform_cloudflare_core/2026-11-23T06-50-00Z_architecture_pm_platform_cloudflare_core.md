@@ -721,3 +721,33 @@ edge should do what it holds itself once GitHub answers again, and not
 wait for a machine that may not come. That touches the rule against
 doing anything twice (a machine may already have been handed it), so
 it is its own change.
+
+## 2026-11-23T22:40Z Update: the shared allowance, after review
+
+Review of #13570 found two faults, both real, and one more was found
+answering them.
+
+- _The age shown was the last try's, not the copy's._ A document says
+  when each of its lists was last tried (`read`), and a failed try
+  moves that on as much as a good one: "read 12 min ago" would have
+  said "just now" of a list hours old, and again after every failed
+  try. Documents now also say when what is shown of each list was read
+  (`good`), and the notice uses that. A copy of a document from before
+  this (one kept on a device) gives no age, and none is made up.
+- _An answer cut off part-way was kept under its tag._ A list whose
+  body could not be read to its end was an empty answer, as before,
+  and was then kept: GitHub's next "not modified" would have made it
+  the answer again, every time, until the list changed. Only an answer
+  that arrived whole is kept now.
+- _An action could have been left to a machine for most of an hour._
+  Whether this side was turned away is judged by its calls since an
+  action began, whoever made them. With calls held back all through a
+  wait, an action that failed for a reason of its own beside one of
+  them would have been a machine's for the rest of the wait. An action
+  is left for five minutes, as it always was; only a section read from
+  named services is left until GitHub's time.
+
+The type check that #13498 added to the deploy (by a fleet lane, while
+this was in review) caught a fourth before it could reach the deploy:
+a test passing a list where the page's function, read by the checker,
+took none.

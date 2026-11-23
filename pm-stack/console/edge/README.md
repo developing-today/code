@@ -241,7 +241,9 @@ it (the laptop's, the sign-in issuer's).
   characters and two hundred answers at most, the one asked for longest
   ago dropped first); a restart costs one full answer of each. A tag
   belongs to the token it was given to, so after a new token the old
-  tags only get full answers. Health counts GitHub's answers and how
+  tags only get full answers. An answer whose body was cut off
+  part-way is not kept: under GitHub's tag it would have been the
+  answer every time GitHub said "not modified" after. Health counts GitHub's answers and how
   many were "not modified" (`github.answers`, `github.unchanged`).
   This does not give the edge an allowance of its own: when the agents
   use the hour up, the edge is turned away with them until it turns

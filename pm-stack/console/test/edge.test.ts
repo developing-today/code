@@ -4341,6 +4341,8 @@ describe("the edge does the core itself", () => {
       prs: unknown;
       priorities: unknown;
       health: Record<string, { ok: boolean; error: string | null }>;
+      read: Record<string, string | null>;
+      good: Record<string, string | null>;
     };
   const githubSaid = async (w: World) =>
     (
@@ -4442,6 +4444,11 @@ describe("the edge does the core itself", () => {
       expect(section.error).toContain(`GitHub says to ask again at ${new Date(back).toISOString()}`);
       expect(section.error).toMatch(/API rate limit exceeded/);
     }
+    // How old the copy shown is, is when it was read, which the failed tries leave alone;
+    // when each was last tried has moved on.
+    expect([limited.ops.good.prs, limited.core.good.asks]).toEqual([first.ops.good.prs, first.core.good.asks]);
+    expect(limited.ops.good.prs).toBe(first.ops.read.prs);
+    expect(Date.parse(limited.ops.read.prs ?? "")).toBeGreaterThan(Date.parse(first.ops.read.prs ?? ""));
     // Ranked issues are a search: read as ever.
     expect(limited.ops.health.priorities.ok).toBe(true);
     expect(searches()).toBeGreaterThan(before.searches);
@@ -4452,10 +4459,21 @@ describe("the edge does the core itself", () => {
     w.now.t += 20 * 60_000;
     expect(await refused()).toEqual(["read.asks", "read.prs"]);
     await settle(w);
+    // Something the owner does meanwhile is not sent either: it is kept, not lost.
+    const tried = await w.act("issue.rank", { issue: 301, rank: "next" });
+    expect(await tried.json()).toMatchObject({ ok: true, held: true });
+    expect(hourly()).toBe(before.hourly + 1);
+    // That kind of action is left to a machine for five minutes, as when no time is given,
+    // and not for the rest of the hour: what failed beside a call held back may have
+    // failed for a reason of its own. (Tried again here, it is held back again.)
+    expect(await refused()).toEqual(["issue.rank", "read.asks", "read.prs"]);
+    w.now.t += 5 * 60_000 + 1_000;
+    expect(await refused()).toEqual(["read.asks", "read.prs"]);
+    await settle(w);
     // For the rest of the forty: screens looked at, minutes passing, the check that health
     // makes. None of it asks GitHub for anything counted by the hour, and what is held back
     // here is not counted as an answer of GitHub's.
-    for (let minute = 23; minute < 40; minute += 3) {
+    for (let minute = 28; minute < 40; minute += 3) {
       w.now.t += 3 * 60_000;
       await look();
       const said = await githubSaid(w);
@@ -4463,10 +4481,6 @@ describe("the edge does the core itself", () => {
       expect([minute, said.quiet, said.answers]).toEqual([minute, { core: back, search: null }, w.githubCalls.length]);
       expect([minute, hourly()]).toEqual([minute, before.hourly + 1]);
     }
-    // Nor does something the owner does: it is kept, not sent and not lost.
-    const tried = await w.act("issue.rank", { issue: 301, rank: "next" });
-    expect(await tried.json()).toMatchObject({ ok: true, held: true });
-    expect(hourly()).toBe(before.hourly + 1);
     // The time comes, and GitHub answers again: it is asked, and what it says is shown with nothing wrong.
     w.ghLimits.length = 0;
     w.now.t = back + 181_000;
