@@ -84,7 +84,7 @@ def corpus_payload(corpus: bytes, fixture: dict[str, Any], declared_digest: str)
     return actual
 
 
-RUST_HARNESS = r'''use id_benchmarks::{ReferenceStore, adapters::{redb::RedbStore, turso::TursoStore}};
+RUST_HARNESS = r'''use id_benchmarks::{ReferenceStore, adapters::{redb::RedbStore, turso::TursoStore}, support_level};
 use serde_json::{json, Value};
 use std::{env, fs, time::Instant};
 
@@ -98,7 +98,9 @@ fn normalized(mut observed: Value, expected: &Value) -> Value {
 fn main() {
     let args: Vec<String> = env::args().collect();
     let fixture: Value = serde_json::from_slice(&fs::read(&args[1]).expect("read fixture")).expect("parse fixture");
+    let plan: Value = serde_json::from_slice(&fs::read(&args[2]).expect("read plan")).expect("parse plan");
     let operations = fixture["operations"].as_array().expect("operations array");
+    let plan_operations = plan["logical_operations"].as_array().expect("plan operations array");
     let mut result = serde_json::Map::new();
     let mut matched = serde_json::Map::new();
     let mut sync = serde_json::Map::new();
@@ -107,15 +109,16 @@ fn main() {
         let mut sync_samples = Vec::<Value>::new();
         let mut matched_count = 0usize;
         let mut capability_count = 0usize;
-        for _ in 0..5 {
+        for repetition in 0..5 {
             let mut reference = ReferenceStore::new();
             match engine {
                 "redb" => {
                     let mut store = RedbStore::temp();
                     for (index, op) in operations.iter().enumerate() {
                         let id = op["id"].as_str().expect("operation id");
-                        assert!(!op["engine_support"][engine].as_str().unwrap_or("").is_empty(), "capability mapping missing");
-                        capability_count += 1;
+                        let cell = plan_operations.iter().find(|row| row["id"] == id).expect("plan operation")[engine].as_str().expect("plan engine cell");
+                        assert_eq!(support_level(id, engine, cell), op["engine_support"][engine].as_str().expect("fixture capability"), "capability mapping at {id}");
+                        if repetition == 0 { capability_count += 1; }
                         let args = &op["input"];
                         let expected = &op["expected"];
                         let reference_row = normalized(reference.execute(id, args, &fixture), expected);
@@ -131,8 +134,9 @@ fn main() {
                     let mut store = TursoStore::temp();
                     for (index, op) in operations.iter().enumerate() {
                         let id = op["id"].as_str().expect("operation id");
-                        assert!(!op["engine_support"][engine].as_str().unwrap_or("").is_empty(), "capability mapping missing");
-                        capability_count += 1;
+                        let cell = plan_operations.iter().find(|row| row["id"] == id).expect("plan operation")[engine].as_str().expect("plan engine cell");
+                        assert_eq!(support_level(id, engine, cell), op["engine_support"][engine].as_str().expect("fixture capability"), "capability mapping at {id}");
+                        if repetition == 0 { capability_count += 1; }
                         let args = &op["input"];
                         let expected = &op["expected"];
                         let reference_row = normalized(reference.execute(id, args, &fixture), expected);
@@ -306,10 +310,15 @@ def run(argv: list[str]) -> int:
             if broker is None and home_broker.is_file() and os.access(home_broker, os.X_OK):
                 broker = str(home_broker)
             if broker:
+                repo_root = command_output("git", "rev-parse", "--show-toplevel")
                 cargo = [
-                    broker, "exec", "--repo", command_output("git", "rev-parse", "--show-toplevel"),
+                    broker, "exec", "--repo", repo_root,
                     "--profile", "test", "--", *cargo,
                 ]
+            else:
+                repo_root = command_output("git", "rev-parse", "--show-toplevel")
+            plan_path = Path(repo_root) / "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-c/benchmark-plan.json"
+            cargo.extend([str(plan_path)])
             completed = subprocess.run(
                 cargo,
                 check=True, capture_output=True, text=True,
