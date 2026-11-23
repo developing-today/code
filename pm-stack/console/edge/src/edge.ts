@@ -23,6 +23,7 @@ import { DIRECT_ACTIONS, DIRECT_READ_SECTIONS, directClasses, directRead } from 
 import { Devices, KeyedLimiter, Limiter } from "../../src/devices.ts";
 import { type Act, DOC_NAMES, type DocName, Docs, Stamped } from "../../src/docs.ts";
 import {
+  APK_LIMIT,
   type ApkReport,
   apkReport,
   type EdgeConfig,
@@ -90,6 +91,8 @@ const SIGNATURE = /^[A-Za-z0-9_-]{86}$/;
 const SYNC_REFUSALS = 20;
 /** The Android build is kept in pieces of this many bytes. */
 const APK_CHUNK = 512 * 1024;
+/** The most pieces a build that may be carried can take. */
+const APK_PIECES = Math.ceil(APK_LIMIT / APK_CHUNK);
 /** A build that could not be kept is asked for again no sooner than this. */
 const APK_RETRY_MS = 10 * 60_000;
 /** With no report for this long, the laptop is not there to ask. */
@@ -270,10 +273,19 @@ export class Edge {
     const sha256 = [...digest].map((b) => b.toString(16).padStart(2, "0")).join("");
     if (bytes.byteLength !== build.size || sha256 !== build.sha256)
       throw new Error("the build sent is not the build described");
-    const before = await this.apkKept();
+    // The record of the copy kept so far goes first. Its pieces are about
+    // to be written over, and a write that stops half-way must not leave
+    // pieces of two builds under a record that describes one of them.
+    // With no record there is no copy: nothing is handed out, and the
+    // build is asked for again.
+    if (await this.apkKept()) {
+      this.keptApk = null;
+      await this.kv.delete("apk");
+    }
     const chunks = Math.ceil(bytes.byteLength / APK_CHUNK);
     for (let i = 0; i < chunks; i++) await this.kv.put(`apk:${i}`, bytes.slice(i * APK_CHUNK, (i + 1) * APK_CHUNK));
-    for (let i = chunks; i < (before?.chunks ?? 0); i++) await this.kv.delete(`apk:${i}`);
+    // Pieces left by a larger build, whether or not its record survived.
+    for (let i = chunks; i < APK_PIECES; i++) await this.kv.delete(`apk:${i}`);
     this.keptApk = { sha256, size: build.size, at: build.at, chunks };
     await this.kv.put("apk", this.keptApk);
   }

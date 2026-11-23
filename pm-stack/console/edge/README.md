@@ -18,6 +18,7 @@ runs the fleet's tools can be reached.
 | Direct actions (reply to or close a prompt, comment, rank an issue, move a task) | edge, once the laptop has been quiet for a minute | run at the edge through the laptop's own classes, and never sent to the laptop, so they are not done twice; a new prompt is filed at the edge and only its queue task is held for the laptop |
 | Actions not safe to do late (merge, units, unblock, …)                           | laptop, relayed at once                           | refused, saying why                                                                                                                                                                          |
 | The dashboard's own pages, logs, one pull request's page                         | laptop                                            | a plain notice with a link to the app                                                                                                                                                        |
+| The signed Android build (`/console/pm-console.apk`)                             | laptop, and a copy at the edge                    | the copy is served, and the app says so when the copy is older than the laptop's newest                                                                                                      |
 
 The list of actions that may be done late is `HOLDABLE` in
 `../src/edge-proto.ts`.
@@ -50,6 +51,15 @@ laptop: pm-console (../src/server.ts), reporting through ../src/sync.ts
   state that changed, how current each unchanged one is, and what became
   of anything held for it. The answer says whether anyone is looking, and
   carries the actions the owner took while it was away.
+- **The signed Android build travels in a report**, once per build, when
+  the edge says it lacks it, and is kept only if it matches its
+  fingerprint. It never stands in the way of the reports themselves,
+  which are how the edge knows the laptop is there. Beside sections that
+  would take the report past its room (counted in bytes as sent) it goes
+  alone and they follow at once. If a report carrying it does not get
+  through (a slow connection runs out of time, or it is turned away), or
+  the file cannot be read, the reports after that go without it, and it
+  is tried again ten minutes later.
 - **An action for the laptop is relayed at once** when the laptop is in
   reach; its answer carries what it read again, so the edge's copy shows
   the change before the next report.
