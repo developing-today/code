@@ -1554,6 +1554,11 @@ pub(crate) fn schedule_fired_event_from(id: &str, late: bool, source: Option<&st
 /// waits while the program cannot take a fire (`deliverable` is false): a due
 /// schedule that cannot be delivered would otherwise wake the loop without end.
 ///
+/// A due schedule whose fire was refused at the account's fuel rate waits
+/// until `not_before` instead (#1067): without this the loop retries the same
+/// refused fire, scans schedules and warns on every pass until rollover. A
+/// schedule that is not due yet keeps its own wake.
+///
 /// The deadline is anchored to `now_instant` (the injected clock's monotonic
 /// face), so a manual clock advancing `now_ms` past a schedule also advances
 /// this deadline.
@@ -1562,13 +1567,19 @@ pub(crate) fn next_schedule_wake(
     now_ms: u64,
     now_instant: std::time::Instant,
     deliverable: bool,
+    not_before: Option<std::time::Instant>,
 ) -> Option<std::time::Instant> {
     if !deliverable {
         return None;
     }
     let earliest = schedules.values().map(|schedule| schedule.at_ms).min()?;
     let wait = std::time::Duration::from_millis(earliest.saturating_sub(now_ms));
-    Some(now_instant + wait)
+    let wake = now_instant + wait;
+    Some(if wait.is_zero() {
+        not_before.filter(|deadline| *deadline > wake).unwrap_or(wake)
+    } else {
+        wake
+    })
 }
 
 /// The newest `count` chat lines in `events`, oldest first, each carrying its

@@ -647,6 +647,19 @@ pub(crate) struct WorldActor {
     pub(crate) active_subs: BTreeSet<Subscription>,
     /// Request ids already executed, so `wants` states intent, not polling.
     pub(crate) handled_requests: BTreeSet<String>,
+    /// Capability results whose delivery was refused at the account's
+    /// fuel rate (#1067): the side effect already ran, so the result
+    /// event waits here — never re-executed — until the window rolls
+    /// and `retry_pending_results` delivers it. Actor lifetime only,
+    /// like `handled_requests`: a restart falls back to the existing
+    /// restarted-refusal path for the same id.
+    pub(crate) pending_results: std::collections::VecDeque<String>,
+    /// Earliest actor-clock instant a fuel-refused delivery may be
+    /// retried (#1067): one full window past the refusal, which is
+    /// guaranteed to land in a fresh budget window — the refused
+    /// window started no later than the refusal. `None` while no
+    /// refusal is outstanding.
+    pub(crate) fuel_retry_not_before: Option<std::time::Instant>,
     /// Forms registered by `form.present`; actor-lifetime only, so a restart
     /// invalidates outstanding UI submissions instead of replaying stale input.
     pub(crate) pending_forms: BTreeMap<String, PendingForm>,
@@ -892,6 +905,14 @@ impl WorldActor {
         }
         let deliverable = self.program_healthy && !self.storage_failed;
         let clock = self.core.clock();
+        let now_instant = clock.now_instant();
+        // A fuel-rate refusal backs delivery off until one full window
+        // past the refusal (#1067): the budget's window started no
+        // later than the refusal, so that instant is guaranteed to
+        // land in a fresh window.
+        let fuel_backoff = self
+            .fuel_retry_not_before
+            .filter(|deadline| *deadline > now_instant);
         self.ticks
             .values()
             .min()
@@ -900,11 +921,16 @@ impl WorldActor {
             .chain(next_schedule_wake(
                 &self.core.schedules,
                 clock.now_ms(),
-                clock.now_instant(),
+                now_instant,
                 deliverable,
+                fuel_backoff,
             ))
             .chain(self.loc_watches.values().min().copied())
             .chain(self.provider_broker.next_deadline())
+            // A queued capability result needs a wake at the retry
+            // deadline too, or the loop would sleep past the rollover
+            // with a result still waiting (#1067).
+            .chain(fuel_backoff.filter(|_| !self.pending_results.is_empty()))
             .min()
     }
 
@@ -4123,6 +4149,8 @@ impl WorldActor {
             presence: HashMap::new(),
             active_subs: BTreeSet::new(),
             handled_requests: BTreeSet::new(),
+            pending_results: std::collections::VecDeque::new(),
+            fuel_retry_not_before: None,
             pending_forms: BTreeMap::new(),
             denied_subs: BTreeSet::new(),
             ticks: BTreeMap::new(),
