@@ -304,7 +304,15 @@ class D1Client:
         return result[0].get("results") or []
 
     def import_sql(self, db_id, sql_text):
-        """Import SQL text via the D1 import API (init -> upload -> poll)."""
+        """Import SQL text via the D1 import API (init -> upload -> ingest -> poll).
+
+        The poll step identifies the import by the current_bookmark
+        the ingest step returns (its at_bookmark); polling with the
+        filename instead is rejected by the live API with
+        "current_bookmark => Required" (seen on the first live run,
+        2026-11-22, #8584). Completion is the result status reaching
+        "complete"; a result error aborts.
+        """
         digest = hashlib.md5(sql_text.encode()).hexdigest()
         init = self._call(
             "POST",
@@ -315,23 +323,34 @@ class D1Client:
         req = urllib.request.Request(upload_url, data=sql_text.encode(), method="PUT")
         try:
             with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT_SECONDS) as resp:
-                etag = resp.headers.get("etag", "").strip('"')
+                etag = resp.headers.get("etag", "").strip("\"")
         except (urllib.error.URLError, TimeoutError, OSError) as exc:
             raise RuntimeError(f"D1 import upload failed: {exc}") from exc
         if etag != digest:
             raise RuntimeError(
                 f"D1 import upload etag mismatch: sent {digest}, got {etag}"
             )
-        for _attempt in range(60):
+        ingest = self._call(
+            "POST",
+            f"/accounts/{self.account}/d1/database/{db_id}/import",
+            {"action": "ingest", "etag": digest, "filename": filename},
+        )
+        bookmark = ingest.get("at_bookmark")
+        if not bookmark:
+            raise RuntimeError(f"D1 import ingest returned no at_bookmark: {ingest}")
+        # A full-store import executes ~600k statements server-side;
+        # the poll bound (360 x 5s = 30 min) is sized to that, not to
+        # the hermetic fixtures.
+        for _attempt in range(360):
             poll = self._call(
                 "POST",
                 f"/accounts/{self.account}/d1/database/{db_id}/import",
-                {"action": "poll", "filename": filename},
+                {"action": "poll", "current_bookmark": bookmark},
             )
-            if poll.get("success"):
-                return poll
             if poll.get("error"):
-                raise RuntimeError(f"D1 import failed: {poll['error']}")
+                raise RuntimeError(f"D1 import failed: {poll["error"]}")
+            if poll.get("status") == "complete":
+                return poll
             time.sleep(5)
         raise RuntimeError("D1 import did not complete within the poll bound")
 
