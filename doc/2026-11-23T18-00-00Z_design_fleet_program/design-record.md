@@ -1,0 +1,20 @@
+# Fleet research decisions and implementation boundaries
+
+**Status.** Proposed engineering direction for #13272. This record identifies the owning systems and acceptance oracles. A change of lease semantics, paid capacity, identity scope or destructive retention needs its own recorded disposition. The Fleet operator book carries the dated evidence and detailed workstream chapters.
+
+| Workstream | Decision and reason | What would qualify the change |
+|---|---|---|
+| A. Queue | Give each grant a recoverable receipt and fence stale writes. Renewals and reclaims need one authoritative clock because seats can disconnect. Keep external side effects idempotent by logical operation ID. | Test an ambiguous commit, reclaim, stale completion and duplicate wake against the writer and effect destination. |
+| B. Placement | Extend the existing evaluator and mirror. Rank eligible capacity using job-level history and reserve at submission to prevent concurrent oversubscription. | Replay one snapshot through dry run and dispatch. A second authorized seat resolves the exact run and attempt. |
+| C. Lifecycle | Bind identity to an installation and verified grants. Join to a machine when known, allow lanes to auto-register, and enforce requirements at claim time. | Two same-named workers cannot renew each other's grants. A duplicate handoff redemption recovers the first result. |
+| D. Secrets | Specify readiness, freshness and offline policy by credential class. Preserve progress on long legitimate refreshes. | Live and cold fixtures distinguish loading, denied, missing, stale and revoked states using metadata-only probes. |
+| E. Recovery | Assign each transport leg one recovery owner. Journal generation switches and measure cold recovery before choosing timeouts. | In isolation, cold-start from zero, roll back an invalid generation, then verify that a second heal pass leaves healthy services running. |
+| F. Builds | Collect separate preparation, workload and publication receipts. Key eligible reuse by source, environment, toolchain, command, authorization and oracle version. | A root-environment smoke test, a workload result and a pulled image digest are independently verifiable. |
+| G. Constellation | Keep the existing member roster, reconcile declared paths with gitlinks and record per-fork ancestry. Compare release, pin, generation and book independently. | A missing member, skipped private fetch, stale fork or unverified rollback target has its own disposition. |
+| H. Quota | Keep the policy in pm-stack and consume its versioned decision. Meter scope and age must survive transport. Preserve the distinction between admission, pace and provider-disable decisions. | Replay fixed-clock windows, unknown observations, a wall near reset and a flag-only rollback on a single trial pool. |
+| I. Observability | Project status from bounded reads with source-specific freshness. Attribute runner use by provider job and attempt. Use substantive progress to date stalled work. | Losing a source produces a partial view. Repeated observations of one job or one stalled task stay idempotent. |
+| J. Integrations | Reuse Atlas search, existing mcpx discovery, and explicit Fleet library interfaces. Couple offline data to an authorized scope and version. | A separately built ID consumer agrees with CLI behavior, a second principal cannot reuse a search cursor, and report replay preserves record identity. |
+
+The [delivery plan](../../pkgs/fleet/book/research/roadmap.md) sets implementation order. The [issue map](../../pkgs/fleet/book/research/issue-map.md) keeps GitHub prerequisites, written gates and operating holds distinguishable. The [charter](charter.md) links the earlier execution, admission and multicall decisions.
+
+The [investigation notebook](investigation-notebook.md) gives the source comparisons and implementation fixtures. The [native dependency ledger](native-blockers.csv) contains the dated edge readbacks.
