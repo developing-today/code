@@ -7,6 +7,7 @@
 pub mod authority;
 pub mod completion;
 pub mod degraded;
+pub mod operations;
 pub mod routing;
 pub mod selection;
 #[cfg(feature = "queue-broker")]
