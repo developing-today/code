@@ -306,3 +306,171 @@ fn policy_partial_vest_resolves_at_most_once() {
         Err(GrantError::UnknownGrant(999))
     );
 }
+
+#[test]
+fn late_refund_with_balance_held_settles_clawback() {
+    // Oracle: design sections 4 + 6.2 — a refund that arrives
+    // after vest takes the clawback path. While the holder still
+    // holds the balance, the clawback transfer settles: the
+    // posted balance returns to the grant pool and the grant row
+    // reads clawback_settled.
+    let mut svc = service();
+    let grant = svc
+        .register(&request("key-late-held", "user-1", 500), NOW)
+        .expect("register");
+    svc.vest(grant.id, NOW + 60).expect("vest");
+    assert_eq!(svc.ledger().credits_posted(HOLDER), 500);
+
+    let settled = svc
+        .refund_late(grant.id, 500, POOL, HOLDER, NOW + 120)
+        .expect("late refund");
+    assert_eq!(settled.state, GrantState::ClawbackSettled);
+    assert_eq!(svc.ledger().credits_posted(HOLDER), 0);
+    assert_eq!(svc.ledger().credits_posted(POOL), 500);
+}
+
+#[test]
+fn late_refund_after_spending_records_debt_and_moves_nothing() {
+    // Oracle: design section 6.2's bounded exposure — the holder
+    // spent part of the posted balance, so the clawback transfer
+    // fails exceeds_credits: nothing moves, the balance the
+    // holder still has stays untouched and non-negative, and
+    // the grant is marked debt (the recorded receivable). Debt
+    // is an outcome of the refund, not an error.
+    let mut svc = service();
+    let grant = svc
+        .register(&request("key-late-spent", "user-1", 500), NOW)
+        .expect("register");
+    svc.vest(grant.id, NOW + 60).expect("vest");
+    svc.ledger_mut().spend_posted(HOLDER, 200);
+    assert_eq!(svc.ledger().credits_posted(HOLDER), 300);
+
+    let debt = svc
+        .refund_late(grant.id, 500, POOL, HOLDER, NOW + 120)
+        .expect("late refund reaching debt is Ok");
+    assert_eq!(debt.state, GrantState::Debt);
+    assert!(debt.last_error.is_some());
+    assert_eq!(svc.ledger().credits_posted(HOLDER), 300);
+    assert_eq!(svc.ledger().credits_posted(POOL), 0);
+}
+
+#[test]
+fn partial_late_refund_claws_back_only_the_refunded_part() {
+    // Oracle: a late refund of part of a posted grant claws
+    // back exactly that part; the rest stays the holder's
+    // posted balance.
+    let mut svc = service();
+    let grant = svc
+        .register(&request("key-late-partial", "user-1", 500), NOW)
+        .expect("register");
+    svc.vest(grant.id, NOW + 60).expect("vest");
+
+    let settled = svc
+        .refund_late(grant.id, 200, POOL, HOLDER, NOW + 120)
+        .expect("partial late refund");
+    assert_eq!(settled.state, GrantState::ClawbackSettled);
+    assert_eq!(svc.ledger().credits_posted(HOLDER), 300);
+    assert_eq!(svc.ledger().credits_posted(POOL), 200);
+}
+
+#[test]
+fn late_refund_requires_a_posted_grant_and_resolves_at_most_once() {
+    // Oracle: a refund of a pending grant is the void path,
+    // never a clawback (NotPosted; nothing resolves, and a void
+    // still lands afterwards). A clawback that already finished
+    // — settled or debt — and any other resolved grant answer
+    // AlreadyResolved (the 409), and no more value moves.
+    let mut svc = service();
+    let pending = svc
+        .register(&request("key-late-pending", "user-1", 100), NOW)
+        .expect("register");
+    assert_eq!(
+        svc.refund_late(pending.id, 100, POOL, HOLDER, NOW),
+        Err(GrantError::NotPosted {
+            grant_id: pending.id,
+            state: GrantState::Pending,
+        })
+    );
+    assert_eq!(
+        svc.get(pending.id).expect("grant").state,
+        GrantState::Pending
+    );
+    svc.void(pending.id, NOW + 60).expect("void still lands");
+    assert_eq!(
+        svc.refund_late(pending.id, 100, POOL, HOLDER, NOW + 120),
+        Err(GrantError::AlreadyResolved {
+            grant_id: pending.id,
+            state: GrantState::Voided,
+        })
+    );
+
+    let settled = svc
+        .register(&request("key-late-once", "user-1", 100), NOW)
+        .expect("register");
+    svc.vest(settled.id, NOW).expect("vest");
+    svc.refund_late(settled.id, 100, POOL, HOLDER, NOW + 60)
+        .expect("clawback");
+    assert_eq!(
+        svc.refund_late(settled.id, 100, POOL, HOLDER, NOW + 120),
+        Err(GrantError::AlreadyResolved {
+            grant_id: settled.id,
+            state: GrantState::ClawbackSettled,
+        })
+    );
+    assert_eq!(svc.ledger().credits_posted(POOL), 100);
+
+    let spent = svc
+        .register(&request("key-late-debt-once", "user-1", 100), NOW)
+        .expect("register");
+    svc.vest(spent.id, NOW).expect("vest");
+    svc.ledger_mut().spend_posted(HOLDER, 100);
+    svc.refund_late(spent.id, 100, POOL, HOLDER, NOW + 60)
+        .expect("clawback reaching debt");
+    assert_eq!(
+        svc.refund_late(spent.id, 100, POOL, HOLDER, NOW + 120),
+        Err(GrantError::AlreadyResolved {
+            grant_id: spent.id,
+            state: GrantState::Debt,
+        })
+    );
+
+    assert_eq!(
+        svc.refund_late(999, 100, POOL, HOLDER, NOW),
+        Err(GrantError::UnknownGrant(999))
+    );
+}
+
+#[test]
+fn late_refund_amount_must_be_within_the_grant() {
+    // Oracle: InvalidAmount for a zero refund (no refund at
+    // all) and for more than the grant (never posted, so never
+    // clawback-able). Rejections attempt nothing: the row never
+    // enters clawback_pending and no value moves; a proper late
+    // refund still lands afterwards.
+    let mut svc = service();
+    let grant = svc
+        .register(&request("key-late-bounds", "user-1", 100), NOW)
+        .expect("register");
+    svc.vest(grant.id, NOW).expect("vest");
+    for attempted in [0, 101] {
+        assert_eq!(
+            svc.refund_late(grant.id, attempted, POOL, HOLDER, NOW + 60),
+            Err(GrantError::InvalidAmount {
+                attempted,
+                grant_amount: 100,
+            })
+        );
+    }
+    let row = svc.get(grant.id).expect("grant");
+    assert_eq!(row.state, GrantState::Posted);
+    assert_eq!(row.attempt_count, 2); // register + vest; rejections added none
+    assert_eq!(svc.ledger().credits_posted(HOLDER), 100);
+    assert_eq!(svc.ledger().credits_posted(POOL), 0);
+
+    let settled = svc
+        .refund_late(grant.id, 100, POOL, HOLDER, NOW + 120)
+        .expect("late refund after rejections");
+    assert_eq!(settled.state, GrantState::ClawbackSettled);
+    assert_eq!(svc.ledger().credits_posted(HOLDER), 0);
+    assert_eq!(svc.ledger().credits_posted(POOL), 100);
+}
