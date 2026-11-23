@@ -63,6 +63,7 @@ pub mod sanctions;
 pub mod sanctions_store;
 pub mod seed_phrase;
 pub mod signed_envelope;
+pub mod social_object;
 pub mod swarm;
 pub mod sync_method;
 pub mod text;
