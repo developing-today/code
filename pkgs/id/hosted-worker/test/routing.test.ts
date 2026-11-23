@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { FailClosed, parseBindingId, parseJurisdiction, userStub } from "../src/routing.ts";
-import { createHostedAccountRecord } from "../src/account-directory.ts";
+import { createHostedAccountRecord, updateHostedAccountRecord } from "../src/account-directory.ts";
 
 const BINDING = "0123456789abcdef0123456789abcdef";
 
@@ -60,6 +60,38 @@ test("hosted account metadata rejects invalid identity inputs", () => {
     () => createHostedAccountRecord({ subjectKey: "provider-subject-hash", bindingId: "google:sub", jurisdiction: "us" }),
     (error: unknown) => error instanceof FailClosed,
   );
+});
+
+test("profile update changing jurisdiction fails closed and leaves the record unchanged", () => {
+  const record = createHostedAccountRecord({
+    subjectKey: "provider-subject-hash",
+    bindingId: BINDING,
+    jurisdiction: "us",
+  });
+  assert.throws(
+    () => updateHostedAccountRecord(record, { jurisdiction: "eu" }),
+    (error: unknown) => error instanceof FailClosed,
+  );
+  assert.deepEqual(record, {
+    subjectKey: "provider-subject-hash",
+    bindingId: BINDING,
+    jurisdiction: "us",
+    jurisdictionPending: null,
+    migrationId: null,
+    phase: "stable",
+    routingEpoch: 0,
+  });
+});
+
+test("profile update with the same or no jurisdiction succeeds with routing metadata unchanged", () => {
+  const record = createHostedAccountRecord({
+    subjectKey: "provider-subject-hash",
+    bindingId: BINDING,
+    jurisdiction: "us",
+  });
+  assert.deepEqual(updateHostedAccountRecord(record, { jurisdiction: "us" }), record);
+  assert.deepEqual(updateHostedAccountRecord(record, {}), record);
+  assert.deepEqual(updateHostedAccountRecord(record, { jurisdiction: null }), record);
 });
 
 test("userStub takes id and stub from the restricted namespace only", () => {
