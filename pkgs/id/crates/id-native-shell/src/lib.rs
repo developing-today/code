@@ -20,12 +20,16 @@
 //! and the live `WorldClient` session loop ([`run_session`]) that
 //! feeds the renderer through `render::PresentedView`;
 //! `tests/live_session.rs` proves the durable-outcome half of the
-//! parity criterion against a live host.
+//! parity criterion against a live host. The #12657 step-2a scene
+//! renderer ([`scene`]) presents validated `scene/1` surfaces as 3D
+//! entities beside the text grid; shells without it keep the scene's
+//! text projection.
 
 pub mod events;
 pub mod form;
 pub mod providers;
 pub mod render;
+pub mod scene;
 mod session;
 
 pub use providers::{
