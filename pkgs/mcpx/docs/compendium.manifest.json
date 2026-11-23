@@ -78,6 +78,12 @@
       "order": 11,
       "title": "Document history",
       "source": "docs/archive.md"
+    },
+    {
+      "id": "research-program",
+      "order": 12,
+      "title": "MCPX research and implementation plan",
+      "source": "docs/program/"
     }
   ],
   "entries": [
@@ -849,28 +855,28 @@
       "chapter": null,
       "role": "not-compendium",
       "lines": 109,
-      "note": "level-1 site page (#1878): content for the docs site, rendered by the generator chosen in #1939 \u2014 not a compendium (level-3) chapter"
+      "note": "level-1 site page (#1878): content for the docs site, rendered by the generator chosen in #1939 — not a compendium (level-3) chapter"
     },
     {
       "path": "docs/install.md",
       "chapter": null,
       "role": "not-compendium",
       "lines": 68,
-      "note": "level-1 site page (#1878): content for the docs site, rendered by the generator chosen in #1939 \u2014 not a compendium (level-3) chapter"
+      "note": "level-1 site page (#1878): content for the docs site, rendered by the generator chosen in #1939 — not a compendium (level-3) chapter"
     },
     {
       "path": "docs/quick-start.md",
       "chapter": null,
       "role": "not-compendium",
       "lines": 57,
-      "note": "level-1 site page (#1878): content for the docs site, rendered by the generator chosen in #1939 \u2014 not a compendium (level-3) chapter"
+      "note": "level-1 site page (#1878): content for the docs site, rendered by the generator chosen in #1939 — not a compendium (level-3) chapter"
     },
     {
       "path": "docs/now-what.md",
       "chapter": null,
       "role": "not-compendium",
       "lines": 30,
-      "note": "level-1 site page (#1878): content for the docs site, rendered by the generator chosen in #1939 \u2014 not a compendium (level-3) chapter"
+      "note": "level-1 site page (#1878): content for the docs site, rendered by the generator chosen in #1939 — not a compendium (level-3) chapter"
     },
     {
       "path": "docs/binary.md",
@@ -996,7 +1002,7 @@
       "chapter": "designs",
       "role": "chapter-source",
       "lines": 148,
-      "note": "modes: how a client reaches a daemon, how the daemon reaches a server, and mcpx itself as a server \u2014 the level-2 guide (#4821)"
+      "note": "modes: how a client reaches a daemon, how the daemon reaches a server, and mcpx itself as a server — the level-2 guide (#4821)"
     },
     {
       "path": "docs/opencode-plugin-v2.md",
@@ -1080,7 +1086,7 @@
       "chapter": null,
       "role": "not-compendium",
       "lines": 197,
-      "note": "the docs site home page (id: mcpx-home): level-1 site content (#1878), rendered by the generator chosen in #1939 \u2014 not a compendium (level-3) chapter"
+      "note": "the docs site home page (id: mcpx-home): level-1 site content (#1878), rendered by the generator chosen in #1939 — not a compendium (level-3) chapter"
     },
     {
       "path": "docs/coverage.md",
@@ -1102,6 +1108,76 @@
       "role": "chapter-source",
       "lines": 126,
       "note": "the book's vocabulary in one place: reader reference apparatus, kept with the docs-maintenance chapter (bookwright coverage run, 2026-11-23)"
+    },
+    {
+      "path": "docs/program/overview.md",
+      "chapter": "research-program",
+      "role": "chapter-source",
+      "lines": 24,
+      "note": "MCPX research and implementation plan for program #13264"
+    },
+    {
+      "path": "docs/program/lifecycle.md",
+      "chapter": "research-program",
+      "role": "chapter-source",
+      "lines": 36,
+      "note": "Server onboarding and process ownership for program #13264"
+    },
+    {
+      "path": "docs/program/hosted.md",
+      "chapter": "research-program",
+      "role": "chapter-source",
+      "lines": 28,
+      "note": "Hosted servers, protocol revisions and release channels for program #13264"
+    },
+    {
+      "path": "docs/program/settings.md",
+      "chapter": "research-program",
+      "role": "chapter-source",
+      "lines": 84,
+      "note": "Effect probes and test venues for program #13264"
+    },
+    {
+      "path": "docs/program/policy.md",
+      "chapter": "research-program",
+      "role": "chapter-source",
+      "lines": 38,
+      "note": "Enforcing client ceilings and recording tool calls for program #13264"
+    },
+    {
+      "path": "docs/program/interop.md",
+      "chapter": "research-program",
+      "role": "chapter-source",
+      "lines": 28,
+      "note": "Connecting Fleet, Atlas, ID and agent harnesses for program #13264"
+    },
+    {
+      "path": "docs/program/libraries-models.md",
+      "chapter": "research-program",
+      "role": "chapter-source",
+      "lines": 44,
+      "note": "Public libraries and model operations for program #13264"
+    },
+    {
+      "path": "docs/program/publication.md",
+      "chapter": "research-program",
+      "role": "chapter-source",
+      "lines": 49,
+      "note": "Auditing the rendered book for program #13264"
+    },
+    {
+      "path": "docs/program/runtime.md",
+      "chapter": "research-program",
+      "role": "chapter-source",
+      "lines": 20,
+      "note": "Laptop runtime and verification venues for program #13264"
+    },
+    {
+      "path": "docs/program/issue-map.md",
+      "chapter": "research-program",
+      "role": "chapter-source",
+      "lines": 201,
+      "note": "MCPX issue map for program #13264"
     }
   ]
 }
