@@ -24,7 +24,8 @@ SRC="$PWD"
 REPO="$(git -C "$SRC" rev-parse --show-toplevel)"
 STATE="$HOME/.local/state/pm-console"
 BUN="${PM_CONSOLE_BUN:-/run/current-system/sw/bin/bun}"
-UNITS=(pm-console.service pm-console-expose.service pm-console-expose.timer pm-console-redeploy.service pm-console-redeploy.timer)
+UNITS=(pm-console.service pm-console-expose.service pm-console-expose.timer pm-console-redeploy.service pm-console-redeploy.timer
+  pm-console-android-release.service pm-console-android-release.timer)
 
 # What is in the checkout: the console's tree, and the units it runs
 # under. A checkout that is part-way through an update (files that do

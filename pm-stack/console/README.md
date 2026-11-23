@@ -171,7 +171,7 @@ app's link to this origin), and the two phone paths under
 ## Run
 
 ```bash
-bash pm-stack/console/install.sh          # user unit pm-console, port 4872, loopback only; and its two timers
+bash pm-stack/console/install.sh          # user unit pm-console, port 4872, loopback only; and its three timers
 python3 pm-stack/console/scripts/expose.py --owner you@example.com   # first time: Access, console env, tunnel route, DNS, the edge's route
 python3 pm-stack/console/scripts/expose.py --check   # what public exposure would change
 python3 pm-stack/console/scripts/expose.py           # later runs (the timer's): the owner is remembered

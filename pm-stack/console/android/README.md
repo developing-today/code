@@ -59,11 +59,7 @@ A build names its own version from its commit (`build.sh`): a code that
 rises with the commit's time, so each build installs over the one
 before, and a name that says the day and the commit.
 
-What happens next depends on who holds the signing key.
-
-**GitHub holds it.** The build is signed in the workflow, checked
-against the certificate in `signing-fingerprint.txt`, and released by
-`release.sh` with nobody involved, twice:
+Every build ends up signed and released with nobody involved, twice:
 
 - `pm-console-android-v<code>`: that build. Once made it is never
   changed.
@@ -72,10 +68,27 @@ against the certificate in `signing-fingerprint.txt`, and released by
 
 Each carries `pm-console.apk`, `pm-console.apk.sha256` and a
 `version.json` (name, code, commit, sha256, size, when, certificate).
+`release.sh` makes both. Where the signing happens depends on where the
+key is.
 
-**Only the laptop holds it** (how it starts). The workflow's build is
-unsigned, kept as the artifact `pm-console-apk-unsigned`, and the run
-says nothing was released. It can be signed and put in place by hand:
+**Only the pm-stack host holds the key** (how it starts). The workflow's
+build is unsigned and kept as the artifact `pm-console-apk-unsigned`,
+with the version it was built as. On the host,
+`pm-console-android-release.timer` runs `release-built.sh` every ten
+minutes: it takes the newest unsigned build made on `main`, signs it
+there with `sign.sh` (which refuses a result that does not carry the
+certificate in `signing-fingerprint.txt`), releases it, and puts it
+where the console serves the app from. The key is read there by
+`apksigner` and goes nowhere; what leaves is the signed APK, which is
+public. A build is released within about ten minutes of being made, or
+when the host is next up. If that unit fails it shows on the console's
+Services screen and in its notifications, like any other.
+
+Only a build this repository made on `main`, by a push or by hand, is
+ever signed: a run of a pull request, another branch or a fork is not,
+whatever it is called.
+
+By hand, the same steps:
 
 ```bash
 gh run download <run-id> -n pm-console-apk-unsigned -D /tmp/pm-apk
@@ -83,7 +96,15 @@ nix shell nixpkgs#apksigner -c bash pm-stack/console/android/sign.sh /tmp/pm-apk
 install -m 644 /tmp/pm-apk/pm-console.apk ~/.local/state/pm-console/android/pm-console.apk
 ```
 
+**GitHub holds the key too** (the owner's choice). The build is signed
+in the workflow, checked against the same certificate, and released by
+the same `release.sh`; the host then finds nothing to do, and a release
+no longer waits for the host to be up.
+
 ### Giving GitHub the key
+
+Not needed for releases to happen: see above. It takes the host out of
+the path.
 
 The key is on the pm-stack host at
 `~/.local/state/pm-console/android/release.p12`, with its password in
@@ -100,9 +121,9 @@ environment is made by the workflow's first run; limiting it to the
 `main` branch (Settings, Environments) keeps a workflow on any other
 branch from reading the key.
 
-A build signed by any other key fails in `build.sh` before anything is
-released. Losing the key means a new key, a new fingerprint and a
-reinstall; nothing else depends on it.
+A build signed by any other key fails before anything is released, in
+`build.sh` or in `sign.sh`. Losing the key means a new key, a new
+fingerprint and a reinstall; nothing else depends on it.
 
 ## Install
 
