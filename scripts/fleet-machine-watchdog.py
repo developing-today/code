@@ -14,7 +14,8 @@ declaration before any file is read, any probe runs, or any write
 happens. Anything unaccounted for is a usage error (exit 2).
 
 The §1.5 minimum health record, refreshed on the watchdog's cadence
-(15 minutes — the fleet watchdog's cadence; a `last_seen` older than
+(30 minutes — the fleet watchdog's cadence since 2026-11-22, when
+Drewry moved the cron from 15 to 30 minutes; a `last_seen` older than
 two cadences is stale, and a stale machine is treated as having left
 the pool for placement purposes, §1.5/§4):
 
@@ -92,7 +93,7 @@ _spec = importlib.util.spec_from_file_location(
 validator = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(validator)
 
-CADENCE_SECONDS = 15 * 60
+CADENCE_SECONDS = 30 * 60
 STALE_AFTER_SECONDS = 2 * CADENCE_SECONDS
 DISK_FREE_MIN_PCT = 10.0
 LOAD15_PER_CORE_MAX = 1.0
