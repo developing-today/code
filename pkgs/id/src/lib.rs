@@ -208,6 +208,7 @@ pub use id_core::access;
 pub use id_core::admission_gate;
 #[cfg(feature = "world")]
 pub mod artifact;
+pub use id_events::admission as events_admission;
 pub use id_events::attestation;
 pub mod backup;
 pub mod blob_gate;

@@ -24,6 +24,7 @@
 /// advertise against, owned by `id-core` (slice 9110-02, #10160).
 pub use id_core::port;
 
+pub mod admission;
 pub mod attestation;
 pub mod event_store;
 pub mod event_sync;
