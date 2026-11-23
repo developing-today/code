@@ -349,6 +349,36 @@ def table_columns(create_sql):
     return cols
 
 
+def table_column_types(create_sql):
+    """Column name -> declared type (uppercased) for a CREATE TABLE.
+
+    The declared type is the text after the column name up to the
+    first constraint keyword or '(' -- e.g. "INTEGER", "TEXT",
+    "DOUBLE PRECISION", "UNSIGNED BIG INT", or "" for a typeless
+    column.
+    """
+    types = {}
+    for d in _create_defs(create_sql) or []:
+        d = d.strip()
+        if _is_constraint_def(d):
+            continue
+        m = re.match(
+            r'^(?:"([^"]+)"|`([^`]+)`|\[([^\]]+)\]|([A-Za-z_][A-Za-z0-9_]*))\s+(.*)$',
+            d,
+            re.DOTALL,
+        )
+        if m:
+            name = next(g for g in m.groups()[:4] if g is not None)
+            raw = re.split(
+                r"\(|\bPRIMARY\b|\bNOT\b|\bNULL\b|\bDEFAULT\b|\bCHECK\b"
+                r"|\bREFERENCES\b|\bUNIQUE\b|\bCOLLATE\b|\bGENERATED\b",
+                m.group(5),
+                flags=re.IGNORECASE,
+            )[0]
+            types[name] = raw.strip().upper()
+    return types
+
+
 def _pk_columns(create_sql):
     """Primary-key column names from a CREATE TABLE statement, or None.
 

@@ -77,16 +77,49 @@ def d1_columns(create_sql):
     return fq_common.table_columns(create_sql)
 
 
+def d1_integer_value(value):
+    """Decode an INTEGER-affinity column read back as CAST AS TEXT.
+
+    The D1 query API serializes numbers through JavaScript doubles,
+    so an int64 beyond 2^53 arrives rounded: the source's
+    autoincrement sequence tables hold i64::MAX, which came back as
+    9223372036854776000 and the target rejected it as out of range
+    (live drill run, #8584). CAST AS TEXT returns the exact decimal.
+    Decode int first, then float (a REAL stored in an INTEGER
+    column), then the string itself (a non-numeric value, which
+    column affinity leaves stored as text).
+    """
+    if value is None or isinstance(value, int):
+        return value
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        pass
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return value
+
+
 def d1_read_table(d1, db_id, table, create_sql):
     columns = d1_columns(create_sql)
+    types = fq_common.table_column_types(create_sql)
+    select = ", ".join(
+        f'CAST("{c}" AS TEXT) AS "{c}"' if "INT" in types.get(c, "") else f'"{c}"'
+        for c in columns
+    )
+    decoders = [
+        d1_integer_value if "INT" in types.get(c, "") else d1_value
+        for c in columns
+    ]
     offset = 0
     for _page in range(fq_common.MAX_PAGES):
         rows = d1.query(
             db_id,
-            f'SELECT * FROM "{table}" LIMIT {READ_PAGE} OFFSET {offset}',
+            f'SELECT {select} FROM "{table}" LIMIT {READ_PAGE} OFFSET {offset}',
         )
         for row in rows:
-            yield tuple(d1_value(row[c]) for c in columns)
+            yield tuple(decode(row[c]) for decode, c in zip(decoders, columns))
         if len(rows) < READ_PAGE:
             return
         offset += READ_PAGE
