@@ -137,9 +137,12 @@ jobs:
         run: |
           rm -rf site/fleet
           # site/ is a copy of a Nix store path: its directories are
-          # read-only, so make the root writable before adding fleet/.
-          chmod u+w site
-          cp -rL result-fleet-docs site/fleet
+          # read-only. Create the mount point explicitly before copying
+          # the book contents so cp never has to create it under the
+          # store-derived directory's permissions.
+          chmod u+rwx site
+          install -d -m 0755 site/fleet
+          cp -rL result-fleet-docs/. site/fleet/
           test -f site/fleet/index.html
 
       - uses: actions/configure-pages@v6
