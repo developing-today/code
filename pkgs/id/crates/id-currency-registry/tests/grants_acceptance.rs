@@ -337,3 +337,30 @@ fn late_refund_claws_back_a_posted_grant() {
     assert_eq!(svc.ledger().credits_posted(HOLDER), 0);
     assert_eq!(svc.ledger().credits_posted(POOL), 500);
 }
+
+#[test]
+fn late_refund_records_debt_when_the_holder_spent_the_grant() {
+    // Oracle: the holder's no-overdraft balance remains zero, the
+    // grant row records bounded debt, and the issuer receives no
+    // clawback when the grant was already spent.
+    let mut svc = service();
+    let grant = svc
+        .register(&request("key-late-refund-debt", "user-1", 500), NOW)
+        .expect("register");
+    svc.vest(grant.id, NOW + WINDOW_SECONDS)
+        .expect("vest before late refund");
+    svc.ledger_mut()
+        .spend_posted(HOLDER, 125)
+        .expect("spend part of grant");
+
+    let debt = svc
+        .clawback(grant.id, POOL, HOLDER, NOW + WINDOW_SECONDS + 60)
+        .expect("record debt when clawback cannot be covered");
+
+    assert_eq!(debt.state, GrantState::Debt);
+    assert!(debt.resolution_transfer_id.is_some());
+    assert!(debt.last_error.is_some());
+    assert_eq!(svc.ledger().credits_posted(HOLDER), 375);
+    assert_eq!(svc.ledger().credits_posted(POOL), 0);
+    assert_eq!(svc.ledger().credits_pending(HOLDER), 0);
+}
