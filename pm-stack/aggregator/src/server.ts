@@ -50,6 +50,11 @@ import { GithubHotListConsumer, unconfiguredGithubStatus } from "./github-hot-li
 import { RoadmapAnnotationsStore, validateNewRoadmapAnnotation } from "./roadmap-annotations.ts";
 import { createAccessAuthorEnforcer, enforceAccessAuthor } from "./access-identity.ts";
 import { IdentityRegistryStore, identityMappingAuditEvent, validateIdentityMapping } from "./identity-registry.ts";
+import {
+  BreakGlassTokenStore,
+  authorizeWithBreakGlassToken,
+  presentedBreakGlassToken,
+} from "./break-glass.ts";
 import { STACK_TOKEN_TTL_SECONDS, mintStackToken, type StackTokenRole } from "./stack-token.ts";
 import { healthHookAuditEvent } from "./health-hook-audit-event.ts";
 import {
@@ -382,6 +387,7 @@ const viewsStore = new ViewsStore(cfg.viewsFile);
 const eventsStore = new EventsStore(cfg.eventsFile);
 const reportRecordsLocation = storeRemotes?.aaLastGood ?? defaultReportRecordsFile();
 const identityRegistryStore = new IdentityRegistryStore(cfg.identityRegistryFile);
+const breakGlassTokenStore = new BreakGlassTokenStore(cfg.breakGlassFile);
 const freshnessStore = new FreshnessStore(cfg.freshnessFile);
 
 /** #3976: the 5-minute anti-entropy reconciler over the freshness
@@ -2385,10 +2391,26 @@ async function handler(req: Request): Promise<Response> {
   ) {
     const access = await enforceAccessAuthor(req, { kind: "drew", id: "drew", label: "Drew" });
     if (!access.ok) return json({ error: access.error }, access.status);
-    if (!access.verified || access.author.kind !== "drew") {
-      return json({ error: "verified Access owner required" }, 403);
+    let auditActor: string;
+    if (access.verified && access.author.kind === "drew") {
+      // Access-verified owner proceeds exactly as before; a presented
+      // break-glass token is never touched on this path.
+      auditActor = access.identity?.sub || access.identity?.email || access.author.id;
+    } else {
+      // #9608: the Access/IdP-outage path. A presented single-use
+      // break-glass token is consumed atomically (with its audit
+      // event) and authorizes exactly this one admin request;
+      // anything invalid — or no token at all — fails closed.
+      const presented = presentedBreakGlassToken(req);
+      if (!presented) return json({ error: "verified Access owner required" }, 403);
+      const grant = await authorizeWithBreakGlassToken({
+        store: breakGlassTokenStore,
+        events: eventsStore,
+        token: presented,
+      });
+      if (!grant.ok) return json({ error: grant.error }, 403);
+      auditActor = grant.auditActor;
     }
-    const auditActor = access.identity?.sub || access.identity?.email || access.author.id;
     if (req.method === "GET") return json({ registry: await identityRegistryStore.list() });
     try {
       const body = await readJsonBody(req);
