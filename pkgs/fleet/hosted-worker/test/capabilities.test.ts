@@ -103,4 +103,6 @@ test("capabilities mirrors the native shape with hosted values", async () => {
   assert.equal(doorById.get("query")?.state, "live");
   assert.equal(doorById.get("queue")?.state, "live");
   assert.equal(doorById.get("ingestion")?.state, "live");
+  // #12591 landed the sync door: every component-C door is live.
+  assert.equal(doorById.get("sync")?.state, "live");
 });
