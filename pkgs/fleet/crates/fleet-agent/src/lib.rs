@@ -556,6 +556,10 @@ pub fn run_shell(config: &Config, args: &[String]) -> i32 {
             print(&v);
             EXIT_OK
         }
+        Ok(shell::Done::PrintedCode(v, code)) => {
+            print(&v);
+            code
+        }
         Ok(shell::Done::Ran(code)) => code,
         Err(e) => {
             eprintln!(
