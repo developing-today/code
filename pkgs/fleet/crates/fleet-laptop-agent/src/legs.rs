@@ -317,11 +317,7 @@ impl SshLeg {
                     }
                     std::thread::sleep(Duration::from_millis(25));
                 }
-                Err(e) => {
-                    return Err(LegError::Unsent(format!(
-                        "ssh wait failed: {e}"
-                    )))
-                }
+                Err(e) => return Err(LegError::Unsent(format!("ssh wait failed: {e}"))),
             }
         };
         let out = out_thread.join().unwrap_or_default();
@@ -330,7 +326,11 @@ impl SshLeg {
         let Some(idx) = find_subslice(&out, &marker) else {
             return Err(LegError::Unsent(format!(
                 "remote shell never started (exit={exit:?}): {}",
-                String::from_utf8_lossy(&err).trim().chars().take(200).collect::<String>()
+                String::from_utf8_lossy(&err)
+                    .trim()
+                    .chars()
+                    .take(200)
+                    .collect::<String>()
             )));
         };
         Ok((exit, out[idx + marker.len()..].to_vec(), err))
@@ -347,7 +347,12 @@ impl SshLeg {
         let mut lines = text.lines();
         let parsed = (|| {
             let load1: f64 = lines.next()?.split_whitespace().next()?.parse().ok()?;
-            let uptime_s: u64 = lines.next()?.split_whitespace().next()?.parse::<f64>().ok()? as u64;
+            let uptime_s: u64 = lines
+                .next()?
+                .split_whitespace()
+                .next()?
+                .parse::<f64>()
+                .ok()? as u64;
             let jobs: u64 = lines.next()?.split_whitespace().next()?.parse().ok()?;
             Some((load1, uptime_s, jobs))
         })();
@@ -366,7 +371,10 @@ impl SshLeg {
     fn exec(&self, req: &Request) -> Result<Reply, LegError> {
         let empty = serde_json::json!({});
         let body = req.body.as_ref().unwrap_or(&empty);
-        let timeout_s = body.get("timeout_s").and_then(|v| v.as_u64()).unwrap_or(120);
+        let timeout_s = body
+            .get("timeout_s")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(120);
         let cmds = body.get("cmds").and_then(|v| v.as_array());
         let mut results = Vec::new();
         if let Some(cmds) = cmds {
@@ -384,7 +392,7 @@ impl SshLeg {
     ) -> Result<serde_json::Value, LegError> {
         let remote = format!("exec bash -lc {}", sh_quote(&ssh_inner(spec)));
         let started = Instant::now();
-        let (exit, out, err) = self.run(&remote, Duration::from_secs(timeout_s.saturating_add(15)))?;
+        let (exit, out, err) = self.run(&remote, Duration::from_secs(timeout_s + 15))?;
         let duration_ms = started.elapsed().as_millis() as u64;
         let (out, out_trunc) = cap_tail(&out);
         let (err, err_trunc) = cap_tail(&err);
@@ -452,9 +460,7 @@ impl SshLeg {
                 "unparsable poll reply for {job_id}"
             )));
         };
-        let exit = fields
-            .get("EXIT")
-            .and_then(|v| v.parse::<i64>().ok());
+        let exit = fields.get("EXIT").and_then(|v| v.parse::<i64>().ok());
         let parse_u64 = |key: &str, default: u64| {
             fields
                 .get(key)
@@ -530,12 +536,9 @@ impl Leg for SshLeg {
             ("POST", "/exec") => self.exec(req),
             ("POST", "/jobs") => self.launch_job(req),
             ("GET", "/jobs") => self.list_jobs(),
-            ("GET", p) if p.starts_with("/jobs/") => {
-                self.poll_job(job_segment(p), query)
-            }
+            ("GET", p) if p.starts_with("/jobs/") => self.poll_job(job_segment(p), query),
             ("POST", p)
-                if p.starts_with("/jobs/")
-                    && p.trim_end_matches('/').ends_with("/kill") =>
+                if p.starts_with("/jobs/") && p.trim_end_matches('/').ends_with("/kill") =>
             {
                 self.kill_job(job_segment(p))
             }
@@ -545,6 +548,135 @@ impl Leg for SshLeg {
             ))),
         }
     }
+}
+
+/// The job id segment of a `/jobs/<id>...` path.
+fn job_segment(path: &str) -> &str {
+    path.strip_prefix("/jobs/")
+        .unwrap_or(path)
+        .split('/')
+        .next()
+        .unwrap_or("")
+}
+
+fn json_reply(value: serde_json::Value) -> Reply {
+    Reply {
+        status: 200,
+        body: serde_json::to_vec(&value).unwrap_or_default(),
+    }
+}
+
+fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    haystack.windows(needle.len()).position(|w| w == needle)
+}
+
+/// One query parameter as u64; absent or unparsable means 0, as the
+/// Python poll handler's `int(... or 0)` on a missing key.
+fn query_u64(query: &str, key: &str) -> u64 {
+    for pair in query.split('&') {
+        if let Some((k, v)) = pair.split_once('=')
+            && k == key
+        {
+            return v.parse().unwrap_or(0);
+        }
+    }
+    0
+}
+
+/// The per-stream capture cap, as the daemon's: past it, keep the
+/// tail and say so.
+fn cap_tail(data: &[u8]) -> (&[u8], bool) {
+    let cap = crate::FILE_CHUNK_MAX as usize;
+    if data.len() > cap {
+        (&data[data.len() - cap..], true)
+    } else {
+        (data, false)
+    }
+}
+
+/// POSIX shell quoting, mirroring Python's `shlex.quote`: safe
+/// strings pass through, everything else is single-quoted with
+/// embedded quotes escaped as `'\''`.
+pub fn sh_quote(s: &str) -> String {
+    if !s.is_empty()
+        && s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || "_@%+=:,./-".contains(c))
+    {
+        return s.to_string();
+    }
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
+
+/// Flatten a {cwd, argv|shell, env?} spec into one command string,
+/// mirroring the daemon's shell mode (the `bash -lc` happens one
+/// level up, in the remote string the caller builds).
+pub fn ssh_inner(spec: &serde_json::Value) -> String {
+    let mut inner = String::new();
+    if let Some(env) = spec.get("env").and_then(|v| v.as_object())
+        && !env.is_empty()
+    {
+        let exports: Vec<String> = env
+            .iter()
+            .map(|(k, v)| {
+                let text = match v {
+                    serde_json::Value::String(s) => s.clone(),
+                    other => other.to_string(),
+                };
+                format!("export {k}={}", sh_quote(&text))
+            })
+            .collect();
+        inner += &exports.join("; ");
+        inner += "; ";
+    }
+    if let Some(cwd) = spec.get("cwd").and_then(|v| v.as_str()) {
+        inner += &format!("cd {} || exit 126; ", sh_quote(cwd));
+    }
+    if let Some(shell) = spec.get("shell").and_then(|v| v.as_str()) {
+        inner += shell;
+    } else if let Some(argv) = spec.get("argv").and_then(|v| v.as_array()) {
+        let words: Vec<String> = argv
+            .iter()
+            .map(|a| match a {
+                serde_json::Value::String(s) => sh_quote(s),
+                other => sh_quote(&other.to_string()),
+            })
+            .collect();
+        inner += &words.join(" ");
+    }
+    inner
+}
+
+/// Standard-alphabet base64 decode, tolerant of whitespace and
+/// missing padding (the poll reply's payloads arrive wrapped by
+/// shell echo). Invalid bytes are skipped, as Python's
+/// `b64decode(validate=False)` does.
+pub fn b64_decode(text: &str) -> Vec<u8> {
+    fn value(c: u8) -> Option<u32> {
+        match c {
+            b'A'..=b'Z' => Some(u32::from(c - b'A')),
+            b'a'..=b'z' => Some(u32::from(c - b'a') + 26),
+            b'0'..=b'9' => Some(u32::from(c - b'0') + 52),
+            b'+' => Some(62),
+            b'/' => Some(63),
+            _ => None,
+        }
+    }
+    let mut out = Vec::new();
+    let mut acc: u32 = 0;
+    let mut bits = 0;
+    for byte in text.bytes() {
+        if byte == b'=' {
+            break;
+        }
+        let Some(v) = value(byte) else { continue };
+        acc = (acc << 6) | v;
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push((acc >> bits) as u8);
+        }
+    }
+    out
 }
 
 /// The ladder for this process: broker, Cloudflare, Tailscale, SSH.
