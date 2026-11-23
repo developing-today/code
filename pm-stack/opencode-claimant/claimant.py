@@ -387,13 +387,20 @@ def run_poll() -> Dict[str, Any]:
     if not poll_script.exists():
         raise FileNotFoundError(f"poll.py not found at {poll_script}")
 
-    # Run poll.py from the primary clone
+    # Run poll.py from the primary clone. The 300s ceiling covers the
+    # aggregate of poll.py's per-call timeouts (15s server GET, 30s broker
+    # POSTs) plus the growing OpenCode session store (28k+ root sessions
+    # made the full poll take ~51s on 2026-11-22, permanently above the
+    # old 30s cap, so every live fire failed its own gate as
+    # "gate_unknown" -- #3026 fire log 2026-11-23T01:48Z/01:53Z).
+    # Single-instance lock keeps overlapping fires impossible; a slow poll
+    # only delays the fire, it cannot double-launch.
     result = subprocess.run(
         ["python3", str(poll_script)],
         cwd=str(PRIMARY_CLONE),
         capture_output=True,
         text=True,
-        timeout=30,
+        timeout=300,
     )
 
     if result.returncode != 0:
