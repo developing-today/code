@@ -48,8 +48,26 @@ routes over model pins; workhorse is the default route; there is no
 in-session model switch — escalation is a fresh launch on a higher
 route with the reason recorded.
 
-- Claim each arm with `fleet agent next --pool <arm-route>` — one
-  arm on the candidate route, one on the incumbent.
+- Launch each arm as a separate session on its managed route
+  **before claiming anything** — one session launched on the
+  candidate route, one on the incumbent. A session runs the route
+  head it was launched with; there is no in-session model switch
+  (routing policy §2), so the route is fixed at launch, not at
+  claim time. Record the route and the reason for it in each
+  session's record.
+- From that arm's session, claim the arm's tasks with
+  `fleet agent next --pool <arm-route>`. `--pool` is only the
+  claimer's declared pool identity, used to satisfy a task's
+  `requires.pool` (`pkgs/fleet/book/reference/queue-core.md`) —
+  it does not select or launch a route. Claiming both arms with
+  different `--pool` values from sessions launched on the same
+  route pins nothing: both arms would run on that one route and
+  the candidate-versus-incumbent comparison would be void.
+- **A run whose arms share a route is not a controlled test.**
+  Before recording a verdict, verify the two arms' session routes
+  differ, from the claim stamps plus `route_usage.lastServing`
+  below; if they do not differ, the run is void and is re-run
+  from fresh launches.
 - What the pin leaves behind: the claim stamps
   `claim_provider` / `claim_model` / `claim_variant` /
   `claim_session_id` on the task row, written by `stamp_claim_model`

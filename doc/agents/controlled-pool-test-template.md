@@ -23,7 +23,13 @@ A record missing any per-arm measurement cannot support a verdict
 
 - Candidate arm tasks (issue numbers):
 - Incumbent arm tasks (issue numbers):
-- Route pin: `fleet agent next --pool <arm-route>` per arm.
+- Candidate arm session (launched on the candidate route):
+- Incumbent arm session (launched on the incumbent route):
+- Claim: `fleet agent next --pool <arm-route>` from that arm's
+  own session. `--pool` declares pool identity only; it does not
+  launch or select the route — the route is fixed when the
+  session is launched, so the two arms must be separate sessions
+  on different routes or the run is void.
 - Arm identity: claim stamps (`claim_provider` / `claim_model` /
   `claim_variant`) plus `route_usage.lastServing` — never the
   `pool` field.

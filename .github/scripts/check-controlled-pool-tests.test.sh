@@ -61,6 +61,11 @@ make_fixture "$MUT"
 sed -i '/Verdict/d' "$MUT/doc/agents/controlled-pool-test-template.md"
 expect_fail "$MUT" "template without the Verdict field"
 
+MUT="$TMP/no-separate-session-launch"
+make_fixture "$MUT"
+sed -i '/Launch each arm as a separate session/d' "$MUT/doc/agents/controlled-pool-tests.md"
+expect_fail "$MUT" "procedure without the separate-session launch requirement"
+
 MUT="$TMP/no-claim-model-column"
 make_fixture "$MUT"
 sed -i '/claim_model TEXT/d' "$MUT/pkgs/fleet/crates/fleet-queue/src/turso_queue.rs"

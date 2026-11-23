@@ -14,7 +14,11 @@
 # This guard fails — naming the offender — when:
 #   (a) the procedure doc is missing or lacks a required section
 #       (Authorization gate, Batch design, Route pinning,
-#       Measurements, Verdict, Records);
+#       Measurements, Verdict, Records), or its Route pinning
+#       section no longer requires launching each arm as a
+#       separate session on its managed route before claiming
+#       (the Codex P1 on #13419: --pool declares pool identity
+#       only and does not launch a route);
 #   (b) the template is missing or lacks a required field (flag
 #       issue, candidate/incumbent route, tasks per arm, completion,
 #       wall-clock, tokens, stalls/nudges, rework within 48h,
@@ -61,6 +65,9 @@ else
       fail "controlled-pool-tests: procedure doc lacks section: $section"
     fi
   done
+  if ! grep -qF "Launch each arm as a separate session" "$PROC"; then
+    fail "controlled-pool-tests: procedure doc lacks the separate-session launch requirement (Route pinning: --pool does not launch a route)"
+  fi
 fi
 
 # (b) Template fields.
