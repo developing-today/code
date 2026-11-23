@@ -650,3 +650,116 @@ mod name_rule_tests {
         node.shutdown().await.unwrap();
     }
 }
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod phase4_audit_probes {
+    use crate::local::LocalNode;
+
+    use id_sync::fileops::*;
+
+    async fn put(node: &LocalNode, name: &str, content: &[u8]) {
+        let guard = node
+            .blobs()
+            .add_bytes(content.to_vec())
+            .temp_tag()
+            .await
+            .unwrap();
+        node.ops().put(name, guard.hash()).await.unwrap();
+    }
+
+    async fn exists(node: &LocalNode, name: &str) -> bool {
+        node.blobs().tags().get(name).await.unwrap().is_some()
+    }
+
+    /// (e) delete naming an archive tag directly.
+    #[tokio::test]
+    async fn probe_delete_of_archive_name_directly() {
+        let node = LocalNode::open(true).await.unwrap();
+        put(&node, "a", b"v1").await;
+        put(&node, "b", b"v2").await;
+        let outcome = node.ops().rename("b", "a", false).await.unwrap();
+        let archive = outcome.archived_replaced.expect("replace archives");
+        let result = node.ops().delete(&archive).await;
+        println!("PROBE-E delete({archive}) -> {result:?}");
+        println!(
+            "PROBE-E archive still exists: {}",
+            exists(&node, &archive).await
+        );
+        node.shutdown().await.unwrap();
+    }
+
+    /// (b) overflow-suffix user file vs base delete.
+    #[tokio::test]
+    async fn probe_overflow_suffix_user_file_vs_base_delete() {
+        let node = LocalNode::open(true).await.unwrap();
+        put(&node, "a", b"v1").await;
+        put(&node, "a.archive.18446744073709551616", b"user file").await;
+        let outcome = node.ops().delete("a").await.unwrap();
+        println!(
+            "PROBE-B delete(a): existed={} archives_removed={}",
+            outcome.existed, outcome.archives_removed
+        );
+        println!(
+            "PROBE-B overflow user file still exists: {}",
+            exists(&node, "a.archive.18446744073709551616").await
+        );
+        node.shutdown().await.unwrap();
+    }
+
+    /// (b) the a.archive.notes nested-archive probe.
+    #[tokio::test]
+    async fn probe_nested_archive_notes() {
+        let node = LocalNode::open(true).await.unwrap();
+        put(&node, "a", b"base").await;
+        put(&node, "a.archive.notes", b"notes v1").await;
+        put(&node, "other", b"notes v2").await;
+        let outcome = node
+            .ops()
+            .rename("other", "a.archive.notes", false)
+            .await
+            .unwrap();
+        let archive = outcome.archived_replaced.expect("replace archives");
+        println!("PROBE-N nested archive name: {archive}");
+        let del_a = node.ops().delete("a").await.unwrap();
+        println!(
+            "PROBE-N delete(a): archives_removed={}; nested archive exists: {}",
+            del_a.archives_removed,
+            exists(&node, &archive).await
+        );
+        let del_notes = node.ops().delete("a.archive.notes").await.unwrap();
+        println!(
+            "PROBE-N delete(a.archive.notes): archives_removed={}; nested archive exists: {}",
+            del_notes.archives_removed,
+            exists(&node, &archive).await
+        );
+        node.shutdown().await.unwrap();
+    }
+
+    /// (d) legacy archive-shaped file rescued by rename.
+    #[tokio::test]
+    async fn probe_legacy_archive_shaped_file_rename_rescue() {
+        let node = LocalNode::open(true).await.unwrap();
+        // Seed a pre-Phase-1 user file directly at the tag layer (put
+        // refuses this name today).
+        let guard = node
+            .blobs()
+            .add_bytes(b"legacy".to_vec())
+            .temp_tag()
+            .await
+            .unwrap();
+        node.blobs()
+            .tags()
+            .set("a.archive.5", guard.hash())
+            .await
+            .unwrap();
+        let result = node.ops().rename("a.archive.5", "a-notes", false).await;
+        println!("PROBE-D rename -> {result:?}");
+        println!("PROBE-D rescued exists: {}", exists(&node, "a-notes").await);
+        println!(
+            "PROBE-D legacy name exists: {}",
+            exists(&node, "a.archive.5").await
+        );
+        node.shutdown().await.unwrap();
+    }
+}
