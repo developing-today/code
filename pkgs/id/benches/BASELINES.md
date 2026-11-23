@@ -664,3 +664,22 @@ reference machine class).
 
 All runs: `queue_depth_max=0`, checkpoints/evicted/reopened
 100/100/100.
+
+## Selectable ack modes landed (2026-11-23, no new measurement)
+
+Per Drewry's 2026-11-22 decision on #557, the journal's
+acknowledgement is now a selectable mode (`JournalAckMode`):
+`sync` (the default — the contract every number above was measured
+under, unchanged byte-for-byte), `batched` (one sync per 64 appends;
+loss bounded to the unsynced tail) and `async` (no sync on the ack
+path; durability at sync points only). Design and tradeoff record:
+`doc/2026-11-23T00-24-00Z_design_journal_ack_modes`.
+
+No performance number is claimed for the relaxed modes here. The
+expectation that they cut the ack's sync wait is an inference from
+the loaded laptop profile's components (input_ack_p50 18.892 ms vs
+journal append mean 25.784 ms, PR #12503's run), not a measurement.
+The deciding run for the criterion remains what it was: the
+unloaded laptop re-run of the many-worlds harness, still
+outstanding; a loaded number is not substituted for it.
+`baseline.txt` is untouched.
