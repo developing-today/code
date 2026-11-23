@@ -345,7 +345,7 @@ async function setup(options: { direct?: boolean } = {}) {
     "goal",
   ];
   const taskRow = (t: (typeof queueTasks)[number]) =>
-    TASK_COLS.map((c) => ({ value: (t as Record<string, string | number | null>)[c] ?? null }));
+    TASK_COLS.map((c) => ({ value: ((t as Record<string, unknown>)[c] as string | number | null) ?? null }));
   const queueAnswer = (sql: string, args: (string | number)[]) => {
     const cols = (names: string[]) => names.map((name) => ({ name }));
     const rows = (rs: { value: string | number | null }[][]) => rs;
