@@ -1,16 +1,16 @@
 {
   "retrieved": {
-    "membership_first_page": "2026-11-23 17:55 UTC",
-    "membership_last_page": "2026-11-23 17:55 UTC",
-    "evidence_assembled": "2026-11-23 18:04 UTC"
+    "membership_first_page": "2026-11-23 18:06 UTC",
+    "membership_last_page": "2026-11-23 18:06 UTC",
+    "evidence_assembled": "2026-11-23 18:08 UTC"
   },
   "scope": "Exact union of three open issue labels in developing-today/code, excluding pull requests. Counts checked for complete pages.",
   "membership_counts": {
-    "app/id": 196,
+    "app/id": 201,
     "epic/id-program": 182,
     "epic/id-platform": 35
   },
-  "open_issue_count": 211,
+  "open_issue_count": 216,
   "baseline": {
     "time": "2026-11-23 14:15 UTC",
     "count": 216
@@ -20,7 +20,12 @@
     13522,
     13523,
     13524,
-    13525
+    13525,
+    13540,
+    13542,
+    13543,
+    13558,
+    13564
   ],
   "removed": [
     {
@@ -137,6 +142,20 @@
       "issue": 13525,
       "blocked_by": 13522,
       "confirmed": "2026-11-23T18:04:45.060870+00:00",
+      "source": "https://github.com/developing-today/code/issues/13525",
+      "rest_endpoint": "https://api.github.com/repos/developing-today/code/issues/13525/dependencies/blocked_by"
+    },
+    {
+      "issue": 13525,
+      "blocked_by": 13523,
+      "confirmed": "2026-11-23T18:04:55.966814+00:00",
+      "source": "https://github.com/developing-today/code/issues/13525",
+      "rest_endpoint": "https://api.github.com/repos/developing-today/code/issues/13525/dependencies/blocked_by"
+    },
+    {
+      "issue": 13525,
+      "blocked_by": 13524,
+      "confirmed": "2026-11-23T18:05:05.331926+00:00",
       "source": "https://github.com/developing-today/code/issues/13525",
       "rest_endpoint": "https://api.github.com/repos/developing-today/code/issues/13525/dependencies/blocked_by"
     }
@@ -490,7 +509,7 @@
       "title": "[Security] Identity and Delegation System Hardening",
       "url": "https://github.com/developing-today/code/issues/6379",
       "previous_rank": 13,
-      "issue_updated_at": "2026-11-23T17:49:48Z",
+      "issue_updated_at": "2026-11-23T17:59:22Z",
       "labels": [
         "effort/l",
         "epic/id-program",
@@ -516,7 +535,7 @@
       "dependency_basis": "https://github.com/developing-today/code/issues/6379",
       "latest_comment_checked": "https://github.com/developing-today/code/issues/6379#issuecomment-7109178281",
       "latest_comment_date": "2026-11-23T17:47:12Z",
-      "comment_count_at_census": 18,
+      "comment_count_at_census": 19,
       "next_proof_or_decision": "Cross-reference each key/delegation guarantee with the admission function and defensive scenarios.",
       "issue_specific_note": null,
       "rank": 13
@@ -1386,7 +1405,7 @@
       "title": "id: design: adapter conformance harness & interop matrix CI (from #5674)",
       "url": "https://github.com/developing-today/code/issues/5814",
       "previous_rank": 45,
-      "issue_updated_at": "2026-11-22T00:44:41Z",
+      "issue_updated_at": "2026-11-23T18:04:54Z",
       "labels": [
         "app/id",
         "epic/id-program"
@@ -1399,7 +1418,7 @@
       "dependency_basis": "https://github.com/developing-today/code/issues/5814",
       "latest_comment_checked": "https://github.com/developing-today/code/issues/5814#issuecomment-7071750941",
       "latest_comment_date": "2026-11-22T00:44:40Z",
-      "comment_count_at_census": 13,
+      "comment_count_at_census": 14,
       "next_proof_or_decision": "Use a shared interop corpus across channel, carrier, serialization and refusal outcomes.",
       "issue_specific_note": null,
       "rank": 43
@@ -7480,7 +7499,23 @@
         "priority/normal"
       ],
       "assignees_count": 0,
-      "native_blocked_by": [],
+      "native_blocked_by": [
+        {
+          "number": 13522,
+          "state": "open",
+          "url": "https://github.com/developing-today/code/issues/13522"
+        },
+        {
+          "number": 13523,
+          "state": "open",
+          "url": "https://github.com/developing-today/code/issues/13523"
+        },
+        {
+          "number": 13524,
+          "state": "open",
+          "url": "https://github.com/developing-today/code/issues/13524"
+        }
+      ],
       "native_listing_evidence": "https://api.github.com/repos/developing-today/code/issues/13525/dependencies/blocked_by",
       "body_or_comment_prerequisites": [
         {
@@ -7506,6 +7541,122 @@
       "next_proof_or_decision": "Reconcile every source object to a fidelity outcome; re-import must preserve local edits and explicit conflicts.",
       "issue_specific_note": "The operator-managed importer sequence is documented in the issue comments.",
       "rank": 211
+    },
+    {
+      "number": 13540,
+      "title": "fix(id-store): enforce the artifact byte ceiling during media stream assembly",
+      "url": "https://github.com/developing-today/code/issues/13540",
+      "previous_rank": null,
+      "issue_updated_at": "2026-11-23T18:01:21Z",
+      "labels": [
+        "app/id"
+      ],
+      "status_and_priority_labels": [],
+      "assignees_count": 0,
+      "native_blocked_by": [],
+      "native_listing_evidence": "https://api.github.com/repos/developing-today/code/issues/13540/dependencies/blocked_by",
+      "body_or_comment_prerequisites": [],
+      "dependency_basis": "https://github.com/developing-today/code/issues/13540",
+      "latest_comment_checked": "https://github.com/developing-today/code/issues/13540#issuecomment-7109530958",
+      "latest_comment_date": "2026-11-23T18:01:21Z",
+      "comment_count_at_census": 3,
+      "next_proof_or_decision": "Bound cumulative retained stream bytes before appending and prove the limit and unchanged state on refusal using a small fixture.",
+      "issue_specific_note": "The existing worker holds this correction; consult the linked issue before pickup.",
+      "rank": 212
+    },
+    {
+      "number": 13542,
+      "title": "fix(id/currency): prevent full-width posted counters from producing a false clean supply audit",
+      "url": "https://github.com/developing-today/code/issues/13542",
+      "previous_rank": null,
+      "issue_updated_at": "2026-11-23T18:05:05Z",
+      "labels": [
+        "app/id",
+        "status:in-review"
+      ],
+      "status_and_priority_labels": [
+        "status:in-review"
+      ],
+      "assignees_count": 0,
+      "native_blocked_by": [],
+      "native_listing_evidence": "https://api.github.com/repos/developing-today/code/issues/13542/dependencies/blocked_by",
+      "body_or_comment_prerequisites": [],
+      "dependency_basis": "https://github.com/developing-today/code/issues/13542",
+      "latest_comment_checked": "https://github.com/developing-today/code/issues/13542#issuecomment-7109461282",
+      "latest_comment_date": "2026-11-23T17:58:36Z",
+      "comment_count_at_census": 2,
+      "next_proof_or_decision": "Prove full-width posted counters differing by one cannot pass the independent supply audit; verify the change on PR #13565.",
+      "issue_specific_note": "See PR #13565 and its Fleet verification.",
+      "rank": 213
+    },
+    {
+      "number": 13543,
+      "title": "docs(id-core): graph module and test headers still describe the landed modules as unwired",
+      "url": "https://github.com/developing-today/code/issues/13543",
+      "previous_rank": null,
+      "issue_updated_at": "2026-11-23T18:01:56Z",
+      "labels": [
+        "app/id",
+        "status:in-review"
+      ],
+      "status_and_priority_labels": [
+        "status:in-review"
+      ],
+      "assignees_count": 0,
+      "native_blocked_by": [],
+      "native_listing_evidence": "https://api.github.com/repos/developing-today/code/issues/13543/dependencies/blocked_by",
+      "body_or_comment_prerequisites": [],
+      "dependency_basis": "https://github.com/developing-today/code/issues/13543",
+      "latest_comment_checked": "https://github.com/developing-today/code/issues/13543#issuecomment-7109459856",
+      "latest_comment_date": "2026-11-23T17:58:33Z",
+      "comment_count_at_census": 1,
+      "next_proof_or_decision": "Update graph module and test headers against actual exports and independently inspect every linked module.",
+      "issue_specific_note": null,
+      "rank": 214
+    },
+    {
+      "number": 13558,
+      "title": "id(worlds): implement the bounded Cells glider as a playable Plaza guest",
+      "url": "https://github.com/developing-today/code/issues/13558",
+      "previous_rank": null,
+      "issue_updated_at": "2026-11-23T18:03:40Z",
+      "labels": [
+        "app/id"
+      ],
+      "status_and_priority_labels": [],
+      "assignees_count": 0,
+      "native_blocked_by": [],
+      "native_listing_evidence": "https://api.github.com/repos/developing-today/code/issues/13558/dependencies/blocked_by",
+      "body_or_comment_prerequisites": [],
+      "dependency_basis": "https://github.com/developing-today/code/issues/13558",
+      "latest_comment_checked": "https://github.com/developing-today/code/issues/13558#issuecomment-7109590943",
+      "latest_comment_date": "2026-11-23T18:03:40Z",
+      "comment_count_at_census": 2,
+      "next_proof_or_decision": "Run the bounded Cells glider through normal guest entry points and compare four generations, pause, and restore with fixed expected cells.",
+      "issue_specific_note": null,
+      "rank": 215
+    },
+    {
+      "number": 13564,
+      "title": "docs(id-native-shell): distinguish the recorded v1 capability statement from the later rich presenters",
+      "url": "https://github.com/developing-today/code/issues/13564",
+      "previous_rank": null,
+      "issue_updated_at": "2026-11-23T18:04:54Z",
+      "labels": [
+        "app/id"
+      ],
+      "status_and_priority_labels": [],
+      "assignees_count": 0,
+      "native_blocked_by": [],
+      "native_listing_evidence": "https://api.github.com/repos/developing-today/code/issues/13564/dependencies/blocked_by",
+      "body_or_comment_prerequisites": [],
+      "dependency_basis": "https://github.com/developing-today/code/issues/13564",
+      "latest_comment_checked": "https://github.com/developing-today/code/issues/13564#issuecomment-7109622715",
+      "latest_comment_date": "2026-11-23T18:04:54Z",
+      "comment_count_at_census": 1,
+      "next_proof_or_decision": "Separate the host’s v1 capability statement from later presenter availability and verify each claim against source.",
+      "issue_specific_note": null,
+      "rank": 216
     }
   ]
 }
