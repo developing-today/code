@@ -4,17 +4,18 @@ name: mcpx docs
 
 # Build the mcpx book (#1941, Approach C) and publish it to GitHub Pages.
 #
-# Pull requests build .#mcpx-docs and upload the rendered site as an
-# ordinary build artifact — no deploy, no PR previews (reviewers download
-# the artifact). Pushes to main and manual dispatches deploy the same
-# build to Pages via the Actions artifact flow: Pages source for this
-# repository is "GitHub Actions" (build_type=workflow), no generated
-# HTML is ever committed, and no extra repository or secret is needed.
+# Builds run on pushes to main and on manual dispatch — there is no
+# pull-request build (the sibling docs workflows, fleet-docs.yml,
+# atlas-docs.yml and id-docs.yml, are shaped the same way). Pushes and
+# dispatches deploy the build to Pages via the Actions artifact flow:
+# Pages source for this repository is "GitHub Actions"
+# (build_type=workflow), no generated HTML is ever committed, and no
+# extra repository or secret is needed.
 #
 # The build is the flake output .#mcpx-docs (pkgs/mcpx/docs.nix, from
 # #1939 / PR #2629): the same `nix build` locally and in CI. The
 # derivation takes the base URL as its `siteUrl` argument, baked in as
-# mdBook's site-url: PR/local builds use the default "/", the Pages
+# mdBook's site-url: plain builds use the default "/", the Pages
 # deploy overrides it with "/code/" (the project site's path) — builds
 # differ only in that one value (#1941).
 
@@ -65,14 +66,6 @@ jobs:
           test -f site/index.html.md
           grep -q 'rel="alternate" type="text/markdown"' site/index.html
 
-      - name: Upload site artifact (PR builds only)
-        if: github.event_name == 'pull_request'
-        uses: actions/upload-artifact@v7
-        with:
-          name: mcpx-docs-site
-          path: site
-          if-no-files-found: error
-
   deploy:
     name: "stage: build + upload Pages artifact"
     # Deploys only from main: pushes to main and manual dispatches
@@ -99,7 +92,7 @@ jobs:
       # (https://developing-today.github.io/code/), and mdBook needs
       # that path as its site-url: with "/" the generated 404 page
       # points its CSS/JS and navigation at the domain root and breaks.
-      # Same derivation as the PR build, differing only in the siteUrl
+      # Same derivation as the build job, differing only in the siteUrl
       # argument (#1941).
       - name: Nix build (deploy variant, siteUrl /code/)
         run: |

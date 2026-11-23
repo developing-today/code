@@ -14461,7 +14461,7 @@
     },
     "notes": {
       "client": "yes — broker records `Server`",
-      "server": "yes — message rewritten \"\u003cserver\u003e (via mcpx) asks:\" so the downstream can meet it"
+      "server": "yes — message rewritten \"\u0026lt;server\u0026gt; (via mcpx) asks:\" so the downstream can meet it"
     }
   },
   {
