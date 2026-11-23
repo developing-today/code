@@ -11,6 +11,7 @@
 //! the dependency points one way — `id-core` never names this crate.
 
 pub mod agent_delegation;
+pub mod cap_class;
 pub mod declaration;
 pub mod http_fetch_url;
 pub mod library_attach;
