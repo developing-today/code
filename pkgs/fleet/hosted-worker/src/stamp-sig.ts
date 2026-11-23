@@ -76,11 +76,7 @@ export type StampVerification =
   | { status: "unsigned" }
   | {
       status: "diverged";
-      reason:
-        | "signature_mismatch"
-        | "malformed_stamp_sig"
-        | "unknown_key"
-        | "unsupported_stamp_version";
+      reason: "signature_mismatch" | "malformed_stamp_sig" | "unknown_key" | "unsupported_stamp_version";
     }
   | { status: "unverifiable"; reason: "no_verify_keys_configured" };
 
@@ -116,11 +112,7 @@ function canonicalizeValue(value: unknown, depth: number): string {
   if (typeof value === "boolean") return value ? "true" : "false";
   if (typeof value === "number") {
     if (!Number.isSafeInteger(value)) {
-      throw new FailClosed(
-        400,
-        "uncanonicalizable_provenance",
-        "provenance numbers must be safe integers",
-      );
+      throw new FailClosed(400, "uncanonicalizable_provenance", "provenance numbers must be safe integers");
     }
     return String(value);
   }
@@ -134,11 +126,7 @@ function canonicalizeValue(value: unknown, depth: number): string {
     const parts = keys.map((key) => {
       const v = record[key];
       if (v === undefined) {
-        throw new FailClosed(
-          400,
-          "uncanonicalizable_provenance",
-          `provenance field ${key} is undefined`,
-        );
+        throw new FailClosed(400, "uncanonicalizable_provenance", `provenance field ${key} is undefined`);
       }
       return `${JSON.stringify(key)}:${canonicalizeValue(v, depth + 1)}`;
     });
@@ -188,9 +176,7 @@ export async function importStampVerifyKeys(
 ): Promise<Map<string, CryptoKey>> {
   const out = new Map<string, CryptoKey>();
   for (const [keyId, raw] of material) {
-    const key = await crypto.subtle.importKey("raw", raw as BufferSource, { name: "Ed25519" }, false, [
-      "verify",
-    ]);
+    const key = await crypto.subtle.importKey("raw", raw as BufferSource, { name: "Ed25519" }, false, ["verify"]);
     out.set(keyId, key);
   }
   return out;
@@ -206,11 +192,7 @@ const signerCache = new WeakMap<StampSigningMaterial, Promise<StampSigner>>();
  */
 export function requireStampSigner(material: StampSigningMaterial | null): Promise<StampSigner> {
   if (material === null) {
-    throw new FailClosed(
-      503,
-      "stamp_signing_not_configured",
-      "no stamp signing key is configured for this deployment",
-    );
+    throw new FailClosed(503, "stamp_signing_not_configured", "no stamp signing key is configured for this deployment");
   }
   let cached = signerCache.get(material);
   if (!cached) {
@@ -233,12 +215,7 @@ export async function signStamp(provenance: Provenance, signer: StampSigner): Pr
     signer.privateKey,
     canonicalProvenanceBytes(provenance) as BufferSource,
   );
-  const stampSig = [
-    SIG_VERSION,
-    SIG_ALGORITHM,
-    signer.keyId,
-    bytesToB64url(new Uint8Array(signature)),
-  ].join(".");
+  const stampSig = [SIG_VERSION, SIG_ALGORITHM, signer.keyId, bytesToB64url(new Uint8Array(signature))].join(".");
   return { ...provenance, stamp_sig: stampSig };
 }
 
@@ -308,7 +285,5 @@ export async function verifyStamp(
     parsed.signature as BufferSource,
     canonicalProvenanceBytes(provenance) as BufferSource,
   );
-  return ok
-    ? { status: "verified", keyId: parsed.keyId }
-    : { status: "diverged", reason: "signature_mismatch" };
+  return ok ? { status: "verified", keyId: parsed.keyId } : { status: "diverged", reason: "signature_mismatch" };
 }

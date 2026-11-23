@@ -255,10 +255,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
       env.PM_AGG_ACTIVITY_FILE,
       join(homedir(), ".local", "state", "pm-aggregator", "activity-ingestion.json"),
     ),
-    outcomeFile: s(
-      env.PM_AGG_OUTCOME_FILE,
-      join(homedir(), ".local", "state", "pm-aggregator", "outcome-facts.jsonl"),
-    ),
+    outcomeFile: s(env.PM_AGG_OUTCOME_FILE, join(homedir(), ".local", "state", "pm-aggregator", "outcome-facts.jsonl")),
     outcomeBindingsFile: s(
       env.PM_AGG_OUTCOME_BINDINGS_FILE,
       join(homedir(), ".local", "state", "pm-aggregator", "outcome-bindings.jsonl"),

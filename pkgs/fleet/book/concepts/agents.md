@@ -15,13 +15,13 @@ reference.
 
 ## Kinds and seat shapes: 16 × 3
 
-A *kind* says three things: which bridge groups the agent joins, how it
+A _kind_ says three things: which bridge groups the agent joins, how it
 reaches the fleet from where it runs, and what to tell it at enrolment.
 `fleet agent kinds` prints the table as JSON — for each kind its name,
 summary, bridge groups, seat, and enrolment note, plus the three seat
 definitions. Adding a kind is adding a row; no verb changes.
 
-A *seat shape* is how the agent runs:
+A _seat shape_ is how the agent runs:
 
 - **binary** — has a shell and runs the fleet binary itself: `enroll`, then
   `next`.
@@ -33,24 +33,24 @@ A *seat shape* is how the agent runs:
 
 The 16 kinds:
 
-| Kind | Groups | Seat | Note |
-|---|---|---|---|
-| `muse` | muse | binary | A fresh Muse gets a bridge-capable static build from `scripts/muse/bootstrap.sh`; older installs run the same commands on the laptop install via `~/tools/laptop-ssh.sh`. |
-| `opencode` | opencode | binary | Runs on the laptop seat, so every leg is local. |
-| `openchamber` | opencode, openchamber | binary | Joins `opencode` too, so `group:opencode` reaches both pipelines. |
-| `openclaw` | openclaw | binary | |
-| `claude-code` | claude-code | binary | A cloud session has no tailnet: messaging and the priority rung work over HTTPS; builds go through `fleet shell`. |
-| `codex` | codex | binary | |
-| `gemini` | gemini | binary | |
-| `antigravity` | antigravity | binary | |
-| `grok` | grok | binary | A bot with no shell enrols as kind `http` under the same name and groups. |
-| `dot` | dot | http | Its Slack and ChatGPT transports are carried elsewhere; the mailbox is the same store. |
-| `duet` | duet | http | |
-| `claude` | (none) | connector | Fixed bridge address `claude`; set a wake hook for channel:claude so a send starts a session. |
-| `chatgpt` | (none) | connector | Fixed address `chatgpt`; woken by its MCP Events subscription. |
-| `laptop` | laptop | binary | A job or service on the fleet laptop. |
-| `http` | (none) | http | Anything that can make an HTTPS request and nothing else. |
-| `generic` | (none) | binary | Any other agent with a shell — the fallback the enrolment error names. |
+| Kind          | Groups                | Seat      | Note                                                                                                                                                                      |
+| ------------- | --------------------- | --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `muse`        | muse                  | binary    | A fresh Muse gets a bridge-capable static build from `scripts/muse/bootstrap.sh`; older installs run the same commands on the laptop install via `~/tools/laptop-ssh.sh`. |
+| `opencode`    | opencode              | binary    | Runs on the laptop seat, so every leg is local.                                                                                                                           |
+| `openchamber` | opencode, openchamber | binary    | Joins `opencode` too, so `group:opencode` reaches both pipelines.                                                                                                         |
+| `openclaw`    | openclaw              | binary    |                                                                                                                                                                           |
+| `claude-code` | claude-code           | binary    | A cloud session has no tailnet: messaging and the priority rung work over HTTPS; builds go through `fleet shell`.                                                         |
+| `codex`       | codex                 | binary    |                                                                                                                                                                           |
+| `gemini`      | gemini                | binary    |                                                                                                                                                                           |
+| `antigravity` | antigravity           | binary    |                                                                                                                                                                           |
+| `grok`        | grok                  | binary    | A bot with no shell enrols as kind `http` under the same name and groups.                                                                                                 |
+| `dot`         | dot                   | http      | Its Slack and ChatGPT transports are carried elsewhere; the mailbox is the same store.                                                                                    |
+| `duet`        | duet                  | http      |                                                                                                                                                                           |
+| `claude`      | (none)                | connector | Fixed bridge address `claude`; set a wake hook for channel:claude so a send starts a session.                                                                             |
+| `chatgpt`     | (none)                | connector | Fixed address `chatgpt`; woken by its MCP Events subscription.                                                                                                            |
+| `laptop`      | laptop                | binary    | A job or service on the fleet laptop.                                                                                                                                     |
+| `http`        | (none)                | http      | Anything that can make an HTTPS request and nothing else.                                                                                                                 |
+| `generic`     | (none)                | binary    | Any other agent with a shell — the fallback the enrolment error names.                                                                                                    |
 
 ## Enrolment and the profile
 
@@ -61,15 +61,15 @@ fleet agent enroll --kind K --name N [--groups a,b] [--dry-run] [--profile PATH]
 The kind is validated (an unknown kind is a usage error listing all kinds —
 "use generic for anything with a shell"). `--groups` adds to the kind's
 built-in groups. For a binary or http seat, the bridge leg is probed in
-*register* mode — a bridge `hello` with the name and groups, which is what
+_register_ mode — a bridge `hello` with the name and groups, which is what
 actually registers the mailbox. Connector kinds instead get the "attach the
 connector" instruction and a fixed channel address. The four legs are
-probed (below) and the saved *profile* — at the default path, or `--profile`
+probed (below) and the saved _profile_ — at the default path, or `--profile`
 — records the agent, kind, groups, and leg state. `--dry-run` probes nothing
 and registers nothing.
 
 The JSON answer carries the profile, `registered` (true only when it is not
-a dry run *and* the bridge leg answered), the legs, the *rungs* map (below),
+a dry run _and_ the bridge leg answered), the legs, the _rungs_ map (below),
 and seat-specific next-step lines: for a binary seat, the run loop
 (`fleet agent next --agent <name>`, do the task, run its `then` lines,
 repeat while the run has budget) and the `fleet shell` line ("runs where
@@ -93,16 +93,16 @@ source is explicit, and this book follows the source.
 The four probes are independent, issued together (one parallel call), and
 each is a real fleet verb run as this seat:
 
-| Leg | Probe | Needs |
-|---|---|---|
-| bridge | `bridge hello` (enrol) / `bridge inbox --agent A --limit 1` (doctor with a name) / `bridge health` (no name known) | HTTPS to the bridge + the fleet token by name through fleet secrets |
-| queue | `queue health` | The queue broker: its socket on the laptop, or the laptop transport from elsewhere |
-| github | `gh api rate_limit` via `fleet gh`; if that fails, plain signed-in `gh api rate_limit` (the answer records `route: "fleet"` or `"plain"`) | `gh` with a token: fleet gh's rotation, or a signed-in gh |
-| shell | `laptop-agent health` | A route to the laptop: its broker, the Cloudflare tunnel, the tailnet, or SSH |
+| Leg    | Probe                                                                                                                                     | Needs                                                                              |
+| ------ | ----------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------- |
+| bridge | `bridge hello` (enrol) / `bridge inbox --agent A --limit 1` (doctor with a name) / `bridge health` (no name known)                        | HTTPS to the bridge + the fleet token by name through fleet secrets                |
+| queue  | `queue health`                                                                                                                            | The queue broker: its socket on the laptop, or the laptop transport from elsewhere |
+| github | `gh api rate_limit` via `fleet gh`; if that fails, plain signed-in `gh api rate_limit` (the answer records `route: "fleet"` or `"plain"`) | `gh` with a token: fleet gh's rotation, or a signed-in gh                          |
+| shell  | `laptop-agent health`                                                                                                                     | A route to the laptop: its broker, the Cloudflare tunnel, the tailnet, or SSH      |
 
 Doctor's bridge probe with a known agent is a read that takes nothing
 (`inbox --limit 1`): service health alone proves nothing about whether this
-seat holds the fleet token, so only a call made *as* an agent counts. With
+seat holds the fleet token, so only a call made _as_ an agent counts. With
 no agent name, the bridge leg is reported **not ok** even when the service
 answers ("the service answers, but no agent name is known to read a mailbox
 with: enrol, or pass --agent").
@@ -125,8 +125,8 @@ fleet agent next [--agent N] [--lane L] [--repo OWNER/NAME] [--low-water N]
 ```
 
 `next` tries four rungs **in order** and returns the first that yields work.
-A rung that is *down* (bridge unreachable, broker not answering) is not the
-same as a rung that is *empty*: down rungs are recorded and skipped, so a
+A rung that is _down_ (bridge unreachable, broker not answering) is not the
+same as a rung that is _empty_: down rungs are recorded and skipped, so a
 seat with only HTTPS still gets work from rungs 1 and 4. Every answer is
 `{agent, rung, task, then, tried}` — `tried` is the per-rung log
 (`skipped`/`empty`/`down`/`rejected`, with a reason), and `then` is the list
@@ -183,7 +183,7 @@ level.
 else unranked = 6. Hand-out order is lowest rank, then oldest `added_at`,
 then lowest issue number.
 
-**Defaults: low-water 3, target 8.** A list is *low* when
+**Defaults: low-water 3, target 8.** A list is _low_ when
 `entries ≤ low_water` — so a list of exactly 3 is already low.
 `shortlist status [--low-water N]` reports the list, its count, `low`, and
 the refill state. `shortlist add --issue N --title T [--repo R] [--rank N]

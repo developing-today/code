@@ -4,12 +4,12 @@
 
 Roles:
 
-| Role token | Capability | Runs | Same leaf as |
-|---|---|---|---|
-| `queue-broker` | `queue-broker` | the repo work queue as a resident service | argv0 `queue-broker` |
-| `secrets-broker` | `secrets-broker` | the Bitwarden-backed secrets cache | argv0 `secrets-broker` |
-| `search` | `search-serve` | the Atlas search service | `fleet search serve`, argv0 `atlas-search serve` |
-| `proxy` | `proxy-serve` | the session proxy broker | `fleet proxy serve` |
+| Role token       | Capability       | Runs                                      | Same leaf as                                     |
+| ---------------- | ---------------- | ----------------------------------------- | ------------------------------------------------ |
+| `queue-broker`   | `queue-broker`   | the repo work queue as a resident service | argv0 `queue-broker`                             |
+| `secrets-broker` | `secrets-broker` | the Bitwarden-backed secrets cache        | argv0 `secrets-broker`                           |
+| `search`         | `search-serve`   | the Atlas search service                  | `fleet search serve`, argv0 `atlas-search serve` |
+| `proxy`          | `proxy-serve`    | the session proxy broker                  | `fleet proxy serve`                              |
 
 See also [fleet proxy](proxy.md), [fleet secrets](secrets.md), [fleet search](search.md), and [Secrets and the secrets broker](../concepts/secrets.md).
 
@@ -21,7 +21,7 @@ fleet serve <role> [<role> ...]
 ```
 
 - **One role:** `fleet serve <role>` runs that role in the foreground.
-- **Two or more roles:** `fleet serve <role> [<role> ...]` with two or more *distinct* role tokens and nothing else runs all of them in one process. The parser only engages as a list when at least the first two tokens are both role tokens; it then validates the whole tail.
+- **Two or more roles:** `fleet serve <role> [<role> ...]` with two or more _distinct_ role tokens and nothing else runs all of them in one process. The parser only engages as a list when at least the first two tokens are both role tokens; it then validates the whole tail.
 - A duplicate is a hard error: `error: duplicate role 'queue-broker' in 'fleet serve' list`.
 - Any non-role token is a hard error, for example: `error: unexpected argument '--help' in 'fleet serve' list: a serve list is role tokens only (queue-broker, secrets-broker, search, proxy)`.
 - **All roles are capability-checked before anything binds.** If any role is not available in this invocation, the whole list stubs with exit 69 and `fleet serve: role '<role>' cannot run in this invocation` — there is no partial start.
@@ -43,13 +43,13 @@ Invoking the binary as `queue-broker` or `secrets-broker` routes straight into t
 fleet serve queue-broker
 ```
 
-| Flag | Argument | Default | Meaning |
-|---|---|---|---|
-| — | — | — | This role takes no flags and no arguments. |
+| Flag | Argument | Default | Meaning                                    |
+| ---- | -------- | ------- | ------------------------------------------ |
+| —    | —        | —       | This role takes no flags and no arguments. |
 
 ### Behaviour
 
-Runs the repo work queue as a resident service. Any trailing argument is rejected before the daemon starts with `unexpected argument '<first>' for 'fleet serve queue-broker'`, exit 2 — through the serve spelling and through the argv0 alias alike. A help flag in the flag position (`fleet serve queue-broker --help`) is answered first with the *generic serve domain help*, exit 0.
+Runs the repo work queue as a resident service. Any trailing argument is rejected before the daemon starts with `unexpected argument '<first>' for 'fleet serve queue-broker'`, exit 2 — through the serve spelling and through the argv0 alias alike. A help flag in the flag position (`fleet serve queue-broker --help`) is answered first with the _generic serve domain help_, exit 0.
 
 - **Bind:** TCP `QUEUE_BROKER_BIND`, default `100.99.113.103:4801` (the laptop tailnet address), **plus a Unix-socket dual-bind**: `QUEUE_BROKER_SOCKET`, default `~/.config/queue-broker/broker.sock`. Routes and auth are identical on both transports. A Unix-socket bind failure degrades to "TCP only" with a log line.
 - **Token:** `QUEUE_BROKER_TOKEN_FILE`, default `~/.config/queue-broker/token`; an unreadable token file is a startup error, exit 3. Requests carry `X-Agent-Token`; a pre-body gate refuses unauthenticated or oversized requests from headers alone (401 / 413) before any body byte is read. The only unauthenticated route is the health probe.
@@ -57,7 +57,7 @@ Runs the repo work queue as a resident service. Any trailing argument is rejecte
 - **Health:** `GET /healthz` returns `{"service": "queue-broker"}`, unauthenticated.
 - **Backend:** Turso only, on the dedicated `fleet-queue` database at `QUEUE_BROKER_TURSO_URL`, token from `QUEUE_BROKER_TURSO_TOKEN_FILE` or resolved from the secrets broker. `QUEUE_BROKER_BACKEND` unset, empty, or `turso` is accepted; anything else is a startup config error, exit 3.
 - **Secrets dependency:** `QUEUE_BROKER_SECRETS_URL` (default `http://100.99.113.103:4800`, or `unix://<path>` for the secrets broker's socket) and `QUEUE_BROKER_SECRETS_TOKEN_FILE` (default `~/.config/secrets-broker/token`).
-- **Startup ordering:** the listener binds *first*, then the Turso backend comes up on a startup thread, so `/healthz` answers immediately and queue verbs answer exit 3 with a `turso_pending` reason until the backend is ready. A backend that cannot come up within its retry budget still exits the broker with 3 so the supervisor restarts it.
+- **Startup ordering:** the listener binds _first_, then the Turso backend comes up on a startup thread, so `/healthz` answers immediately and queue verbs answer exit 3 with a `turso_pending` reason until the backend is ready. A backend that cannot come up within its retry budget still exits the broker with 3 so the supervisor restarts it.
 
 Known discrepancy: there is no role-specific help for this role; `fleet serve queue-broker --help` prints the generic serve domain help.
 
@@ -82,9 +82,9 @@ Runs the queue broker in the foreground on TCP port 4801 and its Unix socket unt
 fleet serve secrets-broker
 ```
 
-| Flag | Argument | Default | Meaning |
-|---|---|---|---|
-| — | — | — | This role takes no flags and no arguments. |
+| Flag | Argument | Default | Meaning                                    |
+| ---- | -------- | ------- | ------------------------------------------ |
+| —    | —        | —       | This role takes no flags and no arguments. |
 
 ### Behaviour
 
@@ -92,12 +92,12 @@ Runs the secrets broker in the foreground, dual-bound on TCP and a Unix socket. 
 
 The broker's full semantics — the serving gate, cache-first reads, read-through on miss, refresh, and per-secret install — are covered in [Secrets and the secrets broker](../concepts/secrets.md). The client side is [fleet secrets](secrets.md). Its configuration:
 
-| Env var | Default | Meaning |
-|---|---|---|
-| `SECRETS_BROKER_BIND` | `100.99.113.103:4800` | TCP bind. On the sandbox (`FLEET_LOCATION=sandbox`) the bind is forced to `127.0.0.1:4800` at the bind itself, whatever the env says. |
-| `SECRETS_BROKER_SOCKET` | `~/.config/secrets-broker/broker.sock` | Unix-socket dual-bind; a bind failure degrades to TCP-only with a log line. |
-| `SECRETS_BROKER_TOKEN_FILE` | `~/.config/secrets-broker/token` | Daemon token file; unreadable means startup exit 3. |
-| `SECRETS_BROKER_TTL_S` | `900` (minimum `30`) | Refresh interval in seconds. Unparseable falls back to 900 with a warning; parsed but below 30 refuses to start, exit 2. |
+| Env var                     | Default                                | Meaning                                                                                                                               |
+| --------------------------- | -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| `SECRETS_BROKER_BIND`       | `100.99.113.103:4800`                  | TCP bind. On the sandbox (`FLEET_LOCATION=sandbox`) the bind is forced to `127.0.0.1:4800` at the bind itself, whatever the env says. |
+| `SECRETS_BROKER_SOCKET`     | `~/.config/secrets-broker/broker.sock` | Unix-socket dual-bind; a bind failure degrades to TCP-only with a log line.                                                           |
+| `SECRETS_BROKER_TOKEN_FILE` | `~/.config/secrets-broker/token`       | Daemon token file; unreadable means startup exit 3.                                                                                   |
+| `SECRETS_BROKER_TTL_S`      | `900` (minimum `30`)                   | Refresh interval in seconds. Unparseable falls back to 900 with a warning; parsed but below 30 refuses to start, exit 2.              |
 
 Endpoints (header `X-Agent-Token` required on everything except `/health`; identical over TCP and the Unix socket): `GET /health`, `GET /secrets` (names only, sorted), `GET /secret/<name>`, `POST /refresh`.
 
@@ -124,13 +124,13 @@ Runs the secrets broker in the foreground on TCP port 4800 and its Unix socket u
 usage: fleet serve search [options]
 ```
 
-| Flag | Argument | Default | Meaning |
-|---|---|---|---|
-| `--config` | `PATH` | `~/.local/state/atlas-search/service.json` (env `ATLAS_SEARCH_SERVICE_CONFIG`) | Service config file. |
-| `--listen` | `ADDR` | from config | Listen address override (loopback only). |
-| `--job-ttl-ms` | `N` | `600000` | Completed-job TTL override, milliseconds. |
-| `--hard-ttl-ms` | `N` | `3600000` | Submit hard-cap override, milliseconds. |
-| `-h`, `--help` | — | — | Print this role's usage and exit 0. |
+| Flag            | Argument | Default                                                                        | Meaning                                   |
+| --------------- | -------- | ------------------------------------------------------------------------------ | ----------------------------------------- |
+| `--config`      | `PATH`   | `~/.local/state/atlas-search/service.json` (env `ATLAS_SEARCH_SERVICE_CONFIG`) | Service config file.                      |
+| `--listen`      | `ADDR`   | from config                                                                    | Listen address override (loopback only).  |
+| `--job-ttl-ms`  | `N`      | `600000`                                                                       | Completed-job TTL override, milliseconds. |
+| `--hard-ttl-ms` | `N`      | `3600000`                                                                      | Submit hard-cap override, milliseconds.   |
+| `-h`, `--help`  | —        | —                                                                              | Print this role's usage and exit 0.       |
 
 ### Behaviour
 
@@ -162,9 +162,9 @@ Runs the search service with a five-minute completed-job TTL.
 fleet serve proxy
 ```
 
-| Flag | Argument | Default | Meaning |
-|---|---|---|---|
-| — | — | — | This role takes no flags and no arguments. |
+| Flag | Argument | Default | Meaning                                    |
+| ---- | -------- | ------- | ------------------------------------------ |
+| —    | —        | —       | This role takes no flags and no arguments. |
 
 ### Behaviour
 

@@ -60,23 +60,23 @@ construction:
 Scale claims need a fixed 1x. These are the platform's current operating
 points, from the committed harness configuration and baselines:
 
-| Axis | 1x anchor | Source |
-| --- | --- | --- |
-| Worlds per host | 1,000 idle / 100 active, 20 events/s for 10 s | `benches/world_bench.rs`, `ManyWorldsConfig::full` |
-| Single-world history | 10,000 events | `guest_replay` workload, `benches/BASELINES.md` |
-| Compaction journal | 2,000 entries | `checkpoint_compaction` workload |
-| Members on one world | 32 clients × 100 rounds | `session_fanout` workload |
-| Guest frame budget | 10M fuel per call (default) | `SandboxLimits::fuel`; perf-budgets doc in this directory |
-| Journal size cap | 64 MiB per world journal | codified: `MAX_JOURNAL_BYTES`, `crates/id-worlds/src/world_store.rs:51` |
+| Axis                 | 1x anchor                                     | Source                                                                  |
+| -------------------- | --------------------------------------------- | ----------------------------------------------------------------------- |
+| Worlds per host      | 1,000 idle / 100 active, 20 events/s for 10 s | `benches/world_bench.rs`, `ManyWorldsConfig::full`                      |
+| Single-world history | 10,000 events                                 | `guest_replay` workload, `benches/BASELINES.md`                         |
+| Compaction journal   | 2,000 entries                                 | `checkpoint_compaction` workload                                        |
+| Members on one world | 32 clients × 100 rounds                       | `session_fanout` workload                                               |
+| Guest frame budget   | 10M fuel per call (default)                   | `SandboxLimits::fuel`; perf-budgets doc in this directory               |
+| Journal size cap     | 64 MiB per world journal                      | codified: `MAX_JOURNAL_BYTES`, `crates/id-worlds/src/world_store.rs:51` |
 
 ## Scale tiers
 
-| Axis | 1x | 10x | 100x |
-| --- | --- | --- | --- |
-| Idle worlds | 1,000 | 10,000 | 100,000 |
-| Active worlds | 100 | 1,000 | 10,000 |
+| Axis                          | 1x     | 10x     | 100x      |
+| ----------------------------- | ------ | ------- | --------- |
+| Idle worlds                   | 1,000  | 10,000  | 100,000   |
+| Active worlds                 | 100    | 1,000   | 10,000    |
 | Single-world history (events) | 10,000 | 100,000 | 1,000,000 |
-| Members on the hot world | 32 | 320 | 3,200 |
+| Members on the hot world      | 32     | 320     | 3,200     |
 
 A tier is a measurement target, not a promise. The 100x fleet tier in
 particular may exceed one host's memory; the program's job at that point is
@@ -188,22 +188,22 @@ derived rows with measured-at-tier rows; the 100x run
 ([#13088](https://github.com/developing-today/code/issues/13088)) adds the
 100x column or an explicit wall per row.
 
-| Limit | Value | Kind | Source |
-| --- | --- | --- | --- |
-| Journal append + fsync | 5,180 µs median per append | measured | `benches/baseline.txt` |
-| Durable append ceiling, per world | ≈193 appends/s unbatched | derived | arithmetic on the row above |
-| Checkpoint compaction | 10,972 µs median per compact, 2,000-entry journal | measured | `benches/baseline.txt` |
-| Guest replay | 0.170 µs/event; 10,000 events ≈ 1.7 ms | measured | `benches/baseline.txt` |
-| Session fan-out | 1.437 µs per delivery, 32 clients × 100 rounds | measured | `benches/baseline.txt` |
-| Many-worlds command p99 | 4,549 ms vs 50 ms target — **missed** | measured | #557 (later run 5,650 ms) |
-| `fuel_spin_isolation` ratio | ~3.8–3.9 vs 1.10 target — **missed** | measured | #1067 line, 2026-11-22 post-admission pairs |
-| Journal size cap | 64 MiB per world journal | codified | `MAX_JOURNAL_BYTES`, `crates/id-worlds/src/world_store.rs:51` |
-| Session checkpoint interval | 2,000 ms default | codified | `crates/id-store/src/session_checkpoint.rs` |
-| Documents | 64 KiB each / 512 list items | codified | #6281 findings, limits inventory |
-| Compile inputs | 8 files / 256 KiB total | codified | #6281 findings, limits inventory |
-| SSH surface | 64 connections / 16 tunnel streams | codified | #6281 findings, limits inventory |
-| Participants per world | 256 | codified | `WorldLimits::default().participants`, `crates/id-worlds/src/world/mod.rs` — found by the #13083 generator's restore verification (the 10x tier's 320-member hot world is refused); the generator caps the hot world at 256 and records the wall in its manifest |
-| Per-world caps on entities / programs | **none codified** | gap | #6281 findings, Finding 1 (the members part of that finding is superseded by the row above) |
+| Limit                                 | Value                                             | Kind     | Source                                                                                                                                                                                                                                                           |
+| ------------------------------------- | ------------------------------------------------- | -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Journal append + fsync                | 5,180 µs median per append                        | measured | `benches/baseline.txt`                                                                                                                                                                                                                                           |
+| Durable append ceiling, per world     | ≈193 appends/s unbatched                          | derived  | arithmetic on the row above                                                                                                                                                                                                                                      |
+| Checkpoint compaction                 | 10,972 µs median per compact, 2,000-entry journal | measured | `benches/baseline.txt`                                                                                                                                                                                                                                           |
+| Guest replay                          | 0.170 µs/event; 10,000 events ≈ 1.7 ms            | measured | `benches/baseline.txt`                                                                                                                                                                                                                                           |
+| Session fan-out                       | 1.437 µs per delivery, 32 clients × 100 rounds    | measured | `benches/baseline.txt`                                                                                                                                                                                                                                           |
+| Many-worlds command p99               | 4,549 ms vs 50 ms target — **missed**             | measured | #557 (later run 5,650 ms)                                                                                                                                                                                                                                        |
+| `fuel_spin_isolation` ratio           | ~3.8–3.9 vs 1.10 target — **missed**              | measured | #1067 line, 2026-11-22 post-admission pairs                                                                                                                                                                                                                      |
+| Journal size cap                      | 64 MiB per world journal                          | codified | `MAX_JOURNAL_BYTES`, `crates/id-worlds/src/world_store.rs:51`                                                                                                                                                                                                    |
+| Session checkpoint interval           | 2,000 ms default                                  | codified | `crates/id-store/src/session_checkpoint.rs`                                                                                                                                                                                                                      |
+| Documents                             | 64 KiB each / 512 list items                      | codified | #6281 findings, limits inventory                                                                                                                                                                                                                                 |
+| Compile inputs                        | 8 files / 256 KiB total                           | codified | #6281 findings, limits inventory                                                                                                                                                                                                                                 |
+| SSH surface                           | 64 connections / 16 tunnel streams                | codified | #6281 findings, limits inventory                                                                                                                                                                                                                                 |
+| Participants per world                | 256                                               | codified | `WorldLimits::default().participants`, `crates/id-worlds/src/world/mod.rs` — found by the #13083 generator's restore verification (the 10x tier's 320-member hot world is refused); the generator caps the hot world at 256 and records the wall in its manifest |
+| Per-world caps on entities / programs | **none codified**                                 | gap      | #6281 findings, Finding 1 (the members part of that finding is superseded by the row above)                                                                                                                                                                      |
 
 ## Host classes
 

@@ -139,7 +139,7 @@ broker surface, and the feature gates between them — is the subject of
 > "The full fleet domain registry: names, one-line descriptions, argv0 aliases, capabilities and variant profiles. Std-only; compiled into every fleet variant."
 
 A platform crate with a hard constraint: **dependency-free** (std only,
-strings and tables, no I/O), so it can be compiled into *every* variant
+strings and tables, no I/O), so it can be compiled into _every_ variant
 — including the size-gated connect build — and `--help` is always
 complete. It owns the 15 capability atoms, the 12 domains, the three
 build variants and the argv0 alias map. Covered in depth in
@@ -161,7 +161,7 @@ atlas-search's service, held byte-for-byte by a parity-guard workflow.
 > "The one secrets-by-name path for fleet: secrets-broker protocol first, bws CLI fallback. Values are never stored, never logged, and redacted in Debug."
 
 A platform crate, not a domain: the resolver every domain uses to turn a
-secret *name* into a value. The resolution chain is broker first (direct
+secret _name_ into a value. The resolution chain is broker first (direct
 socket where the broker is local, framed through the session broker
 elsewhere), then the `bws` CLI fallback, then a 1Password source where a
 vault is named. Resolved values live in a type whose `Debug` is
@@ -201,22 +201,22 @@ variant unconditionally.
 
 ## Which crate owns which domain
 
-| Registry domain | Primary capability | Owning crate | Entry point |
-|---|---|---|---|
-| `queue` | `queue` | `fleet-queue` | `fleet_queue::client::run` |
-| `serve` (roles `queue-broker`, `secrets-broker`) | `queue-broker` | `fleet-queue` (bin-crate glue routes the roles) | `fleet_queue::queue_broker::run`, `fleet_queue::secrets_broker::run` |
-| `serve` (role `search`) | `search-serve` | `fleet-search` | `fleet_search::serve::run` |
-| `serve` (role `proxy`) | `proxy-serve` | `fleet-proxy` | the proxy serve loop, via bin-crate glue |
-| `proxy` | `proxy-connect` | `fleet-proxy` (+ `fleet-proxy-proto`) | bin-crate glue over `fleet-proxy` client/serve |
-| `dispatch` | `dispatch` | `fleet-dispatch` | `fleet_dispatch::run` |
-| `dispatch-test` | `dispatch-test` | `fleet-dispatch-test` | `fleet_dispatch_test::run` |
-| `secrets` | `secrets` | bin crate, over `fleet-secrets` | `crates/fleet/src/secrets.rs` |
-| `gh` | `gh` | bin crate | `crates/fleet/src/gh.rs` and siblings |
-| `bridge` | `bridge` | `fleet-bridge` | `fleet_bridge::run` |
-| `agent` | `agent` | `fleet-agent` | `fleet_agent::run` |
-| `shell` | `agent` | `fleet-agent` | `fleet_agent::run_shell` |
-| `search` | `search` | `fleet-search` | `fleet_search::run` |
-| `laptop-agent` | `laptop-agent` | `fleet-laptop-agent` | `fleet_laptop_agent::cli::run` |
+| Registry domain                                  | Primary capability | Owning crate                                    | Entry point                                                          |
+| ------------------------------------------------ | ------------------ | ----------------------------------------------- | -------------------------------------------------------------------- |
+| `queue`                                          | `queue`            | `fleet-queue`                                   | `fleet_queue::client::run`                                           |
+| `serve` (roles `queue-broker`, `secrets-broker`) | `queue-broker`     | `fleet-queue` (bin-crate glue routes the roles) | `fleet_queue::queue_broker::run`, `fleet_queue::secrets_broker::run` |
+| `serve` (role `search`)                          | `search-serve`     | `fleet-search`                                  | `fleet_search::serve::run`                                           |
+| `serve` (role `proxy`)                           | `proxy-serve`      | `fleet-proxy`                                   | the proxy serve loop, via bin-crate glue                             |
+| `proxy`                                          | `proxy-connect`    | `fleet-proxy` (+ `fleet-proxy-proto`)           | bin-crate glue over `fleet-proxy` client/serve                       |
+| `dispatch`                                       | `dispatch`         | `fleet-dispatch`                                | `fleet_dispatch::run`                                                |
+| `dispatch-test`                                  | `dispatch-test`    | `fleet-dispatch-test`                           | `fleet_dispatch_test::run`                                           |
+| `secrets`                                        | `secrets`          | bin crate, over `fleet-secrets`                 | `crates/fleet/src/secrets.rs`                                        |
+| `gh`                                             | `gh`               | bin crate                                       | `crates/fleet/src/gh.rs` and siblings                                |
+| `bridge`                                         | `bridge`           | `fleet-bridge`                                  | `fleet_bridge::run`                                                  |
+| `agent`                                          | `agent`            | `fleet-agent`                                   | `fleet_agent::run`                                                   |
+| `shell`                                          | `agent`            | `fleet-agent`                                   | `fleet_agent::run_shell`                                             |
+| `search`                                         | `search`           | `fleet-search`                                  | `fleet_search::run`                                                  |
+| `laptop-agent`                                   | `laptop-agent`     | `fleet-laptop-agent`                            | `fleet_laptop_agent::cli::run`                                       |
 
 Note the two irregular rows, because embedders trip on both: `shell`
 has **no capability atom of its own** — it rides the `agent` capability
@@ -226,7 +226,7 @@ modules in the bin crate (over `fleet-secrets`, in the `secrets` case).
 ## Example: depending on the platform layer
 
 The smallest useful embedding is the dependency-free registry: any
-crate, tool or test can ask what the fleet's surface *is* without
+crate, tool or test can ask what the fleet's surface _is_ without
 linking a single domain. This example is illustrative — it follows the
 researched API (`fleet_registry::DOMAINS`, `fleet_registry::domain`)
 but the exact return type of the lookup helper was not verified against

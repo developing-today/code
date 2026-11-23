@@ -22,20 +22,20 @@ Fleet is one Rust workspace that produces one binary. Capability variants are se
    ./pkgs/fleet/smoke.sh ./result ./result-1 ./result-2 ./result-3
    ```
 
-The builder is `pkgs/fleet/default.nix`. Its internal `mkFleet` function takes a package name, a Cargo feature set, an optional argv0 alias, an optional size gate, a platform, and a static flag. Cargo flags are always `-p fleet`, plus `--no-default-features` when the feature set is not the default, plus `--features <comma-joined>` when the set is non-empty — so the Nix attribute *is* the Cargo feature set.
+The builder is `pkgs/fleet/default.nix`. Its internal `mkFleet` function takes a package name, a Cargo feature set, an optional argv0 alias, an optional size gate, a platform, and a static flag. Cargo flags are always `-p fleet`, plus `--no-default-features` when the feature set is not the default, plus `--features <comma-joined>` when the set is non-empty — so the Nix attribute _is_ the Cargo feature set.
 
 ### The six attributes
 
 `default.nix` returns six attributes:
 
-| Attribute | Cargo features | Platform | Alias link | Size gate |
-|---|---|---|---|---|
-| `fleet` | default (= `full`) | glibc | — | no |
-| `fleet-serve` | `serve` | glibc | `fleet-serve` | no |
-| `fleet-connect` | none (`--no-default-features`) | glibc | `fleet-connect` | **yes** |
-| `fleet-brokers` | separate build, see below | glibc | — | no |
-| `fleet-static` | default (= `full`) | musl (`pkgsStatic.rustPlatform`) | — | no |
-| `fleet-connect-static` | none | musl (`pkgsStatic.rustPlatform`) | `fleet-connect` | **yes** |
+| Attribute              | Cargo features                 | Platform                         | Alias link      | Size gate |
+| ---------------------- | ------------------------------ | -------------------------------- | --------------- | --------- |
+| `fleet`                | default (= `full`)             | glibc                            | —               | no        |
+| `fleet-serve`          | `serve`                        | glibc                            | `fleet-serve`   | no        |
+| `fleet-connect`        | none (`--no-default-features`) | glibc                            | `fleet-connect` | **yes**   |
+| `fleet-brokers`        | separate build, see below      | glibc                            | —               | no        |
+| `fleet-static`         | default (= `full`)             | musl (`pkgsStatic.rustPlatform`) | —               | no        |
+| `fleet-connect-static` | none                           | musl (`pkgsStatic.rustPlatform`) | `fleet-connect` | **yes**   |
 
 Notes on each:
 
@@ -115,7 +115,7 @@ Feature sets are defined in `crates/fleet/Cargo.toml` under `[features]`: `defau
 
 Properties that matter:
 
-- A build *waits* for a free slot. Load alone never parks work; the lock queues, it does not reject.
+- A build _waits_ for a free slot. Load alone never parks work; the lock queues, it does not reject.
 - It sets `CARGO_BUILD_JOBS` to half the host's cores unless that variable is already set.
 - Usage is `fleet-build-lock [--] command [args…]`, run on the building host (the laptop), for example via the laptop agent. `fleet shell --build` takes a slot through it automatically.
 

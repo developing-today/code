@@ -25,15 +25,7 @@ import { dispatch } from "../src/router.ts";
 import { FixtureSessionRegistry } from "../src/sessions.ts";
 import { importStampVerifyKeys, verifyStamp, type Provenance } from "../src/stamp-sig.ts";
 import { FixtureMetadataStore, FixtureQueueRecordSource } from "../src/stamping.ts";
-import {
-  AUDIENCE,
-  BINDING_A,
-  BINDING_B,
-  ISSUER,
-  WEBHOOK_SECRET,
-  bearerReq,
-  makeHarness,
-} from "./helpers.ts";
+import { AUDIENCE, BINDING_A, BINDING_B, ISSUER, WEBHOOK_SECRET, bearerReq, makeHarness } from "./helpers.ts";
 
 const h = await makeHarness();
 
@@ -57,8 +49,20 @@ const stampRawPub = new Uint8Array(await crypto.subtle.exportKey("raw", stampKey
 const tenancyFixture = JSON.stringify({
   subjects: [{ issuer: ISSUER, subject: "user-sub-1", binding_id: BINDING_A, active: true }],
   service_tokens: [
-    { sha256: await sha256Hex(INGEST_TOKEN), binding_id: BINDING_A, routes: ["ingestion"], active: true, label: "ingestion-test" },
-    { sha256: await sha256Hex(QUERY_ONLY_TOKEN), binding_id: BINDING_A, routes: ["query"], active: true, label: "query-only" },
+    {
+      sha256: await sha256Hex(INGEST_TOKEN),
+      binding_id: BINDING_A,
+      routes: ["ingestion"],
+      active: true,
+      label: "ingestion-test",
+    },
+    {
+      sha256: await sha256Hex(QUERY_ONLY_TOKEN),
+      binding_id: BINDING_A,
+      routes: ["query"],
+      active: true,
+      label: "query-only",
+    },
   ],
 });
 
@@ -475,13 +479,24 @@ test("a malformed block refuses the webhook with 400 and becomes a per-item erro
   const world = makeWorld();
   const badBody = `Broken block.\n\n${METADATA_START}\n\`\`\`json\n{broken}\n\`\`\`\n${METADATA_END}\n`;
   world.writer.seedItem({
-    repo: REPO, kind: "issue", number: 14, title: "Broken", body: badBody,
-    state: "open", labels: [], createdAt: "2026-11-20T10:00:00.000Z",
+    repo: REPO,
+    kind: "issue",
+    number: 14,
+    title: "Broken",
+    body: badBody,
+    state: "open",
+    labels: [],
+    createdAt: "2026-11-20T10:00:00.000Z",
   });
   world.writer.seedItem({
-    repo: REPO, kind: "issue", number: 15, title: "Fine",
+    repo: REPO,
+    kind: "issue",
+    number: 15,
+    title: "Fine",
     body: bodyWithBlock("Fine.", authoredBlock(REPO)),
-    state: "open", labels: [], createdAt: "2026-11-20T10:00:00.000Z",
+    state: "open",
+    labels: [],
+    createdAt: "2026-11-20T10:00:00.000Z",
   });
 
   const res = await deliver(world, issuePayload(REPO, 14));
@@ -505,13 +520,25 @@ test("sweeper catches an item the listener missed, with the same check result as
   const world = makeWorld();
   const body = bodyWithBlock("Same item, two repos.", authoredBlock(REPO));
   world.writer.seedItem({
-    repo: REPO, kind: "issue", number: 7, title: "Via webhook", body,
-    state: "open", labels: [], createdAt: "2026-11-20T10:00:00.000Z",
+    repo: REPO,
+    kind: "issue",
+    number: 7,
+    title: "Via webhook",
+    body,
+    state: "open",
+    labels: [],
+    createdAt: "2026-11-20T10:00:00.000Z",
   });
   const body2 = bodyWithBlock("Same item, two repos.", authoredBlock(REPO2));
   world.writer.seedItem({
-    repo: REPO2, kind: "issue", number: 7, title: "Via sweep", body: body2,
-    state: "open", labels: [], createdAt: "2026-11-20T10:00:00.000Z",
+    repo: REPO2,
+    kind: "issue",
+    number: 7,
+    title: "Via sweep",
+    body: body2,
+    state: "open",
+    labels: [],
+    createdAt: "2026-11-20T10:00:00.000Z",
   });
 
   const hookRes = await deliver(world, issuePayload(REPO, 7));
@@ -534,9 +561,15 @@ test("sweeper catches an item the listener missed, with the same check result as
 test("sweeper completes a quickly-merged PR's Metadata retroactively", async () => {
   const world = makeWorld();
   world.writer.seedItem({
-    repo: REPO, kind: "pr", number: 9, title: "Merged before anyone watched",
+    repo: REPO,
+    kind: "pr",
+    number: 9,
+    title: "Merged before anyone watched",
     body: bodyWithBlock("A fast PR.", authoredBlock(REPO)),
-    state: "closed", labels: [], createdAt: "2026-11-21T08:00:00.000Z", merged: true,
+    state: "closed",
+    labels: [],
+    createdAt: "2026-11-21T08:00:00.000Z",
+    merged: true,
   });
   assert.equal(await world.store.get(REPO, "pr", 9), null);
   const res = await sweep(world, INGEST_TOKEN, { repos: [REPO] });
@@ -553,9 +586,14 @@ test("sweeper completes a quickly-merged PR's Metadata retroactively", async () 
 test("sweeper falls back to the configured scope and fails closed with none", async () => {
   const scoped = makeWorld({ INGESTION_REPOS: REPO });
   scoped.writer.seedItem({
-    repo: REPO, kind: "issue", number: 21, title: "Configured scope",
+    repo: REPO,
+    kind: "issue",
+    number: 21,
+    title: "Configured scope",
     body: bodyWithBlock("Scoped.", authoredBlock(REPO)),
-    state: "open", labels: [], createdAt: "2026-11-20T10:00:00.000Z",
+    state: "open",
+    labels: [],
+    createdAt: "2026-11-20T10:00:00.000Z",
   });
   const okRes = await sweep(scoped, INGEST_TOKEN);
   assert.equal(okRes.status, 200, await okRes.clone().text());

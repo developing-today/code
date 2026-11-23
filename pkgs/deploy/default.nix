@@ -79,9 +79,9 @@ let
   # name -> .drv path. unsafeDiscardOutputDependency keeps the .drv files in
   # the CLI's closure (so `nix-store --realise` can build from them) without
   # building their outputs.
-  targetDrvs = lib.mapAttrs (name: defn: builtins.unsafeDiscardOutputDependency defn.package.drvPath) (
-    lib.filterAttrs (name: defn: lib.isDerivation defn.package) definitions
-  );
+  targetDrvs = lib.mapAttrs (
+    name: defn: builtins.unsafeDiscardOutputDependency defn.package.drvPath
+  ) (lib.filterAttrs (name: defn: lib.isDerivation defn.package) definitions);
   registryJson = writeText "deploy-targets.json" (builtins.toJSON jsonDefinitions);
   targetDrvsJson = writeText "deploy-target-drvs.json" (builtins.toJSON targetDrvs);
 in

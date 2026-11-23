@@ -6,7 +6,7 @@ See also [fleet dispatch](dispatch.md) and [Dispatch and dispatch-test](../conce
 
 ## Shared machinery
 
-- **Execution homes:** ONE repo — the fleet repo, config `[dispatch-test] fleet_repo`, default **`dezren39/fleet`** — holds the other fleet repos as git submodules and carries the generic workflow `fleet-dispatch-test.yml`. Eligible homes are its *copies*: the source repo plus its fork network, discovered per invocation by breadth-first traversal of `GET /repos/{r}/forks`, **depth-capped at 8 levels**, deduplicated, source first, then copies in API order — unless `[dispatch-test] scopes` pins an explicit list (pin wins; scan output reports `scopes_source: "config"` vs `"fork-network"`).
+- **Execution homes:** ONE repo — the fleet repo, config `[dispatch-test] fleet_repo`, default **`dezren39/fleet`** — holds the other fleet repos as git submodules and carries the generic workflow `fleet-dispatch-test.yml`. Eligible homes are its _copies_: the source repo plus its fork network, discovered per invocation by breadth-first traversal of `GET /repos/{r}/forks`, **depth-capped at 8 levels**, deduplicated, source first, then copies in API order — unless `[dispatch-test] scopes` pins an explicit list (pin wins; scan output reports `scopes_source: "config"` vs `"fork-network"`).
 - **Capacity counting:** for each scope, ACTIVE = (jobs with status `in_progress` or `queued` across all `in_progress` runs — fetched paginated, page size 100, max 100 pages) + (number of `queued` runs, from `total_count`, counted as **1 active unit each** — a queued run has not started and exposes no jobs, so it counts once regardless of its eventual fan-out).
 - **Workflow presence:** the repo's workflows list (paginated) contains a workflow whose `path` ends with `fleet-dispatch-test.yml` and whose `state` is `active` (a missing state counts as active).
 - **Eligible** = `workflow_present && active < threshold`.
@@ -23,19 +23,17 @@ Known discrepancy: the help text understates three source behaviours — scan's 
 fleet dispatch-test scan [--threshold N] [--json]
 ```
 
-| Flag | Argument | Default | Meaning |
-|---|---|---|---|
-| `--threshold` | `N` | config, else `40` | Eligibility threshold: a scope is eligible when `active < threshold` and the workflow is present. `0` is a usage error. |
-| `--json` | — | off | Print the facts as JSON instead of lines. |
+| Flag          | Argument | Default           | Meaning                                                                                                                 |
+| ------------- | -------- | ----------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| `--threshold` | `N`      | config, else `40` | Eligibility threshold: a scope is eligible when `active < threshold` and the workflow is present. `0` is a usage error. |
+| `--json`      | —        | off               | Print the facts as JSON instead of lines.                                                                               |
 
 ### Behaviour
 
 Scans every scope in order. Human output: a first line `scopes source: {config|fork-network} (fleet repo {repo})`, then one line per scope `<repo> active=<n> workflow=<yes|no> eligible=<yes|no>`, then `chosen: <repo|none>` (the first eligible scope). `--json` prints:
 
 ```json
-{"threshold": 40, "fleet_repo": "dezren39/fleet", "scopes_source": "fork-network",
- "scopes": [{"repo": "dezren39/fleet", "active": 3, "workflow": true, "eligible": true}],
- "chosen": "dezren39/fleet"}
+{ "threshold": 40, "fleet_repo": "dezren39/fleet", "scopes_source": "fork-network", "scopes": [{ "repo": "dezren39/fleet", "active": 3, "workflow": true, "eligible": true }], "chosen": "dezren39/fleet" }
 ```
 
 ### Exit codes
@@ -60,15 +58,15 @@ chosen: dezren39/fleet
 fleet dispatch-test submit --submodule NAME [--threshold N] [--repo owner/name] [--ref REF] [--name TEXT] [--commands TEXT | --commands-file PATH]
 ```
 
-| Flag | Argument | Default | Meaning |
-|---|---|---|---|
-| `--submodule` | `NAME` | required | Fleet-repo submodule to run in — a single path segment: alphanumerics, `-`, `_`, `.`; never empty, `.` or `..`, never a slash. Examples: `code, opencode, openchamber, nix, hatch`. |
-| `--threshold` | `N` | config, else `40` | Capacity threshold for the scan rule. `0` is a usage error. |
-| `--repo` | `owner/name` | — | Force this execution-home copy. Forcing **bypasses the eligibility rule**: the code scans the forced repo only to report `active_at_scan`; it does not check `active < threshold` or workflow presence. |
-| `--ref` | `REF` | empty | Ref **inside the submodule repo**; empty = the submodule stays at the umbrella's recorded SHA. Stored in the row's `target_ref`. |
-| `--name` | `TEXT` | — | Free-text job name recorded on the row. |
-| `--commands` | `TEXT` | trivial smoke set | Shell commands run inside the submodule. Mutually exclusive with `--commands-file`. Default: `set -eux; echo dispatch-test smoke; git rev-parse HEAD; uname -a`. |
-| `--commands-file` | `PATH` | — | Read the commands from a file. Mutually exclusive with `--commands`. |
+| Flag              | Argument     | Default           | Meaning                                                                                                                                                                                                 |
+| ----------------- | ------------ | ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--submodule`     | `NAME`       | required          | Fleet-repo submodule to run in — a single path segment: alphanumerics, `-`, `_`, `.`; never empty, `.` or `..`, never a slash. Examples: `code, opencode, openchamber, nix, hatch`.                     |
+| `--threshold`     | `N`          | config, else `40` | Capacity threshold for the scan rule. `0` is a usage error.                                                                                                                                             |
+| `--repo`          | `owner/name` | —                 | Force this execution-home copy. Forcing **bypasses the eligibility rule**: the code scans the forced repo only to report `active_at_scan`; it does not check `active < threshold` or workflow presence. |
+| `--ref`           | `REF`        | empty             | Ref **inside the submodule repo**; empty = the submodule stays at the umbrella's recorded SHA. Stored in the row's `target_ref`.                                                                        |
+| `--name`          | `TEXT`       | —                 | Free-text job name recorded on the row.                                                                                                                                                                 |
+| `--commands`      | `TEXT`       | trivial smoke set | Shell commands run inside the submodule. Mutually exclusive with `--commands-file`. Default: `set -eux; echo dispatch-test smoke; git rev-parse HEAD; uname -a`.                                        |
+| `--commands-file` | `PATH`       | —                 | Read the commands from a file. Mutually exclusive with `--commands`.                                                                                                                                    |
 
 ### Behaviour
 
@@ -102,9 +100,9 @@ $ fleet dispatch-test submit --submodule code --name "smoke the code submodule"
 fleet dispatch-test status <job-id>
 ```
 
-| Flag | Argument | Default | Meaning |
-|---|---|---|---|
-| `<job-id>` (positional) | job id | required | Exactly one positional; anything else is a usage error. This verb takes no flags. |
+| Flag                    | Argument | Default  | Meaning                                                                           |
+| ----------------------- | -------- | -------- | --------------------------------------------------------------------------------- |
+| `<job-id>` (positional) | job id   | required | Exactly one positional; anything else is a usage error. This verb takes no flags. |
 
 ### Behaviour
 

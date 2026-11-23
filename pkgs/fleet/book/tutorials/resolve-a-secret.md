@@ -14,7 +14,7 @@ through `fleet secrets` only.** No fleet domain shells out to `bws`
 itself or reads a token file on its own, and no command in this tutorial
 ever prints a secret value anywhere except the one place `get` is
 specified to put it — its own stdout. The examples below use the
-placeholder name `example.api-token`; substitute a real secret *name*
+placeholder name `example.api-token`; substitute a real secret _name_
 (never a value) from your own vault.
 
 ## Step 1: Resolve a name through the broker path
@@ -36,7 +36,7 @@ the `fleet-secrets` crate):
    (the laptop), the client speaks `GET /secret/<name>` over that Unix
    socket directly. Elsewhere (a sandbox seat), it makes a framed
    exchange through the session broker to port `4800`. On that leg the
-   request names the token *file* (config `[secrets] token_file`,
+   request names the token _file_ (config `[secrets] token_file`,
    default `~/tools/secrets-broker-token`); the session broker reads the
    file per request and sends its contents as the auth header — the
    client only ever names the file, and the value never transits the
@@ -48,7 +48,7 @@ the `fleet-secrets` crate):
    broker, then `bws`.
 
 What the broker does with the request: a cache hit answers immediately
-with the cached value. A miss on a *loaded* cache is not final — the
+with the cached value. A miss on a _loaded_ cache is not final — the
 broker reads through to Bitwarden for that one name and serves what it
 finds, so a secret minted moments ago is visible immediately instead of
 at the next refresh tick. The broker refreshes its whole cache from
@@ -88,7 +88,7 @@ the listing.
 ## Step 3: Force and observe the `bws` fallback
 
 There is no `--force-bws` flag. The fallback is a property of the chain:
-when the broker leg reports itself *unavailable*, the leg is retried
+when the broker leg reports itself _unavailable_, the leg is retried
 first — the retry budget is sized to real restart windows (a full switch
 restarts broker and tunnel together, and the broker is back in about
 16 seconds), with pauses doubling per attempt up to a cap — and only
@@ -141,7 +141,7 @@ you fixing the wrong layer.
 **`404` — the name does not exist.** From the broker:
 `{"error": "no such secret"}`. The broker's cache was loaded, the
 read-through to Bitwarden ran, and Bitwarden definitely does not hold
-that name. Fix the *name*: check spelling against Step 2's list. Do not
+that name. Fix the _name_: check spelling against Step 2's list. Do not
 retry, and do not restart anything — nothing is down.
 
 **`502` — the source behind the broker failed.** From the broker:
@@ -154,15 +154,15 @@ check. Fix the broker's Bitwarden leg (Step 5), then retry.
 **`503` — the broker is up but not serving yet.** Before its first
 successful refresh, the broker answers `GET /secret/<name>` with
 `{"error": "secrets not loaded yet"}`, and its health endpoint answers
-503 too. A live process whose `bws` cannot run is *not* serving, and
+503 too. A live process whose `bws` cannot run is _not_ serving, and
 health says so. This is a wait-or-fix-the-refresh state, not a missing
 secret.
 
 **Exit `3` — the client could not resolve the name at all.** The
 `fleet secrets` client-side shape: the broker leg was unavailable (after
 its retries), and the fallback also failed or the name was unresolved
-through it. Exit `3` is about the *path*, where `404`/`502`/`503` are
-answers *from* a broker that was reached. (For completeness: the
+through it. Exit `3` is about the _path_, where `404`/`502`/`503` are
+answers _from_ a broker that was reached. (For completeness: the
 client's other exits are `0` for success and `2` for usage.)
 
 ## Step 5: Check the broker's health when it fails

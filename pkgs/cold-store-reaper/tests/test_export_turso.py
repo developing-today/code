@@ -224,9 +224,7 @@ class TestExportTursoArgv(unittest.TestCase):
         result = self.run_script(env=env)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("retrying 1 failed database(s) after 1s", result.stdout)
-        self.assertIn(
-            "retrying 1 download-failed database(s) after 1s", result.stdout
-        )
+        self.assertIn("retrying 1 download-failed database(s) after 1s", result.stdout)
         self.assertIn("all 1 database(s) filed", result.stdout)
         self.assertEqual(self.dump_calls(), 3)
 

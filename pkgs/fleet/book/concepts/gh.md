@@ -3,7 +3,7 @@
 `fleet gh` runs the real `gh` CLI (GitHub's command-line tool) under a
 rotating fleet token. Every argument passes to the real `gh` binary
 unchanged (`FLEET_GH_BIN` selects the binary, default `gh`) — except the
-four *shadow subcommands* (`tiers`, `cache-serve`, `cache-status`,
+four _shadow subcommands_ (`tiers`, `cache-serve`, `cache-status`,
 `closures`), which fleet implements itself. The domain help's status line
 still claims the implementation "lands in a later step" of the multicall
 epic; that wording is stale — the source is a complete implementation, and
@@ -15,10 +15,10 @@ Source: https://github.com/developing-today/code/blob/main/pkgs/fleet/crates/fle
 
 Before each attempt, one token is resolved by name through the fleet
 secrets chain and exported as `GH_TOKEN` **for that attempt only**.
-Attempts are *captured* (piped), not streamed, because the failure text is
+Attempts are _captured_ (piped), not streamed, because the failure text is
 what classifies a failover; the caller sees the final attempt's stdout,
 stderr, and exit code **byte-exact** as `gh` produced them. Attempts are
-silent by default; `FLEET_GH_TRACE=1` names each attempt's token *source*
+silent by default; `FLEET_GH_TRACE=1` names each attempt's token _source_
 (never a value) on stderr. Tokens are never printed, logged, or written to
 a file; provider errors name source and stage only. The audit log redacts
 secret-carrying arguments (`gh secret set` bodies, `Authorization` headers)
@@ -57,7 +57,7 @@ is resolved live from `GET /app/installations`, paginated at 100 per page
 (the App has 100+ installations).
 
 **Hint-first.** When the call names a repo or org, that owner's
-installation moves to the front of *each* App leg, because an installation
+installation moves to the front of _each_ App leg, because an installation
 token only sees its own installation's scope.
 
 Controls: `FLEET_GH_ORDER` (a comma list fixing the rotation exactly:
@@ -69,25 +69,25 @@ Controls: `FLEET_GH_ORDER` (a comma list fixing the rotation exactly:
 
 A failed attempt's combined stdout+stderr is classified:
 
-| Class | Trigger strings (case-insensitive) | Retry? |
-|---|---|---|
-| RateLimit | `rate limit`, `rate_limit`, `too many requests`, `http 429` | Yes — any call |
-| Permission | `missing required scopes`, `insufficient_scopes`, `resource not accessible`, `not accessible by integration`, `not accessible by personal access token`, `this endpoint requires you to be authenticated`, `bad credentials`, `http 401` | Yes — any call |
-| NodeResolution | `could not resolve to a node` | **Read-only calls only** |
-| Other | anything else | **Read-only calls only** |
+| Class          | Trigger strings (case-insensitive)                                                                                                                                                                                                       | Retry?                   |
+| -------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------ |
+| RateLimit      | `rate limit`, `rate_limit`, `too many requests`, `http 429`                                                                                                                                                                              | Yes — any call           |
+| Permission     | `missing required scopes`, `insufficient_scopes`, `resource not accessible`, `not accessible by integration`, `not accessible by personal access token`, `this endpoint requires you to be authenticated`, `bad credentials`, `http 401` | Yes — any call           |
+| NodeResolution | `could not resolve to a node`                                                                                                                                                                                                            | **Read-only calls only** |
+| Other          | anything else                                                                                                                                                                                                                            | **Read-only calls only** |
 
 The rule: **a write is only repeated under a fresh token when the failure
 proves GitHub refused the request before processing it.** Rate-limit
 rejections (the limiter answers before the mutation runs) and
 permission/scope rejections are both pre-execution refusals.
-Node-resolution is explicitly *not* one: GraphQL executes mutation fields
+Node-resolution is explicitly _not_ one: GraphQL executes mutation fields
 serially, so a batched mutation may already have run an earlier field
 before a later field's node fails to resolve; replaying would duplicate
 the part that landed. Any other write failure is returned as-is — the
 request may have landed, and repeating it could double-post. **Reads repeat
 on any failure class.**
 
-A token *provider* failure (a source that cannot resolve or mint) skips
+A token _provider_ failure (a source that cannot resolve or mint) skips
 that source silently (named under trace) and the rotation continues; if no
 attempt produced output, the caller gets the provider errors and exit 3.
 If the last failover has no successor, the caller is shown the real `gh`
@@ -115,12 +115,12 @@ daemon in the foreground. It caches four things, **memory-only, with
 single-flight minting** (concurrent requests for one key block on the
 in-flight mint):
 
-| Entry kind | TTL |
-|---|---|
-| Secret resolutions | 60 s |
-| App JWTs | within their expiry, minus a 60 s skew |
-| Installation tokens | until shortly before `expires_at`, minus the same 60 s skew, floored at 1 s |
-| Per-App installation lists | 300 s |
+| Entry kind                 | TTL                                                                         |
+| -------------------------- | --------------------------------------------------------------------------- |
+| Secret resolutions         | 60 s                                                                        |
+| App JWTs                   | within their expiry, minus a 60 s skew                                      |
+| Installation tokens        | until shortly before `expires_at`, minus the same 60 s skew, floored at 1 s |
+| Per-App installation lists | 300 s                                                                       |
 
 Nothing is written to disk; a restart is a cold cache, never a stale one.
 The wire is newline-delimited JSON over TCP, protocol version 1 — a daemon
@@ -129,7 +129,7 @@ guessing. Bind: `--bind` beats `FLEET_GH_CACHE_BIND` beats the default
 **`127.0.0.1:4802`**; a bind without a port gets 4802. Every normal
 `fleet gh` call resolves through the localhost daemon first, then the
 laptop daemon (the proxy's reach target at the same port); with no daemon
-answering it resolves in-process over the *same* cache implementation and
+answering it resolves in-process over the _same_ cache implementation and
 says so on stderr ("resolving in-process").
 
 `fleet gh cache-status` probes the configured cache daemons and prints each
@@ -139,7 +139,7 @@ no daemon answered.
 
 ## The shadow verbs: tiers and closures
 
-**`fleet gh tiers`** probes *every* rotation source and prints its core and
+**`fleet gh tiers`** probes _every_ rotation source and prints its core and
 GraphQL rate-limit headroom — labels and numbers only; token values never
 leave the provider. Exit 0 when every source answers, **3 when any source
 is down**. Source behaviour: `tiers` takes no `--help` — `fleet gh tiers

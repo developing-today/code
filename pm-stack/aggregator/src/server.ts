@@ -53,11 +53,7 @@ import { OutcomeFactStore } from "./outcome-attribution.ts";
 import { RoadmapAnnotationsStore, validateNewRoadmapAnnotation } from "./roadmap-annotations.ts";
 import { createAccessAuthorEnforcer, enforceAccessAuthor } from "./access-identity.ts";
 import { IdentityRegistryStore, identityMappingAuditEvent, validateIdentityMapping } from "./identity-registry.ts";
-import {
-  BreakGlassTokenStore,
-  authorizeWithBreakGlassToken,
-  presentedBreakGlassToken,
-} from "./break-glass.ts";
+import { BreakGlassTokenStore, authorizeWithBreakGlassToken, presentedBreakGlassToken } from "./break-glass.ts";
 import { STACK_TOKEN_TTL_SECONDS, mintStackToken, type StackTokenRole } from "./stack-token.ts";
 import { healthHookAuditEvent } from "./health-hook-audit-event.ts";
 import {
@@ -2505,7 +2501,8 @@ async function handler(req: Request): Promise<Response> {
         typeof body === "object" && body !== null && typeof (body as { action?: unknown }).action === "string"
           ? (body as { action: string }).action.trim()
           : "";
-      if (!["kaneo", "pad", "grist"].includes(target)) return json({ error: "target must be kaneo, pad, or grist" }, 400);
+      if (!["kaneo", "pad", "grist"].includes(target))
+        return json({ error: "target must be kaneo, pad, or grist" }, 400);
       if (!/^[A-Za-z][A-Za-z0-9._:-]{0,63}$/.test(action)) return json({ error: "action is invalid" }, 400);
       const token = mintStackToken({ sub: identity, role, aud: target, act: action }, secret);
       return json({ token, tokenType: "Bearer", audience: target, expiresIn: STACK_TOKEN_TTL_SECONDS });
@@ -5136,7 +5133,6 @@ if (cfg.source !== "fixtures") {
   timer.unref?.();
 }
 
-
 // #9991: the §4 escalation sinks — the real journal/feed/push surfaces
 // escalation.ts's delivery step was built against. Journal: the
 // aggregator's append-only watchdog journal (the SLO journal file,
@@ -5176,10 +5172,7 @@ const escalationSink: EscalationSink = {
     let sent = 0;
     let lastError = "push was not delivered";
     for (const sub of subs) {
-      const outcome = await sendPush(
-        { endpoint: sub.endpoint, p256dh: sub.p256dh, auth: sub.auth },
-        payload,
-      );
+      const outcome = await sendPush({ endpoint: sub.endpoint, p256dh: sub.p256dh, auth: sub.auth }, payload);
       if (outcome.ok) {
         sent += 1;
         await store.logSend({ class: "incident", objectRef: ESCALATION_PAGE_OBJECT_REF, outcome: "sent" });

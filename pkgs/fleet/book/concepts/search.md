@@ -20,27 +20,27 @@ the org slash; the source spelling is the operative one).
 
 Client flags with their defaults:
 
-| Flag | Default | Meaning |
-|---|---|---|
-| `--k N` | 10 | Final result count. |
-| `--pool N` | 100 | Per-branch candidates; validated 1..=400. |
-| `--mode MODE` | `hybrid` | `hybrid \| fts \| vector`. |
-| `--kind CSV` / `--topic CSV` / `--project CSV` / `--client CSV` | — | Classification filters. |
-| `--since YYYY-MM-DD` / `--until YYYY-MM-DD` | — | Sessions created on/after / on/before (inclusive). |
-| `--max-sensitivity LV` | `personal` | `shareable \| personal \| local-only \| secret-bearing`. A *request*; the server clamps it (below). |
-| `--group-by-session` | off | Roll chunk hits up to sessions. |
-| `--expand N` | 0 | Include N neighbouring chunks around each hit. |
-| `--with-message` | off | Include the parent message text. |
-| `--no-cache` | off | Bypass service cache *reads*; the fresh result still lands in the cache. |
-| `--no-wait` | off | Do not block: print the service job handle and return. (The one-shot default waits for the job.) |
-| `--hydrate N` | 0 | Hydrate the top N results to full content. |
-| `--raw-rows[=branches]` | — | Ungrouped rows: bare = flat fused rows; `=branches` = pre-fusion branch rows. |
-| `--text` | off | Human-readable output instead of JSON (JSON is the default). |
-| `--model NAME` | Snowflake arctic-embed-m-v2.0 | Embedding model. |
-| `--embedder NAME` | `auto` | `auto \| fastembed \| st`. |
-| `--trunc N` | 0 | Truncate vectors to N dims (0 = full). |
-| `--vector-backend B` | `scan` | `scan \| index-fill \| index-fixed`. |
-| `--service-url URL` | `http://127.0.0.1:18760` | Service base URL; env `ATLAS_SEARCH_URL`, then fleet.toml `[search] url`, override it. |
+| Flag                                                            | Default                       | Meaning                                                                                             |
+| --------------------------------------------------------------- | ----------------------------- | --------------------------------------------------------------------------------------------------- |
+| `--k N`                                                         | 10                            | Final result count.                                                                                 |
+| `--pool N`                                                      | 100                           | Per-branch candidates; validated 1..=400.                                                           |
+| `--mode MODE`                                                   | `hybrid`                      | `hybrid \| fts \| vector`.                                                                          |
+| `--kind CSV` / `--topic CSV` / `--project CSV` / `--client CSV` | —                             | Classification filters.                                                                             |
+| `--since YYYY-MM-DD` / `--until YYYY-MM-DD`                     | —                             | Sessions created on/after / on/before (inclusive).                                                  |
+| `--max-sensitivity LV`                                          | `personal`                    | `shareable \| personal \| local-only \| secret-bearing`. A _request_; the server clamps it (below). |
+| `--group-by-session`                                            | off                           | Roll chunk hits up to sessions.                                                                     |
+| `--expand N`                                                    | 0                             | Include N neighbouring chunks around each hit.                                                      |
+| `--with-message`                                                | off                           | Include the parent message text.                                                                    |
+| `--no-cache`                                                    | off                           | Bypass service cache _reads_; the fresh result still lands in the cache.                            |
+| `--no-wait`                                                     | off                           | Do not block: print the service job handle and return. (The one-shot default waits for the job.)    |
+| `--hydrate N`                                                   | 0                             | Hydrate the top N results to full content.                                                          |
+| `--raw-rows[=branches]`                                         | —                             | Ungrouped rows: bare = flat fused rows; `=branches` = pre-fusion branch rows.                       |
+| `--text`                                                        | off                           | Human-readable output instead of JSON (JSON is the default).                                        |
+| `--model NAME`                                                  | Snowflake arctic-embed-m-v2.0 | Embedding model.                                                                                    |
+| `--embedder NAME`                                               | `auto`                        | `auto \| fastembed \| st`.                                                                          |
+| `--trunc N`                                                     | 0                             | Truncate vectors to N dims (0 = full).                                                              |
+| `--vector-backend B`                                            | `scan`                        | `scan \| index-fill \| index-fixed`.                                                                |
+| `--service-url URL`                                             | `http://127.0.0.1:18760`      | Service base URL; env `ATLAS_SEARCH_URL`, then fleet.toml `[search] url`, override it.              |
 
 Standalone-only engine knobs (`--backend`, `--db`) are deliberately not part
 of this surface.
@@ -88,7 +88,7 @@ then fleet.toml `[search] via`; then the seat default:
   has one.
 
 `get-chunk` **always runs standalone** — it is job-scoped in the protocol,
-so it cannot ride the service route. When via-service was *requested* (by
+so it cannot ride the service route. When via-service was _requested_ (by
 flag, env, or config — the seat default does not count) it prints the loud
 fallback note first.
 

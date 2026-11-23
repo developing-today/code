@@ -113,20 +113,20 @@ nix build .#fleet .#fleet-serve .#fleet-connect .#fleet-connect-static
 
 `pkgs/fleet/default.nix` returns six attributes:
 
-| Attribute | Cargo features | Platform | Installed alias link | Size gate |
-|---|---|---|---|---|
-| `fleet` | default (= full) | glibc | — | no |
-| `fleet-serve` | `serve` | glibc | `fleet-serve` | no |
-| `fleet-connect` | none (`--no-default-features`) | glibc | `fleet-connect` | yes |
-| `fleet-brokers` | `fleet-queue` with `client,queue-broker,secrets-broker`, `--bins` | glibc | — | no |
-| `fleet-static` | default (= full) | musl (`pkgsStatic`) | — | no |
-| `fleet-connect-static` | none | musl (`pkgsStatic`) | `fleet-connect` | yes |
+| Attribute              | Cargo features                                                    | Platform            | Installed alias link | Size gate |
+| ---------------------- | ----------------------------------------------------------------- | ------------------- | -------------------- | --------- |
+| `fleet`                | default (= full)                                                  | glibc               | —                    | no        |
+| `fleet-serve`          | `serve`                                                           | glibc               | `fleet-serve`        | no        |
+| `fleet-connect`        | none (`--no-default-features`)                                    | glibc               | `fleet-connect`      | yes       |
+| `fleet-brokers`        | `fleet-queue` with `client,queue-broker,secrets-broker`, `--bins` | glibc               | —                    | no        |
+| `fleet-static`         | default (= full)                                                  | musl (`pkgsStatic`) | —                    | no        |
+| `fleet-connect-static` | none                                                              | musl (`pkgsStatic`) | `fleet-connect`      | yes       |
 
 Facts that matter when choosing one:
 
 - The installed binary is always named `fleet`. A hyphenated name
-  (`fleet-serve`, `fleet-connect`) is installed as a *symlink to the same
-  binary*; the name narrows the capability surface at invocation time. See
+  (`fleet-serve`, `fleet-connect`) is installed as a _symlink to the same
+  binary_; the name narrows the capability surface at invocation time. See
   [The shape of the binary](shape.md).
 - The size gate is the connect variant's budget: the stripped binary must be
   at most 2 MiB (2,097,152 bytes) or the build fails.
@@ -155,7 +155,7 @@ name (`fleet`, `fleet-serve`, or `fleet-connect`, derived by matching the
 compiled capability set against the variant sets — with an annotation when
 the invocation name narrowed the surface), the derived version (of the form
 `0.1.0-dev+g<rev>`), the source revision (the full commit SHA the build was
-cut from), and the enabled capabilities — the *usable* set for this
+cut from), and the enabled capabilities — the _usable_ set for this
 invocation, in registry order, or `none`.
 
 `fleet capabilities` prints the same facts as JSON, plus the full domain

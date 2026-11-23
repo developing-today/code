@@ -1,6 +1,6 @@
 # Proxy, sessions and recovery
 
-The *session proxy* is how a sandbox seat reaches the laptop's services. The
+The _session proxy_ is how a sandbox seat reaches the laptop's services. The
 proxy domain's verbs are `serve`, `connect`, `init`, `ssh`, `splice`,
 `get`, and `put`, gated per verb on the capabilities `proxy-serve` (serve),
 `proxy-connect` (connect/init/get/put/ssh), and `proxy-raw-splice`
@@ -22,7 +22,7 @@ binds.
 
 The broker persists nothing: its routing table comes from config, its
 tunnels live in memory, and token files are read per request and never
-stored or logged. The routing table — the *services map* — is port →
+stored or logged. The routing table — the _services map_ — is port →
 service name: **4799 laptop-agent, 4800 secrets-broker, 4801 queue-broker,
 21118 rustdesk**. The hello response carries that map and the broker's
 capability list.
@@ -34,7 +34,7 @@ peeking at the first frame, never by configuration. A too-old peer gets the
 proto-too-old frame and exit 69 on the client side.
 
 **Keepalive and idle exit.** A keepalive thread pings the laptop-agent's
-`/health` every **180 s**. The broker exits once *client requests* have
+`/health` every **180 s**. The broker exits once _client requests_ have
 been idle for `idle_exit_secs` (`[proxy] idle_exit_secs`, default **3600 s**;
 0 is rejected at config load) — keepalive traffic does not count as use. A
 warmth cache that exits when cold is a feature on a shared sandbox. Inside
@@ -42,7 +42,7 @@ a multi-role `fleet serve` list, the idle exit is disabled, so an idle
 proxy cannot exit the shared process and kill its sibling roles.
 
 **Colocated brokers.** For the queue/secrets broker ports, the broker first
-tries the role's own Unix socket with a bounded dial — the dial *is* the
+tries the role's own Unix socket with a bounded dial — the dial _is_ the
 probe; a socket that answers within the deadline is used, any other outcome
 selects TCP within the same attempt — before tunnelling to the laptop.
 
@@ -63,7 +63,7 @@ of the pool. Pools key on `(port, transport)`, so the two laptop reaches
 Sandbox↔laptop transport lives in this binary. There are two legs:
 
 1. **The Cloudflare leg is primary** for the laptop-agent daemon port
-   *when its Access file exists*: `~/tools/laptop-agent-cf-access.json` — a
+   _when its Access file exists_: `~/tools/laptop-agent-cf-access.json` — a
    JSON `{client_id, client_secret}` file, mode 600, read per request, sent
    only as `CF-Access-*` headers, never stored or logged. No file, no leg.
    The leg is TLS through the platform egress proxy to the tunnel hostname
@@ -71,7 +71,7 @@ Sandbox↔laptop transport lives in this binary. There are two legs:
    listener laptop-side; the daemon's token auth is preserved end to end.
 2. **The tailnet leg is the automatic fallback**: a CONNECT through the
    host egress proxy to the tailnet target host `100.99.113.103`. It is
-   selected on connection failure *and* on a Cloudflare edge error status
+   selected on connection failure _and_ on a Cloudflare edge error status
    (502/503/530) alike.
 
 Port **3130** is the host egress proxy port — the CONNECT proxy named by
@@ -185,13 +185,13 @@ temp's size.
   hashes the file, uploads it in chunks to the deterministic temp on the
   laptop, and **atomically renames it over the destination only after the
   daemon verifies the hash**. The recursive form is `put -r … <local-dir>
-  <laptop-dir>`. `-` reads stdin (spooled locally first; mode defaults to
+<laptop-dir>`. `-` reads stdin (spooled locally first; mode defaults to
   0644). Progress and the final sha256 go to stderr.
 - `fleet proxy get [--mode OCTAL] [--no-resume] <laptop-path> <local-path | ->`
   lands chunks in a deterministic local temp; the SHA-256 from the daemon's
   `stat` must match before the temp is renamed over the destination. `-`
   streams to stdout — the hash is still verified at the end, and a mismatch
-  fails the command *after* the bytes were emitted, so check stderr.
+  fails the command _after_ the bytes were emitted, so check stderr.
   **Recursive get is deferred in v1**: the daemon protocol has no
   directory-listing route.
 

@@ -18,11 +18,11 @@ the operator's view.
 
 `fleet-queue`'s features, and the modules each one gates in `lib.rs`:
 
-| Feature | Dependencies it adds | Modules it gates |
-|---|---|---|
-| `client` | `fleet-config`, `ureq` | `client`, `fallback`, `needs_drew`, `placement` |
-| `queue-broker` | `client`, plus `tiny_http`, `ureq`, `fleet-config`, `libc`, `rusqlite` | `queue_broker`, `turso_queue`, `validate` |
-| `secrets-broker` | `tiny_http`, `fleet-config`, `libc` | `secrets_broker` |
+| Feature          | Dependencies it adds                                                   | Modules it gates                                |
+| ---------------- | ---------------------------------------------------------------------- | ----------------------------------------------- |
+| `client`         | `fleet-config`, `ureq`                                                 | `client`, `fallback`, `needs_drew`, `placement` |
+| `queue-broker`   | `client`, plus `tiny_http`, `ureq`, `fleet-config`, `libc`, `rusqlite` | `queue_broker`, `turso_queue`, `validate`       |
+| `secrets-broker` | `tiny_http`, `fleet-config`, `libc`                                    | `secrets_broker`                                |
 
 Either broker also gates `uds_http`; `disposition` is gated on
 `client` **or** `queue-broker` (the completion gate is needed on both
@@ -59,7 +59,7 @@ binary and the standalone `repo-queue` binary both call:
 pub fn run(args: &[String]) -> i32   // fleet_queue::client::run
 ```
 
-`args` is the argument vector *after* the domain name (`fleet queue
+`args` is the argument vector _after_ the domain name (`fleet queue
 <args…>` / `repo-queue <args…>`), and the return is the process exit
 code. Inside, `run` is one match over 32 verb names — the same 32 names
 the registry lists as the queue domain's subcommands — dispatching to a
@@ -101,7 +101,7 @@ contract, not accidents:
   500 ms, doubling, capped at 20 s, at most 6 attempts. This is safe for
   writes because a `57014` means the statement rolled back.
 - **The fallback switch.** For the work verbs — `claim`, `heartbeat`,
-  `checkpoint`, `complete`, `health` — *any* primary-store failure
+  `checkpoint`, `complete`, `health` — _any_ primary-store failure
   (broker unreachable, or an `{ok: false}` envelope) switches the caller
   to the GitHub fallback for that work instead of dying: a diagnostic on
   stderr, one JSON object on stdout naming the switch
@@ -139,7 +139,7 @@ accessors `get`, `has`, `get_i64` and `pos_i64`.
 The parser's rules are the client's usage contract, and they are strict:
 
 - A help token anywhere in a verb's args prints that verb's exact usage
-  and exits `0` — help wins over every other argument, *except* when the
+  and exits `0` — help wins over every other argument, _except_ when the
   help-looking token is the value of a value-flag (`fail 5 --error help`
   records the error text "help").
 - Unknown flags, duplicate value flags (never silent last-wins), a
@@ -157,7 +157,7 @@ The parser's rules are the client's usage contract, and they are strict:
 Two hand-maintained usage strings per verb live beside the parser (the
 one-line synopsis in `TOP_USAGE` and the long form in `usage(verb)`),
 and a machine test — `every_verb_usage_matches_its_parser` — asserts
-every verb's usage names *exactly* the flags its parser accepts. An
+every verb's usage names _exactly_ the flags its parser accepts. An
 embedder adding a verb gets that test as a free oracle; see the worked
 example in the crates' contributor documentation.
 
@@ -165,7 +165,7 @@ Shared resolution helpers sit on top of `Args`: `opt_worker` (flag, else
 the default worker `repo-worker-code`), `opt_queue` (flag, else
 `REPO_QUEUE_DEFAULT_QUEUE`, else the shadow default
 `repo-health-code-shadow` — with `claim` and `list` deliberately
-*unscoped* when neither flag nor env is present, and `enqueue` having no
+_unscoped_ when neither flag nor env is present, and `enqueue` having no
 default at all), and the lane resolution for holder verbs (flag, else
 `REPO_QUEUE_LANE`, else null, in which case the broker checks the worker
 alone). These helpers are crate-internal (`pub(super)` / `pub(crate)`):
@@ -186,7 +186,7 @@ is read as `http://host:port` TCP. With no configured URL, fleet-config's
 probe-based choice for the `queue-broker` role applies: a live role
 socket selects the Unix socket, otherwise the client falls through to
 route 2 — and a failed Unix-socket attempt falls back to the
-session-proxy route *within the same call*.
+session-proxy route _within the same call_.
 
 On the wire this is raw HTTP/1.1: `POST <path>`, header
 `X-Agent-Token: <token>`, `Content-Type: application/json`,
@@ -204,10 +204,10 @@ beats that compiled-in default). Framing is the proxy protocol: an
 8-byte big-endian length prefix plus one JSON envelope:
 
 ```json
-{"method": "POST", "path": "/claim", "body": { }, "port": 4801, "token_file": "<home>/tools/queue-broker-token"}
+{ "method": "POST", "path": "/claim", "body": {}, "port": 4801, "token_file": "<home>/tools/queue-broker-token" }
 ```
 
-The proxy, on the laptop, reads the named token file *there* and
+The proxy, on the laptop, reads the named token file _there_ and
 forwards to the broker on port `4801`. Read timeout 660 s. On a failed
 first attempt the client auto-spawns the proxy/broker program — a
 sibling `fleet` binary (`fleet proxy serve`) always wins; the Python
@@ -223,18 +223,18 @@ One loader serves every side: `token_file::load_token_file` reads the
 file and trims it, and a missing, unreadable, empty or whitespace-only
 file is a **hard error naming the file** — a broker refuses to start and
 a client refuses to send. (Before this rule, an empty token file
-authenticated *any* empty-token client, including to the secrets
+authenticated _any_ empty-token client, including to the secrets
 broker.)
 
 Which file, on which route (names and paths only — values are never
 read by the client code that names them, and never printed):
 
-| Side | Source |
-|---|---|
-| Session-proxy envelope | Names the file `<home>/tools/queue-broker-token`; the proxy reads it on the laptop, per request |
-| Direct route, client token | `REPO_QUEUE_TOKEN_FILE`, else `~/.config/queue-broker/token` |
-| Broker's own token | `QUEUE_BROKER_TOKEN_FILE`, default `~/.config/queue-broker/token` — compared against the request's `X-Agent-Token` header |
-| Broker's Turso credential | `QUEUE_BROKER_TURSO_TOKEN_FILE`, else resolved through the secrets broker by the secret name `turso.fleet-queue-rw-token` |
+| Side                       | Source                                                                                                                    |
+| -------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| Session-proxy envelope     | Names the file `<home>/tools/queue-broker-token`; the proxy reads it on the laptop, per request                           |
+| Direct route, client token | `REPO_QUEUE_TOKEN_FILE`, else `~/.config/queue-broker/token`                                                              |
+| Broker's own token         | `QUEUE_BROKER_TOKEN_FILE`, default `~/.config/queue-broker/token` — compared against the request's `X-Agent-Token` header |
+| Broker's Turso credential  | `QUEUE_BROKER_TURSO_TOKEN_FILE`, else resolved through the secrets broker by the secret name `turso.fleet-queue-rw-token` |
 
 The broker side mirrors the client's strictness: its pre-body gate
 refuses from headers alone — wrong or missing token gets

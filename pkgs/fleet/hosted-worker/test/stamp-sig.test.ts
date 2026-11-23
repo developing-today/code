@@ -186,8 +186,7 @@ test("tampered or malformed stamp_sig values diverge with named reasons", async 
   // an unpadded 64-byte encoding carries unused low bits, so flipping
   // it could decode to the identical bytes.
   const sigStart = sig.lastIndexOf(".") + 1;
-  const flipped =
-    sig.slice(0, sigStart) + (sig[sigStart] === "A" ? "B" : "A") + sig.slice(sigStart + 1);
+  const flipped = sig.slice(0, sigStart) + (sig[sigStart] === "A" ? "B" : "A") + sig.slice(sigStart + 1);
   assert.deepEqual(await verifyStamp({ ...stamped, stamp_sig: flipped }, bothKeys), {
     status: "diverged",
     reason: "signature_mismatch",
@@ -201,10 +200,10 @@ test("tampered or malformed stamp_sig values diverge with named reasons", async 
     );
   }
   // A future/foreign version is named, not lumped in with forgery.
-  assert.deepEqual(
-    await verifyStamp({ ...stamped, stamp_sig: sig.replace("v1.ed25519", "v2.ed25519") }, bothKeys),
-    { status: "diverged", reason: "unsupported_stamp_version" },
-  );
+  assert.deepEqual(await verifyStamp({ ...stamped, stamp_sig: sig.replace("v1.ed25519", "v2.ed25519") }, bothKeys), {
+    status: "diverged",
+    reason: "unsupported_stamp_version",
+  });
   // Non-string stamp_sig cannot verify.
   assert.deepEqual(await verifyStamp({ ...stamped, stamp_sig: 42 }, bothKeys), {
     status: "diverged",

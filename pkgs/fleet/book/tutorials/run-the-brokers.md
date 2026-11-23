@@ -15,10 +15,10 @@ Two facts frame everything below:
 - The broker roles take **no arguments**. Through `fleet serve`, any
   trailing argument to `queue-broker` or `secrets-broker` is rejected
   before the daemon starts (`unexpected argument '<first>' for 'fleet
-  serve <role>'`, exit `2`) — through the spelled-out form and through
+serve <role>'`, exit `2`) — through the spelled-out form and through
   the `queue-broker` / `secrets-broker` argv0 aliases alike. There is no
   per-role help for the two brokers either: `fleet serve queue-broker
-  --help` answers with the generic serve domain help, exit `0`.
+--help` answers with the generic serve domain help, exit `0`.
 - In production these roles are supervised (systemd on the laptop), and
   the supervisor restarts them. In this tutorial **you** are the
   supervisor: the process runs until you stop it.
@@ -128,7 +128,7 @@ queue-broker secrets-broker`. A serve list is **role tokens only, two or
 more distinct ones, and nothing else**:
 
 - A duplicate is a hard error: `error: duplicate role 'queue-broker' in
-  'fleet serve' list`.
+'fleet serve' list`.
 - Any non-role token is a hard error — including `--help`. A serve list
   has **no `--help` form at all**.
 - **All roles are capability-checked before anything binds.** If any
@@ -136,7 +136,7 @@ more distinct ones, and nothing else**:
   `69` and no partial start.
 - Each role's blocking loop runs on its own thread. Supervision is
   fail-fast: the first role thread to return or panic takes the whole
-  process down, naming the role on stderr. A role exiting *cleanly*
+  process down, naming the role on stderr. A role exiting _cleanly_
   (code `0`) is converted to process exit `1` — a daemon role returning
   at all is abnormal — and a panic is also exit `1`.
 
@@ -159,7 +159,7 @@ The secrets broker in this list behaves exactly as it does alone
   a parsed TTL below 30 makes startup **refuse to run**, exit `2`,
   because one interval costs a full vault refresh and 0 would spin that
   loop with no sleep at all.
-- Until the first refresh *succeeds*, the broker is up but **not
+- Until the first refresh _succeeds_, the broker is up but **not
   serving**: its health endpoint answers `503`. That gate is the subject
   of Step 4.
 

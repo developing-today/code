@@ -11,7 +11,7 @@ DOC-01 is the "Operator and contributor contract" section of `pkgs/fleet/README.
 The supporting rules in the same section:
 
 - **The inventory is the registry.** `fleet --help` renders the full registry on every variant and `fleet capabilities` prints it as JSON. The registered inventory lives in one place — `crates/fleet-registry/src/lib.rs` — so no build can know a domain another build forgot. See [Register a domain or capability](register-a-domain.md).
-- **Designed-versus-shipped discipline.** Spellings that are designed but not yet shipped are documented *as contract, not surface*, explicitly marked as not in the registered inventory and not dispatchable today, each with its shipped equivalent. Invoking one answers `unknown command`. Never write a designed spelling into a procedure as if it works.
+- **Designed-versus-shipped discipline.** Spellings that are designed but not yet shipped are documented _as contract, not surface_, explicitly marked as not in the registered inventory and not dispatchable today, each with its shipped equivalent. Invoking one answers `unknown command`. Never write a designed spelling into a procedure as if it works.
 - **Decision records for settled semantics.** A change to claim/park/resume semantics, supervision or stop authority, cap policy, or attribution/logging requires a fleet decision record (FDR, in repository-root `doc/decisions/`, indexed by `doc/decisions/README.md`) in the same body of work — the same pull request, or the same run for non-PR work.
 - **A machine check enforces the inventory half.** The test `pmo_operator_docs_match_registered_help_inventory` in `crates/fleet-registry/tests/pmo_operator_docs.rs` ties the README's operator contract to the registered help inventory: a verb added to the registry without its contract docs, or vice versa, fails the workspace test suite. See [Testing](testing.md).
 
@@ -59,6 +59,7 @@ If the three disagree, the README's DOC-01 text wins for command-contract questi
    ```
 
    The rendered site lands in the build directory named by `book.toml`. Open its `index.html` to preview.
+
 2. Or build the packaged form, exactly as CI does, from the repository root:
 
    ```sh

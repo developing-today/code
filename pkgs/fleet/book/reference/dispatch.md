@@ -2,11 +2,11 @@
 
 `fleet dispatch` is a thin client over pm-dispatch, the pm-stack dispatch service. The service is a working TypeScript/Bun suite that is not rewritten; this domain is verbs over its existing HTTP routes — and those routes are exactly three. Per-task status is **not** here: a task's state is the repo queue itself, so per-task status reads ride the queue domain (`fleet queue list`).
 
-| Verb | Route | Auth |
-|---|---|---|
-| `status` | `GET /health` | unauthenticated |
-| `launch` | `POST /v1/sessions` | Bearer |
-| `enqueue` | `POST /v1/tasks` | Bearer |
+| Verb      | Route               | Auth            |
+| --------- | ------------------- | --------------- |
+| `status`  | `GET /health`       | unauthenticated |
+| `launch`  | `POST /v1/sessions` | Bearer          |
+| `enqueue` | `POST /v1/tasks`    | Bearer          |
 
 See also [fleet dispatch-test](dispatch-test.md) and [Dispatch and dispatch-test](../concepts/dispatch.md).
 
@@ -31,9 +31,9 @@ The argument parser is shared by `launch` and `enqueue`: `--flag value` and `--f
 fleet dispatch status
 ```
 
-| Flag | Argument | Default | Meaning |
-|---|---|---|---|
-| — | — | — | Takes no arguments. Any argument is a usage error. `--help`/`-h` prints usage and succeeds without contacting the service. |
+| Flag | Argument | Default | Meaning                                                                                                                    |
+| ---- | -------- | ------- | -------------------------------------------------------------------------------------------------------------------------- |
+| —    | —        | —       | Takes no arguments. Any argument is a usage error. `--help`/`-h` prints usage and succeeds without contacting the service. |
 
 ### Behaviour
 
@@ -59,17 +59,17 @@ $ fleet dispatch status
 fleet dispatch launch --repo <owner/name> --prompt <text> [options]
 ```
 
-| Flag | Argument | Default | Meaning |
-|---|---|---|---|
-| `--repo` | `<owner/name>` | required | An allowlisted fleet repo (allowlist checked service-side). |
-| `--prompt` | `<text>` | required (or `--prompt-file`) | The session prompt. |
-| `--prompt-file` | `<path>` | — | Read the prompt from a file. Together with `--prompt` is a usage error. |
-| `--title` | `<text>` | service default: the prompt's first line | Tracking-issue title. |
-| `--model` | `<provider/id>` | — | Model hint for the session. |
-| `--directory` | `<path>` | — | Must be the repo's laptop primary or inside it. |
-| `--priority` | `<p>` | — | Integer 10–90, or `critical\|high\|normal\|low`. Sent as a JSON number when it parses as an integer, otherwise as the raw string; range validation is the service's job. |
-| `--issue` / `--no-issue` | — | service default: issue | Create the tracking issue. Both together, in either order, is a usage error. Sent only when given. |
-| `--wait` / `--no-wait` | — | service default: wait | Wait for the launch to complete. Both together is a usage error. Sent only when given. |
+| Flag                     | Argument        | Default                                  | Meaning                                                                                                                                                                  |
+| ------------------------ | --------------- | ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `--repo`                 | `<owner/name>`  | required                                 | An allowlisted fleet repo (allowlist checked service-side).                                                                                                              |
+| `--prompt`               | `<text>`        | required (or `--prompt-file`)            | The session prompt.                                                                                                                                                      |
+| `--prompt-file`          | `<path>`        | —                                        | Read the prompt from a file. Together with `--prompt` is a usage error.                                                                                                  |
+| `--title`                | `<text>`        | service default: the prompt's first line | Tracking-issue title.                                                                                                                                                    |
+| `--model`                | `<provider/id>` | —                                        | Model hint for the session.                                                                                                                                              |
+| `--directory`            | `<path>`        | —                                        | Must be the repo's laptop primary or inside it.                                                                                                                          |
+| `--priority`             | `<p>`           | —                                        | Integer 10–90, or `critical\|high\|normal\|low`. Sent as a JSON number when it parses as an integer, otherwise as the raw string; range validation is the service's job. |
+| `--issue` / `--no-issue` | —               | service default: issue                   | Create the tracking issue. Both together, in either order, is a usage error. Sent only when given.                                                                       |
+| `--wait` / `--no-wait`   | —               | service default: wait                    | Wait for the launch to complete. Both together is a usage error. Sent only when given.                                                                                   |
 
 ### Behaviour
 
@@ -96,18 +96,18 @@ Creates the tracking issue and queue task, starts a session on the laptop, and r
 fleet dispatch enqueue --repo <owner/name> --title <text> --prompt <text> [options]
 ```
 
-| Flag | Argument | Default | Meaning |
-|---|---|---|---|
-| `--repo` | `<owner/name>` | required | An allowlisted fleet repo (allowlist checked service-side). |
-| `--title` | `<text>` | required | Task title. |
-| `--prompt` | `<text>` | required (or `--prompt-file`) | The task prompt. |
-| `--prompt-file` | `<path>` | — | Read the prompt from a file. Together with `--prompt` is a usage error. |
-| `--kind` | `<kind>` | service default: `triage` | One of `triage\|small_fix\|pr_shepherd\|ci_investigation`. Validated client-side; an unknown kind is a usage error listing the four. Sent only when given. |
-| `--priority` | `<p>` | — | Integer 10–90, or `critical\|high\|normal\|low` (same wire rule as launch). |
-| `--model` | `<provider/id>` | — | Stored as the payload's model hint only. |
-| `--issue` | — | service default: no issue | Create a tracking issue first. One-way boolean — there is no `--no-issue`; omitting it sends nothing. The opposite default from launch. |
-| `--issue-number` | `<n>` | — | Attach to this existing issue instead. Must parse as an integer; sent as `issue_number`. |
-| `--dedupe-key` | `<key>` | service default: canonical key from the issue, else unique | Sent as `dedupe_key`. |
+| Flag             | Argument        | Default                                                    | Meaning                                                                                                                                                    |
+| ---------------- | --------------- | ---------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--repo`         | `<owner/name>`  | required                                                   | An allowlisted fleet repo (allowlist checked service-side).                                                                                                |
+| `--title`        | `<text>`        | required                                                   | Task title.                                                                                                                                                |
+| `--prompt`       | `<text>`        | required (or `--prompt-file`)                              | The task prompt.                                                                                                                                           |
+| `--prompt-file`  | `<path>`        | —                                                          | Read the prompt from a file. Together with `--prompt` is a usage error.                                                                                    |
+| `--kind`         | `<kind>`        | service default: `triage`                                  | One of `triage\|small_fix\|pr_shepherd\|ci_investigation`. Validated client-side; an unknown kind is a usage error listing the four. Sent only when given. |
+| `--priority`     | `<p>`           | —                                                          | Integer 10–90, or `critical\|high\|normal\|low` (same wire rule as launch).                                                                                |
+| `--model`        | `<provider/id>` | —                                                          | Stored as the payload's model hint only.                                                                                                                   |
+| `--issue`        | —               | service default: no issue                                  | Create a tracking issue first. One-way boolean — there is no `--no-issue`; omitting it sends nothing. The opposite default from launch.                    |
+| `--issue-number` | `<n>`           | —                                                          | Attach to this existing issue instead. Must parse as an integer; sent as `issue_number`.                                                                   |
+| `--dedupe-key`   | `<key>`         | service default: canonical key from the issue, else unique | Sent as `dedupe_key`.                                                                                                                                      |
 
 ### Behaviour
 

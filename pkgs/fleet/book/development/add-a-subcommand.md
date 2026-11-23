@@ -10,7 +10,7 @@ This chapter traces one real verb end to end — `fleet queue unblock` — and t
 
 ### 1. The registry entry
 
-In `crates/fleet-registry/src/lib.rs`, the `queue` entry of `pub const DOMAINS` lists `"unblock"` as one string in its `subcommands` array. That alone puts the verb in `fleet --help`, `fleet queue --help`, and `fleet capabilities` on *every* variant — including builds where the queue client is not compiled, which then answer the verb with the capability stub at exit 69.
+In `crates/fleet-registry/src/lib.rs`, the `queue` entry of `pub const DOMAINS` lists `"unblock"` as one string in its `subcommands` array. That alone puts the verb in `fleet --help`, `fleet queue --help`, and `fleet capabilities` on _every_ variant — including builds where the queue client is not compiled, which then answer the verb with the capability stub at exit 69.
 
 ### 2. The client dispatch arm
 
@@ -45,7 +45,7 @@ print_json(&require_row(&resp, "unblock_task"));
 
 Five moves: declare the flags, validate the positionals, build the JSON body, call the broker, print the returned row. The helpers live in `crates/fleet-queue/src/client/support.rs`:
 
-- `parse_verb_args(verb, rest, flags, bools)` — `flags` are value flags, `bools` are boolean flags. Its pure core is `parse_args_inner`: duplicate value flags are errors (never silent last-wins), a boolean given `--flag=value` is an error, a value flag followed by another `--flag` token is an error, and an unknown flag is `unrecognized argument: --<name>`. A help token that is not a flag *value* prints the verb's usage and exits 0; any shape rejection exits 2 with the message plus usage.
+- `parse_verb_args(verb, rest, flags, bools)` — `flags` are value flags, `bools` are boolean flags. Its pure core is `parse_args_inner`: duplicate value flags are errors (never silent last-wins), a boolean given `--flag=value` is an error, a value flag followed by another `--flag` token is an error, and an unknown flag is `unrecognized argument: --<name>`. A help token that is not a flag _value_ prints the verb's usage and exits 0; any shape rejection exits 2 with the message plus usage.
 - `Args` — the parsed result, with `get`, `has`, `get_i64`, and `pos_i64` accessors.
 - `call("/unblock", &body)` — the transport in `src/client/transport.rs`: session-proxy Unix socket from the sandbox, direct HTTP on the laptop, probe-selected. Exit 3 means the broker path was unavailable.
 - `unwrap_ok` / `require_row(resp, "unblock_task")` / `print_json` — envelope handling: a broker envelope is `{ok: true, …}` or `{ok: false, exit, error}`; the client prints `error` and exits with `exit`.
@@ -63,7 +63,7 @@ A queue verb that must work while the broker is down also lands in `crates/fleet
 - its own dispatch arm, `"unblock" => cmd_unblock(rest)`;
 - its own `fn cmd_unblock`, whose grammar is narrower — flags `&["worker", "reason"]` only; `--drop-dep` was deliberately not added to the fallback grammar;
 - its own usage arm in `fallback_help`;
-- the guard `fn unblock_refusal(open, labels, &ClaimState)`, which the comments require to *mirror* the broker's `verb_unblock` refusal rules;
+- the guard `fn unblock_refusal(open, labels, &ClaimState)`, which the comments require to _mirror_ the broker's `verb_unblock` refusal rules;
 - a marker discipline: the GitHub side records the override as an audit-only marker comment (`<!-- fleet-claim v1 kind=unblock worker=<id> ts=<rfc3339-utc> -->`, `MarkerKind::Unblock`) that does not fold claim state.
 
 Fallback switching itself: a work verb that hits a primary-store failure switches to the GitHub fallback with exit 6 and one JSON object naming the switch.
@@ -72,7 +72,7 @@ Fallback switching itself: a work verb that hits a primary-store failure switche
 
 The queue domain is written out in full; other domains follow the same shape minus the broker and fallback steps.
 
-1. **Registry entry.** Add the verb name to the domain's `subcommands` array in `crates/fleet-registry/src/lib.rs`. Do this only for a *top-level* verb of the domain — nested leaves such as `outbox claim` live only in the handler and the usage strings, not in the registry.
+1. **Registry entry.** Add the verb name to the domain's `subcommands` array in `crates/fleet-registry/src/lib.rs`. Do this only for a _top-level_ verb of the domain — nested leaves such as `outbox claim` live only in the handler and the usage strings, not in the registry.
 2. **Usage strings, both of them.** In `crates/fleet-queue/src/client/support.rs`, add the one-line synopsis to `TOP_USAGE` and the long-text arm to `usage(verb)`. The parity test checks the second; nothing checks the first, so review it by eye (see the discrepancy note in [Testing](testing.md)).
 3. **Parser and handler.** Add the match arm in the domain's `run` (queue: `crates/fleet-queue/src/client.rs`) and write `cmd_<verb>` in the domain's commands module — lifecycle verbs in `client/commands_lifecycle.rs`, query verbs in `client/commands_query.rs`. Build it on `parse_verb_args` and, for a broker verb, on `call("/<verb>", body)` followed by `unwrap_ok` / `require_row` / `print_json`.
 4. **Broker verb, if it mutates state.** Implement `verb_<verb>` in the appropriate `crates/fleet-queue/src/turso_queue/*.rs` module and route `POST /<verb>` to it from `src/queue_broker.rs`. The broker re-validates everything the client validated; the client-side checks are for fast, legible failure at the caller's terminal, not for safety.

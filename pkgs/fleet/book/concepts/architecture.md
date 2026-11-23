@@ -13,21 +13,21 @@ Source: https://github.com/developing-today/code/blob/main/pkgs/fleet/Cargo.toml
 
 ## The crates map: 13 crates
 
-| Crate | Owns |
-|---|---|
-| `fleet` (the bin) | The multicall entrypoint (`src/main.rs`), root built-ins, dispatch and the stub machinery, plus the domains that live in the bin crate itself: `secrets` verbs (over `fleet-secrets`), and `gh` with its cache, closure, guard, and metadata modules. |
-| `fleet-registry` | The domain registry: the 15 capability atoms, the three variants and their capability sets, the 12 domain entries (name, summary, capabilities, primary capability, aliases, subcommand inventory), and the argv0 alias map. Dependency-free; compiled into every variant so help is always complete. |
-| `fleet-config` | The one place config resolves: `fleet.toml` (default `${XDG_CONFIG_HOME:-~/.config}/fleet/fleet.toml`, overridable with `FLEET_CONFIG`), the `[domains]` switches, `[proxy]`, `[secrets]`, `[queue-broker]`, `[secrets-broker]`, `[dispatch]`, `[host]` sections, and the fleet's path/port/socket constants. Resolution order is environment → config file → compiled-in defaults. A missing file is not an error; a malformed file — including unknown sections or keys — is a loud error on every path, never a silent fallback. |
-| `fleet-secrets` | The secret resolver library: the broker-first, Bitwarden-fallback chain, by name only. Every domain that needs a secret resolves it through this crate; no domain shells out to `bws` or reads a token file on its own. |
-| `fleet-proxy-proto` | The session-broker wire protocol: 8-byte big-endian length-prefixed JSON frames, the hello/capability handshake, and the protocol version window (current and previous major, plus legacy proto 0). |
-| `fleet-proxy` | The session proxy: the broker (`serve`), the client (`connect`, `init`, `ssh`, `get`/`put`), raw splice, tunnels, and shims. The client half is in every variant; only the broker half is feature-gated. |
-| `fleet-queue` | The queue domain end to end: the client (32 verbs), the queue broker, the secrets broker, the Turso queue store, packet validation, the GitHub fallback queue, placement, the creation outbox, and merge-intent stacks. Its features split the surfaces: `client`, `queue-broker`, `secrets-broker`. |
-| `fleet-dispatch` | The `dispatch` domain: a single-file thin client over the pm-dispatch HTTP service. |
-| `fleet-dispatch-test` | The `dispatch-test` domain: scan/submit/status over GitHub and its Turso jobs store. |
-| `fleet-laptop-agent` | The `laptop-agent` client: verbs, transport legs, and the connection ladder for the laptop-agent daemon. |
-| `fleet-search` | The `search` domain: the Atlas client surface, and — behind its `serve` feature — the Atlas search service itself, consuming the `atlas-core`/`atlas-embed`/`atlas-proto` crates from `pkgs/atlas-search` by relative path. |
-| `fleet-bridge` | The `bridge` domain: the mailbox client for the message bridge (send/agents/log for central; hello/inbox/post/ack/health for agents). |
-| `fleet-agent` | The `agent` and `shell` domains: kinds, enrolment, doctor, the intake ladder (`next`), the shortlist, and the shell target planner. It links only `fleet-config`: it runs the other domains' verbs through this same binary rather than linking them. |
+| Crate                 | Owns                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| --------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `fleet` (the bin)     | The multicall entrypoint (`src/main.rs`), root built-ins, dispatch and the stub machinery, plus the domains that live in the bin crate itself: `secrets` verbs (over `fleet-secrets`), and `gh` with its cache, closure, guard, and metadata modules.                                                                                                                                                                                                                                                                               |
+| `fleet-registry`      | The domain registry: the 15 capability atoms, the three variants and their capability sets, the 12 domain entries (name, summary, capabilities, primary capability, aliases, subcommand inventory), and the argv0 alias map. Dependency-free; compiled into every variant so help is always complete.                                                                                                                                                                                                                               |
+| `fleet-config`        | The one place config resolves: `fleet.toml` (default `${XDG_CONFIG_HOME:-~/.config}/fleet/fleet.toml`, overridable with `FLEET_CONFIG`), the `[domains]` switches, `[proxy]`, `[secrets]`, `[queue-broker]`, `[secrets-broker]`, `[dispatch]`, `[host]` sections, and the fleet's path/port/socket constants. Resolution order is environment → config file → compiled-in defaults. A missing file is not an error; a malformed file — including unknown sections or keys — is a loud error on every path, never a silent fallback. |
+| `fleet-secrets`       | The secret resolver library: the broker-first, Bitwarden-fallback chain, by name only. Every domain that needs a secret resolves it through this crate; no domain shells out to `bws` or reads a token file on its own.                                                                                                                                                                                                                                                                                                             |
+| `fleet-proxy-proto`   | The session-broker wire protocol: 8-byte big-endian length-prefixed JSON frames, the hello/capability handshake, and the protocol version window (current and previous major, plus legacy proto 0).                                                                                                                                                                                                                                                                                                                                 |
+| `fleet-proxy`         | The session proxy: the broker (`serve`), the client (`connect`, `init`, `ssh`, `get`/`put`), raw splice, tunnels, and shims. The client half is in every variant; only the broker half is feature-gated.                                                                                                                                                                                                                                                                                                                            |
+| `fleet-queue`         | The queue domain end to end: the client (32 verbs), the queue broker, the secrets broker, the Turso queue store, packet validation, the GitHub fallback queue, placement, the creation outbox, and merge-intent stacks. Its features split the surfaces: `client`, `queue-broker`, `secrets-broker`.                                                                                                                                                                                                                                |
+| `fleet-dispatch`      | The `dispatch` domain: a single-file thin client over the pm-dispatch HTTP service.                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| `fleet-dispatch-test` | The `dispatch-test` domain: scan/submit/status over GitHub and its Turso jobs store.                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| `fleet-laptop-agent`  | The `laptop-agent` client: verbs, transport legs, and the connection ladder for the laptop-agent daemon.                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| `fleet-search`        | The `search` domain: the Atlas client surface, and — behind its `serve` feature — the Atlas search service itself, consuming the `atlas-core`/`atlas-embed`/`atlas-proto` crates from `pkgs/atlas-search` by relative path.                                                                                                                                                                                                                                                                                                         |
+| `fleet-bridge`        | The `bridge` domain: the mailbox client for the message bridge (send/agents/log for central; hello/inbox/post/ack/health for agents).                                                                                                                                                                                                                                                                                                                                                                                               |
+| `fleet-agent`         | The `agent` and `shell` domains: kinds, enrolment, doctor, the intake ladder (`next`), the shortlist, and the shell target planner. It links only `fleet-config`: it runs the other domains' verbs through this same binary rather than linking them.                                                                                                                                                                                                                                                                               |
 
 Domain ownership, one line each: `queue` → `fleet-queue`; `serve` → bin-crate
 glue over `fleet-queue` / `fleet-search` / `fleet-proxy`; `proxy` →
@@ -39,20 +39,20 @@ glue over `fleet-queue` / `fleet-search` / `fleet-proxy`; `proxy` →
 
 ## The brokers and their ports and sockets
 
-A *broker* in fleet is a resident process that other processes ask for a
+A _broker_ in fleet is a resident process that other processes ask for a
 service, as distinct from a library they link. There are three fleet brokers,
 plus the laptop-agent daemon and two auxiliary services:
 
-| Service | Port | Unix socket (default) | Notes |
-|---|---|---|---|
-| laptop-agent daemon | 4799 | — | The Python daemon on the laptop that runs jobs. Not a fleet binary, but the proxy's routing table names it. |
-| secrets-broker | 4800 | `~/.config/secrets-broker/broker.sock` | The Bitwarden cache. Dual-binds TCP and the Unix socket with identical routes and auth. On the sandbox its TCP bind is forced to `127.0.0.1:4800`. |
-| queue-broker | 4801 | `~/.config/queue-broker/broker.sock` | The work queue service. Dual-binds TCP (`100.99.113.103:4801`, the laptop tailnet address) and the Unix socket. |
-| gh cache daemon | 4802 | — | Loopback token/secret cache for the `gh` passthrough. See [The gh passthrough](gh.md). |
-| pm-dispatch | 4879 | — | The TypeScript/Bun dispatch service the `dispatch` domain is a client of. |
-| session broker (proxy) | — (socket only) | `~/.cache/laptop-agent/broker.sock` | The sandbox-side broker every local client talks to; it tunnels framed requests to the laptop's services. Socket overridable with `FLEET_BROKER_SOCKET`. |
-| RustDesk direct access | 21118 | — | Also the loopback listen port of `fleet proxy splice`. |
-| tailnet egress proxy | 3130 | — | The host session's CONNECT proxy. Not a fleet listener; fleet is its client. |
+| Service                | Port            | Unix socket (default)                  | Notes                                                                                                                                                    |
+| ---------------------- | --------------- | -------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| laptop-agent daemon    | 4799            | —                                      | The Python daemon on the laptop that runs jobs. Not a fleet binary, but the proxy's routing table names it.                                              |
+| secrets-broker         | 4800            | `~/.config/secrets-broker/broker.sock` | The Bitwarden cache. Dual-binds TCP and the Unix socket with identical routes and auth. On the sandbox its TCP bind is forced to `127.0.0.1:4800`.       |
+| queue-broker           | 4801            | `~/.config/queue-broker/broker.sock`   | The work queue service. Dual-binds TCP (`100.99.113.103:4801`, the laptop tailnet address) and the Unix socket.                                          |
+| gh cache daemon        | 4802            | —                                      | Loopback token/secret cache for the `gh` passthrough. See [The gh passthrough](gh.md).                                                                   |
+| pm-dispatch            | 4879            | —                                      | The TypeScript/Bun dispatch service the `dispatch` domain is a client of.                                                                                |
+| session broker (proxy) | — (socket only) | `~/.cache/laptop-agent/broker.sock`    | The sandbox-side broker every local client talks to; it tunnels framed requests to the laptop's services. Socket overridable with `FLEET_BROKER_SOCKET`. |
+| RustDesk direct access | 21118           | —                                      | Also the loopback listen port of `fleet proxy splice`.                                                                                                   |
+| tailnet egress proxy   | 3130            | —                                      | The host session's CONNECT proxy. Not a fleet listener; fleet is its client.                                                                             |
 
 The session broker's routing table maps port → service name — 4799
 laptop-agent, 4800 secrets-broker, 4801 queue-broker, 21118 rustdesk — and
@@ -146,7 +146,7 @@ pools, the Cloudflare leg versus the tailnet fallback, recovery — are in
 ### The dispatch path (a build runs remotely)
 
 1. A caller runs `fleet queue dispatch --repo <owner/name> --command '<cmd>'
-   --dispatch` (or `fleet shell --target actions`, which drives the same
+--dispatch` (or `fleet shell --target actions`, which drives the same
    verb).
 2. Placement loads the surface registry — data, not code: `--registry` or
    `FLEET_PLACE_REGISTRY`, else a home copy, else the source-tree path, else
@@ -166,5 +166,5 @@ pools, the Cloudflare leg versus the tailnet fallback, recovery — are in
    one — and writes a session record under a handle `fp_` plus 32 hex
    characters in `~/.local/state/fleet-place/sessions.json`.
 6. The caller follows the run with `fleet queue session status|result
-   <handle>`; the portable form `OWNER/REPO#RUN_ID` resolves the same run
+<handle>`; the portable form `OWNER/REPO#RUN_ID` resolves the same run
    without the local store. Full detail: [Placement and remote dispatch](placement.md).

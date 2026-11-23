@@ -15,12 +15,12 @@ On the laptop, services are defined in `pkgs/deploy/services.nix` and deployed b
 
 Three of the laptop's services are fleet's own; the fourth group is the pm stack that shares the same deployment machinery and the same host.
 
-| Service | Runs | Port | Restart | Health |
-|---|---|---|---|---|
-| `queue-broker` | `fleet serve queue-broker`, backend `turso` | 4801 | `on-failure` | Unauthenticated `GET /healthz` |
-| `secrets-broker` | `fleet serve secrets-broker` | 4800 | `on-failure` | `GET /health` (503 until the first successful refresh — that is a state, not a crash; see [Troubleshooting](troubleshooting.md)) |
-| `laptop-agent` | `bin/laptop-agent` (its own package, not the fleet binary) | 4799 | `always` | No unauthenticated endpoint; verified through the authenticated client |
-| pm stack neighbours | `pm-aggregator`, `pm-projector`, `pm-tunnel`, and the other Cloudflare/pm-stack targets declared in the same `services.nix` registry | per definition | per definition | per definition |
+| Service             | Runs                                                                                                                                 | Port           | Restart        | Health                                                                                                                           |
+| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------ | -------------- | -------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| `queue-broker`      | `fleet serve queue-broker`, backend `turso`                                                                                          | 4801           | `on-failure`   | Unauthenticated `GET /healthz`                                                                                                   |
+| `secrets-broker`    | `fleet serve secrets-broker`                                                                                                         | 4800           | `on-failure`   | `GET /health` (503 until the first successful refresh — that is a state, not a crash; see [Troubleshooting](troubleshooting.md)) |
+| `laptop-agent`      | `bin/laptop-agent` (its own package, not the fleet binary)                                                                           | 4799           | `always`       | No unauthenticated endpoint; verified through the authenticated client                                                           |
+| pm stack neighbours | `pm-aggregator`, `pm-projector`, `pm-tunnel`, and the other Cloudflare/pm-stack targets declared in the same `services.nix` registry | per definition | per definition | per definition                                                                                                                   |
 
 Operational notes:
 
@@ -48,5 +48,5 @@ Two more init behaviours to know:
 ## Restart and health expectations
 
 - A broker that is down is restarted by its supervisor: systemd on the laptop (per the profile's restart policy), the heal stack on a sandbox seat (see [Health checks and the heal stack](health-and-healing.md)).
-- Do not restart-loop a broker that is *up but not serving*. The canonical case is the secrets-broker before its first successful refresh: the process is alive, `/health` answers 503 with `serving=false`, and restarting it only restarts the refresh clock. Diagnose the refresh instead — see [Troubleshooting](troubleshooting.md).
+- Do not restart-loop a broker that is _up but not serving_. The canonical case is the secrets-broker before its first successful refresh: the process is alive, `/health` answers 503 with `serving=false`, and restarting it only restarts the refresh clock. Diagnose the refresh instead — see [Troubleshooting](troubleshooting.md).
 - After any restart, verify with the health surfaces, not with process existence: `/healthz` for the queue-broker, `/health` for the secrets-broker, `fleet queue health` for the queue as a client sees it, and `fleet agent doctor` for the seat as a whole.

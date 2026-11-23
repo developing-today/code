@@ -17,11 +17,11 @@ Each call gets a fresh **trip id** (sent as the `X-Trip-Id` header on HTTP legs 
 Every verb's call goes down a four-leg **ladder**, in order; the first leg that answers wins, and when an earlier leg failed the client prints one line: `laptop-agent: note: answered by <leg> after <legs> failed`.
 
 1. **Broker** — the warm session-broker socket (default `~/.cache/laptop-agent/broker.sock`): the framed protocol (8-byte big-endian length + JSON `{method, path, body, trip}`; reply framed the same way, `{status, body}`). Absent when no socket file exists.
-2. **Cloudflare** — TLS through the egress proxy to the tunnel hostname, with the Access service token resolved by name (secret name `cloudflare.access-laptop-agent`) *only when this leg is tried*, so a healthy broker never pays for the resolution; a resolution failure is cached 60 s.
+2. **Cloudflare** — TLS through the egress proxy to the tunnel hostname, with the Access service token resolved by name (secret name `cloudflare.access-laptop-agent`) _only when this leg is tried_, so a healthy broker never pays for the resolution; a resolution failure is cached 60 s.
 3. **Tailscale** — HTTP CONNECT through the egress proxy at port **3130** to `100.99.113.103:4799`.
 4. **SSH** — a named **stub**: always absent ("ssh leg not implemented"). The ladder's fourth leg exists in the ordering but never carries traffic in this build.
 
-**Replay rules:** each leg classifies its failures as **absent** (not configured here), **unsent** (failed before the request was written), or **sent** (failed after). A request may fall through to the next leg freely when absent/unsent, but a *sent* failure replays only for idempotent calls — non-idempotent calls (`exec`, `run` submits) are never replayed on a leg that may already have sent them, so a submitted job or an exec is never duplicated by the ladder.
+**Replay rules:** each leg classifies its failures as **absent** (not configured here), **unsent** (failed before the request was written), or **sent** (failed after). A request may fall through to the next leg freely when absent/unsent, but a _sent_ failure replays only for idempotent calls — non-idempotent calls (`exec`, `run` submits) are never replayed on a leg that may already have sent them, so a submitted job or an exec is never duplicated by the ladder.
 
 The USAGE block (printed only inside error messages) is:
 
@@ -42,9 +42,9 @@ usage: fleet laptop-agent <command>
 fleet laptop-agent health
 ```
 
-| Flag | Argument | Default | Meaning |
-|---|---|---|---|
-| — | — | — | Takes no arguments. Any trailing argument is a usage error, exit 2. |
+| Flag | Argument | Default | Meaning                                                             |
+| ---- | -------- | ------- | ------------------------------------------------------------------- |
+| —    | —        | —       | Takes no arguments. Any trailing argument is a usage error, exit 2. |
 
 ### Behaviour
 
@@ -70,12 +70,12 @@ Prints the daemon's health JSON.
 fleet laptop-agent exec [--cwd DIR] [--timeout SECS] [--shell] -- CMD...
 ```
 
-| Flag | Argument | Default | Meaning |
-|---|---|---|---|
-| `--cwd` | `DIR` | daemon default | Working directory for the command (sent as the spec's `cwd`). |
-| `--timeout` | `SECS` | `120` | Daemon-side timeout in seconds. The client deadline is timeout + 15 s transport grace. |
-| `--shell` | — | off | Run the joined command string as a shell command (`{cwd, shell: "cmd string"}`) instead of an argv spec (`{cwd, argv}`). |
-| `--` | — | required | Separator; everything after it is the command. No command is a usage error ("no command given (use -- cmd...)"). |
+| Flag        | Argument | Default        | Meaning                                                                                                                  |
+| ----------- | -------- | -------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| `--cwd`     | `DIR`    | daemon default | Working directory for the command (sent as the spec's `cwd`).                                                            |
+| `--timeout` | `SECS`   | `120`          | Daemon-side timeout in seconds. The client deadline is timeout + 15 s transport grace.                                   |
+| `--shell`   | —        | off            | Run the joined command string as a shell command (`{cwd, shell: "cmd string"}`) instead of an argv spec (`{cwd, argv}`). |
+| `--`        | —        | required       | Separator; everything after it is the command. No command is a usage error ("no command given (use -- cmd...)").         |
 
 ### Behaviour
 
@@ -102,12 +102,12 @@ Runs `cargo build` synchronously on the laptop with a 300 s timeout and returns 
 fleet laptop-agent run [--cwd DIR] [--shell] -- CMD...
 ```
 
-| Flag | Argument | Default | Meaning |
-|---|---|---|---|
-| `--cwd` | `DIR` | daemon default | Working directory for the job. |
-| `--shell` | — | off | Run the joined command string as a shell command instead of an argv spec. |
-| `--` | — | required | Separator; everything after it is the command. |
-| `--timeout` | — | — | **Not accepted** — passing it is an unknown-option error. Detached jobs have no client-side timeout; use `poll --wait` to bound waiting. |
+| Flag        | Argument | Default        | Meaning                                                                                                                                  |
+| ----------- | -------- | -------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| `--cwd`     | `DIR`    | daemon default | Working directory for the job.                                                                                                           |
+| `--shell`   | —        | off            | Run the joined command string as a shell command instead of an argv spec.                                                                |
+| `--`        | —        | required       | Separator; everything after it is the command.                                                                                           |
+| `--timeout` | —        | —              | **Not accepted** — passing it is an unknown-option error. Detached jobs have no client-side timeout; use `poll --wait` to bound waiting. |
 
 ### Behaviour
 
@@ -134,10 +134,10 @@ Submits a detached job and prints its job id.
 fleet laptop-agent poll JOB [--wait SECS]
 ```
 
-| Flag | Argument | Default | Meaning |
-|---|---|---|---|
-| `JOB` (positional) | job id | required | Job id (`[A-Za-z0-9_-]` only). |
-| `--wait` | `SECS` | — | How long to keep polling before reporting still-running. |
+| Flag               | Argument | Default  | Meaning                                                  |
+| ------------------ | -------- | -------- | -------------------------------------------------------- |
+| `JOB` (positional) | job id   | required | Job id (`[A-Za-z0-9_-]` only).                           |
+| `--wait`           | `SECS`   | —        | How long to keep polling before reporting still-running. |
 
 ### Behaviour
 
@@ -164,9 +164,9 @@ Streams new output every ≤3 s for up to 600 s, then returns the job's exit cod
 fleet laptop-agent jobs
 ```
 
-| Flag | Argument | Default | Meaning |
-|---|---|---|---|
-| — | — | — | Takes no arguments. Any trailing argument is an unknown-command error, exit 2. |
+| Flag | Argument | Default | Meaning                                                                        |
+| ---- | -------- | ------- | ------------------------------------------------------------------------------ |
+| —    | —        | —       | Takes no arguments. Any trailing argument is an unknown-command error, exit 2. |
 
 ### Behaviour
 
@@ -192,9 +192,9 @@ Prints the daemon's job list as pretty JSON.
 fleet laptop-agent kill JOB
 ```
 
-| Flag | Argument | Default | Meaning |
-|---|---|---|---|
-| `JOB` (positional) | job id | required | Exactly one job id (`[A-Za-z0-9_-]` only). |
+| Flag               | Argument | Default  | Meaning                                    |
+| ------------------ | -------- | -------- | ------------------------------------------ |
+| `JOB` (positional) | job id   | required | Exactly one job id (`[A-Za-z0-9_-]` only). |
 
 ### Behaviour
 
@@ -220,14 +220,14 @@ Kills the named job and prints the daemon's reply.
 fleet laptop-agent fetch REMOTE_PATH LOCAL_PATH
 ```
 
-| Flag | Argument | Default | Meaning |
-|---|---|---|---|
-| `REMOTE_PATH` (positional) | path | required | File path on the laptop. |
-| `LOCAL_PATH` (positional) | path | required | Destination path on this host. This verb takes no flags. |
+| Flag                       | Argument | Default  | Meaning                                                  |
+| -------------------------- | -------- | -------- | -------------------------------------------------------- |
+| `REMOTE_PATH` (positional) | path     | required | File path on the laptop.                                 |
+| `LOCAL_PATH` (positional)  | path     | required | Destination path on this host. This verb takes no flags. |
 
 ### Behaviour
 
-Hash-checked copy. First it hashes the remote file *on the laptop* by running `shasum -a 256` through `/exec`, then pulls the file in **1 MiB** raw ranges via `GET /file?path=…&off=…&len=1048576` until an empty chunk, verifies the assembled bytes' SHA-256 against the remote hash, and only then writes the destination — a mismatch writes nothing and exits 1.
+Hash-checked copy. First it hashes the remote file _on the laptop_ by running `shasum -a 256` through `/exec`, then pulls the file in **1 MiB** raw ranges via `GET /file?path=…&off=…&len=1048576` until an empty chunk, verifies the assembled bytes' SHA-256 against the remote hash, and only then writes the destination — a mismatch writes nothing and exits 1.
 
 ### Exit codes
 

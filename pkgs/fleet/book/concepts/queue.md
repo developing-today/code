@@ -1,6 +1,6 @@
 # The queue: tasks, lanes and leases
 
-The queue is the fleet's shared work queue: one queue of *tasks* (units of
+The queue is the fleet's shared work queue: one queue of _tasks_ (units of
 repo work), served by the queue broker over a dedicated Turso store, with a
 GitHub-issue-comment fallback queue behind it. The client surface is
 `fleet queue` (argv0 alias `repo-queue`) with 32 verbs. Inside the binary,
@@ -11,30 +11,30 @@ Source: https://github.com/developing-today/code/blob/main/pkgs/fleet/crates/fle
 
 ## The task model
 
-A task is created from a *packet*: a JSON document validated against
+A task is created from a _packet_: a JSON document validated against
 `repo-task-v1.schema.json` plus the fleet queue validator. The envelope
 fields live outside the payload: `title`, `body`, `dedupe_key`, `priority`,
 `not_before`, `max_attempts`. The payload (`schema` const `"repo-task/v1"`)
 carries:
 
-| Field | Shape | Notes |
-|---|---|---|
-| `kind` | enum | The validator accepts six: `pr_shepherd`, `triage`, `small_fix`, `ci_investigation`, plus `second_pass` and `feature_slice`. (The schema file lists only the first four; the validator is the wider, operative list — source behaviour wins.) |
-| `repo` | enum | The validator's allowlist has nine repos, including the legacy `dezren39/nix` name kept valid for in-flight dedupe keys. (The schema lists eight.) |
-| `implementation_repo` | `owner/name`, optional | The repo receiving the implementation when it differs from the issue repo. Required when `risk.flags` contains `cross-repo-change`. |
-| `problem` | string, non-empty | |
-| `evidence` | string array, at least 1 | |
-| `acceptance` | string array, at least 1 | |
-| `scope` | `{include, exclude}`, both required, `exclude` non-empty | |
-| `tests` | string array, at least 1 | |
-| `risk` | `{level: low\|medium\|high, flags: string[]}` | |
-| `priority_reason` | string, non-empty | |
-| `timebox_minutes` | integer 1..=240 | Design values are 20 (triage) and 45 (standard); other values warn. |
-| `max_attempts` | integer 1..=1000 | Design default 1000 for every kind. |
-| `context_refs` | string array | |
-| `dedupe` | `{checked_at, basis}`, both non-empty | The producer's dedupe attestation. |
-| `required_budget_minutes` | integer ≥ 1, optional | The minimum uninterrupted budget a claimer must declare; absent means no requirement. |
-| identity | one of `issue`, `prs`, `set`, `source` | At least one is required: an issue `{number ≥ 1, url?, title?, state_checked_at?}`, a non-empty PR list, a PR-set, or a pre-filing triage source `{pr, finding}`. |
+| Field                     | Shape                                                    | Notes                                                                                                                                                                                                                                         |
+| ------------------------- | -------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `kind`                    | enum                                                     | The validator accepts six: `pr_shepherd`, `triage`, `small_fix`, `ci_investigation`, plus `second_pass` and `feature_slice`. (The schema file lists only the first four; the validator is the wider, operative list — source behaviour wins.) |
+| `repo`                    | enum                                                     | The validator's allowlist has nine repos, including the legacy `dezren39/nix` name kept valid for in-flight dedupe keys. (The schema lists eight.)                                                                                            |
+| `implementation_repo`     | `owner/name`, optional                                   | The repo receiving the implementation when it differs from the issue repo. Required when `risk.flags` contains `cross-repo-change`.                                                                                                           |
+| `problem`                 | string, non-empty                                        |                                                                                                                                                                                                                                               |
+| `evidence`                | string array, at least 1                                 |                                                                                                                                                                                                                                               |
+| `acceptance`              | string array, at least 1                                 |                                                                                                                                                                                                                                               |
+| `scope`                   | `{include, exclude}`, both required, `exclude` non-empty |                                                                                                                                                                                                                                               |
+| `tests`                   | string array, at least 1                                 |                                                                                                                                                                                                                                               |
+| `risk`                    | `{level: low\|medium\|high, flags: string[]}`            |                                                                                                                                                                                                                                               |
+| `priority_reason`         | string, non-empty                                        |                                                                                                                                                                                                                                               |
+| `timebox_minutes`         | integer 1..=240                                          | Design values are 20 (triage) and 45 (standard); other values warn.                                                                                                                                                                           |
+| `max_attempts`            | integer 1..=1000                                         | Design default 1000 for every kind.                                                                                                                                                                                                           |
+| `context_refs`            | string array                                             |                                                                                                                                                                                                                                               |
+| `dedupe`                  | `{checked_at, basis}`, both non-empty                    | The producer's dedupe attestation.                                                                                                                                                                                                            |
+| `required_budget_minutes` | integer ≥ 1, optional                                    | The minimum uninterrupted budget a claimer must declare; absent means no requirement.                                                                                                                                                         |
+| identity                  | one of `issue`, `prs`, `set`, `source`                   | At least one is required: an issue `{number ≥ 1, url?, title?, state_checked_at?}`, a non-empty PR list, a PR-set, or a pre-filing triage source `{pr, finding}`.                                                                             |
 
 Envelope rules: `priority` must be on the design scale
 **[10, 20, 30, 40, 50, 70, 90]** (lower is sooner); payload size has a hard
@@ -47,11 +47,11 @@ Two stored-priority exceptions: at enqueue, a payload whose `labels` array
 contains `expedite` stores priority **15**, else `next-up` stores **25**.
 These stored values are deliberately not on the packet scale.
 
-**Dedupe.** Enqueue dedupes on `(queue, dedupe_key)` among *live* rows, and
+**Dedupe.** Enqueue dedupes on `(queue, dedupe_key)` among _live_ rows, and
 separately on work identity (repo, issue, kind family): a live task already
 holding the work identity means nothing is filed, unless the packet sets
 `payload.dedupe_override`. A key held only by terminal rows accepts a new
-row. A *cancelled* row is revived in place by a re-enqueue; a *failed* row
+row. A _cancelled_ row is revived in place by a re-enqueue; a _failed_ row
 deliberately is not — re-enqueueing a failed identity files a new row.
 
 **Enqueue has no default queue.** The queue resolves from `--queue`, else
@@ -60,7 +60,7 @@ environment variable; with none of the three, enqueue exits 2. (The old
 shadow default silently misrouted work.) Enqueueing into a queue whose name
 ends in `-shadow` additionally requires `--shadow-intent`. Most other verbs
 default `--queue` to `repo-health-code-shadow` via the same environment
-variable, but `claim` and `list` are *unscoped* when neither flag nor env is
+variable, but `claim` and `list` are _unscoped_ when neither flag nor env is
 present: the broker works across the one fleet queue.
 
 ## States and transitions
@@ -89,9 +89,9 @@ Every transition writes an event row; `fleet queue timeline <task-id>`
 
 ## Lanes and workers
 
-A *worker* is the claiming identity stamped on a row (default
+A _worker_ is the claiming identity stamped on a row (default
 `repo-worker-code`; `cancel` defaults its worker to `fleet-monitor`). A
-*lane* is a finer identity used when many scheduled lanes share one worker
+_lane_ is a finer identity used when many scheduled lanes share one worker
 id: the lane tells the broker whose claim a holder verb acts on. Holder
 verbs (heartbeat, checkpoint, park, release, block, fail, complete) resolve
 `--lane` from the flag, else the `REPO_QUEUE_LANE` environment variable,
@@ -119,7 +119,7 @@ omitting it leaves such tasks unclaimed. No claimable task is
 
 ## Leases and heartbeat
 
-A *lease* is the claim's expiry. Claim's default lease is **2700 s
+A _lease_ is the claim's expiry. Claim's default lease is **2700 s
 (45 minutes)**, range 1..=86400, rejected outside it; a zero or negative
 lease is born expired. `fleet agent next` claims with a 14,400 s (4-hour)
 lease instead, because 45 minutes lapses mid-task.
@@ -144,7 +144,7 @@ whereas `block`'s `--reason-class` is free-form.
 
 ## Park, wake, and ready-conditions
 
-`park` moves a claimed task out of the way until a *ready-condition* says the
+`park` moves a claimed task out of the way until a _ready-condition_ says the
 wait is over. `--reason` is required; `--delay-seconds` (range 1..=604800,
 7 days; 0 is rejected — a zero-second park is a requeue, and `release`
 exists) and `--not-before` are mutually exclusive; with neither, the
@@ -157,7 +157,7 @@ kinds (`ci`, `pr_merged`, `issue_closed`, `person_answer`, `review`, …) are
 recorded faithfully but cannot be verified by the sweeper. With no explicit
 condition the broker derives one from `progress.ready_condition`, else
 `{"kind":"time","until":<not_before>}`. The condition kind determines the
-*wait kind* (`time`→`timer`; `ci`/`ci_green`/`pr_merged`/`issue_closed`/
+_wait kind_ (`time`→`timer`; `ci`/`ci_green`/`pr_merged`/`issue_closed`/
 `upstream_pr`→`ci`; `review`/`codex_review`/`pr_review`/`person_answer`→
 `review`; `capacity`/`quota_reset`→`capacity`; `triage`→`triage`; anything
 else→`external`), and the broker enforces wait floors whatever delay was
@@ -167,9 +167,9 @@ later records `check_outcome` as `confirmed` (condition unmet), `released`
 (condition met → back to `queued`), or `stale` (cannot verify). `wake`
 releases a parked wait now that its condition is satisfied.
 
-A park (or block) that waits on a *person* — a `person_answer` condition, a
+A park (or block) that waits on a _person_ — a `person_answer` condition, a
 person-wait reason class, or blocker text naming the owner as the release —
-is refused client-side, exit 2, unless it is a valid *hands item*:
+is refused client-side, exit 2, unless it is a valid _hands item_:
 `--hands physical|interactive-login|payment|signature` plus `--action` with
 one sentence a person can do in five minutes (a single line, at most 200
 characters, not itself asking for a decision). The rule's point: a choice
@@ -178,8 +178,8 @@ that is the worker's to make is never parked onto a person.
 ## Block and dependencies (`dep_blocked`)
 
 `block` sets status `blocked`. `--reason-class` and `--blocker` are both
-required. A classic block waits for a manual `unblock`. A *typed dependency
-block* names machine-watchable dependencies instead of prose:
+required. A classic block waits for a manual `unblock`. A _typed dependency
+block_ names machine-watchable dependencies instead of prose:
 `--blocked-by-pr`, `--blocked-by-issue`, `--blocked-by-ci` take
 comma-separated `owner/repo#N` refs (for CI, `N` is an Actions run id), and
 `--blocked-by-task` takes bare task ids. Bad refs die client-side, exit 2.
@@ -227,22 +227,22 @@ gate, 1 when the gate would reject it or the readback cannot be read.
 
 The five verdicts:
 
-| Verdict | Derived when | Gate requires |
-|---|---|---|
-| `merged_verified` | some pull in the readback is merged | at least 1 merged pull in the readback |
-| `closed_verified` | issue closed and no unfinished pulls | the issue state actually `closed` |
-| `open_draft_with_followup` | unfinished pulls exist, nothing merged, issue not cleanly closed | a recorded `follow_up` |
-| `open_draft_superseded` | operator-asserted, same family | a recorded `follow_up` |
-| `invalid_no_work` | none of the above | rejected if any linked pull still carries work |
+| Verdict                    | Derived when                                                     | Gate requires                                  |
+| -------------------------- | ---------------------------------------------------------------- | ---------------------------------------------- |
+| `merged_verified`          | some pull in the readback is merged                              | at least 1 merged pull in the readback         |
+| `closed_verified`          | issue closed and no unfinished pulls                             | the issue state actually `closed`              |
+| `open_draft_with_followup` | unfinished pulls exist, nothing merged, issue not cleanly closed | a recorded `follow_up`                         |
+| `open_draft_superseded`    | operator-asserted, same family                                   | a recorded `follow_up`                         |
+| `invalid_no_work`          | none of the above                                                | rejected if any linked pull still carries work |
 
-A pull is *unfinished* when it is not merged and not closed. A follow-up is
+A pull is _unfinished_ when it is not merged and not closed. A follow-up is
 exactly one of `--follow-up-task <id>` (checked by the broker at completion —
 only the queue knows if it is live), `--follow-up-issue <n|url>` (same-repo,
 open, must link the completed issue and every unfinished PR), or
 `--follow-up-pr <n>` (must be in the readback and merged); any follow-up
 target requires `--reason`. One exception: a closed issue may leave related
 work open when the close was a deliberate act by a person (the readback's
-`closed_by` is checked against automation) *and* a verified follow-up owns
+`closed_by` is checked against automation) _and_ a verified follow-up owns
 the remainder.
 
 `complete`'s other rules: `--result`/`--result-file` must be a JSON object
@@ -278,7 +278,7 @@ gate as the broker path before posting anything; a rejection posts nothing
 and exits 1.
 
 **The fallback switch is permanently armed.** For the work verbs — claim,
-heartbeat, checkpoint, complete, health — *any* primary-store failure
+heartbeat, checkpoint, complete, health — _any_ primary-store failure
 (broker unreachable, or an `{ok:false}` envelope) switches the caller to the
 GitHub fallback for that work instead of dying: a message on stderr, one
 JSON object on stdout with `"fallback": true, "switch_to":
@@ -297,7 +297,7 @@ matching claimed row / no claimable task; 6 the fallback switch.
 ## The creation outbox
 
 Creating GitHub objects (issues, PRs, comments) must survive crashes and
-rate limits, so creation goes through the *creation outbox*: producers
+rate limits, so creation goes through the _creation outbox_: producers
 enqueue, a single serial drainer creates through `gh`, verifies by
 read-back, and resolves. There is no dual-write and no automatic fallback to
 direct creation — a broker failure stops the drain visibly.
@@ -311,12 +311,12 @@ attempts **8**. Entries carry a `fleet-outbox:<id>` marker in the created
 object's body so the drainer can reconcile by search and read-back. The
 verbs are `outbox enqueue|list|metrics|claim|resolve|drain`; `drain`
 defaults to at most 20 items (`--max`, floored at 1), and an `uncertain`
-entry is reconciled by marker first — a lookup that *could not check* keeps
+entry is reconciled by marker first — a lookup that _could not check_ keeps
 the entry uncertain and never re-creates.
 
 ## Merge-intent stacks
 
-A *stack* is a recorded, ordered set of merge intents — finished branches
+A _stack_ is a recorded, ordered set of merge intents — finished branches
 with their authoring lane, worker, and session — stored in the broker's
 `merge_intents` table, unique on `(stack_id, position)` and `(repo,
 branch)`. Intent states: `intended → replaying → landed`, plus `conflicted`
@@ -356,7 +356,7 @@ canonical lanes when empty), `workers`, `checkpoints`, `repo_task_lane_ledger`,
 Broker protocol facts: every verb is one `POST /<command>` with a JSON args
 object; the response envelope is `{ok:true, ...}` or `{ok:false, exit,
 error}`. The only unauthenticated route is `GET /healthz`. The broker binds
-*first* and brings the Turso backend up on a startup thread, so `/healthz`
+_first_ and brings the Turso backend up on a startup thread, so `/healthz`
 and `/validate` answer immediately while other verbs answer exit 3 with a
 `turso_pending` reason until the backend is ready. A transient store error
 carrying PostgREST code `57014` or `PGRST002` is retried client-side with

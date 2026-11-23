@@ -1383,7 +1383,12 @@ fn check_fallback_disposition(
         crate::disposition::DEFAULT_STALENESS_SECONDS,
     )?;
     let task_id = record.follow_up.as_ref().and_then(|f| f.task_id);
-    Ok((value, record.verdict.clone(), record.checked_at.clone(), task_id))
+    Ok((
+        value,
+        record.verdict.clone(),
+        record.checked_at.clone(),
+        task_id,
+    ))
 }
 
 /// The comment body a fallback `complete` posts: the release-done

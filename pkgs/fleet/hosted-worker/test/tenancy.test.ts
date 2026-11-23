@@ -7,11 +7,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { sha256Hex } from "../src/auth.ts";
-import {
-  BINDING_ID_RE,
-  FixtureTenancyDirectory,
-  parseTenancyFixture,
-} from "../src/tenancy.ts";
+import { BINDING_ID_RE, FixtureTenancyDirectory, parseTenancyFixture } from "../src/tenancy.ts";
 import { BINDING_A, ISSUER, SERVICE_TOKEN } from "./helpers.ts";
 
 test("a mapped subject resolves to its binding_id and active flag", async () => {
@@ -63,7 +59,10 @@ test("a fixture with a non-minted binding_id is rejected at construction", () =>
       }),
     /not a minted binding id/,
   );
-  assert.throws(() => parseTenancyFixture('{"subjects": [{"issuer":"i","subject":"s","binding_id":"nope","active":true}]}'), /not a minted binding id/);
+  assert.throws(
+    () => parseTenancyFixture('{"subjects": [{"issuer":"i","subject":"s","binding_id":"nope","active":true}]}'),
+    /not a minted binding id/,
+  );
 });
 
 test("the binding_id shape is the minted 32-lowercase-hex contract", () => {

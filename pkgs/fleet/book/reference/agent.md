@@ -14,32 +14,32 @@ Known discrepancy: every per-verb help invocation returns **one shared USAGE tex
 fleet agent kinds
 ```
 
-| Flag | Argument | Default | Meaning |
-|---|---|---|---|
-| — | — | — | Takes no arguments and no flags. |
+| Flag | Argument | Default | Meaning                          |
+| ---- | -------- | ------- | -------------------------------- |
+| —    | —        | —       | Takes no arguments and no flags. |
 
 ### Behaviour
 
 Prints the kind table as JSON: for each kind its name, summary, bridge groups, seat, and enrolment note, plus the three seat definitions. A kind says three things: which bridge groups it joins, how it reaches the fleet from where it runs, and what to tell it at enrolment. Adding a kind is adding a row; no verb changes. The 16 kinds:
 
-| Kind | Groups | Seat | Note (abridged) |
-|---|---|---|---|
-| `muse` | muse | binary | Fresh Muse gets a bridge-capable static build from `scripts/muse/bootstrap.sh`; older installs run the same commands on the laptop install via `~/tools/laptop-ssh.sh` |
-| `opencode` | opencode | binary | Runs on the laptop seat, so every leg is local |
-| `openchamber` | opencode, openchamber | binary | Joins `opencode` too, so `group:opencode` reaches both pipelines |
-| `openclaw` | openclaw | binary | — |
-| `claude-code` | claude-code | binary | A cloud session has no tailnet: messaging and the priority rung work over HTTPS; builds go through `fleet shell` |
-| `codex` | codex | binary | — |
-| `gemini` | gemini | binary | — |
-| `antigravity` | antigravity | binary | — |
-| `grok` | grok | binary | A bot with no shell enrolls as kind `http` under the same name and groups |
-| `dot` | dot | http | `pkgs/dot-bridge` carries its Slack and ChatGPT transports; the mailbox is the same store |
-| `duet` | duet | http | — |
-| `claude` | (none) | connector | Fixed bridge address `claude`; set a wake hook for channel:claude so a send starts a session |
-| `chatgpt` | (none) | connector | Fixed address `chatgpt`; woken by its MCP Events subscription |
-| `laptop` | laptop | binary | A job or service on the fleet laptop |
-| `http` | (none) | http | Anything that can make an HTTPS request and nothing else |
-| `generic` | (none) | binary | Any other agent with a shell — the fallback `enroll` names in its unknown-kind error |
+| Kind          | Groups                | Seat      | Note (abridged)                                                                                                                                                        |
+| ------------- | --------------------- | --------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `muse`        | muse                  | binary    | Fresh Muse gets a bridge-capable static build from `scripts/muse/bootstrap.sh`; older installs run the same commands on the laptop install via `~/tools/laptop-ssh.sh` |
+| `opencode`    | opencode              | binary    | Runs on the laptop seat, so every leg is local                                                                                                                         |
+| `openchamber` | opencode, openchamber | binary    | Joins `opencode` too, so `group:opencode` reaches both pipelines                                                                                                       |
+| `openclaw`    | openclaw              | binary    | —                                                                                                                                                                      |
+| `claude-code` | claude-code           | binary    | A cloud session has no tailnet: messaging and the priority rung work over HTTPS; builds go through `fleet shell`                                                       |
+| `codex`       | codex                 | binary    | —                                                                                                                                                                      |
+| `gemini`      | gemini                | binary    | —                                                                                                                                                                      |
+| `antigravity` | antigravity           | binary    | —                                                                                                                                                                      |
+| `grok`        | grok                  | binary    | A bot with no shell enrolls as kind `http` under the same name and groups                                                                                              |
+| `dot`         | dot                   | http      | `pkgs/dot-bridge` carries its Slack and ChatGPT transports; the mailbox is the same store                                                                              |
+| `duet`        | duet                  | http      | —                                                                                                                                                                      |
+| `claude`      | (none)                | connector | Fixed bridge address `claude`; set a wake hook for channel:claude so a send starts a session                                                                           |
+| `chatgpt`     | (none)                | connector | Fixed address `chatgpt`; woken by its MCP Events subscription                                                                                                          |
+| `laptop`      | laptop                | binary    | A job or service on the fleet laptop                                                                                                                                   |
+| `http`        | (none)                | http      | Anything that can make an HTTPS request and nothing else                                                                                                               |
+| `generic`     | (none)                | binary    | Any other agent with a shell — the fallback `enroll` names in its unknown-kind error                                                                                   |
 
 Seats: **binary** = has a shell and runs the fleet binary itself (`enroll`, then `next`); **http** = no shell of its own, speaks the bridge's fleet routes over HTTPS (`scripts/fleet/bridge-mailbox.py` is the reference client) and gets work from its mailbox; **connector** = a chat assistant with the Message Bridge connector attached — it has a channel address, not a mailbox.
 
@@ -61,19 +61,19 @@ Prints all 16 kinds with their groups, seats, and enrolment notes as one JSON ob
 fleet agent enroll --kind K --name N [--groups a,b] [--dry-run] [--profile PATH]
 ```
 
-| Flag | Argument | Default | Meaning |
-|---|---|---|---|
-| `--kind` | `K` | required | One of the 16 kinds (see `kinds`). An unknown kind is a usage error listing all kinds, with "use generic for anything with a shell". |
-| `--name` | `N` | required | The agent's name (its bridge mailbox name). The shared USAGE spells this `--name`; the domain help line abbreviates it as the enroll line's second value. |
-| `--groups` | `a,b` | kind's built-in groups | Additional bridge groups; adds to the kind's groups, never replaces them. |
-| `--dry-run` | — | off | Probe nothing and register nothing. |
-| `--profile` | `PATH` | default profile path | Where to save the profile. |
+| Flag        | Argument | Default                | Meaning                                                                                                                                                   |
+| ----------- | -------- | ---------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--kind`    | `K`      | required               | One of the 16 kinds (see `kinds`). An unknown kind is a usage error listing all kinds, with "use generic for anything with a shell".                      |
+| `--name`    | `N`      | required               | The agent's name (its bridge mailbox name). The shared USAGE spells this `--name`; the domain help line abbreviates it as the enroll line's second value. |
+| `--groups`  | `a,b`    | kind's built-in groups | Additional bridge groups; adds to the kind's groups, never replaces them.                                                                                 |
+| `--dry-run` | —        | off                    | Probe nothing and register nothing.                                                                                                                       |
+| `--profile` | `PATH`   | default profile path   | Where to save the profile.                                                                                                                                |
 
 ### Behaviour
 
 Registers an agent and saves its profile. Flow: the kind is validated; `--groups` adds to the kind's built-in groups; for a binary/http seat the bridge leg is probed in **Register** mode — `bridge hello` with the name and groups, which is what actually registers the mailbox; connector kinds instead get the "attach the connector" instruction and a fixed channel address. The four legs are probed (see `doctor`) and the saved profile records agent, kind, groups, and leg state.
 
-The JSON answer carries: the profile, `registered` (true only when not a dry run *and* the bridge leg answered), the legs, the **rungs** map, and seat-specific next-step lines — for a binary seat the run loop (`fleet agent next --agent <name>`, do the task, run its `then` lines, repeat while the run has budget) and the `fleet shell` line ("runs where builds belong; never build in a limited sandbox"); for an http seat the token-by-name note and the reference-client commands; for central, the `fleet bridge send --to <address> [--command]` lines.
+The JSON answer carries: the profile, `registered` (true only when not a dry run _and_ the bridge leg answered), the legs, the **rungs** map, and seat-specific next-step lines — for a binary seat the run loop (`fleet agent next --agent <name>`, do the task, run its `then` lines, repeat while the run has budget) and the `fleet shell` line ("runs where builds belong; never build in a limited sandbox"); for an http seat the token-by-name note and the reference-client commands; for central, the `fleet bridge send --to <address> [--command]` lines.
 
 ### Exit codes
 
@@ -93,22 +93,22 @@ Registers `worker-1`, probes its four legs, and saves its profile with the run-l
 fleet agent doctor [--agent N]
 ```
 
-| Flag | Argument | Default | Meaning |
-|---|---|---|---|
-| `--agent` | `N` | profile / `$FLEET_AGENT` | Agent name to probe the bridge leg as. With no name known, the bridge leg is reported not ok even when the service answers. |
+| Flag      | Argument | Default                  | Meaning                                                                                                                     |
+| --------- | -------- | ------------------------ | --------------------------------------------------------------------------------------------------------------------------- |
+| `--agent` | `N`      | profile / `$FLEET_AGENT` | Agent name to probe the bridge leg as. With no name known, the bridge leg is reported not ok even when the service answers. |
 
 ### Behaviour
 
 Checks which legs answer from this seat. **The four legs are `bridge`, `queue`, `github`, `shell`** — there is no secrets leg; secrets is folded into the bridge leg's stated need ("HTTPS to the message bridge, and the fleet token by name through fleet secrets"). The four probes are independent and are issued **together** (one parallel call), each a real fleet verb run as this seat:
 
-| Leg | Probe | "Up" detail | What it needs |
-|---|---|---|---|
-| bridge | `bridge hello` (enroll) / `bridge inbox --agent A --limit 1` (doctor with a name) / `bridge health` (no name known) | "registered" / "the mailbox answers" | HTTPS to the bridge + the fleet token by name through fleet secrets |
-| queue | `queue health` | "answers" | The queue broker: its socket on the laptop, or the laptop transport from elsewhere |
-| github | `gh api rate_limit` via `fleet gh`; if that fails, plain signed-in `gh api rate_limit` | "answers", with `route: "fleet"` or `"plain"` recorded | `gh` with a token: fleet gh's rotation, or a signed-in gh |
-| shell | `laptop-agent health` | "the laptop answers" | A route to the laptop: its broker, the Cloudflare tunnel, the tailnet or ssh |
+| Leg    | Probe                                                                                                               | "Up" detail                                            | What it needs                                                                      |
+| ------ | ------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------ | ---------------------------------------------------------------------------------- |
+| bridge | `bridge hello` (enroll) / `bridge inbox --agent A --limit 1` (doctor with a name) / `bridge health` (no name known) | "registered" / "the mailbox answers"                   | HTTPS to the bridge + the fleet token by name through fleet secrets                |
+| queue  | `queue health`                                                                                                      | "answers"                                              | The queue broker: its socket on the laptop, or the laptop transport from elsewhere |
+| github | `gh api rate_limit` via `fleet gh`; if that fails, plain signed-in `gh api rate_limit`                              | "answers", with `route: "fleet"` or `"plain"` recorded | `gh` with a token: fleet gh's rotation, or a signed-in gh                          |
+| shell  | `laptop-agent health`                                                                                               | "the laptop answers"                                   | A route to the laptop: its broker, the Cloudflare tunnel, the tailnet or ssh       |
 
-Doctor's bridge probe with a known agent is a **read that takes nothing** (`inbox --limit 1`): service health alone proves nothing about whether this seat holds the fleet token, so only a call made *as* an agent counts. With no agent name, the bridge leg is reported **not ok** even when the service answers ("the service answers, but no agent name is known to read a mailbox with: enrol, or pass --agent").
+Doctor's bridge probe with a known agent is a **read that takes nothing** (`inbox --limit 1`): service health alone proves nothing about whether this seat holds the fleet token, so only a call made _as_ an agent counts. With no agent name, the bridge leg is reported **not ok** even when the service answers ("the service answers, but no agent name is known to read a mailbox with: enrol, or pass --agent").
 
 From the legs, doctor derives the **rungs** map — which intake rungs this seat still has: `push` = bridge leg, `queue` = queue leg, `shortlist` = **always true** (it is a local file), `priority` = github leg. The answer also reports `builds`: "fleet shell reaches the laptop" when the shell leg answers, else "fleet shell has no laptop route from here; it will try a codespace, then run here".
 
@@ -130,26 +130,26 @@ Probes all four legs in parallel and prints the legs, the rungs map, and the bui
 fleet agent next [--agent N] [--lane L] [--repo OWNER/NAME] [--low-water N] [--shortlist PATH] [--platform P] [--pool P] [--remaining-budget-minutes N] [--filter EXPR] [--queue Q] [--no-push] [--no-queue] [--no-shortlist] [--no-priority]
 ```
 
-| Flag | Argument | Default | Meaning |
-|---|---|---|---|
-| `--agent` | `N` | profile / `$FLEET_AGENT` | Agent taking the work. |
-| `--lane` | `L` | derived from the agent name | Queue lane for the queue rung's claim. |
-| `--repo` | `OWNER/NAME` | `developing-today/code` | Repo the priority/shortlist rungs draw from. |
-| `--low-water` | `N` | `3` | Shortlist low-water mark for this call. |
-| `--shortlist` | `PATH` | profile/state default | Shortlist file path. |
-| `--platform` | `P` | — | Carried into the queue claim. |
-| `--pool` | `P` | — | Carried into the queue claim. |
-| `--remaining-budget-minutes` | `N` | — | Carried into the queue claim. |
-| `--filter` | `EXPR` | — | Carried into the queue claim. |
-| `--queue` | `Q` | — | Queue name for the queue rung's claim. |
-| `--no-push` | — | off | Skip rung 1 (recorded as `skipped` in `tried`). |
-| `--no-queue` | — | off | Skip rung 2. |
-| `--no-shortlist` | — | off | Skip rung 3. |
-| `--no-priority` | — | off | Skip rung 4. |
+| Flag                         | Argument     | Default                     | Meaning                                         |
+| ---------------------------- | ------------ | --------------------------- | ----------------------------------------------- |
+| `--agent`                    | `N`          | profile / `$FLEET_AGENT`    | Agent taking the work.                          |
+| `--lane`                     | `L`          | derived from the agent name | Queue lane for the queue rung's claim.          |
+| `--repo`                     | `OWNER/NAME` | `developing-today/code`     | Repo the priority/shortlist rungs draw from.    |
+| `--low-water`                | `N`          | `3`                         | Shortlist low-water mark for this call.         |
+| `--shortlist`                | `PATH`       | profile/state default       | Shortlist file path.                            |
+| `--platform`                 | `P`          | —                           | Carried into the queue claim.                   |
+| `--pool`                     | `P`          | —                           | Carried into the queue claim.                   |
+| `--remaining-budget-minutes` | `N`          | —                           | Carried into the queue claim.                   |
+| `--filter`                   | `EXPR`       | —                           | Carried into the queue claim.                   |
+| `--queue`                    | `Q`          | —                           | Queue name for the queue rung's claim.          |
+| `--no-push`                  | —            | off                         | Skip rung 1 (recorded as `skipped` in `tried`). |
+| `--no-queue`                 | —            | off                         | Skip rung 2.                                    |
+| `--no-shortlist`             | —            | off                         | Skip rung 3.                                    |
+| `--no-priority`              | —            | off                         | Skip rung 4.                                    |
 
 ### Behaviour
 
-Tries four rungs **in order** and returns the first that yields work. A rung that is *down* (bridge unreachable, broker not answering) is not the same as a rung that is *empty*: down rungs are recorded and skipped, so a seat with only HTTPS still gets work from rungs 1 and 4. Every answer is `{agent, rung, task, then, tried}` — `tried` is the per-rung log (`skipped`/`empty`/`down`/`rejected` with a why), and `then` is the list of follow-up commands the runner should execute for the handed-out task.
+Tries four rungs **in order** and returns the first that yields work. A rung that is _down_ (bridge unreachable, broker not answering) is not the same as a rung that is _empty_: down rungs are recorded and skipped, so a seat with only HTTPS still gets work from rungs 1 and 4. Every answer is `{agent, rung, task, then, tried}` — `tried` is the per-rung log (`skipped`/`empty`/`down`/`rejected` with a why), and `then` is the list of follow-up commands the runner should execute for the handed-out task.
 
 1. **Push** — a command addressed to this agent on the bridge (`bridge inbox --commands --take`). This rung outranks everything: a command a person (or central) pushed is work already chosen.
 2. **Queue** — a claim on the one fleet queue (`queue claim` with the agent's lane; the lane defaults from the agent name — known lane families are validated by the queue, and a lane registered to a shared queue worker is honoured). `next` claims with a **4-hour lease** (14400 s, overriding the queue's 45-minute default, which lapses mid-task) and the task's `then` lines name the lease deadline plus the `queue checkpoint` / `queue complete` commands with the claimed worker/lane. A broker refusal that is really a lane verdict (lane bound to another queue, registration did not land) is reported as rung `rejected`, distinct from `down`.
@@ -175,10 +175,10 @@ Returns the first available work down the ladder, with the follow-up commands in
 fleet agent shortlist status [--low-water N]
 ```
 
-| Flag | Argument | Default | Meaning |
-|---|---|---|---|
-| `--low-water` | `N` | `3` | Low-water mark for the `low` computation. |
-| `--shortlist` | `PATH` | profile/state default | Shortlist file path (shared shortlist flag). |
+| Flag          | Argument | Default               | Meaning                                      |
+| ------------- | -------- | --------------------- | -------------------------------------------- |
+| `--low-water` | `N`      | `3`                   | Low-water mark for the `low` computation.    |
+| `--shortlist` | `PATH`   | profile/state default | Shortlist file path (shared shortlist flag). |
 
 ### Behaviour
 
@@ -204,9 +204,9 @@ Prints the entries, the count, whether the list is low, and the refill state.
 fleet agent shortlist take
 ```
 
-| Flag | Argument | Default | Meaning |
-|---|---|---|---|
-| `--shortlist` | `PATH` | profile/state default | Shortlist file path (shared shortlist flag). This verb takes no verb-specific flags. |
+| Flag          | Argument | Default               | Meaning                                                                              |
+| ------------- | -------- | --------------------- | ------------------------------------------------------------------------------------ |
+| `--shortlist` | `PATH`   | profile/state default | Shortlist file path (shared shortlist flag). This verb takes no verb-specific flags. |
 
 ### Behaviour
 
@@ -230,9 +230,9 @@ Hands out the soonest shortlist entry as one JSON object.
 fleet agent shortlist clear
 ```
 
-| Flag | Argument | Default | Meaning |
-|---|---|---|---|
-| `--shortlist` | `PATH` | profile/state default | Shortlist file path (shared shortlist flag). This verb takes no verb-specific flags. |
+| Flag          | Argument | Default               | Meaning                                                                              |
+| ------------- | -------- | --------------------- | ------------------------------------------------------------------------------------ |
+| `--shortlist` | `PATH`   | profile/state default | Shortlist file path (shared shortlist flag). This verb takes no verb-specific flags. |
 
 ### Behaviour
 
@@ -256,14 +256,14 @@ Empties the local shortlist and clears any live refill marker.
 fleet agent shortlist add --issue N --title T [--repo R] [--rank N] [--why TEXT]
 ```
 
-| Flag | Argument | Default | Meaning |
-|---|---|---|---|
-| `--issue` | `N` | required | Issue number to add. |
-| `--title` | `T` | required | Issue title recorded on the entry. |
-| `--repo` | `R` | `developing-today/code` | Repository the issue belongs to. |
-| `--rank` | `N` | `6` (unranked) | Rank for hand-out order (see `status` for the rank table). |
-| `--why` | `TEXT` | — | Why this entry was listed. |
-| `--shortlist` | `PATH` | profile/state default | Shortlist file path (shared shortlist flag). |
+| Flag          | Argument | Default                 | Meaning                                                    |
+| ------------- | -------- | ----------------------- | ---------------------------------------------------------- |
+| `--issue`     | `N`      | required                | Issue number to add.                                       |
+| `--title`     | `T`      | required                | Issue title recorded on the entry.                         |
+| `--repo`      | `R`      | `developing-today/code` | Repository the issue belongs to.                           |
+| `--rank`      | `N`      | `6` (unranked)          | Rank for hand-out order (see `status` for the rank table). |
+| `--why`       | `TEXT`   | —                       | Why this entry was listed.                                 |
+| `--shortlist` | `PATH`   | profile/state default   | Shortlist file path (shared shortlist flag).               |
 
 ### Behaviour
 
@@ -287,11 +287,11 @@ Adds issue 13165 at rank 1 (`priority/critical` rank).
 fleet agent shortlist fill [--repo R] [--target N]
 ```
 
-| Flag | Argument | Default | Meaning |
-|---|---|---|---|
-| `--repo` | `R` | `developing-today/code` | Repository to draw candidates from. |
-| `--target` | `N` | `8` (clamped 1–50) | Top the list up to this many entries. |
-| `--shortlist` | `PATH` | profile/state default | Shortlist file path (shared shortlist flag). |
+| Flag          | Argument | Default                 | Meaning                                      |
+| ------------- | -------- | ----------------------- | -------------------------------------------- |
+| `--repo`      | `R`      | `developing-today/code` | Repository to draw candidates from.          |
+| `--target`    | `N`      | `8` (clamped 1–50)      | Top the list up to this many entries.        |
+| `--shortlist` | `PATH`   | profile/state default   | Shortlist file path (shared shortlist flag). |
 
 ### Behaviour
 

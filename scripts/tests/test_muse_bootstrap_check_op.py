@@ -165,11 +165,43 @@ class TestMuseBootstrapCheckOp(unittest.TestCase):
         self.sys_bin = base / "sysbin"
         self.sys_bin.mkdir()
         for name in (
-            "bash", "sh", "env", "uname", "id", "curl", "tar", "python3",
-            "sha256sum", "sed", "grep", "cut", "tr", "ls", "cat", "chmod",
-            "mv", "rm", "mkdir", "dirname", "mktemp", "wc", "head", "tail",
-            "sort", "readlink", "realpath", "basename", "sleep", "awk",
-            "find", "xargs", "date", "hostname", "touch", "ln", "cp",
+            "bash",
+            "sh",
+            "env",
+            "uname",
+            "id",
+            "curl",
+            "tar",
+            "python3",
+            "sha256sum",
+            "sed",
+            "grep",
+            "cut",
+            "tr",
+            "ls",
+            "cat",
+            "chmod",
+            "mv",
+            "rm",
+            "mkdir",
+            "dirname",
+            "mktemp",
+            "wc",
+            "head",
+            "tail",
+            "sort",
+            "readlink",
+            "realpath",
+            "basename",
+            "sleep",
+            "awk",
+            "find",
+            "xargs",
+            "date",
+            "hostname",
+            "touch",
+            "ln",
+            "cp",
             "stat",
         ):
             resolved = shutil.which(name)
@@ -211,7 +243,9 @@ class TestMuseBootstrapCheckOp(unittest.TestCase):
             "TS_STATE": str(self.ts_state),
         }
         if shutil.which("op", path=env["PATH"]):
-            self.skipTest("an `op` binary is on the test PATH; cannot stage its absence")
+            self.skipTest(
+                "an `op` binary is on the test PATH; cannot stage its absence"
+            )
         return subprocess.run(
             ["bash", str(BOOTSTRAP), "--skip", skip],
             env=env,

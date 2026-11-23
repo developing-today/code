@@ -4,7 +4,7 @@ Two different domains share the word "dispatch", and a third verb besides.
 This chapter keeps them apart:
 
 - **`fleet dispatch`** — a thin client over pm-dispatch, an existing
-  TypeScript/Bun service that is *not* rewritten in fleet. Its verbs are
+  TypeScript/Bun service that is _not_ rewritten in fleet. Its verbs are
   `status`, `launch`, and `enqueue`.
 - **`fleet dispatch-test`** — an explicit-dispatch CI test: scan fleet repos
   for free Actions capacity, submit a job, track its stored status. Nothing
@@ -20,11 +20,11 @@ Per-task status is deliberately **not** here: a task's state is the repo
 queue itself, so per-task status reads ride the queue domain
 (`fleet queue list`). The client's routes are exactly three:
 
-| Verb | Route | Auth |
-|---|---|---|
-| `fleet dispatch status` | `GET /health` | unauthenticated |
-| `fleet dispatch launch …` | `POST /v1/sessions` | Bearer |
-| `fleet dispatch enqueue …` | `POST /v1/tasks` | Bearer |
+| Verb                       | Route               | Auth            |
+| -------------------------- | ------------------- | --------------- |
+| `fleet dispatch status`    | `GET /health`       | unauthenticated |
+| `fleet dispatch launch …`  | `POST /v1/sessions` | Bearer          |
+| `fleet dispatch enqueue …` | `POST /v1/tasks`    | Bearer          |
 
 **The connection ladder** (transport selection, in order):
 
@@ -33,7 +33,7 @@ queue itself, so per-task status reads ride the queue domain
    a missing port gets the configured port appended).
 2. **Laptop zero-config**: probe `127.0.0.1:{port}` with a 750 ms connect
    timeout; if it answers, direct to loopback. The port is `[dispatch]
-   port`, default **4879**.
+port`, default **4879**.
 3. If config `proxy_direct()` is set: direct to `{target_host}:{port}`.
 4. **Tunnel**: a CONNECT through the fleet proxy egress to the target host's
    dispatch port (the sandbox route). The client opens its own tunnel on
@@ -109,7 +109,7 @@ Enqueue only, no session (POST `/v1/tasks`). Differences from launch:
 `--title` is required; `--kind` **is** validated client-side against the
 four kinds — an unknown kind is a usage error listing the four — but is
 only sent when given (the `triage` default is service-side); `--issue` is
-a one-way boolean with no `--no-issue`, and the service default is *no*
+a one-way boolean with no `--no-issue`, and the service default is _no_
 issue — the opposite default from launch; `--issue-number` must parse as
 an integer (sent as `issue_number`); `--dedupe-key` is sent as
 `dedupe_key`; `--model` goes in the task payload as a hint only.
@@ -124,7 +124,7 @@ id on `status`).
 **Execution homes.** One repo — the fleet repo, config `[dispatch-test]
 fleet_repo`, default **`dezren39/fleet`** — holds the other fleet repos as
 git submodules and carries the generic workflow `fleet-dispatch-test.yml`.
-Eligible homes are its *copies*: the source repo plus its fork network,
+Eligible homes are its _copies_: the source repo plus its fork network,
 discovered per invocation by breadth-first traversal of
 `GET /repos/{r}/forks`, **depth-capped at 8 levels**, deduplicated, source
 first, then copies in API order — unless `[dispatch-test] scopes` pins an
@@ -173,7 +173,7 @@ fleet dispatch-test submit --submodule NAME [--threshold N]
 
 `--submodule` is required: a single path segment (alphanumerics, `-`, `_`,
 `.`; never empty, `.` or `..`, never a slash). Examples: `code`, `opencode`,
-`openchamber`, `nix`, `hatch`. `--ref` is a ref *inside the submodule repo*;
+`openchamber`, `nix`, `hatch`. `--ref` is a ref _inside the submodule repo_;
 default empty = the submodule stays at the umbrella's recorded SHA.
 `--commands` / `--commands-file` are mutually exclusive; the default
 commands are `set -eux; echo dispatch-test smoke; git rev-parse HEAD;
@@ -197,12 +197,12 @@ The sequence is load-bearing, in this order:
    {id} remains queued in the store)".
 4. Dispatch: UPDATE the row's `target_repo`; POST the
    `fleet-dispatch-test.yml` workflow dispatch with `{"ref": <that repo's
-   default_branch>, "inputs": {"job_id": id}}` — the job id is the
+default_branch>, "inputs": {"job_id": id}}` — the job id is the
    workflow's **only** input; only then UPDATE the row to
    `status='dispatched'`. Any failure stops the sequence: a failed dispatch
    leaves the row `queued`, with its target repo recorded.
 5. Print `{job_id, repo, submodule, ref (null when empty), active_at_scan,
-   threshold, status: "dispatched"}` as JSON.
+threshold, status: "dispatched"}` as JSON.
 
 ### The Turso jobs store
 

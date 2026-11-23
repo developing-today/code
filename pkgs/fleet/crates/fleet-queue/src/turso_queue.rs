@@ -54,8 +54,8 @@ mod staleness;
 mod work_identity;
 
 pub use admin::*;
-pub use closed_bound::*;
 pub use claim::*;
+pub use closed_bound::*;
 pub use core::*;
 pub use label_enrich::*;
 pub use lifecycle::*;

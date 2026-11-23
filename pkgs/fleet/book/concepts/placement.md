@@ -1,6 +1,6 @@
 # Placement and remote dispatch
 
-*Placement* is the decision of where a build job runs. The live engine is
+_Placement_ is the decision of where a build job runs. The live engine is
 Rust, inside the queue crate, exposed as `fleet queue dispatch`,
 `fleet queue session …`, and `fleet queue surfaces`. (A Go directory at
 `pkgs/fleet/placement/` is an unwired proof of concept for a different
@@ -10,7 +10,7 @@ Source: https://github.com/developing-today/code/blob/main/pkgs/fleet/crates/fle
 
 ## Surfaces as data: the registry
 
-No surface is hardcoded. A *surface* is one entry in the registry file
+No surface is hardcoded. A _surface_ is one entry in the registry file
 `fleet-surfaces.json` (version 2), and adding a location is adding an entry.
 Resolution order: `--registry <path>` or the `FLEET_PLACE_REGISTRY`
 environment variable (strict — a bad path is fatal, never a silent fallback);
@@ -22,25 +22,25 @@ pretty JSON.
 The top level is `{comment, version, laptop: {busy, busy_source, note},
 owners: {…}, surfaces: […]}`. Each surface entry carries:
 
-| Field | Meaning |
-|---|---|
-| `id` | Surface identity; the `--surface` pin, session records, and tie-breaks key on it. |
-| `kind` | Adapter selector: `github-actions`, `blacksmith`, `codespace`, or `laptop`. Any other value has no adapter and is invisible to the cascade (and cannot be pinned). |
-| `status` | `base_eligible` requires exactly `active` for Actions/Blacksmith surfaces. Shipped values: `active`, `standby`, `pending-scope`, `handoff-only`. |
-| `owner` | The account whose cap, load, and budget the surface draws on. Load is aggregated per owner, not per surface. |
-| `repo` | The *runner-host* repo the workflow is dispatched in (not the target repo); null for codespace and laptop. |
-| `workflow` | The workflow file dispatched; `fleet-command.yml` for all Actions/Blacksmith surfaces. |
-| `targets` | Target-repo patterns: exact `owner/repo`, `owner/*`, or `*`. |
-| `dispatch_as` | `user` = the signed-in user's token; absent/`app` = a GitHub App installation token. Any other value fails eligibility. |
-| `dispatch_id_input` | The workflow declares a `dispatch_id` input (used for exact run correlation). |
-| `platform_input` | The workflow declares a `platform` input; gates macOS eligibility and sending the input. |
-| `previous_run_id_input` | The workflow accepts the follow-up output-download inputs. |
-| `container_input` | The workflow accepts `container_image`; `--container` is only sent when this is true. |
-| `sticky_queue_threshold` | Follow-up stickiness threshold; code default 2, minimum 1. All shipped surfaces: 2. |
-| `selection_priority` | Tier-1 sort key; code default 50. Shipped: 10 everywhere except `org-run` at 20. Lower sorts first. |
-| `public_targets_only` | Only `fleet-forks` (true): eligibility does a live repo read and requires `"private": false`. |
-| `budget` | Blacksmith: `{free_minutes_monthly, paid_cap_minutes, rate_note}`. Codespace: `{core_hours_monthly, note}`. |
-| `max_live` | Only `codespace-overflow`: 3. Printed in the capacity summary; **never enforced** (source behaviour). |
+| Field                    | Meaning                                                                                                                                                            |
+| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `id`                     | Surface identity; the `--surface` pin, session records, and tie-breaks key on it.                                                                                  |
+| `kind`                   | Adapter selector: `github-actions`, `blacksmith`, `codespace`, or `laptop`. Any other value has no adapter and is invisible to the cascade (and cannot be pinned). |
+| `status`                 | `base_eligible` requires exactly `active` for Actions/Blacksmith surfaces. Shipped values: `active`, `standby`, `pending-scope`, `handoff-only`.                   |
+| `owner`                  | The account whose cap, load, and budget the surface draws on. Load is aggregated per owner, not per surface.                                                       |
+| `repo`                   | The _runner-host_ repo the workflow is dispatched in (not the target repo); null for codespace and laptop.                                                         |
+| `workflow`               | The workflow file dispatched; `fleet-command.yml` for all Actions/Blacksmith surfaces.                                                                             |
+| `targets`                | Target-repo patterns: exact `owner/repo`, `owner/*`, or `*`.                                                                                                       |
+| `dispatch_as`            | `user` = the signed-in user's token; absent/`app` = a GitHub App installation token. Any other value fails eligibility.                                            |
+| `dispatch_id_input`      | The workflow declares a `dispatch_id` input (used for exact run correlation).                                                                                      |
+| `platform_input`         | The workflow declares a `platform` input; gates macOS eligibility and sending the input.                                                                           |
+| `previous_run_id_input`  | The workflow accepts the follow-up output-download inputs.                                                                                                         |
+| `container_input`        | The workflow accepts `container_image`; `--container` is only sent when this is true.                                                                              |
+| `sticky_queue_threshold` | Follow-up stickiness threshold; code default 2, minimum 1. All shipped surfaces: 2.                                                                                |
+| `selection_priority`     | Tier-1 sort key; code default 50. Shipped: 10 everywhere except `org-run` at 20. Lower sorts first.                                                                |
+| `public_targets_only`    | Only `fleet-forks` (true): eligibility does a live repo read and requires `"private": false`.                                                                      |
+| `budget`                 | Blacksmith: `{free_minutes_monthly, paid_cap_minutes, rate_note}`. Codespace: `{core_hours_monthly, note}`.                                                        |
+| `max_live`               | Only `codespace-overflow`: 3. Printed in the capacity summary; **never enforced** (source behaviour).                                                              |
 
 The seven shipped surfaces: `fleet-personal` (github-actions, dezren39/fleet,
 App dispatch, active), `fleet-org` (github-actions, developing-today/fleet,
@@ -66,11 +66,11 @@ error, exit 2 — and every error in the dispatch/session family prints
 
 From the registry's `owners` table:
 
-| Owner | `concurrent_jobs_cap` | `concurrent_macos_cap` | `plan` | `private_minutes_monthly` |
-|---|---|---|---|---|
-| `dezren39` | **40** | **5** | `pro` | 3000 |
-| `developing-today` | **20** | **5** | `free-org` | 2000 |
-| `developing-today-forks` | **20** | **5** | `free-org (assumed - confirm)` | 2000 |
+| Owner                    | `concurrent_jobs_cap` | `concurrent_macos_cap` | `plan`                         | `private_minutes_monthly` |
+| ------------------------ | --------------------- | ---------------------- | ------------------------------ | ------------------------- |
+| `dezren39`               | **40**                | **5**                  | `pro`                          | 3000                      |
+| `developing-today`       | **20**                | **5**                  | `free-org`                     | 2000                      |
+| `developing-today-forks` | **20**                | **5**                  | `free-org (assumed - confirm)` | 2000                      |
 
 So the working summary is caps of 40/20/20, and a macOS cap of 5 for every
 owner. An owner missing from the table, or a missing cap field, yields cap 0
@@ -79,7 +79,7 @@ are registry documentation only; the placement code never reads them, and
 GitHub private-repo minute billing is not modelled in the cascade.
 
 For a macOS job the effective cap is `min(concurrent_jobs_cap,
-concurrent_macos_cap)` — 5 for every owner — and the adapter counts *all* of
+concurrent_macos_cap)` — 5 for every owner — and the adapter counts _all_ of
 the owner's active host runs (Linux included) against that minimum, so
 dispatch never oversubscribes the small macOS pool. There is no
 macOS-specific load measurement anywhere.
@@ -98,7 +98,7 @@ macOS-specific load measurement anywhere.
 2. **Tier 1 — free GitHub-hosted Actions.** Every `github-actions` surface
    that is eligible with `free_slots > 0`, sorted ascending by
    `(load, owner_last_dispatch, selection_priority, surface_last_dispatch,
-   surface_id)`: least-loaded owner first; among equals, the
+surface_id)`: least-loaded owner first; among equals, the
    least-recently-used owner (an owner never used sorts before all used
    owners); then registry priority; then per-surface last dispatch; then the
    surface id alphabetically. The rotation is owner-first.
@@ -119,7 +119,7 @@ adapter ineligible, and `--runner auto` (the default) leaves both open.
 ## Load measurement
 
 There is no account-wide Actions endpoint, so load is a proxy counted only
-over each owner's *fleet runner-host repos* (the distinct `repo` values of
+over each owner's _fleet runner-host repos_ (the distinct `repo` values of
 that owner's github-actions/blacksmith surfaces). For each host repo, with
 that surface's token, placement reads only `total_count` from
 `GET /repos/{host}/actions/runs?status=in_progress&per_page=1` and the same
@@ -229,7 +229,7 @@ endpoint is secret-configured, never hardcoded in the workflow.
 Two workflow-contract facts placement users hit: placement never sends the
 workflow's `timeout_minutes` input, so **all dispatches run under the
 60-minute default** (the workflow validates 5–120); and the `dispatch_id`
-input is a *fresh* correlation id minted per dispatch, not the session
+input is a _fresh_ correlation id minted per dispatch, not the session
 handle, despite the workflow describing it as one.
 
 ## Sessions: `fp_` handles and portable references

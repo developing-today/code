@@ -12,11 +12,11 @@ Sources: [commands_query.rs](https://github.com/developing-today/code/blob/main/
 usage: repo-queue timeline <task-id> [--worker <id>] [--json]
 ```
 
-| Flag | Argument | Default | Meaning |
-|---|---|---|---|
-| `<task-id>` (positional) | task id | required | The task whose timeline to render. |
-| `--worker` | worker id | `repo-worker-code` | Attribution; the events queries don't use it beyond the shared envelope. |
-| `--json` | boolean | off | Print `{"task_id": n, "events": […], "served": […]}` instead of the rendered timeline. |
+| Flag                     | Argument  | Default            | Meaning                                                                                |
+| ------------------------ | --------- | ------------------ | -------------------------------------------------------------------------------------- |
+| `<task-id>` (positional) | task id   | required           | The task whose timeline to render.                                                     |
+| `--worker`               | worker id | `repo-worker-code` | Attribution; the events queries don't use it beyond the shared envelope.               |
+| `--json`                 | boolean   | off                | Print `{"task_id": n, "events": […], "served": […]}` instead of the rendered timeline. |
 
 **Behaviour.** For each of 14 event kinds — `claimed, session_bound, lane_session_bound, model_stamp, session_unbound, session_binding_cleared, completed, lease_expired, lease_expired_at_cap, claim_refused, released, parked, failed, cancelled` — it calls `/events-list {task_id, kind, limit:1000}`, merges, sorts by event id, and collapses duplicates (same kind/session/leaf/trigger within 120 s = one record written by two surfaces). If the broker doesn't serve `/events-list`, it prints the interim direct-DB SQL to stderr and exits **3**. Output: a rendered timeline (binding windows with the exact resolved models per window, joined from the route ledger). With `--json`: `{"task_id": n, "events": […], "served": [{"session_id", "start", "end", "segments": […]}]}`; an empty timeline prints `task <id>: no timeline records` (or the empty JSON shape), exit 0.
 
@@ -37,11 +37,11 @@ task 19479 timeline:
 usage: repo-queue history <task-id> [--worker <id>] [--json]
 ```
 
-| Flag | Argument | Default | Meaning |
-|---|---|---|---|
-| `<task-id>` (positional) | task id | required | The task whose timeline to render. |
-| `--worker` | worker id | `repo-worker-code` | Attribution (as `timeline`). |
-| `--json` | boolean | off | JSON output (as `timeline`). |
+| Flag                     | Argument  | Default            | Meaning                            |
+| ------------------------ | --------- | ------------------ | ---------------------------------- |
+| `<task-id>` (positional) | task id   | required           | The task whose timeline to render. |
+| `--worker`               | worker id | `repo-worker-code` | Attribution (as `timeline`).       |
+| `--json`                 | boolean   | off                | JSON output (as `timeline`).       |
 
 **Behaviour.** `history` is a pure alias of `timeline`: same function, same output, same exit codes. See `timeline` above for the full behaviour.
 
@@ -58,10 +58,10 @@ $ fleet queue history 19479 --json
 usage: repo-queue signal [--queue <name>] [--reason <text>]
 ```
 
-| Flag | Argument | Default | Meaning |
-|---|---|---|---|
-| `--queue` | queue name | `repo-health-code-shadow` | The ordinary queue resolution — flag → env `REPO_QUEUE_DEFAULT_QUEUE` → the shadow default. (Unlike `claim`/`list`, signal is NOT unscoped; unlike `enqueue`, it does have a default.) |
-| `--reason` | text | `manual_signal` | Reason recorded in the signal object. |
+| Flag       | Argument   | Default                   | Meaning                                                                                                                                                                                |
+| ---------- | ---------- | ------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--queue`  | queue name | `repo-health-code-shadow` | The ordinary queue resolution — flag → env `REPO_QUEUE_DEFAULT_QUEUE` → the shadow default. (Unlike `claim`/`list`, signal is NOT unscoped; unlike `enqueue`, it does have a default.) |
+| `--reason` | text       | `manual_signal`           | Reason recorded in the signal object.                                                                                                                                                  |
 
 **Behaviour.** Asks the broker `/signal-count {queue}` for `queued_count` + `oldest_queued_at`, then writes a wake-up signal file for the queue's consumers: a JSON object `{"queue", "generation", "queued_count", "oldest_queued_at", "updated_at", "reason"}` where `generation` is one more than the max generation found in the existing signal/state files for that queue. Signal file path: env `REPO_QUEUE_SIGNAL_PATH`, else `$HOME/workspace/goals/keep-the-four-repos-healthy/hidden_files/repo-queue-signal.json`, with a sibling `repo-queue-signal-state.json` carrying `{queue, generation, updated_at}`. Both writes are atomic (tmp + rename); a write failure dies exit 3. The printed output is the signal object itself, exit 0.
 
@@ -78,10 +78,10 @@ $ fleet queue signal --queue repo-health-code --reason "manual wake for the book
 usage: repo-queue models [--days <n>] [--json]
 ```
 
-| Flag | Argument | Default | Meaning |
-|---|---|---|---|
-| `--days` | integer days | 7 | Rollup window. **Clamped** to 1..=30 (note: clamped, unlike the reject-don't-clamp duration/limit flags elsewhere). |
-| `--json` | boolean | off | Print an object including `"days"` and the per-model rows instead of the human table. |
+| Flag     | Argument     | Default | Meaning                                                                                                             |
+| -------- | ------------ | ------- | ------------------------------------------------------------------------------------------------------------------- |
+| `--days` | integer days | 7       | Rollup window. **Clamped** to 1..=30 (note: clamped, unlike the reject-don't-clamp duration/limit flags elsewhere). |
+| `--json` | boolean      | off     | Print an object including `"days"` and the per-model rows instead of the human table.                               |
 
 **Behaviour.** Rolls up serving-model stamps across tasks: which models worked which tasks, joined from claim stamps + timeline binding windows + the route ledger. Output: human table headed `model rollup — last <n>d (since <ts>)`, or with `--json` an object including `"days"` and the per-model rows. If the broker's `/events-list` doesn't serve the cross-task kinds, it prints `repo-queue models: this broker does not serve cross-task …` and a 50000-row scan cap produces a warning line rather than silent truncation.
 
@@ -112,14 +112,14 @@ Each subverb below follows the reference format. All outbox subverbs print the f
 usage: repo-queue outbox enqueue [--repo <r>] [--kind <k>] [--dedup-key <d>] [--producer <p>] [--payload <json> | --payload-file <f>]
 ```
 
-| Flag | Argument | Default | Meaning |
-|---|---|---|---|
-| `--repo` | repo | unset | Target repo for the object to create. |
-| `--kind` | `issue\|pull_request\|issue_comment\|pr_comment` | unset | Object kind. |
-| `--dedup-key` | key | unset | Dedupe key; the broker table has a unique index on `(repo, dedup_key)`. |
-| `--producer` | producer name | unset | Producing identity (pilot: `new-issue-creator-code-a`). |
-| `--payload` | JSON | **required (one of the two)** | Creation payload inline. Neither `--payload` nor `--payload-file` → exit 2. |
-| `--payload-file` | file path | **required (one of the two)** | Creation payload from a file. |
+| Flag             | Argument                                         | Default                       | Meaning                                                                     |
+| ---------------- | ------------------------------------------------ | ----------------------------- | --------------------------------------------------------------------------- |
+| `--repo`         | repo                                             | unset                         | Target repo for the object to create.                                       |
+| `--kind`         | `issue\|pull_request\|issue_comment\|pr_comment` | unset                         | Object kind.                                                                |
+| `--dedup-key`    | key                                              | unset                         | Dedupe key; the broker table has a unique index on `(repo, dedup_key)`.     |
+| `--producer`     | producer name                                    | unset                         | Producing identity (pilot: `new-issue-creator-code-a`).                     |
+| `--payload`      | JSON                                             | **required (one of the two)** | Creation payload inline. Neither `--payload` nor `--payload-file` → exit 2. |
+| `--payload-file` | file path                                        | **required (one of the two)** | Creation payload from a file.                                               |
 
 **Behaviour.** POST `/outbox-enqueue`; prints the full broker envelope JSON. The entry lands in state `pending`.
 
@@ -136,10 +136,10 @@ $ fleet queue outbox enqueue --repo developing-today/code --kind issue --dedup-k
 usage: repo-queue outbox list [--repo <r>] [--state <s>]
 ```
 
-| Flag | Argument | Default | Meaning |
-|---|---|---|---|
-| `--repo` | repo | unset | Filter by repo. |
-| `--state` | `pending\|leased\|uncertain\|done\|blocked` | unset | Filter by state. |
+| Flag      | Argument                                    | Default | Meaning          |
+| --------- | ------------------------------------------- | ------- | ---------------- |
+| `--repo`  | repo                                        | unset   | Filter by repo.  |
+| `--state` | `pending\|leased\|uncertain\|done\|blocked` | unset   | Filter by state. |
 
 **Behaviour.** POST `/outbox-list`; prints the envelope.
 
@@ -156,9 +156,9 @@ $ fleet queue outbox list --state pending
 usage: repo-queue outbox metrics
 ```
 
-| Flag | Argument | Default | Meaning |
-|---|---|---|---|
-| _(none)_ | — | — | Takes no flags. |
+| Flag     | Argument | Default | Meaning         |
+| -------- | -------- | ------- | --------------- |
+| _(none)_ | —        | —       | Takes no flags. |
 
 **Behaviour.** POST `/outbox-metrics` with `{}`; prints the envelope (counts by state/kind plus circuit-breaker state).
 
@@ -175,8 +175,8 @@ $ fleet queue outbox metrics
 usage: repo-queue outbox claim [--owner <name>]
 ```
 
-| Flag | Argument | Default | Meaning |
-|---|---|---|---|
+| Flag      | Argument   | Default          | Meaning                                          |
+| --------- | ---------- | ---------------- | ------------------------------------------------ |
 | `--owner` | owner name | `outbox-drainer` | Claiming drainer identity. Claim lease is 120 s. |
 
 **Behaviour.** Claims the oldest due entry; prints the envelope (its `row` is null when idle).
@@ -194,14 +194,14 @@ $ fleet queue outbox claim
 usage: repo-queue outbox resolve <id> [--outcome done|rate_limited|uncertain|failed] [--github-number <n>] [--github-url <u>] [--retry-after <s>] [--error <text>]
 ```
 
-| Flag | Argument | Default | Meaning |
-|---|---|---|---|
-| `<id>` (positional) | entry id | required | The leased entry to resolve. Missing `<id>` → exit 2 with the usage line. |
-| `--outcome` | `done\|rate_limited\|uncertain\|failed` | **none (see note)** | Resolution outcome. |
-| `--github-number` | integer | unset | Created object's number, for `done`. |
-| `--github-url` | URL | unset | Created object's URL, for `done`. |
-| `--retry-after` | seconds | unset | Backoff hint for `rate_limited`. |
-| `--error` | text | unset | Error text for `failed`/`uncertain`. |
+| Flag                | Argument                                | Default             | Meaning                                                                   |
+| ------------------- | --------------------------------------- | ------------------- | ------------------------------------------------------------------------- |
+| `<id>` (positional) | entry id                                | required            | The leased entry to resolve. Missing `<id>` → exit 2 with the usage line. |
+| `--outcome`         | `done\|rate_limited\|uncertain\|failed` | **none (see note)** | Resolution outcome.                                                       |
+| `--github-number`   | integer                                 | unset               | Created object's number, for `done`.                                      |
+| `--github-url`      | URL                                     | unset               | Created object's URL, for `done`.                                         |
+| `--retry-after`     | seconds                                 | unset               | Backoff hint for `rate_limited`.                                          |
+| `--error`           | text                                    | unset               | Error text for `failed`/`uncertain`.                                      |
 
 **Behaviour.** POST `/outbox-resolve` for the leased entry, recording the outcome and (for `done`) the created object's identity for read-back reconciliation.
 
@@ -220,12 +220,12 @@ $ fleet queue outbox resolve 77 --outcome done --github-number 13170 --github-ur
 usage: repo-queue outbox drain [--owner <name>] [--max <n>]
 ```
 
-| Flag | Argument | Default | Meaning |
-|---|---|---|---|
-| `--owner` | owner name | `outbox-drainer` | Drainer identity used for claims. |
-| `--max` | integer | 20 | Max items to drain this run, floored at 1. |
+| Flag      | Argument   | Default          | Meaning                                    |
+| --------- | ---------- | ---------------- | ------------------------------------------ |
+| `--owner` | owner name | `outbox-drainer` | Drainer identity used for claims.          |
+| `--max`   | integer    | 20               | Max items to drain this run, floored at 1. |
 
-**Behaviour.** The pilot drainer itself. Loop: claim → if the entry is `uncertain`, reconcile by marker first (search + strongly-consistent list scan; a lookup that *could not check* keeps the entry uncertain with the error class recorded and **never re-creates**) → create via `gh` (pacing: ≥2 s between creates; the broker enforces circuit + hourly budget at claim) → verify by read-back → resolve. Per-item output lines are JSON: `{"id","outcome":"done"|"uncertain"|"rate_limited"|"failed"|"reconciled"|"lookup_unchecked", …}`; when the claim comes back empty it prints `{"drained": k, "idle": true, "claim": <envelope>}` and exits 0; after `--max` items, `{"drained": k, "idle": false}`. Create outcomes map: created+verified → `done`; created but read-back failed or ambiguous output → `uncertain`; 403/429/rate-limit → `rate_limited`; other failure → `failed`.
+**Behaviour.** The pilot drainer itself. Loop: claim → if the entry is `uncertain`, reconcile by marker first (search + strongly-consistent list scan; a lookup that _could not check_ keeps the entry uncertain with the error class recorded and **never re-creates**) → create via `gh` (pacing: ≥2 s between creates; the broker enforces circuit + hourly budget at claim) → verify by read-back → resolve. Per-item output lines are JSON: `{"id","outcome":"done"|"uncertain"|"rate_limited"|"failed"|"reconciled"|"lookup_unchecked", …}`; when the claim comes back empty it prints `{"drained": k, "idle": true, "claim": <envelope>}` and exits 0; after `--max` items, `{"drained": k, "idle": false}`. Create outcomes map: created+verified → `done`; created but read-back failed or ambiguous output → `uncertain`; 403/429/rate-limit → `rate_limited`; other failure → `failed`.
 
 Exit codes: 0 drained / idle · 2 usage · 3 transport (a broker failure stops the drain visibly) · 4 broker store failure.
 
@@ -251,20 +251,20 @@ Each subverb below follows the reference format.
 usage: repo-queue stack record --stack <id> --repo <r> --branch <b> [--base-branch <b>] [--head-sha <sha>] [--issue <n>] [--pr <n>] --lane <l> [--worker <id>] [--session-id <id>]
 ```
 
-| Flag | Argument | Default | Meaning |
-|---|---|---|---|
-| `--stack` | stack id | **required** | Stack to append to. Missing → exit 2. |
-| `--repo` | repo | **required** | The intent's repo. Missing → exit 2. |
-| `--branch` | branch name | **required** | The finished branch. Missing → exit 2. |
-| `--base-branch` | branch name | unset | Base the branch was authored against. |
-| `--head-sha` | commit SHA | unset | Recorded head SHA. |
-| `--issue` | issue number | unset | Linked issue. |
-| `--pr` | PR number | unset | Linked PR. |
-| `--lane` | lane id | **required** | Authoring lane (the owner lane for conflict routing). Missing → exit 2. |
-| `--worker` | worker id | caller's worker (`repo-worker-code`) | Authoring worker. |
-| `--session-id` | session id | unset | Authoring session. |
+| Flag            | Argument     | Default                              | Meaning                                                                 |
+| --------------- | ------------ | ------------------------------------ | ----------------------------------------------------------------------- |
+| `--stack`       | stack id     | **required**                         | Stack to append to. Missing → exit 2.                                   |
+| `--repo`        | repo         | **required**                         | The intent's repo. Missing → exit 2.                                    |
+| `--branch`      | branch name  | **required**                         | The finished branch. Missing → exit 2.                                  |
+| `--base-branch` | branch name  | unset                                | Base the branch was authored against.                                   |
+| `--head-sha`    | commit SHA   | unset                                | Recorded head SHA.                                                      |
+| `--issue`       | issue number | unset                                | Linked issue.                                                           |
+| `--pr`          | PR number    | unset                                | Linked PR.                                                              |
+| `--lane`        | lane id      | **required**                         | Authoring lane (the owner lane for conflict routing). Missing → exit 2. |
+| `--worker`      | worker id    | caller's worker (`repo-worker-code`) | Authoring worker.                                                       |
+| `--session-id`  | session id   | unset                                | Authoring session.                                                      |
 
-**Behaviour.** The append is fail-fast validated client-side with the *same* pure-core rules the broker applies, and the broker additionally validates the (lane, worker) pair against the lane registry — an unregistered owner lane is refused. POST `/stack-record`; prints the row.
+**Behaviour.** The append is fail-fast validated client-side with the _same_ pure-core rules the broker applies, and the broker additionally validates the (lane, worker) pair against the lane registry — an unregistered owner lane is refused. POST `/stack-record`; prints the row.
 
 Exit codes: 0 ok · 2 usage / missing required flag / validation failure · 3 transport · 4 broker store failure / broker refusal.
 
@@ -279,11 +279,11 @@ $ fleet queue stack record --stack book-13165 --repo developing-today/code --bra
 usage: repo-queue stack list <stack-id> [--stack <id>] [--worker <id>]
 ```
 
-| Flag | Argument | Default | Meaning |
-|---|---|---|---|
-| `<stack-id>` (positional) | stack id | one of positional / `--stack` required | The stack to list. |
-| `--stack` | stack id | unset | Alternative spelling of the positional. If both are given and disagree → exit 2. |
-| `--worker` | worker id | `repo-worker-code` | Caller identity. |
+| Flag                      | Argument  | Default                                | Meaning                                                                          |
+| ------------------------- | --------- | -------------------------------------- | -------------------------------------------------------------------------------- |
+| `<stack-id>` (positional) | stack id  | one of positional / `--stack` required | The stack to list.                                                               |
+| `--stack`                 | stack id  | unset                                  | Alternative spelling of the positional. If both are given and disagree → exit 2. |
+| `--worker`                | worker id | `repo-worker-code`                     | Caller identity.                                                                 |
 
 **Behaviour.** POST `/stack-list`; prints the derived stack state (the full state is answered from the database alone).
 
@@ -300,14 +300,14 @@ $ fleet queue stack list book-13165
 usage: repo-queue stack transition --stack <id> --position <n> --to <state> [--pr <n>] [--conflict-detail <text>] [--worker <id>]
 ```
 
-| Flag | Argument | Default | Meaning |
-|---|---|---|---|
-| `--stack` | stack id | **required** | The stack. Missing → exit 2. |
-| `--position` | integer | **required** | The intent's position. Missing → exit 2. |
-| `--to` | intent state | **required** | Target state; must parse as an intent state (`intended`, `replaying`, `landed`, `conflicted`, `abandoned`). Missing/unparseable → exit 2. |
-| `--pr` | PR number | unset | PR associated with the move. |
-| `--conflict-detail` | text | **required when `--to conflicted`** | What the authoring lane must resolve. A move to `conflicted` without it → exit 2. |
-| `--worker` | worker id | `repo-worker-code` | Caller identity. |
+| Flag                | Argument     | Default                             | Meaning                                                                                                                                   |
+| ------------------- | ------------ | ----------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| `--stack`           | stack id     | **required**                        | The stack. Missing → exit 2.                                                                                                              |
+| `--position`        | integer      | **required**                        | The intent's position. Missing → exit 2.                                                                                                  |
+| `--to`              | intent state | **required**                        | Target state; must parse as an intent state (`intended`, `replaying`, `landed`, `conflicted`, `abandoned`). Missing/unparseable → exit 2. |
+| `--pr`              | PR number    | unset                               | PR associated with the move.                                                                                                              |
+| `--conflict-detail` | text         | **required when `--to conflicted`** | What the authoring lane must resolve. A move to `conflicted` without it → exit 2.                                                         |
+| `--worker`          | worker id    | `repo-worker-code`                  | Caller identity.                                                                                                                          |
 
 **Behaviour.** An illegal move is a broker refusal, not a write. POST `/stack-transition`.
 
@@ -324,13 +324,13 @@ $ fleet queue stack transition --stack book-13165 --position 0 --to replaying
 usage: repo-queue stack restack --stack <id> --position <n> --base <b> [--head-sha <sha>] [--worker <id>]
 ```
 
-| Flag | Argument | Default | Meaning |
-|---|---|---|---|
-| `--stack` | stack id | **required** | The stack. Missing → exit 2. |
-| `--position` | integer | **required** | The intent's position. Missing → exit 2. |
-| `--base` | branch name | **required** | The new base branch. Missing → exit 2. |
-| `--head-sha` | commit SHA | unset | New head SHA after the restack. |
-| `--worker` | worker id | `repo-worker-code` | Caller identity. |
+| Flag         | Argument    | Default            | Meaning                                  |
+| ------------ | ----------- | ------------------ | ---------------------------------------- |
+| `--stack`    | stack id    | **required**       | The stack. Missing → exit 2.             |
+| `--position` | integer     | **required**       | The intent's position. Missing → exit 2. |
+| `--base`     | branch name | **required**       | The new base branch. Missing → exit 2.   |
+| `--head-sha` | commit SHA  | unset              | New head SHA after the restack.          |
+| `--worker`   | worker id   | `repo-worker-code` | Caller identity.                         |
 
 **Behaviour.** Acknowledges that an intent's author restacked its branch off a withdrawn base; the broker re-plans with the core's `plan_restack` (taint rules bind there) and refreshes the recorded `base_branch`. POST `/stack-restack`.
 
@@ -347,12 +347,12 @@ $ fleet queue stack restack --stack book-13165 --position 0 --base main
 usage: repo-queue stack replay [--stack <id>] [--worker <id>] [--repo-dir <dir>] [--dry-run]
 ```
 
-| Flag | Argument | Default | Meaning |
-|---|---|---|---|
-| `--stack` | stack id | **required in practice** | The stack to replay. The usage line brackets it optional, but missing → exit 2. |
-| `--worker` | worker id | `repo-worker-code` | Caller identity. |
-| `--repo-dir` | directory | `.` | Checkout to replay in. |
-| `--dry-run` | boolean | off | Print the plan JSON — exactly what a live pass would do — and change nothing. |
+| Flag         | Argument  | Default                  | Meaning                                                                         |
+| ------------ | --------- | ------------------------ | ------------------------------------------------------------------------------- |
+| `--stack`    | stack id  | **required in practice** | The stack to replay. The usage line brackets it optional, but missing → exit 2. |
+| `--worker`   | worker id | `repo-worker-code`       | Caller identity.                                                                |
+| `--repo-dir` | directory | `.`                      | Checkout to replay in.                                                          |
+| `--dry-run`  | boolean   | off                      | Print the plan JSON — exactly what a live pass would do — and change nothing.   |
 
 **Behaviour.** The replay executor: walks the stack's recorded merge order bottom-up and lands it — rebase onto new main, push (force-with-lease pinned to the verified pre-rebase tip), open PR, merge, mark landed, post the outcome note — one intent at a time. `--dry-run` prints `{"stack_id","dry_run":true,"plan":[{"position","branch","action"}]}`. Refuses a checkout with somebody else's rebase already in progress. Replay never resolves a conflict itself.
 

@@ -34,23 +34,23 @@ see [The shape of the binary](shape.md).
 fleet agent doctor
 ```
 
-Doctor probes the seat's four *legs* — a leg is one route the seat needs —
+Doctor probes the seat's four _legs_ — a leg is one route the seat needs —
 in parallel, each by running a real fleet verb as this seat, and prints one
 JSON object:
 
-| Leg | Probe | What "up" needs |
-|---|---|---|
-| `bridge` | `bridge inbox --agent <name> --limit 1` (with a known agent name) | HTTPS to the message bridge, and the fleet token resolved by name through fleet secrets |
-| `queue` | `queue health` | The queue broker: its socket on the laptop, or the laptop transport from elsewhere |
-| `github` | `gh api rate_limit` through `fleet gh` (falling back to a plain signed-in `gh`) | A working `gh` token, by fleet rotation or by sign-in |
-| `shell` | `laptop-agent health` | A route to the laptop: its broker, the Cloudflare tunnel, the tailnet, or SSH |
+| Leg      | Probe                                                                           | What "up" needs                                                                         |
+| -------- | ------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------- |
+| `bridge` | `bridge inbox --agent <name> --limit 1` (with a known agent name)               | HTTPS to the message bridge, and the fleet token resolved by name through fleet secrets |
+| `queue`  | `queue health`                                                                  | The queue broker: its socket on the laptop, or the laptop transport from elsewhere      |
+| `github` | `gh api rate_limit` through `fleet gh` (falling back to a plain signed-in `gh`) | A working `gh` token, by fleet rotation or by sign-in                                   |
+| `shell`  | `laptop-agent health`                                                           | A route to the laptop: its broker, the Cloudflare tunnel, the tailnet, or SSH           |
 
-The bridge probe is deliberately a read made *as* an agent: service health
+The bridge probe is deliberately a read made _as_ an agent: service health
 alone proves nothing about whether this seat holds the fleet token, so with
 no agent name known the bridge leg is reported not ok even when the service
 answers.
 
-From the legs, doctor derives the *rungs* map — which rungs of the intake
+From the legs, doctor derives the _rungs_ map — which rungs of the intake
 ladder (see step 5) this seat still has: `push` follows the bridge leg,
 `queue` follows the queue leg, `shortlist` is always true (it is a local
 file), and `priority` follows the github leg. It also reports `builds`:
@@ -71,7 +71,7 @@ fleet secrets get tailscale.auth-key
 (Any secret name your seat is entitled to works; `tailscale.auth-key` is the
 name the bootstrap check phase uses.)
 
-This resolves the secret *by name*: the secrets broker first, Bitwarden
+This resolves the secret _by name_: the secrets broker first, Bitwarden
 (`bws`) as fallback. The value goes to stdout and nowhere else — not to a
 log, not to an error message. Resolution order and cache semantics are in
 [Secrets and the secrets broker](../concepts/secrets.md); the short version
@@ -96,7 +96,7 @@ This asks the queue broker for its health table. The first output line is
 `project: <netloc> (resolved via <source>)`; the table that follows carries
 per-queue counts by task status, or `(no queues have tasks)` when empty.
 Exit 0 means the broker answered. Exit 3 means the transport path to the
-broker failed. Exit 6 is special: it is the *fallback switch* — the primary
+broker failed. Exit 6 is special: it is the _fallback switch_ — the primary
 queue store failed and this work has been switched to the GitHub fallback
 queue; the output is one JSON object saying so, with a hint naming the
 `fleet queue fallback …` verbs to continue with. See
@@ -111,7 +111,7 @@ different thing from the broker's unauthenticated `GET /healthz` probe.
 fleet agent next
 ```
 
-`next` walks the *intake ladder* — four rungs, in order — and returns the
+`next` walks the _intake ladder_ — four rungs, in order — and returns the
 first piece of work it finds, as one JSON object
 `{agent, rung, task, then, tried}`:
 
@@ -130,7 +130,7 @@ first piece of work it finds, as one JSON object
    host do not take the same issue.
 
 `tried` is the per-rung log: each rung is recorded as `skipped`, `empty`,
-`down`, or `rejected`, with a reason. A rung that is *down* is skipped, not
+`down`, or `rejected`, with a reason. A rung that is _down_ is skipped, not
 fatal — that is what doctor's rung map predicted. Exit codes: 0 when work
 was handed out, 5 when no rung had work, 3 when a needed leg is down in a
 way that leaves nothing to try, 2 for a usage error.

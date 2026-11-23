@@ -13,14 +13,14 @@ fleet gh <args...>
 fleet gh --raw <args...>
 ```
 
-| Flag | Argument | Default | Meaning |
-|---|---|---|---|
-| `--raw` | — | off (also `FLEET_GH_RAW=1`) | First-class bypass: exec the real `gh` directly with the caller's ambient credentials; no token resolved or injected, no rotation or failover. |
-| *(all other args)* | — | — | Passed to the real `gh` binary unchanged. `FLEET_GH_BIN` selects the binary, default `gh`. |
+| Flag               | Argument | Default                     | Meaning                                                                                                                                        |
+| ------------------ | -------- | --------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--raw`            | —        | off (also `FLEET_GH_RAW=1`) | First-class bypass: exec the real `gh` directly with the caller's ambient credentials; no token resolved or injected, no rotation or failover. |
+| _(all other args)_ | —        | —                           | Passed to the real `gh` binary unchanged. `FLEET_GH_BIN` selects the binary, default `gh`.                                                     |
 
 ### Behaviour
 
-Before each attempt, one token is resolved by name through the fleet secrets chain and exported as `GH_TOKEN` **for that attempt only**. Attempts are *captured* (piped), not streamed, because the failure text is what classifies a failover; the caller sees the final attempt's stdout, stderr, and exit code **byte-exact** as `gh` produced them. Attempts are silent by default; `FLEET_GH_TRACE=1` names each attempt's token *source* (never a value) on stderr. Tokens are never printed, logged, or written to a file; provider errors name source and stage only. The audit log redacts secret-carrying arguments (`gh secret set` bodies, `Authorization` headers) in its copy only.
+Before each attempt, one token is resolved by name through the fleet secrets chain and exported as `GH_TOKEN` **for that attempt only**. Attempts are _captured_ (piped), not streamed, because the failure text is what classifies a failover; the caller sees the final attempt's stdout, stderr, and exit code **byte-exact** as `gh` produced them. Attempts are silent by default; `FLEET_GH_TRACE=1` names each attempt's token _source_ (never a value) on stderr. Tokens are never printed, logged, or written to a file; provider errors name source and stage only. The audit log redacts secret-carrying arguments (`gh secret set` bodies, `Authorization` headers) in its copy only.
 
 **Rotation order** (source behaviour):
 
@@ -31,18 +31,18 @@ Before each attempt, one token is resolved by name through the fleet secrets cha
 
 Known discrepancy: the help summary's "personal, then the developing.today App's installations" understates the source — there are **three** Apps in a fixed order (fleet → developing.today → backup), each expanded over its owners.
 
-Mechanics per App leg: the private key is resolved by name; an RS256 JWT is signed with the system `openssl`, the key passed over an inherited fd — never written to disk, never in argv; the owner's installation is resolved live from `GET /app/installations`, paginated at 100/page. **Hint-first:** when the call names a repo or org, that owner's installation moves to the front of *each* App leg, because an installation token only sees its own installation's scope. Controls: `FLEET_GH_ORDER` (comma list fixing the rotation exactly: `personal`, `app:<owner>`, `devtoday:<owner>`, `backup:<owner>`), `FLEET_GH_APP_OWNERS` / `FLEET_GH_DEVTODAY_OWNERS` / `FLEET_GH_BACKUP_OWNERS` (comma lists replacing an App's default owners).
+Mechanics per App leg: the private key is resolved by name; an RS256 JWT is signed with the system `openssl`, the key passed over an inherited fd — never written to disk, never in argv; the owner's installation is resolved live from `GET /app/installations`, paginated at 100/page. **Hint-first:** when the call names a repo or org, that owner's installation moves to the front of _each_ App leg, because an installation token only sees its own installation's scope. Controls: `FLEET_GH_ORDER` (comma list fixing the rotation exactly: `personal`, `app:<owner>`, `devtoday:<owner>`, `backup:<owner>`), `FLEET_GH_APP_OWNERS` / `FLEET_GH_DEVTODAY_OWNERS` / `FLEET_GH_BACKUP_OWNERS` (comma lists replacing an App's default owners).
 
 **Failover triggers.** A failed attempt's combined stdout+stderr is classified:
 
-| Class | Trigger strings (case-insensitive) | Retry? |
-|---|---|---|
-| RateLimit | `rate limit`, `rate_limit`, `too many requests`, `http 429` | Yes — any call |
-| Permission | `missing required scopes`, `insufficient_scopes`, `resource not accessible`, `not accessible by integration`, `not accessible by personal access token`, `this endpoint requires you to be authenticated`, `bad credentials`, `http 401` | Yes — any call |
-| NodeResolution | `could not resolve to a node` | Read-only calls only |
-| Other | anything else | Read-only calls only |
+| Class          | Trigger strings (case-insensitive)                                                                                                                                                                                                       | Retry?               |
+| -------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------- |
+| RateLimit      | `rate limit`, `rate_limit`, `too many requests`, `http 429`                                                                                                                                                                              | Yes — any call       |
+| Permission     | `missing required scopes`, `insufficient_scopes`, `resource not accessible`, `not accessible by integration`, `not accessible by personal access token`, `this endpoint requires you to be authenticated`, `bad credentials`, `http 401` | Yes — any call       |
+| NodeResolution | `could not resolve to a node`                                                                                                                                                                                                            | Read-only calls only |
+| Other          | anything else                                                                                                                                                                                                                            | Read-only calls only |
 
-The rule: a **write is only repeated under a fresh token when the failure proves GitHub refused the request before processing it** — rate-limit and permission/scope rejections are both pre-execution refusals. Node-resolution is explicitly not one: GraphQL executes mutation fields serially, so a batched mutation may already have run an earlier field before a later field's node fails to resolve; replaying would duplicate the part that landed. Any other write failure is returned as-is. Reads repeat on any failure class. A token *provider* failure skips that source silently (named under trace) and the rotation continues; if no attempt produced output, the caller gets the provider errors and exit 3. If the last failover has no successor, the caller is shown the real `gh` failure, not a summary.
+The rule: a **write is only repeated under a fresh token when the failure proves GitHub refused the request before processing it** — rate-limit and permission/scope rejections are both pre-execution refusals. Node-resolution is explicitly not one: GraphQL executes mutation fields serially, so a batched mutation may already have run an earlier field before a later field's node fails to resolve; replaying would duplicate the part that landed. Any other write failure is returned as-is. Reads repeat on any failure class. A token _provider_ failure skips that source silently (named under trace) and the rotation continues; if no attempt produced output, the caller gets the provider errors and exit 3. If the last failover has no successor, the caller is shown the real `gh` failure, not a summary.
 
 Two wrappers sit in front of the rotation:
 
@@ -69,13 +69,13 @@ Runs the real `gh` under the first rotation token that succeeds, failing over on
 fleet gh tiers
 ```
 
-| Flag | Argument | Default | Meaning |
-|---|---|---|---|
-| — | — | — | Takes no flags. |
+| Flag | Argument | Default | Meaning         |
+| ---- | -------- | ------- | --------------- |
+| —    | —        | —       | Takes no flags. |
 
 ### Behaviour
 
-Probes *every* rotation source and prints its core and GraphQL rate-limit headroom — labels and numbers only; token values never leave the provider.
+Probes _every_ rotation source and prints its core and GraphQL rate-limit headroom — labels and numbers only; token values never leave the provider.
 
 Known discrepancy: `tiers` takes no `--help`: `fleet gh tiers --help` errors with `error: unexpected argument '--help' for 'fleet gh tiers'`. This verb is documented only in source.
 
@@ -98,22 +98,22 @@ Prints per-source core and GraphQL headroom for the personal token and all three
 fleet gh cache-serve [--bind <addr>]
 ```
 
-| Flag | Argument | Default | Meaning |
-|---|---|---|---|
+| Flag     | Argument | Default                                      | Meaning                                                                                                |
+| -------- | -------- | -------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
 | `--bind` | `<addr>` | `FLEET_GH_CACHE_BIND`, else `127.0.0.1:4802` | Daemon bind address. `--bind` beats the env, which beats the default; a bind without a port gets 4802. |
 
 ### Behaviour
 
 Runs the credential/token cache daemon in the foreground (port **4802** — the next port after the queue broker's 4801). It caches four things, **memory-only, single-flight minting** (concurrent requests for one key block on the in-flight mint):
 
-| Entry kind | TTL |
-|---|---|
-| Secret resolutions | 60 s |
-| App JWTs | within their expiry, minus a 60 s skew |
-| Installation tokens | until shortly before `expires_at`, minus the same 60 s skew, floored at 1 s |
-| Per-App installation lists | 300 s |
+| Entry kind                 | TTL                                                                         |
+| -------------------------- | --------------------------------------------------------------------------- |
+| Secret resolutions         | 60 s                                                                        |
+| App JWTs                   | within their expiry, minus a 60 s skew                                      |
+| Installation tokens        | until shortly before `expires_at`, minus the same 60 s skew, floored at 1 s |
+| Per-App installation lists | 300 s                                                                       |
 
-Nothing is written to disk; a restart is a cold cache, never a stale one. The wire is newline-delimited JSON over TCP, protocol version 1 — a daemon that does not know a request's version answers `{ok: false, …}` rather than guessing. Every normal `fleet gh` call resolves through the localhost daemon first, then the laptop daemon (the proxy's reach target at the same port; `[gh] cache_local` / `cache_laptop` in config, `FLEET_GH_CACHE` env beats both); with no daemon answering it resolves in-process over the *same* cache implementation and says so on stderr ("resolving in-process").
+Nothing is written to disk; a restart is a cold cache, never a stale one. The wire is newline-delimited JSON over TCP, protocol version 1 — a daemon that does not know a request's version answers `{ok: false, …}` rather than guessing. Every normal `fleet gh` call resolves through the localhost daemon first, then the laptop daemon (the proxy's reach target at the same port; `[gh] cache_local` / `cache_laptop` in config, `FLEET_GH_CACHE` env beats both); with no daemon answering it resolves in-process over the _same_ cache implementation and says so on stderr ("resolving in-process").
 
 ### Exit codes
 
@@ -135,9 +135,9 @@ Runs the cache daemon in the foreground on 127.0.0.1:4802.
 fleet gh cache-status
 ```
 
-| Flag | Argument | Default | Meaning |
-|---|---|---|---|
-| — | — | — | Takes no arguments and no flags. |
+| Flag | Argument | Default | Meaning                          |
+| ---- | -------- | ------- | -------------------------------- |
+| —    | —        | —       | Takes no arguments and no flags. |
 
 ### Behaviour
 
@@ -163,9 +163,9 @@ Prints counts-only snapshots for each configured cache daemon.
 fleet gh closures [<item>]
 ```
 
-| Flag | Argument | Default | Meaning |
-|---|---|---|---|
-| `<item>` (positional, optional) | item reference | — | Filter the closure log to one item. This verb takes no flags. |
+| Flag                            | Argument       | Default | Meaning                                                       |
+| ------------------------------- | -------------- | ------- | ------------------------------------------------------------- |
+| `<item>` (positional, optional) | item reference | —       | Filter the closure log to one item. This verb takes no flags. |
 
 ### Behaviour
 

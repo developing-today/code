@@ -12,14 +12,14 @@ A domain exists in fleet because three things agree: the registry names it, a Ca
 
 `struct Domain` is the unit that help lists, stubs name, and config disables:
 
-| Field | Meaning |
-|---|---|
-| `name: &'static str` | The domain's invocation name. |
-| `summary: &'static str` | The one-line description help renders. |
-| `capabilities: &'static [Capability]` | Every capability the domain spans. |
-| `primary: Capability` | The headline capability availability keys on. Example: on `fleet-serve` the `search` domain is marked absent because its headline is the client, even though the `search-serve` capability exists under `serve`. |
-| `aliases: &'static [&str]` | The domain's argv0 aliases. |
-| `subcommands: &'static [&str]` | The top-level verb inventory, rendered by domain help and checked by the DOC-01 machine test. |
+| Field                                 | Meaning                                                                                                                                                                                                          |
+| ------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `name: &'static str`                  | The domain's invocation name.                                                                                                                                                                                    |
+| `summary: &'static str`               | The one-line description help renders.                                                                                                                                                                           |
+| `capabilities: &'static [Capability]` | Every capability the domain spans.                                                                                                                                                                               |
+| `primary: Capability`                 | The headline capability availability keys on. Example: on `fleet-serve` the `search` domain is marked absent because its headline is the client, even though the `search-serve` capability exists under `serve`. |
+| `aliases: &'static [&str]`            | The domain's argv0 aliases.                                                                                                                                                                                      |
+| `subcommands: &'static [&str]`        | The top-level verb inventory, rendered by domain help and checked by the DOC-01 machine test.                                                                                                                    |
 
 `struct AliasRoute { domain, implied_arg }` and `pub fn alias_route(argv0)` define the argv0 map. The shipped aliases are: `repo-queue` → `queue`; `queue-broker` → `serve` with implied arg `queue-broker`; `secrets-broker` → `serve` with implied arg `secrets-broker`; `laptop-agent-broker` → `proxy` with implied arg `serve`; `atlas-search` → `search`; `laptop-agent` → `laptop-agent`. An argv0 that is none of {`fleet`, a variant name, an alias} is a usage error at exit 2 naming the expected names. `is_known_invocation_name(name)` is `fleet` ∨ variant name ∨ alias.
 
@@ -37,12 +37,12 @@ Note there is no `shell` capability atom: the `shell` domain rides on the `agent
 
 At dispatch, `Surface::cap_state(cap, domain_name)` checks in order and yields `enum CapState`:
 
-| State | Meaning |
-|---|---|
-| `Available` | Compiled in, in profile, not config-disabled. The domain handler runs. |
-| `NotInBuild` | The Cargo feature was not compiled into this build. |
-| `NarrowedByName` | Compiled in, but the argv0 profile (below) narrowed it out. |
-| `DisabledByConfig` | The `[domains]` table in `fleet.toml` disabled it on this host. |
+| State              | Meaning                                                                |
+| ------------------ | ---------------------------------------------------------------------- |
+| `Available`        | Compiled in, in profile, not config-disabled. The domain handler runs. |
+| `NotInBuild`       | The Cargo feature was not compiled into this build.                    |
+| `NarrowedByName`   | Compiled in, but the argv0 profile (below) narrowed it out.            |
+| `DisabledByConfig` | The `[domains]` table in `fleet.toml` disabled it on this host.        |
 
 Any non-`Available` state falls through to the stub (exit 69 — see the stub wordings below). `Surface` itself is the invocation's whole effective surface: `compiled` (from Cargo features), `profile` (from the hyphenated invocation name), `effective` (= `compiled ∩ profile.capabilities()`, or `compiled` when there is no profile), and the loaded `fleet_config::Config`.
 
@@ -64,7 +64,7 @@ Two layers, and both must agree.
 
 Domain crates mirror the discipline one level down. In `fleet-queue`, the features are `client`, `queue-broker`, and `secrets-broker`, and `src/lib.rs` gates modules on them: `client`, `fallback`, `needs_drew`, `placement` under `client`; `queue_broker`, `turso_queue`, `validate` under `queue-broker`; `secrets_broker` under `secrets-broker`; `uds_http` under either broker. In `fleet-search`, `client` and `serve` split the client surface from the Atlas service role.
 
-**Layer 2 — runtime reconstruction.** `fn compiled_capabilities()` in `crates/fleet/src/main.rs` starts from `{ProxyConnect, ProxyRawSplice}` unconditionally and inserts one `Capability` per `cfg!(feature = "…")`. `build_variant(compiled)` then re-derives which shipped `Variant` the set equals — Full, Serve, or Connect; an unrecognised set reports its build name as `fleet-custom`. The binary *reports* its variant from its feature set; it does not trust a baked-in name. `fleet capabilities` prints both lists: `capabilities` (what this invocation can use) and `compiled_capabilities` (what the binary was built with) — their difference is exactly the profile and config narrowing.
+**Layer 2 — runtime reconstruction.** `fn compiled_capabilities()` in `crates/fleet/src/main.rs` starts from `{ProxyConnect, ProxyRawSplice}` unconditionally and inserts one `Capability` per `cfg!(feature = "…")`. `build_variant(compiled)` then re-derives which shipped `Variant` the set equals — Full, Serve, or Connect; an unrecognised set reports its build name as `fleet-custom`. The binary _reports_ its variant from its feature set; it does not trust a baked-in name. `fleet capabilities` prints both lists: `capabilities` (what this invocation can use) and `compiled_capabilities` (what the binary was built with) — their difference is exactly the profile and config narrowing.
 
 ## argv0 profiles narrow only
 
@@ -74,7 +74,7 @@ The rule is **narrowing only**: a profile is a capability ceiling (`compiled ∩
 
 ## The stub wordings
 
-When a domain is not `Available`, `fn stub(...)` in `main.rs` prints to stderr and returns exit 69 (`EXIT_UNAVAILABLE`, `EX_UNAVAILABLE` from sysexits.h). The first line names the domain and the reason class; the second line lists what this invocation *can* do (`Enabled capabilities: <usable caps>.`); the third names the build. One form per `CapState`:
+When a domain is not `Available`, `fn stub(...)` in `main.rs` prints to stderr and returns exit 69 (`EXIT_UNAVAILABLE`, `EX_UNAVAILABLE` from sysexits.h). The first line names the domain and the reason class; the second line lists what this invocation _can_ do (`Enabled capabilities: <usable caps>.`); the third names the build. One form per `CapState`:
 
 - `NotInBuild`: `fleet: this build does not include '<domain>'.` plus `This is the <build> build (<VERSION>).`, and ` The full build is 'fleet'.` when the build is not full.
 - `NarrowedByName`: `fleet: invoked as '<invoked_as>', this build does not include '<domain>'.` plus the explanation that the invocation is name-scoped to the profile and that invoked as `fleet` it carries the full surface.
@@ -89,7 +89,7 @@ Help renders the same states without stubbing: domain help is registry data and 
 2. **Crate.** A new library crate under `pkgs/fleet/crates/`, added to the workspace `members` in `pkgs/fleet/Cargo.toml` and to `[workspace.dependencies]` by path, exposing a `run` entry point with the domain's argument and config shape. Follow the existing crates' feature discipline: gate server roles and heavy dependencies behind features so the connect build stays clean.
 3. **Bin-crate wiring.** An optional dependency plus a feature in `crates/fleet/Cargo.toml`; the feature added to `full` (and to `serve` if the domain has a broker-side role); one `cfg!(feature = "…")` insertion in `compiled_capabilities()` in `main.rs`.
 4. **Dispatch arm.** In `run_domain` in `main.rs`, a `#[cfg(feature = …)]` arm under the `CapState::Available` path calling the crate's `run`. Subcommand-sensitive capability requirements (the way `serve` maps its role token to `QueueBroker` / `SecretsBroker` / `SearchServe` / `ProxyServe`) go in `required_capability(...)`. An argv0 alias, if the domain needs one, goes in `alias_route()` in the registry — and the registry test `domain_aliases_match_the_argv0_map` must still pass.
-5. **Help.** The registry entry *is* the top-level help. The domain's own `--help`, per-verb usage strings, and parser live in the domain crate, hand-rolled — see [Add a subcommand](add-a-subcommand.md).
+5. **Help.** The registry entry _is_ the top-level help. The domain's own `--help`, per-verb usage strings, and parser live in the domain crate, hand-rolled — see [Add a subcommand](add-a-subcommand.md).
 6. **Capabilities JSON.** Nothing extra to write: `fleet capabilities` is generated from the registry plus `compiled_capabilities()`, so a correctly registered domain appears in it automatically, with its per-domain `state` one of `available`, `not-in-build`, `narrowed-by-name`, `disabled-by-config`. Verify it does, on both a full build and a narrowed build.
 7. **Build and smoke coverage.** A Nix attribute only if the domain needs a new variant (rare — variants are profiles, not domains). Smoke coverage in `pkgs/fleet/smoke.sh` that the domain renders in help on every variant and stubs at 69 where it is unavailable.
 8. **Docs in the same change (DOC-01).** `pkgs/fleet/docs/verbs.md` and this book in the same change — see [Keeping this book current](keeping-this-book-current.md). The DOC-01 machine test (`pmo_operator_docs_match_registered_help_inventory`) ties the README's operator contract to the registered inventory, so a registry entry without its contract docs fails the workspace suite.

@@ -121,9 +121,7 @@ const PLATFORM_FAMILIES = ["openchamber", "muse"];
 export function parsePlatform(v: Json | undefined): string | null {
   if (v === undefined || v === null) return null;
   if (typeof v !== "string") {
-    throw new Error(
-      `invalid platform ${JSON.stringify(v)} (expected "openchamber" or "muse")`,
-    );
+    throw new Error(`invalid platform ${JSON.stringify(v)} (expected "openchamber" or "muse")`);
   }
   const p = v.trim();
   if (p === "") return null;
@@ -728,9 +726,7 @@ function cmpMatches(e: { field: string; op: string; values: string[] }, row: Tas
   const payload = taskPayload(row);
   if (e.field === "label") {
     const labels = payload["labels"];
-    const list = Array.isArray(labels)
-      ? labels.filter((l): l is string => typeof l === "string")
-      : [];
+    const list = Array.isArray(labels) ? labels.filter((l): l is string => typeof l === "string") : [];
     const any = e.values.some((v) => list.includes(v));
     return e.op === "eq" || e.op === "in" ? any : e.op === "ne" || e.op === "notin" ? !any : false;
   }
@@ -814,9 +810,7 @@ interface ClaimScope {
 }
 
 function platformLimitInvalid(limit: string | null, reason: string | null): boolean {
-  return (
-    limit !== null && limit.trim() !== "" && (reason === null || reason.trim() === "")
-  );
+  return limit !== null && limit.trim() !== "" && (reason === null || reason.trim() === "");
 }
 
 function platformLimitError(limit: string | null, reason: string | null): string | null {
@@ -834,11 +828,7 @@ function platformLimitError(limit: string | null, reason: string | null): string
   return null;
 }
 
-function platformLimitRefusal(
-  limit: string | null,
-  reason: string | null,
-  family: string | null,
-): string | null {
+function platformLimitRefusal(limit: string | null, reason: string | null, family: string | null): string | null {
   if (limit === null || limit.trim() === "" || platformLimitInvalid(limit, reason)) {
     return null;
   }
@@ -849,12 +839,7 @@ function platformLimitRefusal(
   return `task is limited to platform '${limit}' (reason: ${reason}); the transfer-claim must declare its platform family to take it`;
 }
 
-function scopeMatch(
-  store: QueueStore,
-  row: TaskRow,
-  scope: ClaimScope,
-  withPlatformLimit: boolean,
-): boolean {
+function scopeMatch(store: QueueStore, row: TaskRow, scope: ClaimScope, withPlatformLimit: boolean): boolean {
   if (scope.queue !== null && row.queue !== scope.queue) return false;
   if (scope.filter && !filterMatches(scope.filter, row)) return false;
   if (taskRequirementsUnmet(row, scope.claimer) !== null) return false;
@@ -885,8 +870,7 @@ function eligibleDefault(row: TaskRow, now: string, claimer: ClaimerCtx): boolea
     live = gate;
   } else if (
     row.status === "parked" &&
-    ((row.not_before !== null && row.not_before <= now) ||
-      (row.wait_kind === "capacity" && bypass))
+    ((row.not_before !== null && row.not_before <= now) || (row.wait_kind === "capacity" && bypass))
   ) {
     live = gate;
   }
@@ -902,9 +886,7 @@ function payloadNonEmpty(row: TaskRow): boolean {
 function expireLeases(store: QueueStore, env: QueueEnv): number {
   const now = nowIso(env);
   let expired = 0;
-  const rows = store
-    .allTasks()
-    .filter((t) => t.status === "claimed" && t.lease_until !== null && t.lease_until < now);
+  const rows = store.allTasks().filter((t) => t.status === "claimed" && t.lease_until !== null && t.lease_until < now);
   for (const row of rows) {
     const toSink = handoffShape(progressOf(row));
     const [progress, cleared] = clearBinding(row.progress, "expire_leases", env);
@@ -937,11 +919,7 @@ function expireLeases(store: QueueStore, env: QueueEnv): number {
             progress,
             updated_at: now,
           };
-    const updated = store.conditionalUpdateTask(
-      row.id,
-      { status: "claimed", lease_until: row.lease_until },
-      set,
-    );
+    const updated = store.conditionalUpdateTask(row.id, { status: "claimed", lease_until: row.lease_until }, set);
     if (!updated) continue;
     if (atCap) {
       emit(store, env, row.worker_id, row.id, "lease_expired_at_cap", {
@@ -972,12 +950,7 @@ function quarantineSweep(store: QueueStore, env: QueueEnv, queue: string | null)
     if (queue !== null && row.queue !== queue) continue;
     if (!["queued", "parked", "handed_off"].includes(row.status)) continue;
     if (payloadMissing(row.payload)) {
-      quarantineTask(
-        store,
-        env,
-        row.id,
-        "quarantined by claim path: payload missing/empty (#5444)",
-      );
+      quarantineTask(store, env, row.id, "quarantined by claim path: payload missing/empty (#5444)");
     }
   }
 }
@@ -1057,9 +1030,7 @@ function claimPickOnce(
       .filter(
         (t) =>
           payloadNonEmpty(t) &&
-          (pickMode === "handoff"
-            ? isHandedOff(t)
-            : eligibleDefault(t, now, scope.claimer)) &&
+          (pickMode === "handoff" ? isHandedOff(t) : eligibleDefault(t, now, scope.claimer)) &&
           scopeMatch(store, t, scope, true),
       )
       .sort(
@@ -1085,10 +1056,7 @@ function claimPickOnce(
         worker_id: scope.claimer.worker,
         claimed_at: now,
         lease_until: leaseUntil,
-        attempts:
-          cand.status === "parked" || cand.status === "handed_off"
-            ? cand.attempts
-            : cand.attempts + 1,
+        attempts: cand.status === "parked" || cand.status === "handed_off" ? cand.attempts : cand.attempts + 1,
         lane_id: scope.claimer.lane,
         platform: scope.claimer.family ?? cand.platform,
         park_kind: null,
@@ -1202,8 +1170,7 @@ function claimById(
       worker_id: scope.claimer.worker,
       claimed_at: now,
       lease_until: iso(env.nowEpoch() + leaseSeconds),
-      attempts:
-        row.status === "parked" || row.status === "handed_off" ? row.attempts : row.attempts + 1,
+      attempts: row.status === "parked" || row.status === "handed_off" ? row.attempts : row.attempts + 1,
       lane_id: scope.claimer.lane,
       platform: scope.claimer.family ?? row.platform,
       park_kind: null,
@@ -1289,9 +1256,7 @@ function claimTransfer(
     quarantineTask(store, env, row.id, guard);
     return null;
   }
-  const claimedEvents = store
-    .eventsForTask(taskId)
-    .filter((e) => e.kind === "claimed");
+  const claimedEvents = store.eventsForTask(taskId).filter((e) => e.kind === "claimed");
   const lastClaimed = claimedEvents[claimedEvents.length - 1];
   const claimedEventSession =
     lastClaimed && isObj(lastClaimed.detail) && typeof lastClaimed.detail["session_id"] === "string"
@@ -1309,23 +1274,12 @@ function claimTransfer(
     ledger = store.getLedger(taskId);
   }
   if (ledger) {
-    const refusal = platformLimitRefusal(
-      ledger.platform_limit,
-      ledger.platform_limit_reason,
-      scope.claimer.family,
-    );
+    const refusal = platformLimitRefusal(ledger.platform_limit, ledger.platform_limit_reason, scope.claimer.family);
     if (refusal) fail(4, `claim_repo_task: transfer refused: ${refusal}`);
   }
   const unmet = taskRequirementsUnmet(row, scope.claimer);
   if (unmet) fail(4, `claim_repo_task: transfer refused: ${unmet}`);
-  const refusal = transferRefusal(
-    row,
-    fromSession,
-    claimedEventSession,
-    ledger?.session_id ?? null,
-    claimSession,
-    now,
-  );
+  const refusal = transferRefusal(row, fromSession, claimedEventSession, ledger?.session_id ?? null, claimSession, now);
   if (refusal) fail(4, `claim_repo_task: transfer refused: ${refusal}`);
   const oldWorker = row.worker_id;
   const oldLane = row.lane_id;
@@ -1408,8 +1362,7 @@ function budgetSkipSummary(store: QueueStore, scope: ClaimScope, now: string): R
     const due = t.not_before === null || t.not_before <= now;
     const liveMinusGate =
       (t.status === "queued" && t.attempts < t.max_attempts && due) ||
-      (t.status === "parked" &&
-        ((t.not_before !== null && t.not_before <= now) || t.wait_kind === "capacity"));
+      (t.status === "parked" && ((t.not_before !== null && t.not_before <= now) || t.wait_kind === "capacity"));
     if (!liveMinusGate) return false;
     const required = requiredBudget(t);
     return required !== null && required > remaining;
@@ -1423,25 +1376,15 @@ function budgetSkipSummary(store: QueueStore, scope: ClaimScope, now: string): R
 }
 
 function noClaimCounts(store: QueueStore, scope: ClaimScope, now: string): Resp {
-  const rows = store
-    .allTasks()
-    .filter((t) => payloadNonEmpty(t) && scopeMatch(store, t, scope, true));
+  const rows = store.allTasks().filter((t) => payloadNonEmpty(t) && scopeMatch(store, t, scope, true));
   return {
     queued: rows.filter((t) => t.status === "queued").length,
-    at_cap_queued: rows.filter(
-      (t) => t.status === "queued" && t.attempts >= t.max_attempts,
-    ).length,
+    at_cap_queued: rows.filter((t) => t.status === "queued" && t.attempts >= t.max_attempts).length,
     queued_not_yet_due: rows.filter(
-      (t) =>
-        t.status === "queued" &&
-        t.attempts < t.max_attempts &&
-        t.not_before !== null &&
-        t.not_before > now,
+      (t) => t.status === "queued" && t.attempts < t.max_attempts && t.not_before !== null && t.not_before > now,
     ).length,
     parked_due: rows.filter(
-      (t) =>
-        t.status === "parked" &&
-        ((t.not_before !== null && t.not_before <= now) || t.wait_kind === "capacity"),
+      (t) => t.status === "parked" && ((t.not_before !== null && t.not_before <= now) || t.wait_kind === "capacity"),
     ).length,
   };
 }
@@ -1494,13 +1437,7 @@ function workIdentity(row: { queue: string; payload: Json }): WorkIdentity | nul
   if (payload["dedupe_exempt"] === true) return null;
   const kind = typeof payload["kind"] === "string" ? payload["kind"] : "";
   const family =
-    kind === "small_fix"
-      ? "fix"
-      : kind === "triage"
-        ? "triage"
-        : kind === "pr_shepherd"
-          ? "pr_shepherd"
-          : null;
+    kind === "small_fix" ? "fix" : kind === "triage" ? "triage" : kind === "pr_shepherd" ? "pr_shepherd" : null;
   if (family === null) return null;
   const issueObj = payload["issue"];
   const issue = isObj(issueObj) ? intOrNull(issueObj["number"]) : null;
@@ -1538,11 +1475,7 @@ function holdsIdentity(store: QueueStore, env: QueueEnv, row: TaskRow, identity:
   return claimGuardReason(env, row) === null;
 }
 
-function liveIdentityHolder(
-  store: QueueStore,
-  env: QueueEnv,
-  identity: WorkIdentity,
-): TaskRow | null {
+function liveIdentityHolder(store: QueueStore, env: QueueEnv, identity: WorkIdentity): TaskRow | null {
   for (const row of store.allTasks()) {
     const payload = taskPayload(row);
     if (payload["kind"] !== identity.kind) continue;
@@ -1580,22 +1513,14 @@ function repoFromDedupeKey(key: string | null): string | null {
   return repo;
 }
 
-function payloadIssueRef(
-  payload: JsonObject,
-  dedupeKey: string | null,
-): { repo: string; number: number } | null {
+function payloadIssueRef(payload: JsonObject, dedupeKey: string | null): { repo: string; number: number } | null {
   const issue = payload["issue"];
   const num = isObj(issue) ? intOrNull(issue["number"]) : null;
   if (num === null || num <= 0) return null;
   let repo: string | null =
-    typeof payload["repo"] === "string" && payload["repo"] !== ""
-      ? (payload["repo"] as string)
-      : null;
+    typeof payload["repo"] === "string" && payload["repo"] !== "" ? (payload["repo"] as string) : null;
   if (repo === null && isObj(issue)) {
-    repo =
-      typeof issue["repo"] === "string" && issue["repo"] !== ""
-        ? (issue["repo"] as string)
-        : null;
+    repo = typeof issue["repo"] === "string" && issue["repo"] !== "" ? (issue["repo"] as string) : null;
   }
   if (repo === null) repo = repoFromDedupeKey(dedupeKey);
   if (repo === null || !repo.includes("/")) return null;
@@ -1619,9 +1544,7 @@ function enrichPayloadLabels(
   try {
     labels = store.mirrorLabels(ref.repo, ref.number);
   } catch (e) {
-    warnings?.push(
-      `payload.labels: GitHub mirror enrichment skipped (${e instanceof Error ? e.message : String(e)})`,
-    );
+    warnings?.push(`payload.labels: GitHub mirror enrichment skipped (${e instanceof Error ? e.message : String(e)})`);
     return;
   }
   if (labels === null) return;
@@ -1838,13 +1761,7 @@ function verbClaim(store: QueueStore, env: QueueEnv, req: Req): Resp {
         fail(4, `claim_repo_task: lane ${lane} is disabled`);
       }
       const registered = laneRow.queue ?? "";
-      if (
-        queue !== null &&
-        registered !== "*" &&
-        registered !== "all" &&
-        registered !== "" &&
-        registered !== queue
-      ) {
+      if (queue !== null && registered !== "*" && registered !== "all" && registered !== "" && registered !== queue) {
         fail(4, `claim_repo_task: lane ${lane} is for queue ${registered}, not ${queue}`);
       }
     }
@@ -1901,10 +1818,7 @@ function verbClaim(store: QueueStore, env: QueueEnv, req: Req): Resp {
 
   if (count > 1) {
     if (taskId !== null) {
-      fail(
-        2,
-        "claim_repo_task: --count cannot be combined with --task: a by-id claim takes exactly one task (#8217)",
-      );
+      fail(2, "claim_repo_task: --count cannot be combined with --task: a by-id claim takes exactly one task (#8217)");
     }
     const rows: TaskRow[] = [];
     for (let i = 0; i < count; i++) {
@@ -1947,9 +1861,7 @@ function notClaimedReason(store: QueueStore, row: TaskRow | null, worker: string
     base = `it is ${row.status}`;
   }
   if (row.status !== "claimed") {
-    const events = store
-      .eventsForTask(row.id)
-      .filter((e) => e.kind === "claimed" || e.kind === "lease_expired");
+    const events = store.eventsForTask(row.id).filter((e) => e.kind === "claimed" || e.kind === "lease_expired");
     const last = events[events.length - 1];
     if (last && last.kind === "lease_expired" && last.worker_id === worker) {
       base += `; ${worker}'s lease expired at ${last.created_at} and the task went back to the queue, so claim it again before completing it (heartbeat or checkpoint to keep a lease)`;
@@ -1980,10 +1892,7 @@ function claimedBy(store: QueueStore, env: QueueEnv, req: Req, verb: string): Ta
       } catch {
         // Best-effort audit (native: let _ =).
       }
-      fail(
-        5,
-        `${verb}: task ${taskId} is not claimed by ${worker} on lane ${callerLane}: lane ${holderLane} holds it`,
-      );
+      fail(5, `${verb}: task ${taskId} is not claimed by ${worker} on lane ${callerLane}: lane ${holderLane} holds it`);
     }
     return row;
   }
@@ -2495,12 +2404,7 @@ interface DepTransition {
   evidence: Json;
 }
 
-function emitDepTransitions(
-  store: QueueStore,
-  env: QueueEnv,
-  task: TaskRow,
-  transitions: DepTransition[],
-): void {
+function emitDepTransitions(store: QueueStore, env: QueueEnv, task: TaskRow, transitions: DepTransition[]): void {
   for (const t of transitions) {
     emitMarked(store, env, "dep-rechecker", task, t.transition === "cleared" ? "dep_cleared" : "dep_broken", {
       dep: t.dep,
@@ -2510,12 +2414,7 @@ function emitDepTransitions(
   }
 }
 
-function depRecheckOne(
-  store: QueueStore,
-  env: QueueEnv,
-  row: TaskRow,
-  cache: Map<string, DepObs>,
-): [string, number] {
+function depRecheckOne(store: QueueStore, env: QueueEnv, row: TaskRow, cache: Map<string, DepObs>): [string, number] {
   const deps = depsOf(row);
   if (deps.length === 0) return ["not_dep_blocked", 0];
   const now = nowIso(env);
@@ -2730,9 +2629,7 @@ function verbFail(store: QueueStore, env: QueueEnv, req: Req): Resp {
   const maxAttempts = row.max_attempts;
   const requeue = reasonClass === "transient" && row.attempts < maxAttempts;
   const newStatus = requeue ? "queued" : reasonClass === "blocked" ? "blocked" : "failed";
-  const notBefore = requeue
-    ? iso(env.nowEpoch() + (row.attempts <= 1 ? 900 : 2700))
-    : (row.not_before ?? "");
+  const notBefore = requeue ? iso(env.nowEpoch() + (row.attempts <= 1 ? 900 : 2700)) : (row.not_before ?? "");
   let progress: Json = row.progress;
   let cleared: string | null = null;
   if (requeue) {
@@ -2822,8 +2719,7 @@ function parseFollowUp(v: Json): FollowUp {
   let issueState: string | null = null;
   let issueLinks: number[] = [];
   if (issueUrl !== null) {
-    const readback =
-      "an issue follow-up needs its readback; re-run `repo-queue verify-disposition --follow-up-issue`";
+    const readback = "an issue follow-up needs its readback; re-run `repo-queue verify-disposition --follow-up-issue`";
     issueNumber = intOrNull(v["issue_number"]);
     if (issueNumber === null) {
       throw new Error(`disposition.follow_up.issue_number missing: ${readback}`);
@@ -2839,9 +2735,7 @@ function parseFollowUp(v: Json): FollowUp {
     if (!Array.isArray(links)) {
       throw new Error(`disposition.follow_up.issue_links missing: ${readback}`);
     }
-    issueLinks = links
-      .map((l) => intOrNull(l))
-      .filter((n): n is number => n !== null);
+    issueLinks = links.map((l) => intOrNull(l)).filter((n): n is number => n !== null);
   }
   if (taskId === null && successorPr === null && issueUrl === null) {
     throw new Error("disposition.follow_up needs task_id, issue_url or successor_pr");
@@ -2878,17 +2772,13 @@ function parseDispositionRecord(v: Json): DispositionRecord {
       const state = trimmedStr(po["state"]);
       if (state === null) throw new Error(`disposition.pulls[${number}].state missing`);
       if (state !== "open" && state !== "closed" && state !== "merged") {
-        throw new Error(
-          `disposition.pulls[${number}].state ${JSON.stringify(state)} is not open|closed|merged`,
-        );
+        throw new Error(`disposition.pulls[${number}].state ${JSON.stringify(state)} is not open|closed|merged`);
       }
       let mergedAt: string | null = null;
       const mergedRaw = po["merged_at"];
       if (mergedRaw !== undefined && mergedRaw !== null) {
         if (typeof mergedRaw !== "string" || parseRfc3339Epoch(mergedRaw) === null) {
-          throw new Error(
-            `disposition.pulls[${number}].merged_at ${JSON.stringify(mergedRaw)} is not RFC 3339`,
-          );
+          throw new Error(`disposition.pulls[${number}].merged_at ${JSON.stringify(mergedRaw)} is not RFC 3339`);
         }
         mergedAt = mergedRaw;
       }
@@ -2917,17 +2807,11 @@ function parseDispositionRecord(v: Json): DispositionRecord {
   };
 }
 
-function checkFollowUp(
-  rec: DispositionRecord,
-  fu: FollowUp,
-  unfinished: DispositionPull[],
-): void {
+function checkFollowUp(rec: DispositionRecord, fu: FollowUp, unfinished: DispositionPull[]): void {
   if (fu.issueUrl !== null && fu.issueNumber !== null) {
     const n = fu.issueNumber;
     if (n === rec.issueNumber) {
-      throw new Error(
-        `follow_up issue #${n} is the issue being completed; a follow-up must be a different item`,
-      );
+      throw new Error(`follow_up issue #${n} is the issue being completed; a follow-up must be a different item`);
     }
     if (fu.issueState !== "open") {
       throw new Error(`follow_up issue #${n} is ${fu.issueState}; a closed issue cannot own the remaining work`);
@@ -2970,9 +2854,7 @@ function checkDisposition(
   nowEpoch: number,
 ): void {
   if (rec.checkedAtEpoch > nowEpoch + DISPOSITION_FUTURE_SKEW_SECONDS) {
-    throw new Error(
-      `disposition.checked_at ${JSON.stringify(rec.checkedAt)} is in the future; unreadable readback`,
-    );
+    throw new Error(`disposition.checked_at ${JSON.stringify(rec.checkedAt)} is in the future; unreadable readback`);
   }
   const age = nowEpoch - rec.checkedAtEpoch;
   if (age > DISPOSITION_STALENESS_SECONDS) {
@@ -2981,9 +2863,7 @@ function checkDisposition(
     );
   }
   if (expectedIssue !== null && rec.issueNumber !== expectedIssue) {
-    throw new Error(
-      `disposition describes issue #${rec.issueNumber} but the task is for #${expectedIssue}`,
-    );
+    throw new Error(`disposition describes issue #${rec.issueNumber} but the task is for #${expectedIssue}`);
   }
   if (rec.verdict === "closed_verified" && rec.issueState !== "closed") {
     throw new Error(
@@ -2991,9 +2871,7 @@ function checkDisposition(
     );
   }
   if (rec.verdict === "merged_verified" && !rec.pulls.some((p) => p.mergedAt !== null)) {
-    throw new Error(
-      `verdict merged_verified but no pull in the readback is merged (issue #${rec.issueNumber})`,
-    );
+    throw new Error(`verdict merged_verified but no pull in the readback is merged (issue #${rec.issueNumber})`);
   }
   if (
     (rec.verdict === "open_draft_with_followup" || rec.verdict === "open_draft_superseded") &&
@@ -3015,9 +2893,7 @@ function checkDisposition(
   if (unfinished.length > 0) {
     const list = unfinished.map((p) => `#${p.number}`).join(", ");
     if (rec.verdict === "invalid_no_work") {
-      throw new Error(
-        `verdict invalid_no_work but linked PR ${list} still carries work (issue #${rec.issueNumber})`,
-      );
+      throw new Error(`verdict invalid_no_work but linked PR ${list} still carries work (issue #${rec.issueNumber})`);
     }
     if (
       rec.issueState === "open" &&
@@ -3053,11 +2929,7 @@ function checkDisposition(
   }
 }
 
-function checkSuccessorTask(
-  store: QueueStore,
-  rec: DispositionRecord,
-  completingTaskId: number,
-): void {
+function checkSuccessorTask(store: QueueStore, rec: DispositionRecord, completingTaskId: number): void {
   const fu = rec.followUp;
   if (fu === null || fu.taskId === null) return;
   const want = fu.taskId;
@@ -3835,10 +3707,7 @@ function verbEventsCount(store: QueueStore, env: QueueEnv, req: Req): Resp {
   const since = str(req["since"]);
   const count = store
     .allEvents()
-    .filter(
-      (e) =>
-        (kind === undefined || e.kind === kind) && (since === undefined || e.created_at > since),
-    ).length;
+    .filter((e) => (kind === undefined || e.kind === kind) && (since === undefined || e.created_at > since)).length;
   return ok({ row: { count } });
 }
 
@@ -3866,13 +3735,7 @@ function verbEventsPrune(store: QueueStore, env: QueueEnv, req: Req): Resp {
   const keepDays = clampRange(intOr(req["keep_days"], 30), 1, 3650);
   const cutoff = iso(env.nowEpoch() - keepDays * 86400);
   const deleted = store.deleteEventsBefore(cutoff);
-  store.appendEvent(
-    "prune_events",
-    null,
-    "events_pruned",
-    { deleted, cutoff, keep_days: keepDays },
-    nowIso(env),
-  );
+  store.appendEvent("prune_events", null, "events_pruned", { deleted, cutoff, keep_days: keepDays }, nowIso(env));
   return ok({ row: { deleted, cutoff } });
 }
 
@@ -3941,12 +3804,7 @@ export type QueueVerb = (typeof QUEUE_VERBS)[number];
  * error} on refusal — the native broker answers HTTP 200 with this
  * envelope for every verb outcome, and so does the hosted door.
  */
-export function executeQueueVerb(
-  store: QueueStore,
-  verb: string,
-  req: Req,
-  env: QueueEnv,
-): Resp {
+export function executeQueueVerb(store: QueueStore, verb: string, req: Req, env: QueueEnv): Resp {
   try {
     validateDurationsGate(verb, req);
     validateNotBeforeGate(env, verb, req);
@@ -3963,7 +3821,7 @@ export function executeQueueVerb(
         return verbBind(store, env, req);
       case "heartbeat":
         return verbHeartbeat(store, env, req);
-    case "checkpoint":
+      case "checkpoint":
         return verbCheckpoint(store, env, req);
       case "park":
         return verbPark(store, env, req);

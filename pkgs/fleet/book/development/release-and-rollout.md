@@ -24,6 +24,7 @@ Steps:
    ```
 
    Building in a detached worktree, not the primary clone, keeps the primary on `main` and clean.
+
 3. Gate the artefact, twice:
    - **Static-linkage gate** — `file -L` on the binary must report `statically linked` or `static-pie`. A non-static build is refused.
    - **Bridge-capability gate** — the binary's `capabilities` output, checked programmatically, must show a domain named `bridge` with `available` true. The Muse seat's bootstrap requires the bridge-capable full profile; a build without it is fatal.
@@ -63,13 +64,13 @@ Broker services on the laptop are deployed with `pkgs/deploy/deploy.py` — a re
 
 The three fleet profiles:
 
-| Profile | Package / entry point | Args | Port | Health check |
-|---|---|---|---|---|
-| `queue-broker` | `fleet`, `bin/fleet` | `serve queue-broker` | 4801 (`PORT=4801`, `QUEUE_BROKER_BACKEND=turso`) | `GET /healthz` on the laptop tailnet address, port 4801 |
-| `secrets-broker` | `fleet`, `bin/fleet` | `serve secrets-broker` | 4800 (`PORT=4800`) | `GET /health` on the laptop tailnet address, port 4800 |
-| `laptop-agent` | `laptopAgent`, `bin/laptop-agent` | none | 4799 (`LAPTOP_AGENT_PORT=4799`) | none — `/health` requires the daemon token, so health is verified through the authenticated client after activation |
+| Profile          | Package / entry point             | Args                   | Port                                             | Health check                                                                                                        |
+| ---------------- | --------------------------------- | ---------------------- | ------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------- |
+| `queue-broker`   | `fleet`, `bin/fleet`              | `serve queue-broker`   | 4801 (`PORT=4801`, `QUEUE_BROKER_BACKEND=turso`) | `GET /healthz` on the laptop tailnet address, port 4801                                                             |
+| `secrets-broker` | `fleet`, `bin/fleet`              | `serve secrets-broker` | 4800 (`PORT=4800`)                               | `GET /health` on the laptop tailnet address, port 4800                                                              |
+| `laptop-agent`   | `laptopAgent`, `bin/laptop-agent` | none                   | 4799 (`LAPTOP_AGENT_PORT=4799`)                  | none — `/health` requires the daemon token, so health is verified through the authenticated client after activation |
 
-`queue-broker` names one secret by name (the Turso fleet-queue read-write token); `secrets-broker` names none, because it *is* the resolver. `laptop-agent` restarts `always` rather than `on-failure`: a clean SIGTERM/success exit does not restart under `on-failure`, and a past daemon-death episode showed that gap is real.
+`queue-broker` names one secret by name (the Turso fleet-queue read-write token); `secrets-broker` names none, because it _is_ the resolver. `laptop-agent` restarts `always` rather than `on-failure`: a clean SIGTERM/success exit does not restart under `on-failure`, and a past daemon-death episode showed that gap is real.
 
 ### Profiles, generations, and the generation log
 
@@ -77,7 +78,7 @@ Each target owns a per-service Nix profile. The system-scope default base is `/n
 
 The rendered systemd unit's `ExecStart` points at the profile's **`current`** link (`<base>/<name>/current/<entryPoint>`), never at a bare store path — so a generation flip is a profile repoint, not a unit rewrite, and the unit file itself does not change between generations. A flip is one atomic symlink repoint at the generation directory (`<base>/.generations/<name>/<id>/`).
 
-Every deploy and rollback appends to an **append-only JSONL generation log**, one file per target at `<state-dir>/generations/<name>.jsonl` (state dir via `--state-dir` / `$DEPLOY_STATE_DIR`). Each event records the generation id, source revision, artefact, timestamp, and actor. The log is never truncated; the current and previous generations are derived by *folding* it in order — a `deploy` event makes its generation current, a `rollback` event makes the generation it repointed to current, and previous is the last distinct generation before current.
+Every deploy and rollback appends to an **append-only JSONL generation log**, one file per target at `<state-dir>/generations/<name>.jsonl` (state dir via `--state-dir` / `$DEPLOY_STATE_DIR`). Each event records the generation id, source revision, artefact, timestamp, and actor. The log is never truncated; the current and previous generations are derived by _folding_ it in order — a `deploy` event makes its generation current, a `rollback` event makes the generation it repointed to current, and previous is the last distinct generation before current.
 
 ### Activation and rollback
 
@@ -88,6 +89,7 @@ Every deploy and rollback appends to an **append-only JSONL generation log**, on
    ```
 
    This prints the ordered activation plan, which is the oracle for what a real activation will do.
+
 2. Activate. The real run, in plan order: build → install the next generation into the profile → write the unit → daemon-reload → restart **only that unit** → health-check (the definition's `healthCheck` URL, within `healthTimeoutSeconds`). On any failure, the profile flips back to the previous generation and the unit restarts on it.
 3. Roll back when a generation is bad. **Rollback is a repoint, never a rebuild:** repoint the profile at the previous distinct generation → restart → health-check → on failure, flip back to the generation you came from → append a `rollback` event to the log. Rollback refuses when no generations are recorded or only one is ("rollback needs a previous generation"). `deploy status` folds the log and reports current and previous with their source revisions plus health.
 
@@ -103,6 +105,7 @@ Separate from `deploy.py`, the fleet binary itself has two live installs, and bo
    ```
 
    Both installs must match that build's source revision.
+
 2. **Laptop install** — a plain binary copy over the laptop's `~/.local/bin/fleet`. Verify in place.
 3. **Sandbox install** — `~/tools/fleet`, reached through the `~/tools/bin/fleet` and `~/tools/bin/repo-queue` symlinks. This install is root-owned provisioning, read-only to lanes: a lane that cannot redeploy it files or updates the tracking issue instead of working around it. In practice it moves through the bootstrap path of section 2.
 

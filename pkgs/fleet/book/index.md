@@ -1,9 +1,9 @@
 # fleet
 
-`fleet` is one multicall binary for the fleet's tools. A *multicall binary* is a
+`fleet` is one multicall binary for the fleet's tools. A _multicall binary_ is a
 single executable that behaves as many different programs depending on the name
 it is invoked under and the first argument it is given. The fleet binary is
-version `0.1.0`. Invoked as `fleet`, it dispatches to one of twelve *domains* —
+version `0.1.0`. Invoked as `fleet`, it dispatches to one of twelve _domains_ —
 a domain is a named tool area, such as the work queue or the secrets resolver —
 and invoked under one of its alias names (`repo-queue`, `queue-broker`,
 `secrets-broker`, `laptop-agent-broker`, `atlas-search`, `laptop-agent`) it
@@ -20,14 +20,14 @@ way, and each one re-solved the same four problems. Fleet solves them once,
 inside one binary:
 
 1. **A shared work queue.** Agents on different machines need one place where
-   work is filed, claimed by exactly one worker at a time under a *lease* (a
+   work is filed, claimed by exactly one worker at a time under a _lease_ (a
    time-limited claim that expires if the holder stops reporting in), and
    completed with evidence. The queue domain and its resident queue broker
    provide that queue, backed by a dedicated Turso database. See
    [The queue: tasks, lanes and leases](concepts/queue.md).
 2. **Secrets without vault sprawl.** Resolving a secret by shelling out to the
    Bitwarden Secrets Manager command-line tool (`bws`) on every call cost
-   10–40 seconds per invocation. Fleet instead runs a *secrets broker*: a
+   10–40 seconds per invocation. Fleet instead runs a _secrets broker_: a
    resident cache of the vault that answers by name in milliseconds, refreshes
    itself on a timer, and falls back to `bws` only when it must. Callers name a
    secret; they never hold a vault credential of their own. See
@@ -40,13 +40,13 @@ inside one binary:
 4. **Agent coordination.** Agents need a mailbox, a way to prove what their
    seat can reach, and one rule for what work to take next. The bridge domain
    provides the mailbox, the agent domain provides enrolment, a four-leg
-   health check called *doctor*, and the *intake ladder* that decides what an
+   health check called _doctor_, and the _intake ladder_ that decides what an
    agent works on next. See [The bridge: fleet messaging](concepts/bridge.md)
    and [Agents: enrolment, doctor and the intake ladder](concepts/agents.md).
 
 ## Who it serves
 
-- **Agents on seats.** A *seat* is one running agent instance in one place: a
+- **Agents on seats.** A _seat_ is one running agent instance in one place: a
   Muse session in a sandbox, an OpenCode session on the laptop, a chat
   assistant connected over HTTPS. An agent uses fleet to enrol, check its
   seat, take work, resolve secrets, message other agents, and run builds where
@@ -62,26 +62,26 @@ inside one binary:
 
 ## The domain map
 
-Every build of fleet knows every domain. Whether a given invocation can *use*
+Every build of fleet knows every domain. Whether a given invocation can _use_
 a domain depends on the capabilities compiled into that build, on the name it
 was invoked under, and on the host's configuration; a domain it cannot use
 answers with a stub message and exit code 69. The full mechanics are in
 [The shape of the binary](getting-started/shape.md).
 
-| Domain | Purpose |
-|---|---|
-| `queue` | The repo work queue: enqueue, claim, and complete tasks through the queue broker. Alias: `repo-queue`. |
-| `serve` | Run a fleet daemon role (queue-broker, secrets-broker, search, proxy) in the foreground. Aliases: `queue-broker`, `secrets-broker`. |
-| `proxy` | The session proxy: serve the broker socket, connect or init through it, run recovery SSH, splice raw TCP streams, or transfer files (`get`/`put`). Alias: `laptop-agent-broker`. |
-| `dispatch` | Thin client over pm-stack dispatch: status, launch, and enqueue verbs. |
-| `dispatch-test` | Explicit-dispatch CI test: scan fleet repos for free Actions capacity, submit a job, track its stored status. |
-| `secrets` | Resolve secrets by name: the secrets broker first, Bitwarden as fallback. |
-| `gh` | The real `gh` CLI, passed through under a rotating fleet token (personal, then the fleet's GitHub Apps); rate-limit and permission failures fail over to the next token. |
-| `bridge` | Fleet messaging through the message bridge: central sends messages or commands to an agent, a group, or all; agents read their mailbox, answer, and ack. |
-| `agent` | The agent's front door: enrol an agent of any kind, check what this seat reaches, and take the next piece of work down the intake ladder. |
-| `shell` | Run a command, or open a shell, where builds belong: the laptop, a codespace, or here. |
-| `search` | Atlas corpus search over the session history (hybrid full-text plus vector search). Alias: `atlas-search`. |
-| `laptop-agent` | Client for the laptop-agent daemon: run and manage jobs on the laptop. Alias: `laptop-agent`. |
+| Domain          | Purpose                                                                                                                                                                          |
+| --------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `queue`         | The repo work queue: enqueue, claim, and complete tasks through the queue broker. Alias: `repo-queue`.                                                                           |
+| `serve`         | Run a fleet daemon role (queue-broker, secrets-broker, search, proxy) in the foreground. Aliases: `queue-broker`, `secrets-broker`.                                              |
+| `proxy`         | The session proxy: serve the broker socket, connect or init through it, run recovery SSH, splice raw TCP streams, or transfer files (`get`/`put`). Alias: `laptop-agent-broker`. |
+| `dispatch`      | Thin client over pm-stack dispatch: status, launch, and enqueue verbs.                                                                                                           |
+| `dispatch-test` | Explicit-dispatch CI test: scan fleet repos for free Actions capacity, submit a job, track its stored status.                                                                    |
+| `secrets`       | Resolve secrets by name: the secrets broker first, Bitwarden as fallback.                                                                                                        |
+| `gh`            | The real `gh` CLI, passed through under a rotating fleet token (personal, then the fleet's GitHub Apps); rate-limit and permission failures fail over to the next token.         |
+| `bridge`        | Fleet messaging through the message bridge: central sends messages or commands to an agent, a group, or all; agents read their mailbox, answer, and ack.                         |
+| `agent`         | The agent's front door: enrol an agent of any kind, check what this seat reaches, and take the next piece of work down the intake ladder.                                        |
+| `shell`         | Run a command, or open a shell, where builds belong: the laptop, a codespace, or here.                                                                                           |
+| `search`        | Atlas corpus search over the session history (hybrid full-text plus vector search). Alias: `atlas-search`.                                                                       |
+| `laptop-agent`  | Client for the laptop-agent daemon: run and manage jobs on the laptop. Alias: `laptop-agent`.                                                                                    |
 
 Alongside the domains there are five built-in commands that are not domains:
 `init` (autostart this host's roles per the host manifest), `session bind`
@@ -113,15 +113,15 @@ Alongside the domains there are five built-in commands that are not domains:
   `fleet queue claim` or `repo-queue claim`; they are the same code path.
 - **Flags and defaults.** When a flag has a default, the default is stated as a
   number or a literal value, for example "lease default 2700 s (45 minutes)".
-  Where the help text and the source disagree, this book states the *source*
+  Where the help text and the source disagree, this book states the _source_
   behaviour and says so.
 - **Exit codes.** Fleet uses a small shared vocabulary: 0 success, 2 usage
   error, 3 transport down / unresolved / a needed leg down, 69 capability
   unavailable (the stub). Individual domains add codes — 1, 4, 5, 6 appear in
   the queue, bridge, agent, and dispatch chapters — and each chapter lists its
   own codes in full.
-- **Secrets are named, never valued.** This book gives secret *names* (for
-  example `fleet.secrets-broker-token`) and token *file paths*. It never
+- **Secrets are named, never valued.** This book gives secret _names_ (for
+  example `fleet.secrets-broker-token`) and token _file paths_. It never
   prints a secret value, and neither does the binary: values go to the one
   place each command defines (standard output for `fleet secrets get`, a
   single header for an authenticated request) and nowhere else.

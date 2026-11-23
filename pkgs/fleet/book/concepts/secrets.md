@@ -1,6 +1,6 @@
 # Secrets and the secrets broker
 
-Fleet resolves secrets *by name, through one crate* (`fleet-secrets`). No
+Fleet resolves secrets _by name, through one crate_ (`fleet-secrets`). No
 domain shells out to `bws` (the Bitwarden Secrets Manager command-line tool)
 or reads a token file on its own. A caller names a secret; the chain finds
 the value; the value goes only where the caller's contract says it goes.
@@ -9,7 +9,7 @@ Source: https://github.com/developing-today/code/blob/main/pkgs/fleet/crates/fle
 
 ## The broker: a resident cache of the vault
 
-The *secrets broker* is a resident cache of the Bitwarden Secrets Manager
+The _secrets broker_ is a resident cache of the Bitwarden Secrets Manager
 vault. It exists because the per-call alternative — `bws secret list` plus
 `bws secret get` on every invocation — made every queue call pay 10–40
 seconds. The broker binds the laptop tailnet address `100.99.113.103:4800`
@@ -27,12 +27,12 @@ Endpoints (the `X-Agent-Token` header is required on everything except
 `/health`; an empty expected token never authenticates, not even against an
 empty header):
 
-| Route | Answer |
-|---|---|
-| `GET /health` | `{ok, serving, secrets, last_refresh_unix, refreshing, oldest_secret_age_seconds}`; **503 while `serving` is false** |
-| `GET /secrets` | `{names: [...]}` — names only, sorted |
-| `GET /secret/<name>` | `{key, value, fetched_at_unix, age_seconds, source}`, or 404 / 502 / 503 (below) |
-| `POST /refresh` | 202 `{ok: true, refresh: "started"}` — kicks a refresh on a new thread |
+| Route                | Answer                                                                                                               |
+| -------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| `GET /health`        | `{ok, serving, secrets, last_refresh_unix, refreshing, oldest_secret_age_seconds}`; **503 while `serving` is false** |
+| `GET /secrets`       | `{names: [...]}` — names only, sorted                                                                                |
+| `GET /secret/<name>` | `{key, value, fetched_at_unix, age_seconds, source}`, or 404 / 502 / 503 (below)                                     |
+| `POST /refresh`      | 202 `{ok: true, refresh: "started"}` — kicks a refresh on a new thread                                               |
 
 Auth failures are 401. Startup exit codes: 2 for a bad home or a refused
 TTL, 3 for a token-file or bind failure. The broker's own token file is
@@ -40,11 +40,11 @@ TTL, 3 for a token-file or bind failure. The broker's own token file is
 
 ## The serving gate: 503 until loaded
 
-`serving` is true only once at least one refresh has *succeeded*. Before
+`serving` is true only once at least one refresh has _succeeded_. Before
 that, `/health` answers **503** with `ok:false, serving:false` (plus
 `refresh_error` when a refresh has failed), and `GET /secret/<name>`
 answers 503 `{error: "secrets not loaded yet", …}`. A live process whose
-`bws` cannot run is *not* serving, and health says so: not-loaded is a
+`bws` cannot run is _not_ serving, and health says so: not-loaded is a
 distinct, diagnosable state, not a 404. Clients key on this gate.
 
 ## Cache semantics: age and source
@@ -55,7 +55,7 @@ carries the time the broker last fetched it from Bitwarden, precisely so a
 rotation runbook can tell "the broker is serving a value N seconds old"
 from "Bitwarden itself holds this value".
 
-**Read-through on miss.** A miss on a *loaded* cache is not final: the
+**Read-through on miss.** A miss on a _loaded_ cache is not final: the
 broker reads through to Bitwarden for that one name and serves what it
 finds with `source: "bitwarden-read-through"`, `age_seconds: 0` — a secret
 minted moments ago is visible immediately instead of at the next TTL tick.
@@ -82,8 +82,8 @@ second refresh requested while one is in progress is refused
 
 A refresh installs **per secret**, not all-or-nothing: fetches that succeed
 land immediately with the batch's install time; a secret whose fetch fails
-keeps its previous value *and age*; deletions follow the authoritative
-list. Only a refresh in which *every* fetch fails keeps the whole previous
+keeps its previous value _and age_; deletions follow the authoritative
+list. Only a refresh in which _every_ fetch fails keeps the whole previous
 cache untouched. Net effect: a rotation lands within one TTL of the edit,
 bounded and observable via the exposed age, and one broken fetch cannot
 block every rotation in the vault.
@@ -110,7 +110,7 @@ The resolution chain (`Resolver::default_chain`):
    (the laptop), a direct source speaks `GET /secret/<name>` over that Unix
    socket. Elsewhere (the sandbox), the broker leg is a framed exchange
    through the session broker to port 4800: the request names the token
-   *file* (`[secrets] token_file`, default `~/tools/secrets-broker-token`);
+   _file_ (`[secrets] token_file`, default `~/tools/secrets-broker-token`);
    the session broker reads the file per request and sends its contents as
    `X-Agent-Token` — fleet only ever names the file, and the value never
    transits fleet's own memory on this leg. Exactly one broker leg owns the
@@ -166,11 +166,11 @@ prevents: a seat kind whose bootstrap skips the token phase can enrol — its
 bridge leg answers, because that leg is HTTPS plus a by-name secret — yet
 fail its queue, secrets, and shell legs with synthesised transport errors,
 because the three shared files were never provisioned for it. Note that the
-older Bitwarden name `secrets-broker.token` is a *different* value and is
+older Bitwarden name `secrets-broker.token` is a _different_ value and is
 never used as the client token.
 
 What the binary itself provisions at runtime is narrower: `fleet init`
-*spawns* the sandbox secrets broker (which then reads its own daemon token
+_spawns_ the sandbox secrets broker (which then reads its own daemon token
 file), and the brokers read their token files per startup or per request.
 Token files stay files — read per request, never stored in memory
 long-term, never logged.

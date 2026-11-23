@@ -122,7 +122,7 @@ What can go wrong, and the fix:
   resolution (`$FLEET_BRIDGE_URL`, then `[bridge] url` in the fleet
   config, then the default above).
 - Exit `2` — a usage error; fix the flags and retry. Note that `fleet
-  bridge` has one shared usage text for the whole domain, so read the
+bridge` has one shared usage text for the whole domain, so read the
   `hello` line in it carefully.
 
 If you omit `--agent`, the name defaults to `$FLEET_AGENT`, then
@@ -190,18 +190,18 @@ fleet agent doctor --agent <your-agent-name>
 
 Read the answer leg by leg:
 
-| Leg | Probe | "Up" means | It needs |
-|---|---|---|---|
-| `bridge` | `bridge inbox --agent <name> --limit 1` | "the mailbox answers" | HTTPS to the bridge, and the fleet token by name through fleet secrets |
-| `queue` | `queue health` | "answers" | The queue broker: its socket on the laptop, or the laptop transport from elsewhere |
-| `github` | `gh api rate_limit` via `fleet gh`, falling back to a signed-in plain `gh` | "answers", with `route: "fleet"` or `"plain"` recorded | A `gh` token: the fleet rotation, or a signed-in `gh` |
-| `shell` | `laptop-agent health` | "the laptop answers" | A route to the laptop: its broker, the Cloudflare tunnel, the tailnet, or ssh |
+| Leg      | Probe                                                                      | "Up" means                                             | It needs                                                                           |
+| -------- | -------------------------------------------------------------------------- | ------------------------------------------------------ | ---------------------------------------------------------------------------------- |
+| `bridge` | `bridge inbox --agent <name> --limit 1`                                    | "the mailbox answers"                                  | HTTPS to the bridge, and the fleet token by name through fleet secrets             |
+| `queue`  | `queue health`                                                             | "answers"                                              | The queue broker: its socket on the laptop, or the laptop transport from elsewhere |
+| `github` | `gh api rate_limit` via `fleet gh`, falling back to a signed-in plain `gh` | "answers", with `route: "fleet"` or `"plain"` recorded | A `gh` token: the fleet rotation, or a signed-in `gh`                              |
+| `shell`  | `laptop-agent health`                                                      | "the laptop answers"                                   | A route to the laptop: its broker, the Cloudflare tunnel, the tailnet, or ssh      |
 
 Two details matter when reading the result:
 
 - Doctor's bridge probe with a known agent is a read that takes nothing
   (`inbox --limit 1`). Service health alone proves nothing about whether
-  this seat holds the fleet token, so only a call made *as* an agent
+  this seat holds the fleet token, so only a call made _as_ an agent
   counts. With no agent name known, the bridge leg is reported **not ok**
   even when the service answers — enrol, or pass `--agent`.
 - From the legs, doctor derives the **rungs** map: `push` follows the
@@ -230,7 +230,7 @@ What can go wrong, and the fix:
 `fleet agent next` walks the intake ladder in order — a pushed bridge
 command, a queue claim, the local shortlist, then the highest-priority
 open issue from GitHub — and returns the first rung that yields work. A
-rung that is *down* is recorded and skipped; a rung that is *empty* is
+rung that is _down_ is recorded and skipped; a rung that is _empty_ is
 different, and the answer's `tried` log says which was which.
 
 ```bash

@@ -1,11 +1,6 @@
 import { env } from "cloudflare:test";
 import { beforeAll, describe, expect, it } from "vitest";
-import {
-  HotCacheStore,
-  hotCacheEnabled,
-  hotCacheStore,
-  type HotCacheClass,
-} from "../src/hot_cache";
+import { HotCacheStore, hotCacheEnabled, hotCacheStore, type HotCacheClass } from "../src/hot_cache";
 import schemaSql from "../migrations/0001_hot_cache.sql?raw";
 
 const db = (env as unknown as { HOT_CACHE: D1Database }).HOT_CACHE;
@@ -114,8 +109,6 @@ describe("hot cache flag gating", () => {
   it("yields no store when off or unbound, a store when on and bound", () => {
     expect(hotCacheStore({ HOT_CACHE: db })).toBeUndefined();
     expect(hotCacheStore({ HOT_CACHE_ENABLED: "true" })).toBeUndefined();
-    expect(hotCacheStore({ HOT_CACHE: db, HOT_CACHE_ENABLED: "true" })).toBeInstanceOf(
-      HotCacheStore,
-    );
+    expect(hotCacheStore({ HOT_CACHE: db, HOT_CACHE_ENABLED: "true" })).toBeInstanceOf(HotCacheStore);
   });
 });

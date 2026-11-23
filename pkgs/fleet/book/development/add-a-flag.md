@@ -66,7 +66,7 @@ One deliberate non-touch: the flag was **not** added to the fallback grammar. Fa
 
 ## Defaults discipline
 
-- A new flag is optional unless the verb is meaningless without it. Adding a *required* flag to a shipped verb is a breaking change to every script that calls it; that needs its own justification, not a ride-along.
+- A new flag is optional unless the verb is meaningless without it. Adding a _required_ flag to a shipped verb is a breaking change to every script that calls it; that needs its own justification, not a ride-along.
 - An omitted flag must reproduce the old behaviour exactly — including the old request-body shape where a broker is involved, as the `drop_deps` conditional above does.
 - Defaults that already exist are part of the contract: for example `--worker` defaults to `repo-worker-code` (with named exceptions such as `cancel`, whose worker defaults to `fleet-monitor`), and `--queue` defaults are verb-specific (see the queue chapters). Do not quietly change a default while adding an unrelated flag.
 - Numeric flags die with exit 2 naming the flag when given a non-numeric value. Follow that shape for any new validated value.

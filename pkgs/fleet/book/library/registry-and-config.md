@@ -1,6 +1,6 @@
 # Registry, config and capabilities
 
-Two platform crates decide what a given `fleet` invocation *is*:
+Two platform crates decide what a given `fleet` invocation _is_:
 `fleet-registry` says what exists — every domain, capability and build
 variant, in every build — and `fleet-config` says what this host allows
 and where everything lives. On top of them, the binary computes an
@@ -42,18 +42,18 @@ variant sets below.
 `struct Domain` is the unit that help lists, stubs name, and config
 disables:
 
-| Field | Meaning |
-|---|---|
-| `name: &'static str` | The domain's invocation name |
-| `summary: &'static str` | The one-line description help prints |
-| `capabilities: &'static [Capability]` | Every capability the domain spans |
-| `primary: Capability` | The capability headline availability keys on |
-| `aliases: &'static [&str]` | Its argv0 aliases |
-| `subcommands: &'static [&str]` | The top-level verb inventory rendered by domain help |
+| Field                                 | Meaning                                              |
+| ------------------------------------- | ---------------------------------------------------- |
+| `name: &'static str`                  | The domain's invocation name                         |
+| `summary: &'static str`               | The one-line description help prints                 |
+| `capabilities: &'static [Capability]` | Every capability the domain spans                    |
+| `primary: Capability`                 | The capability headline availability keys on         |
+| `aliases: &'static [&str]`            | Its argv0 aliases                                    |
+| `subcommands: &'static [&str]`        | The top-level verb inventory rendered by domain help |
 
 The `primary` rule has a visible consequence: on the `fleet-serve`
 build, the `search` domain is marked absent because its headline
-capability is the `search` *client*, even though the `search-serve`
+capability is the `search` _client_, even though the `search-serve`
 role exists under `serve`. And `shell`'s capability list is `["agent"]`
 — there is no `shell` capability atom; shell rides on the agent
 capability.
@@ -66,11 +66,11 @@ capability.
 `enum Variant { Full, Serve, Connect }` — a property of the artifact,
 whose names double as invocation profiles:
 
-| Variant | Installed name | Compiled capabilities |
-|---|---|---|
-| `Full` | `fleet` | All 15 |
-| `Serve` | `fleet-serve` | `proxy-connect`, `proxy-serve`, `proxy-raw-splice`, `queue-broker`, `secrets-broker`, `search-serve`, `secrets` (7) — daemon roles plus proxy, no working-seat clients |
-| `Connect` | `fleet-connect` | `proxy-connect`, `proxy-raw-splice` (2) |
+| Variant   | Installed name  | Compiled capabilities                                                                                                                                                  |
+| --------- | --------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `Full`    | `fleet`         | All 15                                                                                                                                                                 |
+| `Serve`   | `fleet-serve`   | `proxy-connect`, `proxy-serve`, `proxy-raw-splice`, `queue-broker`, `secrets-broker`, `search-serve`, `secrets` (7) — daemon roles plus proxy, no working-seat clients |
+| `Connect` | `fleet-connect` | `proxy-connect`, `proxy-raw-splice` (2)                                                                                                                                |
 
 `Variant::name()` gives the installed side-by-side name; wherever a
 variant is actually used, the binary is renamed plain `fleet` and the
@@ -89,14 +89,14 @@ table matching the argv0 map.
 `struct AliasRoute { domain, implied_arg }` and `pub fn alias_route(argv0)`
 give the multicall names; anything not listed is not a multicall name:
 
-| argv0 | Routes to domain | Implied argument |
-|---|---|---|
-| `repo-queue` | `queue` | — |
-| `queue-broker` | `serve` | `queue-broker` |
-| `secrets-broker` | `serve` | `secrets-broker` |
-| `laptop-agent-broker` | `proxy` | `serve` |
-| `atlas-search` | `search` | — |
-| `laptop-agent` | `laptop-agent` | — |
+| argv0                 | Routes to domain | Implied argument |
+| --------------------- | ---------------- | ---------------- |
+| `repo-queue`          | `queue`          | —                |
+| `queue-broker`        | `serve`          | `queue-broker`   |
+| `secrets-broker`      | `serve`          | `secrets-broker` |
+| `laptop-agent-broker` | `proxy`          | `serve`          |
+| `atlas-search`        | `search`         | —                |
+| `laptop-agent`        | `laptop-agent`   | —                |
 
 An alias route constructs the surface with **no profile** (aliases do
 not narrow), prepends the implied argument, and dispatches straight to
@@ -112,28 +112,28 @@ intersection as the effective set, and the loaded config.
 `Surface::cap_state(cap, domain_name)` checks in order and yields
 `enum CapState`:
 
-| `CapState` | Meaning | Stub wording (first line) |
-|---|---|---|
-| `Available` | Compiled in, in profile, not config-disabled | — (the domain runs; the fourth form below is its skeleton variant) |
-| `NotInBuild` | This build was compiled without it | `fleet: this build does not include '<domain>'.` |
-| `NarrowedByName` | The invocation name (`fleet-serve` / `fleet-connect`) scoped it away | `fleet: invoked as '<name>', this build does not include '<domain>'.` |
-| `DisabledByConfig` | The `[domains]` table in this host's fleet config set the domain to `false` | `fleet: '<domain>' is disabled by config on this host.` |
+| `CapState`         | Meaning                                                                     | Stub wording (first line)                                             |
+| ------------------ | --------------------------------------------------------------------------- | --------------------------------------------------------------------- |
+| `Available`        | Compiled in, in profile, not config-disabled                                | — (the domain runs; the fourth form below is its skeleton variant)    |
+| `NotInBuild`       | This build was compiled without it                                          | `fleet: this build does not include '<domain>'.`                      |
+| `NarrowedByName`   | The invocation name (`fleet-serve` / `fleet-connect`) scoped it away        | `fleet: invoked as '<name>', this build does not include '<domain>'.` |
+| `DisabledByConfig` | The `[domains]` table in this host's fleet config set the domain to `false` | `fleet: '<domain>' is disabled by config on this host.`               |
 
 Every stub goes to stderr and returns exit **69** (`EX_UNAVAILABLE`).
 Its second line is always `Enabled capabilities: <comma list>` — the
-*usable* set: the effective set minus every capability of every
+_usable_ set: the effective set minus every capability of every
 config-disabled domain — and its third line names the build. There is
 also a step-1 skeleton form for a capability that is `Available` but has
 nothing behind it yet: "included in this build but not implemented
 yet", in frozen epic-#5412 wording. Help renders the same four states
 inline (`[not in this build]`, `[narrowed out by this name]`,
-`[disabled by config]`), and renders them on *every* variant — help
+`[disabled by config]`), and renders them on _every_ variant — help
 never stubs.
 
 `fleet capabilities` prints the whole picture as JSON: the build block
 (name, version, derived version, source revision, invoked-as, profile),
-**two** capability lists — `capabilities` (what this *invocation* can
-use) and `compiled_capabilities` (what the *binary* was built with);
+**two** capability lists — `capabilities` (what this _invocation_ can
+use) and `compiled_capabilities` (what the _binary_ was built with);
 their difference is exactly the profile/config narrowing — and one
 entry per domain with its `state` (`available`, `not-in-build`,
 `narrowed-by-name`, `disabled-by-config`) and `available` boolean.
@@ -141,7 +141,7 @@ entry per domain with its `state` (`available`, `not-in-build`,
 ## `compiled_capabilities()`: the binary reports its own variant
 
 Capabilities are compiled in through Cargo features on the bin crate,
-and reconstructed at runtime — the binary *derives* its variant from
+and reconstructed at runtime — the binary _derives_ its variant from
 its feature set; it does not trust a baked-in name.
 
 - The feature sets: `default = ["full"]`, where `full` enables every
@@ -149,7 +149,7 @@ its feature set; it does not trust a baked-in name.
   Nix build; the connect build is `--no-default-features` with nothing
   optional on. Each feature wires its optional dependencies and the
   owning crate's matching feature (for example `queue =
-  ["dep:fleet-secrets", "dep:fleet-queue", "fleet-queue/client"]`).
+["dep:fleet-secrets", "dep:fleet-queue", "fleet-queue/client"]`).
 - `proxy-connect` is **not a feature**: it is compiled into every
   variant unconditionally. `fleet-proxy` itself is a non-optional
   dependency with default features off — the client is in every
@@ -157,7 +157,7 @@ its feature set; it does not trust a baked-in name.
   `fleet-secrets` is optional for the same reason in reverse: the
   connect variant must not carry it.
 - `fn compiled_capabilities()` starts from `{ProxyConnect,
-  ProxyRawSplice}` unconditionally and inserts one `Capability` per
+ProxyRawSplice}` unconditionally and inserts one `Capability` per
   `cfg!(feature = "…")`. `build_variant(compiled)` then matches the set
   against the three variant sets — `Full`, `Serve`, `Connect`, or
   `None`, which renders as the build name `fleet-custom` in
@@ -204,10 +204,10 @@ the manifest in this order:
 The built-in location map has two locations today (a future lab node
 provisions its own `[host]` section instead of growing the table):
 
-| Location | `init_mode` | Roles |
-|---|---|---|
-| `sandbox` | `spawn` | `proxy`, `secrets-broker` |
-| `laptop` | `systemd` | `laptop-agent`, `queue-broker`, `search`, `secrets-broker` |
+| Location  | `init_mode` | Roles                                                      |
+| --------- | ----------- | ---------------------------------------------------------- |
+| `sandbox` | `spawn`     | `proxy`, `secrets-broker`                                  |
+| `laptop`  | `systemd`   | `laptop-agent`, `queue-broker`, `search`, `secrets-broker` |
 
 The full `[host]` role vocabulary is five names — `proxy`,
 `queue-broker`, `secrets-broker`, `search`, `laptop-agent` — a superset
@@ -235,7 +235,7 @@ These are the rules the narrowing-only design imposes on anyone
 embedding or wrapping the binary:
 
 1. **Profiles only narrow, never widen.** Invoking under `fleet-serve`
-   or `fleet-connect` sets a capability *ceiling*: the effective surface
+   or `fleet-connect` sets a capability _ceiling_: the effective surface
    is `compiled ∩ profile`. No invocation name, config file or
    environment variable can give an invocation a capability its binary
    was not compiled with.
@@ -245,7 +245,7 @@ embedding or wrapping the binary:
    or profile lacks.
 3. **Aliases do not narrow.** An argv0 alias (`repo-queue`,
    `queue-broker`, …) routes straight to its domain with no profile.
-   Only the two hyphenated *variant* names narrow.
+   Only the two hyphenated _variant_ names narrow.
 4. **Check state, don't assume.** An embedder that depends on a domain
    must handle all four `CapState` outcomes — or, from outside the
    process, exit `69` with the stub's wording — and should read

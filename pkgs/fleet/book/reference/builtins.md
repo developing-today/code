@@ -19,9 +19,9 @@ Sources: [fleet main.rs](https://github.com/developing-today/code/blob/main/pkgs
 Usage: fleet init
 ```
 
-| Flag | Argument | Default | Meaning |
-|---|---|---|---|
-| _(none)_ | — | — | `init` takes no arguments and no flags. Any trailing argument is a usage error, exit 2. The identical command is also spelled `fleet proxy init`; both spellings resolve to one implementation. |
+| Flag     | Argument | Default | Meaning                                                                                                                                                                                         |
+| -------- | -------- | ------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| _(none)_ | —        | —       | `init` takes no arguments and no flags. Any trailing argument is a usage error, exit 2. The identical command is also spelled `fleet proxy init`; both spellings resolve to one implementation. |
 
 **Behaviour.** `fleet init` autostarts this host's fleet roles if they are not running, per the `[host]` manifest. It first runs session initialisation (see `session bind` below); a session error is exit 2 before any role work. The capability ladder applies before anything else: a build whose usable surface lacks `proxy-serve` can only stub `init`, exit 69.
 
@@ -33,18 +33,18 @@ The manifest resolution order is:
 
 Only two built-in locations exist today; a future lab node provisions its own `[host]` section instead of growing the table:
 
-| Location | init_mode | Roles |
-|---|---|---|
-| `sandbox` | spawn | `proxy`, `secrets-broker` |
-| `laptop` | systemd | `laptop-agent`, `queue-broker`, `search`, `secrets-broker` |
+| Location  | init_mode | Roles                                                      |
+| --------- | --------- | ---------------------------------------------------------- |
+| `sandbox` | spawn     | `proxy`, `secrets-broker`                                  |
+| `laptop`  | systemd   | `laptop-agent`, `queue-broker`, `search`, `secrets-broker` |
 
 The full `[host]` role vocabulary is five names — `proxy`, `queue-broker`, `secrets-broker`, `search`, `laptop-agent` — a superset of the serve roles (it includes `laptop-agent`, which is not a serve role).
 
 - **Unknown location** (no manifest from any source, or a location with no roles): init reports state — every source consulted, plus detected hostname/OS/systemd for the report only (detection never selects roles) — starts nothing, and exits 69. It never guess-starts a role.
 - **Manifest skips and the kill switch:** roles the manifest itself disables (`enabled = false`) are reported as skipped with their reason; then the `[domains]` gate is applied and wins over the manifest (the proxy role keys on the `proxy` domain, the daemon roles on `serve`).
 - **`spawn` mode (sandbox):** spawn semantics exist for exactly two roles; any other role in a spawn manifest is reported and skipped, never spawned.
-  - *proxy:* probe the broker socket and say hello. A live broker (either protocol dialect) means status plus PATH-shim sync and out — a strict no-op: never a spawn, never a restart; init never fights an incumbent broker. Only an unanswered socket spawns `fleet serve proxy` detached, then reports what it started and syncs shims from the new broker's services map.
-  - *secrets-broker:* probe its Unix socket; a live answer means status and out. Otherwise spawn `fleet serve secrets-broker` detached (output appended to `secrets-broker.log` beside the socket) with `SECRETS_BROKER_BIND=127.0.0.1:4800` set explicitly — and the broker forces loopback itself when `FLEET_LOCATION=sandbox`, so the sandbox broker is loopback-only twice over. Init then waits (50 × 100 ms probes) for the socket to answer before reporting success.
+  - _proxy:_ probe the broker socket and say hello. A live broker (either protocol dialect) means status plus PATH-shim sync and out — a strict no-op: never a spawn, never a restart; init never fights an incumbent broker. Only an unanswered socket spawns `fleet serve proxy` detached, then reports what it started and syncs shims from the new broker's services map.
+  - _secrets-broker:_ probe its Unix socket; a live answer means status and out. Otherwise spawn `fleet serve secrets-broker` detached (output appended to `secrets-broker.log` beside the socket) with `SECRETS_BROKER_BIND=127.0.0.1:4800` set explicitly — and the broker forces loopback itself when `FLEET_LOCATION=sandbox`, so the sandbox broker is loopback-only twice over. Init then waits (50 × 100 ms probes) for the socket to answer before reporting success.
 - **`systemd` mode (laptop):** init never detached-spawns a daemon systemd owns. For each role it reports `fleet-<role>.service` state via `systemctl --user is-active`; an active unit is a no-op; an inactive but existing unit is started via `systemctl --user start`; a missing unit is reported and skipped, not an error; unavailable systemctl is a report, not a spawn.
 
 Exit codes: 0 ok (including the all-roles-already-running no-op) · 2 usage error or session-initialisation error · 69 capability stub, or unknown location (starts nothing).
@@ -63,8 +63,8 @@ $ echo $?
 Usage: fleet session bind [--session-id ID]
 ```
 
-| Flag | Argument | Default | Meaning |
-|---|---|---|---|
+| Flag           | Argument   | Default                  | Meaning                                                                                                                                                                                                   |
+| -------------- | ---------- | ------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `--session-id` | session id | resolved (see Behaviour) | The explicit session identity to validate and persist. Both `--session-id ID` and `--session-id=ID` spellings are accepted; at most one value — a second value is the usage error shown in the help dump. |
 
 **Behaviour.** `fleet session bind` validates and persists this worktree's session identity. The identity is an OpenCode session id of the form `ses_` followed by ASCII letters and digits — anything else fails closed.
@@ -88,9 +88,9 @@ fleet session: invalid session id 'not-a-session' (expected ses_ followed by let
 Usage: fleet version
 ```
 
-| Flag | Argument | Default | Meaning |
-|---|---|---|---|
-| _(none)_ | — | — | `version` takes no arguments. `fleet version --help` is a usage error, exit 2. The short form is spelled `fleet --version` or `fleet -V`. |
+| Flag     | Argument | Default | Meaning                                                                                                                                   |
+| -------- | -------- | ------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| _(none)_ | —        | —       | `version` takes no arguments. `fleet version --help` is a usage error, exit 2. The short form is spelled `fleet --version` or `fleet -V`. |
 
 **Behaviour.** `fleet version` prints five lines; the short `--version` / `-V` form prints only the first two:
 
@@ -102,7 +102,7 @@ Source rev: b8bbcc0c49564ab31db8d58b026b67532db9491e
 Enabled capabilities: proxy-connect, proxy-serve, … (usable set, registry order)
 ```
 
-The fields are: the workspace **version**; the **build** name — `fleet`, `fleet-serve`, or `fleet-connect`, derived by matching the *compiled* capability set against the variant sets (an unrecognised compiled set falls back to the plain build name) — with the profile annotation when the invocation name narrowed the surface; the **derived version** (the `0.1.0-dev+g<rev>` form); the **source rev** (the full commit SHA the build was cut from); and the **enabled capabilities** — the *usable* set (compiled ∩ profile ∩ `[domains]` enables), comma-joined in registry order, or `none`. The values above are the reference build's, as captured in the capabilities dump.
+The fields are: the workspace **version**; the **build** name — `fleet`, `fleet-serve`, or `fleet-connect`, derived by matching the _compiled_ capability set against the variant sets (an unrecognised compiled set falls back to the plain build name) — with the profile annotation when the invocation name narrowed the surface; the **derived version** (the `0.1.0-dev+g<rev>` form); the **source rev** (the full commit SHA the build was cut from); and the **enabled capabilities** — the _usable_ set (compiled ∩ profile ∩ `[domains]` enables), comma-joined in registry order, or `none`. The values above are the reference build's, as captured in the capabilities dump.
 
 There are 15 capability atoms, in registry order: `proxy-connect, proxy-serve, proxy-raw-splice, queue, queue-broker, secrets-broker, search, search-serve, dispatch, dispatch-test, laptop-agent, secrets, gh, bridge, agent`. `proxy-connect` is unconditional — present in every variant. The three build variants are: Full (`fleet`, all 15), Serve (`fleet-serve`: `proxy-connect, proxy-serve, proxy-raw-splice, queue-broker, secrets-broker, search-serve, secrets` — daemon roles plus proxy, no working-seat clients), and Connect (`fleet-connect`: `proxy-connect, proxy-raw-splice` only). Invoking the binary under a hyphenated name selects that profile as a ceiling; profiles can only narrow, never widen. An unknown invocation name is a usage error, exit 2, naming the expected names.
 
@@ -123,30 +123,29 @@ Enabled capabilities: proxy-connect, proxy-serve, proxy-raw-splice, queue, queue
 Usage: fleet capabilities
 ```
 
-| Flag | Argument | Default | Meaning |
-|---|---|---|---|
-| _(none)_ | — | — | `capabilities` takes no arguments. `fleet capabilities --help` is a usage error, exit 2. |
+| Flag     | Argument | Default | Meaning                                                                                  |
+| -------- | -------- | ------- | ---------------------------------------------------------------------------------------- |
+| _(none)_ | —        | —       | `capabilities` takes no arguments. `fleet capabilities --help` is a usage error, exit 2. |
 
 **Behaviour.** `fleet capabilities` prints the registry for agents as pretty-printed JSON:
 
 ```json
 {
   "build": {
-    "name": "fleet", "version": "0.1.0",
+    "name": "fleet",
+    "version": "0.1.0",
     "derived_version": "0.1.0-dev+gb8bbcc0",
     "source_rev": "b8bbcc0c49564ab31db8d58b026b67532db9491e",
-    "invoked_as": "fleet", "profile": null
+    "invoked_as": "fleet",
+    "profile": null
   },
-  "capabilities": [ "…" ],
-  "compiled_capabilities": [ "…" ],
-  "domains": [
-    { "name": "queue", "summary": "…", "aliases": ["repo-queue"],
-      "capabilities": ["queue"], "available": true, "state": "available" }
-  ]
+  "capabilities": ["…"],
+  "compiled_capabilities": ["…"],
+  "domains": [{ "name": "queue", "summary": "…", "aliases": ["repo-queue"], "capabilities": ["queue"], "available": true, "state": "available" }]
 }
 ```
 
-Per-domain `state` is one of `available`, `not-in-build`, `narrowed-by-name`, `disabled-by-config` (the four reason classes behind the exit-69 stub), and `available` is exactly `state == "available"`. Note the two distinct capability lists: `capabilities` is what this *invocation* can use; `compiled_capabilities` is what the *binary* was built with — their difference is the profile/config narrowing. In the reference build both are the full 15 and every domain is `available`. One registry quirk: the `shell` domain's capability list is `["agent"]` — there is no `shell` capability atom; shell rides on the agent capability.
+Per-domain `state` is one of `available`, `not-in-build`, `narrowed-by-name`, `disabled-by-config` (the four reason classes behind the exit-69 stub), and `available` is exactly `state == "available"`. Note the two distinct capability lists: `capabilities` is what this _invocation_ can use; `compiled_capabilities` is what the _binary_ was built with — their difference is the profile/config narrowing. In the reference build both are the full 15 and every domain is `available`. One registry quirk: the `shell` domain's capability list is `["agent"]` — there is no `shell` capability atom; shell rides on the agent capability.
 
 Exit codes: 0 ok · 2 usage error (any argument, including `--help`).
 
@@ -175,8 +174,8 @@ $ fleet capabilities | head -20
 Usage: fleet help [domain]
 ```
 
-| Flag | Argument | Default | Meaning |
-|---|---|---|---|
+| Flag                    | Argument    | Default       | Meaning                                                                                                                                                                                                                            |
+| ----------------------- | ----------- | ------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `<domain>` (positional) | domain name | full registry | With no argument, prints the full registry help (identical to `fleet --help`). With one domain name, prints that domain's help. A second argument is rejected. `fleet help --help` is an error: there is no domain named `--help`. |
 
 **Behaviour.** `fleet help` with no argument prints the full registry: `fleet 0.1.0 — one multicall binary for the fleet's tools`, the usage lines, all 12 domains with summaries and argv0 aliases, the five built-in commands, and the note that a domain this invocation cannot use answers with a stub and exit code 69. `fleet help <domain>` prints the domain's registry help: summary line, `Usage: fleet <domain> <command> [args...]`, argv0 aliases, the command list, and a status line whose wording is per-domain and capability-aware. An unknown name is a usage error: `error: no domain named '<name>' — run 'fleet --help' for the registry`, exit 2. Domain help is registry data and renders identically on every build, with unavailable domains marked — help never stubs.

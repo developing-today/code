@@ -60,7 +60,7 @@ surprise people:
 - **No claimable task** prints `{"task": null}` — deliberately carrying
   no id, queue or status a caller could mistake for a task — plus a
   diagnostic on stderr of the form `no claimable task — Q queued (A at
-  the attempt cap, D not yet due), P parked due`, and exits **5**.
+the attempt cap, D not yet due), P parked due`, and exits **5**.
 
 Keep the claimed row. Everything below needs its `id`, and Steps 2–6
 need the worker and lane the claim was stamped with.
@@ -97,8 +97,8 @@ claim actually used, everywhere, unchanged.
 ## Step 3: Heartbeat to keep the lease
 
 A claim is a lease. If it lapses, the task returns to the pool and
-another worker may take it. A heartbeat sets the lease to *now plus the
-extend* on both the task row and the lease record.
+another worker may take it. A heartbeat sets the lease to _now plus the
+extend_ on both the task row and the lease record.
 
 ```bash
 fleet queue heartbeat <task-id> --worker agent-next-05 --lane agent-next-05
@@ -123,7 +123,7 @@ value into the row.
 What can go wrong, and the fix:
 
 - Exit `5` with `heartbeat: no matching claimed row (task not claimed by
-  this worker, or already terminal)`: the broker does not believe you
+this worker, or already terminal)`: the broker does not believe you
   hold this task. The usual causes are a wrong `--worker`/`--lane` pair
   (re-read Step 2), a lease that already lapsed and was re-claimed by
   someone else, or a task that is already terminal. Do not retry blindly
@@ -131,7 +131,7 @@ What can go wrong, and the fix:
 - Exit `6`: the primary queue store failed and the verb switched this
   work to the GitHub fallback. The output is one JSON object naming the
   switch, with a hint of the form `continue this work with: fleet queue
-  fallback scan|claim|heartbeat|release|unblock`. Follow it: from here
+fallback scan|claim|heartbeat|release|unblock`. Follow it: from here
   the task is worked through the fallback verbs until the primary store
   returns. Setting `REPO_QUEUE_NO_FALLBACK_SWITCH=1` disables the switch
   and restores plain die-on-error, if you ever need the raw failure.
@@ -188,13 +188,13 @@ verb then runs the offline gate on its own record before returning:
 
 The verdict is one of exactly five:
 
-| Verdict | Means |
-|---|---|
-| `merged_verified` | Some pull in the readback is merged |
-| `closed_verified` | The issue is closed and no unfinished pulls remain |
+| Verdict                    | Means                                                                |
+| -------------------------- | -------------------------------------------------------------------- |
+| `merged_verified`          | Some pull in the readback is merged                                  |
+| `closed_verified`          | The issue is closed and no unfinished pulls remain                   |
 | `open_draft_with_followup` | Unfinished pulls exist, nothing merged, and a follow-up is on record |
-| `open_draft_superseded` | Operator-asserted variant of the above, also requiring a follow-up |
-| `invalid_no_work` | No merged pull, issue open, no unfinished pull |
+| `open_draft_superseded`    | Operator-asserted variant of the above, also requiring a follow-up   |
+| `invalid_no_work`          | No merged pull, issue open, no unfinished pull                       |
 
 When the honest verdict needs a follow-up — typically
 `open_draft_with_followup`, because a draft PR still carries work —
@@ -274,7 +274,7 @@ What else can go wrong here:
   by another worker, it is theirs now — do not complete over them.
 - Exit `6`: the fallback switch. In the fallback, completion is
   `fleet queue fallback complete <repo> <issue-number> --worker <id>
-  --summary <text> --result <path>`, where `--result` is the same
+--summary <text> --result <path>`, where `--result` is the same
   `verify-disposition --json` record; it must pass the same offline gate
   **before anything is posted**, and a rejection there also posts
   nothing, leaves the claim live, and exits `1`.

@@ -1,6 +1,6 @@
 # Placement and surfaces as data
 
-Placement — deciding *where* a build job runs — is data, not code. The
+Placement — deciding _where_ a build job runs — is data, not code. The
 surface registry is a JSON file; adding a location is adding an entry;
 no surface is hardcoded in the engine. This chapter documents that file
 field by field, how the registry is resolved and extended, the decision
@@ -16,7 +16,7 @@ into the queue client. The operator's walkthrough is
 
 > Do not confuse this engine with `pkgs/fleet/placement/`. That
 > directory is a different, unrelated Go proof-of-concept (a
-> placement-*record* package for a policy framework) that is
+> placement-_record_ package for a policy framework) that is
 > deliberately not wired into the live queue client or any dispatcher.
 > Two placement systems share one name; only the Rust module over
 > `fleet-surfaces.json` dispatches anything.
@@ -42,9 +42,9 @@ Top-level shape:
 {
   "comment": "Fleet placement registry. …",
   "version": 2,
-  "laptop":  { "busy": false, "busy_source": "manual-flag", "note": "…" },
-  "owners":  { "<owner>": { "…": "…" } },
-  "surfaces": [ { "…": "…" } ]
+  "laptop": { "busy": false, "busy_source": "manual-flag", "note": "…" },
+  "owners": { "<owner>": { "…": "…" } },
+  "surfaces": [{ "…": "…" }]
 }
 ```
 
@@ -57,7 +57,7 @@ Top-level shape:
   `--laptop-busy`. Deliberately not scraped telemetry.
 - `owners`: per-owner caps, below.
 - `surfaces`: the surface entries, below. `fleet queue surfaces` prints
-  the resolved registry verbatim as pretty JSON — that output *is* this
+  the resolved registry verbatim as pretty JSON — that output _is_ this
   file, which is the quickest way to read the registry a given binary
   will use.
 
@@ -66,40 +66,40 @@ Top-level shape:
 The union of fields across the shipped entries, with the code that
 consumes each:
 
-| Field | Type | Consumed by / meaning |
-|---|---|---|
-| `id` | string | Surface identity: the `--surface ID` pin, the session record's `surface`, and the sort tie-break |
-| `kind` | string | Adapter selector: `github-actions`, `blacksmith`, `codespace` or `laptop`. Any other value gets **no adapter** — the surface is invisible to the cascade and cannot be pinned either |
-| `status` | string | Eligibility requires exactly `"active"` for `github-actions`/`blacksmith` surfaces. Shipped values: `active`, `standby` (`org-run`), `pending-scope` (`codespace-overflow`), `handoff-only` (`laptop`). The codespace and laptop adapters do not apply this check |
-| `owner` | string | The account whose cap, load and budget the surface draws on; load is aggregated per owner, not per surface |
-| `repo` | string or null | The *runner-host* repo the workflow is dispatched in (not the target repo). `null` for `codespace-overflow` and `laptop`. Used for token minting, load counting, run correlation, and the session record's `runner_repo` / `portable_id` |
-| `workflow` | string or null | The workflow file dispatched; `"fleet-command.yml"` for all Actions/Blacksmith surfaces, `null` for codespace/laptop |
-| `targets` | string array | Target-repo patterns: exact `owner/repo`, `owner/*`, or `*` (see matching rules below) |
-| `notes` | string | Human documentation only; never read by code |
-| `app_installation` | integer or null | GitHub App installation id for that host repo. Documentation/record only in the Rust code — nothing in the engine reads it; token minting goes through a separate helper |
-| `dispatch_as` | string, optional | `"user"` dispatches with the signed-in user's token; absent or `"app"` uses an App installation token. Any other value fails eligibility |
-| `dispatch_id_input` | bool | The workflow declares a `dispatch_id` input. When true, dispatch mints a fresh `fp_…` handle (separate from the session handle) and sends it as that input; the workflow puts it in the run title, enabling exact run correlation. When absent/false, correlation falls back to pre-dispatch snapshot exclusion |
-| `platform_input` | bool | The workflow declares a `platform` input. Gates macOS: a `platform=macos` job is ineligible on a surface where this is not `true` |
-| `previous_run_id_input` | bool | The workflow accepts `previous_run_id` / `previous_run_repo` inputs (follow-up output download) |
-| `container_input` | bool | The workflow accepts `container_image`; a `--container` value is only sent when this is `true` |
-| `sticky_queue_threshold` | integer | Follow-up stickiness threshold. Code default if absent: `2`, clamped to at least 1. All shipped surfaces: `2` |
-| `selection_priority` | integer | Tier-1 sort key (third position). Code default if absent: `50`. Shipped: `10` everywhere except `org-run` at `20`. Lower sorts first |
-| `public_targets_only` | bool, optional | Only `fleet-forks` (`true`). Eligibility does a live `GET /repos/{target}` and requires `"private": false` |
-| `host_surface` | string, optional | Only `fleet-org-blacksmith` (`"fleet-org"`): records which github-actions surface hosts this Blacksmith variant. Documentation-level linkage; the Blacksmith adapter dispatches its own surface's repo/workflow directly |
-| `budget` | object, optional | Blacksmith: `{free_minutes_monthly, paid_cap_minutes, rate_note}`. Codespace: `{core_hours_monthly, note}` |
-| `max_live` | integer, optional | Only `codespace-overflow` (`3`). Printed in the capacity summary only; **never enforced** |
+| Field                    | Type              | Consumed by / meaning                                                                                                                                                                                                                                                                                           |
+| ------------------------ | ----------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `id`                     | string            | Surface identity: the `--surface ID` pin, the session record's `surface`, and the sort tie-break                                                                                                                                                                                                                |
+| `kind`                   | string            | Adapter selector: `github-actions`, `blacksmith`, `codespace` or `laptop`. Any other value gets **no adapter** — the surface is invisible to the cascade and cannot be pinned either                                                                                                                            |
+| `status`                 | string            | Eligibility requires exactly `"active"` for `github-actions`/`blacksmith` surfaces. Shipped values: `active`, `standby` (`org-run`), `pending-scope` (`codespace-overflow`), `handoff-only` (`laptop`). The codespace and laptop adapters do not apply this check                                               |
+| `owner`                  | string            | The account whose cap, load and budget the surface draws on; load is aggregated per owner, not per surface                                                                                                                                                                                                      |
+| `repo`                   | string or null    | The _runner-host_ repo the workflow is dispatched in (not the target repo). `null` for `codespace-overflow` and `laptop`. Used for token minting, load counting, run correlation, and the session record's `runner_repo` / `portable_id`                                                                        |
+| `workflow`               | string or null    | The workflow file dispatched; `"fleet-command.yml"` for all Actions/Blacksmith surfaces, `null` for codespace/laptop                                                                                                                                                                                            |
+| `targets`                | string array      | Target-repo patterns: exact `owner/repo`, `owner/*`, or `*` (see matching rules below)                                                                                                                                                                                                                          |
+| `notes`                  | string            | Human documentation only; never read by code                                                                                                                                                                                                                                                                    |
+| `app_installation`       | integer or null   | GitHub App installation id for that host repo. Documentation/record only in the Rust code — nothing in the engine reads it; token minting goes through a separate helper                                                                                                                                        |
+| `dispatch_as`            | string, optional  | `"user"` dispatches with the signed-in user's token; absent or `"app"` uses an App installation token. Any other value fails eligibility                                                                                                                                                                        |
+| `dispatch_id_input`      | bool              | The workflow declares a `dispatch_id` input. When true, dispatch mints a fresh `fp_…` handle (separate from the session handle) and sends it as that input; the workflow puts it in the run title, enabling exact run correlation. When absent/false, correlation falls back to pre-dispatch snapshot exclusion |
+| `platform_input`         | bool              | The workflow declares a `platform` input. Gates macOS: a `platform=macos` job is ineligible on a surface where this is not `true`                                                                                                                                                                               |
+| `previous_run_id_input`  | bool              | The workflow accepts `previous_run_id` / `previous_run_repo` inputs (follow-up output download)                                                                                                                                                                                                                 |
+| `container_input`        | bool              | The workflow accepts `container_image`; a `--container` value is only sent when this is `true`                                                                                                                                                                                                                  |
+| `sticky_queue_threshold` | integer           | Follow-up stickiness threshold. Code default if absent: `2`, clamped to at least 1. All shipped surfaces: `2`                                                                                                                                                                                                   |
+| `selection_priority`     | integer           | Tier-1 sort key (third position). Code default if absent: `50`. Shipped: `10` everywhere except `org-run` at `20`. Lower sorts first                                                                                                                                                                            |
+| `public_targets_only`    | bool, optional    | Only `fleet-forks` (`true`). Eligibility does a live `GET /repos/{target}` and requires `"private": false`                                                                                                                                                                                                      |
+| `host_surface`           | string, optional  | Only `fleet-org-blacksmith` (`"fleet-org"`): records which github-actions surface hosts this Blacksmith variant. Documentation-level linkage; the Blacksmith adapter dispatches its own surface's repo/workflow directly                                                                                        |
+| `budget`                 | object, optional  | Blacksmith: `{free_minutes_monthly, paid_cap_minutes, rate_note}`. Codespace: `{core_hours_monthly, note}`                                                                                                                                                                                                      |
+| `max_live`               | integer, optional | Only `codespace-overflow` (`3`). Printed in the capacity summary only; **never enforced**                                                                                                                                                                                                                       |
 
 ### The seven shipped surfaces
 
-| `id` | `kind` | `status` | Owner / host repo | `dispatch_as` | Notable |
-|---|---|---|---|---|---|
-| `fleet-personal` | github-actions | active | dezren39 / dezren39/fleet | (app) | Its repo secrets include `GHCR_ORG_PAT` and `NIX_CACHE_*` (names only) for private checkouts, cross-run artifacts and Nix cache pushes |
-| `fleet-org` | github-actions | active | developing-today / developing-today/fleet | user | Canonical org runner; also the Blacksmith host |
-| `fleet-forks` | github-actions | active | developing-today-forks / developing-today-forks/fleet | user | `public_targets_only: true` — private targets are rejected because this host has no `GHCR_ORG_PAT` secret |
-| `org-run` | github-actions | standby | developing-today / developing-today/code | (app) | `platform_input`, `previous_run_id_input`, `container_input` all false; priority 20. Because eligibility requires `"active"`, it can never be selected or pinned — retained for manual workflow use |
-| `fleet-org-blacksmith` | blacksmith | active | developing-today / developing-today/fleet | user | `host_surface: fleet-org`; budget below |
-| `codespace-overflow` | codespace | pending-scope | dezren39 / no repo | — | Budget 180 core-hours/month; `max_live: 3`; never creates codespaces |
-| `laptop` | laptop | handoff-only | dezren39 / no repo | — | Targets `["*"]`; a placement record only — this adapter never runs shell commands on the laptop |
+| `id`                   | `kind`         | `status`      | Owner / host repo                                     | `dispatch_as` | Notable                                                                                                                                                                                             |
+| ---------------------- | -------------- | ------------- | ----------------------------------------------------- | ------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `fleet-personal`       | github-actions | active        | dezren39 / dezren39/fleet                             | (app)         | Its repo secrets include `GHCR_ORG_PAT` and `NIX_CACHE_*` (names only) for private checkouts, cross-run artifacts and Nix cache pushes                                                              |
+| `fleet-org`            | github-actions | active        | developing-today / developing-today/fleet             | user          | Canonical org runner; also the Blacksmith host                                                                                                                                                      |
+| `fleet-forks`          | github-actions | active        | developing-today-forks / developing-today-forks/fleet | user          | `public_targets_only: true` — private targets are rejected because this host has no `GHCR_ORG_PAT` secret                                                                                           |
+| `org-run`              | github-actions | standby       | developing-today / developing-today/code              | (app)         | `platform_input`, `previous_run_id_input`, `container_input` all false; priority 20. Because eligibility requires `"active"`, it can never be selected or pinned — retained for manual workflow use |
+| `fleet-org-blacksmith` | blacksmith     | active        | developing-today / developing-today/fleet             | user          | `host_surface: fleet-org`; budget below                                                                                                                                                             |
+| `codespace-overflow`   | codespace      | pending-scope | dezren39 / no repo                                    | —             | Budget 180 core-hours/month; `max_live: 3`; never creates codespaces                                                                                                                                |
+| `laptop`               | laptop         | handoff-only  | dezren39 / no repo                                    | —             | Targets `["*"]`; a placement record only — this adapter never runs shell commands on the laptop                                                                                                     |
 
 All Actions/Blacksmith surfaces target
 `["dezren39/*", "developing-today/*", "developing-today-forks/*"]` except
@@ -109,11 +109,11 @@ All Actions/Blacksmith surfaces target
 
 From the shipped `owners` object:
 
-| Owner | `concurrent_jobs_cap` | `concurrent_macos_cap` | `plan` | `private_minutes_monthly` |
-|---|---|---|---|---|
-| `developing-today` | 20 | 5 | `free-org` | 2000 |
-| `developing-today-forks` | 20 | 5 | `free-org (assumed - confirm)` | 2000 |
-| `dezren39` | 40 | 5 | `pro` | 3000 |
+| Owner                    | `concurrent_jobs_cap` | `concurrent_macos_cap` | `plan`                         | `private_minutes_monthly` |
+| ------------------------ | --------------------- | ---------------------- | ------------------------------ | ------------------------- |
+| `developing-today`       | 20                    | 5                      | `free-org`                     | 2000                      |
+| `developing-today-forks` | 20                    | 5                      | `free-org (assumed - confirm)` | 2000                      |
+| `dezren39`               | 40                    | 5                      | `pro`                          | 3000                      |
 
 Only `concurrent_jobs_cap` is read as the cap: an owner missing from
 `owners`, or a missing field, yields cap **0** — zero free slots, so the
@@ -121,7 +121,7 @@ surface is unusable in Tier 1. `plan` and `private_minutes_monthly` are
 never read by the placement code; they are registry documentation.
 For a macOS job the effective cap is
 `min(concurrent_jobs_cap, concurrent_macos_cap)` — 5 for every shipped
-owner — and the adapter deliberately counts *all* of the owner's active
+owner — and the adapter deliberately counts _all_ of the owner's active
 host runs against that minimum, so macOS headroom is
 `max(0, 5 − (running + queued on that owner's hosts))`.
 
@@ -150,7 +150,7 @@ eligibility allowance for this one decision only — not a per-run
 spending cap, not a workflow input, not persisted.
 
 By contrast, the codespace budget numbers (`core_hours_monthly: 180`,
-`max_live: 3`) appear only in a capacity *summary string*. Neither is
+`max_live: 3`) appear only in a capacity _summary string_. Neither is
 measured or enforced anywhere; dispatch does not count live codespaces.
 
 ## Reading and extending the registry
@@ -186,9 +186,9 @@ No code change is needed for a new surface of an existing `kind`. A new
 The engine's vocabulary, as researched from the module:
 
 - **The job**: `{repo, command, ref, runner, platform, container,
-  surface_pin, preferred_surface, previous_run_id, previous_run_repo,
-  push_nix_cache, actions_cache, actions_cache_restore_keys,
-  allow_paid_blacksmith}` — exactly the fields a session record stores
+surface_pin, preferred_surface, previous_run_id, previous_run_repo,
+push_nix_cache, actions_cache, actions_cache_restore_keys,
+allow_paid_blacksmith}` — exactly the fields a session record stores
   under `job` (below). `runner` is `auto | github | blacksmith`;
   `platform` is `linux | macos`. A job pinning `runner=blacksmith`
   makes every github-actions adapter ineligible, and vice versa for
@@ -201,7 +201,7 @@ The engine's vocabulary, as researched from the module:
   `remaining_total_minutes` are both optional in a capacity report: a
   summary-only adapter (codespace) reports neither.
 - **`DispatchResult`**: `{run_id, run_url, note, codespace,
-  terminal_state}` — what a dispatch attempt hands back to be recorded
+terminal_state}` — what a dispatch attempt hands back to be recorded
   as a session.
 - **The decision**: `decide(registry, job, ctx, gh)` returns the chosen
   adapter (or none, for the all-tiers-exhausted case) together with the
@@ -236,7 +236,7 @@ Store shape:
 ```json
 {
   "sessions": { "<fp_handle>": { "…": "…" } },
-  "blacksmith_dispatches": [ { "…": "…" } ]
+  "blacksmith_dispatches": [{ "…": "…" }]
 }
 ```
 
@@ -255,12 +255,7 @@ A session record (dispatched case):
 ```json
 {
   "handle": "fp_…",
-  "job": { "repo": "…", "command": "…", "ref": "…", "runner": "…",
-           "platform": "…", "container": "…", "surface_pin": "…",
-           "preferred_surface": "…", "previous_run_id": "…",
-           "previous_run_repo": "…", "push_nix_cache": false,
-           "actions_cache": "…", "actions_cache_restore_keys": [],
-           "allow_paid_blacksmith": 0.0 },
+  "job": { "repo": "…", "command": "…", "ref": "…", "runner": "…", "platform": "…", "container": "…", "surface_pin": "…", "preferred_surface": "…", "previous_run_id": "…", "previous_run_repo": "…", "push_nix_cache": false, "actions_cache": "…", "actions_cache_restore_keys": [], "allow_paid_blacksmith": 0.0 },
   "surface": "fleet-org",
   "surface_kind": "github-actions",
   "runner_repo": "developing-today/fleet",
@@ -295,7 +290,7 @@ Field notes an embedder must know:
   surfaces — a known inaccuracy in the record for the majority of
   shipped surfaces. Do not build attribution on it.
 - `blacksmith_dispatches` entries are `{handle, month, minutes,
-  run_id, note, reconciled}`: appended with `minutes: 0.0` at dispatch,
+run_id, note, reconciled}`: appended with `minutes: 0.0` at dispatch,
   then reconciled to the run's real duration (rounded to 2 dp) when the
   session reaches a terminal state, or before the next real dispatch
   decision.

@@ -43,11 +43,11 @@ the service skeleton from #12583; each door is filled by its own issue.
   declared model, open/close times, and the lane-start issue set.
   Routes, all behind the shared plumbing: `POST /v1/sessions` (open),
   `POST /v1/sessions/resume` (CLI re-attach), `POST
-  /v1/sessions/resolve` (the stamp path's question — may this session
+/v1/sessions/resolve` (the stamp path's question — may this session
   be cited?), `POST /v1/sessions/close`. Unknown ids are refused
   `404 session_unknown` (a session owned by another tenancy answers
   identically — no cross-tenant existence oracle), closed ids `409
-  session_closed`, malformed ids `400 invalid_session_id`. An agent
+session_closed`, malformed ids `400 invalid_session_id`. An agent
   caller opens under its credential's lane; declaring a different one
   is refused (`lane_beyond_credential`).
 - **Session resolution** (`src/session-resolution.ts`, #12584; design
@@ -144,7 +144,7 @@ the service skeleton from #12583; each door is filled by its own issue.
   its `X-Hub-Signature-256` HMAC (503 unconfigured, 401
   unverified, both before any parsing); events/actions outside
   the §16 set are acknowledged as ignored. `POST
-  /v1/ingestion/sweep` runs the interval sweeper over a named or
+/v1/ingestion/sweep` runs the interval sweeper over a named or
   configured repo scope (the Worker's `scheduled` handler runs
   the same sweep on the wrangler cron trigger). One check code
   path serves both: the item is read fresh through the GitHub
@@ -178,9 +178,9 @@ the service skeleton from #12583; each door is filled by its own issue.
 The remaining door routes authenticate, then answer
 `501 not_implemented` naming the issue that fills them:
 
-| Door      | Routes                                  | Filled by |
-| --------- | --------------------------------------- | --------- |
-| sync      | `POST /v1/sync/project`, `POST /v1/sync/queue-github` | #12591 |
+| Door | Routes                                                | Filled by |
+| ---- | ----------------------------------------------------- | --------- |
+| sync | `POST /v1/sync/project`, `POST /v1/sync/queue-github` | #12591    |
 
 Stamp signing (#12586) is a separate slice, deliberately not
 absorbed here. The session registry (#12584) is real, above — it is

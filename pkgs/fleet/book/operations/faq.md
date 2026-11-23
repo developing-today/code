@@ -12,7 +12,7 @@ The domain is not usable in that invocation: not compiled into the build, narrow
 
 **The broker is down — what do I do?**
 
-First, find out *which* broker and *which layer*: `fleet agent doctor` for the seat, `fleet queue health` for the queue, `GET /health` for the secrets-broker. On a sandbox seat, the heal chain rebuilds the stack in order (tailscaled → relay → session broker → secrets broker → gh) on a roughly five-minute cycle. On the laptop, systemd owns the brokers — check the unit, and redeploy through the profile if the generation is bad. If the *queue*-broker is unreachable for a work verb, the client switches to the GitHub fallback with exit 6 rather than failing outright. See [Health checks and the heal stack](health-and-healing.md).
+First, find out _which_ broker and _which layer_: `fleet agent doctor` for the seat, `fleet queue health` for the queue, `GET /health` for the secrets-broker. On a sandbox seat, the heal chain rebuilds the stack in order (tailscaled → relay → session broker → secrets broker → gh) on a roughly five-minute cycle. On the laptop, systemd owns the brokers — check the unit, and redeploy through the profile if the generation is bad. If the _queue_-broker is unreachable for a work verb, the client switches to the GitHub fallback with exit 6 rather than failing outright. See [Health checks and the heal stack](health-and-healing.md).
 
 **Where do secrets come from?**
 
@@ -20,7 +20,7 @@ By name, never by value in files or commands. The resolution path is the secrets
 
 **Why did placement pick Blacksmith?**
 
-Placement is a tiered cascade over the surfaces in `fleet-surfaces.json`: free GitHub-hosted Actions capacity first (Tier 1, least-loaded owner first), then Blacksmith (Tier 2) within its monthly budget — Blacksmith is a budgeted fallback, not a default, and a dispatch can require explicit allowance for paid capacity. A `--followup` dispatch sticks to the previous session's surface when that surface still has capacity and its owner's queued count is below the sticky threshold (2 on every shipped surface). See also: why did placement pick *anything* — it picks from live capacity and local session history, per owner, not per repository whim.
+Placement is a tiered cascade over the surfaces in `fleet-surfaces.json`: free GitHub-hosted Actions capacity first (Tier 1, least-loaded owner first), then Blacksmith (Tier 2) within its monthly budget — Blacksmith is a budgeted fallback, not a default, and a dispatch can require explicit allowance for paid capacity. A `--followup` dispatch sticks to the previous session's surface when that surface still has capacity and its owner's queued count is below the sticky threshold (2 on every shipped surface). See also: why did placement pick _anything_ — it picks from live capacity and local session history, per owner, not per repository whim.
 
 **What is an `fp_` handle?**
 
@@ -36,7 +36,7 @@ Follow [Add a subcommand](../development/add-a-subcommand.md): registry entry, b
 
 **Which queue am I on?**
 
-There is one fleet queue; the `--queue` flag scopes within it, it does not select a different system. The subtleties: `claim` and `list` are *unscoped* when neither flag nor the `REPO_QUEUE_DEFAULT_QUEUE` environment variable is set (the broker works across the one queue); `enqueue` has no default queue at all and must name one; most other verbs default to `repo-health-code-shadow` via `--queue`'s default. If a verb behaved as if it could not see your task, check which of those three cases you were in before suspecting the broker.
+There is one fleet queue; the `--queue` flag scopes within it, it does not select a different system. The subtleties: `claim` and `list` are _unscoped_ when neither flag nor the `REPO_QUEUE_DEFAULT_QUEUE` environment variable is set (the broker works across the one queue); `enqueue` has no default queue at all and must name one; most other verbs default to `repo-health-code-shadow` via `--queue`'s default. If a verb behaved as if it could not see your task, check which of those three cases you were in before suspecting the broker.
 
 **Why exit 5?**
 
