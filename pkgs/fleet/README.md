@@ -435,6 +435,16 @@ requires a decision record in the same body of work — see
   same run for non-PR work. See
   [the rule](../../doc/decisions/README.md#5-same-body-of-work).
 
+## Fleet program
+
+The fleet program — full investigation of the fleet system, design completion,
+and new designs toward a fully featured platform — is chartered by the
+[Fleet program investigation & build-out prompt](../../doc/2026-11-23T12-45-06Z_design_fleet_program_investigation/2026-11-23T12-45-06Z_design_fleet_program_investigation.md),
+tracked in [#13272](https://github.com/developing-today/code/issues/13272).
+Its deliverables include a fleet charter, the fleet book extended in place
+under `/code/fleet/`, and a prioritized map of all fleet issues with blockers
+marked.
+
 ## Build and smoke
 
 ```sh
