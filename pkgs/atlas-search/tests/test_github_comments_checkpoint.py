@@ -6,7 +6,6 @@ import subprocess
 import sys
 import tempfile
 
-CLI = Path(sys.argv[1]).resolve()
 REPO = "developing-today/atlas-fixture"
 BASE = "2026-01-01T00:00:00Z"
 FAKE_GH = """#!/usr/bin/env python3
@@ -37,7 +36,7 @@ for row in rows:
 """
 
 
-def exercise(directory):
+def exercise(directory, cli):
     gh = directory / "gh"
     gh.write_text(FAKE_GH)
     gh.chmod(0o700)
@@ -47,7 +46,7 @@ def exercise(directory):
     state.write_text(initial)
     output.write_text("")
     env = dict(os.environ, PATH=f"{directory}:{os.environ['PATH']}")
-    cmd = [str(CLI), "--repo", REPO, "--state", str(state), "--out", str(output),
+    cmd = [str(cli), "--repo", REPO, "--state", str(state), "--out", str(output),
            "--observed-date", "2026-01-02"]
 
     def ids():
@@ -69,4 +68,4 @@ def exercise(directory):
 
 if __name__ == "__main__":
     with tempfile.TemporaryDirectory() as tmp:
-        exercise(Path(tmp))
+        exercise(Path(tmp), Path(sys.argv[1]).resolve())
