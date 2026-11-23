@@ -837,6 +837,9 @@ export class Edge {
         hostSeen: this.hostSeen || null,
         // The commit the host's console is running, as it last said.
         hostVersion: this.hostVersion,
+        // The copy of the Android build kept here: when it was built,
+        // and whether it is the host's newest. Null if there is none.
+        androidBuild: await this.apkState(),
         // Since this object last started: requests it answered as the
         // owner's, and requests it left to the host to judge.
         answered: this.sure,

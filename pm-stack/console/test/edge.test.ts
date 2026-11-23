@@ -760,6 +760,7 @@ describe("before the host's first report", () => {
       selfCheck: null,
       hostSeen: null,
       hostVersion: null,
+      androidBuild: null,
       answered: 0,
       deferred: 0,
       version: "test",
@@ -1353,6 +1354,9 @@ describe("the Android build", () => {
     const me = (await (await w.browse("/console/api/me")).json()) as Record<string, any>;
     expect(me.androidApp).toBe(true);
     expect(me.androidBuild).toEqual({ at: w.build.at, current: true });
+    // Health says the same of the copy, to anyone: it is how its arrival is checked from outside.
+    const health = (await (await w.browse("/console/health", { token: null })).json()) as Record<string, unknown>;
+    expect(health.androidBuild).toEqual({ at: w.build.at, current: true });
     // Only the owner gets it.
     expect((await w.browse("/console/pm-console.apk", { token: null })).status).not.toBe(200);
   });
