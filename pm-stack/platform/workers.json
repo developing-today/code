@@ -40,6 +40,18 @@
       "next": "Deployed from Actions, stood up, checked and rolled back the way the PM console is; listed here with its last deploy. Then the questions it feeds can be read at the edge with no machine."
     },
     {
+      "name": "pm-notify",
+      "title": "pm-notify relay",
+      "group": "fleet",
+      "path": "pm-stack/notify-relay",
+      "does": "The edge half of the pm-stack dead-man's switch: sends one Web Push when the laptop aggregator goes silent, and one when it recovers.",
+      "state": "not deployed",
+      "deploy": "none",
+      "workflow": null,
+      "address": null,
+      "next": "Local only until its deploy step (wrangler deploy) is run; step 1 of the notifications design. Listed here so the Platform screen shows it once it is deployed."
+    },
+    {
       "name": "queue-transport-alert",
       "title": "Queue transport alert",
       "group": "fleet",
