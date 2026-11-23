@@ -59,7 +59,7 @@ function cfJson(argv) {
   return parsed?.result ?? parsed;
 }
 
-const version = cfJson(["workers", "versions", "get", manifest.versionId, "--worker", config.worker]);
+const version = cfJson(["workers", "versions", "get", manifest.versionId, "--worker-id", config.worker]);
 if ((version.id ?? version.version_id) !== manifest.versionId) {
   throw new Error("cf did not return the manifest version; refusing to promote");
 }
