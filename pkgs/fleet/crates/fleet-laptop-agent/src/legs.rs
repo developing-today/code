@@ -256,6 +256,28 @@ pub fn ladder(config: &fleet_config::Config) -> Result<Ladder, String> {
     Ok(Ladder::new(legs))
 }
 
+/// The HTTP-only ladder for tier T2 (`fleet http`, #13717): the same
+/// legs as [`ladder`] minus the SSH leg, by construction — the http
+/// form can never silently become the ssh form.
+pub fn http_ladder(config: &fleet_config::Config) -> Result<Ladder, String> {
+    let token = read_token(&token_file())?;
+    let legs: Vec<Box<dyn Leg>> = vec![
+        Box::new(BrokerLeg {
+            socket: broker_socket(),
+        }),
+        Box::new(CfLeg {
+            token: token.clone(),
+            config: config.clone(),
+            cf_host: config.cf_host().to_string(),
+            cache: Mutex::new(CfCache::default()),
+        }),
+        Box::new(TailscaleLeg {
+            token: token.clone(),
+        }),
+    ];
+    Ok(Ladder::new(legs))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
