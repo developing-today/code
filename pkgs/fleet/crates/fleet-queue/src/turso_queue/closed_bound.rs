@@ -818,8 +818,13 @@ mod tests {
         // and a cycle that found missing records lands in the
         // sweep event.
         let src = include_str!("core.rs");
-        let flat = src.split_whitespace().collect::<Vec<_>>().join(" ");
-        assert!(flat.contains("run_closed_bound_checks( t, req_i64(req, \"closed_bound_limit\")"));
+        let compact = src
+            .chars()
+            .filter(|c| !c.is_whitespace())
+            .collect::<String>();
+        assert!(compact.contains(
+            "run_closed_bound_checks(t,req_i64(req,\"closed_bound_limit\").unwrap_or(200))"
+        ));
         assert!(src.contains("req_bool(req, \"closed_bound\")"));
         assert!(src.contains("out[\"closed_bound\"]"));
         assert!(src.contains("closed_bound_missing > 0"));
