@@ -362,6 +362,57 @@ daemon's general client.
 | `health`                                      | Run `hostname` over ssh; exit 0 iff the host answers.                   |
 | `exec [--cwd DIR] [--timeout SECS] -- CMD...` | Run a command line over ssh under the binary-owned client contract (pinned host key, proxy CONNECT, fleet-owned multiplex master); the remote exit code propagates; the binary deadline exits 124. ssh's own failure exit is 255. |
 | `close`                                       | Tear down the fleet-owned multiplex master, if any.                     |
+## `actions` — live exec sessions in Actions runners
+
+`fleet actions exec start --repo OWNER/REPO --timeout S
+[--max-lifespan S] [--ref R] [--target-repo OWNER/REPO]
+[--hide-logs] [--detach] [--broker-url URL]`
+
+Open a session at the queue broker, attempt the #13765
+coordinator claim (the singular fallback names itself in the
+output as `placement_path` while those verbs are not live),
+dispatch `fleet-exec.yml` with only the handle and non-secret
+inputs, bind the run, and print the handoff: the handle plus the
+portable `OWNER/REPO#RUN_ID` form and the run attempt. `--timeout`
+is the session lease and is required — there is no default;
+`--max-lifespan` defaults to 1800 s and caps at 7200 s. Without
+`--detach`, start attaches and streams session IO.
+
+`fleet actions exec run <ref> [--timeout S] -- <command...>` —
+enqueue one command on the session's runner, stream its output,
+exit with the command's exit code (default command timeout
+600 s). `<ref>` is a handle or the portable `OWNER/REPO#RUN_ID`
+form.
+
+`fleet actions exec attach <ref>` / `fleet actions exec watch
+<ref>` — stream the session's IO after handoff (watch also
+reports run/session status). `fleet actions exec renew <ref>
+--timeout S` extends the lease, clamped at the max lifespan;
+the reply names `extension_required` when the ask passed the
+max. `fleet actions exec extend <ref> [--minutes M] [--reason
+TEXT]` requests an emergency extension past the max: the broker
+records it and raises the needs-drew alert (source
+`fleet-actions-exec`, key `actions-exec-ext:<handle>`); `fleet
+actions exec decide <ref> --approve|--deny` records the answer
+(approval adds the minutes to the max and the lease). `fleet
+actions exec close <ref>` closes the session.
+
+`fleet actions agent --handle H --broker-url URL
+--lease-seconds S --max-seconds S --workdir D --outbox D
+[--hide-logs]` — the runner half, invoked by the
+fleet-exec-session composite action: registers with the job's
+GitHub OIDC token (never logged), long-polls for commands, runs
+them in the workdir, streams IO through the broker (echoed to
+the run log unless `--hide-logs`), installs `fleet-exec-put` on
+the session PATH, and exits at lease expiry even if partitioned.
+
+`fleet actions put <file>` — the egress helper (session PATH
+name `fleet-exec-put`): copies the file into the session outbox
+(the run's `fleet-exec-out` artifact) and, when the session
+carries `FLEET_EXEC_R2_*` credentials, PUTs it to R2 under
+`fleet-exec/<handle>/` with a SigV4 signature. Credential values
+are never printed.
+
 ## Exit and availability
 
 Usage errors generally exit 2. Capability stubs exit 69. Some domains define additional statuses, such as queue transport unavailable or `agent next` having no work. A successful command's exit code and output belong to its handler; preserve both when wrapping Fleet in scripts.

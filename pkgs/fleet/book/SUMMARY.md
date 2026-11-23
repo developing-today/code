@@ -37,6 +37,7 @@
 - [fleet search](reference/search.md)
 - [fleet laptop-agent](reference/laptop-agent.md)
 - [fleet laptop route forms](reference/laptop-route-forms.md)
+- [fleet actions](reference/actions.md)
 
 - [Tutorial: enrol a new seat](tutorials/enrol-a-seat.md)
 - [Tutorial: claim and complete a queue task](tutorials/claim-and-complete.md)
