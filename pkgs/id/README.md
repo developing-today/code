@@ -412,6 +412,10 @@ tests/
 - [docs/](docs/) — Feature documentation (chronological)
 - [AGENTS.md](AGENTS.md) — AI agent development guidelines
 
+### ID program
+
+A full investigation, design-completion and build-out program for the ID platform is tracked in [#13240](https://github.com/developing-today/code/issues/13240). Its charter is the [program prompt](docs/2026-11-23T12-06-42Z_design_id_program_investigation_prompt/2026-11-23T12-06-42Z_design_id_program_investigation_prompt.md); the program epics are [#2056](https://github.com/developing-today/code/issues/2056) and [#9106](https://github.com/developing-today/code/issues/9106). Deliverables include an ID book published under `/code/id/` and a prioritized map of all ID issues with blockers marked.
+
 ## License
 
 MIT OR Apache-2.0
