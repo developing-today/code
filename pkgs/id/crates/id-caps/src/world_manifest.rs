@@ -23,6 +23,182 @@ use crate::world_caps::{
 };
 use crate::world_limits::WorldExecutionProfile;
 
+/// Schema version of a manifest's role configuration. Version 1 is the
+/// initial shape of #8299 (ceiling + quota class + delegation lifetime
+/// bounds + review policy); unknown versions are refused at parse time so
+/// a newer manifest never silently drops role state (#2876's rule, applied
+/// to roles).
+pub const ROLE_CONFIG_VERSION: u64 = 1;
+
+/// Longest accepted role name, in bytes — the same bound
+/// [`crate::world_caps`] gives capability and schedule names.
+pub const MAX_ROLE_NAME_BYTES: usize = MAX_NAME_BYTES;
+
+/// Review policy for a role definition (#8299): how the owner reviews the
+/// role's effects. `owner` is the default: every grant and role edit is
+/// audited and owner-visible; `digest` additionally requires the periodic
+/// refusal digest of the v2 outline §2.5.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RoleReviewPolicy {
+    /// Audited world events, owner-visible.
+    #[default]
+    Owner,
+    /// Audited events plus periodic refusal digests.
+    Digest,
+}
+
+/// Delegation-lifetime bounds for a role definition, in seconds, matching
+/// the v1 §9.2 range the delegation module enforces (15 minutes to 4
+/// hours). A role may narrow the range but never widen it past the v1
+/// bounds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "snake_case", deny_unknown_fields)]
+pub struct RoleDelegationLifetime {
+    /// Shortest delegation lifetime the role may set.
+    pub min_secs: u64,
+    /// Longest delegation lifetime the role may set.
+    pub max_secs: u64,
+}
+
+impl RoleDelegationLifetime {
+    /// The v1 §9.2 bounds every role definition stays within.
+    pub const FLOOR_SECS: u64 = 15 * 60;
+    /// The v1 §9.2 ceiling no role edit may exceed.
+    pub const CEILING_SECS: u64 = 4 * 60 * 60;
+
+    /// Validate the bounds: within the v1 §9.2 range and ordered.
+    ///
+    /// # Errors
+    ///
+    /// Names the offending bound.
+    pub fn validate(&self) -> Result<()> {
+        ensure!(
+            self.min_secs >= Self::FLOOR_SECS,
+            "role delegation lifetime min_secs {} is below the 15-minute floor",
+            self.min_secs
+        );
+        ensure!(
+            self.max_secs <= Self::CEILING_SECS,
+            "role delegation lifetime max_secs {} exceeds the 4-hour ceiling",
+            self.max_secs
+        );
+        ensure!(
+            self.min_secs <= self.max_secs,
+            "role delegation lifetime min_secs {} exceeds max_secs {}",
+            self.min_secs,
+            self.max_secs
+        );
+        Ok(())
+    }
+}
+
+impl Default for RoleDelegationLifetime {
+    fn default() -> Self {
+        Self {
+            min_secs: Self::FLOOR_SECS,
+            max_secs: 60 * 60,
+        }
+    }
+}
+
+/// One versioned role definition in world configuration (#8299, v2
+/// outline §2.1): the authority a grant of this role carries. Starter
+/// roles ship as ordinary definitions a world can copy and edit; there is
+/// no privileged tier, so every field is validated exactly as an owner's
+/// own definition would be.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub struct RoleDefinition {
+    /// The role's stable name, as carried in grant records.
+    pub name: String,
+    /// The capability ceiling a grant of this role holds. Names must be
+    /// known capabilities (no `*`), exactly like a world ceiling.
+    pub ceiling: Vec<String>,
+    /// The quota class a grant of this role charges against.
+    pub quota_class: String,
+    /// Delegation-lifetime bounds for delegations under this role.
+    pub delegation: RoleDelegationLifetime,
+    /// How the owner reviews this role's effects.
+    #[serde(default)]
+    pub review: RoleReviewPolicy,
+}
+
+impl RoleDefinition {
+    /// Validate one role definition: bounded printable-ASCII name, known
+    /// ceiling capabilities, bounded quota-class name, and lifetime bounds
+    /// within the v1 §9.2 range.
+    ///
+    /// # Errors
+    ///
+    /// Names the role and the first offending field.
+    pub fn validate(&self) -> Result<()> {
+        ensure!(
+            !self.name.is_empty() && self.name.len() <= MAX_ROLE_NAME_BYTES,
+            "role name must be 1 to {MAX_ROLE_NAME_BYTES} bytes"
+        );
+        crate::world_caps::validate_schedule_id(&self.name)
+            .map_err(|e| anyhow::Error::msg(format!("role name {:?}: {e}", self.name)))?;
+        validate_ceiling_names(&self.ceiling)?;
+        ensure!(
+            !self.quota_class.is_empty() && self.quota_class.len() <= MAX_ROLE_NAME_BYTES,
+            "role {:?} quota_class must be 1 to {MAX_ROLE_NAME_BYTES} bytes",
+            self.name
+        );
+        self.delegation.validate()?;
+        Ok(())
+    }
+}
+
+/// The world's declared roles, versioned as a whole (#8299): `version`
+/// names the schema of `roles`, and a present table replaces the live
+/// role set exactly like a present `grants` list. An omitted field leaves
+/// the live roles alone.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub struct RoleConfig {
+    /// Schema version of this configuration. Only
+    /// [`ROLE_CONFIG_VERSION`] is accepted today.
+    pub version: u64,
+    /// The role definitions, keyed by role name. Duplicate names are
+    /// impossible in TOML and refused by serde in other spellings.
+    pub roles: BTreeMap<String, RoleDefinition>,
+}
+
+impl Default for RoleConfig {
+    fn default() -> Self {
+        Self {
+            version: ROLE_CONFIG_VERSION,
+            roles: BTreeMap::new(),
+        }
+    }
+}
+
+impl RoleConfig {
+    /// Validate the whole role configuration: a known schema version and
+    /// every definition valid.
+    ///
+    /// # Errors
+    ///
+    /// Names the first offending role or the version.
+    pub fn validate(&self) -> Result<()> {
+        ensure!(
+            self.version == ROLE_CONFIG_VERSION,
+            "role config version {} is unsupported (this build reads version {ROLE_CONFIG_VERSION})",
+            self.version
+        );
+        for (key, definition) in &self.roles {
+            ensure!(
+                key == &definition.name,
+                "role config key {key:?} does not match definition name {:?}",
+                definition.name
+            );
+            definition.validate()?;
+        }
+        Ok(())
+    }
+}
+
 /// A declarative description of a world. Fields the manifest omits are left
 /// alone by [`plan`], so a minimal manifest drifts nothing; a field that is
 /// present — even empty, like `grants = []` — is authoritative.
@@ -58,6 +234,11 @@ pub struct WorldManifest {
     /// reconciled exactly — missing ids are scheduled, undeclared ones
     /// cancelled.
     pub schedules: Option<BTreeMap<String, u64>>,
+    /// The world's versioned role configuration (#8299): role definitions
+    /// as first-class world state. `None` (the field is omitted) leaves the
+    /// live roles alone; a present table is authoritative and replaces the
+    /// live role set.
+    pub role_config: Option<RoleConfig>,
 }
 
 /// The relevant current state of a live world, as `id world stats` would see
@@ -247,6 +428,9 @@ impl WorldManifest {
     ///
     /// Names the first offending field.
     pub fn validate(&self) -> Result<()> {
+        if let Some(role_config) = &self.role_config {
+            role_config.validate()?;
+        }
         if let Some(grants) = &self.grants {
             validate_grant_names(grants)?;
         }
@@ -610,6 +794,83 @@ wasm_fuel = 5_000_000
             Some(BTreeMap::from([("round".to_owned(), 1_800_000_000_000)]))
         );
         assert_eq!(round_trip(&manifest).unwrap(), manifest);
+    }
+
+    #[test]
+    fn versioned_role_configuration_round_trips_and_rejects_unknown_versions() {
+        let text = r#"
+[role_config]
+version = 1
+
+[role_config.roles.observer]
+name = "observer"
+ceiling = ["chat.history"]
+quota_class = "standard"
+review = "digest"
+
+[role_config.roles.observer.delegation]
+min_secs = 900
+max_secs = 3600
+"#;
+        let manifest = parse(text).unwrap();
+        let roles = manifest.role_config.as_ref().unwrap();
+        assert_eq!(roles.version, ROLE_CONFIG_VERSION);
+        assert_eq!(roles.roles["observer"].quota_class, "standard");
+        assert_eq!(roles.roles["observer"].review, RoleReviewPolicy::Digest);
+        assert_eq!(round_trip(&manifest).unwrap(), manifest);
+
+        let unknown_version = text.replace("version = 1", "version = 2");
+        let err = parse(&unknown_version).unwrap_err();
+        assert!(format!("{err}").contains("unsupported"), "{err}");
+    }
+
+    #[test]
+    fn role_config_rejects_unknown_ceiling_and_out_of_range_lifetime() {
+        let unknown_capability = r#"
+[role_config]
+version = 1
+[role_config.roles.observer]
+name = "observer"
+ceiling = ["not.a.capability"]
+quota_class = "standard"
+review = "owner"
+"#;
+        assert!(parse(unknown_capability).is_err());
+
+        let out_of_range_lifetime = r#"
+[role_config]
+version = 1
+[role_config.roles.observer]
+name = "observer"
+ceiling = []
+quota_class = "standard"
+review = "owner"
+[role_config.roles.observer.delegation]
+min_secs = 60
+max_secs = 3600
+"#;
+        let err = parse(out_of_range_lifetime).unwrap_err();
+        assert!(format!("{err}").contains("15-minute floor"), "{err}");
+    }
+
+    #[test]
+    fn role_review_policy_defaults_to_owner() {
+        let text = r#"
+[role_config]
+version = 1
+[role_config.roles.observer]
+name = "observer"
+ceiling = ["chat.history"]
+quota_class = "standard"
+[role_config.roles.observer.delegation]
+min_secs = 900
+max_secs = 3600
+"#;
+        let manifest = parse(text).unwrap();
+        let role = &manifest.role_config.unwrap().roles["observer"];
+        assert_eq!(role.review, RoleReviewPolicy::Owner);
+        assert_eq!(role.delegation.min_secs, RoleDelegationLifetime::FLOOR_SECS);
+        assert_eq!(role.delegation.max_secs, 3600);
     }
 
     #[test]
