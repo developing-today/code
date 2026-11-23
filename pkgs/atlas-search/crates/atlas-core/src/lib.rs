@@ -147,3 +147,52 @@ pub use trace_stats::{
 };
 pub use turso::TursoBackend;
 pub use types::{BranchQuery, DEFAULT_MODEL, DEFAULT_VEC_TABLE, VectorBackend};
+
+// ------------------------------------------------------------- home ----
+
+/// Home-resolution contract (issues #5640 / #5762): a missing or
+/// empty HOME is an error naming HOME, never a substitute
+/// directory. Every atlas-core path rooted at the user's home goes
+/// through here so the contract cannot drift per call site - the
+/// trace and feedback sinks' `default_dir` once fell back to the
+/// CWD (issue #13279), landing state files wherever the process
+/// happened to run.
+pub(crate) fn require_home() -> std::path::PathBuf {
+    home_from(std::env::var_os("HOME"))
+}
+
+fn home_from(home: Option<std::ffi::OsString>) -> std::path::PathBuf {
+    match home {
+        Some(home) if !home.is_empty() => std::path::PathBuf::from(home),
+        _ => panic!(
+            "HOME is not set or is empty: atlas-core requires a non-empty HOME to resolve its state/config paths (issue #5640)"
+        ),
+    }
+}
+
+#[cfg(test)]
+mod home_tests {
+    use super::home_from;
+    use std::ffi::OsString;
+    use std::path::PathBuf;
+
+    #[test]
+    fn home_from_accepts_a_non_empty_home() {
+        assert_eq!(
+            home_from(Some(OsString::from("/home/someone"))),
+            PathBuf::from("/home/someone")
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "HOME is not set or is empty")]
+    fn home_from_rejects_a_missing_home() {
+        home_from(None);
+    }
+
+    #[test]
+    #[should_panic(expected = "HOME is not set or is empty")]
+    fn home_from_rejects_an_empty_home() {
+        home_from(Some(OsString::new()));
+    }
+}
