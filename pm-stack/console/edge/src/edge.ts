@@ -90,6 +90,8 @@ const SIGNATURE = /^[A-Za-z0-9_-]{86}$/;
 const SYNC_REFUSALS = 20;
 /** The Android build is kept in pieces of this many bytes. */
 const APK_CHUNK = 512 * 1024;
+/** A build that could not be kept is asked for again no sooner than this. */
+const APK_RETRY_MS = 10 * 60_000;
 /** With no report for this long, the laptop is not there to ask. */
 const HOST_QUIET_MS = 60_000;
 
@@ -186,6 +188,8 @@ export class Edge {
   private hostVersion: string | null = null;
   private latestApk: ApkMeta | null | undefined;
   private keptApk: (ApkMeta & { chunks: number }) | null | undefined;
+  /** The build that could not be kept when it was last sent, and when. */
+  private apkFailed: { sha256: string; at: number } | null = null;
   private syncRefused: KeyedLimiter;
   readonly docs: Docs;
   readonly push: Push;
@@ -757,13 +761,22 @@ export class Edge {
       if (this.latestApk) await this.kv.put("apk:latest", this.latestApk);
       else await this.kv.delete("apk:latest");
     }
-    if (build?.data)
-      await this.keepApk(build).catch((error) => console.error(`pm-edge: apk: ${(error as Error).message}`));
+    if (build?.data) {
+      await this.keepApk(build).catch((error) => {
+        // Not kept (it did not match its description, or could not be
+        // stored). It is not asked for again at once: a build that
+        // fails every time would otherwise be sent with every report.
+        this.apkFailed = { sha256: build.sha256, at: now };
+        console.error(`pm-edge: apk: ${(error as Error).message}`);
+      });
+    }
 
     // What the host has and this side has lost (its storage was reset).
     const want: string[] = [];
     const kept = await this.apkKept();
-    if (this.latestApk && kept?.sha256 !== this.latestApk.sha256) want.push("apk");
+    const failedLately =
+      this.apkFailed?.sha256 === this.latestApk?.sha256 && now - (this.apkFailed?.at ?? 0) < APK_RETRY_MS;
+    if (this.latestApk && kept?.sha256 !== this.latestApk.sha256 && !failedLately) want.push("apk");
     for (const name of Object.keys(SECTIONS)) {
       if (typeof msg.have?.[name]?.hash === "string" && !(await this.mirror(name))) want.push(name);
     }

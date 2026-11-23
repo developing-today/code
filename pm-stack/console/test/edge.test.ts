@@ -1328,7 +1328,10 @@ describe("the Android build", () => {
     w.build.bytes = apk(1);
     w.build.at = w.now.t;
     // It has one now. The first report only describes it; the edge asks; the next carries it.
-    expect((await report(w))?.want).toContain("apk");
+    // Being asked for the build does not hurry the host the way a missing section does.
+    w.now.t += 1_000;
+    expect(await w.link.now.turn()).toBeGreaterThan(500);
+    expect(w.link.now.last?.want).toContain("apk");
     expect(w.build.reads).toBe(0);
     expect((await report(w))?.want).not.toContain("apk");
     expect(w.build.reads).toBe(1);
@@ -1396,11 +1399,19 @@ describe("the Android build", () => {
     w.build.corrupt = true;
     await report(w);
     await report(w);
-    // What arrived did not match its fingerprint: nothing is kept, and it is asked for again.
+    // What arrived did not match its fingerprint: nothing is kept.
     expect(w.stored.has("apk")).toBe(false);
-    expect((await report(w))?.want).toContain("apk");
+    expect(w.build.reads).toBe(1);
+    // It is not asked for again with every report: a build that fails
+    // every time would be half a megabyte in each of them.
+    for (let i = 0; i < 20; i++) expect((await report(w))?.want).not.toContain("apk");
+    expect(w.build.reads).toBe(1);
+    // Ten minutes on it is asked for once more, and this time it is right.
     w.build.corrupt = false;
+    w.now.t += 10 * 60_000;
+    expect((await report(w))?.want).toContain("apk");
     await report(w);
+    expect(w.build.reads).toBe(2);
     expect((w.stored.get("apk") as { size: number }).size).toBe(700_000);
     // A build too large to carry in a report is never read to be sent.
     const big = await setup();

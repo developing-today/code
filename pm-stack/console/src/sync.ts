@@ -268,7 +268,9 @@ export class EdgeLink {
     }
     const answer = await this.once();
     // Something was done or is wanted: say so at once.
-    if (this.acks.length > 0 || this.want.size > 0) return 500;
+    // (The Android build is not such a thing: it waits for the next
+    // ordinary report, and half a megabyte is never sent in a hurry.)
+    if (this.acks.length > 0 || [...this.want].some((name) => name !== "apk")) return 500;
     return answer?.watching || this.o.docs.watched() ? FAST_MS : IDLE_MS;
   }
 
