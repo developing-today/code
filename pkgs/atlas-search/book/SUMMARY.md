@@ -67,3 +67,5 @@
 - [Deploying this book](operations/deploying-this-book.md)
 - [FAQ](operations/faq.md)
 - [Glossary](operations/glossary.md)
+
+- [Implementation programme and evidence gates](design/implementation-programme.md)
