@@ -2633,10 +2633,17 @@ describe("the edge does the core itself", () => {
     // The copy is as old as its last good read, and the app is told so.
     expect(doc.read.board).toBe(new Date(w.now.t).toISOString()); // tried now
     expect((w.stored.get("m:board") as { at: number }).at).toBe(START); // good then
+    // A source that is down is not a token that was refused: nothing is
+    // handed to the laptop, and it is this side that reads it again.
+    expect(
+      ((await (await w.browse("/console/health", { token: null })).json()) as { refused: string[] }).refused,
+    ).toEqual([]);
     w.directDown.on = false;
     w.now.t += 60_000;
+    const queue = w.queueCalls.length;
     await w.core();
     await settle(w);
+    expect(w.queueCalls.length).toBeGreaterThan(queue);
     const back = await w.core();
     expect(back.doc.health.board).toEqual({ ok: true, error: null });
     expect(back.doc.health.asks).toEqual({ ok: true, error: null });
@@ -2675,6 +2682,27 @@ describe("the edge does the core itself", () => {
     expect(doc.board.counts).toEqual(QUEUE_NOW);
     expect(doc.health.board).toEqual({ ok: false, error: expect.stringContaining("the direct source is down") });
     expect(doc.health.asks.ok).toBe(false);
+  });
+
+  test("after a restart, what an action changed is read from its source, not shown as it was kept", async () => {
+    const w = await primary();
+    await w.core();
+    await w.browse("/console/api/doc/ops");
+    await settle(w);
+    // The object starts again, and the first thing asked of it is not a
+    // look but a doing: nothing here has been read by this object yet.
+    w.edge.now = w.makeEdge();
+    const moved = await w.act("task.move", { task: 21048, to: "first" });
+    expect(await moved.json()).toEqual({ ok: true, result: { task: 21048, priority: 10 } });
+    const merged = await w.act("pr.merge", { pr: 55 });
+    expect((await merged.json()) as { ok: boolean }).toMatchObject({ ok: true });
+    // No time has passed, so nothing would be read again for being old:
+    // the very next look shows both, read from where they changed.
+    expect((await w.core()).doc.board.next.find((t: { id: number }) => t.id === 21048)?.priority).toBe(10);
+    expect(((await (await w.browse("/console/api/doc/ops")).json()) as { prs: unknown[] }).prs).toEqual([]);
+    // What no action touched is still the copy kept from before, shown
+    // at once and as old as it is.
+    expect((await w.core()).doc.asks.map((a: { issue: number }) => a.issue)).toContain(201);
   });
 
   test("what was read is kept once: content that has not changed is not written again, only its time, now and then", async () => {
@@ -2895,6 +2923,50 @@ describe("the edge does the core itself", () => {
     expect(w.ran.filter((r) => r.kind === "prompt.enqueue")).toHaveLength(1);
     expect(w.githubCalls.filter((c) => c.method === "POST" && c.url.endsWith("/issues"))).toHaveLength(1);
     expect((await w.core()).doc.edge).toEqual({ held: 0, primary: true });
+  });
+
+  test("a task the laptop files late is on the board here as soon as the laptop says it is done", async () => {
+    const w = await primary();
+    await w.core();
+    await settle(w);
+    w.table["prompt.enqueue"].run = async (a) => {
+      w.ran.push({ kind: "prompt.enqueue", args: a });
+      w.queueTasks.push({ ...w.queueTasks[1], id: 21061, title: "Owner prompt, filed late", issue: Number(a.issue) });
+      return { issue: a.issue, queued: true };
+    };
+    expect((await w.act("ask.send", { text: "File this, and its task after" })).status).toBe(200);
+    await w.core();
+    await settle(w);
+    // The laptop takes the task to file, and files it.
+    w.now.t += 1_000;
+    expect((await w.link.now.once())?.commands.map((c) => c.kind)).toEqual(["prompt.enqueue"]);
+    expect(w.ran.map((r) => r.kind)).toEqual(["prompt.enqueue"]);
+    const before = w.queueCalls.length;
+    expect((await w.core()).doc.board.next.map((t: { id: number }) => t.id)).not.toContain(21061);
+    await settle(w);
+    expect(w.queueCalls.length).toBe(before);
+    // Its next report says so; the board is read again then, not when
+    // its half minute comes round. Only the board: filing a task
+    // changed nothing else that is read here.
+    const github = w.githubCalls.length;
+    w.now.t += 1_000;
+    await w.link.now.once();
+    expect(w.queueCalls.length).toBeGreaterThan(before);
+    expect(w.githubCalls.length).toBe(github);
+    expect((await w.core()).doc.board.next.map((t: { id: number }) => t.id)).toContain(21061);
+    // One that failed changed nothing, and nothing is read for it.
+    w.table["prompt.enqueue"].run = async () => {
+      throw new OpError(502, "the queue would not take it");
+    };
+    expect((await w.act("ask.send", { text: "And another" })).status).toBe(200);
+    await w.core();
+    await settle(w);
+    w.now.t += 1_000;
+    await w.link.now.once();
+    const quiet = w.queueCalls.length;
+    w.now.t += 1_000;
+    await w.link.now.once();
+    expect(w.queueCalls.length).toBe(quiet);
   });
 
   test("a bug, a note and a session are filed here with his words first; their tasks are a machine's to file", async () => {
@@ -3155,6 +3227,45 @@ describe("the edge does the core itself", () => {
     expect(w.ran).toHaveLength(2);
   });
 
+  test("what the laptop does to something this side reads is read again here at once, not when its interval comes round", async () => {
+    const w = await primary();
+    await w.core();
+    await w.browse("/console/api/doc/ops");
+    await settle(w);
+    const lists = () => w.githubCalls.filter((c) => c.method === "GET" && /\/pulls\?/.test(c.url)).length;
+    // Refused here, so the laptop merges it, and on GitHub it is gone.
+    w.ghRefuses.push((method, url) => method === "PUT" && url.includes("/merge"));
+    w.table["pr.merge"].run = async (a) => {
+      w.ran.push({ kind: "pr.merge", args: a });
+      w.ghPrs.length = 0;
+      return { merged: a.pr };
+    };
+    const before = lists();
+    expect((await w.act("pr.merge", { pr: 55 })).status).toBe(200);
+    expect(w.ran.map((r) => r.kind)).toEqual(["pr.merge"]);
+    // The laptop sent the list as it read it. That copy is not taken
+    // (the list is this side's to read), but it says the list changed:
+    // this side read it again, once, before the answer went back.
+    expect(lists()).toBe(before + 1);
+    expect(((await (await w.browse("/console/api/doc/ops")).json()) as { prs: unknown[] }).prs).toEqual([]);
+    expect(lists()).toBe(before + 1);
+    // The same for something only a machine does: the task of an issue,
+    // filed by the laptop, is on the board served here at once.
+    w.table["triage.enqueue"].run = async (a) => {
+      w.ran.push({ kind: "triage.enqueue", args: a });
+      w.queueTasks.push({ ...w.queueTasks[1], id: 21060, title: "Filed by the laptop", issue: Number(a.issue) });
+      return { issue: a.issue, queued: true };
+    };
+    const filed = await w.act("triage.enqueue", { issue: 301, rank: "now", at: new Date(w.now.t).toISOString() });
+    expect(filed.status).toBe(200);
+    expect((await w.core()).doc.board.next.map((t: { id: number }) => t.id)).toContain(21060);
+    // What the laptop did that touches nothing read here asks nothing of GitHub.
+    const github = w.githubCalls.length;
+    const queue = w.queueCalls.length;
+    expect((await w.act("question.answer", { qid: "q1", answer: "yes" })).status).toBe(200);
+    expect([w.githubCalls.length, w.queueCalls.length]).toEqual([github, queue]);
+  });
+
   test("refused here with the laptop out of reach: held if it may be done late, and said to be refused if not", async () => {
     const w = await primary();
     w.net.hostUp = false;
@@ -3209,10 +3320,119 @@ describe("the edge does the core itself", () => {
     const res = await w.act("task.move", { task: 21048, to: "first" });
     expect(await res.json()).toMatchObject({ ok: true, result: { task: 21048, priority: 10 } });
     expect(w.ran).toEqual([{ kind: "task.move", args: { task: 21048, to: "first" } }]);
-    // It was tried here first (and once more, in case the token had only been changed).
-    expect(w.queueRefused.n).toBe(2);
+    // It was tried here first (and once more, in case the token had only
+    // been changed); and then the board, which the laptop said it had
+    // changed, was to be read again here, and was refused the same way.
+    expect(w.queueRefused.n).toBe(4);
     // Nothing was changed from here.
     expect(w.queueTasks.find((t) => t.id === 21048)?.priority).toBe(before);
+    // So the board is the laptop's to read as well: the copy that came
+    // with its answer is shown at once, and health says both.
+    const { doc } = await w.core();
+    expect(doc.board).toEqual(w.data.board);
+    expect(doc.health.board).toEqual({ ok: true, error: null });
+    expect(
+      ((await (await w.browse("/console/health", { token: null })).json()) as { refused: string[] }).refused,
+    ).toEqual(["task.move", "read.board"]);
+  });
+
+  test("a section this side's token is refused for is the laptop's to read, as before, until the token is put right", async () => {
+    const w = await primary();
+    const health = async () =>
+      ((await (await w.browse("/console/health", { token: null })).json()) as { refused: string[] }).refused;
+    const ops = async () =>
+      (await (await w.browse("/console/api/doc/ops")).json()) as {
+        prs: { number: number }[];
+        health: Record<string, { ok: boolean; error: string | null }>;
+      };
+    const lists = () => w.githubCalls.filter((c) => c.method === "GET" && /\/pulls\?/.test(c.url)).length;
+    await ops();
+    await settle(w);
+    expect((await ops()).prs.map((p) => p.number)).toEqual([55]);
+    // GitHub stops letting this side's token list pull requests. The
+    // list's interval passes, and the read behind the next look is refused.
+    w.ghRefuses.push((method, url) => method === "GET" && /\/pulls\?/.test(url));
+    w.now.t += 91_000;
+    await ops();
+    await settle(w);
+    expect(await health()).toEqual(["read.prs"]);
+    // Until the laptop's copy comes, the last one read here is shown,
+    // with why it could not be read again.
+    const waiting = await ops();
+    expect(waiting.prs.map((p) => p.number)).toEqual([55]);
+    expect(waiting.health.prs.ok).toBe(false);
+    // For as long as no laptop's copy has come: it is not asked of
+    // GitHub again, and it does not start to look as if all were well.
+    const refusedAt = lists();
+    w.now.t += 91_000;
+    await ops();
+    await settle(w);
+    const still = await ops();
+    expect(lists()).toBe(refusedAt);
+    expect(still.prs.map((p) => p.number)).toEqual([55]);
+    expect(still.health.prs).toEqual({ ok: false, error: expect.stringContaining("token was refused") });
+    // The laptop is told the list is not read here any more ...
+    w.now.t += 1_000;
+    expect((await w.link.now.once())?.owns).toEqual(["board", "priorities", "asks"]);
+    // ... so its next report brings its own copy, which is shown as it
+    // was before this side read anything.
+    w.now.t += 1_000;
+    await w.link.now.once();
+    expect(w.reports[w.reports.length - 1].sections.map((x) => x.name)).toContain("prs");
+    const theirs = await ops();
+    expect(theirs.prs).toEqual(w.data.prs as never);
+    expect(theirs.health.prs).toEqual({ ok: true, error: null });
+    // It is not asked for here again within the hour, however often it is looked at.
+    const asked = lists();
+    w.now.t += 91_000;
+    await ops();
+    await settle(w);
+    expect(lists()).toBe(asked);
+    // What it was not refused for is still read here, and not reported.
+    const queue = w.queueCalls.length;
+    await w.core();
+    await settle(w);
+    expect(w.queueCalls.length).toBeGreaterThan(queue);
+    await w.hostReads();
+    await w.link.now.once();
+    const last = w.reports[w.reports.length - 1];
+    expect(Object.keys(last.have)).toContain("prs");
+    for (const name of ["board", "priorities", "asks"]) expect(Object.keys(last.have)).not.toContain(name);
+    // After the hour, with the token put right, it is read here again,
+    // and the laptop is told so.
+    w.ghRefuses.length = 0;
+    w.now.t += 60 * 60_000;
+    expect(await health()).toEqual([]);
+    await ops();
+    await settle(w);
+    expect((await ops()).prs.map((p) => p.number)).toEqual([55]);
+    expect(lists()).toBeGreaterThan(asked);
+    await w.hostReads();
+    expect((await w.link.now.once())?.owns).toEqual(["board", "prs", "priorities", "asks"]);
+  });
+
+  test("a section refused here from the start shows the laptop's copy without a gap", async () => {
+    // The laptop has been reporting, and this side has only now been
+    // given its tokens: the copies here are the laptop's.
+    const w = await setup({ direct: true });
+    w.edge.now = w.makeEdge(false);
+    await w.hostReads();
+    await w.link.now.once();
+    expect((await w.core()).doc.board).toEqual(w.data.board);
+    w.queueRefuses.on = true;
+    w.edge.now = w.makeEdge(true);
+    w.now.t += 31_000;
+    // Its first look shows what is kept, and the read behind it is refused.
+    const first = (await w.core()).doc;
+    expect(first.board).toEqual(w.data.board);
+    await settle(w);
+    expect(w.queueRefused.n).toBeGreaterThan(0);
+    const after = (await w.core()).doc;
+    expect(after.board).toEqual(w.data.board);
+    expect(after.health.board).toEqual({ ok: true, error: null });
+    // Nothing of the laptop's was lost on the way, and it goes on reporting.
+    w.now.t += 1_000;
+    expect((await w.link.now.once())?.owns).not.toContain("board");
   });
 
   test("a read GitHub refuses this side's token for is asked of the laptop", async () => {
@@ -3220,6 +3440,45 @@ describe("the edge does the core itself", () => {
     w.ghRefuses.push((method, url) => method === "GET" && url.endsWith("/pulls/55"));
     await w.browse("/console/api/prs/55");
     expect(w.hostSaw).toEqual(["GET /console/api/prs/55"]);
+    // With no laptop reporting there is nobody to ask, and it says what
+    // is the matter: not that a laptop could not be reached.
+    w.net.hostUp = false;
+    w.net.edgeUp = false;
+    w.now.t += 61_000;
+    const res = await w.browse("/console/api/prs/55");
+    expect(res.status).toBe(503);
+    expect(((await res.json()) as { error: string }).error).toContain("token was refused");
+    expect(w.hostSaw).toHaveLength(1);
+  });
+
+  test("a screen that says what it could not read, refused here, is the laptop's while it is there", async () => {
+    const w = await primary();
+    // The deploys and builds: each list says for itself that it could
+    // not be read, so nothing is thrown.
+    w.ghRefuses.push((method, url) => method === "GET" && url.includes("/actions/workflows/"));
+    await w.browse("/console/api/releases");
+    expect(w.hostSaw).toEqual(["GET /console/api/releases"]);
+    // A roadmap whose issues could not be searched for, the same.
+    w.ghRefuses.length = 0;
+    w.ghRefuses.push((method, url) => method === "GET" && url.includes("/search/issues"));
+    await w.browse("/console/api/roadmap?area=pm-stack");
+    expect(w.hostSaw).toEqual(["GET /console/api/releases", "GET /console/api/roadmap"]);
+    // One that was read whole is answered here, as ever.
+    w.ghRefuses.length = 0;
+    expect((await w.browse("/console/api/releases")).status).toBe(200);
+    expect(w.hostSaw).toHaveLength(2);
+    // With no laptop reporting, what could be read is shown, with what
+    // could not beside it: better than being told a laptop is away.
+    w.ghRefuses.push((method, url) => method === "GET" && url.includes("pm-console-android.yml"));
+    w.net.hostUp = false;
+    w.net.edgeUp = false;
+    w.now.t += 61_000;
+    const res = await w.browse("/console/api/releases");
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { site: { id: number }[]; app: { error: string } };
+    expect(body.site[0].id).toBe(4501);
+    expect(body.app.error).toContain("Resource not accessible");
+    expect(w.hostSaw).toHaveLength(2);
   });
 
   test("health says this side does the core, and how its own check of each kind of read went", async () => {

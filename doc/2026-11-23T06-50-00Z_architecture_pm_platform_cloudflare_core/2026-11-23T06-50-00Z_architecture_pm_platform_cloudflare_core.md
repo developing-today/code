@@ -279,3 +279,45 @@ Not done in this step, and still a machine's: filing a queue task (held
 for one, as before); questions, needs and sessions; units, agents and
 messages; the sign-in settings. The edge still learns where things are
 from a machine's first report. Each has an issue (step 6).
+
+## 2026-11-23T11:12Z Update: step 3 after review
+
+Review of the change above (Codex, and a second reading of it here)
+found five ways it could show the owner less than the laptop did. All
+are closed in the same change, before it was merged.
+
+- **`off` was forgotten on a laptop that never had it on.** With on as
+  the default, `--edge-direct off` before any run had turned it on
+  took nothing away and remembered nothing, so the timer's next run
+  turned it on. It is remembered now, before the tidying, so a tidying
+  that is refused leaves the mode off all the same.
+- **After a restart, an action's change could be shown as it was
+  before.** The first look of an object that has just started shows
+  the copy kept from before; the read after an action took that
+  shortcut. What an action touched is now read from its source, always.
+- **What a machine did was not read again here.** A section the edge
+  reads is not taken from a machine, so an action the laptop did (one
+  handed on after a refusal, one only a machine does, one held and done
+  late) showed only when the section's interval came round: up to three
+  minutes for ranked issues. The laptop already says which sections an
+  action changed; those the edge reads are now read again at once.
+- **A refused read had nowhere to go.** Actions were handed on when the
+  edge's token was refused; sections were not, and a screen that
+  answers in part (the deploys, a roadmap) was answered here with its
+  error. Now a section the edge is refused for is the laptop's again for
+  the hour (out of `owns`, the laptop's copy shown, health saying
+  `read.<section>`), and a refused or part-refused screen is asked of
+  the laptop while one is reporting. This is the same rule as for
+  actions, and for the same reason: what the edge's token may do was
+  not known when this was built, and giving the edge its tokens must
+  not be able to take anything away.
+- **A read under way was trusted after a change.** The document keeper
+  shared a read already in flight, which may have been taken before
+  the action finished, and then counted the section fresh. After a
+  change it now waits for that read and reads once more
+  (`Docs.reread`); on the laptop too.
+
+Checked again: 290 tests (265 under bun, the keeper's 25). 24 more
+planted faults in these fixes, 23 caught and one that changes nothing;
+3 in the keeper's fix, all caught. The bundle in the Worker runtime with
+the switch on: all checks passed.

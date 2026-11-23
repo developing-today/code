@@ -142,10 +142,10 @@ on the laptop for it, and no value is printed or written anywhere.
 On is how this is set up: a run of that script that was never told
 either way gives the Worker all three, and its timer keeps them there.
 `--edge-direct off` turns the switch off, takes the two tokens away,
-and is remembered; the owner has the same switch in the app, under
-More, Cloudflare. A run that was never told and cannot do it (a secret
-not readable, Cloudflare refusing) says so and carries on, and the
-next run tries again.
+and is remembered, also on a laptop that never had it on; the owner
+has the same switch in the app, under More, Cloudflare. A run that was
+never told and cannot do it (a secret not readable, Cloudflare
+refusing) says so and carries on, and the next run tries again.
 
 `/console/health` says whether the switch is on, whether each token is
 present, whether the edge is doing the core (`primary`), and the result
@@ -189,8 +189,27 @@ it (the laptop's, the sign-in issuer's).
   an hour, and `/console/health` lists the kinds under `refused`, which
   is how a missing permission is seen. A refusal after a write was
   taken, a write that got no answer, and any failure that is not a
-  refusal are not handed on: they are said as they are. A read that is
-  refused is asked of the laptop.
+  refusal are not handed on: they are said as they are.
+- **The same for what it reads.** A section the edge is refused for is
+  the laptop's to read for the hour, exactly as it was before the edge
+  read anything: the edge stops naming it under `owns`, the laptop's
+  next reports bring its copy, and health lists it as
+  `read.<section>`. A copy of the laptop's that is already here is
+  shown without a gap; a copy the edge read itself is shown with the
+  reason beside it until the laptop's comes. A screen read on request
+  (a pull request, the deploys, a roadmap) that is refused, or that
+  answers in part because one of its reads was, is asked of the laptop
+  while one is reporting; with none, what could be read is shown, or
+  the refusal is said as what it is. So a token that may do less than
+  was thought leaves the app no worse off than before it was given.
+- **What changed is read from where it changed.** After an action the
+  edge reads again the sections it touched before it answers, from
+  their source and never from a copy kept before a restart. When a
+  machine did the action (one handed on, one only a machine does, one
+  held and done late), the sections it says it changed that the edge
+  reads are read again here at once, not when their interval comes
+  round. A read that was already under way when the change was made is
+  waited for and not trusted: the section is read once more.
 
 ## Deploy, and going back
 

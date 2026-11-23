@@ -700,6 +700,55 @@ class Expose(unittest.TestCase):
         )
         self.assertEqual(account.worker_secrets, given)
 
+    def test_off_asked_for_before_it_was_ever_on_is_remembered(self):
+        marker = pathlib.Path(self.home) / ".local/state/pm-console/edge-direct"
+        secrets = {
+            expose.GITHUB_TOKEN_SECRET: "gh-test-value",
+            expose.QUEUE_TOKEN_DEFAULT: "queue-test-value",
+        }
+        said_on = (
+            "edge direct: upload the GitHub and queue tokens and turn direct actions on"
+        )
+        account = Account()
+        # Asked what turning it off would change, on a host that never
+        # had it on: nothing of this, and nothing is remembered.
+        run(account, self.home, "--check", "--edge-direct", "off", secrets=secrets)
+        self.assertNotIn(said_on, account.changes)
+        self.assertFalse(marker.exists())
+        # Told off before any run turned it on. Nothing is uploaded, and
+        # the choice is remembered: the timer's runs, which would turn it
+        # on by themselves and could, leave it off.
+        self.assertEqual(
+            run(account, self.home, "--edge-direct", "off", secrets=secrets), 0
+        )
+        self.assertEqual(account.worker_secrets, {})
+        self.assertEqual(marker.read_text().strip(), "off")
+        for _ in range(2):
+            self.assertEqual(run(account, self.home, secrets=secrets), 0)
+            self.assertNotIn(said_on, account.changes)
+            self.assertEqual(account.worker_secrets, {})
+            self.assertEqual(marker.read_text().strip(), "off")
+        run(account, self.home, "--check", secrets=secrets)
+        self.assertNotIn(said_on, account.changes)
+        # It is remembered before the tidying, so a token left behind by
+        # an attempt that never finished cannot bring the mode back: the
+        # tidying is refused, and the mode is off all the same.
+        marker.unlink()
+        account.worker_secrets["GITHUB_TOKEN"] = "left behind"
+        account.delete_failures = 1
+        with self.assertRaisesRegex(SystemExit, "refused"):
+            run(account, self.home, "--edge-direct", "off", secrets=secrets)
+        self.assertEqual(marker.read_text().strip(), "off")
+        self.assertEqual(run(account, self.home, secrets=secrets), 0)
+        self.assertEqual(account.worker_secrets, {})
+        self.assertEqual(marker.read_text().strip(), "off")
+        # Told on: it is given, as ever.
+        self.assertEqual(
+            run(account, self.home, "--edge-direct", "on", secrets=secrets), 0
+        )
+        self.assertEqual(account.worker_secrets["EDGE_DIRECT"], "on")
+        self.assertEqual(marker.read_text().strip(), "on")
+
     def test_a_run_never_told_that_cannot_give_the_tokens_says_so_and_carries_on(
         self,
     ):

@@ -836,6 +836,94 @@ describe("the state kept ready", () => {
     expect([never.tried("board"), never.goodAt("board")]).toEqual([true, 0]);
   });
 
+  test("after a change, a read that was already under way is not taken as showing it", async () => {
+    let now = 1_000_000;
+    let value = "first";
+    let reads = 0;
+    let gate: Promise<void> | null = null;
+    let open = () => {};
+    const hold = () => {
+      gate = new Promise<void>((r) => {
+        open = r;
+      });
+    };
+    const release = () => {
+      gate = null;
+      open();
+    };
+    // What the source held when the read began is what the read gives.
+    const load = async () => {
+      reads++;
+      const seen = value;
+      await gate;
+      return { seen };
+    };
+    const docs = new Docs(all({ ttlMs: 10_000, load }), () => now);
+    const board = async () => JSON.parse((await docs.doc("core")).body).board;
+    await docs.doc("core");
+    // Reading now shares a read under way, whatever it saw.
+    now += 11_000;
+    hold();
+    await docs.doc("core"); // a read starts behind the answer, and has seen "first"
+    expect(reads).toBe(2);
+    value = "second";
+    const shared = docs.touch(["board"]);
+    release();
+    await shared;
+    expect(reads).toBe(2);
+    expect(await board()).toEqual({ seen: "first" });
+    // Reading after a change waits for the read under way, which may
+    // have been taken before the change, and then reads once more.
+    now += 11_000;
+    hold();
+    await docs.doc("core"); // this one has seen "second"
+    expect(reads).toBe(3);
+    value = "third"; // something is done
+    const reread = docs.reread(["board"]);
+    release();
+    await reread;
+    expect(reads).toBe(4);
+    expect(await board()).toEqual({ seen: "third" });
+    // With no read under way it is one read, and a section there is no
+    // such thing as is passed over.
+    await docs.reread(["board", "nonesuch"]);
+    expect(reads).toBe(5);
+  });
+
+  test("what an action changed is on the next page, though a read was under way while it ran", async () => {
+    let now = 1_000_000;
+    let value = "before";
+    let gate: Promise<void> | null = null;
+    let open = () => {};
+    const load = async () => {
+      const seen = value;
+      await gate;
+      return { seen };
+    };
+    const docs = new Docs(all({ ttlMs: 10_000, load }), () => now);
+    await docs.doc("core");
+    now += 11_000;
+    gate = new Promise<void>((r) => {
+      open = r;
+    });
+    await docs.doc("core"); // the board is being read, and has seen "before"
+    const table = {
+      "thing.do": {
+        run: async () => {
+          value = "after";
+          return { done: true };
+        },
+        touch: ["board"],
+        audit: () => ({}),
+      },
+    };
+    const doing = perform(table, docs, "thing.do", {});
+    gate = null;
+    open();
+    expect(await doing).toEqual({ done: true });
+    expect(JSON.parse((await docs.doc("core")).body).board).toEqual({ seen: "after" });
+  });
+
   test("an unchanged document keeps its tag, and nothing is read when nobody is looking", async () => {
     let now = 1_000_000;
     let reads = 0;

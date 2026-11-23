@@ -220,6 +220,6 @@ export async function perform(
   const result = await action.run(args as Args);
   // The census is the dashboard's and refreshes on its own clock; for the
   // rest, the caller's next read should already show the change.
-  await docs.touch(action.touch);
+  await docs.reread(action.touch);
   return result;
 }

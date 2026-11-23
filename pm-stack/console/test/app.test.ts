@@ -456,6 +456,13 @@ test("what Cloudflare's token was refused for is said in the owner's words", () 
   ]);
   // One this app does not know by name is still said, as it came.
   expect(awayState({ ...base, refused: ["something.new"] }).refused).toEqual(["something.new"]);
+  // What it could not read is said the same way.
+  expect(awayState({ ...base, refused: ["read.board", "read.prs", "read.priorities", "read.asks"] }).refused).toEqual([
+    "reading the board",
+    "reading the pull requests",
+    "reading the ranked issues",
+    "reading your prompts",
+  ]);
   // An edge that says nothing of it, or something that is not a list, has refused nothing.
   expect(awayState(base).refused).toEqual([]);
   expect(awayState({ ...base, refused: "pr.merge" }).refused).toEqual([]);

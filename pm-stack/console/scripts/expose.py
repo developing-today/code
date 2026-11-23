@@ -433,8 +433,14 @@ def ensure_edge_direct(
         take_tokens_away()
         return
     if choice == "off":
-        # Asked for off while already off, or after an attempt to turn it
-        # on that never finished: make sure nothing was left behind.
+        # Asked for off while it is not on: never turned on, off already,
+        # or after an attempt to turn it on that never finished. The
+        # Worker is not acting, so the choice is remembered first; a run
+        # that was never told turns it on, and without this the next
+        # timer's run would undo what was just asked for. Then make sure
+        # nothing was left behind.
+        if not check:
+            remember("off")
         take_tokens_away()
         return
     if marker.exists():

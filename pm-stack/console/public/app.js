@@ -1601,6 +1601,10 @@ const REFUSED_SAID = {
   "pr.merge": "merging",
   "deploy.start": "starting a deploy",
   "intake.send": "filing a note, a bug or a change",
+  "read.board": "reading the board",
+  "read.prs": "reading the pull requests",
+  "read.priorities": "reading the ranked issues",
+  "read.asks": "reading your prompts",
 };
 
 /** What the edge says of doing the core itself, read from its public

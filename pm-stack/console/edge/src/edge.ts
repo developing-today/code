@@ -150,6 +150,9 @@ const OWN_TIME_EVERY_MS = 5 * 60_000;
 /** An action this side's token was refused for is left to a machine
  * for this long before this side tries it again. */
 const REFUSED_FOR_MS = 60 * 60_000;
+/** What a section says while this side's token is refused for it and
+ * no machine has sent its copy yet. */
+const REFUSED_READ = "Cloudflare's token was refused for this, and no machine has reported it yet";
 /** How many of this side's own calls are remembered, to tell what an
  * action that failed had got done. */
 const OUTWARD_KEPT = 200;
@@ -238,6 +241,9 @@ export class Edge {
   private outwardN = 0;
   /** Actions this side's token was refused for, and when. */
   private refused = new Map<string, number>();
+  /** Sections this side's token was refused for, and when: a machine's
+   * to read, as they were before this side read anything. */
+  private unread = new Map<string, number>();
   /** The time this object last asked to be woken at. */
   private alarmFor = 0;
   private later: (work: Promise<unknown>) => void;
@@ -298,6 +304,9 @@ export class Edge {
               if (this.owns(name, cfg)) return this.readOwn(name, cfg);
               const m = await this.mirror(name);
               if (!m) throw new Error("the laptop has not reported this yet");
+              // A copy this side read itself, shown because its token
+              // has since been refused: said, until a machine's comes.
+              if (m.own && this.unread.has(name)) return new Stamped(m.data, m.at, REFUSED_READ);
               // With the laptop's own word on whether it could still read it.
               return new Stamped(m.data, m.at, this.confirmed[name]?.error ?? null);
             },
@@ -548,7 +557,7 @@ export class Edge {
       await this.putMirror({ name: raw.name, at: Math.min(raw.at, this.now()), hash: raw.hash, data: raw.data });
       names.push(raw.name);
     }
-    if (names.length > 0) await this.docs.touch(names);
+    if (names.length > 0) await this.docs.reread(names);
     return names;
   }
 
@@ -644,12 +653,25 @@ export class Edge {
 
   /** A section this side reads itself. */
   private owns(name: string, cfg: EdgeConfig | null): boolean {
-    return (DIRECT_READ_SECTIONS as readonly string[]).includes(name) && this.primary(cfg);
+    return this.owned(cfg).includes(name);
   }
 
-  /** The sections this side reads itself: all of them, or none. */
+  /** The sections this side reads itself: all it can while it does the
+   * core, less any its token was refused for within the hour. Those are
+   * a machine's to read meanwhile, exactly as before this side read
+   * anything: a token that may do less than was thought leaves the app
+   * no worse off than it was. */
   private owned(cfg: EdgeConfig | null): string[] {
-    return this.primary(cfg) ? [...DIRECT_READ_SECTIONS] : [];
+    if (!this.primary(cfg)) return [];
+    const refused = this.refusedReads();
+    return DIRECT_READ_SECTIONS.filter((name) => !refused.includes(name));
+  }
+
+  /** Sections this side's token was refused for within the hour. */
+  private refusedReads(): string[] {
+    const now = this.now();
+    for (const [name, at] of this.unread) if (now - at >= REFUSED_FOR_MS) this.unread.delete(name);
+    return [...this.unread.keys()].sort();
   }
 
   /** The console's own classes and its table of actions, wired for the
@@ -701,7 +723,21 @@ export class Edge {
       this.shown.add(name);
       if (before) return new Stamped(before.data, before.at, null, true);
     }
-    const data = await directRead(name, mine.ops, mine.work);
+    const from = this.outwardN;
+    let data: unknown;
+    try {
+      data = await directRead(name, mine.ops, mine.work);
+    } catch (error) {
+      // This side's token may not read this. For the next hour it is a
+      // machine's to read, as it was before: the copy a machine sent is
+      // shown if there is one here, and its next reports bring it.
+      if (!this.refusedCleanly(from)) throw error;
+      this.unread.set(name, this.now());
+      console.error(`pm-edge: reading ${name} was refused here; left to a machine`);
+      const theirs = await this.mirror(name);
+      if (!theirs || theirs.own) throw error;
+      return new Stamped(theirs.data, theirs.at, this.confirmed[name]?.error ?? null);
+    }
     await this.keepOwn(name, data).catch((error) =>
       console.error(`pm-edge: keeping ${name}: ${(error as Error).message}`),
     );
@@ -750,6 +786,22 @@ export class Edge {
     const now = this.now();
     for (const [kind, at] of this.refused) if (now - at >= REFUSED_FOR_MS) this.refused.delete(kind);
     return [...this.refused.keys()].sort();
+  }
+
+  /** The source of these sections has just changed: those this side
+   * reads itself are read again from it, so the next document shows the
+   * change. Never from the copy kept from before a restart, which the
+   * first look would otherwise show: that copy is from before the
+   * change. */
+  private async reread(names: string[], cfg: EdgeConfig | null): Promise<void> {
+    const mine = [...new Set(names)].filter((name) => this.owns(name, cfg));
+    for (const name of mine) this.shown.add(name);
+    if (mine.length > 0) await this.docs.reread(mine);
+  }
+
+  /** A machine reported within the minute, so it can be asked. */
+  private machineThere(): boolean {
+    return this.now() - (this.hostSeen ?? 0) < HOST_QUIET_MS;
   }
 
   /** Tell the owner what changed. What this side reads itself is
@@ -846,8 +898,7 @@ export class Edge {
       else result = await action.run(args);
       await this.audit({ ...base, phase: "done", ok: true });
       await this.logAct({ ...entry, status: "done" });
-      const changed = action.touch.filter((name) => this.owns(name, cfg));
-      if (changed.length > 0) await this.docs.touch(changed);
+      await this.reread(action.touch, cfg);
       if (action.touch.some((n) => WATCHED.includes(n))) await this.tell(cfg).catch(() => {});
       return json({ ok: true, result });
     } catch (error) {
@@ -966,7 +1017,7 @@ export class Edge {
         if (!changed.includes(name)) fresher.push(name);
       }
     }
-    if (fresher.length > 0) await this.docs.touch(fresher);
+    if (fresher.length > 0) await this.docs.reread(fresher);
     if (Array.isArray((msg as { acts?: unknown }).acts)) {
       this.hostActs = ((msg as { acts?: Act[] }).acts ?? []).slice(0, ACTS_KEPT);
       await this.showActs();
@@ -975,14 +1026,16 @@ export class Edge {
     // What became of the held actions the host was given.
     const held = await this.heldList();
     let settled = false;
+    const did: string[] = [];
     for (const ack of Array.isArray(msg.acks) ? msg.acks : []) {
       const at = held.findIndex((h) => h.id === ack?.id);
       if (at < 0) continue;
       const [done] = held.splice(at, 1);
       settled = true;
-      if (ack.ok)
+      if (ack.ok) {
         await this.dropAct(done.id); // the host's own record shows it done
-      else {
+        did.push(done.kind);
+      } else {
         await this.logAct({
           id: done.id,
           kind: done.kind,
@@ -1007,6 +1060,15 @@ export class Edge {
       });
     }
     if (settled) await this.saveHeld();
+    // What a machine has just done late changed things this side reads
+    // itself: they are read again, so the next document shows it.
+    if (did.length > 0) {
+      const table = this.mine(settings)?.table ?? {};
+      await this.reread(
+        did.flatMap((kind) => (Object.hasOwn(table, kind) ? table[kind].touch : [])),
+        settings,
+      );
+    }
 
     // The host is back, if it had been reported silent.
     const wasSilent = (await this.kv.get("silent")) === true;
@@ -1186,9 +1248,10 @@ export class Edge {
         // only while the laptop was away.
         primary: this.primary(cfg),
         directReady: this.primary(cfg),
-        // Actions this side's token was refused for within the hour,
-        // which a machine does instead.
-        refused: this.refusedKinds(),
+        // What this side's token was refused for within the hour, and
+        // a machine does instead: actions by their names, and sections
+        // it could not read as `read.<section>`.
+        refused: [...this.refusedKinds(), ...this.refusedReads().map((name) => `read.${name}`)],
         selfCheck: this.selfCheckResult,
         hostSeen: this.hostSeen || null,
         // The commit the host's console is running, as it last said.
@@ -1317,14 +1380,26 @@ export class Edge {
         const mine = this.mine(cfg);
         if (mine) {
           const from = this.outwardN;
+          let read: unknown;
           try {
-            const read = await platformRead(seg, url.searchParams, mine.ops, mine.plan);
-            if (read !== undefined) return json(read);
+            read = await platformRead(seg, url.searchParams, mine.ops, mine.plan);
           } catch (error) {
             // Refused here: a machine has its own way in, and a read may
-            // be asked twice. Anything else is said as it is.
+            // be asked twice. Anything else is said as it is; so is this,
+            // when there is no machine to ask.
             if (!this.refusedCleanly(from)) throw error;
+            if (!this.machineThere()) {
+              throw new OpError(
+                503,
+                "Cloudflare's token was refused for this, and no machine is reporting that could read it instead.",
+              );
+            }
           }
+          // Some of these say what they could not read in place of
+          // failing (a list with its error beside it). One that was
+          // refused part-way is a machine's too, when one is there; with
+          // none, what could be read is better than nothing.
+          if (read !== undefined && !(this.refusedCleanly(from) && this.machineThere())) return json(read);
         }
         // Everything else is read from the host as it is now.
         return next("relay", { mode: "live" });
@@ -1466,6 +1541,14 @@ export class Edge {
   private async relayed(req: Request): Promise<Response> {
     const body = (await req.json().catch(() => null)) as { sections?: unknown; acts?: unknown } | null;
     await this.ready();
+    // What the machine read again after doing this, and this side reads
+    // itself, is not taken from it. That it was sent says its source
+    // has just changed, so it is read again here: first, so that one
+    // this side turns out to be refused for is taken from this answer.
+    const sent = (Array.isArray(body?.sections) ? body.sections : [])
+      .map((section) => (section as { name?: unknown } | null)?.name)
+      .filter((name): name is string => typeof name === "string");
+    await this.reread(sent, await this.config());
     const changed = await this.take(body?.sections);
     if (Array.isArray(body?.acts)) {
       this.hostActs = (body.acts as Act[]).slice(0, ACTS_KEPT);

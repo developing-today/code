@@ -134,9 +134,22 @@ export class Docs {
     }
   }
 
-  /** After an action: read the sections it changed, so the next document shows it. */
+  /** Read these sections now. A read already under way is shared. */
   async touch(names: string[]): Promise<void> {
     await Promise.all(names.map((n) => this.refresh(n)));
+  }
+
+  /** After something changed these sections at their source: read them
+   * again, so the next document shows it. A read that was already under
+   * way may have been taken before the change, so it is waited for and
+   * the section is then read once more. */
+  async reread(names: string[]): Promise<void> {
+    await Promise.all(
+      names.map(async (n) => {
+        await this.sections.get(n)?.loading;
+        await this.refresh(n);
+      }),
+    );
   }
 
   private stale(s: Section): boolean {
