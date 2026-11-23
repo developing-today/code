@@ -1028,6 +1028,7 @@ pub fn dispatch(t: &TursoBackend, path: &str, req: &Value) -> Value {
         "/unblock" => verb_unblock(t, req),
         "/dep-recheck" => verb_dep_recheck(t, req),
         "/quarantine-recheck" => verb_quarantine_recheck(t, req),
+        "/repair" => verb_repair(t, req),
         "/cancel" => verb_cancel(t, req),
         "/fail" => verb_fail(t, req),
         "/complete" => verb_complete(t, req),

@@ -76,6 +76,7 @@ pub fn run(args: &[String]) -> i32 {
         "unblock" => cmd_unblock(rest),
         "dep-recheck" => cmd_dep_recheck(rest),
         "quarantine-recheck" => cmd_quarantine_recheck(rest),
+        "repair" => cmd_repair(rest),
         "cancel" => cmd_cancel(rest),
         "revive" => cmd_revive(rest),
         "fail" => cmd_fail(rest),
