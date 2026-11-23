@@ -208,10 +208,16 @@ local temporary database fixtures are removed after tests. The unit/property and
 state-machine tests complement this runtime evidence. No test deploys a Worker,
 connects to AMD, reads live credentials or installs a service.
 
-`check:staging` runs the pinned `cf` Build Output v1 build, Versions dry run, and effective payload validator, not a deployment. `cloudflare.config.ts` in `bridge` mode is the sole real staging lifecycle definition; `wrangler.staging.jsonc` and `wrangler.jsonc` are parity fixtures tested against it, never release inputs. The smoke Worker is owned by the separate smoke init/upload workflows on `main` and is not selectable in the bridge release workflow. The deployed
-candidate's default HTTP handler always denies; only the Gateway RPC entrypoint
-can reach the signed bridge, after trusted-context checks. The real Gateway DNS,
-device enrollment and TLS-trust path still requires the approval packet's smoke.
+`check:staging` runs the pinned `cf` Build Output v1 build, Versions dry run,
+and effective payload validator, not a deployment. `cloudflare.config.ts` in
+`bridge` mode is the sole real staging lifecycle definition;
+`wrangler.staging.jsonc` and `wrangler.jsonc` are parity fixtures tested against
+it, never release inputs. The smoke Worker is owned by the separate smoke
+init/upload workflows on `main` and is not selectable in the bridge release
+workflow. The deployed candidate's default HTTP handler always denies; only the
+Gateway RPC entrypoint can reach the signed bridge, after trusted-context
+checks. The real Gateway DNS, device enrollment and TLS-trust path still requires
+the approval packet's smoke.
 
 No automatic PR CI or active schedule is added. The merged smoke init/upload
 workflows are manual; this branch retains a separate manual bridge release path

@@ -12,7 +12,8 @@ const isolated = () => ({
 });
 
 // The bridge mode is the sole real staging release definition. It remains disabled
-// until owner-approved account, namespace, Gateway, and laptop preflight is complete.
+// until owner-approved account, namespace, Gateway, and laptop preflight is
+// complete.
 // The default mode exists only for the separately managed synthetic smoke Worker.
 export default defineConfig(({mode}) => mode === 'bridge' ? ({
   worker: {
