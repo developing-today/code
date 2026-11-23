@@ -366,7 +366,7 @@ daemon's general client.
 
 `fleet actions exec start --repo OWNER/REPO --timeout S
 [--max-lifespan S] [--ref R] [--target-repo OWNER/REPO]
-[--hide-logs] [--detach] [--broker-url URL]`
+[--hide-logs] [--detach] [--broker-url URL] [--context TEXT]`
 
 Open a session at the queue broker, attempt the #13765
 coordinator claim (the singular fallback names itself in the
@@ -375,8 +375,10 @@ dispatch `fleet-exec.yml` with only the handle and non-secret
 inputs, bind the run, and print the handoff: the handle plus the
 portable `OWNER/REPO#RUN_ID` form and the run attempt. `--timeout`
 is the session lease and is required — there is no default;
-`--max-lifespan` defaults to 1800 s and caps at 7200 s. Without
-`--detach`, start attaches and streams session IO.
+`--max-lifespan` defaults to 1800 s and caps at 7200 s.
+`--context` records a task/issue link for the session, carried
+into extension pushes. Without `--detach`, start attaches and
+streams session IO.
 
 `fleet actions exec run <ref> [--timeout S] -- <command...>` —
 enqueue one command on the session's runner, stream its output,
@@ -390,12 +392,19 @@ reports run/session status). `fleet actions exec renew <ref>
 --timeout S` extends the lease, clamped at the max lifespan;
 the reply names `extension_required` when the ask passed the
 max. `fleet actions exec extend <ref> [--minutes M] [--reason
-TEXT]` requests an emergency extension past the max: the broker
-records it and raises the needs-drew alert (source
-`fleet-actions-exec`, key `actions-exec-ext:<handle>`); `fleet
-actions exec decide <ref> --approve|--deny` records the answer
-(approval adds the minutes to the max and the lease). `fleet
-actions exec close <ref>` closes the session.
+TEXT]` requests an extension past the max, decided by the
+tiered policy (#13774 design amendment): the first extension
+within the auto caps (single ask ≤ 30 min, cumulative ≤ 60
+min) is granted by the broker itself and Drew is only notified
+(tier 1); the second pends under a 10-minute deny window —
+the push (source `fleet-actions-exec`, key
+`actions-exec-ext:<handle>:<n>`) states it approves itself at
+window end unless denied (tier 2); a third extension, an
+oversized ask, or one past the cumulative cap needs Drew's
+manual approval (tier 3). `fleet actions exec decide <ref>
+--approve|--deny` records the answer (approval adds the
+minutes to the max and the lease). `fleet actions exec close
+<ref>` closes the session.
 
 `fleet actions agent --handle H --broker-url URL
 --lease-seconds S --max-seconds S --workdir D --outbox D

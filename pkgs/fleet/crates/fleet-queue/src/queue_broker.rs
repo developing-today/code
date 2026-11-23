@@ -581,11 +581,11 @@ fn actions_exec_agent_call(path: &str, provided_token: Option<&str>) -> bool {
     }
 }
 
-/// #13774: an approved-by-nobody-yet extension request raises the
-/// needs-drew alert on the PM push surface (fire-and-forget, the
-/// /block pattern): the verb has already recorded the pending
-/// request and its decision grace; this post is what puts the
-/// approve/deny choice in front of Drew.
+/// #13774: an extension request raises its tier's push on the
+/// PM surface (fire-and-forget, the /block pattern): tier 1's
+/// notification, tier 2's deny-window warning, tier 3's manual
+/// ask. The verb has already recorded (or, tier 1, applied) the
+/// request; this post is what puts it in front of Drew.
 fn maybe_raise_actions_exec_extension(st: &State, resp: &Value) {
     if resp.get("requested").and_then(|v| v.as_bool()) != Some(true) {
         return;
@@ -596,18 +596,42 @@ fn maybe_raise_actions_exec_extension(st: &State, resp: &Value) {
     ) else {
         return;
     };
-    let body = crate::needs_drew::build_extension_alert_body(
-        handle,
-        host_repo,
-        resp.get("run_id").and_then(|v| v.as_i64()),
-        resp.get("extend_s")
-            .and_then(|v| v.as_i64())
-            .unwrap_or(1800),
-        resp.get("grace_until")
+    let s = |k: &str| {
+        resp.get(k)
             .and_then(|v| v.as_str())
-            .unwrap_or(""),
-        resp.get("reason").and_then(|v| v.as_str()).unwrap_or(""),
-    );
+            .unwrap_or("")
+            .to_string()
+    };
+    let i = |k: &str, d: i64| resp.get(k).and_then(|v| v.as_i64()).unwrap_or(d);
+    let info = crate::needs_drew::ExtensionAlert {
+        key: s("alert_key"),
+        handle: handle.to_string(),
+        context: resp
+            .get("context")
+            .and_then(|v| v.as_str())
+            .map(str::to_string),
+        host_repo: host_repo.to_string(),
+        workflow: s("workflow"),
+        seat: s("seat"),
+        run_id: resp.get("run_id").and_then(|v| v.as_i64()),
+        run_attempt: resp.get("run_attempt").and_then(|v| v.as_i64()),
+        created_at: s("created_at"),
+        granted_s: i("granted_s", 0),
+        elapsed_s: i("elapsed_s", 0),
+        lease_until: s("lease_until"),
+        max_until: s("max_until"),
+        extend_s: i("extend_s", 1800),
+        tier: i("tier", 3),
+        ext_count_before: i("ext_count", 0),
+        ext_total_s_before: i("ext_total_s", 0),
+        decide_after: resp
+            .get("decide_after")
+            .and_then(|v| v.as_str())
+            .map(str::to_string),
+        grace_until: s("grace_until"),
+        reason: s("reason"),
+    };
+    let body = crate::needs_drew::build_extension_alert_body(&info);
     let secrets_url = st.secrets_url.clone();
     let secrets_token = st.secrets_token.clone();
     let agent = st.agent.clone();
