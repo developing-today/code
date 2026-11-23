@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { inspectPoolOrdering } from './check-pool-ordering.mjs';
+import path from 'node:path';
+import { inspectPoolOrdering, parseArgs } from './check-pool-ordering.mjs';
 
 // Oracle: the tier's effective pool order, read off inspectRouteRules'
 // resolved eligible leaves. In every ordered chain an OpenAI-backed pool
@@ -112,6 +113,19 @@ function configWith({ tiers = {}, pools = {}, providerRoutes = {} } = {}) {
     },
   };
 }
+
+test('parseArgs rejects undeclared single-dash flags before reading any config', () => {
+  // `-j` is not a declared flag: it must be a usage error, never the
+  // config-path positional (which would audit whatever file it names).
+  assert.throws(() => parseArgs(['-j']), /unrecognised argument: -j/);
+  assert.throws(() => parseArgs(['-h']), /unrecognised argument: -h/);
+  assert.throws(() => parseArgs(['-']), /unrecognised argument: -/);
+  assert.throws(() => parseArgs(['--bogus']), /unrecognised argument: --bogus/);
+  assert.throws(() => parseArgs(['--json', '--json']), /--json was given more than once/);
+  assert.throws(() => parseArgs(['a.jsonc', 'b.jsonc']), /unexpected positional argument: b\.jsonc/);
+  assert.equal(parseArgs(['--json']).json, true);
+  assert.equal(parseArgs(['some/config.jsonc']).configPath, path.resolve('some/config.jsonc'));
+});
 
 test('ordered chain with the OpenAI-backed pool last passes and reports pool order', () => {
   const result = inspectPoolOrdering(configWith());

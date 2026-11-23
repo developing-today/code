@@ -40,6 +40,10 @@
 //   report prints the pool order so the audit can compare it, and the
 //   next slice wires --plans.
 
+// Argument contract (#3352): the command line is exactly one optional
+// config path plus --json. Any other token — including a single-dash
+// flag such as `-j` — is a usage error raised by parseArgs before the
+// config is read, never a positional.
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -315,7 +319,11 @@ export function parseArgs(argv) {
     if (token === '--json') {
       if (json) throw new Error('--json was given more than once');
       json = true;
-    } else if (token.startsWith('--')) {
+    } else if (token.startsWith('-')) {
+      // Any dash-prefixed token that is not a declared flag is a usage
+      // error, including single-dash flags such as `-j`: without this
+      // they fall through to the config-path positional and the checker
+      // silently audits whatever path they name (#3352).
       throw new Error(`unrecognised argument: ${token}`);
     } else if (configPath) {
       throw new Error(`unexpected positional argument: ${token}`);
