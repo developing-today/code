@@ -78,6 +78,16 @@
 //! (#5851 §3.6 — targets render state behaviour natively) and
 //! conditional blocks (no #5849 representation yet).
 
+//! * **Author tooling** ([`tooling`]): the one toolchain
+//!   surface #5855 §4 settles — a linter over the source plus
+//!   the vocabularies and tables the pipeline consumes, and
+//!   the multi-target preview: the pipeline run in report
+//!   mode, presenting every target's artefact together with
+//!   the coverage/conflict report. The §4 rule that cannot be
+//!   expressed over the pipeline's current inputs (essential
+//!   content in conditional blocks) does not ship, per §4's
+//!   own gate; see the module documentation.
+//!
 pub mod assertion_vocabulary;
 pub mod compose;
 pub mod gui_table;
@@ -86,6 +96,7 @@ pub mod lower_gui;
 pub mod lower_native;
 pub mod native_table;
 mod parse;
+pub mod tooling;
 mod validate;
 pub mod vocabulary;
 pub mod web_table;
