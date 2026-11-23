@@ -59,6 +59,23 @@ claimant = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(claimant)
 
 
+def _fake_git_run(argv, **kwargs):
+    """Fake git at the subprocess boundary for fire-log tests.
+
+    log_fire() records read_code_source()'s provenance read in every
+    entry; that read spawns git, which the hermetic suite forbids.
+    Fire-log tests whose subject is another entry field fake the read
+    here (the TestCodeSourceFireLog shape, #13254) so the entry still
+    carries a real-shaped code_source and no spawn is attempted.
+    """
+    stdout = (
+        "main\n"
+        if "--abbrev-ref" in argv
+        else "0123456789abcdef0123456789abcdef01234567\n"
+    )
+    return subprocess.CompletedProcess(argv, 0, stdout=stdout)
+
+
 class Result:
     """Minimal subprocess.run stand-in."""
 
@@ -915,6 +932,7 @@ class TestCapUnknownFireLog(unittest.TestCase):
                 ),
                 patch.object(claimant, "STATE_DIR", state_dir),
                 patch.object(claimant, "FIRES_FILE", fires),
+                patch.object(claimant.subprocess, "run", _fake_git_run),
                 patch.object(claimant, "fire_opencode_working_hook") as hook,
             ):
                 self.assertEqual(claimant.main(), 1)
@@ -975,6 +993,7 @@ class TestGateExitFireLog(unittest.TestCase):
                 ),
                 patch.object(claimant, "STATE_DIR", state_dir),
                 patch.object(claimant, "FIRES_FILE", fires),
+                patch.object(claimant.subprocess, "run", _fake_git_run),
             ):
                 self.assertEqual(claimant.main(), 0)
             entries = [

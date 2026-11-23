@@ -35,6 +35,7 @@ no babysitter.py and no babysitter round in the claimant fire
 
 import importlib.util
 import json
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -52,6 +53,24 @@ def _load(name, filename):
 
 babysitter = _load("babysitter", "babysitter.py")
 claimant = _load("claimant_for_babysitter", "claimant.py")
+
+
+def _fake_git_run(argv, **kwargs):
+    """Fake git at the subprocess boundary for fire-log tests.
+
+    log_fire() records read_code_source()'s provenance read in every
+    entry; that read spawns git, which the hermetic suite forbids.
+    Fire-log tests whose subject is another entry field fake the read
+    here (the TestCodeSourceFireLog shape, #13254) so the entry still
+    carries a real-shaped code_source and no spawn is attempted.
+    """
+    stdout = (
+        "main\n"
+        if "--abbrev-ref" in argv
+        else "0123456789abcdef0123456789abcdef01234567\n"
+    )
+    return subprocess.CompletedProcess(argv, 0, stdout=stdout)
+
 
 NOW = 1_700_000_000_000  # fixed round clock (ms)
 MIN = 60 * 1000
@@ -402,6 +421,7 @@ class TestFireWiring(unittest.TestCase):
                 ),
                 patch.object(claimant, "STATE_DIR", state_dir),
                 patch.object(claimant, "FIRES_FILE", fires),
+                patch.object(claimant.subprocess, "run", _fake_git_run),
             ):
                 rc = claimant.main()
             self.assertEqual(rc, 0)
