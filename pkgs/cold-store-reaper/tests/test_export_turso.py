@@ -192,13 +192,43 @@ class TestExportTursoArgv(unittest.TestCase):
         self.assertEqual(self.dump_calls(), 2)
         self.assertIn("put-backup", (self.capture / "cold-store.log").read_text())
 
-    def test_database_failing_both_passes_fails_the_run(self):
-        env = {**self.env, "STUB_DUMP_FAIL_FIRST": "99"}
+    def test_database_failing_every_pass_fails_the_run(self):
+        # A 75s deadline with a 1s pass delay: the spread passes fit
+        # waits of 1s, 2s and 4s, then the next wait (8s) plus the
+        # 60s attempt floor no longer fits the remaining budget, so
+        # a database whose download keeps being cut still ends the
+        # run in failure, with the stop named.
+        env = {
+            **self.env,
+            "STUB_DUMP_FAIL_FIRST": "99",
+            "TURSO_DUMP_RETRY_PASS_DELAY_SECONDS": "1",
+            "TURSO_EXPORT_DEADLINE_SECONDS": "75",
+        }
         result = self.run_script(env=env)
         self.assertEqual(result.returncode, 1, result.stderr)
         self.assertIn("1 of 1 database(s) FAILED", result.stderr)
-        self.assertEqual(self.dump_calls(), 2)
+        self.assertIn("no room for another retry pass", result.stderr)
+        self.assertGreaterEqual(self.dump_calls(), 2)
         self.assertFalse((self.capture / "cold-store.log").exists())
+
+    def test_failed_dump_is_filed_on_a_third_pass(self):
+        # #13115: download-stage retries spread across the deadline
+        # budget instead of stopping at the old single second pass —
+        # a database cut on the first two passes is tried again in a
+        # deadline-spread pass and files.
+        env = {
+            **self.env,
+            "STUB_DUMP_FAIL_FIRST": "2",
+            "TURSO_DUMP_RETRY_PASS_DELAY_SECONDS": "1",
+        }
+        result = self.run_script(env=env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("retrying 1 failed database(s) after 1s", result.stdout)
+        self.assertIn(
+            "retrying 1 download-failed database(s) after 1s", result.stdout
+        )
+        self.assertIn("all 1 database(s) filed", result.stdout)
+        self.assertEqual(self.dump_calls(), 3)
 
     def test_rebuild_failure_names_the_repeated_statement(self):
         # #12000: the atlas dump repeated a vec-table row and the rebuild
