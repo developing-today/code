@@ -133,13 +133,9 @@ reason:
    set the domain to `false`; the stub names the config file to re-enable it
    in. This is the per-host shaping / incident lever: one host's fleet can
    have a domain switched off without a rebuild.
-4. **Available but not implemented** — the step-1 skeleton form: "included in
-   this build but not implemented yet", with wording from the multicall
-   epic's first step. (The wording is stale step-1 text; the form remains in
-   the source. Where this book's research found help text claiming a domain
-   "lands in a later step" for a domain that is in fact fully implemented —
-   `gh` and `laptop-agent` are the two cases — the source behaviour is what
-   this book documents.)
+4. **Available but not implemented** — "included in this build but not
+   implemented yet", with the stub's third line naming the build and the
+   not-implemented state.
 
 Every stub's second line is `Enabled capabilities: <comma list>` (`none`
 when empty), so a stub always tells you what the invocation _can_ do.
