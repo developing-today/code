@@ -1698,7 +1698,24 @@ async function viewAway() {
         ? h(
             "p",
             { class: "why" },
-            `Its token was refused for ${s.refused.join(", ")}. Nothing was lost: the laptop does ${s.refused.length === 1 ? "that" : "those"} instead, and Cloudflare tries again within the hour.`,
+            `Its token was turned away for ${s.refused.join(", ")}. Nothing was lost: the laptop does ${s.refused.length === 1 ? "that" : "those"} instead, and Cloudflare tries again within the hour.`,
+          )
+        : null,
+      s.refused.length > 0
+        ? h(
+            "div",
+            { class: "row end" },
+            h(
+              "button",
+              {
+                class: "small ghost",
+                onclick: async (e) => {
+                  // For after the token has been put right: not to wait the hour.
+                  if (await act("edge.retry", {}, "Cloudflare will try again itself", e.target)) draw();
+                },
+              },
+              "Try again now",
+            ),
           )
         : null,
     ),

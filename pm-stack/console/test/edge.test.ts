@@ -1191,6 +1191,15 @@ describe("the owner, at the edge", () => {
     expect(health.answered).toBeGreaterThan(0);
   });
 
+  test("a section the laptop has not sent yet says so", async () => {
+    const w = await setup();
+    // The laptop reports before it has read anything.
+    await w.link.now.once();
+    const { doc } = await w.core();
+    expect(doc.health.board).toEqual({ ok: false, error: "the laptop has not reported this yet" });
+    expect(doc.health.asks).toEqual({ ok: false, error: "the laptop has not reported this yet" });
+  });
+
   test("the state is as old as the host's last report, and says so", async () => {
     const w = await setup();
     await w.hostReads();
@@ -3396,7 +3405,7 @@ describe("the edge does the core itself", () => {
     const still = await ops();
     expect(lists()).toBe(refusedAt);
     expect(still.prs.map((p) => p.number)).toEqual([55]);
-    expect(still.health.prs).toEqual({ ok: false, error: expect.stringContaining("token was refused") });
+    expect(still.health.prs).toEqual({ ok: false, error: expect.stringContaining("turned away") });
     // The laptop is told the list is not read here any more ...
     w.now.t += 1_000;
     expect((await w.link.now.once())?.owns).toEqual(["board", "priorities", "asks"]);
@@ -3435,6 +3444,105 @@ describe("the edge does the core itself", () => {
     expect(lists()).toBeGreaterThan(asked);
     await w.hostReads();
     expect((await w.link.now.once())?.owns).toEqual(["board", "prs", "priorities", "asks"]);
+  });
+
+  test("what this side is turned away for is remembered when the object starts again, and tried again when the owner says", async () => {
+    const w = await primary();
+    const health = async () =>
+      ((await (await w.browse("/console/health", { token: null })).json()) as { refused: string[] }).refused;
+    const ops = async () => (await (await w.browse("/console/api/doc/ops")).json()) as { prs: { number: number }[] };
+    const lists = () => w.githubCalls.filter((c) => c.method === "GET" && /\/pulls\?/.test(c.url)).length;
+    const merges = () => w.githubCalls.filter((c) => c.method === "PUT" && c.url.endsWith("/pulls/55/merge")).length;
+    await ops();
+    await settle(w);
+    // The list of pull requests and merging are both refused here.
+    w.ghRefuses.push((method, url) => method === "GET" && /\/pulls\?/.test(url));
+    w.ghRefuses.push((method, url) => method === "PUT" && url.includes("/merge"));
+    w.now.t += 91_000;
+    await ops();
+    await settle(w);
+    // (Each is written down as it happens: an object that starts again
+    // between the two knows of the first.)
+    w.edge.now = w.makeEdge();
+    expect(await health()).toEqual(["read.prs"]);
+    await w.act("pr.merge", { pr: 55 });
+    expect(await health()).toEqual(["pr.merge", "read.prs"]);
+    w.now.t += 1_000;
+    await w.link.now.once();
+    w.now.t += 1_000;
+    await w.link.now.once();
+    expect((await ops()).prs).toEqual(w.data.prs as never);
+    const asked = [lists(), merges()];
+    // The object is put away and starts again, as it does whenever it
+    // is idle. It does not claim the list back: the laptop would be told
+    // to stop sending it, and each start would only be refused again.
+    w.edge.now = w.makeEdge();
+    expect(await health()).toEqual(["pr.merge", "read.prs"]);
+    w.now.t += 91_000;
+    expect((await ops()).prs).toEqual(w.data.prs as never);
+    await settle(w);
+    await w.hostReads();
+    expect((await w.link.now.once())?.owns).toEqual(["board", "priorities", "asks"]);
+    await w.act("pr.merge", { pr: 55 });
+    expect([lists(), merges()]).toEqual(asked);
+    expect(w.ran.map((r) => r.kind)).toEqual(["pr.merge", "pr.merge"]);
+    // The token is put right, and the owner says to try again now.
+    w.ghRefuses.length = 0;
+    const retry = await w.act("edge.retry");
+    expect(await retry.json()).toEqual({ ok: true, result: { tried: ["pr.merge", "read.prs"] } });
+    expect(await health()).toEqual([]);
+    // That was this side's own to do: the laptop was not asked.
+    expect(w.ran).toHaveLength(2);
+    // It holds across a restart too, and both are done here again.
+    w.edge.now = w.makeEdge();
+    expect(await health()).toEqual([]);
+    w.now.t += 91_000;
+    await ops();
+    await settle(w);
+    expect((await ops()).prs.map((p) => p.number)).toEqual([55]);
+    expect(lists()).toBeGreaterThan(asked[0]);
+    expect((await w.act("pr.merge", { pr: 55 })).status).toBe(200);
+    expect(merges()).toBe(asked[1] + 1);
+    expect(w.ran).toHaveLength(2);
+  });
+
+  test("what was kept of being turned away is not believed past its time, nor for longer than it could have been set", async () => {
+    const w = await primary();
+    const health = async () =>
+      ((await (await w.browse("/console/health", { token: null })).json()) as { refused: string[] }).refused;
+    w.stored.set("away", {
+      kinds: { "pr.merge": w.now.t + 10 * 60_000, "ask.send": w.now.t - 1, "issue.rank": "soon" },
+      reads: { prs: w.now.t + 365 * 24 * 3600_000, board: w.now.t - 1 },
+    });
+    w.edge.now = w.makeEdge();
+    expect(await health()).toEqual(["pr.merge", "read.prs"]);
+    w.now.t += 11 * 60_000;
+    expect(await health()).toEqual(["read.prs"]);
+    // A year was written down; an hour is the longest it can stand.
+    w.now.t += 50 * 60_000;
+    expect(await health()).toEqual([]);
+    // Storage that cannot keep it does not stop the hand-over itself.
+    w.storeFails.add("away");
+    w.ghRefuses.push((method, url) => method === "PUT" && url.includes("/merge"));
+    expect((await w.act("pr.merge", { pr: 55 })).status).toBe(200);
+    expect(w.ran.map((r) => r.kind)).toEqual(["pr.merge"]);
+    expect(await health()).toEqual(["pr.merge"]);
+    w.ghRefuses.push((method, url) => method === "GET" && url.includes("/search/issues"));
+    const said = async () =>
+      ((await (await w.browse("/console/api/doc/ops")).json()) as { health: Record<string, { error: string | null }> })
+        .health.priorities.error;
+    await said();
+    await settle(w);
+    expect(await health()).toEqual(["pr.merge", "read.priorities"]);
+    // What the section says is why it could not be read, not that
+    // something could not be written down ...
+    expect(await said()).toContain("Resource not accessible");
+    // ... and from then on, with no copy of anybody's here, that this
+    // side was turned away: not that a laptop has been slow to report.
+    w.now.t += 181_000;
+    await said();
+    await settle(w);
+    expect(await said()).toContain("turned away");
   });
 
   test("a section refused here from the start shows the laptop's copy without a gap", async () => {
@@ -3589,7 +3697,7 @@ describe("the edge does the core itself", () => {
     w.now.t += 61_000;
     const res = await w.browse("/console/api/prs/55");
     expect(res.status).toBe(503);
-    expect(((await res.json()) as { error: string }).error).toContain("token was refused");
+    expect(((await res.json()) as { error: string }).error).toContain("turned away");
     expect(w.hostSaw).toHaveLength(1);
   });
 

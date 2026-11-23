@@ -3,6 +3,7 @@
 // Oracles: the elapsed-time phrases and the device labels are written
 // out here by hand for real inputs (two real browser names).
 import { expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
 import {
   ago,
   androidSource,
@@ -478,4 +479,62 @@ test("the laptop being away is said differently when Cloudflare is carrying on",
   expect(waiting.text).toBe(
     "It last reported 2 h ago; this is the state as of then. You can keep working: what is safe to do late is held and sent when it is back.",
   );
+});
+
+test("text on a status colour can be read, on the dark page and the light one", () => {
+  // The oracle is the WCAG 2 contrast formula, written out here; 4.5 to
+  // 1 is what it asks of text this size. (The toasts and the danger
+  // button are not on screen when the screens are scanned, which is how
+  // three of these went unread for a while.)
+  const css = readFileSync(new URL("../public/app.css", import.meta.url), "utf8");
+  const block = (from: number) => css.slice(css.indexOf("{", from) + 1, css.indexOf("}", from));
+  const vars = (text: string) =>
+    Object.fromEntries([...text.matchAll(/(--[a-z0-9-]+):\s*(#[0-9a-fA-F]{6})\s*;/g)].map((m) => [m[1], m[2]]));
+  const dark = vars(block(css.indexOf(":root")));
+  const lightAt = css.indexOf("@media (prefers-color-scheme: light)");
+  expect(lightAt).toBeGreaterThan(0);
+  const light = { ...dark, ...vars(block(css.indexOf(":root", lightAt))) };
+  const luminance = (hex: string) => {
+    const channel = (i: number) => {
+      const c = Number.parseInt(hex.slice(1 + 2 * i, 3 + 2 * i), 16) / 255;
+      return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+    };
+    return 0.2126 * channel(0) + 0.7152 * channel(1) + 0.0722 * channel(2);
+  };
+  const contrast = (a: string, b: string) => {
+    const [hi, lo] = [luminance(a), luminance(b)].sort((x, y) => y - x);
+    return (hi + 0.05) / (lo + 0.05);
+  };
+  // The formula itself, on the two pairs everybody knows.
+  expect(contrast("#000000", "#ffffff")).toBeCloseTo(21, 5);
+  expect(contrast("#777777", "#ffffff")).toBeCloseTo(4.48, 2);
+  for (const [name, theme] of [
+    ["dark", dark],
+    ["light", light],
+  ] as const) {
+    for (const [ink, on] of [
+      ["--accent-ink", "--accent"],
+      ["--good-ink", "--good"],
+      ["--bad-ink", "--bad"],
+      ["--text", "--bg"],
+      ["--text", "--panel"],
+      ["--quiet", "--panel"],
+      ["--good", "--panel"],
+      ["--warn", "--panel"],
+      ["--bad", "--panel"],
+    ]) {
+      const ratio = contrast(theme[ink], theme[on]);
+      expect(`${name} ${ink} on ${on}: ${ratio >= 4.5 ? "readable" : ratio.toFixed(2)}`).toBe(
+        `${name} ${ink} on ${on}: readable`,
+      );
+    }
+  }
+  // And the stylesheet uses those inks where it puts text on the colours.
+  for (const rule of [".toast {", ".toast.bad {", "button.danger {"]) {
+    const at = css.indexOf(`\n${rule}`);
+    expect(at).toBeGreaterThan(0);
+    const body = block(at);
+    const background = /background:\s*var\((--[a-z-]+)\)/.exec(body)?.[1];
+    expect(body).toContain(`color: var(${background}-ink)`);
+  }
 });

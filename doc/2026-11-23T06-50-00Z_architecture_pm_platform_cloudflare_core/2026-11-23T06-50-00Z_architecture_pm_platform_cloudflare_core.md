@@ -336,9 +336,29 @@ could have gone wrong:
   minute's wake runs only while the edge reads the prompts. When it is
   turned away for them the object now asks to be woken when that time
   is up, if a device is there to tell.
+- **The hand-over was forgotten whenever the object was put away.** It
+  was kept in memory only. An object that starts again would have
+  claimed every section afresh, told the laptop so, and been refused
+  again on the next look: with the app closed, the laptop's copy of the
+  prompts would never have been taken, and no reply would have been
+  told of. What the edge is turned away for is now kept in its storage
+  until its time is up, and the owner can have it tried again at once
+  (More, Cloudflare, "Try again now") when the token has been put right.
 
-Checked again: 298 tests (273 under bun, the keeper's 25). 50 more
-planted faults in all of this: 48 caught, two that change nothing that
-can be seen (a section a machine reads being read once more from the
-copy here; a wake that would find nothing to do). The bundle in the
-Worker runtime with the switch on: all checks passed.
+One thing found on the way that is not about the edge: text on the
+status colours. The success toast on the light page (3.3 to 1) and the
+failure toast and the danger button on the dark one (3.35 to 1) were
+below what can be read comfortably; none of them is on screen when the
+screens are scanned, which is how they were missed. Each status colour
+now has an ink of its own per theme, and a test measures every such
+pair with the WCAG formula on each run.
+
+Checked again: 302 tests (277 under bun, the keeper's 25). 65 more
+planted faults in all of this: 62 caught, three that change nothing
+that can be seen (a section a machine reads being read once more from
+the copy here; a wake that would find nothing to do; a kept entry past
+its time, which is dropped on first use anyway). The bundle in the
+Worker runtime with the switch on: all checks passed. A phone-sized
+Chrome over the Cloudflare screen in each state with the new control,
+and axe-core over the toasts and the danger dialog while they show,
+light and dark: no violations (three before the inks).

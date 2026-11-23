@@ -215,6 +215,14 @@ it (the laptop's, the sign-in issuer's).
   while one is reporting; with none, what could be read is shown, or
   the refusal is said as what it is. So a token that may do less than
   was thought leaves the app no worse off than before it was given.
+- **Remembered across restarts, and tried again when the owner says.**
+  What the edge is turned away for is written to its storage with the
+  time it stands until. The object is put away when idle; one that
+  forgot would claim every section again on each start, the laptop,
+  told so, would stop sending its copy, and nothing would show the
+  section at all. When the token has been put right, More, Cloudflare
+  has "Try again now" (`edge.retry`), which is the edge's own to do and
+  clears the list at once.
 - **What changed is read from where it changed.** After an action the
   edge reads again the sections it touched before it answers, from
   their source and never from a copy kept before a restart. When a

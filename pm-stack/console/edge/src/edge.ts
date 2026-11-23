@@ -156,7 +156,7 @@ const REFUSED_FOR_MS = 60 * 60_000;
 const LIMITED_FOR_MS = 5 * 60_000;
 /** What a section says while this side's token is refused for it and
  * no machine has sent its copy yet. */
-const REFUSED_READ = "Cloudflare's token was refused for this, and no machine has reported it yet";
+const REFUSED_READ = "Cloudflare was turned away when it read this, and no machine has reported it yet";
 /** How many of this side's own calls are remembered, to tell what an
  * action that failed had got done. */
 const OUTWARD_KEPT = 200;
@@ -250,6 +250,11 @@ export class Edge {
    * they are a machine's to read, as they were before this side read
    * anything. */
   private unread = new Map<string, number>();
+  /** Both of those have been read back from storage. They are kept
+   * there because this object is put away when idle: one that forgot
+   * them would claim each section again on every start, and a machine,
+   * told so, would never send its copy. */
+  private awayRead = false;
   /** The time this object last asked to be woken at. */
   private alarmFor = 0;
   private later: (work: Promise<unknown>) => void;
@@ -309,10 +314,12 @@ export class Edge {
               const cfg = await this.config();
               if (this.owns(name, cfg)) return this.readOwn(name, cfg);
               const m = await this.mirror(name);
-              if (!m) throw new Error("the laptop has not reported this yet");
-              // A copy this side read itself, shown because its token
-              // has since been refused: said, until a machine's comes.
-              if (m.own && this.unread.has(name)) return new Stamped(m.data, m.at, REFUSED_READ);
+              // Left to a machine because this side was turned away for
+              // it: said, with this side's last copy if it has one,
+              // until a machine's comes.
+              const away = this.unread.has(name);
+              if (!m) throw new Error(away ? REFUSED_READ : "the laptop has not reported this yet");
+              if (m.own && away) return new Stamped(m.data, m.at, REFUSED_READ);
               // With the laptop's own word on whether it could still read it.
               return new Stamped(m.data, m.at, this.confirmed[name]?.error ?? null);
             },
@@ -335,7 +342,23 @@ export class Edge {
       refused: new Limiter(60, 60_000, this.now),
     };
     this.notifier = new Notifier(this.docs, this.push, kvStore(this.kv, "seen"), this.now);
-    this.table = ownActions(this.push, devices);
+    this.table = {
+      ...ownActions(this.push, devices),
+      // What this side was turned away for is tried here again now, not
+      // when its time is up: for after the token has been put right.
+      "edge.retry": {
+        run: async () => {
+          await this.ready();
+          const tried = [...this.refusedKinds(), ...this.refusedReads().map((name) => `read.${name}`)];
+          this.refused.clear();
+          this.unread.clear();
+          await this.saveAway();
+          return { tried };
+        },
+        touch: [],
+        audit: () => ({}),
+      },
+    };
   }
 
   // ---- the Android build -------------------------------------------------
@@ -634,6 +657,30 @@ export class Edge {
       this.confirmed = host?.confirmed ?? {};
       this.hostVersion = host?.version ?? null;
     }
+    if (!this.awayRead) {
+      this.awayRead = true;
+      const kept = (await this.kv.get("away")) as
+        | { kinds?: Record<string, unknown>; reads?: Record<string, unknown> }
+        | undefined;
+      const now = this.now();
+      // Only what still stands, and never for longer than it could
+      // have been set for.
+      const still = (from: Record<string, unknown> | undefined, into: Map<string, number>) => {
+        for (const [name, until] of Object.entries(from ?? {})) {
+          if (typeof until === "number" && until > now && !into.has(name)) {
+            into.set(name, Math.min(until, now + REFUSED_FOR_MS));
+          }
+        }
+      };
+      still(kept?.kinds, this.refused);
+      still(kept?.reads, this.unread);
+    }
+  }
+
+  /** Write down what this side is turned away for, so that an object
+   * that starts again knows. */
+  private async saveAway(): Promise<void> {
+    await this.kv.put("away", { kinds: Object.fromEntries(this.refused), reads: Object.fromEntries(this.unread) });
   }
 
   // ---- doing the core here ------------------------------------------------
@@ -741,6 +788,7 @@ export class Edge {
       const away = this.away(from, READ_FROM[name as keyof typeof READ_FROM]);
       if (away === null) throw error;
       this.unread.set(name, this.now() + away);
+      await this.saveAway().catch((failed) => console.error(`pm-edge: keeping what was refused: ${failed.message}`));
       console.error(`pm-edge: reading ${name} was refused here; left to a machine`);
       const theirs = await this.mirror(name);
       if (!theirs || theirs.own) throw error;
@@ -924,6 +972,7 @@ export class Edge {
         // is a machine's to do, now and for the next hour (a few
         // minutes, if it was only calling too often).
         this.refused.set(kind, this.now() + away);
+        await this.saveAway().catch((failed) => console.error(`pm-edge: keeping what was refused: ${failed.message}`));
         await this.audit({ ...base, phase: "done", ok: false, error: "refused here; left to a machine" });
         throw new HandOver((error as Error).message);
       }
@@ -1188,8 +1237,8 @@ export class Edge {
     // for is tried again when its time is up; with nobody looking and
     // no machine reporting, only a wake would notice that it is.
     if (this.primary(cfg) && (await this.push.status()).devices > 0) {
-      for (const [name, until] of this.unread) {
-        if (NOTIFIED.includes(name)) wakes.push(Math.max(now + 1000, until + 1000));
+      for (const name of this.refusedReads()) {
+        if (NOTIFIED.includes(name)) wakes.push(Math.max(now + 1000, (this.unread.get(name) ?? now) + 1000));
       }
     }
     if (wakes.length > 0) await this.setAlarm(Math.min(...wakes));
@@ -1417,7 +1466,7 @@ export class Edge {
             if (!this.machineThere()) {
               throw new OpError(
                 503,
-                "Cloudflare's token was refused for this, and no machine is reporting that could read it instead.",
+                "Cloudflare was turned away when it read this, and no machine is reporting that could read it instead.",
               );
             }
           }
