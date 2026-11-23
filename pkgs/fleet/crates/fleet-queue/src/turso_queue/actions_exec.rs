@@ -26,13 +26,20 @@
 //!
 //! Lease discipline (the design's contract): the lease is set at
 //! open; renewals may move it up to `max_until` and no further;
-//! past the max only an approved emergency extension moves it
-//! (+30 min per approval, requested via /actions-exec-extend-request
-//! — queue_broker raises the needs-drew PM alert on that verb's
-//! success). While an extension request is pending the session sits
-//! in `extension-pending` with a short decision grace past its
-//! lease, so a live agent is not killed mid-question; past the
-//! grace (or the max, unextended) the session is expired and the
+//! past the max only an extension moves it, and extensions are
+//! tiered (design amendment on #13774): the first extension
+//! within the auto caps is granted by /actions-exec-extend-request
+//! itself with a notification-only push (tier 1); the second
+//! pends under a deny window and is granted by silence at window
+//! end unless Drew denies it first (tier 2); anything further —
+//! a third extension, an oversized ask, or a request past the
+//! cumulative auto cap — pends for Drew's manual answer (tier 3).
+//! queue_broker raises the tier's PM push on the verb's success.
+//! While a request is pending the session sits in
+//! `extension-pending` with a decision grace past its lease (a
+//! tier-2 request's hard deadline covers its whole deny window),
+//! so a live agent is not killed mid-question; past the grace
+//! (or the max, unextended) the session is expired and the
 //! agent dies — the agent also enforces its own local deadline.
 //!
 //! Atomicity follows the house shape: state transitions are single
@@ -54,6 +61,8 @@ pub(crate) const ACTIONS_EXEC_DDL_SESSIONS: &str = "CREATE TABLE IF NOT EXISTS a
     run_id INTEGER, run_attempt INTEGER, \
     lease_until TEXT NOT NULL, max_until TEXT NOT NULL, \
     ext_state TEXT, ext_seconds INTEGER, \
+    ext_count INTEGER NOT NULL DEFAULT 0, ext_total_s INTEGER NOT NULL DEFAULT 0, \
+    ext_tier INTEGER, ext_decide_after TEXT, ext_reason TEXT, context TEXT, \
     created_at TEXT NOT NULL, updated_at TEXT NOT NULL, closed_at TEXT)";
 
 pub(crate) const ACTIONS_EXEC_DDL_COMMANDS: &str = "CREATE TABLE IF NOT EXISTS actions_exec_commands (\
@@ -94,6 +103,27 @@ const MAX_EXTENSION_S: i64 = 1_800;
 /// While an extension request awaits Drew's answer, the session
 /// may outlive its lease by this much before it expires.
 const EXTENSION_GRACE_S: i64 = 300;
+/// Tiered extension policy (design amendment on #13774): the
+/// largest single ask the auto tiers (1-2) may grant. Equal to
+/// MAX_EXTENSION_S today, so the binding form of the rule is the
+/// raw-ask check in evaluate_extension_tier: an ask for more
+/// than this is a manual (tier 3) request even though the grant
+/// itself would be clamped to the same bound.
+const EXT_AUTO_SIZE_CAP_S: i64 = 1_800;
+/// Extension number one is tier 1 (auto + notify).
+const EXT_TIER1_MAX_COUNT: i64 = 1;
+/// Extension number two is tier 2 (notify + deny window);
+/// number three and beyond are tier 3 (manual only).
+const EXT_TIER2_MAX_COUNT: i64 = 2;
+/// Cumulative granted extension seconds the auto tiers may
+/// account for over a session's life; a request that would push
+/// the total past this is tier 3. (With the current size/count
+/// caps the count cap binds first; this is an independent guard
+/// so retuning one cap cannot silently widen the auto surface.)
+const EXT_AUTO_TOTAL_CAP_S: i64 = 3_600;
+/// Tier 2's deny window: the push states the extension WILL be
+/// approved at window end unless Drew denies it first.
+const EXT_DENY_WINDOW_S: i64 = 600;
 /// Long-poll ceiling for /actions-exec-poll.
 const MAX_POLL_WAIT_S: i64 = 25;
 /// IO chunk cap per append (the broker caps bodies anyway; a chunk
@@ -155,7 +185,8 @@ fn session_row(t: &TursoBackend, handle: &str) -> Result<Option<Value>, TErr> {
     let rows = t.query_objs(
         "SELECT handle, host_repo, workflow, seat, state, hide_logs, \
                 run_id, run_attempt, lease_until, max_until, \
-                ext_state, ext_seconds, created_at, updated_at \
+                ext_state, ext_seconds, ext_count, ext_total_s, ext_tier, \
+                ext_decide_after, ext_reason, context, created_at, updated_at \
          FROM actions_exec_sessions WHERE handle = ?",
         &[Arg::Text(handle.to_string())],
         &[],
@@ -188,24 +219,41 @@ fn session_json(row: &Value) -> Value {
         "max_until": row.get("max_until").cloned().unwrap_or(Value::Null),
         "max_unix": max_unix,
         "ext_state": row.get("ext_state").cloned().unwrap_or(Value::Null),
+        "ext_seconds": row.get("ext_seconds").cloned().unwrap_or(Value::Null),
+        "ext_tier": row.get("ext_tier").cloned().unwrap_or(Value::Null),
+        "ext_count": row.get("ext_count").and_then(|v| v.as_i64()).unwrap_or(0),
+        "ext_total_s": row.get("ext_total_s").and_then(|v| v.as_i64()).unwrap_or(0),
+        "ext_decide_after": row.get("ext_decide_after").cloned().unwrap_or(Value::Null),
+        "ext_reason": row.get("ext_reason").cloned().unwrap_or(Value::Null),
+        "context": row.get("context").cloned().unwrap_or(Value::Null),
     })
 }
 
 /// The last moment the agent may live, in unix seconds: the lease,
 /// or — while an extension decision is pending — the lease plus
-/// the decision grace. Never past max_until unless an approved
-/// extension already moved max_until (approvals update both).
+/// the decision grace. A pending tier-2 request instead runs to
+/// the end of its deny window plus the grace: the session must
+/// not expire mid-window, before its silence-approval can land.
+/// Never past max_until unless an approved extension already
+/// moved max_until (approvals update both).
 fn hard_deadline_unix(row: &Value) -> i64 {
     let lease = row
         .get("lease_until")
         .and_then(|v| v.as_str())
         .and_then(parse_iso)
         .unwrap_or(0);
-    if row.get("ext_state").and_then(|v| v.as_str()) == Some("pending") {
-        lease + EXTENSION_GRACE_S
-    } else {
-        lease
+    if row.get("ext_state").and_then(|v| v.as_str()) != Some("pending") {
+        return lease;
     }
+    if row.get("ext_tier").and_then(|v| v.as_i64()) == Some(2) {
+        let decide_after = row
+            .get("ext_decide_after")
+            .and_then(|v| v.as_str())
+            .and_then(parse_iso)
+            .unwrap_or(lease);
+        return decide_after.max(lease) + EXTENSION_GRACE_S;
+    }
+    lease + EXTENSION_GRACE_S
 }
 
 /// The state the rest of the world should treat the session as
@@ -236,6 +284,180 @@ fn require_session(t: &TursoBackend, req: &Value) -> Result<Value, Value> {
         Ok(None) => Err(fail(5, format!("unknown session handle {handle}"))),
         Err(e) => Err(terr(e)),
     }
+}
+
+/// require_session + the tier-2 settle: a pending tier-2 request
+/// whose deny window has lapsed is granted (silence approves)
+/// before the caller reads any state off the row, and the fresh
+/// row is returned. Verbs that read or decide session state use
+/// this; the agent's poll settles inline in its loop instead.
+fn require_session_settled(t: &TursoBackend, req: &Value) -> Result<Value, Value> {
+    let row = require_session(t, req)?;
+    let now = now_unix();
+    match settle_extension(t, &row, now) {
+        Ok(true) => {
+            let handle = row.get("handle").and_then(|v| v.as_str()).unwrap_or("");
+            match session_row(t, handle) {
+                Ok(Some(fresh)) => Ok(fresh),
+                _ => Ok(row),
+            }
+        }
+        Ok(false) => Ok(row),
+        Err(e) => Err(terr(e)),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Extension tiers (#13774 design amendment)
+// ---------------------------------------------------------------------------
+
+/// Approved extensions recorded on the row so far.
+fn ext_count(row: &Value) -> i64 {
+    row.get("ext_count").and_then(|v| v.as_i64()).unwrap_or(0)
+}
+
+/// Total granted extension seconds recorded on the row so far.
+fn ext_total_s(row: &Value) -> i64 {
+    row.get("ext_total_s").and_then(|v| v.as_i64()).unwrap_or(0)
+}
+
+/// The tier ladder, evaluated at request time from the session's
+/// counters and the ask. `raw_extend_s` is the ask as requested,
+/// `extend_s` the same ask clamped to the per-approval bound:
+/// an oversized ask is manual (tier 3) even though its grant
+/// would be clamped. Pure — the tier tests name this as oracle.
+pub(crate) fn evaluate_extension_tier(
+    ext_count: i64,
+    ext_total_s: i64,
+    raw_extend_s: i64,
+    extend_s: i64,
+) -> i64 {
+    if raw_extend_s > EXT_AUTO_SIZE_CAP_S || extend_s > EXT_AUTO_SIZE_CAP_S {
+        return 3;
+    }
+    if ext_count >= EXT_TIER2_MAX_COUNT {
+        return 3;
+    }
+    if ext_total_s + extend_s > EXT_AUTO_TOTAL_CAP_S {
+        return 3;
+    }
+    if ext_count < EXT_TIER1_MAX_COUNT {
+        1
+    } else {
+        2
+    }
+}
+
+/// One extension grant, applied identically by every approval
+/// path (tier-1 auto, tier-2 silence, manual decide): the max
+/// and the lease move by the granted seconds, the counters
+/// increment, and the outcome is recorded in ext_state.
+struct ExtensionGrant {
+    extend_s: i64,
+    tier: i64,
+    reason: String,
+    outcome: &'static str,
+}
+
+/// Apply a grant as one conditional UPDATE. `from_pending`
+/// selects the guard: a pending request must still be pending
+/// (decide / settle paths); a fresh tier-1 grant must find no
+/// request pending and the session in a live shape (request
+/// path). Returns the new (max_until, lease_until) when the
+/// UPDATE landed, None when the guard refused it.
+fn apply_extension(
+    t: &TursoBackend,
+    row: &Value,
+    now: i64,
+    grant: &ExtensionGrant,
+    from_pending: bool,
+) -> Result<Option<(String, String)>, TErr> {
+    let handle = row.get("handle").and_then(|v| v.as_str()).unwrap_or("");
+    let max_unix = row
+        .get("max_until")
+        .and_then(|v| v.as_str())
+        .and_then(parse_iso)
+        .unwrap_or(0);
+    let lease_unix = row
+        .get("lease_until")
+        .and_then(|v| v.as_str())
+        .and_then(parse_iso)
+        .unwrap_or(0);
+    let new_max = iso(max_unix + grant.extend_s);
+    let new_lease = iso(lease_unix
+        .max(now + grant.extend_s)
+        .min(max_unix + grant.extend_s));
+    let guard = if from_pending {
+        "ext_state = 'pending'"
+    } else {
+        "state IN ('open', 'bound', 'live', 'extension-pending') AND COALESCE(ext_state, '') <> 'pending'"
+    };
+    let sql = format!(
+        "UPDATE actions_exec_sessions \
+         SET state = 'live', ext_state = ?, ext_seconds = ?, ext_tier = ?, \
+             ext_reason = ?, ext_decide_after = NULL, \
+             ext_count = COALESCE(ext_count, 0) + 1, \
+             ext_total_s = COALESCE(ext_total_s, 0) + ?, \
+             max_until = ?, lease_until = ?, updated_at = ? \
+         WHERE handle = ? AND {guard}"
+    );
+    let res = t.exec(
+        &sql,
+        &[
+            Arg::Text(grant.outcome.to_string()),
+            Arg::Int(grant.extend_s),
+            Arg::Int(grant.tier),
+            Arg::Text(grant.reason.clone()),
+            Arg::Int(grant.extend_s),
+            Arg::Text(new_max.clone()),
+            Arg::Text(new_lease.clone()),
+            Arg::Text(now_iso()),
+            Arg::Text(handle.to_string()),
+        ],
+    )?;
+    Ok(if res.affected > 0 {
+        Some((new_max, new_lease))
+    } else {
+        None
+    })
+}
+
+/// Settle a lapsed tier-2 deny window: silence approves. Fires
+/// at most once — the grant's conditional UPDATE consumes the
+/// pending state — and never for tier 3, which waits for Drew's
+/// recorded answer however old the request gets.
+fn settle_extension(t: &TursoBackend, row: &Value, now: i64) -> Result<bool, TErr> {
+    if row.get("ext_state").and_then(|v| v.as_str()) != Some("pending") {
+        return Ok(false);
+    }
+    if row.get("ext_tier").and_then(|v| v.as_i64()) != Some(2) {
+        return Ok(false);
+    }
+    let Some(decide_after) = row
+        .get("ext_decide_after")
+        .and_then(|v| v.as_str())
+        .and_then(parse_iso)
+    else {
+        return Ok(false);
+    };
+    if now < decide_after {
+        return Ok(false);
+    }
+    let grant = ExtensionGrant {
+        extend_s: row
+            .get("ext_seconds")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(MAX_EXTENSION_S)
+            .clamp(60, MAX_EXTENSION_S),
+        tier: 2,
+        reason: row
+            .get("ext_reason")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+        outcome: "silence-approved",
+    };
+    Ok(apply_extension(t, row, now, &grant, true)?.is_some())
 }
 
 // ---------------------------------------------------------------------------
@@ -541,6 +763,12 @@ pub(crate) fn verb_actions_exec_open(t: &TursoBackend, req: &Value) -> Value {
         .filter(|s| !s.is_empty())
         .unwrap_or("unknown-seat")
         .to_string();
+    // Optional session context (a task/issue link the seat names
+    // for the session): carried into extension pushes so Drew can
+    // see where a session comes from. Free-form, length-capped.
+    let context = req_str(req, "context")
+        .filter(|s| !s.is_empty())
+        .map(|s| s.chars().take(300).collect::<String>());
     let lease_s = req_i64(req, "lease_s").unwrap_or(0);
     let max_s = req_i64(req, "max_s").unwrap_or(DEFAULT_MAX_S);
     if lease_s < MIN_LEASE_S {
@@ -582,8 +810,8 @@ pub(crate) fn verb_actions_exec_open(t: &TursoBackend, req: &Value) -> Value {
         t.exec(
             "INSERT INTO actions_exec_sessions \
                 (handle, host_repo, workflow, seat, state, hide_logs, \
-                 lease_until, max_until, created_at, updated_at) \
-             VALUES (?, ?, ?, ?, 'open', ?, ?, ?, ?, ?)",
+                 lease_until, max_until, context, created_at, updated_at) \
+             VALUES (?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, ?)",
             &[
                 Arg::Text(handle.clone()),
                 Arg::Text(host_repo.to_string()),
@@ -592,6 +820,10 @@ pub(crate) fn verb_actions_exec_open(t: &TursoBackend, req: &Value) -> Value {
                 Arg::Int(hide_logs),
                 Arg::Text(lease_until.clone()),
                 Arg::Text(max_until.clone()),
+                match &context {
+                    Some(c) => Arg::Text(c.clone()),
+                    None => Arg::Null,
+                },
                 Arg::Text(stamp.clone()),
                 Arg::Text(stamp),
             ],
@@ -601,6 +833,7 @@ pub(crate) fn verb_actions_exec_open(t: &TursoBackend, req: &Value) -> Value {
             "state": "open",
             "lease_until": lease_until,
             "max_until": max_until,
+            "context": context,
         }))
     })();
     match work {
@@ -697,7 +930,7 @@ pub(crate) fn verb_actions_exec_command(t: &TursoBackend, req: &Value) -> Value 
 }
 
 pub(crate) fn verb_actions_exec_stream(t: &TursoBackend, req: &Value) -> Value {
-    let row = match require_session(t, req) {
+    let row = match require_session_settled(t, req) {
         Ok(r) => r,
         Err(v) => return v,
     };
@@ -751,7 +984,7 @@ pub(crate) fn verb_actions_exec_stream(t: &TursoBackend, req: &Value) -> Value {
 }
 
 pub(crate) fn verb_actions_exec_renew(t: &TursoBackend, req: &Value) -> Value {
-    let row = match require_session(t, req) {
+    let row = match require_session_settled(t, req) {
         Ok(r) => r,
         Err(v) => return v,
     };
@@ -812,7 +1045,7 @@ pub(crate) fn verb_actions_exec_renew(t: &TursoBackend, req: &Value) -> Value {
 }
 
 pub(crate) fn verb_actions_exec_extend_request(t: &TursoBackend, req: &Value) -> Value {
-    let row = match require_session(t, req) {
+    let row = match require_session_settled(t, req) {
         Ok(r) => r,
         Err(v) => return v,
     };
@@ -830,35 +1063,124 @@ pub(crate) fn verb_actions_exec_extend_request(t: &TursoBackend, req: &Value) ->
     if row.get("ext_state").and_then(|v| v.as_str()) == Some("pending") {
         return fail(5, "an extension request is already pending".to_string());
     }
-    let extend_s = req_i64(req, "extend_s")
-        .unwrap_or(MAX_EXTENSION_S)
-        .clamp(60, MAX_EXTENSION_S);
+    // The tier ladder reads the RAW ask: an oversized request is
+    // a manual-tier request even though the grant itself stays
+    // clamped to the per-approval bound.
+    let raw_extend_s = req_i64(req, "extend_s").unwrap_or(MAX_EXTENSION_S);
+    let extend_s = raw_extend_s.clamp(60, MAX_EXTENSION_S);
+    let reason = req_str(req, "reason").unwrap_or("").to_string();
     let handle = row.get("handle").and_then(|v| v.as_str()).unwrap_or("");
+    let count_before = ext_count(&row);
+    let total_before = ext_total_s(&row);
+    let tier = evaluate_extension_tier(count_before, total_before, raw_extend_s, extend_s);
+    let ordinal = count_before + 1;
+    let lease_unix = row
+        .get("lease_until")
+        .and_then(|v| v.as_str())
+        .and_then(parse_iso)
+        .unwrap_or(0);
+    let max_unix = row
+        .get("max_until")
+        .and_then(|v| v.as_str())
+        .and_then(parse_iso)
+        .unwrap_or(0);
+    let created_unix = row
+        .get("created_at")
+        .and_then(|v| v.as_str())
+        .and_then(parse_iso)
+        .unwrap_or(0);
+    // Everything queue_broker's alert builder needs, on every
+    // tier: who, where from, the run, the lease state, the ask,
+    // the cumulative counters (before this request), the tier.
+    let mut out = json!({
+        "requested": true,
+        "handle": handle,
+        "host_repo": row.get("host_repo").cloned().unwrap_or(Value::Null),
+        "workflow": row.get("workflow").cloned().unwrap_or(Value::Null),
+        "seat": row.get("seat").cloned().unwrap_or(Value::Null),
+        "context": row.get("context").cloned().unwrap_or(Value::Null),
+        "run_id": row.get("run_id").cloned().unwrap_or(Value::Null),
+        "run_attempt": row.get("run_attempt").cloned().unwrap_or(Value::Null),
+        "created_at": row.get("created_at").cloned().unwrap_or(Value::Null),
+        "granted_s": max_unix - created_unix,
+        "elapsed_s": now - created_unix,
+        "extend_s": extend_s,
+        "tier": tier,
+        "ext_ordinal": ordinal,
+        "alert_key": format!("actions-exec-ext:{handle}:{ordinal}"),
+        "ext_count": count_before,
+        "ext_total_s": total_before,
+        "reason": reason.clone(),
+    });
     let work = (|| -> Result<Value, TErr> {
-        let res = t.exec(
-            "UPDATE actions_exec_sessions \
-             SET state = 'extension-pending', ext_state = 'pending', \
-                 ext_seconds = ?, updated_at = ? \
-             WHERE handle = ? AND state IN ('open', 'bound', 'live', 'extension-pending') \
-               AND COALESCE(ext_state, '') <> 'pending'",
-            &[
-                Arg::Int(extend_s),
-                Arg::Text(now_iso()),
-                Arg::Text(handle.to_string()),
-            ],
-        )?;
-        if res.affected == 0 {
-            return Ok(json!({"requested": false}));
+        match tier {
+            1 => {
+                // AUTO + NOTIFY: apply in this request, with the
+                // same grant shape a manual approval produces.
+                let grant = ExtensionGrant {
+                    extend_s,
+                    tier,
+                    reason: reason.clone(),
+                    outcome: "auto-approved",
+                };
+                match apply_extension(t, &row, now, &grant, false)? {
+                    Some((new_max, new_lease)) => {
+                        out["outcome"] = json!("auto-approved");
+                        out["max_until"] = json!(new_max);
+                        out["lease_until"] = json!(new_lease.clone());
+                        out["grace_until"] = json!(new_lease);
+                        Ok(out)
+                    }
+                    None => Ok(json!({"requested": false})),
+                }
+            }
+            _ => {
+                let decide_after = if tier == 2 {
+                    Some(iso(now + EXT_DENY_WINDOW_S))
+                } else {
+                    None
+                };
+                let res = t.exec(
+                    "UPDATE actions_exec_sessions \
+                     SET state = 'extension-pending', ext_state = 'pending', \
+                         ext_seconds = ?, ext_tier = ?, ext_reason = ?, \
+                         ext_decide_after = ?, updated_at = ? \
+                     WHERE handle = ? AND state IN ('open', 'bound', 'live', 'extension-pending') \
+                       AND COALESCE(ext_state, '') <> 'pending'",
+                    &[
+                        Arg::Int(extend_s),
+                        Arg::Int(tier),
+                        Arg::Text(reason.clone()),
+                        match &decide_after {
+                            Some(s) => Arg::Text(s.clone()),
+                            None => Arg::Null,
+                        },
+                        Arg::Text(now_iso()),
+                        Arg::Text(handle.to_string()),
+                    ],
+                )?;
+                if res.affected == 0 {
+                    return Ok(json!({"requested": false}));
+                }
+                out["outcome"] = json!(if tier == 2 {
+                    "pending-deny-window"
+                } else {
+                    "pending-manual"
+                });
+                out["max_until"] = row.get("max_until").cloned().unwrap_or(Value::Null);
+                out["lease_until"] = row.get("lease_until").cloned().unwrap_or(Value::Null);
+                out["decide_after"] = match &decide_after {
+                    Some(s) => json!(s),
+                    None => Value::Null,
+                };
+                out["grace_until"] = json!(iso(if tier == 2 {
+                    lease_unix.max(now + EXT_DENY_WINDOW_S) + EXTENSION_GRACE_S
+                } else {
+                    lease_unix + EXTENSION_GRACE_S
+                }));
+                Ok(out)
+            }
         }
-        Ok(json!({
-            "requested": true,
-            "handle": handle,
-            "host_repo": row.get("host_repo").cloned().unwrap_or(Value::Null),
-            "run_id": row.get("run_id").cloned().unwrap_or(Value::Null),
-            "extend_s": extend_s,
-            "grace_until": iso(hard_deadline_unix(&row)),
-            "reason": req_str(req, "reason").unwrap_or(""),
-        }))
     })();
     match work {
         Ok(v) => ok(v),
@@ -867,10 +1189,22 @@ pub(crate) fn verb_actions_exec_extend_request(t: &TursoBackend, req: &Value) ->
 }
 
 pub(crate) fn verb_actions_exec_extend_decide(t: &TursoBackend, req: &Value) -> Value {
-    let row = match require_session(t, req) {
+    let row = match require_session_settled(t, req) {
         Ok(r) => r,
         Err(v) => return v,
     };
+    // A tier-2 request whose deny window lapsed was settled by
+    // require_session_settled: nothing is left to decide, and a
+    // late deny must not read as if it landed.
+    if row.get("ext_state").and_then(|v| v.as_str()) == Some("silence-approved") {
+        return ok(json!({
+            "decided": false,
+            "approved": true,
+            "tier": 2,
+            "outcome": "silence-approved",
+            "note": "the deny window lapsed before this decision arrived; the extension was auto-approved at window end",
+        }));
+    }
     if row.get("ext_state").and_then(|v| v.as_str()) != Some("pending") {
         return fail(
             5,
@@ -880,51 +1214,47 @@ pub(crate) fn verb_actions_exec_extend_decide(t: &TursoBackend, req: &Value) -> 
     let approve = req.get("approve").and_then(|v| v.as_bool()) == Some(true);
     let handle = row.get("handle").and_then(|v| v.as_str()).unwrap_or("");
     let now = now_unix();
+    let tier = row.get("ext_tier").and_then(|v| v.as_i64()).unwrap_or(3);
     let work = (|| -> Result<Value, TErr> {
         if approve {
-            let extend_s = row
-                .get("ext_seconds")
-                .and_then(|v| v.as_i64())
-                .unwrap_or(MAX_EXTENSION_S)
-                .clamp(60, MAX_EXTENSION_S);
-            let max_unix = row
-                .get("max_until")
-                .and_then(|v| v.as_str())
-                .and_then(parse_iso)
-                .unwrap_or(0);
-            let lease_unix = row
-                .get("lease_until")
-                .and_then(|v| v.as_str())
-                .and_then(parse_iso)
-                .unwrap_or(0);
-            let new_max = iso(max_unix + extend_s);
-            let new_lease = iso(lease_unix.max(now + extend_s).min(max_unix + extend_s));
-            let res = t.exec(
-                "UPDATE actions_exec_sessions \
-                 SET state = 'live', ext_state = 'approved', max_until = ?, \
-                     lease_until = ?, updated_at = ? \
-                 WHERE handle = ? AND ext_state = 'pending'",
-                &[
-                    Arg::Text(new_max.clone()),
-                    Arg::Text(new_lease.clone()),
-                    Arg::Text(now_iso()),
-                    Arg::Text(handle.to_string()),
-                ],
-            )?;
-            Ok(json!({
-                "decided": res.affected > 0,
-                "approved": true,
-                "max_until": new_max,
-                "lease_until": new_lease,
-            }))
+            let grant = ExtensionGrant {
+                extend_s: row
+                    .get("ext_seconds")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(MAX_EXTENSION_S)
+                    .clamp(60, MAX_EXTENSION_S),
+                tier,
+                reason: row
+                    .get("ext_reason")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                outcome: "approved",
+            };
+            match apply_extension(t, &row, now, &grant, true)? {
+                Some((new_max, new_lease)) => Ok(json!({
+                    "decided": true,
+                    "approved": true,
+                    "tier": tier,
+                    "outcome": "approved",
+                    "max_until": new_max,
+                    "lease_until": new_lease,
+                })),
+                None => Ok(json!({"decided": false, "approved": true})),
+            }
         } else {
             let res = t.exec(
                 "UPDATE actions_exec_sessions \
-                 SET state = 'live', ext_state = 'denied', updated_at = ? \
+                 SET state = 'live', ext_state = 'denied', ext_decide_after = NULL, updated_at = ? \
                  WHERE handle = ? AND ext_state = 'pending'",
                 &[Arg::Text(now_iso()), Arg::Text(handle.to_string())],
             )?;
-            Ok(json!({"decided": res.affected > 0, "approved": false}))
+            Ok(json!({
+                "decided": res.affected > 0,
+                "approved": false,
+                "tier": tier,
+                "outcome": "denied",
+            }))
         }
     })();
     match work {
@@ -1042,6 +1372,13 @@ pub(crate) fn verb_actions_exec_poll(t: &TursoBackend, req: &Value) -> Value {
             Err(e) => return terr(e),
         };
         let now = now_unix();
+        // A lapsed tier-2 deny window settles here first (silence
+        // approves), so the state read below already reflects the
+        // grant — this poll is the session's most frequent touch.
+        let current = match settle_extension(t, &current, now) {
+            Ok(true) => session_row(t, handle).ok().flatten().unwrap_or(current),
+            _ => current,
+        };
         let state = effective_state(&current, now);
         if state == "expired" && current.get("state").and_then(|v| v.as_str()) != Some("expired") {
             // Write the lazy transition back so every reader agrees.
@@ -1503,24 +1840,31 @@ mod tests {
 
     #[test]
     fn extension_request_and_decision_move_the_max() {
+        // Oracle: the tier-3 (manual) path — an oversized raw ask
+        // is manual even as a first extension (the size-cap rule),
+        // its grant stays clamped to the per-approval bound, and
+        // decide moves the max exactly as v1 did.
         let t = backend();
         let h = "fx-test-extend";
         assert_eq!(open_session(&t, h, 60, 120)["ok"], true);
         verb_actions_exec_bind(&t, &json!({"handle": h, "run_id": 7, "run_attempt": 1}));
-        let out = verb_actions_exec_extend_request(&t, &json!({"handle": h, "extend_s": 1800}));
+        let out = verb_actions_exec_extend_request(&t, &json!({"handle": h, "extend_s": 7200}));
         assert_eq!(out["requested"], true, "{out}");
+        assert_eq!(out["tier"], 3, "{out}");
+        assert_eq!(out["extend_s"], 1800, "{out}");
         assert_eq!(out["run_id"], 7);
         // A second request while one is pending is refused.
         let out = verb_actions_exec_extend_request(&t, &json!({"handle": h}));
         assert_eq!(out["ok"], false, "{out}");
-        // Deny: state returns to live-shaped, max unmoved.
+        // Deny: state returns to live-shaped, max unmoved, no count.
         let out = verb_actions_exec_extend_decide(&t, &json!({"handle": h, "approve": false}));
         assert_eq!(out["approved"], false, "{out}");
         let stream = verb_actions_exec_stream(&t, &json!({"handle": h}));
         assert_eq!(stream["session"]["ext_state"], "denied");
+        assert_eq!(stream["session"]["ext_count"], 0);
         // Approve on a fresh request: max and lease both move +1800.
         let before = stream["session"]["max_unix"].as_i64().unwrap();
-        verb_actions_exec_extend_request(&t, &json!({"handle": h, "extend_s": 1800}));
+        verb_actions_exec_extend_request(&t, &json!({"handle": h, "extend_s": 7200}));
         let out = verb_actions_exec_extend_decide(&t, &json!({"handle": h, "approve": true}));
         assert_eq!(out["approved"], true, "{out}");
         let stream = verb_actions_exec_stream(&t, &json!({"handle": h}));
@@ -1529,6 +1873,184 @@ mod tests {
             before + 1800
         );
         assert_eq!(stream["session"]["ext_state"], "approved");
+        assert_eq!(stream["session"]["ext_count"], 1);
+        assert_eq!(stream["session"]["ext_total_s"], 1800);
+    }
+
+    #[test]
+    fn tier1_first_extension_auto_approves() {
+        // Oracle: policy tier 1 — the first extension within the
+        // caps is granted by the request itself: no pending state,
+        // the max moves, the counters record it, and the next
+        // request is free to pend as tier 2.
+        let t = backend();
+        let h = "fx-test-tier1";
+        assert_eq!(open_session(&t, h, 60, 120)["ok"], true);
+        verb_actions_exec_bind(&t, &json!({"handle": h, "run_id": 11, "run_attempt": 2}));
+        let before = verb_actions_exec_stream(&t, &json!({"handle": h}))["session"]["max_unix"]
+            .as_i64()
+            .unwrap();
+        let out = verb_actions_exec_extend_request(
+            &t,
+            &json!({"handle": h, "extend_s": 1800, "reason": "build still running"}),
+        );
+        assert_eq!(out["requested"], true, "{out}");
+        assert_eq!(out["tier"], 1, "{out}");
+        assert_eq!(out["outcome"], "auto-approved", "{out}");
+        assert_eq!(
+            out["alert_key"], "actions-exec-ext:fx-test-tier1:1",
+            "{out}"
+        );
+        let stream = verb_actions_exec_stream(&t, &json!({"handle": h}));
+        assert_eq!(stream["session"]["ext_state"], "auto-approved");
+        assert_eq!(stream["session"]["ext_count"], 1);
+        assert_eq!(stream["session"]["ext_total_s"], 1800);
+        assert_eq!(
+            stream["session"]["max_unix"].as_i64().unwrap(),
+            before + 1800
+        );
+        // Not pending: a follow-up request pends as tier 2 rather
+        // than being refused as a duplicate.
+        let out = verb_actions_exec_extend_request(&t, &json!({"handle": h, "extend_s": 900}));
+        assert_eq!(out["requested"], true, "{out}");
+        assert_eq!(out["tier"], 2, "{out}");
+        assert_eq!(out["outcome"], "pending-deny-window", "{out}");
+    }
+
+    #[test]
+    fn tier2_silence_approves_at_window_end() {
+        // Oracle: policy tier 2 — silence at the deny-window end
+        // approves; the settle lands on the next verb that touches
+        // the session (the stream here stands in for the agent's
+        // poll), and a decision arriving after the lapse is told
+        // it changed nothing.
+        let t = backend();
+        let h = "fx-test-tier2-silence";
+        assert_eq!(open_session(&t, h, 60, 120)["ok"], true);
+        verb_actions_exec_extend_request(&t, &json!({"handle": h, "extend_s": 1800}));
+        let out = verb_actions_exec_extend_request(&t, &json!({"handle": h, "extend_s": 1800}));
+        assert_eq!(out["tier"], 2, "{out}");
+        assert_eq!(out["outcome"], "pending-deny-window", "{out}");
+        assert!(out["decide_after"].as_str().is_some(), "{out}");
+        let before = verb_actions_exec_stream(&t, &json!({"handle": h}))["session"]["max_unix"]
+            .as_i64()
+            .unwrap();
+        // Age the window out and touch the session.
+        t.exec(
+            "UPDATE actions_exec_sessions SET ext_decide_after = ? WHERE handle = ?",
+            &[Arg::Text(iso(now_unix() - 1)), Arg::Text(h.to_string())],
+        )
+        .unwrap();
+        let stream = verb_actions_exec_stream(&t, &json!({"handle": h}));
+        assert_eq!(stream["session"]["ext_state"], "silence-approved");
+        assert_eq!(stream["session"]["ext_count"], 2);
+        assert_eq!(stream["session"]["ext_total_s"], 3600);
+        assert_eq!(
+            stream["session"]["max_unix"].as_i64().unwrap(),
+            before + 1800
+        );
+        // A deny arriving after the lapse is told the truth.
+        let out = verb_actions_exec_extend_decide(&t, &json!({"handle": h, "approve": false}));
+        assert_eq!(out["ok"], true, "{out}");
+        assert_eq!(out["decided"], false, "{out}");
+        assert_eq!(out["outcome"], "silence-approved", "{out}");
+    }
+
+    #[test]
+    fn tier2_deny_inside_the_window_ends_it() {
+        // Oracle: policy tier 2 — a deny inside the window kills
+        // the extension: the session keeps its current cap, the
+        // counters do not move, and a later lapse cannot resurrect
+        // the denied request.
+        let t = backend();
+        let h = "fx-test-tier2-deny";
+        assert_eq!(open_session(&t, h, 60, 120)["ok"], true);
+        verb_actions_exec_extend_request(&t, &json!({"handle": h, "extend_s": 1800}));
+        let capped = verb_actions_exec_stream(&t, &json!({"handle": h}))["session"]["max_unix"]
+            .as_i64()
+            .unwrap();
+        let out = verb_actions_exec_extend_request(&t, &json!({"handle": h, "extend_s": 1800}));
+        assert_eq!(out["tier"], 2, "{out}");
+        let out = verb_actions_exec_extend_decide(&t, &json!({"handle": h, "approve": false}));
+        assert_eq!(out["decided"], true, "{out}");
+        assert_eq!(out["approved"], false, "{out}");
+        // Even with the window aged out, a denied request stays denied.
+        t.exec(
+            "UPDATE actions_exec_sessions SET ext_decide_after = ? WHERE handle = ?",
+            &[Arg::Text(iso(now_unix() - 1)), Arg::Text(h.to_string())],
+        )
+        .unwrap();
+        let stream = verb_actions_exec_stream(&t, &json!({"handle": h}));
+        assert_eq!(stream["session"]["ext_state"], "denied");
+        assert_eq!(stream["session"]["ext_count"], 1);
+        assert_eq!(stream["session"]["max_unix"].as_i64().unwrap(), capped);
+    }
+
+    #[test]
+    fn tier3_third_extension_stays_manual() {
+        // Oracle: policy tier 3 — the third extension never
+        // auto-settles, however often the session is touched;
+        // only a recorded decision moves it.
+        let t = backend();
+        let h = "fx-test-tier3";
+        assert_eq!(open_session(&t, h, 60, 120)["ok"], true);
+        verb_actions_exec_extend_request(&t, &json!({"handle": h, "extend_s": 1800}));
+        verb_actions_exec_extend_request(&t, &json!({"handle": h, "extend_s": 1800}));
+        let out = verb_actions_exec_extend_decide(&t, &json!({"handle": h, "approve": true}));
+        assert_eq!(out["approved"], true, "{out}");
+        assert_eq!(out["tier"], 2, "{out}");
+        let out = verb_actions_exec_extend_request(&t, &json!({"handle": h, "extend_s": 1800}));
+        assert_eq!(out["tier"], 3, "{out}");
+        assert_eq!(out["outcome"], "pending-manual", "{out}");
+        let stream = verb_actions_exec_stream(&t, &json!({"handle": h}));
+        assert_eq!(stream["session"]["ext_state"], "pending");
+        assert_eq!(stream["session"]["ext_count"], 2);
+        let out = verb_actions_exec_extend_decide(&t, &json!({"handle": h, "approve": true}));
+        assert_eq!(out["approved"], true, "{out}");
+        let stream = verb_actions_exec_stream(&t, &json!({"handle": h}));
+        assert_eq!(stream["session"]["ext_count"], 3);
+        assert_eq!(stream["session"]["ext_state"], "approved");
+    }
+
+    #[test]
+    fn cumulative_cap_escalates_to_tier3() {
+        // Oracle: the cumulative auto cap — a session whose
+        // granted total leaves no room under EXT_AUTO_TOTAL_CAP_S
+        // goes manual even for its second extension.
+        let t = backend();
+        let h = "fx-test-tier-cum";
+        assert_eq!(open_session(&t, h, 60, 120)["ok"], true);
+        t.exec(
+            "UPDATE actions_exec_sessions SET ext_count = 1, ext_total_s = 3500 WHERE handle = ?",
+            &[Arg::Text(h.to_string())],
+        )
+        .unwrap();
+        let out = verb_actions_exec_extend_request(&t, &json!({"handle": h, "extend_s": 900}));
+        assert_eq!(out["tier"], 3, "{out}");
+        assert_eq!(out["outcome"], "pending-manual", "{out}");
+    }
+
+    #[test]
+    fn deny_window_covers_the_hard_deadline() {
+        // Oracle: while a tier-2 request pends, the agent's hard
+        // deadline reaches the window end plus grace — the session
+        // cannot expire mid-window; a tier-3 request keeps the
+        // plain lease + grace.
+        let lease = 1_700_000_000;
+        let row = json!({
+            "lease_until": iso(lease),
+            "ext_state": "pending",
+            "ext_tier": 2,
+            "ext_decide_after": iso(lease + 900),
+        });
+        assert_eq!(hard_deadline_unix(&row), lease + 900 + EXTENSION_GRACE_S);
+        let row = json!({
+            "lease_until": iso(lease),
+            "ext_state": "pending",
+            "ext_tier": 3,
+            "ext_decide_after": null,
+        });
+        assert_eq!(hard_deadline_unix(&row), lease + EXTENSION_GRACE_S);
     }
 
     #[test]

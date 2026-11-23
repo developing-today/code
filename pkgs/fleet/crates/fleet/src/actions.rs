@@ -390,6 +390,7 @@ fn exec_start(config: &Config, args: &[String]) -> i32 {
             "timeout",
             "max-lifespan",
             "broker-url",
+            "context",
         ],
         &["hide-logs", "detach"],
     ) {
@@ -431,6 +432,7 @@ fn exec_start(config: &Config, args: &[String]) -> i32 {
         lease_s,
         max_s,
         flags.has("hide-logs"),
+        flags.get("context"),
     )
     .and_then(check_envelope)
     {
@@ -804,14 +806,42 @@ fn exec_extend(_config: &Config, args: &[String]) -> i32 {
     {
         Ok(v) => {
             if v.get("requested").and_then(|x| x.as_bool()) == Some(true) {
-                println!(
-                    "extension requested for {handle}: +{}s past the max; the needs-drew alert is raised (source fleet-actions-exec, key actions-exec-ext:{handle}); decision grace runs to {}",
-                    minutes * 60,
-                    v.get("grace_until").and_then(|x| x.as_str()).unwrap_or("?"),
-                );
-                println!(
-                    "Drew's answer returns via: fleet actions exec decide {handle} --approve|--deny"
-                );
+                let tier = v.get("tier").and_then(|x| x.as_i64()).unwrap_or(3);
+                let key = v
+                    .get("alert_key")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                match tier {
+                    1 => println!(
+                        "extension auto-approved for {handle} (tier 1): +{}s; max_until={} lease_until={}; Drew has been notified (alert key {key})",
+                        minutes * 60,
+                        v.get("max_until").and_then(|x| x.as_str()).unwrap_or("?"),
+                        v.get("lease_until").and_then(|x| x.as_str()).unwrap_or("?"),
+                    ),
+                    2 => {
+                        println!(
+                            "extension pending for {handle} (tier 2): +{}s; it approves itself at {} unless Drew denies (alert key {key})",
+                            minutes * 60,
+                            v.get("decide_after")
+                                .and_then(|x| x.as_str())
+                                .unwrap_or("?"),
+                        );
+                        println!(
+                            "early answer: fleet actions exec decide {handle} --approve|--deny"
+                        );
+                    }
+                    _ => {
+                        println!(
+                            "extension requested for {handle} (tier 3): +{}s past the max; the needs-drew alert is raised (source fleet-actions-exec, key {key}); decision grace runs to {}",
+                            minutes * 60,
+                            v.get("grace_until").and_then(|x| x.as_str()).unwrap_or("?"),
+                        );
+                        println!(
+                            "Drew's answer returns via: fleet actions exec decide {handle} --approve|--deny"
+                        );
+                    }
+                }
                 EXIT_OK
             } else {
                 fail_out(EXIT_ERROR, "the broker did not record the request")
@@ -835,6 +865,12 @@ fn exec_decide(_config: &Config, args: &[String]) -> i32 {
         .and_then(check_envelope)
     {
         Ok(v) => {
+            if v.get("outcome").and_then(|x| x.as_str()) == Some("silence-approved") {
+                println!(
+                    "extension for {handle} was already auto-approved at the tier-2 deny-window end; this decision arrived too late to change it"
+                );
+                return EXIT_OK;
+            }
             if approve {
                 println!(
                     "extension approved for {handle}: max_until={} lease_until={}",
