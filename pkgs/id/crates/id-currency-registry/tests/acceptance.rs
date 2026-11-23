@@ -19,7 +19,7 @@
 use id_currency_registry::{
     AccountKind, AllocError, Allocator, CURRENCY_RANGE_START, CurrencyStatus, InMemoryStore,
     LedgerKind, MIGRATION_0001_UP, RegisterAccount, RegisterCurrency, Registry, RegistryError,
-    SYSTEM_RANGE_END, StoreError, SupplyPolicy,
+    SYSTEM_RANGE_END, Store, StoreError, SupplyPolicy,
 };
 
 fn register_input(currency_id: &str, issuer_id: &str, symbol: &str) -> RegisterCurrency {
@@ -239,4 +239,171 @@ fn migration_creates_the_four_tables_with_the_named_constraints() {
     assert!(sql.contains("graph_object_id"));
     // Design section 6: the allocator entry point exists.
     assert!(sql.contains("create function allocate_ledger"));
+}
+
+// Oracle for the tests below: issue #13342 scope item 1 (registry
+// status transitions). The transition table is decided on the issue
+// and documented on `Registry::set_status`: same-status repeats are
+// idempotent success, sunset is reachable from frozen and terminal
+// once set, and a frozen currency never unfreezes.
+
+fn registry_with_currency() -> Registry<InMemoryStore> {
+    let mut registry = Registry::new(InMemoryStore::new());
+    registry
+        .register_currency(register_input("abc", "alice", "ABC"))
+        .unwrap();
+    registry
+}
+
+#[test]
+fn issuer_can_freeze_an_active_currency() {
+    let mut registry = registry_with_currency();
+    let frozen = registry.freeze_currency("abc", "alice").unwrap();
+    assert_eq!(frozen.status, CurrencyStatus::Frozen);
+    assert_eq!(frozen.currency_id, "abc");
+    // The stored record moves too: resolve sees the new status.
+    assert_eq!(
+        registry.resolve("abc").unwrap().status,
+        CurrencyStatus::Frozen
+    );
+}
+
+#[test]
+fn issuer_can_sunset_an_active_currency() {
+    let mut registry = registry_with_currency();
+    let sunset = registry.sunset_currency("abc", "alice").unwrap();
+    assert_eq!(sunset.status, CurrencyStatus::Sunset);
+    assert_eq!(
+        registry.resolve("abc").unwrap().status,
+        CurrencyStatus::Sunset
+    );
+}
+
+#[test]
+fn sunset_is_reachable_from_frozen() {
+    let mut registry = registry_with_currency();
+    registry.freeze_currency("abc", "alice").unwrap();
+    let sunset = registry.sunset_currency("abc", "alice").unwrap();
+    assert_eq!(sunset.status, CurrencyStatus::Sunset);
+}
+
+#[test]
+fn only_the_issuer_can_freeze_or_sunset() {
+    let mut registry = registry_with_currency();
+    let err = registry.freeze_currency("abc", "mallory").unwrap_err();
+    assert_eq!(
+        err,
+        RegistryError::NotIssuer {
+            currency_id: "abc".to_owned(),
+            account_id: "mallory".to_owned()
+        }
+    );
+    let err = registry.sunset_currency("abc", "mallory").unwrap_err();
+    assert_eq!(
+        err,
+        RegistryError::NotIssuer {
+            currency_id: "abc".to_owned(),
+            account_id: "mallory".to_owned()
+        }
+    );
+    // The refused attempts changed nothing.
+    assert_eq!(
+        registry.resolve("abc").unwrap().status,
+        CurrencyStatus::Active
+    );
+}
+
+#[test]
+fn repeating_a_freeze_is_idempotent_success() {
+    let mut registry = registry_with_currency();
+    registry.freeze_currency("abc", "alice").unwrap();
+    let again = registry.freeze_currency("abc", "alice").unwrap();
+    assert_eq!(again.status, CurrencyStatus::Frozen);
+    assert_eq!(
+        registry.resolve("abc").unwrap().status,
+        CurrencyStatus::Frozen
+    );
+}
+
+#[test]
+fn repeating_a_sunset_is_idempotent_success() {
+    let mut registry = registry_with_currency();
+    registry.sunset_currency("abc", "alice").unwrap();
+    let again = registry.sunset_currency("abc", "alice").unwrap();
+    assert_eq!(again.status, CurrencyStatus::Sunset);
+}
+
+#[test]
+fn sunset_is_terminal() {
+    let mut registry = registry_with_currency();
+    registry.sunset_currency("abc", "alice").unwrap();
+    let err = registry.freeze_currency("abc", "alice").unwrap_err();
+    assert_eq!(
+        err,
+        RegistryError::InvalidTransition {
+            currency_id: "abc".to_owned(),
+            from: CurrencyStatus::Sunset,
+            to: CurrencyStatus::Frozen,
+        }
+    );
+    let err = registry
+        .set_status("abc", CurrencyStatus::Active, "alice")
+        .unwrap_err();
+    assert_eq!(
+        err,
+        RegistryError::InvalidTransition {
+            currency_id: "abc".to_owned(),
+            from: CurrencyStatus::Sunset,
+            to: CurrencyStatus::Active,
+        }
+    );
+}
+
+#[test]
+fn a_frozen_currency_never_unfreezes() {
+    let mut registry = registry_with_currency();
+    registry.freeze_currency("abc", "alice").unwrap();
+    let err = registry
+        .set_status("abc", CurrencyStatus::Active, "alice")
+        .unwrap_err();
+    assert_eq!(
+        err,
+        RegistryError::InvalidTransition {
+            currency_id: "abc".to_owned(),
+            from: CurrencyStatus::Frozen,
+            to: CurrencyStatus::Active,
+        }
+    );
+}
+
+#[test]
+fn status_transitions_reject_unknown_currencies() {
+    let mut registry = registry_with_currency();
+    let err = registry.freeze_currency("nope", "alice").unwrap_err();
+    assert_eq!(err, RegistryError::UnknownCurrency("nope".to_owned()));
+    let err = registry.sunset_currency("nope", "alice").unwrap_err();
+    assert_eq!(err, RegistryError::UnknownCurrency("nope".to_owned()));
+}
+
+#[test]
+fn set_status_moves_through_the_general_path() {
+    let mut registry = registry_with_currency();
+    let frozen = registry
+        .set_status("abc", CurrencyStatus::Frozen, "alice")
+        .unwrap();
+    assert_eq!(frozen.status, CurrencyStatus::Frozen);
+    // A same-status set through the general path is also idempotent.
+    let again = registry
+        .set_status("abc", CurrencyStatus::Frozen, "alice")
+        .unwrap();
+    assert_eq!(again.status, CurrencyStatus::Frozen);
+}
+
+#[test]
+fn store_update_currency_status_rejects_unknown_ledgers() {
+    let mut store = InMemoryStore::new();
+    let err = store
+        .update_currency_status(0x0010_0000, CurrencyStatus::Frozen)
+        .unwrap_err();
+    assert_eq!(err, StoreError::UnknownLedger(0x0010_0000));
 }
