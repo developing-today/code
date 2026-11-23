@@ -82,6 +82,10 @@ synthetic `eval-smoke.json` fixture is not held-out evaluation evidence.
 - Validation rejects: wrong format version, duplicate query ids,
   qrels or runs naming unknown queries, duplicate (query, doc)
   qrels, duplicate docs inside one ranking, duplicate signal names.
+- Optional (#8627): a query may carry `forbidden` (doc ids that
+  must never be returned for it) and `corpora` (the corpora it is
+  scoped to); the document may carry `docs` (`{"id", "corpus"}`
+  attribution for provenance checks). See the next-but-one section.
 
 ## Metrics
 
@@ -103,6 +107,52 @@ The dev split is for iteration and parameter selection
 test-split report outright, so no helper in this harness can
 silently tune on held-out qrels; a test report exists to be read,
 not selected from.
+
+## Ceiling/scope negatives and provenance (#8627)
+
+The cross-corpus sets for the Atlas memory integration (design
+record `../docs/memory-integration-design-8567.md` §6, slice 5)
+must be able to fail a run for breaking *policy*, not just for
+ranking badly. Three optional `atlas-eval/v1` fields express that,
+all backward compatible — a set that omits them scores and
+serializes exactly as before:
+
+- `forbidden` (per query): doc ids that must never appear in a
+  ranking for that query — above-ceiling or out-of-scope docs a
+  correct system cannot return. A forbidden doc may not also hold
+  a positive grade for the query; validation rejects the
+  contradiction.
+- `corpora` (per query): the corpora the query is scoped to. When
+  present, provenance is enforced for its rankings.
+- `docs` (per document): `{"id": ..., "corpus": ...}` attribution
+  naming each doc's corpus; may cover docs nothing else mentions.
+
+A ranking that surfaces a forbidden doc, a doc from outside the
+query's corpus scope, or a doc with no attribution at all records
+a **violation** in that signal's report (query, doc, rank, kind,
+corpus). The metrics are computed unchanged — the doc still scores
+grade 0 — but the signal has *failed*: `select_best_signal`
+refuses a report containing violations, and the runner exits
+non-zero. A policy regression therefore fails the eval itself,
+not just a code review.
+
+**The one evidence command.** A corpus or connector change ships
+with before/after output from:
+
+```sh
+cargo run -p atlas-core --bin atlas-eval -- <set.json> dev
+```
+
+Exit 0 = every signal passed; exit 1 = at least one violation
+(the report is still printed, as the evidence). Per-family sets
+(OpenClaw, OpenCode, OpenChamber, Muse lanes) with graded qrels
+and recorded baselines land on #8627 per family as slices
+#8622/#8623/#8625/#8626 stage their corpora; qrels are never
+invented for a corpus that is not staged yet.
+`fixtures/eval-negatives-smoke.json` is a synthetic set that
+exercises the negative/provenance paths end to end (one clean
+signal, one leaking signal) — like the smoke fixture below, it is
+not evaluation evidence and not a family baseline.
 
 ## The smoke fixture is not evidence
 
