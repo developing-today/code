@@ -2800,19 +2800,34 @@
   // seated -- it is absent from the groq provider catalog above
   // (Groq shut PlayAI TTS down; the catalog's TTS shelf is the
   // Canopy Labs Orpheus pair designated here instead).
+  // Provenance (Drew, 2026-11-23): every designation below was
+  // verified against models.dev AND the provider's own live
+  // model-list endpoint; each entry's "source" names the asserting
+  // source(s) so a stale classification is traceable. Findings:
+  // the Zen decision ids (jev-1.13-free, jev-1.13,
+  // gpt-6-luna-decision, gemini-decision-1) are absent from
+  // models.dev entirely -- Zen's own live /v1/models list asserts
+  // them, and it is their source. gemini-decision-1 is asserted by
+  // Google's live list with supportedGenerationMethods
+  // ["createDecision"], and both embedding ids with embedContent
+  // (models.dev also asserts both, family gemini-embedding, and
+  // marks gemini-embedding-001 deprecated there -- Google's live
+  // list still serves it). playai-tts is absent from models.dev
+  // AND from Groq's live list for our key (11 models), confirming
+  // the Orpheus substitution above.
   "model_designations": {
-    "jev-1.13-free": { "purposes": ["decision"] },
-    "jev-1.13": { "purposes": ["decision"] },
-    "gpt-6-luna-decision": { "purposes": ["decision"] },
-    "gemini-decision-1": { "purposes": ["decision"] },
-    "gemini-embedding-2": { "purposes": ["embed"] },
-    "gemini-embedding-001": { "purposes": ["embed"] },
-    "whisper-large-v3": { "purposes": ["transcribe"], "capabilities": ["stt", "audio-in"] },
-    "whisper-large-v3-turbo": { "purposes": ["transcribe"], "capabilities": ["stt", "audio-in"] },
-    "canopylabs/orpheus-v1-english": { "purposes": ["speak"], "capabilities": ["tts"] },
-    "canopylabs/orpheus-arabic-saudi": { "purposes": ["speak"], "capabilities": ["tts"] },
-    "meta-llama/llama-prompt-guard-2-22m": { "purposes": ["guard"] },
-    "meta-llama/llama-prompt-guard-2-86m": { "purposes": ["guard"] }
+    "jev-1.13-free": { "purposes": ["decision"], "source": "opencode.ai/zen live /v1/models, 2026-11-23" },
+    "jev-1.13": { "purposes": ["decision"], "source": "opencode.ai/zen live /v1/models, 2026-11-23" },
+    "gpt-6-luna-decision": { "purposes": ["decision"], "source": "opencode.ai/zen live /v1/models, 2026-11-23" },
+    "gemini-decision-1": { "purposes": ["decision"], "source": "generativelanguage.googleapis.com live /v1beta/models, 2026-11-23" },
+    "gemini-embedding-2": { "purposes": ["embed"], "source": "generativelanguage.googleapis.com live /v1beta/models, 2026-11-23; models.dev" },
+    "gemini-embedding-001": { "purposes": ["embed"], "source": "generativelanguage.googleapis.com live /v1beta/models, 2026-11-23; models.dev" },
+    "whisper-large-v3": { "purposes": ["transcribe"], "capabilities": ["stt", "audio-in"], "source": "api.groq.com live /openai/v1/models, 2026-11-23; models.dev" },
+    "whisper-large-v3-turbo": { "purposes": ["transcribe"], "capabilities": ["stt", "audio-in"], "source": "api.groq.com live /openai/v1/models, 2026-11-23; models.dev" },
+    "canopylabs/orpheus-v1-english": { "purposes": ["speak"], "capabilities": ["tts"], "source": "api.groq.com live /openai/v1/models, 2026-11-23; models.dev" },
+    "canopylabs/orpheus-arabic-saudi": { "purposes": ["speak"], "capabilities": ["tts"], "source": "api.groq.com live /openai/v1/models, 2026-11-23; models.dev" },
+    "meta-llama/llama-prompt-guard-2-22m": { "purposes": ["guard"], "source": "api.groq.com live /openai/v1/models, 2026-11-23; models.dev" },
+    "meta-llama/llama-prompt-guard-2-86m": { "purposes": ["guard"], "source": "api.groq.com live /openai/v1/models, 2026-11-23; models.dev" }
   },
   "experimental": {
     "provider_routes": {

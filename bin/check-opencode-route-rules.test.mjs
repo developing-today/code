@@ -378,3 +378,17 @@ test('designations may also live under experimental like the other route maps', 
     `expected a designation issue via experimental.model_designations, got: ${JSON.stringify(issues)}`,
   );
 });
+
+test('designation source, when present, must be a non-empty string', () => {
+  const config = configWithDesignations();
+  config.model_designations['decision-bot'] = { purposes: ['decision'], source: 'models.dev' };
+  assert.deepEqual(inspectRouteRules(config).issues, []);
+  config.model_designations['decision-bot'] = { purposes: ['decision'], source: '' };
+  const issues = inspectRouteRules(config).issues;
+  assert.ok(
+    issues.some((issue) => issue.includes('designation:') && issue.includes('"decision-bot"') && issue.includes('source must be a non-empty string')),
+    `expected a source validation issue, got: ${JSON.stringify(issues)}`,
+  );
+  config.model_designations['decision-bot'] = { purposes: ['decision'], source: 42 };
+  assert.ok(inspectRouteRules(config).issues.some((issue) => issue.includes('source must be a non-empty string')));
+});
