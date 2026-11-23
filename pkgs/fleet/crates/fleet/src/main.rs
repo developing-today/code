@@ -50,7 +50,10 @@ mod gh;
 
 #[cfg(feature = "gh")]
 mod gh_cache;
+#[cfg(feature = "gh")]
 mod gh_closure;
+#[cfg(feature = "gh")]
+mod gh_guard;
 mod invocation_ledger;
 mod session_state;
 

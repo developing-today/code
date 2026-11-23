@@ -45,6 +45,7 @@ use crate::validate::{task_from_packet, validate_packet};
 
 mod admin;
 mod claim;
+mod closed_bound;
 mod core;
 mod label_enrich;
 mod lifecycle;
@@ -53,6 +54,7 @@ mod staleness;
 mod work_identity;
 
 pub use admin::*;
+pub use closed_bound::*;
 pub use claim::*;
 pub use core::*;
 pub use label_enrich::*;
@@ -64,9 +66,13 @@ pub use work_identity::*;
 #[cfg(test)]
 mod tests {
 
-    /// The full backend source, concatenated in original file order
-    /// across the #8589 module split (parent file last, so the
-    /// cfg(test) marker still terminates the production text).
+    /// The full backend source, concatenated across the #8589
+    /// module split (parent file last, so the cfg(test) marker
+    /// still terminates the production text). Production-only
+    /// modules come first; modules with inline test mods
+    /// (staleness, work_identity, closed_bound) come after, so
+    /// the first `#[cfg(test)]` in the concat stays behind every
+    /// production module the source-content tests read.
     fn test_source() -> String {
         [
             include_str!("turso_queue/core.rs"),
@@ -77,6 +83,7 @@ mod tests {
             include_str!("turso_queue/stacks_outbox.rs"),
             include_str!("turso_queue/staleness.rs"),
             include_str!("turso_queue/work_identity.rs"),
+            include_str!("turso_queue/closed_bound.rs"),
             include_str!("turso_queue.rs"),
         ]
         .concat()
