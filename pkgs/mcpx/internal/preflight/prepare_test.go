@@ -270,3 +270,34 @@ func TestCheckImportsPrepareModeMaterialisesTheResolvedSet(t *testing.T) {
 		t.Errorf("prepare installs the set once, got %d", inst.calls)
 	}
 }
+
+func TestIsPreparedNodeModules(t *testing.T) {
+	root := t.TempDir()
+	inst := &fakeInstaller{}
+	set := preflight.ResolvedSet{Packages: []preflight.ResolvedPackage{
+		{Name: "alpha", Version: "1.2.3", Source: "explicit --package"},
+	}}
+	prepared, err := preflight.PrepareSet(context.Background(), root, set, inst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !preflight.IsPreparedNodeModules(filepath.Join(prepared.Dir, "node_modules")) {
+		t.Error("a materialised entry's node_modules is recognised as prepared")
+	}
+
+	// A directory whose manifest carries any other name is not a
+	// prepared environment, and neither is a path with no manifest.
+	other := filepath.Join(root, "other")
+	if err := os.MkdirAll(filepath.Join(other, "node_modules"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(other, "package.json"), []byte("{\"name\": \"some-project\"}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if preflight.IsPreparedNodeModules(filepath.Join(other, "node_modules")) {
+		t.Error("another project's node_modules is not a prepared environment")
+	}
+	if preflight.IsPreparedNodeModules(filepath.Join(root, "missing", "node_modules")) {
+		t.Error("a missing path is not a prepared environment")
+	}
+}
