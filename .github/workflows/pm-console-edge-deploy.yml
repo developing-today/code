@@ -101,6 +101,35 @@ jobs:
           node build.mjs
           npx wrangler deploy --dry-run --outdir .wrangler/dry
           npx wrangler deploy --dry-run --config init/wrangler.jsonc --outdir .wrangler/dry-init
+      - name: Run the bundle in the Worker runtime, against a host on this runner
+        working-directory: pm-stack/console
+        run: |
+          # The tests above run the Worker's code under bun, which is not
+          # the runtime it is deployed to: a request's upload, for one,
+          # behaves differently there (a report that hung for twenty
+          # seconds on first contact passed every bun test). This runs
+          # the bundle in the Worker runtime itself, with a host on port
+          # 4898, and makes the checks that need no sign-in.
+          (cd edge && npx wrangler dev --port 8799 --persist-to "$RUNNER_TEMP/pm-edge-state" \
+            --var PUBLIC_HOST:localhost --var HOST_ORIGIN:http://127.0.0.1:4898 --var VERSION:smoke \
+            >"$RUNNER_TEMP/wrangler-dev.log" 2>&1 &)
+          up=false
+          for _ in $(seq 1 60); do
+            if curl -fsS --max-time 3 http://localhost:8799/console/health >/dev/null 2>&1; then
+              up=true
+              break
+            fi
+            sleep 2
+          done
+          if [ "$up" != true ]; then
+            echo "the Worker runtime did not come up on this runner" >&2
+            tail -n 60 "$RUNNER_TEMP/wrangler-dev.log" >&2
+            exit 1
+          fi
+          if ! bun run scripts/edge-smoke.ts; then
+            tail -n 60 "$RUNNER_TEMP/wrangler-dev.log" >&2
+            exit 1
+          fi
       - name: See whether this push changes how the Worker is stood up
         id: standup
         if: steps.secrets.outputs.ready == 'true' && inputs.rollback_version == ''

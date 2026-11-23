@@ -713,6 +713,14 @@ export class Edge {
         return refuse({ error: "this is not signed with the host's key" }, 401);
       }
       this.lastKeyFetch = now;
+      // The report is sent again once the key is known, from a second
+      // copy of the same upload. This copy has to be read to its end
+      // first: in the Worker runtime the two share one stream, and a
+      // copy left unread holds the other back until the laptop gives up
+      // waiting. (It is read at most once in KEY_FETCH_EVERY_MS, and
+      // only up to what a report may be, so this is no way to make the
+      // edge read at will.)
+      await req.arrayBuffer().catch(() => {});
       return next("key", {});
     }
     const body = new Uint8Array(await req.arrayBuffer());
