@@ -280,14 +280,9 @@ def _value_chunks(kind, value, first_budget=None):
     return [c for c in chunks if c] or [b""]
 
 
-def _pk_columns(create_sql):
-    """Primary-key column names from a CREATE TABLE statement, or None.
-
-    Handles the two shapes the queue schema uses: a table-level
-    PRIMARY KEY (a, b) definition and an inline column PRIMARY KEY.
-    The parenthesised body is split into top-level definitions first,
-    so a single-line CREATE cannot confuse the match.
-    """
+def _create_defs(create_sql):
+    """The top-level definitions inside a CREATE TABLE's parentheses,
+    split on top-level commas, or None if the parens do not parse."""
     start = create_sql.find("(")
     if start < 0:
         return None
@@ -315,6 +310,45 @@ def _pk_columns(create_sql):
             cur += ch
     if cur.strip():
         defs.append(cur)
+    return defs
+
+
+def table_columns(create_sql):
+    """Column names of a CREATE TABLE, in definition order.
+
+    Constraint definitions (PRIMARY KEY / FOREIGN KEY / UNIQUE /
+    CHECK / CONSTRAINT) are not columns and are skipped. The D1 query
+    API refuses PRAGMA statements (SQLITE_AUTH), so the restore drill
+    gets column order from the CREATE text it already fetched rather
+    than from PRAGMA table_info.
+    """
+    cols = []
+    for d in _create_defs(create_sql) or []:
+        d = d.strip()
+        if d.upper().startswith(
+            ("PRIMARY", "FOREIGN", "UNIQUE", "CHECK", "CONSTRAINT")
+        ):
+            continue
+        m = re.match(
+            r'^(?:"([^"]+)"|`([^`]+)`|\[([^\]]+)\]|([A-Za-z_][A-Za-z0-9_]*))\s',
+            d,
+        )
+        if m:
+            cols.append(next(g for g in m.groups() if g is not None))
+    return cols
+
+
+def _pk_columns(create_sql):
+    """Primary-key column names from a CREATE TABLE statement, or None.
+
+    Handles the two shapes the queue schema uses: a table-level
+    PRIMARY KEY (a, b) definition and an inline column PRIMARY KEY.
+    The parenthesised body is split into top-level definitions first,
+    so a single-line CREATE cannot confuse the match.
+    """
+    defs = _create_defs(create_sql)
+    if defs is None:
+        return None
     for d in defs:
         m = re.match(r"\s*PRIMARY\s+KEY\s*\(([^)]*)\)", d, re.IGNORECASE)
         if m:

@@ -64,15 +64,17 @@ def d1_schema(d1, db_id):
     )
 
 
-def d1_columns(d1, db_id, table):
-    """Column names in table order, from PRAGMA table_info — the
-    drill never trusts JSON object key order for column position."""
-    rows = d1.query(db_id, f'PRAGMA table_info("{table}")')
-    return [r["name"] for r in sorted(rows, key=lambda r: r["cid"])]
+def d1_columns(create_sql):
+    """Column names in table order, parsed from the CREATE TABLE --
+    the drill never trusts JSON object key order for column position,
+    and the D1 query API refuses PRAGMA statements (SQLITE_AUTH, seen
+    live on the first drill run, #8584), so PRAGMA table_info cannot
+    be the source."""
+    return fq_common.table_columns(create_sql)
 
 
-def d1_read_table(d1, db_id, table):
-    columns = d1_columns(d1, db_id, table)
+def d1_read_table(d1, db_id, table, create_sql):
+    columns = d1_columns(create_sql)
     offset = 0
     for _page in range(fq_common.MAX_PAGES):
         rows = d1.query(
@@ -112,10 +114,10 @@ def restore(d1_name, target_url):
         target.execute(f'DROP TABLE IF EXISTS "{name}"')
     for _name, sql in tables:
         target.execute(sql.rstrip().rstrip(";"))
-    for name, _sql in tables:
+    for name, sql in tables:
         batch = []
         placeholders = None
-        for row in d1_read_table(d1, db_id, name):
+        for row in d1_read_table(d1, db_id, name, sql):
             if placeholders is None:
                 placeholders = ", ".join("?" for _ in row)
             batch.append((f'INSERT INTO "{name}" VALUES ({placeholders})', row))
