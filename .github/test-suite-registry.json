@@ -273,9 +273,17 @@
         "pkgs/id/hosted-worker/test/usage.test.ts",
         "pkgs/id/hosted-worker/test/currency.test.ts",
         "pkgs/id/hosted-worker/test/front-door.test.ts",
-        "pkgs/id/hosted-worker/test/id-uri-vectors.test.ts"
+        "pkgs/id/hosted-worker/test/id-uri-vectors.test.ts",
+        "pkgs/id/hosted-worker/test/admission-gate.test.ts",
+        "pkgs/id/hosted-worker/test/provisioning.test.ts",
+        "pkgs/id/hosted-worker/test/bridge-blake3.test.ts",
+        "pkgs/id/hosted-worker/test/bridge-do.test.ts",
+        "pkgs/id/hosted-worker/test/bridge-event.test.ts",
+        "pkgs/id/hosted-worker/test/bridge-range.test.ts",
+        "pkgs/id/hosted-worker/test/bridge-session.test.ts",
+        "pkgs/id/hosted-worker/test/bridge-store.test.ts"
       ],
-      "invocation": "cd pkgs/id/hosted-worker && npm test (node --experimental-transform-types --test test/routing.test.ts test/blobs.test.ts test/canonical-cbor.test.ts test/usage.test.ts test/currency.test.ts test/front-door.test.ts test/id-uri-vectors.test.ts)",
+      "invocation": "cd pkgs/id/hosted-worker && npm test (node --experimental-transform-types --test test/routing.test.ts test/blobs.test.ts test/canonical-cbor.test.ts test/usage.test.ts test/currency.test.ts test/front-door.test.ts test/id-uri-vectors.test.ts test/admission-gate.test.ts test/provisioning.test.ts test/bridge-blake3.test.ts test/bridge-do.test.ts test/bridge-event.test.ts test/bridge-range.test.ts test/bridge-session.test.ts test/bridge-store.test.ts)",
       "venue": {
         "workflow": ".github/workflows/id-hosted-worker-tests.yml",
         "job_step": "hosted-worker-tests / Run the hosted-worker routing suite",
@@ -284,7 +292,7 @@
       },
       "status": "mapped",
       "related_issues": [6095],
-      "notes": "The registry paths match every file in npm test, including canonical-cbor and currency; path coverage trued up 2026-11-17 while restoring the #6188 ratchet (#10329)."
+      "notes": "The registry paths match every file in npm test, including canonical-cbor and currency; path coverage trued up 2026-11-17 while restoring the #6188 ratchet (#10329). 2026-11-23 (#12230): admission-gate.test.ts was unwired because npm test did not run it — added to the test script and the registry; the bridge-* and provisioning suites already ran under npm test and are now named."
     },
     {
       "id": "id.hosted-worker.smoke",
@@ -474,14 +482,19 @@
     {
       "id": "mcpx.plugin.v2",
       "paths": [
+        "pkgs/mcpx/plugin/opencode/v2/annotate.test.ts",
+        "pkgs/mcpx/plugin/opencode/v2/backend.test.ts",
+        "pkgs/mcpx/plugin/opencode/v2/bin-args.test.ts",
+        "pkgs/mcpx/plugin/opencode/v2/bin.test.ts",
         "pkgs/mcpx/plugin/opencode/v2/permission.test.ts",
         "pkgs/mcpx/plugin/opencode/v2/picker.test.ts",
+        "pkgs/mcpx/plugin/opencode/v2/plugin-tools.test.ts",
         "pkgs/mcpx/plugin/opencode/v2/sampling.test.ts",
         "pkgs/mcpx/plugin/opencode/v2/tool-filter.test.ts",
         "pkgs/mcpx/plugin/opencode/v2/tools.test.ts",
         "pkgs/mcpx/plugin/opencode/v2/v2.test.ts"
       ],
-      "invocation": "bun test plugin/opencode/v2/ (73 tests)",
+      "invocation": "bun test plugin/opencode/v2/ (93 tests)",
       "venue": {
         "workflow": ".github/workflows/mcpx.yml",
         "job_step": "plugin / bun test (opencode plugin v2)",
@@ -490,7 +503,7 @@
       },
       "status": "mapped",
       "phase2_issue": 6092,
-      "notes": "Wired 2026-11-14 (#6092): the plugin job runs the v2 directory and asserts the six registered files exist. Verified locally at wiring time: 73 pass, 0 fail, 6 files."
+      "notes": "Wired 2026-11-14 (#6092): the plugin job runs the v2 directory and asserts the eleven registered files exist. Verified locally at wiring time: 73 pass, 0 fail, 6 files; re-verified 2026-11-23 (#12230): 93 pass, 0 fail, 11 files."
     },
     {
       "id": "mcpx.conformance.official",
@@ -1343,11 +1356,13 @@
     {
       "id": "id.rust.id-core.integration",
       "paths": [
+        "pkgs/id/crates/id-core/tests/admission_gate.rs",
         "pkgs/id/crates/id-core/tests/array_address.rs",
         "pkgs/id/crates/id-core/tests/array_order_prop.rs",
         "pkgs/id/crates/id-core/tests/canonical_cbor_vectors.rs",
         "pkgs/id/crates/id-core/tests/array_shorthand.rs",
         "pkgs/id/crates/id-core/tests/atlas_content_profile_vectors.rs",
+        "pkgs/id/crates/id-core/tests/attribute_definition.rs",
         "pkgs/id/crates/id-core/tests/content_id_vectors.rs",
         "pkgs/id/crates/id-core/tests/cross_signing_challenge.rs",
         "pkgs/id/crates/id-core/tests/delegation_model.rs",
@@ -1367,6 +1382,7 @@
         "pkgs/id/crates/id-core/tests/world_definition.rs",
         "pkgs/id/crates/id-core/tests/screen_parity.rs",
         "pkgs/id/crates/id-core/tests/signer_bound_space.rs",
+        "pkgs/id/crates/id-core/tests/stream_lifecycle_model.rs",
         "pkgs/id/crates/id-core/tests/succeeds_dag.rs",
         "pkgs/id/crates/id-core/tests/swarm_bench.rs",
         "pkgs/id/crates/id-core/tests/typed_value.rs"
@@ -1383,7 +1399,10 @@
     },
     {
       "id": "id.rust.id-events.integration",
-      "paths": ["pkgs/id/crates/id-events/tests/append_list_state_machine.rs"],
+      "paths": [
+        "pkgs/id/crates/id-events/tests/append_list_state_machine.rs",
+        "pkgs/id/crates/id-events/tests/deletion_state_machine.rs"
+      ],
       "invocation": "nix flake check ./pkgs/id (check test-sandbox runs cargo nextest --all-features for default workspace members)",
       "venue": {
         "workflow": ".github/workflows/id-check.yml",
@@ -1413,11 +1432,13 @@
     {
       "id": "id.rust.id-render.integration",
       "paths": [
+        "pkgs/id/crates/id-render/tests/assertions.rs",
         "pkgs/id/crates/id-render/tests/compose.rs",
         "pkgs/id/crates/id-render/tests/lower.rs",
         "pkgs/id/crates/id-render/tests/lower_gui.rs",
         "pkgs/id/crates/id-render/tests/lower_native.rs",
-        "pkgs/id/crates/id-render/tests/pipeline.rs"
+        "pkgs/id/crates/id-render/tests/pipeline.rs",
+        "pkgs/id/crates/id-render/tests/tooling.rs"
       ],
       "invocation": "nix flake check ./pkgs/id (check test-sandbox runs cargo nextest --all-features for default workspace members)",
       "venue": {
@@ -1468,9 +1489,17 @@
     {
       "id": "id.rust.id-store.integration",
       "paths": [
+        "pkgs/id/crates/id-store/tests/array_query_model.rs",
         "pkgs/id/crates/id-store/tests/content_store.rs",
         "pkgs/id/crates/id-store/tests/graph_encoding_bakeoff.rs",
-        "pkgs/id/crates/id-store/tests/graph_index_rebuild.rs"
+        "pkgs/id/crates/id-store/tests/graph_index_rebuild.rs",
+        "pkgs/id/crates/id-store/tests/location_index_model.rs",
+        "pkgs/id/crates/id-store/tests/location_privacy.rs",
+        "pkgs/id/crates/id-store/tests/name_candidates.rs",
+        "pkgs/id/crates/id-store/tests/namespace_registry_model.rs",
+        "pkgs/id/crates/id-store/tests/numeric_registry.rs",
+        "pkgs/id/crates/id-store/tests/sidecar_snapshot.rs",
+        "pkgs/id/crates/id-store/tests/stream_subscribe.rs"
       ],
       "invocation": "nix flake check ./pkgs/id (check test-sandbox runs cargo nextest --all-features for default workspace members)",
       "venue": {
