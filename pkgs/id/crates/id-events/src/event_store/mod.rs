@@ -674,9 +674,17 @@ impl EventStore {
     /// Pruned events are removed from event storage (events, hashes, groups, actions, applied)
     /// while keeping chain and index consistency and avoiding corrupting active backlink walks.
     ///
+    /// A store that holds compacted residue (#3797) is refused, changing nothing:
+    /// prune erases presence and compaction preserves it, and the two are not
+    /// composed yet (#13401). The walks and the chain rewrite below are built
+    /// from stored events only, so over residue a prune would silently
+    /// under-erase and drop chain rows below live residue positions.
+    ///
     /// # Errors
     ///
-    /// Returns a redb error if the write transaction fails, or [`StoreError::Corrupt`].
+    /// Returns [`StoreError::PruneOverResidue`] if the store holds any compacted
+    /// residue, a redb error if the write transaction fails, or
+    /// [`StoreError::Corrupt`].
     pub fn prune_behind_cut(
         &mut self,
         cut: &[Hash],
@@ -687,6 +695,16 @@ impl EventStore {
         }
         if cut.is_empty() {
             return Ok(0);
+        }
+
+        // The composition guard (#13401): refuse a store that holds any
+        // compacted residue, before anything is written. See the doc above.
+        {
+            let read = self.db.begin_read()?;
+            let residue = compaction::load_residue_read(&read)?;
+            if !residue.is_empty() {
+                return Err(StoreError::PruneOverResidue(residue.len()));
+            }
         }
 
         let txn = self.db.begin_write()?;
