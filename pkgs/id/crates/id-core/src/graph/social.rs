@@ -24,7 +24,7 @@
 //! inside that pinned snapshot and `before` pages backward, both in
 //! the same stable total order `(last_projection_seq, entry_id)`.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fmt;
 
 use super::term::ObjectRef;
@@ -183,7 +183,7 @@ pub fn traverse(
     if !by_id.contains_key(root) {
         return Traversal { entries, complete };
     }
-    let mut visited: BTreeSet<ObjectRef> = BTreeSet::new();
+    let mut visited: HashSet<ObjectRef> = HashSet::new();
     let mut visited_count = 0usize;
     let mut bytes = 0usize;
     let mut stack: Vec<(ObjectRef, usize)> = vec![(*root, 0)];
@@ -526,7 +526,7 @@ impl FeedLedger {
                 && entry.entry_id > cursor.last_entry_id)
     }
 
-    fn before(entry: &FeedEntry, cursor: &FeedCursor) -> bool {
+    fn is_before_frontier(entry: &FeedEntry, cursor: &FeedCursor) -> bool {
         entry.last_projection_seq < cursor.last_projection_seq
             || (entry.last_projection_seq == cursor.last_projection_seq
                 && entry.entry_id < cursor.last_entry_id)
@@ -561,7 +561,9 @@ impl FeedLedger {
         Ok(self
             .entries
             .iter()
-            .filter(|entry| Self::before(entry, cursor) && Self::in_snapshot(cursor, entry))
+            .filter(|entry| {
+                Self::is_before_frontier(entry, cursor) && Self::in_snapshot(cursor, entry)
+            })
             .cloned()
             .collect())
     }

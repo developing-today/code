@@ -10,7 +10,7 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{HashMap, HashSet};
 
 use id_core::graph::social::{
     traverse, FeedError, FeedLedger, FeedScope, SocialObject, SocialObjectKind, SourcePosition,
@@ -64,7 +64,7 @@ fn model_traverse(
     authorized: impl Fn(&SocialObject) -> bool,
 ) -> Vec<(ObjectRef, usize, TraversalMark)> {
     let mut children: HashMap<ObjectRef, Vec<ObjectRef>> = HashMap::new();
-    let mut known: BTreeSet<ObjectRef> = BTreeSet::new();
+    let mut known: HashSet<ObjectRef> = HashSet::new();
     for object in objects {
         if !authorized(object) {
             continue;
@@ -86,7 +86,7 @@ fn model_traverse(
         depth: usize,
         children: &HashMap<ObjectRef, Vec<ObjectRef>>,
         profile: &TraversalProfile,
-        visited: &mut BTreeSet<ObjectRef>,
+        visited: &mut HashSet<ObjectRef>,
         bytes: &mut usize,
         out: &mut Vec<(ObjectRef, usize, TraversalMark)>,
     ) {
@@ -116,7 +116,7 @@ fn model_traverse(
 
     let mut out = Vec::new();
     if known.contains(root) {
-        let mut visited = BTreeSet::new();
+        let mut visited = HashSet::new();
         let mut bytes = 0;
         walk(
             *root,

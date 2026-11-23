@@ -88,6 +88,18 @@ local placeholder: the real `atlas-hot-cache` database is created at
 deploy time and its id replaces the placeholder in both
 `wrangler.toml` and `cloudflare.config.ts`.
 
+Invalidation (§8 item 5, #13106) is implemented in
+`src/invalidation.ts` over the tenant-state and purge-audit tables
+of migration `migrations/0002_hot_cache_invalidation.sql`:
+consumption of the per-tenant invalidation events that ride on
+ingest completion records (the design's v1 piggyback transport)
+drops the tenant's Class C entries and sets forced-revalidation,
+and the audited operator purge deletes all of a tenant's classes as
+a store operation. Neither is wired into the request path yet:
+event consumption is invoked by the ingest-completion consumer and
+the purge is operator-only, never called by automated paths;
+read-path integration (#13105) is what consults the recorded state.
+
 ## Secrets (names only; set with `wrangler secret put`)
 
 `GATE_TOKEN`, `SERVICE_TOKEN` (the service's `cf-worker` client

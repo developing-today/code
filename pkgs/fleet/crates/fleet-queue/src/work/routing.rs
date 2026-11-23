@@ -400,14 +400,18 @@ impl CoordinationReplica for MemoryReplica {
         lane: &str,
         lease_seconds: i64,
     ) -> Result<Option<ReplicaClaim>, ReplicaError> {
-        let mut candidates: Vec<&ReplicaTask> = self
+        // Only the single best candidate is claimed, so select it
+        // in one pass instead of collecting and sorting them all:
+        // `pick_key` is a total order (its last element is the
+        // unique task id), so the minimum is exactly the head of
+        // the sorted order.
+        let next = self
             .snapshot
             .values()
             .filter(|t| t.due(self.now_unix))
             .filter(|t| self.live_claim(t.task_id).is_none())
-            .collect();
-        candidates.sort_by_key(|t| t.pick_key());
-        let next = candidates.first().map(|t| t.task_id);
+            .min_by_key(|t| t.pick_key())
+            .map(|t| t.task_id);
         match next {
             Some(task_id) => Ok(Some(self.claim(task_id, worker, lane, lease_seconds)?)),
             None => Ok(None),
@@ -829,6 +833,33 @@ mod tests {
             picked.push(claim.task_id);
         }
         assert_eq!(picked, vec![3, 2, 1, 4]);
+    }
+
+    #[test]
+    fn memory_replica_pick_drains_a_large_snapshot_in_pick_key_order() {
+        // Regression guard for the single-pass selection in `pick`:
+        // draining a snapshot must yield exactly the `pick_key`
+        // sort order, including NULL priorities and tied
+        // (priority, created) pairs broken by task id.
+        let tasks: Vec<ReplicaTask> = (0..64)
+            .map(|i| {
+                let priority = match i % 5 {
+                    0 => None,
+                    r => Some((i * 7 + r) % 11),
+                };
+                task(i, priority, (i * 37) % 17)
+            })
+            .collect();
+        let mut sorted = tasks.clone();
+        sorted.sort_by_key(|t| t.pick_key());
+        let expected: Vec<i64> = sorted.iter().map(|t| t.task_id).collect();
+        let mut replica = MemoryReplica::new(1_000);
+        replica.refresh_snapshot(&tasks).unwrap();
+        let mut picked = Vec::new();
+        while let Some(claim) = replica.pick("worker-a", "lane-x", 300).unwrap() {
+            picked.push(claim.task_id);
+        }
+        assert_eq!(picked, expected);
     }
 
     #[test]
