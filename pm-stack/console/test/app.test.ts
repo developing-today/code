@@ -25,6 +25,9 @@ import {
   keptGroups,
   keptSaid,
   levelHeadings,
+  listed,
+  machineSaid,
+  machinesMark,
   phaseHeading,
   prCheck,
   runSaid,
@@ -656,6 +659,7 @@ test("keeping a copy of every screen reads each under the address its screen ask
     "messages?limit=15",
     "push",
     "devices",
+    "machines",
     "signin",
     "android",
   ]);
@@ -678,6 +682,7 @@ test("keeping a copy of every screen reads each under the address its screen ask
     "messages?limit=15",
     "push",
     "devices",
+    "machines",
     "signin",
   ]);
 });
@@ -755,4 +760,117 @@ test("a question is left out of the list while its answer is kept and not yet re
   ]).toEqual([]);
   // One being sent this moment is left out too, with what is kept.
   expect([...answeredKeys([answer("q1", "waiting")], ["s1|l1|q9"])]).toEqual(["s1|l1|q9", "s1|l1|q1"]);
+});
+
+test("a machine, as the Machines screen says it: what only it reports and does, beside what the platform does itself", () => {
+  const now = Date.parse("2026-11-23T12:00:00Z");
+  const machine = {
+    name: "nixos",
+    seen: now - 12_000,
+    quiet: false,
+    version: "0123abcd4567",
+    actions: ["ask.send", "issue.rank", "question.answer", "task.cancel", "unit.act", "push.on", "something.new"],
+    sections: ["board", "sessions", "questionCount", "questions", "services", "asks"],
+  };
+  // The platform does the core itself: only what is left is the machine's.
+  const platform = {
+    primary: true,
+    actions: ["ask.send", "issue.rank", "push.on"],
+    sections: ["board", "asks"],
+    refused: [],
+  };
+  expect(machineSaid(machine, platform, now)).toEqual({
+    name: "nixos",
+    reporting: true,
+    state: "Reporting. Last heard from just now.",
+    version: "0123abc",
+    // The count of questions is part of the questions, not a thing of its own.
+    reports: ["sessions", "questions", "its units"],
+    // A kind this screen has no words for is said as it is named.
+    does: ["record an answer", "cancel a task", "start, stop or restart a unit", "something.new"],
+    said: true,
+  });
+  // With nothing in front of it, everything is the machine's.
+  const alone = machineSaid(machine, null, now);
+  expect(alone.reports).toEqual(["the board", "sessions", "questions", "its units", "your prompts"]);
+  expect(alone.does).toContain("send a prompt");
+  // Away, and for how long.
+  expect(machineSaid({ ...machine, seen: now - 2 * 3600_000, quiet: true }, platform, now)).toMatchObject({
+    reporting: false,
+    state: "Not reporting. Last heard from 2 h ago.",
+  });
+  expect(machineSaid({ ...machine, seen: null, quiet: true }, platform, now)).toMatchObject({
+    reporting: false,
+    state: "It has never reported.",
+  });
+  // A console older than this screen: a machine that has not said what it can do.
+  expect(
+    machineSaid(
+      { name: "A machine", seen: now, quiet: false, version: null, actions: [], sections: [] },
+      platform,
+      now,
+    ),
+  ).toMatchObject({
+    version: "",
+    reports: [],
+    does: [],
+    said: false,
+  });
+  // Lists in words.
+  expect([listed([]), listed(["a"]), listed(["a", "b"]), listed(["a", "b", "c"])]).toEqual([
+    "",
+    "a",
+    "a and b",
+    "a, b and c",
+  ]);
+});
+
+test("the Machines screen is drawn again when what it shows has changed, and not for a report that changed nothing", () => {
+  const now = Date.parse("2026-11-23T12:00:00Z");
+  const machine = {
+    name: "nixos",
+    seen: now - 5_000,
+    quiet: false,
+    version: "0123abcd4567",
+    actions: ["a.b"],
+    sections: ["board"],
+  };
+  const answer = (more: Record<string, unknown> = {}) => ({
+    served: "edge",
+    platform: { primary: true, actions: ["ask.send"], sections: ["board"], refused: [] },
+    machines: [machine],
+    held: [{ id: "h1", kind: "task.move" }],
+    ...more,
+  });
+  const mark = machinesMark(answer(), now);
+  // Another report from a machine that is still reporting changes nothing that is shown.
+  expect(machinesMark(answer({ machines: [{ ...machine, seen: now }] }), now + 5_000)).toBe(mark);
+  // Each of these does.
+  for (const [why, changed] of [
+    ["it went quiet", answer({ machines: [{ ...machine, quiet: true }] })],
+    ["it runs another commit", answer({ machines: [{ ...machine, version: "fedcba987654" }] })],
+    ["it can do something more", answer({ machines: [{ ...machine, actions: ["a.b", "c.d"] }] })],
+    ["it is called something else", answer({ machines: [{ ...machine, name: "amd" }] })],
+    ["there is another", answer({ machines: [machine, { ...machine, name: "amd" }] })],
+    ["there is none", answer({ machines: [] })],
+    ["something else waits", answer({ held: [{ id: "h1" }, { id: "h2" }] })],
+    ["nothing waits", answer({ held: [] })],
+    [
+      "the platform stopped doing the core",
+      answer({ platform: { primary: false, actions: [], sections: [], refused: [] } }),
+    ],
+    [
+      "the platform was turned away for something",
+      answer({ platform: { primary: true, actions: [], sections: ["board"], refused: ["pr.merge"] } }),
+    ],
+    ["nothing is in front any more", answer({ platform: null })],
+  ] as const) {
+    expect([why, machinesMark(changed, now) === mark]).toEqual([why, false]);
+  }
+  // Gone quiet, it is drawn again as the minutes pass (the screen says how long), not with every look.
+  const quiet = answer({ machines: [{ ...machine, quiet: true, seen: now - 90_000 }] });
+  expect(machinesMark(quiet, now + 20_000)).toBe(machinesMark(quiet, now));
+  expect(machinesMark(quiet, now + 60_000)).not.toBe(machinesMark(quiet, now));
+  // An answer that is not one is not a crash.
+  expect(machinesMark(null, now)).toBe(machinesMark({}, now));
 });

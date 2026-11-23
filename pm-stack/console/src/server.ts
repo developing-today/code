@@ -12,9 +12,10 @@
 import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync } from "node:fs";
 import { appendFile } from "node:fs/promises";
+import { hostname } from "node:os";
 import { dirname, join } from "node:path";
 import { actions, perform } from "./actions.ts";
-import { HOLDABLE, type Held } from "./edge-proto.ts";
+import { HOLDABLE, type Held, type MachinesAnswer, machineName } from "./edge-proto.ts";
 import { AuthError, type Identity, identify } from "./auth.ts";
 import { type Config, readConfig } from "./config.ts";
 import { Devices, Limiter } from "./devices.ts";
@@ -145,6 +146,9 @@ export interface Deps {
    * once however often it arrives. The link keeps one; a host with no
    * edge in front of it keeps its own. */
   named?: Pick<Named, "begin" | "end" | "seen"> & Partial<Pick<Named, "known" | "take" | "release">>;
+  /** What this machine is called and the commit it runs, for where
+   * machines are listed. */
+  self?: { name: string; version?: string };
 }
 
 /** Text that shrinks well. The dashboard's fragments run to a megabyte
@@ -319,6 +323,26 @@ export async function handle(req: Request, deps: Deps, peer: string | null = nul
       }
       if (seg.length === 1 && seg[0] === "push" && deps.push) return json(await deps.push.status());
       if (seg.length === 1 && seg[0] === "devices" && deps.phones) return json(await deps.phones.devices.list());
+      if (seg.length === 1 && seg[0] === "machines") {
+        // Asked of this machine itself (the edge answers for itself when
+        // it is in front): one machine, this one, and nothing held.
+        const answer: MachinesAnswer = {
+          served: "machine",
+          platform: null,
+          machines: [
+            {
+              name: deps.self?.name ?? "this machine",
+              seen: Date.now(),
+              quiet: false,
+              version: deps.self?.version ?? null,
+              actions: Object.keys(deps.actions ?? {}).sort(),
+              sections: (deps.docs?.names() ?? []).sort(),
+            },
+          ],
+          held: [],
+        };
+        return json(answer);
+      }
       if (seg.length === 1 && seg[0] === "signin") return json(await ops.signin());
       if (seg.length === 1 && seg[0] === "question" && deps.work) {
         return json(await deps.work.question(query.get("set"), query.get("ledger"), query.get("qid")));
@@ -686,10 +710,15 @@ if (import.meta.main) {
   const named = new Named(fileStore(cfg.edgeDoneFile));
   deps.named = named;
   // Behind an edge: report to it, and run what it held for this host.
+  const version = await runningCommit();
+  // What this machine is called: what it was told to be, or its own name.
+  const self = { name: cfg.machineName || machineName(hostname()) || "machine", version };
+  deps.self = self;
   const link = cfg.edgeUrl
     ? new EdgeLink({
         url: cfg.edgeUrl,
-        version: await runningCommit(),
+        version,
+        machine: () => ({ name: self.name, actions: Object.keys(deps.actions ?? {}).sort() }),
         apk: androidBuild(cfg.androidApk),
         keys: fileStore(cfg.edgeKeyFile),
         done: fileStore(cfg.edgeDoneFile),

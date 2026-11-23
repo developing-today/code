@@ -134,6 +134,11 @@ export class Docs {
     }
   }
 
+  /** Every section there is a reader for, read yet or not. */
+  names(): string[] {
+    return [...this.sections.keys()];
+  }
+
   /** Read these sections now. A read already under way is shared. */
   async touch(names: string[]): Promise<void> {
     await Promise.all(names.map((n) => this.refresh(n)));

@@ -549,3 +549,56 @@ fault. Adding the check to CI is the next change.
 Not done, and filed as #13398: an older action held for a machine is
 not ordered against a newer one about the same thing that the edge
 does itself.
+
+## 2026-11-23T16:50Z Update: step 4 in service, and step 5 (machines)
+
+**Step 4 is in service.** Merged as #13287 after four rounds of review
+(thirteen findings, all real, each with a test and most with a check
+in a real browser that fails against the code before its fix). At
+16:38Z the Worker and the laptop both ran `2a96e875037d`; the Worker
+said it does the core itself and had been turned away for nothing.
+
+Seen in that answer: the Worker's own read of pull requests had failed
+a quarter of an hour earlier with GitHub's "rate limit exceeded" for
+the owner's account. The Worker's token is the fleet's, and the fleet
+had used the hour's allowance. The Worker treats that as "one too many
+just now" and asks again in five minutes, which is right; but a
+platform whose core reads stop when agents are busy is not doing the
+core by itself. Filed with the gaps: its own allowance.
+
+**Step 5 is built: the laptop is a machine.** Decision 5 above, as it
+turned out:
+
+- **A machine says what it is.** Each report carries the machine's name
+  and what it can do: the kinds of action it has and the sections it
+  reads. The edge keeps what it last said beside when it last reported.
+  A console older than this says nothing, and is shown as a machine
+  that has not said what it can do.
+- **The edge answers for the whole.** `GET /console/api/machines` is
+  answered at the edge with no machine asked: what the edge does itself
+  right now, each machine and whether it is reporting, and what waits
+  for one. A machine serving the app by itself answers the same read
+  with itself.
+- **What waits can be taken back.** `held.drop` removes one held action
+  before a machine has it, and records it as not sent under its name,
+  so the device that sent it learns so.
+- **The screen** (More, Machines) says each of those in words, and that
+  one machine can be connected today.
+
+What this does not do yet, and is filed: a second machine under its own
+key; each action sent to a machine that can do it (today there is one,
+so "a machine" is "the machine"); what is held kept per machine.
+
+Review found two faults, both real. Taken back, an action could be
+kept again when a device that never heard it was kept offered it again:
+taking back now ends the name, and the offer is answered "taken back".
+And the screen did not notice a machine going quiet unless something
+else changed: it now asks again while it is open, and is drawn again
+when what it shows has changed.
+
+Checked: 351 tests under bun. 28 planted faults in the new code, all
+caught. In a real Chrome against both demos, light and dark: the
+screen with nothing in front of the machine and with the edge in front;
+something held while the machine is out of reach, listed in the owner's
+words, taken back after a question, and recorded as not sent. axe-core
+over 21 screens and the new dialog: no violations.

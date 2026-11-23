@@ -211,6 +211,7 @@ export function directConfig(edge: EdgeConfig): Config {
     edgeUrl: null,
     edgeKeyFile: "",
     edgeDoneFile: "",
+    machineName: "",
     decisionsFile: "",
     promptLabel: edge.promptLabel,
     needsRepos: edge.needsRepos,

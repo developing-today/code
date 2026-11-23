@@ -47,6 +47,9 @@ import {
   type Held,
   HOLDABLE,
   keyId,
+  type MachineReport,
+  type MachinesAnswer,
+  machineReport,
   type PublicKey,
   publicKey,
   subjectOf,
@@ -298,6 +301,10 @@ export class Edge {
   private sure = 0;
   private unsure = 0;
   private hostVersion: string | null = null;
+  /** What the machine that reports says of itself: its name and what
+   * it can do. Null until one has said, or from a console older than
+   * the saying. */
+  private machine: MachineReport | null = null;
   private latestApk: ApkMeta | null | undefined;
   private keptApk: (ApkMeta & { chunks: number }) | null | undefined;
   /** The build that could not be kept when it was last sent, and when. */
@@ -379,6 +386,43 @@ export class Edge {
         },
         touch: [],
         audit: () => ({}),
+      },
+      // Something waiting for a machine is taken back by the owner
+      // before one has it. (One a machine was already handed may still
+      // be done: its answer then finds nothing waiting, and is let go.)
+      "held.drop": {
+        run: async (a) => {
+          await this.ready();
+          const held = await this.heldList();
+          const at = held.findIndex((h) => h.id === a.id);
+          if (at < 0) {
+            throw new OpError(404, "That is no longer waiting: a machine took it, or it was taken back already.");
+          }
+          const [gone] = held.splice(at, 1);
+          await this.saveHeld();
+          // Under its name it is over. A device that never heard it was
+          // kept offers it again: it is told it was taken back, and it
+          // is neither kept again nor handed to a machine.
+          await this.kv.put(`a:${gone.id}`, {
+            at: this.now(),
+            kind: gone.kind,
+            state: "done",
+            status: 410,
+            body: { error: "This was taken back before a machine took it." },
+          } satisfies Acted);
+          await this.actedIndex(gone.id);
+          await this.logAct({
+            id: gone.id,
+            kind: gone.kind,
+            at: gone.at,
+            by: gone.who,
+            status: "failed",
+            note: "Not sent: taken back before a machine took it.",
+          });
+          return { dropped: gone.id, kind: gone.kind };
+        },
+        touch: [],
+        audit: (a) => ({ id: a.id }),
       },
     };
   }
@@ -622,6 +666,46 @@ export class Edge {
     await this.showEdge();
   }
 
+  /** The platform's own part, each machine that reports, and what is
+   * held for one: what the Machines screen is drawn from. Answered
+   * here, so it is there with every machine away. */
+  private async machinesSaid(cfg: EdgeConfig | null): Promise<MachinesAnswer> {
+    await this.ready();
+    const primary = this.primary(cfg);
+    const refused = this.refusedKinds();
+    const seen = this.hostSeen || null;
+    return {
+      served: "edge",
+      platform: {
+        primary,
+        // What it does itself right now. Its own (notifications, linked
+        // phones, what is held) always; the core when it has the means,
+        // less what it was turned away for and a machine does for the hour.
+        actions: [
+          ...Object.keys(this.table).sort(),
+          ...(primary ? (DIRECT_ACTIONS as readonly string[]).filter((kind) => !refused.includes(kind)) : []),
+        ],
+        sections: primary ? this.owned(cfg) : [],
+        refused: [...refused, ...this.refusedReads().map((name) => `read.${name}`)],
+      },
+      // One machine can report today: the one whose key this side holds.
+      machines:
+        seen === null
+          ? []
+          : [
+              {
+                name: this.machine?.name ?? "A machine",
+                seen,
+                quiet: this.now() - seen >= HOST_QUIET_MS,
+                version: this.hostVersion,
+                actions: this.machine?.actions ?? [],
+                sections: this.machine?.sections ?? [],
+              },
+            ],
+      held: [...(await this.heldList())],
+    };
+  }
+
   /** What the app is told of this side, beside its state: how much is
    * waiting for a machine, and whether this side does the core itself. */
   private async showEdge(): Promise<void> {
@@ -672,12 +756,14 @@ export class Edge {
             seq: number;
             confirmed?: Record<string, { hash: string; at: number; error: string | null }>;
             version?: string | null;
+            machine?: unknown;
           }
         | undefined;
       this.hostSeen = host?.seen ?? 0;
       this.hostSeq = host?.seq ?? 0;
       this.confirmed = host?.confirmed ?? {};
       this.hostVersion = host?.version ?? null;
+      this.machine = machineReport(host?.machine);
     }
     if (!this.awayRead) {
       this.awayRead = true;
@@ -1175,7 +1261,14 @@ export class Edge {
     this.hostSeen = now;
     this.hostSeq = msg.at;
     this.hostVersion = typeof msg.version === "string" && /^[0-9a-f]{7,40}$/.test(msg.version) ? msg.version : null;
-    await this.kv.put("host", { seen: now, seq: msg.at, confirmed: this.confirmed, version: this.hostVersion });
+    this.machine = machineReport(msg.machine);
+    await this.kv.put("host", {
+      seen: now,
+      seq: msg.at,
+      confirmed: this.confirmed,
+      version: this.hostVersion,
+      machine: this.machine,
+    });
     if (wasSilent) {
       try {
         const delivery = await this.push.send("trouble", {
@@ -1480,6 +1573,7 @@ export class Edge {
         }
         if (seg.length === 1 && seg[0] === "push") return json(await this.push.status());
         if (seg.length === 1 && seg[0] === "devices") return json(await this.phones.devices.list());
+        if (seg.length === 1 && seg[0] === "machines") return json(await this.machinesSaid(cfg));
         // What needs only GitHub and the queue store is read here, by
         // the code a machine would read it with.
         const mine = this.mine(cfg);

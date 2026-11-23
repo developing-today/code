@@ -1128,6 +1128,7 @@ function viewMore() {
       tile("more/phone", "Phones", "the Android app and its home-screen widget"),
       tile("more/signin", "Sign-in", "Google first, the emailed code as the fallback"),
       tile("more/away", "Cloudflare", "what it does by itself, and what waits for a machine"),
+      tile("more/machines", "Machines", "each machine, what only it can do, and what waits for one"),
       tile("more/device", "On this device", "what is kept here to send, and what it shows with no connection"),
       tile("more/releases", "Releases", "what is deployed, the Android app, and putting either out again"),
     ),
@@ -2017,6 +2018,182 @@ async function viewAway() {
   ];
 }
 
+/** What each kind of action is, in a few words: for saying what the
+ * platform does itself and what only a machine can. */
+const CAN_SAID = {
+  "ask.send": "send a prompt",
+  "ask.reply": "reply on a prompt",
+  "ask.close": "close a prompt",
+  "issue.comment": "comment on an issue",
+  "need.comment": "reply on something that needs you",
+  "issue.rank": "rank an issue",
+  "task.move": "move a task",
+  "task.cancel": "cancel a task",
+  "task.unblock": "unblock a task",
+  "pr.merge": "merge",
+  "deploy.start": "start a deploy",
+  "intake.send": "file a note, a bug or a change",
+  "question.answer": "record an answer",
+  "question.defer": "hand a question back",
+  "questions.accept": "accept the recommended answers",
+  "hands.done": "mark something for your hands done",
+  "message.send": "message an agent",
+  "unit.act": "start, stop or restart a unit",
+  "sso.google": "set up Google sign-in",
+  "edge.direct": "turn Cloudflare's own doing on or off",
+  "prompt.enqueue": "file a prompt's task in the queue",
+  "triage.enqueue": "file a triage task in the queue",
+  "push.on": "turn notifications on for a device",
+  "push.off": "turn notifications off for a device",
+  "push.class": "choose which notifications a device gets",
+  "push.test": "send a test notification",
+  "device.approve": "link a phone",
+  "device.remove": "remove a phone",
+};
+/** What each section of the state is, in a few words. One with no
+ * words of its own is part of another (the count of questions). */
+const SECTION_SAID = {
+  board: "the board",
+  sessions: "sessions",
+  census: "what needs you",
+  asks: "your prompts",
+  questionCount: "",
+  questions: "questions",
+  prs: "pull requests",
+  priorities: "ranked issues",
+  agents: "agents",
+  services: "its units",
+  more: "the dashboard's pages",
+};
+
+/** A list in words: "a, b and c". */
+export const listed = (items) => (items.length <= 1 ? items.join("") : `${items.slice(0, -1).join(", ")} and ${items[items.length - 1]}`);
+
+/** One machine as the Machines screen says it: whether it is
+ * reporting, what it runs, and what only it reports and does. What the
+ * platform does itself (`platform`, null when nothing is in front of
+ * the machine) is not counted as the machine's. */
+export function machineSaid(machine, platform, now = Date.now()) {
+  const theirs = new Set(platform?.sections || []);
+  const done = new Set(platform?.actions || []);
+  const words = (names, said) => [...new Set(names.map((name) => (name in said ? said[name] : name)).filter(Boolean))];
+  const when = machine.seen === null ? "" : ago(new Date(machine.seen).toISOString(), now);
+  return {
+    name: machine.name,
+    reporting: machine.seen !== null && !machine.quiet,
+    state: machine.seen === null ? "It has never reported." : machine.quiet ? `Not reporting. Last heard from ${when}.` : `Reporting. Last heard from ${when}.`,
+    version: machine.version ? String(machine.version).slice(0, 7) : "",
+    reports: words((machine.sections || []).filter((name) => !theirs.has(name)), SECTION_SAID),
+    does: words((machine.actions || []).filter((kind) => !done.has(kind)), CAN_SAID),
+    // A console older than this screen does not say what it can do.
+    said: (machine.actions || []).length + (machine.sections || []).length > 0,
+  };
+}
+
+/** What the Machines screen shows that can change with nothing else
+ * changing: who is reporting, what the platform does itself, what
+ * waits. When a machine was last heard from changes with every report
+ * and is left out, except by the minute once it has gone quiet (the
+ * screen says for how long). The screen is drawn again when this is
+ * no longer what it was drawn from. */
+export function machinesMark(m, now = Date.now()) {
+  return JSON.stringify({
+    platform: m?.platform ? [m.platform.primary, m.platform.refused, m.platform.actions.length, m.platform.sections.length] : null,
+    machines: (m?.machines || []).map((x) => [
+      x.name,
+      x.quiet,
+      x.version,
+      (x.actions || []).length,
+      (x.sections || []).length,
+      x.quiet && x.seen ? Math.floor((now - x.seen) / 60_000) : 0,
+    ]),
+    held: (m?.held || []).map((item) => item.id),
+  });
+}
+let machinesDrawn = "";
+
+/** Machines: the platform's own part, each machine that reports and
+ * what only it can do, and what waits for one. */
+async function viewMachines() {
+  const m = await api("machines");
+  machinesDrawn = machinesMark(m);
+  const platform = m.platform;
+  const held = Array.isArray(m.held) ? m.held : [];
+  const takeBack = async (item, e) => {
+    const queueOnly = item.kind === "prompt.enqueue" || item.kind === "triage.enqueue";
+    const sure = await ask({
+      title: "Take this back?",
+      text: queueOnly
+        ? `${Outbox.sayOf(item.kind, item.args)}. The issue stays; without its task the fleet will not pick it up by itself.`
+        : `${Outbox.sayOf(item.kind, item.args)}. It will not be done. If a machine has already been handed it, it may still be.`,
+      okLabel: "Take back",
+      danger: true,
+    });
+    if (sure === null) return;
+    if (await act("held.drop", { id: item.id }, "Taken back", e.target)) draw();
+  };
+  const out = [
+    card(
+      h("h3", {}, "Cloudflare"),
+      h(
+        "p",
+        { class: "meta" },
+        platform === null
+          ? "Not in front right now: the app is coming straight from the machine below, which does everything."
+          : platform.primary
+            ? "Does the core itself, with a machine connected or not. A machine reports what only it has and does what only it can."
+            : "Serves the app and keeps what you send. A machine does the rest.",
+      ),
+      platform?.refused?.length ? h("p", { class: "why" }, `Turned away lately for ${listed(platform.refused.map((kind) => REFUSED_SAID[kind] || String(kind)))}: a machine does that for now.`) : null,
+      platform === null ? null : h("div", { class: "row end" }, h("button", { class: "small ghost", onclick: () => go("more/away") }, "What it does")),
+    ),
+    h("h2", {}, `Machines (${m.machines.length})`),
+  ];
+  if (m.machines.length === 0) out.push(card(h("p", { class: "meta" }, "No machine has reported yet.")));
+  for (const machine of m.machines) {
+    const s = machineSaid(machine, platform);
+    out.push(
+      card(
+        h("div", { class: "row" }, chip(s.reporting ? "reporting" : "away", s.reporting ? "good" : "warn")),
+        h("h3", {}, s.name),
+        h("p", { class: "meta" }, [s.state, s.version ? `Running ${s.version}.` : ""].filter(Boolean).join(" ")),
+        !s.said
+          ? h("p", { class: "meta" }, "It has not said what it can do: its console is older than this screen.")
+          : platform === null
+            ? h("p", {}, "It reports everything and does everything: nothing is in front of it.")
+            : [
+                s.reports.length ? h("p", {}, h("b", {}, "Only it reports: "), `${listed(s.reports)}.`) : null,
+                s.does.length
+                  ? h("details", {}, h("summary", {}, `Only it can do ${s.does.length} thing${s.does.length === 1 ? "" : "s"}`), h("ul", { class: "plain" }, s.does.map((what) => h("li", {}, what))))
+                  : h("p", { class: "meta" }, "Nothing is left that only it can do."),
+              ],
+      ),
+    );
+  }
+  out.push(h("h2", {}, `Waiting for a machine (${held.length})`));
+  if (held.length === 0) out.push(card(h("p", { class: "meta" }, "Nothing is waiting.")));
+  for (const item of held) {
+    out.push(
+      card(
+        h("h3", {}, Outbox.sayOf(item.kind, item.args)),
+        h("p", { class: "meta" }, `${item.who} · ${ago(item.at)}`),
+        h("div", { class: "row end" }, h("button", { class: "small ghost", onclick: (e) => takeBack(item, e) }, "Take back")),
+      ),
+    );
+  }
+  out.push(
+    h("h2", {}, "More than one"),
+    card(
+      h(
+        "p",
+        { class: "meta" },
+        "One machine can be connected today: the one the tunnel leads to, whose key is the only one Cloudflare takes reports under. Connecting others, each under its own key and with what it can do, is not built yet.",
+      ),
+    ),
+  );
+  return out;
+}
+
 /** What is kept on this device, in the groups the screen shows it in,
  * newest first: `title`, the entries, and what can be done with each. */
 export function keptGroups(entries) {
@@ -2049,6 +2226,7 @@ export function everyRead(caps, edge) {
     "messages?limit=15",
     "push",
     "devices",
+    "machines",
     "signin",
     ...(edge ? ["android"] : []),
   ];
@@ -2636,6 +2814,7 @@ const VIEWS = {
   "more/phone": ["Phones", viewPhone],
   "more/signin": ["Sign-in", viewSignin],
   "more/away": ["Cloudflare", viewAway],
+  "more/machines": ["Machines", viewMachines],
   "more/device": ["On this device", viewDevice],
   "more/releases": ["Releases", viewReleases],
   "more/roadmap": ["Roadmap", viewRoadmap],
@@ -2805,6 +2984,14 @@ async function refresh(force) {
     changed = await loadDoc("core");
     loadError = "";
     if (extra) changed = (await loadDoc(extra)) || changed;
+    // The Machines screen is drawn from an answer of its own, which can
+    // change with nothing else changing (a machine goes quiet, or comes
+    // back as it was). While that screen is open it is asked again, and
+    // the screen is drawn again when it says something else.
+    if (name === "more/machines") {
+      const now = await api("machines").catch(() => null);
+      if (now && machinesMark(now) !== machinesDrawn) changed = true;
+    }
     // An old copy means the laptop has just been told someone is
     // looking: look again shortly, a few times, instead of waiting out
     // the full interval.

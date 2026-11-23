@@ -651,6 +651,8 @@ const table = new Proxy({} as Record<string, ReturnType<typeof done>>, {
               : { ok: true },
         ),
   has: () => true,
+  // The kinds a real machine has, for where what it can do is listed.
+  ownKeys: () => Object.keys(real),
   getOwnPropertyDescriptor: () => ({ configurable: true, enumerable: true, value: done({}) }),
 });
 
@@ -668,6 +670,8 @@ export const demoDeps: Deps = {
   // What was done under each name, as the real host keeps it: an action
   // a device sends twice is done once here too.
   named: new Named(memoryStore()),
+  // What this machine is called where machines are listed.
+  self: { name: "framework", version: "0123abcd4567" },
   identify: async () => ({ via: "demo", email: "you@example.com" }),
   audit: async () => {},
 };
