@@ -215,18 +215,24 @@ export class BridgeStore {
    * events — the bridge's set, see the design note) as range keys
    * and as fetchable held events. */
   syncEntries(): { author: string; seq: number; id: string }[] {
-    const out: { author: string; seq: number; id: string }[] = [];
+    // A set of keys, not a list of rows: an event that is both
+    // stored and a fork proof header (the applied-then-forked case)
+    // is one key, as in the native sync set.
+    const byId = new Map<string, { author: string; seq: number; id: string }>();
+    const add = (author: string, seq: number, id: string) => {
+      if (!byId.has(id)) byId.set(id, { author, seq, id });
+    };
     for (const r of this.sql.exec("SELECT author, seq, id FROM bridge_events").toArray()) {
-      out.push({ author: r.author as string, seq: Number(r.seq), id: r.id as string });
+      add(r.author as string, Number(r.seq), r.id as string);
     }
     for (const r of this.sql.exec("SELECT author, seq, first_id, second_id FROM bridge_forks").toArray()) {
-      out.push({ author: r.author as string, seq: Number(r.seq), id: r.first_id as string });
-      out.push({ author: r.author as string, seq: Number(r.seq), id: r.second_id as string });
+      add(r.author as string, Number(r.seq), r.first_id as string);
+      add(r.author as string, Number(r.seq), r.second_id as string);
     }
     for (const r of this.sql.exec("SELECT author, seq, id FROM bridge_waiting").toArray()) {
-      out.push({ author: r.author as string, seq: Number(r.seq), id: r.id as string });
+      add(r.author as string, Number(r.seq), r.id as string);
     }
-    return out;
+    return [...byId.values()];
   }
 
   heldEvent(id: string): HeldEvent | null {

@@ -704,6 +704,10 @@ export async function syncWithRetry(
       return result;
     } catch (e) {
       lastError = e;
+      // A rejected resume is not a failure of the sync itself: the
+      // token is stale, so the next attempt opens with HELLO and
+      // re-derives everything through the range exchange.
+      if (e instanceof Error && e.message.includes("resume_rejected")) token = null;
       if (attempt + 1 < retry.attempts) {
         await sleep(retry.baseDelayMs * 2 ** attempt);
       }
