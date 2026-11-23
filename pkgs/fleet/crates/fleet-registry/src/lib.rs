@@ -65,6 +65,19 @@ pub enum Capability {
     /// the next piece of work down the intake ladder, and run a command
     /// where builds belong. Composes the other domains' verbs.
     Agent,
+    /// `fleet commander …` — tier T1 (commander/fleet) of the laptop
+    /// route forms (#13717): the Desktop Commander MCP endpoint.
+    Commander,
+    /// `fleet http …` — tier T2 (http/fleet) of the laptop route
+    /// forms (#13717): the laptop-agent daemon HTTP API, HTTP legs
+    /// only.
+    LaptopHttp,
+    /// `fleet ssh …` — tier T3 (ssh/fleet) of the laptop route forms
+    /// (#13717): real SSH under a binary-owned client contract.
+    LaptopSsh,
+    /// `fleet laptop …` — tier T0 (tiered/fleet) of the laptop route
+    /// forms (#13717): the generic tiered command and the form index.
+    Laptop,
 }
 
 impl Capability {
@@ -87,6 +100,10 @@ impl Capability {
             Capability::Gh => "gh",
             Capability::Bridge => "bridge",
             Capability::Agent => "agent",
+            Capability::Commander => "commander",
+            Capability::LaptopHttp => "laptop-http",
+            Capability::LaptopSsh => "laptop-ssh",
+            Capability::Laptop => "laptop",
         }
     }
 
@@ -108,6 +125,10 @@ impl Capability {
         Capability::Gh,
         Capability::Bridge,
         Capability::Agent,
+        Capability::Commander,
+        Capability::LaptopHttp,
+        Capability::LaptopSsh,
+        Capability::Laptop,
     ];
 }
 
@@ -365,6 +386,38 @@ pub const DOMAINS: &[Domain] = &[
         primary: Capability::LaptopAgent,
         aliases: &["laptop-agent"],
         subcommands: &["health", "jobs", "kill", "exec", "run", "poll", "fetch"],
+    },
+    Domain {
+        name: "commander",
+        summary: "Tier T1 (commander/fleet) of the laptop route forms (#13717): run commands on the laptop through the Desktop Commander MCP endpoint.",
+        capabilities: &[Capability::Commander],
+        primary: Capability::Commander,
+        aliases: &[],
+        subcommands: &["health", "exec"],
+    },
+    Domain {
+        name: "http",
+        summary: "Tier T2 (http/fleet) of the laptop route forms (#13717): the laptop-agent daemon HTTP API as a fleet subcommand (HTTP legs only; never ssh).",
+        capabilities: &[Capability::LaptopHttp],
+        primary: Capability::LaptopHttp,
+        aliases: &[],
+        subcommands: &["health", "jobs", "kill", "exec", "run", "poll", "fetch"],
+    },
+    Domain {
+        name: "ssh",
+        summary: "Tier T3 (ssh/fleet) of the laptop route forms (#13717): real SSH to the laptop under a binary-owned client contract (pinned host key, proxy CONNECT, fleet-owned multiplexing).",
+        capabilities: &[Capability::LaptopSsh],
+        primary: Capability::LaptopSsh,
+        aliases: &[],
+        subcommands: &["health", "exec", "close"],
+    },
+    Domain {
+        name: "laptop",
+        summary: "Tier T0 (tiered/fleet) of the laptop route forms (#13717): the generic tiered command - walks T1 -> T2 -> T3 and reports the serving tier; `fleet laptop tiers` prints the matrix.",
+        capabilities: &[Capability::Laptop],
+        primary: Capability::Laptop,
+        aliases: &[],
+        subcommands: &["tiers", "exec"],
     },
 ];
 

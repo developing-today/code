@@ -80,6 +80,10 @@ full = [
   "dispatch",
   "dispatch-test",
   "laptop-agent",
+  "commander",
+  "http",
+  "ssh",
+  "laptop",
   "secrets",
   "gh",
   "bridge",
@@ -130,6 +134,14 @@ gh = [
   "dep:rusqlite",
 ]
 laptop-agent = ["dep:fleet-secrets", "dep:fleet-laptop-agent"]
+# The laptop route forms (developing-today/code#13717): T1 commander
+# (an MCP client over ureq; the bearer comes from fleet-secrets), T2
+# http (the daemon client, HTTP legs only), T3 ssh (no deps: the
+# binary owns the ssh argv), T0 the tiered walker composing T1-T3.
+commander = ["dep:fleet-secrets", "dep:ureq"]
+http = ["dep:fleet-laptop-agent"]
+ssh = []
+laptop = ["commander", "http", "ssh"]
 # Ask the local OpenCode server whether a worktree's recorded session
 # is live before reusing it (session_state.rs). In full and serve;
 # never in connect, where ureq+rustls would break the D7 2 MiB gate
