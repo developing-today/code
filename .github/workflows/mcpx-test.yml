@@ -359,6 +359,89 @@ jobs:
           MCPX_TEST_REQUIRE: deno,bun,node,python3
         run: go test ./internal/e2e -count=1 -timeout 30m
 
+  e2e-no-deno:
+    name: "environment: mcpx e2e without Deno (bun and node only)"
+    # #13387 (tier 1 remainder of #1983): the real bun and node e2e
+    # paths with no Deno anywhere on PATH — what a user without Deno
+    # gets from script.runtime=auto. Every other leg installs Deno
+    # (setup-deno) or runs the nix-wrapped binary, whose wrapper
+    # suffixes Deno onto PATH, so auto resolves to Deno there and the
+    # Deno-less behaviour is otherwise untested end to end. This leg
+    # deliberately omits setup-deno and asserts deno stays absent, so
+    # it fails if Deno is introduced onto the runner PATH. The run is
+    # -run-filtered to the per-runtime tests plus the two
+    # auto-resolution probes; filtered runs are exempt from the
+    # feature-coverage guard by design. Tier placement: this workflow
+    # is nightly + workflow_dispatch, not a PR gate (see
+    # .github/ci-policy.md).
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: pkgs/mcpx/go.mod
+          cache: true
+          cache-dependency-path: pkgs/mcpx/go.sum
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.x"
+      - name: Assert Deno is absent from PATH
+        run: |
+          if command -v deno >/dev/null 2>&1; then
+            echo "deno found on PATH ($(command -v deno)): this leg must run without Deno" >&2
+            exit 1
+          fi
+          echo "deno is absent from PATH, as this leg requires"
+      - name: Run the runtime e2e tests without Deno
+        working-directory: pkgs/mcpx
+        env:
+          MCPX_TEST_REQUIRE: bun,node,python3
+        run: |
+          set +e
+          go test ./internal/e2e -count=1 -timeout 20m -json \
+            -run '^(TestGeneratedClientWorksOnEveryRuntime|TestSessionIsolationHoldsOnEveryRuntime|TestDenoExitWorksOnEveryRuntime|TestScriptRuntimeSelectsTheRuntime|TestScriptRuntimeOrderRanksTheAutoPick)$' \
+            > "$RUNNER_TEMP/e2e-no-deno.json"
+          rc=$?
+          set -e
+          # The acceptance is not just a green exit: the bun and node
+          # subtests must be shown as run and passed, not skipped via
+          # RequireBinary, so assert their outcomes from the -json
+          # stream (the deno subtests are expected to skip).
+          python3 - "$RUNNER_TEMP/e2e-no-deno.json" <<'PYEOF'
+          import json, sys
+          required = [
+              "TestGeneratedClientWorksOnEveryRuntime/bun",
+              "TestGeneratedClientWorksOnEveryRuntime/node",
+              "TestSessionIsolationHoldsOnEveryRuntime/bun",
+              "TestSessionIsolationHoldsOnEveryRuntime/node",
+              "TestDenoExitWorksOnEveryRuntime/bun",
+              "TestDenoExitWorksOnEveryRuntime/node",
+              "TestScriptRuntimeSelectsTheRuntime",
+              "TestScriptRuntimeOrderRanksTheAutoPick",
+          ]
+          outcome = {}
+          with open(sys.argv[1], errors="replace") as fh:
+              for line in fh:
+                  try:
+                      event = json.loads(line)
+                  except json.JSONDecodeError:
+                      continue
+                  if event.get("Action") in ("pass", "fail", "skip") and event.get("Test") in required:
+                      outcome[event["Test"]] = event["Action"]
+          for name in required:
+              print(f"{name}: {outcome.get(name, 'did not run')}")
+          problems = [name for name in required if outcome.get(name) != "pass"]
+          if problems:
+              raise SystemExit("no-deno leg: required tests did not all run and pass: " + ", ".join(problems))
+          print("no-deno leg: all required bun/node subtests and auto probes ran and passed")
+          PYEOF
+          exit $rc
+
   container-e2e:
     name: "environment: mcpx container e2e"
     runs-on: ubuntu-latest
@@ -436,7 +519,7 @@ jobs:
   ci-ok:
     name: "mcpx-test ci-ok"
     needs:
-      [init, unit, lint, plugin-ts, e2e, nix-e2e, e2e-host-linux-arm64, container-e2e, remote-smoke]
+      [init, unit, lint, plugin-ts, e2e, nix-e2e, e2e-host-linux-arm64, e2e-no-deno, container-e2e, remote-smoke]
     if: always() && (github.event_name != 'pull_request' || github.event.pull_request.draft == false)
     runs-on: ubuntu-latest
     timeout-minutes: 10
