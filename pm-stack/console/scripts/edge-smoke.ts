@@ -133,7 +133,30 @@ deps.link = link;
 const seen: string[] = [];
 /** What reached the stand-ins for GitHub and the queue store, and with
  * what: the Worker's own reads, made in its runtime. */
-const outside: { to: "github" | "queue"; path: string; auth: string | null; agent: string | null }[] = [];
+const outside: {
+  to: "github" | "queue";
+  path: string;
+  auth: string | null;
+  agent: string | null;
+  /** The tag a read of GitHub was asked by, and what it was answered. */
+  tag?: string | null;
+  status?: number;
+}[] = [];
+/** GitHub turning every call away as one too many, until this second
+ * (as it says it: nothing left of the allowance, and when it is back). */
+const spent = { until: 0 };
+/** GitHub's answer to a read: tagged, and "not modified" (with no body)
+ * to a read that carries the tag of what it would say. */
+const tagged = (req: Request, entry: { tag?: string | null; status?: number }, body: unknown, status = 200) => {
+  const etag = `W/"${Bun.hash(JSON.stringify(body)).toString(16)}"`;
+  entry.tag = req.headers.get("if-none-match");
+  if (status === 200 && req.method === "GET" && entry.tag === etag) {
+    entry.status = 304;
+    return new Response(null, { status: 304, headers: { etag } });
+  }
+  entry.status = status;
+  return Response.json(body, { status, headers: status === 200 ? { etag } : {} });
+};
 const server = Bun.serve({
   hostname: "127.0.0.1",
   port: 4898,
@@ -142,23 +165,31 @@ const server = Bun.serve({
     if (url.pathname === "/jwks") return Response.json({ keys: [jwk] });
     if (url.pathname.startsWith("/github/")) {
       const path = url.pathname.slice("/github/".length);
-      outside.push({
+      const entry: (typeof outside)[number] = {
         to: "github",
         path,
         auth: req.headers.get("authorization"),
         agent: req.headers.get("user-agent"),
-      });
+      };
+      outside.push(entry);
+      if (spent.until > 0) {
+        entry.status = 403;
+        return Response.json(
+          { message: "API rate limit exceeded for user ID 1.", status: "403" },
+          { status: 403, headers: { "x-ratelimit-remaining": "0", "x-ratelimit-reset": String(spent.until) } },
+        );
+      }
       if (path.endsWith("/contents/pm-stack/platform/workers.json")) {
         // The platform read's list, served as GitHub serves a file.
-        return Response.json({
+        return tagged(req, entry, {
           content: Buffer.from(readFileSync(join(import.meta.dir, "..", "..", "platform", "workers.json"))).toString(
             "base64",
           ),
         });
       }
-      if (path.includes("/actions/workflows/")) return Response.json({ workflow_runs: [] });
+      if (path.includes("/actions/workflows/")) return tagged(req, entry, { workflow_runs: [] });
       if (path.endsWith("/pulls")) {
-        return Response.json([
+        return tagged(req, entry, [
           {
             number: 7,
             title: "Smoke pull request",
@@ -170,9 +201,9 @@ const server = Bun.serve({
           },
         ]);
       }
-      if (path === "search/issues") return Response.json({ total_count: 0, items: [] });
-      if (path.endsWith("/issues")) return Response.json([]);
-      return Response.json({ message: "Not Found" }, { status: 404 });
+      if (path === "search/issues") return tagged(req, entry, { total_count: 0, items: [] });
+      if (path.endsWith("/issues")) return tagged(req, entry, []);
+      return tagged(req, entry, { message: "Not Found" }, 404);
     }
     if (url.pathname === "/queue/v2/pipeline") {
       outside.push({ to: "queue", path: url.pathname, auth: req.headers.get("authorization"), agent: null });
@@ -343,6 +374,70 @@ try {
       `${(platform.workers ?? []).length} workers, checked ${platform.checked}; host saw ${seen.join(", ")}`,
     );
     check("and no machine was asked for it", !seen.some((path) => path.includes("/api/platform")), seen.join(", "));
+    // Read again, the list is asked for by the tag GitHub gave it, GitHub
+    // says "not modified" with no body, and this runtime's fetch hands
+    // that back as it is: the answer is the one kept, whole.
+    const githubSaid = async () =>
+      (
+        (await (await get("/console/health")).json()) as {
+          github?: {
+            answers: number;
+            unchanged: number;
+            kept: number;
+            quiet: { core: number | null; search: number | null };
+          };
+        }
+      ).github;
+    const list = () => outside.filter((call) => call.path.endsWith("/contents/pm-stack/platform/workers.json"));
+    const unchangedBefore = (await githubSaid())?.unchanged ?? -1;
+    const again = (await (await asOwner("/console/api/platform")).json()) as typeof platform;
+    const lastAsk = list().at(-1);
+    const said = await githubSaid();
+    check(
+      'a list read again is asked for by its tag, and GitHub\'s "not modified" is the kept answer',
+      lastAsk?.status === 304 &&
+        typeof lastAsk.tag === "string" &&
+        lastAsk.tag.startsWith('W/"') &&
+        JSON.stringify(again.workers) === JSON.stringify(platform.workers) &&
+        (again.workers ?? []).length > 0 &&
+        (said?.unchanged ?? 0) > unchangedBefore &&
+        (said?.kept ?? 0) > 0,
+      `asked by ${lastAsk?.tag}, answered ${lastAsk?.status}; health ${JSON.stringify(said)}, before ${unchangedBefore}`,
+    );
+    // GitHub turns the account away: nothing left of the hour, back in a
+    // few seconds. The time is kept to in this runtime: until it comes
+    // the Worker asks GitHub for nothing counted by the hour, and then
+    // it asks again.
+    spent.until = Math.ceil(Date.now() / 1000) + 8;
+    const quietTo = spent.until * 1000;
+    const turned = await asOwner("/console/api/platform");
+    await turned.text();
+    spent.until = 0;
+    const until = (await githubSaid())?.quiet.core ?? null;
+    // (Searches are counted apart by GitHub, and are not what was spent:
+    // only what draws on the hour is looked at.)
+    const hourly = () => outside.filter((call) => call.to === "github" && !call.path.startsWith("search/")).length;
+    const askedBy = hourly();
+    // GitHub would answer now, and is not asked: not for this read, and
+    // not by anything else the Worker does meanwhile.
+    const held = await asOwner("/console/api/platform");
+    await held.text();
+    check(
+      "turned away with the hour used up, the Worker keeps to the time GitHub gave and asks it nothing more",
+      until === quietTo && hourly() === askedBy,
+      `quiet until ${until}, GitHub said ${quietTo}; the read answered ${turned.status}, then ${held.status}; ${
+        hourly() - askedBy
+      } calls while quiet`,
+    );
+    await new Promise((resolve) => setTimeout(resolve, Math.max(0, (until ?? 0) - Date.now()) + 400));
+    const back = (await (await asOwner("/console/api/platform")).json()) as typeof platform;
+    check(
+      "and when the time has come it asks again, and reads the list",
+      (back.workers ?? []).some((w) => w.name === "pm-console-edge") &&
+        hourly() > askedBy &&
+        (await githubSaid())?.quiet.core === null,
+      `${(back.workers ?? []).length} workers; ${hourly() - askedBy} more calls`,
+    );
     // Someone to tell: a device takes notifications (its service is a
     // known one and its key a real point; nothing is sent to it in
     // this run unless the clock's news is worth sending).

@@ -29,8 +29,11 @@ import {
   DIRECT_READ_SECTIONS,
   type DirectClasses,
   directClasses,
+  ALLOWANCES,
   directRead,
+  githubMemory,
   type Outward,
+  QUIET_MOST_MS,
   READ_FROM,
 } from "./direct.ts";
 import { Devices, KeyedLimiter, Limiter } from "../../src/devices.ts";
@@ -275,6 +278,15 @@ export class Edge {
   /** This side's latest calls of GitHub and the queue store, numbered. */
   private outward: (Outward & { n: number })[] = [];
   private outwardN = 0;
+  /** What this side remembers of GitHub between calls: its answers by
+   * address, asked for again by their tags, and when it said to ask
+   * again. Kept while this object lives; a restart only costs one full
+   * answer of each. */
+  private github = githubMemory();
+  /** GitHub's answers since this object started: all of them, and
+   * those that were "not modified", which cost nothing of the hour's
+   * allowance. For health: it is how the saving is seen from outside. */
+  private githubAnswers = { all: 0, unchanged: 0 };
   /** Actions this side's token was turned away for, and until when
    * they are left to a machine. */
   private refused = new Map<string, number>();
@@ -392,6 +404,9 @@ export class Edge {
           const tried = [...this.refusedKinds(), ...this.refusedReads().map((name) => `read.${name}`)];
           this.refused.clear();
           this.unread.clear();
+          // The owner's word outweighs GitHub's "not before": if it is
+          // still turned away, the first call says so again.
+          this.github.quiet = {};
           await this.saveAway();
           return { tried };
         },
@@ -861,7 +876,13 @@ export class Edge {
         queueDb: this.direct?.queueDb,
         fetchImpl: this.direct?.fetchImpl as never,
         now: this.now,
+        github: this.github,
         seen: (call) => {
+          // Counted: what GitHub answered, not what was held back here.
+          if (call.to === "github" && call.status !== 0 && !call.unsent) {
+            this.githubAnswers.all++;
+            if (call.status === 304) this.githubAnswers.unchanged++;
+          }
           this.outward.push({ ...call, n: ++this.outwardN });
           if (this.outward.length > OUTWARD_KEPT) this.outward.splice(0, this.outward.length - OUTWARD_KEPT);
         },
@@ -944,15 +965,26 @@ export class Edge {
   /** Whether this side's token was turned away in a call since number
    * `from` (of these services only, if any are named), and if so for
    * how long what was being done is left to a machine: an hour when it
-   * may not do the thing (401, 403), a few minutes when it was only
-   * calling too often. Calls made at the same time by something else
-   * are counted too: that can only hand a machine something this side
-   * could have done, never keep from it what this side cannot. */
+   * may not do the thing (401, 403), and a few minutes when it was
+   * only calling too often. A section read from named services is
+   * left until the time GitHub gave for asking again, where it gave a
+   * further one: nothing would be read before then, and claiming the
+   * section back every few minutes only to give it up again would have
+   * a machine stop and start sending its copy. Calls made at the same
+   * time by something else are counted too: that can only hand a
+   * machine something this side could have done, never keep from it
+   * what this side cannot. Which is why an action (no services named)
+   * is only ever left for the few minutes: one that failed for a
+   * reason of its own, beside a call held back for the hour, is not
+   * then a machine's for the hour. */
   private away(from: number, to?: Outward["to"][]): number | null {
     const mine = this.outward.filter((call) => call.n > from && (to === undefined || to.includes(call.to)));
     if (mine.some((call) => (call.status === 401 || call.status === 403) && !call.limited)) return REFUSED_FOR_MS;
-    if (mine.some((call) => call.limited)) return LIMITED_FOR_MS;
-    return null;
+    const limited = mine.filter((call) => call.limited);
+    if (limited.length === 0) return null;
+    if (to === undefined) return LIMITED_FOR_MS;
+    const until = Math.max(0, ...limited.map((call) => call.until ?? 0));
+    return Math.min(QUIET_MOST_MS, Math.max(LIMITED_FOR_MS, until - this.now()));
   }
 
   /** Whether something was written since call number `from`, or may
@@ -1464,6 +1496,22 @@ export class Edge {
         // it could not read as `read.<section>`.
         refused: [...this.refusedKinds(), ...this.refusedReads().map((name) => `read.${name}`)],
         selfCheck: this.selfCheckResult,
+        // What GitHub answered this side since it started, how many of
+        // those were "not modified" (which cost nothing of the hour's
+        // allowance), how many answers are kept to ask by, and until
+        // when GitHub said not to ask, if it has: for searches, which
+        // it counts apart by the minute, and for everything else.
+        github: {
+          answers: this.githubAnswers.all,
+          unchanged: this.githubAnswers.unchanged,
+          kept: this.github.size(),
+          quiet: Object.fromEntries(
+            ALLOWANCES.map((allowance) => {
+              const until = this.github.quiet[allowance]?.until ?? 0;
+              return [allowance, until > this.now() ? until : null];
+            }),
+          ),
+        },
         hostSeen: this.hostSeen || null,
         // The commit the host's console is running, as it last said.
         hostVersion: this.hostVersion,

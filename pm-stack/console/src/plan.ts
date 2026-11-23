@@ -61,13 +61,13 @@ export const CAPABILITIES: Capability[] = [
       "epic/fleet-expansion",
       "roadmap/fleet-health",
     ],
-    file: null,
+    file: "planning/roadmaps/fleet.md",
   },
   {
     id: "atlas",
     title: "Atlas",
     labels: ["app/atlas", "app/atlas-search", "epic/atlas-program", "epic/atlas"],
-    file: null,
+    file: "planning/roadmaps/atlas.md",
   },
   {
     id: "pm-stack",
