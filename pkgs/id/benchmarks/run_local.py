@@ -17,6 +17,7 @@ import json
 import os
 import platform
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -296,8 +297,21 @@ def run(argv: list[str]) -> int:
             ])
             (temp / "Cargo.toml").write_text(manifest, encoding="utf-8")
             (temp / "src" / "main.rs").write_text(RUST_HARNESS, encoding="utf-8")
+            cargo = [
+                "cargo", "run", "--quiet", "--manifest-path", str(temp / "Cargo.toml"),
+                "--", str(FIXTURE),
+            ]
+            broker = shutil.which("cargo-target-broker")
+            home_broker = Path.home() / "tools" / "cargo-target-broker"
+            if broker is None and home_broker.is_file() and os.access(home_broker, os.X_OK):
+                broker = str(home_broker)
+            if broker:
+                cargo = [
+                    broker, "exec", "--repo", command_output("git", "rev-parse", "--show-toplevel"),
+                    "--profile", "test", "--", *cargo,
+                ]
             completed = subprocess.run(
-                ["cargo", "run", "--quiet", "--manifest-path", str(temp / "Cargo.toml"), "--", str(FIXTURE)],
+                cargo,
                 check=True, capture_output=True, text=True,
             )
         harness_result = json.loads(completed.stdout)
