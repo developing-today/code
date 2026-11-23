@@ -14,6 +14,11 @@ import type { Config } from "./config.ts";
 import { OpError } from "./errors.ts";
 import { plain } from "./plain.ts";
 import { WORKERS_FILE, workersList } from "./platform.ts";
+// The queue's packet validator, as the fleet's hosted door runs it:
+// the claim guard below decides with the broker's own rules, not a
+// copy of them (pkgs/fleet/hosted-worker/src/queue-validate.ts is a
+// faithful port of the native validator, and has no imports of its own).
+import { isObj, validatePacket, type Json } from "../../../pkgs/fleet/hosted-worker/src/queue-validate.ts";
 
 export interface RunResult {
   code: number;
@@ -171,6 +176,40 @@ function id(value: unknown, name: string): number {
   return Number(s);
 }
 
+/** Parse a JSON column of a queue row. A stored value that is not
+ * JSON is a broken row, not an empty one. */
+function jsonColumn(value: unknown, name: string): unknown {
+  if (value === null || value === undefined) return null;
+  if (typeof value === "object") return value;
+  try {
+    return JSON.parse(String(value));
+  } catch {
+    throw new OpError(502, `queue store returned a task whose ${name} is not JSON`);
+  }
+}
+
+/** A JSON column that must hold an object: null reads as empty, anything
+ * else that is not an object is a broken row. */
+function jsonObject(value: unknown, name: string): Record<string, unknown> {
+  const parsed = jsonColumn(value, name);
+  if (parsed === null) return {};
+  if (typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new OpError(502, `queue store returned a task whose ${name} is not an object`);
+  }
+  return parsed as Record<string, unknown>;
+}
+
+/** A JSON column that must hold a list: null reads as none, anything
+ * else that is not a list is a broken row. */
+function jsonList(value: unknown, name: string): unknown[] {
+  const parsed = jsonColumn(value, name);
+  if (parsed === null) return [];
+  if (!Array.isArray(parsed)) {
+    throw new OpError(502, `queue store returned a task whose ${name} is not a list`);
+  }
+  return parsed;
+}
+
 export class Ops {
   private queueToken: string | null = null;
 
@@ -293,9 +332,9 @@ export class Ops {
   }
 
   /**
-   * Move a queued task along the priority scale. The one write this
-   * service makes to the queue store, because the queue has no verb for
-   * it: one column, on one row, and only while the task is still queued.
+   * Move a queued task along the priority scale. A write this service
+   * makes to the queue store directly, because the queue has no verb
+   * for it: one column, on one row, and only while the task is still queued.
    */
   async setTaskPriority(task: unknown, priority: unknown) {
     const t = id(task, "task");
@@ -336,8 +375,193 @@ export class Ops {
     if (action !== "unblock" && action !== "cancel") throw new OpError(400, "action: unblock or cancel");
     const taskId = id(task, "task");
     const why = text(reason, "reason", 500);
-    await this.must([this.cfg.fleetBin, "queue", action, String(taskId), "--worker", "pm-console", "--reason", why]);
+    try {
+      await this.must([this.cfg.fleetBin, "queue", action, String(taskId), "--worker", "pm-console", "--reason", why]);
+    } catch (error) {
+      // At the edge the fleet binary is not here: the edge's run refuses
+      // the verb as needing a machine (edge/src/direct.ts), and the
+      // queue store is written directly instead, by the broker's own
+      // rules below. Any other failure is the machine's answer, not a
+      // cue to write around it.
+      if (!(error instanceof OpError) || error.message !== "needs a machine") throw error;
+      return this.queueActDirect(action, taskId, why);
+    }
     return { task: taskId, action };
+  }
+
+  /** The task row cancel and unblock decide on: what the broker's verbs
+   * read, and what their events record. Scoped to this queue, like
+   * every other read and write here. */
+  private async queueTaskRow(taskId: number): Promise<Row> {
+    const rows = await this.sql(
+      "SELECT id, queue, title, body, priority, payload, result, progress, last_error, blocked_deps, platform, lane_id, claim_provider, claim_model, claim_variant, max_attempts, required_budget_minutes, not_before, dedupe_key, status FROM tasks WHERE id = ? AND queue = ?",
+      [taskId, this.cfg.queue],
+    );
+    const row = rows[0];
+    if (!row) throw new OpError(404, `task ${taskId}: no such task in this queue`);
+    return row;
+  }
+
+  /** The audit marks the broker's events carry: the task's own
+   * identity, so the event names the row without another read
+   * (turso_queue/core.rs audit_marks). */
+  private queueMarks(row: Row, progress: Record<string, unknown>): Record<string, unknown> {
+    return {
+      task_id: row.id,
+      queue: row.queue,
+      pool: row.queue,
+      platform: row.platform ?? null,
+      lane_id: row.lane_id ?? null,
+      model_provider: row.claim_provider ?? null,
+      model_id: row.claim_model ?? null,
+      model_variant: row.claim_variant ?? null,
+      session_id: typeof progress.session_id === "string" ? progress.session_id : null,
+    };
+  }
+
+  /** One event row, as the broker writes it: the worker that did it,
+   * the task, the kind, the detail as JSON, and now. */
+  private queueEvent(taskId: number, kind: string, detail: Record<string, unknown>, now: string) {
+    return {
+      sql: "INSERT INTO events (worker_id, task_id, kind, detail, created_at) VALUES (?, ?, ?, ?, ?)",
+      args: ["pm-console", taskId, kind, JSON.stringify(detail), now] as (string | number)[],
+    };
+  }
+
+  /** The claim guard's verdict on a row (#5444): null when the packet
+   * is whole, the quarantine's words when it is not. The row is passed
+   * as the packet is stored — payload, title, priority and dedupe key
+   * as its own fields — so the validator decides exactly what the
+   * broker's claim path decides. */
+  private claimGuardReason(row: Row): string | null {
+    const payload = jsonColumn(row.payload, "payload");
+    if (payload === null || (isObj(payload) && Object.keys(payload).length === 0)) {
+      return "quarantined by claim path: payload missing/empty (#5444)";
+    }
+    const [errors] = validatePacket(
+      {
+        title: row.title,
+        body: row.body,
+        priority: row.priority,
+        payload,
+        max_attempts: row.max_attempts,
+        required_budget_minutes: row.required_budget_minutes,
+        not_before: row.not_before,
+        dedupe_key: row.dedupe_key,
+      } as unknown as Json,
+      Math.floor(Date.now() / 1000),
+    );
+    if (errors.length > 0) {
+      return `quarantined by claim path: packet failed validation (#5444): ${errors.join("; ")}`;
+    }
+    return null;
+  }
+
+  /** Cancel and unblock where the fleet binary is not: in the queue
+   * store, by the broker's verbs. The update goes first on its own, so
+   * a row that moved under this writes no event for a change that did
+   * not happen. */
+  private async queueActDirect(action: "cancel" | "unblock", taskId: number, reason: string) {
+    return action === "cancel" ? this.queueCancel(taskId, reason) : this.queueUnblock(taskId, reason);
+  }
+
+  /** Cancel a task, by the broker's verb_cancel (turso_queue/admin.rs):
+   * a task already done, cancelled or failed is answered as it stands;
+   * any other is cancelled, its lease dropped, its result keeps the
+   * reason, and the cancellation is an event — with a second event
+   * closing the binding window when the task was bound to a session
+   * (#9046). */
+  private async queueCancel(taskId: number, reason: string): Promise<{ task: number; action: string }> {
+    const row = await this.queueTaskRow(taskId);
+    const status = String(row.status ?? "");
+    if (status === "done" || status === "cancelled" || status === "failed") {
+      return { task: taskId, action: "cancel" };
+    }
+    const now = new Date().toISOString();
+    const result = jsonObject(row.result, "result");
+    const progress = jsonObject(row.progress, "progress");
+    const sessionId = typeof progress.session_id === "string" ? progress.session_id : null;
+    const [updated] = await this.pipeline([
+      {
+        sql: "UPDATE tasks SET status = 'cancelled', worker_id = NULL, lease_until = NULL, result = ?, updated_at = ? WHERE id = ? AND queue = ? AND status NOT IN ('done', 'cancelled', 'failed')",
+        args: [JSON.stringify({ ...result, cancel_reason: reason }), now, taskId, this.cfg.queue] as (
+          | string
+          | number
+        )[],
+      },
+    ]);
+    if ((updated.affected_row_count ?? 0) !== 1) {
+      // The row moved under this: a machine took it meanwhile, or it
+      // left the queue. Answered from the row as it stands now.
+      const fresh = await this.queueTaskRow(taskId);
+      if (["done", "cancelled", "failed"].includes(String(fresh.status ?? ""))) {
+        return { task: taskId, action: "cancel" };
+      }
+      throw new OpError(409, `task ${taskId} changed while it was being cancelled; try again`);
+    }
+    await this.pipeline([
+      { sql: "DELETE FROM leases WHERE task_id = ?", args: [taskId] },
+      this.queueEvent(taskId, "cancelled", { reason, via: "cancel_repo_task_turso" }, now),
+      ...(sessionId === null
+        ? []
+        : [
+            this.queueEvent(taskId, "session_unbound", {
+              ...this.queueMarks(row, progress),
+              session_id: sessionId,
+              trigger: "cancel",
+            }, now),
+          ]),
+    ]);
+    return { task: taskId, action: "cancel" };
+  }
+
+  /** Unblock a task, by the broker's verb_unblock (turso_queue/admin.rs):
+   * only a blocked task releases, its dep record is discarded, and the
+   * event names what was discarded. A task the claim path quarantined
+   * stays refused until its packet is repaired — the guard re-validates
+   * the packet, so a last_error left over from a repair already made
+   * does not refuse a task whose packet now passes (#13191). */
+  private async queueUnblock(taskId: number, reason: string): Promise<{ task: number; action: string }> {
+    const row = await this.queueTaskRow(taskId);
+    const status = String(row.status ?? "");
+    if (status !== "blocked") {
+      throw new OpError(409, `unblock_task: task ${taskId} is ${status || "unknown"}, not blocked`);
+    }
+    const recorded = typeof row.last_error === "string" ? row.last_error : "";
+    if (recorded.startsWith("quarantined by claim path")) {
+      const guard = this.claimGuardReason(row);
+      if (guard !== null) {
+        throw new OpError(
+          409,
+          `unblock_task: task ${taskId} is quarantined (${guard}); unblock cannot clear a packet defect — repair the packet first with \`fleet queue repair ${taskId}\``,
+        );
+      }
+    }
+    const now = new Date().toISOString();
+    const deps = jsonList(row.blocked_deps, "blocked_deps");
+    const progress = jsonObject(row.progress, "progress");
+    const [updated] = await this.pipeline([
+      {
+        sql: "UPDATE tasks SET status = 'queued', blocked_deps = NULL, dep_next_recheck_at = NULL, dep_blocked_until = NULL, dep_recheck_seconds = NULL, updated_at = ? WHERE id = ? AND queue = ? AND status = 'blocked'",
+        args: [now, taskId, this.cfg.queue] as (string | number)[],
+      },
+    ]);
+    if ((updated.affected_row_count ?? 0) !== 1) {
+      throw new OpError(409, `task ${taskId} changed while it was being unblocked; try again`);
+    }
+    const detail =
+      deps.length === 0
+        ? { reason, via: "unblock_task_turso" }
+        : { reason, discarded_deps: deps, via: "unblock_task_turso" };
+    await this.pipeline([
+      this.queueEvent(
+        taskId,
+        deps.length === 0 ? "unblocked" : "dep_unblock_override",
+        { ...this.queueMarks(row, progress), ...detail },
+        now,
+      ),
+    ]);
+    return { task: taskId, action: "unblock" };
   }
 
   // ---- priorities and ideas ---------------------------------------------

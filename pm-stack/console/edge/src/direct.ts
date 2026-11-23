@@ -12,8 +12,11 @@
 // their shapes.
 //
 // What stays a machine's: `fleet queue enqueue` (the fleet binary is
-// not here), `fleet bridge`, `systemctl`, and anything that reads the
-// dashboard or the decisions file, which live on a machine alone.
+// not here, and filing a task is its dedupe and identity rules),
+// `fleet bridge`, `systemctl`, and anything that reads the dashboard or
+// the decisions file, which live on a machine alone. Cancelling and
+// unblocking a task are not among them: they are done here through the
+// queue store (Ops.queueAct), by the broker's own rules.
 // A prompt, a note or a bug is filed at the edge and only its queue
 // task is held for a machine, as `prompt.enqueue` or `triage.enqueue`:
 // the issue is never filed twice.
@@ -27,7 +30,9 @@ import { Work } from "../../src/work.ts";
 /** Sections the edge reads itself. */
 export const DIRECT_READ_SECTIONS = ["board", "prs", "priorities", "asks"] as const;
 /** Actions the edge runs itself: each is one or a few calls to GitHub
- * or the queue store, and needs nothing a machine has. */
+ * or the queue store, and needs nothing a machine has. Cancelling and
+ * unblocking a task are among them: where the fleet binary is not here
+ * the store is written directly, by the broker's own rules (Ops.queueAct). */
 export const DIRECT_ACTIONS = [
   "ask.send",
   "ask.reply",
@@ -36,6 +41,8 @@ export const DIRECT_ACTIONS = [
   "need.comment",
   "issue.rank",
   "task.move",
+  "task.cancel",
+  "task.unblock",
   "pr.merge",
   "deploy.start",
   "intake.send",

@@ -33,7 +33,7 @@ import {
   sign,
 } from "../src/edge-proto.ts";
 import { OpError } from "../src/errors.ts";
-import { Ops } from "../src/ops.ts";
+import { Ops, triagePacket } from "../src/ops.ts";
 import { type Deps, handle, heldRunner, marked } from "../src/server.ts";
 import { memoryStore } from "../src/store.ts";
 import { EdgeLink } from "../src/sync.ts";
@@ -112,6 +112,9 @@ async function setup(options: { direct?: boolean } = {}) {
   // laptop has been away for a while.
   const githubCalls: { method: string; url: string; body?: string }[] = [];
   const queueCalls: { sql: string; args: (string | number)[] }[] = [];
+  /** Events the queue store was asked to record, in order. */
+  const queueEvents: { worker: string; task: number; kind: string; detail: Record<string, unknown>; created: string }[] =
+    [];
   const ghIssues: Record<
     number,
     {
@@ -225,6 +228,18 @@ async function setup(options: { direct?: boolean } = {}) {
     pr: number | null;
     step: string | null;
     goal: string | null;
+    /** The row as the broker's verbs read it: the packet, what it
+     * did, and why it is where it is. */
+    body: string;
+    result: Record<string, unknown>;
+    progress: Record<string, unknown>;
+    last_error: string | null;
+    blocked_deps: unknown[] | null;
+    payload: Record<string, unknown>;
+    max_attempts: number;
+    required_budget_minutes: number | null;
+    not_before: string | null;
+    dedupe_key: string | null;
   }[] = [
     {
       id: 21047,
@@ -243,6 +258,16 @@ async function setup(options: { direct?: boolean } = {}) {
       pr: null,
       step: "reading the issue",
       goal: "Carry out the owner's instruction",
+      body: "Do the docs",
+      result: {},
+      progress: { session_id: "sess-21047" },
+      last_error: null,
+      blocked_deps: null,
+      payload: triagePacket(cfg.repo, cfg.queue, 201, "Do the docs", "now", "2026-11-22T11:00:00Z").payload,
+      max_attempts: 1000,
+      required_budget_minutes: null,
+      not_before: null,
+      dedupe_key: "repo-health:v1:triage:developing-today/code:issue:201",
     },
     {
       id: 21048,
@@ -261,6 +286,16 @@ async function setup(options: { direct?: boolean } = {}) {
       pr: null,
       step: null,
       goal: "Triage",
+      body: "Ranked fresh",
+      result: {},
+      progress: {},
+      last_error: null,
+      blocked_deps: null,
+      payload: triagePacket(cfg.repo, cfg.queue, 301, "Ranked fresh", "now", "2026-11-22T11:30:00Z").payload,
+      max_attempts: 1000,
+      required_budget_minutes: null,
+      not_before: null,
+      dedupe_key: "repo-health:v1:triage:developing-today/code:issue:301",
     },
     {
       id: 21049,
@@ -279,6 +314,16 @@ async function setup(options: { direct?: boolean } = {}) {
       pr: null,
       step: null,
       goal: null,
+      body: "Blocked task",
+      result: {},
+      progress: {},
+      last_error: null,
+      blocked_deps: [{ kind: "issue", repo: "developing-today/code", number: 999, state: "open" }],
+      payload: {},
+      max_attempts: 1000,
+      required_budget_minutes: null,
+      not_before: null,
+      dedupe_key: null,
     },
   ];
   const TASK_COLS = [
@@ -317,9 +362,92 @@ async function setup(options: { direct?: boolean } = {}) {
       const found = queueTasks.find((t) => t.id === Number(args[0]) && t.status === "queued");
       return { cols: cols(["priority"]), rows: rows(found ? [[{ value: found.priority }]] : []) };
     }
+    // The one row cancel and unblock read: every column their rules
+    // decide on. JSON columns travel as the store holds them: text.
+    if (sql.startsWith("SELECT id, queue, title")) {
+      const names = [
+        "id",
+        "queue",
+        "title",
+        "body",
+        "priority",
+        "payload",
+        "result",
+        "progress",
+        "last_error",
+        "blocked_deps",
+        "platform",
+        "lane_id",
+        "claim_provider",
+        "claim_model",
+        "claim_variant",
+        "max_attempts",
+        "required_budget_minutes",
+        "not_before",
+        "dedupe_key",
+        "status",
+      ];
+      const found = queueTasks.find((t) => t.id === Number(args[0]));
+      if (!found) return { cols: cols(names), rows: [] };
+      const values: Record<string, unknown> = {
+        ...found,
+        queue: cfg.queue,
+        platform: null,
+        lane_id: found.lane,
+        claim_provider: null,
+        claim_model: found.model,
+        claim_variant: null,
+      };
+      const cell = (value: unknown) => ({
+        value:
+          value === null || value === undefined
+            ? null
+            : typeof value === "object"
+              ? JSON.stringify(value)
+              : (value as string | number),
+      });
+      return { cols: cols(names), rows: rows([names.map((n) => cell(values[n]))]) };
+    }
     if (sql.startsWith("UPDATE tasks SET priority")) {
       const found = queueTasks.find((t) => t.id === Number(args[1]) && t.status === "queued");
       if (found) found.priority = Number(args[0]);
+      return { cols: cols([]), rows: [], affected_row_count: found ? 1 : 0 };
+    }
+    if (sql.startsWith("UPDATE tasks SET status = 'cancelled'")) {
+      // args: [result, updated_at, id, queue]. The guard is the
+      // broker's own: a row already at an end is left as it stands.
+      const found = queueTasks.find(
+        (t) => t.id === Number(args[2]) && !["done", "cancelled", "failed"].includes(t.status),
+      );
+      if (found) {
+        found.status = "cancelled";
+        found.worker = null;
+        found.lease = null;
+        found.result = JSON.parse(String(args[0])) as Record<string, unknown>;
+      }
+      return { cols: cols([]), rows: [], affected_row_count: found ? 1 : 0 };
+    }
+    if (sql.startsWith("DELETE FROM leases")) {
+      return { cols: cols([]), rows: [], affected_row_count: 0 };
+    }
+    if (sql.startsWith("INSERT INTO events")) {
+      // args: [worker, task, kind, detail, created_at].
+      queueEvents.push({
+        worker: String(args[0]),
+        task: Number(args[1]),
+        kind: String(args[2]),
+        detail: JSON.parse(String(args[3])) as Record<string, unknown>,
+        created: String(args[4]),
+      });
+      return { cols: cols([]), rows: [], affected_row_count: 1 };
+    }
+    if (sql.startsWith("UPDATE tasks SET status = 'queued'")) {
+      // args: [updated_at, id, queue]. Only a blocked row releases.
+      const found = queueTasks.find((t) => t.id === Number(args[1]) && t.status === "blocked");
+      if (found) {
+        found.status = "queued";
+        found.blocked_deps = null;
+      }
       return { cols: cols([]), rows: [], affected_row_count: found ? 1 : 0 };
     }
     if (sql.includes("status = 'claimed'")) {
@@ -1027,6 +1155,7 @@ async function setup(options: { direct?: boolean } = {}) {
     directDown,
     githubCalls,
     queueCalls,
+    queueEvents,
     ghIssues,
     ghComments,
     ghLabels,
@@ -3425,6 +3554,8 @@ describe("the edge does the core itself", () => {
         "need.comment",
         "issue.rank",
         "task.move",
+        "task.cancel",
+        "task.unblock",
         "pr.merge",
         "deploy.start",
         "intake.send",
@@ -4293,6 +4424,156 @@ describe("the edge does the core itself", () => {
       ((await (await w.browse("/console/health", { token: null })).json()) as { refused: string[] }).refused,
     ).toEqual(["task.move"]);
     expect((await w.core()).doc.board.counts).toEqual(QUEUE_NOW);
+  });
+
+  test("a task is cancelled here with the machine away: the row, its lease and the event say so", async () => {
+    const w = await primary();
+    w.net.hostUp = false;
+    w.net.edgeUp = false;
+    const res = await w.act("task.cancel", { task: 21048, reason: "superseded" });
+    expect(await res.json()).toEqual({ ok: true, result: { task: 21048, action: "cancel" } });
+    const task = w.queueTasks.find((t) => t.id === 21048);
+    expect(task?.status).toBe("cancelled");
+    expect(task?.worker).toBeNull();
+    expect(task?.lease).toBeNull();
+    expect(task?.result).toEqual({ cancel_reason: "superseded" });
+    // The machine was never asked: nothing held, nothing run there.
+    expect(w.ran).toEqual([]);
+    expect(w.hostSaw).toEqual([]);
+    // The cancellation is an event, in the broker's words, and the
+    // update only touches a row that had not already ended.
+    expect(w.queueEvents).toEqual([
+      {
+        worker: "pm-console",
+        task: 21048,
+        kind: "cancelled",
+        detail: { reason: "superseded", via: "cancel_repo_task_turso" },
+        created: expect.any(String),
+      },
+    ]);
+    expect(w.queueCalls.map((c) => c.sql)).toContain(
+      "UPDATE tasks SET status = 'cancelled', worker_id = NULL, lease_until = NULL, result = ?, updated_at = ? WHERE id = ? AND queue = ? AND status NOT IN ('done', 'cancelled', 'failed')",
+    );
+    expect(w.queueCalls.some((c) => c.sql.startsWith("DELETE FROM leases"))).toBe(true);
+    // And the Machines screen says the edge does this kind, and unblocking too.
+    const machines = (await (await w.browse("/console/api/machines")).json()) as MachinesAnswer;
+    expect(machines.platform?.actions).toContain("task.cancel");
+    expect(machines.platform?.actions).toContain("task.unblock");
+  });
+
+  test("cancelling a claimed task bound to a session closes the binding window", async () => {
+    const w = await primary();
+    w.net.hostUp = false;
+    const res = await w.act("task.cancel", { task: 21047, reason: "no longer needed" });
+    expect(await res.json()).toEqual({ ok: true, result: { task: 21047, action: "cancel" } });
+    const task = w.queueTasks.find((t) => t.id === 21047);
+    expect(task?.status).toBe("cancelled");
+    expect(task?.worker).toBeNull();
+    expect(task?.lease).toBeNull();
+    expect(task?.result).toEqual({ cancel_reason: "no longer needed" });
+    expect(w.ran).toEqual([]);
+    expect(w.queueEvents.map((e) => e.kind)).toEqual(["cancelled", "session_unbound"]);
+    expect(w.queueEvents[1]?.detail).toEqual({
+      task_id: 21047,
+      queue: w.edgeConfig.queue,
+      pool: w.edgeConfig.queue,
+      platform: null,
+      lane_id: null,
+      model_provider: null,
+      model_id: "muse",
+      model_variant: null,
+      session_id: "sess-21047",
+      trigger: "cancel",
+    });
+  });
+
+  test("a blocked task is unblocked here with the machine away, and its dep record is named as discarded", async () => {
+    const w = await primary();
+    w.net.hostUp = false;
+    const deps = w.queueTasks.find((t) => t.id === 21049)?.blocked_deps;
+    const res = await w.act("task.unblock", { task: 21049, reason: "the owner says so" });
+    expect(await res.json()).toEqual({ ok: true, result: { task: 21049, action: "unblock" } });
+    const task = w.queueTasks.find((t) => t.id === 21049);
+    expect(task?.status).toBe("queued");
+    expect(task?.blocked_deps).toBeNull();
+    expect(w.ran).toEqual([]);
+    expect(w.queueEvents).toHaveLength(1);
+    expect(w.queueEvents[0]).toMatchObject({ worker: "pm-console", task: 21049, kind: "dep_unblock_override" });
+    expect(w.queueEvents[0]?.detail).toEqual({
+      task_id: 21049,
+      queue: w.edgeConfig.queue,
+      pool: w.edgeConfig.queue,
+      platform: null,
+      lane_id: null,
+      model_provider: null,
+      model_id: null,
+      model_variant: null,
+      session_id: null,
+      reason: "the owner says so",
+      discarded_deps: deps,
+      via: "unblock_task_turso",
+    });
+    expect(w.queueCalls.map((c) => c.sql)).toContain(
+      "UPDATE tasks SET status = 'queued', blocked_deps = NULL, dep_next_recheck_at = NULL, dep_blocked_until = NULL, dep_recheck_seconds = NULL, updated_at = ? WHERE id = ? AND queue = ? AND status = 'blocked'",
+    );
+  });
+
+  test("cancelling and unblocking refuse what the broker refuses: no such task, a task that is not blocked, a quarantined packet", async () => {
+    const w = await primary();
+    w.net.hostUp = false;
+    const missing = await w.act("task.cancel", { task: 99999, reason: "gone" });
+    expect(missing.status).toBe(404);
+    expect(((await missing.json()) as { error: string }).error).toContain("no such task");
+    const notBlocked = await w.act("task.unblock", { task: 21048, reason: "nothing to release" });
+    expect(notBlocked.status).toBe(409);
+    expect(((await notBlocked.json()) as { error: string }).error).toContain("is queued, not blocked");
+    // A task the claim path quarantined: refused, and told to repair it.
+    const quarantined = w.queueTasks.find((t) => t.id === 21049);
+    if (!quarantined) throw new Error("fixture lost 21049");
+    quarantined.last_error = "quarantined by claim path: payload missing/empty (#5444)";
+    quarantined.payload = {};
+    const refused = await w.act("task.unblock", { task: 21049, reason: "let it go" });
+    expect(refused.status).toBe(409);
+    expect(((await refused.json()) as { error: string }).error).toContain("repair the packet first");
+    expect(w.queueTasks.find((t) => t.id === 21049)?.status).toBe("blocked");
+    // Nothing was written for any of the three.
+    expect(w.queueEvents).toEqual([]);
+    expect(w.queueCalls.every((c) => /^\s*SELECT/i.test(c.sql))).toBe(true);
+    expect(w.ran).toEqual([]);
+  });
+
+  test("a blocked task whose packet was repaired unblocks here, though its last_error still says quarantined", async () => {
+    const w = await primary();
+    w.net.hostUp = false;
+    const task = w.queueTasks.find((t) => t.id === 21049);
+    if (!task) throw new Error("fixture lost 21049");
+    task.last_error = "quarantined by claim path: payload missing/empty (#5444)";
+    const packet = triagePacket(w.edgeConfig.repo, w.edgeConfig.queue, 301, "Ranked fresh", "now", "2026-11-22T11:30:00Z");
+    task.payload = packet.payload;
+    task.title = packet.title;
+    task.body = packet.body;
+    task.priority = packet.priority;
+    task.dedupe_key = packet.dedupe_key;
+    task.max_attempts = 1000;
+    const res = await w.act("task.unblock", { task: 21049, reason: "repaired" });
+    expect(await res.json()).toEqual({ ok: true, result: { task: 21049, action: "unblock" } });
+    expect(w.queueTasks.find((t) => t.id === 21049)?.status).toBe("queued");
+    expect(w.queueEvents.map((e) => e.kind)).toEqual(["dep_unblock_override"]);
+  });
+
+  test("cancelling a task that is already cancelled answers done and writes nothing", async () => {
+    const w = await primary();
+    w.net.hostUp = false;
+    const first = await w.act("task.cancel", { task: 21048, reason: "twice" });
+    expect(first.status).toBe(200);
+    const calls = w.queueCalls.length;
+    const events = w.queueEvents.length;
+    const again = await w.act("task.cancel", { task: 21048, reason: "twice" });
+    expect(await again.json()).toEqual({ ok: true, result: { task: 21048, action: "cancel" } });
+    expect(w.queueEvents.length).toBe(events);
+    // Only reads: the row, and the board read again after.
+    expect(w.queueCalls.slice(calls).every((c) => /^\s*SELECT/i.test(c.sql))).toBe(true);
+    expect(w.ran).toEqual([]);
   });
 
   test("turned away for calling too often is not refused for the hour: the laptop does it meanwhile, and this side tries again in five minutes", async () => {
