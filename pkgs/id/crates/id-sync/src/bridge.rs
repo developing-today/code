@@ -898,7 +898,7 @@ mod tests {
     use id_core::waiting::WaitingLimits;
     use id_store::chain::{ChainExt, sign};
 
-    const BINDING: &str = "binding-1";
+    const BINDING: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     const NOW_MS: u64 = 0;
 
     // ----- fixtures -------------------------------------------------
@@ -1275,6 +1275,43 @@ mod tests {
         assert!(result.withholding.is_empty());
         assert!(result.acks.is_empty());
         let _server = handle.await.unwrap().unwrap();
+    }
+
+    /// Exercises the production native WebSocket transport against a
+    /// real local workerd/UserDO. The smoke runner starts wrangler and
+    /// supplies the test-harness URL; keeping process supervision out
+    /// of this crate leaves this test focused on the native protocol.
+    #[tokio::test]
+    #[ignore = "run via hosted-worker smoke/native-bridge.mjs"]
+    async fn live_hosted_worker_accepts_native_push_and_resume() {
+        let url = std::env::var("ID_HOSTED_BRIDGE_WS_URL")
+            .expect("the native bridge smoke runner sets ID_HOSTED_BRIDGE_WS_URL");
+        let (_dir, mut store) = open_store();
+        let events = make_events(9, 3);
+        store.bridge_ingest(&events, NOW_MS).unwrap();
+
+        let key = dalek_key(9);
+        let mut dialer = BridgeDialer::new(BINDING, key);
+        let mut transport = connect(&url).await.unwrap();
+        let first = dialer
+            .sync(&mut store, &mut transport, NOW_MS)
+            .await
+            .unwrap();
+        assert!(first.withholding.is_empty());
+        assert!(first.token.is_some());
+        assert_eq!(first.acks.iter().map(|ack| ack.refused).sum::<u64>(), 0);
+        assert_eq!(dialer.resume_token(), first.token.as_deref());
+
+        // A fresh socket exercises the hosted token store and the
+        // native dialer's RESUME path against the real Durable Object.
+        let mut transport = connect(&url).await.unwrap();
+        let resumed = dialer
+            .sync(&mut store, &mut transport, NOW_MS)
+            .await
+            .unwrap();
+        assert!(resumed.withholding.is_empty());
+        assert!(resumed.token.is_some());
+        assert!(resumed.acks.is_empty());
     }
 
     #[tokio::test]
