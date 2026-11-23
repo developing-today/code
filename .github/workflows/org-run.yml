@@ -402,7 +402,7 @@ jobs:
             user="nixbld${index}"
             if ! getent passwd "$user" >/dev/null; then
               useradd --system --no-create-home --home-dir /var/empty \
-                --shell /usr/sbin/nologin --gid nixbld "$user"
+                --shell /usr/sbin/nologin --gid nixbld --groups nixbld "$user"
             fi
           done
       - name: Run command
