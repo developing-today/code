@@ -14,6 +14,7 @@ Worked examples live in `pkgs/id/examples/`. Each app is a directory holding its
 | `examples/roc-text-counter/` | The same counter on the legacy plain-text presentation, importing no platform modules. |
 | `examples/roc-chat/` | Chat over the capability protocol: `chat.say` and `chat.history` through `RocCap`. |
 | `examples/roc-grid/` | The `RocGrid` library: a 4×3 byte grid with bounds-checked reads. |
+| `examples/roc-mind-map/` | Stable IDs with duplicate labels, a typed cross-link, refused cycles, preserved positions. |
 | `examples/roc-screen/` | The `Screen` and `Key` libraries: a structured screen document instead of text. |
 | `examples/lounge/` | The capability system end to end: subscriptions, arrival greetings through `chat.say`, and refusal counting. |
 | `examples/territory/` | A complete multiplayer game: at most 8 seated players on a 16×8 grid, adjacency-only claiming, seats that persist across leave, rejoin and restart. |
