@@ -482,6 +482,38 @@ describe("fresh GitHub reads while the host is away", () => {
     await w.browse("/console/api/doc/ops");
     expect(reads).toEqual(["prs:developing-today/code"]);
   });
+
+  test("a failed fresh read after a restart keeps the laptop's last pull requests", async () => {
+    const w = await setup({
+      freshRead: async () => {
+        throw new Error("GitHub is down");
+      },
+    });
+    w.data.prs = [
+      {
+        number: 7,
+        title: "Host PR",
+        draft: false,
+        url: "https://example.test/pr/7",
+        created: "2026-11-22T11:00",
+        author: "worker",
+        branch: "queue/7",
+      },
+    ];
+    await w.hostReads();
+    await w.link.now.once();
+    // The object restarts with the laptop away: nothing in memory.
+    w.edge.now = w.makeEdge();
+    w.net.hostUp = false;
+    w.now.t += 91_000;
+    await w.browse("/console/api/doc/ops");
+    await Promise.all(w.later);
+    // The last good list is still shown, and the failed read is said to have failed.
+    const again = await w.browse("/console/api/doc/ops");
+    const doc = (await again.json()) as Record<string, any>;
+    expect(doc.prs).toEqual(w.data.prs);
+    expect(doc.health.prs).toEqual({ ok: false, error: "GitHub is down" });
+  });
 });
 
 describe("the owner, at the edge", () => {

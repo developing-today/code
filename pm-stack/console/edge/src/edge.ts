@@ -510,6 +510,11 @@ export class Edge {
       try {
         this.docs.record("prs", await read("prs", cfg), this.now());
       } catch (error) {
+        // The stored copy is still the last good list: read it back
+        // before saying the fresh read failed, so the failure does not
+        // hide it. A failed read stamps the section's time, which is
+        // what decides whether the stored copy is ever loaded.
+        await this.docs.refresh("prs");
         this.docs.recordFailure("prs", error);
       } finally {
         this.prsRefresh = null;
