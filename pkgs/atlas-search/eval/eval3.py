@@ -15,6 +15,12 @@ Everything else is a faithful port of the v2 harness:
   top-30 fused by reciprocal rank fusion, k=60; the hybrid FTS branch
   uses words >3 chars WITHOUT the STOP filter and LIMIT 30, exactly as
   the v2 harness did).
+- Configuration note (#13283): this hybrid is the Python eval
+  lineage — top-30 branches, RRF k=60, vectors truncated under
+  --trunc (384 in the gate lineage). The production shape is a
+  different configuration (RRF k=10, pool 100 per branch, full 768
+  dimensions; see ../atlas_search.py). Numbers from this harness are
+  eval-lineage numbers; cite them with their configuration.
 - bge query prefix: same rule as eval_vectors.py ("bge" in model name ->
   "Represent this sentence for searching relevant passages: ").
 - ST models: queries encoded with prompt_name="query" so the model's own
