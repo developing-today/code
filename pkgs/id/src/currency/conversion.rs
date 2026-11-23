@@ -558,7 +558,7 @@ struct FoldedVerification {
 /// (#2063 §2.4) and never by verification.
 #[derive(Clone, Debug, Default)]
 pub struct ConversionUsage {
-    posted: BTreeMap<u128, u128>,
+    posted: BTreeMap<(IssuerId, u128), u128>,
 }
 
 impl ConversionUsage {
@@ -568,19 +568,24 @@ impl ConversionUsage {
         Self::default()
     }
 
-    /// The volume already posted against `authorisation_id`.
+    /// The volume already posted against `authorisation_id` of
+    /// `issuer`. Authorisation ids are scoped to their issuer, so
+    /// another issuer's usage under the same number is not counted.
     #[must_use]
-    pub fn used_volume(&self, authorisation_id: u128) -> u128 {
-        self.posted.get(&authorisation_id).copied().unwrap_or(0)
+    pub fn used_volume(&self, issuer: &IssuerId, authorisation_id: u128) -> u128 {
+        self.posted
+            .get(&(*issuer, authorisation_id))
+            .copied()
+            .unwrap_or(0)
     }
 
-    /// Commit `amount` of posted volume against
-    /// `authorisation_id`. Called by the execution layer when a
+    /// Commit `amount` of posted volume against `authorisation_id`
+    /// of `issuer`. Called by the execution layer when a
     /// conversion posts — never for a refused or failed one.
-    pub fn record_posted(&mut self, authorisation_id: u128, amount: u128) {
-        let used = self.used_volume(authorisation_id);
+    pub fn record_posted(&mut self, issuer: &IssuerId, authorisation_id: u128, amount: u128) {
+        let used = self.used_volume(issuer, authorisation_id);
         self.posted
-            .insert(authorisation_id, used.saturating_add(amount));
+            .insert((*issuer, authorisation_id), used.saturating_add(amount));
     }
 }
 
@@ -615,8 +620,8 @@ impl ConversionVerifier {
 
     /// Commit posted volume (execution layer only; see
     /// [`ConversionUsage::record_posted`]).
-    pub fn record_posted(&mut self, authorisation_id: u128, amount: u128) {
-        self.usage.record_posted(authorisation_id, amount);
+    pub fn record_posted(&mut self, issuer: &IssuerId, authorisation_id: u128, amount: u128) {
+        self.usage.record_posted(issuer, authorisation_id, amount);
     }
 
     /// Verify one conversion submission, composing the checks
@@ -758,7 +763,7 @@ impl ConversionVerifier {
                 max_amount: authorisation.max_amount,
             });
         }
-        let used = self.usage.used_volume(submission.authorisation_id);
+        let used = self.usage.used_volume(&submission.issuer, submission.authorisation_id);
         let remaining_volume = authorisation.total_cap.saturating_sub(used);
         if submission.amount > remaining_volume {
             return Err(FailedPreSubmit::CapExhausted { remaining_volume });
@@ -1069,7 +1074,7 @@ mod tests {
         expected: &FailedPreSubmit,
     ) {
         let ledger = InMemoryLedger::default();
-        let used_before = verifier.usage().used_volume(submission.authorisation_id);
+        let used_before = verifier.usage().used_volume(&submission.issuer, submission.authorisation_id);
         let error = verifier
             .verify(control, submission)
             .expect_err("submission must be refused pre-flight");
@@ -1080,7 +1085,7 @@ mod tests {
         );
         assert_eq!(error.disposition(), "FAILED_PRE_SUBMIT");
         assert_eq!(
-            verifier.usage().used_volume(submission.authorisation_id),
+            verifier.usage().used_volume(&submission.issuer, submission.authorisation_id),
             used_before,
             "a refused submission must not commit usage"
         );
@@ -1114,17 +1119,30 @@ mod tests {
         assert_eq!(verified.dest_amount, 81);
         assert_eq!(verified.remaining_volume, 1_000_000 - 100);
         // Verification alone commits no usage.
-        assert_eq!(verifier.usage().used_volume(7), 0);
+        assert_eq!(verifier.usage().used_volume(&super::super::issuer_id(&lp_key()), 7), 0);
     }
 
     #[test]
     fn posted_usage_reduces_remaining_volume() {
         let mut verifier = ConversionVerifier::new();
-        verifier.record_posted(7, 400_000);
+        verifier.record_posted(&super::super::issuer_id(&lp_key()), 7, 400_000);
         let verified = verifier
             .verify(&eligible_control(), &valid_submission())
             .unwrap();
         assert_eq!(verified.remaining_volume, 1_000_000 - 400_000 - 100);
+    }
+
+    #[test]
+    fn posted_usage_is_scoped_to_its_issuer() {
+        // Oracle: #13698 acceptance — authorisation ids are per
+        // issuer, so one LP's posted volume must not refuse
+        // another LP's same-numbered authorisation.
+        let mut verifier = ConversionVerifier::new();
+        let lp = super::super::issuer_id(&lp_key());
+        verifier.record_posted(&lp, 7, 1_000_000);
+        let other = super::super::issuer_id(&other_key());
+        assert_eq!(verifier.usage().used_volume(&other, 7), 0);
+        assert_eq!(verifier.usage().used_volume(&lp, 7), 1_000_000);
     }
 
     #[test]
@@ -1306,7 +1324,7 @@ mod tests {
         // Oracle: #3801 acceptance — cap-exhausted, zero ledger
         // writes. Posted volume leaves less than the amount.
         let mut verifier = ConversionVerifier::new();
-        verifier.record_posted(7, 1_000_000 - 50);
+        verifier.record_posted(&super::super::issuer_id(&lp_key()), 7, 1_000_000 - 50);
         assert_pre_submit(
             &verifier,
             &eligible_control(),
@@ -1431,7 +1449,7 @@ mod tests {
         expected: &FailedPreSubmit,
     ) {
         let ledger = InMemoryLedger::default();
-        let used_before = verifier.usage().used_volume(submission.authorisation_id);
+        let used_before = verifier.usage().used_volume(&submission.issuer, submission.authorisation_id);
         let error = verifier
             .verify_quoted(control, submission, quote_id)
             .expect_err("quoted submission must be refused pre-flight");
@@ -1442,7 +1460,7 @@ mod tests {
         );
         assert_eq!(error.disposition(), "FAILED_PRE_SUBMIT");
         assert_eq!(
-            verifier.usage().used_volume(submission.authorisation_id),
+            verifier.usage().used_volume(&submission.issuer, submission.authorisation_id),
             used_before,
             "a refused submission must not commit usage"
         );
@@ -1493,7 +1511,7 @@ mod tests {
         // The gateway's book holds the issued quote; issuance
         // committed no usage.
         assert_eq!(verifier.quote(42), Some(&quote));
-        assert_eq!(verifier.usage().used_volume(7), 0);
+        assert_eq!(verifier.usage().used_volume(&super::super::issuer_id(&lp_key()), 7), 0);
     }
 
     #[test]
@@ -1674,6 +1692,6 @@ mod tests {
         assert_eq!(executed.fee(), 1);
         assert_eq!(executed.remaining_volume, 1_000_000 - 100);
         // Execution verification alone commits no usage.
-        assert_eq!(verifier.usage().used_volume(7), 0);
+        assert_eq!(verifier.usage().used_volume(&super::super::issuer_id(&lp_key()), 7), 0);
     }
 }
