@@ -50,6 +50,7 @@ pub mod ip_evidence;
 pub mod iroh_hash;
 pub mod json_unique;
 pub mod key_envelope;
+pub mod location_ref;
 pub mod membership;
 pub mod namespace_definition;
 pub mod numeric_order;
