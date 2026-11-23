@@ -30,7 +30,11 @@ import sys
 
 import fq_common
 
-BATCH = 100
+# Rows per D1 read page and per pipeline write batch. Sized for the
+# measured per-request latency of the laptop-to-Turso path (seconds
+# per request, #8584): at 100 the restore ran at ~3 rows/s.
+READ_PAGE = 1000
+BATCH = 1000
 
 
 def _require_env(name):
@@ -79,13 +83,13 @@ def d1_read_table(d1, db_id, table, create_sql):
     for _page in range(fq_common.MAX_PAGES):
         rows = d1.query(
             db_id,
-            f'SELECT * FROM "{table}" LIMIT {fq_common.PAGE_ROWS} OFFSET {offset}',
+            f'SELECT * FROM "{table}" LIMIT {READ_PAGE} OFFSET {offset}',
         )
         for row in rows:
             yield tuple(d1_value(row[c]) for c in columns)
-        if len(rows) < fq_common.PAGE_ROWS:
+        if len(rows) < READ_PAGE:
             return
-        offset += fq_common.PAGE_ROWS
+        offset += READ_PAGE
     raise RuntimeError(
         f"{table}: D1 pagination exceeded {fq_common.MAX_PAGES} pages; "
         "refusing to page unboundedly"
