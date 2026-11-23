@@ -248,7 +248,7 @@ fn unknown_target_kind_is_unsupported_target_kind() {
         let error = LinkTarget::from_value(&value).unwrap_err();
         assert_eq!(error.class(), "unsupported_target_kind");
         assert!(
-            matches!(error, LinkError::UnsupportedTargetKind { ref k } if k == kind),
+            matches!(error, LinkError::UnsupportedTargetKind { kind: ref got } if got == kind),
             "got {error}"
         );
     }
