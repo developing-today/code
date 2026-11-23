@@ -155,10 +155,13 @@ fn gate_a_bit_identity() {
 
     // Version guard (code#6663): bit-identity is a version-matched
     // claim. The fixtures were recorded under the provenance runtime
-    // (onnxruntime 1.31.1, atlas venv); the nix closure's 1.27.1
-    // produces ~1e-7 deltas on most components of every probe, which
-    // reads as a parity failure but is only a version mismatch. Fail
-    // loudly as NOT APPLICABLE instead of printing a parity table.
+    // (onnxruntime 1.31.1, atlas venv); a different runtime — e.g.
+    // nixpkgs' 1.27.1 — produces ~1e-7 deltas on most components of
+    // every probe, which reads as a parity failure but is only a
+    // version mismatch. (The packaged nix closure carries the
+    // vendored 1.31.1, code#6765, so its library passes this guard.)
+    // Fail loudly as NOT APPLICABLE instead of printing a parity
+    // table.
     match loaded_ort_version(&ort_lib) {
         Some(v) if v != fixture.provenance.onnxruntime_version => panic!(
             "Gate A NOT APPLICABLE: fixtures were recorded under ONNX Runtime {} \

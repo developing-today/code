@@ -252,7 +252,13 @@ impl Row {
 /// The production vector table (the CLI's `VEC_TABLE`).
 pub const DEFAULT_VEC_TABLE: &str = "vec_snowflake_m_v2_768_f32";
 
-/// The production embedder identity (the CLI's `MODEL`).
+/// The production embedder identity (the CLI's `MODEL`): the
+/// HuggingFace org/name spelling. Shard and staging manifests
+/// stamp a different string for the same model —
+/// [`EMBEDDING_MODEL_ID`](crate::shards::EMBEDDING_MODEL_ID), the
+/// bare lowercase name — and the two spellings are compared only
+/// within their own subsystems; no code converts between them
+/// (#13284).
 pub const DEFAULT_MODEL: &str = "Snowflake/snowflake-arctic-embed-m-v2.0";
 
 /// How the vector branch gathers its pool. The default stays
