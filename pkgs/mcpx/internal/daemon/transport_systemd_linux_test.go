@@ -23,30 +23,30 @@ func TestTCPSystemd(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer listener.Close()
+			closeOnCleanup(t, listener)
 			f, err := listener.File()
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer f.Close()
+			closeOnCleanup(t, f)
 			if mode == "file" {
 				f, err = os.Open(os.DevNull)
 				if err != nil {
 					t.Fatal(err)
 				}
-				defer f.Close()
+				closeOnCleanup(t, f)
 			}
 			if mode == "unix" {
 				other, err := net.ListenUnix("unix", &net.UnixAddr{Name: filepath.Join(t.TempDir(), "listener.sock"), Net: "unix"})
 				if err != nil {
 					t.Fatal(err)
 				}
-				defer other.Close()
+				closeOnCleanup(t, other)
 				f, err = other.File()
 				if err != nil {
 					t.Fatal(err)
 				}
-				defer f.Close()
+				closeOnCleanup(t, f)
 			}
 			cmd := exec.Command(os.Args[0], "-test.run=^TestTCPSystemdChild$")
 			for _, entry := range os.Environ() {
@@ -64,6 +64,15 @@ func TestTCPSystemd(t *testing.T) {
 			}
 		})
 	}
+}
+
+func closeOnCleanup(t *testing.T, closer interface{ Close() error }) {
+	t.Helper()
+	t.Cleanup(func() {
+		if err := closer.Close(); err != nil {
+			t.Errorf("close: %v", err)
+		}
+	})
 }
 
 func TestTCPSystemdChild(t *testing.T) {
@@ -107,7 +116,7 @@ func TestTCPSystemdChild(t *testing.T) {
 	switch mode {
 	case "bad-pid", "missing-pid", "bad-count", "missing-count", "file", "unix", "closed", "address", "port":
 		if err == nil {
-			listener.Close()
+			closeOnCleanup(t, listener)
 			t.Fatal("activation silently succeeded or fell back")
 		}
 		expected := map[string]string{"bad-pid": "LISTEN_PID", "missing-pid": "LISTEN_PID", "bad-count": "LISTEN_FDS", "missing-count": "LISTEN_FDS", "file": "inspect fd 3", "unix": "not a TCP listener", "closed": "inspect fd 3", "address": "does not match", "port": "does not match"}[mode]
@@ -123,7 +132,7 @@ func TestTCPSystemdChild(t *testing.T) {
 			return
 		}
 	default:
-		defer listener.Close()
+		closeOnCleanup(t, listener)
 		if mode == "absent" {
 			if listener.Addr().String() == target {
 				t.Fatal("adopted without activation")
@@ -154,12 +163,12 @@ func TestTCPSystemdChild(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer client.Close()
+	closeOnCleanup(t, client)
 	server, err := listener.Accept()
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer server.Close()
+	closeOnCleanup(t, server)
 	if _, err := fmt.Fprintln(server, "ok"); err != nil {
 		t.Fatal(err)
 	}

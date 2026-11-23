@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -1979,7 +1980,7 @@ func TestEventsReconnectWaitsForTheConfiguredDelay(t *testing.T) {
 	select {
 	case event := <-eventsSeen:
 		if event.Kind != events.CallFinished || event.Seq != 1 {
-			t.Fatalf("retry delivered unexpected event kind %q", event.Kind)
+			t.Fatalf("first stream delivered unexpected event: %+v", event)
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("client did not process the event delivered on the first stream")
@@ -1993,7 +1994,10 @@ func TestEventsReconnectWaitsForTheConfiguredDelay(t *testing.T) {
 		t.Fatal("client did not process the event delivered on reconnect")
 	}
 	select {
-	case <-streamDone:
+	case err := <-streamDone:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("event stream stopped with %v, want context.Canceled", err)
+		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("event stream did not stop after cancellation")
 	}

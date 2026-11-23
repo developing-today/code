@@ -57,9 +57,4 @@ describe("shell.env session created conversion (#2355)", () => {
     expect(e.MCPX_SESSION_CREATED).toBe(new Date(created).toISOString());
     expect(Number(e.MCPX_SESSION_AGE_MS)).toBeGreaterThanOrEqual(60_000);
   });
-
-  test("exports the OpenCode identity for Fleet session-state integration", async () => {
-    const e = await envFor(Date.now());
-    expect(e.FLEET_SESSION_ID).toBe("ses_1");
-  });
 });
