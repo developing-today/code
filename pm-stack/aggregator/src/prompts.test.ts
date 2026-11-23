@@ -185,6 +185,7 @@ describe("syncBlockHttpResult (S3 response shapes)", () => {
     replyTo: null,
     refs: [],
     notify: false,
+    attachments: [],
   };
 
   test("answered maps to the design §3.7 body at 200", () => {

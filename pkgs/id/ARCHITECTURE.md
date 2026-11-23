@@ -43,8 +43,10 @@ crate is consumed outside `pkgs/id/`).
 | `id-core` | Public surface (shared core) | Depended on by 10 crates. The root re-exports a subset (`abuse`, `access`, `connectivity`, `discovery`, `frames`, `holders`, `membership`, `rejection`, `residency`, `sync_method`, `tuple`, `waiting`, plus `KEY_FILE`, `CLIENT_KEY_FILE`, `SERVE_LOCK`, `is_node_id`). Modules not re-exported by `id` are internal to the workspace. |
 | `id-caps`, `id-store`, `id-events`, `id-groups`, `id-sync`, `id-worlds`, `id-directory`, `id-web` | Internal | Used only by sibling crates and the root. |
 | `id-cli` | Internal (binary) | Only the root depends on it. |
-| `id-native-shell` | Internal (app) | Not a default workspace member. |
-| `id-currency-registry`, `id-render` | Internal, no dependents | Candidates for removal or for documenting as unused. |
+| `id-config` | Internal | Only the root depends on it. |
+| `id-currency-registry` | Internal | Only the root depends on it. |
+| `id-native-shell`, `id-hw-shell` | Internal (app) | Workspace members, but not default members; no dependents. |
+| `id-render`, `id-import-notion` | Internal, no dependents | Candidates for removal or for documenting as unused. |
 
 Standalone examples and benchmarks (`examples/`, `benchmarks`) are not
 public API. Vendored crates (`vendor/p2panda-sync`, `vendor/p2panda-encryption`)

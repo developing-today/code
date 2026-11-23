@@ -61,7 +61,7 @@ usage: repo-queue session <status|result|list> [HANDLE|OWNER/REPO#RUN_ID] [--min
 
 **Behaviour.** Session records are a labeled **STOPGAP**: a local JSON store at `~/.local/state/fleet-place/sessions.json` (same path/shape as the reference implementation, so records migrate when the designed placement-sessions table lands). The store is lock-guarded on write. `session status <handle>` refreshes the record from GitHub and prints `<handle>: state=<state> surface=<id> run=<url>` (or the record as JSON with `--json`).
 
-Known discrepancy: `--help` is **not** treated as help here. The token after the subcommand is taken as the HANDLE, so `session status --help` looks up a session literally named `--help` and fails with `repo-queue: no session with handle --help in …/sessions.json`. Only a bare `session --help` (no subcommand) prints usage. The flags documented here come from source. This chapter documents the source behaviour.
+Help: a help flag after the subcommand prints the session usage and exits 0 — `session status --help` asks for help; it does not look up a session named `--help` (#13175). The flags documented here come from source.
 
 Exit codes: 0 ok · 2 usage / no such handle / missing handle (`session status needs a HANDLE`).
 
@@ -85,7 +85,7 @@ usage: repo-queue session <status|result|list> [HANDLE|OWNER/REPO#RUN_ID] [--min
 
 **Behaviour.** Same refresh as `status`; the output adds `terminal: bool` (`succeeded|failed|cancelled` are terminal) and, when not terminal, the note `not terminal yet — reconnect with the same handle`. Text form: `<handle>: <state> (terminal=<bool>) run=<url>`.
 
-Known discrepancy: as with `status`, `--help` after the subcommand is treated as a handle, not as help (see `session status`). Flags are documented from source.
+Help: as with `status`, a help flag after the subcommand prints the session usage (see `session status`). Flags are documented from source.
 
 Exit codes: 0 ok · 2 usage / no such handle / missing handle.
 
@@ -126,7 +126,7 @@ usage: repo-queue surfaces [--registry PATH]
 | ------------ | --------- | -------------------------------- | ----------------------- |
 | `--registry` | file path | resolution order (see Behaviour) | Registry file to print. |
 
-**Behaviour.** Prints the resolved placement registry verbatim as pretty JSON, exit 0. (The help-dump `queue_surfaces.txt` is exactly this output, not help text.) Registry resolution order: `--registry <path>` or env `FLEET_PLACE_REGISTRY` → a home copy → the source-tree relative path → the registry **embedded in the binary**. Registry shape (version 2): `{comment, version, laptop: {busy, busy_source, note}, owners: {<owner>: {concurrent_jobs_cap, concurrent_macos_cap, plan, private_minutes_monthly}}, surfaces: […]}`.
+**Behaviour.** Prints the resolved placement registry verbatim as pretty JSON, exit 0. `surfaces --help` prints a short usage instead of the registry. Registry resolution order: `--registry <path>` or env `FLEET_PLACE_REGISTRY` → a home copy → the source-tree relative path → the registry **embedded in the binary**. Registry shape (version 2): `{comment, version, laptop: {busy, busy_source, note}, owners: {<owner>: {concurrent_jobs_cap, concurrent_macos_cap, plan, private_minutes_monthly}}, surfaces: […]}`.
 
 The shipped surfaces: `fleet-personal` (github-actions, dezren39/fleet, App installation, active), `fleet-org` (github-actions, developing-today/fleet, user-token dispatch, active; also the Blacksmith host), `fleet-forks` (github-actions, developing-today-forks/fleet, **public targets only**, active), `org-run` (standby, retained for manual use; placement prefers fleet-org), `fleet-org-blacksmith` (kind `blacksmith`, Linux-only fallback; budget 3000 free min/mo, paid cap 0 — paid overage disabled unless a dispatch explicitly supplies `--allow-paid-blacksmith`), `codespace-overflow` (kind `codespace`, status `pending-scope`, max 3 live, 180 core-hours/mo budget; uses existing codespaces only, never creates them), `laptop` (kind `laptop`, `handoff-only` — a placement record only; this adapter never runs shell commands on the laptop). Targets accept exact `owner/repo`, `owner/*`, or `*`. `sticky_queue_threshold: 2` and `selection_priority` (10 for the active runners, 20 for org-run) drive the cascade.
 

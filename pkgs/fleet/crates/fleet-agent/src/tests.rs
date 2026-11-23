@@ -24,7 +24,10 @@ use serde_json::{Value, json};
 
 use crate::shell::{self, Options, Target};
 use crate::shortlist::{self, Entry, Shortlist};
-use crate::{AgentError, EXIT_DOWN, EXIT_NO_WORK, EXIT_OK, Out, World, argv, execute};
+use crate::{
+    AgentError, EXIT_DOWN, EXIT_NO_WORK, EXIT_OK, Out, USAGE, USAGE_FOOTER, World, argv, execute,
+    verb_usage,
+};
 
 static NEXT_DIR: AtomicU32 = AtomicU32::new(0);
 
@@ -298,6 +301,9 @@ fn next_uses_the_registered_worker_for_a_known_lane() {
         ("not-code-e", "repo-worker-opencode"),
         ("not-code-f", "repo-worker-code"),
         ("not-code-g", "repo-worker-nix"),
+        ("oc-code-01", "repo-worker-code"),
+        ("oc-code-04", "repo-worker-code"),
+        ("oc-code-08", "repo-worker-code"),
     ] {
         let fake = Fake::new();
         fake.on(INBOX, vec![empty_inbox()]).on(
@@ -3189,4 +3195,23 @@ fn the_step_limit_is_a_positive_number_of_seconds_or_the_default() {
         crate::step_limit(Some(" 7 ")),
         std::time::Duration::from_secs(7)
     );
+}
+
+/// #13175 oracle: every agent verb has its own help — it starts
+/// with the verb's own usage line, ends with the shared footer,
+/// and is not the shared USAGE; USAGE itself ends with the footer
+/// so the two cannot drift apart.
+#[test]
+fn every_agent_verb_has_its_own_help() {
+    for verb in ["kinds", "enroll", "doctor", "next", "shortlist"] {
+        let text = verb_usage(verb).unwrap_or_else(|| panic!("{verb} must have usage"));
+        assert!(
+            text.starts_with(&format!("usage: fleet agent {verb}")),
+            "{verb} help must open with its own usage line: {text}"
+        );
+        assert!(text.ends_with(USAGE_FOOTER), "{verb}: {text}");
+        assert_ne!(text, USAGE, "{verb} help must not be the shared text");
+    }
+    assert!(verb_usage("bogus").is_none());
+    assert!(USAGE.ends_with(USAGE_FOOTER));
 }

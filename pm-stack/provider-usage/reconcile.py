@@ -19,6 +19,12 @@ window limit/reset, status — each naming the winning source. It never
 edits any source: corrections flow through normal edit/PR paths with
 the diff attached.
 
+fee_period vocabularies differ by leg: the plan store's schema admits
+monthly/yearly/once, the tracker's approved plan-facts schema uses
+month/year. The diff canonicalises fee_period to the tracker vocabulary
+for comparison only (see PERIOD_ALIASES); findings always report each
+leg's raw value.
+
 Exit codes: 0 = ran (findings or no-drift printed); 2 = missing plan
 store (failure finding); 3 = unreadable input.
 """
@@ -27,6 +33,17 @@ import argparse, json, re, sys
 from pathlib import Path
 
 FIELDS = ("fee_amount", "fee_period", "window", "limit", "reset", "status")
+
+# Store-leg fee_period values mapped to the tracker vocabulary. `once`
+# has no tracker equivalent and passes through unchanged, so a one-off
+# fee still mismatches any recurring tracker period.
+PERIOD_ALIASES = {"monthly": "month", "yearly": "year"}
+
+
+def _canon(field, value):
+    if field == "fee_period" and isinstance(value, str):
+        return PERIOD_ALIASES.get(value, value)
+    return value
 
 
 def load_store(path):
@@ -106,7 +123,7 @@ def diff(store, tracker, measured):
                 for n, r in (("measured", m), ("plan-store", s), ("tracker", t))
                 if r and r.get(f) is not None
             }
-            if len(set(map(str, vals.values()))) > 1:
+            if len({str(_canon(f, v)) for v in vals.values()}) > 1:
                 winner = next(
                     n for n in ("measured", "plan-store", "tracker") if n in vals
                 )

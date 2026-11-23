@@ -69,7 +69,7 @@ usage: repo-queue fallback scan [--repo <repo>] [--limit <1..100>] [--lease-min 
 
 **Behaviour.** Sweeps the fallback repos' labelled issues (`queue/queued`, `queue/claimed`, `queue/blocked`) and folds each issue's claim state. Output JSON: `{"mode":"fallback", "generated_at", "lease_seconds", "items": [{"repo","number","title","url","labels","blocked","claim": <state JSON>}], "summary": {"total", "claimable"}, "notes": […]}`. Items are ranked claimable first (free/released/stale), then live, then contested/blocked; a blocked item never ranks claimable even if its marker fold reads free — the label is the block. Per-issue comment-read failures land in `notes` and the issue is folded with no markers rather than failing the sweep.
 
-Known discrepancy: the group usage line in `queue_fallback.txt` (and source `GROUP_USAGE`) summarizes `scan <repo> <issue-number>`, but `fallback scan` takes **no positionals at all** (they are a usage error) — its repo filter is the `--repo` flag. The same top-level usage additionally **omits `complete`** from the fallback subcommand list while the fallback group usage and the implementation both include it. This chapter documents the implementation behaviour.
+Help: the group usage line lists `scan [--repo <repo>] [--limit <1..100>] [--lease-min <minutes>]` — `fallback scan` takes **no positionals at all** (they are a usage error); its repo filter is the `--repo` flag. The top-level usage lists the full fallback subcommand set, `complete` included. This chapter documents the implementation behaviour.
 
 Exit codes: 0 ok · 2 usage (including positionals, out-of-range `--limit`) · 3 GitHub transport failed.
 

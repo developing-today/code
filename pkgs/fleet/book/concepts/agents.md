@@ -9,9 +9,9 @@ the same `agent` capability.
 
 Source: https://github.com/developing-today/code/blob/main/pkgs/fleet/crates/fleet-agent/src/lib.rs
 
-As with the bridge, every per-verb `--help` prints the same shared usage
-text; there is no per-verb help in source. This chapter is the per-verb
-reference.
+As with the bridge, every verb has its own `--help`: the verb's
+synopsis and description over the shared output/exit-code footer.
+This chapter is the per-verb reference.
 
 ## Kinds and seat shapes: 16 × 3
 

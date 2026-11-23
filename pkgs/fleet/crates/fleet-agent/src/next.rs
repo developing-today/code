@@ -457,6 +457,14 @@ fn registered_lane_worker(lane: &str) -> Option<&'static str> {
     if lane == "not-code-d" {
         return Some("repo-worker-openchamber");
     }
+    // The constant OpenChamber lanes (`oc-code-01` .. `oc-code-08`)
+    // belong to the code worker; their suffix is a number, not the
+    // single letter the family split below expects (#6853).
+    if let Some(suffix) = lane.strip_prefix("oc-code-") {
+        if !suffix.is_empty() && suffix.bytes().all(|b| b.is_ascii_digit()) {
+            return Some("repo-worker-code");
+        }
+    }
 
     let (family, suffix) = lane.rsplit_once('-')?;
     if suffix.len() != 1 || !suffix.bytes().all(|b| b.is_ascii_lowercase()) {

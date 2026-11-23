@@ -29,7 +29,7 @@ fleet serve <role> [<role> ...]
 - Supervision is fail-fast: the supervisor polls the threads on a 100 ms tick; **the first role thread to return or panic takes the whole process down** (the external supervisor restarts the unit). The process exit code is the role's own code, except that a role exiting cleanly (code 0) is converted to exit **1** — a daemon role returning at all is abnormal — and a panic is also exit 1. The role is named on stderr either way.
 - One composition subtlety: the `proxy` role inside a list runs co-hosted, which **disables the proxy's idle-exit**, so an idle proxy cannot exit the shared process and kill its siblings.
 
-Known discrepancy: a serve list has **no `--help` form at all** — appending `--help` to a two-role list is the hard error above, not help. Single-role `--help` works, but for the two brokers it returns only the generic serve domain help (see below).
+Help: appending `--help` to a two-role list prints the serve domain help and exits 0 — a list has no single role to name. Single-role `--help` prints that role's own usage, for the two brokers as well (see below).
 
 If the invocation cannot use a role at all (not in this build, narrowed out by the invocation name, or disabled by config), `serve` answers with the capability stub on stderr, always **exit 69**.
 
@@ -59,7 +59,7 @@ Runs the repo work queue as a resident service. Any trailing argument is rejecte
 - **Secrets dependency:** `QUEUE_BROKER_SECRETS_URL` (default `http://100.99.113.103:4800`, or `unix://<path>` for the secrets broker's socket) and `QUEUE_BROKER_SECRETS_TOKEN_FILE` (default `~/.config/secrets-broker/token`).
 - **Startup ordering:** the listener binds _first_, then the Turso backend comes up on a startup thread, so `/healthz` answers immediately and queue verbs answer exit 3 with a `turso_pending` reason until the backend is ready. A backend that cannot come up within its retry budget still exits the broker with 3 so the supervisor restarts it.
 
-Known discrepancy: there is no role-specific help for this role; `fleet serve queue-broker --help` prints the generic serve domain help.
+Help: `fleet serve queue-broker --help` prints this role's own usage — the environment configuration surface below — and exits 0.
 
 ### Exit codes
 
@@ -101,7 +101,7 @@ The broker's full semantics — the serving gate, cache-first reads, read-throug
 
 Endpoints (header `X-Agent-Token` required on everything except `/health`; identical over TCP and the Unix socket): `GET /health`, `GET /secrets` (names only, sorted), `GET /secret/<name>`, `POST /refresh`.
 
-Known discrepancy: there is no role-specific help for this role; `fleet serve secrets-broker --help` prints the generic serve domain help.
+Help: `fleet serve secrets-broker --help` prints this role's own usage — the environment configuration surface below — and exits 0.
 
 ### Exit codes
 

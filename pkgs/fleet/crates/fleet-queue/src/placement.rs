@@ -1902,9 +1902,23 @@ fn run_dispatch(args: &[String]) -> R<i32> {
 const SESSION_USAGE: &str = "usage: repo-queue session <status|result|list> [HANDLE|OWNER/REPO#RUN_ID] \
 [--mine] [--json] [--registry PATH]";
 
+/// True when a session subcommand's tail asks for help. A help flag
+/// is never a session handle: `session status --help` used to look
+/// up a session literally named `--help` and error (#13175).
+fn session_help_requested(sub: &str, rest: &[String]) -> bool {
+    matches!(sub, "status" | "result" | "list")
+        && rest
+            .get(1..)
+            .is_some_and(|tail| tail.iter().any(|a| matches!(a.as_str(), "--help" | "-h")))
+}
+
 fn run_session(args: &[String]) -> R<i32> {
     let (cli, rest) = extract_common(args)?;
     let sub = rest.first().map(|s| s.as_str()).unwrap_or("");
+    if session_help_requested(sub, &rest) {
+        println!("{SESSION_USAGE}");
+        return Ok(0);
+    }
     let gh = RealGh::new();
     // #13146: the session mirror to the queue backend (best-effort).
     let remote = remote::session_remote();
@@ -2043,8 +2057,14 @@ fn run_session(args: &[String]) -> R<i32> {
     }
 }
 
+const SURFACES_USAGE: &str = "usage: repo-queue surfaces [--json] [--registry PATH]\n\nPrints the placement surface registry as JSON.";
+
 fn run_surfaces(args: &[String]) -> R<i32> {
-    let (cli, _rest) = extract_common(args)?;
+    let (cli, rest) = extract_common(args)?;
+    if rest.iter().any(|a| matches!(a.as_str(), "--help" | "-h")) {
+        println!("{SURFACES_USAGE}");
+        return Ok(0);
+    }
     let registry = registry_value(&cli)?;
     println!(
         "{}",
@@ -3345,5 +3365,28 @@ mod tests {
         assert!(parse_timeout_minutes("121").is_err());
         assert!(parse_timeout_minutes("abc").is_err());
         assert!(parse_timeout_minutes("").is_err());
+    }
+
+    /// #13175 oracle: a help flag after a session subcommand is a
+    /// help request, never a handle; a real handle is not.
+    #[test]
+    fn session_help_flag_is_not_a_handle() {
+        let args = |xs: &[&str]| xs.iter().map(|x| x.to_string()).collect::<Vec<String>>();
+        assert!(session_help_requested(
+            "status",
+            &args(&["status", "--help"])
+        ));
+        assert!(session_help_requested("result", &args(&["result", "-h"])));
+        assert!(session_help_requested("list", &args(&["list", "--help"])));
+        assert!(!session_help_requested(
+            "status",
+            &args(&["status", "fp_abc123"])
+        ));
+        assert!(!session_help_requested("status", &args(&["status"])));
+        assert!(!session_help_requested(
+            "bogus",
+            &args(&["bogus", "--help"])
+        ));
+
     }
 }

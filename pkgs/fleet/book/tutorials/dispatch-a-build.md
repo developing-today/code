@@ -182,11 +182,9 @@ What can go wrong, and the fix:
   the handle is not in this seat's local store. Handles are local —
   another seat's store does not have your record. Use the portable
   reference instead (Step 4), which resolves live without the store.
-- Do not pass `--help` to `session status` or `session result`: those
-  subcommands do not special-case it, so the token after the subcommand
-  is taken as the handle and you get exactly the "no session with handle
-  --help" error above. Only a bare `fleet queue session --help` prints
-  the usage.
+- Passing `--help` to `session status` or `session result` is safe:
+  a help flag after the subcommand prints the session usage and exits 0
+  — it is never taken as a handle.
 
 ## Step 4: Refer to a run portably
 
