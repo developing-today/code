@@ -25,7 +25,7 @@ import { Ops } from "../src/ops.ts";
 import { type Deps, handle, heldRunner, marked } from "../src/server.ts";
 import { memoryStore } from "../src/store.ts";
 import { EdgeLink } from "../src/sync.ts";
-import { browser, signer } from "./support.ts";
+import { asThePlatformFetch, browser, signer } from "./support.ts";
 
 const HOST = "pm.example";
 const OWNER = "owner@example.com";
@@ -451,9 +451,15 @@ async function setup(options: { direct?: boolean } = {}) {
     new Edge({
       kv,
       now: clock,
-      fetchImpl: outward as never,
+      // As the Worker runtime's fetch is: not to be called as a method.
+      fetchImpl: asThePlatformFetch(outward) as never,
       direct: options.direct
-        ? { enabled: true, githubToken: "gh-test", queueToken: "queue-test", fetchImpl: directFetch }
+        ? {
+            enabled: true,
+            githubToken: "gh-test",
+            queueToken: "queue-test",
+            fetchImpl: asThePlatformFetch(directFetch) as typeof directFetch,
+          }
         : undefined,
       setAlarm: async (at) => {
         alarm.at = at;
@@ -810,6 +816,7 @@ describe("before the host's first report", () => {
       hostVersion: null,
       androidBuild: null,
       androidRelease: null,
+      androidReleaseTrouble: null,
       answered: 0,
       deferred: 0,
       version: "test",
@@ -1706,6 +1713,12 @@ describe("the Android build", () => {
     w.now.t += 60_000;
     expect((await ask())?.name).toBe("2026.11.23-a3a547e");
     expect(w.github.asked.length).toBe(4);
+    // Health says why it could not be asked, to anyone: from outside,
+    // "none published" and "could not ask" must not look the same.
+    const trouble = async () =>
+      ((await (await w.browse("/console/health", { token: null })).json()) as Record<string, unknown>)
+        .androidReleaseTrouble;
+    expect(await trouble()).toBe("github: connection reset");
     // With GitHub out of reach the file cannot be fetched either: the download falls back to the laptop.
     w.build.bytes = apk(1);
     w.build.at = w.now.t;
@@ -1717,6 +1730,8 @@ describe("the Android build", () => {
     w.github.version = null;
     w.now.t += 60_000;
     expect(await ask()).toBeNull();
+    // And once GitHub answers again (here with "none"), there is no trouble to report.
+    expect(await trouble()).toBeNull();
   });
 
   test("a copy whose replacement stops half-way is not handed out as either build", async () => {

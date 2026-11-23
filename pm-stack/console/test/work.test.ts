@@ -15,6 +15,7 @@ import { Docs } from "../src/docs.ts";
 import { type Fetch, OpError, Ops, type Run } from "../src/ops.ts";
 import { type Deps, handle, loaders } from "../src/server.ts";
 import { promptPacket, Work } from "../src/work.ts";
+import { asThePlatformFetch } from "./support.ts";
 
 const CFG = readConfig({ HOME: "/h" });
 const REPO = "developing-today/code";
@@ -74,7 +75,8 @@ function world(opts: {
     const a = opts.commands?.(argv, o?.stdin) ?? "{}";
     return typeof a === "string" ? { code: 0, stdout: a, stderr: "" } : { code: a.code, stdout: "", stderr: a.stderr };
   };
-  const ops = new Ops(CFG, run, fetchImpl);
+  // As the Worker runtime's fetch is (these classes run there too): not to be called as a method.
+  const ops = new Ops(CFG, run, asThePlatformFetch(fetchImpl) as Fetch);
   return { ops, sqls, dashed, calls, gh: () => calls.filter((c) => c.argv[1] === "gh").map((c) => c.argv.slice(3)) };
 }
 

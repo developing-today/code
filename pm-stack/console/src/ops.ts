@@ -12,6 +12,7 @@
 // resolved inside expose().
 import type { Config } from "./config.ts";
 import { OpError } from "./errors.ts";
+import { plain } from "./plain.ts";
 
 export interface RunResult {
   code: number;
@@ -170,11 +171,18 @@ function id(value: unknown, name: string): number {
 export class Ops {
   private queueToken: string | null = null;
 
+  /** How the queue store and the dashboard are reached. Kept as a plain
+   * caller: these classes also run at the edge, where the platform's
+   * fetch may not be called as a method (see `plain`). */
+  readonly fetchImpl: Fetch;
+
   constructor(
     readonly cfg: Config,
     readonly run: Run = realRun,
-    readonly fetchImpl: Fetch = fetch as unknown as Fetch,
-  ) {}
+    fetchImpl: Fetch = fetch as unknown as Fetch,
+  ) {
+    this.fetchImpl = plain(fetchImpl);
+  }
 
   async must(argv: string[], opts?: { stdin?: string; timeoutMs?: number }): Promise<string> {
     const r = await this.run(argv, opts);
