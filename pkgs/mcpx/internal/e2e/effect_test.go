@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -1966,6 +1967,16 @@ func TestEventsReconnectWaitsForTheConfiguredDelay(t *testing.T) {
 				return
 			}
 			accepted <- time.Now()
+			// Drain the request head before writing. A close() with unread
+			// request bytes in the receive buffer sends a reset instead of a
+			// FIN, and the peer may drop response bytes it has not yet read:
+			// on macOS that loses the first event and the stream sees seq 2
+			// first, which this test then reports as "unexpected event kind".
+			if _, err := http.ReadRequest(bufio.NewReader(conn)); err != nil {
+				serveErr <- err
+				_ = conn.Close()
+				return
+			}
 			body := fmt.Sprintf("id: %d\ndata: {\"seq\":%d,\"kind\":\"call.finished\"}\n\n", attempt+1, attempt+1)
 			_, err = fmt.Fprintf(conn, "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s", len(body), body)
 			_ = conn.Close()
@@ -2024,7 +2035,7 @@ func TestEventsReconnectWaitsForTheConfiguredDelay(t *testing.T) {
 	select {
 	case event := <-eventsSeen:
 		if event.Kind != events.CallFinished || event.Seq != 1 {
-			t.Fatalf("retry delivered unexpected event kind %q", event.Kind)
+			t.Fatalf("first stream delivered unexpected event: %+v", event)
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("client did not process the event delivered on the first stream")
@@ -2038,7 +2049,10 @@ func TestEventsReconnectWaitsForTheConfiguredDelay(t *testing.T) {
 		t.Fatal("client did not process the event delivered on reconnect")
 	}
 	select {
-	case <-streamDone:
+	case err := <-streamDone:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("event stream stopped with %v, want context.Canceled", err)
+		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("event stream did not stop after cancellation")
 	}
