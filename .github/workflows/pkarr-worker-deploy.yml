@@ -1,25 +1,30 @@
 name: pkarr-worker-deploy
 
-# Protected operator workflow. Upload and promotion are separate dispatches:
-# upload prints a version ID; promotion requires an explicit version ID.
+# An opt-in alternative to the existing nix run .#pkarr-deploy operator path.
 on:
   workflow_dispatch:
     inputs:
+      confirm:
+        description: Confirm this exact pkarr release action
+        type: boolean
+        default: false
       operation:
         description: Upload a candidate version or promote an existing version
         type: choice
         required: true
-        options:
-          - upload
-          - promote
+        options: [upload, promote]
       version_id:
-        description: Required for promote; ID printed by the successful upload run
+        description: Exact version ID printed by the successful upload
         type: string
-        required: false
       upload_run_id:
-        description: Required for promote; run ID of successful trusted upload
+        description: Run ID from the upload receipt
         type: string
-        required: false
+      upload_run_attempt:
+        description: Run attempt from the upload receipt
+        type: string
+      source_sha:
+        description: Full source SHA from the upload receipt
+        type: string
 
 permissions:
   contents: read
@@ -30,107 +35,149 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  preflight:
+    if: github.event_name == 'workflow_dispatch' && github.repository == 'developing-today/code' && github.ref == 'refs/heads/main' && inputs.confirm == true
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Require the pre-existing protected environment
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api repos/developing-today/code/environments/pkarr-worker-production |
+            jq -e '
+              .name == "pkarr-worker-production" and
+              any(.protection_rules[]?; .type == "required_reviewers" and .prevent_self_review == true and (.reviewers | length > 0)) and
+              (.deployment_branch_policy.protected_branches == true or .deployment_branch_policy.custom_branch_policies == true)
+            ' > /dev/null
+
   deploy:
-    if: github.ref == 'refs/heads/main'
+    needs: preflight
+    if: github.event_name == 'workflow_dispatch' && github.repository == 'developing-today/code' && github.ref == 'refs/heads/main' && inputs.confirm == true
     environment: pkarr-worker-production
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    env:
+      CLOUDFLARE_CI_OVERRIDE_WORKER_NAME: ''
+      OPERATION: ${{ inputs.operation }}
+      VERSION_ID: ${{ inputs.version_id }}
+      UPLOAD_RUN_ID: ${{ inputs.upload_run_id }}
+      UPLOAD_RUN_ATTEMPT: ${{ inputs.upload_run_attempt }}
+      UPLOAD_SOURCE_SHA: ${{ inputs.source_sha }}
+    defaults:
+      run:
+        working-directory: pkgs/pkarr-worker
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.sha }}
-      - uses: actions/setup-node@v7
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 24.22.0
-      - name: Validate requested operation
-        env:
-          OPERATION: ${{ inputs.operation }}
-          VERSION_ID: ${{ inputs.version_id }}
-          UPLOAD_RUN_ID: ${{ inputs.upload_run_id }}
+      - name: Validate requested operation and offline release contracts
         run: |
-          if [[ "$OPERATION" == promote && -z "$VERSION_ID" ]]; then
-            echo 'version_id is required for promotion' >&2
-            exit 2
-          fi
-          if [[ "$OPERATION" == upload && -n "$VERSION_ID" ]]; then
-            echo 'version_id must be empty for upload' >&2
-            exit 2
-          fi
-          if [[ "$OPERATION" == promote && ! "$UPLOAD_RUN_ID" =~ ^[0-9]+$ ]]; then
-            echo 'a successful upload_run_id is required for promotion' >&2
-            exit 2
-          fi
-      - name: Install locked dependencies
-        working-directory: pkgs/pkarr-worker
-        run: npm ci --ignore-scripts --no-audit --no-fund
-      - name: Verify pinned cf CLI
-        working-directory: pkgs/pkarr-worker
-        run: test "$(./node_modules/.bin/cf --version)" = "cf 1.0.0-beta.32"
-      - name: Prepare cf Build Output
+          set -euo pipefail
+          node gha-publish.mjs input
+          node --test gha-publish.test.mjs
+      - name: Stage a credential-free build with its own locked tools
+        run: |
+          set -euo pipefail
+          umask 077
+          # Install only into the release copy, never into the operator project.
+          release="$RUNNER_TEMP/pkarr-release"
+          mkdir "$release"
+          cp -- gha-toolchain/package.json gha-toolchain/package-lock.json "$release/"
+          cp -- cloudflare.config.ts wrangler.jsonc tsconfig.json gha-publish.mjs "$release/"
+          cp -R -- src "$release/"
+          cd "$release"
+          npm ci --ignore-scripts --no-audit --no-fund
+          test "$(./node_modules/.bin/cf --version)" = 1.0.0-beta.32
+          test "$(node -p "require('./node_modules/wrangler/package.json').version")" = 4.161.0
+      - name: Build and dry-run the pinned non-preview upload without credentials
         if: inputs.operation == 'upload'
-        working-directory: pkgs/pkarr-worker
-        run: ./node_modules/.bin/cf -q build
-      - name: Upload candidate version
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/pkarr-release"
+          ./node_modules/.bin/cf -q build
+          # beta.32 emits Build Output v0, not the current CLI's v1.
+          jq -e '. == {"buildContext":{"isPreview":false}}' .cloudflare/output/v0/config.json > /dev/null
+          jq -e '.name == "pkarr"' .cloudflare/output/v0/workers/default/worker.config.json > /dev/null
+          ./node_modules/.bin/cf -q workers versions create --worker pkarr --prebuilt --tag "$GITHUB_SHA" --dry-run
+      - name: Upload exact candidate and capture unchanged serving baseline
         if: inputs.operation == 'upload'
-        working-directory: pkgs/pkarr-worker
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.PKARR_WORKER_CLOUDFLARE_API_TOKEN }}
         run: |
-          sha="$GITHUB_SHA"
-          tag="git-${sha:0:12}"
-          ./node_modules/.bin/cf -q workers versions create --worker pkarr --tag "$tag" --message "deploy $sha via GitHub Actions" --dry-run
-          ./node_modules/.bin/cf -q workers versions create --worker pkarr --tag "$tag" --message "deploy $sha via GitHub Actions"
-          response="$(curl --fail --silent --show-error \
-            -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
-            "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/scripts/pkarr/versions?per_page=100")"
-          version_id="$(echo "$response" | jq -er --arg tag "$tag" '[.result.items[] | select(.annotations["workers/tag"] == $tag)] | sort_by(.metadata.created_on) | last | .id')"
-          printf 'Uploaded version ID: %s\nUpload run ID: %s\nSource SHA: %s\n' "$version_id" "$GITHUB_RUN_ID" "$GITHUB_SHA" >> "$GITHUB_STEP_SUMMARY"
-          jq -n --arg version_id "$version_id" --arg run_id "$GITHUB_RUN_ID" --arg sha "$GITHUB_SHA" '{version_id:$version_id,run_id:$run_id,sha:$sha}' > "$RUNNER_TEMP/pkarr-upload.json"
-      - name: Save upload provenance
+          set -euo pipefail
+          umask 077
+          cd "$RUNNER_TEMP/pkarr-release"
+          [[ "$CLOUDFLARE_ACCOUNT_ID" =~ ^[a-f0-9]{32}$ && -n "$CLOUDFLARE_API_TOKEN" ]]
+          api="https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/scripts/pkarr"
+          get() { curl --fail --silent --show-error --max-time 30 -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" "$api/$1"; }
+          get deployments > "$RUNNER_TEMP/pkarr-before.json"
+          # Refuse to upload unless the provider's prior serving state was readable.
+          node gha-publish.mjs unchanged "$RUNNER_TEMP/pkarr-before.json" "$RUNNER_TEMP/pkarr-before.json"
+          ./node_modules/.bin/cf -q workers versions create --worker pkarr --prebuilt --tag "$GITHUB_SHA" \
+            --message "pkarr $GITHUB_SHA run $GITHUB_RUN_ID attempt $GITHUB_RUN_ATTEMPT" > "$RUNNER_TEMP/pkarr-cf-response.json"
+          VERSION_ID="$(node gha-publish.mjs upload-id "$RUNNER_TEMP/pkarr-cf-response.json")"
+          export VERSION_ID
+          [[ "$VERSION_ID" =~ ^[a-f0-9-]{36}$ ]]
+          export UPLOAD_RUN_ID="$GITHUB_RUN_ID" UPLOAD_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" UPLOAD_SOURCE_SHA="$GITHUB_SHA"
+          get "versions/$VERSION_ID" > "$RUNNER_TEMP/pkarr-version.json"
+          get deployments > "$RUNNER_TEMP/pkarr-after.json"
+          node gha-publish.mjs unchanged "$RUNNER_TEMP/pkarr-before.json" "$RUNNER_TEMP/pkarr-after.json"
+          node gha-publish.mjs receipt "$RUNNER_TEMP/pkarr-before.json" "$RUNNER_TEMP/pkarr-version.json" > "$RUNNER_TEMP/pkarr-upload.json"
+          printf 'Version ID: %s\nUpload run: %s\nUpload attempt: %s\nSource SHA: %s\n' \
+            "$VERSION_ID" "$UPLOAD_RUN_ID" "$UPLOAD_RUN_ATTEMPT" "$UPLOAD_SOURCE_SHA" >> "$GITHUB_STEP_SUMMARY"
+      - name: Save exact upload receipt
         if: inputs.operation == 'upload'
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: pkarr-upload-${{ github.run_id }}
+          name: pkarr-upload-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/pkarr-upload.json
           if-no-files-found: error
           retention-days: 7
-      - name: Download referenced upload provenance
+      - name: Download the selected run attempt receipt
         if: inputs.operation == 'promote'
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@d3c42e5aac5ba805825da76410c181273ba90b1 # v4.3.0
         with:
-          name: pkarr-upload-${{ inputs.upload_run_id }}
+          name: pkarr-upload-${{ inputs.upload_run_id }}-${{ inputs.upload_run_attempt }}
           path: ${{ runner.temp }}/upload
-          github-token: ${{ secrets.GITHUB_TOKEN }}
+          github-token: ${{ github.token }}
           run-id: ${{ inputs.upload_run_id }}
-      - name: Verify trusted upload run provenance
+      - name: Read trusted upload attempt and source ancestry
         if: inputs.operation == 'promote'
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          UPLOAD_RUN_ID: ${{ inputs.upload_run_id }}
+          GH_TOKEN: ${{ github.token }}
         run: |
-          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$UPLOAD_RUN_ID" |
-            jq -e --arg sha "$GITHUB_SHA" '.path == ".github/workflows/pkarr-worker-deploy.yml" and .event == "workflow_dispatch" and .head_branch == "main" and .head_sha == $sha and .status == "completed" and .conclusion == "success"' >/dev/null
-      - name: Promote existing version
+          set -euo pipefail
+          gh api "repos/developing-today/code/actions/runs/$UPLOAD_RUN_ID/attempts/$UPLOAD_RUN_ATTEMPT" > "$RUNNER_TEMP/pkarr-run.json"
+          gh api "repos/developing-today/code/compare/$UPLOAD_SOURCE_SHA...$GITHUB_SHA" > "$RUNNER_TEMP/pkarr-comparison.json"
+      - name: Promote the exact candidate only if the serving baseline still matches
         if: inputs.operation == 'promote'
-        working-directory: pkgs/pkarr-worker
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.PKARR_WORKER_CLOUDFLARE_API_TOKEN }}
-          VERSION_ID: ${{ inputs.version_id }}
-          UPLOAD_RUN_ID: ${{ inputs.upload_run_id }}
         run: |
-          jq -e --arg id "$VERSION_ID" --arg run "$UPLOAD_RUN_ID" --arg sha "$GITHUB_SHA" \
-            '.version_id == $id and .run_id == $run and .sha == $sha' "$RUNNER_TEMP/upload/pkarr-upload.json" >/dev/null
-          response="$(curl --fail --silent --show-error \
-            -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
-            "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/scripts/pkarr/versions?deployable=true")"
-          echo "$response" | jq -e --arg id "$VERSION_ID" '(.result.items // .result // []) | any(.id == $id)' >/dev/null
-          current="$(./node_modules/.bin/cf -q workers deployments list --worker pkarr)"
-          echo "$current" | jq -e '(.result.items // .result // .deployments // .) | type == "array" and length > 0' >/dev/null
-          echo "$current" | jq -r '(.result.items // .result // .deployments // .) | sort_by(.metadata.created_on // .created_on) | last | .versions[] | "Pre-promotion serving version: " + .version_id + " at " + (.percentage|tostring) + "%"' >> "$GITHUB_STEP_SUMMARY"
+          set -euo pipefail
+          umask 077
+          cd "$RUNNER_TEMP/pkarr-release"
+          [[ "$CLOUDFLARE_ACCOUNT_ID" =~ ^[a-f0-9]{32}$ && -n "$CLOUDFLARE_API_TOKEN" ]]
+          api="https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/scripts/pkarr"
+          get() { curl --fail --silent --show-error --max-time 30 -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" "$api/$1"; }
+          receipt="$RUNNER_TEMP/upload/pkarr-upload.json"
+          get "versions/$VERSION_ID" > "$RUNNER_TEMP/pkarr-version.json"
+          get 'versions?deployable=true' | jq -e --arg id "$VERSION_ID" '.success == true and any(.result.items[]?; .id == $id)' > /dev/null
+          get deployments > "$RUNNER_TEMP/pkarr-current.json"
+          node gha-publish.mjs authorize "$receipt" "$RUNNER_TEMP/pkarr-run.json" "$RUNNER_TEMP/pkarr-comparison.json" \
+            "$RUNNER_TEMP/pkarr-version.json" "$RUNNER_TEMP/pkarr-current.json"
+          # This is a pre-write check, not a Cloudflare CAS. Operators must not
+          # use the separate Nix/other release path during this promotion.
           versions="$(jq -cn --arg id "$VERSION_ID" '[{version_id:$id,percentage:100}]')"
-          ./node_modules/.bin/cf -q workers deployments create --worker pkarr --strategy percentage --versions "$versions"
-          deployments="$(./node_modules/.bin/cf -q workers deployments list --worker pkarr)"
-          echo "$deployments" | jq -e --arg id "$VERSION_ID" '(.result.items // .result // .deployments // .) | sort_by(.metadata.created_on // .created_on) | last | .versions | (length == 1 and .[0].version_id == $id and (.[0].percentage | tonumber) == 100)' >/dev/null
-          curl --fail --silent --show-error https://pkarr.developing-today.workers.dev/healthz | grep -Fxq ok
+          ./node_modules/.bin/cf -q workers deployments create --worker pkarr --strategy percentage --versions "$versions" > "$RUNNER_TEMP/pkarr-promotion.json"
+          get deployments > "$RUNNER_TEMP/pkarr-promoted.json"
+          node gha-publish.mjs verify "$RUNNER_TEMP/pkarr-promoted.json" "$receipt"
+          curl --fail --silent --show-error --max-time 15 https://pkarr.developing-today.workers.dev/healthz | grep -Fxq ok
