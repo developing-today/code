@@ -330,5 +330,36 @@ open nothing.
   laptop cannot repeat it; an action that was relayed and got no answer
   is only ever resolved by the laptop, which wrote its name down before
   starting. That is the rule against doing anything twice.
+- The same rule reaches the device. An action may come with a name the
+  device gave it (`id`, a UUID), because a device with no connection
+  keeps what the owner did and sends it later, and again if it never
+  heard back. What the edge does itself it writes down under that name
+  before starting and with its answer after (a week, three hundred
+  names, an answer of up to four thousand characters): the name offered
+  again is answered from that, marked `again`, and not done again. One
+  still being done is answered 409 `running`; one started by an object
+  that was put away before it ended is said to be unknown, once, and
+  not retried. What goes to the laptop goes under the same name, and
+  the laptop keeps the record. Held twice under one name, an action
+  waits once. A name is taken by one arrival at a time, here and on the
+  laptop, before anything else is waited for: of two that arrive
+  together one does it and the other is told it is being done.
+- A name keeps to the side that first took it. What the edge hands to
+  a machine it writes down as given, under the name; sent again, it
+  goes to a machine again, even if the edge would do that kind itself
+  by then, and what the edge did is answered from the edge's record
+  even if it would hand that kind over by then. Chosen afresh each
+  time, a name whose answer was lost while the choice changed could be
+  done once on each side. The cost: something that may not be done
+  late, given to a machine that then cannot be reached, stays the
+  machine's (the edge cannot know whether it was done).
+- What is done late is done in the order the owner did it. An action
+  that may be held goes behind an earlier one about the same thing (the
+  same issue, task, reference or set of questions) that a machine has
+  not taken yet, even when the machine can be reached again: sent
+  straight on it would be done first, and the older one would undo it.
+  What is about something else goes straight on. Not covered (#13398):
+  an older action held for a machine and a newer one about the same
+  thing that the edge does itself.
 - The storage is one Durable Object. A section larger than one stored
   value is kept in pieces.

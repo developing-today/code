@@ -647,7 +647,7 @@ export class Ops {
       html_url: string;
       created_at: string;
       user: { login: string };
-      head: { ref: string };
+      head: { ref: string; sha?: string };
     }[];
     return list.map((p) => ({
       number: p.number,
@@ -657,6 +657,9 @@ export class Ops {
       created: p.created_at.slice(0, 16),
       author: p.user.login,
       branch: p.head.ref,
+      // The commit it stood at when this was read: a merge asked for
+      // from this list is a merge of this, and of nothing pushed since.
+      ...(typeof p.head.sha === "string" ? { head: p.head.sha } : {}),
     }));
   }
 
@@ -681,14 +684,22 @@ export class Ops {
     };
   }
 
-  async mergePr(number: unknown) {
+  /** Merge a pull request. With `head`, the commit the owner was shown,
+   * GitHub merges only if that is still where it stands: a merge asked
+   * for a while ago (kept on a device that was offline) must not take
+   * in what was pushed since. */
+  async mergePr(number: unknown, head?: unknown) {
     const n = id(number, "pull request");
+    if (head !== undefined && head !== null && !(typeof head === "string" && /^[0-9a-f]{40}$/.test(head))) {
+      throw new OpError(400, "head: a commit's full name");
+    }
     const done = (await this.gh([
       "-X",
       "PUT",
       `repos/${this.cfg.repo}/pulls/${n}/merge`,
       "-f",
       "merge_method=merge",
+      ...(typeof head === "string" ? ["-f", `sha=${head}`] : []),
     ])) as { merged: boolean; sha: string };
     return { number: n, merged: done.merged, sha: done.sha };
   }

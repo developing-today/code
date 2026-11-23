@@ -362,3 +362,190 @@ Worker runtime with the switch on: all checks passed. A phone-sized
 Chrome over the Cloudflare screen in each state with the new control,
 and axe-core over the toasts and the danger dialog while they show,
 light and dark: no violations (three before the inks).
+
+## 2026-11-23T12:52Z Update: in service, and step 4 (with no connection)
+
+**Step 3 is in service.** Merged as #13205. At 12:00Z the public health
+answer said `primary: true`, both tokens present, nothing refused,
+and its own read of each kind (the board, pull requests, ranked issues,
+the prompts) good with the real tokens. Not checked: a write with the
+real token, which needs the owner's sign-in; a refusal would show under
+`refused` and be the laptop's to do.
+
+The deploy of that merge failed twice at its rehearsal on a scratch
+Worker: Cloudflare answered "This Worker does not exist" (10007) about
+a Worker wrangler had uploaded a second before. The real Worker was
+deployed by a manual run without the rehearsal; standing a Worker up is
+now made up to four times (#13235), and the next deploy passed on the
+third.
+
+**Step 4 is built: the app with no connection.** Decision 4 above, as
+it turned out:
+
+- **The device keeps a copy of everything it read.** The service
+  worker asks the network first and keeps each good answer under the
+  address it was asked for: the app's files, the three documents, and
+  every screen's own read. A copy is shown only when the network gives
+  no answer or is too slow to wait for, and is marked as one; an answer
+  that says no is never replaced by a copy. So nothing about a screen
+  had to change for it to work offline, and a screen added later works
+  offline from its first visit.
+- **Every action has a name, given on the device.** It is written to
+  the browser's database before it is sent, and sent at once when there
+  is a connection, as before. With none it waits, and goes when there
+  is one: from the page, or from the service worker if the app is
+  closed (Background Sync). One file (`public/outbox.js`) holds the
+  rules for both.
+- **Once, however often it arrives.** The edge writes down each name it
+  did with its answer; a machine does the same (`src/named.ts`, one
+  record for actions sent straight to it, relayed to it, and held for
+  it). A name offered again is answered from the record. This is the
+  rule that already protected a relayed action whose answer was lost,
+  extended back to where the action starts.
+- **What may have changed is not sent unasked.** The list the platform
+  already had for a machine that is away (what may be done late) is the
+  device's list too. A merge, a deploy, a cancel, an unblock and a
+  service action are kept, sent by themselves only within ten minutes,
+  and after that wait for the owner to look again. A merge now names
+  the commit the owner was shown, and GitHub merges only that: this
+  guards a merge asked for a second ago as much as one kept for hours.
+- **Signed out is told from offline** by asking past the service
+  worker without following the way to the sign-in page.
+
+What the owner sees: `offline` and how old the state is in the corner;
+a line under the header saying there is no connection and what is kept;
+More, On this device, where what is waiting, kept back, failed, with
+the platform or sent can be looked at, dropped, sent or tried again,
+and where a copy of every screen can be fetched before a flight.
+
+Checked: 321 tests under bun and the keeper's 25. Planted faults: 23 in
+the once-only rule on the edge and the laptop, 57 on the device (the
+outbox, the worker, the app's wording), all caught. In a real Chrome,
+against the demo laptop and the demo edge, light and dark: the app
+taken offline opens, shows each screen it had seen, says so, keeps
+three actions across a reload, sends each once when the connection is
+back, answers a repeat of each name without doing it again, keeps a
+three-hour-old merge back until it is confirmed, and forgets when
+asked; and with the app closed, the worker, woken as the browser wakes
+it, sends what was kept. axe-core over all 20 screens, the dialogs, the
+toasts and the new screen in each state: no violations.
+
+Not checked: a real phone with no signal, and the Android app (it is
+this site in Chrome, so nothing in it changed). Not done: copies are
+not encrypted on the device beyond what the device does itself; a
+screen never visited has no copy until it is visited or "keep a copy of
+every screen" is pressed.
+
+## 2026-11-23T15:40Z Update: step 4 after review
+
+Review of the offline work found six real faults, and looking at them
+found three more of the same kinds. All are fixed in the same change.
+
+- **A name could be done twice by two arrivals at the same moment.**
+  The laptop looked a name up, then waited for the audit's write, and
+  only then marked it as being done: two arrivals could both look and
+  both do it. A name is now taken first, with no waiting in between
+  (`Named.take`), and what is known of it is read after, on the laptop
+  and at the edge alike; the second arrival is told it is being done,
+  and asks again. The laptop's record of names is read once however
+  many ask together, and written one write at a time.
+- **A held action being done on the laptop looked "lost" to a retry.**
+  Doing a held action wrote "started" without marking the name as being
+  done, so a device sending it again meanwhile was told the laptop had
+  restarted, and offered a retry under a new name. Held actions now go
+  through the same taking and giving back as any other.
+- **Something done now could overtake something older.** A new action
+  was sent by itself, ahead of what was waiting on the device; the
+  older one, sent later, undid it (a rank changed twice ended as the
+  first). A new action is now written down and sent through the same
+  oldest-first pass as everything else (`sendInOrder`).
+- **Order is kept per thing, to the end.** Found while fixing the last:
+  an older change that nothing could take just now (503) or that was
+  still being done (409) let a newer change about the same thing go
+  first. Each action says what it is about (`subject` on the device,
+  `subjectOf` on the platform; a test holds them together); a later one
+  about the same thing waits behind an earlier one that has not been
+  taken, on the device and in what the edge holds for a machine. What
+  is about something else is not held up.
+- **"Do not send" during a send was ignored**, and so was an entry
+  another tab or the worker had dealt with meanwhile: each entry is now
+  read again just before it is sent.
+- **The worker gave up with things still waiting.** A 503 or a
+  "being done" left an entry waiting but ended the browser's wake as a
+  success, so nothing called again. The worker now asks to be woken
+  again while anything waits to be sent, and on the browser's last call
+  says what still waits.
+- **A full device broke reads.** A refused write to the cache failed
+  the read it belonged to. Keeping copies is now on a best effort; and
+  with no cache at all (a browser that gives the site no storage) the
+  worker installs and answers as if it kept nothing.
+
+A second review of those fixes found two more, both real:
+
+- **A name could be done once on each side.** Which side does a kind
+  can change (the edge is turned away for an hour, then takes it
+  back). An action given to the laptop, its answer lost, and sent again
+  after the change was done again by the edge, which had no record of
+  the name; and the other way about. The edge now writes down a name
+  it hands to a machine as given, and looks a name up before choosing
+  a side: a name keeps to the side that first took it.
+- **A refused answer was counted as sent.** An answer to a question
+  settled in the meantime comes back as a success that says "not
+  recorded". Sent from what the device kept, it was marked sent. It is
+  now "could not be done", with why, as the laptop already says of one
+  it does late.
+
+A third review found two more, both real, both in the page:
+
+- **An action waited its turn in memory.** It was written down only
+  once it held the turn to send; with another tab or the worker in the
+  middle of a slow send, closing the page lost it. It is now written
+  down first, and only the sending waits. One try at sending is given a
+  minute, so a request that hangs cannot hold every sender up.
+- **A taken-back answer left its question hidden.** The page kept its
+  own list of questions answered here. The list is now worked out from
+  what is kept: a question is out of the list while its answer waits
+  (across a reload too) and back when the answer is taken back or does
+  not count.
+
+A fourth review found three more, all real:
+
+- **A draft was erased by a send in the background.** When something
+  kept earlier was sent, the screen was drawn again whatever the owner
+  was doing, and a bug report, a note or a message half typed was
+  gone. A background send now draws the screen again only when nobody
+  is in the middle of something, and those three forms keep what is
+  typed across any redraw (as the prompt box already did).
+- **A cut-off answer was read as "sign in again".** An answer whose
+  body stops arriving is no answer, and is offered again; only a body
+  that arrives and is not JSON is taken for something other than the
+  platform.
+- **A failed answer could leave its question hidden**, if the list was
+  read while the answer was on its way. On failure the list is read
+  again whole.
+
+Checked: 342 tests under bun, the keeper's 25. 52 planted faults in
+the new code, all caught (two more were planted and found to change
+nothing: each is behind a second guard). In a real Chrome against both
+demos: the offline flow, light
+and dark; the worker woken with the app closed; an older waiting rank
+and a new one leave the device in order and are done in order (and with
+the old direct send planted, that check fails); an answer kept, taken
+back and kept again, and an action done while another sender holds the
+turn and the page then closed; a draft kept through a background send
+with the cursor in it and with it set aside, and a question back after
+its answer failed (each of these fails against the code before its
+fix); axe-core over 20
+screens, the dialogs and the toasts: no violations. The Worker in its
+real runtime passes its own checks.
+
+Found on the way: the console's TypeScript is never type-checked. A
+method added to the laptop's link had the name of one already there,
+and the second silently replaced the first; the tests passed for the
+wrong reason until a later change exposed it. A type check finds it at
+once, and 53 smaller complaints across the console, none of them a
+fault. Adding the check to CI is the next change.
+
+Not done, and filed as #13398: an older action held for a machine is
+not ordered against a newer one about the same thing that the edge
+does itself.

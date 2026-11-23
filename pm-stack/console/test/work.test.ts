@@ -12,8 +12,10 @@ import { gunzipSync } from "node:zlib";
 import { actions, perform } from "../src/actions.ts";
 import { readConfig } from "../src/config.ts";
 import { Docs, Stamped } from "../src/docs.ts";
+import { Named } from "../src/named.ts";
 import { type Fetch, OpError, Ops, type Run } from "../src/ops.ts";
 import { type Deps, handle, loaders } from "../src/server.ts";
+import { memoryStore } from "../src/store.ts";
 import { promptPacket, Work } from "../src/work.ts";
 import { asThePlatformFetch } from "./support.ts";
 
@@ -1005,6 +1007,182 @@ describe("the interface's endpoints", () => {
     expect(raw.byteLength).toBeLessThan(JSON.stringify(body).length / 2);
     expect((await handle(get("/console/api/doc/secrets"), d)).status).toBe(404);
     expect((await handle(get("/console/api/doc/core"), deps(401).d)).status).toBe(401);
+  });
+
+  test("with no edge in front of it, a host does an action once under the name a device gave it", async () => {
+    const { d, w } = deps();
+    d.named = new Named(memoryStore());
+    const id = "0e000000-0000-4000-8000-000000000001";
+    const moves = () => w.sqls.flat().filter((s) => s.sql.startsWith("UPDATE tasks SET priority")).length;
+    const first = await handle(
+      post("/console/api/act", { kind: "task.move", args: { task: 21016, to: "first" }, id }),
+      d,
+    );
+    expect(await first.json()).toEqual({ ok: true, result: { task: 21016, priority: 10 } });
+    const second = await handle(
+      post("/console/api/act", { kind: "task.move", args: { task: 21016, to: "first" }, id }),
+      d,
+    );
+    expect(await second.json()).toEqual({ ok: true, result: { task: 21016, priority: 10 }, again: true });
+    expect(moves()).toBe(1);
+    // Its record of what was done carries the name, once.
+    const core = await (await handle(get("/console/api/doc/core"), d)).json();
+    expect(core.acts.map((a: { id: string; status: string }) => [a.id, a.status])).toEqual([[id, "done"]]);
+    // With nowhere to write names down, an action is done as often as it is asked: as it always was.
+    const bare = deps();
+    await handle(post("/console/api/act", { kind: "task.move", args: { task: 21016, to: "first" }, id }), bare.d);
+    await handle(post("/console/api/act", { kind: "task.move", args: { task: 21016, to: "first" }, id }), bare.d);
+    expect(bare.w.sqls.flat().filter((s) => s.sql.startsWith("UPDATE tasks SET priority")).length).toBe(2);
+  });
+
+  test("two arrivals under one name at the same moment: one does it, the other is told it is being done", async () => {
+    const { d, w, audited } = deps();
+    d.named = new Named(memoryStore());
+    const moves = () => w.sqls.flat().filter((s) => s.sql.startsWith("UPDATE tasks SET priority")).length;
+    const body = (id: string) => ({ kind: "task.move", args: { task: 21016, to: "first" }, id });
+    // The record of what is done is slow to write, which is where two
+    // arrivals used to pass each other: both had looked, neither had begun.
+    let open: () => void = () => {};
+    const gate = new Promise<void>((r) => {
+      open = r;
+    });
+    const audit = d.audit;
+    d.audit = async (e) => {
+      await gate;
+      return audit(e);
+    };
+    const id = "0e000000-0000-4000-8000-000000000002";
+    const a = handle(post("/console/api/act", body(id)), d);
+    const b = handle(post("/console/api/act", body(id)), d);
+    await new Promise((r) => setTimeout(r, 5));
+    open();
+    const answers = await Promise.all([a, b]);
+    expect(answers.map((r) => r.status).sort()).toEqual([200, 409]);
+    const told = await (answers.find((r) => r.status === 409) as Response).json();
+    expect(told).toEqual({ error: "This is still being done.", running: true });
+    expect(moves()).toBe(1);
+    expect(audited.filter((e) => e.phase === "start")).toHaveLength(1);
+    // Asked again once it is over, it is answered from the record.
+    expect(await (await handle(post("/console/api/act", body(id)), d)).json()).toMatchObject({ ok: true, again: true });
+    // An action that could not be recorded is not taken, and its name
+    // is not left taken either: tried again, it is simply done.
+    const other = "0e000000-0000-4000-8000-000000000003";
+    d.audit = async () => {
+      throw new Error("disk full");
+    };
+    const refused = await handle(post("/console/api/act", body(other)), d);
+    expect([refused.status, await refused.json()]).toEqual([
+      502,
+      { error: "the action could not be recorded, so it was not taken" },
+    ]);
+    d.audit = audit;
+    const retried = await handle(post("/console/api/act", body(other)), d);
+    expect(await retried.json()).toEqual({ ok: true, result: { task: 21016, priority: 10 } });
+    expect(moves()).toBe(2);
+  });
+
+  test("the record of names: what each state means, how many are kept, and a record that cannot be read", async () => {
+    const store = memoryStore();
+    const named = new Named(store);
+    expect(await named.seen("a")).toBeNull();
+    await named.begin("a");
+    expect(await named.seen("a")).toEqual({ state: "running" });
+    await named.end("a", { ok: true, result: { n: 1 } });
+    expect(await named.seen("a")).toEqual({ state: "done", fate: { ok: true, result: { n: 1 } } });
+    await named.begin("b");
+    await named.end("b", { ok: false, error: "no", status: 404 });
+    expect(await named.seen("b")).toEqual({ state: "done", fate: { ok: false, error: "no", status: 404 } });
+    // Started, and the process stopped: another one, reading the same
+    // record, knows it was started and not how it ended.
+    await named.begin("c");
+    const after = new Named(store);
+    expect(await after.seen("c")).toEqual({ state: "lost" });
+    expect(await after.seen("a")).toEqual({ state: "done", fate: { ok: true, result: { n: 1 } } });
+    expect([named.isRunning("c"), after.isRunning("c")]).toEqual([true, false]);
+    // An outcome that cannot be written still frees the name in this process.
+    const failing = new Named({
+      read: async () => null,
+      write: async (text) => {
+        if (text.includes('"ok"')) throw new Error("disk full");
+      },
+    });
+    await failing.begin("d");
+    await expect(failing.end("d", { ok: true })).rejects.toThrow("disk full");
+    expect(failing.isRunning("d")).toBe(false);
+    // A name is taken by one at a time, and given back.
+    const one = new Named(memoryStore());
+    expect([one.take("t"), one.take("t"), one.isRunning("t")]).toEqual([true, false, true]);
+    expect(await one.seen("t")).toEqual({ state: "running" });
+    one.release("t");
+    expect([one.isRunning("t"), await one.seen("t"), one.take("t")]).toEqual([false, null, true]);
+    // Three hundred names are kept: the oldest is forgotten first, and
+    // one seen again counts as new.
+    const many = new Named(memoryStore());
+    for (let i = 0; i < 300; i++) await many.record(`n${i}`, { ok: true });
+    await many.record("n0", { ok: true });
+    await many.record("n300", { ok: true });
+    expect([await many.get("n1"), await many.get("n0"), await many.get("n2")]).toEqual([
+      undefined,
+      { ok: true },
+      { ok: true },
+    ]);
+    // A record that cannot be read is an empty one, not a crash.
+    const broken = new Named({ read: async () => "not json", write: async () => {} });
+    expect(await broken.seen("x")).toBeNull();
+  });
+
+  test("the record of names on a slow disk: read once however many ask together, and no write lands over a later one", async () => {
+    let content: string | null = JSON.stringify({ old: { ok: true } });
+    let reads = 0;
+    // Each write takes as long as it is told to.
+    const delays: number[] = [];
+    const disk = {
+      read: async () => {
+        reads++;
+        await new Promise((r) => setTimeout(r, 5));
+        return content;
+      },
+      write: async (text: string) => {
+        await new Promise((r) => setTimeout(r, delays.shift() ?? 1));
+        content = text;
+      },
+    };
+    const named = new Named(disk);
+    // Three ask at the same moment, before the record has been read.
+    await Promise.all([named.begin("a"), named.begin("b"), named.record("c", { ok: true })]);
+    expect(reads).toBe(1);
+    // All three are in the record, with what was there before.
+    expect(Object.keys(JSON.parse(content as string))).toEqual(["old", "a", "b", "c"]);
+    expect([named.isRunning("a"), named.isRunning("b")]).toEqual([true, true]);
+    // One write is slow, and another name is written down while it is
+    // out: the slow one does not land afterwards, over the newer.
+    delays.push(12, 1);
+    const slow = named.record("d", { ok: true });
+    await new Promise((r) => setTimeout(r, 3));
+    const quick = named.record("e", { ok: true });
+    await Promise.all([slow, quick]);
+    expect(Object.keys(JSON.parse(content as string))).toEqual(["old", "a", "b", "c", "d", "e"]);
+    // A process started now reads all of them back.
+    const after = new Named(disk);
+    expect([await after.seen("a"), await after.seen("c"), await after.seen("e")]).toEqual([
+      { state: "lost" },
+      { state: "done", fate: { ok: true } },
+      { state: "done", fate: { ok: true } },
+    ]);
+    // A write that fails is its own caller's to hear of; the next one is written all the same.
+    const flaky = { fail: true };
+    const kept: string[] = [];
+    const sometimes = new Named({
+      read: async () => null,
+      write: async (text) => {
+        if (flaky.fail) throw new Error("disk full");
+        kept.push(text);
+      },
+    });
+    await expect(sometimes.record("x", { ok: true })).rejects.toThrow("disk full");
+    flaky.fail = false;
+    await sometimes.record("y", { ok: true });
+    expect(Object.keys(JSON.parse(kept[kept.length - 1]))).toEqual(["x", "y"]);
   });
 
   test("an action runs, is recorded without the owner's words, and shows in the state", async () => {
