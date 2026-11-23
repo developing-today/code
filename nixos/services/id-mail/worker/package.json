@@ -7,6 +7,6 @@
     "wrangler": "4.152.0"
   },
   "scripts": {
-    "test": "node --test deploy.test.mjs promote.test.mjs runtime.test.mjs"
+    "test": "node --test deploy.test.mjs upload-version.test.mjs promote.test.mjs runtime.test.mjs"
   }
 }

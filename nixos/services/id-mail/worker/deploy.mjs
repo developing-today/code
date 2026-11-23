@@ -1,13 +1,14 @@
-// Validates config.json and uploads a Cloudflare Workers Version. Uploading does not promote it,
-// change routes, or retire another Worker. Promotion and resource retirement are separate actions.
-// Usage: deploy.mjs [--dry-run]. Uploads require the dedicated mail-environment token.
+// Validates config.json, generates the Wrangler config, retires old Workers, deploys, and sets CALLERS.
+// Usage: deploy.mjs [--dry-run]. Needs CLOUDFLARE_ACCOUNT_ID and BWS_ACCESS_TOKEN; deploy.sh sets them.
 import { execFileSync } from "node:child_process";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const here = dirname(fileURLToPath(import.meta.url));
-const cfBin = join(here, "node_modules", ".bin", "cf");
+const generatedDir = join(here, ".generated");
+const generatedConfig = join(generatedDir, "wrangler.json");
 const KNOWN_TRANSPORTS = ["email"];
 const MODES = ["template", "free"];
 const PLACEHOLDER = "{code}";
@@ -15,7 +16,9 @@ const PLACEHOLDER = "{code}";
 // Strict argument validation (#3281): the only accepted invocation is
 // `deploy.mjs [--dry-run]`. Anything else — a typo'd `--dry-rnu`, a
 // stray positional, an unknown flag — aborts here, before any config,
-// cf or API work: unrecognized arguments must never fall through to an upload.
+// bws, wrangler or API work: the old `argv.includes("--dry-run")`
+// check silently treated every unrecognized argument as a request for
+// the real deploy sequence (retire, deploy, secret put).
 const args = process.argv.slice(2);
 const unknownArgs = args.filter((arg) => arg !== "--dry-run");
 if (args.length > 1 || unknownArgs.length > 0) {
@@ -37,137 +40,90 @@ if (problems.length > 0) {
   throw new Error(`config.json is invalid:\n  ${problems.join("\n  ")}`);
 }
 
-requireEnv("CLOUDFLARE_ACCOUNT_ID");
-const uploadToken = dryRun ? undefined : requireEnv("ID_MAIL_WORKER_CF_TOKEN_MAIL_WORKER_PRODUCTION");
+const accountId = requireEnv("CLOUDFLARE_ACCOUNT_ID");
+const secrets = JSON.parse(execFileSync("bws", ["secret", "list", "-o", "json"], { encoding: "utf8" }));
+const secretValue = (key) => {
+  const found = secrets.find((secret) => secret.key === key);
+  if (!found?.value) {
+    throw new Error(`no Bitwarden secret named ${key}`);
+  }
+  return found.value;
+};
+const apiToken = secretValue("cloudflare.api-token-account-wide");
+const env = { ...process.env, CLOUDFLARE_API_TOKEN: apiToken, CLOUDFLARE_ACCOUNT_ID: accountId };
 
-// cf resolves cloudflare.config.ts from this project's directory. Install the exact
-// locked project dependency on a first local invocation, matching the pkarr Worker flow.
-if (!existsSync(cfBin)) {
-  console.log("cf dependency missing; running npm ci");
-  execFileSync("npm", ["ci", "--no-audit", "--no-fund"], { cwd: here, stdio: "inherit" });
-}
+const mailConfig = {
+  defaultTransport: config.defaultTransport,
+  transports: config.transports,
+  limits: config.limits,
+  templates: config.templates,
+};
+const callers = Object.fromEntries(
+  Object.entries(config.callers).map(([name, caller]) => [
+    name,
+    {
+      sha256: createHash("sha256").update(secretValue(caller.tokenKey)).digest("hex"),
+      transports: caller.transports,
+    },
+  ]),
+);
 
-const sha = process.env.GITHUB_SHA ?? execFileSync("git", ["rev-parse", "HEAD"], { cwd: here, encoding: "utf8" }).trim();
-const runId = process.env.GITHUB_RUN_ID;
-const runAttempt = process.env.GITHUB_RUN_ATTEMPT;
-const provenancePath = dryRun ? undefined : requireEnv("ID_MAIL_WORKER_PROVENANCE_FILE");
-if (!dryRun) {
-  if (!/^\d+$/.test(runId ?? "") || !/^\d+$/.test(runAttempt ?? "")) {
-    throw new Error("GITHUB_RUN_ID and GITHUB_RUN_ATTEMPT are required for provenance");
-  }
-  if (process.env.GITHUB_EVENT_NAME !== "workflow_dispatch" || process.env.GITHUB_REF !== "refs/heads/main") {
-    throw new Error("uploads are allowed only from a manual workflow run on main");
-  }
-  if (!/^[0-9a-f]{40}$/.test(sha) || !process.env.GITHUB_REPOSITORY) {
-    throw new Error("a full commit SHA and repository identity are required for provenance");
-  }
-}
-const tag = dryRun ? `git-${sha.slice(0, 12)}` : `mail-${sha.slice(0, 12)}-run-${runId}-attempt-${runAttempt}`;
-const cfArgs = [
-  "workers", "versions", "create",
-  "--worker", config.worker,
-  "--tag", tag,
-  "--message", `publish ${sha} for ${config.worker} (upload only)`,
-];
-if (dryRun) cfArgs.push("--dry-run");
-let baselineDeployment;
-if (!dryRun) {
-  const baselineOutput = execFileSync(cfBin, ["workers", "deployments", "list", "--worker", config.worker, "--per-page", "1"], {
-    cwd: here,
-    encoding: "utf8",
-    env: { ...process.env, CLOUDFLARE_API_TOKEN: uploadToken },
-  });
-  baselineDeployment = firstDeployment(unwrapJson(baselineOutput));
-  if (typeof baselineDeployment?.versions?.[0]?.version_id !== "string" || !baselineDeployment.id) {
-    throw new Error("cf could not identify the current active Worker deployment; refusing to upload");
-  }
-  const versionsOutput = execFileSync(cfBin, ["workers", "versions", "list", "--worker-id", config.worker, "--per-page", "1"], {
-    cwd: here,
-    encoding: "utf8",
-    env: { ...process.env, CLOUDFLARE_API_TOKEN: uploadToken },
-  });
-  const latestVersion = firstVersion(unwrapJson(versionsOutput));
-  if (latestVersion?.id !== baselineDeployment.versions[0].version_id) {
-    throw new Error("latest uploaded version is not the current active version; refusing to inherit CALLERS from an unpromoted version");
-  }
-}
-const output = execFileSync(cfBin, cfArgs, {
-  cwd: here,
-  encoding: "utf8",
-  env: uploadToken ? { ...process.env, CLOUDFLARE_API_TOKEN: uploadToken } : process.env,
-});
+const wranglerConfig = {
+  name: config.worker,
+  main: "../src/index.js",
+  compatibility_date: config.compatibilityDate,
+  workers_dev: config.workersDev,
+  routes: config.routes.map((pattern) => ({ pattern, custom_domain: true })),
+  vars: { MAIL_CONFIG: JSON.stringify(mailConfig) },
+  send_email: [{ name: "EMAIL", allowed_sender_addresses: config.senders }],
+  durable_objects: { bindings: [{ name: "LIMITER", class_name: "Limiter" }] },
+  migrations: [{ tag: "v1", new_sqlite_classes: ["Limiter"] }],
+};
+mkdirSync(generatedDir, { recursive: true });
+writeFileSync(generatedConfig, `${JSON.stringify(wranglerConfig, null, 2)}\n`);
+
+wrangler(["deploy", "--dry-run"]);
 if (dryRun) {
-  process.stdout.write(output);
-  console.log(`dry run: ${config.worker} version is valid; nothing uploaded`);
-} else {
-  const version = unwrapJson(output);
-  const versionId = version.id ?? version.version_id;
-  if (typeof versionId !== "string" || !versionId) {
-    throw new Error("cf did not return the uploaded version ID; refusing to emit provenance");
-  }
-  if (version.annotations?.["workers/tag"] && version.annotations["workers/tag"] !== tag) {
-    throw new Error("cf returned an uploaded version with an unexpected tag");
-  }
-  const deploymentOutput = execFileSync(cfBin, ["workers", "deployments", "list", "--worker", config.worker, "--per-page", "1"], {
-    cwd: here,
-    encoding: "utf8",
-    env: { ...process.env, CLOUDFLARE_API_TOKEN: uploadToken },
+  console.log(`dry run: ${config.worker} config is valid, nothing deployed`);
+  process.exit(0);
+}
+
+// A hostname can belong to only one Worker, so retired Workers go before the deploy takes their routes.
+for (const name of config.retire ?? []) {
+  await retire(name);
+}
+wrangler(["deploy"]);
+wrangler(["secret", "put", "CALLERS"], JSON.stringify(callers));
+console.log(`deployed ${config.worker} with callers: ${Object.keys(callers).join(", ")}`);
+
+async function retire(name) {
+  const response = await fetch(`https://api.cloudflare.com/client/v4/accounts/${accountId}/workers/scripts/${name}`, {
+    headers: { authorization: `Bearer ${apiToken}` },
   });
-  const deployment = firstDeployment(unwrapJson(deploymentOutput));
-  if (deployment?.id !== baselineDeployment.id || deployment?.versions?.[0]?.version_id !== baselineDeployment.versions[0].version_id) {
-    throw new Error("the active deployment changed during upload; refusing to emit provenance");
+  if (response.status === 404) {
+    console.log(`retire: ${name} is already gone`);
+    return;
   }
-  const provenance = {
-    schema: 1,
-    repository: process.env.GITHUB_REPOSITORY,
-    workflow: ".github/workflows/id-mail-worker-publish.yml",
-    event: process.env.GITHUB_EVENT_NAME,
-    ref: process.env.GITHUB_REF,
-    sha,
-    runId,
-    runAttempt,
-    worker: config.worker,
-    tag,
-    versionId,
-    baselineDeploymentId: baselineDeployment.id,
-    baselineVersionId: baselineDeployment.versions[0].version_id,
-  };
-  if (provenance.event !== "workflow_dispatch" || provenance.ref !== "refs/heads/main") {
-    throw new Error("upload provenance must come from a manual run on main");
+  if (!response.ok) {
+    throw new Error(`retire: checking ${name} failed with HTTP ${response.status}`);
   }
-  writeFileSync(provenancePath, `${JSON.stringify(provenance, null, 2)}\n`, { mode: 0o600 });
-  console.log(`uploaded ${config.worker} version ${versionId} with tag ${tag}; promotion is separate`);
+  wrangler(["delete", "--name", name, "--force"]);
+}
+
+function wrangler(args, input) {
+  execFileSync("wrangler", [...args, "--config", generatedConfig], {
+    env,
+    input,
+    stdio: [input === undefined ? "inherit" : "pipe", "inherit", "inherit"],
+  });
 }
 
 function requireEnv(name) {
   const value = process.env[name];
   if (!value) {
-    throw new Error(`${name} is not set`);
+    throw new Error(`${name} is not set; run deploy.sh`);
   }
   return value;
-}
-
-function unwrapJson(output) {
-  let parsed;
-  try {
-    parsed = JSON.parse(output);
-  } catch {
-    throw new Error("cf returned non-JSON output; refusing to continue");
-  }
-  return parsed?.result ?? parsed;
-}
-
-function firstDeployment(result) {
-  if (Array.isArray(result)) return result[0];
-  if (Array.isArray(result?.deployments)) return result.deployments[0];
-  return undefined;
-}
-
-function firstVersion(result) {
-  if (Array.isArray(result)) return result[0];
-  if (Array.isArray(result?.versions)) return result.versions[0];
-  if (Array.isArray(result?.items)) return result.items[0];
-  return undefined;
 }
 
 function validate(c) {

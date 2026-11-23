@@ -43,7 +43,7 @@ jobs:
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           GITHUB_SHA: ${{ github.sha }}
-        run: node deploy.mjs --dry-run
+        run: node upload-version.mjs --dry-run
       - name: Upload Worker Version and capture provenance
         working-directory: nixos/services/id-mail/worker
         env:
@@ -56,7 +56,7 @@ jobs:
           GITHUB_RUN_ID: ${{ github.run_id }}
           GITHUB_RUN_ATTEMPT: ${{ github.run_attempt }}
           GITHUB_SHA: ${{ github.sha }}
-        run: node deploy.mjs
+        run: node upload-version.mjs
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: id-mail-worker-upload-${{ github.run_id }}-${{ github.run_attempt }}

@@ -1,5 +1,10 @@
-// Probe for deploy.mjs argument handling and upload-only behavior.
-// Runs deploy.mjs in a temp dir with a stubbed project-local `cf` binary.
+// Probe for deploy.mjs argument handling (issue #3281).
+//
+// Runs deploy.mjs in a temp dir with stubbed `bws` / `wrangler` binaries on
+// PATH and a stubbed global fetch (via --import), and pins the three cases:
+//   --dry-run   -> validation only, exits 0, nothing deployed
+//   --dry-rnu   -> usage error, non-zero exit, ZERO external calls logged
+//   (no args)   -> the real deploy sequence runs against the stubs
 // Run with: node --test deploy.test.mjs
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
@@ -15,8 +20,8 @@ const here = dirname(fileURLToPath(import.meta.url));
 
 function makeSandbox(mutateConfig) {
   const dir = mkdtempSync(join(tmpdir(), "deploy-probe-"));
-  const cfBin = join(dir, "node_modules", ".bin");
-  mkdirSync(cfBin, { recursive: true });
+  const bin = join(dir, "bin");
+  mkdirSync(bin);
   copyFileSync(join(here, "deploy.mjs"), join(dir, "deploy.mjs"));
   // The sandbox config defaults to the committed one; a test may replace
   // it wholesale (a raw string) or mutate the parsed object (#6947).
@@ -31,41 +36,60 @@ function makeSandbox(mutateConfig) {
   writeFileSync(join(dir, "config.json"), configText);
   const log = join(dir, "calls.log");
   writeFileSync(log, "");
-  writeFileSync(join(cfBin, "cf"), `#!/bin/sh\nprintf 'cf %s\\n' "$*" >> "${log}"\ncase "$1 $2 $3" in\n  "workers deployments list") printf '%s\\n' '{"result":[{"id":"deployment-1","versions":[{"version_id":"baseline-version","percentage":100}]}]}' ;;\n  "workers versions list") printf '%s\\n' '{"result":[{"id":"baseline-version"}]}' ;;\n  "workers versions create") printf '%s\\n' '{"result":{"id":"candidate-version"}}' ;;\nesac\nexit 0\n`);
-  chmodSync(join(cfBin, "cf"), 0o755);
-  return { dir, cfBin, log };
+  // bws stub: logs the call, returns a stub value for every secret
+  // deploy.mjs looks up (the account token plus each caller's tokenKey,
+  // derived from config.json so the probe survives config edits).
+  // Malformed configs never reach bws, so unparseable shapes simply
+  // contribute no caller keys.
+  let keys = ["cloudflare.api-token-account-wide"];
+  try {
+    const config = JSON.parse(configText);
+    keys = [
+      ...keys,
+      ...Object.values(config.callers ?? {})
+        .filter((caller) => caller && typeof caller.tokenKey === "string")
+        .map((caller) => caller.tokenKey),
+    ];
+  } catch {
+    /* the invalid-config cases exit in validation, before any bws call */
+  }
+  const secretsJson = JSON.stringify(keys.map((key) => ({ key, value: `stub-${key}` })));
+  writeFileSync(join(bin, "bws"), `#!/bin/sh\necho "bws $@" >> "${log}"\nprintf '%s' '${secretsJson}'\n`);
+  writeFileSync(join(bin, "wrangler"), `#!/bin/sh\necho "wrangler $@" >> "${log}"\nexit 0\n`);
+  chmodSync(join(bin, "bws"), 0o755);
+  chmodSync(join(bin, "wrangler"), 0o755);
+  // fetch stub: every retired Worker reports 404 (already gone), so the
+  // retire loop logs and moves on without a wrangler delete.
+  const fetchStub = join(dir, "fetch-stub.mjs");
+  writeFileSync(fetchStub, `globalThis.fetch = async () => ({ status: 404, ok: false });\n`);
+  return { dir, bin, log, fetchStub };
 }
 
-async function runDeploy(sb, args, { token = true } = {}) {
+async function runDeploy(sb, args) {
   try {
-    const env = {
-      PATH: process.env.PATH,
-      CLOUDFLARE_ACCOUNT_ID: "stub-account",
-      GITHUB_SHA: "0123456789abcdef0123456789abcdef01234567",
-      GITHUB_REPOSITORY: "developing-today/code",
-      GITHUB_EVENT_NAME: "workflow_dispatch",
-      GITHUB_REF: "refs/heads/main",
-      GITHUB_RUN_ID: "99",
-      GITHUB_RUN_ATTEMPT: "1",
-      ID_MAIL_WORKER_PROVENANCE_FILE: join(sb.dir, "provenance.json"),
-    };
-    if (token && !args.includes("--dry-run")) env.ID_MAIL_WORKER_CF_TOKEN_MAIL_WORKER_PRODUCTION = "stub-token";
-    const { stdout, stderr } = await run("node", [join(sb.dir, "deploy.mjs"), ...args], { env });
+    const { stdout, stderr } = await run("node", ["--import", sb.fetchStub, join(sb.dir, "deploy.mjs"), ...args], {
+      env: {
+        ...process.env,
+        PATH: `${sb.bin}:${process.env.PATH}`,
+        CLOUDFLARE_ACCOUNT_ID: "stub-account",
+      },
+    });
     return { code: 0, stdout, stderr };
   } catch (error) {
     return { code: error.code, stdout: error.stdout ?? "", stderr: error.stderr ?? "" };
   }
 }
 
-test("--dry-run validates and builds without uploading", async () => {
+test("--dry-run validates only and deploys nothing", async () => {
   const sb = makeSandbox();
   const result = await runDeploy(sb, ["--dry-run"]);
   assert.equal(result.code, 0, result.stderr);
-  assert.match(result.stdout, /nothing uploaded/);
+  assert.match(result.stdout, /nothing deployed/);
   const calls = readFileSync(sb.log, "utf8");
-  assert.match(calls, /cf workers versions create --worker mail --tag git-0123456789ab/);
-  assert.match(calls, /--dry-run/);
-  assert.doesNotMatch(calls, /deployments create|delete|wrangler|secret put|bws/);
+  assert.match(calls, /bws secret list/);
+  assert.match(calls, /wrangler deploy --dry-run/);
+  assert.doesNotMatch(calls, /wrangler deploy --config/);
+  assert.doesNotMatch(calls, /secret put/);
 });
 
 test("--dry-rnu (typo) aborts with a usage error before any external call", async () => {
@@ -73,7 +97,7 @@ test("--dry-rnu (typo) aborts with a usage error before any external call", asyn
   const result = await runDeploy(sb, ["--dry-rnu"]);
   assert.notEqual(result.code, 0);
   assert.match(result.stderr, /usage: deploy\.mjs \[--dry-run\]/);
-  assert.equal(readFileSync(sb.log, "utf8"), "", "no cf call may be logged");
+  assert.equal(readFileSync(sb.log, "utf8"), "", "no bws/wrangler call may be logged");
 });
 
 test("--bogus-flag aborts with a usage error before any external call", async () => {
@@ -81,7 +105,7 @@ test("--bogus-flag aborts with a usage error before any external call", async ()
   const result = await runDeploy(sb, ["--bogus-flag"]);
   assert.notEqual(result.code, 0);
   assert.match(result.stderr, /unrecognized argument\(s\): --bogus-flag/);
-  assert.equal(readFileSync(sb.log, "utf8"), "", "no cf call may be logged");
+  assert.equal(readFileSync(sb.log, "utf8"), "", "no bws/wrangler call may be logged");
 });
 
 test("a stray positional aborts with a usage error before any external call (#7855)", async () => {
@@ -90,7 +114,7 @@ test("a stray positional aborts with a usage error before any external call (#78
   assert.equal(result.code, 2, result.stderr);
   assert.match(result.stderr, /unrecognized argument\(s\): extra/);
   assert.match(result.stderr, /usage: deploy\.mjs \[--dry-run\]/);
-  assert.equal(readFileSync(sb.log, "utf8"), "", "no cf call may be logged");
+  assert.equal(readFileSync(sb.log, "utf8"), "", "no bws/wrangler call may be logged");
 });
 
 test("duplicate --dry-run is named as a duplicate, not unrecognized (#7855)", async () => {
@@ -100,7 +124,7 @@ test("duplicate --dry-run is named as a duplicate, not unrecognized (#7855)", as
   assert.match(result.stderr, /duplicate argument\(s\): --dry-run/);
   assert.doesNotMatch(result.stderr, /unrecognized argument/);
   assert.match(result.stderr, /usage: deploy\.mjs \[--dry-run\]/);
-  assert.equal(readFileSync(sb.log, "utf8"), "", "no cf call may be logged");
+  assert.equal(readFileSync(sb.log, "utf8"), "", "no bws/wrangler call may be logged");
 });
 
 test("--dry-run with a bogus flag aborts with a usage error before any external call (#7855)", async () => {
@@ -109,7 +133,7 @@ test("--dry-run with a bogus flag aborts with a usage error before any external 
   assert.equal(result.code, 2, result.stderr);
   assert.match(result.stderr, /unrecognized argument\(s\): --bogus-flag/);
   assert.match(result.stderr, /usage: deploy\.mjs \[--dry-run\]/);
-  assert.equal(readFileSync(sb.log, "utf8"), "", "no cf call may be logged");
+  assert.equal(readFileSync(sb.log, "utf8"), "", "no bws/wrangler call may be logged");
 });
 
 test("null and non-object config entries are validation errors, not TypeErrors (#6947)", async () => {
@@ -159,57 +183,33 @@ test("null and non-object config entries are validation errors, not TypeErrors (
     assert.match(result.stderr, /config\.json is invalid:/);
     assert.match(result.stderr, pattern);
     assert.doesNotMatch(result.stderr, /TypeError/);
-    assert.equal(readFileSync(sb.log, "utf8"), "", "no cf call may be logged");
+    assert.equal(readFileSync(sb.log, "utf8"), "", "no bws/wrangler call may be logged");
   }
 });
 
-test("a config without retire validates and uploads a version (#6947)", async () => {
+test("a config without retire validates and deploys fully against the stubs (#6947)", async () => {
   const sb = makeSandbox((c) => {
     delete c.retire;
   });
   const dry = await runDeploy(sb, ["--dry-run"]);
   assert.equal(dry.code, 0, dry.stderr);
-  assert.match(dry.stdout, /nothing uploaded/);
+  assert.match(dry.stdout, /nothing deployed/);
   const result = await runDeploy(sb, []);
   assert.equal(result.code, 0, result.stderr);
-  assert.match(result.stdout, /uploaded mail version candidate-version/);
+  assert.match(result.stdout, /deployed mail with callers/);
   const calls = readFileSync(sb.log, "utf8");
-  assert.match(calls, /cf workers versions create --worker mail --tag mail-0123456789ab-run-99-attempt-1/);
-  assert.match(calls, /cf workers deployments list --worker mail --per-page 1/);
-  assert.doesNotMatch(calls, /deployments create|delete|wrangler|secret put|bws/);
-  const provenance = JSON.parse(readFileSync(join(sb.dir, "provenance.json"), "utf8"));
-  assert.equal(provenance.versionId, "candidate-version");
-  assert.equal(provenance.baselineVersionId, "baseline-version");
+  assert.match(calls, /wrangler deploy --config/);
+  assert.match(calls, /secret put/);
 });
 
-test("upload requires the unique environment token and ignores the generic token", async () => {
-  const sb = makeSandbox();
-  const env = {
-    PATH: process.env.PATH,
-    CLOUDFLARE_ACCOUNT_ID: "stub-account",
-    CLOUDFLARE_API_TOKEN: "generic-token-must-not-be-used",
-  };
-  let result;
-  try {
-    const { stdout, stderr } = await run("node", [join(sb.dir, "deploy.mjs")], { env });
-    result = { code: 0, stdout, stderr };
-  } catch (error) {
-    result = { code: error.code, stdout: error.stdout ?? "", stderr: error.stderr ?? "" };
-  }
-  assert.notEqual(result.code, 0);
-  assert.match(result.stderr, /ID_MAIL_WORKER_CF_TOKEN_MAIL_WORKER_PRODUCTION is not set/);
-  assert.equal(readFileSync(sb.log, "utf8"), "");
-});
-
-test("no args uploads a version only against the stub and records provenance", async () => {
+test("no args runs the real deploy sequence against the stubs", async () => {
   const sb = makeSandbox();
   const result = await runDeploy(sb, []);
   assert.equal(result.code, 0, result.stderr);
-  assert.match(result.stdout, /uploaded mail version candidate-version/);
+  assert.match(result.stdout, /deployed mail with callers/);
   const calls = readFileSync(sb.log, "utf8");
-  assert.equal(calls.split("\n").filter(Boolean).length, 4);
-  assert.match(calls, /cf workers versions create --worker mail --tag mail-0123456789ab-run-99-attempt-1/);
-  assert.match(calls, /cf workers deployments list --worker mail --per-page 1/);
-  assert.equal(JSON.parse(readFileSync(join(sb.dir, "provenance.json"), "utf8")).versionId, "candidate-version");
-  assert.doesNotMatch(calls, /deployments create|delete|wrangler|secret put|bws/);
+  assert.match(calls, /bws secret list/);
+  assert.match(calls, /wrangler deploy --dry-run/);
+  assert.match(calls, /wrangler deploy --config/);
+  assert.match(calls, /wrangler secret put CALLERS/);
 });

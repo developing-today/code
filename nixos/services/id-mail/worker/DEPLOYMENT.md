@@ -1,5 +1,8 @@
 # id-mail Worker publishing and promotion
 
+The existing operator command `id-mail-deploy` and its rollback/fallback path
+are unchanged. GitHub Actions uses the separate `upload-version.mjs` entry point.
+
 The `id-mail-worker-publish` workflow is a manual, main-only publisher. Its
 confirmation input defaults to false. A confirmed run uploads a version with
 the pinned `cf` CLI and the Workers Versions API; it does not deploy it. It
