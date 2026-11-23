@@ -589,6 +589,32 @@ let
                 ];
               };
 
+              # The mcpx development shell (#1983): the local test
+              # environment at the flake's versions, so a suite run on
+              # a laptop tests what the nix package ships. package.nix
+              # builds with go_1_27 and wraps deno, bun-bin and nodejs
+              # from this same nixpkgs; the host CI legs instead take
+              # deno/bun/node from setup-* actions at unrelated
+              # versions, and only the nix-e2e leg covers the wrapped
+              # set. This shell is that set plus the tools a local
+              # e2e run needs (git, python3 for the sqlite3 seed) and
+              # the linters. Like mcpx-lint above, it is deliberately
+              # lean: the default shell is the whole monorepo
+              # environment, which is the "impractical setup" #1983
+              # set out to remove for mcpx work.
+              mcpx = pkgs.mkShell {
+                packages = with pkgs; [
+                  go_1_27
+                  gopls
+                  deno
+                  bun
+                  nodejs
+                  git
+                  python3
+                  golangci-lint
+                ];
+              };
+
               # Lean shell for the fleet build container and GHA job
               # containers (dezren39/fleet, containers/fleet-build).
               # Same motivation as mcpx-lint above: `default` is the

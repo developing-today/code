@@ -209,6 +209,7 @@ import {
   renderOverview,
   renderOverviewBody,
   renderOverviewShell,
+  renderChat,
   renderCommentsQueue,
   renderPages,
   renderProgram,
@@ -245,6 +246,7 @@ import {
   type PushPayload,
 } from "./alerts.ts";
 import { recordSwProbe, sendPush, swProbeSummary, VAPID_PUBLIC_KEY } from "./push.ts";
+import { notifyPromptCompletion, promptCompletionTransition } from "./prompt-notify.ts";
 import { resolveBwsSecret, resolveBwsSecretLookup } from "./secrets.ts";
 import { openMetadataStore, type EpicSlugMap, type IngestionItem } from "./metadata-ingestion.ts";
 import { createMetadataWebhookHandler } from "./webhook-listener.ts";
@@ -2841,8 +2843,24 @@ async function handler(req: Request, remoteAddress?: string): Promise<Response> 
     if (typeof b.read === "boolean") patch.read = b.read;
     if (Array.isArray(b.refs) && b.refs.every((x) => typeof x === "string")) patch.refs = b.refs as string[];
     if (b.replyTo === null || typeof b.replyTo === "string") patch.replyTo = b.replyTo as string | null;
+    const before = await promptsStore.get(id);
     const updated = await promptsStore.update(id, patch);
     if (!updated) return json({ error: "prompt not found" }, 404);
+    // #10035 S6 (design #9539 §4): push on async completion, opt-in
+    // per submission (the record's notify flag). Answers land only
+    // through this route, so the terminal transition is detected
+    // here; the send is fire-and-forget — a push failure must never
+    // fail the answer itself.
+    if (promptCompletionTransition(before, updated)) {
+      void (async () => {
+        const store = await getAlertsStore();
+        if (store) await notifyPromptCompletion(store, updated, cfg.publicOrigin);
+      })().catch((err) => {
+        console.error(
+          `[prompt-notify] completion push failed for ${updated.id}: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      });
+    }
     return json({ prompt: updated });
   }
   if (req.method === "POST" && path === "/api/comments") {
@@ -4165,6 +4183,14 @@ async function handler(req: Request, remoteAddress?: string): Promise<Response> 
     return html(renderCommentsQueue(await commentsStore.all(), prov()));
   }
 
+  if (path === "/chat") {
+    // #10035 S6: the threaded chat/session view over the prompt
+    // store. list() with includeArchived returns every record; the
+    // render hides archived unless ?archived=1 asks for them.
+    const showArchived = url.searchParams.get("archived") === "1";
+    return html(renderChat(await promptsStore.list({ includeArchived: true }), prov(), { showArchived }));
+  }
+
   if (path === "/api/comments/queue.json") {
     const all = await commentsStore.all();
     return json({ comments: queuedComments(all), counts: commentKindCounts(all) });
@@ -4409,6 +4435,13 @@ async function handler(req: Request, remoteAddress?: string): Promise<Response> 
   }
   if (path === "/assets/push-client.js") {
     const file = Bun.file(new URL("./assets/push-client.js", import.meta.url));
+    if (!(await file.exists())) return json({ error: "asset missing" }, 404);
+    return new Response(file, {
+      headers: { "content-type": "text/javascript; charset=utf-8", "cache-control": "public, max-age=3600" },
+    });
+  }
+  if (path === "/assets/prompt-badge.js") {
+    const file = Bun.file(new URL("./assets/prompt-badge.js", import.meta.url));
     if (!(await file.exists())) return json({ error: "asset missing" }, 404);
     return new Response(file, {
       headers: { "content-type": "text/javascript; charset=utf-8", "cache-control": "public, max-age=3600" },

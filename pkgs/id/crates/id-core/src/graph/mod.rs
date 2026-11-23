@@ -9,6 +9,7 @@
 
 pub mod append_list;
 pub mod attribute;
+pub mod comment_projection;
 pub mod cross_signing;
 pub mod cursor;
 pub mod delegation;

@@ -38,12 +38,12 @@ import { join } from "node:path";
 import { Database } from "bun:sqlite";
 import {
   buildTriagePacket,
+  openMetadataStore,
   runMetadataCheck,
   storeOutcome,
   type EpicSlugMap,
   type IngestionItem,
 } from "../src/metadata-ingestion.ts";
-import { createPmMetadataStore } from "../src/metadata-store.ts";
 
 const USAGE =
   "metadata-sweeper: usage: bun run scripts/metadata-sweeper.ts --repo <owner/name> [--repo ...] " +
@@ -335,9 +335,8 @@ async function main(): Promise<void> {
   const options = parseArgs(process.argv.slice(2));
   // Dry runs never touch the configured database file: every path below
   // already skips persistence, and the store lives in memory.
-  const db = new Database(options.dryRun ? ":memory:" : options.dbPath);
+  const db = openMetadataStore(options.dryRun ? ":memory:" : options.dbPath, (path) => new Database(path));
   try {
-    createPmMetadataStore(db);
     const scratch = await mkdtemp(join(tmpdir(), "metadata-sweeper-"));
     const summary: Record<string, SweepCounts & { dbRows: number }> = {};
     try {
