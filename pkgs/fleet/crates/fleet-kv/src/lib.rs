@@ -124,14 +124,16 @@ fn validate_namespace(namespace: &str) -> Result<(), KvError> {
 }
 
 fn validate_key(key: &str) -> Result<(), KvError> {
+    // The design's "Key syntax and limits" contract permits printable ASCII
+    // (0x20-0x7E, space included), not just graphic characters.
     if key.is_empty()
         || key.len() > 512
         || key.starts_with('/')
         || key.ends_with('/')
         || !key.is_ascii()
-        || key
-            .split('/')
-            .any(|segment| segment.is_empty() || !segment.bytes().all(|b| b.is_ascii_graphic()))
+        || key.split('/').any(|segment| {
+            segment.is_empty() || !segment.bytes().all(|b| b.is_ascii_graphic() || b == b' ')
+        })
     {
         return Err(KvError::MalformedKey);
     }
@@ -201,6 +203,132 @@ mod tests {
     }
 
     #[test]
+    fn keys_with_spaces_round_trip() {
+        let store = LocalStore::in_memory().expect("store opens");
+        let identity = Identity::new("owner", "context", "partition");
+        store
+            .set(&identity, "notes", "notes/meeting agenda", b"space key")
+            .expect("set with space");
+        assert_eq!(
+            store
+                .get(&identity, "notes", "notes/meeting agenda")
+                .expect("get with space"),
+            Some(b"space key".to_vec())
+        );
+    }
+
+    #[test]
+    fn key_length_boundaries_match_the_oracle() {
+        assert!(matches!(validate_key(""), Err(KvError::MalformedKey)));
+        assert!(validate_key(&"k".repeat(512)).is_ok());
+        assert!(matches!(
+            validate_key(&"k".repeat(513)),
+            Err(KvError::MalformedKey)
+        ));
+    }
+
+    #[test]
+    fn namespace_grammar_boundaries() {
+        assert!(validate_namespace("a").is_ok());
+        assert!(validate_namespace("n-0Z").is_ok());
+        assert!(validate_namespace(&format!("a{}", "b".repeat(62))).is_ok());
+        assert!(matches!(
+            validate_namespace(&format!("a{}", "b".repeat(63))),
+            Err(KvError::MalformedNamespace)
+        ));
+        assert!(matches!(
+            validate_namespace("0abc"),
+            Err(KvError::MalformedNamespace)
+        ));
+        assert!(matches!(
+            validate_namespace("has space"),
+            Err(KvError::MalformedNamespace)
+        ));
+        assert!(matches!(
+            validate_namespace("under_score"),
+            Err(KvError::MalformedNamespace)
+        ));
+        assert!(matches!(
+            validate_namespace(""),
+            Err(KvError::MalformedNamespace)
+        ));
+    }
+
+    /// Independent key-grammar oracle transcribed from the fleet-kv design's
+    /// "Key syntax and limits" contract, not from `validate_key`.
+    fn oracle_key_accepts(key: &str) -> bool {
+        let bytes = key.as_bytes();
+        if bytes.is_empty() || bytes.len() > 512 {
+            return false;
+        }
+        if !bytes.iter().all(|b| (0x20..=0x7E).contains(b)) {
+            return false;
+        }
+        if key.starts_with('/') || key.ends_with('/') {
+            return false;
+        }
+        key.split('/').all(|segment| !segment.is_empty())
+    }
+
+    /// Independent namespace-grammar oracle transcribed from the `NamespaceId`
+    /// rule (letter first, then letters/digits/hyphens, at most 63 bytes).
+    fn oracle_namespace_accepts(namespace: &str) -> bool {
+        let bytes = namespace.as_bytes();
+        if bytes.is_empty() || bytes.len() > 63 {
+            return false;
+        }
+        let mut cursor = bytes.iter();
+        if !cursor
+            .next()
+            .is_some_and(|first| first.is_ascii_alphabetic())
+        {
+            return false;
+        }
+        cursor.all(|b| b.is_ascii_alphanumeric() || *b == b'-')
+    }
+
+    fn key_char() -> impl Strategy<Value = char> {
+        prop_oneof![
+            10 => (0x20u8..0x7Fu8).prop_map(|b| b as char),
+            2 => Just('/'),
+            2 => (0x00u8..0x20u8).prop_map(|b| b as char),
+            1 => Just('\u{7f}'),
+            1 => prop_oneof![Just('é'), Just('中'), Just('💾')],
+        ]
+    }
+
+    fn generated_key() -> impl Strategy<Value = String> {
+        prop_oneof![
+            3 => proptest::collection::vec(key_char(), 0..600)
+                .prop_map(|chars| chars.into_iter().collect()),
+            1 => proptest::collection::vec(key_char(), 505..520)
+                .prop_map(|chars| chars.into_iter().collect()),
+        ]
+    }
+
+    fn namespace_char() -> impl Strategy<Value = char> {
+        prop_oneof![
+            8 => prop_oneof![
+                (0u8..26u8).prop_map(|b| (b'a' + b) as char),
+                (0u8..26u8).prop_map(|b| (b'A' + b) as char),
+                (0u8..10u8).prop_map(|b| (b'0' + b) as char),
+                Just('-'),
+            ],
+            1 => Just(' '),
+            1 => prop_oneof![Just('_'), Just('.'), Just('/'), Just('é'), Just('\u{7f}')],
+        ]
+    }
+
+    fn generated_namespace() -> impl Strategy<Value = String> {
+        prop_oneof![
+            3 => proptest::collection::vec(namespace_char(), 0..70)
+                .prop_map(|chars| chars.into_iter().collect()),
+            1 => proptest::collection::vec(namespace_char(), 60..68)
+                .prop_map(|chars| chars.into_iter().collect()),
+        ]
+    }
+
+    #[test]
     fn file_backed_store_reopens_with_the_same_identity_scoped_value() {
         let suffix = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -250,6 +378,26 @@ mod tests {
             prop_assert_eq!(store.get(&foreign_owner, "notes", "same/key").expect("foreign owner read"), None);
             prop_assert_eq!(store.get(&foreign_context, "notes", "same/key").expect("foreign context read"), None);
             prop_assert_eq!(store.get(&foreign_partition, "notes", "same/key").expect("foreign partition read"), None);
+        }
+
+        #[test]
+        fn generated_keys_agree_with_the_grammar_oracle(key in generated_key()) {
+            prop_assert_eq!(
+                validate_key(&key).is_ok(),
+                oracle_key_accepts(&key),
+                "key {:?}",
+                key
+            );
+        }
+
+        #[test]
+        fn generated_namespaces_agree_with_the_grammar_oracle(namespace in generated_namespace()) {
+            prop_assert_eq!(
+                validate_namespace(&namespace).is_ok(),
+                oracle_namespace_accepts(&namespace),
+                "namespace {:?}",
+                namespace
+            );
         }
     }
 }
