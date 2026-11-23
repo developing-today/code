@@ -493,3 +493,63 @@ test('a free-alias model seated under the paid base via weights alone fails', ()
     `expected a split invariant issue naming the weights seat: ${issues}`,
   );
 });
+
+test('a same-model paid tail passes when the free seat outweighs it in the same route', () => {
+  const config = configWithWallSplit();
+  config.experimental.model_routes['mixed-pool'] = {
+    targets: ['paid-free/free-model', 'paid/free-model#low'],
+    weights: { 'paid-free/free-model': 3, 'paid/free-model': 0.1 },
+  };
+  assert.deepEqual(inspectProviderWallRules(config), []);
+});
+
+test('a same-model paid tail at equal weight to the free seat fails', () => {
+  const config = configWithWallSplit();
+  config.experimental.model_routes['mixed-pool'] = {
+    targets: ['paid-free/free-model', 'paid/free-model#low'],
+    weights: { 'paid-free/free-model': 1, 'paid/free-model': 1 },
+  };
+  const issues = inspectProviderWallRules(config);
+  assert.ok(
+    issues.some((issue) => issue.includes('"free-model"') && issue.includes('mixed-pool')),
+    `expected a split invariant issue for the equal-weight tail: ${issues}`,
+  );
+});
+
+test('a same-model paid tail outweighing the free seat fails', () => {
+  const config = configWithWallSplit();
+  config.experimental.model_routes['mixed-pool'] = {
+    targets: ['paid-free/free-model', 'paid/free-model#low'],
+    weights: { 'paid-free/free-model': 0.1, 'paid/free-model': 3 },
+  };
+  const issues = inspectProviderWallRules(config);
+  assert.ok(
+    issues.some((issue) => issue.includes('"free-model"') && issue.includes('mixed-pool')),
+    `expected a split invariant issue for the heavier tail: ${issues}`,
+  );
+});
+
+test('a paid tail fails when the free seat is only in a different route', () => {
+  const config = configWithWallSplit();
+  config.experimental.model_routes['mixed-pool'] = {
+    targets: ['paid/free-model#low'],
+    weights: { 'paid/free-model': 0.1 },
+  };
+  const issues = inspectProviderWallRules(config);
+  assert.ok(
+    issues.some((issue) => issue.includes('"free-model"') && issue.includes('mixed-pool')),
+    `expected a split invariant issue for the cross-route tail: ${issues}`,
+  );
+});
+
+test('a paid tail fails when either seat lacks an explicit weight', () => {
+  const config = configWithWallSplit();
+  config.experimental.model_routes['mixed-pool'] = {
+    targets: ['paid-free/free-model', 'paid/free-model#low'],
+  };
+  const issues = inspectProviderWallRules(config);
+  assert.ok(
+    issues.some((issue) => issue.includes('"free-model"') && issue.includes('mixed-pool')),
+    `expected a split invariant issue for the unweighted tail: ${issues}`,
+  );
+});

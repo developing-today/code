@@ -306,17 +306,38 @@ function routeSeatReferences(config) {
       route.targets.forEach((target, index) => {
         const reference = typeof target === 'string' ? target : isObject(target) ? target.model : null;
         const parsed = typeof reference === 'string' ? splitModelReference(reference) : null;
-        if (parsed) seats.push({ ...parsed, where: `model route "${routeName}" targets[${index}]` });
+        if (parsed) seats.push({ ...parsed, route: routeName, where: `model route "${routeName}" targets[${index}]` });
       });
     }
     if (isObject(route.weights)) {
       for (const key of Object.keys(route.weights)) {
         const parsed = splitModelReference(key);
-        if (parsed) seats.push({ ...parsed, where: `model route "${routeName}" weights` });
+        if (parsed) seats.push({ ...parsed, route: routeName, where: `model route "${routeName}" weights` });
       }
     }
   }
   return seats;
+}
+
+// Explicit per-route seat weights, keyed "route|provider/model".
+// Weights keys name the leaf exactly as targets do (see
+// routeSeatReferences); the paid-tail exemption in rule (c) compares
+// the free alias seat's weight against the base seat's weight within
+// one route, so it needs the numbers, not just the references.
+function routeSeatWeights(config) {
+  const weights = new Map();
+  const modelRoutes = activeMap(config, 'model_routes');
+  if (!isObject(modelRoutes)) return weights;
+  for (const [routeName, route] of Object.entries(modelRoutes)) {
+    if (!isObject(route) || !isObject(route.weights)) continue;
+    for (const [key, value] of Object.entries(route.weights)) {
+      const parsed = splitModelReference(key);
+      if (parsed && typeof value === 'number') {
+        weights.set(`${routeName}|${parsed.provider}/${parsed.model}`, value);
+      }
+    }
+  }
+  return weights;
 }
 
 // Wall-scope declarations and the free/paid alias split invariants:
@@ -328,6 +349,15 @@ function routeSeatReferences(config) {
 // (c) a model in a -free alias's catalog must not also be seated under
 //     the paid base id anywhere in the routes -- that seat would let a
 //     wall on the base bench the free model the split exists to free.
+//     Paid-tail exemption (code#13677, 2026-11-23): when free and paid
+//     are billing states of the SAME model on the SAME account (the
+//     OpenAI data-sharing shape -- complimentary tokens first, paid
+//     after), the base seat is the designed late fallback, not a
+//     split violation, provided the same route also seats the model
+//     via the -free alias at a STRICTLY GREATER explicit weight. The
+//     exemption is fail-closed: either seat missing a weight, or the
+//     base seat weighing as much as or more than the free seat, keeps
+//     the failure.
 export function inspectProviderWallRules(config) {
   const issues = [];
   const providers = isObject(config?.provider) ? config.provider : {};
@@ -358,13 +388,16 @@ export function inspectProviderWallRules(config) {
     }
 
     if (isObject(block.models) && isObject(base)) {
+      const weights = routeSeatWeights(config);
       for (const model of Object.keys(block.models)) {
         for (const seat of seats) {
-          if (seat.provider === baseID && seat.model === model) {
-            issues.push(
-              `wallScope: model "${model}" is in free alias "${providerID}"'s catalog but is also seated under its paid base "${baseID}" at ${seat.where}; seat it via the alias so a wall on the base cannot bench it`,
-            );
-          }
+          if (seat.provider !== baseID || seat.model !== model) continue;
+          const freeWeight = weights.get(`${seat.route}|${providerID}/${model}`);
+          const baseWeight = weights.get(`${seat.route}|${baseID}/${model}`);
+          if (freeWeight !== undefined && baseWeight !== undefined && baseWeight < freeWeight) continue;
+          issues.push(
+            `wallScope: model "${model}" is in free alias "${providerID}"'s catalog but is also seated under its paid base "${baseID}" at ${seat.where}; seat it via the alias so a wall on the base cannot bench it -- or, for a same-model paid tail, seat it via the alias in the same route at a strictly greater weight (the free-first / paid-tail shape, code#13677)`,
+          );
         }
       }
     }
