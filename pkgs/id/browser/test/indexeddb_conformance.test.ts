@@ -304,26 +304,43 @@ async function launchChromium(): Promise<{
     ],
     { stdio: ["ignore", "ignore", "pipe"] },
   );
-  const wsUrl = await new Promise<string>((resolve, reject) => {
-    let buffer = "";
-    const timer = setTimeout(
-      () => reject(new Error("chromium did not print a DevTools URL in 30s")),
-      30_000,
-    );
-    child.stderr?.on("data", (chunk) => {
-      buffer += String(chunk);
-      const match = buffer.match(/DevTools listening on (ws:\/\/\S+)/);
-      if (match) {
+  try {
+    const wsUrl = await new Promise<string>((resolve, reject) => {
+      let buffer = "";
+      let settled = false;
+      const timer = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        reject(new Error("chromium did not print a DevTools URL in 30s"));
+      }, 30_000);
+      const fail = (error: Error) => {
+        if (settled) return;
+        settled = true;
         clearTimeout(timer);
-        resolve(match[1]);
-      }
+        reject(error);
+      };
+      child.stderr?.on("data", (chunk) => {
+        buffer += String(chunk);
+        const match = buffer.match(/DevTools listening on (ws:\/\/\S+)/);
+        if (match && !settled) {
+          settled = true;
+          clearTimeout(timer);
+          resolve(match[1]);
+        }
+      });
+      child.on("exit", (code) =>
+        fail(new Error(`chromium exited early with code ${code}`)),
+      );
     });
-    child.on("exit", (code) =>
-      reject(new Error(`chromium exited early with code ${code}`)),
-    );
-  });
-  const cdp = await connectCdp(wsUrl);
-  return { cdp, process: child, userDataDir };
+    const cdp = await connectCdp(wsUrl);
+    return { cdp, process: child, userDataDir };
+  } catch (error) {
+    // A failed launch must not leak the browser or its profile:
+    // the caller's cleanup only runs on a successful launch.
+    child.kill("SIGKILL");
+    rmSync(userDataDir, { recursive: true, force: true });
+    throw error;
+  }
 }
 
 async function runInEngine(base: string): Promise<any> {
@@ -491,6 +508,11 @@ test(
     assert.equal(typeof result.probes.storage.quota, "number");
     assert.ok(result.probes.storage.quota > 0);
     assert.equal(typeof result.probes.storage.persisted, "boolean");
+    assert.equal(
+      result.probes.metaNamespace,
+      "refused:unsupported-capability",
+      "the internal operation-ID store must not be openable as a user namespace",
+    );
 
     // The evidence record: engine, verdict, probes.
     console.log(

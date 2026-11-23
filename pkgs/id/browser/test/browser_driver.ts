@@ -214,6 +214,22 @@ async function probeUpgrade(): Promise<{
   }
 }
 
+/**
+ * The reserved-namespace probe: the internal operation-ID store
+ * is refused as a user namespace at open time, so user records
+ * can never share the dedupe table.
+ */
+async function probeMetaNamespace(): Promise<string> {
+  try {
+    const store = await IndexedDbStore.open("id-probe-meta", ["__port_meta"]);
+    store.close();
+    return "opened";
+  } catch (error) {
+    if (error instanceof PortRefusal) return `refused:${error.kind}`;
+    throw error;
+  }
+}
+
 async function probeStorage(): Promise<{
   usage: number | null;
   quota: number | null;
@@ -248,6 +264,7 @@ export async function runInBrowser(fixture: {
       reopenValue: await probeReopen(),
       upgrade: await probeUpgrade(),
       storage: await probeStorage(),
+      metaNamespace: await probeMetaNamespace(),
     },
   };
 }

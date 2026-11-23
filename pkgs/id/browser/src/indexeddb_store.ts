@@ -255,6 +255,12 @@ export class IndexedDbStore {
     namespaces: string[],
     version = 1,
   ): Promise<IndexedDbStore> {
+    if (namespaces.includes(META_STORE)) {
+      throw new PortRefusal(
+        "unsupported-capability",
+        `namespace ${META_STORE} is reserved for operation-ID records`,
+      );
+    }
     const db = await new Promise<IDBDatabase>((resolve, reject) => {
       const request = indexedDB.open(name, version);
       request.onupgradeneeded = () => {
@@ -268,11 +274,28 @@ export class IndexedDbStore {
           database.createObjectStore(META_STORE);
         }
       };
-      request.onsuccess = () => resolve(request.result);
-      request.onerror = () =>
+      let settled = false;
+      request.onsuccess = () => {
+        if (settled) {
+          // The open was already rejected (blocked): rejecting the
+          // promise did not cancel the pending request, so close
+          // the late connection instead of leaking it.
+          request.result.close();
+          return;
+        }
+        settled = true;
+        resolve(request.result);
+      };
+      request.onerror = () => {
+        if (settled) return;
+        settled = true;
         reject(request.error ?? new Error("IndexedDB open failed"));
-      request.onblocked = () =>
+      };
+      request.onblocked = () => {
+        if (settled) return;
+        settled = true;
         reject(new Error("IndexedDB open blocked by another connection"));
+      };
     });
     return new IndexedDbStore(db, namespaces);
   }
