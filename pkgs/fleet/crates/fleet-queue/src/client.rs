@@ -579,12 +579,12 @@ mod tests {
         assert_eq!(batch_count_flag(Some(1)), Ok(1));
         assert_eq!(batch_count_flag(Some(2)), Ok(2));
         assert_eq!(
-            batch_count_flag(Some(crate::turso_queue::BATCH_CLAIM_MAX)),
-            Ok(crate::turso_queue::BATCH_CLAIM_MAX)
+            batch_count_flag(Some(crate::BATCH_CLAIM_MAX)),
+            Ok(crate::BATCH_CLAIM_MAX)
         );
         assert!(batch_count_flag(Some(0)).is_err());
         assert!(batch_count_flag(Some(-3)).is_err());
-        assert!(batch_count_flag(Some(crate::turso_queue::BATCH_CLAIM_MAX + 1)).is_err());
+        assert!(batch_count_flag(Some(crate::BATCH_CLAIM_MAX + 1)).is_err());
     }
 
     #[test]
