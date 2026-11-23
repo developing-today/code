@@ -117,13 +117,23 @@
 //! The queue query fails open (a broker outage must not block every
 //! close — the queue sweep's detective check is the net), and a
 //! build without the queue client skips the guard the same way.
+//!
+//! Metadata create path (#9073, design §12–§15): `issue create` and
+//! `pr create` bodies are stamped with the fleet Metadata block
+//! (gh_metadata.rs) before the rotation runs, and the full record
+//! is inserted into the metadata store after a successful create.
+//! A malformed caller block refuses the create before any write;
+//! a failed insert never loses the item (the miss is reported on
+//! stderr and ingestion heals it). Controls: FLEET_METADATA_DB
+//! (store path), FLEET_GH_STAMP_KEY_ID (stamp signing key id; the
+//! key material is resolved by name from the secrets broker).
 
 use crate::gh_cache;
 use crate::gh_closure;
 use crate::gh_guard;
 use fleet_config::{Config, DEFAULT_GH_CACHE_PORT};
 use fleet_secrets::Resolver;
-use std::io::Write;
+use std::io::{IsTerminal, Write};
 use std::process::{Command, Stdio};
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -1245,6 +1255,22 @@ fn run_with_provider<P: TokenProvider>(
     sources: &[TokenSource],
     trace: bool,
 ) -> i32 {
+    run_with_provider_capturing(provider, gh_bin, args, sources, trace, false).0
+}
+
+/// run_with_provider, additionally handing back the final attempt's
+/// stdout when `capture_stdout` is set (the Metadata create path
+/// reads the created item's URL from it, #9073). The capture is a
+/// clone taken only on the path that asked for it, so the hot
+/// passthrough pays nothing.
+fn run_with_provider_capturing<P: TokenProvider>(
+    provider: &mut P,
+    gh_bin: &str,
+    args: &[String],
+    sources: &[TokenSource],
+    trace: bool,
+    capture_stdout: bool,
+) -> (i32, Option<Vec<u8>>) {
     let read_only = is_read_call(args);
     let mut last: Option<Attempt> = None;
     let mut provider_errors: Vec<String> = Vec::new();
@@ -1266,12 +1292,13 @@ fn run_with_provider<P: TokenProvider>(
             Ok(a) => a,
             Err(e) => {
                 eprintln!("fleet gh: failed to run '{gh_bin}': {e}");
-                return EXIT_UNRESOLVED;
+                return (EXIT_UNRESOLVED, None);
             }
         };
         if attempt.code == 0 {
+            let captured = capture_stdout.then(|| attempt.stdout.clone());
             emit(&attempt);
-            return EXIT_OK;
+            return (EXIT_OK, captured);
         }
         let combined = format!(
             "{}{}",
@@ -1296,22 +1323,24 @@ fn run_with_provider<P: TokenProvider>(
             last = Some(attempt);
             continue;
         }
+        let captured = capture_stdout.then(|| attempt.stdout.clone());
         emit(&attempt);
-        return attempt.code;
+        return (attempt.code, captured);
     }
     // No attempt produced output: either every source failed to
     // resolve, or the last failover had no successor. Prefer showing
     // the caller the real gh failure over our own summary.
     if let Some(attempt) = last {
         let code = attempt.code;
+        let captured = capture_stdout.then(|| attempt.stdout.clone());
         emit(&attempt);
-        return code;
+        return (code, captured);
     }
     for e in &provider_errors {
         eprintln!("fleet gh: {e}");
     }
     eprintln!("fleet gh: no token source could be resolved");
-    EXIT_UNRESOLVED
+    (EXIT_UNRESOLVED, None)
 }
 
 /// Write an attempt's captured bytes to the real stdout/stderr,
@@ -1498,11 +1527,38 @@ pub fn run(config: &Config, args: &[String]) -> i32 {
         Some(i) => i.gh_args_with_reason(),
         None => parsed_args.to_vec(),
     };
+    // Metadata create path (#9073): stamp an issue/pr create's body
+    // before the rotation runs and remember the stamped block for
+    // the post-create record insert. A refusal (a malformed caller
+    // Metadata block, an unreadable --body-file) happens before any
+    // GitHub write and never reaches the rotation.
+    let prepared_create = match gh_metadata::prepare_create(
+        config,
+        &call_args,
+        std::io::stdin().is_terminal(),
+    ) {
+        Ok(prepared) => prepared,
+        Err(e) => {
+            eprintln!("fleet gh: {e}");
+            return EXIT_USAGE;
+        }
+    };
+    let call_args = match &prepared_create {
+        Some(prepared) => prepared.args.clone(),
+        None => call_args,
+    };
     let gh_bin = std::env::var("FLEET_GH_BIN").unwrap_or_else(|_| "gh".to_string());
     let sources = rotation(&call_args);
     let trace = std::env::var("FLEET_GH_TRACE").is_ok_and(|v| v == "1");
     let mut provider = FleetTokenProvider::new(config, cache_addrs(config, &flags));
-    let code = run_with_provider(&mut provider, &gh_bin, &call_args, &sources, trace);
+    let (code, final_stdout) = run_with_provider_capturing(
+        &mut provider,
+        &gh_bin,
+        &call_args,
+        &sources,
+        trace,
+        prepared_create.is_some(),
+    );
     // Durable audit trail for App-token writes (#9177 control 3):
     // record the caller/session identity, the call, and its outcome
     // so an App-identity write is attributable to a component. Gated
@@ -1544,6 +1600,38 @@ pub fn run(config: &Config, args: &[String]) -> i32 {
                 i.action
             );
             return EXIT_UNRESOLVED;
+        }
+    }
+    // Metadata create path (#9073): the create succeeded, so insert
+    // the full record into the metadata store. The item already
+    // exists and gh's exit code stands either way — a failed insert
+    // is reported on stderr and ingestion (§16) heals the miss.
+    if let Some(prepared) = &prepared_create {
+        if code == EXIT_OK {
+            let store = gh_metadata::SqliteMetadataStore::new(
+                gh_metadata::SqliteMetadataStore::default_path(),
+            );
+            let stdout = final_stdout
+                .as_deref()
+                .map(|bytes| String::from_utf8_lossy(bytes).into_owned())
+                .unwrap_or_default();
+            match gh_metadata::finish_create(&store, &stdout, &prepared.block) {
+                gh_metadata::CreateOutcome::Inserted(_) => {}
+                gh_metadata::CreateOutcome::InsertFailed { item, error } => {
+                    eprintln!(
+                        "fleet gh: created {}, but its Metadata record was not \
+                         inserted ({error}); the ingestion sweeper will heal the miss",
+                        item.url
+                    );
+                }
+                gh_metadata::CreateOutcome::NoUrl => {
+                    eprintln!(
+                        "fleet gh: the create succeeded but gh's output carried \
+                         no item URL; its Metadata record was not inserted; \
+                         the ingestion sweeper will heal the miss"
+                    );
+                }
+            }
         }
     }
     code
