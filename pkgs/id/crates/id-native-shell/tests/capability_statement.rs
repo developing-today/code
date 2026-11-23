@@ -138,7 +138,7 @@ fn builder_sent_kinds() -> BTreeSet<String> {
         "version": 1,
         "form_id": "signup",
         "title": "Sign up",
-        "presentation_token": "tok-1",
+        "presentation_token": "0123456789abcdef0123456789abcdef",
         "fields": [
             {"kind": "text", "id": "name", "label": "Name", "required": true, "max_length": 40}
         ],
