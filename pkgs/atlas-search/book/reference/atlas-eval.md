@@ -95,3 +95,17 @@ The report's per-signal means carry the four metrics above — `ndcg10`, `recall
 | 0 | Success: the report for the requested split was printed to stdout. |
 | 1 | Runtime failure: unreadable input file, invalid evaluation data, or an evaluation failure. |
 | 2 | Usage failure: wrong arity (including `--help`/`-h`/`help`) or an unknown split value. |
+
+## Offline single-user recommendation candidates
+
+The Python experiment in `eval/session_cooccurrence.py` evaluates the session co-occurrence signal from [#9140](https://github.com/developing-today/code/issues/9140). From the repository root, run the synthetic fixture with:
+
+```sh
+python3 pkgs/atlas-search/eval/session_cooccurrence.py pkgs/atlas-search/eval/fixtures/session-cooccurrence.json -k 2
+```
+
+The fixture uses `atlas-recommendation-eval/v1`. One subject has an explicit list of eligible session and item references, a chronological cutoff, and sessions with inclusive integer start/end positions and ordered item opens. References must have a common stable namespace and opens must follow event order. Eligibility comes from the evaluation fixture or a trusted upstream projection that resolves current access and tombstones. The evaluator admits matching subjects and sessions and removes ineligible items before any split or pair count. It discards sessions spanning the cutoff. The CLI reports aggregate counts and metrics.
+
+Training uses sessions ending at or before the cutoff. Each distinct seed/candidate pair contributes once per training session. Candidates accumulate votes across distinct seeds, omit seeds, and break ties by item reference ascending. Each later session with at least two eligible, distinct opens provides a test case. The first half (rounded down) supplies seeds and the remainder supplies binary relevance. Repeated opens use their first position. Precision and recall use pooled counts, while reciprocal rank and normalized discounted gain use session means. An unseen seed counts as a miss. With no scorable sessions the metrics are null. The fixture hand-counts one hit across two scorable sessions at depth two.
+
+A live experiment needs a trusted session-to-query join, stable item resolution and an eligibility projection current at evaluation time. The current trace writer in `crates/atlas-core/src/trace.rs` emits a requester and query ID and leaves file/content identity fields null. Feedback in `crates/atlas-core/src/feedback.rs` attaches the opened signal to a query and chunk. The synthetic fixture tests the algorithm only. The package has no production recommendation route from this experiment.
