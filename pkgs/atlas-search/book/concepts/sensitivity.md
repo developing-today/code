@@ -35,6 +35,14 @@ stated at the end of this chapter.
 
 **Client ceilings** — how much a caller may see. Four levels, in ascending
 order, named in code (`SENS_ORDER`) `shareable < personal < local-only < secret-bearing`.
+The canonical terminology for the four classes is
+`public < internal < private < sensitive`, in the same order — `shareable`
+is public, `personal` is internal, `local-only` is private, and
+`secret-bearing` is sensitive. Where this book speaks of the classes
+themselves it uses the canonical names; where it quotes a flag value, a
+config cap, or a stored label it spells the value as the code does, because
+the code spellings remain the literal values until the identifier rename
+(#13506) lands with alias/migration handling for the stored values.
 A *ceiling* is a maximum: a search run at ceiling `personal` may return
 chunks classified `shareable` or `personal`, and nothing above. The default
 ceiling is `personal` — a caller who asks for nothing gets `personal`, and
@@ -43,12 +51,12 @@ above the default is both requested and granted.
 
 The mapping between the ladders is fixed:
 
-| Client ceiling | Corpus tier it reaches |
-|---|---|
-| `shareable` | `public` |
-| `personal` | `internal` |
-| `local-only` | `internal` |
-| `secret-bearing` | `secret` |
+| Client ceiling (code spelling) | Canonical name | Corpus tier it reaches |
+|---|---|---|
+| `shareable` | `public` | `public` |
+| `personal` | `internal` | `internal` |
+| `local-only` | `private` | `internal` |
+| `secret-bearing` | `sensitive` | `secret` |
 
 Note the deliberate pinch in the middle: two ceiling levels map to the
 internal tier. The ceiling ladder is finer-grained than physical placement,
@@ -58,7 +66,11 @@ staging database's `sensitivity` column speaks tier words and defaults to
 `internal`, while the published `chunks` and `session_labels` columns speak
 ceiling words — and the translation happens at promotion, in the aggregator,
 in one direction, and at shard selection, in the other. No schema declares
-the mapping; the two code points above are where it lives.
+the mapping; the two code points above are where it lives. Whether the tier
+vocabulary and the ceiling vocabulary are one ladder or two is a deliberate
+open decision, recorded on #13506: the canonical ceiling names now share
+`public` and `internal` with the tiers, which makes the question sharper,
+not settled.
 
 A third, related vocabulary appears at the output boundary: the
 *disclosure context*, which names the destination surface rather than the

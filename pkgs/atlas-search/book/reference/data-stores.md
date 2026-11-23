@@ -16,7 +16,9 @@ the main case — the schema below is the shape the code issues SQL against and
 the fixture corpus mirrors, and the chapter says so.
 
 Two vocabularies recur and must not be confused. The sensitivity *ladder* —
-`shareable`, `personal`, `local-only`, `secret-bearing` — is the value set of
+canonically `public`, `internal`, `private`, `sensitive`, and spelled in
+the stored values today `shareable`, `personal`, `local-only`,
+`secret-bearing` — is the value set of
 the publish store's sensitivity columns. The physical *tier* vocabulary —
 `public`, `internal`, `secret` — is the value set of the staging, gate and
 shard stores. The aggregator translates tier to ladder at promotion; no schema
@@ -128,8 +130,10 @@ CREATE TABLE atlas_manifest ("key" TEXT PRIMARY KEY, value TEXT);
 
 Tier assignment: a shard's tier is the staging unit's recorded sensitivity
 at promotion, and its topic is the unit's topic string. The sensitivity
-ladder maps onto tiers as `shareable` to public, `personal` and `local-only`
-to internal, and `secret-bearing` to secret — so a caller at the default
+ladder maps onto tiers as, in canonical names, public to public, internal
+and private to internal, and sensitive to secret (in the stored spellings:
+`shareable` to public, `personal` and `local-only` to internal, and
+`secret-bearing` to secret) — so a caller at the default
 `personal` ceiling can never fan out to a secret-tier shard, and a tier above
 the caller's ceiling is never connected, probed or scanned.
 

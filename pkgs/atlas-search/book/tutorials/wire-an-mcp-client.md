@@ -121,7 +121,9 @@ Run the identical call a second time. The second result should report `cache: "h
 
 ## Step 5 — Understand the pinned `personal` ceiling
 
-The ceiling is the highest sensitivity a search may return. The ladder, lowest to highest, is `shareable`, `personal`, `local-only`, `secret-bearing`. What this surface may ever search under is pinned in the Worker's source as a compile-time constant:
+The ceiling is the highest sensitivity a search may return. The ladder, lowest to highest, is canonically `public`, `internal`,
+`private`, `sensitive` — spelled in code `shareable`, `personal`,
+`local-only`, `secret-bearing`. What this surface may ever search under is pinned in the Worker's source as a compile-time constant:
 
 - Ceiling: `personal`.
 - Disclosure context (the destination-surface half of the model, which intersects with the ceiling and can only narrow it): `hosted-per-user`, whose ceiling is also `personal`.
