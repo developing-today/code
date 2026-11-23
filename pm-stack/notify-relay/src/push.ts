@@ -65,14 +65,20 @@ export async function encryptPayload(target: PushTarget, plaintext: Uint8Array):
   const local = (await crypto.subtle.generateKey({ name: "ECDH", namedCurve: "P-256" }, true, [
     "deriveBits",
   ])) as CryptoKeyPair;
-  const localPublic = new Uint8Array(await crypto.subtle.exportKey("raw", local.publicKey));
-  // The .slice()/cast pair is for the workers-types surface: its
-  // BufferSource wants an ArrayBuffer-backed view, and its
-  // deriveBits params predate the standard EcdhKeyDeriveParams
-  // shape. Both are the standard calls at runtime.
+  const localPublic = new Uint8Array(
+    (await crypto.subtle.exportKey("raw", local.publicKey)) as ArrayBuffer,
+  );
+  // The casts in this function are for the workers-types surface:
+  // its exportKey returns an ArrayBuffer|JsonWebKey union and its
+  // deriveBits params type predates the standard ECDH params
+  // shape. Every call is the standard one at runtime.
   const peer = await crypto.subtle.importKey("raw", uaPublic.slice(), { name: "ECDH", namedCurve: "P-256" }, false, []);
   const shared = new Uint8Array(
-    await crypto.subtle.deriveBits({ name: "ECDH", public: peer } as EcdhKeyDeriveParams, local.privateKey, 256),
+    await crypto.subtle.deriveBits(
+      { name: "ECDH", public: peer } as Parameters<SubtleCrypto["deriveBits"]>[0],
+      local.privateKey,
+      256,
+    ),
   );
   const ikm = await hkdf(authSecret, shared, concat(enc.encode("WebPush: info\0"), uaPublic, localPublic), 32);
   const salt = crypto.getRandomValues(new Uint8Array(16));
