@@ -73,6 +73,12 @@
 //!   of the output root and publishes by rename, so an interrupted
 //!   run is recoverable on retry and the output root only ever holds
 //!   a complete generation (#13181).
+//! - `frame_cost` — the scale program's frame-cost slice (#13085):
+//!   view (and layout) fuel and wall time for the Territory-class
+//!   guest at the stress tiers' hot-world event counts (10k / 100k /
+//!   1M applied events), measured at full state through
+//!   `WorldInstance::metrics`. Prints one `profile frame_cost ...`
+//!   line per size; `ID_BENCH_FRAME_EVENTS` selects a single size.
 //! - `bot_battle` (design only, not runnable yet) — a deterministic, mixed-
 //!   strategy territory workload for N=2/4/8 users is specified in
 //!   `../../../doc/2026-11-06T00-50-21Z_design_dynamic_world_tick_cost/`; its current-
@@ -104,7 +110,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, ensure};
 use id::guest_burn::GuestBurnBudget;
-use id::sandbox::{Sandbox, SandboxLimits};
+use id::sandbox::{GuestCall, Sandbox, SandboxLimits};
 use id::world::{
     CapabilityBounds, JoinCapability, JournalEntry, WorldCore, WorldEvent, WorldEventKind,
     WorldHandle, WorldJournal, WorldLimits, WorldProgram, WorldScopes,
@@ -136,6 +142,7 @@ const BENCH_SEED: u64 = 0x5891;
 
 const MANY_WORLDS_ADMIN: &str = "f11-many-worlds-benchmark";
 const COUNTER_WASM: &[u8] = include_bytes!("../examples/roc-counter/counter.wasm");
+const TERRITORY_WASM: &[u8] = include_bytes!("../examples/territory/territory.wasm");
 
 struct DurableBenchOpener {
     root: PathBuf,
@@ -2269,6 +2276,73 @@ fn bench_stress_gen(quick: bool) -> Result<()> {
     Ok(())
 }
 
+/// The `frame_cost` profile (#13085): view (and layout) fuel and wall
+/// time as a function of applied state size, for the Territory-class
+/// guest the scale design names as the frame-cost reference. The world
+/// takes the perf-budgets baseline shape — two seats joined — then the
+/// applied events are alternating cursor-move inputs from the two
+/// seats, so the applied-event axis grows without ending the game.
+/// The frame is measured at full state: fuel is the dedicated call's
+/// `fuel_last` from `WorldInstance::metrics` (the instrumentation
+/// `id world measure` reports), wall time the median of five calls.
+/// Sizes are the stress tiers' hot-world event counts (10k / 100k /
+/// 1M); `ID_BENCH_FRAME_EVENTS` selects a single size, and `--quick`
+/// runs a 200-event smoke size.
+fn bench_frame_cost(quick: bool) -> Result<()> {
+    let sizes: Vec<u64> = if quick {
+        vec![200]
+    } else if let Ok(value) = std::env::var("ID_BENCH_FRAME_EVENTS") {
+        vec![value.parse().context("parse ID_BENCH_FRAME_EVENTS")?]
+    } else {
+        vec![10_000, 100_000, 1_000_000]
+    };
+    for events in sizes {
+        frame_cost_at(events)?;
+    }
+    Ok(())
+}
+
+fn frame_cost_at(events: u64) -> Result<()> {
+    let sandbox = Sandbox::compile(TERRITORY_WASM, SandboxLimits::default())?;
+    let mut world = sandbox.instantiate(1)?;
+    for (id, name) in [(1, "ann"), (2, "bob")] {
+        let join = format!(
+            r#"{{"cap":"players","event":"joined","participant":{{"id":{id},"name":"{name}"}}}}"#
+        );
+        world.update(0, join.as_bytes())?;
+    }
+    const MOVES: [&[u8]; 4] = [b"l", b"j", b"h", b"k"];
+    let applied_start = Instant::now();
+    for seq in 0..events {
+        world.update(seq % 2 + 1, MOVES[(seq % 4) as usize])?;
+    }
+    let applied_secs = applied_start.elapsed().as_secs_f64();
+    let mut view_walls = Vec::new();
+    let mut layout_walls = Vec::new();
+    for _ in 0..5 {
+        let start = Instant::now();
+        black_box(world.view()?);
+        view_walls.push(start.elapsed().as_secs_f64() * 1e6);
+        let start = Instant::now();
+        black_box(world.layout_at(40, 20)?);
+        layout_walls.push(start.elapsed().as_secs_f64() * 1e6);
+    }
+    let metrics = world.metrics();
+    let view = metrics.get(GuestCall::View);
+    let layout = metrics.get(GuestCall::Layout);
+    let update = metrics.get(GuestCall::Update);
+    println!(
+        "profile frame_cost guest=territory seats=2 events={events} view_fuel={} view_wall_us_med={:.1} layout_fuel={} layout_calls={} layout_wall_us_med={:.1} update_fuel_max={} applied_secs={applied_secs:.3}",
+        view.fuel_last,
+        median(view_walls),
+        layout.fuel_last,
+        layout.calls,
+        median(layout_walls),
+        update.fuel_max,
+    );
+    Ok(())
+}
+
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
     let quick = args.iter().any(|arg| arg == "--quick");
@@ -2287,7 +2361,7 @@ fn main() -> Result<()> {
     let dir = std::env::temp_dir().join(format!("id-bench-{}", std::process::id()));
     std::fs::create_dir_all(&dir)?;
 
-    const BENCHMARKS: [&str; 7] = [
+    const BENCHMARKS: [&str; 8] = [
         "journal_append_fsync",
         "checkpoint_compaction",
         "guest_replay",
@@ -2295,6 +2369,7 @@ fn main() -> Result<()> {
         "many_worlds",
         "fuel_spin_isolation",
         "stress_gen",
+        "frame_cost",
     ];
     if let Some(name) = only
         && !BENCHMARKS.contains(&name)
@@ -2363,6 +2438,10 @@ fn main() -> Result<()> {
 
     if run("stress_gen") {
         bench_stress_gen(quick)?;
+    }
+
+    if run("frame_cost") {
+        bench_frame_cost(quick)?;
     }
 
     if !cells.is_empty() {
