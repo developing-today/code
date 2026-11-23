@@ -50,6 +50,8 @@ jobs:
             || python3 -m pip install --break-system-packages --quiet 'pyyaml>=6,<7' \
             || python3 -m pip install --quiet 'pyyaml>=6,<7' \
             || echo "PyYAML unavailable; check-workflows.sh uses its structural fallback"
+      - name: Contract tests for the fleet sync probe (#12235)
+        run: bash .github/scripts/fleet-sync-probe.test.sh
       - name: Contract tests for the workflow validator (#5743)
         run: bash .github/scripts/check-workflows.test.sh
       - name: Contract tests for pm-dispatch retry safety (#8950)

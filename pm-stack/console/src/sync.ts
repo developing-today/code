@@ -11,6 +11,8 @@
 // interrupted instead of being run a second time.
 import type { Docs } from "./docs.ts";
 import {
+  APK_LIMIT,
+  type ApkReport,
   type EdgeConfig,
   type Held,
   HOLDABLE,
@@ -19,6 +21,7 @@ import {
   type PublicKey,
   type PhoneLinks,
   publicKey,
+  REPORT_ROOM,
   type SyncRequest,
   type SyncResponse,
   sign,
@@ -50,6 +53,9 @@ export interface LinkOptions {
   run: (held: Held) => Promise<void>;
   /** The commit this console is running, if it could be found. */
   version?: string;
+  /** The signed Android build on this host, if there is one, and a way
+   * to read it when the edge asks for it. */
+  apk?: () => Promise<{ sha256: string; size: number; at: number; read: () => Promise<Uint8Array> } | null>;
   fetchImpl?: typeof fetch;
   now?: () => number;
   log?: (line: string) => void;
@@ -182,13 +188,28 @@ export class EdgeLink {
     try {
       const pair = await this.keys();
       const snapshot = this.o.docs.snapshot();
-      const sections = snapshot.filter((s) => this.sent.get(s.name) !== s.hash || this.want.has(s.name));
+      let sections = snapshot.filter((s) => this.sent.get(s.name) !== s.hash || this.want.has(s.name));
       const acks = [...this.acks];
       const at = Math.max(this.now(), this.lastAt + 1);
+      // The Android build: always what it is, and the build itself only
+      // when the edge has said it lacks this one.
+      const build = (await this.o.apk?.().catch(() => null)) ?? null;
+      const apk: ApkReport | null =
+        build && build.size <= APK_LIMIT ? { sha256: build.sha256, size: build.size, at: build.at } : null;
+      if (apk && build && this.want.has("apk")) {
+        apk.data = Buffer.from(await build.read()).toString("base64");
+        // The build and large sections together could pass what the edge
+        // takes in one report, and a report refused as too large would be
+        // built the same way again and again. So the build goes alone
+        // then; the sections are not marked sent and follow next time.
+        const others = sections.reduce((sum, s) => sum + JSON.stringify(s.data).length, 0);
+        if (apk.data.length + others > REPORT_ROOM) sections = [];
+      }
       const message: SyncRequest & { acts: unknown } = {
         v: 1,
         at,
         ...(this.o.version ? { version: this.o.version } : {}),
+        ...(apk ? { apk } : {}),
         config: await this.o.config(),
         sections,
         have: Object.fromEntries(snapshot.map((s) => [s.name, { hash: s.hash, at: s.at, error: s.error }])),
@@ -251,7 +272,9 @@ export class EdgeLink {
     }
     const answer = await this.once();
     // Something was done or is wanted: say so at once.
-    if (this.acks.length > 0 || this.want.size > 0) return 500;
+    // (The Android build is not such a thing: it waits for the next
+    // ordinary report, and half a megabyte is never sent in a hurry.)
+    if (this.acks.length > 0 || [...this.want].some((name) => name !== "apk")) return 500;
     return answer?.watching || this.o.docs.watched() ? FAST_MS : IDLE_MS;
   }
 

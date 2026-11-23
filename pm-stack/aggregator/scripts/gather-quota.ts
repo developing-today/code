@@ -80,6 +80,25 @@
 //     the babysitter's per-pool wall state (#1338), projected from
 //     this tick's entries by src/pool-state.ts. Fail-soft on the
 //     same terms as the Turso sink.
+//   - quota-forecast.json beside quota-current.json — the Stage-3
+//     forecast product (#12695, design D1/D2): the quota-analytics
+//     pace projection per pool/window, projected from this tick's
+//     entries + the snapshot store's history by
+//     src/quota-forecast.ts, plus one Turso agent_quota_records
+//     ledger row per pool/window (source "quota-forecast") beside
+//     the reading rows. Fail-soft on the same terms: a forecast
+//     failure never fails the tick and the previous forecast
+//     stands and ages.
+//   - quota-shadow-placement.json beside quota-current.json, plus
+//     one appended line per tick in
+//     quota-shadow-placement-history.jsonl beside it — the Stage-3
+//     shadow placement record (#12697, design D3): the
+//     forecast-informed ordering logged beside the live ordering
+//     as a per-decision diff record, projected by
+//     src/quota-shadow-placement.ts from this tick's entries + the
+//     forecast product. SHADOW ONLY: no live path reads it; the
+//     live ordering is computed from the measured entries alone.
+//     Fail-soft on the same terms as the forecast.
 //
 // Fail-soft contract: if the subcommand cannot be run or its output
 // cannot be parsed, the tick writes a heartbeat carrying the error
@@ -97,7 +116,11 @@
 //      "opencode quota --json" / the explicit ask appends provider
 //      ids), QUOTA_SUBCOMMAND_TIMEOUT_MS (240000 — the whole-exec
 //      cap; the subcommand self-limits per provider),
-//      QUOTA_CURRENT_PATH, QUOTA_HEARTBEAT_PATH,
+//      QUOTA_CURRENT_PATH, QUOTA_HEARTBEAT_PATH, QUOTA_FORECAST_PATH
+//      (default: quota-forecast.json beside QUOTA_CURRENT_PATH),
+//      QUOTA_SHADOW_PLACEMENT_PATH / QUOTA_SHADOW_PLACEMENT_HISTORY_PATH
+//      (defaults: quota-shadow-placement.json /
+//      quota-shadow-placement-history.jsonl beside QUOTA_CURRENT_PATH),
 //      QUOTA_GATHERER_STATE_PATH, QUOTA_SNAPSHOTS_DIR (./snapshots),
 //      USAGE_SNAPSHOT_OUTBOX_PATH,
 //      QUOTA_GATHER_CONCURRENCY (retained for interface stability;
@@ -144,6 +167,8 @@ import { ensureLibDependencies } from "../src/lib-deps.ts";
 import { loadOpenChamberLib, resolveLibDir as resolveOpenChamberLib } from "../src/openchamber-lib.ts";
 import { readProviderAuthAlerts } from "../src/provider-auth-alerts.ts";
 import { projectPoolState } from "../src/pool-state.ts";
+import { buildForecastLedgerRows, buildQuotaForecast, type QuotaForecastFile } from "../src/quota-forecast.ts";
+import { buildShadowPlacement } from "../src/quota-shadow-placement.ts";
 import { renewMetaSession } from "../src/meta-renewal.ts";
 import { classEnabled, getAlertsStore } from "../src/alerts.ts";
 import { sendPush, type PushTarget } from "../src/push.ts";
@@ -175,6 +200,16 @@ const outboxPath = process.env.USAGE_SNAPSHOT_OUTBOX_PATH ?? null;
 // walled verdict runs on live quota. Fail-soft like the Turso write:
 // a failed pool-state write warns and never fails the tick.
 const poolStatePath = process.env.POOL_STATE_PATH ?? join(HOME, ".local/state/opencode-claimant/pool-state.json");
+// #12695: the Stage-3 forecast product, beside quota-current.json
+// (design D1: same directory, same fail-soft posture).
+const forecastPath = process.env.QUOTA_FORECAST_PATH ?? join(dirname(currentPath), "quota-forecast.json");
+// #12697: the Stage-3 shadow placement record (design D3), beside
+// quota-current.json like the forecast: the latest diff record plus
+// the append-only history the weekly review (S7) scores.
+const shadowPlacementPath =
+  process.env.QUOTA_SHADOW_PLACEMENT_PATH ?? join(dirname(currentPath), "quota-shadow-placement.json");
+const shadowPlacementHistoryPath =
+  process.env.QUOTA_SHADOW_PLACEMENT_HISTORY_PATH ?? join(dirname(currentPath), "quota-shadow-placement-history.jsonl");
 /** Strict millisecond parse for boot-time env (#2835 env-number contract):
  * digits only, 1..2^31-1, else fail naming the variable and the value
  * instead of coercing NaN/negative/huge values into a fetch deadline. */
@@ -853,6 +888,64 @@ async function writeTursoRecords(entries: QuotaCurrentEntry[], tickAt: string): 
   }
 }
 
+/**
+ * The forecast ledger sink (#12695, design D1): one
+ * agent_quota_records row per pool/window per tick, beside the
+ * reading rows writeTursoRecords writes, source "quota-forecast"
+ * with the forecast shape in the payload — so the Stage-3 accuracy
+ * scoring joins forecasts to outcomes in one place. Same contract
+ * as the reading sink: INSERT OR IGNORE on the (source, id, ts) PK,
+ * fail-soft (logged, never fails the tick), and TURSO_QUOTA_SINK=0
+ * disables it together with the reading sink — one ledger, one
+ * switch.
+ */
+async function writeTursoForecastRecords(
+  rows: ReturnType<typeof buildForecastLedgerRows>,
+  tickAt: string,
+): Promise<void> {
+  if (process.env.TURSO_QUOTA_SINK === "0") return;
+  if (!rows.length) return;
+  try {
+    const token = await resolveBwsSecret(TURSO_TOKEN_NAME);
+    if (!token) {
+      console.log("quota-gatherer: forecast turso sink skipped — token unresolved by name");
+      return;
+    }
+    const values = rows.map(
+      (r) =>
+        `(${sqlString(r.id)}, ${sqlString(r.source)}, ${sqlString(r.ts)}, ${r.plan ? sqlString(r.plan) : "NULL"}, ${
+          r.weeklyPercent ?? "NULL"
+        }, ${r.resets ? sqlString(r.resets) : "NULL"}, ${sqlString(JSON.stringify(r.payload))}, ${sqlString(tickAt)})`,
+    );
+    const query =
+      "insert or ignore into agent_quota_records (id, source, ts, plan, weekly_percent, resets, payload, inserted_at) values " +
+      values.join(", ") +
+      ";";
+    const res = await fetch(`${TURSO_URL}/v2/pipeline`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        requests: [{ type: "execute", stmt: { sql: query } }, { type: "close" }],
+      }),
+    });
+    if (!res.ok) {
+      console.log(`quota-gatherer: forecast turso sink failed-soft: HTTP ${res.status}`);
+      return;
+    }
+    const out = (await res.json()) as { results?: { type: string; error?: { message?: string } }[] };
+    const failed = (out.results ?? []).find((r) => r.type === "error");
+    if (failed) {
+      console.log(`quota-gatherer: forecast turso sink failed-soft: ${failed.error?.message ?? "pipeline error"}`);
+      return;
+    }
+    console.log(`quota-gatherer: forecast turso sink wrote ${rows.length} forecast rows (source=quota-forecast)`);
+  } catch (err) {
+    console.log(
+      `quota-gatherer: forecast turso sink failed-soft: ${safeProviderReason(err instanceof Error ? err.message : String(err))}`,
+    );
+  }
+}
+
 async function main(): Promise<number> {
   const started = Date.now();
   const tickAt = new Date(started).toISOString();
@@ -1055,6 +1148,56 @@ async function main(): Promise<number> {
   // Turso: the same readings land in agent_quota_records on the
   // same tick (Drew's regular-basis rule). Fail-soft, after the file.
   await writeTursoRecords(entries, tickAt);
+
+  // Stage-3 S1 (#12695, design D1/D2): publish the forecast product —
+  // quota-forecast.json beside quota-current.json, plus the ledger
+  // rows — projected by src/quota-forecast.ts from this tick's
+  // entries and the snapshot store's history (this tick's appended
+  // records merged in, so the current point is in the series even
+  // when the append rode the outbox). Fail-soft like the pool-state
+  // write: any failure logs and the tick still succeeds; the
+  // previous forecast stands and ages, exactly as a failed tick
+  // leaves the previous quota-current.json standing.
+  let forecast: QuotaForecastFile | null = null;
+  try {
+    const stored = await new SnapshotStore(snapshotsDir).readAll().catch((): SnapshotRecord[] => []);
+    forecast = buildQuotaForecast(file, [...stored, ...fresh], new Date(tickAt));
+    await writeAtomic(forecastPath, JSON.stringify(forecast, null, 2) + "\n");
+    const forecastRows = buildForecastLedgerRows(forecast, tickAt);
+    await writeTursoForecastRecords(forecastRows, tickAt);
+    const poolCount = Object.values(forecast.pools).reduce((n, ps) => n + ps.length, 0);
+    console.log(
+      `quota-gatherer: forecast wrote ${poolCount} pools / ${forecastRows.length} windows -> ${forecastPath}`,
+    );
+  } catch (err) {
+    console.error(
+      `quota-gatherer: forecast failed-soft: ${safeProviderReason(err instanceof Error ? err.message : String(err))}`,
+    );
+  }
+
+  // Stage-3 S3 (#12697, design D3): the shadow placement record —
+  // the forecast-informed ordering logged beside the live ordering
+  // as a per-decision diff record (src/quota-shadow-placement.ts),
+  // written as the latest-state file plus one appended line per
+  // tick in the history JSONL the weekly review (S7) scores.
+  // SHADOW ONLY: no live path reads the record, and it is computed
+  // after every live output above is already written; a null
+  // forecast (the block above failed) still yields a record, with
+  // the shadow ordering equal to the live one. Fail-soft like the
+  // forecast write: any failure logs and the tick still succeeds.
+  try {
+    const shadow = buildShadowPlacement(file, forecast, new Date(tickAt));
+    await writeAtomic(shadowPlacementPath, JSON.stringify(shadow, null, 2) + "\n");
+    await mkdir(dirname(shadowPlacementHistoryPath), { recursive: true });
+    await appendFile(shadowPlacementHistoryPath, JSON.stringify(shadow) + "\n", "utf8");
+    console.log(
+      `quota-gatherer: shadow placement wrote ${shadow.summary.pools} pools, ${shadow.summary.demotedByForecast} forecast demotions (shadow only) -> ${shadowPlacementPath}`,
+    );
+  } catch (err) {
+    console.error(
+      `quota-gatherer: shadow placement failed-soft: ${safeProviderReason(err instanceof Error ? err.message : String(err))}`,
+    );
+  }
 
   const okCount = runs.filter((r) => r.state === "ok").length;
   console.log(

@@ -39,6 +39,10 @@ type FileOptions struct {
 	// generous than the terminal's: a file is cheap and a question asked
 	// tomorrow cannot be answered by a line that was never written.
 	Level string
+	// Location is the zone the active file's day and the rotation stamps
+	// are read in. Nil means time.Local. Records keep their own zone in
+	// their "ts"; only the file name follows this one.
+	Location *time.Location
 }
 
 // FileSink appends records to a dated file as JSON lines.
@@ -54,6 +58,7 @@ type FileSink struct {
 	maxLines int64
 	maxAge   time.Duration
 	keep     int
+	loc      *time.Location
 	day      string
 	file     *os.File
 	written  int64
@@ -81,6 +86,10 @@ func NewFileSink(opts FileOptions) (*FileSink, error) {
 		maxLines: opts.MaxLines,
 		maxAge:   opts.MaxAge,
 		keep:     opts.Keep,
+		loc:      opts.Location,
+	}
+	if s.loc == nil {
+		s.loc = time.Local
 	}
 	if s.maxBytes <= 0 {
 		s.maxBytes = defaults.LogMaxBytes
@@ -100,6 +109,10 @@ func NewFileSink(opts FileOptions) (*FileSink, error) {
 	return s, nil
 }
 
+func (s *FileSink) dayOf(t time.Time) string {
+	return t.In(s.loc).Format("2006-01-02")
+}
+
 func (s *FileSink) path(day string) string {
 	return filepath.Join(s.dir, "mcpx-"+day+".jsonl")
 }
@@ -108,7 +121,7 @@ func (s *FileSink) reopen(now time.Time) error {
 	if s.file != nil {
 		_ = s.file.Close()
 	}
-	s.day = now.Format("2006-01-02")
+	s.day = s.dayOf(now)
 	path := s.path(s.day)
 	// Whatever is already on disk counts against the thresholds, or a daemon
 	// restarted every few minutes would never rotate at all.
@@ -173,7 +186,11 @@ func (s *FileSink) Write(r Record, extra map[string]any) {
 	if now.IsZero() {
 		now = time.Now()
 	}
-	if day := now.Format("2006-01-02"); day != s.day {
+	// The day is read in the sink's zone, never the record's: a script
+	// stamps its records with toISOString (UTC), and reading those in their
+	// own zone reopened the sink on the UTC-dated file for every such record
+	// whenever the local and UTC dates differ, and back on the next local one.
+	if day := s.dayOf(now); day != s.day {
 		if err := s.reopen(now); err != nil {
 			s.failed = true
 			return
@@ -245,7 +262,7 @@ func (s *FileSink) rotate(now time.Time) error {
 // enough: two rotations in the same second would rename the first one's
 // contents into oblivion.
 func (s *FileSink) rotatedPath(now time.Time) string {
-	base := filepath.Join(s.dir, fmt.Sprintf("mcpx-%s-%s", s.day, now.Format("150405")))
+	base := filepath.Join(s.dir, fmt.Sprintf("mcpx-%s-%s", s.day, now.In(s.loc).Format("150405")))
 	if _, err := os.Stat(base + ".jsonl"); os.IsNotExist(err) {
 		return base + ".jsonl"
 	}

@@ -2632,8 +2632,16 @@
         // (drewrypope, _openai renamed) second; selection round-robin,
         // weights removed. Ordered selection in this same listed order is
         // the planned later step, on Drew's call.
+        // 2026-11-22 (Drew, direct order): the call is made -- selection
+        // is now ORDERED in the same listed order. _openai.alt
+        // (popesdrew, the free Student account) is attempted first on
+        // every dispatch and burns first; _openai.main (drewrypope) is
+        // the failover leg and serves only when alt fails or is
+        // demoted. This supersedes the round-robin arrangement for
+        // this pool only; OpenAI among pools is unchanged (still the
+        // final reserve there).
         "providers": ["_openai.alt", "_openai.main"],
-        "selection": "round-robin"
+        "selection": "ordered"
       },
       // mistral-plan (2026-11-04, Drew): the Mistral pair as ONE
       // provider route — vibe-direct attempted first on every dispatch
