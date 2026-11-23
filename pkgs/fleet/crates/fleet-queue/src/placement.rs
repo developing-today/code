@@ -127,6 +127,33 @@ fn current_month() -> String {
 
 // --------------------------------------------------------------------- job
 
+/// The run timeout placement sends to `fleet-command.yml`, in
+/// minutes (issue #13178 gap 2). The workflow declares the input as
+/// 5-120 with a default of 60; placement always sends an explicit
+/// value so a dispatch is never silently capped at the default.
+pub const DEFAULT_TIMEOUT_MINUTES: u32 = 60;
+
+/// The `timeout_minutes` range `fleet-command.yml` enforces
+/// (5-120); a value outside it fails the dispatch locally instead
+/// of failing the remote run.
+pub const MIN_TIMEOUT_MINUTES: u32 = 5;
+pub const MAX_TIMEOUT_MINUTES: u32 = 120;
+
+/// Parse a `--timeout-minutes` value against the workflow contract.
+fn parse_timeout_minutes(s: &str) -> R<u32> {
+    let v: u32 = s.parse().map_err(|_| {
+        Die(format!(
+            "--timeout-minutes: not a number: {s} (fleet-command.yml accepts {MIN_TIMEOUT_MINUTES}-{MAX_TIMEOUT_MINUTES})"
+        ))
+    })?;
+    if !(MIN_TIMEOUT_MINUTES..=MAX_TIMEOUT_MINUTES).contains(&v) {
+        return die(format!(
+            "--timeout-minutes: {v} is outside {MIN_TIMEOUT_MINUTES}-{MAX_TIMEOUT_MINUTES} (fleet-command.yml rejects it)"
+        ));
+    }
+    Ok(v)
+}
+
 #[derive(Debug, Clone)]
 pub struct Job {
     pub repo: String,
@@ -143,6 +170,7 @@ pub struct Job {
     pub actions_cache: Option<String>,
     pub actions_cache_restore_keys: Vec<String>,
     pub allow_paid_blacksmith: f64,
+    pub timeout_minutes: u32,
 }
 
 impl Job {
@@ -162,6 +190,7 @@ impl Job {
             "actions_cache": self.actions_cache,
             "actions_cache_restore_keys": self.actions_cache_restore_keys,
             "allow_paid_blacksmith": self.allow_paid_blacksmith,
+            "timeout_minutes": self.timeout_minutes,
         })
     }
 
@@ -1466,7 +1495,7 @@ const DISPATCH_USAGE: &str = "usage: repo-queue dispatch --repo <owner/name> --c
 [--ref REF] [--runner auto|github|blacksmith] [--platform linux|macos] [--container IMAGE] \
 [--surface ID] [--followup HANDLE|OWNER/REPO#RUN_ID] [--push-nix-cache] \
 [--actions-cache KEY:PATH] [--actions-cache-restore-key PREFIX]... \
-[--allow-paid-blacksmith MINUTES] \
+[--allow-paid-blacksmith MINUTES] [--timeout-minutes MINUTES] \
 [--laptop-busy] [--dispatch] [--json] [--registry PATH]\nDry-run unless --dispatch; prints the placement decision.";
 
 fn run_dispatch(args: &[String]) -> R<i32> {
@@ -1483,6 +1512,7 @@ fn run_dispatch(args: &[String]) -> R<i32> {
     let mut actions_cache: Option<String> = None;
     let mut actions_cache_restore_keys: Vec<String> = Vec::new();
     let mut allow_paid: f64 = 0.0;
+    let mut timeout_minutes = DEFAULT_TIMEOUT_MINUTES;
     let mut laptop_busy_flag = false;
     let mut assume_owner_load = String::new();
     let mut assume_blacksmith_used: Option<f64> = None;
@@ -1567,6 +1597,11 @@ fn run_dispatch(args: &[String]) -> R<i32> {
                     .parse::<f64>()
                     .map_err(|_| Die(format!("--allow-paid-blacksmith: not a number: {v}")))?;
             }
+            "--timeout-minutes" => {
+                i += 1;
+                let v = need(&rest, i, "--timeout-minutes")?;
+                timeout_minutes = parse_timeout_minutes(&v)?;
+            }
             "--laptop-busy" => laptop_busy_flag = true,
             "--assume-owner-load" => {
                 i += 1;
@@ -1613,6 +1648,7 @@ fn run_dispatch(args: &[String]) -> R<i32> {
         actions_cache,
         actions_cache_restore_keys,
         allow_paid_blacksmith: allow_paid,
+        timeout_minutes,
     };
     let registry = registry_value(&cli)?;
     let gh = RealGh::new();
@@ -2237,6 +2273,7 @@ mod tests {
             actions_cache: None,
             actions_cache_restore_keys: vec![],
             allow_paid_blacksmith: 0.0,
+            timeout_minutes: DEFAULT_TIMEOUT_MINUTES,
         }
     }
 
@@ -3247,5 +3284,66 @@ mod tests {
         );
         assert_eq!(jobs[0]["cache"]["actions_restore_keys"][1], "rust-code-");
         assert_eq!(inputs["dispatch_id"], "fp_test");
+    }
+
+    #[test]
+    fn timeout_minutes_sent_to_fleet_command() {
+        // Issue #13178 gap 2: placement never sent the timeout_minutes
+        // input fleet-command.yml declares (5-120, default 60), so every
+        // dispatch was capped at the workflow default regardless of the
+        // job. Oracle: the workflow contract in developing-today/fleet's
+        // .github/workflows/fleet-command.yml (normalize job validates
+        // 5-120 and applies it as the run timeout-minutes).
+        let surface = json!({
+            "id": "fleet-org",
+            "kind": "github-actions",
+            "repo": "developing-today/fleet",
+            "workflow": "fleet-command.yml",
+            "dispatch_as": "user",
+            "dispatch_id_input": true,
+            "platform_input": true,
+            "previous_run_id_input": true,
+            "container_input": true,
+        });
+        let adapter = GithubActionsAdapter {
+            surface,
+            force_runner: "github",
+        };
+        let mut j = job();
+        j.timeout_minutes = 90;
+        let inputs = adapter.workflow_inputs(&j, None);
+        assert_eq!(inputs["timeout_minutes"], json!(90));
+    }
+
+    #[test]
+    fn timeout_minutes_defaults_to_sixty() {
+        // The documented default matches the workflow's own default
+        // (60), so a dispatch without --timeout-minutes is explicit
+        // in the inputs and the session record, not silently absent.
+        let surface = json!({
+            "id": "fleet-org",
+            "kind": "github-actions",
+            "repo": "developing-today/fleet",
+            "workflow": "fleet-command.yml",
+            "dispatch_as": "user",
+            "dispatch_id_input": true,
+        });
+        let adapter = GithubActionsAdapter {
+            surface,
+            force_runner: "github",
+        };
+        let inputs = adapter.workflow_inputs(&job(), None);
+        assert_eq!(inputs["timeout_minutes"], json!(60));
+    }
+
+    #[test]
+    fn parse_timeout_minutes_rejects_out_of_range() {
+        assert_eq!(parse_timeout_minutes("5").unwrap(), 5);
+        assert_eq!(parse_timeout_minutes("60").unwrap(), 60);
+        assert_eq!(parse_timeout_minutes("120").unwrap(), 120);
+        assert!(parse_timeout_minutes("4").is_err());
+        assert!(parse_timeout_minutes("121").is_err());
+        assert!(parse_timeout_minutes("abc").is_err());
+        assert!(parse_timeout_minutes("").is_err());
     }
 }
