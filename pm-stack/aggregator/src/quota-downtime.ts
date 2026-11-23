@@ -42,7 +42,7 @@
 // Basis (§1: mandatory, singular): since_last_reset — the S1
 // projections are fit on the current reset period's same-period
 // series, and this module fits nothing itself; it intersects the
-// oracle's published intervals. Methodology version c4-meth:1
+// oracle's published intervals. Methodology version c4-meth:2
 // (c4-methodology-log.jsonl beside this module's package root,
 // §6). Advisory only: no placement path reads these records —
 // the C6 pages and forecast alerts named by #9572 consume them.
@@ -54,7 +54,7 @@ import type { ForecastLedgerRow, QuotaForecastFile } from "./quota-forecast.ts";
  * into the S1 source. */
 export const PREDICTION_LEDGER_SOURCE = "quota-prediction";
 
-export const C4_METHODOLOGY_VERSION = "c4-meth:1" as const;
+export const C4_METHODOLOGY_VERSION = "c4-meth:2" as const;
 
 export interface C4PredictionRecord {
   record_version: 1;
@@ -84,11 +84,15 @@ interface WallInterval {
 
 // --- Range rendering (design §4) ----------------------------------
 // One formatter for (earliest, latest, issued_at), in
-// America/Chicago wall-clock terms. Duration form under 48h,
-// day form at/over 48h, calendar form when the range crosses a
-// Chicago day boundary — the form preferred for downtime windows
-// and any range whose latest bound falls on a different day than
-// its earliest.
+// America/Chicago wall-clock terms. Day form at/over a 48h span,
+// checked first: a range that wide always crosses a Chicago day
+// boundary, so the calendar check below would otherwise swallow
+// every day-form range (#13357). Mixed spans render compound —
+// whole days + whole hours per bound — when either bound is not
+// an exact tenth of a day; otherwise plain decimal days. Calendar
+// form when the range crosses a Chicago day boundary, or when it
+// is already in progress (a past start has no "days from now"
+// reading); duration form otherwise.
 
 const CHICAGO = "America/Chicago";
 const dayKeyFmt = new Intl.DateTimeFormat("en-US", { timeZone: CHICAGO, year: "numeric", month: "2-digit", day: "2-digit" });
@@ -119,6 +123,25 @@ function chicagoDaypart(ms: number, issuedMs: number): string {
 const roundHalf = (x: number) => Math.round(x * 2) / 2;
 const fmtNum = (x: number) => (Number.isInteger(x) ? String(x) : x.toFixed(1));
 
+/** True when the offset is an exact tenth of a day — the plain
+ * day form's rounding is then lossless for that bound. */
+function isExactTenthDay(offsetMs: number): boolean {
+  const tenths = (offsetMs / 86_400_000) * 10;
+  return Math.abs(tenths - Math.round(tenths)) < 1e-9;
+}
+
+/** A day-form bound as whole days + whole hours, e.g. "2 days
+ * 4 hours" — the compound form's per-bound rendering (§4). */
+function daysHours(offsetMs: number): string {
+  const totalHours = Math.round(offsetMs / 3_600_000);
+  const days = Math.floor(totalHours / 24);
+  const hours = totalHours - days * 24;
+  const dPart = `${days} day${days === 1 ? "" : "s"}`;
+  if (hours === 0) return dPart;
+  if (days === 0) return `${hours} hour${hours === 1 ? "" : "s"}`;
+  return `${dPart} ${hours} hour${hours === 1 ? "" : "s"}`;
+}
+
 /** The stored `rendered` string for a prediction range (§4):
  * what was shown is exactly what is scored, so it is produced
  * once, at issuance, by this formatter. */
@@ -126,15 +149,18 @@ export function renderPredictionRange(earliestISO: string, latestISO: string, is
   const earliest = Date.parse(earliestISO);
   const latest = Date.parse(latestISO);
   const issued = Date.parse(issuedAtISO);
+  const spanH = (latest - earliest) / 3_600_000;
+  if (spanH >= 48 && earliest > issued) {
+    const roundTenth = (x: number) => Math.round(x * 10) / 10;
+    const earliestDays = (earliest - issued) / 86_400_000;
+    const latestDays = (latest - issued) / 86_400_000;
+    if (isExactTenthDay(earliest - issued) && isExactTenthDay(latest - issued)) {
+      return `${fmtNum(roundTenth(earliestDays))} to ${fmtNum(roundTenth(latestDays))} days`;
+    }
+    return `${daysHours(earliest - issued)} to up to ${daysHours(latest - issued)}`;
+  }
   if (dayKeyFmt.format(new Date(earliest)) !== dayKeyFmt.format(new Date(latest))) {
     return `between ${chicagoDaypart(earliest, issued)} and ${chicagoDaypart(latest, issued)}`;
-  }
-  const spanH = (latest - earliest) / 3_600_000;
-  if (spanH >= 48) {
-    const roundTenth = (x: number) => Math.round(x * 10) / 10;
-    return `${fmtNum(roundTenth((earliest - issued) / 86_400_000))} to ${fmtNum(
-      roundTenth((latest - issued) / 86_400_000),
-    )} days`;
   }
   if (earliest <= issued) {
     // Already in progress: "from now" cannot express a start in
