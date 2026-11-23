@@ -2,6 +2,7 @@ package runner
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -205,7 +206,7 @@ func TestPointRunAtPreparedEnv(t *testing.T) {
 
 	// A Node file run is pointed at the environment, and releasing
 	// frees the directory lock for the next run.
-	release, err := pointRunAtPreparedEnv(context.Background(), opts, KindNode, prepared, work, false)
+	release, _, err := pointRunAtPreparedEnv(context.Background(), opts, KindNode, prepared, work, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -216,7 +217,7 @@ func TestPointRunAtPreparedEnv(t *testing.T) {
 		t.Errorf("the run resolves against the prepared environment: got %s, want %s", got, want)
 	}
 	release()
-	release2, err := pointRunAtPreparedEnv(context.Background(), opts, KindNode, prepared, work, false)
+	release2, _, err := pointRunAtPreparedEnv(context.Background(), opts, KindNode, prepared, work, false)
 	if err != nil {
 		t.Fatalf("after release the next run wires again: %v", err)
 	}
@@ -231,7 +232,7 @@ func TestPointRunAtPreparedEnv(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	release3, err := pointRunAtPreparedEnv(ctx, opts, KindNode, prepared, work, true)
+	release3, _, err := pointRunAtPreparedEnv(ctx, opts, KindNode, prepared, work, true)
 	if err != nil {
 		t.Fatalf("already-locked wiring: %v", err)
 	}
@@ -240,7 +241,7 @@ func TestPointRunAtPreparedEnv(t *testing.T) {
 
 	// A run that prepared nothing clears the stale link, holding
 	// only the directory lock while it runs.
-	release4, err := pointRunAtPreparedEnv(context.Background(), opts, KindNode, nil, work, false)
+	release4, _, err := pointRunAtPreparedEnv(context.Background(), opts, KindNode, nil, work, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -252,14 +253,42 @@ func TestPointRunAtPreparedEnv(t *testing.T) {
 		t.Errorf("the stale prepared link is cleared, stat err = %v", err)
 	}
 
-	// Deno is not wired by this slice: no link, no error.
-	release5, err := pointRunAtPreparedEnv(context.Background(), opts, KindDeno, prepared, work, false)
+	// A Deno run is wired in the import-map form instead: no
+	// beside-script link, but a map rendered into the workdir, the
+	// --import-map flag naming it, and the cache lease held until
+	// release.
+	if err := os.MkdirAll(work, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	release5, flags5, err := pointRunAtPreparedEnv(context.Background(), opts, KindDeno, prepared, work, false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if release5 != nil {
-		t.Error("a deno run holds nothing from this wiring")
+	if release5 == nil {
+		t.Error("a deno run holds the prepared entry's lease until release")
 	}
+	mapPath := filepath.Join(work, preparedImportMapName)
+	if len(flags5) != 2 || flags5[0] != "--import-map" || flags5[1] != mapPath {
+		t.Errorf("a deno run is passed the rendered import map: got %v", flags5)
+	}
+	mapText, rerr := os.ReadFile(mapPath)
+	if rerr != nil {
+		t.Fatal(rerr)
+	}
+	var rendered struct {
+		Imports map[string]string `json:"imports"`
+	}
+	if err := json.Unmarshal(mapText, &rendered); err != nil {
+		t.Fatal(err)
+	}
+	envModules := filepath.Join(env, "node_modules", "left-pad")
+	if got, want := rendered.Imports["left-pad"], "file://"+envModules+"/index.js"; got != want {
+		t.Errorf("the map names the package entry point: got %s, want %s", got, want)
+	}
+	if got, want := rendered.Imports["left-pad/"], "file://"+envModules+"/"; got != want {
+		t.Errorf("the map names the package prefix: got %s, want %s", got, want)
+	}
+	release5()
 	if _, err := os.Lstat(filepath.Join(scriptDir, "node_modules")); !os.IsNotExist(err) {
 		t.Errorf("a deno run gets no node_modules link, stat err = %v", err)
 	}
@@ -285,8 +314,11 @@ func TestPointRunAtPreparedEnvFailsClosedOnAMissingEnvironment(t *testing.T) {
 		t.Fatal(err)
 	}
 	prepared := &preflight.PreparedSet{Dir: env, Key: "k"}
-	if _, err := pointRunAtPreparedEnv(context.Background(), Options{File: script}, KindNode, prepared, root, false); err == nil {
+	if _, _, err := pointRunAtPreparedEnv(context.Background(), Options{File: script}, KindNode, prepared, root, false); err == nil {
 		t.Fatal("a prepared environment with no node_modules must fail the run, not fall back")
+	}
+	if _, _, err := pointRunAtPreparedEnv(context.Background(), Options{File: script}, KindDeno, prepared, root, false); err == nil {
+		t.Fatal("a prepared environment with no node_modules must fail a deno run too, not fall back")
 	}
 	if _, err := os.Lstat(filepath.Join(scriptDir, "node_modules")); !os.IsNotExist(err) {
 		t.Errorf("no link is left by the failed wiring, stat err = %v", err)
