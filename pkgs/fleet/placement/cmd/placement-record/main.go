@@ -21,7 +21,10 @@
 // read clears any pool_read_unobtainable B4 fallback recorded there:
 // once an authoritative read exists, the fallback no longer applies and
 // the guard judges the fresh read. A missing, stale, or failed read is
-// a non-zero exit, not a silent unguarded record.
+// a fresh read is retried once; if it still cannot be obtained, the tool
+// emits a B4 record from the latest valid last-known measurement. That
+// fallback is explicitly marked in the record and never presented as fresh.
+// If no last-known monthly measurement exists, the tool exits non-zero.
 //
 // Exit status is non-zero when no valid record can be emitted (for
 // example a pool-drawn placement without a fresh-enough quota read, per
@@ -81,12 +84,22 @@ func main() {
 	}
 	now := time.Now()
 	if liveRead {
-		pct, readAt, err := placement.ReadQuotaCurrent(*quotaCurrentPath, *poolID, now, time.Duration(pol.QuotaReadMaxAgeMinutes())*time.Minute)
+		pct, readAt, b4Fallback, err := readQuotaCurrentWithB4Fallback(
+			*quotaCurrentPath,
+			*poolID,
+			now,
+			time.Duration(pol.QuotaReadMaxAgeMinutes())*time.Minute,
+		)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "placement-record:", err)
 			os.Exit(1)
 		}
-		applyLiveRead(&answers, pct, readAt, *poolID)
+		if b4Fallback {
+			applyB4Fallback(&answers, pct, readAt, *poolID)
+			fmt.Fprintf(os.Stderr, "placement-record: B4 last-known quota relied on for pool %q (monthly %.1f%% measured %s); retry fresh quota before the next dispatch\n", *poolID, pct, readAt.UTC().Format(time.RFC3339))
+		} else {
+			applyLiveRead(&answers, pct, readAt, *poolID)
+		}
 	}
 	rec, err := placement.Evaluate(pol, answers, now)
 	if err != nil {
@@ -99,6 +112,28 @@ func main() {
 		os.Exit(1)
 	}
 	fmt.Println(string(out))
+}
+
+// readQuotaCurrentWithB4Fallback retries the fresh read once, then returns
+// the last valid monthly measurement as B4 reliance. A fresh read still
+// drives the monthly guard; B4 is explicitly distinguishable in the emitted
+// record and is used only after both fresh reads fail.
+func readQuotaCurrentWithB4Fallback(path, pool string, now time.Time, maxAge time.Duration) (float64, time.Time, bool, error) {
+	pct, readAt, firstErr := placement.ReadQuotaCurrent(path, pool, now, maxAge)
+	if firstErr == nil {
+		return pct, readAt, false, nil
+	}
+	time.Sleep(250 * time.Millisecond)
+	retryAt := now.Add(250 * time.Millisecond)
+	pct, readAt, retryErr := placement.ReadQuotaCurrent(path, pool, retryAt, maxAge)
+	if retryErr == nil {
+		return pct, readAt, false, nil
+	}
+	pct, readAt, fallbackErr := placement.ReadLastKnownQuotaCurrent(path, pool, retryAt)
+	if fallbackErr != nil {
+		return 0, time.Time{}, false, fmt.Errorf("fresh quota read failed twice (%v; retry: %v); no usable B4 last-known state: %w", firstErr, retryErr, fallbackErr)
+	}
+	return pct, readAt, true, nil
 }
 
 // liveReadSelection validates the --quota-current/--pool pair and reports
@@ -135,4 +170,11 @@ func applyLiveRead(answers *placement.Answers, pct float64, readAt time.Time, po
 	answers.PoolReadAt = &readAt
 	answers.PoolID = poolID
 	answers.PoolReadUnobtainable = false
+}
+
+func applyB4Fallback(answers *placement.Answers, pct float64, readAt time.Time, poolID string) {
+	answers.PoolMonthlyPct = &pct
+	answers.PoolReadAt = &readAt
+	answers.PoolID = poolID
+	answers.PoolReadUnobtainable = true
 }

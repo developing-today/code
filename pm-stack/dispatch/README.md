@@ -81,6 +81,12 @@ model hint or a provider outside the account-specific Go/Zen and ClinePass
 mappings are not covered by this slice; the remaining model-to-pool map is
 still needed for full rollout.
 
+If both fresh quota reads fail but a valid last-known monthly measurement
+exists, `placement-record` records B4 reliance, writes that fallback to the
+dispatcher journal, and proceeds. A fresh monthly threshold refusal still
+stops the launch. If the snapshot has no valid prior measurement, the
+service refuses because it cannot make a truthful B4 record.
+
 Stage/failure semantics (design #2668): step 4's claim PATCH is the
 launch's commit point. Steps before it are pre-commit — a failure
 cancels the task and fails the launch. Step 5 is post-commit: the

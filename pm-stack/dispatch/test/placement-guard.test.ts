@@ -93,6 +93,32 @@ describe("pm-dispatch placement guard (issue #2732; oracle = placement-record ar
     expect(calls[0]?.args.at(-1)).toBe("cline-pass");
   });
 
+  test("B4 last-known reliance is written to the dispatcher log (oracle = placement-record B4 field)", () => {
+    const logged: string[] = [];
+    const result = enforcePlacementGuard(
+      {
+        enabled: true,
+        executable: "placement-record",
+        policyFile: "/policy/placement-policy.yaml",
+        quotaCurrentFile: "/state/quota-current.json",
+        logError: (line) => logged.push(line),
+      },
+      {
+        taskId: 9,
+        repo: "developing-today/code",
+        model: { providerID: "opencode-go", id: "gpt-5.6-luna" },
+        activeGoAccountLabel: "popesdrew",
+      },
+      () => ({
+        status: 0,
+        stdout: "{\"option\":\"opencode-session\",\"rule\":\"R4\",\"b4_unknown_read_relied_on\":true}",
+        stderr: "placement-record: B4 last-known quota relied on for pool \"opencode-go.popesdrew\"",
+      }),
+    );
+    expect(result?.poolId).toBe("opencode-go.popesdrew");
+    expect(logged).toEqual(["placement-record: B4 last-known quota relied on for pool \"opencode-go.popesdrew\""]);
+  });
+
   test("disabled guard and non-covered providers do not invoke the helper", () => {
     let calls = 0;
     const command = () => {

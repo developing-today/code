@@ -131,6 +131,12 @@ export function enforcePlacementGuard(
   ) {
     throw new Error("placement-record: expected the default R4 opencode-session record");
   }
+  if ((record as { b4_unknown_read_relied_on?: unknown }).b4_unknown_read_relied_on === true) {
+    const b4Line = stderr.startsWith("placement-record: B4")
+      ? stderr
+      : `placement-record: B4 last-known quota relied on for pool ${JSON.stringify(placement.poolId)}`;
+    (config.logError ?? console.error)(b4Line);
+  }
   return placement;
 }
 

@@ -40,16 +40,9 @@ import (
 // a read that ages past the bound between this call and evaluation is
 // refused there, not seated on stale data.
 func ReadQuotaCurrent(path, pool string, now time.Time, maxAge time.Duration) (float64, time.Time, error) {
-	raw, err := os.ReadFile(path)
+	doc, err := readQuotaCurrentDoc(path)
 	if err != nil {
-		return 0, time.Time{}, fmt.Errorf("quota-current: read %s: %w", path, err)
-	}
-	var doc quotaCurrentDoc
-	if err := json.Unmarshal(raw, &doc); err != nil {
-		return 0, time.Time{}, fmt.Errorf("quota-current: parse %s: %w", path, err)
-	}
-	if doc.Version != 1 {
-		return 0, time.Time{}, fmt.Errorf("quota-current: %s: unsupported version %d, want 1", path, doc.Version)
+		return 0, time.Time{}, err
 	}
 	var (
 		entriesForPool int
@@ -104,6 +97,73 @@ func ReadQuotaCurrent(path, pool string, now time.Time, maxAge time.Duration) (f
 		return *w.PctOfLimit, newestAt, nil
 	}
 	return 0, time.Time{}, fmt.Errorf("quota-current: freshest ok read for pool %q carries no monthly window", pool)
+}
+
+// ReadLastKnownQuotaCurrent returns the newest valid monthly measurement for
+// one pool without applying B5's freshness bound. Callers use it only after a
+// fresh read failed and was retried: the result must be recorded as B4
+// reliance, never passed off as a current read. Retained rows are eligible
+// here because they preserve the last successful measurement after a failed
+// gatherer tick; their original measuredAt remains the timestamp of record.
+func ReadLastKnownQuotaCurrent(path, pool string, now time.Time) (float64, time.Time, error) {
+	doc, err := readQuotaCurrentDoc(path)
+	if err != nil {
+		return 0, time.Time{}, err
+	}
+	var (
+		entriesForPool int
+		newestAt       time.Time
+		newestPct      float64
+		found          bool
+	)
+	for _, e := range doc.Providers {
+		if e.ServiceID != pool {
+			continue
+		}
+		entriesForPool++
+		if e.State != "ok" && e.RetainedFromFailedTick == "" {
+			continue
+		}
+		measuredAt, err := time.Parse(time.RFC3339, e.MeasuredAt)
+		if err != nil || measuredAt.After(now.Add(quotaCurrentFutureSkew)) {
+			continue
+		}
+		var monthly *float64
+		for _, w := range e.Windows {
+			if w.Name == "monthly" {
+				monthly = w.PctOfLimit
+				break
+			}
+		}
+		if monthly == nil || math.IsNaN(*monthly) || math.IsInf(*monthly, 0) || *monthly < 0 || *monthly > 100 {
+			continue
+		}
+		if !found || measuredAt.After(newestAt) {
+			newestAt, newestPct, found = measuredAt, *monthly, true
+		}
+	}
+	if entriesForPool == 0 {
+		return 0, time.Time{}, fmt.Errorf("quota-current: no read for pool %q in %s", pool, path)
+	}
+	if !found {
+		return 0, time.Time{}, fmt.Errorf("quota-current: no valid last-known monthly read for pool %q in %s", pool, path)
+	}
+	return newestPct, newestAt, nil
+}
+
+func readQuotaCurrentDoc(path string) (quotaCurrentDoc, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return quotaCurrentDoc{}, fmt.Errorf("quota-current: read %s: %w", path, err)
+	}
+	var doc quotaCurrentDoc
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		return quotaCurrentDoc{}, fmt.Errorf("quota-current: parse %s: %w", path, err)
+	}
+	if doc.Version != 1 {
+		return quotaCurrentDoc{}, fmt.Errorf("quota-current: %s: unsupported version %d, want 1", path, doc.Version)
+	}
+	return doc, nil
 }
 
 // quotaCurrentFutureSkew is the clock-skew tolerance for a gatherer
