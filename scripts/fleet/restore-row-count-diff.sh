@@ -33,23 +33,30 @@
 # Usage:
 #   restore-row-count-diff.sh --manifest MANIFEST.tsv --live LIVE.tsv #       [--inventory INVENTORY.txt]
 # Exit: 0 = gate passes, 1 = gate fails, 2 = usage/input error.
+# The command line is parsed strictly (#3352): a value option with no
+# value, or with a value that is itself an option, is a usage error.
 set -euo pipefail
+
+usage() {
+  echo "usage: restore-row-count-diff.sh --manifest M.tsv --live L.tsv [--inventory I.txt]" >&2
+}
 
 manifest=""
 live=""
 inventory=""
 while [ $# -gt 0 ]; do
   case "$1" in
-  --manifest)
-    manifest="$2"
-    shift 2
-    ;;
-  --live)
-    live="$2"
-    shift 2
-    ;;
-  --inventory)
-    inventory="$2"
+  --manifest | --live | --inventory)
+    if [ $# -lt 2 ] || [ "${2#--}" != "$2" ]; then
+      echo "option $1 requires a value" >&2
+      usage
+      exit 2
+    fi
+    case "$1" in
+    --manifest) manifest="$2" ;;
+    --live) live="$2" ;;
+    --inventory) inventory="$2" ;;
+    esac
     shift 2
     ;;
   *)
@@ -59,7 +66,7 @@ while [ $# -gt 0 ]; do
   esac
 done
 [ -n "$manifest" ] && [ -n "$live" ] || {
-  echo "usage: restore-row-count-diff.sh --manifest M.tsv --live L.tsv [--inventory I.txt]" >&2
+  usage
   exit 2
 }
 [ -f "$manifest" ] && [ -f "$live" ] || {
