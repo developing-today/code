@@ -71,6 +71,8 @@ export interface Config {
   eventsFile: string;
   /** Identity-to-role registry (#9604), separate from the session registry. */
   identityRegistryFile: string;
+  /** Shared HS256 secret used only to mint short-lived brokered-write tokens. */
+  stackTokenSecret: string | null;
   /** Break-glass owner token store (#9608) — written only by the local
    * owner CLI (scripts/issue-break-glass-token.ts); hashes only. */
   breakGlassFile: string;
@@ -86,6 +88,13 @@ export interface Config {
    * dispatch credential. */
   queueBrokerTokenFile: string;
   activityFile: string;
+  /** Append-only outcome-fact ledger (#10910): the outcome consumer
+   *  projects the GitHub hot list into it on the activity cadence. */
+  outcomeFile: string;
+  /** JSONL queue/session binding records (#10910) the outcome consumer
+   *  joins hot-list events through; an absent file means no bindings
+   *  exist yet, so facts land explicitly unattributed. */
+  outcomeBindingsFile: string;
   /** Durable identity-registry store (#906 §3), merged on every read. */
   registryFile: string;
   /** Usage snapshot store (hub §4): a directory of monthly JSONL files. */
@@ -227,6 +236,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
       env.PM_AGG_IDENTITY_REGISTRY_FILE,
       join(homedir(), ".local", "state", "pm-aggregator", "identity-registry.json"),
     ),
+    stackTokenSecret: env.PM_AGG_STACK_TOKEN_SECRET?.trim() || null,
     breakGlassFile: s(
       env.PM_AGG_BREAK_GLASS_FILE,
       join(homedir(), ".local", "state", "pm-aggregator", "break-glass-tokens.json"),
@@ -244,6 +254,14 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     activityFile: s(
       env.PM_AGG_ACTIVITY_FILE,
       join(homedir(), ".local", "state", "pm-aggregator", "activity-ingestion.json"),
+    ),
+    outcomeFile: s(
+      env.PM_AGG_OUTCOME_FILE,
+      join(homedir(), ".local", "state", "pm-aggregator", "outcome-facts.jsonl"),
+    ),
+    outcomeBindingsFile: s(
+      env.PM_AGG_OUTCOME_BINDINGS_FILE,
+      join(homedir(), ".local", "state", "pm-aggregator", "outcome-bindings.jsonl"),
     ),
     registryFile: s(env.PM_AGG_REGISTRY_FILE, join(process.cwd(), "registry.json")),
     snapshotsDir: s(env.PM_AGG_SNAPSHOTS_DIR, join(process.cwd(), "snapshots")),

@@ -54,6 +54,8 @@ mod gh_cache;
 mod gh_closure;
 #[cfg(feature = "gh")]
 mod gh_guard;
+#[cfg(feature = "gh")]
+mod gh_metadata;
 mod invocation_ledger;
 mod session_state;
 

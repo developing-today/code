@@ -36,6 +36,7 @@ import {
 } from "./http.ts";
 import { Notifier } from "./notify.ts";
 import { OpError, Ops } from "./ops.ts";
+import { Plan } from "./plan.ts";
 import { contact, Push } from "./push.ts";
 import { EdgeLink } from "./sync.ts";
 import { Work } from "./work.ts";
@@ -92,9 +93,24 @@ function file(req: Request, name: string, type: string): Response {
 
 export { assetLinks, type Phones };
 
+/** The plan's reader for these dependencies: the one given, or one made
+ * from the same `ops` and `work` and kept. */
+const plans = new WeakMap<Deps, Plan>();
+function planOf(deps: Deps): Plan {
+  if (deps.plan) return deps.plan;
+  let plan = plans.get(deps);
+  if (!plan) {
+    plan = new Plan(deps.ops, deps.work ?? new Work(deps.ops));
+    plans.set(deps, plan);
+  }
+  return plan;
+}
+
 export interface Deps {
   cfg: Config;
   ops: Ops;
+  /** Roadmaps, bugs and the intake list. Made from `ops` and `work` when not given. */
+  plan?: Plan;
   /** `peer` is the connection's remote address as the server saw it. */
   identify: (req: Request, peer: string | null) => Promise<Identity>;
   audit: (entry: Record<string, unknown>) => Promise<void>;
@@ -283,6 +299,18 @@ export async function handle(req: Request, deps: Deps, peer: string | null = nul
             return json(await ops.services());
           case "prs":
             return json(await ops.prs());
+          case "releases":
+            return json(await ops.releases());
+          case "roadmaps":
+            return json(planOf(deps).capabilities());
+          // `fresh=1` is the reader pressing refresh: asked again now,
+          // not answered from the last minute's read.
+          case "roadmap":
+            return json(await planOf(deps).roadmap(query.get("area"), query.get("fresh") === "1"));
+          case "bugs":
+            return json(await planOf(deps).bugs(query.get("fresh") === "1"));
+          case "intake":
+            return json(await planOf(deps).intakeList(query.get("fresh") === "1"));
         }
       }
       if (seg.length === 2 && seg[0] === "doc" && deps.docs && DOC_NAMES.includes(seg[1] as DocName)) {

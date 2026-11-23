@@ -18,13 +18,13 @@ public, matched exactly: `/manifest.webmanifest` and the four icons under
 `/console/` is one page with five tabs. The first four are what the
 owner does every day; everything else is under More.
 
-| Tab      | What it is for                                                                                                   |
-| -------- | ---------------------------------------------------------------------------------------------------------------- |
-| Now      | Tasks in progress with their next step, sessions that are moving, and what the owner did lately                  |
-| Next     | The queue in the order it will be claimed; move a task first, sooner or later; why tasks are blocked             |
-| Needs me | Open questions (one tap to answer, undo for a few seconds), things only hands can do, reviews                    |
-| Ask      | Say what you want in your own words (typed or dictated). It becomes an issue and a top-of-queue task in one pass |
-| More     | Queue by state, pull requests, ranked issues, agents, services, notifications, phones, and the dashboard's pages |
+| Tab      | What it is for                                                                                                                                                |
+| -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Now      | Tasks in progress with their next step, sessions that are moving, and what the owner did lately                                                               |
+| Next     | The queue in the order it will be claimed; move a task first, sooner or later; why tasks are blocked                                                          |
+| Needs me | Open questions (one tap to answer, undo for a few seconds), things only hands can do, reviews                                                                 |
+| Ask      | Say what you want in your own words (typed or dictated). It becomes an issue and a top-of-queue task in one pass                                              |
+| More     | The plan (roadmaps, bugs, intake), queue by state, pull requests, ranked issues, agents, services, notifications, phones, releases, and the dashboard's pages |
 
 The page never waits on a live fan-out. The server keeps three documents
 ready (`core`, `questions`, `ops`), each built from sections that are
@@ -68,6 +68,65 @@ run that the next run mends says nothing; five minutes of failing run
 after run is reported once ("A unit keeps failing", with what the unit
 is for), and so is its mending. That is what tells the owner when the
 laptop's checkout has stopped following `main`.
+
+### The plan: roadmaps, bugs, intake
+
+Three screens under More, all from `src/plan.ts`, and all read from
+where the plan already lives: nothing is copied into a store here.
+
+- **Roadmap**: one page per capability (id, fleet, atlas and PM stack
+  first, then every other file in `planning/roadmaps/`). A page is the
+  file's own rows and the capability's issues, in five groups: in
+  progress, planned immediately, short term, long term, built. An
+  issue can be moved between the planned groups (its rank, at once); a
+  row or an issue can be given a note; a row can be changed (moved,
+  given a sub-item, marked built, rewritten, dropped), and an item
+  added.
+- **Bugs**: report one in a sentence; the open ones soonest first; the
+  ones fixed lately.
+- **Intake**: say something that is about nothing in particular, see
+  where each kind goes, and see everything sent from the app as GitHub
+  has it now.
+
+Everything said on these screens is one action, `intake.send`: the
+words as typed, what they are about, how soon, and whether an issue or
+a session should take them. Where it goes is one table (`ROUTES`):
+
+| Kind              | Becomes                                                                    | Labels                                                       | Rank unless said |
+| ----------------- | -------------------------------------------------------------------------- | ------------------------------------------------------------ | ---------------- |
+| bug               | an issue and its triage task                                               | `kind/bug`, `source/human`, `owner/intake`, the capability's | now              |
+| note              | a comment on the issue it is about, and a task; else an issue and its task | `source/human`, `owner/intake`, the capability's             | next             |
+| change            | an issue saying what to change, and its task                               | `source/human`, `owner/intake`, the capability's             | next             |
+| any, as a session | the owner's prompt (as on Ask), which starts a session                     | the prompt's own, and those above                            | expedite         |
+
+The words are the first thing in whatever is filed, untouched; what the
+app adds comes after a line. They are not written to the audit log.
+`owner/intake` is how the Intake screen finds them again.
+
+A page costs GitHub three requests (the file, the open issues that are
+being worked on, ranked or epics, and what closed in two weeks) and is
+read at most once a minute, since GitHub's search allows thirty a
+minute and the fleet shares them. The refresh button asks again at
+once; so does anything sent from the app.
+
+### Releases
+
+More, Releases says what is out and lets either be put out again. A
+merge already does both by itself; this is for looking, and for doing it
+over.
+
+- **This site**: which commit Cloudflare serves and whether the laptop
+  runs the same (from the edge's health answer), and the last deploys as
+  GitHub records them. "Deploy again" starts the deploy workflow on
+  `main`; "From nothing first" has it stand a throwaway copy of the
+  Worker up from nothing, check it and remove it before deploying.
+- **Android app**: the build that is released, the last builds, a
+  download, and "Build again".
+
+The runs are read, and a run is started, through the laptop
+(`fleet gh`); with the laptop away the screen still says what is being
+served and what is released. Starting one is never held to be done
+late.
 
 ### Phones
 

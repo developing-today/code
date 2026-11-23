@@ -5,9 +5,12 @@ import { join } from "node:path";
 import {
   BREAK_GLASS_MAX_TTL_MS,
   BreakGlassTokenStore,
+  authorizeWithBreakGlassToken,
+  breakGlassConsumptionAuditEvent,
   breakGlassIssuanceAuditEvent,
   consumeBreakGlassToken,
   issueBreakGlassToken,
+  presentedBreakGlassToken,
 } from "../src/break-glass.ts";
 import { EventsStore } from "../src/events.ts";
 import type { NewAuditEvent } from "../src/events.ts";
@@ -114,6 +117,64 @@ describe("aggregator break-glass owner token (#9608)", () => {
     expect(parsed.tokens).toHaveLength(1);
     expect(parsed.tokens[0]).toMatchObject({ id: issued.id, consumedAt: null });
     expect(parsed.tokens[0]!.tokenHash).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  test("presented token follows the Authorization: Bearer convention", () => {
+    const withToken = new Request("http://localhost/", {
+      headers: { authorization: "Bearer abc123" },
+    });
+    expect(presentedBreakGlassToken(withToken)).toBe("abc123");
+    expect(presentedBreakGlassToken(new Request("http://localhost/"))).toBe("");
+    const basic = new Request("http://localhost/", { headers: { authorization: "Basic abc123" } });
+    expect(presentedBreakGlassToken(basic)).toBe("");
+  });
+
+  test("authorize helper consumes once and audits the consumption", async () => {
+    const { events, store } = await setup();
+    const issued = await issueBreakGlassToken({ store, events, ttlMs: 60_000, now: T0 });
+    const grant = await authorizeWithBreakGlassToken({ store, events, token: issued.token, now: T0 });
+    expect(grant).toMatchObject({ ok: true, id: issued.id, auditActor: `owner:break-glass:${issued.id}` });
+    expect(await events.has("break-glass-token-consumed", `break-glass:${issued.id}`)).toBe(true);
+    const listed = await events.list({ kind: "break-glass-token-consumed" });
+    expect(listed).toHaveLength(1);
+    expect(listed[0]).toMatchObject({ actor: `owner:break-glass:${issued.id}` });
+    const replay = await authorizeWithBreakGlassToken({ store, events, token: issued.token, now: T0 });
+    expect(replay.ok).toBe(false);
+  });
+
+  test("authorize helper fails closed when the consumption audit write fails — and the token is burned", async () => {
+    const { events, store } = await setup();
+    const issued = await issueBreakGlassToken({ store, events, ttlMs: 60_000, now: T0 });
+    const failingEvents = {
+      record: async () => {
+        throw new Error("audit store unavailable");
+      },
+    };
+    const grant = await authorizeWithBreakGlassToken({
+      store,
+      events: failingEvents,
+      token: issued.token,
+      now: T0,
+    });
+    expect(grant.ok).toBe(false);
+    if (!grant.ok) expect(grant.error).toContain("audit write failed");
+    // The token was consumed before the failed audit write, so it
+    // cannot be replayed once the audit store recovers.
+    const retry = await authorizeWithBreakGlassToken({ store, events, token: issued.token, now: T0 });
+    expect(retry.ok).toBe(false);
+    if (!retry.ok) expect(retry.error).toContain("already consumed");
+  });
+
+  test("consumption audit event shape mirrors the issuance event", () => {
+    const event = breakGlassConsumptionAuditEvent({ id: "bg_example", consumedAt: T0.toISOString() });
+    expect(event).toMatchObject({
+      actor: "owner:break-glass:bg_example",
+      kind: "break-glass-token-consumed",
+      ref: "break-glass:bg_example",
+      attribution: { confidence: "authenticated", asserted: true },
+      source: { identity: "pm-aggregator", link: "#9608" },
+    });
+    expect(event.summary).toContain("exactly one admin request");
   });
 
   test("issuance audit event shape follows the identity-registry precedent", () => {

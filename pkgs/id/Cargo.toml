@@ -115,6 +115,9 @@ id-cli = { path = "crates/id-cli", default-features = false }
 # Directory-family modules extracted in step 6b of the crate split
 # (#4409). Re-exported at their historical crate:: paths in src/lib.rs.
 id-directory = { path = "crates/id-directory", default-features = false }
+# Currency registry + account factory (F1 #2317, F2 #2318); composed
+# with the gateway envelope by the #2321 PoC (src/currency/gateway_poc.rs).
+id-currency-registry = { path = "crates/id-currency-registry", default-features = false }
 anyhow = "1"
 cbor-core = { version = "=0.10.1", features = ["serde"] }
 # Calendar arithmetic and the IANA time-zone database for the did-it tracker's

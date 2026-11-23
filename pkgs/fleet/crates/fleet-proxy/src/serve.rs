@@ -516,6 +516,10 @@ fn startup_line(pool_size: usize, socket_path: &std::path::Path) -> String {
 
 struct Broker {
     config: Config,
+    /// The tailnet egress parsed at startup. Tunnel opens
+    /// re-resolve it (see [`Broker::tailnet_egress`]); this parse
+    /// is the fallback for an open whose fresh resolution fails,
+    /// and its absence is what the startup warning reports.
     egress: Option<Egress>,
     /// The Cloudflare leg's egress: the same proxy as `egress`,
     /// dialled at the proxy URL's own port (see
@@ -531,17 +535,48 @@ struct Broker {
     last_used: AtomicU64,
 }
 
+/// The tailnet-egress preference at tunnel-open time (the
+/// oracle for #12426's fix): a fresh resolution of the seat's
+/// current state wins; the startup parse is the fallback when
+/// the fresh resolution fails; with neither, the fresh error —
+/// the same message the startup warning prints — is the
+/// failure.
+fn resolve_tailnet_egress(
+    fresh: Result<Egress, String>,
+    startup: &Option<Egress>,
+) -> Result<Egress, String> {
+    match fresh {
+        Ok(e) => Ok(e),
+        Err(why) => startup.clone().ok_or(why),
+    }
+}
+
 impl Broker {
+    /// The tailnet leg's egress for one tunnel open, resolved
+    /// fresh — never just the startup parse. The seat's recorded
+    /// tailnet proxy (`fleet-proxy.env`, #12555) can appear or
+    /// change after this broker started: a broker auto-spawned
+    /// while tailscaled was down was born with the ambient
+    /// egress value (or none) and would otherwise keep it for
+    /// its whole life, so tailnet tunnels kept failing after
+    /// the tailnet recovered until a manual restart (#12426).
+    /// Opens are pooled and recovery-gated, so re-resolving
+    /// per open costs one small file read per new tunnel, not
+    /// per request.
+    fn tailnet_egress(&self) -> Result<Egress, String> {
+        resolve_tailnet_egress(
+            egress_from_env(self.config.egress_proxy_port()),
+            &self.egress,
+        )
+    }
+
     fn open_raw_tunnel(&self, port: u16) -> Result<TcpStream, String> {
         let target = self.config.target_host();
         let stream = if self.config.proxy_direct() {
             connect_raw_tunnel(None, target, port)
         } else {
-            let egress = self
-                .egress
-                .as_ref()
-                .ok_or_else(|| "HTTPS_PROXY must be set (runtime proxy env)".to_string())?;
-            connect_raw_tunnel(Some(egress), target, port)
+            let egress = self.tailnet_egress()?;
+            connect_raw_tunnel(Some(&egress), target, port)
         }
         .map_err(|e| format!("raw tunnel to {target}:{port}: {e}"))?;
         Ok(stream)
@@ -605,11 +640,8 @@ impl Broker {
                 .map_err(|e| format!("tunnel to {target}:{port}: {e}"))?;
             return HttpConn::new(stream).map_err(|e| format!("tunnel to {target}:{port}: {e}"));
         }
-        let egress = self
-            .egress
-            .as_ref()
-            .ok_or_else(|| "HTTPS_PROXY must be set (runtime proxy env)".to_string())?;
-        let stream: TcpStream = connect_tunnel(Some(egress), target, port)
+        let egress = self.tailnet_egress()?;
+        let stream: TcpStream = connect_tunnel(Some(&egress), target, port)
             .map_err(|e| format!("tunnel to {target}:{port}: {e}"))?;
         HttpConn::new(stream).map_err(|e| format!("tunnel to {target}:{port}: {e}"))
     }
@@ -2207,5 +2239,44 @@ mod tests {
                 .map_err(|_| ());
             prop_assert_eq!(got, model(&value), "port value: {}", value);
         });
+    }
+    fn egress(host: &str) -> Egress {
+        Egress {
+            host: host.to_string(),
+            port: 3130,
+            authorization: "Basic Og==".to_string(),
+        }
+    }
+
+    #[test]
+    fn tailnet_egress_fresh_resolution_wins_over_the_startup_parse() {
+        // The seat's state appeared (or changed) after startup:
+        // the open must ride the current value, not the one the
+        // broker was born with (#12426).
+        let startup = Some(egress("hatch-egress-proxy"));
+        let got = resolve_tailnet_egress(Ok(egress("127.0.0.1")), &startup).unwrap();
+        assert_eq!(got, egress("127.0.0.1"));
+    }
+
+    #[test]
+    fn tailnet_egress_falls_back_to_the_startup_parse() {
+        // Fresh resolution failed (no recorded proxy, no ambient
+        // env): the startup value still serves the open.
+        let startup = Some(egress("127.0.0.1"));
+        let got =
+            resolve_tailnet_egress(Err("HTTPS_PROXY must be set".to_string()), &startup).unwrap();
+        assert_eq!(got, egress("127.0.0.1"));
+    }
+
+    #[test]
+    fn tailnet_egress_without_either_surfaces_the_resolution_error() {
+        let got = resolve_tailnet_egress(
+            Err("HTTPS_PROXY must be set (runtime proxy env)".to_string()),
+            &None,
+        );
+        assert_eq!(
+            got.unwrap_err(),
+            "HTTPS_PROXY must be set (runtime proxy env)"
+        );
     }
 }

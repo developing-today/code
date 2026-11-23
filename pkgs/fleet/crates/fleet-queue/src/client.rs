@@ -2283,6 +2283,32 @@ esac
         assert_eq!(completion_session_id(None, &json!({})), None);
     }
 
+    #[test]
+    fn drop_dep_list_parses_the_block_ref_forms() {
+        // #12777 oracle (client half): --drop-dep takes the
+        // refs block's --blocked-by-* flags take, kind-prefixed,
+        // and refuses anything else before a byte is sent.
+        let deps = parse_drop_dep_list(
+            "issue:developing-today/code#9513, task:20408, ci:developing-today/code#777, pr:developing-today/code#9513",
+        )
+        .expect("the four ref forms parse");
+        assert_eq!(
+            deps,
+            vec![
+                json!({"kind": "issue", "repo": "developing-today/code", "number": 9513}),
+                json!({"kind": "task", "task_id": 20408}),
+                json!({"kind": "ci", "repo": "developing-today/code", "run_id": 777}),
+                json!({"kind": "pr", "repo": "developing-today/code", "number": 9513}),
+            ]
+        );
+        assert_eq!(parse_drop_dep_list("").expect("empty"), Vec::<Value>::new());
+        assert!(parse_drop_dep_list("issue:9513").is_err());
+        assert!(parse_drop_dep_list("issue:developing-today/code").is_err());
+        assert!(parse_drop_dep_list("bogus:developing-today/code#1").is_err());
+        assert!(parse_drop_dep_list("task:abc").is_err());
+        assert!(parse_drop_dep_list("9513").is_err());
+    }
+
     // ---- #10838: per-verb --help, usage-on-error, bare-list note ----
 
     #[test]

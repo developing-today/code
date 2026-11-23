@@ -1347,6 +1347,7 @@
         "pkgs/id/crates/id-core/tests/array_order_prop.rs",
         "pkgs/id/crates/id-core/tests/canonical_cbor_vectors.rs",
         "pkgs/id/crates/id-core/tests/array_shorthand.rs",
+        "pkgs/id/crates/id-core/tests/atlas_content_profile_vectors.rs",
         "pkgs/id/crates/id-core/tests/content_id_vectors.rs",
         "pkgs/id/crates/id-core/tests/cross_signing_challenge.rs",
         "pkgs/id/crates/id-core/tests/delegation_model.rs",
@@ -1358,10 +1359,12 @@
         "pkgs/id/crates/id-core/tests/id_uri_property.rs",
         "pkgs/id/crates/id-core/tests/id_shape.rs",
         "pkgs/id/crates/id-core/tests/legacy_hash_vectors.rs",
+        "pkgs/id/crates/id-core/tests/location_ref.rs",
         "pkgs/id/crates/id-core/tests/namespace_definition.rs",
         "pkgs/id/crates/id-core/tests/numeric_order_prop.rs",
         "pkgs/id/crates/id-core/tests/numeric_value_prop.rs",
         "pkgs/id/crates/id-core/tests/signed_envelope_identity.rs",
+        "pkgs/id/crates/id-core/tests/world_definition.rs",
         "pkgs/id/crates/id-core/tests/screen_parity.rs",
         "pkgs/id/crates/id-core/tests/signer_bound_space.rs",
         "pkgs/id/crates/id-core/tests/succeeds_dag.rs",
@@ -1428,6 +1431,7 @@
     {
       "id": "id.rust.id-sync.integration",
       "paths": [
+        "pkgs/id/crates/id-sync/tests/exchange_lock_release.rs",
         "pkgs/id/crates/id-sync/tests/federation_b01.rs",
         "pkgs/id/crates/id-sync/tests/federation_b02.rs",
         "pkgs/id/crates/id-sync/tests/federation_b03.rs",
@@ -1510,6 +1514,7 @@
     {
       "id": "id.rust.crate-integration",
       "paths": [
+        "pkgs/id/crates/id-caps/tests/mcp_bridge_surface.rs",
         "pkgs/id/crates/id-caps/tests/roc_import_policy.rs",
         "pkgs/id/crates/id-cli/tests/aliases.rs",
         "pkgs/id/crates/id-core/tests/probe_petname_load.rs",
@@ -1524,7 +1529,7 @@
         "dispatchable": true
       },
       "status": "mapped",
-      "notes": "Wired by #10329: test-crate-integration is a named pkgs/id flake check included in the id PR-check list; its just recipe runs all five member-crate targets, including the four named by the issue and id-caps/roc_import_policy."
+      "notes": "Wired by #10329: test-crate-integration is a named pkgs/id flake check included in the id PR-check list; its just recipe runs all six member-crate targets, including the MCP bridge surface, the four named by the issue and id-caps/roc_import_policy."
     },
     {
       "id": "id.web.build-manifest",

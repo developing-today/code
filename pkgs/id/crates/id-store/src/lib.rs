@@ -42,6 +42,7 @@ pub mod note_checkpoints;
 pub mod note_blocks;
 pub mod note_links;
 pub mod notes;
+pub mod numeric_registry;
 pub mod policy;
 pub mod range;
 pub mod search;

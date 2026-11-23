@@ -6,7 +6,10 @@
 use anyhow::Result;
 use ed25519_dalek::SigningKey;
 use id::groups::Role;
-use id::invites::{AcceptSender, Invitation, InviteEvent, RouteStatus, check_route, join};
+use id::invites::{
+    AcceptSender, Invitation, InviteEvent, InviteSource, InviteTarget, InviteTerms, RouteStatus,
+    check_route, join,
+};
 use iroh_base::{EndpointAddr, SecretKey, TransportAddr};
 use iroh_tickets::endpoint::EndpointTicket;
 
@@ -281,7 +284,8 @@ fn a_bare_ticket_with_a_valid_event_is_unverified_because_no_key_anchors_it() {
 fn an_invite_event_names_its_group_role_and_expiry() {
     let event = event(&inviter(), &ticket(7));
     assert_eq!(event.body.inviter, inviter().verifying_key().to_bytes());
-    assert_eq!(event.body.group, [0xaa; 32]);
+    assert_eq!(event.body.group(), [0xaa; 32]);
+    assert_eq!(event.body.target, InviteTarget::Group([0xaa; 32]));
     assert_eq!(event.body.role, Role::Write);
     assert_eq!(event.body.expires_ms, EXPIRES);
 }
@@ -307,17 +311,99 @@ fn an_invite_event_round_trips_through_its_bytes_for_every_role() {
 #[allow(clippy::unwrap_used)]
 fn a_malformed_invite_event_is_refused() {
     let bytes = event(&inviter(), &ticket(7)).to_bytes();
-    let short = &bytes[..bytes.len() - 1];
+    // Cut short of the minimum length, the refusal names the size; cut by one
+    // byte, the body no longer decodes. Both are refused.
+    let short = &bytes[..40];
     let error = InviteEvent::from_bytes(short).unwrap_err();
     assert!(format!("{error:#}").contains("bytes"), "{error:#}");
+    assert!(InviteEvent::from_bytes(&bytes[..bytes.len() - 1]).is_err());
 
     let trailing = [bytes.clone(), vec![0]].concat();
     assert!(InviteEvent::from_bytes(&trailing).is_err());
 
-    let mut unknown_role = bytes;
+    // The role byte lives at a fixed offset only in the v1 form; a v1 event
+    // with an unknown role code is refused by name.
+    let mut unknown_role = v1_event_bytes();
     unknown_role[ROLE_AT] = 9;
     let error = InviteEvent::from_bytes(&unknown_role).unwrap_err();
     assert!(format!("{error:#}").contains("role"), "{error:#}");
+}
+
+/// A v1 fixed-layout event's bytes, built field by field: inviter, ticket
+/// digest, group, role, expiry, and a zero signature. Parsing never checks
+/// the signature or the digest, so the zero signature is fine here; the form
+/// itself is what this pins.
+fn v1_event_bytes() -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(169);
+    bytes.extend_from_slice(&inviter().verifying_key().to_bytes());
+    bytes.extend_from_slice(&[3; 32]);
+    bytes.extend_from_slice(&[0xaa; 32]);
+    bytes.push(2);
+    bytes.extend_from_slice(&EXPIRES.to_be_bytes());
+    bytes.extend_from_slice(&[0; 64]);
+    bytes
+}
+
+#[test]
+#[allow(clippy::unwrap_used)]
+fn a_v1_invite_event_still_parses_with_legacy_terms() {
+    let event = InviteEvent::from_bytes(&v1_event_bytes()).unwrap();
+    assert_eq!(event.body.inviter, inviter().verifying_key().to_bytes());
+    assert_eq!(event.body.target, InviteTarget::Group([0xaa; 32]));
+    assert_eq!(event.body.group(), [0xaa; 32]);
+    assert_eq!(event.body.role, Role::Write);
+    assert_eq!(event.body.expires_ms, EXPIRES);
+    // The v1 form predates the terms: no cap, no re-invite depth, no parent, no pin.
+    assert_eq!(event.body.uses_cap, None);
+    assert_eq!(event.body.depth_remaining, 0);
+    assert_eq!(event.body.parent_digest, None);
+    assert_eq!(event.body.redeemer, None);
+    assert_eq!(event.to_bytes(), v1_event_bytes());
+}
+
+#[test]
+#[allow(clippy::unwrap_used)]
+fn an_invite_with_terms_round_trips_and_still_checks_the_route() {
+    let ticket = ticket(7);
+    let invitation = Invitation::parse(&link(&ticket, &by(&inviter()))).unwrap();
+    let terms = InviteTerms::link(
+        InviteSource::OpenDelegation,
+        InviteTarget::Group([0xaa; 32]),
+        Role::Write,
+        NOW,
+    );
+    let event = InviteEvent::sign_terms(&inviter(), &ticket, terms).unwrap();
+    assert_eq!(event.body.uses_cap, Some(25), "the link default cap lands");
+    assert_eq!(
+        event.body.depth_remaining, 1,
+        "open delegation defaults to depth 1"
+    );
+    assert_eq!(
+        InviteEvent::from_bytes(&event.to_bytes()).unwrap(),
+        event,
+        "a body carrying terms encodes and decodes identically"
+    );
+    let mut sent = Recorder::default();
+    let status = join(&invitation, Some(&event), NOW, &mut sent, b"accept").unwrap();
+    assert_eq!(status, RouteStatus::Verified);
+    assert_eq!(sent.sent.len(), 1);
+}
+
+#[test]
+#[allow(clippy::unwrap_used)]
+fn a_mint_whose_paste_form_is_over_budget_is_refused() {
+    // A ticket carrying many direct addresses outgrows the 512-character
+    // paste budget; the minter refuses rather than emitting a mangled link.
+    let id = SecretKey::from_bytes(&[9; 32]).public();
+    let addrs = (0..40).map(|i| TransportAddr::Ip(format!("203.0.113.{i}:4433").parse().unwrap()));
+    let fat = EndpointTicket::new(EndpointAddr::from_parts(id, addrs));
+    let error =
+        Invitation::link([0xaa; 32], inviter().verifying_key().to_bytes(), fat).unwrap_err();
+    assert!(format!("{error:#}").contains("512"), "{error:#}");
+
+    let minted =
+        Invitation::link([0xaa; 32], inviter().verifying_key().to_bytes(), ticket(7)).unwrap();
+    assert_eq!(Invitation::parse(&minted.to_string()).unwrap(), minted);
 }
 
 #[test]
