@@ -134,6 +134,26 @@ pub(super) fn cmd_claim(rest: &[String]) -> i32 {
             }
         }
     }
+    // #4919: still no stamp and no session to derive one from —
+    // a worker whose harness knows its own serving leaf (a Muse
+    // seat, which has no OpenCode session record) names it in
+    // the environment instead (REPO_QUEUE_MODEL_PROVIDER /
+    // REPO_QUEUE_MODEL_ID / REPO_QUEUE_MODEL_VARIANT). Fail-soft:
+    // a half-configured pair stamps nothing and the claim
+    // proceeds unstamped exactly as before.
+    if body.get("model_provider").is_none() {
+        if let Some((provider, model, variant)) = claim_model_stamp_from_env(
+            std::env::var("REPO_QUEUE_MODEL_PROVIDER").ok().as_deref(),
+            std::env::var("REPO_QUEUE_MODEL_ID").ok().as_deref(),
+            std::env::var("REPO_QUEUE_MODEL_VARIANT").ok().as_deref(),
+        ) {
+            body["model_provider"] = json!(provider);
+            body["model_id"] = json!(model);
+            if let Some(v) = variant {
+                body["model_variant"] = json!(v);
+            }
+        }
+    }
     // --handoff: the no-id collection of the next recorded
     // opencode handoff from the sink (status 'handed_off', #8234;
     // #8097 Rule 1) — the claimant's default handoff path. The

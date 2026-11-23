@@ -489,6 +489,41 @@ mod tests {
     }
 
     #[test]
+    fn claim_model_stamp_from_env_names_a_seat_without_a_session_record() {
+        // #4919 oracle: a worker with no OpenCode session record
+        // (a Muse seat claiming through `fleet agent next`) names
+        // its own serving leaf in the environment; the stamp is
+        // the same provider+model-together shape as the flags.
+        // Fail-soft: a half-configured pair, a variant alone, or
+        // blank values stamp nothing.
+        assert_eq!(
+            claim_model_stamp_from_env(Some("muse"), Some("Muse Spark"), None),
+            Some((
+                "muse".to_string(),
+                "Muse Spark".to_string(),
+                None,
+            ))
+        );
+        assert_eq!(
+            claim_model_stamp_from_env(Some("muse"), Some("Muse Spark"), Some("medium")),
+            Some((
+                "muse".to_string(),
+                "Muse Spark".to_string(),
+                Some("medium".to_string()),
+            ))
+        );
+        assert_eq!(claim_model_stamp_from_env(None, None, None), None);
+        assert_eq!(claim_model_stamp_from_env(Some("muse"), None, None), None);
+        assert_eq!(claim_model_stamp_from_env(None, Some("Muse Spark"), None), None);
+        assert_eq!(claim_model_stamp_from_env(None, None, Some("medium")), None);
+        assert_eq!(
+            claim_model_stamp_from_env(Some("  "), Some("Muse Spark"), None),
+            None
+        );
+        assert_eq!(claim_model_stamp_from_env(Some("muse"), Some(""), None), None);
+    }
+
+    #[test]
     fn session_model_stamp_reads_the_session_record() {
         // #8176 derivation oracle, as corrected by #9408: the stamp
         // is the SERVING leaf. A direct session's own model —

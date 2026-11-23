@@ -1074,6 +1074,31 @@ pub(super) fn model_stamp_flags(
     }
 }
 
+/// #4919: the claim stamp a worker's environment names, for
+/// sessions with no OpenCode record to derive one from. A Muse
+/// seat claims through `fleet agent next` with no `--session-id`
+/// and no `--model-*` flags, so the #8176 session derivation
+/// never runs and the claim lands unstamped — and the #10704
+/// completion defaults then have no claim source to derive
+/// telemetry from (task 21047, completed 2026-11-22: null
+/// claim_model / claim_variant / claim_session_id). The harness
+/// that knows its own serving leaf names it here instead:
+/// `REPO_QUEUE_MODEL_PROVIDER` + `REPO_QUEUE_MODEL_ID`
+/// (together, exactly as the flags), with the optional
+/// `REPO_QUEUE_MODEL_VARIANT`. Pure, so the resolution is
+/// unit-testable; the caller reads the environment. Fail-soft by
+/// design: a half-configured pair, a variant alone, or an empty
+/// value stamps nothing and the claim proceeds unstamped exactly
+/// as before; explicit flags and the session derivation both win
+/// over the environment (the caller checks this last).
+pub(super) fn claim_model_stamp_from_env(
+    provider: Option<&str>,
+    model: Option<&str>,
+    variant: Option<&str>,
+) -> Option<(String, String, Option<String>)> {
+    model_stamp_flags(provider, model, variant).ok().flatten()
+}
+
 /// The provider id that addresses configured routes, not serving
 /// leaves: routes appear in the catalog under this provider
 /// (opencode-route/<route-id>), so a model addressed under it is a
