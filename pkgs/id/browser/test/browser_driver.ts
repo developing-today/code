@@ -172,6 +172,44 @@ async function probeTransactionLifetime(): Promise<string> {
   }
 }
 
+// Give one test database a genuine engine constraint. The second write in
+// the batch conflicts after a write in another namespace has been queued.
+// Retrying the same operation ID also checks that its dedupe marker rolled back.
+async function probeAbortedBatch() {
+  const name = "id-probe-atomic-abort";
+  await IndexedDbStore.deleteDatabase(name);
+  const seed = await new Promise<IDBDatabase>((resolve, reject) => {
+    const open = indexedDB.open(name, 1);
+    open.onupgradeneeded = () => {
+      open.result.createObjectStore("notes");
+      open.result.createObjectStore("tags").createIndex("unique-value", "", { unique: true });
+    };
+    open.onsuccess = () => resolve(open.result);
+    open.onerror = () => reject(open.error);
+  });
+  seed.close();
+  const store = await IndexedDbStore.open(name, ["notes", "tags"], 2);
+  try {
+    await store.commitBatch("setup", [{ namespace: "tags", id: "original", value: "taken" }]);
+    const note = { namespace: "notes", id: "note", value: "kept" };
+    const tag = { namespace: "tags", id: "new", value: "taken" };
+    let error = "committed";
+    try {
+      await store.commitBatch("batch", [note, tag]);
+    } catch (cause) {
+      if (!(cause instanceof DOMException)) throw cause;
+      error = cause.name;
+    }
+    const afterAbort = [await store.scan("notes"), await store.scan("tags")];
+    await store.commitBatch("batch", [note, { ...tag, value: "free" }]);
+    const afterRetry = [await store.scan("notes"), await store.scan("tags")];
+    return { error, afterAbort, afterRetry };
+  } finally {
+    store.close();
+    await IndexedDbStore.deleteDatabase(name);
+  }
+}
+
 async function probeReopen(): Promise<string | undefined> {
   const dbName = "id-probe-reopen";
   await IndexedDbStore.deleteDatabase(dbName);
@@ -262,6 +300,7 @@ export async function runInBrowser(fixture: {
     probes: {
       transactionLifetime: await probeTransactionLifetime(),
       reopenValue: await probeReopen(),
+      abortedBatch: await probeAbortedBatch(),
       upgrade: await probeUpgrade(),
       storage: await probeStorage(),
       metaNamespace: await probeMetaNamespace(),
