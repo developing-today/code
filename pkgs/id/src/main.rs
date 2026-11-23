@@ -469,6 +469,8 @@ async fn main() -> Result<()> {
         Some(Command::Gallery(args)) => id::commands::cmd_gallery(args),
         #[cfg(feature = "sandbox")]
         Some(Command::MatchAudit(command)) => id::commands::cmd_match_audit(command),
+        #[cfg(not(feature = "sandbox"))]
+        Some(Command::MatchAudit(_)) => anyhow::bail!("this build has no sandbox support"),
         Some(Command::Walk(command)) => id::commands::cmd_walk(command).await,
         #[cfg(feature = "world")]
         Some(Command::World(world_cmd)) => id::commands::cmd_world(*world_cmd).await,

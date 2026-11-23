@@ -1490,6 +1490,26 @@ fn test_cli_rejects_serve_replace_defaults() {
 }
 
 #[test]
+fn test_cli_rejects_top_level_ls() {
+    // CLI-1 (#13363): top-level `list` has no `ls` alias in the clap
+    // parser; `ls` exists only in the REPL and on `tag list`.
+    assert!(Cli::try_parse_from(["id", "ls"]).is_err());
+}
+
+#[test]
+fn test_cli_parses_match_audit() {
+    // CLI-10 (#13363): `match-audit` parses in every build, like
+    // `world`; a build without the `sandbox` feature rejects it at
+    // dispatch time instead of at parse time.
+    let cli = Cli::try_parse_from(["id", "match-audit", "verify", "log.bin"])
+        .expect("match-audit verify should parse");
+    assert!(matches!(
+        cli.command,
+        Some(Command::MatchAudit(MatchAuditCommand::Verify { .. }))
+    ));
+}
+
+#[test]
 fn test_cli_parse_serve_all_new_flags() {
     let cli = Cli::parse_from([
         "id",
