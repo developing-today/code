@@ -358,8 +358,17 @@
   // should - the plan-wall build deployed AND the #2256
   // near-plus-erroring wall working. Until then the door stays
   // dark rather than eating attempts.
+  // 2026-11-23 (Drew, free-wiring order - code#13677): "_commandcode"
+  // LEAVES the list below. Its five free models join through the new
+  // commandcode-free-plan (see model_routes below), seated in scout's
+  // and background's free clusters; its paid DeepSeek legs at #low in
+  // the per-model pools reactivate with the flip, exactly as the
+  // switchboard doctrine provides. No credential step: the native
+  // provider reads ~/.commandcode/auth.json in place and a
+  // credential-store row (integrationID commandcode) already exists.
+  // The 2026-11-16 interim restore condition above is superseded by
+  // this direct order.
   "disabled_providers": [
-    "_commandcode",
     "google",
     "google-vertex",
     "cloudflare-ai-gateway",
@@ -1325,7 +1334,7 @@
 
       }
     },
-    // OFF via disabled_providers (PROVIDER SWITCHBOARD, top of file). Definition kept complete so the flip is the only step. (Its configured :free models were retired 2026-10-22; refresh the model list when re-enabling.)
+    // ENABLED and routed (2026-11-23 correction, code#13677): an older note here claimed this door was OFF via disabled_providers -- stale since the 2026-11-15 free-provider pass. openrouter is NOT in disabled_providers, its credential-store row is active, and openrouter-free-plan below seats its :free shelf in scout and background. The block below is the live definition.
     "openrouter": {
       "npm": "@ai-sdk/openai-compatible",
       "name": "OpenRouter (Free Tier)",
@@ -1359,6 +1368,162 @@
           "limit": {
             "context": 256000,
             "output": 64000
+          }
+        }
+      }
+    },
+    // SambaNova Cloud (2026-11-23, Drew: free-wiring order,
+    // code#13677): direct door on SambaNova's own OpenAI-compatible
+    // endpoint (baseURL per SambaNova's docs:
+    // https://api.sambanova.ai/v1). Key is ours: Bitwarden
+    // `sambanova.api-key`, bound via a credential-store row
+    // (integrationID sambanova) created 2026-11-23. Explicit model
+    // list = this account's live GET /v1/models catalogue read
+    // 2026-11-23 (four models; the wider free shelf in SambaNova's
+    // docs -- Meta-Llama-3.3-70B-Instruct, DeepSeek-V3.1,
+    // DeepSeek-V3.2 -- is NOT in this account's live list). Free
+    // tier per SambaNova's rate-limit docs: 20 RPM / 20 requests
+    // per day / 200K tokens per day PER MODEL. PROBE RESULT
+    // 2026-11-23: every live model answered 402
+    // PAYMENT_METHOD_REQUIRED ("A payment method is required",
+    // balance 0) -- in practice this account is not on the free
+    // tier, and adding a payment method is Drew's call, never a
+    // config step (NEVER FUNDS). DEFINED BUT SEATED NOWHERE until
+    // a probe answers 200; seat the answering models in a
+    // sambanova-free-plan at that point. No limit blocks: the live
+    // catalogue publishes no context/output limits for these ids.
+    "sambanova": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "SambaNova Cloud (Free Tier - probe-blocked, see note)",
+      "options": {
+        "baseURL": "https://api.sambanova.ai/v1"
+      },
+      "models": {
+        "gpt-oss-120b": {
+          "name": "gpt-oss-120b (SambaNova)"
+        },
+        "gemma-4-31B-it": {
+          "name": "Gemma 4 31B IT (SambaNova)"
+        },
+        "GLM-5.3": {
+          "name": "GLM 5.3 (SambaNova)"
+        },
+        "MiniMax-M3.1-Flash": {
+          "name": "MiniMax M3.1 Flash (SambaNova)"
+        }
+      }
+    },
+    // Kilo Gateway (2026-11-23, Drew: free-wiring order,
+    // code#13677): KEYLESS door -- Kilo's gateway serves its :free
+    // shelf without authentication (verified live 2026-11-23: GET
+    // /models and a chat completion on kilo-auto/free both answered
+    // 200 with no Authorization header; the completion cost $0).
+    // Unauthenticated rate limit: 200 requests/hour per IP. No
+    // credential-store row exists or is needed; the apiKey below is
+    // a clearly-marked placeholder the gateway ignores, present
+    // only because the SDK shape expects one. PROMPT-LOGGING
+    // CAVEAT (Kilo's own model description): prompts may be logged
+    // by the upstream provider and used to improve their services
+    // -- non-sensitive volume only, never secrets or private code.
+    // Explicit model list = the :free chat shelf of the live GET
+    // /models catalogue read 2026-11-23 (470 models total; limits
+    // below are the catalogue's own context/max-output values).
+    // Only kilo-auto/free is seated (kilo-free-plan below): the
+    // named :free legs duplicate shelves already seated elsewhere
+    // (OpenRouter / NVIDIA) and stay unseated until wanted.
+    "kilo": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "Kilo Gateway (Free, Keyless)",
+      "options": {
+        "baseURL": "https://ai-gateway.kilo.ai/api/v1",
+        "apiKey": "kilo-free-keyless-placeholder"
+      },
+      "models": {
+        "kilo-auto/free": {
+          "name": "Auto Free (Kilo)",
+          "limit": {
+            "context": 256000,
+            "output": 32768
+          }
+        },
+        "inclusionai/ling-3.2-flash:free": {
+          "name": "Ling 3.2 Flash (Kilo Free)",
+          "limit": {
+            "context": 1048576,
+            "output": 262144
+          }
+        },
+        "baidu/ernie-5.5-flash-preview:free": {
+          "name": "ERNIE 5.5 Flash Preview (Kilo Free)",
+          "limit": {
+            "context": 1024000,
+            "output": 921600
+          }
+        },
+        "liquid/lfm-3-1.7b:free": {
+          "name": "LFM 3 1.7B (Kilo Free)",
+          "limit": {
+            "context": 262144,
+            "output": 8192
+          }
+        },
+        "particle-ai/particle-1:free": {
+          "name": "Particle 1 (Kilo Free)",
+          "limit": {
+            "context": 1048576,
+            "output": 131072
+          }
+        },
+        "recursive/flint-v1.0:free": {
+          "name": "Flint v1.0 (Kilo Free)",
+          "limit": {
+            "context": 262144,
+            "output": 235929
+          }
+        },
+        "nvidia/nemotron-3.5-super-vl:free": {
+          "name": "Nemotron 3.5 Super VL (Kilo Free)",
+          "limit": {
+            "context": 1000000,
+            "output": 131072
+          }
+        },
+        "dots-studio/dots-3-note-preview:free": {
+          "name": "Dots 3 Note Preview (Kilo Free)",
+          "limit": {
+            "context": 512000,
+            "output": 460800
+          }
+        },
+        "nvidia/nemotron-3.5-lightning:free": {
+          "name": "Nemotron 3.5 Lightning (Kilo Free)",
+          "limit": {
+            "context": 1000000,
+            "output": 65536
+          }
+        },
+        "nvidia/nemotron-3-ultra-550b-a55b:free": {
+          "name": "Nemotron 3 Ultra 550B (Kilo Free)",
+          "limit": {
+            "context": 1000000,
+            "output": 65536
+          }
+        },
+        "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free": {
+          "name": "Nemotron 3 Nano Omni 30B (Kilo Free)",
+          "limit": {
+            "context": 256000,
+            "output": 65536
+          }
+        },
+        "openrouter/free": {
+          "name": "OpenRouter Free Router (Kilo)"
+        },
+        "reflection/beam-free": {
+          "name": "Beam 1.0 Free (Kilo)",
+          "limit": {
+            "context": 1048576,
+            "output": 131072
           }
         }
       }
@@ -3713,6 +3878,63 @@
           "openrouter/cohere/north-mini-code:free": 3
         }
       },
+      "commandcode-free-plan": {
+        "name": "Command Code Free - plan providers",
+        // NEW 2026-11-23 (Drew, free-wiring order - code#13677): the
+        // _commandcode door's five free models as their own pool, in
+        // the pass that removes _commandcode from disabled_providers
+        // above. Laguna S 2.1 Free, the two Ling Flash :free legs and
+        // Glyph Cluster :free are plain free legs. Beam :free is
+        // seated on this same direct order even though its free tier
+        // was recorded ended 2026-11-13 (403 on every call that day):
+        // the fork benches a permanently-refused leg reactively
+        // (opencode#2570), so a still-dead tier costs a bench, not a
+        // burn. Plain legs, no variant remaps -- the free door's
+        // variant surface is unverified (same rationale as
+        // flash-free-plan). Seated free-first in scout's free cluster
+        // and in background's free cluster per Drew's 2026-11-23
+        // free-first rule. Known follow-up (wall scoping, Drew
+        // 2026-11-23): a provider-wide wall on _commandcode would
+        // bench these free legs together with the paid ones; the
+        // free/paid alias split is the wall lane's design
+        // (opencode#2256), not this pass.
+        "targets": [
+          "_commandcode/poolside/laguna-s-2.1-free",
+          "_commandcode/inclusionai/ling-3.0-flash-sante:free",
+          "_commandcode/inclusionai/ling-3.1-flash:free",
+          "_commandcode/reflection/beam:free",
+          "_commandcode/stealth/glyph-cluster:free"
+        ],
+        "selection": "round-robin",
+        "autonomy": "rules",
+        "weights": {
+          "_commandcode/poolside/laguna-s-2.1-free": 3,
+          "_commandcode/inclusionai/ling-3.0-flash-sante:free": 3,
+          "_commandcode/inclusionai/ling-3.1-flash:free": 3,
+          "_commandcode/reflection/beam:free": 3,
+          "_commandcode/stealth/glyph-cluster:free": 3
+        }
+      },
+      "kilo-free-plan": {
+        "name": "Kilo Free (Gateway, Keyless) - plan providers",
+        // NEW 2026-11-23 (Drew, free-wiring order - code#13677):
+        // Kilo Gateway's keyless auto-router over its :free shelf
+        // (probe-verified live 2026-11-23: HTTP 200, $0, no auth --
+        // the probe rotated to nvidia/nemotron-3.5-super-vl:free).
+        // 200 requests/hour per IP unauthenticated; Kilo warns
+        // prompts may be logged upstream, so non-sensitive volume
+        // only. The router's backend rotates, so no capability score
+        // can attach: it sits in scout's free cluster behind the
+        // measured free plans, and in background's free cluster.
+        "targets": [
+          "kilo/kilo-auto/free"
+        ],
+        "selection": "round-robin",
+        "autonomy": "rules",
+        "weights": {
+          "kilo/kilo-auto/free": 3
+        }
+      },
       "inkling-plan": {
         "name": "Inkling 2 Small Free (Zen) - plan providers",
         // NEW 2026-11-14 (Drew, Zen pass): Thinking Machines Lab's
@@ -4162,12 +4384,21 @@
         // (aggregate dealt opencode.developing-today-0/inkling-2-small-
         // free, success; direct pin opencode.drewrypope/big-pickle,
         // success).
+        // 2026-11-23 (Drew, free-wiring order - code#13677): two more
+        // free plans join this tier's free cluster behind
+        // openrouter-free-plan and ahead of the paid legs --
+        // commandcode-free-plan (the _commandcode door's five free
+        // models, on the flip that re-enables the door) and
+        // kilo-free-plan (Kilo's keyless auto-router; unmeasured
+        // rotating backend, so it trails the measured free plans).
         "targets": [
           "opencode-route/beam-plan",
           "opencode-route/longcat-plan",
           "opencode-route/iceman-plan",
           "opencode-route/inkling-plan",
           "opencode-route/openrouter-free-plan",
+          "opencode-route/commandcode-free-plan",
+          "opencode-route/kilo-free-plan",
           "opencode-route/deepseek-flash-plan#low",
           "opencode-route/haiku-plan#low",
           "opencode-route/background",
@@ -4250,6 +4481,12 @@
         // an unbenchmarked vendor-claim model, so it takes a
         // toss-up background seat ahead of the ~200k legs, not a
         // scout front seat, until its history proves equivalence.
+        // 2026-11-23 (Drew, free-wiring order - code#13677):
+        // commandcode-free-plan (the _commandcode door's five free
+        // models) and kilo-free-plan (Kilo's keyless auto-router)
+        // join this cluster at its end, ahead of the workhorse
+        // escalation -- patient bulk work is exactly the
+        // non-sensitive volume Kilo's prompt-logging caveat allows.
         // Drew (2026-11-14, later): the whole Zen shelf sits in this
         // last-resort position deliberately — limited context on the
         // Zen free models means they are never a first-choice leg.
@@ -4292,6 +4529,8 @@
           // plan stays defined below for tiny-prompt seats only.
           "opencode-route/nvidia-free-plan",
           "opencode-route/openrouter-free-plan",
+          "opencode-route/commandcode-free-plan",
+          "opencode-route/kilo-free-plan",
           "opencode-route/workhorse"
         ],
         "selection": "ordered",
