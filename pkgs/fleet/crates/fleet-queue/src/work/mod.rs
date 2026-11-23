@@ -6,6 +6,7 @@
 
 pub mod authority;
 pub mod completion;
+pub mod contracts;
 pub mod degraded;
 pub mod lifecycle;
 pub mod operations;
