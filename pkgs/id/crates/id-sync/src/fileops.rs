@@ -38,6 +38,10 @@
 //!   [`FileOps::rename`] (the source name ceases to exist), and are never copied
 //!   by [`FileOps::copy`], which sets only the `archive.replace` it creates
 //!   itself for a file it replaces.
+//! - **Archives are dropped only with their owner.** [`FileOps::delete`]
+//!   validates its name like every other entry point, so naming an archive
+//!   tag itself is refused with [`FileOpError::ReservedArchiveName`]; there
+//!   is no per-archive delete.
 
 use std::collections::BTreeSet;
 use std::time::{Duration, Instant};
@@ -900,6 +904,15 @@ mod archive_tag_shape_tests {
         assert_eq!(archive_tag_timestamp("x.archive.+5"), None);
         assert_eq!(archive_tag_timestamp("x.archive.notes"), None);
     }
+
+    #[test]
+    fn archive_tag_timestamp_padded_suffix_is_archive_shaped() {
+        // The #4767 probe set includes padded components: the shared
+        // rule parses the suffix as a u64, so `007` is the timestamp 7
+        // for the writer and every reader alike.
+        assert_eq!(archive_tag_timestamp("x.archive.007"), Some(7));
+        assert_eq!(archive_tag_timestamp("x.archive.000"), Some(0));
+    }
 }
 
 #[cfg(test)]
@@ -1097,6 +1110,121 @@ mod archive_owner_read_tests {
         assert!(env.store.tags().get(archive).await.unwrap().is_none());
     }
 
+    /// #4767 probe (b): a file whose name contains `.archive.` in a
+    /// non-numeric position is an ordinary file. Deleting its apparent
+    /// base spares it and its archives; deleting it collects exactly
+    /// its own archives.
+    #[tokio::test]
+    async fn delete_of_base_spares_dot_archive_notes_and_its_archives() {
+        let env = env_with_archive_reference().await;
+        env.store
+            .tags()
+            .set("a.archive.notes", Hash::from([6; 32]))
+            .await
+            .unwrap();
+        env.store
+            .tags()
+            .set("a.archive.notes.archive.1700000000", Hash::from([7; 32]))
+            .await
+            .unwrap();
+
+        let outcome = FileOps::new(&env.store, &env.tags)
+            .delete("a")
+            .await
+            .unwrap();
+        assert_eq!(outcome.archives_removed, 0);
+        assert!(
+            env.store
+                .tags()
+                .get("a.archive.notes")
+                .await
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            env.store
+                .tags()
+                .get("a.archive.notes.archive.1700000000")
+                .await
+                .unwrap()
+                .is_some()
+        );
+
+        let outcome = FileOps::new(&env.store, &env.tags)
+            .delete("a.archive.notes")
+            .await
+            .unwrap();
+        assert_eq!(outcome.archives_removed, 1);
+        assert!(
+            env.store
+                .tags()
+                .get("a.archive.notes")
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            env.store
+                .tags()
+                .get("a.archive.notes.archive.1700000000")
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    /// #4767 probe (d): a legacy user file with an archive-shaped name
+    /// (created before the writer reserved the namespace) can be
+    /// renamed to a legal name -- rename validates only its target --
+    /// so its owner can move it out of the reserved namespace without
+    /// losing it.
+    #[tokio::test]
+    async fn rename_moves_legacy_archive_shaped_file_to_a_legal_name() {
+        let env = env_with_archive_reference().await;
+        env.store
+            .tags()
+            .set("x.archive.123", Hash::from([4; 32]))
+            .await
+            .unwrap();
+
+        let outcome = FileOps::new(&env.store, &env.tags)
+            .rename("x.archive.123", "x-recovered", false)
+            .await
+            .unwrap();
+
+        assert_eq!(outcome.hash, Hash::from([4; 32]));
+        assert!(
+            env.store
+                .tags()
+                .get("x.archive.123")
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            env.store
+                .tags()
+                .get("x-recovered")
+                .await
+                .unwrap()
+                .unwrap()
+                .hash,
+            Hash::from([4; 32])
+        );
+    }
+
+    /// #4767 record (e): `FileOps::delete` refuses an archive-shaped
+    /// name outright. Dropping a single archive by naming it is not a
+    /// FileOps operation; archives are removed through their owner.
+    #[tokio::test]
+    async fn delete_refuses_archive_shaped_name() {
+        let env = env_with_archive_reference().await;
+        let result = FileOps::new(&env.store, &env.tags)
+            .delete("a.archive.123")
+            .await;
+        assert!(matches!(result, Err(FileOpError::ReservedArchiveName(_))));
+    }
+
     /// Regression test for #13291: an all-digit suffix that overflows u64
     /// is an ordinary user file under the shared `archive_tag_timestamp`
     /// rule, so `delete` of the base name must not collect it.
@@ -1142,6 +1270,7 @@ mod archive_name_tests {
             "report.archive.0",
             "report.archive.1700000000",
             "report.archive.18446744073709551615",
+            "report.archive.007",
         ] {
             assert!(matches!(
                 FileOps::validate_name(name),
