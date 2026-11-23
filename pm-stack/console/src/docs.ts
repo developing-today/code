@@ -116,6 +116,27 @@ export class Docs {
     await Promise.all(names.map((n) => this.refresh(n)));
   }
 
+  /** Record a section read by another trusted source, such as the edge
+   * reading GitHub or the queue store while the laptop is away. */
+  record(name: string, data: unknown, at = this.now()): void {
+    const s = this.sections.get(name);
+    if (!s) return;
+    s.data = data;
+    s.at = at;
+    s.goodAt = at;
+    s.ok = true;
+    s.error = null;
+  }
+
+  /** Keep the last good value, but say that a fresh read failed. */
+  recordFailure(name: string, error: unknown): void {
+    const s = this.sections.get(name);
+    if (!s) return;
+    s.at = this.now();
+    s.ok = false;
+    s.error = (error as Error).message.slice(0, 300);
+  }
+
   private stale(s: Section): boolean {
     return this.now() - s.at > s.ttlMs;
   }
@@ -141,6 +162,13 @@ export class Docs {
   good(name: string): unknown {
     const s = this.sections.get(name);
     return s && s.goodAt > 0 ? s.data : null;
+  }
+
+  /** When that data was read from its source, or 0 if it never was. A
+   * read that failed since does not move it: the data is still the last
+   * good copy, and this is how old that copy is. */
+  goodAt(name: string): number {
+    return this.sections.get(name)?.goodAt ?? 0;
   }
 
   /** Sections brought up to date for a caller that asks rarely (a

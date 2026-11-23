@@ -11,7 +11,8 @@
 //
 //   add     names the path with a per-run unique id (UTC timestamp plus
 //           random suffix), refuses loudly if the path already exists,
-//           fetches the base, runs `git worktree add` without masking its
+//           fetches the base (which must name a remote, such as
+//           origin/main, unless --no-fetch is given), runs `git worktree add` without masking its
 //           exit status, and records an owner token in the worktree's own
 //           git dir (so the tree stays clean).
 //   remove  removes a scratch worktree only when the caller presents the
@@ -93,8 +94,18 @@ export const add = ({ repo, prefix, root, base = 'origin/main', fetch = true, no
     throw new ScratchError(3, `refusing to adopt existing scratch path ${target}`);
   }
   if (fetch) {
+    // Only a remote-qualified base can be fetched. A bare branch name such
+    // as `main` would otherwise skip the fetch and branch from a stale local
+    // ref while the output still looks fresh (#12172), so it is refused
+    // unless the caller opts out of fetching with --no-fetch.
     const slash = base.indexOf('/');
-    if (slash > 0) git(['fetch', '-q', base.slice(0, slash), base.slice(slash + 1)], repo);
+    if (slash <= 0) {
+      throw new ScratchError(
+        2,
+        `--base ${base} has no remote prefix, so it cannot be fetched; pass origin/${base.replace(/^\/+/, '')} (or --no-fetch to use the local ref)`,
+      );
+    }
+    git(['fetch', '-q', base.slice(0, slash), base.slice(slash + 1)], repo);
   }
   const baseSha = git(['rev-parse', '--verify', `${base}^{commit}`], repo);
   fs.mkdirSync(scratchRoot, { recursive: true });

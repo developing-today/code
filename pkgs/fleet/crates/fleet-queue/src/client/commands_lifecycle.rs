@@ -259,6 +259,7 @@ pub(super) fn cmd_claim(rest: &[String]) -> i32 {
             &no_claim_diagnostic(&resp)
                 .unwrap_or_else(|| "repo-queue: no claimable task".to_string()),
         );
+        attach_mode_line(&mut out, "claim", legs_served(true, true));
         print_json(&out);
         return code;
     }
@@ -288,13 +289,15 @@ pub(super) fn cmd_claim(rest: &[String]) -> i32 {
                     "repo-queue: WARNING: fallback guard block failed;                      the task stays claimed under its lease",
                 );
             }
-            print_json(&json!({
+            let mut held_out = json!({
                 "task": Value::Null,
                 "guard": "fallback_held",
                 "held_by": holder,
                 "repo": repo,
                 "issue": issue,
-            }));
+            });
+            attach_mode_line(&mut held_out, "claim", legs_served(true, true));
+            print_json(&held_out);
             NO_CLAIM_EXIT
         }
         GuardOutcome::Unchecked(e) => {
@@ -306,10 +309,12 @@ pub(super) fn cmd_claim(rest: &[String]) -> i32 {
                     )),
                 );
             }
+            attach_mode_line(&mut out, "claim", legs_served(true, false));
             print_json(&out);
             code
         }
         GuardOutcome::Serve => {
+            attach_mode_line(&mut out, "claim", legs_served(true, true));
             print_json(&out);
             code
         }
@@ -397,6 +402,9 @@ pub(super) fn claim_batch_output(resp: &Value, worker: &str, requested: i64) -> 
         .unwrap_or_default();
     let mut tasks: Vec<Value> = Vec::new();
     let mut held: Vec<Value> = Vec::new();
+    // #8581: the batch's gh-read leg is its worst guard outcome —
+    // one unchecked guard read degrades the batch's mode line.
+    let mut github_read = true;
     for row in rows {
         // Payload defense in depth, as in claim_output (#5444): a
         // well-formed claim never carries a null or {} payload.
@@ -437,6 +445,7 @@ pub(super) fn claim_batch_output(resp: &Value, worker: &str, requested: i64) -> 
                 }));
             }
             GuardOutcome::Unchecked(e) => {
+                github_read = false;
                 let mut row = row;
                 if let Some(o) = row.as_object_mut() {
                     o.insert(
@@ -473,6 +482,7 @@ pub(super) fn claim_batch_output(resp: &Value, worker: &str, requested: i64) -> 
             }
         }
     }
+    attach_mode_line(&mut out, "claim", legs_served(true, github_read));
     print_json(&out);
     if claimed == 0 {
         eprint(
@@ -778,7 +788,9 @@ pub(super) fn cmd_heartbeat(rest: &[String]) -> i32 {
         ),
         "/heartbeat",
     );
-    print_json(&require_row(&resp, "heartbeat_task"));
+    let mut row = require_row(&resp, "heartbeat_task");
+    attach_mode_line(&mut row, "heartbeat", legs_served(true, true));
+    print_json(&row);
     0
 }
 
@@ -806,7 +818,9 @@ pub(super) fn cmd_checkpoint(rest: &[String]) -> i32 {
         ),
         "/checkpoint",
     );
-    print_json(&require_row(&resp, "checkpoint_task"));
+    let mut row = require_row(&resp, "checkpoint_task");
+    attach_mode_line(&mut row, "checkpoint", legs_served(true, true));
+    print_json(&row);
     0
 }
 

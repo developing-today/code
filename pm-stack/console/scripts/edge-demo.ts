@@ -91,6 +91,7 @@ const link = new EdgeLink({
   keys: memoryStore(),
   done: memoryStore(),
   docs: demoDocs,
+  phones: demoDeps.phones!.devices,
   config: async () => ({
     owners: [OWNER],
     certNames: [],
@@ -100,6 +101,10 @@ const link = new EdgeLink({
     androidPackage: demoDeps.cfg.androidPackage,
     androidFingerprints: [],
     androidApp: false,
+    queueDbUrl: demoDeps.cfg.queueDbUrl,
+    queueTokenName: demoDeps.cfg.queueTokenName,
+    promptLabel: demoDeps.cfg.promptLabel,
+    needsRepos: demoDeps.cfg.needsRepos,
   }),
   run: heldRunner(demoDeps),
   fetchImpl: (async (url: string, init: RequestInit) => {

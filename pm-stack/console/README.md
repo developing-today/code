@@ -49,6 +49,14 @@ subscribes under More, Notifications, and chooses what reaches it: a
 reply to something asked, something new that needs the owner, new
 questions, a failed unit. The Android app shows them as its own.
 
+A unit that runs on a timer (a service with a timer of the same name,
+such as `pm-git-sync`) is treated differently from one that stays up.
+Between runs it shows as failed whenever its last run failed, so one bad
+run that the next run mends says nothing; five minutes of failing run
+after run is reported once ("A unit keeps failing", with what the unit
+is for), and so is its mending. That is what tells the owner when the
+laptop's checkout has stopped following `main`.
+
 ### Phones
 
 The Android app's home-screen widget reads a short summary (three counts
@@ -162,6 +170,10 @@ bun run scripts/demo.ts          # the app with made-up state, on this host alon
 bun run scripts/edge-demo.ts     # the same behind the edge
 ```
 
+The app's own switches for what this script sets up are under More:
+Sign-in (the Google client) and Laptop away (whether Cloudflare acts
+by itself while the laptop cannot be reached; see edge/README.md).
+
 The owner's address is given once with `--owner` and remembered in the
 console's environment file; it is not written in the script.
 
@@ -200,7 +212,9 @@ never falls behind the site. Around that it uses what only an installed
 app has: a home-screen widget, dictation from a shortcut or a
 quick-settings tile, text shared or selected in any app, long-press
 shortcuts, and notifications shown as its own. The `pm-console-android`
-workflow builds it and the host signs it. Once the signed file is on the
-host, More, Phones offers it to the signed-in owner at
-`/console/pm-console.apk`, so the phone gets the app from the site it
-opens. See its README.
+workflow builds it on every change to it. Once the owner has given
+GitHub the signing key, the workflow signs and releases each build by
+itself, and More, Phones offers the newest release to the signed-in
+owner at `/console/pm-console.apk`, so the phone gets the app from the
+site it opens. Until then the host signs, and its build is what is
+offered. See its README.

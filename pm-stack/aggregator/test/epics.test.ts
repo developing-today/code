@@ -1,31 +1,17 @@
 import { describe, expect, test } from "bun:test";
-import type {
-  GhItem,
-  ProjectPoolItem,
-  Provenance,
-  RefKey,
-} from "../src/model.ts";
+import type { GhItem, ProjectPoolItem, Provenance, RefKey } from "../src/model.ts";
 import {
   buildEpicRollups,
   deriveEpicClosureGateFacts,
   evaluateEpicClosureGate,
   type EpicClosureGateBlocker,
 } from "../src/epics.ts";
-import {
-  renderItem,
-  renderProgramProject,
-  renderProjects,
-} from "../src/render.ts";
-import {
-  buildProjectDetail,
-  projectConfigById,
-} from "../src/project-config.ts";
+import { renderItem, renderProgramProject, renderProjects } from "../src/render.ts";
+import { buildProjectDetail, projectConfigById } from "../src/project-config.ts";
 
 const R = (n: number): RefKey => `developing-today/code#${n}`;
 
-function item(
-  partial: Partial<ProjectPoolItem> & { number: number },
-): ProjectPoolItem {
+function item(partial: Partial<ProjectPoolItem> & { number: number }): ProjectPoolItem {
   return {
     id: `PVTI_${partial.number}`,
     url: "https://github.com/orgs/developing-today/projects/4?pane=issue&itemId=1",
@@ -112,26 +98,12 @@ describe("epic rollups", () => {
     expect(projectsHtml).toContain("0 resolved</strong> · completion unknown");
     expect(projectsHtml).toContain("Status mix: none");
     const nonEpicStart = projectsHtml.indexOf("<strong>item 8</strong>");
-    const nonEpicCard = projectsHtml.slice(
-      nonEpicStart,
-      projectsHtml.indexOf("</div>", nonEpicStart),
-    );
+    const nonEpicCard = projectsHtml.slice(nonEpicStart, projectsHtml.indexOf("</div>", nonEpicStart));
     expect(nonEpicCard).not.toContain("Epic rollup");
 
     const config = projectConfigById("pm-dashboard")!;
-    const detail = buildProjectDetail(
-      config,
-      new Map<RefKey, GhItem>(),
-      pool,
-      [],
-    );
-    const programHtml = renderProgramProject(
-      detail,
-      new Map(),
-      PROV,
-      undefined,
-      pool,
-    );
+    const detail = buildProjectDetail(config, new Map<RefKey, GhItem>(), pool, []);
+    const programHtml = renderProgramProject(detail, new Map(), PROV, undefined, pool);
     expect(programHtml).toContain("Epic one");
     expect(programHtml).toContain("2/4 done");
     expect(programHtml).toContain("Blocked: 1");
@@ -143,9 +115,7 @@ describe("epic rollups", () => {
       sessions: [],
       epicRollup: buildEpicRollups(pool).get(R(1)),
     });
-    expect(itemHtml.indexOf("Epic rollup")).toBeLessThan(
-      itemHtml.indexOf("Linked issues / PRs"),
-    );
+    expect(itemHtml.indexOf("Epic rollup")).toBeLessThan(itemHtml.indexOf("Linked issues / PRs"));
     expect(itemHtml).toContain("2/4 done");
   });
 });
@@ -160,15 +130,13 @@ describe("epic closure gate", () => {
         factsComplete: (mask & 1) !== 0,
         unfinishedDesignRefs: (mask & 2) !== 0 ? [refs[0]] : [],
         qualifyingOpenDescendantRefs: (mask & 4) !== 0 ? [refs[1]] : [],
-        unfinishedChildrenWithoutReparentDestinationRefs:
-          (mask & 8) !== 0 ? [refs[2]] : [],
+        unfinishedChildrenWithoutReparentDestinationRefs: (mask & 8) !== 0 ? [refs[2]] : [],
       };
 
       // Independent policy model: incompleteness and each unmet closure
       // condition independently contribute one blocker, in policy order.
       const expectedBlockers: EpicClosureGateBlocker[] = [];
-      if (!facts.factsComplete)
-        expectedBlockers.push({ condition: "source_incomplete", refs: [] });
+      if (!facts.factsComplete) expectedBlockers.push({ condition: "source_incomplete", refs: [] });
       if (facts.unfinishedDesignRefs.length > 0) {
         expectedBlockers.push({
           condition: "designs_incomplete",
@@ -361,14 +329,7 @@ describe("epic closure gate", () => {
       factsComplete: true,
       unfinishedDesignRefs: [R(11)],
       qualifyingOpenDescendantRefs: [R(13), R(14), R(15)],
-      unfinishedChildrenWithoutReparentDestinationRefs: [
-        R(11),
-        R(12),
-        R(13),
-        R(14),
-        R(15),
-        R(16),
-      ],
+      unfinishedChildrenWithoutReparentDestinationRefs: [R(11), R(12), R(13), R(14), R(15), R(16)],
     });
   });
 });

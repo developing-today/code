@@ -4,6 +4,7 @@ import { storeStatement, decodeStoreRow, createTursoStoreClient } from "../src/t
 import {
   createTursoActionsRemote,
   createTursoActivityRemote,
+  createTursoCommentsRemote,
   createTursoDocumentRemote,
   createTursoSnapshotsRemote,
 } from "../src/remote-stores.ts";
@@ -52,7 +53,9 @@ test("activity arrays and document JSON round trip", async () => {
   expect(await doc.load("test")).toEqual({ version: 1, document: { quotes: "::jsonb now()", a: [1, true] } });
   const event = { eventId: "report:stable", type: "report.generated", ts: "2026-11-22T00:00:00.000Z" };
   expect(await doc.insertIfAbsent("c7-report:v1:generated:stable", 1, event)).toBe(true);
-  expect(await doc.insertIfAbsent("c7-report:v1:generated:stable", 1, { ...event, ts: "2026-11-22T00:01:00.000Z" })).toBe(false);
+  expect(
+    await doc.insertIfAbsent("c7-report:v1:generated:stable", 1, { ...event, ts: "2026-11-22T00:01:00.000Z" }),
+  ).toBe(false);
   expect(await doc.listPrefix("c7-report:v1:")).toEqual([
     { store: "c7-report:v1:generated:stable", version: 1, document: event },
   ]);
@@ -168,5 +171,31 @@ test("actions JSON and self references round trip with real FK constraints", asy
   expect(rows[0].payload).toEqual(base.payload);
   expect(rows[0].author).toEqual(base.author);
   expect(rows[1].supersedes).toBe("one");
+  db.close();
+});
+test("shared_comments round-trips through the dialect bridge (SQLite oracle)", async () => {
+  const db = new Database(":memory:");
+  db.exec(
+    `create table shared_comments(id text primary key, object_ref text, kind text, author text, author_verified integer, provenance text, linked_identity text, body text, created_at text, triage_state text, github_ref text, github_state text, github_url text, github_error text, github_failed_at text);`,
+  );
+  const remote = createTursoCommentsRemote(async () => localClient(db));
+  const c = {
+    id: "dc-bridge-1",
+    objectRef: "orch:item-9",
+    kind: "message",
+    author: { kind: "drew", id: "drew", label: "Drew" },
+    authorVerified: true,
+    provenance: "verified",
+    body: "now() public.shared_comments ::jsonb 'quoted'",
+    createdAt: "2026-11-18T00:00:00.000Z",
+    triageState: "new",
+  } as any;
+  await remote.saveAll([c]);
+  expect(await remote.loadAll()).toEqual([c]);
+  // A state transition rides the same row via the upsert.
+  await remote.saveAll([{ ...c, triageState: "triaged" }]);
+  const rows = await remote.loadAll();
+  expect(rows).toHaveLength(1);
+  expect(rows[0].triageState).toBe("triaged");
   db.close();
 });

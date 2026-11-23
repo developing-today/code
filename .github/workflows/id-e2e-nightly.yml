@@ -19,6 +19,27 @@
 # 1200s) before any build time, and a cold store cache pushes the total
 # well past it. Raised to 300 minutes so the nightly can finish and
 # report a real result; the schedule still bounds it to once a day.
+#
+# 2026-11-22 (#1372): a long job is not the same as a legible one. The
+# first 300-minute run (45026136879) sat in the single check step for
+# over an hour and a half with no per-check progress signal: the job
+# log visible via the API lagged ~25 minutes behind the runner (last
+# visible line 13:59:58Z in downloads at 14:19Z and 14:24Z, while the
+# job was in fact still building), so slow and dead are
+# indistinguishable from outside until the job timeout fires. The
+# check step therefore runs under a watchdog: a heartbeat line every
+# 5 minutes naming the current phase, all output tee'd to
+# flake-check.log and uploaded as an artifact even on cancellation,
+# and a step timeout (270) below the job timeout (300) so the
+# always() steps still run. The workflow_dispatch input `only_checks`
+# runs named checks individually under per-check budgets (GNU
+# timeout), so a targeted verification — or a hang — names the check
+# and fails that check instead of burning the whole night. Budgets
+# bound build + test: a check derivation's build is its test, and on
+# a cold store cache the shared workspace build alone takes ~1h on
+# this runner (run 45033002221: nixos-serve was still compiling the
+# `id` crate when a 1200s budget expired); the checks' own internal
+# timeouts bound the test phase once built.
 
 name: id e2e nightly
 
@@ -27,6 +48,12 @@ on:
     # 07:23 UTC ≈ 01:23–02:23 local — off the hour, away from other dailies.
     - cron: "23 7 * * *"
   workflow_dispatch:
+    inputs:
+      only_checks:
+        description: "Space-separated check names to build individually under per-check budgets (targeted verification); empty = full flake check"
+        required: false
+        default: ""
+        type: string
 
 permissions:
   contents: read
@@ -91,9 +118,83 @@ jobs:
       - name: Disk space after reclaim (before check)
         run: df -h
 
-      - name: Run full nix flake check
-        run: nix flake check ./pkgs/id/ -L --keep-going
+      # Watchdog + log capture (#1372, see header): heartbeat every
+      # 5 minutes naming the phase, output tee'd to flake-check.log
+      # (uploaded below even when the job is cancelled), step timeout
+      # 270 < job timeout 300 so the always() steps still run. With
+      # only_checks set, each named check runs on its own under a
+      # per-check GNU timeout budget and the step ends with a summary
+      # naming every failed check.
+      - name: Run nix flake check (watchdog, log capture)
+        timeout-minutes: 270
+        env:
+          ONLY_CHECKS: ${{ inputs.only_checks }}
+        run: |
+          set -uo pipefail
+          set +e
+          PHASE_FILE="$RUNNER_TEMP/nightly-phase"
+          echo "full flake check" > "$PHASE_FILE"
+          # setsid + process-group kill: a plain kill of the loop would
+          # orphan its current `sleep`, which inherits the step's stdout
+          # pipe and can hold the step open until the sleep expires.
+          setsid bash -c '
+            while true; do
+              sleep 300
+              echo "[nightly-watchdog] still running: phase=$(cat "$1" 2>/dev/null || echo unknown), watchdog elapsed ${SECONDS}s"
+            done
+          ' _ "$PHASE_FILE" &
+          WATCHDOG=$!
+          trap 'kill -TERM -"$WATCHDOG" 2>/dev/null || true' EXIT
+
+          budget_for() {
+            # Build + test bounds (see header): the test phase itself
+            # is bounded by each check's own internal timeouts.
+            case "$1" in
+              nixos-integration) echo 7200 ;;
+              nixos-playwright-e2e) echo 5400 ;;
+              nixos-e2e|nixos-serve) echo 5400 ;;
+              *) echo 5400 ;;
+            esac
+          }
+
+          if [ -n "${ONLY_CHECKS:-}" ]; then
+            FAILED=""
+            for CHECK in $ONLY_CHECKS; do
+              BUDGET=$(budget_for "$CHECK")
+              echo "targeted check $CHECK" > "$PHASE_FILE"
+              echo "[nightly] waiting on check '$CHECK' (budget ${BUDGET}s)"
+              timeout --signal=TERM --kill-after=30s "$BUDGET" \
+                nix build "./pkgs/id#checks.x86_64-linux.$CHECK" -L 2>&1 | tee -a flake-check.log
+              RC=${PIPESTATUS[0]}
+              if [ "$RC" -eq 124 ]; then
+                echo "[nightly] check '$CHECK' exceeded its ${BUDGET}s budget (rc=124)"
+                FAILED="$FAILED $CHECK"
+              elif [ "$RC" -ne 0 ]; then
+                echo "[nightly] check '$CHECK' failed (rc=$RC)"
+                FAILED="$FAILED $CHECK"
+              else
+                echo "[nightly] check '$CHECK' passed"
+              fi
+            done
+            echo "[nightly] targeted summary: failed checks:${FAILED:- none}"
+            [ -z "$FAILED" ]
+            exit $?
+          fi
+
+          nix flake check ./pkgs/id/ -L --keep-going 2>&1 | tee flake-check.log
+          exit "${PIPESTATUS[0]}"
 
       - name: Disk space after check
         if: always()
         run: df -h
+
+      # The tee'd check log as a downloadable artifact (#1372): it
+      # survives job cancellation/timeout, so the evidence for a stall
+      # or a named failure is attachable to the issue, not scrollback.
+      - name: Upload flake check log
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: nightly-flake-check-log
+          path: flake-check.log
+          if-no-files-found: ignore

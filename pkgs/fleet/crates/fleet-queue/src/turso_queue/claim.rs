@@ -8,8 +8,8 @@
 use super::*;
 
 pub(crate) fn verb_enqueue(t: &TursoBackend, req: &Value) -> Value {
-    let packet = req.get("packet").cloned().unwrap_or(Value::Null);
-    let (errors, warnings) = validate_packet(&packet);
+    let mut packet = req.get("packet").cloned().unwrap_or(Value::Null);
+    let (errors, mut warnings) = validate_packet(&packet);
     if !errors.is_empty() {
         return json!({
             "ok": false, "exit": 2,
@@ -33,6 +33,25 @@ pub(crate) fn verb_enqueue(t: &TursoBackend, req: &Value) -> Value {
                  (CLI: --shadow-intent) to enqueue there deliberately"
             ),
         );
+    }
+    // #12744: label carriage. No producer writes payload.labels, so
+    // the #7030 band selection in task_from_packet never fired on a
+    // live packet. Before the row is built, fill the payload's
+    // labels from the GitHub mirror in this same store when the
+    // packet identifies an issue and carries no labels array of its
+    // own (label_enrich.rs has the semantics). The mirror is a read
+    // model and never gates work: a failed lookup warns and the
+    // enqueue proceeds exactly as it did before this change.
+    let dedupe = packet
+        .get("dedupe_key")
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
+    if let Some(payload) = packet.get_mut("payload") {
+        if let Err(e) = enrich_payload_labels(t, payload, dedupe.as_deref()) {
+            warnings.push(format!(
+                "payload.labels: GitHub mirror enrichment skipped ({e})"
+            ));
+        }
     }
     let mut task = task_from_packet(&packet, &queue);
     // #8097 Rule 2: the optional coarse platform selector. The

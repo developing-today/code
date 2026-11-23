@@ -4,9 +4,12 @@
 // services through `systemctl --user`. Nothing here builds a shell
 // command line: each call is an argument vector, and text a person
 // typed travels on stdin or as a single argument.
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+//
+// The edge Worker imports this module and runs Ops with stand-ins for
+// `run` and `fetch`, so nothing this module needs at load time may come
+// from the filesystem: node:fs is imported lazily inside enqueue(), the
+// one method that touches the disk, and the expose script's path is
+// resolved inside expose().
 import type { Config } from "./config.ts";
 import { OpError } from "./errors.ts";
 
@@ -163,9 +166,6 @@ function id(value: unknown, name: string): number {
   if (!/^[1-9][0-9]{0,9}$/.test(s)) throw new OpError(400, `${name}: not a positive number`);
   return Number(s);
 }
-
-/** scripts/expose.py, beside this package's sources. */
-const EXPOSE = join(import.meta.dir, "..", "scripts", "expose.py");
 
 export class Ops {
   private queueToken: string | null = null;
@@ -398,6 +398,11 @@ export class Ops {
   /** Hand one packet to the queue. `fleet queue enqueue` reads a packet
    * file, not stdin, so the packet lives in a private file for the call. */
   async enqueue(packet: unknown): Promise<RunResult> {
+    // The filesystem is the laptop's only: this import is lazy so the
+    // edge Worker, which never calls this, can import this module.
+    const { mkdtempSync, rmSync, writeFileSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
     const dir = mkdtempSync(join(tmpdir(), "pm-console-"));
     const file = join(dir, "packet.json");
     try {
@@ -451,11 +456,13 @@ export class Ops {
 
   async messages(limit: unknown) {
     const n = limit === undefined || limit === null || limit === "" ? 30 : Math.min(id(limit, "limit"), 200);
-    return (
+    const log = (
       JSON.parse(await this.must([this.cfg.fleetBin, "bridge", "log", "--limit", String(n), "--order", "desc"])) as {
-        messages: unknown[];
-      }
-    ).messages;
+        messages?: unknown;
+      } | null
+    )?.messages;
+    // A log with nothing in it is an empty list, never no answer at all.
+    return Array.isArray(log) ? log : [];
   }
 
   /** Send a message or a command to agents, groups, or everyone. */
@@ -479,8 +486,12 @@ export class Ops {
   /** The script that keeps the public address as declared. It is the one
    * place that talks to the sign-in gate, so sign-in is read and changed
    * through it. */
-  private expose(args: string[], stdin?: string) {
-    return this.run(["python3", EXPOSE, ...args], { stdin, timeoutMs: 120_000 });
+  private async expose(args: string[], stdin?: string) {
+    // Resolved here, not at load: the edge imports this module and never
+    // calls this, and import.meta.dir is the laptop's.
+    const { join } = await import("node:path");
+    const script = join(import.meta.dir, "..", "scripts", "expose.py");
+    return this.run(["python3", script, ...args], { stdin, timeoutMs: 120_000 });
   }
 
   /** Which sign-in methods are on, and what Google has to be told to
@@ -530,6 +541,27 @@ export class Ops {
       );
     }
     return { google: true, changed: said.filter((line) => line.startsWith("changed: ")).map((line) => line.slice(9)) };
+  }
+
+  /** Let the edge act by itself while this host is away, or stop it.
+   * Turning it on gives the Worker the repository automation token and
+   * the queue store token, read from the secret store by the setup
+   * script and sent to Cloudflare; turning it off takes them away. It
+   * can only be done here, where the secret store is. */
+  async edgeDirect(on: unknown) {
+    if (typeof on !== "boolean") throw new OpError(400, "on: true or false");
+    const r = await this.expose(["--edge-direct", on ? "on" : "off"]);
+    const said = `${r.stdout}\n${r.stderr}`
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((line) => line !== "");
+    if (r.code !== 0) {
+      throw new OpError(
+        502,
+        `Cloudflare was not ${on ? "given" : "relieved of"} the tokens: ${(said.pop() ?? "the setup script failed").slice(0, 300)}`,
+      );
+    }
+    return { on, changed: said.filter((line) => line.startsWith("changed: ")).map((line) => line.slice(9)) };
   }
 
   // ---- services ----------------------------------------------------------

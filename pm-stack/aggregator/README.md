@@ -577,33 +577,33 @@ except the default Source itself: serving fixtures without an explicit
 a deployment that forgets `PM_AGG_SOURCE=live` fails at startup instead
 of silently showing canned data. `bun run dev` sets the switch for you.
 
-| Env var                    | Default                                                      | Purpose                                                                                                                                                                                                |
-| -------------------------- | ------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `PM_AGG_SOURCE`            | `fixtures` (dev-gated, see below)                            | `live` reads Kaneo/Grist/projector, falling back to fixtures per facet; explicit `fixtures` stays available for deliberate fixture work; unset/invalid without `PM_AGG_DEV=1` refuses to start (#1195) |
-| `PM_AGG_DEV`               | —                                                            | Set to `1` for local development: allows the implicit (unset or invalid `PM_AGG_SOURCE`) fixture default; never set in deployment — `install.sh` renders `PM_AGG_SOURCE=live` instead                  |
-| `PM_AGG_PORT`              | `4870`                                                       | HTTP port                                                                                                                                                                                              |
-| `PM_AGG_HOSTS`             | `127.0.0.1`                                                  | Comma-separated bind addresses (deployment: loopback + tailnet; no public route)                                                                                                                       |
-| `PM_AGG_FEED_FILE`         | `./fleet-feed.json`                                          | The fleet feed (quota + sandbox attention) written by the collector (below)                                                                                                                            |
-| `PM_AGG_SNAPSHOTS_DIR`     | `./snapshots`                                                | Usage snapshot store (hub §4): monthly `usage-YYYY-MM.jsonl` files; read by the hub, appended by the background feed-ingest tick, writer jobs + the one-shot backfill                                  |
-| `PM_AGG_QUOTA_VIEW`        | stewardship goal's `visibility/quota-view.md`                | Hub fallback source when the feed carries no `saas`/`payg` sections yet                                                                                                                                |
-| `PM_AGG_QUOTA_REGISTRY`    | repo-health goal's `provider-quota-registry.md`              | The hub's second dated-read source (billing incidents) for the same fallback                                                                                                                           |
-| `PM_AGG_OPENCHAMBER_STATE` | `~/.config/openchamber/managed-opencode/state.json`          | Laptop OpenCode server port + password source (laptop attention, live)                                                                                                                                 |
-| `KANEO_URL`                | `http://127.0.0.1:5173`                                      | Kaneo base URL (board reader)                                                                                                                                                                          |
-| `KANEO_ADMIN_EMAIL`        | —                                                            | Kaneo admin email (secret `kaneo.admin-password` pairs with it)                                                                                                                                        |
-| `KANEO_ADMIN_PASSWORD`     | —                                                            | Kaneo admin password (Bitwarden `kaneo.admin-password`)                                                                                                                                                |
-| `GRIST_URL`                | `http://127.0.0.1:8484`                                      | Grist base URL                                                                                                                                                                                         |
-| `GRIST_API_KEY`            | —                                                            | Grist API key (Bitwarden `grist.api-key`)                                                                                                                                                              |
-| `GRIST_ROADMAP_DOC`        | `czYHYKgG9SHcm9CPwiKEq1`                                     | The `Program roadmap` document id (Phase 2 seed)                                                                                                                                                       |
-| `PM_PROJECTOR_URL`         | `http://127.0.0.1:7801`                                      | Projector + link registry base URL (`/items`, `/comments`, `/links`); `off` disables it                                                                                                                |
-| `PM_PROJECTOR_API_TOKEN`   | —                                                            | Projector bearer token; the GitHub hot-list consumer uses it to acknowledge completed checkpoints (copy the same secret configured on the projector into the aggregator environment)                   |
-| `PM_AGG_COMMENTS_FILE`     | `./comments.json`                                            | Dashboard comment store (#906) — aggregator-local; created on first comment                                                                                                                            |
-| `PM_AGG_ACTIONS_FILE`      | `./actions.json`                                             | Dashboard action store (#1152/#1154/#1156) — aggregator-local; created on first action                                                                                                                 |
-| `PM_AGG_REGISTRY_FILE`     | `./registry.json`                                            | Durable session identity registry (#906) — merged records persist across restarts                                                                                                                      |
-| `PM_AGG_ACTIVITY_FILE`     | `~/.local/state/pm-aggregator/activity-ingestion.json`       | Activity-ingestion store (#3321) — per-source checkpoints, dedupe seen sets, source status, and gap records for watchdog/Kaneo/GitHub writers                                                          |
-| `PM_AGG_STORE_BACKEND`     | `file`                                                       | Backing store for the four #6815 stores: `file` (local JSON, dev/test/rollback) or `turso` (canonical in Turso). Any other value refuses to start; see "Store backend" below                           |
-| `PM_AGG_STORE_WRITER`      | `pm-aggregator.service`                                      | Writer identity recorded on remote rows (`agg_store_documents.writer`), so the single writer of a store is visible in the data                                                                         |
-| `BWS_BIN`                  | first of `/run/current-system/sw/bin/bws`, `~/tools/bin/bws` | Bitwarden Secrets Manager binary used to resolve the Turso store token by NAME only                                                                                                                    |
-| `BWS_ACCESS_TOKEN_FILE`    | `~/.config/bws/access-token`                                 | Machine-account access token file for `bws`; never logged, never rendered into the archive                                                                                                             |
+| Env var                    | Default                                                      | Purpose                                                                                                                                                                                                 |
+| -------------------------- | ------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `PM_AGG_SOURCE`            | `fixtures` (dev-gated, see below)                            | `live` reads Kaneo/Grist/projector, falling back to fixtures per facet; explicit `fixtures` stays available for deliberate fixture work; unset/invalid without `PM_AGG_DEV=1` refuses to start (#1195)  |
+| `PM_AGG_DEV`               | —                                                            | Set to `1` for local development: allows the implicit (unset or invalid `PM_AGG_SOURCE`) fixture default; never set in deployment — `install.sh` renders `PM_AGG_SOURCE=live` instead                   |
+| `PM_AGG_PORT`              | `4870`                                                       | HTTP port                                                                                                                                                                                               |
+| `PM_AGG_HOSTS`             | `127.0.0.1`                                                  | Comma-separated bind addresses (deployment: loopback + tailnet; no public route)                                                                                                                        |
+| `PM_AGG_FEED_FILE`         | `./fleet-feed.json`                                          | The fleet feed (quota + sandbox attention) written by the collector (below)                                                                                                                             |
+| `PM_AGG_SNAPSHOTS_DIR`     | `./snapshots`                                                | Usage snapshot store (hub §4): monthly `usage-YYYY-MM.jsonl` files; read by the hub, appended by the background feed-ingest tick, writer jobs + the one-shot backfill                                   |
+| `PM_AGG_QUOTA_VIEW`        | stewardship goal's `visibility/quota-view.md`                | Hub fallback source when the feed carries no `saas`/`payg` sections yet                                                                                                                                 |
+| `PM_AGG_QUOTA_REGISTRY`    | repo-health goal's `provider-quota-registry.md`              | The hub's second dated-read source (billing incidents) for the same fallback                                                                                                                            |
+| `PM_AGG_OPENCHAMBER_STATE` | `~/.config/openchamber/managed-opencode/state.json`          | Laptop OpenCode server port + password source (laptop attention, live)                                                                                                                                  |
+| `KANEO_URL`                | `http://127.0.0.1:5173`                                      | Kaneo base URL (board reader)                                                                                                                                                                           |
+| `KANEO_ADMIN_EMAIL`        | —                                                            | Kaneo admin email (secret `kaneo.admin-password` pairs with it)                                                                                                                                         |
+| `KANEO_ADMIN_PASSWORD`     | —                                                            | Kaneo admin password (Bitwarden `kaneo.admin-password`)                                                                                                                                                 |
+| `GRIST_URL`                | `http://127.0.0.1:8484`                                      | Grist base URL                                                                                                                                                                                          |
+| `GRIST_API_KEY`            | —                                                            | Grist API key (Bitwarden `grist.api-key`)                                                                                                                                                               |
+| `GRIST_ROADMAP_DOC`        | `czYHYKgG9SHcm9CPwiKEq1`                                     | The `Program roadmap` document id (Phase 2 seed)                                                                                                                                                        |
+| `PM_PROJECTOR_URL`         | `http://127.0.0.1:7801`                                      | Projector + link registry base URL (`/items`, `/comments`, `/links`); `off` disables it                                                                                                                 |
+| `PM_PROJECTOR_API_TOKEN`   | —                                                            | Projector bearer token; the GitHub hot-list consumer uses it to acknowledge completed checkpoints (copy the same secret configured on the projector into the aggregator environment)                    |
+| `PM_AGG_COMMENTS_FILE`     | `./comments.json`                                            | Dashboard comment store (#906) — aggregator-local; created on first comment                                                                                                                             |
+| `PM_AGG_ACTIONS_FILE`      | `./actions.json`                                             | Dashboard action store (#1152/#1154/#1156) — aggregator-local; created on first action                                                                                                                  |
+| `PM_AGG_REGISTRY_FILE`     | `./registry.json`                                            | Durable session identity registry (#906) — merged records persist across restarts                                                                                                                       |
+| `PM_AGG_ACTIVITY_FILE`     | `~/.local/state/pm-aggregator/activity-ingestion.json`       | Activity-ingestion store (#3321) — per-source checkpoints, dedupe seen sets, source status, and gap records for watchdog/Kaneo/GitHub writers                                                           |
+| `PM_AGG_STORE_BACKEND`     | `file`                                                       | Backing store for the #6815 stores plus dashboard comments (#1744): `file` (local JSON, dev/test/rollback) or `turso` (canonical in Turso). Any other value refuses to start; see "Store backend" below |
+| `PM_AGG_STORE_WRITER`      | `pm-aggregator.service`                                      | Writer identity recorded on remote rows (`agg_store_documents.writer`), so the single writer of a store is visible in the data                                                                          |
+| `BWS_BIN`                  | first of `/run/current-system/sw/bin/bws`, `~/tools/bin/bws` | Bitwarden Secrets Manager binary used to resolve the Turso store token by NAME only                                                                                                                     |
+| `BWS_ACCESS_TOKEN_FILE`    | `~/.config/bws/access-token`                                 | Machine-account access token file for `bws`; never logged, never rendered into the archive                                                                                                              |
 
 Secrets are read from the environment only and are never committed or
 printed. Names here reference Bitwarden entries (`kaneo.*`, `grist.*`).
@@ -653,7 +653,8 @@ projector never received and pre-hot-list history remain unsupported.
 ### Store backend: Turso (#6815)
 
 Four stores that used to live only as laptop-local JSON under the
-aggregator's state dir are canonical in Turso. The
+aggregator's state dir are canonical in Turso. Dashboard comments
+joined the same switch under #1744 (Move 1, step 2). The
 `PM_AGG_STORE_BACKEND` switch picks exactly one active backend:
 
 | Store              | `file` backend                                           | `turso` backend                                |
@@ -662,6 +663,7 @@ aggregator's state dir are canonical in Turso. The
 | Activity ingestion | `activity-ingestion.json` (`PM_AGG_ACTIVITY_FILE`)       | `agg_activity_ingestion` + `agg_activity_gaps` |
 | Usage snapshots    | `snapshots/usage-YYYY-MM.jsonl` (`PM_AGG_SNAPSHOTS_DIR`) | `agg_usage_snapshots`                          |
 | AA last-good       | `aa-last-good.json` (collector)                          | `agg_store_documents` key `aa-last-good`       |
+| Dashboard comments | `comments.json` (`PM_AGG_COMMENTS_FILE`)                 | `shared_comments` (contract `20261122_0001`)   |
 
 Rules the implementation holds to:
 
@@ -677,13 +679,14 @@ Rules the implementation holds to:
   (`PM_AGG_STORE_WRITER`). Rows carry that identity.
 - **Local files are a cache.** With `turso` active, any remaining
   local copy (`actions.json`, `activity-ingestion.json`,
-  `snapshots/`, `aa-last-good.json`) is a rebuildable cache, not the
+  `snapshots/`, `aa-last-good.json`, `comments.json`) is a rebuildable cache, not the
   source of truth: a fresh state dir boots empty and reconstructs from
   Turso (covered by `test/store-remote-backends.test.ts`).
 - **Schema is consumed, not redesigned.** `agg_actions` follows the
   #3142 contract in migration `20261105_0001`; the additive
   `20261116_0001_aggregator_remote_stores` adds the activity, snapshot
-  and document tables. Those PostgreSQL files are the contract; the
+  and document tables, and `20261122_0001_shared_comments` (#1744) adds
+  the comments table. Those PostgreSQL files are the contract; the
   live Turso tables mirror them, and `src/turso-stores.ts`
   (`storeStatement`) translates the statements in
   `src/remote-stores.ts` to SQLite.

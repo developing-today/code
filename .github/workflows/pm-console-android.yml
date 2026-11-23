@@ -1,60 +1,86 @@
 name: pm-console android
 
-# Builds the PM console's Android app (pm-stack/console/android): a
-# Trusted Web Activity over https://pm.security.cab. Manual only: it is
-# run when the app changes, which is rarely, since the app is the site.
+# CI tier policy: see .github/ci-policy.md. This is a release, not CI,
+# so it keeps a push trigger (restricted to main, and to the app's own
+# files).
 #
-# With the signing secrets set, the APK is signed here and attached to
-# the release. Without them the build is unsigned and kept as an
-# artifact, to be signed by pm-stack/console/android/sign.sh on the
-# machine that holds the key.
+# Builds, signs and releases the PM console's Android app
+# (pm-stack/console/android): a Trusted Web Activity over
+# https://pm.security.cab, plus what only an installed app has. It runs
+# on every push to main that touches the app, and by hand.
+#
+# The version is the commit's (build.sh): a code that rises with the
+# commit's time, so each build installs over the one before.
+#
+# Signing needs the app's key, as two secrets of the pm-console-android
+# environment: PM_CONSOLE_ANDROID_KEYSTORE_B64 and
+# PM_CONSOLE_ANDROID_KEYSTORE_PASSWORD. An environment, not the
+# repository, so that it can be limited to runs on main. Putting the key
+# there is the owner's to do, by hand; no script or agent holds or moves
+# it (pm-stack/console/android/README.md).
+#
+# With the key: the APK is signed here, checked against the certificate
+# the site lists (signing-fingerprint.txt), and released twice with
+# nobody involved: as pm-console-android-v<code>, which is never
+# changed again, and as pm-console-android, whose address stays the same
+# and always holds the newest build. The site hands out the second.
+#
+# Without the key: the build is unsigned and kept as an artifact, and
+# the run says so. Nothing is released.
 on:
+  push:
+    branches: [main]
+    paths:
+      - "pm-stack/console/android/**"
+      - ".github/workflows/pm-console-android.yml"
   workflow_dispatch:
-    inputs:
-      publish:
-        description: "Attach the APK to the release pm-console-android (signed builds only)"
-        type: boolean
-        default: true
 
 permissions:
   contents: read
 
+# Releases run one at a time, in order.
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
 jobs:
   build:
-    name: "build: APK"
+    name: "build, sign and release the APK"
     runs-on: ubuntu-latest
     timeout-minutes: 25
+    environment: pm-console-android
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v7
-      - name: Build, and sign when the signing secrets are set
+      - name: Build, and sign when this environment holds the key
         id: build
         env:
           KEYSTORE_B64: ${{ secrets.PM_CONSOLE_ANDROID_KEYSTORE_B64 }}
           PM_ANDROID_KEYSTORE_PASSWORD: ${{ secrets.PM_CONSOLE_ANDROID_KEYSTORE_PASSWORD }}
         run: |
           bash pm-stack/console/android/build.sh
-          if [ -f pm-stack/console/android/app/build/outputs/apk/release/pm-console.apk ]; then
+          out=pm-stack/console/android/app/build/outputs/apk/release
+          {
+            echo "version_name=$(sed -n 1p "$out/version")"
+            echo "version_code=$(sed -n 2p "$out/version")"
+          } >>"$GITHUB_OUTPUT"
+          if [ -f "$out/pm-console.apk" ]; then
             echo "signed=true" >>"$GITHUB_OUTPUT"
           else
             echo "signed=false" >>"$GITHUB_OUTPUT"
-            echo "::notice::Built unsigned: the signing secrets are not set. Sign the artifact with pm-stack/console/android/sign.sh on the machine that holds the key."
+            echo "::notice::Built unsigned: this environment does not hold the signing key, so nothing is released. See pm-stack/console/android/README.md, Giving GitHub the key."
+            echo "Built $(sed -n 1p "$out/version") unsigned: the signing key is not here, so nothing was released." >>"$GITHUB_STEP_SUMMARY"
           fi
       - uses: actions/upload-artifact@v7
         with:
           name: ${{ steps.build.outputs.signed == 'true' && 'pm-console-apk' || 'pm-console-apk-unsigned' }}
           path: pm-stack/console/android/app/build/outputs/apk/release/*.apk
           if-no-files-found: error
-      - name: Attach to the release
-        if: inputs.publish && steps.build.outputs.signed == 'true'
+      - name: Release
+        if: steps.build.outputs.signed == 'true' && github.ref == 'refs/heads/main'
         env:
           GH_TOKEN: ${{ github.token }}
-        run: |
-          apk=pm-stack/console/android/app/build/outputs/apk/release/pm-console.apk
-          if ! gh release view pm-console-android >/dev/null 2>&1; then
-            gh release create pm-console-android --latest=false \
-              --title "PM console for Android" \
-              --notes "The PM stack's console as an Android app. It opens https://pm.security.cab/console/ and signs in the way the site does. Install pm-console.apk; later builds install over it."
-          fi
-          gh release upload pm-console-android "$apk" --clobber
+          VERSION_NAME: ${{ steps.build.outputs.version_name }}
+          VERSION_CODE: ${{ steps.build.outputs.version_code }}
+        run: bash pm-stack/console/android/release.sh pm-stack/console/android/app/build/outputs/apk/release/pm-console.apk

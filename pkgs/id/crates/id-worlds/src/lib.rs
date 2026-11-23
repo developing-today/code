@@ -44,9 +44,11 @@
 /// advertise against, owned by `id-core` (slice 9110-02, #10160).
 pub use id_core::port;
 
+pub mod account_charge;
 pub mod blob_gate;
 pub mod chat_anchor_render;
 pub mod groups;
+pub mod guest_burn;
 pub mod program_bundle;
 pub mod program_gallery;
 pub mod program_gallery_admission;
@@ -68,12 +70,12 @@ pub mod world_hub;
 pub mod world_line;
 pub mod world_native;
 pub mod world_net;
+pub mod world_owner_report;
 pub mod world_records;
 pub mod world_replication_net;
 pub mod world_session;
 #[cfg(feature = "ssh")]
 pub mod world_ssh;
-pub mod world_owner_report;
 pub mod world_storage;
 pub mod world_store;
 pub mod world_terminal;

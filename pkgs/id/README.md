@@ -110,6 +110,99 @@ id peers                # List discovered peers
 id peers --abuse        # Per-peer frame/byte abuse counters, by direction (world traffic only; empty when serving without --world)
 ```
 
+## The #9106 walking skeleton, by hand
+
+`id walk` drives the #9106 walking-skeleton path from the terminal:
+one signed record at an `id://` address, held in a node's on-disk
+store, synced to a second node over the federation exchange
+protocol, a conflicting write, a conflict report on both nodes,
+and a resolution. Each node is a directory; every command opens
+its node fresh and shuts it down on the way out, so what a stage
+leaves behind is read back from disk by the next one. One process
+uses a node directory at a time — stop a node's `serve` before
+running one-shot commands against it (an open that finds the
+directory held says so, rather than waiting).
+
+The writers are demonstration keys, derived from their names so
+two terminals can play both sides without a key exchange: alice
+and bob are the whole demo world, and production key management
+(`id key`, `id keyset`) is a different path.
+
+```bash
+# Two nodes.
+id walk init node-a --name node-a
+id walk init node-b --name node-b
+
+# 1. Write a signed record at an id:// address on A.
+id walk write node-a --as alice --text "first draft"
+# address: id://node-a/notes/v1/content/raw-blake3-256.82b41092…
+# event:   82b41092…
+# outcome: applied
+ADDR=id://node-a/notes/v1/content/raw-blake3-256.82b41092…   # the full address, from the write
+
+# B does not hold it yet — reading the address there is an error,
+# not a fetch:
+id walk read node-b "$ADDR"
+# Error: this node does not hold the record at id://node-a/…
+
+# 2. Serve B (it prints a peer token), and sync A to it.
+id walk serve node-b
+# WALK_NODE name=node-b peer=fe50e5b9…@127.0.0.1:45718
+PEER=fe50e5b9…@127.0.0.1:45718                                # the full token, from the serve
+id walk sync node-a --peer "$PEER"
+# sent to the peer: 82b41092…
+#   82b41092… -> applied
+
+# Stop B's serve (Ctrl-C). The record B admitted while serving
+# was persisted: it still reads from its address.
+id walk read node-b "$ADDR"
+# signer: alice
+# text:   first draft
+
+# 3. Conflicting writes: each writer follows the base record on
+# their own node. (A write with no --parent follows the node's
+# current heads.)
+id walk write node-a --as alice --text "alice's edit"   # event: c56121b2…
+id walk write node-b --as bob   --text "bob's edit"     # event: efe96df0…
+
+# 4. Sync again; the conflict is reported on both nodes.
+id walk serve node-b &   # take a fresh peer token, as above
+id walk sync node-a --peer "$PEER"
+id walk reports node-a
+# head: c56121b2…
+# head: efe96df0…
+# report: 1cb9f5cd…
+#   status: open
+#   key:    e7bbe860…
+#   base:   82b41092…
+#   version: c56121b2… by alice
+#   version: efe96df0… by bob
+id walk reports node-b   # the same key, base and versions;
+                         # the report id is B's own (7802d305…) —
+                         # a report records how versions arrived
+                         # at the reporting node, so ids are
+                         # node-local and the key is the shared
+                         # identity of the conflict
+
+# 5. Resolve on B with a record that follows both edits, sync
+# once more, and the report closes on A too.
+id walk write node-b --as bob --text "both edits, merged by bob" \
+    --parent c56121b2… --parent efe96df0…
+# outcome: applied; resolved report 7802d305…
+id walk sync node-a --peer "$PEER"
+id walk reports node-a   # status: resolved by 8c2bdd30…
+id walk read node-a id://node-b/notes/v1/content/raw-blake3-256.8c2bdd30…
+# signer: bob
+# text:   both edits, merged by bob
+```
+
+The same five steps run as suites in the nightly (registry entry
+`id.rust.substrate-path`): in-process in
+`crates/id-sync/tests/substrate_sync_path.rs`, between two
+processes in `substrate_transport_path.rs`, and through this
+command surface, against on-disk nodes with a restart between
+stages, in `crates/id-cli/tests/walk_cli_path.rs`.
+
 ## Client-only boundary
 
 Remote commands are clients: they never host a world. `id world

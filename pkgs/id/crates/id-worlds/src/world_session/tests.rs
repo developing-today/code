@@ -10,8 +10,8 @@ mod tests {
     use crate::directory::{Actor, Level, Member};
     use crate::directory_auth::sign_request;
     use crate::world::{
-        Participant, WorldCore, WorldEvent, WorldHandle, WorldLimits, WorldScopes, hex_encode,
-        unix_ms,
+        Participant, WorldCore, WorldEvent, WorldEventKind, WorldHandle, WorldLimits, WorldScopes,
+        hex_encode, unix_ms,
     };
     use crate::world_compile::Compiler;
     use crate::world_hub::WorldHub;
@@ -186,7 +186,10 @@ mod tests {
                                 "form_id": "session-form",
                                 "title": "Profile",
                                 "fields": [{"kind":"text","id":"name","label":"Name","required":true,"max_length":32}],
-                                "actions": [{"id":"submit","label":"Save"}]
+                                "actions": [
+                                    {"id":"submit","label":"Save"},
+                                    {"id":"cancel","label":"Cancel","kind":"cancel"}
+                                ]
                             }
                         }
                     }]
@@ -224,7 +227,10 @@ mod tests {
                     "presentation_token": token,
                     "title": "Profile",
                     "fields": [{"kind":"text","id":"name","label":"Name","required":true,"max_length":32}],
-                    "actions": [{"id":"submit","label":"Save"}]
+                    "actions": [
+                        {"id":"submit","label":"Save"},
+                        {"id":"cancel","label":"Cancel","kind":"cancel"}
+                    ]
                 })
                 .to_string(),
             ))
@@ -292,6 +298,204 @@ mod tests {
         assert_eq!(ack["ok"], true);
         assert_eq!(results.lock().unwrap()[0]["values"]["name"], "Ada");
         peer.close().await;
+    }
+
+    #[tokio::test]
+    async fn test_joined_form_cancel_result_frame_uses_session_auth_and_reaches_program() {
+        let mut core = WorldCore::new("lobby", WorldLimits::default()).unwrap();
+        core.ledger.set_granted(BTreeSet::from([
+            "form.present".to_owned(),
+            "form.result".to_owned(),
+        ]));
+        let form_token = Arc::new(std::sync::Mutex::new(None));
+        let results = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let world = WorldHandle::spawn_with_device_manifest(
+            core,
+            Box::new(FormSessionProgram {
+                token: Arc::clone(&form_token),
+                results: Arc::clone(&results),
+            }),
+            Some(WorldHandle::host_device_manifest()),
+        );
+        let (_, capability) = world.issue("Ada", WorldScopes::GUEST).await.unwrap();
+        let mut peer = Peer::connect(WorldService::new(world, None), SessionConfig::default());
+        peer.say(serde_json::json!({
+            "type": "join",
+            "capability": capability.expose(),
+        }))
+        .await;
+        assert_eq!(peer.next().await.unwrap()["type"], "snapshot");
+        let view = peer.next().await.unwrap();
+        assert_eq!(view["type"], "view");
+        let presentation_token = view["surface"]["presentation_token"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+
+        peer.say(serde_json::json!({
+            "type": "form_result",
+            "form_id": "session-form",
+            "presentation_token": presentation_token,
+            "action": "cancel",
+            "values": {},
+        }))
+        .await;
+        let ack = peer.next().await.unwrap();
+        assert_eq!(ack["type"], "form_result_status");
+        assert_eq!(ack["ok"], true);
+        assert_eq!(results.lock().unwrap()[0]["action"], "cancel");
+        peer.close().await;
+    }
+
+    #[derive(Default)]
+    struct SessionFormGateState {
+        input_received: bool,
+        presentation_result: Option<serde_json::Value>,
+    }
+
+    struct SessionFormGateProgram {
+        state: Arc<std::sync::Mutex<SessionFormGateState>>,
+    }
+
+    impl crate::world::WorldProgram for SessionFormGateProgram {
+        fn wants(&mut self) -> anyhow::Result<Option<String>> {
+            if !self.state.lock().unwrap().input_received {
+                return Ok(None);
+            }
+            Ok(Some(
+                serde_json::json!({
+                    "requests": [{
+                        "id": "present-from-session-input",
+                        "cap": "form.present",
+                        "args": {
+                            "form_id": "session-gated-form",
+                            "form": {
+                                "version": 1,
+                                "form_id": "session-gated-form",
+                                "title": "Profile",
+                                "fields": [{"kind":"text","id":"name","label":"Name","required":true,"max_length":32}],
+                                "actions": [{"id":"submit","label":"Save"}]
+                            }
+                        }
+                    }]
+                })
+                .to_string(),
+            ))
+        }
+
+        fn update(&mut self, event: &WorldEvent) -> anyhow::Result<()> {
+            match &event.kind {
+                WorldEventKind::Input { .. } => {
+                    self.state.lock().unwrap().input_received = true;
+                }
+                WorldEventKind::System { event } => {
+                    let value: serde_json::Value = serde_json::from_str(event)?;
+                    if value["id"] == "present-from-session-input" {
+                        self.state.lock().unwrap().presentation_result = Some(value);
+                    }
+                }
+                _ => {}
+            }
+            Ok(())
+        }
+
+        fn view(&mut self, _viewer: &Participant) -> anyhow::Result<Option<String>> {
+            let state = self.state.lock().unwrap();
+            let Some(result) = &state.presentation_result else {
+                return Ok(None);
+            };
+            if result["ok"] == true {
+                return Ok(Some(
+                    serde_json::json!({
+                        "kind": "form",
+                        "version": 1,
+                        "form_id": "session-gated-form",
+                        "presentation_token": result["value"]["presentation_token"],
+                        "title": "Profile",
+                        "fields": [{"kind":"text","id":"name","label":"Name","required":true,"max_length":32}],
+                        "actions": [{"id":"submit","label":"Save"}]
+                    })
+                    .to_string(),
+                ));
+            }
+            Ok(Some(
+                serde_json::json!({
+                    "status": "refused",
+                    "error": result["error"],
+                    "reason": result["reason"],
+                })
+                .to_string(),
+            ))
+        }
+    }
+
+    async fn session_form_gate_view(device_input: serde_json::Value) -> serde_json::Value {
+        let mut core = WorldCore::new("lobby", WorldLimits::default()).unwrap();
+        core.ledger.set_granted(BTreeSet::from([
+            "form.present".to_owned(),
+            "form.result".to_owned(),
+        ]));
+        let state = Arc::new(std::sync::Mutex::new(SessionFormGateState::default()));
+        let world = WorldHandle::spawn_with_device_manifest(
+            core,
+            Box::new(SessionFormGateProgram {
+                state: Arc::clone(&state),
+            }),
+            Some(WorldHandle::host_device_manifest()),
+        );
+        let (_, capability) = world.issue("Ada", WorldScopes::GUEST).await.unwrap();
+        let mut peer = Peer::connect(WorldService::new(world, None), SessionConfig::default());
+        peer.say(serde_json::json!({
+            "type": "join",
+            "capability": capability.expose(),
+            "device_input": device_input,
+        }))
+        .await;
+        assert_eq!(peer.next().await.unwrap()["type"], "snapshot");
+
+        // The join's device_input is session metadata, carried by this
+        // authenticated input into actor execution and form.present.
+        peer.say(serde_json::json!({
+            "type": "input",
+            "data_hex": "00",
+        }))
+        .await;
+        loop {
+            let frame = peer.next().await.unwrap();
+            if frame["type"] == "view" {
+                peer.close().await;
+                return serde_json::from_str(frame["data"].as_str().unwrap()).unwrap();
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn joined_form_uses_capable_presenter_even_when_host_is_headless() {
+        let view = session_form_gate_view(serde_json::json!({
+            "keys": 128,
+            "text_entry": "keyboard",
+            "encoder": false,
+            "pointer": true,
+        }))
+        .await;
+
+        assert_eq!(view["kind"], "form");
+        assert_eq!(view["form_id"], "session-gated-form");
+    }
+
+    #[tokio::test]
+    async fn joined_form_refuses_presenter_without_text_entry() {
+        let view = session_form_gate_view(serde_json::json!({
+            "keys": 0,
+            "text_entry": "none",
+            "encoder": false,
+            "pointer": false,
+        }))
+        .await;
+
+        assert_eq!(view["status"], "refused");
+        assert_eq!(view["error"], "bad_args");
+        assert_eq!(view["reason"], "text_entry_unavailable");
     }
 
     #[tokio::test(start_paused = true)]
@@ -4051,27 +4255,38 @@ mod tests {
         }
 
         /// A 3x1 program: its default view is 3x1, a 2x1 viewport fits it to 2x1.
-        struct WideScreen;
+        struct WideScreen(Arc<AtomicU64>);
 
         impl crate::world::WorldProgram for WideScreen {
             fn view(&mut self, _viewer: &Participant) -> anyhow::Result<Option<String>> {
+                let first = if self.0.load(Ordering::Relaxed) == 0 {
+                    "a"
+                } else {
+                    "x"
+                };
                 Ok(Some(
-                    r#"{"kind":"screen","version":1,"width":3,"height":1,"rows":["abc"]}"#
-                        .to_owned(),
+                    serde_json::json!({
+                        "kind": "screen",
+                        "version": 1,
+                        "width": 3,
+                        "height": 1,
+                        "rows": [format!("{first}bc")],
+                    })
+                    .to_string(),
                 ))
             }
         }
 
         #[tokio::test]
-        async fn a_wrong_viewport_resume_token_falls_back_to_a_full_view() {
+        async fn a_resume_token_restores_the_viewport_before_catching_up() {
+            let step = Arc::new(AtomicU64::new(0));
             let world = WorldHandle::spawn_with_program(
                 WorldCore::new("lobby", WorldLimits::default()).unwrap(),
-                Box::new(WideScreen),
+                Box::new(WideScreen(Arc::clone(&step))),
             );
             let svc = WorldService::new(world.clone(), None);
             let (_, capability) = world.issue("player", WorldScopes::GUEST).await.unwrap();
 
-            // The token is issued for the 2x1 viewport this session resized to.
             let mut first = Peer::connect(svc.clone(), SessionConfig::default());
             first
                 .say(serde_json::json!({
@@ -4081,16 +4296,22 @@ mod tests {
                 }))
                 .await;
             assert_eq!(first.next().await.unwrap()["type"], "snapshot");
-            assert!(next_view(&mut first).await["patch"].is_null());
+            assert_eq!(screen_of(&next_view(&mut first).await).width, 3);
+
+            // The token is issued for the 2x1 viewport this session resized to.
             first
                 .say(serde_json::json!({"type": "resize", "width": 2, "height": 1}))
                 .await;
             let resized = next_view(&mut first).await;
-            assert_eq!(screen_of(&resized).width, 2);
+            let base = screen_of(&resized);
+            assert_eq!(base.width, 2);
             let token = resized["resume_token"].as_str().unwrap().to_owned();
+            let base_revision = resized["view_revision"].as_u64().unwrap();
 
-            // Reconnecting without that viewport asks for the default 3x1
-            // view: the retained baseline is the wrong shape, so it is a miss.
+            // The next session restores that viewport before rendering and
+            // consuming the resume token; without the restore the retained
+            // baseline is the wrong shape and the resume is a miss.
+            step.store(1, Ordering::Relaxed);
             let mut resumed = Peer::connect(svc, SessionConfig::default());
             resumed
                 .say(serde_json::json!({
@@ -4101,16 +4322,21 @@ mod tests {
                 }))
                 .await;
             assert_eq!(resumed.next().await.unwrap()["type"], "snapshot");
-            let view = next_view(&mut resumed).await;
+            let catch_up = next_view(&mut resumed).await;
             assert!(
-                view["patch"].is_null(),
-                "a wrong-viewport token gets a full view: {view}"
+                !catch_up["patch"].is_null(),
+                "a retained viewport token yields a catch-up patch: {catch_up}"
             );
-            assert_eq!(screen_of(&view).width, 3);
-            assert!(
-                view["resume_token"].is_string(),
-                "the full view issues a token for the new viewport"
-            );
+            assert_eq!(catch_up["base_view_revision"].as_u64(), Some(base_revision));
+            let patch = serde_json::from_value::<crate::world_presentation::ScreenPatch>(
+                catch_up["patch"].clone(),
+            )
+            .unwrap();
+            let applied = patch
+                .apply(&base)
+                .expect("the catch-up patch uses its retained base");
+            assert_eq!(applied.width, 2);
+            assert_eq!(applied.cells[0].symbol, "x");
         }
 
         #[tokio::test]
@@ -4127,6 +4353,314 @@ mod tests {
             assert_eq!(frame["type"], "error");
             assert!(frame.get("view").is_none());
             assert!(peer.next().await.is_none());
+        }
+
+        /// One frame a byte-capable transport delivered, text and
+        /// binary kept apart the way a real transport reports them.
+        #[derive(Debug)]
+        enum SentFrame {
+            Text(String),
+            Bytes(Vec<u8>),
+        }
+
+        /// In-memory byte-capable transport: like [`ChannelIo`], but
+        /// it carries binary frames and says so.
+        struct ByteChannelIo {
+            inbound: mpsc::Receiver<Inbound>,
+            outbound: mpsc::Sender<SentFrame>,
+        }
+
+        impl SessionIo for ByteChannelIo {
+            async fn recv(&mut self) -> Inbound {
+                self.inbound.recv().await.unwrap_or(Inbound::Closed)
+            }
+
+            async fn send(&mut self, frame: String) -> bool {
+                self.outbound.send(SentFrame::Text(frame)).await.is_ok()
+            }
+
+            fn supports_bytes(&self) -> bool {
+                true
+            }
+
+            async fn send_bytes(&mut self, frame: Vec<u8>) -> bool {
+                self.outbound.send(SentFrame::Bytes(frame)).await.is_ok()
+            }
+        }
+
+        struct BytePeer {
+            to_server: mpsc::Sender<Inbound>,
+            from_server: mpsc::Receiver<SentFrame>,
+            task: tokio::task::JoinHandle<()>,
+        }
+
+        impl BytePeer {
+            fn connect(service: WorldService) -> Self {
+                let (to_server, inbound) = mpsc::channel(16);
+                let (outbound, from_server) = mpsc::channel(64);
+                let hub = WorldHub::single(service);
+                let task = tokio::spawn(async move {
+                    let mut io = ByteChannelIo { inbound, outbound };
+                    run_session_with(&hub, &mut io, SessionConfig::default()).await;
+                });
+                Self {
+                    to_server,
+                    from_server,
+                    task,
+                }
+            }
+
+            async fn say(&self, frame: serde_json::Value) {
+                self.to_server
+                    .send(Inbound::Text(frame.to_string()))
+                    .await
+                    .unwrap();
+            }
+
+            async fn say_bytes(&self, frame: Vec<u8>) {
+                self.to_server.send(Inbound::Bytes(frame)).await.unwrap();
+            }
+
+            async fn next(&mut self) -> Option<SentFrame> {
+                tokio::time::timeout(Duration::from_mins(1), self.from_server.recv())
+                    .await
+                    .expect("timed out waiting for a server frame")
+            }
+
+            async fn next_text(&mut self) -> serde_json::Value {
+                match self.next().await {
+                    Some(SentFrame::Text(text)) => serde_json::from_str(&text).unwrap(),
+                    other => panic!("expected a text frame, got {other:?}"),
+                }
+            }
+
+            /// The next view-shaped frame, in whichever representation
+            /// the session negotiated.
+            async fn next_view_frame(&mut self) -> SentFrame {
+                loop {
+                    let frame = self.next().await.expect("a frame");
+                    match &frame {
+                        SentFrame::Text(text) => {
+                            let value: serde_json::Value = serde_json::from_str(text).unwrap();
+                            if value["type"] == "view" {
+                                return frame;
+                            }
+                        }
+                        SentFrame::Bytes(_) => return frame,
+                    }
+                }
+            }
+
+            async fn close(self) {
+                let Self {
+                    to_server,
+                    from_server,
+                    task,
+                } = self;
+                let _ = to_server.send(Inbound::Closed).await;
+                drop(from_server);
+                task.await.unwrap();
+            }
+        }
+
+        /// Drives the two-session resume dance on a byte-capable
+        /// transport and returns the retained token, the base
+        /// revision, and the screen the first session ended on.
+        async fn retained_token_on_byte_transport(
+            svc: &WorldService,
+            capability: &crate::world::JoinCapability,
+            step: &AtomicU64,
+        ) -> (String, u64, crate::world_presentation::ScreenSurface) {
+            let mut first = BytePeer::connect(svc.clone());
+            first
+                .say(serde_json::json!({
+                    "type": "join",
+                    "capability": capability.expose(),
+                    "screen_patches": true,
+                    "screen_msgpack": true,
+                }))
+                .await;
+            assert_eq!(first.next_text().await["type"], "snapshot");
+            let opening: serde_json::Value = match first.next_view_frame().await {
+                SentFrame::Text(text) => serde_json::from_str(&text).unwrap(),
+                other => panic!("the first frame is a full text view, got {other:?}"),
+            };
+            assert!(opening["patch"].is_null(), "the first frame is a full view");
+            first
+                .say(serde_json::json!({"type": "resize", "width": 2, "height": 1}))
+                .await;
+            let resized: serde_json::Value = match first.next_view_frame().await {
+                SentFrame::Text(text) => serde_json::from_str(&text).unwrap(),
+                other => panic!("a resize resets to a full text view, got {other:?}"),
+            };
+            assert!(resized["patch"].is_null(), "a resize resets to a full view");
+            let applied = screen_of(&resized);
+            let token = resized["resume_token"].as_str().unwrap().to_owned();
+            let base_revision = resized["view_revision"].as_u64().unwrap();
+            step.store(2, Ordering::Relaxed);
+            first.close().await;
+            (token, base_revision, applied)
+        }
+
+        #[tokio::test]
+        async fn msgpack_negotiated_resume_patch_arrives_as_a_binary_frame() {
+            let step = Arc::new(AtomicU64::new(0));
+            let world = WorldHandle::spawn_with_program(
+                WorldCore::new("lobby", WorldLimits::default()).unwrap(),
+                Box::new(StepScreen(Arc::clone(&step))),
+            );
+            let svc = WorldService::new(world.clone(), None);
+            let (_, capability) = world
+                .issue("player".to_owned(), WorldScopes::GUEST)
+                .await
+                .unwrap();
+            let (token, base_revision, mut applied) =
+                retained_token_on_byte_transport(&svc, &capability, &step).await;
+
+            let mut resumed = BytePeer::connect(svc.clone());
+            resumed
+                .say(serde_json::json!({
+                    "type": "join",
+                    "capability": capability.expose(),
+                    "screen_patches": true,
+                    "screen_msgpack": true,
+                    "resume_token": token,
+                }))
+                .await;
+            assert_eq!(resumed.next_text().await["type"], "snapshot");
+            let bytes = match resumed.next_view_frame().await {
+                SentFrame::Bytes(bytes) => bytes,
+                other => panic!("a negotiated catch-up patch is binary, got {other:?}"),
+            };
+            let frame = id_core::screen_codec::decode_view_patch(&bytes)
+                .expect("the binary frame is a versioned view patch");
+            assert_eq!(frame.base_view_revision, Some(base_revision));
+            assert!(
+                frame.resume_token.is_some(),
+                "the binary frame names its target revision with a token"
+            );
+            applied = frame
+                .patch
+                .apply(&applied)
+                .expect("the binary patch applies to its base");
+
+            // Parity: the binary-patched client holds exactly a
+            // full-frame client's screen.
+            let mut fresh = Peer::connect(svc, SessionConfig::default());
+            fresh
+                .say(serde_json::json!({
+                    "type": "join",
+                    "capability": capability.expose(),
+                }))
+                .await;
+            assert_eq!(fresh.next().await.unwrap()["type"], "snapshot");
+            let full = next_view(&mut fresh).await;
+            assert_eq!(applied, screen_of(&full));
+        }
+
+        #[tokio::test]
+        async fn msgpack_offer_on_a_text_only_transport_keeps_json_patches() {
+            let step = Arc::new(AtomicU64::new(0));
+            let world = WorldHandle::spawn_with_program(
+                WorldCore::new("lobby", WorldLimits::default()).unwrap(),
+                Box::new(StepScreen(Arc::clone(&step))),
+            );
+            let svc = WorldService::new(world.clone(), None);
+            let (_, capability) = world
+                .issue("player".to_owned(), WorldScopes::GUEST)
+                .await
+                .unwrap();
+
+            // The plain ChannelIo cannot carry bytes, so the offer
+            // cannot be taken up: the session negotiates down to the
+            // JSON patch path instead of failing or guessing.
+            let mut first = Peer::connect(svc.clone(), SessionConfig::default());
+            first
+                .say(serde_json::json!({
+                    "type": "join",
+                    "capability": capability.expose(),
+                    "screen_patches": true,
+                    "screen_msgpack": true,
+                }))
+                .await;
+            assert_eq!(first.next().await.unwrap()["type"], "snapshot");
+            assert!(next_view(&mut first).await["patch"].is_null());
+            first
+                .say(serde_json::json!({"type": "resize", "width": 2, "height": 1}))
+                .await;
+            let resized = next_view(&mut first).await;
+            let token = resized["resume_token"].as_str().unwrap().to_owned();
+            let base_revision = resized["view_revision"].as_u64().unwrap();
+
+            step.store(2, Ordering::Relaxed);
+            let mut resumed = Peer::connect(svc, SessionConfig::default());
+            resumed
+                .say(serde_json::json!({
+                    "type": "join",
+                    "capability": capability.expose(),
+                    "screen_patches": true,
+                    "screen_msgpack": true,
+                    "resume_token": token,
+                }))
+                .await;
+            assert_eq!(resumed.next().await.unwrap()["type"], "snapshot");
+            let catch_up = next_view(&mut resumed).await;
+            assert!(
+                !catch_up["patch"].is_null(),
+                "the catch-up is a JSON patch frame: {catch_up}"
+            );
+            assert_eq!(
+                catch_up["base_view_revision"].as_u64().unwrap(),
+                base_revision
+            );
+        }
+
+        #[tokio::test]
+        async fn a_binary_first_frame_fails_safely() {
+            let world = WorldHandle::spawn_with_program(
+                WorldCore::new("lobby", WorldLimits::default()).unwrap(),
+                Box::new(StepScreen(Arc::new(AtomicU64::new(0)))),
+            );
+            let svc = WorldService::new(world, None);
+            let mut peer = BytePeer::connect(svc);
+            peer.say_bytes(vec![0xc1, 0x00, 0xff]).await;
+            let frame = peer.next_text().await;
+            assert_eq!(frame["type"], "error");
+            assert_eq!(frame["message"], "frames must be UTF-8 text");
+            assert!(peer.next().await.is_none(), "the session ends");
+        }
+
+        #[tokio::test]
+        async fn a_binary_frame_after_join_fails_safely() {
+            let world = WorldHandle::spawn_with_program(
+                WorldCore::new("lobby", WorldLimits::default()).unwrap(),
+                Box::new(StepScreen(Arc::new(AtomicU64::new(0)))),
+            );
+            let svc = WorldService::new(world.clone(), None);
+            let (_, capability) = world
+                .issue("player".to_owned(), WorldScopes::GUEST)
+                .await
+                .unwrap();
+            let mut peer = BytePeer::connect(svc);
+            peer.say(serde_json::json!({
+                "type": "join",
+                "capability": capability.expose(),
+                "screen_patches": true,
+                "screen_msgpack": true,
+            }))
+            .await;
+            assert_eq!(peer.next_text().await["type"], "snapshot");
+            assert!(matches!(peer.next_view_frame().await, SentFrame::Text(_)));
+
+            // A binary client frame is malformed input: an error, and
+            // the session carries on — it is not silently decoded.
+            peer.say_bytes(vec![0x82, 0xa7, b'v']).await;
+            let frame = peer.next_text().await;
+            assert_eq!(frame["type"], "error");
+            assert_eq!(frame["message"], "frames must be UTF-8 text");
+            peer.say(serde_json::json!({"type": "resize", "width": 2, "height": 1}))
+                .await;
+            assert!(matches!(peer.next_view_frame().await, SentFrame::Text(_)));
         }
     }
 }

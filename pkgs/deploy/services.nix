@@ -15,6 +15,7 @@
   laptopAgent,
   mcpx,
   routeProxy,
+  quotaRecorder,
   idMailDeploy,
   pkarrDeploy,
   developingTodayBackupDeploy,
@@ -95,6 +96,44 @@
     healthCheck = null;
     targets = [ "laptop" ];
     class = "systemd";
+  };
+
+  # Sandbox quota recorder - issue #5770, migration M3 of the
+  # deployment architecture (design §4.4/§7): the first sandbox-class
+  # target. The recorder had no installer of record — its units lived
+  # as templates in the sandbox's ~/tools and were re-copied by hand
+  # after every recycle. As a target, its generation lives in the
+  # sandbox's home profile and the generic restorer (deploy.py slice
+  # 4 / restore.py) links its rendered units into /etc/systemd/system
+  # on every boot. The cadence is the incumbent template's: a
+  # 5-minute oneshot under a persistent timer — expressed with the
+  # optional `timer` field slice 4 adds to the §3 shape (the shape
+  # had no way to name a timer-driven service). The data path is
+  # untouched (file-first, Turso landing per #5690; #5703's
+  # boundary): the recorder resolves its DB token by name at flush
+  # time, so the name is declared here and no value is carried.
+  quota-recorder = {
+    package = quotaRecorder;
+    entryPoint = "bin/quota-recorder";
+    args = [ ];
+    environment = {
+      # The incumbent unit's only environment: the recorder resolves
+      # its output paths from HOME (the sandbox user's home, not
+      # root's), exactly as the hand-copied unit ran it.
+      HOME = "/home/hatch";
+    };
+    secrets = [ "turso.fleet-platform-rw-token" ];
+    user = "root"; # sandbox system units run as root; there is no user bus
+    ports = [ ];
+    restart = "no"; # a oneshot under its timer, not a daemon
+    healthCheck = null; # no HTTP surface; activation verifies the timer is active
+    targets = [ "sandbox" ];
+    class = "sandbox";
+    timer = {
+      onCalendar = "*:0/5";
+      persistent = true;
+      randomizedDelaySec = 20;
+    };
   };
 
   session-proxy = {

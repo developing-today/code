@@ -1379,49 +1379,9 @@ pub fn validate_blob_hash(hash: &str) -> Result<()> {
     Ok(())
 }
 
-/// The canonical spelling of an `http.fetch` host for allowlist
-/// comparison: lowercase, with one trailing dot (the DNS root in
-/// a fully-qualified name) stripped. Applied to URL hosts and to
-/// allowlist entries alike, so the comparison is between like
-/// spellings.
-#[must_use]
-pub fn normalize_http_fetch_host(host: &str) -> String {
-    let mut normalized = host.to_ascii_lowercase();
-    if normalized.ends_with('.') {
-        normalized.pop();
-    }
-    normalized
-}
-
-/// Check an `http.fetch` URL and return its normalized host: the
-/// spelling the admin allowlist is matched against. Only `http`
-/// and `https` URLs with a host and no userinfo pass — other
-/// schemes are not fetches, and credentials in a URL would leak
-/// into logs and audit digests.
-///
-/// # Errors
-///
-/// Names the rule the URL breaks.
-pub fn validate_http_fetch_url(url: &str) -> Result<String> {
-    ensure!(
-        !url.is_empty() && url.len() <= MAX_HTTP_FETCH_URL_BYTES,
-        "http fetch url must be 1 to {MAX_HTTP_FETCH_URL_BYTES} bytes"
-    );
-    let parsed =
-        url::Url::parse(url).map_err(|_| anyhow::anyhow!("http fetch url is malformed"))?;
-    ensure!(
-        matches!(parsed.scheme(), "http" | "https"),
-        "http fetch url scheme must be http or https"
-    );
-    ensure!(
-        parsed.username().is_empty() && parsed.password().is_none(),
-        "http fetch url must not carry credentials"
-    );
-    let host = parsed
-        .host_str()
-        .ok_or_else(|| anyhow::anyhow!("http fetch url has no host"))?;
-    Ok(normalize_http_fetch_host(host))
-}
+pub use crate::http_fetch_url::{
+    http_fetch_entry_admits, normalize_http_fetch_host, validate_http_fetch_url,
+};
 
 /// Whether `name` is a capability the server can provide.
 #[must_use]
@@ -2847,6 +2807,130 @@ mod tests {
             "example.com",
             "allowlist entries normalize the same way"
         );
+    }
+
+    #[test]
+    fn http_fetch_allowlist_entries_constrain_ports() {
+        // (entry, url, admitted)
+        let cases = [
+            // A bare host admits the scheme's default port only,
+            // whether the URL spells it out or not.
+            ("example.com", "https://example.com/", true),
+            ("example.com", "http://example.com/", true),
+            ("example.com", "https://example.com:443/", true),
+            ("EXAMPLE.com.", "http://example.com:80/x", true),
+            ("example.com", "https://example.com:8443/", false),
+            ("example.com", "http://example.com:443/", false),
+            ("example.com", "https://example.com:80/", false),
+            // An entry with a port admits that port only, under
+            // either scheme, and still matches the host exactly.
+            ("example.com:8443", "https://example.com:8443/", true),
+            ("example.com:8443", "http://example.com:8443/", true),
+            ("example.com:443", "https://example.com/", true),
+            ("example.com:8443", "https://example.com/", false),
+            ("example.com:8443", "https://example.com:8444/", false),
+            ("example.com:8443", "https://api.example.com:8443/", false),
+            // IPv4 and bracketed IPv6 hosts, with and without a port.
+            ("127.0.0.1:8080", "http://127.0.0.1:8080/x", true),
+            ("127.0.0.1", "http://127.0.0.1:8080/x", false),
+            ("[2001:db8::1]", "https://[2001:db8::1]/x", true),
+            ("[2001:db8::1]:8443", "https://[2001:db8::1]:8443/x", true),
+            ("[2001:db8::1]", "https://[2001:db8::1]:8443/x", false),
+            // Malformed entries and URLs admit nothing.
+            ("example.com:99999", "https://example.com:9999/", false),
+            ("example.com:", "https://example.com/", false),
+            ("example.com", "ftp://example.com/", false),
+            ("example.com", "https://user@example.com/", false),
+        ];
+        for (entry, url, admitted) in cases {
+            assert_eq!(
+                http_fetch_entry_admits(entry, url),
+                admitted,
+                "{entry:?} admitting {url:?}"
+            );
+        }
+    }
+
+    mod http_fetch_allowlist_properties {
+        //! Property tests for the `http.fetch` allowlist's port rule
+        //! (#12659). The oracle is the rule itself: an entry with a
+        //! port admits exactly that port, a bare host admits exactly
+        //! the scheme's default port, and an entry whose port suffix
+        //! is not a valid port admits nothing.
+        use super::super::http_fetch_entry_admits;
+        use proptest::prelude::*;
+
+        fn host() -> impl Strategy<Value = String> {
+            prop_oneof![
+                "[a-z][a-z0-9]{0,8}(\\.[a-z][a-z0-9]{0,8}){0,2}",
+                (any::<u8>(), any::<u8>(), any::<u8>(), any::<u8>())
+                    .prop_map(|(a, b, c, d)| format!("{a}.{b}.{c}.{d}")),
+                // Nonzero groups keep the spelling canonical, the
+                // form the URL parser gives back.
+                (1u16.., 1u16..).prop_map(|(a, b)| format!("[2001:db8::{a:x}:{b:x}]")),
+            ]
+        }
+
+        fn scheme() -> impl Strategy<Value = (&'static str, u16)> {
+            prop_oneof![Just(("http", 80u16)), Just(("https", 443u16))]
+        }
+
+        proptest! {
+            #[test]
+            fn a_port_entry_admits_exactly_its_port(
+                host in host(),
+                (scheme, _default) in scheme(),
+                listed in 1u16..,
+                requested in 1u16..,
+            ) {
+                let entry = format!("{host}:{listed}");
+                let url = format!("{scheme}://{host}:{requested}/x");
+                prop_assert_eq!(http_fetch_entry_admits(&entry, &url), listed == requested);
+            }
+
+            #[test]
+            fn a_bare_entry_admits_exactly_the_default_port(
+                host in host(),
+                (scheme, default) in scheme(),
+                requested in 1u16..,
+            ) {
+                let url = format!("{scheme}://{host}:{requested}/x");
+                prop_assert_eq!(http_fetch_entry_admits(&host, &url), requested == default);
+                let unported = format!("{scheme}://{host}/x");
+                prop_assert!(http_fetch_entry_admits(&host, &unported));
+            }
+
+            #[test]
+            fn a_malformed_port_suffix_admits_nothing(
+                host in host(),
+                (scheme, _default) in scheme(),
+                suffix in prop_oneof![
+                    Just(String::new()),
+                    (65_536u32..10_000_000).prop_map(|port| port.to_string()),
+                ],
+                requested in 1u16..,
+            ) {
+                let entry = format!("{host}:{suffix}");
+                let ported = format!("{scheme}://{host}:{requested}/x");
+                let unported = format!("{scheme}://{host}/x");
+                prop_assert!(!http_fetch_entry_admits(&entry, &ported));
+                prop_assert!(!http_fetch_entry_admits(&entry, &unported));
+            }
+
+            #[test]
+            fn another_host_is_never_admitted(
+                listed in host(),
+                requested in host(),
+                (scheme, _default) in scheme(),
+                port in 1u16..,
+            ) {
+                prop_assume!(listed != requested);
+                let url = format!("{scheme}://{requested}:{port}/x");
+                let ported_entry = format!("{listed}:{port}");
+                prop_assert!(!http_fetch_entry_admits(&listed, &url));
+                prop_assert!(!http_fetch_entry_admits(&ported_entry, &url));
+            }
+        }
     }
 
     #[test]

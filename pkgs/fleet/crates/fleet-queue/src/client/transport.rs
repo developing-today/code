@@ -541,11 +541,16 @@ pub(super) fn fallback_switch_enabled() -> bool {
 }
 
 pub(super) fn fallback_switch_json(verb: &str, code: i32, msg: &str) -> Value {
+    // #8581: the switch IS the db-degraded route — carry the
+    // contract's mode line (selected through route_for from the
+    // store-down legs) so a worker loop reads the mode and route
+    // from the same envelope it already branches on.
     json!({
         "ok": false,
         "fallback": true,
         "switch_to": "github-fallback",
         "verb": verb,
+        "mode_line": mode_line_for(verb, legs_store_down()).json_value(),
         "broker_exit": code,
         "error": msg,
         "hint": "continue this work with: fleet queue fallback scan|claim|heartbeat|release",

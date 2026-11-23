@@ -48,6 +48,45 @@ dedupe-keyed merge-watch packet per PR instead, whose job is the
 refresh the branch, merge, or close with a salvage note. Fixtures
 carry the PR set under a top-level `"pulls": {"owner/repo": [...]}`.
 
+Ready-PR shepherd fallback (#12280): the stale-PR warden is the
+merge sweep, but a sweep that depends on one scheduled job fails
+silently when that job stops running — exactly what happened in
+November 2026, when the warden's live job vanished in an environment
+recovery and ready PRs sat unmerged for days. So this reconciliation
+also diffs the repo's ready (non-draft) PRs against live queue tasks:
+the broker `/coverage` call carries the PR numbers and answers which
+of them a LIVE task names (the warden's `pr` dedupe key or the
+merge-watch key — done/cancelled tasks are not coverage, same rule
+as issues). In `--import` mode, any ready PR older than 6 hours with
+no live task naming it gets one `pr_shepherd` packet under the
+warden's own dedupe key, so the warden and this fallback dedupe onto
+a single live task whichever files first. A PR already receiving a
+merge-watch packet this run is not double-filed. Fixtures carry the
+broker's PR answer as `"uncovered_pulls": [{"number": n}]` inside
+each repo's coverage object; a fixture without it treats every PR as
+uncovered (the pre-#12280 fixture semantics).
+
+Verdict coverage (#12233 F2b, decision record on the issue): an open
+`effort/l` or `effort/m` issue whose newest agent note records a
+triage verdict with a valid resume condition
+(`resume=<slice_landed|dependency_closed>:<number>`) is parked by
+that verdict — the note is the park record for the triage
+disposition — so the broker calling it uncovered does not get it
+re-enqueued for triage. The lane-guard `coverage` check
+(`pm-stack/lane-guard/lane_guard.py`) applies the same rules to a
+single issue. Fixtures carry the fields on the issue objects:
+`labels`, `verdict`, `resume_condition`. In live mode the labels
+come with the enumeration and the verdict is read from the issue's
+comments, for broker-uncovered effort issues only.
+
+The coverage is released when the verdict stops parking the issue:
+the resume condition is evaluated against live state (a closed
+dependency, a merged slice), and a label, commit or body change
+after the verdict ends it — the same freshness rule the lane
+guard applies. A verdict that cannot be read (a failed comments
+fetch) is never treated as absent: the issue is skipped from the
+import, reported as an error, and the run exits 3.
+
 Exit codes: 0 = run completed (uncovered may be > 0 in observe mode),
 2 = configuration/usage error, 3 = a fetch or broker call failed (the
 report names which; a failure never masquerades as "0 uncovered").
@@ -111,7 +150,8 @@ def fetch_open_issues(repo: str, gh: str = "gh") -> list[dict]:
         "--paginate",
         f"repos/{repo}/issues?state=open&per_page=100",
         "--jq",
-        '.[] | select(has("pull_request") | not) | {number, title}',
+        '.[] | select(has("pull_request") | not) | '
+        "{number, title, labels: [.labels[].name]}",
     ]
     try:
         out = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
@@ -153,7 +193,7 @@ def fetch_open_prs(repo: str, gh: str = "gh") -> list[dict]:
         "--paginate",
         f"repos/{repo}/pulls?state=open&per_page=100",
         "--jq",
-        '.[] | {number, title, body: ((.body // "") | .[0:2000]), head: {ref: .head.ref}}',
+        '.[] | {number, title, body: ((.body // "") | .[0:2000]), head: {ref: .head.ref}, draft: .draft, created_at: .created_at}',
     ]
     try:
         out = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
@@ -207,6 +247,373 @@ def build_pr_coverage(prs: list[dict]) -> dict[int, dict]:
 
 
 # ---------------------------------------------------------------------------
+# Verdict coverage (#12233 F2b): a recorded verdict parks a large issue
+# ---------------------------------------------------------------------------
+
+# The rules in this section are the F2b decision record on #12233 and
+# are kept in step with pm-stack/lane-guard/lane_guard.py, whose
+# `coverage` check applies them to a single issue: an open effort/l
+# or effort/m issue whose newest agent note is a triage verdict with
+# a recorded verdict token and a valid resume condition is covered.
+VERDICT_EFFORT_LABELS = frozenset({"effort/l", "effort/m"})
+RESUME_KINDS = frozenset({"slice_landed", "dependency_closed"})
+NON_VERDICTS = frozenset({"none", "unknown", "untriaged", "needs_triage"})
+
+_RESUME_VALUE_RE = re.compile(r"([A-Za-z][A-Za-z_ -]*?)\s*(?::|#|\s)\s*#?(\d+)\b")
+_AGENT_NOTE_MARKER = re.compile(r"agent-note[:-]v1|\*\*Agent note\*\*", re.IGNORECASE)
+_NOTE_STATE_RE = re.compile(r"\bstate\s*[:=]\s*([A-Za-z_-]+)", re.IGNORECASE)
+_NOTE_VERDICT_RE = re.compile(r"\bverdict\s*[:=]\s*([A-Za-z0-9][\w -]*)", re.IGNORECASE)
+_NOTE_RESUME_RE = re.compile(r"\bresume\s*[:=]\s*([^\n;]+)", re.IGNORECASE)
+
+
+def _issue_label_names(issue: dict) -> list[str]:
+    names: list[str] = []
+    for lab in issue.get("labels") or []:
+        if isinstance(lab, dict):
+            lab = lab.get("name")
+        if isinstance(lab, str) and lab:
+            names.append(lab)
+    return names
+
+
+def _norm_token(raw: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "_", str(raw).lower()).strip("_")
+
+
+def parse_resume_condition(value) -> str | None:
+    """Canonical `kind:target` for a resume condition, or None.
+
+    Accepts the string forms a note or fixture carries
+    (`dependency_closed:539`, `slice landed #12543`) and the dict
+    form (`{"kind": ..., "target": ...}`). The kind must be a
+    checkable event and the target an issue/PR number: a date, a
+    person, or a kind with no target is not a resume condition.
+    """
+    if isinstance(value, dict):
+        kind = _norm_token(value.get("kind") or "")
+        target = str(value.get("target") or "").lstrip("#")
+        if kind in RESUME_KINDS and target.isdigit():
+            return f"{kind}:{target}"
+        return None
+    if not isinstance(value, str):
+        return None
+    m = _RESUME_VALUE_RE.search(value.strip())
+    if not m:
+        return None
+    kind = _norm_token(m.group(1))
+    if kind not in RESUME_KINDS:
+        return None
+    return f"{kind}:{m.group(2)}"
+
+
+def verdict_coverage(issue: dict) -> dict | None:
+    """{"verdict", "resume"} when the issue's recorded verdict parks
+    it under F2b, else None. The issue dict carries `labels`,
+    `verdict` and `resume_condition` (fixture fields, or the live
+    enrichment from fetch_issue_verdict)."""
+    if not (set(_issue_label_names(issue)) & VERDICT_EFFORT_LABELS):
+        return None
+    verdict = _norm_token(issue.get("verdict") or "")
+    if not verdict or verdict in NON_VERDICTS:
+        return None
+    resume = parse_resume_condition(
+        issue.get("resume_condition") or issue.get("resume")
+    )
+    if not resume:
+        return None
+    return {"verdict": verdict, "resume": resume}
+
+
+def verdict_from_comments(comments: list) -> dict:
+    """{"verdict", "resume_condition"} read from the newest agent
+    note, or {} when that note is not a recorded triage verdict.
+
+    Mirrors the lane-guard freshness rule: the scan stops at the
+    newest non-bot comment — a human comment or a newer agent note
+    of any other state means the verdict is no longer the newest
+    signal, so it does not cover.
+    """
+    for c in reversed(comments or []):
+        body = c.get("body") or ""
+        if not _AGENT_NOTE_MARKER.search(body):
+            user = c.get("user") or {}
+            if user.get("type") == "Bot":
+                continue  # bots (CI, sweepers) are not news
+            return {}
+        head = body[:600]
+        m_state = _NOTE_STATE_RE.search(head)
+        m_verdict = _NOTE_VERDICT_RE.search(head)
+        if (
+            not m_state
+            or m_state.group(1).lower().replace("-", "_") != "triaged"
+            or not m_verdict
+        ):
+            return {}
+        out = {"verdict": _norm_token(m_verdict.group(1))}
+        m_resume = _NOTE_RESUME_RE.search(head)
+        if m_resume:
+            resume = parse_resume_condition(m_resume.group(1))
+            if resume:
+                out["resume_condition"] = resume
+        return out
+    return {}
+
+
+def verdict_from_comments(comments: list) -> dict:
+    """{"verdict", "resume_condition"} read from the newest agent
+    note, or {} when that note is not a recorded triage verdict.
+
+    Mirrors the lane-guard freshness rule: the scan stops at the
+    newest non-bot comment — a human comment or a newer agent note
+    of any other state means the verdict is no longer the newest
+    signal, so it does not cover. When the note comment carries a
+    timestamp it is returned as `verdict_at`, so the caller can
+    check the timeline for changes after the verdict.
+    """
+    for c in reversed(comments or []):
+        body = c.get("body") or ""
+        if not _AGENT_NOTE_MARKER.search(body):
+            user = c.get("user") or {}
+            if user.get("type") == "Bot":
+                continue  # bots (CI, sweepers) are not news
+            return {}
+        head = body[:600]
+        m_state = _NOTE_STATE_RE.search(head)
+        m_verdict = _NOTE_VERDICT_RE.search(head)
+        if (
+            not m_state
+            or m_state.group(1).lower().replace("-", "_") != "triaged"
+            or not m_verdict
+        ):
+            return {}
+        out = {"verdict": _norm_token(m_verdict.group(1))}
+        m_resume = _NOTE_RESUME_RE.search(head)
+        if m_resume:
+            resume = parse_resume_condition(m_resume.group(1))
+            if resume:
+                out["resume_condition"] = resume
+        if c.get("created_at"):
+            out["verdict_at"] = c["created_at"]
+        return out
+    return {}
+
+
+def _parse_ts(value) -> datetime | None:
+    """An ISO-8601 timestamp, or None when it cannot be read."""
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except (ValueError, TypeError):
+        return None
+
+
+# Timeline event -> the kind of issue change it proves, kept in step
+# with lane_guard.changes_from_timeline: a commit referenced on the
+# issue, a label change, a body edit. `commented` is deliberately
+# absent: comments are judged from the comment list itself, where
+# human vs bot is visible.
+_TIMELINE_CHANGES = {"labeled": "label", "unlabeled": "label", "edited": "body"}
+
+
+def changes_from_timeline(events: list) -> list:
+    """[{"kind", "at"}] for the issue changes a verdict must not
+    outlive. A `referenced` event only counts as a commit when it
+    carries a commit_id (a cross-reference from another issue is
+    not one)."""
+    out = []
+    for e in events or []:
+        if not isinstance(e, dict):
+            continue
+        kind = _TIMELINE_CHANGES.get(e.get("event"))
+        if e.get("event") == "referenced" and e.get("commit_id"):
+            kind = "commit"
+        if kind and e.get("created_at"):
+            out.append({"kind": kind, "at": e["created_at"]})
+    return out
+
+
+def verdict_fresh(issue: dict) -> bool:
+    """True unless a recorded timeline change postdates the verdict.
+
+    The issue carries `verdict_at` (the verdict note's timestamp)
+    and `timeline_changes` (from fetch_issue_verdict, or a fixture).
+    With neither recorded there is nothing to compare, so the
+    verdict stands; an unreadable timestamp never invents staleness.
+    """
+    verdict_at = _parse_ts(issue.get("verdict_at"))
+    if verdict_at is None:
+        return True
+    for ch in issue.get("timeline_changes") or []:
+        at = _parse_ts(ch.get("at") if isinstance(ch, dict) else None)
+        if at is not None and at > verdict_at:
+            return False
+    return True
+
+
+def fetch_issue_timeline(repo: str, number: int, gh: str = "gh") -> list:
+    """The issue changes a verdict must not outlive, from the
+    issue timeline. A failed fetch is a FetchError: without the
+    timeline the verdict's freshness is unknown, so the caller
+    must not treat the verdict as fresh."""
+    cmd = [
+        gh,
+        "api",
+        "--paginate",
+        f"repos/{repo}/issues/{number}/timeline?per_page=100",
+        "--jq",
+        ".[] | {event, created_at, commit_id}",
+    ]
+    try:
+        out = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise FetchError(f"github timeline failed for {repo}#{number}: {exc}") from exc
+    if out.returncode != 0:
+        raise FetchError(
+            f"github timeline failed for {repo}#{number} (exit {out.returncode}): "
+            f"{out.stderr.strip()[:400]}"
+        )
+    events: list[dict] = []
+    for line in out.stdout.splitlines():
+        line = line.strip()
+        if line:
+            events.append(json.loads(line))
+    return changes_from_timeline(events)
+
+
+def fetch_issue_verdict(repo: str, number: int, gh: str = "gh") -> dict:
+    """The recorded verdict on one issue, from its comments.
+
+    A failed fetch is a FetchError, exactly like the enumerations:
+    an unread issue must never read as verdict-covered (which would
+    suppress triage) or silently as verdict-free. When a verdict is
+    found, its timeline is fetched too and returned as
+    `timeline_changes`, so the caller can end coverage on a label,
+    commit or body change after the verdict (verdict_fresh).
+    """
+    cmd = [
+        gh,
+        "api",
+        "--paginate",
+        f"repos/{repo}/issues/{number}/comments?per_page=100",
+        "--jq",
+        ".[] | {body, created_at, user: {type: .user.type}}",
+    ]
+    try:
+        out = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise FetchError(f"github comments failed for {repo}#{number}: {exc}") from exc
+    if out.returncode != 0:
+        raise FetchError(
+            f"github comments failed for {repo}#{number} (exit {out.returncode}): "
+            f"{out.stderr.strip()[:400]}"
+        )
+    comments: list[dict] = []
+    for line in out.stdout.splitlines():
+        line = line.strip()
+        if line:
+            comments.append(json.loads(line))
+    verdict = verdict_from_comments(comments)
+    if verdict:
+        verdict["timeline_changes"] = fetch_issue_timeline(repo, number, gh)
+    return verdict
+
+
+# ---------------------------------------------------------------------------
+# Resume conditions (#12233 F2b): is the verdict's wait over?
+# ---------------------------------------------------------------------------
+#
+# Decision (FDR-0013: decide, record, continue — no owner gate): a
+# resume condition is fulfilled by live GitHub state, checked at
+# reconciliation time. `dependency_closed:N` is fulfilled iff issue
+# N is closed. `slice_landed:N` is fulfilled iff PR N is merged; a
+# PR closed without merging did not land the slice, so it does not
+# release the verdict. A target whose state cannot be read is
+# unknown, never fulfilled: the issue stays covered and the failure
+# is reported (exit 3), so a transient outage cannot re-triage a
+# parked issue or park one whose wait is over.
+
+
+def resume_fulfilled(resume: str, state: str | None) -> bool | None:
+    """True/False when `state` settles the resume condition, None
+    when the state is unknown or unrecognised."""
+    kind, _, _ = resume.partition(":")
+    if kind == "dependency_closed":
+        if state == "closed":
+            return True
+        if state == "open":
+            return False
+        return None
+    if kind == "slice_landed":
+        if state == "merged":
+            return True
+        if state in ("open", "closed"):
+            return False
+        return None
+    return None
+
+
+def fetch_resume_state(repo: str, resume: str, gh: str = "gh") -> str:
+    """The live state of a resume condition's target: an issue's
+    state, or a PR's state with "merged" when it has a merge
+    timestamp. A failed fetch is a FetchError."""
+    kind, _, target = resume.partition(":")
+    if kind == "dependency_closed":
+        cmd = [gh, "api", f"repos/{repo}/issues/{target}", "--jq", ".state"]
+    elif kind == "slice_landed":
+        cmd = [
+            gh,
+            "api",
+            f"repos/{repo}/pulls/{target}",
+            "--jq",
+            "{merged: (.merged_at != null), state: .state}",
+        ]
+    else:
+        raise FetchError(f"unknown resume kind in {resume!r}")
+    try:
+        out = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise FetchError(
+            f"github resume target failed for {repo} {resume}: {exc}"
+        ) from exc
+    if out.returncode != 0:
+        raise FetchError(
+            f"github resume target failed for {repo} {resume} "
+            f"(exit {out.returncode}): {out.stderr.strip()[:400]}"
+        )
+    if kind == "dependency_closed":
+        # `--jq .state` emits the raw state word (`closed` / `open`),
+        # not JSON — read it as stripped text. Decoding it as JSON
+        # raised on every live lookup and left closed dependencies
+        # classified unknown.
+        return out.stdout.strip()
+    try:
+        value = json.loads(out.stdout.strip())
+    except json.JSONDecodeError as exc:
+        raise FetchError(
+            f"github resume target failed for {repo} {resume}: unreadable reply"
+        ) from exc
+    if kind == "slice_landed":
+        return "merged" if value.get("merged") else str(value.get("state") or "")
+    return str(value or "")
+
+
+def resolve_resume(
+    repo: str, resume: str, states: dict | None = None, gh: str = "gh"
+) -> bool | None:
+    """True when the resume condition is fulfilled, False when its
+    target is known not to be, None when fulfilment is unknown.
+    `states` is the fixture-mode map of canonical resume condition
+    to target state (`"closed"` / `"open"` for a dependency,
+    `"merged"` / `"open"` / `"closed"` for a slice); with no map the
+    target is read live. A resume condition absent from the map is
+    unknown, never assumed fulfilled."""
+    if states is not None:
+        if resume not in states:
+            return None
+        return resume_fulfilled(resume, states[resume])
+    return resume_fulfilled(resume, fetch_resume_state(repo, resume, gh))
+
+
+# ---------------------------------------------------------------------------
 # Broker: the coverage diff
 # ---------------------------------------------------------------------------
 
@@ -217,8 +624,15 @@ def broker_coverage(
     queue: str,
     repo: str,
     issues: list[dict],
+    pulls: list[dict] | None = None,
 ) -> dict:
-    body = json.dumps({"queue": queue, "repo": repo, "issues": issues}).encode()
+    request: dict = {"queue": queue, "repo": repo, "issues": issues}
+    if pulls is not None:
+        # #12280: the broker answers PR coverage (covered_pulls /
+        # uncovered_pulls) for the PR numbers it is given, under the
+        # same live-task rule as issues.
+        request["pulls"] = [{"number": pr["number"]} for pr in pulls]
+    body = json.dumps(request).encode()
     req = urllib.request.Request(
         broker_url.rstrip("/") + "/coverage",
         data=body,
@@ -391,6 +805,150 @@ def merge_watch_packet(repo: str, issue: dict, pr: dict, checked_at: str) -> dic
     }
 
 
+def shepherd_packet(repo: str, pr: dict, checked_at: str) -> dict:
+    """One `pr_shepherd` packet for a ready PR no live task names (#12280).
+
+    Keyed with the stale-PR warden's own dedupe key
+    (`repo-health:v1:pr:<repo>:pr:<n>`), so this fallback and the
+    warden dedupe onto a single live task whichever files first. The
+    done rule is the warden's, stated in the packet: the task is done
+    only when the PR is merged or closed with a reason.
+    """
+    pr_number = pr["number"]
+    pr_url = f"https://github.com/{repo}/pull/{pr_number}"
+    title = pr.get("title") or f"PR {pr_number}"
+    return {
+        "title": f"Shepherd ready PR #{pr_number}: {title}"[:180],
+        "body": (
+            f"Filed by the standing queue coverage reconciliation (#12280 "
+            f"fallback): {pr_url} is a ready (non-draft) PR older than 6 hours "
+            "with no live task naming it — the fallback for when the stale-PR "
+            "warden has not run. Shepherd it to a finish: answer or fix every "
+            "review finding, re-check mergeability against current main, "
+            "refresh the branch if the change is still desired, and merge it "
+            "when verified — or close it with a reason (salvage note per "
+            "protocol §8) if main has superseded it. This task is done only "
+            "when the PR is merged or closed with a reason recorded."
+        ),
+        "priority": 40,
+        "dedupe_key": f"repo-health:v1:pr:{repo}:pr:{pr_number}",
+        "payload": {
+            "schema": "repo-task/v1",
+            "kind": "pr_shepherd",
+            "repo": repo,
+            "queue": None,  # filled by the caller with the pilot queue
+            # PR references, not bare numbers: the queue validator
+            # requires every prs element to be an object with a
+            # positive-integer `number` (#5549).
+            "prs": [{"number": pr_number, "url": pr_url, "title": title}],
+            "pr": {
+                "number": pr_number,
+                "url": pr_url,
+                "title": title,
+                "branch": pr.get("branch") or ((pr.get("head") or {}).get("ref") or ""),
+                "state_checked_at": checked_at,
+            },
+            "problem": (
+                "A ready PR with no live task naming it has no owner for its "
+                "review findings or its merge, so it sits until the branch "
+                "drifts into conflict. The stale-PR warden normally files "
+                "this task; the coverage reconciliation is its fallback "
+                "(#12280)."
+            ),
+            "evidence": [
+                f"Coverage reconciliation {checked_at}: PR #{pr_number} is "
+                "ready (non-draft), older than 6 hours, and no live task "
+                "names it",
+                pr_url,
+            ],
+            "acceptance": [
+                "Every review finding on the PR is answered or fixed",
+                "Mergeability re-checked against current main immediately before merging",
+                "The PR is merged when verified, OR closed with a reason recorded (salvage note per protocol §8 if superseded)",
+                "The PR's change is NOT re-implemented by a fresh task",
+            ],
+            "tests": [
+                "Merge / mergeable verdict recorded on the task; if merged, the PR's closing-keyword disposition of its issue is verified",
+            ],
+            "scope": {
+                "include": [
+                    f"Shepherd existing PR {repo}#{pr_number} to merged or closed-with-reason"
+                ],
+                "exclude": [
+                    "Re-implementing the PR's change",
+                    "Unrelated issues, pull requests, or repositories",
+                ],
+            },
+            "risk": {"level": "low", "flags": ["pr-shepherd-fallback"]},
+            "priority_reason": (
+                "Warden parity (40): a ready PR older than 6 hours with no "
+                "live owner, filed by coverage reconciliation (#12280)."
+            ),
+            "timebox_minutes": 45,
+            "max_attempts": 4,
+            "context_refs": [pr_url],
+            "dedupe": {
+                "checked_at": checked_at,
+                "basis": "Ready-PR shepherd fallback (#12280): ready PR older than 6h with no live task naming it at check time; warden dedupe key, so the warden and this fallback share one live task per PR.",
+            },
+        },
+    }
+
+
+# A ready PR becomes a shepherd candidate once it is this old. Six
+# hours matches #12280's done-when: long enough that a producing lane
+# has had its chance to own the merge, short enough that the branch
+# has not drifted far.
+SHEPHERD_MIN_AGE_HOURS = 6
+
+
+def _parse_ts(value) -> datetime | None:
+    if value is None:
+        return None
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except (ValueError, TypeError):
+        return None
+
+
+def ready_shepherd_candidates(
+    pulls: list[dict],
+    uncovered_pull_numbers: set[int],
+    watch_pull_numbers: set[int],
+    checked_at: str,
+) -> list[dict]:
+    """Ready PRs the fallback files a shepherd for (#12280).
+
+    Oracle: the issue's done-when — a `pr_shepherd` task exists for
+    each ready PR older than 6 hours, checked by the queue store
+    against `gh pr list`. A PR qualifies iff it is non-draft, its
+    created_at is at least SHEPHERD_MIN_AGE_HOURS before the check,
+    the broker's live-task diff names no live task for it (it is in
+    `uncovered_pull_numbers`), and it is not already receiving a
+    merge-watch packet this run. A PR whose draft state or age cannot
+    be proven from the enumeration is never filed on — the same
+    fail-closed rule as the fetch paths.
+    """
+    now = _parse_ts(checked_at)
+    candidates: list[dict] = []
+    for pr in pulls:
+        number = pr.get("number")
+        if number not in uncovered_pull_numbers:
+            continue
+        if number in watch_pull_numbers:
+            continue
+        if pr.get("draft") is not False:
+            continue
+        created = pr.get("created_at")
+        if not created:
+            continue
+        age = now - _parse_ts(created)
+        if age.total_seconds() < SHEPHERD_MIN_AGE_HOURS * 3600:
+            continue
+        candidates.append(pr)
+    return candidates
+
+
 def enqueue_packet(
     packet: dict,
     queue: str,
@@ -408,7 +966,9 @@ def enqueue_packet(
     """
     payload = packet["payload"]
     repo_slug = payload["repo"].replace("/", "-")
-    number = payload["issue"]["number"]
+    # Issue packets key the temp file on the issue; PR packets
+    # (merge-watch, shepherd) key it on the PR.
+    number = (payload.get("issue") or payload["pr"])["number"]
     fd, tmp_name = tempfile.mkstemp(
         prefix=f"coverage-{repo_slug}-{number}-",
         suffix=".json",
@@ -455,29 +1015,80 @@ def render_report(
         f"# Queue coverage reconciliation — {checked_at}",
         "",
         f"Mode: **{mode}**. Doctrine: every open issue must hold a LIVE task "
-        "(queued/claimed/parked/blocked) in its own pilot queue; a done task is not coverage.",
+        "(queued/claimed/parked/blocked) in its own pilot queue; a done task is not coverage, "
+        "but a recorded verdict with a resume condition is parked coverage (#12233 F2b).",
         "",
-        "| repo | queue | open issues | covered | open-PR covered | uncovered | imported | watch imported |",
-        "|---|---|---|---|---|---|---|---|",
+        "| repo | queue | open issues | covered | open-PR covered | verdict covered | uncovered | imported | watch imported |",
+        "|---|---|---|---|---|---|---|---|---|",
     ]
     for r in results:
         lines.append(
             f"| {r['repo']} | {r['queue']} | {r['open_issues']} | {r['covered']} "
-            f"| {r.get('pr_covered', 0)} | {r['uncovered']} | {r['imported']} "
+            f"| {r.get('pr_covered', 0)} | {r.get('verdict_covered', 0)} "
+            f"| {r['uncovered']} | {r['imported']} "
             f"| {r.get('watch_imported', 0)} |"
         )
     total_uncovered = sum(r["uncovered"] for r in results)
     total_imported = sum(r["imported"] for r in results)
     total_pr = sum(r.get("pr_covered", 0) for r in results)
+    total_verdict = sum(r.get("verdict_covered", 0) for r in results)
     total_watch = sum(r.get("watch_imported", 0) for r in results)
+    total_shepherd = sum(len(r.get("shepherd_candidates", [])) for r in results)
+    total_shepherd_imported = sum(r.get("shepherd_imported", 0) for r in results)
+    total_unread = sum(len(r.get("verdict_unread_issues", [])) for r in results)
+    total_fulfilled = sum(len(r.get("resume_fulfilled_issues", [])) for r in results)
+    total_stale = sum(len(r.get("stale_issues", [])) for r in results)
     lines += [
         "",
         f"**Total uncovered: {total_uncovered}** · imported this run: {total_imported}",
         f"Open-PR covered (#4951): {total_pr} · merge-watch imported this run: {total_watch}",
+        f"Ready-PR shepherd candidates (#12280): {total_shepherd} · shepherd imported this run: {total_shepherd_imported}",
+        f"Verdict covered (#12233 F2b): {total_verdict}",
+        f"Verdict unread (fetch failed — skipped from import): {total_unread} "
+        f"· resume condition fulfilled (due for re-triage): {total_fulfilled} "
+        f"· verdict stale (changed after the verdict): {total_stale}",
         "",
     ]
     if errors:
         lines += ["## ERRORS", ""] + [f"- {e}" for e in errors] + [""]
+    unread_any = [(r, i) for r in results for i in r.get("verdict_unread_issues", [])]
+    if unread_any:
+        lines += [
+            "## Verdict unread — fetch failed, skipped from import (#12233 F2b)",
+            "",
+        ]
+        for r, i in unread_any:
+            lines.append(
+                f"- {r['repo']}#{i['number']} — the recorded verdict could not be "
+                "read, so no triage packet was enqueued for it"
+            )
+        lines.append("")
+    fulfilled_any = [
+        (r, i) for r in results for i in r.get("resume_fulfilled_issues", [])
+    ]
+    if fulfilled_any:
+        lines += [
+            "## Resume condition fulfilled — due for re-triage (#12233 F2b)",
+            "",
+        ]
+        for r, i in fulfilled_any:
+            lines.append(
+                f"- {r['repo']}#{i['number']} — verdict {i.get('verdict')} "
+                f"(resume {i.get('resume')} fulfilled)"
+            )
+        lines.append("")
+    stale_any = [(r, i) for r in results for i in r.get("stale_issues", [])]
+    if stale_any:
+        lines += [
+            "## Verdict stale — issue changed after the verdict (#12233 F2b)",
+            "",
+        ]
+        for r, i in stale_any:
+            lines.append(
+                f"- {r['repo']}#{i['number']} — verdict {i.get('verdict')} "
+                "(a label, commit or body change postdates the verdict)"
+            )
+        lines.append("")
     pr_any = [(r, i) for r in results for i in r.get("pr_covered_issues", [])]
     if pr_any:
         lines += [
@@ -491,11 +1102,32 @@ def render_report(
                 f"({pr.get('branch') or 'branch unknown'})"
             )
         lines.append("")
+    verdict_any = [(r, i) for r in results for i in r.get("verdict_covered_issues", [])]
+    if verdict_any:
+        lines += [
+            "## Covered by a recorded verdict — parked, no triage packet (#12233 F2b)",
+            "",
+        ]
+        for r, i in verdict_any:
+            lines.append(
+                f"- {r['repo']}#{i['number']} — verdict {i.get('verdict')} "
+                f"(resume {i.get('resume')})"
+            )
+        lines.append("")
     uncovered_any = [(r, i) for r in results for i in r.get("uncovered_issues", [])]
     if uncovered_any:
         lines += ["## Uncovered issues", ""]
         for r, i in uncovered_any:
             lines.append(f"- {r['repo']}#{i['number']} — {i.get('title', '')}")
+        lines.append("")
+    shepherd_any = [(r, p) for r in results for p in r.get("shepherd_candidates", [])]
+    if shepherd_any:
+        lines += [
+            "## Ready PRs with no live task — shepherd candidates (#12280)",
+            "",
+        ]
+        for r, p in shepherd_any:
+            lines.append(f"- {r['repo']}#{p['number']} — {p.get('title', '')}")
         lines.append("")
     return "\n".join(lines)
 
@@ -560,6 +1192,12 @@ def main(argv: list[str] | None = None) -> int:
 
     results: list[dict] = []
     errors: list[str] = []
+    # Fixture mode only: canonical resume condition -> target state
+    # ("closed"/"open" for a dependency, "merged"/"open"/"closed"
+    # for a slice), so the resume-fulfilment check runs offline. An
+    # absent map is an empty map (unknown, never fulfilled), never a
+    # live lookup: fixtures must not touch the network.
+    resume_states = (fixture.get("resume_targets") or {}) if fixture else None
     for queue, repo in selected:
         try:
             if fixture:
@@ -568,11 +1206,36 @@ def main(argv: list[str] | None = None) -> int:
                 pulls = (fixture.get("pulls") or {}).get(repo, [])
             else:
                 issues = fetch_open_issues(repo)
-                cov = broker_coverage(args.broker_url, token, queue, repo, issues)
                 pulls = fetch_open_prs(repo)
+                cov = broker_coverage(
+                    args.broker_url, token, queue, repo, issues, pulls
+                )
         except (FetchError, KeyError) as exc:
             errors.append(str(exc))
             continue
+
+        # A verdict read that failed leaves the issue's verdict
+        # unknown: it is skipped from the import below, never
+        # treated as verdict-free.
+        verdict_read_failed: set[int] = set()
+        if not fixture:
+            # #12233 F2b: the broker diff cannot see verdicts. For
+            # the effort issues it calls uncovered, read the recorded
+            # verdict from the issue's comments and merge it into the
+            # issue dict the verdict split below reads. A failed read
+            # is recorded as an error, never as "no verdict".
+            by_number = {i["number"]: i for i in issues}
+            for entry in cov.get("uncovered_issues", []):
+                issue = by_number.get(entry["number"])
+                if issue is None or not (
+                    set(_issue_label_names(issue)) & VERDICT_EFFORT_LABELS
+                ):
+                    continue
+                try:
+                    issue.update(fetch_issue_verdict(repo, issue["number"]))
+                except FetchError as exc:
+                    errors.append(str(exc))
+                    verdict_read_failed.add(issue["number"])
 
         # #4951: an issue the broker calls uncovered whose fix PR is
         # still open is in-flight, not ownerless — no triage packet.
@@ -584,6 +1247,45 @@ def main(argv: list[str] | None = None) -> int:
             for i in broker_uncovered
             if i["number"] in pr_coverage
         ]
+
+        # #12233 F2b: an issue the broker calls uncovered whose
+        # recorded verdict parks it is verdict-covered — the verdict
+        # note is the park record, so no triage packet. Two releases
+        # end the coverage: a timeline change after the verdict
+        # (verdict_fresh), and a fulfilled resume condition
+        # (resolve_resume). An unread verdict is neither covered nor
+        # uncovered — it is skipped from the import entirely.
+        by_number = {i["number"]: i for i in issues}
+        verdict_covered: list[dict] = []
+        verdict_unread: list[dict] = []
+        resume_fulfilled_issues: list[dict] = []
+        stale_issues: list[dict] = []
+        still_uncovered: list[dict] = []
+        for entry in uncovered:
+            issue = by_number.get(entry["number"], entry)
+            if entry["number"] in verdict_read_failed:
+                verdict_unread.append(entry)
+                continue
+            info = verdict_coverage(issue)
+            if not info:
+                still_uncovered.append(entry)
+                continue
+            if not verdict_fresh(issue):
+                stale_issues.append({**entry, **info})
+                still_uncovered.append(entry)
+                continue
+            try:
+                fulfilled = resolve_resume(repo, info["resume"], resume_states)
+            except FetchError as exc:
+                errors.append(str(exc))
+                fulfilled = None
+            if fulfilled:
+                resume_fulfilled_issues.append({**entry, **info})
+                still_uncovered.append(entry)
+            else:
+                verdict_covered.append({**entry, **info})
+        uncovered = still_uncovered
+
         imported = 0
         if do_import and uncovered:
             for issue in uncovered:
@@ -612,6 +1314,54 @@ def main(argv: list[str] | None = None) -> int:
                         f"merge-watch enqueue failed for {repo}#{issue['number']}: {detail}"
                     )
 
+        # #12280: ready PRs older than 6h with no live task naming
+        # them get a warden-keyed shepherd packet. The broker's PR
+        # diff is the authority on "live task naming it"; a live-mode
+        # answer without a PR section means the broker predates the
+        # PR half — an error, never a licence to file blind.
+        if fixture:
+            fixture_uncovered = cov.get("uncovered_pulls")
+            uncovered_pull_numbers = (
+                {p["number"] for p in fixture_uncovered}
+                if fixture_uncovered is not None
+                else {pr["number"] for pr in pulls}
+            )
+            pr_diff_known = True
+        else:
+            live_uncovered = cov.get("uncovered_pulls")
+            pr_diff_known = live_uncovered is not None
+            uncovered_pull_numbers = (
+                {p["number"] for p in live_uncovered} if pr_diff_known else set()
+            )
+            if not pr_diff_known:
+                errors.append(
+                    f"broker /coverage returned no PR coverage for {queue}: "
+                    "ready-PR shepherd fallback skipped for this repo"
+                )
+        shepherd_candidates = (
+            ready_shepherd_candidates(
+                pulls,
+                uncovered_pull_numbers,
+                {i["pr"]["number"] for i in pr_covered},
+                checked_at,
+            )
+            if pr_diff_known
+            else []
+        )
+        shepherd_imported = 0
+        if do_import and shepherd_candidates:
+            for pr in shepherd_candidates:
+                packet = shepherd_packet(repo, pr, checked_at)
+                ok, detail = enqueue_packet(
+                    packet, queue, args.fleet, args.broker_url, args.token_file
+                )
+                if ok:
+                    shepherd_imported += 1
+                else:
+                    errors.append(
+                        f"shepherd enqueue failed for {repo}#{pr['number']}: {detail}"
+                    )
+
         results.append(
             {
                 "repo": repo,
@@ -620,9 +1370,18 @@ def main(argv: list[str] | None = None) -> int:
                 "covered": cov.get("covered", 0),
                 "pr_covered": len(pr_covered),
                 "pr_covered_issues": pr_covered,
+                "verdict_covered": len(verdict_covered),
+                "verdict_covered_issues": verdict_covered,
+                "verdict_unread": len(verdict_unread),
+                "verdict_unread_issues": verdict_unread,
+                "resume_fulfilled": len(resume_fulfilled_issues),
+                "resume_fulfilled_issues": resume_fulfilled_issues,
+                "stale_issues": stale_issues,
                 "uncovered": len(uncovered),
                 "imported": imported,
                 "watch_imported": watch_imported,
+                "shepherd_candidates": shepherd_candidates,
+                "shepherd_imported": shepherd_imported,
                 "uncovered_issues": uncovered,
             }
         )

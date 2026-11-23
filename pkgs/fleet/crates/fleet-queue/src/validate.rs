@@ -57,7 +57,12 @@
 //! next-up ⇒ 25 — the ratified stored bands, deliberately off the
 //! stated-value scale above). The packet's stated priority is
 //! validated here exactly as before, and stands whenever neither
-//! label is present.
+//! label is present. The labels themselves are carried by the
+//! broker, not left to producer discipline (#12744): at enqueue,
+//! a packet that identifies an issue but carries no labels array
+//! is enriched from the GitHub mirror in the same store
+//! (turso_queue::label_enrich), so the selection fires on every
+//! packet; a producer-supplied array stands untouched.
 
 use serde_json::{Value, json};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -72,12 +77,13 @@ pub const PRIORITY_SCALE: [i64; 7] = [10, 20, 30, 40, 50, 70, 90];
 /// read back at 15/25. task_from_packet performs the selection.
 pub const EXPEDITE_PRIORITY: i64 = 15;
 pub const NEXT_UP_PRIORITY: i64 = 25;
-pub const KINDS: [&str; 5] = [
+pub const KINDS: [&str; 6] = [
     "pr_shepherd",
     "triage",
     "small_fix",
     "ci_investigation",
     "second_pass",
+    "feature_slice",
 ];
 // Both the old and the current names of the two repos that moved to the
 // developing-today-forks org (2026-11-04) stay allowlisted: in-flight queue
@@ -100,11 +106,13 @@ const BODY_WARN_WORDS: usize = 250;
 
 pub const DEDUPE_PATTERNS_DOC: &str = "fix:         repo-health:v1:fix:<repo>:issue:<n>\n\
 triage:      repo-health:v1:triage:<repo>:issue:<n>\n\
+dispatch:    fix/triage issue key may append :dispatch:<8-or-16-hex>\n\
 pr:          repo-health:v1:pr:<repo>:pr:<n>\n\
 pr-set:      repo-health:v1:pr-set:<repo>:<n>-<n>[-...] (sorted)\n\
 set:         repo-health:v1:set:<origin issue>:owed:<repo>\n\
 maintenance: repo-health:v1:maintenance:<repo>:<kind>:<YYYY-Www>\n\
-second-pass: repo-health:v1:second-pass:<repo>:<issue>:pass-<n>";
+second-pass: repo-health:v1:second-pass:<repo>:<issue>:pass-<n>\n\
+slice:       repo-health:v1:slice:<repo>:issue:<n>:slice-<k>";
 
 fn manual_schema_errors(p: &Value) -> Vec<String> {
     let mut errs = Vec::new();
@@ -294,6 +302,7 @@ fn manual_schema_errors(p: &Value) -> Vec<String> {
         );
     }
     errs.extend(review_errors(p));
+    errs.extend(slice_errors(p));
     errs
 }
 
@@ -385,6 +394,72 @@ fn review_errors(p: &Value) -> Vec<String> {
 }
 
 /// Python-style repr for the one message that embeds a value.
+/// The slice payload block (#12233 F2c decision record): required for
+/// kind feature_slice, and shape-checked whenever a packet of any kind
+/// carries one. The plan's four required fields — parent issue, the
+/// criterion it moves, the done-check command, owned paths — plus the
+/// slice ordinal that keys the dedupe identity. A slice with no done
+/// check is rejected here, in the enqueue code path: a slice nobody
+/// can verify is how large issues collect verdicts instead of code.
+fn slice_errors(p: &Value) -> Vec<String> {
+    let mut errs = Vec::new();
+    let kind = p.get("kind").and_then(|k| k.as_str()).unwrap_or("");
+    let slice = p.get("slice");
+    if kind != "feature_slice" && slice.is_none() {
+        return errs;
+    }
+    let Some(slice) = slice.and_then(|s| s.as_object()) else {
+        errs.push("payload.slice: required object for kind feature_slice (#12233 F2c)".to_string());
+        return errs;
+    };
+    let parent = match slice.get("parent_issue") {
+        Some(Value::Number(n)) if n.as_i64().is_some_and(|v| v >= 1) => n.as_i64(),
+        _ => {
+            errs.push("payload.slice.parent_issue: must be a positive integer".to_string());
+            None
+        }
+    };
+    match slice.get("number") {
+        Some(Value::Number(n)) if n.as_i64().is_some_and(|v| v >= 1) => {}
+        _ => errs.push("payload.slice.number: must be a positive integer".to_string()),
+    }
+    // The packet's issue IS the parent issue (decision record point
+    // 2): broker coverage and the F2b verdict rules keep operating on
+    // the one issue identity, so a slice block naming a different
+    // parent than the packet's issue is a contradiction, not a slice.
+    if let (Some(parent), Some(ino)) = (
+        parent,
+        p.get("issue")
+            .and_then(|i| i.get("number"))
+            .and_then(|n| n.as_i64()),
+    ) {
+        if parent != ino {
+            errs.push(format!(
+                "payload.slice.parent_issue: {parent} does not match payload.issue.number {ino}"
+            ));
+        }
+    }
+    for f in ["criterion", "done_check"] {
+        match slice.get(f) {
+            Some(Value::String(s)) if !s.is_empty() => {}
+            _ => errs.push(format!(
+                "payload.slice.{f}: required non-empty string for feature_slice packets"
+            )),
+        }
+    }
+    match slice.get("owned_paths") {
+        Some(Value::Array(a))
+            if !a.is_empty()
+                && a.iter()
+                    .all(|s| matches!(s, Value::String(v) if !v.is_empty())) => {}
+        _ => errs.push(
+            "payload.slice.owned_paths: required non-empty list of non-empty path strings for feature_slice packets"
+                .to_string(),
+        ),
+    }
+    errs
+}
+
 fn python_repr(v: Option<&Value>) -> String {
     match v {
         None | Some(Value::Null) => "None".to_string(),
@@ -399,8 +474,9 @@ pub struct DedupeMatch {
     pub num: Option<i64>,
     pub nums: Option<Vec<i64>>,
     pub origin: Option<i64>,
-    /// The commissioned pass for the second-pass family (#2310);
-    /// None for every other family.
+    /// The commissioned pass for the second-pass family (#2310), or
+    /// the slice ordinal for the slice family (#12233 F2c); None for
+    /// every other family.
     pub pass: Option<i64>,
 }
 
@@ -423,6 +499,21 @@ fn canonical_number(s: &str) -> Option<i64> {
         return None;
     }
     Some(n)
+}
+
+/// Issue-scoped dispatch keys retain the issue-number cross-check. Support
+/// existing random 8-hex retry suffixes and stable 16-hex request suffixes.
+fn issue_number_with_dispatch_suffix(tail: &str) -> Option<i64> {
+    let (number, suffix) = match tail.split_once(":dispatch:") {
+        Some((number, suffix)) => (number, Some(suffix)),
+        None => (tail, None),
+    };
+    if let Some(suffix) = suffix {
+        if !matches!(suffix.len(), 8 | 16) || !suffix.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return None;
+        }
+    }
+    canonical_number(number)
 }
 
 /// Hand-rolled equivalent of the DEDUPE_REGEXES family patterns.
@@ -452,6 +543,7 @@ fn match_dedupe(key: &str) -> Option<DedupeMatch> {
         "pr",
         "maintenance",
         "second-pass",
+        "slice",
     ] {
         let Some(after) = rest.strip_prefix(&format!("{fam}:")) else {
             continue;
@@ -463,7 +555,7 @@ fn match_dedupe(key: &str) -> Option<DedupeMatch> {
             match fam {
                 "fix" | "triage" => {
                     if let Some(n) = tail.strip_prefix("issue:") {
-                        if let Some(num) = canonical_number(n) {
+                        if let Some(num) = issue_number_with_dispatch_suffix(n) {
                             return Some(DedupeMatch {
                                 family: fam.into(),
                                 repo: repo.to_string(),
@@ -491,6 +583,27 @@ fn match_dedupe(key: &str) -> Option<DedupeMatch> {
                                 origin: None,
                                 pass: Some(pass),
                             });
+                        }
+                    }
+                }
+                "slice" => {
+                    // repo-health:v1:slice:<repo>:issue:<n>:slice-<k>
+                    // (#12233 F2c): one live packet per (parent issue,
+                    // slice ordinal) by construction.
+                    if let Some(rest) = tail.strip_prefix("issue:") {
+                        if let Some((issue_s, slice_s)) = rest.split_once(":slice-") {
+                            if let (Some(num), Some(slice_no)) =
+                                (canonical_number(issue_s), canonical_number(slice_s))
+                            {
+                                return Some(DedupeMatch {
+                                    family: fam.into(),
+                                    repo: repo.to_string(),
+                                    num: Some(num),
+                                    nums: None,
+                                    origin: None,
+                                    pass: Some(slice_no),
+                                });
+                            }
                         }
                     }
                 }
@@ -592,6 +705,7 @@ fn kind_families(kind: &str) -> Option<&'static [&'static str]> {
         "pr_shepherd" => Some(&["pr", "pr-set", "set"]),
         "ci_investigation" => Some(&["fix", "triage", "pr"]),
         "second_pass" => Some(&["second-pass"]),
+        "feature_slice" => Some(&["slice"]),
         _ => None,
     }
 }
@@ -708,6 +822,40 @@ fn dedupe_errors(packet: &Value, payload: &Value) -> Vec<String> {
                 None => {
                     errors.push(format!(
                         "packet.dedupe_key: family 'second-pass' requires payload.review.pass {key_pass} matching the key pass, but the payload carries no review.pass"
+                    ));
+                }
+            }
+        }
+        "slice" => {
+            let n = m.num.unwrap_or(0);
+            match issue_no {
+                Some(ino) if n != ino => {
+                    errors.push(format!(
+                        "packet.dedupe_key: issue {n} in key does not match payload.issue.number {ino}"
+                    ));
+                }
+                Some(_) => {}
+                None => {
+                    errors.push(format!(
+                        "packet.dedupe_key: family 'slice' requires payload.issue.number {n} matching the key issue, but the payload carries no issue.number (#6446)"
+                    ));
+                }
+            }
+            let key_slice = m.pass.unwrap_or(0);
+            let slice_no = payload
+                .get("slice")
+                .and_then(|s| s.get("number"))
+                .and_then(|v| v.as_i64());
+            match slice_no {
+                Some(sn) if sn != key_slice => {
+                    errors.push(format!(
+                        "packet.dedupe_key: slice {key_slice} in key does not match payload.slice.number {sn}"
+                    ));
+                }
+                Some(_) => {}
+                None => {
+                    errors.push(format!(
+                        "packet.dedupe_key: family 'slice' requires payload.slice.number {key_slice} matching the key slice, but the payload carries no slice.number"
                     ));
                 }
             }
@@ -1110,8 +1258,10 @@ pub fn validate_packet(packet: &Value) -> (Vec<String>, Vec<String>) {
 /// same array the claim filter's label field reads. `expedite`
 /// outranks `next-up` when a packet somehow carries both. Parsing is
 /// tolerant, mirroring the claim filter: a non-array `labels` value
-/// or non-string entries select nothing.
-fn label_band_priority(payload: &Value) -> Option<i64> {
+/// or non-string entries select nothing. pub(crate) since #12744:
+/// the triage follow-on selects its stored priority through this
+/// same function (turso_queue::label_enrich::band_or_inherited).
+pub(crate) fn label_band_priority(payload: &Value) -> Option<i64> {
     let labels = payload.get("labels")?.as_array()?;
     let has = |name: &str| labels.iter().any(|l| l.as_str() == Some(name));
     if has("expedite") {
@@ -1217,6 +1367,107 @@ pub fn task_from_packet(packet: &Value, queue: &str) -> Value {
 mod tests {
     use super::*;
     use proptest::prelude::*;
+
+    #[test]
+    fn issue_dispatch_dedupe_preserves_identity() {
+        assert!(match_dedupe("main-broken-run-45018365692-dispatch-create").is_none());
+        let base = "repo-health:v1:fix:developing-today/code:issue:12527";
+        for key in [
+            base.to_string(),
+            format!("{base}:dispatch:01234567"),
+            format!("{base}:dispatch:0123456789abcdef"),
+        ] {
+            let mut packet = json!({
+                "title": "MCPX repair",
+                "priority": 40,
+                "dedupe_key": key,
+                "payload": payload_with(json!({"issue": {"number": 12527}, "kind": "small_fix"})),
+            });
+            assert!(
+                validate_packet(&packet).0.is_empty(),
+                "{:?}",
+                validate_packet(&packet).0
+            );
+            packet["payload"]["issue"]["number"] = json!(12528);
+            assert!(
+                validate_packet(&packet)
+                    .0
+                    .iter()
+                    .any(|e| e.contains("does not match payload.issue.number"))
+            );
+        }
+        for suffix in ["", "ab", "0123456g", "0123456789abcdef0", "00000000:extra"] {
+            assert!(match_dedupe(&format!("{base}:dispatch:{suffix}")).is_none());
+        }
+    }
+
+    proptest! {
+        /// Invariant (#12527): an issue-scoped fix/triage key with a
+        /// well-formed dispatch suffix (8 or 16 hex digits) parses to the
+        /// same family, repo and issue number as its bare key, and the
+        /// payload issue-number cross-check still holds for it.
+        #[test]
+        fn dispatch_suffix_preserves_issue_identity(
+            fam in prop_oneof![Just("fix"), Just("triage")],
+            num in 1i64..=9_999_999,
+            suffix in prop_oneof!["[0-9a-fA-F]{8}", "[0-9a-fA-F]{16}"],
+            other in 1i64..=9_999_999,
+        ) {
+            let base = format!("repo-health:v1:{fam}:developing-today/code:issue:{num}");
+            let bare = match_dedupe(&base).expect("bare key parses");
+            let key = format!("{base}:dispatch:{suffix}");
+            let m = match_dedupe(&key).expect("suffixed key parses");
+            prop_assert_eq!(&m.family, &bare.family);
+            prop_assert_eq!(&m.repo, &bare.repo);
+            prop_assert_eq!(m.num, Some(num));
+
+            let mut packet = json!({
+                "title": "dispatch identity",
+                "priority": 40,
+                "dedupe_key": key,
+                "payload": payload_with(json!({"issue": {"number": num}, "kind": "small_fix"})),
+            });
+            let (errors, _w) = validate_packet(&packet);
+            prop_assert!(
+                !errors.iter().any(|e| e.contains("does not match payload.issue.number")),
+                "{:?}", errors
+            );
+            if other != num {
+                packet["payload"]["issue"]["number"] = json!(other);
+                let (errors, _w) = validate_packet(&packet);
+                prop_assert!(
+                    errors.iter().any(|e| e.contains("does not match payload.issue.number")),
+                    "{:?}", errors
+                );
+            }
+        }
+
+        /// Invariant (#12527): a dispatch suffix that is not exactly 8 or
+        /// 16 hex digits never parses, so arbitrary request keys cannot
+        /// pass as canonical repo-health keys.
+        #[test]
+        fn malformed_dispatch_suffix_is_rejected(
+            fam in prop_oneof![Just("fix"), Just("triage")],
+            num in 1i64..=9_999_999,
+            suffix in "[0-9a-zA-Z:_-]{0,24}",
+        ) {
+            let well_formed = matches!(suffix.len(), 8 | 16)
+                && suffix.bytes().all(|b| b.is_ascii_hexdigit());
+            let key = format!("repo-health:v1:{fam}:developing-today/code:issue:{num}:dispatch:{suffix}");
+            prop_assert_eq!(match_dedupe(&key).is_some(), well_formed, "{}", key);
+        }
+
+        /// Invariant (#12527): only a canonical issue number is accepted
+        /// in front of a dispatch suffix (no leading zeros or signs).
+        #[test]
+        fn dispatch_suffix_requires_canonical_issue_number(
+            num in 1i64..=9_999_999,
+            pad in "0{1,3}",
+        ) {
+            let key = format!("repo-health:v1:fix:developing-today/code:issue:{pad}{num}:dispatch:01234567");
+            prop_assert!(match_dedupe(&key).is_none(), "{}", key);
+        }
+    }
 
     #[test]
     fn packet_max_attempts_validation_and_selection() {
@@ -2372,5 +2623,238 @@ mod tests {
             )
             .is_empty()
         );
+    }
+
+    fn feature_slice_payload(slice: serde_json::Value) -> Value {
+        let mut payload = payload_with(json!({"issue": {"number": 1062}}));
+        let obj = payload.as_object_mut().expect("payload object");
+        obj.insert("kind".to_string(), json!("feature_slice"));
+        obj.insert("slice".to_string(), slice);
+        payload
+    }
+
+    fn valid_slice() -> serde_json::Value {
+        json!({
+            "parent_issue": 1062,
+            "number": 1,
+            "criterion": "kv provider: a world can put a value and get it back",
+            "done_check": "cargo test -p id-caps kv",
+            "owned_paths": ["pkgs/id/crates/id-caps/src/kv.rs"],
+        })
+    }
+
+    #[test]
+    fn feature_slice_packet_validates() {
+        let packet = json!({
+            "title": "Slice 1 of #1062: kv provider put/get",
+            "priority": 20,
+            "dedupe_key": "repo-health:v1:slice:developing-today/code:issue:1062:slice-1",
+            "payload": feature_slice_payload(valid_slice()),
+        });
+        let (errors, _warnings) = validate_packet(&packet);
+        assert!(
+            errors.is_empty(),
+            "well-formed feature_slice packet must validate; got {errors:?}"
+        );
+        // The done-test's claim half: the validated packet converts to
+        // the task row the claim path consumes, carrying the slice
+        // kind — claim and completion are kind-agnostic over this row
+        // (#12233 F2c decision record, point 5).
+        let task = task_from_packet(&packet, "repo-queue");
+        assert_eq!(task.pointer("/payload/kind"), Some(&json!("feature_slice")));
+        assert_eq!(
+            task.get("dedupe_key"),
+            Some(&json!(
+                "repo-health:v1:slice:developing-today/code:issue:1062:slice-1"
+            ))
+        );
+    }
+
+    #[test]
+    fn feature_slice_rejects_missing_done_check() {
+        // The plan's F2c done-test: a slice packet with no done check
+        // is rejected at enqueue.
+        let mut slice = valid_slice();
+        slice.as_object_mut().unwrap().remove("done_check");
+        let errors = manual_schema_errors(&feature_slice_payload(slice));
+        assert!(
+            errors.iter().any(|e| e.contains("slice.done_check")),
+            "missing done_check must be rejected; got {errors:?}"
+        );
+    }
+
+    #[test]
+    fn feature_slice_rejects_empty_done_check() {
+        let mut slice = valid_slice();
+        slice["done_check"] = json!("");
+        let errors = manual_schema_errors(&feature_slice_payload(slice));
+        assert!(
+            errors.iter().any(|e| e.contains("slice.done_check")),
+            "empty done_check must be rejected; got {errors:?}"
+        );
+    }
+
+    #[test]
+    fn feature_slice_requires_the_slice_block() {
+        let mut payload = payload_with(json!({"issue": {"number": 1062}}));
+        payload
+            .as_object_mut()
+            .unwrap()
+            .insert("kind".to_string(), json!("feature_slice"));
+        let errors = manual_schema_errors(&payload);
+        assert!(
+            errors.iter().any(|e| e.contains("payload.slice")),
+            "feature_slice without a slice block must be rejected; got {errors:?}"
+        );
+    }
+
+    #[test]
+    fn feature_slice_rejects_missing_criterion() {
+        let mut slice = valid_slice();
+        slice.as_object_mut().unwrap().remove("criterion");
+        let errors = manual_schema_errors(&feature_slice_payload(slice));
+        assert!(
+            errors.iter().any(|e| e.contains("slice.criterion")),
+            "missing criterion must be rejected; got {errors:?}"
+        );
+    }
+
+    #[test]
+    fn feature_slice_rejects_empty_owned_paths() {
+        let mut slice = valid_slice();
+        slice["owned_paths"] = json!([]);
+        let errors = manual_schema_errors(&feature_slice_payload(slice));
+        assert!(
+            errors.iter().any(|e| e.contains("slice.owned_paths")),
+            "empty owned_paths must be rejected; got {errors:?}"
+        );
+    }
+
+    #[test]
+    fn feature_slice_rejects_parent_mismatch() {
+        let mut slice = valid_slice();
+        slice["parent_issue"] = json!(999);
+        let errors = manual_schema_errors(&feature_slice_payload(slice));
+        assert!(
+            errors.iter().any(|e| e.contains("slice.parent_issue")),
+            "parent_issue disagreeing with issue.number must be rejected; got {errors:?}"
+        );
+    }
+
+    #[test]
+    fn feature_slice_dedupe_family_matches_issue_and_slice() {
+        let identity = json!({"issue": {"number": 1062}, "slice": {"number": 1}});
+        assert!(
+            dedupe_errs(
+                "repo-health:v1:slice:developing-today/code:issue:1062:slice-1",
+                "feature_slice",
+                identity.clone(),
+            )
+            .is_empty()
+        );
+        // Same (parent, slice ordinal) is the same key by
+        // construction: re-enqueueing a slice collides on it instead
+        // of double-scheduling the slice.
+        let m = match_dedupe("repo-health:v1:slice:developing-today/code:issue:1062:slice-1")
+            .expect("slice key parses");
+        assert_eq!(m.family, "slice");
+        assert_eq!(m.num, Some(1062));
+        assert_eq!(m.pass, Some(1));
+        // Ordinal disagreement between key and payload is an error.
+        let errors = dedupe_errs(
+            "repo-health:v1:slice:developing-today/code:issue:1062:slice-2",
+            "feature_slice",
+            identity,
+        );
+        assert!(
+            errors.iter().any(|e| e.contains("slice 2 in key")),
+            "key slice ordinal must match slice.number; got {errors:?}"
+        );
+        // The slice family is not valid for other kinds, and other
+        // families are not valid for feature_slice.
+        assert!(
+            !dedupe_errs(
+                "repo-health:v1:slice:developing-today/code:issue:1062:slice-1",
+                "small_fix",
+                json!({"issue": {"number": 1062}}),
+            )
+            .is_empty()
+        );
+        assert!(
+            !dedupe_errs(
+                "repo-health:v1:fix:developing-today/code:issue:1062",
+                "feature_slice",
+                json!({"issue": {"number": 1062}, "slice": {"number": 1}}),
+            )
+            .is_empty()
+        );
+    }
+
+    proptest! {
+        /// Invariant (#12233 F2c): a slice's identity is exactly its
+        /// (parent, ordinal) pair. Oracle: the canonical dedupe key
+        /// built from a pair is the identity — `match_dedupe` is the
+        /// reference parse, and `dedupe_errs` is the acceptance
+        /// check. Canonical matching keys validate; changing either
+        /// the parent or the ordinal is rejected, at the dedupe
+        /// level and (for the parent) at the schema level too.
+        #[test]
+        fn slice_identity_is_parent_and_ordinal(
+            parent in 1i64..100_000,
+            ordinal in 1i64..100,
+        ) {
+            let repo = "developing-today/code";
+            let key = format!(
+                "repo-health:v1:slice:{repo}:issue:{parent}:slice-{ordinal}"
+            );
+            let identity = json!({
+                "issue": {"number": parent},
+                "slice": {"number": ordinal},
+            });
+            prop_assert!(
+                dedupe_errs(&key, "feature_slice", identity).is_empty(),
+                "canonical key for ({parent}, {ordinal}) must validate"
+            );
+            let m = match_dedupe(&key).expect("canonical slice key parses");
+            prop_assert_eq!(m.family, "slice");
+            prop_assert_eq!(m.num, Some(parent));
+            prop_assert_eq!(m.pass, Some(ordinal));
+            // Changing the parent is rejected.
+            let wrong_parent = json!({
+                "issue": {"number": parent + 1},
+                "slice": {"number": ordinal},
+            });
+            prop_assert!(
+                !dedupe_errs(&key, "feature_slice", wrong_parent).is_empty(),
+                "parent {} must not match key parent {parent}",
+                parent + 1
+            );
+            // Changing the ordinal is rejected.
+            let wrong_ordinal = json!({
+                "issue": {"number": parent},
+                "slice": {"number": ordinal + 1},
+            });
+            prop_assert!(
+                !dedupe_errs(&key, "feature_slice", wrong_ordinal).is_empty(),
+                "ordinal {} must not match key ordinal {ordinal}",
+                ordinal + 1
+            );
+            // The slice block's parent must be the packet's issue: a
+            // generated mismatch is rejected at the schema level too.
+            let mut payload = payload_with(json!({"issue": {"number": parent}}));
+            let obj = payload.as_object_mut().expect("payload object");
+            obj.insert("kind".to_string(), json!("feature_slice"));
+            let mut slice = valid_slice();
+            slice["parent_issue"] = json!(parent + 1);
+            slice["number"] = json!(ordinal);
+            obj.insert("slice".to_string(), slice);
+            prop_assert!(
+                manual_schema_errors(&payload)
+                    .iter()
+                    .any(|e| e.contains("slice.parent_issue")),
+                "parent_issue {} disagreeing with issue.number {parent} must be rejected",
+                parent + 1
+            );
+        }
     }
 }
