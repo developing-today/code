@@ -33,7 +33,7 @@
     "@ai-sdk/xai": "^3.0.67",
     "@coinbase/agentkit": "^0.10.4",
     "@modelcontextprotocol/sdk": "^1.27.1",
-    "@npmcli/arborist": "^9.4.2",
+    "@npmcli/arborist": "^10.0.5",
     "@opentui/core": "^0.1.88",
     "@opentui/react": "^0.1.88",
     "agent-desktop": "^0.1.11",
