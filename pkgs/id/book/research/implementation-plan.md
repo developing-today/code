@@ -18,6 +18,8 @@ Start with one signed app that runs offline and produces the same authorized res
 
 ## Findings to reconcile first
 
+The currency audit now has a tracking [issue #13542](https://github.com/developing-today/code/issues/13542) and [PR #13565](https://github.com/developing-today/code/pull/13565). [Issue #13540](https://github.com/developing-today/code/issues/13540) owns the cumulative media-retention contract. [Issue #13583](https://github.com/developing-today/code/issues/13583) records the proposed derived graph and search visibility proof and was filed after the live map’s 18:06 UTC census. Recovery after an uncertain effect remains with the [MCP bridge](https://github.com/developing-today/code/issues/7917) and [messaging protocol](https://github.com/developing-today/code/issues/2036).
+
 | Item | Evidence and decision | First authorized repository action |
 | --- | --- | --- |
 | Currency supply audit | Saturating each unsigned counter before comparison can hide a real difference. With M = 2^127−1, issuer debits M+2 versus holder credits M+1 give an exact difference of one and a reported difference of zero. Reachability in a real ledger is unverified. | Check fresh issues, PRs and ownership. If uncovered, file the arithmetic fixture, then correct reconciliation and test aggregation and backend errors. [Code](https://github.com/developing-today/code/blob/7310a95730791e66da98f7b0e13865930058a516/pkgs/id/src/currency/reconcile.rs#L186) · [Three design records for repository review](research-contracts.md) |
