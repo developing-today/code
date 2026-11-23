@@ -1,18 +1,23 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import worker, { type Env } from "../src/index";
+import { MemoryKV } from "./memory-kv";
 
 const env: Env = {
   BRIDGE_BASE: "https://commander-link.security.cab",
   ACCESS_CLIENT_ID: "bridge-id.access",
   ACCESS_CLIENT_SECRET: "bridge-secret",
+  MACHINE_BEARER: "machine-bearer-for-tests",
+  ACCESS_AUD: "authorize-app-aud",
+  ACCESS_TEAM_DOMAIN: "team.example.com",
+  OAUTH_KV: new MemoryKV() as unknown as KVNamespace,
 };
 
-function mcpRequest(withAssertion: boolean): Request {
+function mcpRequest(authorization?: string): Request {
   const headers: Record<string, string> = {
     "content-type": "application/json",
     accept: "application/json, text/event-stream",
   };
-  if (withAssertion) headers["cf-access-jwt-assertion"] = "test-jwt";
+  if (authorization) headers["authorization"] = authorization;
   return new Request("https://commander.security.cab/mcp", {
     method: "POST",
     headers,
@@ -37,10 +42,21 @@ describe("desktop-commander Worker proxy", () => {
     expect(bridge).not.toHaveBeenCalled();
   });
 
-  it("refuses /mcp without an Access assertion and never calls the bridge", async () => {
+  it("refuses /mcp without a Bearer token and never calls the bridge", async () => {
     const bridge = vi.fn();
     vi.stubGlobal("fetch", bridge);
-    const res = await worker.fetch(mcpRequest(false), env);
+    const res = await worker.fetch(mcpRequest(), env);
+    expect(res.status).toBe(401);
+    expect(res.headers.get("www-authenticate")).toBe(
+      'Bearer resource_metadata="https://commander.security.cab/.well-known/oauth-protected-resource"',
+    );
+    expect(bridge).not.toHaveBeenCalled();
+  });
+
+  it("refuses /mcp with an unknown Bearer token", async () => {
+    const bridge = vi.fn();
+    vi.stubGlobal("fetch", bridge);
+    const res = await worker.fetch(mcpRequest("Bearer not-a-real-token"), env);
     expect(res.status).toBe(401);
     expect(bridge).not.toHaveBeenCalled();
   });
@@ -56,7 +72,7 @@ describe("desktop-commander Worker proxy", () => {
       });
     });
     vi.stubGlobal("fetch", bridge);
-    const res = await worker.fetch(mcpRequest(true), env);
+    const res = await worker.fetch(mcpRequest("Bearer machine-bearer-for-tests"), env);
     expect(res.status).toBe(200);
     expect(res.headers.get("mcp-session-id")).toBe("session-123");
 
@@ -69,6 +85,7 @@ describe("desktop-commander Worker proxy", () => {
     const sent = new Headers(calledInit.headers);
     expect(sent.get("cf-access-client-id")).toBe("bridge-id.access");
     expect(sent.get("cf-access-client-secret")).toBe("bridge-secret");
+    expect(sent.get("authorization")).toBeNull();
     expect(sent.get("cf-access-jwt-assertion")).toBeNull();
   });
 
