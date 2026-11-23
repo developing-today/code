@@ -78,6 +78,10 @@ pub enum Capability {
     /// `fleet laptop …` — tier T0 (tiered/fleet) of the laptop route
     /// forms (#13717): the generic tiered command and the form index.
     Laptop,
+    /// `fleet cert …` (alias `fleet pki …`) — the PKI/X.509 domain:
+    /// roots, issuers, leaves, chains and bundles (code#9157, fleet CA
+    /// program #9155). A working-seat client surface, so full only.
+    Cert,
 }
 
 impl Capability {
@@ -104,6 +108,7 @@ impl Capability {
             Capability::LaptopHttp => "laptop-http",
             Capability::LaptopSsh => "laptop-ssh",
             Capability::Laptop => "laptop",
+            Capability::Cert => "cert",
         }
     }
 
@@ -129,6 +134,7 @@ impl Capability {
         Capability::LaptopHttp,
         Capability::LaptopSsh,
         Capability::Laptop,
+        Capability::Cert,
     ];
 }
 
@@ -380,6 +386,17 @@ pub const DOMAINS: &[Domain] = &[
         subcommands: &["search", "get-chunk", "serve"],
     },
     Domain {
+        name: "cert",
+        summary: "PKI/X.509: root and issuer CAs, leaf certificates, chains and bundles (alias: pki).",
+        capabilities: &[Capability::Cert],
+        primary: Capability::Cert,
+        aliases: &["pki"],
+        subcommands: &[
+            "root", "issuer", "leaf", "chain", "bundle", "profile", "algorithms", "explain",
+            "doctor",
+        ],
+    },
+    Domain {
         name: "laptop-agent",
         summary: "Client for the laptop-agent daemon: run and manage jobs on the laptop.",
         capabilities: &[Capability::LaptopAgent],
@@ -461,6 +478,10 @@ pub fn alias_route(argv0: &str) -> Option<AliasRoute> {
             domain: "laptop-agent",
             implied_arg: None,
         }),
+        "pki" => Some(AliasRoute {
+            domain: "cert",
+            implied_arg: None,
+        }),
         _ => None,
     }
 }
@@ -519,6 +540,7 @@ mod tests {
             "laptop-agent-broker",
             "atlas-search",
             "laptop-agent",
+            "pki",
         ] {
             let route = alias_route(name).unwrap_or_else(|| panic!("alias {name} must route"));
             assert!(
