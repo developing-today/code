@@ -286,12 +286,12 @@ bridge use separate GitHub environments/tokens. The bridge environment cannot
 modify Gateway policies; those use a separate approval and administrative
 path.
 
-Offline results on the current follow-up commit (recorded in the PR): Node 24.22.0 + cf 1.0.0-rc.1 + Wrangler
-4.166.0; both smoke and `--mode bridge` pass `cf build` and the corresponding
-`cf workers versions create --prebuilt --dry-run`. The bridge dry-run reports
-only the DO namespace binding `BRIDGE -> PrivateLaptopBridge`, disabled
-`ENABLED=false`, placeholder Gateway identifiers and empty registry; it creates
-nothing. `deployment-config.test.mjs` verifies that the `cf` config is the sole
+A prior pinned CLI rehearsal on `c20f3d96` (recorded in the PR) used Node
+24.22.0, cf 1.0.0-rc.1 and Wrangler 4.166.0; smoke and bridge both passed
+`cf build` and `cf workers versions create --prebuilt --dry-run`. The bridge
+dry-run reported only `BRIDGE -> PrivateLaptopBridge`, disabled `ENABLED=false`,
+placeholder Gateway identifiers and empty registry; it created nothing. This
+turn did not rerun the CLI because the checkout has no installed `cf` binary. `deployment-config.test.mjs` verifies that the `cf` config is the sole
 declarative DO lifecycle source and contains the expected SQLite export. It
 does not prove provider state. Gateway runtime unit tests and smoke tests pass.
 These results prove local Build Output and

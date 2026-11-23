@@ -46,8 +46,10 @@ deployment step, not a second configuration or a legacy migration fallback.
 [cf project deploy](https://developers.cloudflare.com/cf/projects/) ·
 [cf and Durable Object lifecycle](https://developers.cloudflare.com/cf/wrangler/reference/#convert-durable-object-migrations)
 
-The only proposed command sequence is a manual owner-controlled procedure, not
-a GitHub workflow:
+The proposed command sequence is a manual owner-controlled procedure, not a
+GitHub workflow. It has not been run in this turn; first validate the pinned
+CLI syntax/build with no credentials and stop if the pinned release differs
+from current Cloudflare documentation:
 
 ```sh
 npm ci --ignore-scripts --no-audit --no-fund
