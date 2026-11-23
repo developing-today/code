@@ -31,13 +31,19 @@ Each request must pass both layers:
 2. The Worker verifies `Cf-Access-Jwt-Assertion` itself. It pins the exact
    `https://<team>.cloudflareaccess.com` issuer, exact app audience, `RS256`,
    `kid`, fetched JWKS, `type=app`, `sub=""`, `common_name`, `iat`, `exp`, and
-   optional `nbf`. The verified `common_name` must match both the incoming
-   `CF-Access-Client-Id` and exactly one unrevoked principal in the Worker
-   registry. A token for one service cannot assume the other principal's role.
+   optional `nbf`. The Worker also requires the runtime-verified
+   `ctx.access.aud` to match the configured audience. The signed `common_name`
+   selects exactly one unrevoked principal; the request's
+   `x-bridge-principal` must equal that principal's ID before forwarding. The
+   Worker does not rely on the original `CF-Access-Client-Id` header, which is
+   not guaranteed to reach the Worker. A token for one service cannot assume
+   the other principal's role.
    JWKS are fetched only from the exact configured issuer, redirects are
    rejected, cache lifetime is five minutes, and an unknown key or failed
-   refresh after expiry fails closed. The accepted JWT lifetime is at most 15
-   minutes.
+   refresh after expiry fails closed. `exp` must be strictly in the future;
+   `iat` cannot be more than 30 seconds in the future, and optional `nbf` uses
+   the same bounded future skew. No undocumented maximum `exp - iat` is
+   assumed; Access policy token lifetime must be reviewed independently.
 3. The existing bridge check remains independent: Ed25519 signs the request
    method, exact path, body, audience, principal, timestamp, and nonce. The
    Durable Object checks role, device, operation scope, quota, replay, lease,
@@ -49,8 +55,10 @@ headers, `Cookie`, and `Authorization`. It never uses caller-supplied identity
 headers. Denial logs contain only fixed status and reason codes.
 
 The default Worker fetch rejects a missing or mismatched exact HTTPS hostname,
-port, route or query; rejects missing, malformed, forged, wrong-issuer,
-wrong-audience, expired, cross-client, stale-key, or wrong-algorithm tokens;
+port, route or query and Upgrade requests before JWKS or Durable Object calls;
+rejects missing runtime Access context, mismatched context audience, malformed,
+forged, wrong-issuer, wrong-audience, expired, cross-client, stale-key, or
+wrong-algorithm tokens;
 and fails closed when the auth configuration or JWKS are unavailable. Redirects
 are not followed by either client. The deployment must keep `workers_dev` and
 preview URLs disabled and bind only the approved custom hostname. Do not create

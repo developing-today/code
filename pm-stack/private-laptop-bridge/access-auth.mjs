@@ -3,9 +3,9 @@
 const MAX_JWT_LENGTH = 16_384;
 const MAX_KEYS_BYTES = 32_768;
 const SKEW_SECONDS = 30;
-const MAX_TOKEN_AGE_SECONDS = 15 * 60;
 const KEY_CACHE_MS = 5 * 60_000;
 const keyCache = new Map();
+const ACCESS_PATHS = new Set(['/v1/call', '/v1/poll', '/v1/result', '/v1/read']);
 export const BRIDGE_HOST = 'laptop-bridge-staging.security.cab';
 export const BRIDGE_ORIGIN = `https://${BRIDGE_HOST}`;
 
@@ -56,24 +56,26 @@ async function accessKeys({issuer, certsUrl}, fetchImpl, now) {
   return keys;
 }
 
-/** Return the verified service-token Client ID. Never trusts caller-supplied
- * identity fields or Access headers without the signed JWT and exact config. */
-export async function verifyAccessServiceToken(request, env, {fetchImpl = fetch, nowMs = Date.now()} = {}) {
+/** Return the signed service-token common_name. The original service-token
+ * client-ID header is not part of the identity decision; Cloudflare's direct
+ * Access invocation context independently proves the configured audience. */
+export async function verifyAccessServiceToken(request, env, ctx, {fetchImpl = fetch, nowMs = Date.now()} = {}) {
   const cfg = accessConfig(env);
   const url = new URL(request.url);
-  if (request.method !== 'POST' || url.protocol !== 'https:' || url.hostname !== cfg.host || url.port || url.username || url.password || url.search || url.hash) fail();
+  if (request.method !== 'POST' || request.headers.has('upgrade') || url.protocol !== 'https:' || url.hostname !== cfg.host || url.port || url.username || url.password || url.search || url.hash || !ACCESS_PATHS.has(url.pathname)) fail();
+  if (!ctx?.access || ctx.access.aud !== cfg.audience) fail();
   const token = request.headers.get('cf-access-jwt-assertion');
-  const clientId = request.headers.get('cf-access-client-id');
-  if (!token || token.length > MAX_JWT_LENGTH || !clientId || !/^[A-Za-z0-9._-]{8,128}$/.test(clientId)) fail();
+  if (!token || token.length > MAX_JWT_LENGTH) fail();
   const parts = token.split('.');
   if (parts.length !== 3) fail();
   const [header, claims] = [decodePart(parts[0]), decodePart(parts[1])];
   if (!header || header.alg !== 'RS256' || header.typ !== 'JWT' || typeof header.kid !== 'string' ||
       !claims || claims.type !== 'app' || claims.iss !== cfg.issuer || claims.sub !== '' ||
       !Array.isArray(claims.aud) || claims.aud.length < 1 || !claims.aud.includes(cfg.audience) ||
-      claims.common_name !== clientId || !Number.isSafeInteger(claims.exp) || !Number.isSafeInteger(claims.iat) ||
-      claims.exp <= Math.floor(nowMs / 1000) - SKEW_SECONDS || claims.iat > Math.floor(nowMs / 1000) + SKEW_SECONDS ||
-      claims.exp <= claims.iat || claims.exp - claims.iat > MAX_TOKEN_AGE_SECONDS ||
+      typeof claims.common_name !== 'string' || !/^[A-Za-z0-9._-]{8,128}$/.test(claims.common_name) ||
+      !Number.isSafeInteger(claims.exp) || !Number.isSafeInteger(claims.iat) ||
+      claims.exp <= Math.floor(nowMs / 1000) || claims.iat > Math.floor(nowMs / 1000) + SKEW_SECONDS ||
+      claims.exp <= claims.iat ||
       (claims.nbf !== undefined && (!Number.isSafeInteger(claims.nbf) || claims.nbf > Math.floor(nowMs / 1000) + SKEW_SECONDS))) fail();
   const keys = await accessKeys(cfg, fetchImpl, nowMs);
   const key = keys.get(header.kid);
@@ -85,7 +87,7 @@ export async function verifyAccessServiceToken(request, env, {fetchImpl = fetch,
       new TextEncoder().encode(`${parts[0]}.${parts[1]}`));
   } catch { fail(); }
   if (!valid) fail();
-  return clientId;
+  return claims.common_name;
 }
 
 export function clearAccessKeyCacheForTests() { keyCache.clear(); }

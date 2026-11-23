@@ -1,5 +1,5 @@
 import {operations, exact, identifier, unbase64, signingBytes, boundedText, validateOperation, validateResult} from './protocol.mjs';
-import {verifyAccessServiceToken} from './access-auth.mjs';
+import {BRIDGE_HOST, verifyAccessServiceToken} from './access-auth.mjs';
 
 const nextExpiry = s => Math.min(...Object.values(s.nonces), ...Object.values(s.quotas).map(q => q.end), ...Object.values(s.jobs).map(j => j.retainUntil), ...s.audit.map(e => e.at + 180000));
 const paths = ['/v1/call', '/v1/poll', '/v1/result', '/v1/read'];
@@ -145,15 +145,21 @@ export async function dispatchSignedRequest(request, env) {
 }
 
 export default {
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
     if (env.ENABLED !== 'true' || !env.BRIDGE) return response(503, {error: 'disabled'});
     let config;
     try { config = registry(env.BRIDGE_REGISTRY); } catch { return response(503, {error: 'configuration'}); }
+    const url = new URL(request.url);
+    // Reject non-bridge traffic before fetching Access keys or touching the DO.
+    if (request.method !== 'POST' || request.headers.has('upgrade') || url.protocol !== 'https:' || url.hostname !== BRIDGE_HOST || url.port || url.username || url.password || url.search || url.hash || !paths.includes(url.pathname)) return response(404, {error: 'route'});
     let clientId;
-    try { clientId = await verifyAccessServiceToken(request, env); }
+    try { clientId = await verifyAccessServiceToken(request, env, ctx); }
     catch { return response(401, {error: 'access-authentication'}); }
     const principal = Object.values(config.principals).find(p => p.accessClientId === clientId);
     if (!principal || !active(principal, Date.now())) return response(401, {error: 'access-principal'});
+    // The role selected by signed Access common_name must be the same role
+    // whose Ed25519 key signs this request; never pair the two identities.
+    if (request.headers.get('x-bridge-principal') !== principal.id) return response(401, {error: 'principal-binding'});
     // Never forward Access credentials or edge identity headers into the DO.
     const headers = new Headers(request.headers);
     for (const name of [...headers.keys()]) {
