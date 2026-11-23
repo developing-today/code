@@ -7,8 +7,9 @@ Cloudflare Access service-token headers from fleet secrets
 (`cloudflare.access-laptop-agent`, Bitwarden-backed; migrated from the
 0600 file 2026-11-16, Drew-approved). Fallback transport: the
 VM's tailnet tunnel proxy (HTTP CONNECT, same construction as
-laptop-proxy-connect.py; the proxy credential is read from HTTPS_PROXY
-and sent only inside the CONNECT request), used automatically when the
+laptop-proxy-connect.py; the proxy credential is read from the seat's
+recorded tailnet proxy (fleet-proxy.env) when one exists, else from
+HTTPS_PROXY, and sent only inside the CONNECT request), used automatically when the
 Cloudflare path fails and directly for /exec calls whose budget exceeds
 the Cloudflare edge's ~100 s response cap. The agent token lives in
 ~/tools/laptop-agent-token (mode 600) and is sent as a header — never
@@ -250,11 +251,106 @@ def _log_trip(trip, path, total_ms, status, t_sent_ms=None,
         pass
 
 
+# --- recorded tailnet proxy (code#12426, mirroring #12645) -------------
+# In userspace mode the seat bootstrap writes the tailnet proxy URL to
+# fleet-proxy.env beside tailscaled's node state. Tailnet CONNECTs use
+# that recorded proxy in place of the ambient HTTPS_PROXY: a process
+# started from a sandbox shell carries the platform egress proxy there,
+# and tailnet tunnels through it fail while the process looks healthy.
+# The Cloudflare leg keeps the ambient proxy by design (it is the
+# internet egress). A kernel-mode seat has no file (the bootstrap
+# removes it), so the ambient env stays in charge there. The candidate
+# order, slug rule and parse rule mirror fleet-config's
+# tailnet_https_proxy (pkgs/fleet/crates/fleet-config/src/lib.rs).
+
+TAILNET_PROXY_ENV_FILE = "fleet-proxy.env"
+
+
+def _agent_slug(agent):
+    """The bootstrap's agent slug: lower-cased, every character outside
+    [a-z0-9-] replaced by '-', leading and trailing dashes trimmed, cut
+    to 55 characters, then one 'muse-' prefix dropped. None when
+    nothing is left, as the bootstrap refuses such a name."""
+    mapped = "".join(
+        c if ("a" <= c <= "z" or "0" <= c <= "9" or c == "-") else "-"
+        for c in agent.lower()
+    )
+    slug = mapped.strip("-")[:55]
+    if slug.startswith("muse-"):
+        slug = slug[len("muse-"):]
+    return slug or None
+
+
+def _tailnet_proxy_env_candidates(home, fleet_agent, explicit):
+    """Where to look for the recorded tailnet proxy env, most specific
+    first: an explicit $FLEET_PROXY_ENV path, then the named agent's
+    isolated node state (~/.local/state/tailscale/agents/<slug>), then
+    the legacy shared node state (~/.local/state/tailscale). Pure over
+    its inputs so the order is testable."""
+    out = []
+    if explicit:
+        p = Path(explicit)
+        out.append(p if p.is_absolute() else home / p)
+    state = home / ".local" / "state" / "tailscale"
+    if fleet_agent:
+        slug = _agent_slug(fleet_agent)
+        if slug:
+            out.append(state / "agents" / slug / TAILNET_PROXY_ENV_FILE)
+    out.append(state / TAILNET_PROXY_ENV_FILE)
+    return out
+
+
+def _parse_tailnet_proxy_env(text):
+    """The HTTPS_PROXY value an env file sets, from a line of the form
+    [export ]HTTPS_PROXY=value (the value optionally in matching single
+    or double quotes). The last such line with a value wins, as it
+    would when the file is sourced."""
+    value = None
+    for line in text.splitlines():
+        line = line.strip()
+        if line.startswith("export "):
+            line = line[len("export "):].lstrip()
+        if not line.startswith("HTTPS_PROXY="):
+            continue
+        v = line[len("HTTPS_PROXY="):].strip()
+        if len(v) >= 2 and v[0] == v[-1] and v[0] in "\"'":
+            v = v[1:-1]
+        if v:
+            value = v
+    return value
+
+
+def tailnet_https_proxy():
+    """The seat's recorded tailnet proxy: the first readable
+    fleet-proxy.env among the candidates that sets HTTPS_PROXY.
+    None (no file, as on a kernel-mode seat) leaves the ambient env
+    in charge."""
+    for path in _tailnet_proxy_env_candidates(
+        Path.home(),
+        os.environ.get("FLEET_AGENT"),
+        os.environ.get("FLEET_PROXY_ENV"),
+    ):
+        try:
+            text = path.read_text()
+        except OSError:
+            continue
+        value = _parse_tailnet_proxy_env(text)
+        if value:
+            return value
+    return None
+
+
+def tailnet_proxy_url():
+    """The proxy URL for a tailnet CONNECT: the recorded tailnet proxy
+    when the seat has one, else the ambient HTTPS_PROXY."""
+    return tailnet_https_proxy() or os.environ.get("HTTPS_PROXY")
+
+
 def tunnel_socket(port=None):
     import base64
     import urllib.parse
     port = port or TARGET_PORT
-    raw = os.environ.get("HTTPS_PROXY")
+    raw = tailnet_proxy_url()
     if not raw:
         sys.exit("laptop-agent: HTTPS_PROXY must be set")
     u = urllib.parse.urlparse(raw)
