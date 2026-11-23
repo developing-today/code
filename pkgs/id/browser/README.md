@@ -1,12 +1,6 @@
-# id-browser — IndexedDB conformance prototype
+# id-browser — IndexedDB request-batch adapter
 
-Slice 9110-05 of #9110, tracked by #10213. An **evaluation-only**
-IndexedDB adapter that exercises the declared browser-store
-capability subset of the port contract (port-v1, contract version
-2) against the shared conformance fixtures from slice 9110-04
-(`pkgs/id/tests/fixtures/port-v1.json`). Nothing in the product
-enables this adapter; whether IndexedDB is adopted is #9082's
-decision, informed by the verdict this package produces.
+The browser record-store profile is adopted for the checked request-batch subset in #9082. Chromium runs the shared port-v1 fixture (contract version 2) against real IndexedDB. Applications opt in explicitly.
 
 ## The adapter
 
@@ -46,16 +40,16 @@ runs the engine probes for transaction lifetime, upgrade, reopen,
 and quota/eviction, and prints the verdict (engine, proposed
 capability report, probe results) as JSON.
 
-## Verdict shape
+## Supported scope
 
-The proposed `indexeddb` capability report — per-batch
-whole-database atomic scope, definitive commit ambiguity,
-retry-as-new-operation, `store.scan` / `store.txn.multi-record` /
-`store.txn.whole-database` as optional capabilities — is asserted
-in the test and recorded as evidence on #10213. The fixture's own
-`indexeddb` entry deliberately stays `reserved`: flipping it to
-`active` is part of #9082's adoption decision.
+The shared fixture names the active indexeddb profile and gives each
+divergent step its own expected observation. The suite checks the adapter
+descriptor against that report, compares the two complete traces and separately
+forces a transaction abort. Writes across stores and the operation-ID record
+must roll back together. Retrying the same ID with valid values then commits.
 
-Per-engine matrix: Chromium is the engine under evaluation here.
-Firefox and WebKit rows are not run by this package and remain
-open evidence for #9082.
+The measured persistence scope is a database close/reopen and a version upgrade
+in Chromium. The origin may lose its storage through eviction or explicit
+clearing. The suite reports the permission returned by the browser. It supplies
+no guarantee of power-loss durability or protection against quota pressure.
+Firefox, WebKit and a user-facing store selection require their own evidence.
