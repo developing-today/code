@@ -305,9 +305,13 @@ async function readSnapshot({accountId, token, gatewayToken, expectedZoneIds, fe
   const deployResponse = await cfRequest(fetchImpl, accountId, token, `/workers/scripts/${WORKER_NAME}/deployments?page=1&per_page=100`, { });
   const deployments = deployResponse.result?.deployments;
   if (!Array.isArray(deployments)) fail('Worker deployment readback is missing');
-  if (deployments.length === 0) return {worker: worker.result, workerId, subdomain: subdomain.result, settings: settings.result,
-    schedules: schedules.result.schedules, namespaces, domains: allDomains, gatewayRules, version: null, deployments,
-    zoneIds: zones.map(zone => zone.id.toLowerCase()).sort()};
+  const versions=await listPages(fetchImpl,accountId,token,`/workers/scripts/${encodeURIComponent(WORKER_NAME)}/versions`,{resultPath:'items'});
+  if(versions.some(version=>!version||typeof version!=='object'||!UUID.test(version.id??''))) fail('legacy Scripts version inventory contains a malformed version ID');
+  if (deployments.length === 0) {
+    return {worker: worker.result, workerId, subdomain: subdomain.result, settings: settings.result,
+      schedules: schedules.result.schedules, namespaces, domains: allDomains, gatewayRules, version: null, versions, deployments,
+      zoneIds: zones.map(zone => zone.id.toLowerCase()).sort()};
+  }
   const latest = deployments[0];
   const servingVersions = latest?.versions;
   if (!Array.isArray(servingVersions) || servingVersions.length !== 1 || !UUID.test(servingVersions[0]?.version_id ?? '') ||
@@ -333,6 +337,7 @@ export function verifyProviderState(snapshot, {phase, expectedZoneIds, sourceSha
   if (Array.isArray(snapshot.deployments) && snapshot.deployments.length === 0) {
     exactBridgeDomains(snapshot.domains, {deployed: false, zoneIds: expected});
     if (phase !== 'preflight' || snapshot.namespaces.length !== 0 ||
+        !Array.isArray(snapshot.versions) || snapshot.versions.length !== 0 ||
         snapshot.worker.references.domains.length !== 0 ||
         snapshot.subdomain?.enabled !== false || snapshot.subdomain?.previews_enabled !== false ||
         !Array.isArray(snapshot.schedules) || snapshot.schedules.length !== 0 || !snapshot.settings ||
@@ -351,6 +356,7 @@ export function verifyProviderState(snapshot, {phase, expectedZoneIds, sourceSha
   const noIngress=phase==='init-postflight'||phase==='preflight';
   exactBridgeDomains(snapshot.domains, {deployed: !noIngress, zoneIds: expected});
   if(noIngress&&snapshot.worker.references.domains.length!==0) fail('no-ingress Worker still has a reverse domain reference');
+  if(noIngress&&(!Array.isArray(snapshot.versions)||snapshot.versions.length!==1||snapshot.versions[0]?.id!==snapshot.deployments[0]?.versions?.[0]?.version_id)) fail('no-ingress initialization must have exactly one version matching its sole deployment');
   if (snapshot.namespaces.length !== 1) fail('existing Worker SQLite namespace inventory is unexpected');
   const namespace = snapshot.namespaces[0];
   if (!ID.test(namespace?.id ?? '') && !UUID.test(namespace?.id ?? '')) fail('Durable Object namespace ID is invalid');

@@ -40,7 +40,7 @@ const ns = () => ({id:namespaceId,script:WORKER_NAME,class:DO_CLASS,use_sqlite:t
 const snapshot = () => ({
   zoneIds:[zoneId],worker,workerId,subdomain:{enabled:false,previews_enabled:false},
   settings:{logpush:false,observability:{enabled:false},tail_consumers:[]},schedules:[],
-  namespaces:[ns()],domains:[domain()],gatewayRules:[],version:version(),deployments:[deployment()],
+  namespaces:[ns()],domains:[domain()],gatewayRules:[],version:version(),versions:[{id:versionId,metadata:{},number:1}],deployments:[deployment()],
 });
 
 test('first-deploy workflow remains dormant, fixed-target, and checks protection before environment assignment', async()=>{
@@ -88,8 +88,9 @@ function response(result, {status=200,resultInfo={page:1,per_page:100,total_coun
   return new Response(JSON.stringify({success,result,errors,...(resultInfo === undefined ? {} : {result_info:resultInfo})}),{status});
 }
 
-function cloudflareFixture({target='absent', zones=[{id:zoneId,account:{id:accountId}}], zoneInfo, route=[], domains=[], namespaces=[], workerRecord=worker, versionRecord=version(), gatewayRules=[], deployments=[deployment()], overrides={}}={}) {
+function cloudflareFixture({target='absent', zones=[{id:zoneId,account:{id:accountId}}], zoneInfo, route=[], domains=[], namespaces=[], workerRecord=worker, versionRecord=version(), gatewayRules=[], deployments=[deployment()], legacyVersions=null, overrides={}}={}) {
   const calls=[];
+  const versionsList=legacyVersions??(deployments.length?[{id:versionId,metadata:{},number:1}]:[]);
   const fetchImpl=async (url,init={})=>{
     const parsed=new URL(url), method=init.method??'GET';
     calls.push({url:parsed,method,token:init.headers?.authorization});
@@ -99,6 +100,7 @@ function cloudflareFixture({target='absent', zones=[{id:zoneId,account:{id:accou
     if(parsed.pathname==='/client/v4/accounts/'+accountId+'/workers/domains') return response(domains);
     if(parsed.pathname==='/client/v4/accounts/'+accountId+'/gateway/rules') return response(gatewayRules);
     if(parsed.pathname==='/client/v4/accounts/'+accountId+'/workers/durable_objects/namespaces') return response(namespaces,{resultInfo:{page:1,per_page:1000,total_count:namespaces.length,total_pages:namespaces.length?1:0}});
+    if(parsed.pathname===`/client/v4/accounts/${accountId}/workers/scripts/${WORKER_NAME}/versions`) return response({items:versionsList},{resultInfo:{page:1,per_page:100,count:versionsList.length,total_count:versionsList.length,total_pages:versionsList.length?1:0}});
     if(parsed.pathname===`/client/v4/accounts/${accountId}/workers/workers/${WORKER_NAME}`) {
       if(target==='absent') return response(null,{status:404,success:false,resultInfo:undefined,errors:[{code:10007}]});
       return response(workerRecord,{resultInfo:undefined});
@@ -143,6 +145,7 @@ test('exact empty locally created Worker is the only first-deploy candidate; all
   assert.equal(status,'deploy');
   assert.ok(f.calls.every(call=>call.method==='GET'&&call.token===`Bearer ${call.url.pathname.endsWith('/gateway/rules')?gatewayToken:readToken}`));
   assert.ok(f.calls.some(call=>call.url.pathname===`/client/v4/zones/${zoneId}/workers/routes`));
+  assert.ok(f.calls.some(call=>call.url.pathname===`/client/v4/accounts/${accountId}/workers/scripts/${WORKER_NAME}/versions`));
   await assert.rejects(verifyBootstrapPreflight({accountId,workerId,readToken,gatewayToken,expectedZoneIds:[zoneId],sourceSha:sha,fetchImpl:cloudflareFixture({target:'absent'}).fetchImpl}),/created locally by an owner/);
   for(const bad of [
     cloudflareFixture({target:'absent',zones:[]}),
@@ -152,6 +155,8 @@ test('exact empty locally created Worker is the only first-deploy candidate; all
     cloudflareFixture({target:'absent',zoneInfo:{page:2,per_page:50,total_count:1,total_pages:1}}),
     cloudflareFixture({target:'absent',gatewayRules:[{action:'forward',enabled:true,rule_settings:{forward:{worker_id:WORKER_NAME}}}]}),
   ]) await assert.rejects(verifyBootstrapPreflight({accountId,workerId,readToken,gatewayToken,expectedZoneIds:[zoneId],sourceSha:sha,fetchImpl:bad.fetchImpl}));
+  const unservedVersion=cloudflareFixture({target:'empty',deployments:[],legacyVersions:[{id:versionId,metadata:{},number:1}]});
+  await assert.rejects(verifyBootstrapPreflight({accountId,workerId,readToken,gatewayToken,expectedZoneIds:[zoneId],sourceSha:sha,fetchImpl:unservedVersion.fetchImpl}),/only the exact empty disabled locally created Worker/);
   const takeover=cloudflareFixture({target:'empty',deployments:[],domains:[],workerRecord:{...worker,id:'4'.repeat(32)}});
   await assert.rejects(verifyBootstrapPreflight({accountId,workerId,readToken,gatewayToken,expectedZoneIds:[zoneId],sourceSha:sha,fetchImpl:takeover.fetchImpl}),/Worker ID differs/);
   assert.equal(verifyDistinctWriteCredential(readToken,gatewayToken,writeToken),true);
@@ -165,6 +170,8 @@ test('bootstrap only accepts disabled no-ingress state; routed postflight verifi
   const noIngress=snapshot();noIngress.domains=[];
   assert.equal(verifyProviderState(noIngress,{phase:'preflight',expectedZoneIds:[zoneId],sourceSha:sha,expectedWorkerId:workerId}),'already-initialized-no-ingress');
   assert.equal(verifyProviderState(noIngress,{phase:'init-postflight',expectedZoneIds:[zoneId],sourceSha:sha,expectedWorkerId:workerId}),'verified-no-ingress');
+  const extraVersion=structuredClone(noIngress);extraVersion.versions.push({id:'22222222-3333-4444-5555-666666666666',metadata:{},number:2});
+  assert.throws(()=>verifyProviderState(extraVersion,{phase:'init-postflight',expectedZoneIds:[zoneId],sourceSha:sha,expectedWorkerId:workerId}),/exactly one version/);
   assert.throws(()=>verifyProviderState(good,{phase:'init-postflight',expectedZoneIds:[zoneId],sourceSha:sha,expectedWorkerId:workerId}),/empty Worker already has a custom domain/);
   const reverseRef=snapshot();reverseRef.domains=[];reverseRef.worker=structuredClone(worker);reverseRef.worker.references.domains=[{hostname:'private-laptop-bridge-staging.security.cab'}];
   assert.throws(()=>verifyProviderState(reverseRef,{phase:'init-postflight',expectedZoneIds:[zoneId],sourceSha:sha,expectedWorkerId:workerId}),/reverse domain reference/);

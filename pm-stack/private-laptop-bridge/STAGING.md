@@ -79,18 +79,20 @@ is missing or differs.
 
 The deploy job runs the `bridge-init` build and pinned `cf deploy --dry-run`,
 verifies the effective disabled, no-domain Build Output, then uses separate
-read-only and write-only credentials. Before its only possible provider write, read-only
+read-only and write-only credentials. Before its only possible provider write,
+read-only
 checks inventory the full account zone set and every zone's Worker routes,
 account Worker domains, the pinned Worker ID and SQLite namespace, schedules,
 subdomain/preview flags, settings, versions and deployments. It refuses an
 unknown or partial inventory, any unexpected route/domain, an orphan namespace,
 an absent or mismatched Worker ID, shared read/write tokens, or any effective
 config that differs from the disabled artifact. Only an exact, precreated
-metadata-only Worker with zero deployments, zero domain references, and no
-namespace can proceed. A second read-only pass proves that the deployment is
+metadata-only Worker with zero legacy versions and deployments, zero domain
+references, and no namespace can proceed. A second read-only pass proves that the deployment is
 disabled, has the exact source-SHA version and SQLite namespace binding, and
-still has zero custom domains and reverse domain references. It never changes
-Gateway or routes.
+has exactly one version matching its sole serving deployment while retaining
+zero custom domains and reverse domain references. It never changes Gateway
+or routes.
 
 The checked-in template has not been registered, dispatched, or run against
 Cloudflare. The current protected environment, reviewer IDs, exact account,

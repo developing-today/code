@@ -386,8 +386,9 @@ The first-deploy template now uses a separate `bridge-init` mode. Its rendered
 Worker payload must have `domains: []`, blank Access issuer/audience, disabled
 service, no routes/triggers, workers.dev/previews off, and the declared SQLite
 export. The init postflight requires zero account domains and Worker reverse
-domain references, plus the exact disabled source-tagged version and namespace.
-The routed `bridge` mode remains separate; no Access setup or hostname attach
+domain references, zero prior versions before the write, and exactly one
+source-tagged disabled version matching its sole deployment afterward. The
+routed `bridge` mode remains separate; no Access setup or hostname attach
 workflow was added. `private-laptop-bridge-staging-bootstrap.workflow.yml.disabled`
 remains outside `.github/workflows` and was not dispatched.
 
