@@ -1148,6 +1148,9 @@ async function viewPhone(sub) {
     history.replaceState(null, "", "#more/phone");
   }
   const devices = await api("devices");
+  // Where a download would come from. Only the edge can say; the
+  // laptop serving the app itself has no such answer.
+  const android = await api("android").catch(() => null);
   // The phone has collected its token: the request is finished.
   if (linkApprovedAt !== null && devices.length > linkApprovedAt) {
     linkRequest = null;
@@ -1235,19 +1238,36 @@ async function viewPhone(sub) {
         h("li", {}, h("b", {}, "Shortcuts. "), "Long-press the icon for Ask, Needs me and Now."),
         h("li", {}, h("b", {}, "Notifications. "), "Turn them on under Notifications; they arrive as the app's own."),
       ),
-      me.androidApp ? h("div", { class: "row end" }, h("a", { class: "button", href: "/console/pm-console.apk" }, "Download the app")) : null,
-      // Served from Cloudflare's copy when the laptop is away: say so
-      // when that copy is not the laptop's newest build.
-      me.androidBuild && !me.androidBuild.current
-        ? h(
-            "p",
-            { class: "meta" },
-            `With the laptop away you get the copy kept at Cloudflare, built ${ago(new Date(me.androidBuild.at).toISOString())}. The laptop has a newer build, which will be here once it has reported again.`,
-          )
+      me.androidApp || android?.release
+        ? h("div", { class: "row end" }, h("a", { class: "button", href: "/console/pm-console.apk" }, "Download the app"))
         : null,
+      androidNote(me, android),
     ),
   );
   return out;
+}
+
+/** What is said under the download: which build it is and who made it. */
+export function androidSource(me, android) {
+  // Released by GitHub Actions: that is what the download is.
+  if (android?.release) return { by: "github", name: android.release.name, at: android.release.built };
+  // Served from Cloudflare's copy when the laptop is away: worth saying
+  // only when that copy is not the laptop's newest build.
+  if (me?.androidBuild && !me.androidBuild.current) return { by: "copy", at: new Date(me.androidBuild.at).toISOString() };
+  return null;
+}
+
+function androidNote(me, android) {
+  const source = androidSource(me, android);
+  if (!source) return null;
+  if (source.by === "github") {
+    return h("p", { class: "meta" }, `Build ${source.name}, built, signed and released by GitHub ${ago(source.at)}. It installs over the one you have.`);
+  }
+  return h(
+    "p",
+    { class: "meta" },
+    `With the laptop away you get the copy kept at Cloudflare, built ${ago(source.at)}. The laptop has a newer build, which will be here once it has reported again.`,
+  );
 }
 
 const QUEUE_STATES = ["blocked", "queued", "claimed", "parked"];

@@ -12,11 +12,12 @@ name: pm-console android
 # The version is the commit's (build.sh): a code that rises with the
 # commit's time, so each build installs over the one before.
 #
-# Signing needs the app's key, which is held as two secrets of the
-# pm-console-android environment: PM_CONSOLE_ANDROID_KEYSTORE_B64 and
+# Signing needs the app's key, as two secrets of the pm-console-android
+# environment: PM_CONSOLE_ANDROID_KEYSTORE_B64 and
 # PM_CONSOLE_ANDROID_KEYSTORE_PASSWORD. An environment, not the
-# repository, so that only runs on main can read them. The owner hands
-# the key over from the console (More, Phones); nothing here can.
+# repository, so that it can be limited to runs on main. Putting the key
+# there is the owner's to do, by hand; no script or agent holds or moves
+# it (pm-stack/console/android/README.md).
 #
 # With the key: the APK is signed here, checked against the certificate
 # the site lists (signing-fingerprint.txt), and released twice with
@@ -68,7 +69,7 @@ jobs:
             echo "signed=true" >>"$GITHUB_OUTPUT"
           else
             echo "signed=false" >>"$GITHUB_OUTPUT"
-            echo "::notice::Built unsigned: this environment does not hold the signing key. Nothing is released until the owner hands it over (console: More, Phones)."
+            echo "::notice::Built unsigned: this environment does not hold the signing key, so nothing is released. See pm-stack/console/android/README.md, Giving GitHub the key."
             echo "Built $(sed -n 1p "$out/version") unsigned: the signing key is not here, so nothing was released." >>"$GITHUB_STEP_SUMMARY"
           fi
       - uses: actions/upload-artifact@v7
