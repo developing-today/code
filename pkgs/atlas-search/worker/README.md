@@ -25,6 +25,11 @@ and caches the result **indefinitely** (no TTL/eviction in v1).
   the pinned config fingerprint (ceiling, model revision, vector
   table, k). A cached entry is never served across ceilings or
   embedding spaces.
+- `src/admission.ts` — the D1 hot-cache admission policy (#13103,
+  #9134 design §3/§5): heat counters, heavy-query immediate
+  admission, per-tenant quotas (tier weights 1:4:16, 5% floor),
+  entry size cap, negative-result TTL, and the LRU eviction sweep.
+  Pure policy, not yet wired into the read path (follow-on 4).
 
 ## Endpoints
 
