@@ -57,6 +57,7 @@ import {
   type PctPoint,
   type ProjectionState,
 } from "./quota-analytics.ts";
+import { forecastSeriesKey } from "./quota-forecast.ts";
 import type { SnapshotRecord } from "./model.ts";
 
 /** The model under score, named so a ledger is never read as scoring
@@ -64,17 +65,15 @@ import type { SnapshotRecord } from "./model.ts";
 export const FORECAST_ACCURACY_MODEL = "quota-analytics.projectWindow pace v1 (design D2, via S1 #12695)";
 
 /**
- * The serviceId fold, identical to the one S1's quota-forecast.ts
- * publishes as forecastSeriesKey: a leading underscore (the #1823
- * config-id rename), the colon/dot drift, and the hyphen drift all
- * fold away. Distinct pools stay distinct — the fold removes
- * spelling, never structure. Duplicated here deliberately: S2 lands
- * against the design contract, not against S1's branch, and the two
- * folds must agree (the test suite pins this table).
+ * The serviceId fold is S1's own forecastSeriesKey, imported so the
+ * backtest's join and the forecast product's join are the same
+ * function by construction, never two copies that can drift: a
+ * leading underscore (the #1823 config-id rename), the colon/dot
+ * drift, and the hyphen drift all fold away. Distinct pools stay
+ * distinct — the fold removes spelling, never structure. (The test
+ * suite pins the fold table.)
  */
-export function forecastAccuracySeriesKey(serviceId: string): string {
-  return serviceId.replace(/^_/, "").replace(/:/g, ".").replace(/-/g, "");
-}
+export const forecastAccuracySeriesKey = forecastSeriesKey;
 
 /**
  * The explicit rename-join (design §2: "any backtest must join
@@ -674,10 +673,7 @@ export function renderBacktestReport(ledger: ForecastAccuracyLedger): string {
   lines.push("|---|---|---|---|---|---|---|");
   for (const p of ledger.pools) {
     const r = p.rollup;
-    const errPool = p.windows.map((w) => w.wallErrorMin).filter(Boolean) as ErrorDistribution[];
-    const errCell = errPool.length
-      ? errPool.map((d) => `${d.count} TP`).join(", ") + " (per-window below)"
-      : "—";
+    const errCell = r.tp > 0 ? `${r.tp} TP (distributions per window below)` : "—";
     lines.push(
       `| ${p.pool} | ${r.scoreable ? "yes" : "NO"} | ${r.periodsScored}/${r.periodsWalled} | ${r.forecastsScored}/${r.forecastsInsufficient} | ${fmtMetric(r.precision)} | ${fmtMetric(r.recall)} | ${errCell} |`,
     );
@@ -691,6 +687,10 @@ export function renderBacktestReport(ledger: ForecastAccuracyLedger): string {
     if (p.serviceIdsJoined.length) {
       lines.push(`Joined service ids: ${p.serviceIdsJoined.map((s) => `\`${s}\``).join(", ")}`);
       lines.push("");
+    }
+    if (!p.rollup.scoreable) {
+      for (const reason of p.rollup.unscoreableReasons) lines.push(`- note: ${reason}`);
+      if (p.rollup.unscoreableReasons.length) lines.push("");
     }
     for (const w of p.windows) {
       if (w.periodsTotal === 0 && w.forecastsIssued === 0 && !w.unscoreableReasons.length) continue;
