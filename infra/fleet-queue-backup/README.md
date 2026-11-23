@@ -24,15 +24,27 @@ decisions.
   counts against the counts the export recorded in the copy's
   `_fleet_queue_backup_meta` table.
 - `bin/fq_common.py` — the shared clients and the dump builder.
+- `bin/export_to_turso.py` — the reverse leg (backup mesh class D,
+  #13458): a weekly export of the `fleet-queue-backup` D1 database
+  into its dedicated Turso home `d1-backup-fleet-queue-backup`,
+  staged and wholesale-replacing, with the import record kept in
+  the home's `_d1_backup_home_meta` table. A failed import leaves
+  the previous import intact.
+- `bin/restore_drill_d1_home.py` — the class-D acceptance drill:
+  rebuilds the D1 database from its Turso home into a local SQLite
+  file and verifies counts against the home's import record.
 - `systemd/` — a daily user timer (`fleet-queue-backup-export.timer`,
-  02:15 + up to 30 min randomized delay) whose wrapper fetches the
-  credentials from Bitwarden by name at runtime. Install with
-  `systemd/install-units.sh` from a checkout on the laptop.
+  02:15 + up to 30 min randomized delay) and a weekly one
+  (`fleet-queue-backup-d1-home.timer`, Sundays 03:40) whose wrappers
+  fetch the credentials from Bitwarden by name at runtime. Install
+  with `systemd/install-units.sh` from a checkout on the laptop.
 - `docs/RUNBOOK.md` — the restore path, the drill procedure, and the
   freshness target.
 - `tests/` — hermetic tests; sqlite3 is the oracle. Run:
   `python3 -I tests/test_fq_common.py`,
   `python3 -I tests/test_restore_drill.py`,
+  `python3 -I tests/test_export_to_turso.py`,
+  `python3 -I tests/test_restore_drill_d1_home.py`,
   `bash systemd/test-export-arguments.sh`.
 
 ## Credentials
@@ -41,7 +53,9 @@ Environment only, fetched by name, never written down:
 `turso.fleet-queue-rw-token` (export source) and
 `cloudflare.api-token-account-wide` (D1). The restore drill takes a
 token for its scratch target via `TURSO_TARGET_TOKEN` — never the
-production queue token.
+production queue token. The class-D leg takes the home's token via
+`TURSO_HOME_TOKEN` (`turso.d1-backup-fleet-queue-backup-rw-token`,
+minted when the home is provisioned; see the runbook).
 
 ## Status against #8584
 
@@ -50,3 +64,11 @@ This directory covers the Turso -> D1 leg. The repo legs live in
 schedules). Still outstanding for #8584: the Cloudflare rehost leg
 and the unified five-copy freshness/lag readout with automatic issue
 filing; both are recorded on the issue.
+
+## Status against #13458 (mesh class D)
+
+The D1 -> Turso home leg's code, weekly units, and hermetic tests
+are in this directory; the home database itself is provisioned in
+that issue's live leg (create `d1-backup-fleet-queue-backup`, mint
+its token into the vault, install the units, first verified import
++ drill), which is recorded on #13458.
