@@ -42,6 +42,7 @@ pub mod note_links;
 pub mod notes;
 pub mod policy;
 pub mod range;
+pub mod read_authority;
 pub mod search;
 pub mod session_checkpoint;
 pub mod store;

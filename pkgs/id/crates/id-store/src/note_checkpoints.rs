@@ -361,13 +361,33 @@ impl NoteCheckpoints {
         Some((owner, NoteAccess::Public))
     }
 
+    /// A note's recorded access policy, if the log holds one for
+    /// it. `None` both for a note the log does not have and for a
+    /// known note with no recorded policy — unlike [`Self::access`],
+    /// which reports the latter as [`NoteAccess::Public`]. Callers
+    /// that must tell those apart (the #5678 resolution order in
+    /// [`crate::read_authority` falls a known note with no recorded
+    /// policy through to the user default, then the server default)
+    /// use this; callers that only need the effective policy use
+    /// `access`.
+    #[must_use]
+    pub fn recorded_access(&self, note: Hash) -> Option<(AuthorKey, NoteAccess)> {
+        self.policies
+            .get(&note)
+            .map(|policy| (policy.owner, policy.access.clone()))
+    }
+
     /// The role `author` effectively holds on `note`: the owner is
     /// always [`NoteRole::Admin`]; on a public note every author
     /// holds [`NoteRole::Write`] (read included); on a scoped note
     /// the best matching grant wins — a direct user grant, or a
     /// group grant the `groups` resolver answers for. `None` when
     /// the author holds nothing on a scoped note, or the note is
-    /// unknown.
+    /// unknown. The grant logic lives in
+    /// [`crate::read_authority::role_for`]; this applies it to the
+    /// note's recorded policy (a note with no recorded policy reads
+    /// as [`NoteAccess::Public`] — the full #5678 order, with the
+    /// user and server defaults, is [`crate::read_authority::may_read`]).
     #[must_use]
     pub fn effective_role(
         &self,
@@ -376,28 +396,7 @@ impl NoteCheckpoints {
         groups: &GroupRoles,
     ) -> Option<NoteRole> {
         let (owner, access) = self.access(note)?;
-        if author == owner {
-            return Some(NoteRole::Admin);
-        }
-        match access {
-            NoteAccess::Public => Some(NoteRole::Write),
-            NoteAccess::Scoped(grants) => {
-                let mut best: Option<NoteRole> = None;
-                for grant in &grants {
-                    let role = match grant.principal {
-                        NotePrincipal::User(user) if user == author => Some(grant.role),
-                        NotePrincipal::Group(group) => groups
-                            .role(group, author)
-                            .map(|resolved| resolved.min(grant.role)),
-                        _ => None,
-                    };
-                    if let Some(role) = role {
-                        best = Some(best.map_or(role, |b: NoteRole| b.max(role)));
-                    }
-                }
-                best
-            }
-        }
+        crate::read_authority::role_for(owner, &access, author, groups)
     }
 
     /// Whether `author` may read `note` (any role at all on a
