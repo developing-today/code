@@ -108,6 +108,18 @@ missing environments are automatically created without protection rules.
 [GitHub protected branches](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-protected-branches/about-protected-branches) ·
 [GitHub environments](https://docs.github.com/en/actions/how-tos/deploy/configure-and-manage-deployments/manage-environments)
 
+If repository-wide main protection cannot be established, do not mark the
+current policy proof as protected. A separate protected-source path would need
+an environment-owned exact approved full commit SHA, no workflow ref/target
+inputs, a `main`-only dispatch, an independent required reviewer who checks the
+workflow and exact source diff at that SHA, and a separate gated write job that
+checks out only that SHA. The approval record and protected SHA setting must be
+retained as evidence; changing the pin requires the same independent review.
+The environment must not expose its credential to a validation job. This
+fallback is a proposal only: no environment, source pin, workflow, or reviewer
+rule has been created or verified, so the existing release policy remains
+fail-closed until one of the protected paths is actually evidenced.
+
 Fresh provider readback cannot currently run in Actions: there is no protected
 environment or independently scoped read-only credential. The eventual audit
 credential needs Worker metadata read, complete zone/route read, and Zero Trust
