@@ -515,6 +515,14 @@
         # =======================================================================
         checks =
           let
+            mkCheckAggregate =
+              name: members:
+              pkgs.linkFarm name (
+                map (member: {
+                  name = member;
+                  path = individualChecks.${member};
+                }) members
+              );
             individualChecks =
               {
                 # CI-safe checks (read-only): cargo-fmt-check web-fmt-check clippy-lint web-lint test-sandbox test-crate-integration test-web-unit test-web-typecheck roc-test roc-examples doc build release
@@ -531,7 +539,15 @@
                 # workspace member, invisible to the default-member checks.
                 clippy-native-shell = mkCheckCargoOnly "clippy-native-shell" "clippy-native-shell";
                 web-lint = mkCheckBiome "web-lint" "web-lint";
-                test = mkCheck "test" "test-sandbox";
+                # test-unit plus the four shards cover the same root suite
+                # as test-sandbox, without building and running that suite twice.
+                test = mkCheckAggregate "id-test" [
+                  "test-unit"
+                  "test-shard-0"
+                  "test-shard-1"
+                  "test-shard-2"
+                  "test-shard-3"
+                ];
                 test-unit = mkCheck "test-unit" "test-unit";
                 test-crate-integration = mkCheck "test-crate-integration" "test-crate-integration";
                 test-native-shell = mkCheckCargoOnly "test-native-shell" "test-native-shell";
@@ -561,7 +577,14 @@
                     cargo test --no-default-features --features sandbox,world --lib sandbox
                   '';
                 };
-                test-int = mkCheck "test-int" "test-int-sandbox";
+                # The shards cover the integration target as well as
+                # the unit/bin/doc tests assigned to shard zero.
+                test-int = mkCheckAggregate "id-test-int" [
+                  "test-shard-0"
+                  "test-shard-1"
+                  "test-shard-2"
+                  "test-shard-3"
+                ];
                 # PR-gate shards of the integration suite (#869): the four
                 # shards together run every target test-sandbox runs, in
                 # parallel jobs instead of one serial ~25-minute check.
@@ -579,7 +602,13 @@
                 test-shard-1 = mkCheck "test-shard-1" "test-shard-sandbox 1 4";
                 test-shard-2 = mkCheck "test-shard-2" "test-shard-sandbox 2 4";
                 test-shard-3 = mkCheck "test-shard-3" "test-shard-sandbox 3 4";
-                test-web = mkCheck "test-web" "test-web-sandbox";
+                # Compose the Rust and web checks already run separately
+                # by nix flake check instead of rebuilding them in one derivation.
+                test-web = mkCheckAggregate "id-test-web" [
+                  "test"
+                  "test-web-unit"
+                  "test-web-typecheck"
+                ];
                 test-web-unit = mkCheckWebOnly "test-web-unit" "test-web-unit";
                 test-web-typecheck = mkCheckWebOnly "test-web-typecheck" "test-web-typecheck";
                 # Roc library expect() tests (#813): runs the roc-test just
