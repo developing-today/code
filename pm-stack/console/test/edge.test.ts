@@ -11,6 +11,8 @@
 // Oracles: what the host holds is compared with what the edge serves;
 // "run once" is counted on the host; a signature is made here with a key
 // the edge was never given; stored values are measured in the map.
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { beforeEach, describe, expect, test } from "bun:test";
 import { queueWrites } from "../edge/src/direct.ts";
 import { Edge, type KV, SILENT_MS } from "../edge/src/edge.ts";
@@ -47,6 +49,8 @@ const ISSUER = {
   source: "access" as const,
 };
 const START = Date.parse("2026-11-22T12:00:00Z");
+/** The order the platform's Workers are shown in, by what they belong to. */
+const ORDER = ["platform", "fleet", "data", "id", "lab"];
 const SECTION_NAMES = [
   "board",
   "sessions",
@@ -444,6 +448,10 @@ async function setup(options: { direct?: boolean } = {}) {
           },
         ],
       });
+    }
+    if (method === "GET" && path === "contents/pm-stack/platform/workers.json") {
+      // The repository's own list, as it stands in this checkout.
+      return ok({ content: btoa(readFileSync(join(import.meta.dir, "..", "..", "platform", "workers.json"), "utf8")) });
     }
     if (method === "GET" && path === "contents/planning/roadmaps/pm-stack.md") {
       const file =
@@ -3419,6 +3427,43 @@ describe("the edge does the core itself", () => {
     expect(turned?.actions).not.toContain("pr.merge");
     expect(turned?.actions).toContain("issue.rank");
     expect(turned?.refused).toEqual(["pr.merge"]);
+  });
+
+  test("the platform's Workers are read at the edge from the repository's own list, with the last deploy of each that Actions deploys", async () => {
+    const w = await primary();
+    w.net.hostUp = false;
+    const res = await w.browse("/console/api/platform");
+    expect(res.status).toBe(200);
+    const p = (await res.json()) as {
+      checked: string;
+      malformed: number;
+      workers: { name: string; group: string; state: string; deploy: string; workflow: string | null; run: unknown }[];
+    };
+    expect([p.malformed, p.checked]).toEqual([0, "2026-11-23"]);
+    // The platform first, then the rest by what they belong to.
+    expect(p.workers[0]).toMatchObject({
+      name: "pm-console-edge",
+      group: "platform",
+      state: "in service",
+      deploy: "actions",
+      workflow: "pm-console-edge-deploy.yml",
+      // The latest run of its deploy on main, read from GitHub here.
+      run: { commit: expect.stringMatching(/^[0-9a-f]{12}$/), state: "success", at: "2026-11-22T11:50:00Z" },
+    });
+    const byName = new Map(p.workers.map((x) => [x.name, x]));
+    // One that a machine deploys by hand has no run to show; one that is not deployed, neither.
+    expect(byName.get("message-bridge")).toMatchObject({ deploy: "by hand", workflow: null, run: null });
+    expect(byName.get("fleet-hosted")).toMatchObject({ state: "not deployed", deploy: "none", run: null });
+    expect(p.workers.map((x) => x.group)).toEqual(
+      [...p.workers.map((x) => x.group)].sort((a, b) => ORDER.indexOf(a) - ORDER.indexOf(b)),
+    );
+    // No machine was asked.
+    expect(w.hostSaw.filter((seen) => seen.includes("/api/platform"))).toEqual([]);
+    // GitHub did not answer about the deploys: the list still shows, and says so for those.
+    w.ghDrops.push((method, url) => method === "GET" && url.includes("/actions/workflows/"));
+    const partial = (await (await w.browse("/console/api/platform")).json()) as typeof p;
+    expect(partial.workers).toHaveLength(p.workers.length);
+    expect(partial.workers[0].run).toEqual({ error: expect.any(String) });
   });
 
   test("handed on to the laptop, an action keeps the device's name for it: the laptop does it once", async () => {

@@ -13,6 +13,7 @@
 import type { Config } from "./config.ts";
 import { OpError } from "./errors.ts";
 import { plain } from "./plain.ts";
+import { WORKERS_FILE, workersList } from "./platform.ts";
 
 export interface RunResult {
   code: number;
@@ -709,6 +710,57 @@ export class Ops {
   /** What GitHub's own record says of the site's deploys and the app's
    * builds: the last few runs of each on main, newest first. One that
    * could not be read says so by itself; the other still shows. */
+  /** Every Worker the repository holds, as its own list says
+   * (pm-stack/platform/workers.json, read from the repository so that
+   * a merge is all it takes to change it), and for each one deployed
+   * from Actions the latest run of that deploy on main. A run that
+   * could not be read says so by itself; the list still shows. */
+  async platform() {
+    const got = (await this.gh([`repos/${this.cfg.repo}/contents/${WORKERS_FILE}`])) as { content?: string } | null;
+    if (typeof got?.content !== "string") throw new OpError(502, "the list of Workers could not be read");
+    let parsed: unknown;
+    try {
+      // GitHub wraps the encoded file in lines; decoding passes over them.
+      parsed = JSON.parse(new TextDecoder().decode(Uint8Array.from(atob(got.content), (c) => c.charCodeAt(0))));
+    } catch {
+      throw new OpError(502, "the list of Workers is not valid JSON");
+    }
+    const list = workersList(parsed);
+    const flows = [...new Set(list.workers.map((w) => w.workflow).filter((f): f is string => f !== null))];
+    const last = async (workflow: string) => {
+      const found = (await this.gh([
+        `repos/${this.cfg.repo}/actions/workflows/${workflow}/runs?branch=main&per_page=1`,
+      ])) as {
+        workflow_runs?: {
+          head_sha: string;
+          status: string;
+          conclusion: string | null;
+          created_at: string;
+          html_url: string;
+        }[];
+      } | null;
+      const run = found?.workflow_runs?.[0];
+      return run
+        ? {
+            commit: run.head_sha.slice(0, 12),
+            state: run.status === "completed" ? (run.conclusion ?? "unknown") : run.status,
+            at: run.created_at,
+            url: run.html_url,
+          }
+        : null;
+    };
+    const runs = new Map(
+      await Promise.all(
+        flows.map(async (flow) => [flow, await last(flow).catch((e: Error) => ({ error: e.message }))] as const),
+      ),
+    );
+    return {
+      checked: list.checked,
+      malformed: list.malformed,
+      workers: list.workers.map((w) => ({ ...w, run: w.workflow ? (runs.get(w.workflow) ?? null) : null })),
+    };
+  }
+
   async releases() {
     const runs = async (workflow: string) => {
       const got = (await this.gh([

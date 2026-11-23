@@ -1129,6 +1129,7 @@ function viewMore() {
       tile("more/signin", "Sign-in", "Google first, the emailed code as the fallback"),
       tile("more/away", "Cloudflare", "what it does by itself, and what waits for a machine"),
       tile("more/machines", "Machines", "each machine, what only it can do, and what waits for one"),
+      tile("more/platform", "Platform", "every Worker: what it does, whether it is in service, how it is deployed"),
       tile("more/device", "On this device", "what is kept here to send, and what it shows with no connection"),
       tile("more/releases", "Releases", "what is deployed, the Android app, and putting either out again"),
     ),
@@ -2171,6 +2172,90 @@ async function viewMachines() {
   return out;
 }
 
+const GROUP_SAID = { platform: "The platform", fleet: "Fleet", data: "Data", id: "id", lab: "Lab" };
+
+/** One Worker's line on how it gets into service and how its last
+ * deploy went, and whether that needs looking at. */
+export function workerSaid(w, now = Date.now()) {
+  if (w.state !== "in service") return { text: "Not deployed.", tone: "" };
+  if (w.deploy !== "actions") return { text: "In service. Deployed by hand, from a machine.", tone: "warn" };
+  const run = w.run;
+  if (!run) return { text: "In service. Deployed from Actions; it has not run on main yet.", tone: "" };
+  if (run.error) return { text: `In service. Deployed from Actions; its last run could not be read (${run.error}).`, tone: "warn" };
+  const when = ago(run.at, now);
+  if (run.state === "success") return { text: `In service. Last deploy ${when}, of ${run.commit.slice(0, 7)}.`, tone: "good" };
+  if (run.state === "failure" || run.state === "cancelled" || run.state === "timed_out") {
+    return { text: `In service. Its last deploy, ${when}, did not finish (${run.state.replace("_", " ")}).`, tone: "warn" };
+  }
+  return { text: `In service. A deploy of ${run.commit.slice(0, 7)} is ${run.state.replace("_", " ")}, started ${when}.`, tone: "" };
+}
+
+/** The counts the Platform screen opens with. */
+export function platformCounts(workers) {
+  const live = workers.filter((w) => w.state === "in service");
+  return {
+    all: workers.length,
+    live: live.length,
+    actions: live.filter((w) => w.deploy === "actions").length,
+    byHand: live.filter((w) => w.deploy !== "actions").length,
+    idle: workers.length - live.length,
+  };
+}
+
+/** Platform: every Worker the repository holds, as one list. Where each
+ * lives, what it does, whether it is in service, how it gets there and
+ * how its last deploy went; and what joining the one platform means
+ * for each that has not yet. */
+async function viewPlatform() {
+  const p = await api(freshly("platform"));
+  const workers = Array.isArray(p.workers) ? p.workers : [];
+  const n = platformCounts(workers);
+  const repo = `https://github.com/${me.repo || "developing-today/code"}`;
+  const out = [
+    card(
+      h("h3", {}, `${n.live} Worker${n.live === 1 ? "" : "s"} in service`),
+      h(
+        "p",
+        { class: "meta" },
+        `${n.actions} deployed from Actions, ${n.byHand} by hand from a machine. ${n.idle} more ${n.idle === 1 ? "is" : "are"} in the repository and not deployed.`,
+      ),
+      h(
+        "p",
+        { class: "meta" },
+        "One platform means each of these is deployed from Actions with a check and a way back, and is seen and managed from here. This list is the repository's own, and changes with a merge.",
+      ),
+      p.checked ? h("p", { class: "meta" }, `Which are in service was last checked from outside on ${p.checked}.`) : null,
+      p.malformed ? h("p", { class: "why" }, `${p.malformed} entr${p.malformed === 1 ? "y" : "ies"} in the list could not be read and ${p.malformed === 1 ? "is" : "are"} not shown.`) : null,
+    ),
+  ];
+  for (const group of Object.keys(GROUP_SAID)) {
+    const rows = workers.filter((w) => w.group === group);
+    if (rows.length === 0) continue;
+    out.push(h("h2", {}, `${GROUP_SAID[group]} (${rows.length})`));
+    for (const w of rows) {
+      const s = workerSaid(w);
+      out.push(
+        card(
+          h("div", { class: "row" }, chip(w.state, w.state === "in service" ? "good" : ""), w.state === "in service" ? chip(w.deploy === "actions" ? "from Actions" : "by hand", w.deploy === "actions" ? "" : "warn") : null),
+          h("h3", {}, w.title),
+          h("p", {}, w.does),
+          h("p", { class: s.tone === "warn" ? "why" : "meta" }, s.text),
+          h("p", { class: "meta" }, h("b", {}, "Next: "), w.next),
+          h(
+            "div",
+            { class: "row end" },
+            ext(`${repo}/tree/main/${w.path}`, "Its code"),
+            w.workflow ? ext(`${repo}/actions/workflows/${w.workflow}`, "Its deploys") : null,
+            w.run?.url ? ext(w.run.url, "Last run") : null,
+            w.name === "pm-console-edge" ? h("button", { class: "small ghost", onclick: () => go("more/releases") }, "Releases") : null,
+          ),
+        ),
+      );
+    }
+  }
+  return out;
+}
+
 /** What is kept on this device, in the groups the screen shows it in,
  * newest first: `title`, the entries, and what can be done with each. */
 export function keptGroups(entries) {
@@ -2200,6 +2285,7 @@ export function everyRead(caps, edge) {
     "intake",
     ...["blocked", "queued", "claimed", "parked"].map((status) => `queue?status=${status}&q=`),
     "releases",
+    "platform",
     "messages?limit=15",
     "push",
     "devices",
@@ -2792,6 +2878,7 @@ const VIEWS = {
   "more/signin": ["Sign-in", viewSignin],
   "more/away": ["Cloudflare", viewAway],
   "more/machines": ["Machines", viewMachines],
+  "more/platform": ["Platform", viewPlatform],
   "more/device": ["On this device", viewDevice],
   "more/releases": ["Releases", viewReleases],
   "more/roadmap": ["Roadmap", viewRoadmap],
