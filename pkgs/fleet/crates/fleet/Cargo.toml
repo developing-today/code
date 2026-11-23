@@ -48,6 +48,16 @@ ureq = { version = "3", default-features = false, features = [
   "rustls",
   "platform-verifier",
 ], optional = true }
+# The gh domain's Metadata create path (code#9073): Ed25519 stamp
+# signatures over the canonical provenance form. Deterministic
+# RFC 8032 signing is the conformance surface — the hosted edition's
+# golden vectors (pkgs/fleet/hosted-worker/test/stamp-sig.test.ts)
+# must reproduce byte-exact — so signing is a library call, not a
+# subprocess. Same major version as pkgs/id's id-worlds.
+ed25519-dalek = { version = "3", optional = true }
+# The gh domain's Metadata store (code#9073): #9074's pm_metadata
+# schema over SQLite. Same pin as fleet-queue.
+rusqlite = { version = "0.42", features = ["bundled"], optional = true }
 # Direct dep for the SIGPIPE disposition reset in main (#5569);
 # already in the workspace lockfile as a transitive dependency.
 [target.'cfg(unix)'.dependencies]
@@ -112,7 +122,13 @@ secrets = ["dep:fleet-secrets"]
 # The gh passthrough (code#8887): a working-seat client tool, so
 # full only — the serve build's daemons shell out to it externally
 # if ever needed, it is not a daemon role.
-gh = ["dep:fleet-secrets", "dep:ureq"]
+gh = [
+  "dep:fleet-secrets",
+  "dep:ureq",
+  "dep:base64",
+  "dep:ed25519-dalek",
+  "dep:rusqlite",
+]
 laptop-agent = ["dep:fleet-secrets", "dep:fleet-laptop-agent"]
 # Ask the local OpenCode server whether a worktree's recorded session
 # is live before reusing it (session_state.rs). In full and serve;

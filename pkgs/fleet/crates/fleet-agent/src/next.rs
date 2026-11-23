@@ -393,6 +393,33 @@ pub(super) fn default_lane(agent: &str) -> String {
     )
 }
 
+/// The broker binds registered lanes to workers. Agent names identify
+/// the mailbox, but a known lane may belong to a shared queue worker
+/// (for example `code-i` belongs to `repo-worker-code`).
+fn registered_lane_worker(lane: &str) -> Option<&'static str> {
+    if matches!(lane, "not-code-a" | "not-code-g") {
+        return Some("repo-worker-nix");
+    }
+    if matches!(lane, "not-code-b" | "not-code-e") {
+        return Some("repo-worker-opencode");
+    }
+    if lane == "not-code-d" {
+        return Some("repo-worker-openchamber");
+    }
+
+    let (family, suffix) = lane.rsplit_once('-')?;
+    if suffix.len() != 1 || !suffix.bytes().all(|b| b.is_ascii_lowercase()) {
+        return None;
+    }
+    match family {
+        "code" | "any" | "not-code" => Some("repo-worker-code"),
+        "opencode" => Some("repo-worker-opencode"),
+        "openchamber" => Some("repo-worker-openchamber"),
+        "nix" => Some("repo-worker-nix"),
+        _ => None,
+    }
+}
+
 /// How many listed entries in a row may turn out stale in one run
 /// before the shortlist rung gives way to the priority rung.
 const MAX_STALE_ENTRIES: usize = 5;
@@ -507,11 +534,12 @@ pub fn next(world: &dyn World, args: &[String]) -> R<(Value, i32)> {
         tried(&mut log, "queue", "skipped", "--no-queue");
     } else {
         let lease = AGENT_CLAIM_LEASE_SECONDS.to_string();
+        let worker = registered_lane_worker(&lane).unwrap_or(&agent);
         let mut claim = argv(&[
             "queue",
             "claim",
             "--worker",
-            &agent,
+            worker,
             "--lane",
             &lane,
             "--lease-seconds",
@@ -552,8 +580,8 @@ pub fn next(world: &dyn World, args: &[String]) -> R<(Value, i32)> {
                     ),
                 });
                 let then = vec![
-                    format!("fleet queue checkpoint {id} --worker {agent} --lane {lane} ..."),
-                    format!("fleet queue complete {id} --worker {agent} --lane {lane} ..."),
+                    format!("fleet queue checkpoint {id} --worker {worker} --lane {lane} ..."),
+                    format!("fleet queue complete {id} --worker {worker} --lane {lane} ..."),
                 ];
                 return Ok(answer("queue", task, then, log));
             }
