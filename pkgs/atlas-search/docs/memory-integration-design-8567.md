@@ -53,6 +53,14 @@ through the existing stage/registry ingestion path
   atlas-embed where a process is Atlas-internal; the embedding model
   identity is recorded per corpus so a model change is an explicit
   re-embed slice, never silent drift.
+
+  Reconciliation (2026-11-23, #13285): as built, ingestion
+  embeddings are produced in-process by atlas-embed (ONNX) inside
+  the serve process, and the service's outward embedding surface is
+  `POST /v1/embed` on 127.0.0.1:18760. The port-18791
+  openclaw-embedding service exists (home/openclaw) but is not part
+  of the Atlas pipeline; slice 2's port-18791 unification below was
+  not the shape built.
 - No new vector store is created. LanceDB remains OpenClaw's local
   store (its Phase-1 role); the Atlas index is built from it by the
   connector like any other corpus. If the LanceDB store and the
@@ -144,7 +152,8 @@ composes with that track as follows:
    in the stage registry; build the memory-lancedb → Atlas staging
    connector (agent memory corpus live end-to-end).
 2. **Embedding unification:** route all corpus ingestion through the
-   one embedding pipeline (port-18791 endpoint / atlas-embed);
+   one embedding pipeline (port-18791 endpoint / atlas-embed — see
+   the §5 reconciliation note: not built in this shape);
    record embedding-model identity per corpus; re-embed job for
    existing staged content.
 3. **MCP query surface:** the mcpx namespace in front of

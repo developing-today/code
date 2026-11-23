@@ -38,7 +38,11 @@ package's front door.
   Atlas MCP server, with a per-query Durable Object cache and a D1
   hot-cache tier.
 - `atlas_search.py` — the Python reference implementation the Rust
-  was certified against; kept for parity.
+  was certified against; kept for parity. This in-repo copy (1,639
+  lines at 2026-11-23) is not the same file version as the
+  hatch-personal copy the design of record's 1,177-line figure
+  describes; "the Python reference" means this copy unless a copy
+  is named.
 - `eval/`, `schema/`, `tools/`, `fixtures/`, `test-vectors/` — the
   evaluation programme, the staging/gate schemas, and the operator
   tools.
