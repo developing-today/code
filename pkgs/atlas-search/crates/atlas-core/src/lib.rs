@@ -30,6 +30,7 @@
 pub mod aggregate;
 pub mod backend;
 pub mod classification;
+pub mod classify_sweep;
 pub mod detect;
 pub mod embed;
 pub mod embed_cache;
