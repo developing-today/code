@@ -6,17 +6,18 @@
 // `fleet secrets get <queue token name>` into the Worker secret, and
 // refuses every other fleet verb as needing a machine; `fetch` is the
 // Worker's own, which already reaches the queue store. So the board,
-// pull requests, ranked issues, prompts, roadmaps, bugs and intake are
-// read, and the writes that are one call to GitHub or the queue store
-// are run, by the same code a machine runs: nothing here re-implements
-// their shapes.
+// pull requests, ranked issues, prompts, what needs the owner,
+// roadmaps, bugs and intake are read, and the writes that are one call
+// to GitHub or the queue store are run, by the same code a machine
+// runs: nothing here re-implements their shapes.
 //
 // What stays a machine's: `fleet queue enqueue` (the fleet binary is
 // not here), `fleet bridge`, `systemctl`, and anything that reads the
 // dashboard or the decisions file, which live on a machine alone.
 // A prompt, a note or a bug is filed at the edge and only its queue
 // task is held for a machine, as `prompt.enqueue` or `triage.enqueue`:
-// the issue is never filed twice.
+// the issue is never filed twice. What needs the owner is read from
+// GitHub itself, not the dashboard's census of it.
 import { OpError } from "../../src/errors.ts";
 import type { Config } from "../../src/config.ts";
 import type { EdgeConfig } from "../../src/edge-proto.ts";
@@ -25,7 +26,7 @@ import { Plan } from "../../src/plan.ts";
 import { Work } from "../../src/work.ts";
 
 /** Sections the edge reads itself. */
-export const DIRECT_READ_SECTIONS = ["board", "prs", "priorities", "asks"] as const;
+export const DIRECT_READ_SECTIONS = ["board", "prs", "priorities", "asks", "census"] as const;
 /** Actions the edge runs itself: each is one or a few calls to GitHub
  * or the queue store, and needs nothing a machine has. */
 export const DIRECT_ACTIONS = [
@@ -58,6 +59,7 @@ export const READ_FROM: Record<(typeof DIRECT_READ_SECTIONS)[number], Outward["t
   prs: ["github"],
   priorities: ["github"],
   asks: ["github", "queue"],
+  census: ["github"],
 };
 
 export interface DirectSecrets {
@@ -280,6 +282,8 @@ export async function directRead(section: string, ops: Ops, work: Work): Promise
       return ops.priorities();
     case "asks":
       return work.asks();
+    case "census":
+      return work.censusFromGitHub();
     default:
       throw new Error(`not a section the edge reads itself: ${section}`);
   }

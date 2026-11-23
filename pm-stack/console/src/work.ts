@@ -24,6 +24,50 @@ const ASK_NOTE =
   "This is an instruction from the owner, in his own words, sent from the PM console. Work out what he wants and do it with the fleet's own verbs; if it is a question, answer it here. Say on this issue what you did, with links, and close it when nothing is left.";
 const SET_ID = /^[A-Za-z0-9._:-]{1,160}$/;
 const REF = /^([A-Za-z0-9._-]+\/[A-Za-z0-9._-]+)#([1-9][0-9]{0,8})$/;
+/** The labels whose open issues and pull requests are waiting on the
+ * owner: the same two the aggregator's census reads
+ * (pm-stack/aggregator/src/needs-drew.ts). */
+const NEEDS_LABELS = ["user/review", "user/escalated"] as const;
+/** One page of a GitHub search, and how many pages a census reads. */
+const CENSUS_PER_PAGE = 100;
+const CENSUS_MAX_PAGES = 10;
+/** What only a person's hands can do (FDR-0013): the same four kinds
+ * `fleet queue block --hands` accepts. */
+const HANDS_KINDS = ["physical", "interactive-login", "payment", "signature"] as const;
+
+function labelNames(raw: unknown): string[] {
+  if (!Array.isArray(raw)) return [];
+  const out: string[] = [];
+  for (const l of raw) {
+    if (typeof l === "string") out.push(l);
+    else if (l && typeof l === "object" && typeof (l as { name?: unknown }).name === "string")
+      out.push((l as { name: string }).name);
+  }
+  return out;
+}
+
+/** Best-effort reason: an explicit "Escalated: …" / "Reason: …" line
+ * in the item body. Anything else is null — the fallback is the point.
+ * Local copy of the aggregator's extractNeedsDrewReason. */
+function needsReason(body: unknown): string | null {
+  if (typeof body !== "string") return null;
+  const m = /(?:^|\n)\s*(?:escalated(?:\s+to\s+drew)?|reason)\s*[:\-—]\s*(.+)/i.exec(body);
+  const reason = m?.[1]?.trim();
+  return reason ? clip(reason, 240) : null;
+}
+
+/** The hands marker an item body carries, if any:
+ * `<!-- hands:v1 kind=interactive-login action="one sentence" -->`.
+ * A marker with an unknown kind is not a hands marker. Local copy of
+ * the aggregator's extractNeedsDrewHands. */
+function needsHands(body: unknown): { kind: string; action: string | null } | null {
+  if (typeof body !== "string") return null;
+  const m = /<!--\s*hands:v1\s+kind=([a-z-]+)(?:\s+action="([^"]*)")?\s*-->/.exec(body);
+  if (!m) return null;
+  if (!(HANDS_KINDS as readonly string[]).includes(m[1])) return null;
+  const action = m[2]?.trim();
+  return { kind: m[1], action: action ? clip(action, 240) : null };
+}
 const LEANS = ["none", "skeptical", "approve"] as const;
 const SUBMIT_BATCH = 200;
 /** Replies shown in a prompt's thread, and how many pages back are read to find them. */
@@ -260,6 +304,141 @@ export class Work {
         .filter((i) => !i.hands?.kind && !i.needsLabels.includes("user/review"))
         .map((i) => ({ ...base(i), why: clip(i.reason, 300) })),
     };
+  }
+
+  /** What needs the owner, read from GitHub itself: the open issues
+   * and pull requests labelled user/review or user/escalated in every
+   * repository on the needs list. The same shape census() returns, so
+   * the app draws it the same; the edge reads this, where the laptop's
+   * dashboard is the machine's report. A source GitHub cannot answer
+   * leaves the census incomplete rather than empty; when no source
+   * answers at all the read fails, so the last good copy is kept. */
+  async censusFromGitHub() {
+    const at = this.clock().toISOString();
+    const repos = this.ops.cfg.needsRepos;
+    interface CensusItem {
+      ref: string;
+      repo: string;
+      number: number;
+      title: string;
+      url: string;
+      pr: boolean;
+      updated: string;
+      needsLabels: string[];
+      reason: string | null;
+      hands: { kind: string; action: string | null } | null;
+    }
+    const byRef = new Map<string, CensusItem>();
+    let complete = true;
+    let read = false;
+    let firstError: string | null = null;
+    for (const repo of repos) {
+      for (const label of NEEDS_LABELS) {
+        let page = 1;
+        let total = Number.POSITIVE_INFINITY;
+        let count = 0;
+        let truncated = false;
+        let incomplete = false;
+        try {
+          while (page <= CENSUS_MAX_PAGES) {
+            const found = (await this.ops.gh([
+              "-X",
+              "GET",
+              "search/issues",
+              "-f",
+              `q=repo:${repo} state:open label:"${label}"`,
+              "-f",
+              `per_page=${CENSUS_PER_PAGE}`,
+              "-f",
+              `page=${page}`,
+            ])) as { items?: unknown[]; total_count?: unknown; incomplete_results?: unknown };
+            if (typeof found.total_count === "number") total = found.total_count;
+            if (found.incomplete_results === true) incomplete = true;
+            const rawItems = Array.isArray(found.items) ? found.items : [];
+            for (const raw of rawItems) {
+              const item = raw as {
+                number?: unknown;
+                title?: unknown;
+                html_url?: unknown;
+                state?: unknown;
+                updated_at?: unknown;
+                body?: unknown;
+                pull_request?: unknown;
+                labels?: unknown;
+              };
+              // Defensive: the query asks for state:open, but a stale
+              // or hand-built payload must never leak a closed item in.
+              if (item.state !== "open") continue;
+              if (typeof item.number !== "number") continue;
+              count++;
+              const ref = `${repo}#${item.number}`;
+              const names = labelNames(item.labels);
+              const needs = names.filter((n) => (NEEDS_LABELS as readonly string[]).includes(n));
+              const existing = byRef.get(ref);
+              if (existing) {
+                for (const n of needs) if (!existing.needsLabels.includes(n)) existing.needsLabels.push(n);
+                continue;
+              }
+              byRef.set(ref, {
+                ref,
+                repo,
+                number: item.number,
+                title: typeof item.title === "string" ? item.title : ref,
+                url:
+                  typeof item.html_url === "string"
+                    ? item.html_url
+                    : `https://github.com/${repo}/issues/${item.number}`,
+                pr: item.pull_request !== undefined && item.pull_request !== null,
+                updated: typeof item.updated_at === "string" ? item.updated_at : at,
+                needsLabels: needs,
+                reason: needsReason(item.body),
+                hands: needsHands(item.body),
+              });
+            }
+            if (rawItems.length < CENSUS_PER_PAGE || count >= total) break;
+            page++;
+          }
+          if (count < total) truncated = true;
+          read = true;
+        } catch (error) {
+          // A failed source is named by an incomplete census, never
+          // silently rendered as nothing waiting.
+          complete = false;
+          if (firstError === null) firstError = (error as Error).message;
+        }
+        if (truncated || incomplete) complete = false;
+      }
+    }
+    if (!read) {
+      throw new OpError(
+        502,
+        `the needs census could not be read from GitHub${firstError ? `: ${firstError.slice(0, 120)}` : ""}`,
+      );
+    }
+    const order = new Map(repos.map((r, i) => [r, i]));
+    const items = [...byRef.values()].sort(
+      (a, b) => (order.get(a.repo) ?? 0) - (order.get(b.repo) ?? 0) || a.number - b.number,
+    );
+    const base = (i: CensusItem) => ({
+      ref: i.ref,
+      title: clip(i.title, 200),
+      url: i.url,
+      pr: i.pr,
+      updated: clip(i.updated, 19),
+    });
+    const hands: ({ ref: string; title: string; url: string; pr: boolean; updated: string } & {
+      kind: string;
+      action: string;
+    })[] = [];
+    const reviews: ReturnType<typeof base>[] = [];
+    const other: (ReturnType<typeof base> & { why: string })[] = [];
+    for (const i of items) {
+      const b = base(i);
+      if (i.hands) hands.push({ ...b, kind: i.hands.kind, action: clip(i.hands.action, 400) });
+      else if (i.needsLabels.includes("user/review")) reviews.push(b);
+      else other.push({ ...b, why: clip(i.reason, 300) });
+    }
+    return { at, complete, hands, reviews, other };
   }
 
   private async sets(): Promise<DecisionSet[]> {

@@ -183,6 +183,36 @@ async function setup(options: { direct?: boolean } = {}) {
       labels: [{ name: "now" }],
     },
   ];
+  /** What needs the owner, as GitHub's search answers it: one review,
+   * one thing only hands can do, and one escalated with its reason. */
+  const ghNeeds = [
+    {
+      number: 401,
+      title: "Review the release",
+      state: "open",
+      updated_at: "2026-11-22T12:00:00Z",
+      body: "",
+    },
+    {
+      number: 402,
+      title: "Power on the host",
+      state: "open",
+      updated_at: "2026-11-22T12:00:00Z",
+      body: '<!-- hands:v1 kind=physical action="Power on the host." -->',
+    },
+    {
+      number: 403,
+      title: "The queue is wedged",
+      state: "open",
+      updated_at: "2026-11-22T12:00:00Z",
+      body: "Escalated: the queue is wedged",
+    },
+  ];
+  const ghNeedLabels: Record<number, string[]> = {
+    401: ["user/review"],
+    402: ["user/escalated"],
+    403: ["user/escalated"],
+  };
   let ghNextIssue = 500;
   /** The queue store refusing this side's token, and how often it did. */
   const queueRefuses = { on: false };
@@ -382,8 +412,29 @@ async function setup(options: { direct?: boolean } = {}) {
     const ok = (data: unknown, status = 200) => ({ ok: true, status, json: async () => data });
     const fail = (status: number, data: unknown) => ({ ok: false, status, json: async () => data });
     if (method === "GET" && path === "pulls") return ok(ghPrs);
-    if (method === "GET" && u.pathname === "/search/issues")
+    if (method === "GET" && u.pathname === "/search/issues") {
+      // A search for what needs the owner is answered with the items
+      // that carry the label asked for, under the repository asked
+      // about; any other search gets the ranked issues, as before.
+      const q = u.searchParams.get("q") ?? "";
+      const label = q.includes('label:"user/review"')
+        ? "user/review"
+        : q.includes('label:"user/escalated"')
+          ? "user/escalated"
+          : null;
+      if (label !== null) {
+        const repo = /repo:([^ ]+)/.exec(q)?.[1] ?? cfg.repo;
+        const items = ghNeeds
+          .filter((i) => (ghNeedLabels[i.number] ?? []).includes(label))
+          .map((i) => ({
+            ...i,
+            html_url: `https://github.com/${repo}/issues/${i.number}`,
+            labels: (ghNeedLabels[i.number] ?? []).map((name) => ({ name })),
+          }));
+        return ok({ items, total_count: items.length });
+      }
       return ok({ items: ghSearch, total_count: ghSearch.length });
+    }
     if (method === "GET" && path === "issues") {
       // GitHub lists the issues that carry the label asked for.
       const label = u.searchParams.get("labels");
@@ -2987,6 +3038,28 @@ describe("the edge does the core itself", () => {
     expect(later.doc.read.board).toBe(new Date(w.now.t).toISOString());
   });
 
+  test("what needs the owner is read from GitHub, with the laptop away (#13491)", async () => {
+    const w = await primary();
+    // The laptop's copy is empty; what is shown is GitHub's own word.
+    const repos = ["developing-today/code", "developing-today/opencode", "developing-today/openchamber", "dezren39/nix"];
+    let { doc } = await w.core();
+    expect(doc.health.census).toEqual({ ok: true, error: null });
+    expect(doc.census.reviews.map((i: { ref: string }) => i.ref)).toEqual(repos.map((r) => `${r}#401`));
+    expect(
+      doc.census.hands.map((i: { ref: string; kind: string; action: string }) => [i.ref, i.kind, i.action]),
+    ).toEqual(repos.map((r) => [`${r}#402`, "physical", "Power on the host."]));
+    expect(doc.census.other.map((i: { ref: string; why: string }) => [i.ref, i.why])).toEqual(
+      repos.map((r) => [`${r}#403`, "the queue is wedged"]),
+    );
+    // The laptop goes quiet: the census is still read here, not stale.
+    w.now.t += 11 * 60_000;
+    await w.core();
+    await settle(w);
+    ({ doc } = await w.core());
+    expect(doc.census.reviews.map((i: { ref: string }) => i.ref)).toEqual(repos.map((r) => `${r}#401`));
+    expect(doc.health.census).toEqual({ ok: true, error: null });
+  });
+
   test("a section is read again when its own interval has passed, behind the answer and never in its way", async () => {
     const w = await primary();
     await w.core();
@@ -3142,7 +3215,7 @@ describe("the edge does the core itself", () => {
     expect(w.stored.has("m:board")).toBe(false);
     w.now.t += 1_000;
     const answer = await w.link.now.once();
-    expect(answer?.owns).toEqual(["board", "prs", "priorities", "asks"]);
+    expect(answer?.owns).toEqual(["board", "prs", "priorities", "asks", "census"]);
     expect(answer?.want).toEqual([]);
     // The laptop's own board changes. Its report carries neither the
     // board nor its word on how current the board is.
@@ -3153,7 +3226,8 @@ describe("the edge does the core itself", () => {
     await w.link.now.once();
     const last = w.reports[w.reports.length - 1];
     expect(last.sections.map((s) => s.name)).toEqual(["sessions"]);
-    for (const name of ["board", "prs", "priorities", "asks"]) expect(Object.keys(last.have)).not.toContain(name);
+    for (const name of ["board", "prs", "priorities", "asks", "census"])
+      expect(Object.keys(last.have)).not.toContain(name);
     expect(Object.keys(last.have)).toContain("sessions");
     expect((await w.core()).doc.board.counts).toEqual(QUEUE_NOW);
   });
@@ -3429,7 +3503,7 @@ describe("the edge does the core itself", () => {
         "deploy.start",
         "intake.send",
       ],
-      sections: ["board", "prs", "priorities", "asks"],
+      sections: ["board", "prs", "priorities", "asks", "census"],
       refused: [],
     });
     expect(first.machines.map((m) => m.name)).toEqual(["nixos"]);
@@ -3823,7 +3897,7 @@ describe("the edge does the core itself", () => {
     // Nothing of what this side reads is asked of it (it would send the
     // whole section every time, and it would never be taken).
     expect(answer.want).toEqual([]);
-    expect(answer.owns).toEqual(["board", "prs", "priorities", "asks"]);
+    expect(answer.owns).toEqual(["board", "prs", "priorities", "asks", "census"]);
     // Its word did not make this side read anything again ...
     expect(asked(w)).toBe(before);
     // ... nor is its trouble said of a section this side reads well.
@@ -4115,7 +4189,7 @@ describe("the edge does the core itself", () => {
     expect(still.health.prs).toEqual({ ok: false, error: expect.stringContaining("turned away") });
     // The laptop is told the list is not read here any more ...
     w.now.t += 1_000;
-    expect((await w.link.now.once())?.owns).toEqual(["board", "priorities", "asks"]);
+    expect((await w.link.now.once())?.owns).toEqual(["board", "priorities", "asks", "census"]);
     // ... so its next report brings its own copy, which is shown as it
     // was before this side read anything.
     w.now.t += 1_000;
@@ -4139,7 +4213,8 @@ describe("the edge does the core itself", () => {
     await w.link.now.once();
     const last = w.reports[w.reports.length - 1];
     expect(Object.keys(last.have)).toContain("prs");
-    for (const name of ["board", "priorities", "asks"]) expect(Object.keys(last.have)).not.toContain(name);
+    for (const name of ["board", "priorities", "asks", "census"])
+      expect(Object.keys(last.have)).not.toContain(name);
     // After the hour, with the token put right, it is read here again,
     // and the laptop is told so.
     w.ghRefuses.length = 0;
@@ -4150,7 +4225,7 @@ describe("the edge does the core itself", () => {
     expect((await ops()).prs.map((p) => p.number)).toEqual([55]);
     expect(lists()).toBeGreaterThan(asked);
     await w.hostReads();
-    expect((await w.link.now.once())?.owns).toEqual(["board", "prs", "priorities", "asks"]);
+    expect((await w.link.now.once())?.owns).toEqual(["board", "prs", "priorities", "asks", "census"]);
   });
 
   test("what this side is turned away for is remembered when the object starts again, and tried again when the owner says", async () => {
@@ -4189,7 +4264,7 @@ describe("the edge does the core itself", () => {
     expect((await ops()).prs).toEqual(w.data.prs as never);
     await settle(w);
     await w.hostReads();
-    expect((await w.link.now.once())?.owns).toEqual(["board", "priorities", "asks"]);
+    expect((await w.link.now.once())?.owns).toEqual(["board", "priorities", "asks", "census"]);
     await w.act("pr.merge", { pr: 55 });
     expect([lists(), merges()]).toEqual(asked);
     expect(w.ran.map((r) => r.kind)).toEqual(["pr.merge", "pr.merge"]);
@@ -4327,14 +4402,14 @@ describe("the edge does the core itself", () => {
     await settle(w);
     expect(await health()).toEqual(["read.priorities"]);
     w.now.t += 1_000;
-    expect((await w.link.now.once())?.owns).toEqual(["board", "prs", "asks"]);
+    expect((await w.link.now.once())?.owns).toEqual(["board", "prs", "asks", "census"]);
     w.ghLimits.length = 0;
     w.now.t += 4 * 60_000;
     expect(await health()).toEqual(["read.priorities"]);
     w.now.t += 61_000;
     expect(await health()).toEqual([]);
     await w.hostReads();
-    expect((await w.link.now.once())?.owns).toEqual(["board", "prs", "priorities", "asks"]);
+    expect((await w.link.now.once())?.owns).toEqual(["board", "prs", "priorities", "asks", "census"]);
   });
 
   test("a section is judged by its own sources: the queue refusing does not hand the laptop what is read from GitHub", async () => {
@@ -4448,7 +4523,7 @@ describe("the edge does the core itself", () => {
     expect(health.directReady).toBe(true);
     const selfCheck = health.selfCheck as { at: number; kinds: Record<string, { ok: boolean }> };
     expect(selfCheck.at).toBe(START);
-    expect(Object.keys(selfCheck.kinds).sort()).toEqual(["asks", "board", "priorities", "prs"]);
+    expect(Object.keys(selfCheck.kinds).sort()).toEqual(["asks", "board", "census", "priorities", "prs"]);
     expect(Object.values(selfCheck.kinds).every((k) => k.ok)).toBe(true);
     // A second health read reuses the stored self-check: no more reads.
     const calls = asked(w);

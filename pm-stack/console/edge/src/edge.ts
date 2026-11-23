@@ -7,13 +7,14 @@
 //
 // With its two tokens (GitHub's and the queue store's) it does the core
 // itself, whether or not a machine is connected: it reads the board,
-// the owner's prompts, pull requests, ranked issues, roadmaps, bugs and
-// intake, and does what is one call to GitHub or the queue store: ask,
-// reply, comment, rank, move a task, merge, deploy, file a note or a
-// bug. A machine (the laptop) connects and reports what only a machine
-// has: sessions, questions, things for hands, its units and agents; and
-// it does what only a machine can, at once when it is in reach, or
-// later, held here, when it is not.
+// the owner's prompts, pull requests, ranked issues, what needs the
+// owner, roadmaps, bugs and intake, and does what is one call to GitHub
+// or the queue store: ask, reply, comment, rank, move a task, merge,
+// deploy, file a note or a bug. A machine (the laptop) connects and
+// reports what only a machine has: sessions and what is waiting on the
+// owner there, questions, its units and agents; and it does what only a
+// machine can, at once when it is in reach, or later, held here, when
+// it is not.
 //
 // Without the tokens it still serves the app from the copy a machine
 // last reported and holds what may be done late.
