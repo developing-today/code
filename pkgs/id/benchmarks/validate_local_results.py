@@ -77,6 +77,16 @@ def validate_result(document: Any) -> None:
     operation_samples = document.get("raw_operation_samples")
     require(isinstance(operation_samples, dict) and set(operation_samples) == set(ENGINES),
             "raw_operation_samples must contain both engines")
+    engine_state = document.get("engine_state")
+    require(isinstance(engine_state, dict) and set(engine_state) == set(ENGINES),
+            "engine_state must contain both engines")
+    require(all(isinstance(engine_state[engine], dict) for engine in ENGINES),
+            "each engine_state entry must be an object")
+    require(engine_state["redb"].get("network") == "local-only",
+            "redb must record its local-only network condition")
+    turso_sync = engine_state["turso"].get("sync_samples")
+    require(engine_state["turso"].get("network") == "local-only" and isinstance(turso_sync, list),
+            "Turso must record local-only network and separate sync samples")
 
     expected_operations = document.get("operation_ids")
     require(isinstance(expected_operations, list) and expected_operations,
@@ -123,6 +133,8 @@ def validate_result(document: Any) -> None:
 
         samples = operation_samples[engine]
         require(isinstance(samples, list), f"{engine}: operation samples must be a list")
+        require(all(isinstance(item, dict) for item in samples),
+                f"{engine}: every raw operation sample must be an object")
         require([item.get("operation") for item in samples if isinstance(item, dict)] == expected_operations,
                 f"{engine}: raw operation IDs differ from operation_ids")
         for item in samples:
@@ -135,6 +147,15 @@ def validate_result(document: Any) -> None:
         require(run.get("raw_samples") == flat, f"{engine}: raw_samples differ from operation samples")
         require(correctness["reference_transitions_executed_and_matched"] == len(flat),
                 f"{engine}: matched transition count differs from raw sample count")
+
+    require(len(turso_sync) == len(expected_operations) * 5,
+            "Turso sync state must be recorded for every operation and repetition")
+    for item in turso_sync:
+        require(isinstance(item, dict) and item.get("network") == "local-only",
+                "Turso sync samples must remain local-only")
+        require(all(isinstance(item.get(field), int) and item[field] >= 0 for field in (
+            "local_revision", "pushed_revision", "pulled_revision", "pending_push_revisions"
+        )), "Turso sync sample has invalid revision metadata")
 
 
 def main(argv: list[str]) -> int:

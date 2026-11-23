@@ -75,6 +75,14 @@ def fixture_result(validator):
         "fixture_digest": "sha256:" + hashlib.sha256(fixture).hexdigest(),
         "fixture_bytes_base64": base64.b64encode(fixture).decode(),
         "operation_ids": ["blob_put_if_absent"], "runs": runs, "raw_operation_samples": raw,
+        "engine_state": {
+            "redb": {"network": "local-only"},
+            "turso": {"network": "local-only", "sync_samples": [{
+                "operation": "blob_put_if_absent", "local_revision": i,
+                "pushed_revision": 0, "pulled_revision": 0,
+                "pending_push_revisions": i, "network": "local-only",
+            } for i in range(5)]},
+        },
     }
 
 

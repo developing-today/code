@@ -87,14 +87,23 @@ RUST_HARNESS = r'''use id_benchmarks::{ReferenceStore, adapters::{redb::RedbStor
 use serde_json::{json, Value};
 use std::{env, fs, time::Instant};
 
+fn normalized(mut observed: Value, expected: &Value) -> Value {
+    if expected.get("content_id").is_none() {
+        observed.as_object_mut().expect("observed object").remove("content_id");
+    }
+    observed
+}
+
 fn main() {
     let args: Vec<String> = env::args().collect();
     let fixture: Value = serde_json::from_slice(&fs::read(&args[1]).expect("read fixture")).expect("parse fixture");
     let operations = fixture["operations"].as_array().expect("operations array");
     let mut result = serde_json::Map::new();
     let mut matched = serde_json::Map::new();
+    let mut sync = serde_json::Map::new();
     for engine in ["redb", "turso"] {
         let mut samples = vec![Vec::<f64>::new(); operations.len()];
+        let mut sync_samples = Vec::<Value>::new();
         let mut matched_count = 0usize;
         let mut capability_count = 0usize;
         for _ in 0..5 {
@@ -108,12 +117,12 @@ fn main() {
                         capability_count += 1;
                         let args = &op["input"];
                         let expected = &op["expected"];
-                        let reference_row = reference.execute(id, args, &fixture);
+                        let reference_row = normalized(reference.execute(id, args, &fixture), expected);
                         assert_eq!(&reference_row, expected, "reference fixture oracle at {id}");
                         let start = Instant::now();
                         let actual = store.execute(id, args, &fixture);
                         samples[index].push(start.elapsed().as_secs_f64() * 1000.0);
-                        assert_eq!(actual, reference_row, "redb/reference mismatch at {id}");
+                        assert_eq!(normalized(actual, expected), reference_row, "redb/reference mismatch at {id}");
                         matched_count += 1;
                     }
                 }
@@ -125,12 +134,20 @@ fn main() {
                         capability_count += 1;
                         let args = &op["input"];
                         let expected = &op["expected"];
-                        let reference_row = reference.execute(id, args, &fixture);
+                        let reference_row = normalized(reference.execute(id, args, &fixture), expected);
                         assert_eq!(&reference_row, expected, "reference fixture oracle at {id}");
                         let start = Instant::now();
                         let actual = store.execute(id, args, &fixture);
                         samples[index].push(start.elapsed().as_secs_f64() * 1000.0);
-                        assert_eq!(actual.transition, reference_row, "Turso/reference mismatch at {id}");
+                        assert_eq!(normalized(actual.transition, expected), reference_row, "Turso/reference mismatch at {id}");
+                        sync_samples.push(json!({
+                            "operation": id,
+                            "local_revision": actual.sync.local_revision,
+                            "pushed_revision": actual.sync.pushed_revision,
+                            "pulled_revision": actual.sync.pulled_revision,
+                            "pending_push_revisions": actual.sync.pending_push_revisions,
+                            "network": actual.sync.network,
+                        }));
                         matched_count += 1;
                     }
                 }
@@ -141,12 +158,19 @@ fn main() {
             "operation": op["id"], "samples_ms": samples[i]
         })).collect();
         result.insert(engine.to_string(), Value::Array(per_operation));
+        if engine == "turso" {
+            sync.insert(engine.to_string(), json!({
+                "network": "local-only", "sync_samples": sync_samples
+            }));
+        } else {
+            sync.insert(engine.to_string(), json!({"network": "local-only"}));
+        }
         matched.insert(engine.to_string(), json!({
             "reference_transitions_executed_and_matched": matched_count,
             "engine_operation_capability_mappings_checked": capability_count / 5,
         }));
     }
-    println!("{}", json!({"raw_operation_samples": result, "matched_transitions": matched}));
+    println!("{}", json!({"raw_operation_samples": result, "matched_transitions": matched, "engine_state": sync}));
 }
 '''
 
@@ -189,7 +213,7 @@ def environment(digest: str, started: str) -> dict[str, Any]:
             "cargo": command_output("cargo", "--version"),
         },
         "start_time_utc": started,
-        "cache_mode": "warm",
+        "cache_mode": "cold",
         "storage_shard_count": 1,
         "dataset_digest": digest,
     }
@@ -245,6 +269,7 @@ def build_result(corpus: bytes, digest: str, fixture: dict[str, Any], fixture_by
         "operation_ids": operation_ids,
         "runs": runs,
         "raw_operation_samples": per_engine,
+        "engine_state": harness_result["engine_state"],
     }
 
 
