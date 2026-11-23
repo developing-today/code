@@ -15,6 +15,9 @@ license = "MIT OR Apache-2.0"
 # system-library wiring in pkgs/id/nix-common.nix (wayland, X11,
 # libxkbcommon, vulkan-loader). The #12657 step-2a scene renderer
 # adds bevy_pbr (standard 3D materials) on top of the same wiring.
+# The #12657 step-2b audio renderer adds no features: it derives its
+# schedule and tones in-crate and owns presentation state only (this
+# feature set carries no audio output backend).
 
 [dependencies]
 anyhow = "1"

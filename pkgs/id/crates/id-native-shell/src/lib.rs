@@ -23,8 +23,12 @@
 //! parity criterion against a live host. The #12657 step-2a scene
 //! renderer ([`scene`]) presents validated `scene/1` surfaces as 3D
 //! entities beside the text grid; shells without it keep the scene's
-//! text projection.
+//! text projection. The #12657 step-2b audio renderer
+//! ([`audio`]) presents validated `audio/1` surfaces as scheduled
+//! cue entities beside it; shells without it keep the audio's text
+//! projection.
 
+pub mod audio;
 pub mod events;
 pub mod form;
 pub mod providers;
