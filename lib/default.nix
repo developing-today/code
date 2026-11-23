@@ -737,6 +737,7 @@ let
       genericJsRuntime = pkgs.callPackage ../pkgs/generic-containers/js-runtime.nix { };
       genericPythonRuntime = pkgs.callPackage ../pkgs/generic-containers/python-runtime.nix { };
       mcpxDocs = pkgs.callPackage ../pkgs/mcpx/docs.nix { };
+      fleetDocs = pkgs.callPackage ../pkgs/fleet/docs.nix { };
       mcpxRealServers = pkgs.callPackage ../pkgs/mcpx/real-servers.nix { };
       idMailDeploy = pkgs.callPackage ../nixos/services/id-mail/worker/deploy.nix { };
       pkarrDeploy = pkgs.callPackage ../pkgs/pkarr-worker/deploy.nix {
@@ -789,6 +790,7 @@ let
           messageBridgeDeploy
           ;
         mcpx-docs = mcpxDocs;
+        fleet-docs = fleetDocs;
         mcpx-real-servers = mcpxRealServers;
         mcpx-container = mcpxContainer;
         identity-image = identityImage;
