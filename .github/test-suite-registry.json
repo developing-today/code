@@ -1453,7 +1453,8 @@
       "paths": [
         "pkgs/id/crates/id-store/tests/content_store.rs",
         "pkgs/id/crates/id-store/tests/graph_encoding_bakeoff.rs",
-        "pkgs/id/crates/id-store/tests/graph_index_rebuild.rs"
+        "pkgs/id/crates/id-store/tests/graph_index_rebuild.rs",
+        "pkgs/id/crates/id-store/tests/sidecar_snapshot.rs"
       ],
       "invocation": "nix flake check ./pkgs/id (check test-sandbox runs cargo nextest --all-features for default workspace members)",
       "venue": {
