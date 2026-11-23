@@ -644,7 +644,9 @@ mod tests {
         // Consuming returns exactly that much credit to grant back.
         assert_eq!(r.consume(512), 512);
         r.receive(512).unwrap();
-        assert_eq!(r.consume(u64::MAX), INITIAL_STREAM_WINDOW_BYTES - 512);
+        // The window is full again, so consuming everything grants
+        // back the whole window.
+        assert_eq!(r.consume(u64::MAX), INITIAL_STREAM_WINDOW_BYTES);
     }
 
     #[test]
