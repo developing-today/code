@@ -1134,7 +1134,11 @@ func TestScriptViewCommandTimeoutKillsSpawnedWorkers(t *testing.T) {
 	t.Cleanup(func() { _ = syscall.Kill(pid, syscall.SIGKILL) })
 	deadline = time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		if err := syscall.Kill(pid, 0); err != nil {
+		// processExited, not a signal-0 probe: in a container whose PID 1
+		// does not reap orphans the killed worker stays a zombie and
+		// Kill(pid, 0) keeps succeeding on it (#13713). A zombie is gone
+		// as far as the process group is concerned.
+		if processExited(pid) {
 			return // the worker is gone: the group was terminated
 		}
 		time.Sleep(50 * time.Millisecond)
