@@ -513,14 +513,15 @@
         # Checks: nix flake check -L
         # Uses 'ci' command (read-only, no auto-fix modifications)
         # =======================================================================
-        checks = {
+        checks =
+          let
+            individualChecks =
+              {
           # CI-safe checks (read-only): cargo-fmt-check web-fmt-check clippy-lint web-lint test-sandbox test-crate-integration test-web-unit test-web-typecheck roc-test roc-examples doc build release
           # NixOS VM integration tests (Linux only): nixos-serve nixos-e2e
-          default = mkCheckWith {
-            name = "ci";
-            justCmd = "ci";
-            extraNativeBuildInputs = [ pkgs.biome ];
-          };
+          # Nix flake check builds all named checks as well as default.
+          # Use a link farm so the aggregate depends on those same results
+          # instead of rerunning the full CI recipe in a second derivation.
 
           # Individual checks
           cargo-fmt-check = mkCheckRustOnly "cargo-fmt-check" "cargo-fmt-check";
@@ -989,10 +990,10 @@
               echo "prettier-check passed at $(date)" > $out/result.txt
             '';
           };
-        }
-        // (
-          # NixOS VM integration tests (Linux only — VMs require KVM)
-          pkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
+              }
+              // (
+                # NixOS VM integration tests (Linux only — VMs require KVM)
+                pkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
             nixos-serve = pkgs.testers.runNixOSTest (
               import ./nix/tests/serve-test.nix { idPackage = self.packages.${system}.id-web; }
             );
@@ -1012,8 +1013,18 @@
                 inherit integrationTestRunner;
               }
             );
-          }
-        );
+                }
+              );
+          in
+          individualChecks
+          // {
+            default = pkgs.linkFarm "id-checks" (
+              pkgs.lib.mapAttrsToList (name: drv: {
+                inherit name;
+                path = drv;
+              }) individualChecks
+            );
+          };
 
         # =======================================================================
         # Packages: nix build
