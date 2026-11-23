@@ -716,7 +716,7 @@ impl JournalAdminHistory {
     /// carries; `complete` states whether that window reaches back
     /// to the start of the world's history, the same claim the
     /// writer records from its own admin-history state.
-    pub fn new(events: Vec<WorldEvent>, complete: bool) -> Self {
+    pub const fn new(events: Vec<WorldEvent>, complete: bool) -> Self {
         Self { events, complete }
     }
 
@@ -727,7 +727,7 @@ impl JournalAdminHistory {
 
     /// Whether this window reaches back to the start of the
     /// world's history.
-    pub fn is_complete(&self) -> bool {
+    pub const fn is_complete(&self) -> bool {
         self.complete
     }
 
