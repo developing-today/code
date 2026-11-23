@@ -395,6 +395,20 @@ it targeted the retired sandbox collector. The drill script is laptop-only
 sandbox's installed-unit state still requires the operator audit linked from
 issue #1319.
 
+### 2c. Sandbox systemd system timers (1 listed)
+
+The sandbox's system-scope timers (the sandbox has no user bus). A listed
+timer here is a deploy target (design §4.4): its units are rendered with
+its deploy generation and re-linked into `/etc/systemd/system` after
+every recycle by the generic deploy-target restorer (code#5770) — there
+is no per-service installer. The sandbox's other installed units are not
+deploy targets yet and remain inventoried by the operator audit linked
+from issue #1319.
+
+| timer unit             | cadence spec                                            | activates                | owner / scope                                              | budget       | kill criteria | created    | last review |
+| ---------------------- | ------------------------------------------------------- | ------------------------ | ---------------------------------------------------------- | ------------ | ------------- | ---------- | ----------- |
+| `quota-recorder.timer` | `OnCalendar=*:0/5` (Persistent=true, RandomizedDelaySec=20) | `quota-recorder.service` | sandbox (system systemd; deploy target `quota-recorder`, code#5770) | not recorded | not recorded  | 2026-10-28 | 2026-11-22  |
+
 ## Surface 3 — Jules schedules (1 entry, retired)
 
 | name/id                     | repo/scope            | cadence                  | prompt (summary; verbatim in #2265)                                                                                                                                                                                                                 | budget expectation                                      | owner                           | kill criteria                                                                                  | created     | last review | state                                                                                                                                                |

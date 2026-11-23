@@ -11,7 +11,7 @@ blanket assignment as Drew ownership, parked the issue until an
 re-posted the same park note on every 30-minute cycle (#7616 collected
 50+ such notes in two days with no code).
 
-Two checks, both pure functions over GitHub JSON so they are testable
+Three checks, all pure functions over GitHub JSON so they are testable
 offline, plus a thin `gh` CLI wrapper for lanes to call:
 
   hold      Is this issue/PR held for a human? Only an explicit marker
@@ -38,14 +38,26 @@ offline, plus a thin `gh` CLI wrapper for lanes to call:
             changes; re-posting it is the repeat-triage churn
             #12233 removes (#1062 collected four identical verdicts).
 
-Usage (exit 0 = go ahead, 3 = held / skip the note, 2 = usage or I/O
-error; JSON verdict on stdout either way):
+  coverage  Is this issue covered by a recorded verdict (#12233 F2b,
+            decision record on the issue)? An open `effort/l` or
+            `effort/m` issue whose newest agent note is a triage
+            verdict with a recorded verdict token and a valid resume
+            condition (`resume=<kind>:<target>` — a slice landed, a
+            dependency closed) is covered: the verdict note is the
+            park record for the triage disposition, so coverage must
+            not enqueue it for triage again. The verdict covers only
+            while it is the newest signal, under the same freshness
+            rule as the verdict dedupe above.
+
+Usage (exit 0 = go ahead, 3 = held / skip the note / covered, 2 =
+usage or I/O error; JSON verdict on stdout either way):
 
   lane_guard.py hold --repo developing-today/code --issue 7616
   lane_guard.py note --repo developing-today/code --issue 7616 \
       --task 20028 --state parked
   lane_guard.py note --repo developing-today/code --issue 1062 \
       --task 2334 --state triaged --verdict still_blocked
+  lane_guard.py coverage --repo developing-today/code --issue 1062
 """
 
 from __future__ import annotations
@@ -74,6 +86,20 @@ QUIET_STATES = frozenset({"parked", "picked_up", "picked-up"})
 # States that record a triage verdict. A verdict note is deduped by its
 # verdict, not by task or age: see note_verdict's verdict path.
 VERDICT_STATES = frozenset({"triaged"})
+
+# Effort classes a recorded verdict can cover (#12233 F2b, decision
+# record on the issue): a verdict parks large and medium issues; small
+# ones are meant to be picked up, not parked by a verdict.
+COVERAGE_EFFORT_LABELS = frozenset({"effort/l", "effort/m"})
+
+# Placeholder tokens that record no outcome: a note carrying one has
+# not triaged anything, so it cannot cover the issue.
+NON_VERDICTS = frozenset({"none", "unknown", "untriaged", "needs_triage"})
+
+# Resume-condition kinds a verdict park may wait on (F2b decision
+# record, rule 3): an event a later pass can check, never a date or a
+# person. Recorded as `resume=<kind>:<target>`.
+RESUME_KINDS = frozenset({"slice_landed", "dependency_closed"})
 
 DEDUPE_WINDOW = timedelta(hours=24)
 
@@ -148,7 +174,8 @@ _TASK_RE = re.compile(r"\btask(?:_id)?\s*[:=]?\s*#?(\d{3,})", re.IGNORECASE)
 # only, so a YAML note whose verdict is the last field never swallows
 # the blank line and narrative below it into the verdict. A word
 # followed by `=` or `:` ends the value, so a later header field
-# (`body_fp=...`, `task=...`) is never swallowed into it either.
+# (`body_fp=...`, `resume=...`, `task=...`) is never swallowed into
+# it either.
 _VERDICT_RE = re.compile(
     r"\bverdict[ \t]*[:=][ \t]*([A-Za-z0-9][\w-]*(?:[ \t]+(?![\w-]+\s*[:=])[\w-]+)*)",
     re.IGNORECASE,
@@ -156,6 +183,30 @@ _VERDICT_RE = re.compile(
 # The body fingerprint of a triage note: `body_fp: <16 hex>` /
 # `body_fp=<16 hex>` in the header area. See body_fingerprint.
 _BODY_FP_RE = re.compile(r"\bbody_fp\s*[:=]\s*([0-9a-f]{16})\b", re.IGNORECASE)
+# The resume condition of a verdict note: the `resume` field's value
+# runs to the end of its line (or the header), and parse_resume picks
+# the condition out of it.
+_RESUME_FIELD_RE = re.compile(r"\bresume\s*[:=]\s*([^\n;]+)", re.IGNORECASE)
+_RESUME_VALUE_RE = re.compile(r"([A-Za-z][A-Za-z_ -]*?)\s*(?::|#|\s)\s*#?(\d+)\b")
+
+
+def parse_resume(raw) -> str | None:
+    """Canonical `kind:target` for a resume condition, or None when
+    the text is not one: the kind must be a checkable event
+    (RESUME_KINDS) and the target an issue/PR number. A date, a
+    person, or a kind with no target is not a resume condition — a
+    park nothing can check is a stall (F2b decision record, rule 3).
+    Accepts `dependency_closed:539`, `slice landed #12543`, and the
+    raw field value a note carries after `resume=`/`resume:`."""
+    if not isinstance(raw, str):
+        return None
+    m = _RESUME_VALUE_RE.search(raw.strip())
+    if not m:
+        return None
+    kind = _norm_verdict(m.group(1))
+    if kind not in RESUME_KINDS:
+        return None
+    return f"{kind}:{m.group(2)}"
 # Lanes write notes free-form; these map the words they use to states.
 _STATE_WORDS = (
     (
@@ -210,7 +261,11 @@ def parse_note(body: str) -> dict | None:
     recognisable is present; such a note never counts as a duplicate.
     A triage note that records a `verdict:`/`verdict=` field also
     carries a normalised "verdict" key, and one that records a
-    `body_fp:`/`body_fp=` field carries a "body_fp" key.
+    `body_fp:`/`body_fp=` field carries a "body_fp" key, and one that
+    records a valid `resume:`/`resume=` condition a canonical
+    "resume" key (`kind:target`, see parse_resume); an invalid resume
+    condition is not carried, so coverage can treat its absence as
+    "no condition".
     """
     if not isinstance(body, str) or not _MARKER.search(body):
         return None
@@ -238,21 +293,31 @@ def parse_note(body: str) -> dict | None:
     m_body_fp = _BODY_FP_RE.search(head)
     if m_body_fp:
         note["body_fp"] = m_body_fp.group(1).lower()
+    m_resume = _RESUME_FIELD_RE.search(head)
+    if m_resume:
+        resume = parse_resume(m_resume.group(1))
+        if resume:
+            note["resume"] = resume
     return note
 
 
 def note_header(task: str, state: str, verdict: str | None = None,
-                body: str | None = None) -> str:
+                body: str | None = None, resume: str | None = None) -> str:
     """Canonical first line for a lane's agent note, so later dedupe
     checks parse it exactly. A triage note passes its verdict so the
     next lane's check can match it, and — when the issue body is
     known — its body fingerprint, so a later lane can tell whether
-    the body changed since the verdict was recorded."""
+    the body changed since the verdict was recorded, and its resume
+    condition so coverage (F2b) can read the park. The verdict stays
+    last: its free-form value runs to the end of the header, so a
+    field after it would be parsed as part of the verdict."""
     header = f"<!-- agent-note:v1 state={state} task={str(task).lstrip('#')}"
-    if verdict:
-        header += f" verdict={_norm_verdict(verdict)}"
+    if resume:
+        header += f" resume={parse_resume(resume) or _norm_verdict(resume)}"
     if body is not None:
         header += f" body_fp={body_fingerprint(body)}"
+    if verdict:
+        header += f" verdict={_norm_verdict(verdict)}"
     return header + " -->"
 
 
@@ -310,7 +375,7 @@ def _is_verdict_request(state, verdict) -> bool:
     return state in VERDICT_STATES or _norm_state(state) in VERDICT_STATES
 
 
-def _verdict_note_verdict(comments, state, verdict, changes, now, body=None) -> dict:
+def _verdict_note_verdict(comments, state, verdict, changes, now, body=None, resume=None) -> dict:
     """The verdict path of note_verdict (#12233 F2a): a triage verdict
     is skipped when the newest agent note already records the same
     verdict — for any task id, however long ago — and nothing has
@@ -322,10 +387,15 @@ def _verdict_note_verdict(comments, state, verdict, changes, now, body=None) -> 
     check is skipped (the timeline cannot supply it); a recorded
     verdict with no fingerprint cannot prove the body unchanged, so
     with a current body supplied it posts once, and the new note
-    records a fingerprint.
+    records a fingerprint. A newly supplied resume condition still
+    posts: when the stored verdict note lacks the requested
+    condition, or records a different one, the note is the upgrade
+    that gives the verdict its F2b coverage, so dedupe must not
+    swallow it.
     """
     want = _verdict_key(state, verdict)
     current_fp = body_fingerprint(body) if body is not None else None
+    want_resume = parse_resume(resume) if resume else None
     for c in reversed(comments or []):
         note = parse_note(c.get("body"))
         if note is None:
@@ -376,6 +446,16 @@ def _verdict_note_verdict(comments, state, verdict, changes, now, body=None) -> 
                         f"change at {ch['at']}"
                     ),
                 }
+        if want_resume is not None and note.get("resume") != want_resume:
+            return {
+                "post": True,
+                "reason": (
+                    "resume condition added or changed: the newest verdict "
+                    f"records {note.get('resume') or 'no resume condition'}, "
+                    f"this note carries {want_resume}; post to record the "
+                    "F2b resume condition"
+                ),
+            }
         age = now - since
         return {
             "post": False,
@@ -392,7 +472,7 @@ def _verdict_note_verdict(comments, state, verdict, changes, now, body=None) -> 
 
 def note_verdict(
     comments: list, task: str, state: str, now=None, verdict=None, changes=(),
-    body=None,
+    body=None, resume=None,
 ) -> dict:
     """Should a note of `state` for queue `task` be posted, given the
     item's comments (oldest first, REST shape: body, created_at,
@@ -402,14 +482,17 @@ def note_verdict(
     takes the verdict path: `changes` is the issue's change list from
     changes_from_timeline, and `body` is the issue's current body
     text when known, fingerprinted against the verdict note (see
-    _verdict_note_verdict). Everything else takes the park path.
+    _verdict_note_verdict); `resume` is the resume condition the note
+    would record; a verdict that already stands still posts when the
+    condition adds or changes the stored one. Everything else takes
+    the park path.
     """
     now = _ts(now) if now is not None else datetime.now(timezone.utc)
     state = str(state).lower().replace("-", "_")
     task = str(task).lstrip("#")
     verdict = _norm_verdict(verdict) if verdict else None
     if _is_verdict_request(state, verdict):
-        return _verdict_note_verdict(comments, state, verdict, changes, now, body)
+        return _verdict_note_verdict(comments, state, verdict, changes, now, body, resume)
     if state not in {s.replace("-", "_") for s in QUIET_STATES}:
         return {"post": True, "reason": f"progress state {state} always posts"}
 
@@ -442,6 +525,111 @@ def note_verdict(
             ),
         }
     return {"post": True, "reason": "no earlier agent note"}
+
+
+# --- verdict coverage (#12233 F2b) ---------------------------------------
+
+
+def coverage_verdict(item: dict, comments: list, changes=(), resume_fulfilled=None) -> dict:
+    """Is this issue covered by a recorded triage verdict?
+
+    The F2b decision record on #12233: an open `effort/l` or
+    `effort/m` issue whose newest agent note is a triage verdict with
+    a recorded verdict token and a valid resume condition is covered
+    — the verdict note is the park record for the triage disposition,
+    so coverage must not enqueue the issue for triage again. The
+    verdict covers only while it is the newest signal, under the same
+    freshness rule as the F2a dedupe: a human comment, a newer agent
+    note of any other state, or a commit, label or body change after
+    the verdict (from `changes`, see changes_from_timeline) ends the
+    coverage.
+
+    `resume_fulfilled`, when given, is a callable taking the
+    canonical resume condition (`kind:target`) and returning True
+    when the wait is over (the dependency closed, the slice landed),
+    False when its target is known not to be, or None when the
+    state cannot be read. A fulfilled condition ends coverage: the
+    issue is due for re-triage. An unreadable state never ends it.
+
+    `item` is one issue JSON object (REST or `gh` shape), `comments`
+    its comments oldest first. Returns {"covered": bool, "reason":
+    str} plus "verdict" / "resume" when a verdict note was found.
+    """
+    state = str(item.get("state") or "").lower()
+    if state and state != "open":
+        return {"covered": False, "reason": f"issue is not open ({state})"}
+    labels = set(_names(item.get("labels"), "name"))
+    if not labels & COVERAGE_EFFORT_LABELS:
+        return {
+            "covered": False,
+            "reason": "no effort/l or effort/m label: a verdict parks "
+            "only large or medium issues",
+        }
+    for c in reversed(comments or []):
+        note = parse_note(c.get("body"))
+        if note is None:
+            user = c.get("user") or {}
+            if user.get("type") == "Bot":
+                continue  # bots (CI, sweepers) are not news
+            return {
+                "covered": False,
+                "reason": "a non-agent comment arrived since the last agent note",
+            }
+        if note["state"] not in VERDICT_STATES or not note.get("verdict"):
+            return {
+                "covered": False,
+                "reason": "newest agent note is not a recorded triage "
+                f"verdict (it was {note['state']})",
+            }
+        verdict = note["verdict"]
+        if verdict in NON_VERDICTS:
+            return {
+                "covered": False,
+                "verdict": verdict,
+                "reason": f"recorded verdict {verdict} records no outcome",
+            }
+        if not note.get("resume"):
+            return {
+                "covered": False,
+                "verdict": verdict,
+                "reason": "the verdict note carries no valid resume "
+                "condition (resume=<slice_landed|dependency_closed>:"
+                "<issue-or-pr-number>)",
+            }
+        if resume_fulfilled is not None:
+            try:
+                fulfilled = resume_fulfilled(note["resume"])
+            except Exception:
+                fulfilled = None  # unreadable: the wait is not over
+            if fulfilled:
+                return {
+                    "covered": False,
+                    "verdict": verdict,
+                    "resume": note["resume"],
+                    "reason": "the resume condition "
+                    f"{note['resume']} is fulfilled; the issue is "
+                    "due for re-triage",
+                }
+        since = _ts(c.get("created_at"))
+        for ch in changes or ():
+            if _ts(ch["at"]) > since:
+                return {
+                    "covered": False,
+                    "verdict": verdict,
+                    "resume": note["resume"],
+                    "reason": "the issue changed since the verdict: a "
+                    f"{ch['kind']} change at {ch['at']}",
+                }
+        return {
+            "covered": True,
+            "verdict": verdict,
+            "resume": note["resume"],
+            "reason": f"verdict-covered: verdict {verdict} recorded for "
+            f"task {note['task']} with resume condition {note['resume']}; "
+            "the verdict note is the park record — do not re-enqueue "
+            "for triage",
+        }
+    return {"covered": False, "reason": "no earlier agent note"}
 
 
 # --- thin gh wrapper ----------------------------------------------------
@@ -481,6 +669,19 @@ def main(argv=None, gh=_gh_json, now=None) -> int:
         "an unchanged issue with the same verdict already recorded "
         "skips the note",
     )
+    n.add_argument(
+        "--resume",
+        default=None,
+        help="the resume condition this verdict parks on (state "
+        "triaged): slice_landed:<pr> or dependency_closed:<issue>; "
+        "a verdict note with a valid condition covers the issue "
+        "for coverage (F2b)",
+    )
+    c = sub.add_parser(
+        "coverage", help="is this issue covered by a recorded verdict?"
+    )
+    c.add_argument("--repo", required=True)
+    c.add_argument("--issue", required=True, type=int)
     args = ap.parse_args(argv)
 
     try:
@@ -488,6 +689,37 @@ def main(argv=None, gh=_gh_json, now=None) -> int:
             item = gh(f"repos/{args.repo}/issues/{args.issue}")
             verdict = hold_verdict(item)
             code = EXIT_STOP if verdict["held"] else EXIT_GO
+        elif args.cmd == "coverage":
+            item = gh(f"repos/{args.repo}/issues/{args.issue}")
+            comments = gh(
+                f"repos/{args.repo}/issues/{args.issue}/comments?per_page=100"
+            )
+            timeline = gh(
+                f"repos/{args.repo}/issues/{args.issue}/timeline?per_page=100"
+            )
+
+            # The verdict's wait is over when its resume target reads
+            # fulfilled live: a closed dependency, a merged slice (a
+            # PR closed without merging did not land it). An
+            # unreadable target is unknown, never fulfilled.
+            def _resume_fulfilled(resume):
+                try:
+                    kind, _, target = resume.partition(":")
+                    if kind == "dependency_closed":
+                        target_item = gh(f"repos/{args.repo}/issues/{target}")
+                        return (target_item or {}).get("state") == "closed"
+                    target_pr = gh(f"repos/{args.repo}/pulls/{target}")
+                    return bool((target_pr or {}).get("merged_at"))
+                except Exception:
+                    return None
+
+            verdict = coverage_verdict(
+                item,
+                comments,
+                changes=changes_from_timeline(timeline),
+                resume_fulfilled=_resume_fulfilled,
+            )
+            code = EXIT_STOP if verdict["covered"] else EXIT_GO
         else:
             comments = gh(
                 f"repos/{args.repo}/issues/{args.issue}/comments?per_page=100"
@@ -522,11 +754,12 @@ def main(argv=None, gh=_gh_json, now=None) -> int:
                 args.state,
                 now=now,
                 verdict=args.verdict,
+                resume=args.resume,
                 changes=changes,
                 body=body,
             )
             verdict["header"] = note_header(
-                args.task, args.state, verdict=args.verdict, body=body
+                args.task, args.state, verdict=args.verdict, body=body, resume=args.resume
             )
             code = EXIT_GO if verdict["post"] else EXIT_STOP
     except (

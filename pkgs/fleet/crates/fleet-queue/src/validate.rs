@@ -57,7 +57,12 @@
 //! next-up ⇒ 25 — the ratified stored bands, deliberately off the
 //! stated-value scale above). The packet's stated priority is
 //! validated here exactly as before, and stands whenever neither
-//! label is present.
+//! label is present. The labels themselves are carried by the
+//! broker, not left to producer discipline (#12744): at enqueue,
+//! a packet that identifies an issue but carries no labels array
+//! is enriched from the GitHub mirror in the same store
+//! (turso_queue::label_enrich), so the selection fires on every
+//! packet; a producer-supplied array stands untouched.
 
 use serde_json::{Value, json};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -1110,8 +1115,10 @@ pub fn validate_packet(packet: &Value) -> (Vec<String>, Vec<String>) {
 /// same array the claim filter's label field reads. `expedite`
 /// outranks `next-up` when a packet somehow carries both. Parsing is
 /// tolerant, mirroring the claim filter: a non-array `labels` value
-/// or non-string entries select nothing.
-fn label_band_priority(payload: &Value) -> Option<i64> {
+/// or non-string entries select nothing. pub(crate) since #12744:
+/// the triage follow-on selects its stored priority through this
+/// same function (turso_queue::label_enrich::band_or_inherited).
+pub(crate) fn label_band_priority(payload: &Value) -> Option<i64> {
     let labels = payload.get("labels")?.as_array()?;
     let has = |name: &str| labels.iter().any(|l| l.as_str() == Some(name));
     if has("expedite") {
