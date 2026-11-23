@@ -55,7 +55,8 @@ function trustedEvidence() {
   const jobs = { total_count: 1, jobs: [{ name: 'initialize', run_id: run.id, head_sha: sourceSha, status: 'completed', conclusion: 'success', steps: names.map(name => ({ name, status: 'completed', conclusion: 'success' })) }] };
   const uploadSha = 'c'.repeat(40);
   const compatibility = {
-    comparison: { status: 'ahead', ahead_by: 1, behind_by: 0, base_commit: { sha: sourceSha }, head_commit: { sha: uploadSha }, merge_base_commit: { sha: sourceSha } },
+    comparison: { status: 'ahead', ahead_by: 1, behind_by: 0, total_commits: 1, base_commit: { sha: sourceSha }, merge_base_commit: { sha: sourceSha } },
+    uploadCommit: { sha: uploadSha },
     files: INIT_COMPAT_PATHS.map(path => ({ path, init_blob_sha: 'd'.repeat(40), upload_blob_sha: 'd'.repeat(40) })),
   };
   return { receiptJson: `${JSON.stringify(receipt)}\n`, run, jobs, compatibility, uploadSha };
@@ -79,6 +80,24 @@ test('successful init receipt allows main to advance only when the run SHA is an
   assert.throws(() => validateInitReceipt({ receiptJson, runJson: JSON.stringify(run), jobsJson: JSON.stringify(jobs), compatibilityJson: JSON.stringify(compatibility), expectedAccountId: `${'f'.repeat(28)}cbfa`, currentSha: uploadSha, initRunId: '123456789' }), /account/);
   const notAncestor = structuredClone(compatibility); notAncestor.comparison.status = 'diverged';
   assert.throws(() => validateInitReceipt({ receiptJson, runJson: JSON.stringify(run), jobsJson: JSON.stringify(jobs), compatibilityJson: JSON.stringify(notAncestor), expectedAccountId: accountId, currentSha: uploadSha, initRunId: '123456789' }), /ancestor/);
+  const wrongBase = structuredClone(compatibility); wrongBase.comparison.base_commit.sha = 'e'.repeat(40);
+  assert.throws(() => validateInitReceipt({ receiptJson, runJson: JSON.stringify(run), jobsJson: JSON.stringify(jobs), compatibilityJson: JSON.stringify(wrongBase), expectedAccountId: accountId, currentSha: uploadSha, initRunId: '123456789' }), /ancestor/);
+  const wrongMergeBase = structuredClone(compatibility); wrongMergeBase.comparison.merge_base_commit.sha = 'e'.repeat(40);
+  assert.throws(() => validateInitReceipt({ receiptJson, runJson: JSON.stringify(run), jobsJson: JSON.stringify(jobs), compatibilityJson: JSON.stringify(wrongMergeBase), expectedAccountId: accountId, currentSha: uploadSha, initRunId: '123456789' }), /ancestor/);
+  const behind = structuredClone(compatibility); behind.comparison.behind_by = 1;
+  assert.throws(() => validateInitReceipt({ receiptJson, runJson: JSON.stringify(run), jobsJson: JSON.stringify(jobs), compatibilityJson: JSON.stringify(behind), expectedAccountId: accountId, currentSha: uploadSha, initRunId: '123456789' }), /ancestor/);
+  const wrongCount = structuredClone(compatibility); wrongCount.comparison.total_commits = 2;
+  assert.throws(() => validateInitReceipt({ receiptJson, runJson: JSON.stringify(run), jobsJson: JSON.stringify(jobs), compatibilityJson: JSON.stringify(wrongCount), expectedAccountId: accountId, currentSha: uploadSha, initRunId: '123456789' }), /ancestor/);
+  const emptyAhead = structuredClone(compatibility); emptyAhead.comparison.ahead_by = 0; emptyAhead.comparison.total_commits = 0;
+  assert.throws(() => validateInitReceipt({ receiptJson, runJson: JSON.stringify(run), jobsJson: JSON.stringify(jobs), compatibilityJson: JSON.stringify(emptyAhead), expectedAccountId: accountId, currentSha: uploadSha, initRunId: '123456789' }), /inconsistent/);
+  const wrongUploadSha = structuredClone(compatibility); wrongUploadSha.uploadCommit.sha = 'e'.repeat(40);
+  assert.throws(() => validateInitReceipt({ receiptJson, runJson: JSON.stringify(run), jobsJson: JSON.stringify(jobs), compatibilityJson: JSON.stringify(wrongUploadSha), expectedAccountId: accountId, currentSha: uploadSha, initRunId: '123456789' }), /ancestor/);
+  const identical = structuredClone(compatibility);
+  identical.comparison.status = 'identical'; identical.comparison.ahead_by = 0; identical.comparison.total_commits = 0;
+  identical.comparison.base_commit.sha = sourceSha; identical.comparison.merge_base_commit.sha = sourceSha; identical.uploadCommit.sha = sourceSha;
+  assert.equal(assertInitCompatibility({ compatibility: identical, initSha: sourceSha, currentSha: sourceSha }), true);
+  const falseIdentical = structuredClone(identical); falseIdentical.uploadCommit.sha = uploadSha;
+  assert.throws(() => assertInitCompatibility({ compatibility: falseIdentical, initSha: sourceSha, currentSha: uploadSha }), /inconsistent/);
   const changedInitializer = structuredClone(compatibility); changedInitializer.files[1].upload_blob_sha = 'e'.repeat(40);
   assert.throws(() => validateInitReceipt({ receiptJson, runJson: JSON.stringify(run), jobsJson: JSON.stringify(jobs), compatibilityJson: JSON.stringify(changedInitializer), expectedAccountId: accountId, currentSha: uploadSha, initRunId: '123456789' }), /initializer compatibility changed/);
   assert.throws(() => assertInitCompatibility({ compatibility: {}, initSha: sourceSha, currentSha: uploadSha }), /ancestor/);
@@ -94,7 +113,8 @@ test('init evidence fetch is fixed to repository and receipt attempt', async () 
     const json = value => new Response(JSON.stringify(value));
     if (parsed.pathname.endsWith('/actions/runs/123456789')) return json(run);
     if (parsed.pathname.endsWith('/attempts/1/jobs')) return json({ jobs: [], total_count: 0 });
-    if (parsed.pathname.endsWith(`/compare/${sourceSha}...${uploadSha}`)) return json({ status: 'ahead', ahead_by: 1, behind_by: 0, base_commit: { sha: sourceSha }, head_commit: { sha: uploadSha }, merge_base_commit: { sha: sourceSha } });
+    if (parsed.pathname.endsWith(`/compare/${sourceSha}...${uploadSha}`)) return json({ status: 'ahead', ahead_by: 1, behind_by: 0, total_commits: 1, base_commit: { sha: sourceSha }, merge_base_commit: { sha: sourceSha } });
+    if (parsed.pathname.endsWith(`/commits/${uploadSha}`)) return json({ sha: uploadSha });
     if (parsed.pathname.includes('/contents/')) return json({ type: 'file', path: decodeURIComponent(parsed.pathname.split('/contents/')[1]), sha: 'd'.repeat(40) });
     throw new Error(`unexpected GitHub API URL ${url}`);
   } });
@@ -102,6 +122,9 @@ test('init evidence fetch is fixed to repository and receipt attempt', async () 
   assert.match(urls[1], /attempts\/1\/jobs\?per_page=100$/);
   assert.equal(evidence.jobs.total_count, 0);
   assert.ok(urls.includes(`https://api.github.com/repos/developing-today/code/compare/${sourceSha}...${uploadSha}`));
+  assert.ok(urls.includes(`https://api.github.com/repos/developing-today/code/commits/${uploadSha}`));
+  assert.equal(evidence.compatibility.comparison.head_commit, undefined);
+  assert.equal(evidence.compatibility.uploadCommit.sha, uploadSha);
   assert.equal(evidence.compatibility.files.length, INIT_COMPAT_PATHS.length);
   await assert.rejects(fetchInitRunEvidence({ receiptJson, initRunId: 'not-an-id', currentSha: uploadSha, githubToken: 'synthetic-github-token-000000', fetchImpl: async () => new Response('{}') }), /run ID/);
 });

@@ -59,8 +59,13 @@ export function assertInitCompatibility({ compatibility, initSha, currentSha }) 
   const compare = compatibility?.comparison;
   if (!SHA.test(initSha ?? '') || !SHA.test(currentSha ?? '') || !compare ||
       !['ahead', 'identical'].includes(compare.status) || !Number.isSafeInteger(compare.ahead_by) || compare.ahead_by < 0 ||
-      compare.behind_by !== 0 || compare.base_commit?.sha !== initSha || compare.head_commit?.sha !== currentSha ||
-      compare.merge_base_commit?.sha !== initSha) fail('init run SHA is not a verified ancestor of the upload SHA');
+      compare.behind_by !== 0 || !Number.isSafeInteger(compare.total_commits) || compare.total_commits !== compare.ahead_by ||
+      compare.base_commit?.sha !== initSha || compare.merge_base_commit?.sha !== initSha ||
+      compatibility.uploadCommit?.sha !== currentSha) fail('init run SHA is not a verified ancestor of the upload SHA');
+  if ((compare.status === 'identical' && (initSha !== currentSha || compare.ahead_by !== 0 || compare.total_commits !== 0)) ||
+      (compare.status === 'ahead' && (initSha === currentSha || compare.ahead_by < 1))) {
+    fail('GitHub compare status and commit counts are inconsistent with the requested SHAs');
+  }
   const files = compatibility.files;
   if (!Array.isArray(files) || files.length !== INIT_COMPAT_PATHS.length) fail('initializer compatibility file evidence is missing or ambiguous');
   for (let i = 0; i < INIT_COMPAT_PATHS.length; i++) {
@@ -119,6 +124,8 @@ export async function fetchInitRunEvidence({ receiptJson, initRunId, currentSha,
   const jobs = await get(`${base}/attempts/${receipt.run_attempt}/jobs?per_page=100`);
   const initSha = receipt.source_sha;
   const comparison = await get(`https://api.github.com/repos/${REPOSITORY}/compare/${initSha}...${currentSha}`);
+  const uploadCommit = await get(`https://api.github.com/repos/${REPOSITORY}/commits/${currentSha}`);
+  if (uploadCommit?.sha !== currentSha) fail('GitHub upload commit readback does not match the requested upload SHA');
   const files = [];
   for (const path of INIT_COMPAT_PATHS) {
     const apiPath = path.split('/').map(encodeURIComponent).join('/');
@@ -130,7 +137,7 @@ export async function fetchInitRunEvidence({ receiptJson, initRunId, currentSha,
         !/^[a-f0-9]{40}$/i.test(initFile.sha ?? '') || !/^[a-f0-9]{40}$/i.test(uploadFile.sha ?? '')) fail(`GitHub initializer source evidence is unavailable: ${path}`);
     files.push({ path, init_blob_sha: initFile.sha, upload_blob_sha: uploadFile.sha });
   }
-  return { run, jobs, compatibility: { comparison, files } };
+  return { run, jobs, compatibility: { comparison, uploadCommit, files } };
 }
 
 export function assertDryRunOutput(text) {
