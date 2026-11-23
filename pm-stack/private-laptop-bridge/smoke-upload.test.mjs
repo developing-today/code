@@ -103,6 +103,34 @@ test('successful init receipt allows main to advance only when the run SHA is an
   assert.throws(() => assertInitCompatibility({ compatibility: {}, initSha: sourceSha, currentSha: uploadSha }), /ancestor/);
 });
 
+test('verified init run 45100058058 stays compatible across upload-only changes', () => {
+  const initSha = 'a1a9d2c0caf2a105182b97c374d881cc26559acc';
+  const uploadSha = 'a321f4acde3d280940e6c9c5cdf676f4ce129b98';
+  const initRunId = '45100058058';
+  const initFiles = [
+    { path: '.github/workflows/private-laptop-bridge-smoke-init.yml', sha: '29d68e466bf5b0f8ccc0e1cd15f1935f4355b456' },
+    { path: 'pm-stack/private-laptop-bridge/bootstrap-smoke.mjs', sha: '1cacf268d66e68b4f7291845bc076c838c0c7a5d' },
+    { path: 'pm-stack/private-laptop-bridge/bootstrap-smoke.test.mjs', sha: 'fb0c87a0928e261786fa872a26245c069dd71e7f' },
+  ];
+  assert.deepEqual(INIT_COMPAT_PATHS, initFiles.map(file => file.path));
+  const receipt = createInitReceipt({ approvedAccountId: accountId, workerId, status: 'created', repository: 'developing-today/code', sourceSha: initSha, runId: initRunId, runAttempt: 1, event: 'workflow_dispatch', branch: 'main' });
+  const run = { id: 45100058058, run_attempt: 1, status: 'completed', conclusion: 'success', event: 'workflow_dispatch', head_branch: 'main', head_sha: initSha, path: '.github/workflows/private-laptop-bridge-smoke-init.yml', repository: { full_name: 'developing-today/code' } };
+  const names = ['Run offline bootstrap contract tests', 'Create only the fixed empty Worker and verify it read-only', 'Preserve verified smoke initialization receipt'];
+  const jobs = { total_count: 1, jobs: [{ name: 'initialize', run_id: run.id, head_sha: initSha, status: 'completed', conclusion: 'success', steps: names.map(name => ({ name, status: 'completed', conclusion: 'success' })) }] };
+  const compatibility = {
+    comparison: { status: 'ahead', ahead_by: 42, behind_by: 0, total_commits: 42, base_commit: { sha: initSha }, merge_base_commit: { sha: initSha } },
+    uploadCommit: { sha: uploadSha },
+    files: initFiles.map(file => ({ path: file.path, init_blob_sha: file.sha, upload_blob_sha: file.sha })),
+  };
+  const verify = candidate => validateInitReceipt({ receiptJson: `${JSON.stringify(receipt)}\n`, runJson: JSON.stringify(run), jobsJson: JSON.stringify(jobs), compatibilityJson: JSON.stringify(candidate), expectedAccountId: accountId, currentSha: uploadSha, initRunId });
+  assert.equal(verify(compatibility).workerId, workerId);
+  for (let i = 0; i < initFiles.length; i++) {
+    const changed = structuredClone(compatibility);
+    changed.files[i].upload_blob_sha = 'e'.repeat(40);
+    assert.throws(() => verify(changed), /initializer compatibility changed/);
+  }
+});
+
 test('init evidence fetch is fixed to repository and receipt attempt', async () => {
   const { receiptJson, run, uploadSha } = trustedEvidence();
   const urls = [];
@@ -126,6 +154,8 @@ test('init evidence fetch is fixed to repository and receipt attempt', async () 
   assert.equal(evidence.compatibility.comparison.head_commit, undefined);
   assert.equal(evidence.compatibility.uploadCommit.sha, uploadSha);
   assert.equal(evidence.compatibility.files.length, INIT_COMPAT_PATHS.length);
+  assert.deepEqual(urls.filter(url => url.includes('/contents/')).map(url => decodeURIComponent(new URL(url).pathname.split('/contents/')[1])), INIT_COMPAT_PATHS.flatMap(path => [path, path]));
+  assert.equal(urls.some(url => url.includes('/contents/pm-stack/private-laptop-bridge/smoke-upload.mjs?')), false);
   await assert.rejects(fetchInitRunEvidence({ receiptJson, initRunId: 'not-an-id', currentSha: uploadSha, githubToken: 'synthetic-github-token-000000', fetchImpl: async () => new Response('{}') }), /run ID/);
 });
 
@@ -145,7 +175,7 @@ function builtSmokeFixture() {
     END_MS: { type: 'text', value: '' },
   };
   return {
-    buildConfig: { producer: { name: 'wrangler', version: '4.166.0' }, buildContext: { isPreview: false } },
+    buildConfig: { producer: { name: 'wrangler', version: '4.166.0' }, buildContext: { isPreview: false, mode: '' } },
     workerNames: ['default'],
     bundleFiles: ['smoke.js', 'smoke.js.map'],
     workerConfig: {
@@ -159,6 +189,18 @@ function builtSmokeFixture() {
 test('effective Build Output contract excludes routes, domains, triggers, previews, DOs, and extra executable modules', () => {
   const fixture = builtSmokeFixture();
   assert.equal(assertPrebuiltSmokePayload(fixture), true);
+  for (const mutate of [
+    f => { f.buildConfig.buildContext.mode = 'development'; },
+    f => { f.buildConfig.buildContext.isPreview = true; },
+    f => { f.buildConfig.buildContext.extra = 'synthetic-secret-value'; },
+  ]) {
+    const invalid = builtSmokeFixture(); mutate(invalid);
+    assert.throws(() => assertPrebuiltSmokePayload(invalid), error => {
+      assert.match(error.message, /sanitized metadata=/);
+      assert.doesNotMatch(error.message, /synthetic-secret-value/);
+      return true;
+    });
+  }
   for (const mutate of [
     f => { f.workerConfig.domains = [{ hostname: 'public.invalid' }]; },
     f => { f.workerConfig.triggers = [{ cron: '*/1 * * * *' }]; },
