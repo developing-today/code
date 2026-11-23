@@ -104,20 +104,22 @@ describe("RFC 8292 VAPID signing", () => {
 });
 
 describe("delivery accounting", () => {
-  /** A throwaway VAPID private scalar for the sender under test
-   * (a generated keypair's `d`; the production pair is a secret
-   * and never appears in tests). */
-  const testPrivateKey = async (): Promise<string> => {
+  /** A throwaway VAPID keypair for the sender under test (the
+   * production pair is a secret and never appears in tests;
+   * WebCrypto validates the JWK as a set, so the pair must be
+   * consistent — private scalar + its own public point). */
+  const testKeyPair = async (): Promise<{ vapidPrivateKey: string; vapidPublicKey: string }> => {
     const pair = (await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign"])) as CryptoKeyPair;
     const jwk = await crypto.subtle.exportKey("jwk", pair.privateKey);
-    return jwk.d as string;
+    const raw = new Uint8Array(await crypto.subtle.exportKey("raw", pair.publicKey));
+    return { vapidPrivateKey: jwk.d as string, vapidPublicKey: b64uEncode(raw) };
   };
 
   test("2xx counts sent and the posted body is the sealed payload", async () => {
     const receiver = await makeReceiver();
     let posted: { url: string; body: Uint8Array; headers: Record<string, string> } | null = null;
     const summary = await sendPush([receiver.target], { title: "down" }, {
-      vapidPrivateKey: await testPrivateKey(),
+      ...(await testKeyPair()),
       poster: async (url, init) => {
         posted = { url, body: init.body, headers: init.headers };
         return { status: 201 };
@@ -136,7 +138,7 @@ describe("delivery accounting", () => {
     const c = (await makeReceiver()).target;
     const statuses = [410, 500];
     const summary = await sendPush([a, b, c], { title: "x" }, {
-      vapidPrivateKey: await testPrivateKey(),
+      ...(await testKeyPair()),
       poster: async () => {
         const status = statuses.shift();
         if (status === undefined) throw new Error("network down");

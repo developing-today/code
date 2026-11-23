@@ -87,10 +87,16 @@ export async function encryptPayload(target: PushTarget, plaintext: Uint8Array):
 
 /** Import the VAPID signing key from the raw private scalar (the
  * Worker secret's form). The JWK's x/y come from the public point —
- * the pair is only usable together, and a mismatched secret simply
- * fails at the push service, never silently elsewhere. */
-export async function importVapidSigner(privateKeyB64u: string): Promise<CryptoKey> {
-  const point = b64uDecode(VAPID_PUBLIC_KEY);
+ * the pair is only usable together: WebCrypto validates the JWK
+ * as a set, so a secret that does not match the public key is
+ * rejected at import, loudly, before any send. The public key is
+ * a parameter (defaulting to the production key) so tests can
+ * sign with a generated pair. */
+export async function importVapidSigner(
+  privateKeyB64u: string,
+  publicKeyB64u: string = VAPID_PUBLIC_KEY,
+): Promise<CryptoKey> {
+  const point = b64uDecode(publicKeyB64u);
   if (point.length !== 65 || point[0] !== 4) throw new Error("VAPID public key is not an uncompressed P-256 point");
   const jwk: JsonWebKey = {
     kty: "EC",
@@ -103,7 +109,12 @@ export async function importVapidSigner(privateKeyB64u: string): Promise<CryptoK
 }
 
 /** The RFC 8292 Authorization header value for one push endpoint. */
-export async function vapidAuthorization(endpoint: string, signer: CryptoKey, now: number): Promise<string> {
+export async function vapidAuthorization(
+  endpoint: string,
+  signer: CryptoKey,
+  now: number,
+  publicKeyB64u: string = VAPID_PUBLIC_KEY,
+): Promise<string> {
   const head = b64uEncode(enc.encode(JSON.stringify({ typ: "JWT", alg: "ES256" })));
   const body = b64uEncode(
     enc.encode(
@@ -115,7 +126,7 @@ export async function vapidAuthorization(endpoint: string, signer: CryptoKey, no
     ),
   );
   const sig = await crypto.subtle.sign({ name: "ECDSA", hash: "SHA-256" }, signer, enc.encode(`${head}.${body}`));
-  return `vapid t=${head}.${body}.${b64uEncode(sig)}, k=${VAPID_PUBLIC_KEY}`;
+  return `vapid t=${head}.${body}.${b64uEncode(sig)}, k=${publicKeyB64u}`;
 }
 
 export type Poster = (
@@ -135,6 +146,9 @@ export interface SendSummary {
 
 export interface SendOptions {
   vapidPrivateKey: string;
+  /** The public half of the vapidPrivateKey pair; defaults to the
+   * production VAPID_PUBLIC_KEY. Tests pass a generated pair. */
+  vapidPublicKey?: string;
   poster?: Poster;
   now?: () => number;
   /** Matches the laptop's incident sends (aggregator push.ts). */
@@ -146,7 +160,7 @@ export interface SendOptions {
 export async function sendPush(targets: PushTarget[], payload: unknown, opts: SendOptions): Promise<SendSummary> {
   const poster: Poster = opts.poster ?? ((url, init) => fetch(url, init as RequestInit));
   const now = opts.now ?? Date.now;
-  const signer = await importVapidSigner(opts.vapidPrivateKey);
+  const signer = await importVapidSigner(opts.vapidPrivateKey, opts.vapidPublicKey ?? VAPID_PUBLIC_KEY);
   const body = enc.encode(JSON.stringify(payload));
   const summary: SendSummary = { sent: 0, gone: 0, failed: 0, refused: [] };
   for (const target of targets) {
@@ -158,7 +172,7 @@ export async function sendPush(targets: PushTarget[], payload: unknown, opts: Se
       }
     })();
     try {
-      const authorization = await vapidAuthorization(target.endpoint, signer, now());
+      const authorization = await vapidAuthorization(target.endpoint, signer, now(), opts.vapidPublicKey ?? VAPID_PUBLIC_KEY);
       const res = await poster(target.endpoint, {
         method: "POST",
         headers: {
