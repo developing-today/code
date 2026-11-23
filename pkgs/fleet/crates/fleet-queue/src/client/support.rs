@@ -213,7 +213,7 @@ Run `repo-queue <verb> --help` for flags:\n\
   models [--days <n>] [--json]\n\
   health [--queue <name>] [--worker <id>]\n\
   signal [--queue <name>] [--reason <text>]\n\
-  fallback <scan|status|claim|heartbeat|release> ...\n\
+  fallback <scan|status|claim|heartbeat|release|unblock> ...\n\
   outbox <enqueue|list|metrics|claim|resolve|drain> ...\n\
   dispatch|session|surfaces ...\n\
   stack <record|list|transition|restack|replay> ...";

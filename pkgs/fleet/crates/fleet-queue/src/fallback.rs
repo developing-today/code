@@ -28,6 +28,17 @@
 //!   * A worker RELEASES by posting a release marker with the
 //!     outcome (`done` = the work landed, `free` = handed back
 //!     unworked, which restores the `queue/queued` label).
+//!   * A BLOCKED item -- its issue carries the `queue/blocked`
+//!     label the broker-backed system maintains -- sits outside
+//!     the scan sweep and cannot be claimed. A worker UNBLOCKS
+//!     it with the fallback form of the broker's manual override
+//!     (#12777): worker-scoped, a reason is required, the
+//!     override is recorded as an `unblock` marker comment (the
+//!     audit; the broker records the same override as an event),
+//!     and the label transition `queue/blocked` -> `queue/queued`
+//!     returns the item to the pool. An issue that is not
+//!     blocked refuses the override, and so does one under a
+//!     live or contested claim.
 //!   * A claim posted while another worker's claim is live CONTESTS
 //!     the issue: hands-off for everyone while the contest is
 //!     younger than the lease. A contest is not permanent (#6668):
@@ -56,6 +67,7 @@
 //!   <!-- fleet-claim v1 kind=claim worker=<id> ts=<rfc3339-utc> -->
 //!   <!-- fleet-claim v1 kind=heartbeat worker=<id> ts=<rfc3339-utc> -->
 //!   <!-- fleet-claim v1 kind=release worker=<id> outcome=<done|free> ts=<rfc3339-utc> -->
+//!   <!-- fleet-claim v1 kind=unblock worker=<id> ts=<rfc3339-utc> -->
 //!
 //! Exit codes mirror the rest of the client: 0 ok, 2 usage,
 //! 3 the GitHub transport itself failed (gh missing/erroring),
@@ -226,6 +238,7 @@ enum MarkerKind {
     Claim,
     Heartbeat,
     Release,
+    Unblock,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -252,6 +265,7 @@ fn marker_line(kind: &MarkerKind, worker: &str, outcome: Option<&str>, ts: i64) 
         MarkerKind::Claim => "claim",
         MarkerKind::Heartbeat => "heartbeat",
         MarkerKind::Release => "release",
+        MarkerKind::Unblock => "unblock",
     };
     let outcome_s = match outcome {
         Some(o) => format!(" outcome={o}"),
@@ -287,6 +301,7 @@ fn parse_marker(body: &str) -> Option<Marker> {
                 Some(("kind", "claim")) => kind = Some(MarkerKind::Claim),
                 Some(("kind", "heartbeat")) => kind = Some(MarkerKind::Heartbeat),
                 Some(("kind", "release")) => kind = Some(MarkerKind::Release),
+                Some(("kind", "unblock")) => kind = Some(MarkerKind::Unblock),
                 Some(("worker", w)) if valid_worker(w) => worker = Some(w.to_string()),
                 Some(("outcome", o @ ("done" | "free"))) => outcome = Some(o.to_string()),
                 Some(("ts", t)) => match parse_ts(t) {
@@ -481,6 +496,13 @@ fn fold_claim(events: &[Marker], now: i64, lease_seconds: i64) -> ClaimState {
                     }
                 }
             }
+            MarkerKind::Unblock => {
+                // Audit only (#12777): the override is recorded in
+                // the comment stream, but blocked state lives in
+                // the issue's labels, not in this fold -- an
+                // unblock marker neither takes nor releases a
+                // claim.
+            }
             MarkerKind::Release => {
                 if let Some((w, _)) = &holder {
                     if *w == ev.worker {
@@ -544,6 +566,39 @@ fn fold_claim(events: &[Marker], now: i64, lease_seconds: i64) -> ClaimState {
             },
             None => ClaimState::Free,
         },
+    }
+}
+
+/// The most recent unblock marker in the stream, if any -- the
+/// fallback audit trail for the manual override (#12777).
+fn last_unblock(events: &[Marker]) -> Option<&Marker> {
+    events.iter().rev().find(|m| m.kind == MarkerKind::Unblock)
+}
+
+/// Whether an issue's labels mark its task blocked.
+fn is_blocked(labels: &[String]) -> bool {
+    labels.iter().any(|l| l == "queue/blocked")
+}
+
+/// The fallback unblock guard (#12777), mirroring the broker's
+/// verb_unblock: the override exists only for a blocked task, so
+/// anything else refuses -- a closed issue, an issue that is not
+/// blocked, or one whose claim is live or contested (a blocked
+/// task is unclaimed by construction; a live claim means the
+/// state on the ground disagrees with the label, and the safe
+/// answer is hands-off). Returns the refusal reason, or None
+/// when the override may proceed.
+fn unblock_refusal(open: bool, labels: &[String], state: &ClaimState) -> Option<&'static str> {
+    if !open {
+        return Some("issue_closed");
+    }
+    if !is_blocked(labels) {
+        return Some("not_blocked");
+    }
+    match state {
+        ClaimState::Live { .. } => Some("live_claim"),
+        ClaimState::Contested { .. } => Some("contested"),
+        _ => None,
     }
 }
 
@@ -617,6 +672,28 @@ fn collect_markers(
         "issue comments exceed the {MAX_MARKER_PAGES}-page marker read bound          ({} comments); refusing to return a truncated marker set",
         MAX_MARKER_PAGES * MARKER_PAGE_SIZE
     ))
+}
+
+/// One issue's open/closed state and label names, for the verbs
+/// whose state partly lives in labels (unblock's guard, claim's
+/// blocked refusal, status's blocked report).
+fn fetch_issue(repo: &str, number: i64) -> Result<(bool, Vec<String>), String> {
+    let v = gh_json(&["api".into(), format!("repos/{repo}/issues/{number}")])?;
+    let open = v.get("state").and_then(|s| s.as_str()) == Some("open");
+    let labels = v
+        .get("labels")
+        .and_then(|l| l.as_array())
+        .map(|a| {
+            a.iter()
+                .filter_map(|l| {
+                    l.get("name")
+                        .and_then(|n| n.as_str())
+                        .map(|s| s.to_string())
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    Ok((open, labels))
 }
 
 fn post_comment(repo: &str, number: i64, body: &str) -> Result<String, String> {
@@ -710,7 +787,7 @@ struct FbArgs {
 
 /// Group usage for `repo-queue fallback --help`.
 pub(crate) const GROUP_USAGE: &str = "\
-usage: repo-queue fallback <scan|status|claim|heartbeat|release> ...\n\
+usage: repo-queue fallback <scan|status|claim|heartbeat|release|unblock> ...\n\
 \n\
 GitHub-backed queue used when the primary broker is down; issue\n\
 comments carry the claims. Run `repo-queue fallback <sub> --help`\n\
@@ -719,7 +796,8 @@ for flags:\n\
   status <repo> <issue-number>\n\
   claim <repo> <issue-number> --worker <id>\n\
   heartbeat <repo> <issue-number> --worker <id>\n\
-  release <repo> <issue-number> --worker <id>";
+  release <repo> <issue-number> --worker <id>\n\
+  unblock <repo> <issue-number> --worker <id> --reason <text>";
 
 /// Per-verb usage for the fallback verbs.
 pub(crate) fn usage(verb: &str) -> &'static str {
@@ -738,6 +816,9 @@ pub(crate) fn usage(verb: &str) -> &'static str {
         }
         "release" => {
             "usage: repo-queue fallback release <repo> <issue-number> --worker <id> [--lease-min <minutes>] [--outcome done|free] [--summary <text>]\n\nReleases a fallback claim (done keeps the terminal state, free returns it to the pool)."
+        }
+        "unblock" => {
+            "usage: repo-queue fallback unblock <repo> <issue-number> --worker <id> --reason <text>\n\nReleases a blocked fallback issue back to the claimable pool: posts an unblock marker recording the override and its reason, clears the queue/blocked label and restores queue/queued. Refuses an issue that is closed, not blocked, or under a live or contested claim."
         }
         _ => GROUP_USAGE,
     }
@@ -955,7 +1036,7 @@ fn cmd_scan(rest: &[String]) -> i32 {
     let mut items: Vec<Value> = Vec::new();
     for repo in &repos {
         let mut by_number: Map<String, Value> = Map::new();
-        for label in ["queue/queued", "queue/claimed"] {
+        for label in ["queue/queued", "queue/claimed", "queue/blocked"] {
             for row in list_labeled_issues(repo, label, limit, &mut notes) {
                 if let Some(n) = row.get("number").and_then(|v| v.as_i64()) {
                     by_number.entry(n.to_string()).or_insert(row);
@@ -987,22 +1068,31 @@ fn cmd_scan(rest: &[String]) -> i32 {
                         .collect()
                 })
                 .unwrap_or_default();
+            let blocked = is_blocked(&labels);
             items.push(json!({
                 "repo": repo,
                 "number": n,
                 "title": row.get("title").cloned().unwrap_or(Value::Null),
                 "url": issue_url(repo, n),
                 "labels": labels,
+                "blocked": blocked,
                 "claim": state.to_json(),
             }));
         }
     }
-    // Claimable work first, then live claims, then contested; stable
-    // by repo order and issue number within each group.
-    let rank = |it: &Value| match it["claim"]["state"].as_str() {
-        Some("free") | Some("released") | Some("stale") => 0,
-        Some("live") => 1,
-        _ => 2,
+    // Claimable work first, then live claims, then contested and
+    // blocked; stable by repo order and issue number within each
+    // group. A blocked item's claim fold may read free -- the
+    // label is the block -- so it never ranks as claimable here.
+    let rank = |it: &Value| {
+        if it["blocked"].as_bool() == Some(true) {
+            return 2;
+        }
+        match it["claim"]["state"].as_str() {
+            Some("free") | Some("released") | Some("stale") => 0,
+            Some("live") => 1,
+            _ => 2,
+        }
     };
     items.sort_by_key(|it| rank(it));
     let claimable = items.iter().filter(|it| rank(it) == 0).count();
@@ -1023,12 +1113,18 @@ fn cmd_status(rest: &[String]) -> i32 {
     let lease = lease_seconds("status", &args);
     let markers = fetch_markers(&repo, number).unwrap_or_else(|e| die(EXIT_TRANSPORT, &e));
     let state = fold_claim(&markers, now_epoch(), lease);
+    let (_, labels) = fetch_issue(&repo, number).unwrap_or_else(|e| die(EXIT_TRANSPORT, &e));
     print_json(&json!({
         "mode": "fallback",
         "repo": repo,
         "number": number,
         "url": issue_url(&repo, number),
         "lease_seconds": lease,
+        "blocked": is_blocked(&labels),
+        "last_unblock": match last_unblock(&markers) {
+            Some(m) => json!({"worker": m.worker, "ts": format_ts(m.ts)}),
+            None => Value::Null,
+        },
         "claim": state.to_json(),
     }));
     0
@@ -1041,6 +1137,18 @@ fn cmd_claim(rest: &[String]) -> i32 {
     let worker = worker_id("claim", &args);
     let markers = fetch_markers(&repo, number).unwrap_or_else(|e| die(EXIT_TRANSPORT, &e));
     let state = fold_claim(&markers, now_epoch(), lease);
+    // A blocked issue is not claimable (#12777): the manual
+    // override (`fallback unblock`) is the only door back, exactly
+    // as the broker refuses a claim on a blocked task. The block
+    // lives in the issue's labels, so read them before posting.
+    let (_, labels) = fetch_issue(&repo, number).unwrap_or_else(|e| die(EXIT_TRANSPORT, &e));
+    if is_blocked(&labels) {
+        print_json(&json!({
+            "claimed": false, "reason": "blocked",
+            "repo": repo, "number": number, "claim": state.to_json(),
+        }));
+        return EXIT_NO_CLAIM;
+    }
     let mut superseded: Option<String> = None;
     match &state {
         ClaimState::Live { worker: w, .. } if *w != worker => {
@@ -1225,6 +1333,67 @@ fn cmd_release(rest: &[String]) -> i32 {
     0
 }
 
+fn cmd_unblock(rest: &[String]) -> i32 {
+    let args = parse_fb_args("unblock", rest, &["worker", "reason"]);
+    let (repo, number) = repo_and_issue("unblock", &args);
+    let lease = lease_seconds("unblock", &args);
+    let worker = worker_id("unblock", &args);
+    let reason = args
+        .get("reason")
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    let reason = match reason {
+        Some(r) => r,
+        None => usage_error(
+            "unblock",
+            "fallback unblock: --reason is required (the override is audited with its reason, like the broker's unblock)",
+        ),
+    };
+    let (open, labels) = fetch_issue(&repo, number).unwrap_or_else(|e| die(EXIT_TRANSPORT, &e));
+    let markers = fetch_markers(&repo, number).unwrap_or_else(|e| die(EXIT_TRANSPORT, &e));
+    let state = fold_claim(&markers, now_epoch(), lease);
+    if let Some(why) = unblock_refusal(open, &labels, &state) {
+        print_json(&json!({
+            "unblocked": false, "reason": why,
+            "repo": repo, "number": number, "claim": state.to_json(),
+        }));
+        return EXIT_NO_CLAIM;
+    }
+    let body = format!(
+        "{}\n\nUnblocked by `{worker}` -- reason: {reason}\n\n(Fleet queue fallback mode: the queue backend is down, so the manual override is recorded here. The `queue/blocked` label is cleared and `queue/queued` restored; when the broker performs this override it records the same fact as an audit event.)",
+        marker_line(&MarkerKind::Unblock, &worker, None, now_epoch())
+    );
+    let comment_url =
+        post_comment(&repo, number, &body).unwrap_or_else(|e| die(EXIT_TRANSPORT, &e));
+    let mut warnings = Vec::new();
+    edit_labels(
+        &repo,
+        number,
+        &["queue/queued"],
+        &["queue/blocked"],
+        &mut warnings,
+    );
+    // Read back, as claim does: the label transition is the state
+    // change here, so an unblock whose labels did not move is
+    // reported as not done, never hidden behind the audit comment.
+    let (_, after_labels) = fetch_issue(&repo, number).unwrap_or_else(|e| die(EXIT_TRANSPORT, &e));
+    if is_blocked(&after_labels) || !after_labels.iter().any(|l| l == "queue/queued") {
+        print_json(&json!({
+            "unblocked": false, "reason": "label_sync_failed",
+            "repo": repo, "number": number, "worker": worker,
+            "comment_url": comment_url, "warnings": warnings,
+        }));
+        return EXIT_NO_CLAIM;
+    }
+    print_json(&json!({
+        "unblocked": true,
+        "repo": repo, "number": number, "url": issue_url(&repo, number),
+        "worker": worker, "reason": reason,
+        "comment_url": comment_url, "warnings": warnings,
+    }));
+    0
+}
+
 /// Programmatic claim-state lookup (#6741): the GitHub-fallback
 /// claim state of one issue, for the queue client's
 /// no-double-serve guard. Same marker fold and lease as
@@ -1256,6 +1425,7 @@ pub fn run(args: &[String]) -> i32 {
         "claim" => cmd_claim(rest),
         "heartbeat" => cmd_heartbeat(rest),
         "release" => cmd_release(rest),
+        "unblock" => cmd_unblock(rest),
         s if is_help_arg(s) => {
             println!("{GROUP_USAGE}");
             0
@@ -1406,6 +1576,7 @@ mod tests {
             (MarkerKind::Heartbeat, None),
             (MarkerKind::Release, Some("done")),
             (MarkerKind::Release, Some("free")),
+            (MarkerKind::Unblock, None),
         ] {
             let line = marker_line(&kind, "repo-worker-code", outcome, T0);
             let body = format!("{line}\n\nHuman text follows.");
@@ -1636,6 +1807,101 @@ mod tests {
             ClaimState::Stale { worker, .. } => assert_eq!(worker, "a"),
             other => panic!("expected stale a, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn unblock_marker_rejects_an_outcome() {
+        // outcome is release-only: an unblock marker carrying one
+        // is not a marker at all.
+        let body = format!(
+            "{MARKER_PREFIX}kind=unblock worker=a outcome=done ts={} -->",
+            format_ts(T0)
+        );
+        assert_eq!(parse_marker(&body), None);
+    }
+
+    #[test]
+    fn fold_ignores_unblock_markers() {
+        // #12777 oracle: the unblock marker is audit-only -- it
+        // neither takes nor releases a claim, wherever it lands in
+        // the stream.
+        let claim = [
+            ev(MarkerKind::Claim, "a", T0),
+            ev(MarkerKind::Unblock, "b", T0 + 10),
+        ];
+        assert_eq!(fold_claim(&claim, T0 + 20, LEASE).name(), "live");
+        let alone = [ev(MarkerKind::Unblock, "b", T0)];
+        assert_eq!(fold_claim(&alone, T0 + 20, LEASE), ClaimState::Free);
+        let after_release = [
+            ev(MarkerKind::Claim, "a", T0),
+            rel("a", "free", T0 + 10),
+            ev(MarkerKind::Unblock, "b", T0 + 20),
+        ];
+        assert_eq!(
+            fold_claim(&after_release, T0 + 30, LEASE).name(),
+            "released"
+        );
+        // last_unblock reports the newest override in the stream.
+        assert_eq!(last_unblock(&after_release).map(|m| m.ts), Some(T0 + 20));
+        assert_eq!(last_unblock(&alone).map(|m| m.worker.as_str()), Some("b"));
+        assert_eq!(last_unblock(&[]), None);
+    }
+
+    #[test]
+    fn unblock_guard_mirrors_the_broker() {
+        // Oracle: the broker's verb_unblock refuses every task
+        // whose status is not blocked; the fallback form adds the
+        // closed-issue refusal and the claim-state safety (a
+        // blocked task is unclaimed by construction, so a live or
+        // contested claim means the label and the ground disagree
+        // -- hands off).
+        let blocked = vec!["queue/blocked".to_string()];
+        let queued = vec!["queue/queued".to_string()];
+        assert_eq!(
+            unblock_refusal(false, &blocked, &ClaimState::Free),
+            Some("issue_closed")
+        );
+        assert_eq!(
+            unblock_refusal(true, &queued, &ClaimState::Free),
+            Some("not_blocked")
+        );
+        assert_eq!(
+            unblock_refusal(
+                true,
+                &blocked,
+                &ClaimState::Live {
+                    worker: "a".to_string(),
+                    last_activity: T0,
+                    age_seconds: 0,
+                }
+            ),
+            Some("live_claim")
+        );
+        assert_eq!(
+            unblock_refusal(
+                true,
+                &blocked,
+                &ClaimState::Contested {
+                    holder: "a".to_string(),
+                    challenger: "b".to_string(),
+                    ts: T0,
+                }
+            ),
+            Some("contested")
+        );
+        assert_eq!(unblock_refusal(true, &blocked, &ClaimState::Free), None);
+        assert_eq!(
+            unblock_refusal(
+                true,
+                &blocked,
+                &ClaimState::Stale {
+                    worker: "a".to_string(),
+                    last_activity: T0,
+                    age_seconds: LEASE + 1,
+                }
+            ),
+            None
+        );
     }
 
     proptest! {
