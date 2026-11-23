@@ -15,7 +15,7 @@ import { createQuotaRefresher, systemdTrigger } from "./quota-refresh.ts";
 import { buildQuotaAnalytics, primeAttemptAggregates, type QuotaAnalytics } from "./analytics-store.ts";
 import { decodePathSegment } from "./path-segment.ts";
 import { errorBoundaryResponse, notFoundResponse } from "./error-boundary.ts";
-import { ACTION_STATES, ActionsStore, validateNewAction, type DashAction } from "./actions.ts";
+import { ACTION_STATES, ActionsStore, validateNewAction, type DashAction, type NewAction } from "./actions.ts";
 import {
   checkActionAgainstItem,
   effectiveNeedsOrder,
@@ -65,6 +65,15 @@ import { RoadmapAnnotationsStore, validateNewRoadmapAnnotation } from "./roadmap
 import { createAccessAuthorEnforcer, enforceAccessAuthor } from "./access-identity.ts";
 import { IdentityRegistryStore, identityMappingAuditEvent, validateIdentityMapping } from "./identity-registry.ts";
 import { BreakGlassTokenStore, authorizeWithBreakGlassToken, presentedBreakGlassToken } from "./break-glass.ts";
+import {
+  OutageQueueStore,
+  confirmOutageWrite,
+  isStackLocalAddress,
+  outageQueueEligible,
+  queueOutageWrite,
+  rejectOutageWrite,
+  type OutageQueuedWrite,
+} from "./outage-queue.ts";
 import { STACK_TOKEN_TTL_SECONDS, mintStackToken, type StackTokenRole } from "./stack-token.ts";
 import { healthHookAuditEvent } from "./health-hook-audit-event.ts";
 import {
@@ -405,6 +414,28 @@ const eventsStore = new EventsStore(cfg.eventsFile);
 const reportRecordsLocation = storeRemotes?.aaLastGood ?? defaultReportRecordsFile();
 const identityRegistryStore = new IdentityRegistryStore(cfg.identityRegistryFile);
 const breakGlassTokenStore = new BreakGlassTokenStore(cfg.breakGlassFile);
+const outageQueueStore = new OutageQueueStore(cfg.outageQueueFile);
+
+/**
+ * #9608 (design #1253 section 6): the outage-queueing gate for action
+ * writes whose Access verification failed. Queueing engages only on
+ * the enforcer's 401 (verification failed — a 403 is a verified
+ * identity contradicting the claim, not an outage), only from a
+ * stack-local peer address, and only for eligible writes; anything
+ * else returns null and the caller serves the enforcer's refusal
+ * exactly as before. Throws when the queue/audit write itself fails —
+ * callers map that to a 500 (fail closed: nothing was queued).
+ */
+async function tryQueueOutageAction(
+  action: NewAction,
+  accessStatus: number,
+  remoteAddress: string | undefined,
+): Promise<{ record: OutageQueuedWrite; created: boolean } | null> {
+  if (accessStatus !== 401) return null;
+  if (!isStackLocalAddress(remoteAddress)) return null;
+  if (!outageQueueEligible(action)) return null;
+  return queueOutageWrite({ store: outageQueueStore, events: eventsStore, action });
+}
 const freshnessStore = new FreshnessStore(cfg.freshnessFile);
 
 /** #3976: the 5-minute anti-entropy reconciler over the freshness
@@ -2263,7 +2294,7 @@ const metadataWebhookHandler = createMetadataWebhookHandler({
   },
 });
 
-async function handler(req: Request): Promise<Response> {
+async function handler(req: Request, remoteAddress?: string): Promise<Response> {
   const url = new URL(req.url);
   const path = url.pathname;
   const prov = () => source.provenance();
@@ -2815,7 +2846,34 @@ async function handler(req: Request): Promise<Response> {
       // #1253 slice: gate every action write, including non-triage and
       // preference actions, on the configured Access identity.
       const actionAccess = await enforceAccessAuthor(req, parsed.value.author);
-      if (!actionAccess.ok) return json({ error: actionAccess.error }, actionAccess.status);
+      if (!actionAccess.ok) {
+        // #9608 (design #1253 section 6): during an Access/IdP outage
+        // an eligible write from the stack-local network queues as an
+        // unverified claim (provenance: outage-queued) instead of
+        // failing — held out of the actions store until its claimant
+        // confirms it with a fresh login. Anything else keeps the
+        // enforcer's refusal, byte-identical to before.
+        try {
+          const queued = await tryQueueOutageAction(parsed.value, actionAccess.status, remoteAddress);
+          if (queued) {
+            return json(
+              {
+                queued: true,
+                provenance: "outage-queued",
+                queue: queued.record,
+                ...(queued.created ? {} : { deduped: true }),
+              },
+              202,
+            );
+          }
+        } catch (err) {
+          return json(
+            { error: `outage queueing failed: ${err instanceof Error ? err.message : err}` },
+            500,
+          );
+        }
+        return json({ error: actionAccess.error }, actionAccess.status);
+      }
       parsed.value.author = actionAccess.author;
       // #1291/#1293: checks that need the currently published item —
       // option/survey membership, required-question coverage, proposal
@@ -2927,6 +2985,9 @@ async function handler(req: Request): Promise<Response> {
         ok: boolean;
         action?: unknown;
         deduped?: boolean;
+        // #9608: set when the item outage-queued instead of recording.
+        queued?: boolean;
+        queueId?: string;
         error?: string;
       }[] = [];
       // One enforcer for the whole batch: the request's JWT is
@@ -2944,6 +3005,31 @@ async function handler(req: Request): Promise<Response> {
         }
         const batchAccess = await enforceBatchAuthor(parsed.value.author);
         if (!batchAccess.ok) {
+          // #9608: the single-action outage posture, per item — an
+          // eligible item queues as an unverified claim; the rest of
+          // the batch is unaffected.
+          try {
+            const queued = await tryQueueOutageAction(parsed.value, batchAccess.status, remoteAddress);
+            if (queued) {
+              results.push({
+                index,
+                objectRef,
+                ok: true,
+                queued: true,
+                queueId: queued.record.id,
+                ...(queued.created ? {} : { deduped: true }),
+              });
+              continue;
+            }
+          } catch (err) {
+            results.push({
+              index,
+              objectRef,
+              ok: false,
+              error: `outage queueing failed: ${err instanceof Error ? err.message : err}`,
+            });
+            continue;
+          }
           results.push({ index, objectRef, ok: false, error: batchAccess.error });
           continue;
         }
@@ -3011,6 +3097,106 @@ async function handler(req: Request): Promise<Response> {
       return updated ? json({ action: updated }) : json({ error: "no such action" }, 404);
     } catch (err) {
       return json({ error: `invalid result: ${err instanceof Error ? err.message : err}` }, 400);
+    }
+  }
+  // --- Outage-queued action writes (#9608, design #1253 section 6) ---
+  // Queued writes appear ONLY on this read surface, stamped
+  // outage-queued with the claimed author kept a claim — never in
+  // /api/actions.json — until the claimant confirms one with a fresh
+  // verified login (confirm) or it is rejected (reject).
+  if (path === "/api/actions/outage-queue.json") {
+    const state = url.searchParams.get("state");
+    if (state && state !== "queued" && state !== "confirmed" && state !== "rejected") {
+      return json({ error: "state must be one of: queued, confirmed, rejected" }, 400);
+    }
+    let list = await outageQueueStore.list();
+    if (state) list = list.filter((w) => w.state === state);
+    return json({ queue: list });
+  }
+  if (req.method === "POST" && path === "/api/actions/outage-queue/confirm") {
+    try {
+      const body = (await readJsonBody(req)) as { id?: unknown };
+      if (typeof body.id !== "string" || body.id === "") return json({ error: "id required" }, 400);
+      const record = await outageQueueStore.get(body.id);
+      if (!record) return json({ error: "no such outage-queued write" }, 404);
+      // Confirmation IS a fresh login: the enforcer must succeed with
+      // a verified identity. The claimed author rides as the asserted
+      // author, so a verified non-owner presenting an owner claim is
+      // refused by the enforcer itself, exactly as on a fresh write.
+      const access = await enforceAccessAuthor(req, record.claimedAuthor);
+      if (!access.ok) return json({ error: access.error }, access.status);
+      if (!access.verified) {
+        return json({ error: "identity confirmation requires a fresh verified login" }, 403);
+      }
+      const result = await confirmOutageWrite({
+        store: outageQueueStore,
+        events: eventsStore,
+        id: record.id,
+        derivedAuthor: access.author,
+        release: async (action) => {
+          // The released write passes the same published-item checks
+          // as a fresh POST /api/actions (see that route): the item
+          // may have changed while the write sat in the queue.
+          if (action.kind === "triage") {
+            const section = await source.orchestration().catch(() => null);
+            let item: ReturnType<typeof findTierItem>;
+            if (section) {
+              item = findTierItem(section, action.objectRef);
+              const problem = checkActionAgainstItem(action, item, Date.now());
+              if (problem) return { ok: false as const, status: 400, error: problem };
+            }
+            if (action.verb === "answer" && action.payload.optionId) {
+              action.payload.questionId = questionIdForOption(item, action.payload.optionId) ?? "$options";
+            }
+          }
+          try {
+            const added = await actionsStore.add(action);
+            if (added.duplicateOf) {
+              return {
+                ok: false as const,
+                status: 409,
+                error: `duplicate answer recorded as ${added.action.id}; it points to existing answer action ${added.duplicateOf}`,
+              };
+            }
+            return { ok: true as const, actionId: added.action.id };
+          } catch (err) {
+            return {
+              ok: false as const,
+              status: 500,
+              error: `action persistence failed: ${err instanceof Error ? err.message : err}`,
+            };
+          }
+        },
+      });
+      if (!result.ok) return json({ error: result.error }, result.status);
+      return json({ confirmed: true, queue: result.record, actionId: result.actionId });
+    } catch (err) {
+      return json({ error: `invalid confirmation: ${err instanceof Error ? err.message : err}` }, 400);
+    }
+  }
+  if (req.method === "POST" && path === "/api/actions/outage-queue/reject") {
+    try {
+      const body = (await readJsonBody(req)) as { id?: unknown };
+      if (typeof body.id !== "string" || body.id === "") return json({ error: "id required" }, 400);
+      const record = await outageQueueStore.get(body.id);
+      if (!record) return json({ error: "no such outage-queued write" }, 404);
+      // Same fresh-login gate as confirm; rejectOutageWrite owns the
+      // claimant/owner authorization for the rejection itself.
+      const access = await enforceAccessAuthor(req, record.claimedAuthor);
+      if (!access.ok) return json({ error: access.error }, access.status);
+      if (!access.verified) {
+        return json({ error: "rejecting a queued write requires a fresh verified login" }, 403);
+      }
+      const result = await rejectOutageWrite({
+        store: outageQueueStore,
+        events: eventsStore,
+        id: record.id,
+        derivedAuthor: access.author,
+      });
+      if (!result.ok) return json({ error: result.error }, result.status);
+      return json({ rejected: true, queue: result.record, byOwner: result.byOwner });
+    } catch (err) {
+      return json({ error: `invalid rejection: ${err instanceof Error ? err.message : err}` }, 400);
     }
   }
   if (path === "/api/events.json") {
@@ -5059,14 +5245,14 @@ async function handler(req: Request): Promise<Response> {
  * attribution can never disagree.
  */
 
-async function fetchHandler(req: Request): Promise<Response> {
+async function fetchHandler(req: Request, remoteAddress?: string): Promise<Response> {
   // #1211: the top-level error boundary. A throwing handler degrades
   // to a styled 500 page (JSON for /api) instead of rejecting the
   // fetch; the render-health record below still runs, accounting the
   // failure as an unsuccessful render.
   let res: Response;
   try {
-    res = await dashboardResponseWithinDeadline(req, () => handler(req));
+    res = await dashboardResponseWithinDeadline(req, () => handler(req, remoteAddress));
   } catch (err) {
     console.error(`aggregator: handler failed for ${req.method} ${req.url}:`, err);
     res = errorBoundaryResponse(new URL(req.url).pathname, err);
@@ -5128,7 +5314,9 @@ const servers = cfg.hosts.map((hostname) =>
         // the wait plus margin (Bun caps the value at 255).
         server.timeout(req, Math.min(255, Math.ceil(cfg.promptSyncTimeoutMs / 1000) + 5));
       }
-      return fetchHandler(req);
+      // #9608: the peer address rides along so the outage-queueing
+      // path can require a stack-local origin (design #1253 §6).
+      return fetchHandler(req, server.requestIP(req)?.address);
     },
     websocket: {
       open(ws) {

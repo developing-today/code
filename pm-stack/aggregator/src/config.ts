@@ -81,6 +81,10 @@ export interface Config {
   /** Break-glass owner token store (#9608) — written only by the local
    * owner CLI (scripts/issue-break-glass-token.ts); hashes only. */
   breakGlassFile: string;
+  /** Outage-queued action writes (#9608, design #1253 section 6):
+   * writes queued unverified during an Access/IdP outage, held out
+   * of the actions store until a fresh login confirms the claim. */
+  outageQueueFile: string;
   /** Source freshness invalidation journal, separate from #1739/#3321. */
   freshnessFile: string;
   /** Loopback-only publisher listener; never included in PM_AGG_HOSTS. */
@@ -250,6 +254,10 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     breakGlassFile: s(
       env.PM_AGG_BREAK_GLASS_FILE,
       join(homedir(), ".local", "state", "pm-aggregator", "break-glass-tokens.json"),
+    ),
+    outageQueueFile: s(
+      env.PM_AGG_OUTAGE_QUEUE_FILE,
+      join(homedir(), ".local", "state", "pm-aggregator", "outage-queue.json"),
     ),
     freshnessFile: s(env.PM_AGG_FRESHNESS_FILE, join(homedir(), ".local", "state", "pm-aggregator", "freshness.json")),
     freshnessPort: parseAggregatorPort(env.PM_AGG_FRESHNESS_PORT, "PM_AGG_FRESHNESS_PORT", "4871"),

@@ -9,7 +9,10 @@ and caches the result **indefinitely** (no TTL/eviction in v1).
 
 ## Shape
 
-- `src/index.ts` — gate, normalization, keying, routing.
+- `src/index.ts` — the inbound gate and routing. Normalization
+  and keying live in `src/key.ts`; index.ts calls `queryKey`
+  directly only for the inspect/purge routes (search keying runs
+  in `src/search.ts`).
 - `src/cache_do.ts` — the `QueryCache` DO: one per query key;
   check-and-fill runs inside the DO so a fan-out happens once.
   State machine: absent → embedded → complete; the embedding is
@@ -18,13 +21,19 @@ and caches the result **indefinitely** (no TTL/eviction in v1).
   (`POST /v1/embed`, `POST /v1/search`) via the
   `atlas-search.security.cab` tunnel hostname + Cloudflare
   Access service token. The service enforces this client's
-  `personal` tier ceiling; the Worker holds no Turso credentials
+  `personal` tier ceiling, and the Worker enforces it too: every
+  search response's `effective_ceiling` is checked against the
+  pinned ceiling and a mismatch is refused (502) before anything
+  is cached. The Worker holds no Turso credentials
   and keeps no shard list (new `atlas-core-*` databases join the
   fan-out through the service's manifest discovery).
-- `src/key.ts` — DO key = sha256 over the normalized query plus
-  the pinned config fingerprint (ceiling, model revision, vector
-  table, k). A cached entry is never served across ceilings or
-  embedding spaces.
+- `src/key.ts` — query normalization and DO keying. The key is
+  sha256 over the canonical key material (KEY_SCHEMA 2): the
+  normalized query plus `"v": 2`, the pinned ceiling, the
+  disclosure context (`hosted-per-user`, #12622), model
+  revision, vector table, and k. A cached entry is never served
+  across ceilings, disclosure contexts, or embedding spaces;
+  entries keyed under schema v1 are orphaned, never served.
 
 ## Endpoints
 
@@ -68,8 +77,11 @@ The `HOT_CACHE` D1 binding and the store module in
 design (`doc/2026-11-23T08-06-00Z_design_atlas_d1_tenant_hot_cache/`):
 the §5 `hot_cache` schema (migration `migrations/0001_hot_cache.sql`)
 plus get/put/touch/evict primitives. The tier is gated by
-`HOT_CACHE_ENABLED` (default `"false"`); with the flag off nothing
-reads or writes the cache and the read path is unchanged. Freshness
+`HOT_CACHE_ENABLED` (default `"false"`), but the store is not yet
+wired into the request path at all: nothing in the Worker calls
+it outside tests, so the flag alone does not activate the cache —
+with the flag on and the binding present, the Worker still never
+touches D1 and the read path is unchanged. Freshness
 (#13101), admission/eviction (#13103), and read-path integration
 (#13105) are separate follow-ons. The committed `database_id` is a
 local placeholder: the real `atlas-hot-cache` database is created at
