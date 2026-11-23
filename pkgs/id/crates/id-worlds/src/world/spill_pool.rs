@@ -20,7 +20,9 @@ pub const READER_OBSERVATION_CYCLES: u8 = 10;
 /// holder when all higher-priority properties tie.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FailoverCause {
+    /// The previous holder's authority-clock term expired.
     HolderExpired,
+    /// Recovery after a non-death transition where stickiness may break ties.
     Recovery,
 }
 
@@ -41,6 +43,8 @@ pub struct PoolMember {
     pub journal_tip: u64,
     /// Number of worlds this host currently holds.
     pub holder_count: u32,
+    /// Last authority renewal-cycle identifier observed for this reader.
+    pub last_renewal_cycle: Option<u64>,
     /// Consecutive renewal observations made within the catch-up bound.
     pub tip_observation_cycles: u8,
 }
@@ -57,6 +61,7 @@ impl PoolMember {
             replay_position: 0,
             journal_tip: 0,
             holder_count: 0,
+            last_renewal_cycle: None,
             tip_observation_cycles: 0,
         }
     }
@@ -65,6 +70,7 @@ impl PoolMember {
     /// out-of-bound lag, authentication failure, or reachability failure.
     pub fn observe(
         &mut self,
+        renewal_cycle: u64,
         authenticated: bool,
         reachable: bool,
         healthy: bool,
@@ -81,8 +87,13 @@ impl PoolMember {
             && reachable
             && replay_position <= journal_tip
             && journal_tip.saturating_sub(replay_position) <= max_catch_up_lag;
+        let next_cycle =
+            self.last_renewal_cycle.and_then(|last| last.checked_add(1)) == Some(renewal_cycle);
+        let same_cycle = self.last_renewal_cycle == Some(renewal_cycle);
         self.tip_observation_cycles = if within_bound {
-            if was_within_bound {
+            if same_cycle {
+                self.tip_observation_cycles
+            } else if was_within_bound && next_cycle {
                 self.tip_observation_cycles
                     .saturating_add(1)
                     .min(READER_OBSERVATION_CYCLES)
@@ -92,6 +103,7 @@ impl PoolMember {
         } else {
             0
         };
+        self.last_renewal_cycle = Some(renewal_cycle);
         self.authenticated = authenticated;
         self.reachable = reachable;
         self.healthy = healthy;
@@ -124,11 +136,15 @@ impl SpillPool {
     /// reader observation window so stale eligibility cannot carry over.
     pub fn configure(&mut self, identity: impl Into<String>) -> &PoolMember {
         let identity = identity.into();
-        self.members
-            .insert(identity.clone(), PoolMember::configured(identity.clone()));
-        self.members
-            .get(&identity)
-            .expect("configured member inserted")
+        match self.members.entry(identity.clone()) {
+            std::collections::btree_map::Entry::Occupied(mut entry) => {
+                entry.insert(PoolMember::configured(identity));
+                entry.into_mut()
+            }
+            std::collections::btree_map::Entry::Vacant(entry) => {
+                entry.insert(PoolMember::configured(identity))
+            }
+        }
     }
 
     /// Remove an identity from the roster. This does not change the active
@@ -141,6 +157,7 @@ impl SpillPool {
     pub fn observe(
         &mut self,
         identity: &str,
+        renewal_cycle: u64,
         authenticated: bool,
         reachable: bool,
         healthy: bool,
@@ -153,6 +170,7 @@ impl SpillPool {
             return false;
         };
         member.observe(
+            renewal_cycle,
             authenticated,
             reachable,
             healthy,
@@ -254,7 +272,7 @@ impl SpillPool {
 
         Ok(FailoverPlan {
             actions,
-            journal_tip,
+            pre_grant_tip: journal_tip,
         })
     }
 }
@@ -263,16 +281,29 @@ impl SpillPool {
 /// holder must be preceded by a revoke action in the same plan.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LeaseAction {
-    Revoke { former_holder: String, epoch: u64 },
-    Grant { holder: String, epoch: u64 },
+    /// Fence the standing holder at this resulting epoch.
+    Revoke {
+        /// Identity whose lease is being fenced.
+        former_holder: String,
+        /// Epoch established by the revoke record.
+        epoch: u64,
+    },
+    /// Grant authority after the predecessor fence is journaled.
+    Grant {
+        /// Authenticated identity selected as the next holder.
+        holder: String,
+        /// Epoch established by the grant record.
+        epoch: u64,
+    },
 }
 
-/// Deterministic failover decision. `journal_tip` is the barrier a successor
-/// must replay through before the host adapter resumes mutations.
+/// Deterministic failover decision. `pre_grant_tip` is the journal tip used to
+/// assess the candidate. The actor must capture the actual grant position
+/// after appending the grant and use that position as the resume barrier.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FailoverPlan {
     actions: Vec<LeaseAction>,
-    journal_tip: u64,
+    pre_grant_tip: u64,
 }
 
 impl FailoverPlan {
@@ -283,28 +314,26 @@ impl FailoverPlan {
         &self.actions
     }
 
-    /// Journal position the selected successor must replay through.
+    /// Journal tip used to assess the successor before appending failover
+    /// actions. This is not the successor's grant barrier.
     #[must_use]
-    pub const fn journal_tip(&self) -> u64 {
-        self.journal_tip
-    }
-
-    /// Whether the selected successor has replayed through the grant barrier.
-    #[must_use]
-    pub const fn barrier_reached(&self, replay_position: u64) -> bool {
-        replay_position >= self.journal_tip
+    pub const fn pre_grant_tip(&self) -> u64 {
+        self.pre_grant_tip
     }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum FailoverPlanError {
+    /// The current holder has not expired on the authority clock.
     #[error("write lease term has not expired on the authority clock")]
     TermStillLive,
+    /// No next epoch can be represented by the journal format.
     #[error("write lease epoch overflow")]
     EpochOverflow,
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
     use crate::world::{LeaseRejectionReason, LeaseWriteRejection};
@@ -312,26 +341,29 @@ mod tests {
 
     fn eligible_member(pool: &mut SpillPool, identity: &str, tip: u64, load: u32) {
         pool.configure(identity);
-        for _ in 0..READER_OBSERVATION_CYCLES {
-            assert!(pool.observe(identity, true, true, true, tip, tip, 0, load));
+        for cycle in 0..u64::from(READER_OBSERVATION_CYCLES) {
+            assert!(pool.observe(identity, cycle, true, true, true, tip, tip, 0, load));
         }
     }
 
     #[test]
-    fn reader_join_requires_a_continuous_ten_cycle_tip_window() {
+    fn reader_join_requires_ten_distinct_consecutive_renewal_cycles() {
         let mut pool = SpillPool::default();
         pool.configure("reader");
-        for _ in 0..(READER_OBSERVATION_CYCLES - 1) {
-            pool.observe("reader", true, true, true, 7, 7, 0, 0);
+        for cycle in 0..u64::from(READER_OBSERVATION_CYCLES - 1) {
+            pool.observe("reader", cycle, true, true, true, 7, 7, 0, 0);
+        }
+        pool.observe("reader", 8, true, true, true, 7, 7, 0, 0);
+        assert!(!pool.member("reader").unwrap().eligible(7, 0));
+        pool.observe("reader", 9, true, true, true, 5, 7, 1, 0);
+        for cycle in 10..19 {
+            pool.observe("reader", cycle, true, true, true, 7, 7, 0, 0);
         }
         assert!(!pool.member("reader").unwrap().eligible(7, 0));
-        pool.observe("reader", true, true, true, 5, 7, 1, 0);
-        for _ in 0..(READER_OBSERVATION_CYCLES - 1) {
-            pool.observe("reader", true, true, true, 7, 7, 0, 0);
-        }
-        assert!(!pool.member("reader").unwrap().eligible(7, 0));
-        pool.observe("reader", true, true, true, 7, 7, 0, 0);
+        pool.observe("reader", 19, true, true, true, 7, 7, 0, 0);
         assert!(pool.member("reader").unwrap().eligible(7, 0));
+        pool.observe("reader", 21, true, true, true, 7, 7, 0, 0);
+        assert!(!pool.member("reader").unwrap().eligible(7, 0));
     }
 
     #[test]
@@ -341,8 +373,8 @@ mod tests {
         eligible_member(&mut pool, "z-healthy", 20, 1);
         eligible_member(&mut pool, "a-healthy", 20, 1);
         eligible_member(&mut pool, "unhealthy", 20, 0);
-        pool.observe("lagging", true, true, true, 19, 20, 1, 0);
-        pool.observe("unhealthy", true, true, false, 20, 20, 0, 0);
+        pool.observe("lagging", 10, true, true, true, 19, 20, 1, 0);
+        pool.observe("unhealthy", 10, true, true, false, 20, 20, 0, 0);
         assert_eq!(
             pool.select_successor(20, 1, None, FailoverCause::HolderExpired)
                 .map(|member| member.identity.as_str()),
@@ -387,9 +419,7 @@ mod tests {
                 },
             ]
         );
-        assert_eq!(plan.journal_tip(), 50);
-        assert!(!plan.barrier_reached(49));
-        assert!(plan.barrier_reached(50));
+        assert_eq!(plan.pre_grant_tip(), 50);
         lease.apply_revoke("dead", 2, "term expired").unwrap();
         lease.apply_grant("successor", 3, Some(60_000)).unwrap();
         assert_eq!(lease.holder.as_deref(), Some("successor"));
