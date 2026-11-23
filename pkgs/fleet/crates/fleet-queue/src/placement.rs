@@ -1467,7 +1467,9 @@ const DISPATCH_USAGE: &str = "usage: repo-queue dispatch --repo <owner/name> --c
 [--surface ID] [--followup HANDLE|OWNER/REPO#RUN_ID] [--push-nix-cache] \
 [--actions-cache KEY:PATH] [--actions-cache-restore-key PREFIX]... \
 [--allow-paid-blacksmith MINUTES] \
-[--laptop-busy] [--dispatch] [--json] [--registry PATH]\nDry-run unless --dispatch; prints the placement decision.";
+[--laptop-busy] [--dispatch] [--json] [--registry PATH]\nDry-run unless --dispatch; prints the placement decision.\nNix dev-shell (pkgs/id): dispatch runs as root, so plain 'nix develop' fails (#13198); \
+run as the vscode user instead — see 'Nix dev-shell commands' in \
+pkgs/fleet/doc/agents/remote-build-and-test.md.";
 
 fn run_dispatch(args: &[String]) -> R<i32> {
     let (cli, rest) = extract_common(args)?;

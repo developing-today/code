@@ -61,6 +61,45 @@ Fleet prefers the previous runner host while it remains eligible, has a free slo
 - Add `--container <image>` for a specific environment on a compatible surface.
 - Use `--actions-cache <key>:<path>` and repeat `--actions-cache-restore-key <prefix>` to request extra dependency-cache paths. Use `--push-nix-cache` when a Nix build should publish its cache output.
 
+## Nix dev-shell commands (pkgs/id suites)
+
+Plain `nix develop --command ...` fails in the dispatch container: the
+container's nix has experimental features off, is configured for a
+multi-user daemon (`build-users-group = nixbld`) that does not exist, and
+unsandboxed builds trip the `/homeless-shelter` purity check
+(#13198, #13193). The long-term fix is image-level in the fleet repo;
+until then, run dev-shell suites as the `vscode` user with this shape:
+
+```sh
+fleet queue dispatch \
+  --repo developing-today/code \
+  --ref <branch> \
+  --command 'runuser -u vscode -- env HOME=/home/vscode bash -lc '"'"'git config --global --add safe.directory "$PWD" && cd pkgs/id && CARGO_TARGET_DIR=/tmp/id-target nix --extra-experimental-features "nix-command flakes" develop --command cargo test -p id-caps'"'"'' \
+  --dispatch --json
+```
+
+Why each piece matters:
+
+- `runuser -u vscode`: dispatch runs as root; root builds trip the
+  `nixbld` group error and the `/homeless-shelter` purity check, while
+  the `vscode` user avoids both. A dispatcher-side env wrapper alone
+  cannot fix the purity check (verified in #13193: nix's own builders
+  create `/homeless-shelter` mid-run).
+- `HOME=/home/vscode`: gives nix a writable home for the non-root user.
+- `git config --global --add safe.directory "$PWD"`: the checkout is
+  root-owned, so git would otherwise refuse it for another user.
+- `--extra-experimental-features "nix-command flakes"`: the container's
+  nix.conf does not enable them.
+- `CARGO_TARGET_DIR=/tmp/id-target`: keeps the cargo target dir writable
+  for the `vscode` user on the root-owned checkout.
+
+Verified live: `nix develop --command true` in this shape succeeded in
+the fleet-command container (run
+[45189188178](https://github.com/developing-today/fleet/actions/runs/45189188178)),
+and the same shape ran the pkgs/id test suites green for #12050. Do not use a bare `nix develop` in a dispatched command; if the
+shape stops working, the image-level fix in #13193 is the next step, not
+another wrapper.
+
 ## Target laptop, Codespaces, or local
 
 `fleet shell` runs commands on the laptop, a Codespace, or the local environment. Inspect current reachability and automatic selection first:
