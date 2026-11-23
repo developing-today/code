@@ -15,7 +15,7 @@ const domainId = '22222222-3333-4444-5555-666666666666';
 const readToken = 'synthetic-read-token-long-enough';
 const writeToken = 'synthetic-write-token-long-enough';
 const gatewayToken = 'synthetic-gateway-read-token-long-enough';
-const worker = {id:workerId,name:WORKER_NAME,logpush:false,observability:{enabled:false},references:{domains:[]}};
+const worker = {id:workerId,name:WORKER_NAME,logpush:false,observability:{enabled:false},references:{domains:[],workers:[],durable_objects:[],dispatch_namespace_outbounds:[],queues:[]}};
 const bindings = () => [
     {name:'ENABLED',type:'plain_text',text:'false'},
     {name:'GATEWAY_HOST',type:'plain_text',text:'private-bridge-staging.invalid'},
@@ -38,7 +38,7 @@ const deployment = () => ({id:deploymentId,versions:[{version_id:versionId,perce
 const domain = (fields={}) => ({id:domainId,service:WORKER_NAME,hostname:'laptop-bridge-staging.security.cab',enabled:true,previews_enabled:false,zone_id:zoneId,...fields});
 const ns = () => ({id:namespaceId,script:WORKER_NAME,class:DO_CLASS,use_sqlite:true});
 const snapshot = () => ({
-  zoneIds:[zoneId],worker,workerId,subdomain:{enabled:false,previews_enabled:false},
+  zoneIds:[zoneId],worker:{...worker,references:{...worker.references,domains:[{id:domainId,hostname:'laptop-bridge-staging.security.cab',zone_id:zoneId}]}},workerId,subdomain:{enabled:false,previews_enabled:false},
   settings:{logpush:false,observability:{enabled:false},tail_consumers:[]},schedules:[],
   namespaces:[ns()],domains:[domain()],gatewayRules:[],version:version(),versions:[{id:versionId,metadata:{},number:1}],deployments:[deployment()],
 });
@@ -88,9 +88,10 @@ function response(result, {status=200,resultInfo={page:1,per_page:100,total_coun
   return new Response(JSON.stringify({success,result,errors,...(resultInfo === undefined ? {} : {result_info:resultInfo})}),{status});
 }
 
-function cloudflareFixture({target='absent', zones=[{id:zoneId,account:{id:accountId}}], zoneInfo, route=[], domains=[], namespaces=[], workerRecord=worker, versionRecord=version(), gatewayRules=[], deployments=[deployment()], legacyVersions=null, overrides={}}={}) {
+function cloudflareFixture({target='absent', zones=[{id:zoneId,account:{id:accountId}}], zoneInfo, route=[], domains=[], namespaces=[], workerRecord=null, versionRecord=version(), gatewayRules=[], deployments=[deployment()], legacyVersions=null, overrides={}}={}) {
   const calls=[];
   const versionsList=legacyVersions??(deployments.length?[{id:versionId,metadata:{},number:1}]:[]);
+  const effectiveWorkerRecord=workerRecord??{...worker,references:{...worker.references,domains:domains.filter(domain=>domain?.service===WORKER_NAME).map(domain=>({id:domain.id,hostname:domain.hostname,zone_id:domain.zone_id}))}};
   const fetchImpl=async (url,init={})=>{
     const parsed=new URL(url), method=init.method??'GET';
     calls.push({url:parsed,method,token:init.headers?.authorization});
@@ -101,9 +102,10 @@ function cloudflareFixture({target='absent', zones=[{id:zoneId,account:{id:accou
     if(parsed.pathname==='/client/v4/accounts/'+accountId+'/gateway/rules') return response(gatewayRules);
     if(parsed.pathname==='/client/v4/accounts/'+accountId+'/workers/durable_objects/namespaces') return response(namespaces,{resultInfo:{page:1,per_page:1000,total_count:namespaces.length,total_pages:namespaces.length?1:0}});
     if(parsed.pathname===`/client/v4/accounts/${accountId}/workers/scripts/${WORKER_NAME}/versions`) return response({items:versionsList},{resultInfo:{page:1,per_page:100,count:versionsList.length,total_count:versionsList.length,total_pages:versionsList.length?1:0}});
-    if(parsed.pathname===`/client/v4/accounts/${accountId}/workers/workers/${WORKER_NAME}`) {
+    if(parsed.pathname===`/client/v4/accounts/${accountId}/workers/workers`) return response(target==='absent'?[]:[effectiveWorkerRecord],{resultInfo:{page:1,per_page:100,total_count:target==='absent'?0:1,total_pages:target==='absent'?0:1}});
+    if(parsed.pathname===`/client/v4/accounts/${accountId}/workers/workers/${workerId}`) {
       if(target==='absent') return response(null,{status:404,success:false,resultInfo:undefined,errors:[{code:10007}]});
-      return response(workerRecord,{resultInfo:undefined});
+      return response(effectiveWorkerRecord,{resultInfo:undefined});
     }
     if(parsed.pathname.endsWith(`/workers/scripts/${WORKER_NAME}/subdomain`)) return response({enabled:false,previews_enabled:false});
     if(parsed.pathname.endsWith(`/workers/scripts/${WORKER_NAME}/script-settings`)) return response({logpush:false,observability:{enabled:false},tail_consumers:[]});
@@ -146,7 +148,7 @@ test('exact empty locally created Worker is the only first-deploy candidate; all
   assert.ok(f.calls.every(call=>call.method==='GET'&&call.token===`Bearer ${call.url.pathname.endsWith('/gateway/rules')?gatewayToken:readToken}`));
   assert.ok(f.calls.some(call=>call.url.pathname===`/client/v4/zones/${zoneId}/workers/routes`));
   assert.ok(f.calls.some(call=>call.url.pathname===`/client/v4/accounts/${accountId}/workers/scripts/${WORKER_NAME}/versions`));
-  await assert.rejects(verifyBootstrapPreflight({accountId,workerId,readToken,gatewayToken,expectedZoneIds:[zoneId],sourceSha:sha,fetchImpl:cloudflareFixture({target:'absent'}).fetchImpl}),/created locally by an owner/);
+  await assert.rejects(verifyBootstrapPreflight({accountId,workerId,readToken,gatewayToken,expectedZoneIds:[zoneId],sourceSha:sha,fetchImpl:cloudflareFixture({target:'absent'}).fetchImpl}),/owner-created Worker is missing/);
   for(const bad of [
     cloudflareFixture({target:'absent',zones:[]}),
     cloudflareFixture({target:'absent',route:[{id:'route',pattern:'*',script:WORKER_NAME}]}),
@@ -158,23 +160,33 @@ test('exact empty locally created Worker is the only first-deploy candidate; all
   const unservedVersion=cloudflareFixture({target:'empty',deployments:[],legacyVersions:[{id:versionId,metadata:{},number:1}]});
   await assert.rejects(verifyBootstrapPreflight({accountId,workerId,readToken,gatewayToken,expectedZoneIds:[zoneId],sourceSha:sha,fetchImpl:unservedVersion.fetchImpl}),/only the exact empty disabled locally created Worker/);
   const takeover=cloudflareFixture({target:'empty',deployments:[],domains:[],workerRecord:{...worker,id:'4'.repeat(32)}});
-  await assert.rejects(verifyBootstrapPreflight({accountId,workerId,readToken,gatewayToken,expectedZoneIds:[zoneId],sourceSha:sha,fetchImpl:takeover.fetchImpl}),/Worker ID differs/);
+  await assert.rejects(verifyBootstrapPreflight({accountId,workerId,readToken,gatewayToken,expectedZoneIds:[zoneId],sourceSha:sha,fetchImpl:takeover.fetchImpl}),/pinned Beta identity/);
   assert.equal(verifyDistinctWriteCredential(readToken,gatewayToken,writeToken),true);
   assert.throws(()=>verifyDistinctWriteCredential(readToken,gatewayToken,gatewayToken),/separate/);
 });
 
 test('bootstrap only accepts disabled no-ingress state; routed postflight verifies the Access-host phase',()=>{
   const good=snapshot();
-  assert.throws(()=>verifyProviderState(good,{phase:'preflight',expectedZoneIds:[zoneId],sourceSha:sha,expectedWorkerId:workerId}),/empty Worker already has a custom domain/);
+  assert.throws(()=>verifyProviderState(good,{phase:'preflight',expectedZoneIds:[zoneId],sourceSha:sha,expectedWorkerId:workerId}),/reverse domain references/);
   assert.equal(verifyProviderState(good,{phase:'postflight',expectedZoneIds:[zoneId],sourceSha:sha,expectedWorkerId:workerId}),'verified');
-  const noIngress=snapshot();noIngress.domains=[];
+  const noIngress=snapshot();noIngress.domains=[];noIngress.worker.references.domains=[];
   assert.equal(verifyProviderState(noIngress,{phase:'preflight',expectedZoneIds:[zoneId],sourceSha:sha,expectedWorkerId:workerId}),'already-initialized-no-ingress');
   assert.equal(verifyProviderState(noIngress,{phase:'init-postflight',expectedZoneIds:[zoneId],sourceSha:sha,expectedWorkerId:workerId}),'verified-no-ingress');
+  for(const kind of ['workers','durable_objects','dispatch_namespace_outbounds','queues']) {
+    const referenced=structuredClone(noIngress);referenced.worker.references[kind]=[{id:workerId,name:'unexpected-worker'}];
+    assert.throws(()=>verifyProviderState(referenced,{phase:'preflight',expectedZoneIds:[zoneId],sourceSha:sha,expectedWorkerId:workerId}),new RegExp(`reverse ${kind}`));
+  }
+  const incompleteRefs=structuredClone(noIngress);delete incompleteRefs.worker.references.queues;
+  assert.throws(()=>verifyProviderState(incompleteRefs,{phase:'preflight',expectedZoneIds:[zoneId],sourceSha:sha,expectedWorkerId:workerId}),/metadata is missing/);
+  const wrongBetaId=structuredClone(noIngress);wrongBetaId.worker.id='4'.repeat(32);
+  assert.throws(()=>verifyProviderState(wrongBetaId,{phase:'preflight',expectedZoneIds:[zoneId],sourceSha:sha,expectedWorkerId:workerId}),/pinned Beta identity/);
+  const unexpectedDomain=structuredClone(noIngress);unexpectedDomain.worker.references.domains=[{id:'33333333-4444-5555-6666-777777777777',hostname:'other.example',zone_id:zoneId}];
+  assert.throws(()=>verifyProviderState(unexpectedDomain,{phase:'init-postflight',expectedZoneIds:[zoneId],sourceSha:sha,expectedWorkerId:workerId}),/reverse domain references/);
   const extraVersion=structuredClone(noIngress);extraVersion.versions.push({id:'22222222-3333-4444-5555-666666666666',metadata:{},number:2});
   assert.throws(()=>verifyProviderState(extraVersion,{phase:'init-postflight',expectedZoneIds:[zoneId],sourceSha:sha,expectedWorkerId:workerId}),/exactly one version/);
-  assert.throws(()=>verifyProviderState(good,{phase:'init-postflight',expectedZoneIds:[zoneId],sourceSha:sha,expectedWorkerId:workerId}),/empty Worker already has a custom domain/);
-  const reverseRef=snapshot();reverseRef.domains=[];reverseRef.worker=structuredClone(worker);reverseRef.worker.references.domains=[{hostname:'private-laptop-bridge-staging.security.cab'}];
-  assert.throws(()=>verifyProviderState(reverseRef,{phase:'init-postflight',expectedZoneIds:[zoneId],sourceSha:sha,expectedWorkerId:workerId}),/reverse domain reference/);
+  assert.throws(()=>verifyProviderState(good,{phase:'init-postflight',expectedZoneIds:[zoneId],sourceSha:sha,expectedWorkerId:workerId}),/reverse domain references/);
+  const reverseRef=snapshot();reverseRef.domains=[];reverseRef.worker=structuredClone(worker);reverseRef.worker.references.domains=[{id:domainId,hostname:'laptop-bridge-staging.security.cab',zone_id:zoneId}];
+  assert.throws(()=>verifyProviderState(reverseRef,{phase:'init-postflight',expectedZoneIds:[zoneId],sourceSha:sha,expectedWorkerId:workerId}),/reverse domain references/);
   assert.throws(()=>verifyProviderState(noIngress,{phase:'preflight',expectedZoneIds:[zoneId],sourceSha:'c'.repeat(40),expectedWorkerId:workerId}),/exact reviewed source SHA/);
   for(const mutate of [
     s=>{s.zoneIds=[];},

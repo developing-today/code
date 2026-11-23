@@ -505,3 +505,44 @@ starting with the credential-free network smoke; do not request blanket access.
 
 Read-only account/runner discovery and the separate smoke approval gate are in
 [DISCOVERY.md](DISCOVERY.md).
+
+## Review-only bounded pilot request (new)
+
+`bridge-pilot-request.schema.json` and `bridge-pilot-request.example.json`
+define a review packet, not an executable deployment or runtime config. The
+schema only admits `enabled:false`, `live_enable_approval:false`, one exact
+32-hex Worker ID, the four read-only operations, and exactly two ordered roles:
+the Aster caller and the AMD device. It has no secret fields; the client IDs
+and Ed25519 public keys are identity metadata, never private keys or service
+tokens. Any future pilot needs a separately reviewed change to executable
+configuration and a separate protected activation step. The present
+`bridge-init` and `bridge` configs remain disabled and cannot consume this file.
+
+The proposed pilot hostname is `laptop-bridge-pilot.security.cab`; its DNS
+ownership, wildcard interactions, Access application, issuer/audience, and
+Worker custom-domain availability have not been verified. It must not be
+attached based on this request template. A future request is limited to one
+UTC window of at most 60 minutes, two independently reviewed service identities,
+the exact Access application and audience, no browser login or bypass policy,
+and an owner-operated kill switch that disables the Worker, revokes both
+service tokens, and removes the hostname association. Expiration of the window
+must fail closed. The request itself contains no values that enable the pilot.
+
+The latest release guard also binds the short-lived owner proof to the protected
+`CF_BRIDGE_WORKER_ID` environment variable and the Beta API's immutable Worker
+ID. The proof must have been produced within 15 minutes and expires within 15
+minutes of its verification timestamp. It checks the exact stage's route,
+custom-domain and Access posture immediately before upload/promotion; a
+name-only `cf workers get` response is not an identity proof.
+
+Cloudflare's Worker metadata readback checks the complete `references` object
+for `workers`, `dispatch_namespace_outbounds`, `durable_objects`, `queues`, and
+`domains` against the phase-specific expected sets and exact Worker ID. Before
+and after no-ingress initialization, all five sets must be empty; after the
+separately reviewed routed phase, only the exact approved domain reference may
+appear. `subdomain.previews_enabled=false` and empty version `urls` are checked
+as configuration/version facts. They are not a separate inventory of Preview
+objects: the available official Worker API does not define a distinct
+Preview-list endpoint. Any requirement to prove such an inventory needs a
+separate supported owner-side check; these flags are not presented as that
+proof.

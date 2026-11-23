@@ -15,7 +15,7 @@ const root=process.cwd();
 if(action==='preflight') {
  const worker=required('TARGET_WORKER'), environment=required('TARGET_ENV'), accountId=required('CF_ACCOUNT_ID');
  const proof=privateProof();
- assertPreflight(proof,{accountId,worker,environment});
+ assertPreflight(proof,{accountId,worker,environment,expectedWorkerId:required('EXPECTED_WORKER_ID')});
  console.log('owner read-only staging proof valid for '+worker);
 } else if(action==='digest') {
  const config_digest=await digestFiles(root), preflight_digest=proofDigest(), build_digest=await digestTree(resolve(root,'.cloudflare/output/v1'));
@@ -49,7 +49,7 @@ if(action==='preflight') {
  const [handoffPath]=args; if(!handoffPath) throw new Error('usage: current-proof <handoff.json>');
  const artifact=await json(handoffPath),account=required('CF_ACCOUNT_ID'),worker=required('TARGET_WORKER'),environment=required('TARGET_ENV');
  if(artifact.account_id_sha256!==accountDigest(account)||artifact.worker!==worker||artifact.environment!==environment) throw new Error('current owner proof target differs from upload artifact');
- const proof=privateProof(); assertPreflight(proof,{accountId:account,worker,environment});
+ const proof=privateProof(); assertPreflight(proof,{accountId:account,worker,environment,expectedWorkerId:required('EXPECTED_WORKER_ID')});
  const preflight_digest=proofDigest();
  if(preflight_digest!==artifact.preflight_digest) throw new Error('current main owner proof changed since upload; upload a new candidate');
  console.log('current main owner proof matches uploaded candidate');
@@ -60,7 +60,7 @@ if(action==='preflight') {
  const expectedMode=target==='private-laptop-bridge-staging'?'bridge':'default';
  if(artifact.worker!==target||artifact.account_id_sha256!==accountDigest(account)||artifact.environment!==env||artifact.mode!==expectedMode||mode!==expectedMode) throw new Error('promotion target/environment/account/mode differs from handoff');
  assertUploadRun(run,jobs,artifact);
- const proof=privateProof(); assertPreflight(proof,{accountId:account,worker:target,environment:env});
+ const proof=privateProof(); assertPreflight(proof,{accountId:account,worker:target,environment:env,expectedWorkerId:required('EXPECTED_WORKER_ID')});
  const config_digest=await digestFiles(root),preflight_digest=proofDigest(),build_digest=await digestTree(resolve(root,'.cloudflare/output/v1'));
  const head=required('CHECKED_OUT_SHA');
  if(head!==artifact.source_sha||config_digest!==artifact.config_digest||preflight_digest!==artifact.preflight_digest||build_digest!==artifact.build_digest) throw new Error('checked-out source/config/build/preflight digest does not equal uploaded artifact');

@@ -7,6 +7,7 @@ const UUID=/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const SHA=/^[0-9a-f]{40}$/;
 const DIGEST=/^[0-9a-f]{64}$/;
 const NAMESPACE=/^(?:[0-9a-f]{32}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/;
+const WORKER_ID=/^[0-9a-f]{32}$/i;
 const WORKFLOW='.github/workflows/private-laptop-bridge-release.yml';
 export const releaseConfigFiles=['cloudflare.config.ts','package.json','package-lock.json','staging-preflight.json'];
 const fail=(message)=>{throw new Error(message);};
@@ -161,8 +162,9 @@ export function assertUploadRun(run,jobsResponse,handoff) {
   return true;
 }
 
-export function assertPreflight(proof,{accountId,worker,environment,now=Date.now(),accessIssuer=process.env.CF_BRIDGE_ACCESS_ISSUER??'',accessAudience=process.env.CF_BRIDGE_ACCESS_AUDIENCE??''}) {
-  if(!proof||proof.schema!==1||proof.verified!==true||proof.account_id!==accountId||typeof proof.evidence_ref!=='string'||proof.evidence_ref.trim().length<3||!Number.isFinite(Date.parse(proof.verified_at))||!Number.isFinite(Date.parse(proof.expires_at))||Date.parse(proof.verified_at)>now||Date.parse(proof.expires_at)<=now||Date.parse(proof.expires_at)-Date.parse(proof.verified_at)>24*3600000) fail('owner read-only staging proof is absent, expired, or invalid');
+export function assertPreflight(proof,{accountId,worker,environment,expectedWorkerId,now=Date.now(),accessIssuer=process.env.CF_BRIDGE_ACCESS_ISSUER??'',accessAudience=process.env.CF_BRIDGE_ACCESS_AUDIENCE??''}) {
+  const verifiedAt=Date.parse(proof?.verified_at), expiresAt=Date.parse(proof?.expires_at);
+  if(!proof||proof.schema!==1||proof.verified!==true||proof.account_id!==accountId||typeof proof.evidence_ref!=='string'||proof.evidence_ref.trim().length<3||!WORKER_ID.test(expectedWorkerId??'')||!Number.isFinite(verifiedAt)||!Number.isFinite(expiresAt)||verifiedAt>now||now-verifiedAt>15*60000||expiresAt<=now||expiresAt-verifiedAt>15*60000) fail('owner read-only staging proof is absent, expired, older than fifteen minutes, or invalid');
   const release=proof.release_policy,allowedRefs=release?.allowed_environment_branches?.[environment];
   if(release?.repository!=='developing-today/code'||release?.branch!=='main'||release?.branch_protected!==true||release?.required_pull_request_reviews!==true||release?.force_push_disabled!==true||release?.admin_bypass_disabled!==true||release?.environment_reviewers_required?.[environment]!==true||release?.self_review_disabled?.[environment]!==true||!Array.isArray(allowedRefs)||!same(allowedRefs,['main'])||typeof release?.evidence_ref!=='string'||release.evidence_ref.trim().length<3) fail('trusted protected-main or deployment-environment approval proof is absent or invalid');
   const target=proof.targets?.[worker];
@@ -172,7 +174,7 @@ export function assertPreflight(proof,{accountId,worker,environment,now=Date.now
   }
   const expectedVars=worker==='private-laptop-bridge-staging'?{ENABLED:'false',GATEWAY_HOST:'private-bridge-staging.invalid',GATEWAY_ACCOUNT_ID:'',GATEWAY_POLICY_ID:'',GATEWAY_IDENTITY_EMAIL:'',GATEWAY_POSTURE_ID:'',BRIDGE_HOST,ACCESS_ISSUER:accessIssuer,ACCESS_AUDIENCE:accessAudience,BRIDGE_REGISTRY:''}:{ENABLED:'false',GATEWAY_HOST:'private-bridge-smoke.invalid',GATEWAY_ACCOUNT_ID:'',GATEWAY_POLICY_ID:'',START_MS:'',END_MS:''};
   const expectedDomains=worker==='private-laptop-bridge-staging'?[BRIDGE_HOST]:[];
-  if(!target||target.environment!==environment||target.exists!==true||target.script_id!==worker||target.account_id!==accountId||target.workers_dev!==false||target.preview_urls!==false||!Array.isArray(target.routes)||target.routes.length!==0||!same(target.custom_domains,expectedDomains)||target.application_enabled!==false||target.observability?.enabled!==false||target.observability?.logs!==false||target.observability?.traces!==false||target.limits?.cpu_ms!==10||!Array.isArray(target.gateway_forward_policy_ids)||target.gateway_forward_policy_ids.length!==0||!Array.isArray(target.gateway_caller_ids)||target.gateway_caller_ids.length!==0||JSON.stringify(Object.fromEntries(Object.entries(target.variables??{}).sort()))!==JSON.stringify(Object.fromEntries(Object.entries(expectedVars).sort()))||!Array.isArray(target.bindings)) fail('owner read-only proof does not verify the exact private disabled target');
+  if(!target||target.environment!==environment||target.exists!==true||target.script_id!==worker||target.worker_id?.toLowerCase()!==expectedWorkerId.toLowerCase()||target.account_id!==accountId||target.workers_dev!==false||target.preview_urls!==false||!Array.isArray(target.routes)||target.routes.length!==0||!same(target.custom_domains,expectedDomains)||target.application_enabled!==false||target.observability?.enabled!==false||target.observability?.logs!==false||target.observability?.traces!==false||target.limits?.cpu_ms!==10||!Array.isArray(target.gateway_forward_policy_ids)||target.gateway_forward_policy_ids.length!==0||!Array.isArray(target.gateway_caller_ids)||target.gateway_caller_ids.length!==0||JSON.stringify(Object.fromEntries(Object.entries(target.variables??{}).sort()))!==JSON.stringify(Object.fromEntries(Object.entries(expectedVars).sort()))||!Array.isArray(target.bindings)) fail('owner read-only proof does not verify the exact private disabled target and pinned immutable Worker ID');
   if(worker==='private-laptop-bridge-staging') {
     const app=target.access_app, clientIds=app?.allowed_client_ids;
     const expiryIds=Object.keys(app?.client_expires_at??{}).sort();

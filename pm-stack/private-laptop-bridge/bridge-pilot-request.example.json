@@ -1,0 +1,56 @@
+{
+  "schema_version": 1,
+  "status": "request-only",
+  "request_id": "REPLACE_WITH_REVIEWED_REQUEST_ID",
+  "source_sha": "",
+  "target": {
+    "worker": "private-laptop-bridge-staging",
+    "worker_id": ""
+  },
+  "host": "laptop-bridge-pilot.security.cab",
+  "access": {
+    "issuer": "",
+    "audience": "",
+    "application_id": "",
+    "service_token_only": true,
+    "browser_login": false,
+    "bypass_count": 0
+  },
+  "window": {
+    "starts_at": "",
+    "ends_at": "",
+    "max_duration_minutes": 60
+  },
+  "enabled": false,
+  "kill_switch": {
+    "enabled_by_default": false,
+    "disable_on": "window_end",
+    "revoke_access_tokens": true,
+    "remove_host_association": true
+  },
+  "principals": [
+    {
+      "role": "aster-caller",
+      "principal_id": "",
+      "access_client_id": "",
+      "ed25519_public_key": ""
+    },
+    {
+      "role": "amd-device",
+      "principal_id": "",
+      "access_client_id": "",
+      "ed25519_public_key": ""
+    }
+  ],
+  "operations": [
+    "fleet.queue.list",
+    "fleet.queue.health",
+    "laptop.health",
+    "laptop.diagnostics"
+  ],
+  "review": {
+    "independent_source_reviewer": "",
+    "identity_reviewer": "",
+    "live_enable_approval": false
+  }
+}

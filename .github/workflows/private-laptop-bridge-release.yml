@@ -138,6 +138,7 @@ jobs:
         env:
           CF_ACCOUNT_ID: ${{ secrets.CF_BRIDGE_ACCOUNT_ID }}
           OWNER_PROOF_JSON: ${{ secrets.CF_BRIDGE_OWNER_PROOF_JSON }}
+          EXPECTED_WORKER_ID: ${{ vars.CF_BRIDGE_WORKER_ID }}
           TARGET_WORKER: ${{ steps.target.outputs.worker }}
           TARGET_ENV: ${{ steps.target.outputs.environment }}
           SOURCE_SHA: ${{ steps.provenance.outputs.source_sha }}
@@ -171,6 +172,7 @@ jobs:
         env:
           CF_ACCOUNT_ID: ${{ secrets.CF_BRIDGE_ACCOUNT_ID }}
           OWNER_PROOF_JSON: ${{ secrets.CF_BRIDGE_OWNER_PROOF_JSON }}
+          EXPECTED_WORKER_ID: ${{ vars.CF_BRIDGE_WORKER_ID }}
           TARGET_WORKER: ${{ steps.target.outputs.worker }}
           TARGET_ENV: ${{ steps.target.outputs.environment }}
         run: node release-artifact.mjs preflight
@@ -231,6 +233,7 @@ jobs:
           CF_BRIDGE_ACCESS_ISSUER: ${{ vars.CF_BRIDGE_ACCESS_ISSUER }}
           CF_BRIDGE_ACCESS_AUDIENCE: ${{ vars.CF_BRIDGE_ACCESS_AUDIENCE }}
           OWNER_PROOF_JSON: ${{ secrets.CF_BRIDGE_OWNER_PROOF_JSON }}
+          EXPECTED_WORKER_ID: ${{ vars.CF_BRIDGE_WORKER_ID }}
           TARGET_WORKER: ${{ steps.target.outputs.worker }}
           TARGET_ENV: ${{ steps.target.outputs.environment }}
           TARGET_MODE: ${{ steps.target.outputs.mode }}
@@ -269,6 +272,7 @@ jobs:
           OWNER_PROOF_JSON: ${{ secrets.CF_BRIDGE_OWNER_PROOF_JSON }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_BRIDGE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CF_BRIDGE_API_TOKEN }}
+          EXPECTED_WORKER_ID: ${{ vars.CF_BRIDGE_WORKER_ID }}
           TARGET_WORKER: ${{ steps.target.outputs.worker }}
           TARGET_ENV: ${{ steps.target.outputs.environment }}
           TARGET_MODE: ${{ steps.target.outputs.mode }}
@@ -291,6 +295,7 @@ jobs:
         env:
           CF_ACCOUNT_ID: ${{ secrets.CF_BRIDGE_ACCOUNT_ID }}
           OWNER_PROOF_JSON: ${{ secrets.CF_BRIDGE_OWNER_PROOF_JSON }}
+          EXPECTED_WORKER_ID: ${{ vars.CF_BRIDGE_WORKER_ID }}
           TARGET_WORKER: ${{ steps.target.outputs.worker }}
           TARGET_ENV: ${{ steps.target.outputs.environment }}
           SOURCE_SHA: ${{ steps.provenance.outputs.source_sha }}

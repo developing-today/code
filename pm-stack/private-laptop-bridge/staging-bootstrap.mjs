@@ -243,12 +243,30 @@ function verifyVersion(version, namespaceId, expectedVersionId) {
   return true;
 }
 
-function verifyWorkerMetadata(worker) {
+function verifyWorkerMetadata(worker, expectedWorkerId) {
   if (!worker || worker.name !== WORKER_NAME || !ID.test(worker.id ?? '') || worker.logpush !== false ||
-      worker.observability?.enabled !== false || !worker.references || !Array.isArray(worker.references.domains)) {
+      worker.id.toLowerCase() !== expectedWorkerId.toLowerCase() || worker.observability?.enabled !== false || !worker.references ||
+      !['dispatch_namespace_outbounds','domains','durable_objects','queues','workers'].every(key => Array.isArray(worker.references[key]))) {
     fail('Worker metadata is missing or its domain or telemetry state is unverifiable');
   }
   return worker.id;
+}
+
+function verifyWorkerReferences(worker, domains, {routed, zoneIds}) {
+  const refs=worker.references;
+  for(const kind of ['dispatch_namespace_outbounds','durable_objects','queues','workers']) {
+    if(refs[kind].length!==0) fail(`staging Worker has unexpected reverse ${kind} references`);
+  }
+  const referencedDomains=refs.domains;
+  const expected=routed?domains.filter(domain=>domain?.service===WORKER_NAME&&domain?.hostname===BRIDGE_HOST):[];
+  if(expected.length!==(routed?1:0)||referencedDomains.length!==expected.length) fail('Worker reverse domain references do not match the stage ingress state');
+  for(const ref of referencedDomains) {
+    if(!ref||typeof ref!=='object'||!ID.test(ref.id??'')||ref.hostname!==BRIDGE_HOST||!ID.test(ref.zone_id??'')||
+      !zoneIds.includes(ref.zone_id.toLowerCase())||!expected.some(domain=>domain.id===ref.id&&domain.zone_id===ref.zone_id&&domain.hostname===ref.hostname)) {
+      fail('Worker reverse domain reference does not match the exact approved account domain');
+    }
+  }
+  return true;
 }
 
 function exactBridgeDomains(domains, {deployed, zoneIds}) {
@@ -280,7 +298,7 @@ function verifyNoGatewayAssociation(rules, workerId = null) {
   return true;
 }
 
-async function readSnapshot({accountId, token, gatewayToken, expectedZoneIds, fetchImpl = fetch}) {
+async function readSnapshot({accountId, token, gatewayToken, expectedZoneIds, expectedWorkerId, phase, fetchImpl = fetch}) {
   const zones = await readZones(fetchImpl, accountId, token, expectedZoneIds);
   await readRoutes(fetchImpl, accountId, token, zones);
   const gatewayRules = await listPages(fetchImpl, accountId, gatewayToken, '/gateway/rules', {pageSize: 100});
@@ -288,10 +306,13 @@ async function readSnapshot({accountId, token, gatewayToken, expectedZoneIds, fe
   const allDomains = await listPages(fetchImpl, accountId, token, '/workers/domains');
   const allNamespaces = await listPages(fetchImpl, accountId, token, '/workers/durable_objects/namespaces', {pageSize: 1000});
   const namespaces = allNamespaces.filter(item => item?.script === WORKER_NAME);
-  const worker = await cfRequest(fetchImpl, accountId, token, `/workers/workers/${WORKER_NAME}`, {allowMissingWorker: true});
-  if (!worker) return {worker: null, namespaces, domains: allDomains, gatewayRules,
-    zoneIds: zones.map(zone => zone.id.toLowerCase()).sort()};
-  const workerId = verifyWorkerMetadata(worker.result);
+  const workers = await listPages(fetchImpl, accountId, token, '/workers/workers', {params:{order_by:'name',order:'asc'}});
+  if(workers.some(item=>!item||typeof item!=='object'||typeof item.name!=='string'||!ID.test(item.id??''))) fail('Beta Worker inventory contains malformed identity metadata');
+  const named=workers.filter(item=>item.name===WORKER_NAME);
+  if(named.length!==1||named[0]?.id?.toLowerCase()!==expectedWorkerId?.toLowerCase()) fail('owner-created Worker is missing or differs from its pinned Beta identity');
+  const worker = await cfRequest(fetchImpl, accountId, token, `/workers/workers/${encodeURIComponent(expectedWorkerId)}`);
+  const workerId = verifyWorkerMetadata(worker.result, expectedWorkerId);
+  verifyWorkerReferences(worker.result,allDomains,{routed:phase==='postflight',zoneIds:zones.map(zone=>zone.id.toLowerCase())});
   verifyNoGatewayAssociation(gatewayRules, workerId);
   const subdomain = await cfRequest(fetchImpl, accountId, token, `/workers/scripts/${WORKER_NAME}/subdomain`);
   if (subdomain.result?.enabled !== false || subdomain.result?.previews_enabled !== false) fail('Worker subdomain or preview ingress is enabled');
@@ -328,12 +349,12 @@ async function readSnapshot({accountId, token, gatewayToken, expectedZoneIds, fe
 export function verifyProviderState(snapshot, {phase, expectedZoneIds, sourceSha, expectedWorkerId}) {
   if (!['preflight', 'init-postflight', 'postflight'].includes(phase)) fail('provider verification phase is invalid');
   const expected = parseIds(expectedZoneIds, 'approved zone inventory');
-  if (!snapshot || !Array.isArray(snapshot.namespaces) || !Array.isArray(snapshot.domains) || !Array.isArray(snapshot.zoneIds) ||
+  if (!snapshot || !snapshot.worker || !snapshot.worker.references || !Array.isArray(snapshot.namespaces) || !Array.isArray(snapshot.domains) || !Array.isArray(snapshot.zoneIds) ||
       snapshot.zoneIds.length !== expected.length || snapshot.zoneIds.some((id, index) => id !== expected[index])) fail('provider inventory snapshot is incomplete or has the wrong account zones');
-  verifyNoGatewayAssociation(snapshot.gatewayRules, snapshot.worker?.id ?? null);
-  if (!snapshot.worker) fail('the fixed Worker must be created locally by an owner before CI may proceed');
-  const id = verifyWorkerMetadata(snapshot.worker);
-  if (!ID.test(expectedWorkerId ?? '') || id !== expectedWorkerId.toLowerCase()) fail('Worker ID differs from the independently pinned environment identity');
+  verifyNoGatewayAssociation(snapshot.gatewayRules, snapshot.worker.id);
+  if (!ID.test(expectedWorkerId ?? '')) fail('Worker ID is not independently pinned in the protected environment');
+  const id = verifyWorkerMetadata(snapshot.worker, expectedWorkerId);
+  verifyWorkerReferences(snapshot.worker,snapshot.domains,{routed:phase==='postflight',zoneIds:expected});
   if (Array.isArray(snapshot.deployments) && snapshot.deployments.length === 0) {
     exactBridgeDomains(snapshot.domains, {deployed: false, zoneIds: expected});
     if (phase !== 'preflight' || snapshot.namespaces.length !== 0 ||
@@ -376,7 +397,7 @@ export async function verifyBootstrapPreflight({accountId, workerId, readToken, 
   if (!ID.test(accountId ?? '') || typeof readToken !== 'string' || readToken.length < 20 ||
       typeof gatewayToken !== 'string' || gatewayToken.length < 20 || readToken === gatewayToken) fail('protected bootstrap account or separate read-only credentials are missing');
   const zones = parseIds(expectedZoneIds, 'approved zone inventory');
-  const snapshot = await readSnapshot({accountId, token: readToken, gatewayToken, expectedZoneIds: zones, fetchImpl});
+  const snapshot = await readSnapshot({accountId, token: readToken, gatewayToken, expectedZoneIds: zones, expectedWorkerId:workerId, phase:'preflight', fetchImpl});
   return verifyProviderState(snapshot, {phase: 'preflight', expectedZoneIds: zones, sourceSha, expectedWorkerId: workerId});
 }
 
@@ -391,7 +412,7 @@ export async function verifyBootstrapPostflight({accountId, workerId, readToken,
   if (!ID.test(accountId ?? '') || typeof readToken !== 'string' || readToken.length < 20 ||
       typeof gatewayToken !== 'string' || gatewayToken.length < 20 || readToken === gatewayToken) fail('protected read-only provider identities are missing');
   const zones = parseIds(expectedZoneIds, 'approved zone inventory');
-  const snapshot = await readSnapshot({accountId, token: readToken, gatewayToken, expectedZoneIds: zones, fetchImpl});
+  const snapshot = await readSnapshot({accountId, token: readToken, gatewayToken, expectedZoneIds: zones, expectedWorkerId:workerId, phase, fetchImpl});
   return verifyProviderState(snapshot, {phase, expectedZoneIds: zones, sourceSha, expectedWorkerId: workerId});
 }
 
