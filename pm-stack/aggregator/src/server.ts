@@ -2490,20 +2490,64 @@ async function handler(req: Request): Promise<Response> {
       return json({ error: `prompt persistence failed: ${err instanceof Error ? err.message : err}` }, 500);
     }
   }
+  if (req.method === "GET" && path === "/api/prompt/unread-count") {
+    const count = await promptsStore.unreadCount();
+    return json({ count, unread: count, total: count });
+  }
+  if (req.method === "GET" && path === "/api/prompt/threads") {
+    return json({ threads: await promptsStore.threads() });
+  }
+  if (req.method === "GET" && path.startsWith("/api/prompt/thread/")) {
+    const threadId = decodeURIComponent(path.slice("/api/prompt/thread/".length));
+    return json({ threadId, prompts: await promptsStore.thread(threadId) });
+  }
   if (req.method === "GET" && path === "/api/prompt") {
     const status = url.searchParams.get("status");
     const page = url.searchParams.get("page") ?? undefined;
-    const filter = {
+    const threadId = url.searchParams.get("threadId") ?? undefined;
+    const replyTo = url.searchParams.get("replyTo") ?? undefined;
+    const archivedParam = url.searchParams.get("archived");
+    const includeArchived = url.searchParams.get("includeArchived") === "1" || url.searchParams.get("includeArchived") === "true";
+    const archived = archivedParam === "true" ? true : archivedParam === "false" ? false : undefined;
+    const filter: Parameters<typeof promptsStore.list>[0] = {
       page,
       status: PROMPT_STATUSES.includes(status as PromptStatus) ? (status as PromptStatus) : undefined,
+      threadId,
+      replyTo,
+      archived,
+      includeArchived,
     };
-    return json({ prompts: await promptsStore.list(filter) });
+    const prompts = await promptsStore.list(filter);
+    // newest first
+    prompts.sort((a, b) => (a.createdAt < b.createdAt ? 1 : a.createdAt > b.createdAt ? -1 : 0));
+    return json({ prompts });
   }
   if (req.method === "GET" && path.startsWith("/api/prompt/")) {
-    const id = decodeURIComponent(path.slice("/api/prompt/".length));
+    const rest = decodeURIComponent(path.slice("/api/prompt/".length));
+    if (rest === "thread" || rest.startsWith("thread/")) {
+      // handled above via query; fall through to 404
+    }
+    const id = rest;
     const prompt = await promptsStore.get(id);
     if (!prompt) return json({ error: "prompt not found" }, 404);
-    return json({ id: prompt.id, status: prompt.status, answer: prompt.answer, error: prompt.error });
+    return json({ id: prompt.id, status: prompt.status, answer: prompt.answer, error: prompt.error, threadId: prompt.threadId, archived: prompt.archived, read: prompt.read, replyTo: prompt.replyTo, refs: prompt.refs });
+  }
+  if (req.method === "PATCH" && path.startsWith("/api/prompt/")) {
+    const id = decodeURIComponent(path.slice("/api/prompt/".length));
+    let body: unknown = null;
+    try { body = await readJsonBody(req); } catch { body = null; }
+    const b = (body && typeof body === "object" && !Array.isArray(body)) ? (body as Record<string, unknown>) : {};
+    const patch: Parameters<typeof promptsStore.update>[1] = {};
+    if (typeof b.status === "string" && PROMPT_STATUSES.includes(b.status as PromptStatus)) patch.status = b.status as PromptStatus;
+    if (typeof b.answer === "string") patch.answer = b.answer;
+    if (typeof b.error === "string") patch.error = b.error;
+    if (typeof b.archived === "boolean") patch.archived = b.archived;
+    if (typeof b.read === "boolean") patch.read = b.read;
+    if (Array.isArray(b.refs) && b.refs.every((x) => typeof x === "string")) patch.refs = b.refs as string[];
+    if (b.replyTo === null || typeof b.replyTo === "string") patch.replyTo = b.replyTo as string | null;
+    const updated = await promptsStore.update(id, patch);
+    if (!updated) return json({ error: "prompt not found" }, 404);
+    return json({ prompt: updated });
   }
   if (req.method === "POST" && path === "/api/comments") {
     try {
