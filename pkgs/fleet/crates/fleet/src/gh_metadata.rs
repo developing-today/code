@@ -2436,22 +2436,47 @@ mod tests {
 
     // -- #9095 version conformance ------------------------------------
     //
-    // Oracle: the hand-authored fixture set at
+    // Oracle: the hand-authored fixture set. The canonical copy lives
+    // under the schema v1 design folder at
     // doc/2026-11-21T17-56-24Z_design_atlas_metadata_schema_v1/fixtures/
-    // pm-metadata-v1.json — every historical shape of the pm_meta v1
-    // block, with its recorded reader expectation. Each `ok` case must
-    // parse and preserve its declared keys through parse and through
-    // the stamp assembly round-trip; each `reject` case must fail
-    // closed. Doctrine-projection expectations in the fixture are the
-    // oracle for design §7 slice 2 and are not asserted here.
+    // pm-metadata-v1.json; the executable copy this test reads is
+    // vendored at tests/fixtures/pm-metadata-v1.json because the
+    // fleet nix source closure (pkgs/fleet/default.nix fleetSrc,
+    // rooted at pkgs/) does not contain repo-root doc/ — a
+    // CARGO_MANIFEST_DIR-anchored walk to the repo root breaks under
+    // the nix sandbox (code#13617). Where the design copy is present
+    // (normal checkouts) the test asserts both copies are byte-equal
+    // so the vendored copy cannot drift from the oracle; under the
+    // sandbox only the vendored copy is enforced, never skipped.
+    // Each `ok` case must parse and preserve its declared keys
+    // through parse and through the stamp assembly round-trip; each
+    // `reject` case must fail closed. Doctrine-projection
+    // expectations in the fixture are the oracle for design §7 slice
+    // 2 and are not asserted here.
     #[test]
     fn pm_metadata_version_conformance_fixtures() {
         let path = concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../../../doc/2026-11-21T17-56-24Z_design_atlas_metadata_schema_v1/fixtures/pm-metadata-v1.json"
+            "/tests/fixtures/pm-metadata-v1.json"
         );
         let raw = std::fs::read_to_string(path)
             .unwrap_or_else(|e| panic!("conformance fixture set unreadable at {path}: {e}"));
+        // Drift guard: the design-folder copy is the canonical
+        // oracle. It is absent from the nix source closure, so only
+        // compare when it exists; the conformance assertions below
+        // always run against the vendored copy.
+        let design_path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../../doc/2026-11-21T17-56-24Z_design_atlas_metadata_schema_v1/fixtures/pm-metadata-v1.json"
+        );
+        if std::path::Path::new(design_path).exists() {
+            let design_raw = std::fs::read_to_string(design_path)
+                .unwrap_or_else(|e| panic!("design oracle unreadable at {design_path}: {e}"));
+            assert_eq!(
+                raw, design_raw,
+                "vendored fixture diverged from the design oracle; sync tests/fixtures/pm-metadata-v1.json from {design_path}"
+            );
+        }
         let set: Value = serde_json::from_str(&raw).expect("fixture set is valid JSON");
         let cases = set["cases"].as_array().expect("fixture set carries cases");
         assert!(!cases.is_empty(), "fixture set must not be empty");
