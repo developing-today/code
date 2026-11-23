@@ -105,12 +105,14 @@ has the form `fp_` followed by 32 lowercase hex characters, for example:
 fp_d0a842c9bd33aa2999f5a12393397ab9
 ```
 
-Keep it. The handle is how you poll (Step 3), how a follow-up finds this
-run (Step 5), and how the session is recorded in the local store at
-`~/.local/state/fleet-place/sessions.json` (override the store directory
-with `$FLEET_PLACE_STATE`). That store is a labelled stopgap with the
-reference implementation's record shape, kept so records migrate when
-the designed backend table lands.
+Keep the handle. Use it to poll (Step 3) and to submit a follow-up (Step 5).
+Dispatch records it in `~/.local/state/fleet-place/sessions.json` (override
+the directory with `FLEET_PLACE_STATE`) and mirrors it to the queue broker.
+On a second seat with access to that broker, inspect the same handle:
+
+```bash
+fleet queue session status <handle> --json
+```
 
 How dispatch actually happens, so the output makes sense: for the chosen
 surface's host repo, the client snapshots existing workflow runs, POSTs
@@ -172,16 +174,16 @@ fleet queue session list
 fleet queue session list --mine
 ```
 
-`list` prints every record in the local store, newest first — from the
-stored state, **without** refreshing. `--mine` keeps only records whose
+`list` merges the local store with up to 200 broker records and shows their
+stored state, newest first. `--mine` keeps only records whose
 `submitted_by` is the current user on this host.
 
 What can go wrong, and the fix:
 
 - `repo-queue: no session with handle <h> in <store path>`, exit `2`:
-  the handle is not in this seat's local store. Handles are local —
-  another seat's store does not have your record. Use the portable
-  reference instead (Step 4), which resolves live without the store.
+  neither the local store nor the broker supplied the session. Check broker
+  access on both seats. Once the run ID is known, use the portable reference
+  (Step 4) to read the run directly from GitHub.
 - Passing `--help` to `session status` or `session result` is safe:
   a help flag after the subcommand prints the session usage and exits 0
   — it is never taken as a handle.

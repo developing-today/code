@@ -40,16 +40,19 @@ failed (the message names it), 2 usage. Phases are selectable with
 `--only <list>` / `--skip <list>`; `--all` additionally restores `~/git` and
 `~/agents`.
 
-**The pin.** Two lines near the top of the script, both overridable from the
-environment, pin the release:
+**The pin.** Read the matched asset URL and SHA-256 from the same checkout of
+`scripts/muse/bootstrap.sh` that you intend to run:
 
 ```sh
-FLEET_URL="${FLEET_URL:-https://github.com/developing-today/code/releases/download/fleet-static-b8bbcc0/fleet-x86_64-linux-musl}"
-FLEET_SHA256="${FLEET_SHA256:-<the sha256 printed by publish-fleet.sh for that tag>}"
+grep -E '^FLEET_(URL|SHA256)=' scripts/muse/bootstrap.sh
 ```
 
-The URL is exactly the publish tag scheme (`fleet-static-<7-char short sha>`)
-plus the asset name. `FLEET_AGENT` (default `muse`) and `FLEET_AGENT_GROUPS`
+Bootstrap uses those defaults and verifies the downloaded binary. When
+overriding the release, supply both `FLEET_URL` and `FLEET_SHA256` for the
+same published asset. After installation, check `fleet version` and
+`fleet capabilities` on the seat.
+
+`FLEET_AGENT` (default `muse`) and `FLEET_AGENT_GROUPS`
 select the seat identity; groups are never hardcoded for another agent kind.
 
 **The phases**, in the order `PHASES="tools token restore tailnet fleet persist init check"`:

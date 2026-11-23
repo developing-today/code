@@ -225,11 +225,13 @@ order, Tier 3 Codespaces, then exhaustion — is walked step by step in
 
 ## The session store format
 
-Placement sessions are a labelled **stopgap**: a local JSON store at
-`$FLEET_PLACE_STATE/sessions.json`, defaulting to
-`~/.local/state/fleet-place/sessions.json` — the same path and record
-shape the reference implementation used, so records migrate rather than
-being redesigned when the designed backend table lands.
+The local store at `$FLEET_PLACE_STATE/sessions.json` defaults to
+`~/.local/state/fleet-place/sessions.json`. Its existing record shape
+remains readable. Dispatch commits locally before its best-effort mirror
+write to the broker’s `placement_sessions` table. Listing merges local
+records with up to 200 broker records and attempts to insert missing local
+records into the mirror. Status, result and follow-up prefer the record
+with the newer `updated_at` and select the broker copy on ties.
 
 Store shape:
 

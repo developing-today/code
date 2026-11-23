@@ -12,8 +12,8 @@ Symptom → cause → fix. Each entry names the check that confirms the cause be
 ## Secrets broker stuck refreshing (503, very many `bws` fetches)
 
 - **Symptom:** `fleet secrets get <name>` fails or reports the broker not serving; `GET /health` on the secrets-broker answers 503 with `serving=false` for a long time; the broker's refresh appears to run constantly (the shape recorded as issue #13081 involves on the order of 220 `bws` fetches in a refresh cycle).
-- **Cause:** The broker's full-vault refresh has not yet _succeeded_. `serving` only becomes true once a refresh completes (`last_refresh_unix` is set); a refresh that keeps failing or being restarted keeps the broker in the not-serving state, and `/health` reports `refresh_error` when a refresh has failed.
-- **Confirm:** `GET /health` — check `refreshing`, `last_refresh_unix`, and `refresh_error`. A cached read that succeeds carries `source: "cache"` and an `age_seconds`; that tells you the broker once served and how stale the value is.
+- **Cause:** The broker's full-vault refresh has not yet _succeeded_. `serving` only becomes true once a refresh completes (`last_refresh_unix` is set); a refresh that keeps failing or being restarted keeps the broker in the not-serving state, and public `/health` continues to return 503.
+- **Confirm:** `GET /health` — check `refreshing` and `last_refresh_unix`. An authenticated secret read while the cache is unready can return a 503 body with `refresh_error` after a failed refresh. A cached read that succeeds carries `source: "cache"` and an `age_seconds`; that tells you the broker once served and how stale the value is.
 - **Fix:** Fix the refresh's cause (the `bws` route and its token, by name — never by pasting a value anywhere), then let **one** refresh complete. **Do not restart-loop the broker:** every restart discards refresh progress and restarts the clock, converting a slow recovery into a permanent 503. A process that is alive and returning 503-with-`serving=false` is in a known state, not crashed.
 
 ## Queue double-serve: a parked, completed, or cancelled task is served again (#13091)

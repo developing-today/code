@@ -186,11 +186,10 @@ refreshing, oldest_secret_age_seconds}`.
   cached name count; `oldest_secret_age_seconds` is the stalest value
   the broker can currently serve; reads are cache-first, with a
   read-through to Bitwarden on a miss.
-- HTTP `503` with `serving: false` (and `refresh_error` when a refresh
-  has failed): the process is alive and its `bws` leg is not — the
-  single most useful diagnosis this broker gives. Fix the refresh's
-  Bitwarden credential or `bws` availability, then watch
-  `last_refresh_unix` appear.
+- HTTP `503` with `serving: false` means the first successful refresh is
+  pending. Follow `refreshing` and `last_refresh_unix` on public health.
+  An authenticated secret read while unready can return a 503 with
+  `refresh_error` when a refresh has failed.
 - The client-side cross-check is `fleet secrets list`, which lists the
   broker cache's names and never falls back (see
   [Tutorial: resolve a secret](resolve-a-secret.md)).
@@ -236,8 +235,8 @@ What can go wrong, and the fix:
   which point the broker exits `3` and your supervisor (or you) restarts
   it.
 - A restarted secrets broker serves `503` longer than a refresh should
-  take: read `refresh_error` in the health body (Step 4) — the process
-  is honestly reporting a dead refresh leg, not hiding it.
+  take: check the readiness fields in Step 4 and the most recent refresh
+  failure in the broker logs or the authenticated not-loaded response.
 
 ## You are done when
 
