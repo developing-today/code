@@ -464,6 +464,34 @@ in
           };
         };
 
+        quota-weekly-review = {
+          Unit = {
+            Description = "Quota weekly review — Stage-3 S7 forecast-accuracy report to epic #12694 (NixOS; packaged pm-aggregator, #12701)";
+            After = [ "network-online.target" ];
+          };
+          Service = {
+            Type = "oneshot";
+            TimeoutStartSec = 900;
+            WorkingDirectory = aggState;
+            # The job reads the snapshot store + S1/S3 products from
+            # the aggregator state dir, and — like the fleet-feed
+            # collector — the route config and git operations from
+            # the checkout: S6 proposal PRs are opened from the
+            # checkout and NEAR_PCT is read from its derive.ts.
+            ExecStart = builtins.concatStringsSep " " [
+              "${pmAggregator}/bin/pm-aggregator-quota-weekly-review"
+              "--store-dir ${aggState}/snapshots"
+              "--route-config ${home}/git/code/.opencode/opencode.jsonc"
+              "--forecast ${aggState}/quota-forecast.json"
+              "--shadow ${aggState}/quota-shadow-placement.json"
+              "--out-dir ${aggState}/weekly-review"
+              "--repo-root ${home}/git/code"
+              "--open-prs"
+              "--post"
+            ];
+          };
+        };
+
         # fleet-feed-collector is the one unit still running from
         # the checkout, deliberately (code#8171 follow-up): its script
         # derives repo-root paths from its own file location — it
@@ -648,6 +676,17 @@ in
             RandomizedDelaySec = 60;
             Persistent = true;
             Unit = "pm-digest-weekly.service";
+          };
+          Install.WantedBy = [ "timers.target" ];
+        };
+
+        quota-weekly-review = {
+          Unit.Description = "Run the Stage-3 weekly forecast-accuracy review on Mondays at 07:20 local (pm-stack, #12701)";
+          Timer = {
+            OnCalendar = "Mon *-*-* 07:20:00";
+            RandomizedDelaySec = 60;
+            Persistent = true;
+            Unit = "quota-weekly-review.service";
           };
           Install.WantedBy = [ "timers.target" ];
         };
