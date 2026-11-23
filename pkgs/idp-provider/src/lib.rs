@@ -33,6 +33,7 @@ pub mod identities;
 pub mod registry;
 pub mod signing;
 pub mod upstream;
+pub mod verify;
 
 use audit::AuditLog;
 use axum::{routing::get, Json, Router};
@@ -42,7 +43,7 @@ use flow::FlowState;
 use identities::IdentityStore;
 use pkcs1::DecodeRsaPublicKey;
 use rsa::{traits::PublicKeyParts, RsaPublicKey};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -164,7 +165,7 @@ pub fn cert_thumbprint_sha256(der_bytes: &[u8]) -> String {
     b64url(&Sha256::digest(der_bytes))
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Jwk {
     pub kty: String,
     #[serde(rename = "use")]
@@ -177,7 +178,7 @@ pub struct Jwk {
     pub e: String,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Jwks {
     pub keys: Vec<Jwk>,
 }

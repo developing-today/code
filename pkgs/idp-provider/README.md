@@ -46,6 +46,48 @@ SSO never rebinds an id key (#2060).
   UPDATE/DELETE are blocked by triggers, and a failed audit write
   fails the attempt closed).
 
+## Integrating an app (the consumer pattern)
+
+How an application consumes this provider (#13416). The
+reference implementation is the crate's `verify` module plus
+`examples/role-gated-app.rs`; the aggregator integration
+(#13798) is the first production consumer.
+
+1. **Register the app.** Add a row to the provider config's
+   `clients` (a `client_id` and its exact redirect URIs). There
+   are no client secrets: public clients with PKCE (S256) only.
+2. **Configure from discovery.** Point the app at the issuer and
+   read the endpoints and `jwks_uri` from
+   `/.well-known/openid-configuration`. Never hardcode a key or
+   an endpoint.
+3. **Sign in with code + PKCE.** The ID token proves who signed
+   in; the access token is what the app checks on API calls.
+   Tokens live 300 s and there are no refresh tokens — when one
+   expires, run the flow again.
+4. **Verify every request.** RS256 against the JWKS, selecting
+   the key by the token's `kid` — so a provider key rollover
+   (Slice 5) needs no app change — then check `iss`, `exp`, and
+   `token_use=access`. `verify::TokenVerifier` does exactly
+   this; verification is offline once the JWKS is fetched (a
+   long-lived app re-fetches it on a schedule).
+5. **Enforce roles on the server.** Roles are read only from
+   the verified token — never from request bodies, headers, or
+   client-side state. The reference gate: reads accept any valid
+   token; writes require `owner` or `orchestrator`
+   (`verify::require_any_role`). A valid token without a write
+   role gets **403**; an invalid or expired one gets **401**.
+
+The reference consumer serves `/read` and `/write` under that
+gate and is configured by environment alone (`APP_ISSUER`,
+`APP_BIND`); `tests/consumer.rs` proves the gate against tokens
+from the provider's real loop, including the read-only denial.
+
+Cloudflare Access and this provider compose rather than
+compete: Access decides who can *reach* an app, the IdP token
+decides what the app lets them *do*. For the PM stack, the
+#9608 break-glass owner token remains the path when the IdP
+itself is down.
+
 ## Configuration (environment)
 
 | Variable | Default | Meaning |
