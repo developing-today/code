@@ -50,13 +50,46 @@ export interface GitHubWriter {
 
 /** One GitHub item as the query surface reads it (#12587): identity
  * plus the current body text, from which the Metadata block is
- * parsed. */
+ * parsed. The optional fields are the ingestion check's
+ * ascertainment inputs (#12590; #9060 §16: native parent marks,
+ * labels, milestone, timestamps, actor) — the query door ignores
+ * them; both implementations populate what the underlying read
+ * carries and leave the rest undefined. */
 export interface GitHubItem {
   repo: string;
   kind: "issue" | "pr";
   number: number;
   url: string;
   body: string;
+  /** The item's current title. */
+  title?: string;
+  /** "open" | "closed" (a merged PR reads closed). */
+  state?: string;
+  /** Current label names. */
+  labels?: string[];
+  /** Milestone title, or null when unmilestoned. */
+  milestone?: string | null;
+  /** The item author's login (the §16 "actor" ascertainment). */
+  authorLogin?: string | null;
+  /** The item's creation time (ISO 8601). */
+  createdAt?: string | null;
+  /** PRs only: true when the PR is merged. Report-only for the
+   * ingestion check — retroactive completion (§16) treats every
+   * closed item as a valid target, merged or not. */
+  merged?: boolean;
+}
+
+/** The body-edit seam for ingestion's write-back (#12590; #9060
+ * §16): an item lacking a Metadata block gets the ascertained block
+ * written back to its body "where the fleet has write access". A
+ * refusal (no write access, item gone) is a thrown error the check
+ * records as a named outcome — the DB row is already stored by
+ * then, so a refused write-back never loses the record. The App
+ * rotation class implements it as a PATCH through the same
+ * failover rule as every write; the fixture implements it over
+ * its recorded items. */
+export interface GitHubBodyEditor {
+  updateItemBody(repo: string, kind: "issue" | "pr", number: number, body: string): Promise<void>;
 }
 
 /** The GitHub read seam for the query surface (#12587; #9060 §13's
@@ -106,14 +139,50 @@ export const MAX_COMMENT_PAGES = 10;
  * sequence as GitHub does. Also the fixture GitHubItemSource: reads
  * answer from the same recorded items, so a test that mutates a
  * recorded body is simulating a post-create hand-edit on GitHub. */
-export class FixtureGitHubWriter implements GitHubWriter, GitHubItemSource, GitHubCommentSurface {
+export class FixtureGitHubWriter
+  implements GitHubWriter, GitHubItemSource, GitHubCommentSurface, GitHubBodyEditor
+{
   readonly items: (GitHubCreateInput & GitHubCreatedItem)[] = [];
   /** Comments posted through the fixture surface, in post order —
    * the fallback protocol's whole world in tests. */
   readonly comments: { repo: string; number: number; body: string; url: string }[] = [];
+  /** Forced body-edit refusal knob (#12590): when true,
+   * updateItemBody throws — how a test simulates an item the
+   * fleet has no write access to. */
+  failBodyEdits = false;
   private readonly labels = new Map<string, Set<string>>();
+  /** The ingestion facts (#12590) recorded per item by seedItem:
+   * the GitHubItem fields createItem's input does not carry. */
+  private readonly facts = new Map<string, Partial<GitHubItem>>();
   private commentCounter = 0;
   private readonly counters = new Map<string, number>();
+
+  private factKey(repo: string, kind: string, number: number): string {
+    return `${repo}#${kind}#${number}`;
+  }
+
+  /** Test seeding (not part of any door contract): record an item
+   * as if it already existed on GitHub — created outside the
+   * service (web UI, plain gh), with the facts the ingestion
+   * check ascertains from. Returns the recorded item. */
+  seedItem(item: GitHubItem): GitHubItem {
+    const url =
+      item.url ??
+      `https://github.com/${item.repo}/${item.kind === "pr" ? "pull" : "issues"}/${item.number}`;
+    const recorded: GitHubItem = { ...item, url };
+    this.items.push({
+      repo: item.repo,
+      kind: item.kind,
+      title: item.title ?? "",
+      body: item.body,
+      number: item.number,
+      url,
+    });
+    this.facts.set(this.factKey(item.repo, item.kind, item.number), { ...recorded });
+    const counter = this.counters.get(item.repo) ?? 0;
+    if (item.number > counter) this.counters.set(item.repo, item.number);
+    return recorded;
+  }
 
   async createItem(input: GitHubCreateInput): Promise<GitHubCreatedItem> {
     const number = (this.counters.get(input.repo) ?? 0) + 1;
@@ -124,16 +193,48 @@ export class FixtureGitHubWriter implements GitHubWriter, GitHubItemSource, GitH
     return { number, url };
   }
 
+  private toItem(item: GitHubCreateInput & GitHubCreatedItem): GitHubItem {
+    const facts = this.facts.get(this.factKey(item.repo, item.kind, item.number)) ?? {};
+    return {
+      repo: item.repo,
+      kind: item.kind,
+      number: item.number,
+      url: item.url,
+      body: item.body,
+      title: facts.title ?? item.title,
+      state: facts.state ?? "open",
+      labels: facts.labels ?? [],
+      milestone: facts.milestone ?? null,
+      authorLogin: facts.authorLogin ?? null,
+      createdAt: facts.createdAt ?? null,
+      merged: facts.merged ?? false,
+    };
+  }
+
   async getItem(repo: string, kind: "issue" | "pr", number: number): Promise<GitHubItem | null> {
     const item = this.items.find((i) => i.repo === repo && i.kind === kind && i.number === number);
     if (!item) return null;
-    return { repo: item.repo, kind: item.kind, number: item.number, url: item.url, body: item.body };
+    return this.toItem(item);
   }
 
   async listItems(repo: string): Promise<GitHubItem[]> {
-    return this.items
-      .filter((i) => i.repo === repo)
-      .map((i) => ({ repo: i.repo, kind: i.kind, number: i.number, url: i.url, body: i.body }));
+    return this.items.filter((i) => i.repo === repo).map((i) => this.toItem(i));
+  }
+
+  async updateItemBody(
+    repo: string,
+    kind: "issue" | "pr",
+    number: number,
+    body: string,
+  ): Promise<void> {
+    if (this.failBodyEdits) {
+      throw new Error("fixture GitHub writer: body edit refused (failBodyEdits)");
+    }
+    const item = this.items.find((i) => i.repo === repo && i.kind === kind && i.number === number);
+    if (!item) {
+      throw new Error(`fixture GitHub writer: no such item ${repo}#${number}`);
+    }
+    item.body = body;
   }
 
   async listIssueComments(repo: string, number: number): Promise<{ body: string }[]> {
@@ -205,7 +306,7 @@ interface CachedToken {
  * platform fetch).
  */
 export class AppRotationGitHubWriter
-  implements GitHubWriter, GitHubItemSource, GitHubCommentSurface
+  implements GitHubWriter, GitHubItemSource, GitHubCommentSurface, GitHubBodyEditor
 {
   private readonly config: GitHubAppConfig;
   private readonly fetchFn: FetchFn;
@@ -388,16 +489,53 @@ export class AppRotationGitHubWriter
   }
 
   /** The GitHub issues-API shape both reads consume: an entry is a
-   * PR exactly when it carries the pull_request marker. */
+   * PR exactly when it carries the pull_request marker. The
+   * ingestion facts (#12590) ride along from the same object —
+   * labels as names, milestone as its title, the author as its
+   * login, and merged from merged_at when the shape carries it
+   * (the pull shape does; the issue-list shape does not) — and
+   * only when the object carries them: a real GitHub response
+   * always does, and a partial object yields an item without
+   * them rather than invented values. */
   private toItem(repo: string, raw: Record<string, unknown>): GitHubItem | null {
     if (typeof raw["number"] !== "number" || typeof raw["html_url"] !== "string") return null;
-    return {
+    const item: GitHubItem = {
       repo,
       kind: "pull_request" in raw ? "pr" : "issue",
       number: raw["number"],
       url: raw["html_url"],
       body: typeof raw["body"] === "string" ? raw["body"] : "",
     };
+    if (typeof raw["title"] === "string") item.title = raw["title"];
+    if (typeof raw["state"] === "string") item.state = raw["state"];
+    if (Array.isArray(raw["labels"])) {
+      const labels: string[] = [];
+      for (const label of raw["labels"]) {
+        if (typeof label === "string") labels.push(label);
+        else if (typeof label === "object" && label !== null) {
+          const name = (label as Record<string, unknown>)["name"];
+          if (typeof name === "string") labels.push(name);
+        }
+      }
+      item.labels = labels;
+    }
+    if ("milestone" in raw) {
+      const milestone = raw["milestone"];
+      item.milestone =
+        typeof milestone === "object" && milestone !== null
+          ? (((milestone as Record<string, unknown>)["title"] as string) ?? null)
+          : null;
+    }
+    if ("user" in raw) {
+      const user = raw["user"];
+      item.authorLogin =
+        typeof user === "object" && user !== null
+          ? (((user as Record<string, unknown>)["login"] as string) ?? null)
+          : null;
+    }
+    if (typeof raw["created_at"] === "string") item.createdAt = raw["created_at"];
+    if ("merged_at" in raw) item.merged = typeof raw["merged_at"] === "string";
+    return item;
   }
 
   async getItem(repo: string, kind: "issue" | "pr", number: number): Promise<GitHubItem | null> {
@@ -503,6 +641,33 @@ export class AppRotationGitHubWriter
       }
     }
     return out;
+  }
+
+  /** Ingestion write-back (#12590): replace an item's body with
+   * the ascertained-block body, through the rotation under the
+   * same failover rule as every write. The issues endpoint edits
+   * PR bodies too (same object). A 404 means the item is gone —
+   * the write-back is refused and the check records it. */
+  async updateItemBody(
+    repo: string,
+    kind: "issue" | "pr",
+    number: number,
+    body: string,
+  ): Promise<void> {
+    void kind; // the issues endpoint serves both kinds (see getItem)
+    const res = await this.mutateThroughRotation(
+      "PATCH",
+      `${GITHUB_API}/repos/${repo}/issues/${number}`,
+      { body },
+      "github_body_edit_failed",
+    );
+    if (res.status < 200 || res.status >= 300) {
+      throw new FailClosed(
+        502,
+        "github_body_edit_failed",
+        `GitHub body edit failed (HTTP ${res.status})`,
+      );
+    }
   }
 
   async postIssueComment(

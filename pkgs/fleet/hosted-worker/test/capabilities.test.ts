@@ -102,4 +102,5 @@ test("capabilities mirrors the native shape with hosted values", async () => {
   assert.equal(doorById.get("stamping")?.state, "live");
   assert.equal(doorById.get("query")?.state, "live");
   assert.equal(doorById.get("queue")?.state, "live");
+  assert.equal(doorById.get("ingestion")?.state, "live");
 });

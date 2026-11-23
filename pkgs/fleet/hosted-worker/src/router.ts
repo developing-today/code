@@ -4,11 +4,15 @@
 //   route match (404) -> authenticate (401/403/503) -> caller-tenancy
 //   assertion (403 cross-tenant) -> route scope for service tokens
 //   (403) -> door handler.
-// Public routes are exactly /health and /capabilities — the hosted
-// door's identity surface, which callers must be able to read before
-// they hold a credential. Every other route requires auth, including
-// unknown paths' absence: an unmatched path is a plain 404 and
-// advertises nothing about the doors.
+// Public routes are /health and /capabilities — the hosted door's
+// identity surface, which callers must be able to read before
+// they hold a credential — plus the ingestion webhook receiver
+// (#12590): GitHub deliveries hold no fleet credential, so that
+// route is reachable without one and its handler authenticates
+// each delivery by its HMAC signature instead (failing closed:
+// 503 unconfigured, 401 unverified). Every other route requires
+// auth, including unknown paths' absence: an unmatched path is a
+// plain 404 and advertises nothing about the doors.
 
 import {
   assertCallerTenancy,
