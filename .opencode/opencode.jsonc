@@ -1987,11 +1987,19 @@
     // alias's whole catalog (every model below is large-group),
     // hence "wallScope": "account" -- the narrowest true scope for
     // what is seated; a future small-group alias declares its own.
-    // instanceOf openai-payg with NO connection declarations: the
-    // alias inherits the base's credential and endpoint silently
-    // (checker rule b) -- same org, same key (BWS
-    // openai.payg-api-key); only the billing state of the traffic
-    // differs. Seats: gpt-6-luna rides free-first in luna-plan and
+    // instanceOf openai-payg with NO credential / endpoint
+    // declarations: those inherit from the base silently (checker
+    // rule b) -- same org, same key (BWS openai.payg-api-key); only
+    // the billing state of the traffic differs. Two runtime facts
+    // proven by live probes 2026-11-23 (record on code#13677): the
+    // credential store resolves by the ALIAS's own id, so a
+    // credential row for openai-payg-free (seeded from the same
+    // vault key) must exist or the leg is silently not a candidate;
+    // and the session runner does NOT inherit the base's npm
+    // package through instanceOf -- the alias re-declares it
+    // verbatim below, or resolution fails with
+    // SessionRunnerModel.UnsupportedPackageError. Seats: gpt-6-luna
+    // rides free-first in luna-plan and
     // systemone ahead of the openai-payg paid tail (checker rule c
     // paid-tail exemption: same route, free seat at a strictly
     // greater weight). gpt-6-astra / gpt-6-sol are defined here so
@@ -2006,6 +2014,7 @@
     // tail does, bounded by the seats' weights.
     "openai-payg-free": {
       "instanceOf": "openai-payg",
+      "npm": "@ai-sdk/openai",
       "name": "OpenAI API (data-sharing complimentary tokens, free-first)",
       "wallScope": "account",
       "models": {
