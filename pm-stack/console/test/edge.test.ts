@@ -415,9 +415,12 @@ async function setup(options: { direct?: boolean } = {}) {
   const stored = new Map<string, unknown>();
   /** Every key written to the edge's storage, in order. */
   const puts: string[] = [];
+  /** Keys the edge's storage refuses to write, as a store in trouble would. */
+  const storeFails = new Set<string>();
   const kv: KV = {
     get: async (key) => structuredClone(stored.get(key)),
     put: async (key, value) => {
+      if (storeFails.has(key)) throw new Error(`storage: could not write ${key}`);
       puts.push(key);
       stored.set(key, structuredClone(value));
     },
@@ -550,13 +553,25 @@ async function setup(options: { direct?: boolean } = {}) {
       audited.push(entry);
     },
   };
-  const net = { hostUp: true, edgeUp: true, loseAnswer: false, giveUpEarly: false };
+  const net: {
+    hostUp: boolean;
+    edgeUp: boolean;
+    loseAnswer: boolean;
+    giveUpEarly: boolean;
+    /** A report of more than this many bytes does not get through: it
+     * is cut off on the way ("lost", a slow connection running out of
+     * time) or turned away by something in front of the edge ("refused"). */
+    large: { over: number; fate: "lost" | "refused" } | null;
+  } = { hostUp: true, edgeUp: true, loseAnswer: false, giveUpEarly: false, large: null };
+  /** The size of each report the host sent, whether or not it arrived. */
+  const reportSizes: number[] = [];
   /** The signed Android build on the host, if any, and how often it was read to be sent. */
-  const build: { bytes: Uint8Array | null; at: number; reads: number; corrupt: boolean } = {
+  const build: { bytes: Uint8Array | null; at: number; reads: number; corrupt: boolean; unreadable: boolean } = {
     bytes: null,
     at: 0,
     reads: 0,
     corrupt: false,
+    unreadable: false,
   };
   /** Requests to the host still running after the edge stopped waiting. */
   const stillRunning: Promise<unknown>[] = [];
@@ -623,6 +638,7 @@ async function setup(options: { direct?: boolean } = {}) {
           at: build.at,
           read: async () => {
             build.reads++;
+            if (build.unreadable) throw new Error("EACCES: permission denied");
             return build.corrupt ? bytes.map((b) => b ^ 1) : bytes;
           },
         };
@@ -636,6 +652,12 @@ async function setup(options: { direct?: boolean } = {}) {
       run: heldRunner(hostDeps),
       fetchImpl: (async (url: string, init: RequestInit) => {
         if (!net.edgeUp) throw new Error("no route to the edge");
+        const size = (init.body as Uint8Array).byteLength;
+        reportSizes.push(size);
+        if (net.large && size > net.large.over) {
+          if (net.large.fate === "lost") throw new Error("The operation timed out.");
+          return new Response("<html>bad gateway</html>", { status: 502 });
+        }
         return route(
           new Request(url, { ...init, headers: { ...(init.headers as Record<string, string>), "cf-ray": "1" } }),
           io,
@@ -699,6 +721,7 @@ async function setup(options: { direct?: boolean } = {}) {
     edge,
     makeEdge,
     stored,
+    storeFails,
     puts,
     keys,
     done,
@@ -722,6 +745,7 @@ async function setup(options: { direct?: boolean } = {}) {
     core,
     hostReads,
     build,
+    reportSizes,
     failing,
     gate,
     stillRunning,
@@ -1319,6 +1343,13 @@ describe("the Android build", () => {
     const res = await w.browse("/console/pm-console.apk");
     return { res, bytes: new Uint8Array(await res.arrayBuffer()) };
   };
+  /** The questions as the edge holds them, put back together. */
+  const questionsAtEdge = (w: Awaited<ReturnType<typeof setup>>) => {
+    const pieces = (w.stored.get("m:questions") as { chunks: number } | undefined)?.chunks ?? 0;
+    let text = "";
+    for (let i = 0; i < pieces; i++) text += String(w.stored.get(`m:questions:${i}`));
+    return text === "" ? null : (JSON.parse(text) as Record<string, any>);
+  };
 
   test("a copy is kept at the edge, sent once, and served when the laptop is away", async () => {
     const w = await setup();
@@ -1421,16 +1452,157 @@ describe("the Android build", () => {
     w.data.questions = { sets: [{ id: "big", text: "q".repeat(3_000_000) }] };
     w.now.t += 11_000;
     await w.hostReads();
-    // Every report from here is accepted: none is refused as too large.
-    const answers = [await report(w), await report(w), await report(w)];
-    expect(answers.every((answer) => answer?.ok === true)).toBe(true);
+    // The build goes alone, and the host does not wait to send what it displaced.
+    w.now.t += 1_000;
+    expect(await w.link.now.turn()).toBe(500);
+    expect(w.link.now.last?.ok).toBe(true);
     expect((w.stored.get("apk") as { size: number }).size).toBe(4_900_000);
-    // And the questions arrived whole, in the report after the build's.
-    const pieces = (w.stored.get("m:questions") as { chunks: number } | undefined)?.chunks ?? 0;
-    expect(pieces).toBeGreaterThan(1);
-    let text = "";
-    for (let i = 0; i < pieces; i++) text += String(w.stored.get(`m:questions:${i}`));
-    expect(JSON.parse(text).sets[0].text.length).toBe(3_000_000);
+    expect(questionsAtEdge(w)).toEqual({ open: [] });
+    // The questions arrive whole in the report after it, and then there is no hurry.
+    w.now.t += 1_000;
+    expect(await w.link.now.turn()).toBeGreaterThan(500);
+    expect(w.link.now.last?.ok).toBe(true);
+    expect((w.stored.get("m:questions") as { chunks: number }).chunks).toBeGreaterThan(1);
+    expect(questionsAtEdge(w)?.sets[0].text.length).toBe(3_000_000);
+    // No report was as large as the edge refuses (8 MiB), and the build's kept the room it is given.
+    expect(Math.max(...w.reportSizes)).toBeLessThanOrEqual(7.5 * 1024 * 1024);
+  });
+
+  test("room in a report is counted in bytes, so text outside ASCII cannot push it past the limit", async () => {
+    const w = await setup();
+    await w.hostReads();
+    await report(w);
+    w.build.bytes = apk(5, 4_900_000);
+    w.build.at = w.now.t;
+    await report(w); // described; the edge asks for it
+    // 700,000 characters, each three bytes as sent. Counted as characters
+    // they fit beside the build; as bytes the two are past what the edge takes.
+    const text = "\u65e5".repeat(700_000);
+    expect(new TextEncoder().encode(text).byteLength).toBe(2_100_000);
+    w.data.questions = { sets: [{ id: "wide", text }] };
+    w.now.t += 11_000;
+    await w.hostReads();
+    const answers = [await report(w), await report(w)];
+    expect(answers.every((answer) => answer?.ok === true)).toBe(true);
+    expect(Math.max(...w.reportSizes)).toBeLessThanOrEqual(7.5 * 1024 * 1024);
+    expect((w.stored.get("apk") as { size: number }).size).toBe(4_900_000);
+    expect(questionsAtEdge(w)?.sets[0].text).toBe(text);
+  });
+
+  test("a build that does not get through does not hold up the reports after it", async () => {
+    for (const fate of ["lost", "refused"] as const) {
+      const w = await setup();
+      await w.hostReads();
+      await report(w);
+      w.build.bytes = apk(1);
+      w.build.at = w.now.t;
+      expect((await report(w))?.want).toContain("apk"); // described; the edge asks for it
+      // A connection too slow for a report that large, or something in
+      // front of the edge that will not pass one.
+      w.net.large = { over: 500_000, fate };
+      w.data.questions = { sets: [{ id: "new", text: "what next?" }] };
+      w.now.t += 11_000;
+      await w.hostReads();
+      // The report with the build in it fails. The host does not wait to
+      // send the next, and that one goes without the build...
+      w.now.t += 1_000;
+      expect(await w.link.now.turn()).toBe(500);
+      expect(w.link.now.last).toBeNull();
+      expect(w.reportSizes.at(-1)).toBeGreaterThan(500_000);
+      w.now.t += 1_000;
+      expect(await w.link.now.turn()).toBeGreaterThan(500);
+      expect(w.link.now.last?.ok).toBe(true);
+      expect(w.reportSizes.at(-1)).toBeLessThan(500_000);
+      // ...and brings what had changed.
+      expect(questionsAtEdge(w)).toEqual({ sets: [{ id: "new", text: "what next?" }] });
+      // An edge that cannot be reached at all is another matter: a report
+      // without the build that fails is not hurried after.
+      w.net.edgeUp = false;
+      w.now.t += 1_000;
+      expect(await w.link.now.turn()).toBeGreaterThan(500);
+      expect(w.link.now.last).toBeNull();
+      w.net.edgeUp = true;
+      // The edge still asks for the build. For ten minutes it is not sent again.
+      for (let i = 0; i < 20; i++) expect((await report(w))?.want).toContain("apk");
+      expect(w.build.reads).toBe(1);
+      // Then it is tried once more. If that fails too, again only that one report is lost.
+      w.now.t += 10 * 60_000;
+      expect(await report(w)).toBeNull();
+      expect(w.build.reads).toBe(2);
+      expect((await report(w))?.ok).toBe(true);
+      expect(w.build.reads).toBe(2);
+      // On a connection that can carry it, it arrives at the next try.
+      w.net.large = null;
+      w.now.t += 10 * 60_000;
+      expect((await report(w))?.want).not.toContain("apk");
+      expect(w.build.reads).toBe(3);
+      expect((w.stored.get("apk") as { size: number }).size).toBe(700_000);
+    }
+  });
+
+  test("a copy whose replacement stops half-way is not handed out as either build", async () => {
+    const w = await setup();
+    await w.hostReads();
+    w.build.bytes = apk(1, 1_500_000);
+    w.build.at = w.now.t;
+    await report(w);
+    await report(w);
+    expect((w.stored.get("apk") as { chunks: number }).chunks).toBe(3);
+    // A newer build arrives, and the edge's storage fails on its second piece.
+    w.build.bytes = apk(2, 1_500_000);
+    w.build.at = w.now.t + 500;
+    await report(w); // described; the edge asks for it
+    w.storeFails.add("apk:1");
+    expect((await report(w))?.ok).toBe(true); // the report itself is taken
+    // The first piece is now the new build's and the rest are the old one's.
+    // There is no record over them: the edge has no copy, and says so.
+    expect(w.stored.has("apk")).toBe(false);
+    const health = (await (await w.browse("/console/health", { token: null })).json()) as Record<string, unknown>;
+    expect(health.androidBuild).toBeNull();
+    // The laptop goes away. Nothing is handed out from those pieces.
+    w.net.hostUp = false;
+    w.now.t += 2 * 60_000;
+    expect((await download(w)).res.status).not.toBe(200);
+    // It comes back with a smaller build. That one is kept whole, and the
+    // pieces of the larger ones before it are gone, record or no record.
+    w.net.hostUp = true;
+    w.storeFails.clear();
+    w.build.bytes = apk(3, 400_000);
+    w.build.at = w.now.t + 500;
+    expect((await report(w))?.want).toContain("apk");
+    expect((await report(w))?.want).not.toContain("apk");
+    expect([...w.stored.keys()].filter((k) => /^apk:\d+$/.test(k))).toEqual(["apk:0"]);
+    w.net.hostUp = false;
+    w.now.t += 2 * 60_000;
+    const got = await download(w);
+    expect(got.res.status).toBe(200);
+    expect(got.bytes).toEqual(apk(3, 400_000));
+  });
+
+  test("a build that cannot be read is left out, and the report goes anyway", async () => {
+    const w = await setup();
+    await w.hostReads();
+    await report(w);
+    w.build.bytes = apk(4);
+    w.build.at = w.now.t;
+    expect((await report(w))?.want).toContain("apk");
+    w.build.unreadable = true;
+    w.data.questions = { sets: [{ id: "new", text: "what next?" }] };
+    w.now.t += 11_000;
+    await w.hostReads();
+    // The report is not given up for the build's sake.
+    expect((await report(w))?.ok).toBe(true);
+    expect(questionsAtEdge(w)).toEqual({ sets: [{ id: "new", text: "what next?" }] });
+    expect(w.build.reads).toBe(1);
+    // Nor is the file tried again with every report.
+    for (let i = 0; i < 20; i++) expect((await report(w))?.ok).toBe(true);
+    expect(w.build.reads).toBe(1);
+    // Ten minutes on it can be read, and is sent.
+    w.build.unreadable = false;
+    w.now.t += 10 * 60_000;
+    expect((await report(w))?.want).not.toContain("apk");
+    expect(w.build.reads).toBe(2);
+    expect((w.stored.get("apk") as { size: number }).size).toBe(700_000);
   });
 
   test("a build that is not the one described is not kept, and one too large is not sent", async () => {
