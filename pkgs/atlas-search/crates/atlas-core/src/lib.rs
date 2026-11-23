@@ -1,6 +1,10 @@
 //! atlas-core — the Atlas corpus-search pipeline as a library
 //! (developing-today/code#5352), a semantics-exact port of the
-//! production Python `atlas_search.py`.
+//! production Python `atlas_search.py` — exact except for the
+//! intentional divergences named in #13280 (the topics/projects
+//! LIKE escaping, #5375; the FTS digit-token retention in
+//! `fusion::fts_match_expr`; and `index_depths` at pool 0), each
+//! recorded in the Atlas book's python-implementation reference.
 //!
 //! Shape: a [`SearchBackend`] (Turso over the HTTPS pipeline
 //! API, or a local SQLite publish file) gathers an FTS pool and

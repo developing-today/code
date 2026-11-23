@@ -3,6 +3,12 @@
 //! The one-shot CLI (epic developing-today/code#5350, step 3,
 //! #5353): a surface-parity port of the Python `atlas_search.py`'s
 //! front-end over atlas-core (step 2) and atlas-embed (step 1).
+//! Two surface divergences from the Python are intentional
+//! (#13280): search's `--context` defaults to `fleet-internal`
+//! (the Python defaults both verbs to `local-owner`), and
+//! get-chunk has no `--max-sensitivity` — its ceiling arrives
+//! via `--context` (the Python get-chunk takes
+//! `--max-sensitivity`, default `secret-bearing`).
 //! Standalone is the default and is complete — embed the query
 //! in-process, talk to Turso or a local publish file directly.
 //! `--via-service` prefers a running service (the step-4 job
