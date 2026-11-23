@@ -5,7 +5,7 @@
 CREATE TABLE hot_cache_tenant_state (
   tenant_id                  TEXT PRIMARY KEY,
   forced_revalidation        INTEGER NOT NULL DEFAULT 0,  -- 0 | 1
-  last_invalidation_at       INTEGER,  -- unix seconds; NULL until the first event or purge
+  last_invalidation_at       INTEGER,  -- unix seconds, NULL until the first event or purge
   last_invalidated_watermark TEXT,     -- watermark carried by the newest event
   updated_at                 INTEGER NOT NULL  -- unix seconds
 );
