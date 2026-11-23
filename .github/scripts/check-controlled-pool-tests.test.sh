@@ -26,6 +26,7 @@ make_fixture() {
   cp "$REAL_ROOT/doc/agents/controlled-pool-tests.md" "$dest/doc/agents/"
   cp "$REAL_ROOT/doc/agents/controlled-pool-test-template.md" "$dest/doc/agents/"
   cp "$REAL_ROOT/pkgs/fleet/crates/fleet-queue/src/turso_queue/claim.rs" "$dest/pkgs/fleet/crates/fleet-queue/src/turso_queue/"
+  cp "$REAL_ROOT/pkgs/fleet/crates/fleet-queue/src/turso_queue.rs" "$dest/pkgs/fleet/crates/fleet-queue/src/"
   cp "$REAL_ROOT/pkgs/fleet/crates/fleet-queue/src/client/support.rs" "$dest/pkgs/fleet/crates/fleet-queue/src/client/"
   cp "$REAL_ROOT/pkgs/fleet/crates/fleet-queue/src/client.rs" "$dest/pkgs/fleet/crates/fleet-queue/src/"
 }
@@ -59,6 +60,11 @@ MUT="$TMP/no-verdict-field"
 make_fixture "$MUT"
 sed -i '/Verdict/d' "$MUT/doc/agents/controlled-pool-test-template.md"
 expect_fail "$MUT" "template without the Verdict field"
+
+MUT="$TMP/no-claim-model-column"
+make_fixture "$MUT"
+sed -i '/claim_model TEXT/d' "$MUT/pkgs/fleet/crates/fleet-queue/src/turso_queue.rs"
+expect_fail "$MUT" "queue code without the claim_model TEXT column"
 
 MUT="$TMP/no-stamp-claim-model"
 make_fixture "$MUT"

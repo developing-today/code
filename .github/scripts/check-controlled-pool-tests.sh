@@ -42,6 +42,7 @@ ROOT="${1:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
 PROC="$ROOT/doc/agents/controlled-pool-tests.md"
 TMPL="$ROOT/doc/agents/controlled-pool-test-template.md"
 CLAIM="$ROOT/pkgs/fleet/crates/fleet-queue/src/turso_queue/claim.rs"
+SCHEMA="$ROOT/pkgs/fleet/crates/fleet-queue/src/turso_queue.rs"
 SUPPORT="$ROOT/pkgs/fleet/crates/fleet-queue/src/client/support.rs"
 CLIENT="$ROOT/pkgs/fleet/crates/fleet-queue/src/client.rs"
 
@@ -77,8 +78,8 @@ fi
 if [ ! -f "$CLAIM" ] || ! grep -qF "stamp_claim_model" "$CLAIM"; then
   fail "controlled-pool-tests: stamp_claim_model missing from $CLAIM (route pinning cites it)"
 fi
-if ! grep -rqF "claim_model TEXT" "$ROOT/pkgs/fleet/crates/fleet-queue/src/" 2>/dev/null; then
-  fail "controlled-pool-tests: claim_model TEXT column missing from pkgs/fleet/crates/fleet-queue/src/ (route pinning cites it)"
+if [ ! -f "$SCHEMA" ] || ! grep -qF "claim_model TEXT" "$SCHEMA"; then
+  fail "controlled-pool-tests: claim_model TEXT column missing from $SCHEMA (route pinning cites it)"
 fi
 if [ ! -f "$SUPPORT" ] || ! grep -qF "derive_completion_telemetry" "$SUPPORT"; then
   fail "controlled-pool-tests: derive_completion_telemetry missing from $SUPPORT (arm identity cites it)"
