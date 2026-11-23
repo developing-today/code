@@ -2,7 +2,7 @@
 
 One Rust binary for the whole fleet surface (epic
 developing-today/code#5412; design note
-`doc/2026-11-04T11-45-48Z_design_fleet_multicall_binary/`). This
+`../../doc/2026-11-04T11-45-48Z_design_fleet_multicall_binary/2026-11-04T11-45-48Z_design_fleet_multicall_binary.md`). This
 workspace began as the step-1 (#5429) skeleton: the registry,
 config, secrets-by-name and proxy-protocol platform crates. Step 2
 (#5430) landed the queue domain — the repo-queue client and the
@@ -132,7 +132,7 @@ crates/fleet-dispatch/      the dispatch domain (step 4): a THIN
                             egress (sandbox seat).
 crates/fleet/               the binary: multicall dispatch, capability
                             stubs, `version`, `capabilities`, help.
-default.nix                 the four variant packages (see below)
+default.nix                 the six variant packages (see below)
 smoke.sh                    per-variant smoke suite (post-build)
 ```
 
