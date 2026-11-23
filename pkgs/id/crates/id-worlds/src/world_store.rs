@@ -1520,7 +1520,10 @@ mod tests {
         {
             let (mut journal, _) = FileJournal::open(&path, "w").unwrap();
             assert_eq!(journal.ack_mode(), JournalAckMode::Sync);
-            assert_eq!(<FileJournal as WorldJournal>::ack_mode(&journal), JournalAckMode::Sync);
+            assert_eq!(
+                <FileJournal as WorldJournal>::ack_mode(&journal),
+                JournalAckMode::Sync
+            );
             assert_eq!(journal.unsynced_appends(), 0, "the header append syncs");
             for entry in &entries {
                 journal.append(entry).unwrap();
