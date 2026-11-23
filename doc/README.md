@@ -13,6 +13,7 @@ This page says where each kind of document lives in this repository and how it c
 - **`doc/<UTC>_research_<slug>/`.** Research packages. Each holds an exact request transcript, a main reference, a review order, a change log and one file per concept. `request-intake` creates them. [`planning/workflow/records.md`](../planning/workflow/records.md) defines the format.
 - **[`doc/references/`](references/README.md).** Shared standards and reference material that more than one record cites.
 - **[`doc/decisions/`](decisions/README.md).** The **fleet decision records** (FDR) index: one maintained page of convention, template, and an index of FDR-0001…, each record tying a durable ruling on queue claim/park/resume semantics, stop authority, cap policy, or attribution to its source ruling and implementation. A change to any of those semantics adds a record in the same body of work.
+- **[`doc/living/`](living/README.md).** Living documents: programme-level maintained references that no package owns — catalogues and datasets kept current by recurring jobs and lanes. Each carries a metadata header (created, last-modified, revision) and a change log; see [Dated records vs living documents](#dated-records-vs-living-documents).
 - **[`planning/`](../planning/README.md).** Maintained control documents:
   - roadmaps;
   - implementation plans ([`planning/plans/`](../planning/plans/README.md));
@@ -24,6 +25,17 @@ This page says where each kind of document lives in this repository and how it c
 
 - **Package docs.** A component's living docs stay with its code and change with it. Examples: [`pkgs/id/ARCHITECTURE.md`](../pkgs/id/ARCHITECTURE.md), [`pkgs/id/AGENTS.md`](../pkgs/id/AGENTS.md), [`pkgs/id/TODO.md`](../pkgs/id/TODO.md), [`pkgs/mcpx/docs/`](../pkgs/mcpx/docs/) and [`pkgs/mcpx/TODO.md`](../pkgs/mcpx/TODO.md).
 - **Agent skills.** `.agents/skills/` holds the workflow lifecycle skills and the shared skills. `.opencode/skills/` holds the OpenCode skill set.
+
+## Dated records vs living documents
+
+This repo keeps two kinds of documents, and the difference is load-bearing:
+
+- **Dated records** (`doc/<UTC>_<kind>_<name>/`, including research packages) are point-in-time: they state what was known, found, or decided when they were written. While the work is active, sections may be appended; the record is **not rewritten later**. If the world changes, write a new record and let the old one stand as evidence.
+- **Living documents** are maintained in place and expected to be edited over time: `doc/references/`, `doc/decisions/`, `planning/`, package docs (`pkgs/*/`), and [`doc/living/`](living/README.md). A living document carries a header — `created`, `last-modified`, `revision` — and a `## Change log` section. An edit bumps the revision, updates `last-modified`, and appends a change-log line, in the same PR as the edit.
+
+When migrating or filing material, ask which kind it is before choosing a home: a snapshot belongs in a dated folder even if its subject is still evolving; a catalogue or dataset that recurring work keeps current belongs in `doc/living/` (or with its package) even if it began life as a snapshot.
+
+**Framing rule for ecosystem and comparative documents** (Drew, 2026-11-23): describe the subject generically — its features, state, strengths and weaknesses on their own terms, useful to any reader. Material about how a system influences *our* decisions, *our* context, or *our* build belongs only in supplemental, clearly-marked additional sections — never as the lead framing. This applies to living documents as they are edited; dated records are point-in-time and are not rewritten to comply.
 
 ## Research packages
 
