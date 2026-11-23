@@ -63,6 +63,11 @@ beforeAll(async () => {
       PM_AGG_IDENTITY_REGISTRY_FILE: join(dir, "identity-registry.json"),
       PM_AGG_BREAK_GLASS_FILE: join(dir, "break-glass-tokens.json"),
       PM_AGG_REPORT_RECORDS_FILE: join(dir, "report-records.jsonl"),
+      // The server opens its metadata DB at boot; in a clean venue the
+      // default state directory does not exist, so point it at the
+      // temp dir (the pre-existing boot suites rely on the laptop's
+      // state dir instead and fail without it — not this suite's bug).
+      PM_METADATA_DB_PATH: join(dir, "pm-metadata.sqlite"),
     },
     stdout: "pipe",
     stderr: "inherit",

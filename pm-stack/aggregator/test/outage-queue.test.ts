@@ -313,6 +313,7 @@ describe("aggregator outage queueing (#9608)", () => {
     expect((await store.get(agents.record.id))?.state).toBe("rejected");
     const rejections = await events.list({ kind: "outage-write-rejected" });
     expect(rejections).toHaveLength(2);
-    expect(rejections[1]!.summary).toContain("by the verified owner");
+    expect(rejections.some((e) => e.summary.includes("by the verified owner"))).toBe(true);
+    expect(rejections.some((e) => e.summary.includes("by its claimant"))).toBe(true);
   });
 });
