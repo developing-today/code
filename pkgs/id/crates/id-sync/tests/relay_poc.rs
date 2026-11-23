@@ -182,17 +182,20 @@ struct PocNode {
 }
 
 impl PocNode {
-    /// Build a node whose gate authorizes `origin_seed` for the group.
-    /// `neighbours` maps relay IDs to addresses; it is shared with
-    /// the sink so fan-out and the node agree on the graph.
+    /// Build a node on the given endpoint, whose gate authorizes
+    /// `origin_seed` for the group. `neighbours` maps relay IDs to
+    /// addresses; it is shared with the sink so fan-out and the node
+    /// agree on the graph. The endpoint is the caller's: the
+    /// addresses other nodes dial must be this endpoint's, or the
+    /// router behind them never sees the traffic.
     async fn new(
         name: &'static str,
         seed: u8,
         origin_seed: u8,
+        endpoint: Endpoint,
+        addr: EndpointAddr,
         neighbours: Arc<Vec<(String, EndpointAddr)>>,
     ) -> Self {
-        let endpoint = endpoint().await;
-        let addr = loopback_addr(&endpoint);
         let delivered = Arc::new(Mutex::new(Vec::new()));
         let sink = ForwardingSink {
             self_id: key_id(seed),
@@ -279,8 +282,16 @@ async fn five_nodes(extra_bridges: &[(&'static str, u8)]) -> HashMap<&'static st
     };
 
     let mut nodes = HashMap::new();
-    for (name, (seed, _, _)) in &endpoints {
-        let node = PocNode::new(name, *seed, 1, neighbours_of(name)).await;
+    for (name, (seed, endpoint, addr)) in &endpoints {
+        let node = PocNode::new(
+            name,
+            *seed,
+            1,
+            endpoint.clone(),
+            addr.clone(),
+            neighbours_of(name),
+        )
+        .await;
         nodes.insert(*name, node);
     }
     nodes
