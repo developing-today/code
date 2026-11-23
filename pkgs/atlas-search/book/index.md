@@ -40,8 +40,9 @@ after:
   classification, and a follow-up fetch returns one chunk with that same
   provenance attached. A result that cannot say where it came from is not a
   result Atlas serves.
-- **Tiered sensitivity.** Sensitivity is a four-step ladder,
-  `shareable < personal < local-only < secret-bearing`. A caller searches
+- **Tiered sensitivity.** Sensitivity is a four-step ladder —
+  canonically `public < internal < private < sensitive`, spelled in code
+  today `shareable < personal < local-only < secret-bearing`. A caller searches
   under a _ceiling_ — the highest sensitivity it may see — and the ceiling is
   applied inside the branch queries, so material above the ceiling is absent
   from the results, not merely down-ranked. The default ceiling is

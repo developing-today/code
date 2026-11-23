@@ -92,7 +92,8 @@ offsets and effective sensitivity, in the item's metadata.
 **Sensitivity defaults.** A staged item's sensitivity defaults to the
 tier word `internal` (the staging tier vocabulary is
 `public` / `internal` / `secret`); per-chunk classification uses the
-four-rung ladder (`shareable`, `personal`, `local-only`,
+four-rung ladder (canonically `public`, `internal`, `private`,
+`sensitive`; spelled in code `shareable`, `personal`, `local-only`,
 `secret-bearing`). Defaults exist so an undeclared unit can be staged —
 they confer no right to be promoted or served. Where several
 classification records cover one chunk, the effective classification is
