@@ -71,6 +71,8 @@ export interface Config {
   eventsFile: string;
   /** Identity-to-role registry (#9604), separate from the session registry. */
   identityRegistryFile: string;
+  /** Shared HS256 secret used only to mint short-lived brokered-write tokens. */
+  stackTokenSecret: string | null;
   /** Source freshness invalidation journal, separate from #1739/#3321. */
   freshnessFile: string;
   /** Loopback-only publisher listener; never included in PM_AGG_HOSTS. */
@@ -224,6 +226,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
       env.PM_AGG_IDENTITY_REGISTRY_FILE,
       join(homedir(), ".local", "state", "pm-aggregator", "identity-registry.json"),
     ),
+    stackTokenSecret: env.PM_AGG_STACK_TOKEN_SECRET?.trim() || null,
     freshnessFile: s(env.PM_AGG_FRESHNESS_FILE, join(homedir(), ".local", "state", "pm-aggregator", "freshness.json")),
     freshnessPort: parseAggregatorPort(env.PM_AGG_FRESHNESS_PORT, "PM_AGG_FRESHNESS_PORT", "4871"),
     queueBrokerUrl: s(env.PM_AGG_QUEUE_BROKER_URL, "http://100.99.113.103:4801"),
