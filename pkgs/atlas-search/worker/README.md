@@ -133,6 +133,8 @@ new deployment at the previous version id — no upload needed.
 The miss path needs `POST /v1/embed` on the fleet search service
 (added in the same change as this Worker, in both `server.rs`
 copies under the #5433 parity guard). Deploying the service side
-is a binary refresh of the laptop's `atlas-search.service`; the
+is a binary refresh of the laptop's `atlas-search.service` — whose
+ExecStart is `fleet serve search` (atlasSearchServeViaFleet, #5604),
+so the binary refreshed is the fleet binary the unit runs; the
 Worker degrades to 502 (nothing cached) while the service is
 unreachable.
