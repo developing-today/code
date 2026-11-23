@@ -1223,6 +1223,12 @@ in
     # ~/.config/mcpx/config.json to the rendered file, and points
     # MCPX_CONFIG at it for other clients.
     settings = mcpxSettings;
+    # Runtime env for mcpx servers (mode 600, never copied into
+    # the store): carries ATLAS_SEARCH_GATE_TOKEN for the atlas
+    # remote server in mcpx-settings.nix, whose auth token is a
+    # ${ATLAS_SEARCH_GATE_TOKEN} expansion the daemon resolves
+    # from its own environment.
+    environmentFile = "/home/user/.config/mcpx/env";
   };
 
   # Consumer refinements on the module's mcpx unit: the parts of the
