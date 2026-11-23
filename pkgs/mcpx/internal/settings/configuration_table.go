@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+
+	"github.com/developing-today/code/pkgs/mcpx/internal/refdoc"
 )
 
 // ConfigurationTable is the generated inventory inside
@@ -60,6 +62,9 @@ func ConfigurationTable(all []Setting) string {
 			if set.Plumbing {
 				governs = "*(plumbing)* " + governs
 			}
+			// A Short is prose: a bare <placeholder> in it would be
+			// eaten as an HTML tag by the book renderer (#13422).
+			governs = refdoc.EscapeAngles(governs)
 			fmt.Fprintf(&b, "| `%s` | %s | %s | %s | %s | %s | %s | %s |\n",
 				set.Path, set.Kind, def, set.Scope, yesNo(set.Hot),
 				strings.Join(flags, ", "), strings.Join(envs, ", "),
