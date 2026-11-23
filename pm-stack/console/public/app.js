@@ -1236,6 +1236,15 @@ async function viewPhone(sub) {
         h("li", {}, h("b", {}, "Notifications. "), "Turn them on under Notifications; they arrive as the app's own."),
       ),
       me.androidApp ? h("div", { class: "row end" }, h("a", { class: "button", href: "/console/pm-console.apk" }, "Download the app")) : null,
+      // Served from Cloudflare's copy when the laptop is away: say so
+      // when that copy is not the laptop's newest build.
+      me.androidBuild && !me.androidBuild.current
+        ? h(
+            "p",
+            { class: "meta" },
+            `With the laptop away you get the copy kept at Cloudflare, built ${ago(new Date(me.androidBuild.at).toISOString())}. The laptop has a newer build, which will be here once it has reported again.`,
+          )
+        : null,
     ),
   );
   return out;

@@ -551,6 +551,13 @@ async function setup(options: { direct?: boolean } = {}) {
     },
   };
   const net = { hostUp: true, edgeUp: true, loseAnswer: false, giveUpEarly: false };
+  /** The signed Android build on the host, if any, and how often it was read to be sent. */
+  const build: { bytes: Uint8Array | null; at: number; reads: number; corrupt: boolean } = {
+    bytes: null,
+    at: 0,
+    reads: 0,
+    corrupt: false,
+  };
   /** Requests to the host still running after the edge stopped waiting. */
   const stillRunning: Promise<unknown>[] = [];
   const hostSaw: string[] = [];
@@ -606,6 +613,20 @@ async function setup(options: { direct?: boolean } = {}) {
   const makeLink = () =>
     new EdgeLink({
       version: "0123abcd4567",
+      apk: async () => {
+        if (!build.bytes) return null;
+        const bytes = build.bytes;
+        const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
+        return {
+          sha256: [...digest].map((b) => b.toString(16).padStart(2, "0")).join(""),
+          size: bytes.byteLength,
+          at: build.at,
+          read: async () => {
+            build.reads++;
+            return build.corrupt ? bytes.map((b) => b ^ 1) : bytes;
+          },
+        };
+      },
       url: `https://${HOST}`,
       keys,
       done,
@@ -700,6 +721,7 @@ async function setup(options: { direct?: boolean } = {}) {
     act,
     core,
     hostReads,
+    build,
     failing,
     gate,
     stillRunning,
@@ -738,6 +760,7 @@ describe("before the host's first report", () => {
       selfCheck: null,
       hostSeen: null,
       hostVersion: null,
+      androidBuild: null,
       answered: 0,
       deferred: 0,
       version: "test",
@@ -1283,6 +1306,164 @@ describe("actions", () => {
     const full = await w.act("ask.send", { text: "one too many" });
     expect(full.status).toBe(503);
     expect((w.stored.get("held") as unknown[]).length).toBe(100);
+  });
+});
+
+describe("the Android build", () => {
+  const apk = (seed: number, size = 700_000) => Uint8Array.from({ length: size }, (_, i) => (i * 31 + seed) % 251);
+  const report = async (w: Awaited<ReturnType<typeof setup>>) => {
+    w.now.t += 1_000;
+    return w.link.now.once();
+  };
+  const download = async (w: Awaited<ReturnType<typeof setup>>) => {
+    const res = await w.browse("/console/pm-console.apk");
+    return { res, bytes: new Uint8Array(await res.arrayBuffer()) };
+  };
+
+  test("a copy is kept at the edge, sent once, and served when the laptop is away", async () => {
+    const w = await setup();
+    await w.hostReads();
+    // The host has no build: nothing is asked for, and the app is told there is none.
+    expect((await report(w))?.want).not.toContain("apk");
+    w.build.bytes = apk(1);
+    w.build.at = w.now.t;
+    // It has one now. The first report only describes it; the edge asks; the next carries it.
+    // Being asked for the build does not hurry the host the way a missing section does.
+    w.now.t += 1_000;
+    expect(await w.link.now.turn()).toBeGreaterThan(500);
+    expect(w.link.now.last?.want).toContain("apk");
+    expect(w.build.reads).toBe(0);
+    expect((await report(w))?.want).not.toContain("apk");
+    expect(w.build.reads).toBe(1);
+    // After that it is not sent again, however many reports follow.
+    await report(w);
+    await report(w);
+    expect(w.build.reads).toBe(1);
+    // The copy is the laptop's build, so it is served from here without asking the laptop.
+    w.hostSaw.length = 0;
+    let got = await download(w);
+    expect(got.res.status).toBe(200);
+    expect(got.res.headers.get("content-type")).toBe("application/vnd.android.package-archive");
+    expect(got.res.headers.get("content-disposition")).toBe('attachment; filename="pm-console.apk"');
+    expect(got.bytes).toEqual(apk(1));
+    expect(w.hostSaw).toEqual([]);
+    // The edge restarts and the laptop goes away: still served, byte for byte.
+    w.edge.now = w.makeEdge();
+    w.net.hostUp = false;
+    w.now.t += 10 * 60_000;
+    got = await download(w);
+    expect(got.res.status).toBe(200);
+    expect(got.bytes).toEqual(apk(1));
+    const me = (await (await w.browse("/console/api/me")).json()) as Record<string, any>;
+    expect(me.androidApp).toBe(true);
+    expect(me.androidBuild).toEqual({ at: w.build.at, current: true });
+    // Health says the same of the copy, to anyone: it is how its arrival is checked from outside.
+    const health = (await (await w.browse("/console/health", { token: null })).json()) as Record<string, unknown>;
+    expect(health.androidBuild).toEqual({ at: w.build.at, current: true });
+    // Only the owner gets it.
+    expect((await w.browse("/console/pm-console.apk", { token: null })).status).not.toBe(200);
+  });
+
+  test("a newer build on the laptop is fetched, and until then the app says the copy is older", async () => {
+    const w = await setup();
+    await w.hostReads();
+    w.build.bytes = apk(1);
+    w.build.at = w.now.t;
+    await report(w);
+    await report(w);
+    const first = w.build.at;
+    // A new build is signed on the laptop. The edge has heard of it but does not have it yet.
+    w.build.bytes = apk(2, 900_000);
+    w.build.at = w.now.t + 500;
+    expect((await report(w))?.want).toContain("apk");
+    let me = (await (await w.browse("/console/api/me")).json()) as Record<string, any>;
+    expect(me.androidBuild).toEqual({ at: first, current: false });
+    // The laptop is there, so the download is the laptop's: the newest.
+    w.hostSaw.length = 0;
+    await w.browse("/console/pm-console.apk");
+    expect(w.hostSaw).toEqual(["GET /console/pm-console.apk"]);
+    // The next report brings it, and then the copy is current again.
+    await report(w);
+    me = (await (await w.browse("/console/api/me")).json()) as Record<string, any>;
+    expect(me.androidBuild).toEqual({ at: w.build.at, current: true });
+    w.net.hostUp = false;
+    w.now.t += 10 * 60_000;
+    expect((await download(w)).bytes).toEqual(apk(2, 900_000));
+  });
+
+  test("after the edge restarts, a laptop that is there is still asked for its newer build", async () => {
+    const w = await setup();
+    await w.hostReads();
+    w.build.bytes = apk(1);
+    w.build.at = w.now.t;
+    await report(w);
+    await report(w);
+    // A newer build is announced, and the edge restarts before it has a copy.
+    w.build.bytes = apk(2);
+    w.build.at = w.now.t + 500;
+    await report(w);
+    w.edge.now = w.makeEdge();
+    w.hostSaw.length = 0;
+    const got = await download(w);
+    // The laptop reported seconds ago: the download is its newest build, not the older copy.
+    expect(w.hostSaw).toEqual(["GET /console/pm-console.apk"]);
+    expect(got.bytes).not.toEqual(apk(1));
+  });
+
+  test("a build and large sections that will not fit one report go in two, and both arrive", async () => {
+    const w = await setup();
+    await w.hostReads();
+    await report(w);
+    // Nearly the largest build that is carried, and three megabytes of questions changed at once.
+    w.build.bytes = apk(5, 4_900_000);
+    w.build.at = w.now.t;
+    await report(w); // described; the edge asks for it
+    w.data.questions = { sets: [{ id: "big", text: "q".repeat(3_000_000) }] };
+    w.now.t += 11_000;
+    await w.hostReads();
+    // Every report from here is accepted: none is refused as too large.
+    const answers = [await report(w), await report(w), await report(w)];
+    expect(answers.every((answer) => answer?.ok === true)).toBe(true);
+    expect((w.stored.get("apk") as { size: number }).size).toBe(4_900_000);
+    // And the questions arrived whole, in the report after the build's.
+    const pieces = (w.stored.get("m:questions") as { chunks: number } | undefined)?.chunks ?? 0;
+    expect(pieces).toBeGreaterThan(1);
+    let text = "";
+    for (let i = 0; i < pieces; i++) text += String(w.stored.get(`m:questions:${i}`));
+    expect(JSON.parse(text).sets[0].text.length).toBe(3_000_000);
+  });
+
+  test("a build that is not the one described is not kept, and one too large is not sent", async () => {
+    const w = await setup();
+    await w.hostReads();
+    w.build.bytes = apk(3);
+    w.build.at = w.now.t;
+    w.build.corrupt = true;
+    await report(w);
+    await report(w);
+    // What arrived did not match its fingerprint: nothing is kept.
+    expect(w.stored.has("apk")).toBe(false);
+    expect(w.build.reads).toBe(1);
+    // It is not asked for again with every report: a build that fails
+    // every time would be half a megabyte in each of them.
+    for (let i = 0; i < 20; i++) expect((await report(w))?.want).not.toContain("apk");
+    expect(w.build.reads).toBe(1);
+    // Ten minutes on it is asked for once more, and this time it is right.
+    w.build.corrupt = false;
+    w.now.t += 10 * 60_000;
+    expect((await report(w))?.want).toContain("apk");
+    await report(w);
+    expect(w.build.reads).toBe(2);
+    expect((w.stored.get("apk") as { size: number }).size).toBe(700_000);
+    // A build too large to carry in a report is never read to be sent.
+    const big = await setup();
+    await big.hostReads();
+    big.build.bytes = new Uint8Array(5 * 1024 * 1024 + 1);
+    big.build.at = big.now.t;
+    await report(big);
+    await report(big);
+    expect(big.build.reads).toBe(0);
+    expect(big.stored.has("apk")).toBe(false);
   });
 });
 

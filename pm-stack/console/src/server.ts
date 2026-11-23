@@ -543,6 +543,27 @@ export function marked(res: Response): Response {
   return new Response(res.body, { status: res.status, statusText: res.statusText, headers });
 }
 
+/** The signed Android build at `path`, described for the edge. Its
+ * fingerprint is worked out again only when the file has changed. */
+export function androidBuild(path: string) {
+  let known: { mtime: number; size: number; sha256: string } | null = null;
+  return async () => {
+    const file = Bun.file(path);
+    if (!(await file.exists())) return null;
+    const { lastModified: mtime, size } = file;
+    if (!known || known.mtime !== mtime || known.size !== size) {
+      const sha256 = new Bun.CryptoHasher("sha256").update(await file.arrayBuffer()).digest("hex");
+      known = { mtime, size, sha256 };
+    }
+    return {
+      sha256: known.sha256,
+      size,
+      at: mtime,
+      read: async () => new Uint8Array(await Bun.file(path).arrayBuffer()),
+    };
+  };
+}
+
 /** The commit this console was started from, or nothing if it cannot
  * be told (not a checkout, no git). The service is restarted when a
  * merge is put into service, so this is the code that is running. */
@@ -588,6 +609,7 @@ if (import.meta.main) {
     ? new EdgeLink({
         url: cfg.edgeUrl,
         version: await runningCommit(),
+        apk: androidBuild(cfg.androidApk),
         keys: fileStore(cfg.edgeKeyFile),
         done: fileStore(cfg.edgeDoneFile),
         docs,

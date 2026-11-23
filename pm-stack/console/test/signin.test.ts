@@ -168,3 +168,33 @@ describe("sign-in", () => {
     expect(failed.message).not.toContain(VALUE);
   });
 });
+
+test("the Android build on the laptop is described for the edge, and fingerprinted only when it changes", async () => {
+  const { androidBuild } = await import("../src/server.ts");
+  const { mkdtempSync, writeFileSync, utimesSync, rmSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const dir = mkdtempSync(join(tmpdir(), "pm-apk-"));
+  try {
+    const path = join(dir, "pm-console.apk");
+    const build = androidBuild(path);
+    // No build installed: nothing to describe.
+    expect(await build()).toBeNull();
+    writeFileSync(path, "first build");
+    const one = await build();
+    // SHA-256 of the text, worked out separately with sha256sum.
+    expect(one?.sha256).toBe("f3adf3a4014af2dc15376ed0b22ac63cae9073430512bad33659b8f352c9fb30");
+    expect(one?.size).toBe(11);
+    expect(new TextDecoder().decode(await one?.read())).toBe("first build");
+    // Unchanged: the same description.
+    expect((await build())?.sha256).toBe(one?.sha256);
+    // A new build put in its place, same length: a new fingerprint and date.
+    writeFileSync(path, "other build");
+    utimesSync(path, new Date(Date.now() + 5_000), new Date(Date.now() + 5_000));
+    const two = await build();
+    expect(two?.sha256).not.toBe(one?.sha256);
+    expect(two?.at).toBeGreaterThan(one?.at ?? 0);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

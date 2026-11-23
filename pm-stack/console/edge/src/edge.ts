@@ -23,6 +23,8 @@ import { DIRECT_ACTIONS, DIRECT_READ_SECTIONS, directClasses, directRead } from 
 import { Devices, KeyedLimiter, Limiter } from "../../src/devices.ts";
 import { type Act, DOC_NAMES, type DocName, Docs, Stamped } from "../../src/docs.ts";
 import {
+  type ApkReport,
+  apkReport,
   type EdgeConfig,
   edgeConfig,
   HELD_FOR_MS,
@@ -47,6 +49,7 @@ import {
   json,
   manifest,
   type Phones,
+  SECURITY,
   sameSiteWrite,
 } from "../../src/http.ts";
 import { Notifier } from "../../src/notify.ts";
@@ -85,6 +88,18 @@ const SIGNATURE = /^[A-Za-z0-9_-]{86}$/;
 /** Reports from one address that may fail their checks in a minute
  * before that address is refused unread. The host's own never fail. */
 const SYNC_REFUSALS = 20;
+/** The Android build is kept in pieces of this many bytes. */
+const APK_CHUNK = 512 * 1024;
+/** A build that could not be kept is asked for again no sooner than this. */
+const APK_RETRY_MS = 10 * 60_000;
+/** With no report for this long, the laptop is not there to ask. */
+const HOST_QUIET_MS = 60_000;
+
+interface ApkMeta {
+  sha256: string;
+  size: number;
+  at: number;
+}
 const ACT_LIMIT = 256 * 1024;
 const HELD_MAX = 100;
 const ACTS_KEPT = 30;
@@ -171,6 +186,10 @@ export class Edge {
   private sure = 0;
   private unsure = 0;
   private hostVersion: string | null = null;
+  private latestApk: ApkMeta | null | undefined;
+  private keptApk: (ApkMeta & { chunks: number }) | null | undefined;
+  /** The build that could not be kept when it was last sent, and when. */
+  private apkFailed: { sha256: string; at: number } | null = null;
   private syncRefused: KeyedLimiter;
   readonly docs: Docs;
   readonly push: Push;
@@ -217,6 +236,67 @@ export class Edge {
     };
     this.notifier = new Notifier(this.docs, this.push, kvStore(this.kv, "seen"), this.now);
     this.table = ownActions(this.push, devices);
+  }
+
+  // ---- the Android build -------------------------------------------------
+
+  /** What the app is told of the copy kept here. */
+  private async apkState(): Promise<{ at: number; current: boolean } | null> {
+    const kept = await this.apkKept();
+    if (!kept) return null;
+    const latest = await this.apkLatest();
+    return { at: kept.at, current: !latest || latest.sha256 === kept.sha256 };
+  }
+
+  /** The build the host last said it has. */
+  private async apkLatest(): Promise<ApkMeta | null> {
+    if (this.latestApk === undefined)
+      this.latestApk = ((await this.kv.get("apk:latest")) as ApkMeta | undefined) ?? null;
+    return this.latestApk;
+  }
+
+  /** The build a copy of which is kept here. */
+  private async apkKept(): Promise<(ApkMeta & { chunks: number }) | null> {
+    if (this.keptApk === undefined) {
+      this.keptApk = ((await this.kv.get("apk")) as (ApkMeta & { chunks: number }) | undefined) ?? null;
+    }
+    return this.keptApk;
+  }
+
+  /** Take in a build the host sent, if it is what the host says it is. */
+  private async keepApk(build: ApkReport): Promise<void> {
+    const bytes = Uint8Array.from(atob(build.data ?? ""), (c) => c.charCodeAt(0));
+    const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
+    const sha256 = [...digest].map((b) => b.toString(16).padStart(2, "0")).join("");
+    if (bytes.byteLength !== build.size || sha256 !== build.sha256)
+      throw new Error("the build sent is not the build described");
+    const before = await this.apkKept();
+    const chunks = Math.ceil(bytes.byteLength / APK_CHUNK);
+    for (let i = 0; i < chunks; i++) await this.kv.put(`apk:${i}`, bytes.slice(i * APK_CHUNK, (i + 1) * APK_CHUNK));
+    for (let i = chunks; i < (before?.chunks ?? 0); i++) await this.kv.delete(`apk:${i}`);
+    this.keptApk = { sha256, size: build.size, at: build.at, chunks };
+    await this.kv.put("apk", this.keptApk);
+  }
+
+  /** The kept build, as a download. */
+  private async serveApk(kept: ApkMeta & { chunks: number }): Promise<Response> {
+    const bytes = new Uint8Array(kept.size);
+    let at = 0;
+    for (let i = 0; i < kept.chunks; i++) {
+      const part = (await this.kv.get(`apk:${i}`)) as Uint8Array | undefined;
+      if (!part) return json({ error: "the copy of the Android build kept here is incomplete" }, 503);
+      bytes.set(part, at);
+      at += part.byteLength;
+    }
+    return new Response(bytes, {
+      headers: {
+        "Content-Type": "application/vnd.android.package-archive",
+        "Content-Disposition": 'attachment; filename="pm-console.apk"',
+        "Cache-Control": "no-store",
+        "X-Build-At": String(kept.at),
+        ...SECURITY,
+      },
+    });
   }
 
   // ---- what is kept ------------------------------------------------------
@@ -670,8 +750,33 @@ export class Edge {
       await this.notifier.tick().catch((error) => console.error(`pm-edge: notify: ${(error as Error).message}`));
     }
 
+    // The Android build: what the host has now, and the build itself
+    // when the host sent it because this side asked.
+    const build = apkReport(msg.apk);
+    if (
+      JSON.stringify(build && { sha256: build.sha256, size: build.size, at: build.at }) !==
+      JSON.stringify(await this.apkLatest())
+    ) {
+      this.latestApk = build && { sha256: build.sha256, size: build.size, at: build.at };
+      if (this.latestApk) await this.kv.put("apk:latest", this.latestApk);
+      else await this.kv.delete("apk:latest");
+    }
+    if (build?.data) {
+      await this.keepApk(build).catch((error) => {
+        // Not kept (it did not match its description, or could not be
+        // stored). It is not asked for again at once: a build that
+        // fails every time would otherwise be sent with every report.
+        this.apkFailed = { sha256: build.sha256, at: now };
+        console.error(`pm-edge: apk: ${(error as Error).message}`);
+      });
+    }
+
     // What the host has and this side has lost (its storage was reset).
     const want: string[] = [];
+    const kept = await this.apkKept();
+    const failedLately =
+      this.apkFailed?.sha256 === this.latestApk?.sha256 && now - (this.apkFailed?.at ?? 0) < APK_RETRY_MS;
+    if (this.latestApk && kept?.sha256 !== this.latestApk.sha256 && !failedLately) want.push("apk");
     for (const name of Object.keys(SECTIONS)) {
       if (typeof msg.have?.[name]?.hash === "string" && !(await this.mirror(name))) want.push(name);
     }
@@ -745,6 +850,9 @@ export class Edge {
         hostSeen: this.hostSeen || null,
         // The commit the host's console is running, as it last said.
         hostVersion: this.hostVersion,
+        // The copy of the Android build kept here: when it was built,
+        // and whether it is the host's newest. Null if there is none.
+        androidBuild: await this.apkState(),
         // Since this object last started: requests it answered as the
         // owner's, and requests it left to the host to judge.
         answered: this.sure,
@@ -794,6 +902,17 @@ export class Edge {
     if (method === "GET" && Object.hasOwn(STATIC, rest)) {
       return next("asset", { path: `${BASE}/${rest}`, type: STATIC[rest] });
     }
+    if (method === "GET" && rest === "pm-console.apk") {
+      // The newest build is the laptop's. The copy here is served when
+      // it is that build, or when the laptop is not there to ask. After
+      // a restart, when the laptop was last heard from has to be read
+      // back first, or it would look as if it never had been.
+      await this.ready();
+      const kept = await this.apkKept();
+      const latest = await this.apkLatest();
+      const quiet = this.now() - (this.hostSeen ?? 0) >= HOST_QUIET_MS;
+      if (kept && (kept.sha256 === latest?.sha256 || quiet)) return this.serveApk(kept);
+    }
     if (!rest.startsWith("api/")) return next("relay", { mode: "live" });
 
     const seg = rest.slice(4).split("/");
@@ -805,7 +924,11 @@ export class Edge {
             ...who,
             repo: cfg.repo,
             queue: cfg.queue,
-            androidApp: cfg.androidApp,
+            // There is a build to hand out if the laptop has one or a
+            // copy is kept here; `androidBuild` says of the copy when it
+            // was built and whether it is the laptop's newest.
+            androidApp: cfg.androidApp || (await this.apkKept()) !== null,
+            androidBuild: await this.apkState(),
             androidPackage: cfg.androidPackage,
             edge: true,
           });
