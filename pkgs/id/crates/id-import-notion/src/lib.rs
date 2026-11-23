@@ -2,6 +2,10 @@
 //!
 //! The API transport is deliberately injected by callers. In particular, a
 //! bearer token is never accepted by or serialized from [`Manifest`].
+//!
+//! Slice 2 (page/block core, link rewriting, files) lives in [`content`].
+
+pub mod content;
 
 #[cfg(unix)]
 use std::fs::File;
@@ -292,7 +296,7 @@ fn crawl_pending_blocks(
     Ok(())
 }
 
-fn crawl_pages(
+pub(crate) fn crawl_pages(
     mut fetch: impl FnMut(Option<&str>) -> Result<serde_json::Value>,
 ) -> Result<Vec<serde_json::Value>> {
     let mut pages = Vec::new();
@@ -540,6 +544,15 @@ pub struct ObjectProgress {
     pub reason: Option<String>,
 }
 
+/// One fetched source file's blob identity (design §4). The blob itself is
+/// content-addressed by the model's `raw-blake3-256` profile: the lowercase
+/// hex BLAKE3-256 digest of the exact bytes.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct FileBlobRecord {
+    pub blob_hash: String,
+    pub size_bytes: u64,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct Manifest {
     pub schema_version: u32,
@@ -554,6 +567,12 @@ pub struct Manifest {
     pub block_id_to_identity: BTreeMap<String, (String, String)>,
     /// Stable data-source UUID -> (current database UUID, source identity).
     pub data_source_id_to_identity: BTreeMap<String, (String, String)>,
+    /// Source file occurrence -> fetched blob (design §4). The key is the
+    /// UUID of the block carrying the file; duplicate bytes share one
+    /// `blob_hash` across occurrences. Absent from slice-1 manifests, so it
+    /// defaults empty when an older manifest is loaded.
+    #[serde(default)]
+    pub file_blobs: BTreeMap<String, FileBlobRecord>,
     /// Progress checkpoints exist for page, database, and block UUIDs in
     /// `inventory.objects`; a database checkpoint represents its complete
     /// embedded data-source set in `inventory.data_sources`.
@@ -611,7 +630,47 @@ impl Manifest {
             page_id_to_note_id: BTreeMap::new(),
             block_id_to_identity: BTreeMap::new(),
             data_source_id_to_identity,
+            file_blobs: BTreeMap::new(),
         })
+    }
+
+    /// Assign a destination note ID to every inventoried page that lacks
+    /// one (design §3: identity is assigned for the whole inventory before
+    /// any content converts, so forward references resolve). Assignments
+    /// already recorded are never changed — that stability is what makes
+    /// re-import idempotent (§6.1) — and a minter that returns an empty or
+    /// already-used ID fails the pass rather than forking identity.
+    /// Returns how many pages were newly assigned.
+    pub fn assign_page_identities(
+        &mut self,
+        mint: &mut dyn FnMut(&str) -> Result<String>,
+    ) -> Result<usize> {
+        let page_ids: Vec<String> = self
+            .inventory
+            .objects
+            .values()
+            .filter(|object| object.kind == "page")
+            .map(|object| object.id.clone())
+            .collect();
+        let mut taken: std::collections::BTreeSet<String> =
+            self.page_id_to_note_id.values().cloned().collect();
+        let mut assigned = 0;
+        for page_id in page_ids {
+            if self.page_id_to_note_id.contains_key(&page_id) {
+                continue;
+            }
+            let note_id = mint(&page_id)
+                .with_context(|| format!("mint note id for page {page_id}"))?;
+            if note_id.trim().is_empty() {
+                bail!("note id minter returned an empty id for page {page_id}");
+            }
+            if !taken.insert(note_id.clone()) {
+                bail!("note id minter returned duplicate id {note_id}");
+            }
+            self.page_id_to_note_id.insert(page_id, note_id);
+            assigned += 1;
+        }
+        Ok(assigned)
     }
 
     /// Reject resume against another workspace before callers create objects.
@@ -733,7 +792,7 @@ fn ensure_complete_page(page: &serde_json::Value) -> Result<()> {
     Ok(())
 }
 
-fn required_string(value: &serde_json::Value, key: &str) -> Result<String> {
+pub(crate) fn required_string(value: &serde_json::Value, key: &str) -> Result<String> {
     value
         .get(key)
         .and_then(|v| v.as_str())
@@ -784,7 +843,7 @@ fn parent_id(parent: &serde_json::Value) -> Option<String> {
     parent.get(key)?.as_str().map(str::to_owned)
 }
 
-fn sanitized_source(mut value: serde_json::Value) -> serde_json::Value {
+pub(crate) fn sanitized_source(mut value: serde_json::Value) -> serde_json::Value {
     fn redact(value: &mut serde_json::Value) {
         match value {
             serde_json::Value::Object(map) => {
