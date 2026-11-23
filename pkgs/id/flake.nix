@@ -393,7 +393,7 @@
           # roc-examples pattern. Wasm bytes are not reproducible
           # across rustc builds or build paths (the producers/code
           # sections differ between the rustup and rust-overlay
-          # builds of the same pinned 1.99.0), so a byte drift gate
+          # builds of the same pinned 1.99.1), so a byte drift gate
           # would be permanently red; what CI must prove is that the
           # module built from current source passes the conformance
           # tests that load it (src/sandbox.rs include_bytes!).
