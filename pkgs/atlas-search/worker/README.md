@@ -72,8 +72,34 @@ service token for `atlas-search.security.cab`).
 ```sh
 npm install
 npm test        # vitest + @cloudflare/vitest-pool-workers
-npm run deploy  # wrangler deploy (fleet Cloudflare account)
 ```
+
+## Deploy (cf versions flow)
+
+Deploys go through the sanctioned `cf` binary's versions flow —
+the same one `pkgs/pkarr-worker` and `pkgs/message-bridge` use —
+never a silent overwrite. `cloudflare.config.ts` is the deploy
+source of truth; `wrangler.toml` drives local dev and tests.
+Keep the two in step.
+
+```sh
+# CLOUDFLARE_API_TOKEN from the fleet secrets route
+# (cloudflare.api-token-account-wide), exported transiently.
+cf workers versions create --tag git-<sha12> --message "<sha + summary>" \
+  --secrets-file <file holding GATE_TOKEN, SERVICE_TOKEN,
+                  ACCESS_CLIENT_ID, ACCESS_CLIENT_SECRET>
+cf workers versions get <new-version-id>   # check the bindings carried
+cf workers deployments create --worker atlas-search \
+  --version <new-version-id> --percentage 100
+```
+
+The secrets file is a throwaway `.env` assembled from fleet
+secrets (`atlas.search-worker-gate-token`,
+`atlas.search-cf-worker-token`,
+`cloudflare.access-atlas-search-client-id`,
+`cloudflare.access-atlas-search-client-secret`) and deleted
+after the upload; values never land in the repo. Rollback is a
+new deployment at the previous version id — no upload needed.
 
 ## Service dependency
 
