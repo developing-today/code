@@ -1646,6 +1646,15 @@ let
               python3 ${../pkgs/deploy/test_argv.py} ${../pkgs/deploy/deploy.py}
               mkdir -p $out
             '';
+        deploy-lazy-targets =
+          pkgs.runCommandLocal "check-deploy-lazy-targets"
+            {
+              nativeBuildInputs = [ pkgs.python3 ];
+            }
+            ''
+              python3 ${../pkgs/deploy/test_deploy_lazy_targets.py} ${../pkgs/deploy/deploy.py}
+              mkdir -p $out
+            '';
         deploy-argv-property =
           pkgs.runCommandLocal "check-deploy-argv-property"
             {

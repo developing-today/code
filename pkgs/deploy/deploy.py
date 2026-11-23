@@ -64,7 +64,9 @@ Slice 4 (issue #5770, migration M3) adds the sandbox class of design
 
 The registry is JSON baked into the package at build time (the Nix
 expression renders the attrset definitions, replacing each
-derivation with its store path). `--registry PATH` (or $DEPLOY_REGISTRY)
+derivation with its store path, without depending on it: building the
+CLI realizes no target package; a deploy builds its target's package
+from the derivation $DEPLOY_TARGET_DRVS records, code#12738). `--registry PATH` (or $DEPLOY_REGISTRY)
 points the CLI at another registry file, which is how the flake checks
 exercise the malformed-definition path. `--state-dir PATH` (or
 $DEPLOY_STATE_DIR) relocates the generation logs, `--profile-base PATH`
@@ -1011,9 +1013,46 @@ def _run_step(argv, what):
         raise ActivationError(f"{what} failed (exit {rc}): {err.strip()}")
 
 
+def _target_drv(name):
+    """The .drv path that builds `name`'s package, from the map the
+    flake package bakes in as $DEPLOY_TARGET_DRVS (code#12738), or None
+    when no map is configured or it does not name `name`."""
+    path = os.environ.get("DEPLOY_TARGET_DRVS")
+    if not path:
+        return None
+    try:
+        with open(path, encoding="utf-8") as fh:
+            drvs = json.load(fh)
+    except (OSError, ValueError):
+        return None
+    drv = drvs.get(name) if isinstance(drvs, dict) else None
+    if isinstance(drv, str) and drv.startswith("/nix/store/") and drv.endswith(".drv"):
+        return drv
+    return None
+
+
+def ensure_artifact(name, artifact):
+    """Build `artifact` from its recorded derivation when it is not in
+    the store yet. The registry names store paths without depending on
+    them (code#12738), so a target's package is realized only when that
+    target is deployed. A path already present, a non-store artifact, or
+    a target with no recorded derivation is left as it is."""
+    if not artifact.startswith("/nix/store/") or os.path.exists(artifact):
+        return
+    drv = _target_drv(name)
+    if drv is None or not _which("nix-store"):
+        return
+    _run_step(["nix-store", "--realise", drv], f"build the {name} package")
+    if not os.path.exists(artifact):
+        raise ActivationError(
+            f"build the {name} package: {drv} did not produce {artifact}"
+        )
+
+
 def install_generation(name, artifact, generation, base=None):
     """Point the profile link for `name` at a new generation dir
     whose `current` symlink names `artifact`. Returns the link path."""
+    ensure_artifact(name, artifact)
     base_dir = profile_base(base)
     gen_dir = os.path.join(base_dir, ".generations", name, str(generation))
     os.makedirs(gen_dir, exist_ok=True)
