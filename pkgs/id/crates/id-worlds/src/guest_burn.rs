@@ -179,10 +179,7 @@ impl BudgetState {
                 };
                 attained(&self.accounts, &a.account)
                     .total_cmp(&attained(&self.accounts, &b.account))
-                    .then(
-                        attained(&self.keys, &a.key)
-                            .total_cmp(&attained(&self.keys, &b.key)),
-                    )
+                    .then(attained(&self.keys, &a.key).total_cmp(&attained(&self.keys, &b.key)))
                     .then(a.ticket.cmp(&b.ticket))
             })
             .map(|waiter| waiter.ticket)
@@ -671,8 +668,12 @@ mod tests {
     #[test]
     fn account_charges_settle_by_actual_fuel_and_an_unsettled_permit_charges_its_allowance() {
         let budget = Arc::new(GuestBurnBudget::new(4));
-        budget.acquire_charged("world-1", "acct-a", 10_000).settle(120);
-        budget.acquire_charged("world-2", "acct-a", 10_000).settle(80);
+        budget
+            .acquire_charged("world-1", "acct-a", 10_000)
+            .settle(120);
+        budget
+            .acquire_charged("world-2", "acct-a", 10_000)
+            .settle(80);
         // Dropped without settling: the allowance is the charge.
         drop(budget.acquire_charged("world-3", "acct-a", 500));
 

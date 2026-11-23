@@ -324,6 +324,9 @@ mod tests {
     #[test]
     fn a_malformed_registry_is_an_error_not_an_empty_one() {
         assert!(WorldAccountRegistry::from_json_str("{ not json").is_err());
-        assert!(WorldAccountRegistry::from_json_str(r#"{ "worlds": { "w": { "mode": "bogus" } } }"#).is_err());
+        assert!(
+            WorldAccountRegistry::from_json_str(r#"{ "worlds": { "w": { "mode": "bogus" } } }"#)
+                .is_err()
+        );
     }
 }

@@ -1216,13 +1216,10 @@ async fn restore_program(
                 // resolves its charge account against the registry
                 // the serve path installed.
                 guest.set_charge_key(world_id.clone());
-                let burn_budget = crate::guest_burn::GuestBurnBudget::shared_for(
-                    runtime.guest_burn_concurrency,
-                );
+                let burn_budget =
+                    crate::guest_burn::GuestBurnBudget::shared_for(runtime.guest_burn_concurrency);
                 if runtime.guest_burn_per_account_concurrency > 0 {
-                    burn_budget.set_account_bound(Some(
-                        runtime.guest_burn_per_account_concurrency,
-                    ));
+                    burn_budget.set_account_bound(Some(runtime.guest_burn_per_account_concurrency));
                 }
                 guest.set_burn_budget(burn_budget);
                 guest.set_account_registry(crate::account_charge::WorldAccountRegistry::shared());

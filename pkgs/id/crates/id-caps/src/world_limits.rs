@@ -519,8 +519,7 @@ impl RuntimeLimits {
             },
             total_memory_bytes: args.world_total_memory_mib() * MIB,
             guest_burn_concurrency: args.world_guest_burn_concurrency(),
-            guest_burn_per_account_concurrency: args
-                .world_guest_burn_per_account_concurrency(),
+            guest_burn_per_account_concurrency: args.world_guest_burn_per_account_concurrency(),
         })
     }
 }

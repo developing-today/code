@@ -409,8 +409,7 @@ pub struct WorldInstance {
     charge_config: crate::account_charge::WorldChargeConfig,
     /// The admin world→account registry the composition layer
     /// installed, where it installed one.
-    account_registry:
-        Option<std::sync::Arc<crate::account_charge::WorldAccountRegistry>>,
+    account_registry: Option<std::sync::Arc<crate::account_charge::WorldAccountRegistry>>,
     /// The world's recorded creator account, where it carries one.
     creator_account: Option<String>,
     /// The calling account this guest's calls are charged to under
@@ -708,7 +707,8 @@ impl WorldInstance {
         let Some(layout) = self.layout.clone() else {
             return self.view();
         };
-        let result = self.run_guest_call(|instance| instance.layout_inner(&layout, width, height))?;
+        let result =
+            self.run_guest_call(|instance| instance.layout_inner(&layout, width, height))?;
         self.settle(GuestCall::Layout);
         // As with `view`, a trapped layout does not poison the instance.
         result
