@@ -248,6 +248,11 @@ export interface EdgeOptions {
   setAlarm?: (at: number) => Promise<void>;
   /** Work that may finish after the answer has gone. */
   later?: (work: Promise<unknown>) => void;
+  /** How often the object's own clock wakes to read again what the
+   * owner is told about, in milliseconds. A local run shortens it so
+   * a smoke run can watch an alarm fire; where this is deployed it
+   * is left unset and the minute stands. */
+  ownClockMs?: number;
 }
 
 /** An action this side tried and its token was refused for, with
@@ -287,6 +292,7 @@ export class Edge {
   /** The time this object last asked to be woken at. */
   private alarmFor = 0;
   private later: (work: Promise<unknown>) => void;
+  private ownClockMs: number;
   /** The last self-check: one direct read of each kind, and how it went. */
   private selfCheckResult: { at: number; kinds: Record<string, { ok: boolean; error?: string }> } | null = null;
   private setAlarm: (at: number) => Promise<void>;
@@ -334,6 +340,7 @@ export class Edge {
       await setAlarm(at);
     };
     this.later = options.later ?? (() => {});
+    this.ownClockMs = options.ownClockMs ?? OWN_CLOCK_MS;
     this.syncRefused = new KeyedLimiter(SYNC_REFUSALS, 60_000, this.now);
     this.docs = new Docs(
       Object.fromEntries(
@@ -1361,7 +1368,7 @@ export class Edge {
       // not be told, soon again.
       wakes.push(Math.max(this.hostSeen + SILENT_MS + 1000, now + ALARM_RETRY_MS));
     }
-    if (await this.clockWanted(cfg)) wakes.push(Math.max(now + 1000, this.clockAt + OWN_CLOCK_MS));
+    if (await this.clockWanted(cfg)) wakes.push(Math.max(now + 1000, this.clockAt + this.ownClockMs));
     // Something the owner is told about that this side was turned away
     // for is tried again when its time is up; with nobody looking and
     // no machine reporting, only a wake would notice that it is.
@@ -1403,7 +1410,7 @@ export class Edge {
         // Leave the transition pending so a later alarm can retry it.
       }
     }
-    if (now - this.clockAt >= OWN_CLOCK_MS && (await this.clockWanted(cfg))) {
+    if (now - this.clockAt >= this.ownClockMs && (await this.clockWanted(cfg))) {
       this.clockAt = now;
       // Read again what is stale, and wait for it: this wake is the
       // only thing looking. Twice, because the first look of an object
