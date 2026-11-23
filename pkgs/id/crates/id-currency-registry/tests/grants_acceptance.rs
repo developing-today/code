@@ -306,3 +306,34 @@ fn policy_partial_vest_resolves_at_most_once() {
         Err(GrantError::UnknownGrant(999))
     );
 }
+
+#[test]
+fn late_refund_claws_back_a_posted_grant() {
+    // Oracle: the posted holder balance is debited exactly once and
+    // returned to the grant pool; the control-plane row records the
+    // settled clawback.
+    let mut svc = service();
+    let grant = svc
+        .register(&request("key-late-refund", "user-1", 500), NOW)
+        .expect("register");
+    svc.vest(grant.id, NOW + WINDOW_SECONDS)
+        .expect("vest before late refund");
+
+    let clawed_back = svc
+        .clawback(grant.id, POOL, HOLDER, NOW + WINDOW_SECONDS + 60)
+        .expect("clawback after vest");
+
+    assert_eq!(clawed_back.state, GrantState::ClawbackSettled);
+    assert!(clawed_back.resolution_transfer_id.is_some());
+    assert_eq!(svc.ledger().credits_posted(HOLDER), 0);
+    assert_eq!(svc.ledger().credits_posted(POOL), 500);
+    assert_eq!(
+        svc.clawback(grant.id, POOL, HOLDER, NOW + WINDOW_SECONDS + 120),
+        Err(GrantError::AlreadyResolved {
+            grant_id: grant.id,
+            state: GrantState::ClawbackSettled,
+        })
+    );
+    assert_eq!(svc.ledger().credits_posted(HOLDER), 0);
+    assert_eq!(svc.ledger().credits_posted(POOL), 500);
+}
