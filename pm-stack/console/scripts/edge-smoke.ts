@@ -65,6 +65,7 @@ const link = new EdgeLink({
   keys: memoryStore(),
   done: memoryStore(),
   docs,
+  phones: deps.phones!.devices,
   config: async () => ({
     owners: cfg.owners,
     certNames: [],
@@ -74,6 +75,10 @@ const link = new EdgeLink({
     androidPackage: cfg.androidPackage,
     androidFingerprints: [],
     androidApp: false,
+    queueDbUrl: cfg.queueDbUrl,
+    queueTokenName: cfg.queueTokenName,
+    promptLabel: cfg.promptLabel,
+    needsRepos: cfg.needsRepos,
   }),
   run: heldRunner(deps),
   log: (line) => console.log(`  host: ${line}`),

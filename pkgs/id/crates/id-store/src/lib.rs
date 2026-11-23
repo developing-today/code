@@ -38,6 +38,7 @@ pub mod identity;
 pub mod issuer_rotation;
 pub mod media;
 pub mod note_checkpoints;
+pub mod note_blocks;
 pub mod note_links;
 pub mod notes;
 pub mod policy;

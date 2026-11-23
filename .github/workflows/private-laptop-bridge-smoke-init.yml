@@ -1,0 +1,48 @@
+name: Initialize empty private laptop bridge smoke Worker
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: private-laptop-bridge-smoke-init
+  cancel-in-progress: false
+
+jobs:
+  initialize:
+    if: github.repository == 'developing-today/code' && github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch'
+    # Configure this environment out of band with required reviewers and main-only
+    # rules. This workflow cannot verify or create those GitHub environment rules.
+    environment: cloudflare-smoke-bootstrap
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24.22.0
+      - name: Run offline bootstrap contract tests
+        run: node --test --test-reporter=spec pm-stack/private-laptop-bridge/bootstrap-smoke.test.mjs
+      - name: Create only the fixed empty Worker and verify it read-only
+        env:
+          # Both values must be provisioned as protected environment secrets;
+          # neither is a dispatch input or checked-in account/zone data.
+          CF_SMOKE_INIT_APPROVED_ACCOUNT_ID: ${{ secrets.CF_SMOKE_INIT_APPROVED_ACCOUNT_ID }}
+          CF_SMOKE_INIT_EXPECTED_ZONE_IDS: ${{ secrets.CF_SMOKE_INIT_EXPECTED_ZONE_IDS }}
+          CF_SMOKE_INIT_WRITE_TOKEN: ${{ secrets.CF_SMOKE_INIT_WRITE_TOKEN }}
+          CF_SMOKE_INIT_READ_TOKEN: ${{ secrets.CF_SMOKE_INIT_READ_TOKEN }}
+          BOOTSTRAP_RECEIPT_PATH: ${{ runner.temp }}/smoke-init-receipt.json
+        run: node pm-stack/private-laptop-bridge/bootstrap-smoke.mjs
+      - name: Preserve verified smoke initialization receipt
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: private-laptop-smoke-init-${{ github.run_id }}
+          path: ${{ runner.temp }}/smoke-init-receipt.json
+          if-no-files-found: error
+          retention-days: 14

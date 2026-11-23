@@ -1,0 +1,6 @@
+# The collector's only non-stdlib dependency: the Socket Mode
+# WebSocket client. Pinned to the version the #2137 PoC was built and
+# live-verified with (2026-10-29 run); imported lazily inside
+# collector.run_forever so the store/dedupe unit tests run on a bare
+# stdlib interpreter.
+websockets==17.3

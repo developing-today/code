@@ -1,6 +1,7 @@
 # The deploy registry + CLI — issue #5766, slices 1-3 (registry + list;
 # unit/plist rendering, --dry-run plans, generation log, status/rollback logic;
-# real systemd activation with health-check flip-back).
+# real systemd activation with health-check flip-back) and issue #5770,
+# slice 4 (sandbox-class activation + the generic unit restorer).
 #
 # deployTargets: this repo's service definitions (services.nix) in the
 # design §3 shape, with each definition's `package` still a derivation —
@@ -24,6 +25,7 @@ let
     laptopAgent = callPackage ../laptop-agent/package.nix { };
     mcpx = callPackage ../mcpx/package.nix { };
     routeProxy = callPackage ./route-proxy.nix { };
+    quotaRecorder = callPackage ./quota-recorder.nix { };
     # The existing Cloudflare deploy apps (issue #5767, phase 1) — the
     # same callPackage expressions lib/default.nix uses for the
     # id-mail-deploy / pkarr-deploy / developing-today-backup-deploy
@@ -68,7 +70,7 @@ in
       {
         nativeBuildInputs = [ makeWrapper ];
         meta = {
-          description = "Deploy CLI (slices 1-3: registry list + validation, unit rendering, dry-run plans, generation log, status/rollback logic, real systemd activation) for the services deployment layer";
+          description = "Deploy CLI (slices 1-3: registry list + validation, unit rendering, dry-run plans, generation log, status/rollback logic, real systemd activation; slice 4: sandbox activation + restore) for the services deployment layer";
           mainProgram = "deploy";
         };
       }

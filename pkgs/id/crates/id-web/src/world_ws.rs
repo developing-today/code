@@ -678,7 +678,10 @@ impl SessionIo for WsIo {
                     return Inbound::Text(text.to_string());
                 }
                 Some(Ok(Message::Text(_))) => return Inbound::Oversized,
-                Some(Ok(Message::Binary(_))) => return Inbound::Unsupported,
+                Some(Ok(Message::Binary(bytes))) if bytes.len() <= MAX_FRAME_BYTES => {
+                    return Inbound::Bytes(bytes.to_vec());
+                }
+                Some(Ok(Message::Binary(_))) => return Inbound::Oversized,
                 Some(Ok(Message::Ping(payload))) => {
                     if self.sender.send(Message::Pong(payload)).await.is_err() {
                         return Inbound::Closed;
@@ -692,6 +695,17 @@ impl SessionIo for WsIo {
 
     async fn send(&mut self, frame: String) -> bool {
         self.sender.send(Message::Text(frame.into())).await.is_ok()
+    }
+
+    fn supports_bytes(&self) -> bool {
+        true
+    }
+
+    async fn send_bytes(&mut self, frame: Vec<u8>) -> bool {
+        self.sender
+            .send(Message::Binary(frame.into()))
+            .await
+            .is_ok()
     }
 }
 

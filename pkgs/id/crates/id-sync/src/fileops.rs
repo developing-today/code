@@ -726,7 +726,20 @@ impl<'a> FileOps<'a> {
                 && !rest.is_empty()
                 && rest.bytes().all(|b| b.is_ascii_digit())
             {
-                archives.insert(tag);
+                // Keep metadata-free legacy archives owned by their name,
+                // but do not let a matching name override an explicit owner
+                // back-reference (or an undecodable one).
+                match read_archive_owner(self.tags, &tag).await? {
+                    OwnerRead::Absent => {
+                        archives.insert(tag);
+                    }
+                    OwnerRead::Owner(owner) if owner == name => {
+                        archives.insert(tag);
+                    }
+                    OwnerRead::Owner(_) | OwnerRead::Undecodable => {
+                        tracing::warn!("ignoring foreign or undecodable archive owner on {tag}");
+                    }
+                }
             }
         }
 
@@ -1005,6 +1018,64 @@ mod archive_owner_read_tests {
             owner_values(&env.tags, ARCHIVE).await,
             vec![vec![0xff_u8, 0xfe]]
         );
+    }
+
+    #[tokio::test]
+    async fn delete_preserves_legacy_shaped_archive_owned_by_another_file() {
+        let env = env_with_archive_reference().await;
+        let archive = "a.archive.5";
+        env.store
+            .tags()
+            .set("a", Hash::from([2; 32]))
+            .await
+            .unwrap();
+        env.store
+            .tags()
+            .set(archive, Hash::from([3; 32]))
+            .await
+            .unwrap();
+        env.tags
+            .set_tag(
+                &env.tags.global,
+                archive.as_bytes(),
+                b"archive.owner",
+                Some(b"another-file"),
+                b"",
+            )
+            .await
+            .unwrap();
+
+        let outcome = FileOps::new(&env.store, &env.tags)
+            .delete("a")
+            .await
+            .unwrap();
+
+        assert_eq!(outcome.archives_removed, 0);
+        assert!(env.store.tags().get(archive).await.unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn delete_keeps_removing_unattributed_legacy_archive_by_name() {
+        let env = env_with_archive_reference().await;
+        let archive = "a.archive.5";
+        env.store
+            .tags()
+            .set("a", Hash::from([2; 32]))
+            .await
+            .unwrap();
+        env.store
+            .tags()
+            .set(archive, Hash::from([3; 32]))
+            .await
+            .unwrap();
+
+        let outcome = FileOps::new(&env.store, &env.tags)
+            .delete("a")
+            .await
+            .unwrap();
+
+        assert_eq!(outcome.archives_removed, 1);
+        assert!(env.store.tags().get(archive).await.unwrap().is_none());
     }
 }
 

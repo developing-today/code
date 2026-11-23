@@ -6,6 +6,8 @@ import { readFile } from "node:fs/promises";
 import type { ModelRef } from "./validate.ts";
 import { outboundTimeout } from "./fetchTimeout.ts";
 
+const SESSION_LIST_LIMITS = [1_000, 10_000, 100_000] as const;
+
 export class OpenCodeError extends Error {
   status = 502;
   constructor(
@@ -111,7 +113,18 @@ export class OpenCodeClient {
   }
 
   async listSessions(): Promise<unknown> {
-    return this.api("GET", "/api/session");
+    for (const limit of SESSION_LIST_LIMITS) {
+      const data = await this.api("GET", `/api/session?limit=${limit}`);
+      // OpenCode silently truncates the default session list at 50. A
+      // response below its requested limit is the only completeness proof
+      // this endpoint offers; if the largest supported probe is still full,
+      // do not let cleanup infer that an omitted session is absent.
+      if (!Array.isArray(data)) return data;
+      if (data.length < limit) return data;
+    }
+    throw new OpenCodeError(
+      `opencode session list reached the maximum completeness limit (${SESSION_LIST_LIMITS.at(-1)})`,
+    );
   }
 
   /** Read one session's current state (issue #5555): the raw session

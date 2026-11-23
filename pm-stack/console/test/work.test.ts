@@ -505,6 +505,48 @@ describe("what the owner asks for in his own words", () => {
     await expect(work.askReply({ issue: "12501/comments", text: "x" })).rejects.toThrow(OpError);
   });
 
+  test("a custom enqueue hook takes the queue task instead of the laptop's command", async () => {
+    const w = world({
+      commands: (argv) =>
+        argv.includes(`repos/${REPO}/issues`) ? JSON.stringify({ number: 12501, html_url: "https://x/12501" }) : "{}",
+    });
+    const work = new Work(w.ops, undefined, () => new Date("2026-11-22T06:00:00Z"));
+    const held: unknown[] = [];
+    const hook = async (packet: unknown) => {
+      held.push(packet);
+      return { code: 0, stdout: "", stderr: "" };
+    };
+    // A new prompt: the issue is filed at once, the task goes to the hook.
+    expect(await work.ask({ text: "Do the docs" }, hook)).toEqual({
+      issue: 12501,
+      url: "https://x/12501",
+      queued: true,
+    });
+    expect(held).toHaveLength(1);
+    expect(held[0]).toEqual(
+      promptPacket(REPO, "repo-health-code-pilot", 12501, "Do the docs", "2026-11-22T06:00:00.000Z"),
+    );
+    expect(w.calls.some((c) => c.argv[1] === "queue")).toBe(false);
+    // A reply: the comment is posted at once, the task goes to the hook.
+    const issue = (state: string, labels: string[]) =>
+      JSON.stringify({ state, labels: labels.map((name) => ({ name })) });
+    const r = world({
+      commands: (argv) =>
+        argv[3] === `repos/${REPO}/issues/12501` ? issue("open", ["owner/prompt"]) : JSON.stringify({ id: 777 }),
+    });
+    const replyWork = new Work(r.ops, undefined, () => new Date("2026-11-22T06:00:00Z"));
+    expect(await replyWork.askReply({ issue: 12501, text: "also do the docs" }, hook)).toEqual({
+      issue: 12501,
+      queued: true,
+    });
+    expect(held).toHaveLength(2);
+    expect(held[1]).toMatchObject({
+      priority: 10,
+      dedupe_key: `repo-health:v1:triage:${REPO}:issue:12501`,
+    });
+    expect(r.calls.some((c) => c.argv[1] === "queue")).toBe(false);
+  });
+
   test("each prompt shows where it stands", async () => {
     const found = (n: number, state: string, comments: number) => ({
       number: n,

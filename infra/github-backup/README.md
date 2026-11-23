@@ -56,7 +56,15 @@ reconcile-YYYY-MM-DD.md  weekly sweep reports
   drill, uploads the bundle through the existing `r2bak` rclone remote, then
   downloads and compares the remote bytes. It requires the caller to configure
   `r2bak` from runtime credentials (the laptop backup scripts use Bitwarden by
-  secret name); it does not provision a bucket or schedule recurring uploads.
+  secret name). `bin/bundle_r2_all.py` attempts each of the four fleet repos
+  in the plan, and the user systemd `github-backup-r2.timer` runs it daily.
+  This does not provision a bucket or provide freshness/lag reporting.
+- **Plain Git mirror:** `bin/plain_mirror.py --repo OWNER/REPO` pushes every
+  branch and tag from a planned local mirror to the corresponding pre-created
+  `developing-today/<repo>-mirror` GitHub repository. It prunes deleted
+  branches/tags and verifies destination refs against the source. The command
+  does not create repositories or provision credentials; targets must exist
+  before the first run.
 
 ## System contract — a mirror is what it can prove (design #3282)
 

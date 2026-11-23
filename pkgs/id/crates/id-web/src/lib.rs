@@ -80,7 +80,10 @@ use id_store::tags::TagStore;
 
 pub use app_interface::{WebInterface, WebInterfaceError, WebMode, web_interface_from_app_toml};
 pub use assets::static_handler;
-pub use collab::{CollabState, note_session_key};
+pub use collab::{
+    CollabState, NOTE_CHECKPOINT_SNAPSHOT_FILE_NAME, NoteCheckpointSnapshot, NoteSnapshotError,
+    note_session_key,
+};
 pub use identity::IdentityStore;
 #[doc(hidden)]
 pub use identity::crash_gate;
@@ -1089,6 +1092,7 @@ pub async fn web_routers_with_surface(
     transport_ad: Option<Arc<id_core::transport_advertisement::AdMinter>>,
     gallery: Option<gallery::SharedGallery>,
 ) -> anyhow::Result<(Vec<Router>, WebSurfaceFactory)> {
+    let note_snapshot_path = identity_db_path.with_file_name(NOTE_CHECKPOINT_SNAPSHOT_FILE_NAME);
     let mut state = match local_events {
         Some(events) => {
             AppState::with_local_events(
@@ -1119,12 +1123,19 @@ pub async fn web_routers_with_surface(
     state.set_gallery(gallery);
     // Note checkpoints granted to a group resolve against the node's
     // group log (#3819); nothing has cloned `collab` yet, so swapping it
-    // here reaches every router and the surface factory.
-    state.collab = Arc::new(
-        CollabState::new().with_note_group_roles(groups::note_group_roles(
-            groups::resolve_groups_log(groups_log.clone()),
-        )),
-    );
+    // here reaches every router and the surface factory. The checkpoint
+    // log itself persists beside the identity store: restore its
+    // snapshot (events, then policies) before anything serves, and let
+    // every later mutation rewrite it. A snapshot that does not parse
+    // or does not fold fails startup — never a host that silently
+    // reopens scoped notes to public.
+    let collab = CollabState::new()
+        .with_note_group_roles(groups::note_group_roles(groups::resolve_groups_log(
+            groups_log.clone(),
+        )))
+        .with_note_snapshot_path(note_snapshot_path);
+    collab.restore_persisted_note_snapshot().await?;
+    state.collab = Arc::new(collab);
     let surface = WebSurfaceFactory {
         state: state.clone(),
         world: world.clone(),

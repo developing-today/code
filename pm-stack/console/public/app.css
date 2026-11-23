@@ -616,6 +616,18 @@ code.wrap {
   overflow-wrap: anywhere;
   font-size: 0.85rem;
 }
-.card input + input {
+.card input + input,
+.card > select + textarea,
+.card > textarea + .row,
+.card > select + .row {
   margin-top: 0.5rem;
+}
+/* A tick box is never stretched like a text field, wherever it sits. */
+input[type="checkbox"],
+input[type="radio"] {
+  flex: 0 0 22px;
+  width: 22px;
+  min-height: 22px;
+  height: 22px;
+  padding: 0;
 }

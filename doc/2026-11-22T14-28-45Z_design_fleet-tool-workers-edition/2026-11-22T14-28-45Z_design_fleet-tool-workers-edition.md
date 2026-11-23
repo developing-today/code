@@ -36,7 +36,7 @@ Basis, and the inputs this record must answer rather than restate:
 - Design inputs re-checked at writing time (2026-11-22): #9073, #9074,
   #9075, #9076, #9077, #9016, #9079 (A), #9080 (B), #9085 (G) are all still
   **OPEN**. Their semantics are specified but unimplemented natively; this
-  design therefore fixes the hosted shape against the *specifications*,
+  design therefore fixes the hosted shape against the _specifications_,
   and §8 names the points where a native implementation landing first
   would supersede a choice made here.
 
@@ -86,7 +86,7 @@ not off the design documents:
   leases, lanes, workers, checkpoints, the lane ledger, and the
   `agent.events` stream (#6741; `pkgs/fleet/crates/fleet-queue/src/turso_queue.rs`).
   Claim atomicity is one conditional UPDATE under libSQL's single-writer
-  serialization. The "laptop queue" is a *broker process location*, not
+  serialization. The "laptop queue" is a _broker process location_, not
   where the data lives. Packets validate against
   `pkgs/fleet/repo-task-v1.schema.json` (`$id: repo-task/v1`).
 - **A hosted fleet front door already exists as precedent**: the
@@ -101,7 +101,7 @@ not off the design documents:
   item's **scheduled start**, the current time, and the caller's **pwd**.
   Caller-owned block fields are `direct_parent`, `links`, `lineage`;
   #9073's rule is that caller-supplied values are never overwritten.
-- **Session state today** is a *specification* (#9060 §14 / #9075): each
+- **Session state today** is a _specification_ (#9060 §14 / #9075): each
   fleet start assigns a session id, carried in the environment of
   everything fleet launches and in a pwd-file at the worktree root;
   resolution order explicit argument > env > pwd-file. No crate in
@@ -117,20 +117,20 @@ Disposition of every native domain (per `pkgs/fleet/docs/verbs.md`) for
 the hosted edition. "Hosted" = served by fleet-hosted and/or the TS CLI;
 "native-only" is a deliberate divergence, named as such per the doctrine.
 
-| Native domain | Hosted disposition | Notes |
-| --- | --- | --- |
-| `gh` — rotation passthrough | **Hosted, transformed** | The rotation point moves server-side: the service holds the fleet App installation tokens; callers never see a GitHub token. Plain passthrough is *not* offered hosted — every hosted GitHub write goes through a verb that can stamp (§3). Divergence: deliberate (a raw passthrough would bypass the stamping authority). |
-| `gh` — Metadata create/query layer (#9073/#9074) | **Hosted core** | This design's centre: §3 (create/stamp), §7.1 (query). |
-| `queue` — broker verbs (claim/heartbeat/complete/…) | **Hosted front door** | Same Turso queue DB, same `repo-task/v1` schema, broker protocol over hosted transports (§6). |
-| `queue fallback` — GitHub-issue claim markers | **Hosted via service** | The service performs the identical marker-comment protocol on the caller's behalf; marker format unchanged so native and hosted claims interlock. |
-| `agent` — front door (`next`, shortlist, doctor) | **Hosted (intake subset)** | `next` and claim are service calls (the intake ladder's queue + GitHub-priority rungs work hosted; the local-shortlist rung is a laptop-local file and stays native). `doctor` reports hosted-leg reachability. This is how agent workflows off the laptop — the primary consumers of C — take work. |
-| Sync tools (#9016 scope) | **Hosted verbs** | Project sync and queue/GitHub sync as service endpoints with CLI verbs (§7.2). |
-| `bridge` | Already hosted | Precedent, out of C's scope; no change. |
-| `search` (Atlas) | Already a service | Out of scope. |
-| `secrets` | **Native-only (divergence)** | The secrets broker is a local trust domain. Hosted callers use Workers secrets and tenancy-issued credentials (E). No hosted `secrets get`. |
-| `shell` / `laptop-agent` / `queue dispatch` | **Native-only (divergence)** | Execution placement runs on native runners. A hosted caller *requests* execution only by enqueueing a task; it never gets a shell. |
-| `proxy` | **Native-only (divergence)** | Tailnet/session plumbing has no Workers analogue. |
-| `serve` (broker roles) | Transformed | The hosted service *is* the serve role for its front doors, as a Worker; the queue-broker role additionally gains the hosted endpoint (§6) rather than a second broker implementation. |
+| Native domain                                       | Hosted disposition           | Notes                                                                                                                                                                                                                                                                                                                       |
+| --------------------------------------------------- | ---------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `gh` — rotation passthrough                         | **Hosted, transformed**      | The rotation point moves server-side: the service holds the fleet App installation tokens; callers never see a GitHub token. Plain passthrough is _not_ offered hosted — every hosted GitHub write goes through a verb that can stamp (§3). Divergence: deliberate (a raw passthrough would bypass the stamping authority). |
+| `gh` — Metadata create/query layer (#9073/#9074)    | **Hosted core**              | This design's centre: §3 (create/stamp), §7.1 (query).                                                                                                                                                                                                                                                                      |
+| `queue` — broker verbs (claim/heartbeat/complete/…) | **Hosted front door**        | Same Turso queue DB, same `repo-task/v1` schema, broker protocol over hosted transports (§6).                                                                                                                                                                                                                               |
+| `queue fallback` — GitHub-issue claim markers       | **Hosted via service**       | The service performs the identical marker-comment protocol on the caller's behalf; marker format unchanged so native and hosted claims interlock.                                                                                                                                                                           |
+| `agent` — front door (`next`, shortlist, doctor)    | **Hosted (intake subset)**   | `next` and claim are service calls (the intake ladder's queue + GitHub-priority rungs work hosted; the local-shortlist rung is a laptop-local file and stays native). `doctor` reports hosted-leg reachability. This is how agent workflows off the laptop — the primary consumers of C — take work.                        |
+| Sync tools (#9016 scope)                            | **Hosted verbs**             | Project sync and queue/GitHub sync as service endpoints with CLI verbs (§7.2).                                                                                                                                                                                                                                              |
+| `bridge`                                            | Already hosted               | Precedent, out of C's scope; no change.                                                                                                                                                                                                                                                                                     |
+| `search` (Atlas)                                    | Already a service            | Out of scope.                                                                                                                                                                                                                                                                                                               |
+| `secrets`                                           | **Native-only (divergence)** | The secrets broker is a local trust domain. Hosted callers use Workers secrets and tenancy-issued credentials (E). No hosted `secrets get`.                                                                                                                                                                                 |
+| `shell` / `laptop-agent` / `queue dispatch`         | **Native-only (divergence)** | Execution placement runs on native runners. A hosted caller _requests_ execution only by enqueueing a task; it never gets a shell.                                                                                                                                                                                          |
+| `proxy`                                             | **Native-only (divergence)** | Tailnet/session plumbing has no Workers analogue.                                                                                                                                                                                                                                                                           |
+| `serve` (broker roles)                              | Transformed                  | The hosted service _is_ the serve role for its front doors, as a Worker; the queue-broker role additionally gains the hosted endpoint (§6) rather than a second broker implementation.                                                                                                                                      |
 
 ## 3. Question 1 — split of duties
 
@@ -143,7 +143,7 @@ direct Turso is read-only and never on the stamp path.**
   enforcement with #9073's semantics, executed server-side: the service
   fills every fleet-owned provenance field from its own sources (§5)
   and preserves caller-owned fields (`direct_parent`, `links`,
-  `lineage`, and any caller-supplied provenance it is *not* authoritative
+  `lineage`, and any caller-supplied provenance it is _not_ authoritative
   for — none, by §5's table) untouched.
 - **The GitHub write.** Issue/PR creation through the fleet App
   installation-token rotation, held as Worker secrets. This is the
@@ -176,7 +176,7 @@ inventing a second one.
   order with the pwd-file replaced per §4.2. The CLI is where
   `FLEET_SESSION_ID`-equivalent state lives for hosted callers.
 - Assembling create requests: the caller's body text, caller-owned
-  Metadata fields, and *claims* the service may verify (repo, branch) —
+  Metadata fields, and _claims_ the service may verify (repo, branch) —
   never timestamps, never queue fields, never the session's provenance:
   anything fleet-owned in a CLI request is ignored by the service, so a
   buggy or hostile CLI cannot mint provenance.
@@ -203,7 +203,7 @@ rules differently:
    database (all queue access goes through a broker front door, native
    or hosted, so claim semantics and event writes stay in one code
    path per edition), any cross-tenant read, and any write at all.
-3. A direct-Turso token is a *data-plane* credential. It is not an
+3. A direct-Turso token is a _data-plane_ credential. It is not an
    authentication to the service and confers no stamping or queue
    rights (§4.3).
 
@@ -234,7 +234,7 @@ auth outputs.)
   plane marks active; relaxing the gate is a tenancy change (H #9086
   Q3), not a fleet change.
 
-Per-surface token *flows* (PKCE vs device flow for headless agent
+Per-surface token _flows_ (PKCE vs device flow for headless agent
 hosts, session lifetimes) are H's design surface (#9086 Q1); this
 record fixes only what C requires of them: a bearer token the service
 can validate without a callback to the caller, carrying account, role,
@@ -272,13 +272,13 @@ nothing. The hosted model makes provenance verifiable:
    filled by the service from a source the caller does not control:
    times from the service clock, queue fields from the queue record,
    session fields from the session registry, identity from the
-   validated token. This *narrows* #9073's "caller-supplied values
+   validated token. This _narrows_ #9073's "caller-supplied values
    never overwritten" rule, deliberately: that rule continues to govern
    caller-owned fields; fleet-owned provenance is service-authoritative
    in the hosted world because the caller is outside the trust
    boundary. On the laptop the binary is inside it — the divergence is
-   the trust boundary, named, not a semantics change: the *fields and
-   their meanings are identical*.
+   the trust boundary, named, not a semantics change: the _fields and
+   their meanings are identical_.
 2. **Stamp signature.** The service signs the canonical provenance
    object and writes the signature into the block (`stamp_sig`, §5)
    and the DB row. Verifiers — the collector, the query surface, any
@@ -309,27 +309,27 @@ change; additions are additive only (the block stays `pm_meta: 1` —
 additively); a field with no hosted existence gets a named replacement,
 never a silent null with a different meaning.
 
-| Native field | Hosted source / replacement |
-| --- | --- |
-| `queue_id` | Same. Read by the service from the queue record (§6's one queue). Null when the work is not queue-originated — same rule as native. |
-| scheduled start (§13) | Same: the queue packet's scheduled start, read from the queue record by the service. |
-| `picked_up_at` | Same: the claim record's pickup time, from the queue DB via the front door — not from caller assertion. |
-| `work_started_at` | Same: the claim/bind record's work-start time. Where a hosted caller works without a claim, the session-open time (§4.2) is the service-sourced fallback, and the field's source is distinguishable via `stamp_sig`-covered `stamped_by` (additions below). |
-| `created_at` | The service clock at stamp time. This is the point of server-side stamping: one clock authority for the hosted world, instead of every caller's clock. |
-| `session_id` | The server-minted session id (§4.2), resolved by the service against its registry. |
-| `lane` | The lane claim of the caller's agent credential, or the session record's lane. |
-| `model` | The session record's declared model (declared at session open, as native declares it from the serving leaf). |
-| `lane_start_issues` | The session record's lane-start issue set, or the queue record's, read by the service. |
-| `host` | The participant that ran the work, per the peer principle: for a CLI caller, its machine host (Codespace name, laptop name, agent-host name); for work executed by the service itself (sync verbs, ingestion), the service's deployment identity. Host names a participant kind + instance, never a special "ours" value (S19). |
-| `worktree` | **Replaced when no checkout exists.** A CLI caller on a real checkout stamps `worktree` exactly as native (path). A caller without one (Worker, agent runtime without a checkout) leaves `worktree` null and stamps the replacement field `workspace_ref` (below). |
-| pwd (§13) | Subsumed by `workspace_ref.path` when a filesystem exists; absent otherwise. Never a required field hosted. |
+| Native field          | Hosted source / replacement                                                                                                                                                                                                                                                                                                     |
+| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `queue_id`            | Same. Read by the service from the queue record (§6's one queue). Null when the work is not queue-originated — same rule as native.                                                                                                                                                                                             |
+| scheduled start (§13) | Same: the queue packet's scheduled start, read from the queue record by the service.                                                                                                                                                                                                                                            |
+| `picked_up_at`        | Same: the claim record's pickup time, from the queue DB via the front door — not from caller assertion.                                                                                                                                                                                                                         |
+| `work_started_at`     | Same: the claim/bind record's work-start time. Where a hosted caller works without a claim, the session-open time (§4.2) is the service-sourced fallback, and the field's source is distinguishable via `stamp_sig`-covered `stamped_by` (additions below).                                                                     |
+| `created_at`          | The service clock at stamp time. This is the point of server-side stamping: one clock authority for the hosted world, instead of every caller's clock.                                                                                                                                                                          |
+| `session_id`          | The server-minted session id (§4.2), resolved by the service against its registry.                                                                                                                                                                                                                                              |
+| `lane`                | The lane claim of the caller's agent credential, or the session record's lane.                                                                                                                                                                                                                                                  |
+| `model`               | The session record's declared model (declared at session open, as native declares it from the serving leaf).                                                                                                                                                                                                                    |
+| `lane_start_issues`   | The session record's lane-start issue set, or the queue record's, read by the service.                                                                                                                                                                                                                                          |
+| `host`                | The participant that ran the work, per the peer principle: for a CLI caller, its machine host (Codespace name, laptop name, agent-host name); for work executed by the service itself (sync verbs, ingestion), the service's deployment identity. Host names a participant kind + instance, never a special "ours" value (S19). |
+| `worktree`            | **Replaced when no checkout exists.** A CLI caller on a real checkout stamps `worktree` exactly as native (path). A caller without one (Worker, agent runtime without a checkout) leaves `worktree` null and stamps the replacement field `workspace_ref` (below).                                                              |
+| pwd (§13)             | Subsumed by `workspace_ref.path` when a filesystem exists; absent otherwise. Never a required field hosted.                                                                                                                                                                                                                     |
 
 **Additive fields** (both editions may stamp them; native leaves them
 null until #9073's signing hook lands):
 
 - `workspace_ref`: `{kind: "worktree" | "session" | "codespace" | "worker" | "service", id, repo, branch, sha}` — where the work
   happened, in the strongest form the caller's world supports. For a
-  worktree caller it *accompanies* `worktree` (id = the path); for a
+  worktree caller it _accompanies_ `worktree` (id = the path); for a
   Worker it is the only locator. `repo`/`branch`/`sha` are included
   whenever a checkout exists, which is what most consumers of
   `worktree` actually wanted from it.
@@ -349,7 +349,7 @@ null until #9073's signing hook lands):
 
 - The queue core already lives in the fleet-queue Turso database behind
   the broker protocol (§1, #6741). There is no "laptop queue" to remain
-  the only queue — there is a laptop-*hosted broker process* in front
+  the only queue — there is a laptop-_hosted broker process_ in front
   of hosted data. The design therefore adds a **second broker front
   door**: the fleet-hosted Worker exposing the broker protocol over the
   hosted transports (REST per verb; WebSocket where a verb streams —
@@ -370,9 +370,9 @@ null until #9073's signing hook lands):
 - The **fallback claim path** (GitHub-issue markers) carries over
   through the service (§2), so a hosted lane and a laptop lane claim
   the same issue pool with interlocking markers.
-- Deliberate divergence, named: the hosted door *requires*
+- Deliberate divergence, named: the hosted door _requires_
   authentication and refuses anonymous claims; the native door keeps
-  its local trust model. Claim *semantics* are identical; the trust
+  its local trust model. Claim _semantics_ are identical; the trust
   boundary differs, as with stamping (§4.3.1).
 
 ### Shared-semantics discipline (with G)
@@ -389,9 +389,9 @@ instantiation for C's two contracts.
 
 ## 7. The remaining hosted surfaces — query, sync tools, ingestion
 
-*Section order note: §§3–6 answer the issue's questions 1, 3, 2, 4 in
+_Section order note: §§3–6 answer the issue's questions 1, 3, 2, 4 in
 dependency order (auth constrains the stamp set). This section covers
-the rest of #9081's "What".*
+the rest of #9081's "What"._
 
 ### 7.1 Metadata query surface (hosted)
 
@@ -470,18 +470,18 @@ item).
 
 ## 9. Statement coverage (component C slice of the inventory)
 
-| Statement | Where answered |
-| --- | --- |
-| S4 (fleet tool's hosted capabilities exist as a TS service/CLI) | §§0, 2, 3 |
-| S14 (direct Turso when prudent, rules defined) | §3.3 (C's rules; G owns the program statement) |
-| S18 (dual tier-1; parity + deliberate divergence) | §§2, 4.3.1, 6 — every divergence named in place |
-| S19 (peer principle; no special-casing) | §§5 (`host`), 6 (front doors as peers) |
-| #9081 Q1 (split of duties) | §3 |
-| #9081 Q2 (stamping parity) | §5 |
-| #9081 Q3 (auth + non-forgeability) | §4 |
-| #9081 Q4 (queue semantics) | §6 |
-| #9078 program question 3 (the hosted queue question) | §6 |
-| #9078 program question 5 (divergence discipline) | §6, final part |
+| Statement                                                       | Where answered                                  |
+| --------------------------------------------------------------- | ----------------------------------------------- |
+| S4 (fleet tool's hosted capabilities exist as a TS service/CLI) | §§0, 2, 3                                       |
+| S14 (direct Turso when prudent, rules defined)                  | §3.3 (C's rules; G owns the program statement)  |
+| S18 (dual tier-1; parity + deliberate divergence)               | §§2, 4.3.1, 6 — every divergence named in place |
+| S19 (peer principle; no special-casing)                         | §§5 (`host`), 6 (front doors as peers)          |
+| #9081 Q1 (split of duties)                                      | §3                                              |
+| #9081 Q2 (stamping parity)                                      | §5                                              |
+| #9081 Q3 (auth + non-forgeability)                              | §4                                              |
+| #9081 Q4 (queue semantics)                                      | §6                                              |
+| #9078 program question 3 (the hosted queue question)            | §6                                              |
+| #9078 program question 5 (divergence discipline)                | §6, final part                                  |
 
 ## 10. What this record does not do
 

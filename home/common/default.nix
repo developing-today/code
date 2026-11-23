@@ -83,11 +83,18 @@ let
   # standalone artifact until the proxy step's shim dir (design
   # note §4) supersedes the hand-maintained symlinks.
   fleetToolchain = (pkgs.extend (import inputs.id-rust-overlay)).rust-bin.fromRustupToolchainFile ../../pkgs/fleet/rust-toolchain.toml;
+  # Crane's dependency derivation keeps Fleet's registry compile lane
+  # reusable across source changes, using the same pinned Rust toolchain.
+  fleetCraneLib = (inputs.crane.mkLib pkgs).overrideToolchain fleetToolchain;
   fleetPkgs = pkgs.callPackage ../../pkgs/fleet {
     rustPlatform = pkgs.makeRustPlatform {
       cargo = fleetToolchain;
       rustc = fleetToolchain;
     };
+    craneLib = fleetCraneLib;
+    # The fleet Rust workspace has a dedicated CI test workflow. Avoid
+    # compiling its test binaries as part of every system activation.
+    doCheck = false;
     sourceRev = inputs.self.rev or "dirty";
   };
   # Upstream prebuilt release binaries for tools where nixpkgs trails upstream.
@@ -131,8 +138,11 @@ let
   # Hidden-shell auth hook (1Password service account, Cloudflare).
   # Same derivation nixos/agent-auth uses, so the BASH_ENV paths agree.
   agent-shell-env = pkgs.callPackage ../../pkgs/agent-shell-env { };
-  # mcpx MCP gateway and Code Mode execution runner.
-  mcpx = pkgs.callPackage ../../pkgs/mcpx/package.nix { };
+  # mcpx MCP gateway and Code Mode execution runner. Its standalone package
+  # still runs Go checks; profile rebuilds skip the separate test phase.
+  mcpx = pkgs.callPackage ../../pkgs/mcpx/package.nix {
+    doCheck = false;
+  };
   # The cascade's opencode build -- openchamber's nested opencode
   # input, which is exactly the derivation services.opencode.package
   # defaults to (the fork's module wrapper mkDefaults the fork
@@ -881,29 +891,14 @@ in
     };
   };
 
-  # Fleet broker roles (epic #5412 step 2, #5430): the secrets
-  # broker as a `fleet serve <role>` unit, as it has run since
-  # code#5362. This is the home-module pattern ported from
-  # dezren39/nix PR #1459 (closed as superseded by ruling D1) into
-  # this tree, now consuming this flake's own pkgs/fleet instead of
-  # a vendored copy. The queue-broker unit that used to sit beside
-  # it moved to the deploy registry on 2026-11-17 (#5769 M2:
-  # pkgs/deploy/services.nix owns queue-broker; the deploy tool
-  # activates it on the laptop). The secrets-broker definition
-  # stays here until its deploy activation can pass the deploy
-  # health probe (code#11170), then it follows queue-broker.
-  systemd.user.services.secrets-broker = {
-    Unit = {
-      Description = "secrets-broker — resident Bitwarden secrets cache (code#5362)";
-      After = [ "network-online.target" ];
-    };
-    Service = {
-      ExecStart = "${fleetPkgs.fleet}/bin/fleet serve secrets-broker";
-      Restart = "on-failure";
-      RestartSec = 5;
-    };
-    Install.WantedBy = [ "default.target" ];
-  };
+  # Fleet broker roles (epic #5412 step 2, #5430) moved to the
+  # deploy registry (#5769 M2): pkgs/deploy/services.nix owns the
+  # secrets-broker and queue-broker definitions, and the deploy
+  # tool activates them on the laptop. The home-manager units that
+  # ran the brokers since code#5362 are removed — queue-broker in
+  # #11172 (2026-11-17), secrets-broker here, after its deploy
+  # activation passed the 120s health probe (code#11170) on
+  # 2026-11-22.
 
   systemd.user.services.sync-models = {
     Unit = {
@@ -1174,6 +1169,17 @@ in
   # EnvironmentFile at every server start — it is never stored in this
   # repo or the Nix store. The quota gatherer reads the same file (see
   # nixos/services/pm-stack) so its `opencode quota` refresh works too.
+  # Helper-only unit changes must not interrupt the server (#10639).
+  # Home Manager still reloads the unit; the activation below owns build
+  # changes explicitly, using only the serving package's store path as key.
+  systemd.user.services.opencode.Unit."X-RestartIfChanged" = false;
+  home.activation.opencodeDeploy = lib.hm.dag.entryAfter [ "reloadSystemd" ] ''
+    run ${pkgs.bash}/bin/bash ${./opencode-deploy.sh} \
+      '${opencodeCascade}' \
+      "''${XDG_STATE_HOME:-$HOME/.local/state}/opencode/deployed-build" \
+      '${pkgs.systemd}/bin/systemctl' /proc
+  '';
+
   systemd.user.services.opencode.Service = {
     ExecStartPre = toString (
       pkgs.writeShellScript "opencode-env-key-materialize" ''
@@ -1217,6 +1223,12 @@ in
     # ~/.config/mcpx/config.json to the rendered file, and points
     # MCPX_CONFIG at it for other clients.
     settings = mcpxSettings;
+    # Runtime env for mcpx servers (mode 600, never copied into
+    # the store): carries ATLAS_SEARCH_GATE_TOKEN for the atlas
+    # remote server in mcpx-settings.nix, whose auth token is a
+    # ${ATLAS_SEARCH_GATE_TOKEN} expansion the daemon resolves
+    # from its own environment.
+    environmentFile = "/home/user/.config/mcpx/env";
   };
 
   # Consumer refinements on the module's mcpx unit: the parts of the

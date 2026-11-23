@@ -1,5 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import { annualReportPeriod, dailyReportPeriod, monthlyReportPeriod, quarterlyReportPeriod, weeklyReportPeriod } from "../src/report-periods.ts";
+import {
+  annualReportPeriod,
+  dailyReportPeriod,
+  monthlyReportPeriod,
+  quarterlyReportPeriod,
+  weeklyReportPeriod,
+} from "../src/report-periods.ts";
 
 describe("C7 daily report periods", () => {
   test("uses explicit Chicago calendar dates and a stable period identity", () => {
@@ -39,9 +45,8 @@ describe("C7 daily report periods", () => {
       minute: "2-digit",
       hourCycle: "h23",
     });
-    const parts = (instant: string) => Object.fromEntries(
-      chicago.formatToParts(new Date(instant)).map(({ type, value }) => [type, value]),
-    );
+    const parts = (instant: string) =>
+      Object.fromEntries(chicago.formatToParts(new Date(instant)).map(({ type, value }) => [type, value]));
     const minDay = Date.UTC(1900, 0, 1);
     const dayCount = (Date.UTC(2100, 0, 1) - minDay) / 86_400_000;
     let state = 0x7c7c2026;
@@ -52,10 +57,28 @@ describe("C7 daily report periods", () => {
       const period = dailyReportPeriod(date);
       const next = dailyReportPeriod(nextDate);
 
-      expect(parts(period.periodStart)).toMatchObject({ year: date.slice(0, 4), month: date.slice(5, 7), day: date.slice(8, 10), hour: "00", minute: "00" });
-      expect(parts(period.periodEnd)).toMatchObject({ year: nextDate.slice(0, 4), month: nextDate.slice(5, 7), day: nextDate.slice(8, 10), hour: "00", minute: "00" });
+      expect(parts(period.periodStart)).toMatchObject({
+        year: date.slice(0, 4),
+        month: date.slice(5, 7),
+        day: date.slice(8, 10),
+        hour: "00",
+        minute: "00",
+      });
+      expect(parts(period.periodEnd)).toMatchObject({
+        year: nextDate.slice(0, 4),
+        month: nextDate.slice(5, 7),
+        day: nextDate.slice(8, 10),
+        hour: "00",
+        minute: "00",
+      });
       expect(period.periodEnd).toBe(next.periodStart);
-      expect(parts(period.softCloseAt)).toMatchObject({ year: nextDate.slice(0, 4), month: nextDate.slice(5, 7), day: nextDate.slice(8, 10), hour: "08", minute: "00" });
+      expect(parts(period.softCloseAt)).toMatchObject({
+        year: nextDate.slice(0, 4),
+        month: nextDate.slice(5, 7),
+        day: nextDate.slice(8, 10),
+        hour: "08",
+        minute: "00",
+      });
     }
   });
 

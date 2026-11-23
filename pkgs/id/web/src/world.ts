@@ -3,6 +3,7 @@
 import { createFormPresenter, type FormPresenter, type FormSurface } from "./world-form";
 import { advanceHostViewCursor, parseWorldHostViewPage, parseWorldInviteResponse } from "./world-http";
 import { terminalBytesForKey } from "./world-keyboard";
+import { decodeViewPatch } from "./screen-codec";
 import { parseWorldSeed } from "./world-seed";
 import { applyScreenPatch, renderWorldSurface, type ScreenPatch, type ScreenSurface } from "./world-surface";
 
@@ -40,6 +41,7 @@ type WorldFrame = {
   view_revision?: number;
   base_view_revision?: number;
   patch?: ScreenPatch;
+  resume_token?: string | null;
   invite?: { capability?: string; participant_id?: number; display_name?: string };
   capability?: string;
   records?: Record<string, unknown>;
@@ -135,6 +137,8 @@ function initWorld(): void {
   let cursor = 0;
   let renderedSurface: ScreenSurface | null = null;
   let renderedViewRevision: number | null = null;
+  let resumeToken: string | null = null;
+  let sentViewport: { width: number; height: number } | null = null;
   let records: Record<string, unknown> = {};
   let recordsAfter: string | null = null;
   let recordsPending = false;
@@ -233,6 +237,25 @@ function initWorld(): void {
     inviteOutput.hidden = false;
   };
 
+  const receiveBinary = (bytes: Uint8Array) => {
+    // Negotiated binary screen transport (#12242, Rust half #12655):
+    // a binary message is one versioned MessagePack view patch,
+    // applied exactly like a JSON view frame's patch. Anything
+    // undecodable or inapplicable falls back to asking for a full
+    // view, the same recovery as a JSON patch whose base mismatches.
+    const frame = decodeViewPatch(bytes);
+    if (frame && renderedSurface && renderedViewRevision === frame.base_view_revision) {
+      const patched = applyScreenPatch(renderedSurface, frame.patch);
+      if (patched && renderWorldSurface(view, patched)) {
+        renderedSurface = patched;
+        renderedViewRevision = frame.view_revision;
+        resumeToken = frame.resume_token;
+        return;
+      }
+    }
+    sendViewport(true);
+  };
+
   const receive = (raw: string) => {
     let parsed: unknown;
     try {
@@ -292,7 +315,8 @@ function initWorld(): void {
           (frame.view_revision !== undefined && frame.view_revision !== null && !isFiniteNumber(frame.view_revision)) ||
           (frame.base_view_revision !== undefined &&
             frame.base_view_revision !== null &&
-            !isFiniteNumber(frame.base_view_revision))
+            !isFiniteNumber(frame.base_view_revision)) ||
+          (frame.resume_token !== undefined && frame.resume_token !== null && typeof frame.resume_token !== "string")
         ) {
           rejectFrame();
           return;
@@ -307,12 +331,14 @@ function initWorld(): void {
             if (patched && renderWorldSurface(view, patched)) {
               renderedSurface = patched;
               renderedViewRevision = frame.view_revision;
+              resumeToken = frame.resume_token ?? null;
               break;
             }
           }
           // A gap or invalid patch means the browser no longer has the exact
-          // base. A same-size resize asks the server to reset with a full view.
-          sendViewport();
+          // base. A forced same-size resize asks the server to reset with a
+          // full view, and the stale unit is dropped with it.
+          sendViewport(true);
           break;
         }
         if (frame.surface && frame.surface.kind === "form") {
@@ -320,6 +346,7 @@ function initWorld(): void {
           // browser's own input manifest; the program supplies data only.
           // The authoritative screen is replaced, so drop its patch base.
           renderedSurface = null;
+          resumeToken = null;
           renderedViewRevision = frame.view_revision ?? null;
           formPresenter.present(frame.surface);
           break;
@@ -328,12 +355,14 @@ function initWorld(): void {
           formPresenter.present(null);
           renderedSurface = frame.surface;
           renderedViewRevision = frame.view_revision ?? null;
+          resumeToken = frame.resume_token ?? null;
           break;
         }
         if (frame.data !== undefined) {
           formPresenter.present(null);
           view.textContent = frame.data;
           renderedSurface = null;
+          resumeToken = null;
           renderedViewRevision = frame.view_revision ?? null;
         }
         break;
@@ -480,14 +509,34 @@ function initWorld(): void {
     }
   });
 
-  const sendViewport = () => {
+  // The resume unit: the token is worth sending only together with the
+  // exact surface and revision it names. All three are retained across
+  // reconnects and dropped together — a catch-up patch applies only to
+  // that exact base, and the host honors the token only for the
+  // viewport that produced the baseline.
+  const hasResumableScreen = () => resumeToken !== null && renderedSurface !== null && renderedViewRevision !== null;
+  const dropResumeUnit = () => {
+    renderedSurface = null;
+    renderedViewRevision = null;
+    resumeToken = null;
+  };
+  const sendViewport = (force = false) => {
     if (hostMode || socket?.readyState !== WebSocket.OPEN) return;
     const fontSize = Number.parseFloat(getComputedStyle(view).fontSize) || 16;
     const width = Math.max(1, Math.min(500, Math.floor(view.clientWidth / (fontSize * 0.6))));
     const height = Math.max(1, Math.min(200, Math.floor(view.clientHeight / fontSize)));
+    const sameAsLast = sentViewport?.width === width && sentViewport.height === height;
+    // A same-size resize resets the host's retained screen baseline.
+    // Keep it out of an unchanged reconnect so the resume token can
+    // catch up against the retained surface instead.
+    if (!force && sameAsLast) return;
+    // A forced resync or a real viewport change invalidates the local
+    // base too: the host answers with a full view at the new size.
+    if (force || sentViewport !== null) dropResumeUnit();
     socket.send(JSON.stringify({ type: "resize", width, height }));
+    sentViewport = { width, height };
   };
-  const viewportObserver = new ResizeObserver(sendViewport);
+  const viewportObserver = new ResizeObserver(() => sendViewport());
   viewportObserver.observe(view);
 
   recordsRefresh.addEventListener("click", requestRecords);
@@ -514,6 +563,7 @@ function initWorld(): void {
     setStatus("Loading read-only host view…");
     renderedSurface = null;
     renderedViewRevision = null;
+    resumeToken = null;
     const world = selectedWorld();
     let after: string | null = null;
     let pages = 0;
@@ -558,6 +608,7 @@ function initWorld(): void {
           }
           renderedSurface = null;
           renderedViewRevision = null;
+          resumeToken = null;
           if (result.surface && renderWorldSurface(view, result.surface)) {
             renderedSurface = result.surface;
           } else if (result.view) {
@@ -595,8 +646,11 @@ function initWorld(): void {
     // (block) this connection's first fetch.
     recordsPending = false;
     recordsRefetch = false;
-    renderedSurface = null;
-    renderedViewRevision = null;
+    // The resume unit (surface, revision, token) deliberately survives
+    // a reconnect: the join below offers the token, and the host
+    // answers with a catch-up patch against exactly this surface — or
+    // a full view when the token misses, which replaces the unit
+    // wholesale. Clearing it here is what wasted the patch round-trip.
     const scheme = location.protocol === "https:" ? "wss:" : "ws:";
     // #1461: every handler captures THIS connection's socket (`ws`) and
     // ignores events once it is no longer the current one. The handlers
@@ -605,6 +659,7 @@ function initWorld(): void {
     // it) scheduled a duplicate reconnect, and a stale socket's open
     // sent its join frame on the newer socket.
     const ws = new WebSocket(`${scheme}//${location.host}${worldSocketPath}`);
+    ws.binaryType = "arraybuffer";
     socket = ws;
     setStatus("Connecting…");
     ws.addEventListener("open", () => {
@@ -617,13 +672,24 @@ function initWorld(): void {
           after: cursor || null,
           world: selectedWorld(),
           screen_patches: true,
+          screen_msgpack: true,
+          resume_token: hasResumableScreen() ? resumeToken : undefined,
+          device_input: {
+            keys: 128,
+            encoder: false,
+            pointer: true,
+            text_entry: "keyboard",
+          },
         }),
       );
-      sendViewport();
+      // A fresh session needs its initial resize. A resumable
+      // reconnect keeps the established viewport unless it changed.
+      sendViewport(!hasResumableScreen());
     });
     ws.addEventListener("message", (event) => {
       if (ws !== socket) return;
-      receive(String(event.data));
+      if (event.data instanceof ArrayBuffer) receiveBinary(new Uint8Array(event.data));
+      else receive(String(event.data));
     });
     ws.addEventListener("error", () => {
       if (ws !== socket) return;

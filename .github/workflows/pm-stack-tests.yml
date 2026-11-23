@@ -98,6 +98,14 @@ jobs:
       - name: Test pm-git-sync rebuild markers
         run: bash pm-stack/scripts/pm-git-sync-markers.test.sh
 
+      # The Android app's release (pm-stack/console/android/release.sh),
+      # against a stand-in for gh: the numbered release is made once and
+      # never changed, the fixed address always ends up on the newest
+      # build and never goes back, and a run started again changes
+      # nothing.
+      - name: Test the Android app's release script
+        run: bash pm-stack/console/android/release.test.sh
+
       # Script suite for #5993: pm-stack/scripts/
       # tailnet-bindings.test.sh (the #781 regression pin for the
       # Pad/Grist tailnet bindings) was run by no workflow. The

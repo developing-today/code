@@ -12,6 +12,11 @@ plugins {
 
 def site = 'https://pm.security.cab'
 def keystore = System.getenv('PM_ANDROID_KEYSTORE')
+// A release names its own version (build.sh works both out from the
+// commit, so a later build always installs over an earlier one). A
+// build with neither set is a check that the project builds.
+def releaseCode = System.getenv('PM_ANDROID_VERSION_CODE')
+def releaseName = System.getenv('PM_ANDROID_VERSION_NAME')
 
 android {
     namespace 'today.developing.pmconsole'
@@ -21,8 +26,8 @@ android {
         applicationId 'today.developing.pmconsole'
         minSdk 24
         targetSdk 34
-        versionCode 3
-        versionName '0.3.0'
+        versionCode releaseCode ? releaseCode.toInteger() : 3
+        versionName releaseName ?: '0.3.0'
         manifestPlaceholders = [hostName: 'pm.security.cab', defaultUrl: "${site}/console/"]
         // The app's half of the link to the site. The site's half is
         // /.well-known/assetlinks.json, served by pm-console.

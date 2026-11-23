@@ -24,7 +24,7 @@ mod pyjson;
 mod render;
 
 #[cfg(feature = "client")]
-pub use cli::run;
+pub use cli::{SEARCH_USAGE, run};
 
 // Verbatim copy of atlas-search's server.rs (parity-guarded): it keeps
 // that crate's whole surface (e.g. `init_service_config`, which this

@@ -23,7 +23,7 @@ use std::time::{Duration, Instant};
 
 use crate::world_caps::{
     CapError, MAX_HTTP_FETCH_REDIRECTS, MAX_HTTP_FETCH_RESPONSE_BYTES, MAX_HTTP_FETCH_TIMEOUT_MS,
-    normalize_http_fetch_host, validate_http_fetch_url,
+    http_fetch_entry_admits, validate_http_fetch_url,
 };
 
 /// One completed fetch: the URL that produced the response (after
@@ -110,17 +110,17 @@ fn perform(url: &str, allowed_hosts: &BTreeSet<String>) -> Result<HttpFetchOutco
                 if hops > MAX_HTTP_FETCH_REDIRECTS {
                     return Err(CapError::failed_with("too_many_redirects"));
                 }
-                // A redirect is a fresh request to a new host: it
-                // passes the same validation and allowlist check
-                // before any connection to that host is made.
+                // A redirect is a fresh request to a new host and
+                // port: it passes the same validation and allowlist
+                // check before any connection to it is made.
                 let next = current
                     .join(&location)
                     .map_err(|_| CapError::bad_args_with("host_not_allowed"))?;
-                let host = validate_http_fetch_url(next.as_str())
+                validate_http_fetch_url(next.as_str())
                     .map_err(|_| CapError::bad_args_with("host_not_allowed"))?;
                 if !allowed_hosts
                     .iter()
-                    .any(|listed| normalize_http_fetch_host(listed) == host)
+                    .any(|listed| http_fetch_entry_admits(listed, next.as_str()))
                 {
                     return Err(CapError::bad_args_with("host_not_allowed"));
                 }

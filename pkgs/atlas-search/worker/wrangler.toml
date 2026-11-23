@@ -1,6 +1,7 @@
 # atlas-search Worker (#6788). Deployed to the fleet Cloudflare
 # account's workers.dev subdomain; the inbound gate is the
 # GATE_TOKEN secret checked in src/index.ts (not public-open).
+# The same gate covers the MCP endpoint (POST /mcp, #8625).
 #
 # Secrets (wrangler secret put; values never in this file):
 #   GATE_TOKEN          inbound bearer gate for /v1/*

@@ -35,17 +35,17 @@ the decisive lines; the full logs are the two run pages above.
 (`id/v0.12.0`) stays blocked until a re-run of this audit shows nine rows
 met.
 
-| # | Criterion (target, from the exit table) | Verdict |
-| - | --------------------------------------- | ------- |
-| 1 | Time from empty directory to a running world a friend can join: under 5 minutes, one command per step, documented | **Unmeasured** |
-| 2 | Adding a host capability: a new provider and its manifest, no edits to `world.rs` | **Met** |
-| 3 | Guest languages with a passing conformance suite: at least 3 (Roc plus two of Rust, TypeScript or AssemblyScript, Zig) | **Not met** |
-| 4 | Upgrading a running program: state preserved across versions, failed upgrade rolls back, proven by a test | **Met** |
-| 5 | Idle worlds on one node: 1,000, with bounded memory per world | **Met** |
-| 6 | Active worlds on one node: 100 worlds at 20 events per second each, with p99 command latency under 50 ms | **Not met** |
-| 7 | Reproducing a world: `world.toml` plus a module hash recreates grants, ceilings, profile, schedules, and invites | **Met** |
-| 8 | Bandwidth for a typical redraw: under 10 percent of the full-frame size (baseline from F11.9) | **Met** |
-| 9 | Authority and sandbox: no new path to files, network, or processes except through a named, ceilinged provider | **Not met** |
+| #   | Criterion (target, from the exit table)                                                                                | Verdict        |
+| --- | ---------------------------------------------------------------------------------------------------------------------- | -------------- |
+| 1   | Time from empty directory to a running world a friend can join: under 5 minutes, one command per step, documented      | **Unmeasured** |
+| 2   | Adding a host capability: a new provider and its manifest, no edits to `world.rs`                                      | **Met**        |
+| 3   | Guest languages with a passing conformance suite: at least 3 (Roc plus two of Rust, TypeScript or AssemblyScript, Zig) | **Not met**    |
+| 4   | Upgrading a running program: state preserved across versions, failed upgrade rolls back, proven by a test              | **Met**        |
+| 5   | Idle worlds on one node: 1,000, with bounded memory per world                                                          | **Met**        |
+| 6   | Active worlds on one node: 100 worlds at 20 events per second each, with p99 command latency under 50 ms               | **Not met**    |
+| 7   | Reproducing a world: `world.toml` plus a module hash recreates grants, ceilings, profile, schedules, and invites       | **Met**        |
+| 8   | Bandwidth for a typical redraw: under 10 percent of the full-frame size (baseline from F11.9)                          | **Met**        |
+| 9   | Authority and sandbox: no new path to files, network, or processes except through a named, ceilinged provider          | **Not met**    |
 
 ## Row 1 — Empty directory to a joinable world in under 5 minutes: unmeasured
 

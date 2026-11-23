@@ -58,6 +58,10 @@ var implementedEffectProbes = map[string]string{
 	"script.devshell":                    "TestScriptDevshellIsReachableFromTheEnvironment",
 	"script.captureConsole":              "TestScriptCaptureConsoleOffDropsConsoleOutput",
 	"script.check":                       "TestScriptTypecheckOnRefusesATypeError",
+	"script.checkOnError":                "TestScriptCheckOnErrorDecidesOnACheckError",
+	"script.importsCrossProject":         "TestScriptImportsCrossProjectDecidesAForeignProjectEdge",
+	"script.importsOnMissing":            "TestScriptImportsOnMissingDecidesOnAMissingPackage",
+	"script.importsNetwork":              "TestScriptImportsNetworkDecidesWhetherToPinAnUndeclaredPackage",
 	"logging.file":                       "TestLoggingFileOffWritesNoDurableLog",
 	"plumbing.strictUnknownKeys":         "TestStrictUnknownKeysRefusesATypo",
 	"paths.state":                        "TestStateDirectoryIsReachableAsASetting",
@@ -255,6 +259,9 @@ var implementedEffectProbes = map[string]string{
 	"http.shutdownGrace":                 "TestHTTPShutdownGraceBoundsHowLongAStopWaits",
 	"http.requestTimeout":                "TestHTTPRequestTimeoutBoundsAClientCall",
 	"http.streamBufferMax":               "TestHTTPStreamBufferMaxEndsAnOversizedEventLine",
+	"http.idleConns":                     "TestHTTPIdleConnectionPoolSettingsChangeReuse",
+	"http.remoteIdleConns":               "TestHTTPIdleConnectionPoolSettingsChangeReuse",
+	"http.idleConnTimeout":               "TestHTTPIdleConnTimeoutExpiresAnIdleClientConnection",
 	"transport.bearerToken":              "TestTransportBearerTokenGatesTheDaemon",
 	"transport.allowedOrigins":           "TestTransportAllowedOriginsAreServed",
 	"transport.sessionMetaKeys":          "TestTransportSessionMetaKeysNameTheSession",
@@ -288,6 +295,10 @@ var effectProbeFuncs = map[string]func(*testing.T){
 	"TestScriptDevshellIsReachableFromTheEnvironment":                                TestScriptDevshellIsReachableFromTheEnvironment,
 	"TestScriptPrefixIsReachableFromTheEnvironment":                                  TestScriptPrefixIsReachableFromTheEnvironment,
 	"TestScriptTypecheckOnRefusesATypeError":                                         TestScriptTypecheckOnRefusesATypeError,
+	"TestScriptCheckOnErrorDecidesOnACheckError":                                     TestScriptCheckOnErrorDecidesOnACheckError,
+	"TestScriptImportsCrossProjectDecidesAForeignProjectEdge":                        TestScriptImportsCrossProjectDecidesAForeignProjectEdge,
+	"TestScriptImportsOnMissingDecidesOnAMissingPackage":                             TestScriptImportsOnMissingDecidesOnAMissingPackage,
+	"TestScriptImportsNetworkDecidesWhetherToPinAnUndeclaredPackage":                 TestScriptImportsNetworkDecidesWhetherToPinAnUndeclaredPackage,
 	"TestSearchLimitCapsTheResults":                                                  TestSearchLimitCapsTheResults,
 	"TestStateDirectoryIsReachableAsASetting":                                        TestStateDirectoryIsReachableAsASetting,
 	"TestStrictUnknownKeysRefusesATypo":                                              TestStrictUnknownKeysRefusesATypo,
@@ -469,6 +480,8 @@ var effectProbeFuncs = map[string]func(*testing.T){
 	"TestHTTPRequestTimeoutBoundsAClientCall":                                        TestHTTPRequestTimeoutBoundsAClientCall,
 	"TestHTTPShutdownGraceBoundsHowLongAStopWaits":                                   TestHTTPShutdownGraceBoundsHowLongAStopWaits,
 	"TestHTTPStreamBufferMaxEndsAnOversizedEventLine":                                TestHTTPStreamBufferMaxEndsAnOversizedEventLine,
+	"TestHTTPIdleConnectionPoolSettingsChangeReuse":                                  TestHTTPIdleConnectionPoolSettingsChangeReuse,
+	"TestHTTPIdleConnTimeoutExpiresAnIdleClientConnection":                           TestHTTPIdleConnTimeoutExpiresAnIdleClientConnection,
 	"TestTransportAllowedOriginsAreServed":                                           TestTransportAllowedOriginsAreServed,
 	"TestTransportBearerTokenGatesTheDaemon":                                         TestTransportBearerTokenGatesTheDaemon,
 	"TestTransportSSEKeepAliveCommentsOnAQuietStream":                                TestTransportSSEKeepAliveCommentsOnAQuietStream,
@@ -587,6 +600,158 @@ func TestScriptTypecheckOnRefusesATypeError(t *testing.T) {
 	out, err := e.try("run", script)
 	if err == nil {
 		t.Fatalf("script.typecheck=on should refuse a type error:\n%s", out)
+	}
+}
+
+// TestScriptCheckOnErrorDecidesOnACheckError is the effect probe for
+// script.checkOnError. A script with a type error is checked under Deno.
+// Oracle: by default (fail) the run stops before running and reports the
+// error; warn reports it and still runs; run stays quiet and runs.
+func TestScriptCheckOnErrorDecidesOnACheckError(t *testing.T) {
+	testsupport.RequireBinary(t, "deno")
+	e := newEnv(t, oneServer)
+	script := filepath.Join(e.dir, "bad.ts")
+	src := "const n: number = \"not a number\";\n" +
+		"export default function () { return n; }\n"
+	if err := os.WriteFile(script, []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	e.setenv("MCPX_SCRIPT_CHECK=types")
+
+	if out, err := e.try("run", script); err == nil || !strings.Contains(out, "does not type check") {
+		t.Fatalf("default (fail) should refuse and report a type error (err=%v):\n%s", err, out)
+	}
+
+	e.setenv("MCPX_SCRIPT_CHECK_ON_ERROR=warn")
+	out, err := e.try("run", script)
+	if err != nil {
+		t.Fatalf("warn should run the script: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "does not type check") || !strings.Contains(out, "not a number") {
+		t.Fatalf("warn should report the error and run the script:\n%s", out)
+	}
+
+	e.setenv("MCPX_SCRIPT_CHECK_ON_ERROR=run")
+	out, err = e.try("run", script)
+	if err != nil {
+		t.Fatalf("run should run the script: %v\n%s", err, out)
+	}
+	if strings.Contains(out, "does not type check") || !strings.Contains(out, "not a number") {
+		t.Fatalf("run should stay quiet and run the script:\n%s", out)
+	}
+}
+
+// TestScriptImportsCrossProjectDecidesAForeignProjectEdge is the effect
+// probe for script.importsCrossProject. A script in one project imports a
+// module from a second project whose manifest declares a package, so the
+// cross-project policy decides whether that foreign subset is isolated,
+// merged, or ignored.
+func TestScriptImportsCrossProjectDecidesAForeignProjectEdge(t *testing.T) {
+	testsupport.RequireBinary(t, "deno")
+	e := newEnv(t, oneServer)
+	if err := os.MkdirAll(filepath.Join(e.dir, "a"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(e.dir, "b"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(e.dir, "a", "main.ts"), []byte("import \"../b/helper.ts\";\nconsole.log(\"ran-main\")\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(e.dir, "b", "helper.ts"), []byte("import \"foreign-dep\";\nconsole.log(\"ran-helper\")\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(e.dir, "a", "package.json"), []byte(`{"dependencies":{}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(e.dir, "b", "package.json"), []byte(`{"dependencies":{"foreign-dep":"1.2.3"}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	script := filepath.Join(e.dir, "a", "main.ts")
+	e.setenv("MCPX_SCRIPT_CHECK=off")
+	e.setenv("MCPX_SCRIPT_IMPORTS_ON_MISSING=install")
+
+	run := func(mode string) string {
+		t.Helper()
+		e.setenv("MCPX_SCRIPT_IMPORTS_CROSS_PROJECT=" + mode)
+		out, _ := e.try("run", script)
+		return out
+	}
+
+	if out := run("isolate"); !strings.Contains(out, "isolated dependency subset") {
+		t.Fatalf("isolate should report an isolated foreign subset:\n%s", out)
+	}
+	if out := run("merge"); !strings.Contains(out, "resolved dependency set includes") {
+		t.Fatalf("merge should fold the foreign package into the root set:\n%s", out)
+	}
+	if out := run("ignore"); !strings.Contains(out, "ignored import") {
+		t.Fatalf("ignore should report the ignored foreign import:\n%s", out)
+	}
+}
+
+// TestScriptImportsOnMissingDecidesOnAMissingPackage is the effect probe
+// for script.importsOnMissing. A script imports a package declared (but
+// not installed) in its own manifest, so the missing-package policy
+// decides whether the run stops, warns, or records the set.
+func TestScriptImportsOnMissingDecidesOnAMissingPackage(t *testing.T) {
+	testsupport.RequireBinary(t, "deno")
+	e := newEnv(t, oneServer)
+	if err := os.WriteFile(filepath.Join(e.dir, "main.ts"), []byte("import \"foreign-dep\";\nconsole.log(\"ran\")\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(e.dir, "package.json"), []byte(`{"dependencies":{"foreign-dep":"1.2.3"}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	script := filepath.Join(e.dir, "main.ts")
+	e.setenv("MCPX_SCRIPT_CHECK=off")
+	e.setenv("MCPX_SCRIPT_IMPORTS_NETWORK=off")
+
+	run := func(mode string) string {
+		t.Helper()
+		e.setenv("MCPX_SCRIPT_IMPORTS_ON_MISSING=" + mode)
+		out, _ := e.try("run", script)
+		return out
+	}
+
+	if out := run("fail"); !strings.Contains(out, "unresolved import") || !strings.Contains(out, "but is not installed") {
+		t.Fatalf("fail should report an unresolved, not-installed import:\n%s", out)
+	}
+	if out := run("warn"); !strings.Contains(out, "dependency was not installed") {
+		t.Fatalf("warn should report a non-fatal missing dependency:\n%s", out)
+	}
+	if out := run("install"); !strings.Contains(out, "stage 2 records the set but does not install it") {
+		t.Fatalf("install should record the set without installing:\n%s", out)
+	}
+}
+
+// TestScriptImportsNetworkDecidesWhetherToPinAnUndeclaredPackage is the
+// effect probe for script.importsNetwork. A script imports a package
+// with no manifest entry, so the network policy decides whether mcpx
+// tries to pin it from the registry or refuses up front.
+func TestScriptImportsNetworkDecidesWhetherToPinAnUndeclaredPackage(t *testing.T) {
+	testsupport.RequireBinary(t, "deno")
+	e := newEnv(t, oneServer)
+	if err := os.WriteFile(filepath.Join(e.dir, "main.ts"), []byte("import \"undeclared-pkg-xyz\";\nconsole.log(\"ran\")\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(e.dir, "package.json"), []byte(`{"dependencies":{}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	script := filepath.Join(e.dir, "main.ts")
+	e.setenv("MCPX_SCRIPT_CHECK=off")
+	e.setenv("MCPX_SCRIPT_IMPORTS_ON_MISSING=fail")
+
+	if out, _ := func() (string, error) {
+		e.setenv("MCPX_SCRIPT_IMPORTS_NETWORK=off")
+		return e.try("run", script)
+	}(); !strings.Contains(out, "script.importsNetwork is off") {
+		t.Fatalf("off should refuse up front naming the disabled network:\n%s", out)
+	}
+	if out, _ := func() (string, error) {
+		e.setenv("MCPX_SCRIPT_IMPORTS_NETWORK=on")
+		return e.try("run", script)
+	}(); !strings.Contains(out, "cannot pin") {
+		t.Fatalf("on should attempt to pin (and report the outcome):\n%s", out)
 	}
 }
 
@@ -1212,6 +1377,10 @@ func TestExecMaxOutputBytesCapsStdoutFromTheEnvironment(t *testing.T) {
 		t.Helper()
 		e := newEnv(t, oneServer)
 		e.setenv(append([]string{"MCPX_EXEC_OUTPUT=structured"}, env...)...)
+		// Absorb the one-time "reading tool schemas for the first
+		// time..." notice a cold sandbox prints to the merged capture,
+		// as TestExecOutputShapesTheResultFromTheEnvironment does.
+		_ = e.run("exec", `console.log("warmup")`)
 		got := e.run("exec", `console.log("x".repeat(2000))`)
 		var doc map[string]any
 		if err := json.Unmarshal([]byte(strings.TrimSpace(got)), &doc); err != nil {
@@ -3583,17 +3752,33 @@ func lsDemoRow(t *testing.T, out string) []string {
 
 // TestDaemonWarmReadsTheServersAtStartupFromTheEnvironment is the effect
 // probe for daemon.warm. The first ls auto-starts a daemon. Warming (the
-// default), it has read demo's schemas by the time ls answers: nine tools
-// and a running instance. With daemon.warm=false nothing has read the
-// server yet, so the row is unread, with no tools and nothing live.
+// default), it reads demo's schemas on its own: tools and a running
+// instance appear without any call. With daemon.warm=false nothing reads
+// the server, so the row stays unread, with no tools and nothing live, for
+// at least as long as the warm daemon took.
+//
+// Warming is asynchronous by design (Server.WarmAsync: "without delaying
+// the listener"), so the first ls can answer before it finishes. The test
+// used to assert on that first answer and failed whenever ls won the race,
+// which on macOS was about two runs in three.
 func TestDaemonWarmReadsTheServersAtStartupFromTheEnvironment(t *testing.T) {
-	if row := lsDemoRow(t, newEnv(t, oneServer).run("ls")); row[1] == "0" || row[5] != "running" {
-		t.Fatalf("oracle: a warmed daemon should list demo's tools and a running instance: %v", row)
+	warm := newEnv(t, oneServer)
+	start := time.Now()
+	deadline := start.Add(30 * time.Second)
+	for row := lsDemoRow(t, warm.run("ls")); row[1] == "0" || row[5] != "running"; row = lsDemoRow(t, warm.run("ls")) {
+		if time.Now().After(deadline) {
+			t.Fatalf("oracle: a warmed daemon should come to list demo's tools and a running instance: %v", row)
+		}
+		time.Sleep(100 * time.Millisecond)
 	}
+	took := time.Since(start)
+
 	cold := newEnv(t, oneServer)
 	cold.setenv("MCPX_DAEMON_WARM=false")
+	cold.run("ls")
+	time.Sleep(took + 500*time.Millisecond)
 	if row := lsDemoRow(t, cold.run("ls")); row[1] != "0" || row[4] != "0" || row[5] != "unread" {
-		t.Fatalf("with daemon.warm=false demo should be unread, with no tools and nothing live: %v", row)
+		t.Fatalf("with daemon.warm=false demo should stay unread, with no tools and nothing live: %v", row)
 	}
 }
 
@@ -3739,15 +3924,28 @@ func TestAutostartIdleExitStopsAnIdleDaemonFromTheEnvironment(t *testing.T) {
 	}
 }
 
-// readAfterRenewal stores one artifact under a 2s retention swept every
-// 200ms (plus env), reads it at 1.5s, and returns the status of a second
-// read at 3s: 200 if the first read renewed it past its expiry, 404 if
-// it was collected.
+// readAfterRenewal stores one artifact under a 6s retention swept every
+// 200ms (plus env), reads it 4.5s after the store began, and returns the
+// status of a second read: 200 if the first read renewed it past its
+// expiry, 404 if it was collected. Callers set idleTtl=9s (renewal from
+// the first read reaches past the second) and maxAge=6s (the cap is the
+// plain retention again).
+//
+// The schedule used to be 2s/1.5s/3s, timed from after the store and a
+// status call: under a loaded nix build the store plus that call took
+// long enough that the "1.5s" read landed after the 2s expiry, and the
+// first read 404ed. Times are now taken from the start of the store, the
+// unit is three times larger, and the second read waits until the
+// artifact is certainly past its unrenewed expiry, measured from when
+// the store returned.
 func readAfterRenewal(t *testing.T, env ...string) int {
 	t.Helper()
+	const unit = 3 * time.Second
 	e := newEnv(t, oneServer)
-	e.setenv(append([]string{"MCPX_ARTIFACTS_TTL=2s", "MCPX_ARTIFACTS_GC_INTERVAL=200ms"}, env...)...)
+	e.setenv(append([]string{"MCPX_ARTIFACTS_TTL=6s", "MCPX_ARTIFACTS_GC_INTERVAL=200ms"}, env...)...)
+	began := time.Now()
 	e.run("exec", artifactScript)
+	stored := time.Now()
 	c := e.socketClient(t)
 	get := func(path string) (int, []byte) {
 		t.Helper()
@@ -3769,37 +3967,47 @@ func readAfterRenewal(t *testing.T, env ...string) int {
 		t.Fatalf("one artifact should be listed (%v):\n%s", err, b)
 	}
 	id := doc.Artifacts[0].ID
-	time.Sleep(1500 * time.Millisecond)
+	time.Sleep(time.Until(began.Add(unit * 3 / 2)))
+	firstRead := time.Now()
 	if code, b := get("/v1/artifacts/" + id); code != http.StatusOK {
 		t.Fatalf("the first read, inside the retention, should succeed: %d %s", code, b)
 	}
-	time.Sleep(1500 * time.Millisecond)
+	// Past the unrenewed expiry (stored+2 units, plus a sweep), and well
+	// inside a renewal from the first read (firstRead+3 units).
+	second := firstRead.Add(unit * 3 / 2)
+	if expired := stored.Add(2*unit + time.Second); expired.After(second) {
+		second = expired
+	}
+	if !second.Before(firstRead.Add(3 * unit)) {
+		t.Fatalf("the store took %v, too long to tell a renewal from an expiry", stored.Sub(began))
+	}
+	time.Sleep(time.Until(second))
 	code, _ := get("/v1/artifacts/" + id)
 	return code
 }
 
 // TestArtifactsIdleTTLRenewsAReadArtifactFromTheEnvironment is the effect
-// probe for artifacts.idleTtl. Under a 2s absolute retention an artifact
-// read at 1.5s is gone at 3s by default (no renewal); with idleTtl=3s the
-// read renews it, so the 3s read still finds it.
+// probe for artifacts.idleTtl. Under a 6s absolute retention an artifact
+// read at 4.5s is gone at 9s by default (no renewal); with idleTtl=9s the
+// read renews it, so the 9s read still finds it.
 func TestArtifactsIdleTTLRenewsAReadArtifactFromTheEnvironment(t *testing.T) {
 	if code := readAfterRenewal(t); code != http.StatusNotFound {
 		t.Fatalf("oracle: without renewal the artifact should have expired, got %d", code)
 	}
-	if code := readAfterRenewal(t, "MCPX_ARTIFACTS_IDLE_TTL=3s"); code != http.StatusOK {
+	if code := readAfterRenewal(t, "MCPX_ARTIFACTS_IDLE_TTL=9s"); code != http.StatusOK {
 		t.Fatalf("with artifacts.idleTtl=3s the read should have renewed the artifact, got %d", code)
 	}
 }
 
 // TestArtifactsMaxAgeCapsARenewedArtifactFromTheEnvironment is the
-// effect probe for artifacts.maxAge. With idleTtl=3s a read at 1.5s
-// renews the artifact past 3s under the default ceiling; a 2s maxAge
-// caps the renewal at creation plus 2s, so it is gone at 3s.
+// effect probe for artifacts.maxAge. With idleTtl=9s a read at 4.5s
+// renews the artifact past 9s under the default ceiling; a 6s maxAge
+// caps the renewal at creation plus 6s, so it is gone at 9s.
 func TestArtifactsMaxAgeCapsARenewedArtifactFromTheEnvironment(t *testing.T) {
-	if code := readAfterRenewal(t, "MCPX_ARTIFACTS_IDLE_TTL=3s"); code != http.StatusOK {
+	if code := readAfterRenewal(t, "MCPX_ARTIFACTS_IDLE_TTL=9s"); code != http.StatusOK {
 		t.Fatalf("oracle: under the default ceiling the renewed artifact should survive, got %d", code)
 	}
-	if code := readAfterRenewal(t, "MCPX_ARTIFACTS_IDLE_TTL=3s", "MCPX_ARTIFACTS_MAX_AGE=2s"); code != http.StatusNotFound {
+	if code := readAfterRenewal(t, "MCPX_ARTIFACTS_IDLE_TTL=9s", "MCPX_ARTIFACTS_MAX_AGE=6s"); code != http.StatusNotFound {
 		t.Fatalf("with artifacts.maxAge=2s the renewal should be capped and the artifact collected, got %d", code)
 	}
 }
@@ -5090,8 +5298,26 @@ func TestDaemonAddressIsReachableFromTheEnvironment(t *testing.T) {
 // fails and names "disabled by daemon.autostart" and no socket
 // appears; at the default, `ls` succeeds and leaves a socket.
 func TestDaemonAutostartIsReachableFromTheEnvironment(t *testing.T) {
+	// A socket in the state directory, or the one a daemon's info record
+	// says it bound. A long state path moves the socket to a private
+	// runtime directory (daemon.socketPath), which is every nix sandbox
+	// build: globbing the state directory alone found nothing there and
+	// failed the aarch64-darwin build although the daemon was up.
 	socketsIn := func(e *env) []string {
 		socks, _ := filepath.Glob(filepath.Join(e.dir, "state", "*.sock"))
+		infos, _ := filepath.Glob(filepath.Join(e.dir, "state", "daemon*.json"))
+		for _, info := range infos {
+			var rec struct {
+				Socket string `json:"socket"`
+			}
+			b, err := os.ReadFile(info)
+			if err != nil || json.Unmarshal(b, &rec) != nil || rec.Socket == "" {
+				continue
+			}
+			if fi, err := os.Stat(rec.Socket); err == nil && fi.Mode()&os.ModeSocket != 0 {
+				socks = append(socks, rec.Socket)
+			}
+		}
 		return socks
 	}
 

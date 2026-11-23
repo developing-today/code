@@ -1511,7 +1511,41 @@ pub(crate) fn verb_sweep(t: &TursoBackend, req: &Value) -> Value {
         if let Some(s) = quarantine_summary {
             out["quarantine_recheck"] = s;
         }
-        if expired > 0 || do_revalidate || do_prune || dep_checked > 0 || quarantine_checked > 0 {
+        // #9177: the closed-bound detective rides the sweep too —
+        // the same minutely timer already POSTs /sweep, so every
+        // bound (session-stamped claimed|parked) task gets its
+        // issue read on GitHub once per cycle and crossed with the
+        // closure log; a closed issue without the bound task's
+        // completion record raises one throat alert. Opt out per
+        // call: closed_bound=false. The detective never fails the
+        // sweep: its errors (store, unreadable log) are reported
+        // inside its own summary and the cycle continues.
+        let closed_bound_summary = if req_bool(req, "closed_bound").unwrap_or(true) {
+            match run_closed_bound_checks(
+                t,
+                req_i64(req, "closed_bound_limit").unwrap_or(200),
+            ) {
+                Ok(s) => Some(s),
+                Err(e) => Some(json!({"error": e})),
+            }
+        } else {
+            None
+        };
+        let closed_bound_missing = closed_bound_summary
+            .as_ref()
+            .and_then(|s| s.get("missing_record"))
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0);
+        if let Some(s) = closed_bound_summary {
+            out["closed_bound"] = s;
+        }
+        if expired > 0
+            || do_revalidate
+            || do_prune
+            || dep_checked > 0
+            || quarantine_checked > 0
+            || closed_bound_missing > 0
+        {
             event(t, Some("fleet-sweeper"), None, "sweep", &out)?;
         }
         Ok(out)
@@ -1532,6 +1566,12 @@ pub(crate) fn verb_sweep(t: &TursoBackend, req: &Value) -> Value {
 /// (Drew's doctrine, 2026-11-07: a done task means triage or a slice, not
 /// a resolved issue), and neither is a task in another queue.
 ///
+/// The caller may also supply `pulls` (`[{"number": 123}]`, #12280): the
+/// answer then carries `covered_pulls` / `uncovered_pulls` under the same
+/// live-task rule, matched on the PR dedupe-key classes (the warden's
+/// `pr` key and the reconciliation's `merge-watch` key). Callers that do
+/// not send `pulls` get the issue-only answer, unchanged.
+///
 /// Read-only by construction: it never writes tasks or events, so it is
 /// safe to run on a schedule and safe to run in observe mode. The caller
 /// decides what to enqueue; the dedupe key makes that idempotent.
@@ -1548,6 +1588,13 @@ pub(crate) fn verb_coverage(t: &TursoBackend, req: &Value) -> Value {
         Some(a) => a.clone(),
         None => return fail(2, "coverage: issues must be an array".to_string()),
     };
+    let pulls: Option<Vec<Value>> = match req.get("pulls") {
+        None => None,
+        Some(v) => match v.as_array() {
+            Some(a) => Some(a.clone()),
+            None => return fail(2, "coverage: pulls must be an array".to_string()),
+        },
+    };
     let work = (|| -> Result<Value, TErr> {
         // One query for every live task in the queue that carries an
         // issue dedupe key; the match is done in Rust so both the
@@ -1561,6 +1608,8 @@ pub(crate) fn verb_coverage(t: &TursoBackend, req: &Value) -> Value {
         )?;
         let mut live: std::collections::HashMap<i64, (i64, String)> =
             std::collections::HashMap::new();
+        let mut live_prs: std::collections::HashMap<i64, (i64, String)> =
+            std::collections::HashMap::new();
         for r in &rows {
             let id = r.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
             let status = r
@@ -1572,7 +1621,10 @@ pub(crate) fn verb_coverage(t: &TursoBackend, req: &Value) -> Value {
                 continue;
             };
             if let Some(n) = issue_number_for_repo(key, &repo) {
-                live.entry(n).or_insert((id, status));
+                live.entry(n).or_insert((id, status.clone()));
+            }
+            if let Some(n) = pr_number_for_repo(key, &repo) {
+                live_prs.entry(n).or_insert((id, status));
             }
         }
         let mut uncovered: Vec<Value> = Vec::new();
@@ -1595,7 +1647,7 @@ pub(crate) fn verb_coverage(t: &TursoBackend, req: &Value) -> Value {
                 })),
             }
         }
-        Ok(json!({
+        let mut out = json!({
             "queue": queue,
             "repo": repo,
             "open_issues": issues.len(),
@@ -1603,12 +1655,50 @@ pub(crate) fn verb_coverage(t: &TursoBackend, req: &Value) -> Value {
             "uncovered": uncovered.len(),
             "uncovered_issues": uncovered,
             "covered_issues": covered,
-        }))
+        });
+        if let Some(pulls) = &pulls {
+            let mut covered_pulls: Vec<Value> = Vec::new();
+            let mut uncovered_pulls: Vec<Value> = Vec::new();
+            for pr in pulls {
+                let Some(n) = pr.get("number").and_then(|v| v.as_i64()) else {
+                    continue;
+                };
+                match live_prs.get(&n) {
+                    Some((id, status)) => covered_pulls.push(json!({
+                        "number": n,
+                        "task": id,
+                        "status": status,
+                    })),
+                    None => uncovered_pulls.push(json!({ "number": n })),
+                }
+            }
+            out["covered_pulls"] = json!(covered_pulls);
+            out["uncovered_pulls"] = json!(uncovered_pulls);
+        }
+        Ok(out)
     })();
     match work {
         Ok(v) => ok(v),
         Err(e) => terr(e),
     }
+}
+
+/// The number after a `:<repo>:<class>:` marker in a dedupe key, with
+/// the shared tail rule: what follows the digits must be empty or a
+/// further `:`-separated suffix (e.g. `:dispatch:<x>`), so a malformed
+/// key like `…:issue:12abc` cannot silently claim coverage for 12.
+fn number_after_marker(key: &str, marker: &str) -> Option<i64> {
+    let start = key.find(marker)? + marker.len();
+    let rest = &key[start..];
+    let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+    if digits.is_empty() {
+        return None;
+    }
+    let tail = &rest[digits.len()..];
+    if !(tail.is_empty() || tail.starts_with(':')) {
+        return None;
+    }
+    digits.parse::<i64>().ok()
 }
 
 /// Extract the issue number from a repo-health dedupe key for `repo`.
@@ -1618,20 +1708,18 @@ pub(crate) fn verb_coverage(t: &TursoBackend, req: &Value) -> Value {
 /// variants (`…:issue:<n>:dispatch:<x>`) and the legacy repo-name aliases
 /// the reconciliation run of 2026-11-07 had to match by hand.
 pub(crate) fn issue_number_from_dedupe(key: &str, repo: &str) -> Option<i64> {
-    let marker = format!(":{repo}:issue:");
-    let start = key.find(&marker)? + marker.len();
-    let rest = &key[start..];
-    let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
-    if digits.is_empty() {
-        return None;
-    }
-    // Reject `:issue:12abc` style tails only when the tail is not a
-    // known suffix separator.
-    let tail = &rest[digits.len()..];
-    if !(tail.is_empty() || tail.starts_with(':')) {
-        return None;
-    }
-    digits.parse::<i64>().ok()
+    number_after_marker(key, &format!(":{repo}:issue:"))
+}
+
+/// Extract the PR number from a repo-health dedupe key for `repo`.
+///
+/// Both PR-naming key classes carry the same `:<repo>:pr:<n>` segment:
+/// the stale-PR warden's shepherd key `repo-health:v1:pr:<repo>:pr:<n>`
+/// and the coverage reconciliation's merge-watch key
+/// `repo-health:v1:merge-watch:<repo>:pr:<n>` (#4951). One marker parse
+/// covers both, so a live task of either family is PR coverage (#12280).
+pub(crate) fn pr_number_from_dedupe(key: &str, repo: &str) -> Option<i64> {
+    number_after_marker(key, &format!(":{repo}:pr:"))
 }
 
 /// The other name a repository's issue dedupe keys may carry.
@@ -1658,6 +1746,12 @@ pub(crate) fn legacy_alias(repo: &str) -> Option<&'static str> {
 pub(crate) fn issue_number_for_repo(key: &str, repo: &str) -> Option<i64> {
     issue_number_from_dedupe(key, repo)
         .or_else(|| legacy_alias(repo).and_then(|alias| issue_number_from_dedupe(key, alias)))
+}
+
+/// PR number from a key under `repo` or any legacy alias of it.
+pub(crate) fn pr_number_for_repo(key: &str, repo: &str) -> Option<i64> {
+    pr_number_from_dedupe(key, repo)
+        .or_else(|| legacy_alias(repo).and_then(|alias| pr_number_from_dedupe(key, alias)))
 }
 
 pub(crate) fn touch_worker(

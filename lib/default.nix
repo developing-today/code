@@ -898,6 +898,9 @@ let
               self = result // {
                 outPath = "${inputs.self}/pkgs/id";
               };
+              # Root NixOS runtime output; the ID flake's named test
+              # checks remain available and run through id-check CI.
+              checkRuntimePackages = false;
             }
           );
         in
@@ -1448,6 +1451,27 @@ let
     }
   );
 
+  # Archer Slack collector (pkgs/fleet/archer-slack/collector;
+  # code#2137 S2): the Socket Mode listener the laptop's
+  # archer-slack-collector user service runs (nixos/services/
+  # archer-slack callPackages the same file); this output makes
+  # `nix build .#archer-slack-collector` the package-level check,
+  # per the #8171 app + derivation + service surface.
+  make-archer-slack = inputs.flake-utils.lib.eachDefaultSystem (
+    system:
+    let
+      pkgs = import inputs.nixpkgs-unstable { inherit system; };
+      archerSlackCollector = pkgs.callPackage ../pkgs/fleet/archer-slack/collector/package.nix { };
+    in
+    {
+      packages.archer-slack-collector = archerSlackCollector;
+      apps.archer-slack-collector = {
+        type = "app";
+        program = "${archerSlackCollector}/bin/archer-slack-collector";
+      };
+    }
+  );
+
   # deploy registry + CLI (pkgs/deploy; issue #5766 slice 1):
   # deployTargets merges this repo's service definitions (design
   # 2026-11-04 section 3); the checks pin the packet's acceptance --
@@ -1582,6 +1606,7 @@ let
               grep -q "queue-transport-alert" list.txt
               grep -q "message-bridge" list.txt
               grep -q "secrets-broker" list.txt
+              grep -q "quota-recorder" list.txt
               grep -q "session-proxy" list.txt
               grep -q "mcpx" list.txt
               grep -q "laptop" list.txt
@@ -1622,6 +1647,15 @@ let
             }
             ''
               python3 ${../pkgs/deploy/test_deploy_slice3.py} ${../pkgs/deploy/deploy.py}
+              mkdir -p $out
+            '';
+        deploy-slice4-tests =
+          pkgs.runCommandLocal "check-deploy-slice4-tests"
+            {
+              nativeBuildInputs = [ pkgs.python3 ];
+            }
+            ''
+              python3 ${../pkgs/deploy/test_deploy_slice4.py} ${../pkgs/deploy/deploy.py} ${../pkgs/deploy/restore.py}
               mkdir -p $out
             '';
         deploy-argv =
@@ -1728,7 +1762,7 @@ let
 
   # The mcpx daemon modules (code#4801): the canonical module files
   # live in pkgs/mcpx/modules; these outputs wrap them with this
-  # flake's own mcpx build as the package default. The opencode fork
+  # flake's own mcpx build. The opencode fork
   # re-exports the same files defaulted to its build, and
   # openchamber passes them through — the option set never forks.
   make-mcpx-modules =
@@ -1738,7 +1772,13 @@ let
         { lib, pkgs, ... }:
         {
           imports = [ module ];
-          services.mcpx.package = lib.mkDefault (pkgs.callPackage ../pkgs/mcpx/package.nix { });
+          services.mcpx.package = lib.mkDefault (
+            pkgs.callPackage ../pkgs/mcpx/package.nix {
+              # Keep the runtime module lean; the standalone package output
+              # still runs this Go check phase.
+              doCheck = false;
+            }
+          );
         };
     in
     {
@@ -1793,6 +1833,7 @@ let
         make-mcpx-overlay
         make-mcpx-modules
         make-pm-stack
+        make-archer-slack
         make-laptop-backups-checks
         make-fleet
         make-deploy
