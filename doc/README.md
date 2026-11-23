@@ -35,6 +35,8 @@ This list is the workflow's request catalog (`request_catalog` in [`.agents/rese
 
 Folders are named `<UTC datetime>_<kind>_<name>`. The kinds in use are `feature`, `design`, `architecture`, `phase`, `fix`, `reference` and `research`. Run `ls doc/` to list them all. Some starting points:
 
+- [ID program investigation & build-out prompt](2026-11-23T12-06-42Z_design_id_program_investigation_prompt/2026-11-23T12-06-42Z_design_id_program_investigation_prompt.md) — the charter prompt for the ID program tracked in #13240: full investigation and design completion for the ID platform (epics #2056 and #9106), new designs for the obvious next steps, an ID book published under `/code/id/`, and a prioritized map of all ID issues with blockers marked.
+
 - [C8 Atlas ingestion and error-driven investigation](2026-11-22T01-48-21Z_design_c8_atlas_ingestion_investigation/2026-11-22T01-48-21Z_design_c8_atlas_ingestion_investigation.md) — design for #9576: source-authoritative report/page ingestion, versioned metadata and typed links, bounded explainable ranking boosts, and an evidence-first error investigation recipe integrated through #9091.
 
 - [Atlas v2–v4: evidence, adaptation and corpus stewardship](2026-11-11T03-45-00Z_design_atlas_v2_v4/2026-11-11T03-45-00Z_design_atlas_v2_v4.md) — expansive design for #6020: the landed v1 contract inventory, personal-knowledge/provenance/retrieval surveys, dependency-tagged horizons and entry gates, and independently buildable evaluation and conformance follow-ons.
