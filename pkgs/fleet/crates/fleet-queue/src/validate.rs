@@ -1238,18 +1238,37 @@ mod tests {
     fn issue_dispatch_dedupe_preserves_identity() {
         assert!(match_dedupe("main-broken-run-45018365692-dispatch-create").is_none());
         let base = "repo-health:v1:fix:developing-today/code:issue:12527";
-        for key in [base.to_string(), format!("{base}:dispatch:01234567"), format!("{base}:dispatch:0123456789abcdef")] {
+        for key in [
+            base.to_string(),
+            format!("{base}:dispatch:01234567"),
+            format!("{base}:dispatch:0123456789abcdef"),
+        ] {
             let mut packet = json!({
                 "title": "MCPX repair",
                 "priority": 40,
                 "dedupe_key": key,
                 "payload": payload_with(json!({"issue": {"number": 12527}, "kind": "small_fix"})),
             });
-            assert!(validate_packet(&packet).0.is_empty(), "{:?}", validate_packet(&packet).0);
+            assert!(
+                validate_packet(&packet).0.is_empty(),
+                "{:?}",
+                validate_packet(&packet).0
+            );
             packet["payload"]["issue"]["number"] = json!(12528);
-            assert!(validate_packet(&packet).0.iter().any(|e| e.contains("does not match payload.issue.number")));
+            assert!(
+                validate_packet(&packet)
+                    .0
+                    .iter()
+                    .any(|e| e.contains("does not match payload.issue.number"))
+            );
         }
-        for suffix in ["", "ab", "0123456g", "0123456789abcdef0", "00000000:extra"] {
+        for suffix in [
+            "",
+            "ab",
+            "0123456g",
+            "0123456789abcdef0",
+            "00000000:extra",
+        ] {
             assert!(match_dedupe(&format!("{base}:dispatch:{suffix}")).is_none());
         }
     }
