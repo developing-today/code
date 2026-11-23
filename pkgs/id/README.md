@@ -2,6 +2,17 @@
 
 A peer-to-peer file sharing CLI built with [Iroh](https://iroh.computer). Store, retrieve, and share files across a decentralized network with optional collaborative web editing.
 
+## The book
+
+[`book/`](book/) (mdBook sources, [`book.toml`](book.toml) at this
+package's root) is the complete, self-contained reference for the
+platform — every command, flag, default, schema, protocol and
+operational procedure, plus the programme's design archive mapped
+chapter by chapter. It is published at
+https://developing-today.github.io/code/id/ and builds with
+`nix build .#id-docs`. Start there; this README is only the
+package's front door.
+
 ## Features
 
 - **P2P File Sharing**: Store and retrieve files using content-addressed hashes over the Iroh network
@@ -415,6 +426,37 @@ tests/
 ### ID program
 
 A full investigation, design-completion and build-out program for the ID platform is tracked in [#13240](https://github.com/developing-today/code/issues/13240). Its charter is the [program prompt](docs/2026-11-23T12-06-42Z_design_id_program_investigation_prompt/2026-11-23T12-06-42Z_design_id_program_investigation_prompt.md); the program epics are [#2056](https://github.com/developing-today/code/issues/2056) and [#9106](https://github.com/developing-today/code/issues/9106). Deliverables include an ID book published under `/code/id/` and a prioritized map of all ID issues with blockers marked.
+
+## Operator and contributor contract (DOC-01)
+
+The contract with the humans and agents who operate and change
+ID, in the shape of the fleet package's DOC-01 (#10728):
+
+- **The surface is the code.** The CLI's parsers, the web router,
+  the MCP bridge's tool table, the shell contract
+  (`contract/shell-contract.v1.json`) and the versioned schemas
+  are the authority on what ID can do. Documentation — this
+  README, `ARCHITECTURE.md`, `WEB.md`, and the book — must not
+  present a designed spelling as shipped. Where a doc and the
+  code disagree, the code wins and the disagreement is filed as
+  an issue in the same pass it is found.
+- **The book is part of the same change.** Any change to a
+  command, a flag, a default, a config key, an MCP tool, a web
+  route, a schema, a wire format, or an operational procedure
+  updates the matching chapter of [`book/`](book/) in the same
+  change. The rule is stated for readers in the book's own
+  "Keeping this book current" chapter. `create-missing = false`
+  in `book.toml` makes a missing chapter a build failure, never
+  a stub, and the `id-docs.yml` workflow builds `.#id-docs` on
+  `main` so a broken chapter fails by name.
+- **Capabilities are a boundary, not a convention.** Capability
+  ceilings and quotas are enforced in the host policy point and
+  the serving node, never in client goodwill. No change may move
+  enforcement into a guest, a client, or a doc.
+- **Wire formats are versioned, never edited in place.** A new
+  event, frame or schema version is a new `vN` artifact beside
+  the old one; the book's schema chapter follows the same rule
+  and describes the new version beside the old.
 
 ## License
 
