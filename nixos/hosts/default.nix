@@ -33,6 +33,7 @@ in
       "services/opencode-watchdog"
       "services/keyring-auto-unlock"
       "services/signal-audit"
+      "services/archer-slack"
       # "microvm"
       # "server"
       "networking/dhcp-nat"
@@ -136,6 +137,13 @@ in
         # (RAM-only, never disk) and replays it via a .path-triggered
         # user oneshot when the daemon control socket changes.
         services.keyring-auto-unlock.enable = true;
+      }
+      {
+        # Archer Slack collector (code#2137 S2): the Socket Mode
+        # listener as a user service, running the 3-day parallel run
+        # beside the sandbox seat's watermark puller that the cutover
+        # decision waits on.
+        services.archer-slack-collector.enable = true;
       }
       {
         # Laptop backups (code#1516, dezren39/nix#976): the dashboard

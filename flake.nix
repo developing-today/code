@@ -25,6 +25,7 @@ rec {
       lib.make-mcpx-overlay
       lib.make-mcpx-modules
       lib.make-pm-stack
+      lib.make-archer-slack
       lib.make-laptop-backups-checks
       lib.make-fleet
       lib.make-deploy
