@@ -8,7 +8,12 @@
 // landed it (the queue door is a route per broker verb, so the
 // table carries one representative verb route) — their behaviour is
 // covered by test/stamping.test.ts, test/query.test.ts and
-// test/queue.test.ts.
+// test/queue.test.ts. The ingestion door left the stub table when
+// #12590 landed it: its webhook route stays in DOOR_ROUTES (the
+// unauthenticated probe is answered 401 by the receiver's own
+// signature check — GitHub deliveries hold no fleet credential)
+// and out of STUB_ROUTES; its behaviour is covered by
+// test/ingestion.test.ts.
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
@@ -29,7 +34,11 @@ const DOOR_ROUTES: { method: string; path: string; fillingIssue: string }[] = [
 ];
 
 const STUB_ROUTES = DOOR_ROUTES.filter(
-  (r) => r.path !== "/v1/stamps" && r.path !== "/v1/query" && r.path !== "/v1/queue/health",
+  (r) =>
+    r.path !== "/v1/stamps" &&
+    r.path !== "/v1/query" &&
+    r.path !== "/v1/queue/health" &&
+    r.path !== "/v1/ingestion/github",
 );
 
 test("every door route refuses an unauthenticated request", async () => {

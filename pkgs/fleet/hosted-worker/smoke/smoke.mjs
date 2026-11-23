@@ -8,12 +8,16 @@
 // Metadata fields (#12587), and the queue door runs a full broker
 // lifecycle — enqueue, claim, heartbeat, checkpoint, park, wake,
 // claim, complete — plus a fallback claim over the comment
-// surface (#12589). For a wrangler dev run instead: set
+// surface (#12589), and the ingestion door stores the created
+// item into a fresh metadata store from a signed webhook
+// delivery, then re-checks it by sweep (#12590). For a wrangler
+// dev run instead: set
 // RP_ISSUER / TENANCY_FIXTURE_JSON in the environment and
 // `npm run dev`, then curl /health and /capabilities.
 //
 // Run: npm run smoke
 
+import { sha256Hex } from "../src/auth.ts";
 import { configFromEnv } from "../src/config.ts";
 import { FixtureGitHubWriter } from "../src/github.ts";
 import { FixtureQueueStore } from "../src/queue-store.ts";
@@ -21,7 +25,7 @@ import { StoreQueueRecordSource } from "../src/queue-records.ts";
 import { dispatch } from "../src/router.ts";
 import { FixtureSessionRegistry } from "../src/sessions.ts";
 import { FixtureMetadataStore } from "../src/stamping.ts";
-import { AUDIENCE, BINDING_A, ISSUER, bearerReq, makeHarness } from "../test/helpers.ts";
+import { AUDIENCE, BINDING_A, ISSUER, WEBHOOK_SECRET, bearerReq, makeHarness } from "../test/helpers.ts";
 
 const h = await makeHarness();
 const deps = { ...h.deps, sessions: new FixtureSessionRegistry() };
@@ -71,6 +75,13 @@ const b64url = (bytes) => {
 };
 const stampKeyPair = await crypto.subtle.generateKey({ name: "Ed25519" }, true, ["sign", "verify"]);
 const smokeWriter = new FixtureGitHubWriter();
+const stampEnv = {
+  STAMP_SIGNING_KEY_PKCS8: b64url(new Uint8Array(await crypto.subtle.exportKey("pkcs8", stampKeyPair.privateKey))),
+  STAMP_SIGNING_KEY_ID: "smoke-key",
+  STAMP_VERIFY_KEYS_JSON: JSON.stringify({
+    "smoke-key": b64url(new Uint8Array(await crypto.subtle.exportKey("raw", stampKeyPair.publicKey))),
+  }),
+};
 const stampDeps = {
   config: configFromEnv({
     RP_ISSUER: ISSUER,
@@ -79,11 +90,7 @@ const stampDeps = {
       subjects: [{ issuer: ISSUER, subject: "user-sub-1", binding_id: BINDING_A, active: true }],
       service_tokens: [],
     }),
-    STAMP_SIGNING_KEY_PKCS8: b64url(new Uint8Array(await crypto.subtle.exportKey("pkcs8", stampKeyPair.privateKey))),
-    STAMP_SIGNING_KEY_ID: "smoke-key",
-    STAMP_VERIFY_KEYS_JSON: JSON.stringify({
-      "smoke-key": b64url(new Uint8Array(await crypto.subtle.exportKey("raw", stampKeyPair.publicKey))),
-    }),
+    ...stampEnv,
   }),
   jwksFetcher: h.deps.jwksFetcher,
   sessions: new FixtureSessionRegistry(),
@@ -304,6 +311,108 @@ await check(
     }
   }
   void claimed;
+}
+
+// Ingestion door (#12590): the item the stamping door just
+// created exists on GitHub (the shared fixture writer) but NOT
+// in this block's fresh metadata store — the store that missed
+// it. A signed webhook delivery stores it (the heal); a delivery
+// with a bad signature is refused 401; the sweeper then finds
+// the row already matching.
+{
+  const ingestToken = "smoke-ingestion-token-0123456789ab";
+  const ingestDeps = {
+    config: configFromEnv({
+      RP_ISSUER: ISSUER,
+      RP_AUDIENCE: AUDIENCE,
+      TENANCY_FIXTURE_JSON: JSON.stringify({
+        subjects: [{ issuer: ISSUER, subject: "user-sub-1", binding_id: BINDING_A, active: true }],
+        service_tokens: [
+          {
+            sha256: await sha256Hex(ingestToken),
+            binding_id: BINDING_A,
+            routes: ["ingestion"],
+            active: true,
+            label: "smoke-ingestion",
+          },
+        ],
+      }),
+      GITHUB_WEBHOOK_SECRET: WEBHOOK_SECRET,
+      ...stampEnv,
+    }),
+    jwksFetcher: h.deps.jwksFetcher,
+    sessions: new FixtureSessionRegistry(),
+    metadataStore: new FixtureMetadataStore(),
+    githubWriter: smokeWriter,
+    githubItems: smokeWriter,
+    githubEditor: smokeWriter,
+    githubComments: smokeWriter,
+    queueStore: new FixtureQueueStore(),
+  };
+  const signSmoke = async (raw) => {
+    const key = await crypto.subtle.importKey(
+      "raw",
+      new TextEncoder().encode(WEBHOOK_SECRET),
+      { name: "HMAC", hash: "SHA-256" },
+      false,
+      ["sign"],
+    );
+    const sig = new Uint8Array(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(raw)));
+    return `sha256=${[...sig].map((b) => b.toString(16).padStart(2, "0")).join("")}`;
+  };
+  const payload = JSON.stringify({
+    action: "opened",
+    repository: { full_name: "developing-today/code" },
+    issue: { number: 1 },
+  });
+  const hookReq = (signature) =>
+    new Request(`${base}/v1/ingestion/github`, {
+      method: "POST",
+      headers: {
+        "x-github-event": "issues",
+        "x-github-delivery": "smoke-delivery-1",
+        "x-hub-signature-256": signature,
+      },
+      body: payload,
+    });
+
+  const hookRes = await dispatch(hookReq(await signSmoke(payload)), ingestDeps);
+  const hookDoc = await hookRes.json();
+  const okHook =
+    hookRes.status === 200 && hookDoc.outcome === "inserted" && hookDoc.binding_id === BINDING_A;
+  console.log(`${okHook ? "ok  " : "FAIL"} POST /v1/ingestion/github (signed delivery heals the store): HTTP ${hookRes.status}`);
+  if (!okHook) {
+    failures++;
+    console.log(`     body: ${JSON.stringify(hookDoc)}`);
+  }
+
+  const badRes = await dispatch(hookReq(await signSmoke(`${payload} `)), ingestDeps);
+  const badDoc = await badRes.json();
+  const okBad = badRes.status === 401 && badDoc.error === "webhook_signature_invalid";
+  console.log(`${okBad ? "ok  " : "FAIL"} POST /v1/ingestion/github (bad signature refused): HTTP ${badRes.status}`);
+  if (!okBad) {
+    failures++;
+    console.log(`     body: ${JSON.stringify(badDoc)}`);
+  }
+
+  const sweepRes = await dispatch(
+    bearerReq("/v1/ingestion/sweep", ingestToken, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ repos: ["developing-today/code"] }),
+    }),
+    ingestDeps,
+  );
+  const sweepDoc = await sweepRes.json();
+  const okSweep =
+    sweepRes.status === 200 &&
+    sweepDoc.counts?.checked === 1 &&
+    sweepDoc.results?.[0]?.outcome === "unchanged";
+  console.log(`${okSweep ? "ok  " : "FAIL"} POST /v1/ingestion/sweep (row already matching): HTTP ${sweepRes.status}`);
+  if (!okSweep) {
+    failures++;
+    console.log(`     body: ${JSON.stringify(sweepDoc)}`);
+  }
 }
 
 if (failures > 0) {

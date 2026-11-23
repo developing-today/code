@@ -34,9 +34,10 @@ test("a valid RP token resolves to the tenancy binding_id", async () => {
 test("a valid RP token passes auth on a door route (a stub door then answers 501)", async () => {
   const token = await h.sign(h.rpPayload());
   // The probe rides a still-stubbed door: it used the queue door
-  // until #12589 landed it; the ingestion door (#12590) is the
-  // remaining stub with the same shape.
-  const res = await dispatch(bearerReq("/v1/ingestion/github", token, { method: "POST" }), h.deps);
+  // until #12589 landed it, then the ingestion door until #12590
+  // landed it; the sync door (#12591) is the remaining stub with
+  // the same shape.
+  const res = await dispatch(bearerReq("/v1/sync/project", token, { method: "POST" }), h.deps);
   assert.equal(res.status, 501);
   const body = (await res.json()) as { error: string };
   assert.equal(body.error, "not_implemented");
@@ -169,7 +170,7 @@ test("a binding header that agrees with the credential is not a refusal", async 
   // above): past the tenancy check, the stub's 501 is the proof
   // the header was accepted.
   const res = await dispatch(
-    bearerReq("/v1/ingestion/github", token, {
+    bearerReq("/v1/sync/project", token, {
       method: "POST",
       headers: { "x-binding-id": BINDING_A },
     }),

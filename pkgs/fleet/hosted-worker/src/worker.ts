@@ -6,12 +6,14 @@
 // src/jwt.ts and src/tenancy.ts. The skeleton (#12583) landed the
 // plumbing with stub doors; the session registry (#12584), the
 // stamping create path (#12585), the Metadata query surface
-// (#12587), and the queue front door (#12589) are real over the
-// same plumbing. The remaining doors are filled by their own
-// issues (#12590 ingestion, #12591 sync).
+// (#12587), the queue front door (#12589), and the ingestion
+// receiver + sweeper (#12590) are real over the same plumbing.
+// The remaining door is filled by its own issue (#12591 sync).
 
+import type { AuthDeps } from "./auth.ts";
 import { configFromEnv, type HostedEnv } from "./config.ts";
 import { AppRotationGitHubWriter, FixtureGitHubWriter } from "./github.ts";
+import { ingestionDepsFrom, runIngestionSweep } from "./ingestion.ts";
 import { FixtureQueueStore } from "./queue-store.ts";
 import { StoreQueueRecordSource } from "./queue-records.ts";
 import { dispatch } from "./router.ts";
@@ -47,29 +49,67 @@ const queueStore = new FixtureQueueStore();
 // binding still stamps its queue fields null (not queue-originated).
 const queueRecords = new StoreQueueRecordSource(queueStore, sessions);
 
+/** Assemble the door deps for one invocation (fetch or scheduled),
+ * exactly as the Worker wires them in production. */
+function buildDeps(env: HostedEnv): AuthDeps {
+  const config = configFromEnv(env);
+  // The hosted rotation point (#12585): with fleet App material
+  // configured, GitHub writes go through the App installation-token
+  // rotation; without it, the fixture writer stands in (local/dev
+  // semantics — this package is not deployed, see wrangler.toml).
+  const githubWriter = config.github
+    ? new AppRotationGitHubWriter(config.github)
+    : new FixtureGitHubWriter();
+  // The query door's read path (#12587), the queue door's
+  // fallback-claim surface (#12589) and the ingestion door's
+  // write-back (#12590) are the same object: both writer classes
+  // also implement GitHubItemSource, GitHubCommentSurface and
+  // GitHubBodyEditor over the same rotation / recorded state.
+  return {
+    config,
+    sessions,
+    metadataStore,
+    githubWriter,
+    githubItems: githubWriter,
+    queueRecords,
+    queueStore,
+    githubComments: githubWriter,
+    githubEditor: githubWriter,
+  };
+}
+
+/** The scheduled invocation's context slice this module uses. */
+interface ScheduledContext {
+  waitUntil(promise: Promise<unknown>): void;
+}
+
 export default {
   async fetch(req: Request, env: HostedEnv): Promise<Response> {
-    const config = configFromEnv(env);
-    // The hosted rotation point (#12585): with fleet App material
-    // configured, GitHub writes go through the App installation-token
-    // rotation; without it, the fixture writer stands in (local/dev
-    // semantics — this package is not deployed, see wrangler.toml).
-    const githubWriter = config.github
-      ? new AppRotationGitHubWriter(config.github)
-      : new FixtureGitHubWriter();
-    // The query door's read path (#12587) and the queue door's
-    // fallback-claim surface (#12589) are the same object: both
-    // writer classes also implement GitHubItemSource and
-    // GitHubCommentSurface over the same rotation / recorded state.
-    return dispatch(req, {
-      config,
-      sessions,
-      metadataStore,
-      githubWriter,
-      githubItems: githubWriter,
-      queueRecords,
-      queueStore,
-      githubComments: githubWriter,
-    });
+    return dispatch(req, buildDeps(env));
+  },
+
+  /** The interval sweeper (#12590; design §7.3): on the cron
+   * trigger (wrangler.toml), re-scan the configured in-scope
+   * repos (INGESTION_REPOS) with the same check the webhook
+   * route runs per delivery. No configured scope → nothing to
+   * scan. A failed sweep is logged, never silent. */
+  scheduled(_controller: unknown, env: HostedEnv, ctx: ScheduledContext): void {
+    const deps = buildDeps(env);
+    if (deps.config.ingestionRepos.length === 0) return;
+    ctx.waitUntil(
+      (async () => {
+        try {
+          const doc = await runIngestionSweep(
+            ingestionDepsFrom(deps),
+            deps.config.ingestionRepos,
+          );
+          console.log(
+            `fleet-hosted: ingestion sweep ${JSON.stringify(doc.counts)} over ${doc.repos.join(", ")}`,
+          );
+        } catch (e) {
+          console.error("fleet-hosted: ingestion sweep failed", e);
+        }
+      })(),
+    );
   },
 };

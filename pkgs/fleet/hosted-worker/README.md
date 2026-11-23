@@ -135,6 +135,34 @@ the service skeleton from #12583; each door is filled by its own issue.
   quarantine-recheck background verbs (dep-recheck is ported),
   and the merge-intent stack, creation-outbox, signal-count and
   coverage verbs of other stacks.
+- **Ingestion door** (`src/routes/ingestion.ts`, `src/ingestion.ts`,
+  #12590; design §7.3, #9060 §16): the hosted half of dual ingestion
+  — the native ingestion of #9076 remains a peer, and both editions
+  run the same check. `POST /v1/ingestion/github` is the GitHub
+  webhook receiver: deliveries hold no fleet credential, so the
+  route is public and the handler authenticates each delivery by
+  its `X-Hub-Signature-256` HMAC (503 unconfigured, 401
+  unverified, both before any parsing); events/actions outside
+  the §16 set are acknowledged as ignored. `POST
+  /v1/ingestion/sweep` runs the interval sweeper over a named or
+  configured repo scope (the Worker's `scheduled` handler runs
+  the same sweep on the wrangler cron trigger). One check code
+  path serves both: the item is read fresh through the GitHub
+  item source (never the payload's copy), its pm-metadata block
+  is parsed (malformed fails closed, 400), the DB record is
+  inserted or refreshed keyed on the item under the block's own
+  stamped tenancy, and a block-less item gets an ascertained
+  block — parent resolved from its `primary-parent/<slug>` label,
+  provenance from the item read, signed when the service holds
+  stamp material — stored and written back where the fleet has
+  write access. Metadata that stays insufficient (no resolvable
+  parent, not queue-tracked) is forwarded for full triage as one
+  deduped repo-task/v1 triage packet per item. The check is
+  idempotent by construction: duplicate deliveries converge on
+  one DB row and at most one triage task, and a create whose
+  insert failed at the stamping door (#12585's
+  `metadata_inserted: false`) is healed by the first check that
+  sees the item.
 - **Health + capabilities** (`src/health.ts`, `src/capabilities.ts`):
   public identity surface. `/capabilities` mirrors the native
   `fleet capabilities` JSON shape — same `build` / `capabilities` /
@@ -152,7 +180,6 @@ The remaining door routes authenticate, then answer
 
 | Door      | Routes                                  | Filled by |
 | --------- | --------------------------------------- | --------- |
-| ingestion | `POST /v1/ingestion/github`             | #12590    |
 | sync      | `POST /v1/sync/project`, `POST /v1/sync/queue-github` | #12591 |
 
 Stamp signing (#12586) is a separate slice, deliberately not
