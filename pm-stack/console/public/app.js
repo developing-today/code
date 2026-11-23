@@ -526,11 +526,24 @@ function notices(doc) {
   for (const [name, s] of Object.entries(doc?.health || {})) {
     if (!s.ok && s.error) {
       out.push(
-        h("div", { class: "card flag" }, h("p", { class: "meta" }, `Could not read ${name} just now: ${s.error}. Showing the last good copy.`)),
+        h("div", { class: "card flag" }, h("p", { class: "meta" }, `Could not read ${SECTION_SAID[name] || name} just now: ${whySaid(s.error)}. Showing the last good copy.`)),
       );
     }
   }
   return out;
+}
+
+/** Why something could not be read, in the owner's words where the
+ * reason is one that is known. GitHub's "rate limit exceeded" arrives
+ * as a line of JSON with a request number in it; what it means is that
+ * the account's allowance for the hour is used up, and the agents
+ * share that allowance with this app. */
+export function whySaid(error) {
+  const text = String(error || "").trim();
+  if (/rate limit/i.test(text)) {
+    return "GitHub's allowance for the hour is used up on this account, which the agents share; it is asked again every few minutes and answers when the hour turns";
+  }
+  return text || "no reason given";
 }
 
 function viewNow() {
@@ -1959,7 +1972,7 @@ async function viewAway() {
       ? h(
           "ul",
           { class: "plain" },
-          s.checks.map((c) => h("li", {}, `${c.what}: ${c.ok ? "read from Cloudflare" : `could not be read (${c.error || "no reason given"})`}`)),
+          s.checks.map((c) => h("li", {}, `${c.what}: ${c.ok ? "read from Cloudflare" : `could not be read (${whySaid(c.error)})`}`)),
         )
       : h("p", { class: "meta" }, "Not tried yet. It tries one read of each kind within a minute of being turned on.")
     : null;
