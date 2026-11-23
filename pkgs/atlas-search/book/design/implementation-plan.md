@@ -26,3 +26,9 @@ Start with a question an operator can answer from two receipts. Which source rev
 For each experiment record source SHA, corpus and policy generation, model and chunker fingerprints, candidate budget, baseline configuration, judgments, client scope and execution route. Publish a CI/Fleet receipt for synthetic inputs. Restricted evaluation remains on authorized infrastructure. Compare per-class relevance, no-answer behavior, candidate overlap, end-to-end latency and storage. Break out the denominator for each metric. Keep the Jaccard near-exact regression set separate from a new sealed holdout. [Design: the standing evaluation programme](evaluation-programme.md)
 
 After promotion, verify a real authorized request against the new generation. For a failed arm, retain the old serving choice and record which requirement failed. During rollback preserve the latest revocation floor even when restoring an older index. The program's [dated design record](https://github.com/developing-today/code/blob/main/doc/2026-11-23T18-03-00Z_design_atlas_research_acceptance/README.md) provides the source adapter and experiment matrices.
+
+## Research protocols
+
+- [Source adapter contracts and replay fixtures](adapter-fixtures.md)
+- [Planner, approximate search and ranking experiments](retrieval-experiments.md)
+- [Consumer, cache and recommendation acceptance](consumer-acceptance.md)

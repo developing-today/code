@@ -52,6 +52,9 @@
 - [Design: MCP and programmatic access, next steps](design/access-evolution.md)
 - [Design: the standing evaluation programme](design/evaluation-programme.md)
 - [R&D implementation plan and release gates](design/implementation-plan.md)
+  - [Source adapter contracts and replay fixtures](design/adapter-fixtures.md)
+  - [Planner, approximate search and ranking experiments](design/retrieval-experiments.md)
+  - [Consumer, cache and recommendation acceptance](design/consumer-acceptance.md)
 - [Roadmap and issue map](design/roadmap-and-issue-map.md)
 
 - [Repository layout](development/layout.md)
