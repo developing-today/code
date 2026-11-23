@@ -230,34 +230,55 @@ async function cloudflareRead({ accountId, path, readToken, fetchImpl, label }) 
   return apiEnvelope(response, body);
 }
 
-export async function assertLegacyVersionsEmpty({ accountId, readToken, fetchImpl = fetch }) {
-  const { result, resultInfo } = await cloudflareRead({ accountId, readToken, fetchImpl, label: 'legacy version list', path: `/workers/scripts/${encodeURIComponent(WORKER_NAME)}/versions?per_page=100&page=1` });
-  if (!result || typeof result !== 'object' || Array.isArray(result) || !Array.isArray(result.items) || result.items.length !== 0 ||
-      (result.total_count !== undefined && result.total_count !== 0) || (result.count !== undefined && result.count !== 0) ||
-      (resultInfo !== undefined && (!resultInfo || typeof resultInfo !== 'object' || Array.isArray(resultInfo) ||
-        (resultInfo.total_count !== undefined && resultInfo.total_count !== 0) || (resultInfo.count !== undefined && resultInfo.count !== 0) ||
-        (resultInfo.total_pages !== undefined && ![0, 1].includes(resultInfo.total_pages)) ||
-        (resultInfo.page !== undefined && resultInfo.page !== 1) || (resultInfo.per_page !== undefined && resultInfo.per_page !== 100)))) {
-    fail('legacy Scripts version list is not explicitly empty for the fixed smoke Worker');
+export async function readLegacyVersions({ accountId, readToken, fetchImpl = fetch }) {
+  const rows = [];
+  let totalCount;
+  let totalPages;
+  for (let page = 1; page <= 100; page += 1) {
+    const { result, resultInfo } = await cloudflareRead({ accountId, readToken, fetchImpl, label: 'legacy version list', path: `/workers/scripts/${encodeURIComponent(WORKER_NAME)}/versions?page=${page}&per_page=100` });
+    if (!result || typeof result !== 'object' || Array.isArray(result) || !Array.isArray(result.items)) fail('legacy Scripts version list has an ambiguous response shape');
+    const items = result.items;
+    if (items.some(version => !version || typeof version !== 'object' || Array.isArray(version) || !UUID.test(version.id ?? ''))) fail('legacy Scripts version list contains a malformed version ID');
+    rows.push(...items);
+    if (new Set(rows.map(version => version.id)).size !== rows.length) fail('legacy Scripts version list contains duplicate IDs');
+    if (resultInfo !== undefined) {
+      if (!resultInfo || typeof resultInfo !== 'object' || Array.isArray(resultInfo)) fail('legacy Scripts pagination metadata is invalid');
+      if (resultInfo.page !== undefined && resultInfo.page !== page) fail('legacy Scripts page does not match request');
+      if (resultInfo.per_page !== undefined && resultInfo.per_page !== 100) fail('legacy Scripts page size does not match request');
+      if (resultInfo.count !== undefined && resultInfo.count !== items.length) fail('legacy Scripts page count is inconsistent');
+      if (resultInfo.total_count !== undefined) {
+        if (!Number.isInteger(resultInfo.total_count) || resultInfo.total_count < 0) fail('legacy Scripts total count is invalid');
+        if (totalCount === undefined) totalCount = resultInfo.total_count;
+        if (totalCount !== resultInfo.total_count) fail('legacy Scripts version list changed during pagination');
+      }
+      if (resultInfo.total_pages !== undefined) {
+        if (!Number.isInteger(resultInfo.total_pages) || resultInfo.total_pages < 0 || resultInfo.total_pages > 100) fail('legacy Scripts total pages are invalid');
+        if (totalPages === undefined) totalPages = resultInfo.total_pages;
+        if (totalPages !== resultInfo.total_pages) fail('legacy Scripts version list changed during pagination');
+      }
+    }
+    if (totalCount !== undefined && rows.length > totalCount) fail('legacy Scripts version list exceeded reported total count');
+    const doneByPages = totalPages !== undefined && (totalPages === 0 ? page === 1 && rows.length === 0 : page >= totalPages);
+    const doneByCount = totalCount !== undefined && rows.length === totalCount;
+    if (doneByPages || doneByCount || (totalPages === undefined && totalCount === undefined && items.length < 100)) {
+      if (totalCount !== undefined && rows.length !== totalCount) fail('legacy Scripts version list is incomplete');
+      return rows;
+    }
+    if (items.length < 100 && !doneByCount) fail('legacy Scripts version list ended before reported total count');
   }
+  fail('legacy Scripts version pagination exceeded hard bound');
+}
+
+export async function assertLegacyVersionsEmpty({ accountId, readToken, fetchImpl = fetch }) {
+  const versions = await readLegacyVersions({ accountId, readToken, fetchImpl });
+  if (versions.length !== 0) fail('legacy Scripts version list is not empty for the fixed smoke Worker');
   return true;
 }
 
-export async function readExactLegacyVersion({ accountId, versionId, readToken, fetchImpl = fetch }) {
-  return (await cloudflareRead({ accountId, readToken, fetchImpl, label: 'legacy exact version', path: `/workers/scripts/${encodeURIComponent(WORKER_NAME)}/versions/${encodeURIComponent(versionId)}` })).result;
-}
-
-export async function readExactBetaVersion({ accountId, workerId, versionId, readToken, fetchImpl = fetch }) {
-  return (await cloudflareRead({ accountId, readToken, fetchImpl, label: 'Beta exact version', path: `/workers/workers/${encodeURIComponent(workerId)}/versions/${encodeURIComponent(versionId)}` })).result;
-}
-
-export function assertMatchingLegacyBetaVersions({ legacyVersion, betaVersion, versionId, sourceSha, receiptDigest }) {
-  const expectedMessage = `init_receipt_sha256=${receiptDigest}`;
-  for (const [label, version] of [['legacy', legacyVersion], ['Beta', betaVersion]]) {
-    if (!version || typeof version !== 'object' || Array.isArray(version) || version.id !== versionId ||
-        version.annotations?.['workers/tag'] !== sourceSha || version.annotations?.['workers/message'] !== expectedMessage) {
-      fail(`${label} exact-version readback does not match the server UUID and provenance`);
-    }
+export function assertLegacyVersionIdMatch({ legacyVersions, betaVersions, versionId }) {
+  if (!UUID.test(versionId ?? '') || !Array.isArray(legacyVersions) || !Array.isArray(betaVersions) || legacyVersions.length !== 1 || betaVersions.length !== 1 ||
+      legacyVersions[0]?.id !== versionId || betaVersions[0]?.id !== versionId) {
+    fail('legacy and Beta version lists do not agree on exactly the server-returned UUID');
   }
   return true;
 }
@@ -326,11 +347,8 @@ async function main() {
     const readToken = required('CF_SMOKE_UPLOAD_READ_TOKEN');
     const versions = await readVersions({ accountId, workerId, readToken });
     assertExactVersionReadback({ versionId: upload.versionId, versions, sourceSha: required('GITHUB_SHA'), receiptDigest: required('INIT_RECEIPT_DIGEST') });
-    const [legacyVersion, betaVersion] = await Promise.all([
-      readExactLegacyVersion({ accountId, versionId: upload.versionId, readToken }),
-      readExactBetaVersion({ accountId, workerId, versionId: upload.versionId, readToken }),
-    ]);
-    assertMatchingLegacyBetaVersions({ legacyVersion, betaVersion, versionId: upload.versionId, sourceSha: required('GITHUB_SHA'), receiptDigest: required('INIT_RECEIPT_DIGEST') });
+    const legacyVersions = await readLegacyVersions({ accountId, readToken });
+    assertLegacyVersionIdMatch({ legacyVersions, betaVersions: versions, versionId: upload.versionId });
     await verifySmokePostUpload({ approvedAccountId: accountId, expectedZoneIds: required('CF_SMOKE_UPLOAD_EXPECTED_ZONE_IDS'), readToken, expectedWorkerId: workerId });
     console.log(`Verified immutable smoke version ${upload.versionId} in legacy and Beta APIs; no deployment, route or preview was created.`);
     return;

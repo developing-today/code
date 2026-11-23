@@ -122,7 +122,7 @@ test('only the documented Worker-specific 404 means absent', async () => {
     { missingMessage: 'Not found', includeMissingResult: true, missingResult: null },
   ]) {
     const actual = fixture(options);
-    assert.equal(await run({ fetchImpl: actual.fetchImpl }), 'created');
+    assert.deepEqual(await run({ fetchImpl: actual.fetchImpl }), { status: 'created', workerId });
     assert.equal(actual.state.calls.filter(call => call.method === 'POST').length, 1);
   }
 

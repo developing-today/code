@@ -2,16 +2,15 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   assertLegacyVersionsEmpty,
-  assertMatchingLegacyBetaVersions,
   assertNoTargetOverrides,
   assertPrebuiltSmokePayload,
   assertDryRunOutput,
   assertExactVersionReadback,
+  assertLegacyVersionIdMatch,
   extractUploadedVersion,
   fetchInitRunEvidence,
+  readLegacyVersions,
   readVersions,
-  readExactBetaVersion,
-  readExactLegacyVersion,
   validateInitReceipt,
 } from './smoke-upload.mjs';
 import { createInitReceipt, verifySmokeEmptyTarget, WORKER_NAME, CREATE_BODY } from './bootstrap-smoke.mjs';
@@ -158,34 +157,38 @@ test('upload response must be the pinned exact version-upload schema and UUID', 
 test('legacy scripts version list is empty before upload and pinned to the exact Worker name', async () => {
   const seen = [];
   const empty = await assertLegacyVersionsEmpty({ accountId, readToken, fetchImpl: async url => {
-    seen.push(String(url)); return ok({ items: [] }, { total_count: 0, count: 0 });
+    seen.push(String(url)); return ok({ items: [] }, { total_count: 0, count: 0, page: 1, per_page: 100, total_pages: 0 });
   } });
   assert.equal(empty, true);
-  assert.equal(seen[0], `https://api.cloudflare.com/client/v4/accounts/${accountId}/workers/scripts/${WORKER_NAME}/versions?per_page=100&page=1`);
-  await assert.rejects(assertLegacyVersionsEmpty({ accountId, readToken, fetchImpl: async () => ok({ items: [{ id: 'existing' }] }) }), /not explicitly empty/);
-  await assert.rejects(assertLegacyVersionsEmpty({ accountId, readToken, fetchImpl: async () => ok({ items: [] }, { total_count: 1 }) }), /not explicitly empty/);
-  await assert.rejects(assertLegacyVersionsEmpty({ accountId, readToken, fetchImpl: async () => ok({ items: [] }, { page: 2 }) }), /not explicitly empty/);
-  await assert.rejects(assertLegacyVersionsEmpty({ accountId, readToken, fetchImpl: async () => ok({}) }), /not explicitly empty/);
+  assert.equal(seen[0], `https://api.cloudflare.com/client/v4/accounts/${accountId}/workers/scripts/${WORKER_NAME}/versions?page=1&per_page=100`);
+  await assert.rejects(assertLegacyVersionsEmpty({ accountId, readToken, fetchImpl: async () => ok({ items: [{ id: '00000000-0000-4000-8000-000000000099', metadata: {}, number: 1 }] }) }), /not empty/);
+  await assert.rejects(assertLegacyVersionsEmpty({ accountId, readToken, fetchImpl: async () => ok({ items: [] }, { total_count: 1 }) }), /ended before reported/);
+  await assert.rejects(assertLegacyVersionsEmpty({ accountId, readToken, fetchImpl: async () => ok({ items: [] }, { page: 2 }) }), /page does not match/);
+  await assert.rejects(assertLegacyVersionsEmpty({ accountId, readToken, fetchImpl: async () => ok({}) }), /ambiguous response shape/);
   await assert.rejects(assertLegacyVersionsEmpty({ accountId, readToken, fetchImpl: async () => new Response('{}', { status: 403 }) }), /authorization denied/);
 });
 
-test('legacy and Beta exact-version GETs must return the same UUID and provenance', async () => {
+test('legacy and Beta version lists agree by exact UUID while Beta carries provenance', async () => {
   const versionId = '00000000-0000-4000-8000-000000000001';
-  const version = { id: versionId, annotations: { 'workers/tag': sourceSha, 'workers/message': `init_receipt_sha256=${receiptDigest}` } };
+  const legacyItem = { id: versionId, resources: {}, metadata: { created_on: '2026-11-23T00:00:00Z' }, number: 1 };
+  const betaItem = { id: versionId, annotations: { 'workers/tag': sourceSha, 'workers/message': `init_receipt_sha256=${receiptDigest}` }, urls: [], hasPreview: false };
   const paths = [];
   const fetchImpl = async url => {
     const parsed = new URL(url); paths.push(parsed.pathname);
-    return ok(version);
+    if (parsed.pathname.endsWith(`/workers/scripts/${WORKER_NAME}/versions`)) return ok({ items: [legacyItem] }, { page: 1, per_page: 100, count: 1, total_count: 1, total_pages: 1 });
+    if (parsed.pathname.endsWith(`/workers/workers/${workerId}/versions`)) return ok([betaItem], { page: 1, per_page: 100, count: 1, total_count: 1, total_pages: 1 });
+    throw new Error(`unexpected URL ${parsed.pathname}`);
   };
-  const [legacy, beta] = await Promise.all([
-    readExactLegacyVersion({ accountId, versionId, readToken, fetchImpl }),
-    readExactBetaVersion({ accountId, workerId, versionId, readToken, fetchImpl }),
-  ]);
-  assertMatchingLegacyBetaVersions({ legacyVersion: legacy, betaVersion: beta, versionId, sourceSha, receiptDigest });
-  assert.ok(paths.some(path => path.endsWith(`/workers/scripts/${WORKER_NAME}/versions/${versionId}`)));
-  assert.ok(paths.some(path => path.endsWith(`/workers/workers/${workerId}/versions/${versionId}`)));
-  assert.throws(() => assertMatchingLegacyBetaVersions({ legacyVersion: legacy, betaVersion: { ...beta, id: '00000000-0000-4000-8000-000000000002' }, versionId, sourceSha, receiptDigest }), /Beta exact-version readback/);
-  assert.throws(() => assertMatchingLegacyBetaVersions({ legacyVersion: { ...legacy, annotations: {} }, betaVersion: beta, versionId, sourceSha, receiptDigest }), /legacy exact-version readback/);
+  const legacyVersions = await readLegacyVersions({ accountId, readToken, fetchImpl });
+  const betaVersions = await readVersions({ accountId, workerId, readToken, fetchImpl });
+  assert.equal(legacyVersions[0].annotations, undefined); // Legacy list deliberately has no annotation fields.
+  assertLegacyVersionIdMatch({ legacyVersions, betaVersions, versionId });
+  assertExactVersionReadback({ versions: betaVersions, versionId, sourceSha, receiptDigest });
+  assert.ok(paths.some(path => path.endsWith(`/workers/scripts/${WORKER_NAME}/versions`)));
+  assert.ok(paths.some(path => path.endsWith(`/workers/workers/${workerId}/versions`)));
+  assert.throws(() => assertLegacyVersionIdMatch({ legacyVersions: [{ ...legacyItem, id: '00000000-0000-4000-8000-000000000002' }], betaVersions, versionId }), /do not agree/);
+  assert.throws(() => assertLegacyVersionIdMatch({ legacyVersions: [legacyItem, { ...legacyItem, id: '00000000-0000-4000-8000-000000000003' }], betaVersions, versionId }), /do not agree/);
+  assert.throws(() => assertExactVersionReadback({ versions: [{ ...betaItem, annotations: {} }], versionId, sourceSha, receiptDigest }), /does not bind/);
 });
 
 test('version readback tolerates omitted optional pagination metadata but proves complete list', async () => {
