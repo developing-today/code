@@ -172,7 +172,7 @@ fn main() {
         }
         matched.insert(engine.to_string(), json!({
             "reference_transitions_executed_and_matched": matched_count,
-            "engine_operation_capability_mappings_checked": capability_count / 5,
+            "engine_operation_capability_mappings_checked": capability_count,
         }));
     }
     println!("{}", json!({"raw_operation_samples": result, "matched_transitions": matched, "engine_state": sync}));
