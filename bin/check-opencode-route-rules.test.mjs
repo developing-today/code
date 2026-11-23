@@ -392,3 +392,104 @@ test('designation source, when present, must be a non-empty string', () => {
   config.model_designations['decision-bot'] = { purposes: ['decision'], source: 42 };
   assert.ok(inspectRouteRules(config).issues.some((issue) => issue.includes('source must be a non-empty string')));
 });
+
+// --- wallScope declarations + free/paid alias invariants (code#13693) ---
+import { WALL_SCOPES, inspectProviderWallRules } from './check-opencode-route-rules.mjs';
+
+function configWithWallSplit() {
+  const config = configWith();
+  config.provider.paid = {
+    models: { 'free-model': {}, 'paid-model': {} },
+    options: { baseURL: 'https://paid.example/v1' },
+  };
+  config.provider['paid-free'] = {
+    instanceOf: 'paid',
+    wallScope: 'per-model',
+    models: { 'free-model': {} },
+  };
+  config.provider.paid.wallScope = 'provider';
+  config.experimental.model_routes['free-pool'] = { targets: ['paid-free/free-model'] };
+  return config;
+}
+
+test('wallScope vocabulary is the closed set from the design', () => {
+  assert.deepEqual(WALL_SCOPES, ['per-model', 'provider', 'account']);
+});
+
+test('a well-formed wall split passes the wall rules and the full checker', () => {
+  const config = configWithWallSplit();
+  assert.deepEqual(inspectProviderWallRules(config), []);
+  assert.deepEqual(checkRouteRules(config), []);
+});
+
+test('an unknown wallScope value fails, naming the provider', () => {
+  const config = configWithWallSplit();
+  config.provider.groq = { wallScope: 'per-org', models: {} };
+  const issues = inspectProviderWallRules(config);
+  assert.ok(
+    issues.some((issue) => issue.includes('"groq"') && issue.includes('"per-org"')),
+    `expected a wallScope issue naming groq: ${issues}`,
+  );
+  assert.ok(checkRouteRules(config).some((issue) => issue.includes('wallScope')));
+});
+
+test('every closed-vocabulary wallScope value passes', () => {
+  for (const scope of WALL_SCOPES) {
+    const config = configWithWallSplit();
+    config.provider.groq = { wallScope: scope, models: {} };
+    assert.deepEqual(inspectProviderWallRules(config), [], );
+  }
+});
+
+test('a -free alias declaring a differing credential fails, naming both ids', () => {
+  const config = configWithWallSplit();
+  config.provider['paid-free'].options = { apiKey: 'a-different-key' };
+  const issues = inspectProviderWallRules(config);
+  assert.ok(
+    issues.some((issue) => issue.includes('"paid-free"') && issue.includes('"paid"') && issue.includes('options.apiKey')),
+    `expected an alias credential issue naming both ids: ${issues}`,
+  );
+});
+
+test('a -free alias declaring a differing baseURL fails, naming both ids', () => {
+  const config = configWithWallSplit();
+  config.provider['paid-free'].options = { baseURL: 'https://elsewhere.example/v1' };
+  const issues = inspectProviderWallRules(config);
+  assert.ok(
+    issues.some((issue) => issue.includes('"paid-free"') && issue.includes('"paid"') && issue.includes('options.baseURL')),
+    `expected an alias baseURL issue naming both ids: ${issues}`,
+  );
+});
+
+test('a -free alias re-declaring the base value verbatim does not differ and passes', () => {
+  const config = configWithWallSplit();
+  config.provider['paid-free'].options = { baseURL: 'https://paid.example/v1' };
+  assert.deepEqual(inspectProviderWallRules(config), []);
+});
+
+test('a free-alias model also seated under the paid base fails, naming the seat', () => {
+  const config = configWithWallSplit();
+  config.experimental.model_routes['paid-pool'] = { targets: ['paid/free-model'] };
+  const issues = inspectProviderWallRules(config);
+  assert.ok(
+    issues.some(
+      (issue) =>
+        issue.includes('"free-model"') && issue.includes('"paid-free"') && issue.includes('"paid"') && issue.includes('paid-pool'),
+    ),
+    `expected a split invariant issue naming the seat: ${issues}`,
+  );
+  assert.ok(checkRouteRules(config).some((issue) => issue.includes('wallScope')));
+});
+
+test('a free-alias model seated under the paid base via weights alone fails', () => {
+  const config = configWithWallSplit();
+  config.experimental.model_routes['paid-pool'] = {
+    targets: ['paid/paid-model'],
+    weights: { 'paid/free-model': 1, 'paid/paid-model': 1 },
+  };
+  const issues = inspectProviderWallRules(config);
+  assert.ok(
+    issues.some((issue) => issue.includes('"free-model"') && issue.includes('weights')),
+    `expected a split invariant issue naming the weights seat: ${issues}`,
+  );
+});
