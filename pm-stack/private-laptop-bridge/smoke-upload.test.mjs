@@ -175,7 +175,9 @@ function builtSmokeFixture() {
     END_MS: { type: 'text', value: '' },
   };
   return {
-    buildConfig: { producer: { name: 'wrangler', version: '4.166.0' }, buildContext: { isPreview: false, mode: '' } },
+    // `cf build` with the pinned toolchain emits only isPreview. In particular,
+    // it does not serialize an empty mode field for a non-preview build.
+    buildConfig: { producer: { name: 'wrangler', version: '4.166.0' }, buildContext: { isPreview: false } },
     workerNames: ['default'],
     bundleFiles: ['smoke.js', 'smoke.js.map'],
     workerConfig: {
