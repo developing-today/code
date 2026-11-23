@@ -64,6 +64,9 @@ let
     pmAggregator = callPackage ../pm-aggregator/package.nix { };
     pmProjector = callPackage ../pm-projector/package.nix { };
     pmTunnel = cloudflared;
+    # Issue #12909: ready-for-agent, packaged from its pinned npm
+    # tarballs — the last of the four #12768 services to register.
+    readyForAgent = callPackage ../ready-for-agent/package.nix { };
   };
   jsonDefinitions = lib.mapAttrs (name: defn: defn // { package = "${defn.package}"; }) definitions;
 in
