@@ -10,7 +10,9 @@
 import { describe, expect, it } from "vitest";
 import {
   createSnapshot,
+  hexToBytes,
   pageEnvelopeId,
+  type PageEnvelope,
   type ParentEnvelope,
 } from "../src/recommendation_state";
 import { RecommendationAccumulator } from "../src/recommendation_do";
@@ -103,11 +105,19 @@ async function next(
     body: JSON.stringify({ tenant, subject, ...(cursor === undefined ? {} : { cursor }) }),
   }));
   return { response, body: await response.json() as {
-    envelope?: { body: { parent_snapshot_id: string; position: number; entries: Array<{ id: string }>; done: boolean }; signature: Uint8Array };
+    envelope?: { body: { parent_snapshot_id: string; position: number; entries: Array<{ id: string }>; done: boolean }; signature_hex: string };
     envelope_id?: string;
     next_cursor?: { parent_snapshot_id: string; position: number };
     error?: { code: string };
   } };
+}
+
+function envelopeFromWire(page: Awaited<ReturnType<typeof next>>["body"]) {
+  const envelope: PageEnvelope = {
+    body: page.envelope!.body,
+    signature: hexToBytes(page.envelope!.signature_hex),
+  };
+  return envelope;
 }
 
 describe("durable recommendation accumulator (oracle: C9139-01 finite model + write fault injection)", () => {
@@ -124,7 +134,7 @@ describe("durable recommendation accumulator (oracle: C9139-01 finite model + wr
     expect(page0.body.envelope?.body.entries.map((entry) => entry.id)).toEqual(
       model.ordered.slice(0, 10).map((entry) => entry.id),
     );
-    expect(page0.body.envelope_id).toBe(await pageEnvelopeId(page0.body.envelope!));
+    expect(page0.body.envelope_id).toBe(await pageEnvelopeId(envelopeFromWire(page0.body)));
     expect(page0.body.envelope?.body.done).toBe(false);
     expect(page0.body.next_cursor).toEqual({ parent_snapshot_id: model.parent_snapshot_id, position: 10 });
 
@@ -141,7 +151,7 @@ describe("durable recommendation accumulator (oracle: C9139-01 finite model + wr
     );
     expect(page1.body.envelope?.body.done).toBe(true);
     expect(page1.body.envelope?.body.parent_snapshot_id).toBe(model.parent_snapshot_id);
-    expect(page1.body.envelope_id).toBe(await pageEnvelopeId(page1.body.envelope!));
+    expect(page1.body.envelope_id).toBe(await pageEnvelopeId(envelopeFromWire(page1.body)));
     expect(page1.body.envelope_id).not.toBe(page0.body.envelope_id);
   });
 
@@ -167,7 +177,7 @@ describe("durable recommendation accumulator (oracle: C9139-01 finite model + wr
     const restarted = instance(storage);
     const replay = await next(restarted.accumulator, "tenant-a", "subject-1");
     expect(replay.response.status).toBe(200);
-    expect(replay.body.envelope_id).toBe(await pageEnvelopeId(replay.body.envelope!));
+    expect(replay.body.envelope_id).toBe(await pageEnvelopeId(envelopeFromWire(replay.body)));
     expect(replay.body.envelope_id).toBe(
       (await next(restarted.accumulator, "tenant-a", "subject-1")).body.envelope_id,
     );

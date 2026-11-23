@@ -146,7 +146,14 @@ export class RecommendationAccumulator {
       }
       if (request.method === "POST" && url.pathname === "/next") {
         const body = objectBody(await request.json());
-        return Response.json(await this.next(body));
+        const page = await this.next(body);
+        return Response.json({
+          ...page,
+          envelope: {
+            body: page.envelope.body,
+            signature_hex: hex(page.envelope.signature),
+          },
+        });
       }
       return Response.json({ error: { code: "not_found", message: "no route" } }, { status: 404 });
     } catch (error) {
