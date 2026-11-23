@@ -11,8 +11,9 @@ import { OpenCodeClient, OpenCodeError } from "../src/opencode.ts";
 // as OpenCodeError, never a raw Type/SyntaxError, and a non-string
 // password must never be coerced into the Basic credential.
 
-let mode: "ok" | "nonjson" = "ok";
+let mode: "ok" | "nonjson" | "integration" = "ok";
 let lastAuth = "";
+let lastPath = "";
 let server: ReturnType<typeof Bun.serve>;
 let baseUrl = "";
 let dir = "";
@@ -29,8 +30,22 @@ beforeAll(() => {
     port: 0,
     fetch(req) {
       lastAuth = req.headers.get("authorization") ?? "";
+      lastPath = new URL(req.url).pathname + new URL(req.url).search;
       if (mode === "nonjson") {
         return new Response("<html>not json</html>", { status: 200, headers: { "content-type": "text/html" } });
+      }
+      if (mode === "integration") {
+        return Response.json({
+          data: [
+            {
+              id: "opencode",
+              connections: [
+                { type: "credential", label: "popesdrew" },
+                { type: "credential", label: "drewrypope" },
+              ],
+            },
+          ],
+        });
       }
       return Response.json({ data: { id: "sess-control" } });
     },
@@ -201,5 +216,16 @@ describe("OpenCodeClient.listSessions completeness (#13149)", () => {
     const client = new OpenCodeClient(stubUrl, authFile("ls-full.json", JSON.stringify({ password: "pw" })));
     await expect(client.listSessions()).rejects.toThrow(/maximum completeness limit \(200\)/);
     expect(requestedLimits).toEqual([200]);
+  });
+});
+
+describe("OpenCodeClient active integration account (#2732; oracle = active-first integration connection)", () => {
+  test("reads the active-first credential label for the requested session directory", async () => {
+    mode = "integration";
+    const client = new OpenCodeClient(baseUrl, authFile("integration.json", JSON.stringify({ password: "pw" })));
+    const label = await client.activeIntegrationCredentialLabel("opencode", "/home/user/git/code");
+    expect(label).toBe("popesdrew");
+    expect(lastPath).toBe("/api/integration?directory=%2Fhome%2Fuser%2Fgit%2Fcode");
+    expect(Buffer.from(lastAuth.replace("Basic ", ""), "base64").toString()).toBe("opencode:pw");
   });
 });

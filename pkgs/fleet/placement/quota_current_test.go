@@ -126,6 +126,57 @@ func TestReadQuotaCurrent(t *testing.T) {
 	})
 }
 
+// TestReadLastKnownQuotaCurrent pins the B4 fallback oracle: the newest
+// valid monthly measurement remains usable as last-known state after a
+// failed gatherer tick, with its original measuredAt timestamp preserved.
+func TestReadLastKnownQuotaCurrent(t *testing.T) {
+	now := time.Date(2026, 11, 23, 16, 0, 0, 0, time.UTC)
+	monthly := func(pct float64, at string) string {
+		return `{"name":"monthly","pctOfLimit":` + strconv.FormatFloat(pct, 'f', -1, 64) + `,"measuredAt":"` + at + `","state":"ok"}`
+	}
+	old := `{"serviceId":"opencode-go.popesdrew","state":"ok","measuredAt":"2026-11-23T14:00:00Z","windows":[` + monthly(88.0, "2026-11-23T14:00:00Z") + `]}`
+	retained := `{"serviceId":"opencode-go.popesdrew","state":"stale","measuredAt":"2026-11-23T15:30:00Z","retainedFromFailedTick":"2026-11-23T15:45:00Z","windows":[` + monthly(98.4, "2026-11-23T15:30:00Z") + `]}`
+	failed := `{"serviceId":"opencode-go.popesdrew","state":"error","measuredAt":"2026-11-23T15:55:00Z","windows":[]}`
+	path := t.TempDir() + "/quota-current.json"
+	doc := `{"version":1,"providers":[` + old + `,` + retained + `,` + failed + `]}`
+	if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+	pct, readAt, err := ReadLastKnownQuotaCurrent(path, "opencode-go.popesdrew", now)
+	if err != nil {
+		t.Fatalf("ReadLastKnownQuotaCurrent: %v", err)
+	}
+	if pct != 98.4 {
+		t.Fatalf("pct = %v, want newest retained measurement 98.4", pct)
+	}
+	if got := readAt.UTC().Format(time.RFC3339); got != "2026-11-23T15:30:00Z" {
+		t.Fatalf("readAt = %s, want original measurement timestamp", got)
+	}
+}
+
+// TestB4LastKnownReadContinues pins the evaluator oracle: a stale but
+// recorded last-known read is marked as B4 reliance and does not act as a
+// fresh monthly refusal.
+func TestB4LastKnownReadContinues(t *testing.T) {
+	p := testPolicy(t)
+	now := time.Date(2026, 11, 23, 16, 0, 0, 0, time.UTC)
+	lastAt := time.Date(2026, 11, 23, 14, 0, 0, 0, time.UTC)
+	pct := 98.4
+	record, err := Evaluate(p, Answers{
+		Task:                 "queue task test / issue #2732",
+		PoolID:               "opencode-go.popesdrew",
+		PoolReadAt:           &lastAt,
+		PoolMonthlyPct:       &pct,
+		PoolReadUnobtainable: true,
+	}, now)
+	if err != nil {
+		t.Fatalf("B4 last-known state must continue dispatch: %v", err)
+	}
+	if !record.B4Relied {
+		t.Fatal("record does not mark B4 last-known-state reliance")
+	}
+}
+
 // TestQuotaCurrentWiresTheGuard composes the reader with the evaluator: a
 // live 98.4% monthly read refuses the seating through the exact
 // monthly-guard refusal line the weekly audit counts (CountRefusals), so
