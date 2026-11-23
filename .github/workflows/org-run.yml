@@ -394,15 +394,22 @@ jobs:
             esac
             git clone "${clone_args[@]}" "$url" "$dest"
           done < <(jq -c '.[]' <<<"$CHECKOUTS_JSON")
+      - name: Prepare Nix build users
+        run: |
+          set -euo pipefail
+          getent group nixbld >/dev/null || groupadd --system nixbld
+          for index in $(seq 1 32); do
+            user="nixbld${index}"
+            if ! getent passwd "$user" >/dev/null; then
+              useradd --system --no-create-home --home-dir /var/empty \
+                --shell /usr/sbin/nologin --gid nixbld "$user"
+            fi
+          done
       - name: Run command
         if: ${{ matrix.mode == 'single' }}
         env:
           ORG_RUN_COMMAND: ${{ matrix.command }}
-          # The published image runs as root but ships a multi-user Nix
-          # setting for a nixbld group it does not contain. Use Nix's
-          # single-user mode for container legs; callers still choose any
-          # extra experimental features they need in their command.
-          NIX_CONFIG: "build-users-group =\nextra-experimental-features = nix-command flakes"
+          NIX_CONFIG: "extra-experimental-features = nix-command flakes"
         run: |
           git config --global --add safe.directory '*'
           cd "$GITHUB_WORKSPACE/target"
@@ -413,7 +420,7 @@ jobs:
         env:
           CHECKOUTS_JSON: ${{ toJSON(matrix.checkouts) }}
           ORG_RUN_COMMAND: ${{ matrix.command }}
-          NIX_CONFIG: "build-users-group =\nextra-experimental-features = nix-command flakes"
+          NIX_CONFIG: "extra-experimental-features = nix-command flakes"
         run: |
           git config --global --add safe.directory '*'
           cd "$GITHUB_WORKSPACE"
