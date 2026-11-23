@@ -46,7 +46,7 @@ Exactly four methods are handled; everything else gets JSON-RPC error `-32601`.
 
 ## The one tool: `search`
 
-The full definition, exactly as `tools/list` returns it:
+The base definition returned by `tools/list`:
 
 ```json
 {
@@ -74,6 +74,8 @@ The full definition, exactly as `tools/list` returns it:
   }
 }
 ```
+
+After negotiating MCP `2025-06-18`, send `MCP-Protocol-Version: 2025-06-18` with `tools/list`. The search definition then includes an `outputSchema` for successful structured results. The schema requires `cache` (either `hit` or `miss`), `key` and `query` (strings), and `result` and `meta` (objects with service-defined contents). A tool error uses `isError: true` and has no structured payload. Requests carrying an earlier revision or omitting the header receive the base definition. The Worker reads the version from each request because the transport is stateless.
 
 Input rules: `query` is required and must be a string, non-empty after normalization (NFC, trim, collapse whitespace runs — the same normalization as the REST surface). `k` is an integer in the schema, 1–50, default 10; at execution it passes through the Worker's one `clampK`, so a non-number becomes 10, a number is floored, and the result is clamped to [1, 50] — see [The Worker HTTP API](worker-api.md).
 
