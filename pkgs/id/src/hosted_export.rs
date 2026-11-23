@@ -162,10 +162,16 @@ impl ExportObject {
 /// a verifiable signed envelope.
 pub fn cited_content_hashes(bytes: &[u8]) -> Result<Vec<String>, ExportError> {
     let event = crate::chain::decode(bytes).map_err(|_| ExportError::ObjectSignatureInvalid)?;
-    Ok(match &event.header.extensions.document {
+    Ok(citations_of(&event))
+}
+
+/// The BLAKE3 content hashes a decoded envelope cites (see
+/// [`cited_content_hashes`]).
+fn citations_of(event: &crate::chain::Event) -> Vec<String> {
+    match &event.header.extensions.document {
         Some(document) => vec![document.content.to_hex()],
         None => Vec::new(),
-    })
+    }
 }
 
 /// One blob in an export (§6.1 item 2), carried by hash: `hash` is
@@ -319,6 +325,14 @@ pub enum ExportError {
     UnreferencedBlob,
     /// An object cites a blob the export does not carry (§6.2 step 3).
     MissingBlob,
+    /// An object's blob references do not name exactly the blobs
+    /// its envelope's signed content citations resolve to (§6.2
+    /// step 3). `blob_refs` is unsigned — neither the manifest
+    /// digest nor the object's own signature covers it — so the
+    /// references an object may carry are derived from its
+    /// verified envelope and the carried blobs' contents, never
+    /// taken from the reference list alone.
+    CitationBlobMismatch,
 }
 
 impl std::fmt::Display for ExportError {
@@ -378,6 +392,12 @@ impl std::fmt::Display for ExportError {
                 write!(f, "blob is not referenced by any verified object")
             }
             Self::MissingBlob => write!(f, "object cites a blob the export does not carry"),
+            Self::CitationBlobMismatch => {
+                write!(
+                    f,
+                    "object blob references do not match its envelope's content citations"
+                )
+            }
         }
     }
 }
@@ -572,6 +592,7 @@ pub fn verify_import(
     chain_keys.extend(binding.history.iter().map(|e| e.iroh_id.as_str()));
     let mut seen_objects = std::collections::HashSet::new();
     let mut referenced_blobs = std::collections::HashSet::new();
+    let mut citations_per_object: Vec<Vec<String>> = Vec::new();
     for object in &export.objects {
         if !seen_objects.insert(object.hash.clone()) {
             return Err(ExportError::DuplicateObject);
@@ -593,16 +614,22 @@ pub fn verify_import(
         {
             return Err(ExportError::ObjectSignatureInvalid);
         }
+        citations_per_object.push(citations_of(&event));
         for blob_ref in &object.blob_refs {
             referenced_blobs.insert(blob_ref.clone());
         }
     }
     let mut carried_blobs = std::collections::HashSet::new();
+    let mut blob_name_by_citation = std::collections::HashMap::new();
     for blob in &export.blobs {
         if sha256_hex(&blob.bytes) != blob.hash {
             return Err(ExportError::BlobHashMismatch);
         }
         carried_blobs.insert(blob.hash.clone());
+        blob_name_by_citation.insert(
+            p2panda_core::Hash::digest(&blob.bytes).to_hex(),
+            blob.hash.clone(),
+        );
     }
     for blob in &export.blobs {
         if !referenced_blobs.contains(&blob.hash) {
@@ -612,6 +639,30 @@ pub fn verify_import(
     for referenced in &referenced_blobs {
         if !carried_blobs.contains(referenced) {
             return Err(ExportError::MissingBlob);
+        }
+    }
+    // The citation binding: an object's `blob_refs` is unsigned,
+    // so the checks above only prove the reference list is
+    // internally consistent with the carried set — a decoy blob
+    // named by the references passes them while the envelope's
+    // cited content stays absent. The authority is the verified
+    // envelope: each signed content citation must resolve, by
+    // content, to a carried blob, and the object's references
+    // must name exactly the blobs its citations resolve to — no
+    // decoy, no extra references, none missing.
+    for (object, cited) in export.objects.iter().zip(&citations_per_object) {
+        let mut expected = std::collections::HashSet::new();
+        for citation in cited {
+            match blob_name_by_citation.get(citation) {
+                Some(name) => {
+                    expected.insert(name.clone());
+                }
+                None => return Err(ExportError::MissingBlob),
+            }
+        }
+        let refs: std::collections::HashSet<String> = object.blob_refs.iter().cloned().collect();
+        if refs.len() != object.blob_refs.len() || refs != expected {
+            return Err(ExportError::CitationBlobMismatch);
         }
     }
 
@@ -988,5 +1039,100 @@ mod tests {
         assert_eq!(verified.object_count, 2);
         assert_eq!(verified.blob_count, 0);
         assert_eq!(verified.iroh_id, updated.iroh_id);
+    }
+
+    /// A `document.put` object citing `content` whose references
+    /// name `refs` rather than the cited content's blob — the
+    /// hostile-producer shape the citation binding must refuse.
+    fn citing_object_with_refs(
+        key: &SigningKey,
+        content: &[u8],
+        refs: Vec<String>,
+    ) -> ExportObject {
+        let document = crate::documents::DocumentRef::for_bytes("text/plain", content).unwrap();
+        let event = envelope(key, 0, None, ext("document.put", Some(document)));
+        ExportObject::from_envelope(event.bytes, refs).unwrap()
+    }
+
+    #[test]
+    fn decoy_blob_for_cited_content_is_refused() {
+        // The #13289 reproduction: a valid signed `document.put`
+        // citing one content, paired with unrelated decoy bytes
+        // the unsigned `blob_refs` name instead. Signature,
+        // counts, objects digest and blob hashes all verify —
+        // only the citation binding can refuse it, because the
+        // cited content is not in the export at all. Refusal at
+        // verification is what keeps anything from being ingested:
+        // ingest proceeds only from a `VerifiedImport`.
+        let mut svc = service();
+        let binding = bind(&mut svc, 21, None);
+        let decoy = ExportBlob::new(b"decoy payload".to_vec());
+        let object =
+            citing_object_with_refs(&root_key(21), b"blob payload", vec![decoy.hash.clone()]);
+        let export = build_export(
+            &svc,
+            &binding,
+            Vec::new(),
+            vec![object],
+            vec![decoy],
+            Some(&root_key(21)),
+            "export-decoy",
+            CREATED,
+        );
+        assert_eq!(verify_import(&export, false), Err(ExportError::MissingBlob));
+    }
+
+    #[test]
+    fn missing_cited_blob_is_refused() {
+        // The envelope cites content the export does not carry,
+        // and the reference list honestly names nothing: still
+        // refused, because the signed citation itself cannot
+        // resolve to carried bytes.
+        let mut svc = service();
+        let binding = bind(&mut svc, 21, None);
+        let object = citing_object_with_refs(&root_key(21), b"blob payload", Vec::new());
+        let export = build_export(
+            &svc,
+            &binding,
+            Vec::new(),
+            vec![object],
+            Vec::new(),
+            Some(&root_key(21)),
+            "export-missing-cited",
+            CREATED,
+        );
+        assert_eq!(verify_import(&export, false), Err(ExportError::MissingBlob));
+    }
+
+    #[test]
+    fn extra_blob_reference_is_refused() {
+        // Both blobs are carried and every reference names a
+        // carried blob, so the set cross-checks pass; the
+        // references still name a blob the envelope does not
+        // cite, which the citation binding refuses.
+        let mut svc = service();
+        let binding = bind(&mut svc, 21, None);
+        let content = b"blob payload";
+        let cited_blob = ExportBlob::new(content.to_vec());
+        let extra = ExportBlob::new(b"extra payload".to_vec());
+        let object = citing_object_with_refs(
+            &root_key(21),
+            content,
+            vec![cited_blob.hash.clone(), extra.hash.clone()],
+        );
+        let export = build_export(
+            &svc,
+            &binding,
+            Vec::new(),
+            vec![object],
+            vec![cited_blob, extra],
+            Some(&root_key(21)),
+            "export-extra-ref",
+            CREATED,
+        );
+        assert_eq!(
+            verify_import(&export, false),
+            Err(ExportError::CitationBlobMismatch)
+        );
     }
 }
