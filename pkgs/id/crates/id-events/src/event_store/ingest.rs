@@ -2747,6 +2747,81 @@ mod tests {
         store.check_invariants().unwrap();
     }
 
+    /// The roster memo (#13043): resolving a roster folds the whole
+    /// store, so reads are served from the memo until the next
+    /// committed ingest moves the store generation. The resolution
+    /// count — not a clock — is the oracle: it grows once per
+    /// generation, however many unrelated events were ingested, and a
+    /// removal ingested after reads were memoized still takes effect
+    /// on the next read.
+    #[test]
+    fn test_roster_reads_are_memoized_until_the_next_ingest() {
+        let (alice, bob, carol) = (key(61), key(62), key(63));
+        let (_dir, mut store) = open();
+
+        // Alice creates the group with Bob as a reader.
+        let create = GroupAction::Create {
+            initial_members: vec![
+                (individual(&alice), p2panda_auth::Access::manage()),
+                (individual(&bob), p2panda_auth::Access::read()),
+            ],
+        };
+        let (create_event, create_body) = group_op(&alice, 0, None, vec![], None, &create);
+        let group = create_event.id;
+        ingest_op(&mut store, &create_event, &create_body);
+        assert!(store.event_applied(&group).unwrap());
+
+        let mut expected = vec![author(&alice), author(&bob)];
+        expected.sort_unstable();
+        let mut roster = store.roster(&group).unwrap();
+        roster.sort_unstable();
+        assert_eq!(roster, expected);
+        assert_eq!(store.roster_resolutions(), 1);
+
+        // Repeated reads — the relay gate's per-message pattern — are
+        // memo hits: no further fold of the store.
+        for _ in 0..4 {
+            assert_eq!(store.roster(&group).unwrap().len(), 2);
+        }
+        assert_eq!(store.roster_resolutions(), 1);
+
+        // A burst of unrelated content events moves the generation, so
+        // the next read re-resolves — once, however large the burst —
+        // and the reads after it are memo hits again.
+        let mut backlink = None;
+        for seq in 0..8 {
+            let event = event_with_body(&carol, seq, backlink, b"unrelated content");
+            backlink = Some(event.id);
+            let outcome = store
+                .ingest_with_body(&event.bytes, Some(b"unrelated content"), 0)
+                .unwrap();
+            assert!(matches!(outcome, Ingest::Accepted { .. }), "{outcome:?}");
+        }
+        assert_eq!(store.roster(&group).unwrap().len(), 2);
+        assert_eq!(store.roster_resolutions(), 2);
+        assert_eq!(store.roster(&group).unwrap().len(), 2);
+        assert_eq!(store.roster_resolutions(), 2);
+
+        // A removal ingested after the memo was populated takes effect
+        // on the next read: one more resolution, and Bob is gone.
+        let remove_bob = GroupAction::Remove {
+            member: individual(&bob),
+        };
+        let (remove_event, remove_body) = group_op(
+            &alice,
+            1,
+            Some(create_event.id),
+            vec![create_event.id],
+            Some(group),
+            &remove_bob,
+        );
+        ingest_op(&mut store, &remove_event, &remove_body);
+        assert!(store.event_applied(&remove_event.id).unwrap());
+        assert_eq!(store.roster(&group).unwrap(), vec![author(&alice)]);
+        assert_eq!(store.roster_resolutions(), 3);
+        store.check_invariants().unwrap();
+    }
+
     /// The fold gate is a function of the stored set, so it survives a reopen (replay) and a
     /// manager's removal of a plain member — an operation the fold allows — still applies.
     #[test]
