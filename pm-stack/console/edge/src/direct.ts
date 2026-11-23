@@ -42,14 +42,20 @@ export const DIRECT_ACTIONS = [
 ] as const;
 
 /** One call this side made of GitHub or the queue store, and how it was
- * answered: `status` 0 is no answer at all. `write` is anything that
- * may have changed something. `limited` is a call turned away for
- * being one too many just now, not for what the token may do. */
+ * answered: `status` 0 is no answer at all, and 304 is GitHub saying
+ * the answer this side kept still stands. `write` is anything that may
+ * have changed something. `limited` is a call turned away for being
+ * one too many just now, not for what the token may do; `until` is
+ * when GitHub says it may be asked again, where it says. A call this
+ * side did not make, because GitHub had said not to ask before then,
+ * is recorded as the 429 it would have been: it was not sent, so it
+ * wrote nothing. */
 export interface Outward {
   to: "github" | "queue";
   write: boolean;
   status: number;
   limited?: boolean;
+  until?: number;
 }
 
 /** Which of the two each section this side reads is read from. */
@@ -70,9 +76,107 @@ export interface DirectSecrets {
    * address is used, and the queue store's is the one a machine reports. */
   githubApi?: string;
   queueDb?: string;
+  /** What this side remembers of GitHub between calls: its answers by
+   * address, and when it said to ask again. Given by whoever outlives
+   * the classes (the edge's object); without it nothing is remembered. */
+  github?: GitHubMemory;
+  /** The clock, where a test sets it. */
+  now?: () => number;
 }
 
 const GITHUB_API = "https://api.github.com";
+
+/** One answer of GitHub's, with the tag GitHub gave it. */
+export interface KeptAnswer {
+  etag: string;
+  text: string;
+}
+
+/** What is remembered of GitHub between calls.
+ *
+ * Its answers, each under the address it was asked at. Asked again with
+ * the answer's tag, GitHub says "not modified" for one that has not
+ * changed, and a call answered that way does not count against the
+ * account's allowance for the hour: the agents draw on that allowance
+ * too, and a screen left open asks for the same lists every minute.
+ * A tag belongs to the token it was given to; after a new token the
+ * old tags only get full answers again.
+ *
+ * And when it said to ask again, after turning a call away for being
+ * one too many: until then nothing is asked of it at all. */
+export interface GitHubMemory {
+  get(url: string): KeptAnswer | undefined;
+  set(url: string, answer: KeptAnswer): void;
+  delete(url: string): void;
+  /** Not to be asked before this time, in milliseconds; 0 when free to. */
+  quietUntil: number;
+}
+
+/** The longest this side stays quiet on GitHub's word: a little over
+ * the hour its allowance is counted by. A time further off than that
+ * is a header that cannot be right. */
+export const QUIET_MOST_MS = 65 * 60_000;
+
+/** GitHub's answers kept in memory: the one asked for longest ago is
+ * dropped first, once there are more than `most` or they hold more
+ * than `room` characters between them. One that would not fit on its
+ * own is not kept. */
+export function githubMemory(room = 12_000_000, most = 200): GitHubMemory & { held(): number; size(): number } {
+  const kept = new Map<string, KeptAnswer>();
+  let held = 0;
+  const cost = (url: string, answer: KeptAnswer) => url.length + answer.etag.length + answer.text.length;
+  const drop = (url: string) => {
+    const had = kept.get(url);
+    if (!had) return;
+    held -= cost(url, had);
+    kept.delete(url);
+  };
+  return {
+    quietUntil: 0,
+    get(url) {
+      const had = kept.get(url);
+      if (!had) return undefined;
+      // Asked for: it is now the last to go.
+      kept.delete(url);
+      kept.set(url, had);
+      return had;
+    },
+    set(url, answer) {
+      drop(url);
+      if (cost(url, answer) > room) return;
+      kept.set(url, answer);
+      held += cost(url, answer);
+      for (const oldest of kept.keys()) {
+        if (kept.size <= most && held <= room) break;
+        drop(oldest);
+      }
+    },
+    delete: drop,
+    held: () => held,
+    size: () => kept.size,
+  };
+}
+
+/** When GitHub says a caller it turned away for calling too often may
+ * ask again, in milliseconds; undefined where it does not say. It says
+ * it one of two ways: `retry-after`, a number of seconds from now, or,
+ * when `x-ratelimit-remaining` is 0, `x-ratelimit-reset`, the second
+ * the allowance for the hour comes back. Never further off than
+ * QUIET_MOST_MS, and never in the past. */
+export function askAgainAt(headers: { get(name: string): string | null } | undefined, now: number): number | undefined {
+  const within = (at: number) => Math.min(Math.max(at, now), now + QUIET_MOST_MS);
+  const after = headers?.get("retry-after") ?? null;
+  if (after !== null && /^\d{1,9}$/.test(after.trim())) return within(now + Number(after.trim()) * 1000);
+  if (headers?.get("x-ratelimit-remaining")?.trim() === "0") {
+    const reset = headers.get("x-ratelimit-reset") ?? "";
+    if (/^\d{1,12}$/.test(reset.trim())) return within(Number(reset.trim()) * 1000);
+  }
+  return undefined;
+}
+
+/** Said at the front of why a call failed, when GitHub said when to
+ * ask again: the app reads the time back out of it (whySaid). */
+export const askAgainSaid = (until: number) => `GitHub says to ask again at ${new Date(until).toISOString()}: `;
 
 /** One `fleet gh api` call as a GitHub REST call. `argv` is what follows
  * `api`: an optional `-X METHOD`, the path, `-f key=value` pairs, and
@@ -87,6 +191,8 @@ async function ghApi(
   fetchImpl: Fetch,
   origin: string,
   seen?: (call: Outward) => void,
+  memory?: GitHubMemory,
+  now: () => number = Date.now,
 ): Promise<RunResult> {
   if (!token) throw new OpError(502, "the edge has no GitHub token");
   let method = "GET";
@@ -121,6 +227,19 @@ async function ghApi(
     body = JSON.stringify(Object.fromEntries(fields));
   }
   const write = method !== "GET";
+  // GitHub said not to ask before a time that has not come: it is not
+  // asked. Asking on while turned away is what it warns callers off,
+  // and each such call would be one more of the same answer.
+  if (memory && memory.quietUntil > now()) {
+    seen?.({ to: "github", write, status: 429, limited: true, until: memory.quietUntil });
+    return {
+      code: 1,
+      stdout: "",
+      stderr: `${askAgainSaid(memory.quietUntil)}not asked, GitHub having turned this account away for calling too often (rate limit)`,
+    };
+  }
+  // A list asked for before is asked for by its tag.
+  const had = write ? undefined : memory?.get(url);
   let res: Awaited<ReturnType<Fetch>>;
   try {
     res = await fetchImpl(url, {
@@ -133,6 +252,7 @@ async function ghApi(
         "user-agent": "pm-console-edge",
         "x-github-api-version": "2022-11-28",
         ...(body === undefined ? {} : { "content-type": "application/json" }),
+        ...(had ? { "if-none-match": had.etag } : {}),
       },
       ...(body === undefined ? {} : { body }),
       signal: AbortSignal.timeout(20_000),
@@ -142,6 +262,12 @@ async function ghApi(
     // any other, with why: the caller is told, as when the binary fails.
     seen?.({ to: "github", write, status: 0 });
     return { code: 1, stdout: "", stderr: `GitHub could not be reached: ${(error as Error).message}` };
+  }
+  // Not modified: the answer kept from before still stands, and this
+  // call cost nothing of the hour's allowance.
+  if (res.status === 304 && had) {
+    seen?.({ to: "github", write, status: 304 });
+    return { code: 0, stdout: had.text, stderr: "" };
   }
   // The body is read as JSON and written back out, so an empty answer
   // (a 204) stays empty and an error body keeps its own words for the
@@ -157,9 +283,26 @@ async function ghApi(
   // it uses for a token that may not do the thing, and says which in
   // the body; a 429 is always the former.
   const limited = res.status === 429 || (res.status === 403 && /rate limit/i.test(text));
-  seen?.({ to: "github", write, status: res.status, ...(limited ? { limited } : {}) });
+  const until = limited ? askAgainAt(res.headers, now()) : undefined;
+  if (until !== undefined && memory) memory.quietUntil = Math.max(memory.quietUntil, until);
+  seen?.({
+    to: "github",
+    write,
+    status: res.status,
+    ...(limited ? { limited } : {}),
+    ...(until === undefined ? {} : { until }),
+  });
   if (!res.ok) {
-    return { code: 1, stdout: "", stderr: text === "" ? `GitHub answered http ${res.status}` : text };
+    // What was kept under this address is no longer known to be what
+    // is there, if what is there is gone.
+    if (!write && (res.status === 404 || res.status === 410)) memory?.delete(url);
+    const why = text === "" ? `GitHub answered http ${res.status}` : text;
+    return { code: 1, stdout: "", stderr: until === undefined ? why : `${askAgainSaid(until)}${why}` };
+  }
+  if (!write && memory) {
+    const etag = res.headers?.get("etag") ?? null;
+    if (etag) memory.set(url, { etag, text });
+    else memory.delete(url);
   }
   return { code: 0, stdout: text, stderr: "" };
 }
@@ -171,7 +314,16 @@ export function edgeRun(config: Config, secrets: DirectSecrets, fetchImpl: Fetch
   return async (argv, opts) => {
     const [bin, verb, ...rest] = argv;
     if (bin === config.fleetBin && verb === "gh" && rest[0] === "api") {
-      return ghApi(rest.slice(1), opts?.stdin, secrets.githubToken, fetchImpl, origin, secrets.seen);
+      return ghApi(
+        rest.slice(1),
+        opts?.stdin,
+        secrets.githubToken,
+        fetchImpl,
+        origin,
+        secrets.seen,
+        secrets.github,
+        secrets.now,
+      );
     }
     if (bin === config.fleetBin && verb === "secrets" && rest[0] === "get") {
       const name = rest[1];
@@ -220,7 +372,6 @@ export function directConfig(edge: EdgeConfig): Config {
 
 export interface DirectOptions extends DirectSecrets {
   fetchImpl?: Fetch;
-  now?: () => number;
 }
 
 export interface DirectClasses {

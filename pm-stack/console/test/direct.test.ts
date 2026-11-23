@@ -3,21 +3,30 @@
 // secret, and every other fleet verb is refused as the laptop's.
 //
 // Oracles: the exact request the stand-in fetch receives (method, URL,
-// headers, body), and the exact RunResult the classes see back.
+// headers, body), and the exact RunResult the classes see back. For
+// what is remembered of GitHub: a stand-in that tags its answers the
+// way GitHub does and counts what it was asked; a memory written the
+// plain way here (a list, oldest first) that the real one is compared
+// with on generated runs; and for when to ask again, the bounds said
+// here and held against generated headers.
 import { describe, expect, test } from "bun:test";
 import { readConfig } from "../src/config.ts";
 import {
+  askAgainAt,
   directClasses,
   directConfig,
   directRead,
   edgeRun,
+  githubMemory,
+  type KeptAnswer,
   type Outward,
+  QUIET_MOST_MS,
   queueWrites,
   READ_FROM,
 } from "../edge/src/direct.ts";
 import type { Fetch } from "../src/ops.ts";
 import type { EdgeConfig } from "../src/edge-proto.ts";
-import { asThePlatformFetch } from "./support.ts";
+import { asThePlatformFetch, letters, pick, rng } from "./support.ts";
 
 const cfg = readConfig({ HOME: "/h", PM_CONSOLE_OWNER_EMAILS: "owner@example.com" });
 const edgeConfig: EdgeConfig = {
@@ -334,5 +343,278 @@ describe("what this side notes of each call it makes", () => {
       priorities: ["github"],
       asks: ["github", "queue"],
     });
+  });
+});
+
+/** GitHub as it answers a list asked for by its tag. The tag is the
+ * number of times the list has changed; a read that carries the list's
+ * own tag is "not modified", with no body. A test can have it turn
+ * every call away, saying what it likes of when to ask again. */
+function tagging(options: { memory?: boolean; start?: number } = {}) {
+  const lists: Record<string, { rev: number; body: unknown }> = {};
+  const calls: { method: string; url: string; tag: string | null }[] = [];
+  const seen: Outward[] = [];
+  const state: { limited: Record<string, string> | null; tags: boolean; status: number | null } = {
+    limited: null,
+    tags: true,
+    status: null,
+  };
+  const clock = { t: options.start ?? Date.UTC(2026, 10, 23, 17, 0, 0) };
+  const fetchImpl = (async (url: string, init: { method: string; headers: Record<string, string> }) => {
+    calls.push({ method: init.method, url, tag: init.headers["if-none-match"] ?? null });
+    if (state.limited) {
+      return {
+        ok: false,
+        status: 403,
+        headers: new Headers(state.limited),
+        json: async () => ({ message: "API rate limit exceeded for user ID 1." }),
+      };
+    }
+    if (state.status !== null)
+      return { ok: false, status: state.status, headers: new Headers(), json: async () => JSON.parse("") };
+    if (init.method !== "GET")
+      return { ok: true, status: 200, headers: new Headers(), json: async () => ({ done: true }) };
+    lists[url] ??= { rev: 1, body: [{ number: 1 }] };
+    const list = lists[url];
+    const etag = `W/"${list.rev}"`;
+    if (state.tags && init.headers["if-none-match"] === etag) {
+      return { ok: false, status: 304, headers: new Headers({ etag }), json: async () => JSON.parse("") };
+    }
+    return { ok: true, status: 200, headers: new Headers(state.tags ? { etag } : {}), json: async () => list.body };
+  }) as unknown as Fetch;
+  const memory = options.memory === false ? undefined : githubMemory();
+  const run = edgeRun(
+    directConfig(edgeConfig),
+    { githubToken: "gh-test", seen: (call) => seen.push(call), github: memory, now: () => clock.t },
+    asThePlatformFetch(fetchImpl) as typeof fetchImpl,
+  );
+  const api = (...argv: string[]) => run(["fleet", "gh", "api", ...argv]);
+  const change = (url: string, body: unknown) => {
+    lists[url] = { rev: (lists[url]?.rev ?? 0) + 1, body };
+  };
+  return { api, calls, seen, state, clock, memory, change };
+}
+
+describe("what the edge remembers of GitHub", () => {
+  const PULLS = "repos/developing-today/code/pulls?state=open&per_page=60";
+  const ISSUES = "repos/developing-today/code/issues?state=open";
+  const at = (path: string) => `https://api.github.com/${path}`;
+
+  test("a list asked for again is asked for by its tag, and one that has not changed is answered from what was kept", async () => {
+    const g = tagging();
+    const first = await g.api(PULLS);
+    expect(first).toEqual({ code: 0, stdout: '[{"number":1}]', stderr: "" });
+    expect(g.calls).toEqual([{ method: "GET", url: at(PULLS), tag: null }]);
+    // Again: by its tag, and GitHub's "not modified" is the same answer to whoever asked.
+    expect(await g.api(PULLS)).toEqual(first);
+    expect(g.calls[1]).toEqual({ method: "GET", url: at(PULLS), tag: 'W/"1"' });
+    expect(g.seen).toEqual([
+      { to: "github", write: false, status: 200 },
+      { to: "github", write: false, status: 304 },
+    ]);
+    // The list changes: the old tag gets a full answer, which replaces what was kept.
+    g.change(at(PULLS), [{ number: 1 }, { number: 2 }]);
+    expect((await g.api(PULLS)).stdout).toBe('[{"number":1},{"number":2}]');
+    expect(g.calls[2].tag).toBe('W/"1"');
+    expect((await g.api(PULLS)).stdout).toBe('[{"number":1},{"number":2}]');
+    expect(g.calls[3].tag).toBe('W/"2"');
+    expect(g.seen.map((call) => call.status)).toEqual([200, 304, 200, 304]);
+  });
+
+  test("each address has its own answer, and a write is never asked for by a tag", async () => {
+    const g = tagging();
+    await g.api(PULLS);
+    g.change(at(ISSUES), [{ number: 9 }]);
+    expect((await g.api(ISSUES)).stdout).toBe('[{"number":9}]');
+    expect((await g.api(PULLS)).stdout).toBe('[{"number":1}]');
+    expect((await g.api(ISSUES)).stdout).toBe('[{"number":9}]');
+    expect(g.calls.map((call) => call.tag)).toEqual([null, null, 'W/"1"', 'W/"2"']);
+    // The same address with other things asked of it is another address.
+    await g.api(PULLS, "-f", "page=2");
+    expect(g.calls[4]).toEqual({ method: "GET", url: `${at(PULLS)}&page=2`, tag: null });
+    // Writes: no tag sent, nothing kept from them, and what is kept is not disturbed.
+    await g.api("-X", "PUT", "repos/developing-today/code/pulls/55/merge", "-f", "merge_method=merge");
+    await g.api("-X", "POST", PULLS, "-f", "title=x");
+    expect(g.calls.slice(5).map((call) => [call.method, call.tag])).toEqual([
+      ["PUT", null],
+      ["POST", null],
+    ]);
+    await g.api(PULLS);
+    expect(g.calls[7].tag).toBe('W/"1"');
+    expect(g.memory?.size()).toBe(3);
+  });
+
+  test("an answer with no tag is not kept, one that is gone is let go, and with no memory every call is a full one", async () => {
+    const g = tagging();
+    await g.api(PULLS);
+    // GitHub stops tagging: the full answer is used, and the old one is not kept under it.
+    g.state.tags = false;
+    await g.api(PULLS);
+    await g.api(PULLS);
+    expect(g.calls.map((call) => call.tag)).toEqual([null, 'W/"1"', null]);
+    expect(g.memory?.size()).toBe(0);
+    // Gone from GitHub: what was kept under the address goes too.
+    g.state.tags = true;
+    await g.api(PULLS);
+    expect(g.memory?.size()).toBe(1);
+    g.state.status = 404;
+    expect((await g.api(PULLS)).code).toBe(1);
+    expect(g.memory?.size()).toBe(0);
+    // A failure that says nothing of the list leaves what was kept alone.
+    g.state.status = null;
+    await g.api(PULLS);
+    g.state.status = 502;
+    expect(await g.api(PULLS)).toEqual({ code: 1, stdout: "", stderr: "GitHub answered http 502" });
+    expect(g.memory?.size()).toBe(1);
+    // "Not modified" for something never kept is not an answer.
+    g.state.status = 304;
+    expect(await g.api(ISSUES)).toEqual({ code: 1, stdout: "", stderr: "GitHub answered http 304" });
+    // No memory given: nothing is asked by a tag, ever.
+    const plain = tagging({ memory: false });
+    await plain.api(PULLS);
+    await plain.api(PULLS);
+    expect(plain.calls.map((call) => call.tag)).toEqual([null, null]);
+    expect(plain.seen.map((call) => call.status)).toEqual([200, 200]);
+  });
+
+  test("turned away for calling too often with a time to ask again: the time is told, said at the front of why, and nothing is asked until it has come", async () => {
+    const g = tagging();
+    await g.api(PULLS);
+    const back = g.clock.t + 40 * 60_000;
+    g.state.limited = { "x-ratelimit-remaining": "0", "x-ratelimit-reset": String(back / 1000) };
+    const turned = await g.api(PULLS);
+    expect(turned).toEqual({
+      code: 1,
+      stdout: "",
+      stderr: `GitHub says to ask again at ${new Date(back).toISOString()}: {"message":"API rate limit exceeded for user ID 1."}`,
+    });
+    expect(g.seen[1]).toEqual({ to: "github", write: false, status: 403, limited: true, until: back });
+    // Until then nothing goes out: not a read, not a write, though GitHub would answer now.
+    g.state.limited = null;
+    g.clock.t += 39 * 60_000;
+    const asked = g.calls.length;
+    const read = await g.api(ISSUES);
+    const write = await g.api("-X", "PUT", "repos/developing-today/code/pulls/55/merge");
+    expect(g.calls.length).toBe(asked);
+    for (const held of [read, write]) {
+      expect(held.code).toBe(1);
+      expect(held.stderr).toStartWith(`GitHub says to ask again at ${new Date(back).toISOString()}: not asked`);
+      expect(held.stderr).toMatch(/rate limit/i);
+    }
+    // Each is recorded as the answer it would have had: not sent, so nothing written.
+    expect(g.seen.slice(2)).toEqual([
+      { to: "github", write: false, status: 429, limited: true, until: back },
+      { to: "github", write: true, status: 429, limited: true, until: back },
+    ]);
+    // The time comes: it is asked again, and what was kept is still asked for by its tag.
+    g.clock.t = back;
+    expect((await g.api(PULLS)).code).toBe(0);
+    expect(g.calls[asked]).toEqual({ method: "GET", url: at(PULLS), tag: 'W/"1"' });
+  });
+
+  test("when to ask again: the seconds GitHub gives, or the turn of the hour when nothing is left of it; never the past, never much over an hour", () => {
+    const now = Date.UTC(2026, 10, 23, 17, 0, 0);
+    const said = (headers: Record<string, string>) => askAgainAt(new Headers(headers), now);
+    expect(said({ "retry-after": "60" })).toBe(now + 60_000);
+    expect(said({ "retry-after": "0" })).toBe(now);
+    expect(said({ "x-ratelimit-remaining": "0", "x-ratelimit-reset": String(now / 1000 + 1500) })).toBe(
+      now + 1_500_000,
+    );
+    // Both: the seconds are for this caller, now.
+    expect(
+      said({ "retry-after": "30", "x-ratelimit-remaining": "0", "x-ratelimit-reset": String(now / 1000 + 1500) }),
+    ).toBe(now + 30_000);
+    // Something left of the hour's allowance: the turn of the hour is not when to ask again.
+    expect(said({ "x-ratelimit-remaining": "12", "x-ratelimit-reset": String(now / 1000 + 1500) })).toBeUndefined();
+    expect(said({ "x-ratelimit-reset": String(now / 1000 + 1500) })).toBeUndefined();
+    expect(said({})).toBeUndefined();
+    expect(askAgainAt(undefined, now)).toBeUndefined();
+    // A time that cannot be right is cut to a little over the hour; one already past is now.
+    expect(said({ "retry-after": "86400" })).toBe(now + QUIET_MOST_MS);
+    expect(said({ "x-ratelimit-remaining": "0", "x-ratelimit-reset": String(now / 1000 + 7 * 3600) })).toBe(
+      now + QUIET_MOST_MS,
+    );
+    expect(said({ "x-ratelimit-remaining": "0", "x-ratelimit-reset": String(now / 1000 - 30) })).toBe(now);
+    // A date, as the header may also be written, is not read: no time is better than a wrong one.
+    expect(said({ "retry-after": "Mon, 23 Nov 2026 18:00:00 GMT" })).toBeUndefined();
+  });
+
+  test("property: whatever GitHub's headers say, the time to ask again is none, or between now and a little over an hour on", () => {
+    const next = rng(13489);
+    let none = 0;
+    let some = 0;
+    for (let i = 0; i < 6000; i++) {
+      const now = Math.floor(next() * 2e12);
+      const value = () =>
+        pick(next, [
+          "0",
+          "1",
+          "60",
+          "3600",
+          String(Math.floor(now / 1000) + Math.floor((next() - 0.3) * 10_000)),
+          String(Math.floor(next() * 1e13)),
+          "-5",
+          "1.5",
+          "1e9",
+          "",
+          " 30 ",
+          "soon",
+          "Infinity",
+          "NaN",
+          letters(next, "0123456789 -.eE+x", 0, 14),
+        ]);
+      const headers: Record<string, string> = {};
+      for (const name of ["retry-after", "x-ratelimit-remaining", "x-ratelimit-reset"])
+        if (next() < 0.7) headers[name] = value();
+      const at = askAgainAt(new Headers(headers), now);
+      if (at === undefined) none++;
+      else {
+        some++;
+        expect([headers, now, Number.isInteger(at) && at >= now && at <= now + QUIET_MOST_MS]).toEqual([
+          headers,
+          now,
+          true,
+        ]);
+      }
+    }
+    expect([none > 500, some > 500]).toEqual([true, true]);
+  });
+
+  test("property: what is kept is what a plain list kept the same way would hold, within its room and its count", () => {
+    const next = rng(304);
+    for (let round = 0; round < 60; round++) {
+      const room = 40 + Math.floor(next() * 400);
+      const most = 1 + Math.floor(next() * 6);
+      const real = githubMemory(room, most);
+      // The model: [address, answer] pairs, the one asked for longest ago first.
+      let model: [string, KeptAnswer][] = [];
+      const cost = (url: string, answer: KeptAnswer) => url.length + answer.etag.length + answer.text.length;
+      const urls = Array.from({ length: 2 + Math.floor(next() * 8) }, (_, n) => `https://api.github.com/list/${n}`);
+      for (let step = 0; step < 300; step++) {
+        const url = pick(next, urls);
+        const roll = next();
+        if (roll < 0.45) {
+          const answer = { etag: `W/"${step}"`, text: letters(next, "abc", 0, pick(next, [5, 30, 120, 500])) };
+          real.set(url, answer);
+          model = model.filter(([kept]) => kept !== url);
+          if (cost(url, answer) <= room) {
+            model.push([url, answer]);
+            while (model.length > most || model.reduce((sum, [u, a]) => sum + cost(u, a), 0) > room) model.shift();
+          }
+        } else if (roll < 0.9) {
+          const want = model.find(([kept]) => kept === url);
+          expect([round, step, real.get(url)]).toEqual([round, step, want?.[1]]);
+          if (want) model = [...model.filter(([kept]) => kept !== url), want];
+        } else {
+          real.delete(url);
+          model = model.filter(([kept]) => kept !== url);
+        }
+        const held = model.reduce((sum, [u, a]) => sum + cost(u, a), 0);
+        expect([round, step, real.size(), real.held()]).toEqual([round, step, model.length, held]);
+        expect([real.size() <= most, real.held() <= room]).toEqual([true, true]);
+      }
+      // What is left is exactly the model's, each under its own address.
+      for (const url of urls) expect(real.get(url)).toEqual(model.find(([kept]) => kept === url)?.[1]);
+    }
   });
 });
