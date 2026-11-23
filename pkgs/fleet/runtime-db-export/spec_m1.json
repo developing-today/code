@@ -1,0 +1,3 @@
+{"table": "agent.mirror_scheduler_jobs", "conflict": ["job_id"],
+ "jsonb_cols": ["payload"], "hash_payload": true,
+ "history_table": "agent.mirror_history_scheduler_jobs", "mode": "update"}
