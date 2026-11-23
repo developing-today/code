@@ -348,6 +348,7 @@ feature, phase, fix and research records — run `ls doc/` for those.
 - [Atlas Program — Full Investigation, Next-Steps Design & Build-Out Prompt](../../doc/2026-11-23T12-06-51Z_design_atlas_program_investigation/2026-11-23T12-06-51Z_design_atlas_program_investigation.md)
 - [F12.10 per-account quotas — design for the ownership slice of #1067](../../doc/2026-11-23_design_id1067-account-quotas.md)
 - [Social app reference model (design record for #9128)](../../doc/2026-11-23_design_id9128_social_app_reference_model.md)
+- [Rust practices & opinions: Frugal Async Rust considerations (alpha seed for #13779)](../../doc/2026-11-23T22-21-27Z_design_rust-practices/2026-11-23T22-21-27Z_design_rust-practices.md)
 
 ## Package architecture docs (living, with the code)
 
