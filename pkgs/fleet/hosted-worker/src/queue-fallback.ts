@@ -28,11 +28,7 @@ const MARKER_PREFIX = "<!-- fleet-claim v1 ";
 const MARKER_SUFFIX = " -->";
 
 export function validWorkerId(w: string): boolean {
-  return (
-    w !== "" &&
-    w.length <= 64 &&
-    [...w].every((c) => /[A-Za-z0-9._-]/.test(c))
-  );
+  return w !== "" && w.length <= 64 && [...w].every((c) => /[A-Za-z0-9._-]/.test(c));
 }
 
 function daysInMonth(year: number, month: number): number {
@@ -68,8 +64,7 @@ export function parseMarkerTs(input: string): number | null {
   let rest = s.slice(sepIdx + 1);
   const dp = date.split("-");
   if (dp.length !== 3) return null;
-  const num = (v: string): number | null =>
-    v !== "" && /^[0-9]+$/.test(v) ? Number(v) : null;
+  const num = (v: string): number | null => (v !== "" && /^[0-9]+$/.test(v) ? Number(v) : null);
   const year = num(dp[0]);
   const month = num(dp[1]);
   const day = num(dp[2]);
@@ -300,11 +295,7 @@ function transportError(e: unknown): FallbackResult {
   };
 }
 
-async function readMarkers(
-  ctx: FallbackCtx,
-  repo: string,
-  number: number,
-): Promise<Marker[]> {
+async function readMarkers(ctx: FallbackCtx, repo: string, number: number): Promise<Marker[]> {
   const comments = await ctx.surface.listIssueComments(repo, number);
   const markers: Marker[] = [];
   for (const c of comments) {
@@ -322,10 +313,7 @@ function markerLine(kind: string, worker: string, ts: number, outcome?: string):
 const CLAIMED_LABELS_ADD = ["queue/claimed", "work/assigned"];
 const QUEUED_LABELS_REMOVE = ["queue/queued"];
 
-export async function fallbackStatus(
-  ctx: FallbackCtx,
-  req: JsonObject,
-): Promise<FallbackResult> {
+export async function fallbackStatus(ctx: FallbackCtx, req: JsonObject): Promise<FallbackResult> {
   const repo = repoOf(req);
   const number = numberOf(req);
   if (repo === null || number === null) {
@@ -352,10 +340,7 @@ export async function fallbackStatus(
   };
 }
 
-export async function fallbackClaim(
-  ctx: FallbackCtx,
-  req: JsonObject,
-): Promise<FallbackResult> {
+export async function fallbackClaim(ctx: FallbackCtx, req: JsonObject): Promise<FallbackResult> {
   const repo = repoOf(req);
   const number = numberOf(req);
   if (repo === null || number === null) {
@@ -435,10 +420,7 @@ export async function fallbackClaim(
   };
 }
 
-export async function fallbackHeartbeat(
-  ctx: FallbackCtx,
-  req: JsonObject,
-): Promise<FallbackResult> {
+export async function fallbackHeartbeat(ctx: FallbackCtx, req: JsonObject): Promise<FallbackResult> {
   const repo = repoOf(req);
   const number = numberOf(req);
   if (repo === null || number === null) {
@@ -483,10 +465,7 @@ export async function fallbackHeartbeat(
   };
 }
 
-export async function fallbackRelease(
-  ctx: FallbackCtx,
-  req: JsonObject,
-): Promise<FallbackResult> {
+export async function fallbackRelease(ctx: FallbackCtx, req: JsonObject): Promise<FallbackResult> {
   const repo = repoOf(req);
   const number = numberOf(req);
   if (repo === null || number === null) {
@@ -507,9 +486,7 @@ export async function fallbackRelease(
   }
   const summary = typeof req["summary"] === "string" ? req["summary"] : "";
   if (summary.trim() === "") {
-    return usageError(
-      "fallback release: --summary is required (what landed, with PR links for outcome=done)",
-    );
+    return usageError("fallback release: --summary is required (what landed, with PR links for outcome=done)");
   }
   const lease = leaseSecondsOf(req);
   const now = ctx.nowEpoch();

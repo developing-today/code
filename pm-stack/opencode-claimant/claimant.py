@@ -189,7 +189,9 @@ CONCURRENCY_CAP = 36
 LAUNCHED_BY_RECOVERY_ZERO_MESSAGE = "opencode-claimant-recovery:zero-message-deleted"
 LAUNCHED_BY_RECOVERY_GONE_SESSION = "opencode-claimant-recovery:gone-session"
 LAUNCHED_BY_RECOVERY_ERROR_STOPPED = "opencode-claimant-recovery:error-stopped"
-ERROR_STOPPED_OUTCOMES = frozenset(("error", "failed", "failure", "timeout", "timed_out"))
+ERROR_STOPPED_OUTCOMES = frozenset(
+    ("error", "failed", "failure", "timeout", "timed_out")
+)
 
 
 # Where this process's mode came from (#10332): the file's path and
@@ -385,7 +387,13 @@ def log_fire(
 # Preserve #13134’s production poll window; queue health has its own 15s cap.
 POLL_MAX_SECONDS = 300
 GATE_MAX_SECONDS = 315
-_POLL_PHASES = ("session_census", "active_sessions", "broker_reads", "ledger_read", "snapshot")
+_POLL_PHASES = (
+    "session_census",
+    "active_sessions",
+    "broker_reads",
+    "ledger_read",
+    "snapshot",
+)
 _gate_diagnostic = None
 
 
@@ -399,11 +407,13 @@ class PollFailure(RuntimeError):
 def _poll_last_phase(stderr):
     if isinstance(stderr, bytes):
         stderr = stderr.decode("utf-8", errors="replace")
-    phases = {
-        f"claimant-poll-phase:{phase}": phase for phase in _POLL_PHASES
-    }
+    phases = {f"claimant-poll-phase:{phase}": phase for phase in _POLL_PHASES}
     return next(
-        (phases[line] for line in reversed((stderr or "").splitlines()) if line in phases),
+        (
+            phases[line]
+            for line in reversed((stderr or "").splitlines())
+            if line in phases
+        ),
         "poll_start",
     )
 
@@ -1694,7 +1704,9 @@ def launch_step(
         sink_diagnostics = {}
         for queue_name, want in handed_off_by_queue.items():
             diagnostic = {}
-            collected.update(_collect_handed_offs(queue_name, want, diagnostic=diagnostic))
+            collected.update(
+                _collect_handed_offs(queue_name, want, diagnostic=diagnostic)
+            )
             if diagnostic.get("category") == "row_returned":
                 diagnostic["category"] = "different_row"
             sink_diagnostics[queue_name] = diagnostic

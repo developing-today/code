@@ -179,9 +179,7 @@ class TestPlan(unittest.TestCase):
 
 
 class TestNudgeStep(unittest.TestCase):
-    def _step(
-        self, fx, rec, state_dir, mode="live", bindings=None, recover_error=None
-    ):
+    def _step(self, fx, rec, state_dir, mode="live", bindings=None, recover_error=None):
         return nudges.nudge_step(
             mode,
             rec,
@@ -478,13 +476,9 @@ class TestInterventionAccounting(unittest.TestCase):
         fx = FakeEffects(send_ok=False)
         with tempfile.TemporaryDirectory() as tmp:
             state_dir = Path(tmp)
-            out = self._step(
-                fx, record(verdicts={"ses_stuck": stalled()}), state_dir
-            )
+            out = self._step(fx, record(verdicts={"ses_stuck": stalled()}), state_dir)
             self.assertEqual(out["interventions"]["queue"]["nudges"], 0)
-            self.assertEqual(
-                self._state(state_dir)["counts"]["queue"]["nudges"], 0
-            )
+            self.assertEqual(self._state(state_dir)["counts"]["queue"]["nudges"], 0)
 
     def test_counts_accumulate_across_rounds_and_episode_close(self):
         fx = FakeEffects()
@@ -526,7 +520,9 @@ class TestInterventionAccounting(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             state_dir = Path(tmp)
             out = self._step(
-                fx, record(round_no=3, verdicts=verdicts), state_dir,
+                fx,
+                record(round_no=3, verdicts=verdicts),
+                state_dir,
                 bindings=bindings,
             )
             self.assertEqual(len(fx.sent), cap)
@@ -538,32 +534,26 @@ class TestInterventionAccounting(unittest.TestCase):
             # The deferred episode exists with its budget
             # untouched, so the intervention re-plans next round.
             state = self._state(state_dir)
-            self.assertEqual(
-                state["sessions"][overflowed]["nudges_sent"], 0
-            )
+            self.assertEqual(state["sessions"][overflowed]["nudges_sent"], 0)
             out2 = self._step(
-                fx, record(round_no=4, verdicts=verdicts), state_dir,
+                fx,
+                record(round_no=4, verdicts=verdicts),
+                state_dir,
                 bindings=bindings,
             )
             # Least-served first: the session deferred in round 3
             # is served in round 4, ahead of the sessions that
             # consumed budget ahead of it.
             self.assertIn(overflowed, [sid for sid, _ in fx.sent[cap:]])
-            self.assertNotIn(
-                overflowed, [a["session_id"] for a in out2["overflow"]]
-            )
+            self.assertNotIn(overflowed, [a["session_id"] for a in out2["overflow"]])
 
     def test_shadow_reports_overflow_and_counts_but_writes_nothing(self):
         fx = FakeEffects()
         cap = nudges.MAX_QUEUE_INTERVENTIONS_PER_ROUND
-        verdicts = {
-            f"ses_{i:02d}": stalled(task_id=100 + i) for i in range(cap + 1)
-        }
+        verdicts = {f"ses_{i:02d}": stalled(task_id=100 + i) for i in range(cap + 1)}
         with tempfile.TemporaryDirectory() as tmp:
             state_dir = Path(tmp)
-            out = self._step(
-                fx, record(verdicts=verdicts), state_dir, mode="shadow"
-            )
+            out = self._step(fx, record(verdicts=verdicts), state_dir, mode="shadow")
             self.assertEqual(len(out["overflow"]), 1)
             self.assertEqual(out["interventions"]["queue"]["nudges"], cap)
             self.assertEqual(fx.sent, [])

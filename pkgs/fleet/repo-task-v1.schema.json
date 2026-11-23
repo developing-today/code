@@ -70,7 +70,7 @@
       "required": ["number"],
       "type": "object"
     },
-    "kind": { "enum": ["pr_shepherd", "triage", "small_fix", "ci_investigation"], "type": "string" },
+    "kind": { "enum": ["pr_shepherd", "triage", "small_fix", "ci_investigation", "second_pass", "feature_slice"], "type": "string" },
     "max_attempts": { "maximum": 1000, "minimum": 1, "type": "integer" },
     "priority_reason": { "minLength": 1, "type": "string" },
     "problem": { "minLength": 1, "type": "string" },
@@ -99,6 +99,7 @@
         "developing-today/openchamber",
         "developing-today-forks/opencode",
         "developing-today-forks/openchamber",
+        "dezren39/nix",
         "dezren39/darwin-nix",
         "developing-today/zettel",
         "dezren39/dezren39"

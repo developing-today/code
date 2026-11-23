@@ -57,9 +57,7 @@ class TestRestoreRowCountDiffArgs(unittest.TestCase):
             )
             live = Path(tmp) / "live.tsv"
             live.write_text("table\tlive_count\nt1\t5\n")
-            result = run_diff(
-                ["--manifest", str(manifest), "--live", str(live)]
-            )
+            result = run_diff(["--manifest", str(manifest), "--live", str(live)])
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn("GATE PASSED", result.stdout)
 

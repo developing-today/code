@@ -39,6 +39,7 @@ Over 50,000 top-level binaries on PATH (the tree holds ~880K versioned
    whole tree on PATH, backed by an unshare'd mount namespace.
 
 Related projects by the same author:
+
 - **nixpkgs-multiverse** — the "fast mode" index behind omnibin; every
   indexed package version addressable as a fake derivation.
   As of Aug 2026: all 271,187 indexed paths still alive on cache.nixos.org.
@@ -118,13 +119,13 @@ nix-native only, via the pinned flake.
 
 ## What doesn't work here
 
-| Feature | Status | Why |
-|---|---|---|
+| Feature                                     | Status           | Why                                                            |
+| ------------------------------------------- | ---------------- | -------------------------------------------------------------- |
 | `nix run github:fzakaria/omnibin` shell app | ❌ fails cleanly | Needs FUSE mount; `/dev/fuse` can't be created (`mknod` EPERM) |
-| Index query (`#omnibin -- which`) | ✅ works | No FUSE needed |
-| `nix-store --realise` + run | ✅ works | Plain store fetch |
-| dispatcher `@version` | ✅ works | Built on the above, with GC roots + cache |
-| Docker image | ❌ n/a | No Docker here; also needs `/dev/fuse` + `SYS_ADMIN` |
+| Index query (`#omnibin -- which`)           | ✅ works         | No FUSE needed                                                 |
+| `nix-store --realise` + run                 | ✅ works         | Plain store fetch                                              |
+| dispatcher `@version`                       | ✅ works         | Built on the above, with GC roots + cache                      |
+| Docker image                                | ❌ n/a           | No Docker here; also needs `/dev/fuse` + `SYS_ADMIN`           |
 
 Needs the runtime to expose `/dev/fuse` for the full experience.
 Dev note filed with the Muse team 2026-09-30 (confirmed delivered).

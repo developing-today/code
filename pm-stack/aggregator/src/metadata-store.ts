@@ -22,9 +22,7 @@ export interface ParsedPmMetadata {
   indexes: MetadataIndexes;
 }
 
-export type ParsePmMetadataResult =
-  | { ok: true; value: ParsedPmMetadata }
-  | { ok: false; error: string };
+export type ParsePmMetadataResult = { ok: true; value: ParsedPmMetadata } | { ok: false; error: string };
 
 export interface PmMetadataRecord {
   artifactId: string;
@@ -177,23 +175,27 @@ export function upsertPmMetadata(db: Database, record: PmMetadataRecord): void {
   }
 }
 
-const stringOrUndefined = (value: unknown): string | undefined => typeof value === "string" ? value : undefined;
-const numberOrUndefined = (value: unknown): number | undefined => typeof value === "number" ? value : undefined;
+const stringOrUndefined = (value: unknown): string | undefined => (typeof value === "string" ? value : undefined);
+const numberOrUndefined = (value: unknown): number | undefined => (typeof value === "number" ? value : undefined);
 
 /** Read a source row with its extracted query projection. */
 export function getPmMetadata(db: Database, artifactId: string): PmMetadataRow | null {
-  const row = db.query(`
+  const row = db
+    .query(`
     SELECT artifact_id, repo, item_number, item_kind, source_url, schema_version,
       metadata_json, extras_json, direct_parent_repo, direct_parent_number,
       session_id, lane, host, queue_id, source_updated_at
     FROM pm_metadata_items WHERE artifact_id = ?
-  `).get(artifactId) as Record<string, unknown> | null;
+  `)
+    .get(artifactId) as Record<string, unknown> | null;
   if (!row) return null;
 
-  const links = db.query(`
+  const links = db
+    .query(`
     SELECT target_repo, target_number, relation, status
     FROM pm_metadata_links WHERE artifact_id = ? ORDER BY link_index
-  `).all(artifactId) as Record<string, unknown>[];
+  `)
+    .all(artifactId) as Record<string, unknown>[];
   return {
     artifactId: String(row.artifact_id),
     repo: String(row.repo),
@@ -205,7 +207,9 @@ export function getPmMetadata(db: Database, artifactId: string): PmMetadataRow |
     extras: JSON.parse(String(row.extras_json)) as JsonObject,
     indexes: {
       ...(stringOrUndefined(row.direct_parent_repo) ? { directParentRepo: String(row.direct_parent_repo) } : {}),
-      ...(numberOrUndefined(row.direct_parent_number) !== undefined ? { directParentNumber: Number(row.direct_parent_number) } : {}),
+      ...(numberOrUndefined(row.direct_parent_number) !== undefined
+        ? { directParentNumber: Number(row.direct_parent_number) }
+        : {}),
       ...(stringOrUndefined(row.session_id) ? { sessionId: String(row.session_id) } : {}),
       ...(stringOrUndefined(row.lane) ? { lane: String(row.lane) } : {}),
       ...(stringOrUndefined(row.host) ? { host: String(row.host) } : {}),
@@ -261,8 +265,16 @@ export function parsePmMetadata(input: unknown): ParsePmMetadataResult {
   } else if (isObject(provenance)) {
     const fields = ["session_id", "lane", "host", "queue_id"] as const;
     const knownProvenance = new Set([
-      "queue_id", "session_id", "lane", "host", "worktree", "picked_up_at",
-      "work_started_at", "created_at", "model", "lane_start_issues",
+      "queue_id",
+      "session_id",
+      "lane",
+      "host",
+      "worktree",
+      "picked_up_at",
+      "work_started_at",
+      "created_at",
+      "model",
+      "lane_start_issues",
     ]);
     for (const [key, value] of Object.entries(provenance)) {
       if (!knownProvenance.has(key)) extras[`provenance.${key}`] = value;
@@ -272,7 +284,10 @@ export function parsePmMetadata(input: unknown): ParsePmMetadataResult {
       if (value === undefined || value === null) continue;
       if (nonempty(value)) {
         const index = { session_id: "sessionId", lane: "lane", host: "host", queue_id: "queueId" }[field] as
-          | "sessionId" | "lane" | "host" | "queueId";
+          | "sessionId"
+          | "lane"
+          | "host"
+          | "queueId";
         indexes[index] = value.trim();
       } else {
         extras[`provenance.${field}`] = value;
@@ -292,7 +307,13 @@ export function parsePmMetadata(input: unknown): ParsePmMetadataResult {
         return {};
       }
       const target = isObject(raw.target) ? raw.target : {};
-      if (!isObject(raw.target) || !nonempty(target.repo) || !positiveInteger(target.number) || !nonempty(raw.relation) || !nonempty(raw.status)) {
+      if (
+        !isObject(raw.target) ||
+        !nonempty(target.repo) ||
+        !positiveInteger(target.number) ||
+        !nonempty(raw.relation) ||
+        !nonempty(raw.status)
+      ) {
         extras[`links.${position}`] = raw;
       }
       return {

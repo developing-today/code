@@ -1533,17 +1533,14 @@ pub fn run(config: &Config, args: &[String]) -> i32 {
     // the post-create record insert. A refusal (a malformed caller
     // Metadata block, an unreadable --body-file) happens before any
     // GitHub write and never reaches the rotation.
-    let prepared_create = match gh_metadata::prepare_create(
-        config,
-        &call_args,
-        std::io::stdin().is_terminal(),
-    ) {
-        Ok(prepared) => prepared,
-        Err(e) => {
-            eprintln!("fleet gh: {e}");
-            return EXIT_USAGE;
-        }
-    };
+    let prepared_create =
+        match gh_metadata::prepare_create(config, &call_args, std::io::stdin().is_terminal()) {
+            Ok(prepared) => prepared,
+            Err(e) => {
+                eprintln!("fleet gh: {e}");
+                return EXIT_USAGE;
+            }
+        };
     let call_args = match &prepared_create {
         Some(prepared) => prepared.args.clone(),
         None => call_args,

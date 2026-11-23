@@ -91,7 +91,10 @@ export function createPmCoreScheduler(options: {
     start() {
       if (timers.size > 0) return;
       for (const job of Object.keys(jobs) as SchedulerJobName[]) {
-        timers.set(job, setTimer(() => void runNow(job), cadence[job]));
+        timers.set(
+          job,
+          setTimer(() => void runNow(job), cadence[job]),
+        );
       }
     },
     stop() {

@@ -1651,10 +1651,7 @@ pub(crate) fn verb_sweep(t: &TursoBackend, req: &Value) -> Value {
         // sweep: its errors (store, unreadable log) are reported
         // inside its own summary and the cycle continues.
         let closed_bound_summary = if req_bool(req, "closed_bound").unwrap_or(true) {
-            match run_closed_bound_checks(
-                t,
-                req_i64(req, "closed_bound_limit").unwrap_or(200),
-            ) {
+            match run_closed_bound_checks(t, req_i64(req, "closed_bound_limit").unwrap_or(200)) {
                 Ok(s) => Some(s),
                 Err(e) => Some(json!({"error": e})),
             }

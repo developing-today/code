@@ -96,7 +96,10 @@
     # daemon token (401 without it), which the deploy probe cannot
     # present, so healthCheck stays null (the session-proxy/mcpx
     # shape) and health is verified through the authenticated client
-    # (laptop-agent.py health) after activation - issue #5769.
+    # (pkgs/fleet/laptop-agent.py, `laptop-agent.py health`) after
+    # activation - issue #5769. That script is the client only; the
+    # daemon deployed here is the laptopAgent package above
+    # (pkgs/laptop-agent, the reconciled source of #10131).
     healthCheck = null;
     targets = [ "laptop" ];
     class = "systemd";

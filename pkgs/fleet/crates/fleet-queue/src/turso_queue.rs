@@ -54,8 +54,8 @@ mod staleness;
 mod work_identity;
 
 pub use admin::*;
-pub use closed_bound::*;
 pub use claim::*;
+pub use closed_bound::*;
 pub use core::*;
 pub use label_enrich::*;
 pub use lifecycle::*;
@@ -481,6 +481,454 @@ mod tests {
                 .to_string()
                 .contains("mirror enrichment skipped"),
             "{out}"
+        );
+    }
+
+    // ---- #13091: the broker must not re-serve parked or completed
+    // work. The incidents (2026-11-23): a parked task whose recorded
+    // term was a condition/stand-down was timer-served to lanes that
+    // could only re-park it, and a fresh filing for already-completed
+    // work created a new servable task that a lane completed a
+    // second time. The tests below pin both halves at the verb/SQL
+    // surface the serve path actually runs.
+
+    /// A content-routed stub of the Turso pipeline endpoint for the
+    /// #13091 tests: each request is answered by the first route
+    /// whose needle appears in its body; unmatched requests get a
+    /// bare ok execute reply. Captures every request body.
+    fn stub_pipeline_routed_13091(
+        routes: Vec<(&'static str, String)>,
+    ) -> (String, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
+        use std::io::{BufRead, BufReader, Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let captured = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = captured.clone();
+        let routes = std::sync::Arc::new(routes);
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut sock) = stream else { break };
+                let mut reader = BufReader::new(sock.try_clone().unwrap());
+                let mut content_length = 0usize;
+                loop {
+                    let mut line = String::new();
+                    if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                        break;
+                    }
+                    if line.trim().is_empty() {
+                        break;
+                    }
+                    if let Some((name, value)) = line.split_once(':') {
+                        if name.trim().eq_ignore_ascii_case("content-length") {
+                            content_length = value.trim().parse().unwrap_or(0);
+                        }
+                    }
+                }
+                let mut body = vec![0u8; content_length];
+                if reader.read_exact(&mut body).is_err() {
+                    break;
+                }
+                let body = String::from_utf8_lossy(&body).to_string();
+                sink.lock().unwrap().push(body.clone());
+                let resp = routes
+                    .iter()
+                    .find(|(needle, _)| body.contains(needle))
+                    .map(|(_, reply)| reply.clone())
+                    .unwrap_or_else(|| {
+                        json!({"results": [
+                            {"type": "ok", "response": {"type": "execute", "result": {
+                                "cols": [], "rows": [],
+                                "affected_row_count": 0,
+                                "last_insert_rowid": null}}},
+                            {"type": "ok", "response": {"type": "close"}}
+                        ]})
+                        .to_string()
+                    });
+                let out = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\
+                     Content-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    resp.len(),
+                    resp
+                );
+                if sock.write_all(out.as_bytes()).is_err() {
+                    break;
+                }
+            }
+        });
+        (format!("http://{addr}"), captured)
+    }
+
+    /// A SELECT reply carrying full task rows (TASK_COLS order).
+    fn task_select_reply_13091(rows: Vec<Value>) -> String {
+        let cols: Vec<Value> = TASK_COLS
+            .split(", ")
+            .map(|c| json!({"name": c.trim()}))
+            .collect();
+        json!({"results": [
+            {"type": "ok", "response": {"type": "execute", "result": {
+                "cols": cols, "rows": rows,
+                "affected_row_count": 0, "last_insert_rowid": null}}},
+            {"type": "ok", "response": {"type": "close"}}
+        ]})
+        .to_string()
+    }
+
+    /// One task row in TASK_COLS order for the #13091 stub replies.
+    fn task_row_13091(id: i64, status: &str, payload: &Value, dedupe_key: &str) -> Value {
+        let text = |v: &str| json!({"type": "text", "value": v});
+        let int = |v: i64| json!({"type": "integer", "value": v.to_string()});
+        let null = json!({"type": "null"});
+        json!([
+            int(id),
+            text("repo-health-code-pilot"),
+            text("probe"),
+            null,
+            text(&payload.to_string()),
+            text(dedupe_key),
+            int(30),
+            text(status),
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            int(1),
+            int(1000),
+            null,
+            null,
+            null,
+            null,
+            text("{}"),
+            text("{}"),
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            text("2026-11-20T00:00:00Z"),
+            text("2026-11-21T00:00:00Z"),
+            text("2026-11-21T00:00:00Z"),
+            null,
+            null,
+            null,
+            null
+        ])
+    }
+
+    fn insert_ok_13091(id: i64) -> String {
+        json!({"results": [
+            {"type": "ok", "response": {"type": "execute", "result": {
+                "cols": [], "rows": [],
+                "affected_row_count": 1,
+                "last_insert_rowid": id.to_string()}}},
+            {"type": "ok", "response": {"type": "close"}}
+        ]})
+        .to_string()
+    }
+
+    /// A #12744-shaped packet whose payload carries labels, so the
+    /// mirror enrichment (and its backend call) is skipped and the
+    /// first backend call is the dedupe read.
+    fn packet_13091(issue: i64) -> Value {
+        let mut p = packet_12744(issue, 30);
+        p["payload"]["labels"] = json!([]);
+        p
+    }
+
+    /// The full valid packet payload: a holder row only absorbs
+    /// when it is not quarantined, and the claim guard validates
+    /// the holder's payload — a minimal payload would (correctly)
+    /// read as invalid and absorb nothing.
+    fn payload_13091(issue: i64) -> Value {
+        packet_12744(issue, 30)["payload"].clone()
+    }
+
+    #[test]
+    fn enqueue_after_completion_on_the_same_key_files_no_new_task_13091() {
+        // Incident shape: the task for this dedupe key completed
+        // with a verified disposition; a generator re-files the same
+        // packet. The broker must answer with the completed task —
+        // never a fresh servable row.
+        let done = task_row_13091(
+            4242,
+            "done",
+            &payload_13091(10283),
+            "repo-health:v1:fix:developing-today/code:issue:10283",
+        );
+        let fresh = task_row_13091(
+            4243,
+            "queued",
+            &payload_13091(10283),
+            "repo-health:v1:fix:developing-today/code:issue:10283",
+        );
+        let (url, captured) = stub_pipeline_routed_13091(vec![
+            ("dedupe_key = ?", task_select_reply_13091(vec![done])),
+            ("status IN (", task_select_reply_13091(vec![])),
+            ("status = 'done'", task_select_reply_13091(vec![])),
+            ("INSERT INTO tasks", insert_ok_13091(4243)),
+            (
+                "FROM tasks WHERE id = ?",
+                task_select_reply_13091(vec![fresh]),
+            ),
+        ]);
+        let backend = TursoBackend::new(url, "test".to_string(), ureq::agent());
+        let req = json!({"queue": "repo-health-code-pilot", "packet": packet_13091(10283)});
+        let out = verb_enqueue(&backend, &req);
+        assert_eq!(out["ok"], true, "{out}");
+        assert_eq!(out["row"]["id"], 4242, "{out}");
+        assert_eq!(out["row"]["status"], "done", "{out}");
+        let bodies = captured.lock().unwrap();
+        assert_eq!(bodies.len(), 1, "only the dedupe read may run: {bodies:?}");
+        assert!(
+            !bodies.iter().any(|b| b.contains("INSERT INTO tasks")),
+            "no new task may be filed: {bodies:?}"
+        );
+    }
+
+    #[test]
+    fn enqueue_after_completion_under_another_key_files_no_new_task_13091() {
+        // Incident 21296's shape: the completed task sits under a
+        // DIFFERENT dedupe key (generators key the same work
+        // differently), so only the work identity can see it. A done
+        // holder of the identity absorbs the filing the same way.
+        let done = task_row_13091(
+            4242,
+            "done",
+            &payload_13091(10283),
+            "repo-health:v1:fix:developing-today/code:issue:10283",
+        );
+        let fresh = task_row_13091(
+            4243,
+            "queued",
+            &payload_13091(10283),
+            "repo-health:v1:fix:developing-today/code:issue:10283:dispatch:0123abcd",
+        );
+        let (url, captured) = stub_pipeline_routed_13091(vec![
+            ("dedupe_key = ?", task_select_reply_13091(vec![])),
+            ("status IN (", task_select_reply_13091(vec![])),
+            ("status = 'done'", task_select_reply_13091(vec![done])),
+            ("INSERT INTO tasks", insert_ok_13091(4243)),
+            (
+                "FROM tasks WHERE id = ?",
+                task_select_reply_13091(vec![fresh]),
+            ),
+        ]);
+        let backend = TursoBackend::new(url, "test".to_string(), ureq::agent());
+        let mut packet = packet_13091(10283);
+        packet["dedupe_key"] =
+            json!("repo-health:v1:fix:developing-today/code:issue:10283:dispatch:0123abcd");
+        let req = json!({"queue": "repo-health-code-pilot", "packet": packet});
+        let out = verb_enqueue(&backend, &req);
+        assert_eq!(out["ok"], true, "{out}");
+        assert_eq!(out["row"]["id"], 4242, "{out}");
+        assert_eq!(out["work_identity_collision"]["status"], "done", "{out}");
+        let bodies = captured.lock().unwrap();
+        assert!(
+            !bodies.iter().any(|b| b.contains("INSERT INTO tasks")),
+            "no new task may be filed: {bodies:?}"
+        );
+    }
+
+    #[test]
+    fn enqueue_done_predecessor_with_override_files_a_deliberate_parallel_13091() {
+        // The escape hatch stands: a packet that declares
+        // dedupe_override files a deliberate parallel even over a
+        // completed predecessor (the revive-on-enqueue path).
+        let done = task_row_13091(
+            4242,
+            "done",
+            &payload_13091(10283),
+            "repo-health:v1:fix:developing-today/code:issue:10283",
+        );
+        let fresh = task_row_13091(
+            4243,
+            "queued",
+            &payload_13091(10283),
+            "repo-health:v1:fix:developing-today/code:issue:10283",
+        );
+        let (url, captured) = stub_pipeline_routed_13091(vec![
+            ("dedupe_key = ?", task_select_reply_13091(vec![done])),
+            ("INSERT INTO tasks", insert_ok_13091(4243)),
+            (
+                "FROM tasks WHERE id = ?",
+                task_select_reply_13091(vec![fresh]),
+            ),
+        ]);
+        let backend = TursoBackend::new(url, "test".to_string(), ureq::agent());
+        let mut packet = packet_13091(10283);
+        packet["payload"]["dedupe_override"] = json!("deliberate parallel after a regression");
+        let req = json!({"queue": "repo-health-code-pilot", "packet": packet});
+        let out = verb_enqueue(&backend, &req);
+        assert_eq!(out["ok"], true, "{out}");
+        assert_eq!(out["row"]["id"], 4243, "{out}");
+        let bodies = captured.lock().unwrap();
+        assert!(
+            bodies.iter().any(|b| b.contains("INSERT INTO tasks")),
+            "the override must file: {bodies:?}"
+        );
+    }
+
+    #[test]
+    fn enqueue_failed_predecessor_still_revives_13091() {
+        // Only completion is terminal for a filing: a FAILED
+        // predecessor keeps the #6838 revive-on-enqueue behavior.
+        let failed = task_row_13091(
+            4242,
+            "failed",
+            &payload_13091(10283),
+            "repo-health:v1:fix:developing-today/code:issue:10283",
+        );
+        let fresh = task_row_13091(
+            4243,
+            "queued",
+            &payload_13091(10283),
+            "repo-health:v1:fix:developing-today/code:issue:10283",
+        );
+        let (url, captured) = stub_pipeline_routed_13091(vec![
+            ("dedupe_key = ?", task_select_reply_13091(vec![failed])),
+            ("status IN (", task_select_reply_13091(vec![])),
+            ("status = 'done'", task_select_reply_13091(vec![])),
+            ("INSERT INTO tasks", insert_ok_13091(4243)),
+            (
+                "FROM tasks WHERE id = ?",
+                task_select_reply_13091(vec![fresh]),
+            ),
+        ]);
+        let backend = TursoBackend::new(url, "test".to_string(), ureq::agent());
+        let req = json!({"queue": "repo-health-code-pilot", "packet": packet_13091(10283)});
+        let out = verb_enqueue(&backend, &req);
+        assert_eq!(out["ok"], true, "{out}");
+        assert_eq!(out["row"]["id"], 4243, "{out}");
+        let bodies = captured.lock().unwrap();
+        assert!(
+            bodies.iter().any(|b| b.contains("INSERT INTO tasks")),
+            "a failed predecessor must still revive: {bodies:?}"
+        );
+    }
+
+    #[test]
+    fn claim_pick_never_serves_broker_or_person_condition_parks_13091() {
+        // The parked half, at the exact SQL the serve path runs:
+        // the default pick predicate (shared verbatim by the pick
+        // SELECT and the claim UPDATE re-check) evaluated per row.
+        // A park whose recorded term is a broker-owned condition
+        // (task_terminal / task_status / event_seen — released by
+        // the park-revalidation sweeper) or a person's answer
+        // (person_answer — released by /wake when the person acts)
+        // is NOT the pick's to timer-serve; every other park keeps
+        // its timer release, and a completed row is never servable.
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE tasks (id INTEGER PRIMARY KEY, queue TEXT, payload TEXT,
+               status TEXT, attempts INTEGER, max_attempts INTEGER, not_before TEXT,
+               wait_kind TEXT, ready_condition TEXT, required_budget_minutes INTEGER,
+               priority INTEGER, created_at TEXT, progress TEXT);
+             CREATE TABLE repo_task_lane_ledger (task_id INTEGER, platform_limit TEXT,
+               platform_limit_reason TEXT);",
+        )
+        .unwrap();
+        let now = "2026-11-23T12:00:00Z";
+        let past = "2026-11-23T11:00:00Z";
+        let rows: [(i64, &str, Option<&str>, Option<&str>); 8] = [
+            (1, "queued", None, None),
+            (2, "parked", Some(past), Some("{\"kind\":\"time\"}")),
+            (3, "parked", Some(past), Some("{\"kind\":\"pr_merged\"}")),
+            (
+                4,
+                "parked",
+                Some(past),
+                Some("{\"kind\":\"task_terminal\",\"task_id\":99}"),
+            ),
+            (
+                5,
+                "parked",
+                Some(past),
+                Some("{\"kind\":\"person_answer\"}"),
+            ),
+            (
+                6,
+                "parked",
+                Some(past),
+                Some("{\"kind\":\"event_seen\",\"event_kind\":\"x\"}"),
+            ),
+            (7, "done", None, None),
+            (8, "parked", Some(past), None),
+        ];
+        for (id, status, nb, rc) in rows {
+            conn.execute(
+                "INSERT INTO tasks (id, queue, payload, status, attempts, max_attempts, \
+                   not_before, wait_kind, ready_condition, required_budget_minutes, \
+                   priority, created_at) \
+                 VALUES (?, 'repo-health-code-pilot', '{\"kind\":\"small_fix\"}', ?, \
+                   0, 1000, ?, NULL, ?, NULL, 30, '2026-11-20T00:00:00Z')",
+                rusqlite::params![id, status, nb, rc],
+            )
+            .unwrap();
+        }
+        let pred = default_pick_predicate();
+        let scope = claim_scope(None, None, &ClaimerCtx::default());
+        let mut args: Vec<rusqlite::types::Value> = vec![
+            rusqlite::types::Value::Text(now.to_string()),
+            rusqlite::types::Value::Text(now.to_string()),
+            rusqlite::types::Value::Null,
+            rusqlite::types::Value::Null,
+            rusqlite::types::Value::Null,
+            rusqlite::types::Value::Null,
+        ];
+        for a in &scope.args {
+            args.push(match a {
+                Arg::Text(s) => rusqlite::types::Value::Text(s.clone()),
+                Arg::Int(i) => rusqlite::types::Value::Integer(*i),
+                Arg::Null => rusqlite::types::Value::Null,
+            });
+        }
+        let servable = |id: i64| -> bool {
+            let sql = format!(
+                "SELECT COUNT(*) FROM tasks WHERE id = ? AND payload IS NOT NULL \
+                 AND payload <> '' AND payload <> '{{}}' AND ( {pred} ) \
+                 {PLATFORM_LIMIT_PICK_CLAUSE}{}",
+                scope.sql
+            );
+            let mut all: Vec<rusqlite::types::Value> = vec![rusqlite::types::Value::Integer(id)];
+            all.extend(args.iter().cloned());
+            conn.query_row(&sql, rusqlite::params_from_iter(all), |r| {
+                r.get::<_, i64>(0)
+            })
+            .unwrap()
+                > 0
+        };
+        assert!(servable(1), "a due queued row stays servable");
+        assert!(servable(2), "a timed park keeps its timer release");
+        assert!(
+            servable(3),
+            "a lane-recheck condition park keeps its timer release"
+        );
+        assert!(
+            !servable(4),
+            "a task_terminal park is the sweeper's to release, not the pick's"
+        );
+        assert!(
+            !servable(5),
+            "a person_answer park waits on a person, not on a timer"
+        );
+        assert!(
+            !servable(6),
+            "an event_seen park is the sweeper's to release, not the pick's"
+        );
+        assert!(!servable(7), "a completed task is never served");
+        assert!(
+            servable(8),
+            "a legacy park with no recorded condition keeps its timer release"
+        );
+        // The claim UPDATE re-check embeds the same predicate, so a
+        // row the pick cannot select cannot be claimed by racing it.
+        let upd = claim_update_sql(&pred);
+        assert!(
+            upd.contains("person_answer"),
+            "the claim re-check carries the same exclusion: {upd}"
         );
     }
 

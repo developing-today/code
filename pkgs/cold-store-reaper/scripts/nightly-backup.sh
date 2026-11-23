@@ -123,7 +123,7 @@ if mkdir -p "${LOG_DIR}" 2>/dev/null; then
   LOG_FILE="${LOG_DIR}/nightly-$(date +%Y%m%dT%H%M%S).log"
 fi
 
-if [[ -n "${LOG_FILE}" ]]; then
+if [[ -n ${LOG_FILE} ]]; then
   ln -sfn "${LOG_FILE}" "${LOG_DIR}/nightly-latest.log" 2>/dev/null || true
   echo "nightly-backup: durable run log: ${LOG_FILE}" | tee -a "${LOG_FILE}"
   main "$@" 2>&1 | tee -a "${LOG_FILE}"

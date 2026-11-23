@@ -148,7 +148,6 @@ exit 0
         self.assertNotIn("stub status line 21", result.stdout)
         self.assertNotIn("stub status line 300", result.stdout)
 
-
     def test_run_log_is_durable_under_cold_store_home(self):
         # #13115: after the run, the failing step must be named by the
         # log file alone — no journal, no live probe.
@@ -157,9 +156,7 @@ exit 0
         self.assertNotEqual(result.returncode, 0, result.stdout)
         self.assertIn("nightly-backup: durable run log:", result.stdout)
         log_dir = Path(self.env["COLD_STORE_HOME"]) / "logs"
-        logs = sorted(
-            p for p in log_dir.glob("nightly-*.log") if not p.is_symlink()
-        )
+        logs = sorted(p for p in log_dir.glob("nightly-*.log") if not p.is_symlink())
         self.assertEqual(len(logs), 1, [p.name for p in log_dir.iterdir()])
         text = logs[0].read_text()
         self.assertIn("step backup-d1: FAILED (exit 3)", text)

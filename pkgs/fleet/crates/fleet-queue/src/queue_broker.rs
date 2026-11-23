@@ -688,9 +688,19 @@ pub fn run() -> i32 {
         }
     };
 
+    // Platform root store, not webpki-roots alone: this agent
+    // carries the broker's GitHub dep-probe reads, and a broker
+    // running behind a TLS-intercepting egress proxy presents
+    // the proxy's CA, which only the platform store carries
+    // (code#13122; same fix as fleet's gh.rs App leg).
     let agent: ureq::Agent = ureq::Agent::config_builder()
         .http_status_as_error(false)
         .timeout_global(Some(Duration::from_secs(90)))
+        .tls_config(
+            ureq::tls::TlsConfig::builder()
+                .root_certs(ureq::tls::RootCerts::PlatformVerifier)
+                .build(),
+        )
         .build()
         .into();
     // Turso is the only queue backend: QUEUE_BROKER_BACKEND unset

@@ -95,9 +95,7 @@ export class HotCacheStore {
   /** Record a served hit; drives the §5 least-recently-hit eviction order. */
   async touch(tenantId: string, cacheKey: string, atSeconds: number): Promise<void> {
     await this.db
-      .prepare(
-        "UPDATE hot_cache SET last_hit_at = ?, hit_count = hit_count + 1 WHERE tenant_id = ? AND cache_key = ?",
-      )
+      .prepare("UPDATE hot_cache SET last_hit_at = ?, hit_count = hit_count + 1 WHERE tenant_id = ? AND cache_key = ?")
       .bind(atSeconds, tenantId, cacheKey)
       .run();
   }
@@ -121,10 +119,7 @@ export function hotCacheEnabled(env: { HOT_CACHE_ENABLED?: string }): boolean {
  * The store for a request environment, or undefined when the tier is
  * disabled or unbound — the caller's signal to use the pre-cache path.
  */
-export function hotCacheStore(env: {
-  HOT_CACHE?: D1Database;
-  HOT_CACHE_ENABLED?: string;
-}): HotCacheStore | undefined {
+export function hotCacheStore(env: { HOT_CACHE?: D1Database; HOT_CACHE_ENABLED?: string }): HotCacheStore | undefined {
   if (!hotCacheEnabled(env) || !env.HOT_CACHE) return undefined;
   return new HotCacheStore(env.HOT_CACHE);
 }

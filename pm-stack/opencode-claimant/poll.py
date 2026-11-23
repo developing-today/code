@@ -974,7 +974,11 @@ def get_active_root_session_count():
 def main():
     global _POLL_DEADLINE
     raw_budget = os.environ.get("OPENCODE_CLAIMANT_POLL_SECONDS")
-    _POLL_DEADLINE = time.monotonic() + min(300.0, max(0.0, float(raw_budget))) if raw_budget else None
+    _POLL_DEADLINE = (
+        time.monotonic() + min(300.0, max(0.0, float(raw_budget)))
+        if raw_budget
+        else None
+    )
     _poll_phase("session_census")
     now_ms = int(time.time() * 1000)
     # Sessions first: stuck-bound classification (#4758) needs the

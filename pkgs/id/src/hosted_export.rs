@@ -43,9 +43,8 @@
 //! envelope bytes verbatim, SHA-256 as the export-layer digest,
 //! the envelope's own signature as the object's signature, blob
 //! citations resolved by content from BLAKE3 to SHA-256 — is
-//! recorded in the spec as §6.3. Ingest itself (§6.2 step 4)
-//! follows the platform's normal rules and is downstream of a
-//! verified import.
+//! recorded in the spec as §6.3. Ingest itself (§6.2 step 4) lives
+//! in [`crate::hosted_ingest`], downstream of a verified import.
 
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use serde::{Deserialize, Serialize};

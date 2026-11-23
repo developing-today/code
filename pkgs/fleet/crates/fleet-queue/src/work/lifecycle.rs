@@ -259,7 +259,9 @@ pub fn map_queue_state(source: QueueState, evidence: ProjectionEvidence) -> Stat
         // source/reason distinction the workflow state alone lacks.
         QueueState::Blocked => lossy(
             WorkflowState::Blocked,
-            &["the blocker source — hard dependency vs manual block — is not distinguished by the workflow state alone"],
+            &[
+                "the blocker source — hard dependency vs manual block — is not distinguished by the workflow state alone",
+            ],
         ),
         // A handoff changes ownership, not phase: the work remains
         // active, but the transfer itself is an ownership-dimension
@@ -281,7 +283,9 @@ pub fn map_queue_state(source: QueueState, evidence: ProjectionEvidence) -> Stat
                     source,
                     workflow: Some(WorkflowState::Completed),
                     fidelity: MappingFidelity::Conditional,
-                    losses: &["how the remote effects were verified lives on the completion receipt, not in either state"],
+                    losses: &[
+                        "how the remote effects were verified lives on the completion receipt, not in either state",
+                    ],
                     requires,
                     unmapped_reason: None,
                 }

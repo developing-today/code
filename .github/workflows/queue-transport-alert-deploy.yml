@@ -122,7 +122,7 @@ jobs:
       - name: Upload code-only Worker version
         if: inputs.action == 'upload'
         env:
-          QTA_GHA: '1'
+          QTA_GHA: "1"
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.QTA_WORKER_PRODUCTION_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.QTA_WORKER_PRODUCTION_CF_API_TOKEN }}
           QTA_SOURCE_SHA: ${{ github.sha }}
@@ -145,7 +145,7 @@ jobs:
       - name: Promote verified version only
         if: inputs.action == 'promote'
         env:
-          QTA_GHA: '1'
+          QTA_GHA: "1"
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.QTA_WORKER_PRODUCTION_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.QTA_WORKER_PRODUCTION_CF_API_TOKEN }}
           QTA_HANDOFF_FILE: ${{ runner.temp }}/qta-handoff/qta-version.json

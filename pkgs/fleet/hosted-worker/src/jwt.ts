@@ -130,26 +130,16 @@ async function importKey(jwk: Jwk, alg: string): Promise<CryptoKey> {
     if (jwk.kty !== "RSA") {
       throw new FailClosed(401, "invalid_token", "JWKS key type does not match token alg");
     }
-    return crypto.subtle.importKey(
-      "jwk",
-      jwk,
-      { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" },
-      false,
-      ["verify"],
-    );
+    return crypto.subtle.importKey("jwk", jwk, { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" }, false, ["verify"]);
   }
   if (jwk.kty !== "EC" || jwk.crv !== "P-256") {
     throw new FailClosed(401, "invalid_token", "JWKS key type does not match token alg");
   }
-  return crypto.subtle.importKey("jwk", jwk, { name: "ECDSA", namedCurve: "P-256" }, false, [
-    "verify",
-  ]);
+  return crypto.subtle.importKey("jwk", jwk, { name: "ECDSA", namedCurve: "P-256" }, false, ["verify"]);
 }
 
 function verifyParams(alg: string): AlgorithmIdentifier | EcdsaParams {
-  return alg === "RS256"
-    ? { name: "RSASSA-PKCS1-v1_5" }
-    : { name: "ECDSA", hash: "SHA-256" };
+  return alg === "RS256" ? { name: "RSASSA-PKCS1-v1_5" } : { name: "ECDSA", hash: "SHA-256" };
 }
 
 function stringClaim(payload: Record<string, unknown>, name: string): string | undefined {

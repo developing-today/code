@@ -12,6 +12,7 @@ Statements run one by one over the libsql pipeline (see
 turso_client.py); SELECT results print as JSON lines so callers can
 read reconciliation counts from stdout.
 """
+
 import json
 import re
 import sys

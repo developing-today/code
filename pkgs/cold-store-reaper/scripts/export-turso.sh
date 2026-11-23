@@ -503,7 +503,10 @@ FINAL_FAILED=()
 for row in "${PASS_FAILED[@]}"; do
   still_download=0
   for drow in "${PASS_FAILED_DOWNLOAD[@]}"; do
-    if [[ ${drow} == "${row}" ]]; then still_download=1; break; fi
+    if [[ ${drow} == "${row}" ]]; then
+      still_download=1
+      break
+    fi
   done
   if [[ ${still_download} -eq 0 ]]; then FINAL_FAILED+=("${row}"); fi
 done
@@ -522,7 +525,10 @@ while [[ ${#PASS_FAILED_DOWNLOAD[@]} -gt 0 && 10#${retry_delay} -gt 0 ]]; do
   for row in "${PASS_FAILED[@]}"; do
     still_download=0
     for drow in "${PASS_FAILED_DOWNLOAD[@]}"; do
-      if [[ ${drow} == "${row}" ]]; then still_download=1; break; fi
+      if [[ ${drow} == "${row}" ]]; then
+        still_download=1
+        break
+      fi
     done
     if [[ ${still_download} -eq 0 ]]; then FINAL_FAILED+=("${row}"); fi
   done

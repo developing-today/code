@@ -49,10 +49,7 @@ const STUB_ROUTES = DOOR_ROUTES.filter(
 
 test("every door route refuses an unauthenticated request", async () => {
   for (const r of DOOR_ROUTES) {
-    const res = await dispatch(
-      new Request(`https://fleet-hosted.test${r.path}`, { method: r.method }),
-      h.deps,
-    );
+    const res = await dispatch(new Request(`https://fleet-hosted.test${r.path}`, { method: r.method }), h.deps);
     assert.equal(res.status, 401, `${r.method} ${r.path} without a token`);
   }
 });
@@ -63,10 +60,7 @@ test("every unfilled door route stubs 501 naming its filling issue for an authen
     assert.equal(res.status, 501, `${r.method} ${r.path} with a valid token`);
     const body = (await res.json()) as { error: string; message: string };
     assert.equal(body.error, "not_implemented");
-    assert.ok(
-      body.message.includes(r.fillingIssue),
-      `${r.method} ${r.path} stub must name ${r.fillingIssue}`,
-    );
+    assert.ok(body.message.includes(r.fillingIssue), `${r.method} ${r.path} stub must name ${r.fillingIssue}`);
   }
 });
 
