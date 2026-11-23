@@ -21,7 +21,7 @@ fleet serve search [options]
 
 The query is a single positional: `fleet search &lt;query&gt; …` and `fleet search search &lt;query&gt; …` are the same surface. A second positional is a usage error: `unexpected extra argument "…" (the query is one positional)`, exit 2. `fleet search` with no arguments prints the usage text (the shared `SEARCH_USAGE` text) to stderr and exits 2; `--help`/`-h` anywhere in the search arguments prints it and exits 0. Bare `fleet search --version` (or `-V`) prints `fleet search 0.1.0` and exits 0 — any trailing argument after `--version` is a usage error, exit 2.
 
-Parser mechanics worth knowing: for search flags, only the space-separated spelling `--flag value` is parsed — there is no `--flag=value` handling in the search parser, so `--k=5` is an `unknown option` error (the serve parser, below, accepts both spellings). Every value flag requires a following token (`&lt;flag&gt; needs a value`, exit 2); a non-integer value for an integer flag is `&lt;flag&gt;: invalid integer "…"`, exit 2; any unrecognised `-`-prefixed token is `unknown option "…"`, exit 2.
+Parser mechanics worth knowing: for search flags, both spellings are parsed — `--flag value` and `--flag=value` — matching the serve parser below and the standalone binaries (the search parser splits on `=` the same way, #13281). A value attached to a switch (`--text=true`) is a usage error. Every value flag requires a following token (`&lt;flag&gt; needs a value`, exit 2); a non-integer value for an integer flag is `&lt;flag&gt;: invalid integer "…"`, exit 2; any unrecognised `-`-prefixed token is `unknown option "…"`, exit 2.
 
 ## The search flags
 
@@ -38,14 +38,14 @@ Parser mechanics worth knowing: for search flags, only the space-separated spell
 | `--until` | `YYYY-MM-DD` | — | Sessions created on/before the date (inclusive). Passed through unvalidated. |
 | `--max-sensitivity` | ladder name | `personal` | Caller ceiling on the ladder `shareable &lt; personal &lt; local-only &lt; secret-bearing`. The server clamps it to the client identity's ceiling (see Provisioning). An unrecognised name is not clamped here: the via-service attempt is declined and the standalone artifact produces atlas-search's exact validation fatal. |
 | `--group-by-session` | (switch) | off | Roll chunk hits up to sessions. |
-| `--expand` | integer | `0` | Include N neighbouring chunks around each hit. Fleet validation differs from atlas-search's — see below. |
+| `--expand` | integer | `0` | Include N neighbouring chunks around each hit. Validated 0..=100, atlas-search's cap. |
 | `--with-message` | (switch) | off | Include the parent message text. |
 | `--no-cache` | (switch) | off | Bypass service cache reads; the fresh result still lands in the cache. |
 | `--no-wait` | (switch) | off | Do not block: print the service job handle and return. There is no `--wait` flag on this surface; waiting is implied (`wait = !no_wait`). |
-| `--hydrate` | integer | `0` | Hydrate the top N results to full chunk + message content. Fleet validation differs — see below. |
+| `--hydrate` | integer | `0` | Hydrate the top N results to full chunk + message content. Validated ≤ 1000, atlas-search's cap. |
 | `--raw-rows[=branches]` | optional value | off | Ungrouped rows: bare `--raw-rows` for flat fused rows, `--raw-rows=branches` for pre-fusion branch rows. Any other `=value` is a usage error. |
 | `--text` | (switch) | off | Human-readable output instead of JSON. |
-| `--model` | name | `Snowflake/snowflake-arctic-embed-m-v2.0` | Embedding model. (The fleet help text abbreviates this to "Snowflake arctic-embed-m-v2.0"; the parser's default is the full name given here — source wins.) |
+| `--model` | name | `Snowflake/snowflake-arctic-embed-m-v2.0` | Embedding model. (The fleet help text once abbreviated this to "Snowflake arctic-embed-m-v2.0"; it now spells the full name, matching the parser's default.) |
 | `--embedder` | `auto\|fastembed\|st` | `auto` | Query embedder selection. |
 | `--trunc` | integer | `0` | Truncate vectors to N dims (0 = full). Validated ≥ 0. |
 | `--vector-backend` | `scan\|index-fill\|index-fixed` | `scan` | Turso vector branch strategy. |
@@ -53,11 +53,11 @@ Parser mechanics worth knowing: for search flags, only the space-separated spell
 | `--standalone` | (switch) | off | Run standalone via the atlas-search artifact. This flag is fleet-only; atlas-search has no `--standalone`. |
 | `--service-url` | URL | resolution chain below | Service base URL (env `ATLAS_SEARCH_URL`; default `http://127.0.0.1:18760`). |
 
-`get-chunk` documents two flags: `--neighbors &lt;N&gt;` (include N chunks either side in the same message) and `--text` (human-readable output). In fact the fleet verb parses none of its arguments: after answering `--help` itself, it forwards every argument after the `get-chunk` token verbatim to `atlas-search get-chunk …`. So the artifact's full get-chunk surface — `--context`, `--backend`, `--db`, `--vecdb`, `--via-service`, `--service-url` — also works through this verb, undocumented in the fleet help; conversely, a mistyped flag is caught, if at all, by the artifact, with atlas-search's wording and exit codes.
+`get-chunk` documents two flags: `--neighbors &lt;N&gt;` (include N chunks either side in the same message) and `--text` (human-readable output). In fact the fleet verb parses none of its arguments: after answering `--help` itself, it forwards every argument after the `get-chunk` token verbatim to `atlas-search get-chunk …`. So the artifact's full get-chunk surface — `--context`, `--backend`, `--db`, `--vecdb`, `--via-service`, `--service-url` — also works through this verb; the fleet help documents the delegation (#13281). Conversely, a mistyped flag is caught, if at all, by the artifact, with atlas-search's wording and exit codes.
 
-### The 21 atlas-search flags fleet omits
+### The 20 atlas-search flags fleet omits
 
-The fleet help calls its surface "mirroring `atlas-search search`"; the source is more accurate — the fleet struct holds the subset of atlas-search's arguments that translates to the wire request or to routing. The omitted flags fall in these categories:
+The fleet help names its surface the subset of `atlas-search search` that translates to the wire request or to routing (an earlier wording claimed it was "mirroring" atlas-search, and an earlier count here said 21; the enumeration below is 20 names, verified against atlas-search's argument parser, #13281). The omitted flags fall in these categories:
 
 - **Disclosure**: `--context`.
 - **Backend and storage selection** (standalone-only engine knobs): `--backend`, `--db`, `--vecdb`, `--vec-table`, `--shards`.
@@ -67,12 +67,9 @@ The fleet help calls its surface "mirroring `atlas-search search`"; the source i
 
 This is a hard boundary, not a pass-through gap: on the standalone route the caller's raw argv is delegated to the atlas-search artifact with `--via-service`, `--standalone`, and `--service-url &lt;value&gt;` stripped — but the fleet parser runs first, so a flag it rejects never reaches the artifact. It is a usage error at the fleet layer.
 
-### `--expand` and `--hydrate` validation differences
+### `--expand` and `--hydrate` validation
 
-Two defaults are validated more loosely by fleet than by atlas-search:
-
-- `--expand`: atlas-search validates 0..=100. Fleet's via-service request builder validates only ≥ 0 — the cap is not applied here. On the via-service route the server validates on submit; on the standalone route the delegated artifact re-validates with its own cap.
-- `--hydrate`: atlas-search additionally caps the value at 1000 in parameter validation. Fleet's parser checks only ≥ 0.
+Fleet's via-service request builder applies the same caps atlas-search does (#13281): `--expand` is validated 0..=100 (atlas-core's `MAX_EXPAND_NEIGHBORS`) and `--hydrate` at most 1000 (atlas-proto's request-validation cap), with the same fatal-not-clamped shape. (Before #13281 the fleet builder checked only ≥ 0 and left the caps to the server on submit, or to the delegated artifact on the standalone route.)
 
 ## Routing: which route a search takes
 
@@ -114,7 +111,7 @@ The serve parser accepts both `--flag value` and `--flag=value` spellings (unlik
 
 ### Source-wins note: `fleet search serve`
 
-`fleet help search` lists `serve` among the domain's commands, while the client parser in `cli.rs` contains a branch that rejects `serve` (with `init` and `fetch-model`) as "an atlas-search service verb, not part of the fleet search client surface". The source comment and the live behaviour agree that the rejection branch is **dead for `serve`**: the fleet binary routes `search serve` to the serve role *before* the client parser sees it, so `fleet search serve` actually starts the service — probed live, it attempted to bind `127.0.0.1:18760` and failed with `Address already in use`, exit 1. The branch is still live for `init` and `fetch-model`, which do produce the usage error, exit 2. This chapter states the routed behaviour: `fleet search serve` is `fleet serve search`.
+`fleet help search` lists `serve` among the domain's commands, while the client parser in `cli.rs` contains a branch that rejects `serve` (with `init` and `fetch-model`) as "an atlas-search service verb, not part of the fleet search client surface". The source comment and the live behaviour agree that the rejection branch is **dead for `serve`**: the fleet binary routes `search serve` to the serve role *before* the client parser sees it, so `fleet search serve` actually starts the service — probed live, it attempted to bind `127.0.0.1:18760` and failed with `Address already in use`, exit 1. The branch is still live for `init` and `fetch-model`, which do produce the usage error, exit 2. This chapter states the routed behaviour: `fleet search serve` is `fleet serve search`. (The dead-for-`serve` branch's text was corrected in #13281: `serve` now has its own arm naming the routed shape, separate from the `init`/`fetch-model` rejection.)
 
 ## Worked examples
 
