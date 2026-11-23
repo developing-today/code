@@ -382,6 +382,7 @@
           test-unit = mkCheck "test-unit" "test-unit";
           test-crate-integration = mkCheck "test-crate-integration" "test-crate-integration";
           test-native-shell = mkCheck "test-native-shell" "test-native-shell";
+          test-hw-shell = mkCheck "test-hw-shell" "test-hw-shell";
           # Rust example guests (#7904): plaza-sdk (examples/rust-world)
           # and rust-counter (examples/rust-counter) are standalone
           # crates outside the pkgs/id workspace, so no workspace test
