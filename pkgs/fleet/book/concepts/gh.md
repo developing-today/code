@@ -142,8 +142,8 @@ no daemon answered.
 **`fleet gh tiers`** probes _every_ rotation source and prints its core and
 GraphQL rate-limit headroom — labels and numbers only; token values never
 leave the provider. Exit 0 when every source answers, **3 when any source
-is down**. Source behaviour: `tiers` takes no `--help` — `fleet gh tiers
---help` errors with "unexpected argument '--help'".
+is down**. Source behaviour: `fleet gh tiers --help` prints the verb's own
+usage and exits 0; any other argument errors.
 
 **`fleet gh closures [<item>]`** reads back the closure log. The policy
 layer behind it: `issue|pr close|reopen` through the rotation must carry a

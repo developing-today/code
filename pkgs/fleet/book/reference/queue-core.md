@@ -202,7 +202,7 @@ usage: repo-queue release <task-id> [--worker <id>] [--lane <id>] [--reason <tex
 
 **Behaviour.** Returns the task to `queued`, immediately claimable; the reason is recorded on a `released` event. Used by dispatch for an item whose sub-task failed to launch/bind — back to the pool in the same touch instead of sitting claimed until lease expiry. Release also closes the session binding window on the timeline (`session_unbound`, trigger `release`). On success it prints the broker's returned task row as JSON and exits 0. When no matching claimed row exists, it dies exit 5 with `release: no matching claimed row (task not claimed by this worker, or already terminal)`.
 
-Known discrepancy: help brackets `--reason` as optional (`[--reason <text>]`); source makes it **required and non-empty** — missing → exit 2 `release requires --reason "<why this task goes back to the pool>" (#8217)`. This chapter documents the source behaviour. (The top-level usage line additionally omits `[--lane <id>]`, which the per-verb usage, the help dump, and the implementation all have.)
+Help: the usage writes `--reason` bare — it is **required and non-empty** — missing → exit 2 `release requires --reason "<why this task goes back to the pool>" (#8217)`. The top-level usage line lists the same flags as the per-verb usage, `[--lane <id>]` included; a parity test cross-checks the two so they cannot drift apart again.
 
 Exit codes: 0 released · 2 usage / missing or empty `--reason` · 3 transport · 4 broker store failure · 5 no matching claimed row.
 

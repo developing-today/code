@@ -75,7 +75,7 @@ fleet gh tiers
 
 Probes _every_ rotation source and prints its core and GraphQL rate-limit headroom — labels and numbers only; token values never leave the provider.
 
-Known discrepancy: `tiers` takes no `--help`: `fleet gh tiers --help` errors with `error: unexpected argument '--help' for 'fleet gh tiers'`. This verb is documented only in source.
+Help: `fleet gh tiers --help` prints the verb's own usage and exits 0; any other argument is a usage error naming it.
 
 ### Exit codes
 
@@ -169,7 +169,7 @@ fleet gh closures [<item>]
 
 Reads back the closure log. The policy layer behind it: `issue|pr close|reopen` through the rotation must carry a `--reason` from the taxonomy — `implemented`, `superseded`, `cancelled`, `started-incorrectly` — enforced with the policy error "Please give a reason. This is required by policy." The reason is written into the close comment, and every successful close or reopen appends one `fleet-closure/v1` JSON-line record to `closure-records.jsonl` in the fleet state directory (backed up with it); `closures` prints the log, optionally filtered to one item.
 
-Known discrepancy: this verb has **no help output at all** — its help-dump file is empty because the `--help` invocation produced nothing. Its behaviour is documented only in source (this section).
+Help: `fleet gh closures --help` prints the verb's own usage and exits 0.
 
 ### Exit codes
 

@@ -788,6 +788,48 @@ fn run_domain_with_initializer(
         println!("{SERVE_PROXY_USAGE}");
         return EXIT_OK;
     }
+    // The broker roles have their own usage too (#13175): `fleet
+    // serve queue-broker --help` asks for the role's help, not the
+    // serve domain's — the same carve-out the proxy role gets above.
+    if d.name == "serve" && args.get(1).is_some_and(|a| is_help_flag(a)) {
+        match args.first().map(|s| s.as_str()) {
+            Some("queue-broker") => {
+                println!("{SERVE_QUEUE_BROKER_USAGE}");
+                return EXIT_OK;
+            }
+            Some("secrets-broker") => {
+                println!("{SERVE_SECRETS_BROKER_USAGE}");
+                return EXIT_OK;
+            }
+            _ => {}
+        }
+    }
+    // A serve LIST has no single role to name: `fleet serve
+    // queue-broker secrets-broker --help` used to die in the list
+    // parser ("a serve list is role tokens only"). The serve
+    // domain help answers it (#13175).
+    if d.name == "serve"
+        && args.len() > 2
+        && ServeRole::from_token(&args[0]).is_some()
+        && ServeRole::from_token(&args[1]).is_some()
+        && args[2..].iter().any(|a| is_help_flag(a))
+    {
+        print_domain_help(surface, d);
+        return EXIT_OK;
+    }
+    // The shell domain's own usage answers `fleet shell --help`
+    // (#13175): the registry's domain help names only the `targets`
+    // subcommand and hides every flag, while fleet-agent's shell
+    // usage is the documented surface — the same carve-out the
+    // search client gets above (#12782). Routing through run_shell
+    // lets its own help handling print that usage.
+    #[cfg(feature = "agent")]
+    if d.name == "shell"
+        && args.first().is_some_and(|a| is_help_flag(a))
+        && surface.cap_state(Capability::Agent, d.name) == CapState::Available
+    {
+        return fleet_agent::run_shell(&surface.config, args);
+    }
     // Domain help is registry data: always available, even where the
     // domain itself is not (§3).
     if wants_domain_help(d, args) {
@@ -963,6 +1005,23 @@ fn run_domain_with_initializer(
         state => stub(surface, d.name, &state, invoked_as),
     }
 }
+
+const SERVE_QUEUE_BROKER_USAGE: &str = "\
+Usage: fleet serve queue-broker
+
+Run the queue broker in the foreground. The role takes no
+arguments; configuration is by environment: QUEUE_BROKER_BIND
+(default 100.99.113.103:4801), QUEUE_BROKER_TOKEN_FILE,
+QUEUE_BROKER_BACKEND and the QUEUE_BROKER_TURSO_URL /
+QUEUE_BROKER_TURSO_TOKEN_FILE pair for the Turso backend.";
+
+const SERVE_SECRETS_BROKER_USAGE: &str = "\
+Usage: fleet serve secrets-broker
+
+Run the secrets broker in the foreground. The role takes no
+arguments; configuration is by environment: SECRETS_BROKER_BIND
+(default 100.99.113.103:4800), SECRETS_BROKER_TOKEN_FILE and
+SECRETS_BROKER_TTL_S.";
 
 const SERVE_PROXY_USAGE: &str = "\
 Usage: fleet serve proxy
@@ -1399,6 +1458,33 @@ fn reject_extra_args(args: &[String]) -> Option<i32> {
     })
 }
 
+const VERSION_USAGE: &str = "\
+usage: fleet version
+
+Print the version, build, source revision and enabled
+capabilities of this fleet binary. Takes no arguments.";
+
+const CAPABILITIES_USAGE: &str = "\
+usage: fleet capabilities
+
+Print this invocation's capability report as JSON: every domain
+with its state in this build, and the usable capability set.
+Takes no arguments.";
+
+const HELP_USAGE: &str = "\
+usage: fleet help <domain>
+
+Print one domain's registry help: its summary, commands and
+status in this build. With no argument, `fleet --help` prints
+the full registry.";
+
+/// True when a built-in's tail is exactly one help flag: `fleet
+/// version --help` asks what the built-in does (#13175) — it is
+/// not an unexpected argument.
+fn is_help_only_tail(tail: &[String]) -> bool {
+    tail.len() == 1 && is_help_flag(&tail[0])
+}
+
 fn run_root(surface: &Surface, args: &[String], invoked_as: &str) -> i32 {
     let first = args.first().map(|s| s.as_str());
     match first {
@@ -1412,6 +1498,10 @@ fn run_root(surface: &Surface, args: &[String], invoked_as: &str) -> i32 {
         }
         Some("--help") | Some("-h") | Some("help") if args.len() == 1 => {
             print_help(surface);
+            EXIT_OK
+        }
+        Some("help") if is_help_only_tail(&args[1..]) => {
+            println!("{HELP_USAGE}");
             EXIT_OK
         }
         Some("help") => match args.get(1).and_then(|name| domain(name)) {
@@ -1441,6 +1531,10 @@ fn run_root(surface: &Surface, args: &[String], invoked_as: &str) -> i32 {
             EXIT_OK
         }
         Some("version") => {
+            if is_help_only_tail(&args[1..]) {
+                println!("{VERSION_USAGE}");
+                return EXIT_OK;
+            }
             if let Some(code) = reject_extra_args(args) {
                 return code;
             }
@@ -1448,6 +1542,10 @@ fn run_root(surface: &Surface, args: &[String], invoked_as: &str) -> i32 {
             EXIT_OK
         }
         Some("capabilities") => {
+            if is_help_only_tail(&args[1..]) {
+                println!("{CAPABILITIES_USAGE}");
+                return EXIT_OK;
+            }
             if let Some(code) = reject_extra_args(args) {
                 return code;
             }
@@ -1922,6 +2020,75 @@ mod tests {
             run_root(&surface, &args(&["help", "nosuchdomain"]), "fleet"),
             EXIT_USAGE,
             "an unknown domain name stays a usage error"
+        );
+    }
+
+    #[test]
+    fn builtin_help_flags_print_usage_instead_of_erroring() {
+        // #13175: the root built-ins rejected --help as an unexpected
+        // argument (exit 2). A lone help flag now prints the built-in's
+        // own usage and exits 0; a further argument still errors.
+        let surface = Surface::new(None, fleet_config::Config::default());
+        for cmd in ["version", "capabilities", "help"] {
+            assert_eq!(
+                run_root(&surface, &args(&[cmd, "--help"]), "fleet"),
+                EXIT_OK,
+                "{cmd} --help must print its usage"
+            );
+            assert_eq!(
+                run_root(&surface, &args(&[cmd, "--help", "extra"]), "fleet"),
+                EXIT_USAGE,
+                "{cmd} --help with a further argument still errors"
+            );
+        }
+    }
+
+    #[test]
+    fn serve_broker_role_help_prints_the_role_usage() {
+        // #13175: `fleet serve <broker-role> --help` used to print the
+        // generic serve domain help; the role's own usage now answers,
+        // like the proxy and search roles.
+        let serve = domain("serve").expect("serve domain exists");
+        let surface = Surface::new(None, fleet_config::Config::default());
+        for role in ["queue-broker", "secrets-broker"] {
+            assert_eq!(
+                run_domain(&surface, serve, &args(&[role, "--help"]), "fleet"),
+                EXIT_OK,
+                "fleet serve {role} --help must print the role usage"
+            );
+        }
+    }
+
+    #[test]
+    fn shell_help_prints_the_shell_usage() {
+        // #13175: `fleet shell --help` used to print the registry's
+        // domain help, which names only the `targets` subcommand and
+        // hides every flag; the shell's own usage now answers.
+        let shell = domain("shell").expect("shell domain exists");
+        let surface = Surface::new(None, fleet_config::Config::default());
+        assert_eq!(
+            run_domain(&surface, shell, &args(&["--help"]), "fleet"),
+            EXIT_OK,
+            "fleet shell --help must print the shell usage"
+        );
+    }
+
+    #[test]
+    fn serve_list_help_prints_domain_help_instead_of_erroring() {
+        // #13175: a role list plus --help was the list parser's hard
+        // error ("a serve list is role tokens only"); the serve
+        // domain help now answers it.
+        let serve = domain("serve").expect("serve domain exists");
+        let surface = Surface::new(None, fleet_config::Config::default());
+        assert_eq!(
+            run_domain(
+                &surface,
+                serve,
+                &args(&["queue-broker", "secrets-broker", "--help"]),
+                "fleet"
+            ),
+            EXIT_OK,
+            "a serve list with --help must print help, not the list error"
         );
     }
 
