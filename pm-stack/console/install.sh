@@ -32,15 +32,20 @@ if [ ! -f "$STATE/.env" ]; then
 fi
 install -m 644 "$UNIT_SRC" "$UNIT_DST"
 # One timer keeps the public address as declared, and turns Google
-# sign-in on by itself once its two secrets exist. The other puts merged
+# sign-in on by itself once its two secrets exist. Another puts merged
 # console code into service, so a merge needs nobody at this machine.
-for unit in pm-console-expose.service pm-console-expose.timer pm-console-redeploy.service pm-console-redeploy.timer; do
-  install -m 644 "$(dirname "$SRC")/systemd/$unit" "$(dirname "$UNIT_DST")/$unit"
+# The third signs the Android build GitHub makes, here where the key is,
+# and releases it.
+TIMERS=(pm-console-expose pm-console-redeploy pm-console-android-release)
+for timer in "${TIMERS[@]}"; do
+  for unit in "$timer.service" "$timer.timer"; do
+    install -m 644 "$(dirname "$SRC")/systemd/$unit" "$(dirname "$UNIT_DST")/$unit"
+  done
 done
 systemctl --user daemon-reload
 systemctl --user enable pm-console.service >/dev/null
 systemctl --user restart pm-console.service
-systemctl --user enable --now pm-console-expose.timer pm-console-redeploy.timer >/dev/null
+systemctl --user enable --now "${TIMERS[@]/%/.timer}" >/dev/null
 
 # systemd strips one pair of quotes from an EnvironmentFile value, so
 # PM_CONSOLE_PORT="4872" is a valid line: read it the same way.

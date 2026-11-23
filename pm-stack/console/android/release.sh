@@ -7,6 +7,10 @@
 #   VERSION_NAME, VERSION_CODE   the build's version (build.sh writes both)
 #   GITHUB_SHA, GITHUB_REPOSITORY, GITHUB_RUN_ID, GITHUB_SERVER_URL
 #                                as a workflow run has them
+#   PM_GH                        how gh is run, where it is not plain gh
+#                                ("fleet gh" on the host)
+#   PM_SIGNED_HERE               set when the build was made by that run
+#                                and signed on this machine (release-built.sh)
 # Needs gh, signed in with leave to write releases (GH_TOKEN), and python3.
 #
 # Two releases come of it:
@@ -56,9 +60,21 @@ if ! printf '%s' "$repo" | grep -Eq '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$'; then
   exit 2
 fi
 
+if [ -n "${PM_GH:-}" ]; then
+  read -r -a gh_cmd <<<"$PM_GH"
+  # "command": the program of that name, not this function, which is
+  # also called gh (PM_GH may be plain "gh").
+  gh() { command "${gh_cmd[@]}" "$@"; }
+fi
+
 numbered="pm-console-android-v$code"
 fixed="pm-console-android"
 run_url="${GITHUB_SERVER_URL:-https://github.com}/$repo/actions/runs/${GITHUB_RUN_ID:-0}"
+if [ -n "${PM_SIGNED_HERE:-}" ]; then
+  made="Built by $run_url. Signed and released on the machine that holds the app's key, which never leaves it."
+else
+  made="Built, signed and released by $run_url."
+fi
 certificate="$(tr -d '[:space:]' <"$here/signing-fingerprint.txt")"
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
@@ -121,7 +137,7 @@ open(out, "a").write("\n")' "$name" "$code" "$sha" "$digest" "$certificate" "$wo
     --title "PM console for Android $name" \
     --notes "The PM console as an Android app, build $name (version code $code), from commit $sha.
 
-Built, signed and released by $run_url. Signed by the certificate $certificate, the one the site lists, so it installs over earlier builds.
+$made Signed by the certificate $certificate, the one the site lists, so it installs over earlier builds.
 
 The newest build is always at https://github.com/$repo/releases/download/$fixed/pm-console.apk" \
     "$work/new/pm-console.apk" "$work/new/pm-console.apk.sha256" "$work/new/version.json"
