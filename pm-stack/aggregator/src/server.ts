@@ -47,6 +47,8 @@ import {
   type ActivitySourceStatus,
 } from "./activity.ts";
 import { GithubHotListConsumer, unconfiguredGithubStatus } from "./github-hot-list.ts";
+import { FileOutcomeBindingSource, GithubOutcomeConsumer } from "./outcome-consumer.ts";
+import { OutcomeFactStore } from "./outcome-attribution.ts";
 import { RoadmapAnnotationsStore, validateNewRoadmapAnnotation } from "./roadmap-annotations.ts";
 import { createAccessAuthorEnforcer, enforceAccessAuthor } from "./access-identity.ts";
 import { IdentityRegistryStore, identityMappingAuditEvent, validateIdentityMapping } from "./identity-registry.ts";
@@ -398,6 +400,20 @@ const githubHotListConsumer =
         token: cfg.projector.apiToken,
         store: activityStore,
         events: eventsStore,
+      })
+    : null;
+
+/** #10910: the outcome consumer rides the same sweep as the hot-list
+ *  consumer, under its own projector checkpoint: it projects each fixed
+ *  high-water into the append-only outcome-fact ledger, joining events
+ *  to jobs/sessions/models only through the binding records. */
+const githubOutcomeConsumer =
+  cfg.source === "live" && cfg.projector.baseUrl && cfg.projector.apiToken
+    ? new GithubOutcomeConsumer({
+        baseUrl: cfg.projector.baseUrl,
+        token: cfg.projector.apiToken,
+        store: new OutcomeFactStore(cfg.outcomeFile),
+        bindings: new FileOutcomeBindingSource(cfg.outcomeBindingsFile),
       })
     : null;
 
@@ -4998,6 +5014,12 @@ if (githubHotListConsumer) {
     githubSyncRunning = true;
     try {
       await githubHotListConsumer.sync();
+      if (githubOutcomeConsumer) {
+        const outcome = await githubOutcomeConsumer.sync();
+        if (outcome.error) {
+          console.error(`[activity] WARNING: GitHub outcome sync ${outcome.state}: ${outcome.error}`);
+        }
+      }
     } catch (error) {
       console.error(
         `[activity] WARNING: GitHub hot-list worker failed: ${error instanceof Error ? error.message : String(error)}`,
