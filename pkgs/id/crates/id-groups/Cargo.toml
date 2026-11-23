@@ -25,7 +25,7 @@ id-core = { path = "../id-core", default-features = false }
 id-events = { path = "../id-events", default-features = false }
 id-store = { path = "../id-store", default-features = false }
 iroh-base = "1"
-iroh-blobs = "0.103"
+iroh-blobs = "0.105"
 p2panda-core = { git = "https://github.com/p2panda/p2panda", rev = "da80c05b95269926bf58121cf6a2d3dd5ca41dfc" }
 p2panda-encryption = { path = "../../vendor/p2panda-encryption", default-features = false, features = [
   "data_scheme",
