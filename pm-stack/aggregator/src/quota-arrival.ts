@@ -38,9 +38,13 @@
 // no_basis / insufficient_history records are never scored — they
 // are the honest answer, and scoring them would pay for guessing.
 //
-// rendered (§4): the duration and day forms are implemented; the
-// calendar form (day names / dayparts) is not yet, and the machine
-// range never leaves the record regardless.
+// rendered (§4): produced by the one shared formatter
+// (renderPredictionRange in quota-downtime.ts — duration, day,
+// compound, and calendar forms), never by a kind-local copy; the
+// machine range never leaves the record regardless. Arrival
+// records issued before the unification carried strings from this
+// module's own two-form renderer; the change of stored strings is
+// the methodology-visible change logged as c4-meth:2 (§6).
 //
 // Pure functions over plain values — no I/O, no clock reads except
 // through arguments (the quota-anomaly.ts discipline). The live
@@ -48,11 +52,14 @@
 // mirror under source "quota-prediction", design §1) is a follow-up
 // slice; this module is the record contract that wiring writes.
 import type { AnomalyFinding } from "./quota-anomaly.ts";
+import { renderPredictionRange } from "./quota-downtime.ts";
 
-/** First methodology-log entry for the arrival kind (design §6):
- * every record this module emits names it, so a score is always
- * attributable to the method that produced it. */
-export const ARRIVAL_METHODOLOGY_VERSION = "c4-meth:1";
+/** Methodology version for the arrival kind (design §6): every
+ * record this module emits names it, so a score is always
+ * attributable to the method that produced it. c4-meth:2 is the
+ * unification of this kind's range rendering on the one shared §4
+ * formatter (c4-methodology-log.jsonl, §6). */
+export const ARRIVAL_METHODOLOGY_VERSION = "c4-meth:2";
 
 /** Ledger source the live wiring mirrors arrival records under
  * (design §1) — distinct from S1's "quota-forecast"; C4 records
@@ -154,24 +161,6 @@ function dur(ms: number): string {
   return `${Number.isInteger(d) ? String(d) : d.toFixed(1)} days`;
 }
 
-const roundHalf = (n: number): number => Math.round(n * 2) / 2;
-const round1 = (n: number): number => Math.round(n * 10) / 10;
-const fmtNum = (n: number): string => (Number.isInteger(n) ? String(n) : n.toFixed(1));
-
-/** The §4 range rendering, duration and day forms: duration form
- * (span < 48h) "between X and Y hours from now" with X/Y rounded to
- * the half hour; day form (span >= 48h) in days to one decimal. */
-export function renderPredictionRange(earliestMs: number, latestMs: number, issuedMs: number): string {
-  if (latestMs - earliestMs < 48 * HOUR_MS) {
-    const x = roundHalf((earliestMs - issuedMs) / HOUR_MS);
-    const y = roundHalf((latestMs - issuedMs) / HOUR_MS);
-    return `between ${fmtNum(x)} and ${fmtNum(y)} hours from now`;
-  }
-  const x = round1((earliestMs - issuedMs) / DAY_MS);
-  const y = round1((latestMs - issuedMs) / DAY_MS);
-  return `between ${fmtNum(x)} and ${fmtNum(y)} days from now`;
-}
-
 /** The distinct arrival instants a pool's plan-change findings
  * record, ascending. Findings are per-window; several at one
  * instant are one arrival (the plan changed once). Findings with no
@@ -260,7 +249,7 @@ export function buildArrivalRecords(input: ArrivalBuildInput): ArrivalPrediction
               earliest: iso(earliest),
               latest: iso(latest),
               likely: iso(last + median(sorted)),
-              rendered: renderPredictionRange(earliest, latest, issuedMs),
+              rendered: renderPredictionRange(iso(earliest), iso(latest), input.issuedAt),
             },
             state: "predicted",
             state_reason: undefined,
@@ -318,7 +307,7 @@ export function buildArrivalRecords(input: ArrivalBuildInput): ArrivalPrediction
               earliest: iso(earliest),
               latest: iso(latest),
               likely: iso(anchorMs + k * cad.periodMs),
-              rendered: renderPredictionRange(earliest, latest, issuedMs),
+              rendered: renderPredictionRange(iso(earliest), iso(latest), input.issuedAt),
             },
             state: "predicted",
             state_reason: undefined,

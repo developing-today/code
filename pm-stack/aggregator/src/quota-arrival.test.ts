@@ -1,11 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import {
   buildArrivalRecords,
-  renderPredictionRange,
   scoreArrivalPrediction,
   validateArrivalRecord,
   type ArrivalPredictionRecord,
 } from "./quota-arrival.ts";
+import { renderPredictionRange } from "./quota-downtime.ts";
 import type { AnomalyFinding } from "./quota-anomaly.ts";
 
 // Oracle: the C4 design record (doc/2026-11-13T15-12-00Z_design_
@@ -93,7 +93,11 @@ describe("detector_history basis", () => {
     expect(rec.prediction?.likely).toBe(iso(T0 + 37.5 * DAY));
     expect(rec.inputs.samples).toBe(3);
     expect(rec.inputs.span).toEqual({ from: iso(T0), to: iso(T0 + 25 * DAY) });
-    expect(rec.prediction?.rendered).toContain("days from now");
+    // Rendered by the one shared §4 formatter (#13408): the range
+    // crosses Chicago day boundaries, so the calendar form carries
+    // it — the kind-local renderer's "days from now" string is gone.
+    expect(rec.prediction?.rendered).toBe("between Wednesday evening and this evening");
+    expect(rec.methodology_version).toBe("c4-meth:2");
   });
 
   test("several findings at one instant are one arrival", () => {
@@ -235,13 +239,24 @@ describe("validateArrivalRecord — the no-speculative-dates guard", () => {
   });
 });
 
-describe("renderPredictionRange (§4 forms)", () => {
-  test("spans under 48h render in half-hour-rounded hours", () => {
-    expect(renderPredictionRange(T0 + 4 * HOUR, T0 + 6.4 * HOUR, T0)).toBe("between 4 and 6.5 hours from now");
+describe("renderPredictionRange (§4 forms, the shared formatter)", () => {
+  // Since #13408 the arrival builder renders through the one shared
+  // formatter in quota-downtime.ts; these pin its forms at the
+  // arrival call shape (ISO strings in, stored string out). The
+  // formatter's own suite (quota-downtime.test.ts) is the primary
+  // oracle for the forms themselves.
+  const ISSUED_MIDDAY = Date.parse("2026-10-01T17:00:00.000Z"); // Oct 1, 12:00 in Chicago
+
+  test("spans under 48h on one Chicago day render in half-hour-rounded hours", () => {
+    expect(
+      renderPredictionRange(iso(ISSUED_MIDDAY + 4 * HOUR), iso(ISSUED_MIDDAY + 6.4 * HOUR), iso(ISSUED_MIDDAY)),
+    ).toBe("between 4 and 6.5 hours from now");
   });
 
-  test("spans of 48h or more render in days", () => {
-    expect(renderPredictionRange(T0 + 2.5 * DAY, T0 + 5.7 * DAY, T0)).toBe("between 2.5 and 5.7 days from now");
+  test("a range crossing a Chicago day boundary renders in calendar form", () => {
+    expect(renderPredictionRange("2026-10-02T15:00:00.000Z", "2026-10-04T20:00:00.000Z", iso(ISSUED_MIDDAY))).toBe(
+      "between tomorrow morning and Sunday afternoon",
+    );
   });
 });
 
