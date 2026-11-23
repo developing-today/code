@@ -168,6 +168,33 @@ jobs:
           cp -rL result-atlas-docs site/atlas
           test -f site/atlas/index.html
 
+      # The id book (#13332, pkgs/id/book) shares this
+      # repository's single Pages site the same way: built with its
+      # own siteUrl and staged under id/ here, in the same deploy
+      # — a separate id-only deploy would wipe the mcpx, fleet and
+      # atlas books. Its build-only workflow is id-docs.yml; see
+      # the book's "Deploying this book" chapter
+      # (pkgs/id/book/operations/deploying-this-book.md).
+      - name: Nix build (id book, siteUrl /code/id/)
+        run: |
+          # Intentional: the single-quoted string in this block is a Nix expression
+          # evaluated by nix, not the shell -- ${builtins.currentSystem} in it is
+          # Nix's, and letting the shell expand it would break the build.
+          # shellcheck disable=SC2016
+          nix build --impure --print-build-logs --expr \
+            '(builtins.getFlake (toString ./.)).packages.${builtins.currentSystem}.id-docs.override { siteUrl = "/code/id/"; }' \
+            --out-link result-id-docs
+
+      - name: Stage id book into site/id
+        run: |
+          rm -rf site/id
+          # site/ is a copy of a Nix store path: its directories are
+          # read-only, so make the root writable before adding id/.
+          chmod u+w site
+          cp -rL result-id-docs site/id
+          test -f site/id/index.html
+
+
       - uses: actions/configure-pages@v6
 
       - uses: actions/upload-pages-artifact@v5
