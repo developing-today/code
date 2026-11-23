@@ -716,6 +716,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "fleet-kv"
+version = "0.1.0"
+dependencies = [
+ "proptest",
+ "rusqlite",
+]
+
+[[package]]
 name = "fleet-laptop-agent"
 version = "0.1.0"
 dependencies = [
