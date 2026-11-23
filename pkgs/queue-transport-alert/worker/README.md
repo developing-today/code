@@ -120,3 +120,21 @@ node --test test/*.test.mjs
 
 They also run in the package's `checkPhase`, so a flake build fails on
 a broken contract.
+
+### Optional GitHub Actions release
+
+The source-only workflow is manual, main-only, and off without explicit confirmation.
+It does not replace the existing Nix operator command or manage its cron. Before
+any dispatch, an administrator must separately configure
+`cloudflare-queue-transport-alert` with an independent required reviewer, no
+self-review or admin bypass, and only the `main` branch. Use an environment-only
+`QTA_WORKER_PRODUCTION_CF_API_TOKEN` scoped to the existing Worker and set that
+environment's `QTA_WORKER_PRODUCTION_ACCOUNT_ID` variable. Do not put this token
+at repository or organization scope or supply runtime secret values to CI.
+
+Upload is code only; it requires the latest uploaded version to be the current
+single 100% serving version so binding inheritance cannot silently use an
+abandoned candidate. Promotion is a separate dispatch using the exact successful
+upload run. If a candidate is abandoned or verification fails after a promotion,
+stop and have the operator reconcile the serving version using the existing
+operator runbook; the workflow does not perform automatic rollback.

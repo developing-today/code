@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { listItems, newestWithTag, parseArgs, parseJsonOutput, servingCheck, singleServingVersion } from "../deploy-lib.mjs";
+import { listItems, newestWithTag, parseArgs, parseJsonOutput, servingCheck, singleServingVersion, ghaUploadIdentity, uploadedVersionId, hasExactUpload } from "../deploy-lib.mjs";
 
 test("parseArgs accepts the three shapes", () => {
   assert.deepEqual(parseArgs([]), { dryRun: false, deployVersion: null });
@@ -64,4 +64,23 @@ test("code-only upload inheritance requires one serving baseline at 100%", () =>
   assert.equal(singleServingVersion([]), null);
   assert.equal(singleServingVersion([{ versions: [{ version_id: "a", percentage: 50 }, { version_id: "b", percentage: 50 }] }]), null);
   assert.equal(singleServingVersion([{ versions: [{ version_id: "a", percentage: 0 }] }]), null);
+});
+
+test("GHA handoff requires the pinned exact-worker UUID and immutable full-run label", () => {
+  const worker = "queue-transport-alert";
+  const id = "00000000-0000-4000-8000-000000000001";
+  const record = { type: "version-upload", version: 1, worker_name: worker, worker_name_overridden: false, version_id: id };
+  const sha = "a".repeat(40);
+  const upload = ghaUploadIdentity({ sha, runId: "123", attempt: "1" });
+  assert.equal(upload.tag, sha);
+  assert.equal(uploadedVersionId(JSON.stringify(record), worker), id);
+  for (const wrong of [{ version_id: "latest" }, { worker_name: "other" }, { worker_name_overridden: true }, { version: 2 }, { wrangler_environment: "other" }]) {
+    assert.throws(() => uploadedVersionId(JSON.stringify({ ...record, ...wrong }), worker), /exact Worker/);
+  }
+  assert.throws(() => ghaUploadIdentity({ sha: sha.slice(0, 12), runId: "123", attempt: "1" }), /provenance/);
+  const item = { id, annotations: { "workers/tag": upload.tag, "workers/message": upload.message } };
+  assert.equal(hasExactUpload([item], id, upload), true);
+  assert.equal(hasExactUpload([item, item], id, upload), false);
+  assert.equal(hasExactUpload([item], id, ghaUploadIdentity({ sha, runId: "123", attempt: "2" })), false);
+  assert.equal(hasExactUpload([item], id.replace(/1$/, "2"), upload), false);
 });

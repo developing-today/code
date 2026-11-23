@@ -8,6 +8,11 @@ on:
         required: true
         type: choice
         options: [upload, promote]
+      confirm:
+        description: Confirm the selected Cloudflare operation
+        required: true
+        type: boolean
+        default: false
       upload_run_id:
         description: Successful upload workflow run ID for promotion
         required: false
@@ -22,8 +27,29 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  verify-environment:
+    if: github.repository == 'developing-today/code' && github.ref == 'refs/heads/main' && inputs.confirm
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require an existing reviewed main-only environment
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          endpoint="repos/$GITHUB_REPOSITORY/environments/cloudflare-queue-transport-alert"
+          gh api "$endpoint" | jq -e '
+            .name == "cloudflare-queue-transport-alert"
+            and .deployment_branch_policy.custom_branch_policies == true
+            and .deployment_branch_policy.protected_branches == false
+            and any(.protection_rules[];
+              .type == "required_reviewers" and .prevent_self_review == true
+              and (.reviewers | length) > 0)' >/dev/null
+          gh api "$endpoint/deployment-branch-policies?per_page=100" | jq -e '
+            .total_count == 1 and (.branch_policies | length) == 1
+            and .branch_policies[0].type == "branch" and .branch_policies[0].name == "main"' >/dev/null
   deploy:
-    if: github.repository == 'developing-today/code' && github.ref == 'refs/heads/main'
+    needs: verify-environment
     runs-on: ubuntu-latest
     timeout-minutes: 20
     environment: cloudflare-queue-transport-alert
@@ -81,7 +107,8 @@ jobs:
         if: inputs.action == 'upload'
         uses: actions/checkout@v7
         with:
-          ref: main
+          ref: ${{ github.sha }}
+          persist-credentials: false
       - uses: DeterminateSystems/nix-installer-action@v21
       - name: Build pinned deploy application from verified source
         run: nix build .#queue-transport-alert-deploy
@@ -89,8 +116,9 @@ jobs:
         if: inputs.action == 'upload'
         env:
           QTA_GHA: '1'
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.QTA_WORKER_PRODUCTION_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.QTA_WORKER_PRODUCTION_CF_API_TOKEN }}
+          QTA_SOURCE_SHA: ${{ github.sha }}
           GITHUB_RUN_ID: ${{ github.run_id }}
           GITHUB_RUN_ATTEMPT: ${{ github.run_attempt }}
           GITHUB_EVENT_NAME: ${{ github.event_name }}
@@ -111,13 +139,13 @@ jobs:
         if: inputs.action == 'promote'
         env:
           QTA_GHA: '1'
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.QTA_WORKER_PRODUCTION_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.QTA_WORKER_PRODUCTION_CF_API_TOKEN }}
           QTA_HANDOFF_FILE: ${{ runner.temp }}/qta-handoff/qta-version.json
           QTA_SOURCE_SHA: ${{ steps.handoff.outputs.source_sha }}
           QTA_UPLOAD_RUN_ID: ${{ inputs.upload_run_id }}
         run: |
           set -euo pipefail
           version_id=$(jq -r .version_id "$QTA_HANDOFF_FILE")
-          [[ "$version_id" =~ ^[A-Za-z0-9_-]{8,128}$ ]]
+          [[ "$version_id" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]]
           ./result/bin/queue-transport-alert-deploy --deploy-version "$version_id"
