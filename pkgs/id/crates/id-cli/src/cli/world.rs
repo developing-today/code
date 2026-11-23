@@ -991,7 +991,8 @@ pub enum WorldCommand {
     /// is applied through the admin operations and journaled by the host.
     Apply(WorldApplyArgs),
     /// Print the versioned shell contract (the frame protocol every shell
-    /// speaks), or check a recorded session against it.
+    /// speaks), or check a recorded session against it. With `--check-suite`,
+    /// run the whole conformance suite from a manifest instead.
     ///
     /// A transcript has one JSON object per line:
     /// `{"from": "client"|"server", "frame": {...}}`. The check prints each
@@ -1000,6 +1001,11 @@ pub enum WorldCommand {
         /// Transcript to check (`-` reads stdin); without it, print the contract.
         #[arg(long, value_name = "FILE")]
         check: Option<PathBuf>,
+        /// Suite manifest to run (`contract/shell-suite.v1.json`): every
+        /// shell's capability statement and recorded session, checked in
+        /// one pass. Fails if any shell fails.
+        #[arg(long, value_name = "FILE", conflicts_with = "check")]
+        check_suite: Option<PathBuf>,
     },
     /// Measure a compiled `.wasm` world program's fuel use, offline.
     ///
