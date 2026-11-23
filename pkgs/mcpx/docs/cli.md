@@ -91,6 +91,11 @@ mcpx completion bash   # also: zsh, fish
 The Nix package installs both for you: the man page to
 `share/man/man1/mcpx.1`, and completions for all three shells.
 
+One more surface from the same declarations: `mcpx help agents`
+prints the agent documentation (`AGENTS.md`) embedded in the
+binary, so the instructions an agent reads are the ones the
+binary it is driving was built with.
+
 <a id="cli-arguments"></a>
 
 ## CLI arguments
@@ -188,11 +193,36 @@ grouping `mcpx help` presents, and what each group is for:
 | ----------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **running**       | doing the work: `run`, `exec`, `scripts`, `skills`, `recipes`, `prompt`, `proxy`, `embeddings`, `feedback`                                                        |
 | **discovery**     | finding out what exists before paying for its schemas: `ls`, `catalog`, `types`, `search`, `call`, `batch`, `client`, `schema`, `prompts`, `resources`, `openapi` |
-| **daemon**        | the daemon's own lifecycle: `status`, `daemons`, `refresh`, `reload`, `upgrade`, `restart`, `stop`, `supervise`, `daemon`, `serve`                                |
-| **configuration** | shaping mcpx itself: `config`, `settings`, `servers`, `secrets`, `init`, `registry`, `api`, `adapter`, plus `help`, `man` and `completion`                        |
-| **inspection**    | looking at what happened: `diagnose`, `elicit`, `doctor`, `tui`, `explore`, `dashboard`, `interactions`, `log`, `stats`                                           |
+| **daemon**        | the daemon's own lifecycle: `status`, `daemons`, `refresh`, `reload`, `upgrade`, `restart`, `stop`, `supervise`, `daemon`, `serve`, `cache`, `stdio-proxy`                                |
+| **configuration** | shaping mcpx itself: `config`, `settings`, `servers`, `secrets`, `init`, `registry`, `api`, `adapter`, `plugin`, plus `help`, `man` and `completion`                        |
+| **inspection**    | looking at what happened: `diagnose`, `elicit`, `doctor`, `tui`, `explore`, `dashboard`, `interactions`, `log`, `stats`, `hook`, `want`                                           |
 | **operations**    | one generated command per `/v1` operation (for example `mcpx artifact list`) — these exist the moment an operation is declared, with flags from its parameters    |
 
 For any one command, `mcpx help <command>` is the reference: it
 is printed from the same declaration the table is generated
 from, so the two cannot disagree.
+
+### The verb sets
+
+Several commands are families: one name, a verb as the first
+argument. The generated table lists each family once; the verbs
+are declared with it and printed by `mcpx help <command>`.
+
+| command    | verbs                                              | what the family does |
+| ---------- | -------------------------------------------------- | -------------------- |
+| `adapter`  | `list`, `check`, `call`, `tools`, `serve`, `import`, `add`, `remove` | command-line programs declared as MCP tools: show them, check the programs are installed, call one tool, print the tool definitions an MCP host would see, serve one as a namespace, generate a declaration (`import` — from shell completions, a man page or `--help`, in that order), or write and remove declarations through the daemon |
+| `api`      | `list`, `tools`, `call`, `add`, `remove`           | HTTP services described by an OpenAPI document (`--spec`), as tools — the same shapes as `adapter`, over a document instead of a program |
+| `servers`  | `list`, `show`, `add`, `remove`                    | the configured MCP servers, changed live without restarting anything |
+| `registry` | `search`, `show`, `add`                            | find a server in a public registry, inspect what would be added, add it |
+| `secrets`  | `list`, `set`, `unset`, `requests`, `request`, `decline` | the in-memory secret store: what is held, what servers have asked for, and answering or declining a request. In memory only — nothing here is written to disk |
+| `settings` | `list`, `get`, `set`, `unset`                      | read and change any setting, from anywhere — see [Configuration](./configuration.md) |
+| `skills`   | `list`, `install`                                  | the agent skills embedded in the binary, managed by `mcpx skills`: list them, or install them into an agent's configuration (`--agent <name>`, `--to <dir>`) |
+| `cache`    | `prune`, `remove` (a bare `mcpx cache` lists)      | the shared cache: list its entries, prune them by policy, or remove one entry by kind and key |
+| `plugin`   | `list`                                             | the plugins discovered under `paths.plugins`, each one an MCP server |
+| `stats`    | `calls`, `servers`, `errors`, `sessions`, `volume`, `slowest` | one aggregation of the log per mode word: counts, per-server totals, errors, sessions, bytes, and the slowest individual calls |
+
+The daemon-operations group is the same idea, generated: one
+command per `/v1` operation (`artifact`, `ask`, `task`,
+`session`, and the rest), each with the operation's own verbs —
+`mcpx help <command>` prints them, and [parity.md](./parity.md)
+maps every one to its route.
