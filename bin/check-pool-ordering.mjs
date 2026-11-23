@@ -130,13 +130,16 @@ function fallbackTailLength(tierRoute, tier) {
 
 // The pool a leaf was reached through: the innermost model route in its
 // trace. A leaf with no route beyond the tier itself is a direct door
-// and is its own singleton pool.
+// and is its own singleton pool, identified by its provider/model door —
+// two direct leaves from the same provider but different models are
+// different pools, so a trailing non-OpenAI seat cannot collapse into
+// an earlier one and disappear from the check.
 function leafPool(candidate, tier) {
   const segments = traceSegments(candidate.trace);
   for (let i = segments.length - 1; i >= 1; i -= 1) {
     if (segments[i].route !== tier) return segments[i].route;
   }
-  return `direct:${candidate.provider}`;
+  return `direct:${candidate.provider}/${candidate.model}`;
 }
 
 // The route chain governing a pool's position: the tier route plus every

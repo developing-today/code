@@ -89,6 +89,7 @@ function configWith({ tiers = {}, pools = {}, providerRoutes = {} } = {}) {
       _muse: {
         models: {
           'muse-spark-1.3-contributor': { variants: { low: {}, medium: {}, high: {} } },
+          'muse-wonder-1.0-contributor': { variants: { low: {}, medium: {}, high: {} } },
         },
       },
       _claude: {
@@ -240,6 +241,35 @@ test('weighted mixing is a note, not a finding: position is not burn order there
   assert.equal(result.notes.length, 1);
   assert.match(result.notes[0], /luna-plan/);
   assert.match(result.notes[0], /workhorse-weighted/);
+});
+
+test('distinct direct leaves from one provider stay distinct pools', () => {
+  // Spark (direct _muse) -> sol-plan (OpenAI-backed) -> Wonder (direct
+  // _muse): the trailing non-OpenAI Wonder seat must not collapse into
+  // the earlier Spark seat and disappear from the check.
+  const config = configWith({
+    tiers: {
+      summit: {
+        targets: [
+          '_muse/muse-spark-1.3-contributor#medium',
+          'opencode-route/sol-plan#high',
+          '_muse/muse-wonder-1.0-contributor#medium',
+        ],
+        selection: 'ordered',
+      },
+    },
+  });
+  const result = inspectPoolOrdering(config);
+  assert.deepEqual(result.tiers.summit.passes[0].pools, [
+    'direct:_muse/muse-spark-1.3-contributor',
+    'sol-plan',
+    'direct:_muse/muse-wonder-1.0-contributor',
+  ]);
+  assert.equal(result.issues.length, 1);
+  assert.match(result.issues[0], /summit/);
+  assert.match(result.issues[0], /sol-plan/);
+  assert.match(result.issues[0], /muse-wonder-1\.0-contributor/);
+  assert.equal(result.tiers.summit.reserve, 'violation');
 });
 
 test('funds leaves do not count toward pool order', () => {
