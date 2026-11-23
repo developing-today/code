@@ -35,6 +35,8 @@ This list is the workflow's request catalog (`request_catalog` in [`.agents/rese
 
 Folders are named `<UTC datetime>_<kind>_<name>`. The kinds in use are `feature`, `design`, `architecture`, `phase`, `fix`, `reference` and `research`. Run `ls doc/` to list them all. Some starting points:
 
+- [Listing record + registry protocol](2026-11-23T12-46-33Z_design_id10662_listing_record/2026-11-23T12-46-33Z_design_id10662_listing_record.md) — design for #10662 (v4 step 1, under #6303): the listing record's exact fields, its three-signature signing model (owner, agent countersignature at genesis, operator attestation), hash-chained versioning with a first-seen-head fork rule, suspension/resumption and delisting/reinstatement records, and the discovery query shape with signed registry index attestations.
+
 - [ID program investigation & build-out prompt](2026-11-23T12-06-42Z_design_id_program_investigation_prompt/2026-11-23T12-06-42Z_design_id_program_investigation_prompt.md) — the charter prompt for the ID program tracked in #13240: full investigation and design completion for the ID platform (epics #2056 and #9106), new designs for the obvious next steps, an ID book published under `/code/id/`, and a prioritized map of all ID issues with blockers marked.
 
 - [C8 Atlas ingestion and error-driven investigation](2026-11-22T01-48-21Z_design_c8_atlas_ingestion_investigation/2026-11-22T01-48-21Z_design_c8_atlas_ingestion_investigation.md) — design for #9576: source-authoritative report/page ingestion, versioned metadata and typed links, bounded explainable ranking boosts, and an evidence-first error investigation recipe integrated through #9091.
