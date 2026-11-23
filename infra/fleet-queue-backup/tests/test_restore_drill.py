@@ -135,6 +135,52 @@ class TestD1IntegerValue(unittest.TestCase):
         self.assertEqual(restore_drill.d1_integer_value("abc"), "abc")
 
 
+class TestKeysetPaging(unittest.TestCase):
+    def test_int_pk_table_pages_by_key(self):
+        source = sqlite3.connect(":memory:")
+        source.execute(
+            "CREATE TABLE big (id INTEGER PRIMARY KEY, v TEXT)"
+        )
+        source.executemany(
+            "INSERT INTO big VALUES (?,?)",
+            [(i, "row-%d" % i) for i in range(1, 2601)],
+        )
+        source.commit()
+        dump, _counts, _splits = fq_common.build_dump(
+            SqliteLibsqlAdapter(source), "2026-11-22T00:00:00Z"
+        )
+        copy = sqlite3.connect(":memory:")
+        copy.executescript(dump)
+        target_conn = sqlite3.connect(":memory:")
+        target = SqliteLibsqlAdapter(target_conn)
+        restore_drill.fq_common.D1Client = lambda token, account: FakeD1(copy)
+        restore_drill.fq_common.LibsqlClient = lambda url, token: target
+        os.environ["CLOUDFLARE_API_TOKEN"] = "test"
+        os.environ["CLOUDFLARE_ACCOUNT_ID"] = "test"
+        os.environ["TURSO_TARGET_TOKEN"] = "test"
+        try:
+            result = restore_drill.restore(
+                fq_common.DEFAULT_D1_NAME, "https://scratch.invalid"
+            )
+        finally:
+            for name in (
+                "CLOUDFLARE_API_TOKEN",
+                "CLOUDFLARE_ACCOUNT_ID",
+                "TURSO_TARGET_TOKEN",
+            ):
+                del os.environ[name]
+        self.assertEqual(result["rows"], 2600)
+        self.assertEqual(
+            target_conn.execute("SELECT count(*) FROM big").fetchone()[0], 2600
+        )
+        self.assertEqual(
+            target_conn.execute(
+                "SELECT v FROM big WHERE id = 2600"
+            ).fetchone()[0],
+            "row-2600",
+        )
+
+
 class TestRestore(unittest.TestCase):
     def test_restore_round_trips_int64_max(self):
         source = sqlite3.connect(":memory:")

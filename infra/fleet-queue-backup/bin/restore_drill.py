@@ -112,14 +112,46 @@ def d1_read_table(d1, db_id, table, create_sql):
         d1_integer_value if "INT" in types.get(c, "") else d1_value
         for c in columns
     ]
+    pk_cols = fq_common._pk_columns(create_sql)
+    keyset = (
+        pk_cols[0]
+        if pk_cols
+        and len(pk_cols) == 1
+        and "INT" in types.get(pk_cols[0], "")
+        else None
+    )
     offset = 0
+    last_key = None
     for _page in range(fq_common.MAX_PAGES):
-        rows = d1.query(
-            db_id,
-            f'SELECT {select} FROM "{table}" LIMIT {READ_PAGE} OFFSET {offset}',
-        )
+        # ORDER BY must name the CAST, not "{keyset}": the select list
+        # aliases CAST("{keyset}" AS TEXT) AS "{keyset}", and ORDER BY
+        # resolves the alias first -- text ordering ('1', '10', '100',
+        # ...) silently loses rows between pages (hermetic keyset test
+        # caught this: 1701 of 2600 rows restored).
+        if keyset is not None and last_key is not None:
+            sql = (
+                f'SELECT {select} FROM "{table}" '
+                f'WHERE "{keyset}" > {last_key} '
+                f'ORDER BY CAST("{keyset}" AS INTEGER) LIMIT {READ_PAGE}'
+            )
+        elif keyset is not None:
+            sql = (
+                f'SELECT {select} FROM "{table}" '
+                f'ORDER BY CAST("{keyset}" AS INTEGER) LIMIT {READ_PAGE}'
+            )
+        else:
+            sql = (
+                f'SELECT {select} FROM "{table}" '
+                f"LIMIT {READ_PAGE} OFFSET {offset}"
+            )
+        rows = d1.query(db_id, sql)
         for row in rows:
-            yield tuple(decode(row[c]) for decode, c in zip(decoders, columns))
+            values = tuple(
+                decode(row[c]) for decode, c in zip(decoders, columns)
+            )
+            if keyset is not None:
+                last_key = values[columns.index(keyset)]
+            yield values
         if len(rows) < READ_PAGE:
             return
         offset += READ_PAGE
