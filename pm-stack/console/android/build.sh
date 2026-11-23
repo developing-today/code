@@ -13,11 +13,27 @@
 # asset-links file, and an APK signed by anything else would open with a
 # browser bar. Without them the result is an unsigned APK, for a check
 # that the project builds.
+#
+# The version is the commit's: the code rises with the commit's time, so
+# a later build always installs over an earlier one, and the name says
+# the day and the commit. Both are written to
+# app/build/outputs/apk/release/version (name, then code). Set
+# PM_ANDROID_VERSION_CODE and PM_ANDROID_VERSION_NAME to choose them.
 set -euo pipefail
 
 cd "$(dirname "$0")"
 GRADLE_VERSION="${GRADLE_VERSION:-8.9}"
 OUT=app/build/outputs/apk/release
+
+if [ -z "${PM_ANDROID_VERSION_CODE:-}" ] || [ -z "${PM_ANDROID_VERSION_NAME:-}" ]; then
+  if stamp="$(git log -1 --format=%ct 2>/dev/null)" && [ -n "$stamp" ]; then
+    # Ten-second steps since 2020: far below Android's ceiling for
+    # centuries, and two commits are never closer than that in practice.
+    PM_ANDROID_VERSION_CODE="$(((stamp - 1577836800) / 10))"
+    PM_ANDROID_VERSION_NAME="$(date -u -d "@$stamp" +%Y.%m.%d)-$(git rev-parse --short=7 HEAD)"
+    export PM_ANDROID_VERSION_CODE PM_ANDROID_VERSION_NAME
+  fi
+fi
 
 export JAVA_HOME="${JAVA_HOME_17_X64:-${JAVA_HOME_21_X64:-${JAVA_HOME:-}}}"
 if [ -z "$JAVA_HOME" ] || [ -z "${ANDROID_HOME:-}" ]; then
@@ -43,6 +59,8 @@ if [ -n "${KEYSTORE_B64:-}" ] && [ -n "${PM_ANDROID_KEYSTORE_PASSWORD:-}" ]; the
 fi
 
 "$GRADLE" --no-daemon --console=plain assembleRelease
+printf '%s\n%s\n' "${PM_ANDROID_VERSION_NAME:-0.3.0}" "${PM_ANDROID_VERSION_CODE:-3}" >"$OUT/version"
+echo "build.sh: version ${PM_ANDROID_VERSION_NAME:-0.3.0} (code ${PM_ANDROID_VERSION_CODE:-3})"
 
 if [ -z "${PM_ANDROID_KEYSTORE:-}" ]; then
   echo "build.sh: built unsigned: $(ls $OUT/*.apk)"

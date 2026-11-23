@@ -127,6 +127,38 @@ export function apkReport(value: unknown): ApkReport | null {
   };
 }
 
+/** A released build of the Android app, as the version.json beside it
+ * in the GitHub release describes it (android/release.sh writes it). */
+export interface AndroidRelease {
+  name: string;
+  code: number;
+  sha256: string;
+  size: number;
+  /** When it was released, as an ISO time. */
+  built: string;
+}
+
+/** The largest released build that is passed on. */
+export const RELEASE_LIMIT = 32 * 1024 * 1024;
+
+/** A release's description as GitHub may serve it, or null. */
+export function androidRelease(value: unknown): AndroidRelease | null {
+  const v = value as Record<string, unknown> | null;
+  if (!v || typeof v !== "object") return null;
+  if (typeof v.name !== "string" || !/^[0-9A-Za-z][0-9A-Za-z.+-]{0,63}$/.test(v.name)) return null;
+  if (typeof v.code !== "number" || !Number.isSafeInteger(v.code) || v.code <= 0) return null;
+  if (typeof v.sha256 !== "string" || !/^[0-9a-f]{64}$/.test(v.sha256)) return null;
+  if (typeof v.size !== "number" || !Number.isSafeInteger(v.size) || v.size <= 0 || v.size > RELEASE_LIMIT) return null;
+  if (typeof v.built !== "string" || Number.isNaN(Date.parse(v.built))) return null;
+  return {
+    name: v.name,
+    code: v.code,
+    sha256: v.sha256,
+    size: v.size,
+    built: new Date(Date.parse(v.built)).toISOString(),
+  };
+}
+
 export interface SyncResponse {
   ok: true;
   /** Someone has the app open: keep every section fresh. */

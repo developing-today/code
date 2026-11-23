@@ -23,6 +23,8 @@ import { DIRECT_ACTIONS, DIRECT_READ_SECTIONS, directClasses, directRead } from 
 import { Devices, KeyedLimiter, Limiter } from "../../src/devices.ts";
 import { type Act, DOC_NAMES, type DocName, Docs, Stamped } from "../../src/docs.ts";
 import {
+  type AndroidRelease,
+  androidRelease,
   APK_LIMIT,
   type ApkReport,
   apkReport,
@@ -97,6 +99,15 @@ const APK_PIECES = Math.ceil(APK_LIMIT / APK_CHUNK);
 const APK_RETRY_MS = 10 * 60_000;
 /** With no report for this long, the laptop is not there to ask. */
 const HOST_QUIET_MS = 60_000;
+/** The GitHub release whose address always holds the app's newest build. */
+const RELEASE_TAG = "pm-console-android";
+/** GitHub is asked what that release holds no more often than this, */
+const RELEASE_EVERY_MS = 10 * 60_000;
+/** this soon again when it could not be asked, */
+const RELEASE_RETRY_MS = 60_000;
+/** and is given this long to answer, and this long to send the build. */
+const RELEASE_ASK_MS = 8_000;
+const RELEASE_FETCH_MS = 25_000;
 
 interface ApkMeta {
   sha256: string;
@@ -193,6 +204,9 @@ export class Edge {
   private keptApk: (ApkMeta & { chunks: number }) | null | undefined;
   /** The build that could not be kept when it was last sent, and when. */
   private apkFailed: { sha256: string; at: number } | null = null;
+  /** What GitHub last said of the released build, when, and whether it
+   * could be asked at all. */
+  private released: { at: number; asked: boolean; found: AndroidRelease | null } | null = null;
   private syncRefused: KeyedLimiter;
   readonly docs: Docs;
   readonly push: Push;
@@ -242,6 +256,65 @@ export class Edge {
   }
 
   // ---- the Android build -------------------------------------------------
+
+  /** Where the release with the fixed address keeps a file. */
+  private releaseUrl(cfg: EdgeConfig, file: string): string {
+    return `https://github.com/${cfg.repo}/releases/download/${RELEASE_TAG}/${file}`;
+  }
+
+  /** The newest build GitHub Actions has released, by its own
+   * description, or null when none is published. GitHub is not asked on
+   * every request; when it cannot be asked, what was last known stands. */
+  private async androidRelease(cfg: EdgeConfig): Promise<AndroidRelease | null> {
+    const now = this.now();
+    const known = this.released;
+    if (known && now - known.at < (known.asked ? RELEASE_EVERY_MS : RELEASE_RETRY_MS)) return known.found;
+    try {
+      const res = await this.fetchImpl(this.releaseUrl(cfg, "version.json"), {
+        redirect: "follow",
+        signal: AbortSignal.timeout(RELEASE_ASK_MS),
+      });
+      if (res.status === 404) this.released = { at: now, asked: true, found: null };
+      else if (res.ok) this.released = { at: now, asked: true, found: androidRelease(await res.json()) };
+      else throw new Error(`http ${res.status}`);
+    } catch {
+      this.released = { at: now, asked: false, found: known?.found ?? null };
+    }
+    return this.released.found;
+  }
+
+  /** The released build, as a download, or null if it did not arrive as
+   * its description says (GitHub out of reach, or the description read
+   * while a new build was being put up). */
+  private async serveRelease(cfg: EdgeConfig, release: AndroidRelease): Promise<Response | null> {
+    try {
+      const res = await this.fetchImpl(this.releaseUrl(cfg, "pm-console.apk"), {
+        redirect: "follow",
+        signal: AbortSignal.timeout(RELEASE_FETCH_MS),
+      });
+      if (!res.ok) return null;
+      const bytes = new Uint8Array(await res.arrayBuffer());
+      const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
+      const sha256 = [...digest].map((b) => b.toString(16).padStart(2, "0")).join("");
+      if (bytes.byteLength !== release.size || sha256 !== release.sha256) {
+        // The description is out of step with the file: read it again
+        // next time instead of trusting it for ten minutes.
+        this.released = null;
+        return null;
+      }
+      return new Response(bytes, {
+        headers: {
+          "Content-Type": "application/vnd.android.package-archive",
+          "Content-Disposition": 'attachment; filename="pm-console.apk"',
+          "Cache-Control": "no-store",
+          "X-Build": release.name,
+          ...SECURITY,
+        },
+      });
+    } catch {
+      return null;
+    }
+  }
 
   /** What the app is told of the copy kept here. */
   private async apkState(): Promise<{ at: number; current: boolean } | null> {
@@ -915,10 +988,16 @@ export class Edge {
       return next("asset", { path: `${BASE}/${rest}`, type: STATIC[rest] });
     }
     if (method === "GET" && rest === "pm-console.apk") {
-      // The newest build is the laptop's. The copy here is served when
-      // it is that build, or when the laptop is not there to ask. After
-      // a restart, when the laptop was last heard from has to be read
-      // back first, or it would look as if it never had been.
+      // A build GitHub Actions has released comes first: it is the
+      // newest there is, and getting it needs nothing of the laptop.
+      const release = await this.androidRelease(cfg);
+      const released = release ? await this.serveRelease(cfg, release) : null;
+      if (released) return released;
+      // Otherwise the newest build is the laptop's. The copy here is
+      // served when it is that build, or when the laptop is not there
+      // to ask. After a restart, when the laptop was last heard from
+      // has to be read back first, or it would look as if it never had
+      // been.
       await this.ready();
       const kept = await this.apkKept();
       const latest = await this.apkLatest();
@@ -956,6 +1035,15 @@ export class Edge {
           const headers = new Headers(res.headers);
           headers.set("X-Host-Seen", String(this.hostSeen ?? 0));
           return new Response(res.body, { status: res.status, headers });
+        }
+        if (seg.length === 1 && seg[0] === "android") {
+          // Where a download would come from: the build GitHub released,
+          // if there is one, and the copy of the laptop's build kept here.
+          const release = await this.androidRelease(cfg);
+          return json({
+            release: release && { name: release.name, code: release.code, built: release.built },
+            copy: await this.apkState(),
+          });
         }
         if (seg.length === 1 && seg[0] === "push") return json(await this.push.status());
         if (seg.length === 1 && seg[0] === "devices") return json(await this.phones.devices.list());

@@ -59,9 +59,27 @@ async function setup(options: { direct?: boolean } = {}) {
   cfg.issuers = [ISSUER];
   const pushes: { url: string; body: Uint8Array; authorization: string }[] = [];
   const pushFailures = { remaining: 0 };
+  /** The release GitHub holds at the app's fixed address: its
+   * description and its file, either of which may be missing; whether
+   * GitHub can be reached at all; and every file asked for, in order. */
+  const github: { version: unknown; apk: Uint8Array | null; down: boolean; asked: string[] } = {
+    version: null,
+    apk: null,
+    down: false,
+    asked: [],
+  };
+  const releaseBase = `https://github.com/${cfg.repo}/releases/download/pm-console-android/`;
   const outward = async (url: string | URL | Request, init?: { body?: unknown; headers?: Record<string, string> }) => {
     const u = String(url);
     if (u === ISSUER.jwksUri) return { ok: true, status: 200, json: async () => ({ keys: [access.jwk] }) };
+    if (u.startsWith(releaseBase)) {
+      const file = u.slice(releaseBase.length);
+      github.asked.push(file);
+      if (github.down) throw new Error("github: connection reset");
+      if (file === "version.json" && github.version !== null) return new Response(JSON.stringify(github.version));
+      if (file === "pm-console.apk" && github.apk) return new Response(github.apk);
+      return new Response("Not Found", { status: 404 });
+    }
     if (u.startsWith("https://fcm.googleapis.com/")) {
       pushes.push({ url: u, body: init?.body as Uint8Array, authorization: init?.headers?.Authorization ?? "" });
       if (pushFailures.remaining > 0) {
@@ -745,6 +763,7 @@ async function setup(options: { direct?: boolean } = {}) {
     core,
     hostReads,
     build,
+    github,
     reportSizes,
     failing,
     gate,
@@ -1538,6 +1557,128 @@ describe("the Android build", () => {
       expect(w.build.reads).toBe(3);
       expect((w.stored.get("apk") as { size: number }).size).toBe(700_000);
     }
+  });
+
+  /** A release as android/release.sh describes it, for these bytes. */
+  const described = async (bytes: Uint8Array, name: string, code: number) => {
+    const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
+    return {
+      name,
+      code,
+      commit: "a".repeat(40),
+      sha256: [...digest].map((b) => b.toString(16).padStart(2, "0")).join(""),
+      size: bytes.byteLength,
+      built: "2026-11-22T11:00:00Z",
+      certificate: "8B:82",
+    };
+  };
+
+  test("a build GitHub has released is handed out first, and needs nothing of the laptop", async () => {
+    const w = await setup();
+    await w.hostReads();
+    // The laptop has an older build of its own, and the edge a copy of it.
+    w.build.bytes = apk(1);
+    w.build.at = w.now.t;
+    await report(w);
+    await report(w);
+    // No release is published: the download is the copy, as before, and the app is told there is none.
+    expect((await download(w)).bytes).toEqual(apk(1));
+    let said = (await (await w.browse("/console/api/android")).json()) as Record<string, any>;
+    expect(said).toEqual({ release: null, copy: { at: w.build.at, current: true } });
+    // GitHub Actions releases a build. The edge asks again within ten minutes and hands that out.
+    w.github.apk = apk(9, 450_000);
+    w.github.version = await described(w.github.apk, "2026.11.23-a3a547e", 21755935);
+    w.now.t += 10 * 60_000;
+    w.hostSaw.length = 0;
+    const got = await download(w);
+    expect(got.res.status).toBe(200);
+    expect(got.bytes).toEqual(apk(9, 450_000));
+    expect(got.res.headers.get("content-type")).toBe("application/vnd.android.package-archive");
+    expect(got.res.headers.get("content-disposition")).toBe('attachment; filename="pm-console.apk"');
+    expect(got.res.headers.get("x-build")).toBe("2026.11.23-a3a547e");
+    expect(w.hostSaw).toEqual([]);
+    said = (await (await w.browse("/console/api/android")).json()) as Record<string, any>;
+    expect(said.release).toEqual({ name: "2026.11.23-a3a547e", code: 21755935, built: "2026-11-22T11:00:00.000Z" });
+    // The laptop gone, the edge restarted, and no copy of the laptop's build at all: still handed out.
+    w.net.hostUp = false;
+    w.stored.delete("apk");
+    w.edge.now = w.makeEdge();
+    w.now.t += 60 * 60_000;
+    expect((await download(w)).bytes).toEqual(apk(9, 450_000));
+    // Only the owner gets it.
+    expect((await w.browse("/console/pm-console.apk", { token: null })).status).not.toBe(200);
+    expect((await w.browse("/console/api/android", { token: null })).status).not.toBe(200);
+  });
+
+  test("a released build that is not the one described is not handed out", async () => {
+    const w = await setup();
+    await w.hostReads();
+    w.build.bytes = apk(1);
+    w.build.at = w.now.t;
+    await report(w);
+    await report(w);
+    // A new build is half put up: the file is the new one, the description still the old one's.
+    w.github.apk = apk(9, 450_000);
+    w.github.version = await described(apk(8, 440_000), "2026.11.22-0000000", 21000000);
+    w.hostSaw.length = 0;
+    let got = await download(w);
+    // What arrived does not match: the laptop's build is handed out instead.
+    expect(got.bytes).toEqual(apk(1));
+    // And the description is read again at the next request, not trusted for ten minutes.
+    w.github.version = await described(w.github.apk, "2026.11.23-a3a547e", 21755935);
+    got = await download(w);
+    expect(got.bytes).toEqual(apk(9, 450_000));
+    // The file gone missing, cut short, or the right length and the
+    // wrong bytes, is the same: not handed out.
+    w.github.apk = apk(9, 449_999);
+    expect((await download(w)).bytes).toEqual(apk(1));
+    w.github.apk = apk(7, 450_000);
+    expect((await download(w)).bytes).toEqual(apk(1));
+    w.github.apk = null;
+    expect((await download(w)).bytes).toEqual(apk(1));
+    // A description that is not one (no size, a path for a name) is no release.
+    w.now.t += 10 * 60_000;
+    w.github.apk = apk(9, 450_000);
+    w.github.version = { ...(await described(w.github.apk, "../../etc", 1)), size: undefined };
+    expect((await download(w)).bytes).toEqual(apk(1));
+    expect(((await (await w.browse("/console/api/android")).json()) as Record<string, any>).release).toBeNull();
+  });
+
+  test("GitHub is asked now and then, not on every request, and what it last said stands while it is out of reach", async () => {
+    const w = await setup();
+    await w.hostReads();
+    await report(w);
+    const ask = async () => ((await (await w.browse("/console/api/android")).json()) as Record<string, any>).release;
+    // Nothing published. Asked once, however many times the app asks.
+    for (let i = 0; i < 5; i++) expect(await ask()).toBeNull();
+    expect(w.github.asked).toEqual(["version.json"]);
+    // A release goes up. It is seen at the next asking, ten minutes on.
+    w.github.apk = apk(9, 450_000);
+    w.github.version = await described(w.github.apk, "2026.11.23-a3a547e", 21755935);
+    w.now.t += 9 * 60_000;
+    expect(await ask()).toBeNull();
+    w.now.t += 60_000;
+    expect((await ask())?.name).toBe("2026.11.23-a3a547e");
+    expect(w.github.asked).toEqual(["version.json", "version.json"]);
+    // GitHub goes out of reach. The release is still known, and GitHub is tried again each minute, not each request.
+    w.github.down = true;
+    w.now.t += 10 * 60_000;
+    for (let i = 0; i < 5; i++) expect((await ask())?.name).toBe("2026.11.23-a3a547e");
+    expect(w.github.asked.length).toBe(3);
+    w.now.t += 60_000;
+    expect((await ask())?.name).toBe("2026.11.23-a3a547e");
+    expect(w.github.asked.length).toBe(4);
+    // With GitHub out of reach the file cannot be fetched either: the download falls back to the laptop.
+    w.build.bytes = apk(1);
+    w.build.at = w.now.t;
+    w.hostSaw.length = 0;
+    await w.browse("/console/pm-console.apk");
+    expect(w.hostSaw).toEqual(["GET /console/pm-console.apk"]);
+    // Back in reach, and the release withdrawn: that is believed too.
+    w.github.down = false;
+    w.github.version = null;
+    w.now.t += 60_000;
+    expect(await ask()).toBeNull();
   });
 
   test("a copy whose replacement stops half-way is not handed out as either build", async () => {

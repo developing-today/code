@@ -212,7 +212,9 @@ never falls behind the site. Around that it uses what only an installed
 app has: a home-screen widget, dictation from a shortcut or a
 quick-settings tile, text shared or selected in any app, long-press
 shortcuts, and notifications shown as its own. The `pm-console-android`
-workflow builds it and the host signs it. Once the signed file is on the
-host, More, Phones offers it to the signed-in owner at
-`/console/pm-console.apk`, so the phone gets the app from the site it
-opens. See its README.
+workflow builds it on every change to it. Once the owner has given
+GitHub the signing key, the workflow signs and releases each build by
+itself, and More, Phones offers the newest release to the signed-in
+owner at `/console/pm-console.apk`, so the phone gets the app from the
+site it opens. Until then the host signs, and its build is what is
+offered. See its README.

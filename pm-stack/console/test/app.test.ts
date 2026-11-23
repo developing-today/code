@@ -3,7 +3,8 @@
 // Oracles: the elapsed-time phrases and the device labels are written
 // out here by hand for real inputs (two real browser names).
 import { expect, test } from "bun:test";
-import { ago, awayState, band, deviceLabel, endpointMark, subscriptionState } from "../public/app.js";
+import { ago, androidSource, awayState, band, deviceLabel, endpointMark, subscriptionState } from "../public/app.js";
+import { androidRelease } from "../src/edge-proto.ts";
 import { contact, endpointMark as serverMark } from "../src/push.ts";
 
 test("elapsed time reads as a phrase on its own, never 'just now ago'", () => {
@@ -104,4 +105,63 @@ test("the Laptop away screen reads the edge's own account of itself", () => {
   expect(awayState({ edge: true, directEnabled: true, directReady: false }).ready).toBe(false);
   // Ready without the flag is not ready: the flag is what the owner turned.
   expect(awayState({ edge: true, directEnabled: false, directReady: true })).toMatchObject({ on: false, ready: false });
+});
+
+test("the Phones screen says which build a download is, and who made it", () => {
+  const release = { name: "2026.11.23-a3a547e", code: 21755935, built: "2026-11-23T02:00:00.000Z" };
+  // A build GitHub released is what is handed out, whatever the laptop has.
+  expect(androidSource({ androidBuild: { at: 1, current: false } }, { release, copy: null })).toEqual({
+    by: "github",
+    name: "2026.11.23-a3a547e",
+    at: "2026-11-23T02:00:00.000Z",
+  });
+  // No release: the copy at Cloudflare is worth a word only when it is not the laptop's newest.
+  const at = Date.parse("2026-11-22T11:31:06Z");
+  expect(androidSource({ androidBuild: { at, current: false } }, { release: null, copy: null })).toEqual({
+    by: "copy",
+    at: "2026-11-22T11:31:06.000Z",
+  });
+  expect(androidSource({ androidBuild: { at, current: true } }, { release: null, copy: null })).toBeNull();
+  // Served by the laptop itself, which cannot say where a download comes from.
+  expect(androidSource({ androidApp: true }, null)).toBeNull();
+  expect(androidSource(null, null)).toBeNull();
+});
+
+test("a release's description is taken only when it is one", () => {
+  const good = {
+    name: "2026.11.23-a3a547e",
+    code: 21755935,
+    commit: "a".repeat(40),
+    sha256: "b".repeat(64),
+    size: 445978,
+    built: "2026-11-23T02:00:00Z",
+    certificate: "8B:82",
+  };
+  expect(androidRelease(good)).toEqual({
+    name: "2026.11.23-a3a547e",
+    code: 21755935,
+    sha256: "b".repeat(64),
+    size: 445978,
+    built: "2026-11-23T02:00:00.000Z",
+  });
+  const bad: Record<string, unknown>[] = [
+    { name: "../../etc/passwd" },
+    { name: "<b>x</b>" },
+    { name: "" },
+    { name: 7 },
+    { code: 0 },
+    { code: -4 },
+    { code: 1.5 },
+    { code: "21755935" },
+    { sha256: "B".repeat(64) },
+    { sha256: "b".repeat(63) },
+    { size: 0 },
+    { size: 33 * 1024 * 1024 },
+    { size: "445978" },
+    { built: "yesterday" },
+    { built: 1795400000 },
+  ];
+  for (const change of bad) expect(androidRelease({ ...good, ...change })).toBeNull();
+  for (const not of [null, undefined, "", "version", 4, [], "<html>Not Found</html>"])
+    expect(androidRelease(not)).toBeNull();
 });
