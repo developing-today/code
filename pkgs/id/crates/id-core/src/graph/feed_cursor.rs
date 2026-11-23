@@ -51,10 +51,11 @@ pub const FEED_CURSOR_VERSION: u64 = 1;
 /// First projection sequence allocated by a fresh ledger.
 pub const FIRST_PROJECTION_SEQ: u64 = 1;
 
-/// Source provenance retained on every feed entry: the authority
-/// that accepted the object and its position in that authority's own
-/// `(epoch, sequence)` order. Source positions are not the merged
-/// cursor position.
+/// Source provenance retained on every feed entry.
+///
+/// It records the authority that accepted the object and its position
+/// in that authority's own `(epoch, sequence)` order. Source positions
+/// are not the merged cursor position.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SourcePosition {
     /// Authority that accepted the source object.
@@ -106,10 +107,11 @@ pub struct FeedScope {
     pub generation: u64,
 }
 
-/// Why a feed cursor was refused. `Expired` means the snapshot moved
-/// on: callers must take a fresh `latest` page, never treat the
-/// cursor as "no changes". `Mismatch` means the cursor does not
-/// belong to this feed at all.
+/// Why a feed cursor was refused.
+///
+/// `Expired` means the snapshot moved on: callers must take a fresh
+/// `latest` page, never treat the cursor as "no changes". `Mismatch`
+/// means the cursor does not belong to this feed at all.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FeedCursorError {
     /// The cursor's generation, retention horizon, `expires_at` or
@@ -167,7 +169,7 @@ impl FeedLedger {
     /// `durable_high_water` (zero for a fresh feed, the persisted
     /// mark after a restart).
     #[must_use]
-    pub fn new(
+    pub const fn new(
         server: String,
         tenant: String,
         query: [u8; 32],
@@ -233,13 +235,13 @@ impl FeedLedger {
 
     /// The feed scope this ledger projects.
     #[must_use]
-    pub fn scope(&self) -> &FeedScope {
+    pub const fn scope(&self) -> &FeedScope {
         &self.scope
     }
 
     /// The durable high-water mark: persist it with the entries.
     #[must_use]
-    pub fn high_water(&self) -> u64 {
+    pub const fn high_water(&self) -> u64 {
         self.high_water
     }
 
@@ -418,7 +420,7 @@ impl FeedLedger {
     /// high-water mark and entries carry over so no projection
     /// sequence is reused; cursors minted under older generations
     /// report [`FeedCursorError::Expired`].
-    pub fn advance_generation(&mut self, generation: u64) {
+    pub const fn advance_generation(&mut self, generation: u64) {
         self.scope.generation = generation;
     }
 
