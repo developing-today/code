@@ -253,7 +253,7 @@ describe("buildResetDurationLedgerRows", () => {
     expect(rows[0].source).toBe("quota-prediction");
     expect(rows[0].id).toBe(predicted[0].id);
     expect(rows[0].ts).toBe(AS_OF);
-    expect(rows[0].resets).toBe(predicted[0].prediction?.latest);
+    expect(rows[0].resets).toBe(predicted[0].prediction?.latest ?? null);
     expect((rows[0].payload as { kind?: string }).kind).toBe("reset_duration");
     expect(rows[1].resets).toBeNull();
   });
