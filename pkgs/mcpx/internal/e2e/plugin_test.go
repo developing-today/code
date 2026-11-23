@@ -212,6 +212,45 @@ func TestPluginToolsRegistersTheToolSetFromTheEnvironment(t *testing.T) {
 	}
 }
 
+// TestPluginToolTimingRecordsToolCallsFromTheEnvironment is the
+// effect probe for plugin.toolTiming (#8472; the effect guard is
+// #1971).
+//
+// The setting's whole effect lives in the opencode plugin host: with
+// MCPX_PLUGIN_TOOL_TIMING on, the session plugin's
+// tool.execute.after hook sends one harness.tool record per finished
+// tool call to the daemon's durable log (DaemonClient.record,
+// POST /v1/log); off or unset, the hook returns before anything is
+// sent. No Go caller produces those records, so the probe drives the
+// host the way the plugin suite does — bun, the real session plugin,
+// the setting set in the environment before the plugin loads — and
+// the bun cases in plugin/opencode/mcpx/tool-timing.test.ts point
+// discovery at a stub daemon that answers /v1/health with the
+// plugin's own operation fingerprint and captures /v1/log posts.
+// They assert the observable with/without difference: the record
+// arrives carrying the call's tool, session, call id and title when
+// on, and no record is posted when off even though the daemon was
+// reachable (its health endpoint was hit). A run that skipped the
+// cases is a run that did not check what this probe exists to
+// check, so skips fail it, as in
+// TestThePluginSuiteRunsAgainstARealDaemon.
+func TestPluginToolTimingRecordsToolCallsFromTheEnvironment(t *testing.T) {
+	bun := testsupport.RequireBinary(t, "bun")
+	recordSettingProbes(t)
+	cmd := exec.Command(bun, "test", "plugin/opencode/mcpx/tool-timing.test.ts")
+	cmd.Dir = repoRoot(t)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("bun test plugin/opencode/mcpx/tool-timing.test.ts: %v\n%s", err, out)
+	}
+	if strings.Contains(string(out), " skip") && !strings.Contains(string(out), " 0 skip") {
+		t.Fatalf("the plugin.toolTiming probe cases were skipped:\n%s", out)
+	}
+	if !strings.Contains(string(out), " 0 fail") {
+		t.Fatalf("the plugin.toolTiming probe did not report a clean run:\n%s", out)
+	}
+}
+
 // TestPluginEnvLevelChangesShellEnvFromTheEnvironment is the effect
 // probe for plugin.env (#8472; the effect guard is #1971).
 //
