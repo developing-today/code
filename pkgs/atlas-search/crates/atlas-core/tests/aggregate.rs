@@ -13,6 +13,7 @@ use atlas_core::filters::Filters;
 use atlas_core::shards::scan::{FanoutQuery, fanout_scan};
 use atlas_core::shards::{Tier, TierCeiling, open_from_spec};
 use atlas_core::stage::{ArtifactEntry, Registry, UnitState, stage_artifact_in_db};
+use proptest::prelude::*;
 
 const NOW: &str = "2026-11-16T00:00:00Z";
 
@@ -435,4 +436,120 @@ fn promotion_records_chunk_occurrences_for_identical_text() {
         .map(|b| format!("{b:02x}"))
         .collect();
     assert_eq!(rows[0].1, want, "canonical hash is SHA-256 of the text");
+}
+
+/// Oracle: every stored occurrence span selects exactly the persisted
+/// chunk bytes from its source item's original UTF-8 text, and the
+/// ordered spans form a gap-free, overlap-free partition of each item.
+/// Generated documents contain multibyte characters, line boundaries,
+/// multiple source items, and enough tokens to exercise embed-time splits.
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(32))]
+
+    #[test]
+    fn promotion_occurrence_spans_partition_generated_utf8_sources(
+        documents in prop::collection::vec(
+            prop::collection::vec(
+                prop::collection::vec(
+                    prop_oneof![Just('a'), Just('é'), Just('🦀'), Just('β'), Just(' '), Just('\t')],
+                    1..16,
+                ),
+                6..14,
+            ),
+            2..5,
+        )
+    ) {
+        struct FourTokenEmbedder;
+        impl DocEmbedder for FourTokenEmbedder {
+            fn embed_doc(&self, _text: &str) -> Result<Vec<f32>> {
+                Ok(vec![1.0, 0.0])
+            }
+
+            fn token_count(&self, text: &str) -> Option<usize> {
+                Some(text.split_whitespace().count())
+            }
+
+            fn max_input_tokens(&self) -> usize {
+                4
+            }
+        }
+
+        let originals: Vec<String> = documents
+            .iter()
+            .map(|lines| {
+                lines
+                    .iter()
+                    .map(|line| line.iter().collect::<String>())
+                    .collect::<Vec<_>>()
+                    .join("\n")
+                    + "\n"
+            })
+            .collect();
+        let dir = temp_dir("property-spans");
+        let registry = Registry::open(&dir.join("registry.db")).unwrap();
+        let db = dir.join("unit.db");
+        registry.provision(&db, "task-property", "repo-worker-code", Tier::Internal, NOW).unwrap();
+
+        let mut expected = std::collections::BTreeMap::<String, Vec<u8>>::new();
+        for (index, text) in originals.iter().enumerate() {
+            let path = format!("generated/source-{index}.txt");
+            let source = format!("developing-today/code:{path}@abc");
+            expected.insert(source, text.as_bytes().to_vec());
+            let entry = ArtifactEntry {
+                kind: "prose".into(),
+                repo: "developing-today/code".into(),
+                path,
+                commit_sha: "abc".into(),
+                language: "txt".into(),
+                sensitivity: Tier::Internal,
+                text: text.clone(),
+            };
+            stage_artifact_in_db(&db, "task-property", &entry, NOW).unwrap();
+        }
+
+        let report = embed_unit_into_shard(
+            &registry,
+            "task-property",
+            &dir.join("shards"),
+            "property",
+            &FourTokenEmbedder,
+            NOW,
+        ).unwrap();
+        let conn = rusqlite::Connection::open(&report.shard_path).unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT o.source, o.span_start, o.span_end, c.text \
+             FROM chunk_occurrences o JOIN chunks c ON c.id = o.shard_chunk_id \
+             ORDER BY o.source, o.span_start, o.shard_chunk_id",
+        ).unwrap();
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, String>(3)?,
+            ))
+        }).unwrap().collect::<std::result::Result<Vec<_>, _>>().unwrap();
+
+        let mut grouped = std::collections::BTreeMap::<String, Vec<(i64, i64, String)>>::new();
+        for (source, start, end, chunk) in rows {
+            grouped.entry(source).or_default().push((start, end, chunk));
+        }
+        prop_assert_eq!(grouped.len(), expected.len(), "each source has occurrence rows");
+        for (source, original) in &expected {
+            let spans = grouped.get(source).expect("every staged source is registered");
+            let mut cursor = 0usize;
+            for (start, end, chunk) in spans {
+                prop_assert_eq!(*start as usize, cursor, "source spans have no gaps or overlaps");
+                let end = *end as usize;
+                prop_assert!(end <= original.len(), "span ends within source bytes");
+                prop_assert_eq!(
+                    &original[cursor..end],
+                    chunk.as_bytes(),
+                    "occurrence selects the exact persisted UTF-8 chunk bytes",
+                );
+                cursor = end;
+            }
+            prop_assert_eq!(cursor, original.len(), "spans cover all source bytes");
+        }
+    }
 }
