@@ -319,7 +319,10 @@ mod tests {
 
     use crate::chain::{self, ChainExt, Event};
     use crate::hosted_binding::HostedBindingService;
-    use crate::hosted_export::{build_export, verify_import};
+    use sha2::{Digest, Sha256};
+
+    use crate::hosted_binding::hex_encode;
+    use crate::hosted_export::{ExportError, build_export, verify_import};
     use id_core::waiting::WaitingLimits;
     use id_store::documents::{DOCUMENT_KIND, DocumentRef};
 
@@ -395,7 +398,7 @@ mod tests {
                     (Some(blob), DOCUMENT_KIND) => vec![blob.hash.clone()],
                     _ => Vec::new(),
                 };
-                ExportObject::new(&dalek_key(SEED), event.bytes.clone(), refs)
+                ExportObject::from_envelope(event.bytes.clone(), refs).unwrap()
             })
             .collect();
         build_export(
@@ -472,27 +475,35 @@ mod tests {
         assert_eq!(second.already_present(), 4);
     }
 
-    #[tokio::test]
-    async fn an_object_that_is_not_an_event_is_refused_and_named() {
-        // A wrapper-valid object whose bytes are not an event passes
-        // §6.2 verification (the export layer authenticates bytes,
-        // not eventhood) and is refused by the store's normal rules.
+    #[test]
+    fn an_object_that_is_not_an_event_is_refused_at_verification() {
+        // Section 6.3 (slice 4b production, #13157): an export object
+        // IS its signed envelope, so bytes that are not an event fail
+        // section 6.2 verification itself. The refusal this test used
+        // to meet at ingest, under the store's malformed rule, now
+        // happens one layer earlier, before anything is offered to
+        // a store.
         let mut service = HostedBindingService::with_seed("hosted.example", [9u8; 32]);
         service.signup_account(SUB, None, "free").unwrap();
         let binding = service
             .complete_browser_ceremony(SUB, &dalek_key(SEED), None)
             .unwrap();
         let (events, content) = source_chain();
-        let good = ExportObject::new(&dalek_key(SEED), events[0].bytes.clone(), Vec::new());
-        let middle = ExportObject::new(&dalek_key(SEED), events[1].bytes.clone(), Vec::new());
-        let bogus = ExportObject::new(&dalek_key(SEED), b"not an event".to_vec(), Vec::new());
-        let bogus_hash = bogus.hash.clone();
+        let good = ExportObject::from_envelope(events[0].bytes.clone(), Vec::new()).unwrap();
+        let middle = ExportObject::from_envelope(events[1].bytes.clone(), Vec::new()).unwrap();
         let blob = ExportBlob::new(content.clone());
-        let citing = ExportObject::new(
-            &dalek_key(SEED),
-            events[2].bytes.clone(),
-            vec![blob.hash.clone()],
-        );
+        let citing =
+            ExportObject::from_envelope(events[2].bytes.clone(), vec![blob.hash.clone()]).unwrap();
+        // Hand-built: `from_envelope` refuses these bytes by
+        // construction, so the raw struct is the only way to carry
+        // them - exactly what a hostile producer would send.
+        let bogus = ExportObject {
+            hash: hex_encode(&Sha256::digest(b"not an event")),
+            signer: hex_encode(&dalek_key(SEED).verifying_key().to_bytes()),
+            signature: hex_encode(&[0u8; 64]),
+            bytes: b"not an event".to_vec(),
+            blob_refs: Vec::new(),
+        };
         let export = build_export(
             &service,
             &binding,
@@ -503,28 +514,10 @@ mod tests {
             "export-1",
             CREATED,
         );
-        let verified = verify_import(&export, false).unwrap();
-        let (_dir, mut target) = open_store();
-        let blobs = blob_store();
-        let report = ingest_import(&mut target, &blobs, &export, &verified, 0)
-            .await
-            .unwrap();
-        assert_eq!(report.refused(), 1, "report: {report:?}");
-        let refused: Vec<&ObjectEntry> = report
-            .objects
-            .iter()
-            .filter(|entry| matches!(entry.outcome, EntryOutcome::Refused { .. }))
-            .collect();
-        assert_eq!(refused.len(), 1);
-        assert_eq!(refused[0].hash, bogus_hash);
-        match &refused[0].outcome {
-            EntryOutcome::Refused { rule } => {
-                assert!(rule.starts_with("malformed"), "rule: {rule}");
-            }
-            other => panic!("expected a refusal, got {other:?}"),
-        }
-        // The refusal did not block the other entries.
-        assert_eq!(report.applied(), 4); // 3 objects + 1 blob
+        assert_eq!(
+            verify_import(&export, false).unwrap_err(),
+            ExportError::ObjectSignatureInvalid
+        );
     }
 
     #[tokio::test]

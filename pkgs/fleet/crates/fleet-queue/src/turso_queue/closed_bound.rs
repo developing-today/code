@@ -818,8 +818,12 @@ mod tests {
         // and a cycle that found missing records lands in the
         // sweep event.
         let src = include_str!("core.rs");
-        let flat = src.split_whitespace().collect::<Vec<_>>().join(" ");
-        assert!(flat.contains("run_closed_bound_checks( t, req_i64(req, \"closed_bound_limit\")"));
+        // Whitespace-insensitive: strip every whitespace character from
+        // both sides so the assertion pins the call's shape, not the
+        // formatter's line-breaking (the call sits on one line today and
+        // was multi-line when this test was written).
+        let squashed: String = src.chars().filter(|c| !c.is_whitespace()).collect();
+        assert!(squashed.contains("run_closed_bound_checks(t,req_i64(req,\"closed_bound_limit\")"));
         assert!(src.contains("req_bool(req, \"closed_bound\")"));
         assert!(src.contains("out[\"closed_bound\"]"));
         assert!(src.contains("closed_bound_missing > 0"));

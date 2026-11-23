@@ -4,8 +4,6 @@
 
 See also [The gh passthrough](../concepts/gh.md).
 
-Known discrepancy: the domain help's status line still says "implementation lands in a later step of epic #5412". The source is a complete implementation (rotation, cache, close guard, closures, metadata stamping). This chapter documents the source.
-
 ## The passthrough (any other arguments)
 
 ```

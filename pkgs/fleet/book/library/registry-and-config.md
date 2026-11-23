@@ -123,9 +123,9 @@ Every stub goes to stderr and returns exit **69** (`EX_UNAVAILABLE`).
 Its second line is always `Enabled capabilities: <comma list>` — the
 _usable_ set: the effective set minus every capability of every
 config-disabled domain — and its third line names the build. There is
-also a step-1 skeleton form for a capability that is `Available` but has
+also a not-implemented form for a capability that is `Available` but has
 nothing behind it yet: "included in this build but not implemented
-yet", in frozen epic-#5412 wording. Help renders the same four states
+yet", with the build named on the third line. Help renders the same four states
 inline (`[not in this build]`, `[narrowed out by this name]`,
 `[disabled by config]`), and renders them on _every_ variant — help
 never stubs.

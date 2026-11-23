@@ -77,6 +77,13 @@ pub const PRIORITY_SCALE: [i64; 7] = [10, 20, 30, 40, 50, 70, 90];
 /// read back at 15/25. task_from_packet performs the selection.
 pub const EXPEDITE_PRIORITY: i64 = 15;
 pub const NEXT_UP_PRIORITY: i64 = 25;
+/// The dedupe-stamp defect (#5444): the one validate_packet error
+/// the repair verb can fix, by re-performing the dedupe check the
+/// stamp attests to (#13191). Named so validator and repair can
+/// never drift on the string.
+pub const DEDUPE_STAMP_ERROR: &str =
+    "payload.dedupe: must have checked_at and basis as non-empty strings";
+
 pub const KINDS: [&str; 6] = [
     "pr_shepherd",
     "triage",
@@ -264,9 +271,7 @@ fn manual_schema_errors(p: &Value) -> Vec<String> {
         if matches!(d.get("checked_at"), Some(Value::String(s)) if !s.is_empty())
             && matches!(d.get("basis"), Some(Value::String(s)) if !s.is_empty()));
     if !ded_ok {
-        errs.push(
-            "payload.dedupe: must have checked_at and basis as non-empty strings".to_string(),
-        );
+        errs.push(DEDUPE_STAMP_ERROR.to_string());
     }
     // Identity numbers are GitHub numbers: positive integers only. A
     // non-positive issue number names no issue, whatever the dedupe key

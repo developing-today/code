@@ -3,9 +3,11 @@
 // Oracles: the elapsed-time phrases and the device labels are written
 // out here by hand for real inputs (two real browser names).
 import { expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
 import {
   ago,
   androidSource,
+  awayNotice,
   awayState,
   band,
   capital,
@@ -88,7 +90,7 @@ test("the contact given to push services is the project's page, never a person's
   expect(contact("developing-today/code")).toBe("https://github.com/developing-today/code");
 });
 
-test("the Laptop away screen reads the edge's own account of itself", () => {
+test("the Cloudflare screen reads the edge's own account of itself", () => {
   // Straight from the laptop, or no answer: there is no edge to ask.
   expect(awayState(null)).toEqual({ served: false });
   expect(awayState({ ok: true })).toEqual({ served: false });
@@ -97,6 +99,8 @@ test("the Laptop away screen reads the edge's own account of itself", () => {
     served: true,
     on: false,
     ready: false,
+    lacks: [],
+    refused: [],
     checkedAt: null,
     checks: [],
   });
@@ -104,7 +108,11 @@ test("the Laptop away screen reads the edge's own account of itself", () => {
   expect(
     awayState({
       edge: true,
+      configured: true,
       directEnabled: true,
+      githubTokenConfigured: true,
+      queueTokenConfigured: true,
+      primary: true,
       directReady: true,
       selfCheck: {
         at: 1_700_000_000_000,
@@ -115,6 +123,8 @@ test("the Laptop away screen reads the edge's own account of itself", () => {
     served: true,
     on: true,
     ready: true,
+    lacks: [],
+    refused: [],
     checkedAt: 1_700_000_000_000,
     checks: [
       { what: "The board", ok: true, error: "" },
@@ -404,4 +414,127 @@ test("a phase's heading says how many it shows, and of how many when there are m
   expect(phaseHeading("Built", 30, 516, 14)).toBe("Built (30 of 546 in the last 14 days)");
   expect(phaseHeading("Open", 100, 12)).toBe("Open (100 of 112)");
   expect(phaseHeading("Built", 0, 5, 14)).toBe("Built (0 of 5 in the last 14 days)");
+});
+
+test("with the switch on and something missing, the Cloudflare screen says what by name", () => {
+  const base = {
+    edge: true,
+    configured: true,
+    directEnabled: true,
+    githubTokenConfigured: true,
+    queueTokenConfigured: true,
+  };
+  // Everything there, and the edge says it does the core: nothing lacking.
+  expect(awayState({ ...base, primary: true }).lacks).toEqual([]);
+  expect(awayState({ ...base, primary: true }).ready).toBe(true);
+  // An edge from before `primary` says the same under its older name.
+  expect(awayState({ ...base, directReady: true }).ready).toBe(true);
+  // One token missing, the other, and a machine that has never reported.
+  expect(awayState({ ...base, queueTokenConfigured: false, primary: false })).toMatchObject({
+    ready: false,
+    lacks: ["the queue store token"],
+  });
+  expect(awayState({ ...base, githubTokenConfigured: false, queueTokenConfigured: false }).lacks).toEqual([
+    "the repository token",
+    "the queue store token",
+  ]);
+  expect(awayState({ ...base, configured: false }).lacks).toEqual([
+    "a machine's first report, which says where things are",
+  ]);
+  // With the switch off nothing is lacking: nothing was asked for.
+  expect(awayState({ edge: true, directEnabled: false, primary: true })).toMatchObject({
+    on: false,
+    ready: false,
+    lacks: [],
+  });
+});
+
+test("what Cloudflare's token was refused for is said in the owner's words", () => {
+  const base = { edge: true, configured: true, directEnabled: true, primary: true };
+  expect(awayState({ ...base, refused: ["pr.merge", "deploy.start"] }).refused).toEqual([
+    "merging",
+    "starting a deploy",
+  ]);
+  // One this app does not know by name is still said, as it came.
+  expect(awayState({ ...base, refused: ["something.new"] }).refused).toEqual(["something.new"]);
+  // What it could not read is said the same way.
+  expect(awayState({ ...base, refused: ["read.board", "read.prs", "read.priorities", "read.asks"] }).refused).toEqual([
+    "reading the board",
+    "reading the pull requests",
+    "reading the ranked issues",
+    "reading your prompts",
+  ]);
+  // An edge that says nothing of it, or something that is not a list, has refused nothing.
+  expect(awayState(base).refused).toEqual([]);
+  expect(awayState({ ...base, refused: "pr.merge" }).refused).toEqual([]);
+});
+
+test("the laptop being away is said differently when Cloudflare is carrying on", () => {
+  const carrying = awayNotice(true, "2 h ago");
+  expect(carrying.title).toBe("The laptop is not connected");
+  expect(carrying.text).toContain("Cloudflare is carrying on");
+  expect(carrying.text).toContain("as the laptop last reported them, 2 h ago");
+  const waiting = awayNotice(false, "2 h ago");
+  expect(waiting.title).toBe("The laptop is out of reach");
+  expect(waiting.text).toBe(
+    "It last reported 2 h ago; this is the state as of then. You can keep working: what is safe to do late is held and sent when it is back.",
+  );
+});
+
+test("text on a status colour can be read, on the dark page and the light one", () => {
+  // The oracle is the WCAG 2 contrast formula, written out here; 4.5 to
+  // 1 is what it asks of text this size. (The toasts and the danger
+  // button are not on screen when the screens are scanned, which is how
+  // three of these went unread for a while.)
+  const css = readFileSync(new URL("../public/app.css", import.meta.url), "utf8");
+  const block = (from: number) => css.slice(css.indexOf("{", from) + 1, css.indexOf("}", from));
+  const vars = (text: string) =>
+    Object.fromEntries([...text.matchAll(/(--[a-z0-9-]+):\s*(#[0-9a-fA-F]{6})\s*;/g)].map((m) => [m[1], m[2]]));
+  const dark = vars(block(css.indexOf(":root")));
+  const lightAt = css.indexOf("@media (prefers-color-scheme: light)");
+  expect(lightAt).toBeGreaterThan(0);
+  const light = { ...dark, ...vars(block(css.indexOf(":root", lightAt))) };
+  const luminance = (hex: string) => {
+    const channel = (i: number) => {
+      const c = Number.parseInt(hex.slice(1 + 2 * i, 3 + 2 * i), 16) / 255;
+      return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+    };
+    return 0.2126 * channel(0) + 0.7152 * channel(1) + 0.0722 * channel(2);
+  };
+  const contrast = (a: string, b: string) => {
+    const [hi, lo] = [luminance(a), luminance(b)].sort((x, y) => y - x);
+    return (hi + 0.05) / (lo + 0.05);
+  };
+  // The formula itself, on the two pairs everybody knows.
+  expect(contrast("#000000", "#ffffff")).toBeCloseTo(21, 5);
+  expect(contrast("#777777", "#ffffff")).toBeCloseTo(4.48, 2);
+  for (const [name, theme] of [
+    ["dark", dark],
+    ["light", light],
+  ] as const) {
+    for (const [ink, on] of [
+      ["--accent-ink", "--accent"],
+      ["--good-ink", "--good"],
+      ["--bad-ink", "--bad"],
+      ["--text", "--bg"],
+      ["--text", "--panel"],
+      ["--quiet", "--panel"],
+      ["--good", "--panel"],
+      ["--warn", "--panel"],
+      ["--bad", "--panel"],
+    ]) {
+      const ratio = contrast(theme[ink], theme[on]);
+      expect(`${name} ${ink} on ${on}: ${ratio >= 4.5 ? "readable" : ratio.toFixed(2)}`).toBe(
+        `${name} ${ink} on ${on}: readable`,
+      );
+    }
+  }
+  // And the stylesheet uses those inks where it puts text on the colours.
+  for (const rule of [".toast {", ".toast.bad {", "button.danger {"]) {
+    const at = css.indexOf(`\n${rule}`);
+    expect(at).toBeGreaterThan(0);
+    const body = block(at);
+    const background = /background:\s*var\((--[a-z-]+)\)/.exec(body)?.[1];
+    expect(body).toContain(`color: var(${background}-ink)`);
+  }
 });
