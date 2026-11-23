@@ -486,6 +486,7 @@ in
               "--shadow ${aggState}/quota-shadow-placement.json"
               "--out-dir ${aggState}/weekly-review"
               "--repo-root ${home}/git/code"
+              "--gh /etc/profiles/per-user/user/bin/gh"
               "--open-prs"
               "--post"
             ];
