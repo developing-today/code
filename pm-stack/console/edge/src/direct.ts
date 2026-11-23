@@ -1,30 +1,33 @@
-// What the edge can do itself while the laptop is away: the laptop
-// console's own classes, with stand-ins only where they touch the
-// outside world.
+// What the edge does itself: the console's own classes, with stand-ins
+// only where they touch the outside world.
 //
-// Ops and Work take a `run` function and a `fetch`. At the edge, `run`
-// turns `fleet gh api` argv into GitHub REST calls and
+// Ops, Work and Plan take a `run` function and a `fetch`. At the edge,
+// `run` turns `fleet gh api` argv into GitHub REST calls and
 // `fleet secrets get <queue token name>` into the Worker secret, and
-// refuses every other fleet verb as needing the laptop; `fetch` is the
-// Worker's own, which already reaches the queue store. So board, pull
-// requests, ranked issues and prompts are read, and the one-call writes
-// are run, by the same code the laptop runs — nothing here re-implements
+// refuses every other fleet verb as needing a machine; `fetch` is the
+// Worker's own, which already reaches the queue store. So the board,
+// pull requests, ranked issues, prompts, roadmaps, bugs and intake are
+// read, and the writes that are one call to GitHub or the queue store
+// are run, by the same code a machine runs: nothing here re-implements
 // their shapes.
 //
-// What stays the laptop's: `fleet queue enqueue` (the fleet binary is
+// What stays a machine's: `fleet queue enqueue` (the fleet binary is
 // not here), `fleet bridge`, `systemctl`, and anything that reads the
-// dashboard or the decisions file, which live on the laptop alone.
-// A new prompt is filed at the edge and only its queue task is held for
-// the laptop, as `prompt.enqueue`: the issue is never filed twice.
+// dashboard or the decisions file, which live on a machine alone.
+// A prompt, a note or a bug is filed at the edge and only its queue
+// task is held for a machine, as `prompt.enqueue` or `triage.enqueue`:
+// the issue is never filed twice.
 import { OpError } from "../../src/errors.ts";
 import type { Config } from "../../src/config.ts";
 import type { EdgeConfig } from "../../src/edge-proto.ts";
 import { Ops, type Fetch, type Run, type RunResult } from "../../src/ops.ts";
+import { Plan } from "../../src/plan.ts";
 import { Work } from "../../src/work.ts";
 
-/** Sections the edge reads itself once the laptop has gone quiet. */
+/** Sections the edge reads itself. */
 export const DIRECT_READ_SECTIONS = ["board", "prs", "priorities", "asks"] as const;
-/** Actions the edge runs itself once the laptop has gone quiet. */
+/** Actions the edge runs itself: each is one or a few calls to GitHub
+ * or the queue store, and needs nothing a machine has. */
 export const DIRECT_ACTIONS = [
   "ask.send",
   "ask.reply",
@@ -33,12 +36,34 @@ export const DIRECT_ACTIONS = [
   "need.comment",
   "issue.rank",
   "task.move",
+  "pr.merge",
+  "deploy.start",
+  "intake.send",
 ] as const;
+
+/** One call this side made of GitHub or the queue store, and how it was
+ * answered: `status` 0 is no answer at all. `write` is anything that
+ * may have changed something (for the queue store, every call: its
+ * reads and writes travel alike). */
+export interface Outward {
+  to: "github" | "queue";
+  write: boolean;
+  status: number;
+}
 
 export interface DirectSecrets {
   githubToken?: string;
   queueToken?: string;
+  /** Told of every call made, as it is answered. */
+  seen?: (call: Outward) => void;
+  /** Where GitHub's API and the queue store are, when a local run puts
+   * stand-ins in their place. Deployed, neither is given: GitHub's own
+   * address is used, and the queue store's is the one a machine reports. */
+  githubApi?: string;
+  queueDb?: string;
 }
+
+const GITHUB_API = "https://api.github.com";
 
 /** One `fleet gh api` call as a GitHub REST call. `argv` is what follows
  * `api`: an optional `-X METHOD`, the path, `-f key=value` pairs, and
@@ -51,6 +76,8 @@ async function ghApi(
   stdin: string | undefined,
   token: string | undefined,
   fetchImpl: Fetch,
+  origin: string,
+  seen?: (call: Outward) => void,
 ): Promise<RunResult> {
   if (!token) throw new OpError(502, "the edge has no GitHub token");
   let method = "GET";
@@ -72,7 +99,7 @@ async function ghApi(
     else throw new OpError(502, `fleet gh api: unexpected argument ${arg}`);
   }
   if (path === "") throw new OpError(502, "fleet gh api: no path");
-  let url = `https://api.github.com/${path}`;
+  let url = `${origin}/${path}`;
   let body: string | undefined;
   if (method === "GET") {
     if (fields.length > 0) {
@@ -84,20 +111,30 @@ async function ghApi(
   } else if (fields.length > 0) {
     body = JSON.stringify(Object.fromEntries(fields));
   }
-  const res = await fetchImpl(url, {
-    method,
-    headers: {
-      accept: "application/vnd.github+json",
-      authorization: `Bearer ${token}`,
-      // The Workers runtime supplies no User-Agent of its own, and
-      // GitHub requires one: without it every direct call is refused.
-      "user-agent": "pm-console-edge",
-      "x-github-api-version": "2022-11-28",
-      ...(body === undefined ? {} : { "content-type": "application/json" }),
-    },
-    ...(body === undefined ? {} : { body }),
-    signal: AbortSignal.timeout(20_000),
-  });
+  const write = method !== "GET";
+  let res: Awaited<ReturnType<Fetch>>;
+  try {
+    res = await fetchImpl(url, {
+      method,
+      headers: {
+        accept: "application/vnd.github+json",
+        authorization: `Bearer ${token}`,
+        // The Workers runtime supplies no User-Agent of its own, and
+        // GitHub requires one: without it every direct call is refused.
+        "user-agent": "pm-console-edge",
+        "x-github-api-version": "2022-11-28",
+        ...(body === undefined ? {} : { "content-type": "application/json" }),
+      },
+      ...(body === undefined ? {} : { body }),
+      signal: AbortSignal.timeout(20_000),
+    });
+  } catch (error) {
+    // No answer at all (out of reach, or too slow) is a failed call like
+    // any other, with why: the caller is told, as when the binary fails.
+    seen?.({ to: "github", write, status: 0 });
+    return { code: 1, stdout: "", stderr: `GitHub could not be reached: ${(error as Error).message}` };
+  }
+  seen?.({ to: "github", write, status: res.status });
   // The body is read as JSON and written back out, so an empty answer
   // (a 204) stays empty and an error body keeps its own words for the
   // caller.
@@ -115,12 +152,13 @@ async function ghApi(
 }
 
 /** The edge's `run`: GitHub through REST, the queue token from its
- * Worker secret, and everything else refused as the laptop's. */
+ * Worker secret, and everything else refused as a machine's. */
 export function edgeRun(config: Config, secrets: DirectSecrets, fetchImpl: Fetch): Run {
+  const origin = (secrets.githubApi || GITHUB_API).replace(/\/+$/, "");
   return async (argv, opts) => {
     const [bin, verb, ...rest] = argv;
     if (bin === config.fleetBin && verb === "gh" && rest[0] === "api") {
-      return ghApi(rest.slice(1), opts?.stdin, secrets.githubToken, fetchImpl);
+      return ghApi(rest.slice(1), opts?.stdin, secrets.githubToken, fetchImpl, origin, secrets.seen);
     }
     if (bin === config.fleetBin && verb === "secrets" && rest[0] === "get") {
       const name = rest[1];
@@ -129,7 +167,7 @@ export function edgeRun(config: Config, secrets: DirectSecrets, fetchImpl: Fetch
       }
       throw new OpError(502, `the edge has no secret named ${name ?? "?"}`);
     }
-    throw new OpError(502, "needs the laptop");
+    throw new OpError(502, "needs a machine");
   };
 }
 
@@ -166,18 +204,41 @@ export function directConfig(edge: EdgeConfig): Config {
   };
 }
 
-export interface DirectOptions {
-  githubToken?: string;
-  queueToken?: string;
+export interface DirectOptions extends DirectSecrets {
   fetchImpl?: Fetch;
+  now?: () => number;
 }
 
-/** The laptop's own classes, wired for the edge. */
-export function directClasses(edge: EdgeConfig, options: DirectOptions): { ops: Ops; work: Work } {
+export interface DirectClasses {
+  ops: Ops;
+  work: Work;
+  plan: Plan;
+}
+
+/** The console's own classes, wired for the edge. They are made once
+ * and kept: what they remember between reads (which prompts' replies
+ * have not changed, what was read in the last minute) is what keeps the
+ * edge from asking GitHub for the same thing again and again. */
+export function directClasses(edge: EdgeConfig, options: DirectOptions): DirectClasses {
   const config = directConfig(edge);
+  if (options.queueDb) config.queueDbUrl = options.queueDb.replace(/\/+$/, "");
   const fetchImpl = options.fetchImpl ?? (fetch as unknown as Fetch);
-  const ops = new Ops(config, edgeRun(config, options, fetchImpl), fetchImpl);
-  return { ops, work: new Work(ops) };
+  // The queue store is reached by Ops itself, with the fetch it is
+  // given: that one tells of each call too.
+  const queueFetch: Fetch = async (url, init) => {
+    try {
+      const res = await fetchImpl(url, init);
+      options.seen?.({ to: "queue", write: true, status: res.status });
+      return res;
+    } catch (error) {
+      options.seen?.({ to: "queue", write: true, status: 0 });
+      throw error;
+    }
+  };
+  const ops = new Ops(config, edgeRun(config, options, fetchImpl), options.seen ? queueFetch : fetchImpl);
+  const clock = options.now ? () => new Date((options.now as () => number)()) : undefined;
+  const work = new Work(ops, undefined, clock);
+  return { ops, work, plan: new Plan(ops, work, clock) };
 }
 
 /** One section, read by the class that reads it on the laptop. */

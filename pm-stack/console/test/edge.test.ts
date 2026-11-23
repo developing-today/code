@@ -132,6 +132,17 @@ async function setup(options: { direct?: boolean } = {}) {
       comments: 0,
     },
   };
+  // An issue that is not a prompt: ranked, and there to be noted on.
+  ghIssues[301] = {
+    number: 301,
+    title: "Ranked fresh",
+    body: "",
+    html_url: "https://github.com/developing-today/code/issues/301",
+    state: "open",
+    created_at: "2026-11-22T10:00:00Z",
+    updated_at: "2026-11-22T12:31:00Z",
+    comments: 0,
+  };
   const ghComments: Record<number, { body: string; created_at: string; user: { type: string } }[]> = {
     201: [{ body: "Done: the docs are updated.", created_at: "2026-11-22T12:31:00Z", user: { type: "User" } }],
   };
@@ -159,6 +170,19 @@ async function setup(options: { direct?: boolean } = {}) {
     },
   ];
   let ghNextIssue = 500;
+  /** The queue store refusing this side's token, and how often it did. */
+  const queueRefuses = { on: false };
+  const queueRefused = { n: 0 };
+  /** Calls GitHub refuses this side's token for (403), and calls it
+   * fails on its own account (500). */
+  const ghRefuses: ((method: string, url: string) => boolean)[] = [];
+  const ghBreaks: ((method: string, url: string) => boolean)[] = [];
+  /** GitHub answering a new issue with no number on it: not something
+   * it does, and exactly what must not be passed on as a task. */
+  const ghOdd = { noNumber: false };
+  /** Pull requests merged and workflows started through GitHub's API. */
+  const ghMerged: { pr: number; body: unknown }[] = [];
+  const ghStarted: { workflow: string; body: unknown }[] = [];
   const queueTasks: {
     id: number;
     title: string;
@@ -287,6 +311,29 @@ async function setup(options: { direct?: boolean } = {}) {
         ]),
       };
     }
+    if (sql.includes("title LIKE ?")) {
+      // The Queue screen's list: one state, soonest first.
+      const [, status, like, limit] = args;
+      const want = String(like).slice(1, -1).toLowerCase();
+      const found = queueTasks
+        .filter((t) => t.status === status && t.title.toLowerCase().includes(want))
+        .sort((a, b) => a.priority - b.priority || a.id - b.id)
+        .slice(0, Number(limit));
+      return {
+        cols: cols(["id", "status", "priority", "title", "dedupe_key", "updated", "why"]),
+        rows: rows(
+          found.map((t) => [
+            { value: t.id },
+            { value: t.status },
+            { value: t.priority },
+            { value: t.title },
+            { value: t.issue ? `repo-health:v1:triage:${cfg.repo}:issue:${t.issue}` : null },
+            { value: "2026-11-22T11:59" },
+            { value: t.status === "blocked" ? "waiting on the owner" : "" },
+          ]),
+        ),
+      };
+    }
     if (sql.includes("dedupe_key IN")) {
       const keys = args.slice(1) as string[];
       return {
@@ -313,11 +360,69 @@ async function setup(options: { direct?: boolean } = {}) {
     if (method === "GET" && u.pathname === "/search/issues")
       return ok({ items: ghSearch, total_count: ghSearch.length });
     if (method === "GET" && path === "issues") {
+      // GitHub lists the issues that carry the label asked for.
+      const label = u.searchParams.get("labels");
       return ok(
         Object.values(ghIssues)
+          .filter((i) => label === null || (ghLabels[i.number] ?? []).includes(label))
           .sort((a, b) => b.updated_at.localeCompare(a.updated_at))
-          .map((i) => ({ ...i, pull_request: undefined })),
+          .map((i) => ({
+            ...i,
+            labels: (ghLabels[i.number] ?? []).map((name) => ({ name })),
+            pull_request: undefined,
+          })),
       );
+    }
+    const prMatch = /^pulls\/(\d+)(\/merge)?$/.exec(path);
+    if (prMatch) {
+      const pr = ghPrs.find((p) => p.number === Number(prMatch[1]));
+      if (!pr) return fail(404, { message: "Not Found" });
+      if (method === "PUT" && prMatch[2]) {
+        ghMerged.push({ pr: pr.number, body: JSON.parse(body ?? "{}") });
+        ghPrs.splice(ghPrs.indexOf(pr), 1);
+        return ok({ merged: true, sha: "5a5a5a5a5a5a" });
+      }
+      if (method === "GET" && !prMatch[2]) {
+        return ok({
+          ...pr,
+          state: "open",
+          merged: false,
+          mergeable: true,
+          mergeable_state: "clean",
+          body: "What it does.",
+        });
+      }
+    }
+    const workflow = /^actions\/workflows\/([a-z-]+\.yml)\/(runs|dispatches)$/.exec(path);
+    if (workflow && method === "POST" && workflow[2] === "dispatches") {
+      ghStarted.push({ workflow: workflow[1], body: JSON.parse(body ?? "{}") });
+      return {
+        ok: true,
+        status: 204,
+        json: async () => {
+          throw new Error("no body");
+        },
+      };
+    }
+    if (workflow && method === "GET") {
+      return ok({
+        workflow_runs: [
+          {
+            id: 4501,
+            head_sha: "0123456789abcdef0123",
+            status: "completed",
+            conclusion: "success",
+            event: "push",
+            created_at: "2026-11-22T11:50:00Z",
+            html_url: `https://github.com/developing-today/code/actions/runs/4501?wf=${workflow[1]}`,
+          },
+        ],
+      });
+    }
+    if (method === "GET" && path === "contents/planning/roadmaps/pm-stack.md") {
+      const file =
+        "## Now\n\n| Title | Status | Intent | Links |\n| - | - | - | - |\n| Coherence | in-progress | One place. | #1184 |\n";
+      return ok({ content: btoa(file) });
     }
     const issueMatch = /^issues\/(\d+)$/.exec(path);
     if (method === "GET" && issueMatch) {
@@ -343,6 +448,9 @@ async function setup(options: { direct?: boolean } = {}) {
         ghIssues[n].updated_at = new Date(now.t).toISOString();
       }
       return ok({ html_url: `https://github.com/developing-today/code/issues/${n}#issuecomment-1` }, 201);
+    }
+    if (method === "POST" && path === "issues" && ghOdd.noNumber) {
+      return ok({ html_url: "https://github.com/developing-today/code/issues/?", title: "?" });
     }
     if (method === "POST" && path === "issues") {
       const parsed = JSON.parse(body ?? "{}") as { title?: string; body?: string; labels?: string[] };
@@ -408,9 +516,25 @@ async function setup(options: { direct?: boolean } = {}) {
     const method = init?.method ?? "GET";
     if (u.startsWith("https://api.github.com/")) {
       githubCalls.push({ method, url: u, body: init?.body });
+      // A token that may not do this, as GitHub says it.
+      if (ghRefuses.some((refuse) => refuse(method, u))) {
+        return {
+          ok: false,
+          status: 403,
+          json: async () => ({ message: "Resource not accessible by personal access token", status: "403" }),
+        };
+      }
+      if (ghBreaks.some((breaks) => breaks(method, u))) {
+        return { ok: false, status: 500, json: async () => ({ message: "Server Error" }) };
+      }
       return githubAnswer(method, u, init?.body);
     }
     if (u === `${cfg.queueDbUrl}/v2/pipeline`) {
+      // A token the queue store no longer takes.
+      if (queueRefuses.on) {
+        queueRefused.n++;
+        return { ok: false, status: 401, json: async () => ({ error: "unauthorized" }) };
+      }
       const parsed = JSON.parse(init?.body ?? "{}") as {
         requests?: { stmt?: { sql: string; args: { value: string }[] } }[];
       };
@@ -447,13 +571,18 @@ async function setup(options: { direct?: boolean } = {}) {
     },
   };
   const alarm = { at: 0 };
-  const makeEdge = () =>
+  /** What the edge left running behind an answer. */
+  const behind: Promise<unknown>[] = [];
+  /** A new object over the same storage, as after a restart; `direct`
+   * says whether it has the switch and the tokens (as set up, unless
+   * said: turning the switch on or off restarts the Worker). */
+  const makeEdge = (direct: boolean = options.direct === true) =>
     new Edge({
       kv,
       now: clock,
       // As the Worker runtime's fetch is: not to be called as a method.
       fetchImpl: asThePlatformFetch(outward) as never,
-      direct: options.direct
+      direct: direct
         ? {
             enabled: true,
             githubToken: "gh-test",
@@ -463,6 +592,9 @@ async function setup(options: { direct?: boolean } = {}) {
         : undefined,
       setAlarm: async (at) => {
         alarm.at = at;
+      },
+      later: (work) => {
+        behind.push(work);
       },
     });
   const edge = { now: makeEdge() };
@@ -536,6 +668,14 @@ async function setup(options: { direct?: boolean } = {}) {
       touch: ["board"],
       audit: (a) => ({ issue: a.issue }),
     },
+    "triage.enqueue": {
+      run: async (a) => {
+        ran.push({ kind: "triage.enqueue", args: a });
+        return { issue: a.issue, queued: true };
+      },
+      touch: ["board"],
+      audit: (a) => ({ issue: a.issue }),
+    },
     "pr.merge": {
       run: async (a) => {
         ran.push({ kind: "pr.merge", args: a });
@@ -543,6 +683,14 @@ async function setup(options: { direct?: boolean } = {}) {
       },
       touch: ["prs"],
       audit: (a) => ({ pr: a.pr }),
+    },
+    "task.move": {
+      run: async (a) => {
+        ran.push({ kind: "task.move", args: a });
+        return { task: a.task, priority: 10 };
+      },
+      touch: ["board"],
+      audit: (a) => ({ task: a.task }),
     },
     // An answer the dashboard may refuse without anything being thrown.
     "question.answer": {
@@ -589,6 +737,8 @@ async function setup(options: { direct?: boolean } = {}) {
   } = { hostUp: true, edgeUp: true, loseAnswer: false, giveUpEarly: false, large: null };
   /** The size of each report the host sent, whether or not it arrived. */
   const reportSizes: number[] = [];
+  /** Each report the host sent, as it read. */
+  const reports: { sections: { name: string }[]; have: Record<string, unknown> }[] = [];
   /** The signed Android build on the host, if any, and how often it was read to be sent. */
   const build: { bytes: Uint8Array | null; at: number; reads: number; corrupt: boolean; unreadable: boolean } = {
     bytes: null,
@@ -683,6 +833,7 @@ async function setup(options: { direct?: boolean } = {}) {
         if (!net.edgeUp) throw new Error("no route to the edge");
         const size = (init.body as Uint8Array).byteLength;
         reportSizes.push(size);
+        reports.push(JSON.parse(new TextDecoder().decode(init.body as Uint8Array)));
         if (net.large && size > net.large.over) {
           if (net.large.fate === "lost") throw new Error("The operation timed out.");
           return new Response("<html>bad gateway</html>", { status: 502 });
@@ -776,6 +927,15 @@ async function setup(options: { direct?: boolean } = {}) {
     build,
     github,
     reportSizes,
+    reports,
+    behind,
+    ghMerged,
+    ghStarted,
+    ghOdd,
+    ghRefuses,
+    ghBreaks,
+    queueRefuses,
+    queueRefused,
     failing,
     gate,
     stillRunning,
@@ -810,7 +970,9 @@ describe("before the host's first report", () => {
       directEnabled: false,
       githubTokenConfigured: false,
       queueTokenConfigured: false,
+      primary: false,
       directReady: false,
+      refused: [],
       selfCheck: null,
       hostSeen: null,
       hostVersion: null,
@@ -944,7 +1106,7 @@ describe("the owner, at the edge", () => {
     expect(doc.asks).toEqual([]);
     expect(Number(res.headers.get("x-as-of"))).toBe(START);
     expect(Number(res.headers.get("x-host-seen"))).toBe(START);
-    expect(doc.edge).toEqual({ held: 0 });
+    expect(doc.edge).toEqual({ held: 0, primary: false });
     // Unchanged: the tag says so and nothing is sent again.
     const again = await w.browse("/console/api/doc/core", {
       headers: { "if-none-match": res.headers.get("etag") as string },
@@ -1156,7 +1318,7 @@ describe("actions", () => {
     expect(w.ran).toEqual([]);
     // The app says what is waiting.
     let { doc } = await w.core();
-    expect(doc.edge).toEqual({ held: 1 });
+    expect(doc.edge).toEqual({ held: 1, primary: false });
     expect(doc.acts[0]).toMatchObject({ kind: "ask.send", status: "running", by: OWNER });
     expect(doc.acts[0].note).toMatch(/^Held/);
     // Reads that are the host's own say why they cannot be had.
@@ -1170,7 +1332,7 @@ describe("actions", () => {
     expect(await pageRes.text()).toContain("Open the app");
     // The edge restarts while the host is away: nothing held is lost.
     w.edge.now = w.makeEdge();
-    expect((await w.core()).doc.edge).toEqual({ held: 1 });
+    expect((await w.core()).doc.edge).toEqual({ held: 1, primary: false });
 
     // The host is back. Its report brings the held action down, it runs
     // it, and the next report says so.
@@ -1195,7 +1357,7 @@ describe("actions", () => {
     expect(second?.commands).toEqual([]);
     expect(w.ran).toHaveLength(1);
     ({ doc } = await w.core());
-    expect(doc.edge).toEqual({ held: 0 });
+    expect(doc.edge).toEqual({ held: 0, primary: false });
     expect(doc.asks.map((a: { text: string }) => a.text)).toEqual(["Do this when you are back"]);
     // One record of it, the host's, saying it was sent late.
     expect(doc.acts.filter((a: { kind: string }) => a.kind === "ask.send")).toEqual([
@@ -1245,7 +1407,7 @@ describe("actions", () => {
     // The first was tried once and failed; the second was never run.
     expect(w.ran).toEqual([{ kind: "issue.comment", args: { issue: 13, text: "late" } }]);
     const { doc } = await w.core();
-    expect(doc.edge).toEqual({ held: 0 });
+    expect(doc.edge).toEqual({ held: 0, primary: false });
     const notes = doc.acts
       .filter((a: { status: string }) => a.status === "failed")
       .map((a: { note: string }) => a.note);
@@ -1273,7 +1435,7 @@ describe("actions", () => {
     w.now.t += 1_000;
     expect((await w.link.now.once())?.commands).toEqual([]);
     const { doc } = await w.core();
-    expect(doc.edge).toEqual({ held: 0 });
+    expect(doc.edge).toEqual({ held: 0, primary: false });
     expect(doc.asks.map((a: { text: string }) => a.text)).toEqual(["only once"]);
     expect(
       doc.acts.filter((a: { kind: string }) => a.kind === "ask.send").map((a: { status: string }) => a.status),
@@ -1307,7 +1469,7 @@ describe("actions", () => {
     w.now.t += 1_000;
     expect((await w.link.now.once())?.commands).toEqual([]);
     expect(w.ran).toHaveLength(1);
-    expect((await w.core()).doc.edge).toEqual({ held: 0 });
+    expect((await w.core()).doc.edge).toEqual({ held: 0, primary: false });
   });
 
   test("an answer sent late that the dashboard no longer takes is reported as not recorded", async () => {
@@ -1324,7 +1486,7 @@ describe("actions", () => {
     await w.link.now.once();
     expect(w.ran.map((r) => r.args.qid)).toEqual(["settled", "open"]);
     const { doc } = await w.core();
-    expect(doc.edge).toEqual({ held: 0 });
+    expect(doc.edge).toEqual({ held: 0, primary: false });
     const answers = doc.acts.filter((a: { kind: string }) => a.kind === "question.answer");
     expect(answers.map((a: { status: string }) => a.status).sort()).toEqual(["done", "failed"]);
     expect(answers.find((a: { status: string }) => a.status === "failed").note).toMatch(
@@ -1344,7 +1506,7 @@ describe("actions", () => {
     expect(answer?.commands).toEqual([]);
     expect(w.ran).toEqual([]);
     const { doc } = await w.core();
-    expect(doc.edge).toEqual({ held: 0 });
+    expect(doc.edge).toEqual({ held: 0, primary: false });
     expect(doc.acts[0]).toMatchObject({
       kind: "ask.send",
       status: "failed",
@@ -2338,51 +2500,51 @@ describe("notifications and phones, from the edge", () => {
   });
 });
 
-describe("direct reads and writes while the host is away", () => {
-  /** The host has reported, then gone quiet for a minute. */
-  async function quiet() {
+describe("the edge does the core itself", () => {
+  type World = Awaited<ReturnType<typeof setup>>;
+  /** The switch is on, the tokens are there, and a machine has said
+   * where things are: from its first report on, this side does the core. */
+  async function primary() {
     const w = await setup({ direct: true });
     await w.hostReads();
     await w.link.now.once();
-    w.net.hostUp = false;
-    w.net.edgeUp = false;
-    w.now.t += 60_000;
     w.hostSaw.length = 0;
     return w;
   }
+  /** Wait for what an answer left reading behind it: exactly what the
+   * edge handed over to be given the time, and nothing more. */
+  const settle = async (w: World) => {
+    await Promise.all(w.behind.splice(0));
+  };
   /** Only the laptop's doc pokes, never an ask for it to do anything. */
-  const onlyPokes = (w: Awaited<ReturnType<typeof setup>>) =>
-    w.hostSaw.every((s) => s.startsWith("GET /console/api/doc/"));
+  const onlyPokes = (w: World) => w.hostSaw.every((s) => s.startsWith("GET /console/api/doc/"));
+  const asked = (w: World) => w.githubCalls.length + w.queueCalls.length;
+  const QUEUE_NOW = { claimed: 1, queued: 1, blocked: 1 };
 
-  test("the board, pull requests, ranked issues and prompts come from GitHub and the queue store after a minute of silence", async () => {
-    const w = await setup({ direct: true });
-    await w.hostReads();
-    await w.link.now.once();
-    // Before the minute is up the host's copy is served, and nothing is read directly.
-    const stale = await w.core();
-    expect(stale.doc.board).toEqual(w.data.board);
-    expect(stale.doc.asks).toEqual([]);
-    expect(w.githubCalls).toEqual([]);
-    expect(w.queueCalls).toEqual([]);
-    // A minute of silence: the next read is fresh.
-    w.net.hostUp = false;
-    w.net.edgeUp = false;
-    w.now.t += 60_000;
-    w.hostSaw.length = 0;
-    const { doc } = await w.core();
-    expect(doc.board.counts).toEqual({ claimed: 1, queued: 1, blocked: 1 });
+  test("the board, prompts, pull requests and ranked issues come from GitHub and the queue store, laptop or no laptop", async () => {
+    const w = await primary();
+    // The laptop is reporting, and its copy says two are queued. What
+    // is shown is the queue store's own word, read here.
+    const { res, doc } = await w.core();
+    expect(doc.board.counts).toEqual(QUEUE_NOW);
     expect(doc.board.now.map((t: { id: number }) => t.id)).toEqual([21047]);
     expect(doc.board.next.map((t: { id: number }) => t.id)).toEqual([21048]);
     expect(doc.asks.map((a: { issue: number }) => a.issue)).toEqual([202, 201]);
     expect(doc.asks[1].replies).toEqual([
       { you: false, at: "2026-11-22T12:31:00", text: "Done: the docs are updated." },
     ]);
-    const ops = await w.browse("/console/api/doc/ops");
-    const opsDoc = (await ops.json()) as {
+    expect(doc.health.board).toEqual({ ok: true, error: null });
+    expect(Number(res.headers.get("x-as-of"))).toBe(START);
+    // The app is told that this side does the core.
+    expect(doc.edge).toEqual({ held: 0, primary: true });
+    // What only a machine has is still the machine's copy.
+    expect(doc.sessions).toEqual(w.data.sessions);
+    const ops = (await (await w.browse("/console/api/doc/ops")).json()) as {
       prs: unknown[];
       priorities: { issues: { number: number; rank: string }[] };
+      services: unknown;
     };
-    expect(opsDoc.prs).toEqual([
+    expect(ops.prs).toEqual([
       {
         number: 55,
         title: "Fresh PR",
@@ -2393,148 +2555,766 @@ describe("direct reads and writes while the host is away", () => {
         branch: "queue/55",
       },
     ]);
-    expect(opsDoc.priorities.issues.map((i) => i.number)).toEqual([301]);
-    expect(opsDoc.priorities.issues[0].rank).toBe("now");
-    // The reads went to GitHub and the queue store; the laptop was never asked for anything.
+    expect(ops.priorities.issues.map((i) => [i.number, i.rank])).toEqual([[301, "now"]]);
+    expect(ops.services).toEqual(w.data.services);
+    // The reads went to GitHub and the queue store; the laptop was asked for nothing.
     expect(onlyPokes(w)).toBe(true);
     expect(w.githubCalls.map((c) => c.url)).toContain(
       "https://api.github.com/repos/developing-today/code/pulls?state=open&per_page=60",
     );
     expect(w.queueCalls.some((c) => c.sql.includes("GROUP BY status"))).toBe(true);
+    // The laptop's copy of what this side reads was never kept here.
+    expect((w.stored.get("m:board") as { own?: boolean }).own).toBe(true);
+    expect((w.stored.get("m:sessions") as { own?: boolean }).own).toBeUndefined();
+    // And with the laptop gone it is the same.
+    w.net.hostUp = false;
+    w.net.edgeUp = false;
+    w.queueTasks[1].status = "claimed";
+    w.now.t += 61_000;
+    await w.core();
+    await settle(w);
+    const later = await w.core();
+    expect(later.res.status).toBe(200);
+    expect(later.doc.board.counts).toEqual({ claimed: 2, blocked: 1 });
+    expect(later.doc.read.board).toBe(new Date(w.now.t).toISOString());
   });
 
-  test("a reply to a prompt is posted once at the edge and not repeated when the laptop returns", async () => {
-    const w = await quiet();
-    const res = await w.act("ask.reply", { issue: 201, text: "Thanks — noted." });
-    expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ ok: true, result: { issue: 201, queued: true } });
-    const comments = w.githubCalls.filter((c) => c.method === "POST" && c.url.includes("/issues/201/comments"));
-    expect(comments).toHaveLength(1);
-    expect(JSON.parse(comments[0].body ?? "{}").body).toContain("Thanks — noted.");
-    // The reply shows up in the next read at the edge.
+  test("a section is read again when its own interval has passed, behind the answer and never in its way", async () => {
+    const w = await primary();
+    await w.core();
+    const first = asked(w);
+    w.now.t += 20_000;
+    await w.core();
+    await settle(w);
+    // Inside every section's interval: nothing is asked again.
+    expect(asked(w)).toBe(first);
+    // The queue moves on. Thirty-five seconds after the read the board
+    // (thirty) is due and the prompts (forty-five) are not.
+    w.queueTasks[1].status = "claimed";
+    w.now.t += 15_000;
+    const github = w.githubCalls.length;
+    const queue = w.queueCalls.length;
+    const before = await w.core();
+    // Answered at once from what it had; the read goes on behind it.
+    expect(before.doc.board.counts).toEqual(QUEUE_NOW);
+    await settle(w);
+    const after = await w.core();
+    expect(after.doc.board.counts).toEqual({ claimed: 2, blocked: 1 });
+    expect(w.queueCalls.length).toBeGreaterThan(queue);
+    expect(w.githubCalls.length).toBe(github);
+  });
+
+  test("the classes are kept between reads, so a prompt whose thread has not changed is not fetched again", async () => {
+    const w = await primary();
+    const threads = () => w.githubCalls.filter((c) => c.method === "GET" && c.url.includes("/issues/201/comments"));
+    await w.core();
+    expect(threads()).toHaveLength(1);
+    for (let i = 0; i < 3; i++) {
+      w.now.t += 46_000;
+      await w.core();
+      await settle(w);
+    }
+    // Read three more times: the list each time, the thread never again.
+    expect(w.githubCalls.filter((c) => c.url.includes("/issues?labels=owner%2Fprompt"))).toHaveLength(4);
+    expect(threads()).toHaveLength(1);
+  });
+
+  test("a read that fails leaves the last good copy and says why, and stops saying so when it works again", async () => {
+    const w = await primary();
+    await w.core();
+    w.directDown.on = true;
+    w.now.t += 60_000;
+    await w.core();
+    await settle(w);
     const { doc } = await w.core();
-    const asked = doc.asks.find((a: { issue: number }) => a.issue === 201) as {
-      replies: { you: boolean; text: string }[];
+    expect(doc.board.counts).toEqual(QUEUE_NOW);
+    expect(doc.health.board).toEqual({ ok: false, error: expect.stringContaining("the direct source is down") });
+    expect(doc.health.asks.ok).toBe(false);
+    // The copy is as old as its last good read, and the app is told so.
+    expect(doc.read.board).toBe(new Date(w.now.t).toISOString()); // tried now
+    expect((w.stored.get("m:board") as { at: number }).at).toBe(START); // good then
+    w.directDown.on = false;
+    w.now.t += 60_000;
+    await w.core();
+    await settle(w);
+    const back = await w.core();
+    expect(back.doc.health.board).toEqual({ ok: true, error: null });
+    expect(back.doc.health.asks).toEqual({ ok: true, error: null });
+  });
+
+  test("after a restart what was last read is shown at once, as old as it is, and read again behind it", async () => {
+    const w = await primary();
+    await w.core();
+    w.queueTasks[1].status = "claimed";
+    w.now.t += 10 * 60_000;
+    w.edge.now = w.makeEdge();
+    const queue = w.queueCalls.length;
+    const first = await w.core();
+    expect(first.doc.board.counts).toEqual(QUEUE_NOW);
+    // As old as it is: read ten minutes ago, and said to be.
+    expect(first.doc.read.board).toBe(new Date(START).toISOString());
+    expect(Number(first.res.headers.get("x-as-of"))).toBeLessThan(w.now.t - 9 * 60_000);
+    await settle(w);
+    expect(w.queueCalls.length).toBeGreaterThan(queue);
+    const second = await w.core();
+    expect(second.doc.board.counts).toEqual({ claimed: 2, blocked: 1 });
+    expect(second.doc.read.board).toBe(new Date(w.now.t).toISOString());
+  });
+
+  test("after a restart, a first read that fails still shows what was kept, and says the read failed", async () => {
+    const w = await primary();
+    await w.core();
+    w.edge.now = w.makeEdge();
+    w.directDown.on = true;
+    w.net.hostUp = false;
+    w.net.edgeUp = false;
+    w.now.t += 60_000;
+    await w.core();
+    await settle(w);
+    const { doc } = await w.core();
+    expect(doc.board.counts).toEqual(QUEUE_NOW);
+    expect(doc.health.board).toEqual({ ok: false, error: expect.stringContaining("the direct source is down") });
+    expect(doc.health.asks.ok).toBe(false);
+  });
+
+  test("what was read is kept once: content that has not changed is not written again, only its time, now and then", async () => {
+    const w = await primary();
+    await w.core();
+    const writes = (key: string) => w.puts.filter((k) => k === key).length;
+    expect([writes("m:board:0"), writes("m:board")]).toEqual([1, 1]);
+    w.now.t += 31_000;
+    await w.core();
+    await settle(w);
+    expect([writes("m:board:0"), writes("m:board")]).toEqual([1, 1]);
+    w.now.t += 5 * 60_000;
+    await w.core();
+    await settle(w);
+    expect([writes("m:board:0"), writes("m:board")]).toEqual([1, 2]);
+    expect((w.stored.get("m:board") as { at: number }).at).toBe(w.now.t);
+    w.queueTasks[1].status = "claimed";
+    w.now.t += 31_000;
+    await w.core();
+    await settle(w);
+    expect([writes("m:board:0"), writes("m:board")]).toEqual([2, 3]);
+  });
+
+  test("the laptop is told what this side reads, and stops reporting it", async () => {
+    const w = await primary();
+    // Its first report could not know, and carried everything.
+    expect(w.reports[0].sections.map((s) => s.name)).toContain("board");
+    // None of it was kept: this side had not read the board yet, and has no copy.
+    expect(w.stored.has("m:board")).toBe(false);
+    w.now.t += 1_000;
+    const answer = await w.link.now.once();
+    expect(answer?.owns).toEqual(["board", "prs", "priorities", "asks"]);
+    expect(answer?.want).toEqual([]);
+    // The laptop's own board changes. Its report carries neither the
+    // board nor its word on how current the board is.
+    (w.data.board as { counts: Record<string, number> }).counts = { claimed: 9 };
+    (w.data.sessions as { moving: unknown[] }).moving = [{ id: "s1", title: "A session" }];
+    w.now.t += 11_000;
+    await w.hostReads();
+    await w.link.now.once();
+    const last = w.reports[w.reports.length - 1];
+    expect(last.sections.map((s) => s.name)).toEqual(["sessions"]);
+    for (const name of ["board", "prs", "priorities", "asks"]) expect(Object.keys(last.have)).not.toContain(name);
+    expect(Object.keys(last.have)).toContain("sessions");
+    expect((await w.core()).doc.board.counts).toEqual(QUEUE_NOW);
+  });
+
+  test("a section the laptop could not read is not said to be broken when this side reads it", async () => {
+    const w = await setup({ direct: true });
+    // The laptop cannot read the queue; this side can.
+    w.failing.add("board");
+    await w.hostReads();
+    w.failing.delete("board");
+    await w.hostReads();
+    w.failing.add("board");
+    w.now.t += 11_000;
+    await w.hostReads();
+    await w.link.now.once();
+    const { doc } = await w.core();
+    expect(doc.health.board).toEqual({ ok: true, error: null });
+    expect(doc.board.counts).toEqual(QUEUE_NOW);
+  });
+
+  test("with the switch turned off again, the laptop's copies are taken back at once", async () => {
+    const w = await primary();
+    await w.core(); // this side's own copies are kept
+    // Turning the switch off restarts the Worker without it.
+    w.edge.now = w.makeEdge(false);
+    w.now.t += 1_000;
+    const first = await w.link.now.once();
+    expect(first?.owns).toEqual([]);
+    w.now.t += 1_000;
+    await w.link.now.once();
+    const { doc } = await w.core();
+    expect(doc.board).toEqual(w.data.board);
+    expect(doc.asks).toEqual([]);
+    expect(doc.edge).toEqual({ held: 0, primary: false });
+    expect((w.stored.get("m:board") as { own?: boolean }).own).toBeUndefined();
+    expect(asked(w)).toBe(asked(w)); // and nothing more is read from here
+    const calls = asked(w);
+    w.now.t += 61_000;
+    await w.core();
+    await settle(w);
+    expect(asked(w)).toBe(calls);
+  });
+
+  test("a laptop that does not know to send them again is asked for the copies this side used to read", async () => {
+    const w = await primary();
+    await w.core();
+    w.edge.now = w.makeEdge(false);
+    // A report as an older laptop makes it: it believes this side has
+    // its board (it sent it long ago), so it only says what it has.
+    const kept = JSON.parse((await w.keys.read()) ?? "{}") as { privateJwk: JsonWebKey };
+    const say = async (sections: unknown[]) => {
+      w.now.t += 1_000;
+      const msg = {
+        v: 1,
+        at: w.now.t,
+        config: w.edgeConfig,
+        sections,
+        have: {
+          board: { hash: "theirs", at: w.now.t, error: null },
+          sessions: { hash: "x", at: w.now.t, error: null },
+        },
+        acks: [],
+      };
+      const body = new TextEncoder().encode(JSON.stringify(msg));
+      const res = await route(
+        new Request(`https://${HOST}/console/edge/sync`, {
+          method: "POST",
+          body,
+          headers: {
+            "x-pm-key": await keyId(await w.link.now.publicKey()),
+            "x-pm-signature": await sign(kept.privateJwk, body),
+            "cf-ray": "1",
+          },
+        }),
+        w.io,
+      );
+      return (await res.json()) as { want: string[] };
     };
-    expect(asked.replies[asked.replies.length - 1]).toEqual({
+    // The board here is this side's own old read: wanted. The sessions
+    // here are the laptop's: not wanted.
+    expect((await say([])).want).toEqual(["board"]);
+    // Sent, it replaces this side's copy though that was read later.
+    const theirs = { counts: { claimed: 7 }, now: [], next: [], blocked: [] };
+    expect((await say([{ name: "board", at: START - 60_000, hash: "theirs", data: theirs }])).want).toEqual([]);
+    expect((await w.core()).doc.board).toEqual(theirs);
+  });
+
+  test("what the owner does is done here at once, laptop in reach or not, and never sent to the laptop", async () => {
+    const w = await primary();
+    const reply = await w.act("ask.reply", { issue: 201, text: "Thanks — noted." });
+    expect(await reply.json()).toEqual({ ok: true, result: { issue: 201, queued: true } });
+    const comments = () => w.githubCalls.filter((c) => c.method === "POST" && c.url.includes("/issues/201/comments"));
+    expect(comments()).toHaveLength(1);
+    expect(JSON.parse(comments()[0].body ?? "{}").body).toContain("Thanks — noted.");
+    // The reply already shows in the state served here.
+    const shown = (await w.core()).doc.asks.find((a: { issue: number }) => a.issue === 201) as {
+      replies: { you: boolean; at: string; text: string }[];
+    };
+    expect(shown.replies[shown.replies.length - 1]).toEqual({
       you: true,
-      at: "2026-11-22T12:01:00",
+      at: "2026-11-22T12:00:00",
       text: "Thanks — noted.",
     });
-    // Only the queue task waits for the laptop.
+    const closed = await w.act("ask.close", { issue: 202 });
+    expect(await closed.json()).toEqual({ ok: true, result: { issue: 202, closed: true } });
+    expect(w.ghIssues[202].state).toBe("closed");
+    const ranked = await w.act("issue.rank", { issue: 301, rank: "next" });
+    expect(await ranked.json()).toEqual({ ok: true, result: { issue: 301, rank: "next" } });
+    expect(w.ghLabels[301]).toEqual(["next"]);
+    const need = await w.act("need.comment", { ref: "developing-today/code#301", text: "Noted." });
+    expect(need.status).toBe(200);
+    expect((w.ghComments[301] ?? []).some((c) => c.body.startsWith("Noted."))).toBe(true);
+    const comment = await w.act("issue.comment", { issue: 301, text: "And this." });
+    expect(comment.status).toBe(200);
+    expect((w.ghComments[301] ?? []).some((c) => c.body === "And this.")).toBe(true);
+    const moved = await w.act("task.move", { task: 21048, to: "first" });
+    expect(await moved.json()).toEqual({ ok: true, result: { task: 21048, priority: 10 } });
+    expect(w.queueTasks.find((t) => t.id === 21048)?.priority).toBe(10);
+    // The board served here already shows the move.
+    expect((await w.core()).doc.board.next.find((t: { id: number }) => t.id === 21048)?.priority).toBe(10);
+    // A merge, and a deploy started again.
+    const merged = await w.act("pr.merge", { pr: 55 });
+    expect(await merged.json()).toEqual({ ok: true, result: { number: 55, merged: true, sha: "5a5a5a5a5a5a" } });
+    expect(w.ghMerged).toEqual([{ pr: 55, body: { merge_method: "merge" } }]);
+    // The list of pull requests served here no longer has it.
+    expect(((await (await w.browse("/console/api/doc/ops")).json()) as { prs: unknown[] }).prs).toEqual([]);
+    const started = await w.act("deploy.start", { what: "site", scratch: true });
+    expect(await started.json()).toEqual({ ok: true, result: { started: "site", scratch: true } });
+    expect(w.ghStarted).toEqual([
+      { workflow: "pm-console-edge-deploy.yml", body: { ref: "main", inputs: { scratch: "true" } } },
+    ]);
+    // The laptop was in reach the whole time, and was asked to do none of it.
+    expect(w.ran).toEqual([]);
+    expect(onlyPokes(w)).toBe(true);
+    // Only the reply's queue task waits for a machine.
     expect((w.stored.get("held") as { kind: string }[]).map((h) => h.kind)).toEqual(["prompt.enqueue"]);
-    // The laptop returns: it runs the held enqueue once, and the reply is not posted again.
-    w.net.hostUp = true;
-    w.net.edgeUp = true;
-    w.now.t += 60_000;
-    const first = await w.link.now.once();
-    expect(first?.commands.map((c) => c.kind)).toEqual(["prompt.enqueue"]);
-    expect(w.ran.filter((r) => r.kind === "prompt.enqueue")).toHaveLength(1);
-    w.now.t += 1_000;
-    const second = await w.link.now.once();
-    expect(second?.commands).toEqual([]);
-    expect(w.ran.filter((r) => r.kind === "prompt.enqueue")).toHaveLength(1);
-    expect(w.githubCalls.filter((c) => c.method === "POST" && c.url.includes("/issues/201/comments"))).toHaveLength(1);
+    // Each is on this side's record of what was done, without what was typed.
+    const audit = w.stored.get("audit") as { action: string; phase: string; ok?: boolean; args: unknown }[];
+    expect(audit.filter((a) => a.phase === "done" && a.ok).map((a) => a.action)).toEqual([
+      "ask.reply",
+      "ask.close",
+      "issue.rank",
+      "need.comment",
+      "issue.comment",
+      "task.move",
+      "pr.merge",
+      "deploy.start",
+    ]);
+    expect(JSON.stringify(audit)).not.toContain("Thanks");
   });
 
-  test("a new prompt is filed at the edge and only its queue task waits for the laptop", async () => {
-    const w = await quiet();
+  test("a new prompt is filed here and only its queue task waits for a machine, which files it once", async () => {
+    const w = await primary();
+    w.net.hostUp = false;
+    w.net.edgeUp = false;
     const res = await w.act("ask.send", { text: "File this from the edge" });
-    expect(res.status).toBe(200);
     expect(await res.json()).toEqual({
       ok: true,
       result: { issue: 500, url: "https://github.com/developing-today/code/issues/500", queued: true },
     });
     expect(w.githubCalls.filter((c) => c.method === "POST" && c.url.endsWith("/issues"))).toHaveLength(1);
     const held = w.stored.get("held") as { kind: string; args: Record<string, unknown> }[];
-    expect(held).toHaveLength(1);
-    expect(held[0].kind).toBe("prompt.enqueue");
-    expect(held[0].args.issue).toBe(500);
-    // The laptop returns and enqueues it once; the issue is not filed again.
+    expect(held.map((h) => [h.kind, h.args.issue, h.args.text])).toEqual([
+      ["prompt.enqueue", 500, "File this from the edge"],
+    ]);
+    // The app says one thing is waiting.
+    expect((await w.core()).doc.edge).toEqual({ held: 1, primary: true });
+    // The laptop connects and files the task once; the issue is not filed again.
+    w.net.hostUp = true;
+    w.net.edgeUp = true;
+    w.now.t += 60_000;
+    expect((await w.link.now.once())?.commands.map((c) => c.kind)).toEqual(["prompt.enqueue"]);
+    w.now.t += 1_000;
+    expect((await w.link.now.once())?.commands).toEqual([]);
+    expect(w.ran.filter((r) => r.kind === "prompt.enqueue")).toHaveLength(1);
+    expect(w.githubCalls.filter((c) => c.method === "POST" && c.url.endsWith("/issues"))).toHaveLength(1);
+    expect((await w.core()).doc.edge).toEqual({ held: 0, primary: true });
+  });
+
+  test("a bug, a note and a session are filed here with his words first; their tasks are a machine's to file", async () => {
+    const w = await primary();
+    w.net.hostUp = false;
+    w.net.edgeUp = false;
+    const WORDS = "the badge count is one too many\non the Needs tab";
+    const bug = await w.act("intake.send", { id: "d1", kind: "bug", area: "pm-stack", text: WORDS });
+    expect(await bug.json()).toEqual({
+      ok: true,
+      result: {
+        issue: 500,
+        url: "https://github.com/developing-today/code/issues/500",
+        commented: false,
+        queued: true,
+      },
+    });
+    const filed = w.githubCalls.filter((c) => c.method === "POST" && c.url.endsWith("/issues"));
+    expect(filed).toHaveLength(1);
+    const body = JSON.parse(filed[0].body ?? "{}") as { title: string; body: string; labels: string[] };
+    expect(body.body.startsWith(`${WORDS}\n\n---\n`)).toBe(true);
+    expect(body.labels).toEqual(["kind/bug", "source/human", "owner/intake", "app/pm-stack", "now"]);
+    // A note on an issue that is already there: a comment, and a task of its own kind.
+    const note = await w.act("intake.send", {
+      kind: "note",
+      text: "do this first",
+      about: { issue: 301 },
+      rank: "expedite",
+    });
+    expect((await note.json()).result).toMatchObject({ issue: 301, commented: true, queued: true });
+    expect((w.ghComments[301] ?? []).some((c) => c.body.startsWith("do this first\n\n---\n"))).toBe(true);
+    expect(w.ghLabels[301]).toEqual(["owner/intake", "expedite"]);
+    // As a session: the owner's prompt, with the routing labels added.
+    const session = await w.act("intake.send", {
+      kind: "note",
+      area: "fleet",
+      text: "pick these up first",
+      mode: "session",
+    });
+    expect((await session.json()).result).toMatchObject({ issue: 501, commented: false, queued: true });
+    expect(w.ghLabels[501]).toEqual(["owner/prompt", "expedite", "source/human", "owner/intake", "app/fleet"]);
+    // Three tasks wait for a machine, each as the action that builds it there.
+    const at = new Date(w.now.t).toISOString();
+    expect(
+      (w.stored.get("held") as { kind: string; args: Record<string, unknown> }[]).map((h) => [h.kind, h.args]),
+    ).toEqual([
+      ["triage.enqueue", { issue: 500, title: body.title, rank: "now", at }],
+      ["triage.enqueue", { issue: 301, title: "do this first", rank: "expedite", at, note: true }],
+      ["prompt.enqueue", { issue: 501, text: "pick these up first\n\n(note, Fleet; from the PM app)", at }],
+    ]);
+    // What he typed is not on the record of what was done.
+    expect(JSON.stringify(w.stored.get("audit"))).not.toContain("badge count");
+    // The Intake screen, read here, already has them.
+    const intake = (await (await w.browse("/console/api/intake")).json()) as {
+      items: { number: number; kind: string }[];
+    };
+    expect(intake.items.map((i) => [i.number, i.kind]).sort()).toEqual([
+      [301, "note"],
+      [500, "bug"],
+      [501, "session"],
+    ]);
+    // A machine connects: each task is filed once.
     w.net.hostUp = true;
     w.net.edgeUp = true;
     w.now.t += 60_000;
     await w.link.now.once();
-    expect(w.ran.filter((r) => r.kind === "prompt.enqueue")).toHaveLength(1);
-    expect(w.githubCalls.filter((c) => c.method === "POST" && c.url.endsWith("/issues"))).toHaveLength(1);
-  });
-
-  test("closing a prompt, ranking an issue, commenting on a need and moving a task run at the edge", async () => {
-    const w = await quiet();
-    const closed = await w.act("ask.close", { issue: 202 });
-    expect(closed.status).toBe(200);
-    expect(await closed.json()).toEqual({ ok: true, result: { issue: 202, closed: true } });
-    expect(w.ghIssues[202].state).toBe("closed");
-    const ranked = await w.act("issue.rank", { issue: 301, rank: "next" });
-    expect(ranked.status).toBe(200);
-    expect(await ranked.json()).toEqual({ ok: true, result: { issue: 301, rank: "next" } });
-    expect(w.ghLabels[301]).toEqual(["next"]);
-    const need = await w.act("need.comment", { ref: "developing-today/code#301", text: "Noted." });
-    expect(need.status).toBe(200);
-    expect((w.ghComments[301] ?? []).some((c) => c.body.startsWith("Noted."))).toBe(true);
-    const moved = await w.act("task.move", { task: 21048, to: "first" });
-    expect(moved.status).toBe(200);
-    expect(await moved.json()).toEqual({ ok: true, result: { task: 21048, priority: 10 } });
-    expect(w.queueTasks.find((t) => t.id === 21048)?.priority).toBe(10);
-    // Nothing was held for the laptop: all four were done here.
-    expect((w.stored.get("held") as unknown[] | undefined) ?? []).toEqual([]);
-    expect(onlyPokes(w)).toBe(true);
-    // And the board the edge serves already shows the move.
-    const { doc } = await w.core();
-    expect(doc.board.next.find((t: { id: number }) => t.id === 21048)?.priority).toBe(10);
-  });
-
-  test("health reports the direct capability and the self-check", async () => {
-    const w = await setup({ direct: true });
-    await w.hostReads();
+    w.now.t += 1_000;
     await w.link.now.once();
+    expect(w.ran.map((r) => [r.kind, r.args.issue])).toEqual([
+      ["triage.enqueue", 500],
+      ["triage.enqueue", 301],
+      ["prompt.enqueue", 501],
+    ]);
+    expect(w.stored.get("held")).toEqual([]);
+  });
+
+  test("a laptop from before this side read things itself changes nothing by saying what it has", async () => {
+    const w = await primary();
+    await w.core();
+    const kept = JSON.parse((await w.keys.read()) ?? "{}") as { privateJwk: JsonWebKey };
+    const mine = w.stored.get("m:board") as { hash: string; at: number };
+    // It lists the board among what it has, with the very content this
+    // side read (so the same fingerprint), a later time, and its own
+    // trouble reading it; and prompts this side has not kept a copy of.
+    w.now.t += 5_000;
+    const msg = {
+      v: 1,
+      at: w.now.t,
+      config: w.edgeConfig,
+      sections: [],
+      have: {
+        board: { hash: mine.hash, at: w.now.t, error: "the queue store is down" },
+        prs: { hash: "theirs", at: w.now.t, error: null },
+      },
+      acks: [],
+    };
+    const body = new TextEncoder().encode(JSON.stringify(msg));
+    const before = asked(w);
+    const res = await route(
+      new Request(`https://${HOST}/console/edge/sync`, {
+        method: "POST",
+        body,
+        headers: {
+          "x-pm-key": await keyId(await w.link.now.publicKey()),
+          "x-pm-signature": await sign(kept.privateJwk, body),
+          "cf-ray": "1",
+        },
+      }),
+      w.io,
+    );
+    const answer = (await res.json()) as { want: string[]; owns: string[] };
+    // Nothing of what this side reads is asked of it (it would send the
+    // whole section every time, and it would never be taken).
+    expect(answer.want).toEqual([]);
+    expect(answer.owns).toEqual(["board", "prs", "priorities", "asks"]);
+    // Its word did not make this side read anything again ...
+    expect(asked(w)).toBe(before);
+    // ... nor is its trouble said of a section this side reads well.
+    const { doc } = await w.core();
+    expect(doc.health.board).toEqual({ ok: true, error: null });
+    expect((w.stored.get("m:board") as { at: number }).at).toBe(mine.at);
+  });
+
+  test("an answer from GitHub with no issue number on it is not passed on as a task", async () => {
+    const w = await primary();
+    w.ghOdd.noNumber = true;
+    const res = await w.act("intake.send", { kind: "bug", text: "odd" });
+    const { result } = (await res.json()) as { result: { queued: boolean; note: string } };
+    expect(result.queued).toBe(false);
+    expect(result.note).toBe("filed, not queued: the issue could not be read from its task");
+    expect(w.stored.get("held") ?? []).toEqual([]);
+  });
+
+  test("with too much already waiting, the issue is still filed and the answer says its task is not", async () => {
+    const w = await primary();
+    w.stored.set(
+      "held",
+      Array.from({ length: 100 }, (_, i) => ({
+        id: `h${i}`,
+        kind: "ask.send",
+        args: {},
+        who: OWNER,
+        at: new Date(w.now.t).toISOString(),
+      })),
+    );
+    w.edge.now = w.makeEdge();
+    const res = await w.act("intake.send", { kind: "bug", text: "one more" });
+    const { result } = (await res.json()) as { result: { issue: number; queued: boolean; note: string } };
+    expect(result).toMatchObject({ issue: 500, queued: false });
+    expect(result.note).toBe("filed, not queued: too much is already waiting for a machine");
+    expect((w.stored.get("held") as unknown[]).length).toBe(100);
+  });
+
+  test("the screens that need only GitHub and the queue are read here, and the ones that need a machine are asked of it", async () => {
+    const w = await primary();
+    w.net.hostUp = false;
+    w.net.edgeUp = false;
+    const read = async (path: string) => {
+      const res = await w.browse(`/console/api/${path}`);
+      return { status: res.status, body: (await res.json()) as Record<string, any> };
+    };
+    const pr = await read("prs/55");
+    expect(pr.status).toBe(200);
+    expect(pr.body).toMatchObject({
+      number: 55,
+      title: "Fresh PR",
+      state: "open",
+      mergeable: true,
+      body: "What it does.",
+    });
+    const queue = await read("queue?status=blocked");
+    expect(queue.body.counts).toEqual(QUEUE_NOW);
+    expect(queue.body.tasks.map((t: { id: number }) => t.id)).toEqual([21049]);
+    expect((await read("priorities")).body.issues.map((i: { number: number }) => i.number)).toEqual([301]);
+    expect((await read("prs")).body.map((p: { number: number }) => p.number)).toEqual([55]);
+    const releases = await read("releases");
+    expect(releases.body.site[0]).toMatchObject({ id: 4501, state: "success", byHand: false, commit: "0123456789ab" });
+    expect(releases.body.app[0].url).toContain("pm-console-android.yml");
+    expect((await read("roadmaps")).body.slice(0, 4).map((c: { id: string }) => c.id)).toEqual([
+      "id",
+      "fleet",
+      "atlas",
+      "pm-stack",
+    ]);
+    const roadmap = await read("roadmap?area=pm-stack");
+    expect(roadmap.body.rows.map((r: { title: string; phase: string }) => [r.title, r.phase])).toEqual([
+      ["Coherence", "doing"],
+    ]);
+    expect(roadmap.body.issues.now.map((i: { number: number }) => i.number)).toEqual([301]);
+    // Looked at again within the minute, it is not asked of GitHub again:
+    // what read it is kept, here as on a machine.
+    const github = w.githubCalls.length;
+    expect((await read("roadmap?area=pm-stack")).body.rows).toHaveLength(1);
+    expect(w.githubCalls.length).toBe(github);
+    expect((await read("roadmap?area=pm-stack&fresh=1")).status).toBe(200);
+    expect(w.githubCalls.length).toBe(github + 3);
+    expect((await read("bugs")).status).toBe(200);
+    expect((await read("intake")).body.items).toEqual([]);
+    // A mistake in what was asked is the caller's, said as such.
+    expect((await read("roadmap?area=nonesuch")).status).toBe(400);
+    expect((await read("prs/abc")).status).toBe(400);
+    // The laptop is out of reach and none of that needed it.
+    expect(w.hostSaw).toEqual([]);
+    // What only a machine has is asked of it: answered when it is
+    // there, and said to be out of reach when it is not.
+    const away = await read("services");
+    expect(away.status).toBe(503);
+    expect(away.body.error).toContain("cannot be reached");
+    w.net.hostUp = true;
+    expect((await w.browse("/console/api/push")).status).toBe(200);
+    await w.browse("/console/api/agents");
+    expect(w.hostSaw).toEqual(["GET /console/api/agents"]);
+  });
+
+  test("a read that GitHub refuses is answered with why, not sent to the laptop", async () => {
+    const w = await primary();
+    w.directDown.on = true;
+    const res = await w.browse("/console/api/prs/55");
+    expect(res.status).toBe(502);
+    expect(((await res.json()) as { error: string }).error).toContain("the direct source is down");
+    expect(w.hostSaw).toEqual([]);
+  });
+
+  test("an action GitHub refuses this side's token for is done by the laptop instead, and left to it for the hour", async () => {
+    const w = await primary();
+    const merges = () => w.githubCalls.filter((c) => c.method === "PUT" && c.url.endsWith("/pulls/55/merge")).length;
+    w.ghRefuses.push((method, url) => method === "PUT" && url.includes("/merge"));
+    // Refused here with nothing done: the laptop, which has its own way in, does it.
+    const res = await w.act("pr.merge", { pr: 55 });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ ok: true, result: { merged: 55 } });
+    expect(w.ran).toEqual([{ kind: "pr.merge", args: { pr: 55 } }]);
+    expect(merges()).toBe(1);
+    expect(w.ghMerged).toEqual([]);
+    // Health says which, so that it is plain what this side's token lacks.
+    const health = async () =>
+      ((await (await w.browse("/console/health", { token: null })).json()) as { refused: string[] }).refused;
+    expect(await health()).toEqual(["pr.merge"]);
+    // It is on this side's record as refused here, not as a failure of the owner's.
+    const audit = w.stored.get("audit") as { action: string; phase: string; ok?: boolean; error?: string }[];
+    expect(audit.filter((a) => a.action === "pr.merge" && a.phase === "done")).toEqual([
+      expect.objectContaining({ ok: false, error: "refused here; left to a machine" }),
+    ]);
+    // The next one within the hour goes straight to the laptop: GitHub is not asked again.
+    w.now.t += 30 * 60_000;
+    await w.act("pr.merge", { pr: 55 });
+    expect(merges()).toBe(1);
+    expect(w.ran).toHaveLength(2);
+    // What it was not refused for is still done here.
+    expect((await w.act("issue.comment", { issue: 301, text: "still here" })).status).toBe(200);
+    expect(w.ran).toHaveLength(2);
+    // After the hour this side tries again; the token has been put right meanwhile.
+    w.ghRefuses.length = 0;
+    w.now.t += 31 * 60_000;
+    expect(await health()).toEqual([]);
+    const again = await w.act("pr.merge", { pr: 55 });
+    expect(await again.json()).toEqual({ ok: true, result: { number: 55, merged: true, sha: "5a5a5a5a5a5a" } });
+    expect(w.ran).toHaveLength(2);
+  });
+
+  test("refused here with the laptop out of reach: held if it may be done late, and said to be refused if not", async () => {
+    const w = await primary();
+    w.net.hostUp = false;
+    w.net.edgeUp = false;
+    w.ghRefuses.push((method) => method !== "GET");
+    const comment = await w.act("issue.comment", { issue: 301, text: "later, then" });
+    expect(await comment.json()).toEqual({ ok: true, held: true, result: null });
+    expect((w.stored.get("held") as { kind: string }[]).map((h) => h.kind)).toEqual(["issue.comment"]);
+    const merge = await w.act("pr.merge", { pr: 55 });
+    expect(merge.status).toBe(503);
+    expect(((await merge.json()) as { error: string }).error).toContain("not something to do late, so it is not kept");
+    expect(w.ghMerged).toEqual([]);
+  });
+
+  test("a refusal after something was written is not handed on: the laptop would do the written part again", async () => {
+    const w = await primary();
+    // Ranking adds a label and takes the old one off. The first is taken, the second refused.
+    w.ghRefuses.push((method) => method === "DELETE");
+    const res = await w.act("issue.rank", { issue: 301, rank: "next" });
+    expect(res.status).toBe(502);
+    expect(w.ran).toEqual([]);
+    expect(w.ghLabels[301]).toEqual(["now", "next"]);
+    // Nor is a failure that is not a refusal: GitHub being broken is not this side lacking the right.
+    w.ghRefuses.length = 0;
+    w.ghBreaks.push((method, url) => method === "PUT" && url.includes("/merge"));
+    const merge = await w.act("pr.merge", { pr: 55 });
+    expect(merge.status).toBe(502);
+    expect(w.ran).toEqual([]);
+    const health = (await (await w.browse("/console/health", { token: null })).json()) as { refused: string[] };
+    expect(health.refused).toEqual([]);
+    // Both are on the record of what was done, as failures.
+    const acts = (await w.core()).doc.acts as { kind: string; status: string }[];
+    expect(
+      acts
+        .filter((a) => a.status === "failed")
+        .map((a) => a.kind)
+        .sort(),
+    ).toEqual(["issue.rank", "pr.merge"]);
+    // Nor one that got no answer at all: it may have been taken.
+    w.ghBreaks.length = 0;
+    w.directDown.on = true;
+    const silent = await w.act("deploy.start", { what: "site" });
+    expect(silent.status).toBe(502);
+    expect(((await silent.json()) as { error: string }).error).toContain("GitHub could not be reached");
+    expect(w.ran).toEqual([]);
+  });
+
+  test("the queue store refusing this side's token is a refusal like GitHub's: the laptop moves the task", async () => {
+    const w = await primary();
+    const before = w.queueTasks.find((t) => t.id === 21048)?.priority;
+    w.queueRefuses.on = true;
+    const res = await w.act("task.move", { task: 21048, to: "first" });
+    expect(await res.json()).toMatchObject({ ok: true, result: { task: 21048, priority: 10 } });
+    expect(w.ran).toEqual([{ kind: "task.move", args: { task: 21048, to: "first" } }]);
+    // It was tried here first (and once more, in case the token had only been changed).
+    expect(w.queueRefused.n).toBe(2);
+    // Nothing was changed from here.
+    expect(w.queueTasks.find((t) => t.id === 21048)?.priority).toBe(before);
+  });
+
+  test("a read GitHub refuses this side's token for is asked of the laptop", async () => {
+    const w = await primary();
+    w.ghRefuses.push((method, url) => method === "GET" && url.endsWith("/pulls/55"));
+    await w.browse("/console/api/prs/55");
+    expect(w.hostSaw).toEqual(["GET /console/api/prs/55"]);
+  });
+
+  test("health says this side does the core, and how its own check of each kind of read went", async () => {
+    const w = await primary();
     const health = (await (await w.browse("/console/health", { token: null })).json()) as Record<string, unknown>;
     expect(health.directEnabled).toBe(true);
     expect(health.githubTokenConfigured).toBe(true);
     expect(health.queueTokenConfigured).toBe(true);
+    expect(health.primary).toBe(true);
     expect(health.directReady).toBe(true);
     const selfCheck = health.selfCheck as { at: number; kinds: Record<string, { ok: boolean }> };
     expect(selfCheck.at).toBe(START);
     expect(Object.keys(selfCheck.kinds).sort()).toEqual(["asks", "board", "priorities", "prs"]);
     expect(Object.values(selfCheck.kinds).every((k) => k.ok)).toBe(true);
-    // A second health read reuses the stored self-check: no more direct reads.
-    const calls = w.githubCalls.length + w.queueCalls.length;
+    // A second health read reuses the stored self-check: no more reads.
+    const calls = asked(w);
     await w.browse("/console/health", { token: null });
-    expect(w.githubCalls.length + w.queueCalls.length).toBe(calls);
+    expect(asked(w)).toBe(calls);
   });
 
-  test("without the direct switch, or before the laptop is quiet, actions go to the host as before", async () => {
-    // No direct switch: the host is away, so the action is held, not run here.
+  test("without the switch, or without a token, nothing is read or done here: the laptop does it, or it is held", async () => {
     const w = await setup();
     await w.hostReads();
     await w.link.now.once();
+    expect((await w.link.now.once())?.owns ?? []).toEqual([]);
+    expect((await w.core()).doc.board).toEqual(w.data.board);
+    // In reach, the laptop does it.
+    expect((await w.act("issue.comment", { issue: 14, text: "now" })).status).toBe(200);
+    expect(w.ran).toEqual([{ kind: "issue.comment", args: { issue: 14, text: "now" } }]);
+    // Out of reach, it is held.
     w.net.hostUp = false;
     w.net.edgeUp = false;
     const held = await w.act("issue.comment", { issue: 14, text: "late" });
     expect(await held.json()).toEqual({ ok: true, held: true, result: null });
+    // And what the plan's screens read is the laptop's to answer.
+    expect((await w.browse("/console/api/roadmap?area=fleet")).status).toBe(503);
     expect(w.githubCalls).toEqual([]);
     expect(w.queueCalls).toEqual([]);
-    // Direct switch on but the laptop still reporting: the action goes to the host.
-    // A second setup signs with a fresh key under the same kid, so the
-    // cached key set from the first setup must go first.
+    // Both tokens there and the switch off is off: the switch is what says so.
     clearJwksCache();
-    const d = await setup({ direct: true });
-    await d.hostReads();
-    await d.link.now.once();
-    const res = await d.act("issue.comment", { issue: 14, text: "now" });
-    expect(res.status).toBe(200);
-    expect(d.ran).toEqual([{ kind: "issue.comment", args: { issue: 14, text: "now" } }]);
-    expect(d.githubCalls).toEqual([]);
-    expect(d.queueCalls).toEqual([]);
+    const unswitched = await setup({ direct: true });
+    unswitched.edge.now = new Edge({
+      kv: {
+        get: async (k) => unswitched.stored.get(k),
+        put: async (k, v) => void unswitched.stored.set(k, v),
+        delete: async (k) => void unswitched.stored.delete(k),
+      },
+      now: () => unswitched.now.t,
+      fetchImpl: asThePlatformFetch(async (url: string | URL | Request) => {
+        if (String(url) === ISSUER.jwksUri)
+          return { ok: true, status: 200, json: async () => ({ keys: [unswitched.access.jwk] }) };
+        throw new Error(`unexpected fetch ${String(url)}`);
+      }) as never,
+      direct: { enabled: false, githubToken: "gh-test", queueToken: "queue-test" },
+    });
+    await unswitched.hostReads();
+    await unswitched.link.now.once();
+    expect((await unswitched.core()).doc.edge).toEqual({ held: 0, primary: false });
+    expect((await unswitched.core()).doc.board).toEqual(unswitched.data.board);
+    expect(unswitched.githubCalls).toEqual([]);
+    // The switch on, with a token missing, is the same as off.
+    clearJwksCache();
+    const half = await setup({ direct: true });
+    half.edge.now = new Edge({
+      kv: {
+        get: async (k) => half.stored.get(k),
+        put: async (k, v) => void half.stored.set(k, v),
+        delete: async (k) => void half.stored.delete(k),
+      },
+      now: () => half.now.t,
+      fetchImpl: asThePlatformFetch(async (url: string | URL | Request) => {
+        if (String(url) === ISSUER.jwksUri)
+          return { ok: true, status: 200, json: async () => ({ keys: [half.access.jwk] }) };
+        throw new Error(`unexpected fetch ${String(url)}`);
+      }) as never,
+      direct: { enabled: true, githubToken: "gh-test" },
+    });
+    await half.hostReads();
+    await half.link.now.once();
+    const health = (await (await half.browse("/console/health", { token: null })).json()) as Record<string, unknown>;
+    expect([health.directEnabled, health.githubTokenConfigured, health.queueTokenConfigured, health.primary]).toEqual([
+      true,
+      true,
+      false,
+      false,
+    ]);
+    expect((await half.core()).doc.board).toEqual(half.data.board);
+    expect((await half.core()).doc.edge).toEqual({ held: 0, primary: false });
   });
 
-  test("a config stored before direct mode still serves the offline app, without acting itself", async () => {
+  test("a laptop too old to say where the queue is: the app is served from its reports, and nothing is done here", async () => {
     const w = await setup({ direct: true });
-    await w.hostReads();
-    await w.link.now.once();
-    // What an older Worker stored: the same settings, without the fields
-    // direct mode added. That shape still validates, with those empty.
-    const legacy = { ...w.edgeConfig } as Record<string, unknown>;
+    // What an older laptop reports: the same settings, without the
+    // fields acting here needs. That shape still validates, with those empty.
+    const legacy = w.edgeConfig as unknown as Record<string, unknown>;
     delete legacy.queueDbUrl;
     delete legacy.queueTokenName;
     delete legacy.promptLabel;
@@ -2546,60 +3326,193 @@ describe("direct reads and writes while the host is away", () => {
       promptLabel: "",
       needsRepos: [],
     });
-    w.stored.set("cfg", legacy);
-    w.edge.now = w.makeEdge();
-    // The laptop is out of reach: the app is still served from the
-    // mirror, not relayed to a host that cannot answer.
+    await w.hostReads();
+    await w.link.now.once();
+    // The laptop goes out of reach: the app is still served, from its copy.
     w.net.hostUp = false;
     w.net.edgeUp = false;
     const { res, doc } = await w.core();
     expect(res.status).toBe(200);
     expect(doc.board).toEqual(w.data.board);
     expect(doc.asks).toEqual([]);
+    expect(doc.edge).toEqual({ held: 0, primary: false });
     expect(w.githubCalls).toEqual([]);
     expect(w.queueCalls).toEqual([]);
     const health = (await (await w.browse("/console/health", { token: null })).json()) as Record<string, unknown>;
     expect(health.configured).toBe(true);
+    expect(health.primary).toBe(false);
     expect(health.directReady).toBe(false);
+    // And an action is held for the laptop, not done here.
+    expect(await (await w.act("issue.comment", { issue: 14, text: "late" })).json()).toEqual({
+      ok: true,
+      held: true,
+      result: null,
+    });
   });
+});
 
-  test("a notification about a directly read reply is sent, and the fresh read is not overwritten", async () => {
+describe("telling the owner, with no machine", () => {
+  type World = Awaited<ReturnType<typeof setup>>;
+  async function subscribed() {
     const w = await setup({ direct: true });
     const phone = await browser();
     await w.hostReads();
     await w.link.now.once();
-    // Subscribing primes the notifier on the host's last copy: no replies yet.
+    // The fleet's answer on #201 is already there when the device
+    // subscribes: it is not news.
     expect((await w.act("push.on", { subscription: phone.subscription, label: "Pocket" })).status).toBe(200);
     expect(w.pushes).toHaveLength(0);
-    // The laptop goes quiet; the next read comes from GitHub, where the
-    // fleet has since answered prompt #201.
+    w.hostSaw.length = 0;
+    return { w, phone };
+  }
+  const reply = (w: World, issue: number, text: string) => {
+    (w.ghComments[issue] ??= []).push({
+      body: text,
+      created_at: new Date(w.now.t).toISOString(),
+      user: { type: "User" },
+    });
+    w.ghIssues[issue].comments = w.ghComments[issue].length;
+    w.ghIssues[issue].updated_at = new Date(w.now.t).toISOString();
+  };
+
+  test("this side wakes itself each minute, reads the prompts, and tells a subscribed device of a reply", async () => {
+    const { w, phone } = await subscribed();
+    // Subscribing asked for a wake: there is someone to tell.
+    expect(w.alarm.at).toBe(START + 1_000);
+    // The laptop goes away for good. Nobody opens the app.
     w.net.hostUp = false;
     w.net.edgeUp = false;
-    w.now.t += 60_000;
-    const { doc } = await w.core();
-    const asked = doc.asks.find((a: { issue: number }) => a.issue === 201) as {
-      replies: { you: boolean; at: string; text: string }[];
-    };
-    expect(asked.replies).toEqual([{ you: false, at: "2026-11-22T12:31:00", text: "Done: the docs are updated." }]);
-    // The notifier saw that fresh reply, not the mirror's empty asks.
+    w.now.t = w.alarm.at;
+    await w.edge.now.alarm();
+    expect(w.pushes).toHaveLength(0);
+    expect(w.alarm.at).toBe(w.now.t + 60_000);
+    // The fleet answers on GitHub.
+    w.now.t += 30_000;
+    reply(w, 202, "Checked: the queue is moving.");
+    w.now.t = w.alarm.at;
+    await w.edge.now.alarm();
     expect(w.pushes).toHaveLength(1);
-    expect(JSON.parse(await phone.open(w.pushes[0].body)).title).toBe("The fleet replied on #201");
+    expect(JSON.parse(await phone.open(w.pushes[0].body))).toMatchObject({
+      title: "The fleet replied on #202",
+      body: "Checked: the queue is moving.",
+    });
+    // Told once: the next wake finds nothing new, and asks for the one after.
+    w.now.t = w.alarm.at;
+    await w.edge.now.alarm();
+    expect(w.pushes).toHaveLength(1);
+    expect(w.alarm.at).toBe(w.now.t + 60_000);
+    // No request reached the laptop for any of it.
+    expect(w.hostSaw.filter((s) => !s.startsWith("GET /console/api/doc/"))).toEqual([]);
   });
 
-  test("after a restart, a failed first direct read still shows the mirrored copy", async () => {
+  test("a wake in an object that has just started reads all the same: what was kept is the starting point, and only what changed is news", async () => {
+    const { w, phone } = await subscribed();
+    w.net.hostUp = false;
+    w.net.edgeUp = false;
+    const threads = (issue: number) =>
+      w.githubCalls.filter((c) => c.method === "GET" && c.url.includes(`/issues/${issue}/comments`)).length;
+    expect([threads(201), threads(202)]).toEqual([1, 0]);
+    // Between wakes the object is put away, and the fleet answers on #202.
+    w.now.t += 30_000;
+    reply(w, 202, "Checked: the queue is moving.");
+    w.now.t += 30_000;
+    w.edge.now = w.makeEdge();
+    await w.edge.now.alarm();
+    // The answer on #201 was there before: not told again. The new one is.
+    expect(w.pushes).toHaveLength(1);
+    expect(JSON.parse(await phone.open(w.pushes[0].body)).title).toBe("The fleet replied on #202");
+    // And only the thread that changed was fetched: what the kept list
+    // said of the other still stands.
+    expect([threads(201), threads(202)]).toEqual([1, 1]);
+    expect(w.alarm.at).toBe(w.now.t + 60_000);
+    // Put away again, with nothing new: woken, it reads the list and no thread.
+    w.now.t = w.alarm.at;
+    w.edge.now = w.makeEdge();
+    const lists = () => w.githubCalls.filter((c) => c.url.includes("/issues?labels=owner%2Fprompt")).length;
+    const before = lists();
+    await w.edge.now.alarm();
+    expect(lists() - before).toBe(1);
+    expect([threads(201), threads(202)]).toEqual([1, 1]);
+    expect(w.pushes).toHaveLength(1);
+  });
+
+  test("a look at the app starts the wakes again if the object has none asked for", async () => {
+    const { w } = await subscribed();
+    // A new object, as after being put away, with its wake lost.
+    w.edge.now = w.makeEdge();
+    w.alarm.at = 0;
+    w.now.t += 5_000;
+    await w.core();
+    expect(w.alarm.at).toBe(w.now.t + 1_000);
+    // With one asked for, a look does not move it.
+    w.now.t += 500;
+    await w.core();
+    expect(w.alarm.at).toBe(w.now.t + 500);
+  });
+
+  test("with nobody to tell, or without the switch, it does not wake to read: only to notice a laptop gone quiet", async () => {
     const w = await setup({ direct: true });
     await w.hostReads();
     await w.link.now.once();
-    // The edge restarts: nothing is in memory, but the mirror is durable.
-    w.edge.now = w.makeEdge();
-    w.directDown.on = true;
+    expect(w.alarm.at).toBe(START + SILENT_MS + 1000);
+    const calls = w.githubCalls.length;
+    const due = w.alarm.at;
+    w.now.t = due;
     w.net.hostUp = false;
     w.net.edgeUp = false;
-    w.now.t += 60_000;
-    const { doc } = await w.core();
-    expect(doc.board).toEqual(w.data.board);
-    expect(doc.asks).toEqual([]);
-    expect(doc.health.board).toEqual({ ok: false, error: expect.stringContaining("the direct source is down") });
-    expect(doc.health.asks.ok).toBe(false);
+    await w.edge.now.alarm();
+    expect(w.githubCalls.length).toBe(calls);
+    // The laptop's going quiet is noted, and with that there is nothing
+    // left to wake for: no further wake is asked.
+    expect(w.stored.get("silent")).toBe(true);
+    expect(w.alarm.at).toBe(due);
+    // Without the switch, a subscribed device changes nothing about that.
+    clearJwksCache();
+    const off = await setup();
+    const phone = await browser();
+    await off.hostReads();
+    await off.link.now.once();
+    await off.act("push.on", { subscription: phone.subscription, label: "Pocket" });
+    expect(off.alarm.at).toBe(START + SILENT_MS + 1000);
+  });
+
+  test("the laptop going quiet is told once, in words that say this side carries on; a telling that fails is tried again in a minute", async () => {
+    const { w, phone } = await subscribed();
+    w.net.hostUp = false;
+    w.net.edgeUp = false;
+    w.pushFailures.remaining = 1;
+    w.now.t = START + SILENT_MS + 1000;
+    await w.edge.now.alarm();
+    // It could not be told: asked for again soon, not at a time gone by.
+    expect(w.stored.get("silent")).toBeUndefined();
+    expect(w.alarm.at).toBe(w.now.t + 60_000);
+    const failed = w.pushes.length;
+    w.now.t = w.alarm.at;
+    await w.edge.now.alarm();
+    expect(w.stored.get("silent")).toBe(true);
+    const told = JSON.parse(await phone.open(w.pushes[failed].body)) as { title: string; body: string };
+    expect(told.title).toBe("The laptop has gone quiet");
+    expect(told.body).toContain("Cloudflare carries on");
+    // Told once; the wakes go on, for the prompts.
+    const count = w.pushes.length;
+    w.now.t = w.alarm.at;
+    await w.edge.now.alarm();
+    expect(w.pushes).toHaveLength(count);
+    expect(w.alarm.at).toBe(w.now.t + 60_000);
+  });
+
+  test("a laptop's report does not make this side read GitHub again: only its own intervals and wakes do", async () => {
+    const { w } = await subscribed();
+    const calls = w.githubCalls.length;
+    // Six reports in half a minute, each with a unit's state changed,
+    // which is something the owner is told about.
+    for (let i = 0; i < 6; i++) {
+      w.now.t += 5_000;
+      (w.data.services as unknown[]).length = 0;
+      (w.data.services as unknown[]).push({ unit: `u${i}.service`, load: "loaded", active: "active", sub: "running" });
+      await w.hostReads();
+      await w.link.now.once();
+    }
+    expect(w.githubCalls.length).toBe(calls);
   });
 });

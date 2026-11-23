@@ -1,8 +1,10 @@
 // A run of the edge in the real Worker runtime, on this machine.
 //
 //   cd edge && node build.mjs && npx wrangler dev --port 8799 \
-//     --var PUBLIC_HOST:localhost --var HOST_ORIGIN:http://127.0.0.1:4898 --var VERSION:smoke
-//   bun run scripts/edge-smoke.ts            (in another shell)
+//     --var PUBLIC_HOST:localhost --var HOST_ORIGIN:http://127.0.0.1:4898 --var VERSION:smoke \
+//     --var EDGE_DIRECT:on --var GITHUB_TOKEN:smoke-github --var QUEUE_TOKEN:smoke-queue \
+//     --var GITHUB_API_ORIGIN:http://127.0.0.1:4898/github --var QUEUE_DB_ORIGIN:http://127.0.0.1:4898/queue
+//   SMOKE_PRIMARY=1 bun run scripts/edge-smoke.ts            (in another shell)
 //
 // It starts a host on port 4898 with made-up state and this repo's real
 // handler and link, then checks what can be checked without a sign-in
@@ -10,6 +12,13 @@
 // signed report (fetching the host's key through the "tunnel"), keeps a
 // section too large for one stored value, leaves an unsigned caller to
 // the host, and answers a phone that is not linked.
+//
+// Started as above, the Worker does the core itself, and the same port
+// stands in for GitHub's API (/github) and the queue store (/queue): its
+// own check of each kind of read then runs in this runtime, with the
+// Worker's own fetch, and has to come back good. SMOKE_PRIMARY=1 says
+// that is what was started, so that leaving the flags off is a failure
+// and not a quiet skip.
 import { identify } from "../src/auth.ts";
 import { readConfig } from "../src/config.ts";
 import { Devices, Limiter } from "../src/devices.ts";
@@ -85,11 +94,52 @@ const link = new EdgeLink({
 });
 deps.link = link;
 const seen: string[] = [];
+/** What reached the stand-ins for GitHub and the queue store, and with
+ * what: the Worker's own reads, made in its runtime. */
+const outside: { to: "github" | "queue"; path: string; auth: string | null; agent: string | null }[] = [];
 const server = Bun.serve({
   hostname: "127.0.0.1",
   port: 4898,
   fetch: async (req, srv) => {
-    seen.push(`${req.method} ${new URL(req.url).pathname}`);
+    const url = new URL(req.url);
+    if (url.pathname.startsWith("/github/")) {
+      const path = url.pathname.slice("/github/".length);
+      outside.push({
+        to: "github",
+        path,
+        auth: req.headers.get("authorization"),
+        agent: req.headers.get("user-agent"),
+      });
+      if (path.endsWith("/pulls")) {
+        return Response.json([
+          {
+            number: 7,
+            title: "Smoke pull request",
+            draft: false,
+            html_url: "https://github.com/developing-today/code/pull/7",
+            created_at: "2026-11-23T08:00:00Z",
+            user: { login: "smoke" },
+            head: { ref: "smoke" },
+          },
+        ]);
+      }
+      if (path === "search/issues") return Response.json({ total_count: 0, items: [] });
+      if (path.endsWith("/issues")) return Response.json([]);
+      return Response.json({ message: "Not Found" }, { status: 404 });
+    }
+    if (url.pathname === "/queue/v2/pipeline") {
+      outside.push({ to: "queue", path: url.pathname, auth: req.headers.get("authorization"), agent: null });
+      const asked = (await req.json()) as { requests: { type: string }[] };
+      // No rows for anything asked: an empty queue.
+      return Response.json({
+        results: asked.requests.map((r) =>
+          r.type === "execute"
+            ? { type: "ok", response: { type: "execute", result: { cols: [], rows: [] } } }
+            : { type: "ok", response: { type: "close" } },
+        ),
+      });
+    }
+    seen.push(`${req.method} ${url.pathname}`);
     // Everything that arrives here came through the Worker, as it does
     // through the tunnel: never a caller on this machine. (Deployed, the
     // edge's own headers say so; here the address has to.)
@@ -164,6 +214,40 @@ try {
     "a second report is accepted and nothing is asked for again",
     second?.ok === true && (second?.want ?? []).length === 0,
   );
+  // Doing the core itself. The Worker's check of its own reads runs
+  // with its health answer: one read of each kind, made in this runtime
+  // with the fetch it keeps, to the stand-ins on this port.
+  const wanted = process.env.SMOKE_PRIMARY === "1";
+  if (wanted || after.directEnabled === true) {
+    check(
+      "the Worker says it does the core itself, now that it knows where things are",
+      after.directEnabled === true && after.primary === true && before.primary === false,
+      JSON.stringify({ before: before.primary, after: after.primary, enabled: after.directEnabled }),
+    );
+    const kinds = (after.selfCheck as { kinds?: Record<string, { ok: boolean; error?: string }> } | null)?.kinds ?? {};
+    check(
+      "its own read of the board, the prompts, pull requests and ranked issues each came back good",
+      ["board", "asks", "prs", "priorities"].every((kind) => kinds[kind]?.ok === true),
+      JSON.stringify(kinds),
+    );
+    const github = outside.filter((o) => o.to === "github");
+    const queue = outside.filter((o) => o.to === "queue");
+    check(
+      "those reads reached GitHub and the queue store from this runtime, each with its token",
+      github.length >= 3 &&
+        queue.length >= 1 &&
+        github.every((o) => o.auth === "Bearer smoke-github" && o.agent === "pm-console-edge") &&
+        queue.every((o) => o.auth === "Bearer smoke-queue"),
+      `${github.length} to GitHub (${[...new Set(github.map((o) => o.path))].join(", ")}), ${queue.length} to the queue store`,
+    );
+    check(
+      "and it told the host what it reads itself, so the host stops sending it",
+      JSON.stringify(second?.owns) === JSON.stringify(["board", "prs", "priorities", "asks"]),
+      JSON.stringify(second?.owns),
+    );
+  } else {
+    console.log("skip the Worker was not started to do the core itself (see the top of this file)");
+  }
   check(
     "the large section went in pieces",
     JSON.stringify(big).length > 1_500_000,

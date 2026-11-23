@@ -11,7 +11,7 @@ import { readFileSync } from "node:fs";
 import { gunzipSync } from "node:zlib";
 import { actions, perform } from "../src/actions.ts";
 import { readConfig } from "../src/config.ts";
-import { Docs } from "../src/docs.ts";
+import { Docs, Stamped } from "../src/docs.ts";
 import { type Fetch, OpError, Ops, type Run } from "../src/ops.ts";
 import { type Deps, handle, loaders } from "../src/server.ts";
 import { promptPacket, Work } from "../src/work.ts";
@@ -646,6 +646,42 @@ describe("what the owner asks for in his own words", () => {
     // Threads are read again only when the issue has changed.
     await work.asks();
     expect(commentReads).toBe(3);
+    // A holder that was restarted and kept its last list (the edge)
+    // recalls it, and reads no thread that has not changed since.
+    const restarted = new Work(w.ops);
+    restarted.recall(JSON.parse(JSON.stringify(asks)));
+    expect((await restarted.asks()).map((a) => a.replies)).toEqual(asks.map((a) => a.replies));
+    expect(commentReads).toBe(3);
+    // One whose issue changed since the list was kept is read again, alone.
+    const older = JSON.parse(JSON.stringify(asks)) as { issue: number; updated: string }[];
+    (older.find((a) => a.issue === 4) as { updated: string }).updated = "2026-11-22T03:59:59";
+    const behind = new Work(w.ops);
+    behind.recall(older);
+    await behind.asks();
+    expect(commentReads).toBe(4);
+    // What was read since is not unlearned by recalling an older list.
+    const knows = new Work(w.ops);
+    await knows.asks();
+    const read = commentReads;
+    knows.recall(older);
+    await knows.asks();
+    expect(commentReads).toBe(read);
+    // What is not such a list teaches nothing: every thread is read, as from new.
+    for (const junk of [null, "asks", { issue: 1 }, [null, 5, { issue: "1", updated: "x", replies: [] }]]) {
+      const fresh = new Work(w.ops);
+      fresh.recall(junk);
+      const before = commentReads;
+      await fresh.asks();
+      expect(commentReads - before).toBe(3);
+    }
+    // Nor does an entry whose replies are not replies: its thread is read.
+    const bent = JSON.parse(JSON.stringify(asks)) as { issue: number; replies: unknown[] }[];
+    (bent.find((a) => a.issue === 2) as { replies: unknown[] }).replies = [{ you: "no", at: 1, text: null }];
+    const wary = new Work(w.ops);
+    wary.recall(bent);
+    const before = commentReads;
+    await wary.asks();
+    expect(commentReads - before).toBe(1);
   });
 });
 
@@ -730,6 +766,74 @@ describe("the state kept ready", () => {
     expect(body.health.board).toEqual({ ok: false, error: "source is down" });
     expect(after.etag).not.toBe(good.etag);
     expect(after.asOf).toBe(now - 1_000); // the board is a second past its interval
+  });
+
+  test("a copy kept from before is shown at once and read again behind the same answer", async () => {
+    let now = 1_000_000;
+    let reads = 0;
+    let fail = false;
+    // A loader that can read its source, and that starts from a copy it
+    // kept five minutes ago (the edge, after a restart).
+    const load = async () => {
+      reads++;
+      if (reads === 1) return new Stamped({ kept: true }, now - 300_000, null, true);
+      if (fail) throw new Error("source is down");
+      return { fresh: reads };
+    };
+    const docs = new Docs(all({ ttlMs: 10_000, load }), () => now);
+    expect(docs.tried("board")).toBe(false);
+    const first = await docs.doc("core");
+    // The kept copy, said to be as old as it is ...
+    expect(JSON.parse(first.body).board).toEqual({ kept: true });
+    expect(first.asOf).toBe(now - 300_000 + 10_000);
+    expect(JSON.parse(first.body).read.board).toBe(new Date(now - 300_000).toISOString());
+    // ... and already being read again, with nobody having asked twice.
+    expect(reads).toBe(2);
+    await docs.settled(["board"]);
+    const second = await docs.doc("core");
+    expect(JSON.parse(second.body).board).toEqual({ fresh: 2 });
+    expect(second.asOf).toBe(now);
+    expect(reads).toBe(2);
+    expect(docs.tried("board")).toBe(true);
+    // settled() with nothing under way answers at once, and for every section when none is named.
+    await docs.settled();
+
+    // A copy that somewhere else read (no way to read it here) is shown
+    // the same way, and is not asked for again until its interval is up.
+    let mirrored = 0;
+    const far = new Docs(
+      all({ ttlMs: 10_000, load: async () => (mirrored++, new Stamped({ theirs: true }, now - 300_000)) }),
+      () => now,
+    );
+    await far.doc("core");
+    await far.settled();
+    expect(mirrored).toBe(1);
+    now += 11_000;
+    await far.doc("core");
+    await far.settled();
+    expect(mirrored).toBe(2);
+
+    // A kept copy whose first read behind it fails stays, with the reason.
+    reads = 0;
+    fail = true;
+    const down = new Docs(all({ ttlMs: 10_000, load }), () => now);
+    await down.doc("core");
+    await down.settled(["board"]);
+    const body = JSON.parse((await down.doc("core")).body);
+    expect(body.board).toEqual({ kept: true });
+    expect(body.health.board).toEqual({ ok: false, error: "source is down" });
+    // A source never read with success has been tried all the same.
+    const never = new Docs(
+      all({
+        ttlMs: 10_000,
+        load: async () => {
+          throw new Error("nothing yet");
+        },
+      }),
+      () => now,
+    );
+    await never.refresh("board");
+    expect([never.tried("board"), never.goodAt("board")]).toEqual([true, 0]);
   });
 
   test("an unchanged document keeps its tag, and nothing is read when nobody is looking", async () => {

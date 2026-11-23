@@ -142,7 +142,7 @@ describe("the edge's run: secrets and the laptop's verbs", () => {
       ["systemctl", "--user", "restart", "pm-console.service"],
       ["python3", "scripts/expose.py", "--status"],
     ]) {
-      await expect(h.run(argv)).rejects.toThrow(/needs the laptop/);
+      await expect(h.run(argv)).rejects.toThrow(/needs a machine/);
     }
     expect(h.calls).toHaveLength(0);
   });
@@ -188,5 +188,48 @@ describe("the direct classes", () => {
     expect(rows).toEqual([{ n: 3 }]);
     expect(h.calls[0].url).toBe(`${cfg.queueDbUrl}/v2/pipeline`);
     expect(h.calls[0].init.headers.Authorization).toBe("Bearer queue-test");
+  });
+});
+
+describe("a local run's stand-ins", () => {
+  test("GitHub's API and the queue store are where a local run says, and nowhere else otherwise", async () => {
+    const calls: string[] = [];
+    const fetchImpl = (async (url: string) => {
+      calls.push(url);
+      return { ok: true, status: 200, json: async () => [] };
+    }) as unknown as Fetch;
+    const local = edgeRun(
+      directConfig(edgeConfig),
+      { githubToken: "gh-test", queueToken: "queue-test", githubApi: "http://127.0.0.1:4898/github/" },
+      fetchImpl,
+    );
+    await local(["fleet", "gh", "api", "repos/developing-today/code/pulls"]);
+    expect(calls).toEqual(["http://127.0.0.1:4898/github/repos/developing-today/code/pulls"]);
+    const deployed = edgeRun(directConfig(edgeConfig), { githubToken: "gh-test", queueToken: "queue-test" }, fetchImpl);
+    await deployed(["fleet", "gh", "api", "repos/developing-today/code/pulls"]);
+    expect(calls[1]).toBe("https://api.github.com/repos/developing-today/code/pulls");
+    expect(
+      directClasses(edgeConfig, {
+        githubToken: "g",
+        queueToken: "q",
+        queueDb: "http://127.0.0.1:4898/queue/",
+        fetchImpl,
+      }).ops.cfg.queueDbUrl,
+    ).toBe("http://127.0.0.1:4898/queue");
+    expect(directClasses(edgeConfig, { githubToken: "g", queueToken: "q", fetchImpl }).ops.cfg.queueDbUrl).toBe(
+      cfg.queueDbUrl,
+    );
+  });
+
+  test("GitHub out of reach is a failed call with the reason, as when the binary fails", async () => {
+    const down = (async () => {
+      throw new Error("connection refused");
+    }) as unknown as Fetch;
+    const run = edgeRun(directConfig(edgeConfig), { githubToken: "gh-test", queueToken: "queue-test" }, down);
+    expect(await run(["fleet", "gh", "api", "repos/developing-today/code/pulls"])).toEqual({
+      code: 1,
+      stdout: "",
+      stderr: "GitHub could not be reached: connection refused",
+    });
   });
 });

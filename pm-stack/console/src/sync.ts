@@ -206,7 +206,10 @@ export class EdgeLink {
     try {
       const pair = await this.keys();
       this.more = false;
-      const snapshot = this.o.docs.snapshot();
+      // What the edge said it reads itself is not reported to it: not
+      // the copy, and not this host's word on how current it is.
+      const theirs = new Set(this.last?.owns ?? []);
+      const snapshot = this.o.docs.snapshot().filter((s) => !theirs.has(s.name));
       let sections = snapshot.filter((s) => this.sent.get(s.name) !== s.hash || this.want.has(s.name));
       const acks = [...this.acks];
       const at = Math.max(this.now(), this.lastAt + 1);
@@ -294,6 +297,9 @@ export class EdgeLink {
       }
       if (!this.last) this.log("reporting to the edge");
       for (const s of sections) this.sent.set(s.name, s.hash);
+      // What the edge reads itself it does not hold from here: should it
+      // stop reading it, this host's copy goes in the very next report.
+      for (const name of answer.owns ?? []) this.sent.delete(name);
       this.acks = this.acks.filter((a) => !acks.includes(a));
       this.want = new Set(answer.want ?? []);
       this.last = answer;

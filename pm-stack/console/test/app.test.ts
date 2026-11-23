@@ -6,6 +6,7 @@ import { expect, test } from "bun:test";
 import {
   ago,
   androidSource,
+  awayNotice,
   awayState,
   band,
   capital,
@@ -88,7 +89,7 @@ test("the contact given to push services is the project's page, never a person's
   expect(contact("developing-today/code")).toBe("https://github.com/developing-today/code");
 });
 
-test("the Laptop away screen reads the edge's own account of itself", () => {
+test("the Cloudflare screen reads the edge's own account of itself", () => {
   // Straight from the laptop, or no answer: there is no edge to ask.
   expect(awayState(null)).toEqual({ served: false });
   expect(awayState({ ok: true })).toEqual({ served: false });
@@ -97,6 +98,8 @@ test("the Laptop away screen reads the edge's own account of itself", () => {
     served: true,
     on: false,
     ready: false,
+    lacks: [],
+    refused: [],
     checkedAt: null,
     checks: [],
   });
@@ -104,7 +107,11 @@ test("the Laptop away screen reads the edge's own account of itself", () => {
   expect(
     awayState({
       edge: true,
+      configured: true,
       directEnabled: true,
+      githubTokenConfigured: true,
+      queueTokenConfigured: true,
+      primary: true,
       directReady: true,
       selfCheck: {
         at: 1_700_000_000_000,
@@ -115,6 +122,8 @@ test("the Laptop away screen reads the edge's own account of itself", () => {
     served: true,
     on: true,
     ready: true,
+    lacks: [],
+    refused: [],
     checkedAt: 1_700_000_000_000,
     checks: [
       { what: "The board", ok: true, error: "" },
@@ -404,4 +413,62 @@ test("a phase's heading says how many it shows, and of how many when there are m
   expect(phaseHeading("Built", 30, 516, 14)).toBe("Built (30 of 546 in the last 14 days)");
   expect(phaseHeading("Open", 100, 12)).toBe("Open (100 of 112)");
   expect(phaseHeading("Built", 0, 5, 14)).toBe("Built (0 of 5 in the last 14 days)");
+});
+
+test("with the switch on and something missing, the Cloudflare screen says what by name", () => {
+  const base = {
+    edge: true,
+    configured: true,
+    directEnabled: true,
+    githubTokenConfigured: true,
+    queueTokenConfigured: true,
+  };
+  // Everything there, and the edge says it does the core: nothing lacking.
+  expect(awayState({ ...base, primary: true }).lacks).toEqual([]);
+  expect(awayState({ ...base, primary: true }).ready).toBe(true);
+  // An edge from before `primary` says the same under its older name.
+  expect(awayState({ ...base, directReady: true }).ready).toBe(true);
+  // One token missing, the other, and a machine that has never reported.
+  expect(awayState({ ...base, queueTokenConfigured: false, primary: false })).toMatchObject({
+    ready: false,
+    lacks: ["the queue store token"],
+  });
+  expect(awayState({ ...base, githubTokenConfigured: false, queueTokenConfigured: false }).lacks).toEqual([
+    "the repository token",
+    "the queue store token",
+  ]);
+  expect(awayState({ ...base, configured: false }).lacks).toEqual([
+    "a machine's first report, which says where things are",
+  ]);
+  // With the switch off nothing is lacking: nothing was asked for.
+  expect(awayState({ edge: true, directEnabled: false, primary: true })).toMatchObject({
+    on: false,
+    ready: false,
+    lacks: [],
+  });
+});
+
+test("what Cloudflare's token was refused for is said in the owner's words", () => {
+  const base = { edge: true, configured: true, directEnabled: true, primary: true };
+  expect(awayState({ ...base, refused: ["pr.merge", "deploy.start"] }).refused).toEqual([
+    "merging",
+    "starting a deploy",
+  ]);
+  // One this app does not know by name is still said, as it came.
+  expect(awayState({ ...base, refused: ["something.new"] }).refused).toEqual(["something.new"]);
+  // An edge that says nothing of it, or something that is not a list, has refused nothing.
+  expect(awayState(base).refused).toEqual([]);
+  expect(awayState({ ...base, refused: "pr.merge" }).refused).toEqual([]);
+});
+
+test("the laptop being away is said differently when Cloudflare is carrying on", () => {
+  const carrying = awayNotice(true, "2 h ago");
+  expect(carrying.title).toBe("The laptop is not connected");
+  expect(carrying.text).toContain("Cloudflare is carrying on");
+  expect(carrying.text).toContain("as the laptop last reported them, 2 h ago");
+  const waiting = awayNotice(false, "2 h ago");
+  expect(waiting.title).toBe("The laptop is out of reach");
+  expect(waiting.text).toBe(
+    "It last reported 2 h ago; this is the state as of then. You can keep working: what is safe to do late is held and sent when it is back.",
+  );
 });

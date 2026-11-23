@@ -254,23 +254,28 @@ function taskCard(t, extra) {
   );
 }
 
+/** What to say when the laptop has not reported for a while. With
+ * Cloudflare doing the core itself most of what is shown is current,
+ * and only a machine's own part is as old as its last report. */
+export function awayNotice(primary, lastReport) {
+  return primary
+    ? {
+        title: "The laptop is not connected",
+        text: `Cloudflare is carrying on: the board, your prompts, pull requests and the plan are current, and what you do there is done at once. Sessions, questions and things for your hands are as the laptop last reported them, ${lastReport}; what needs the laptop waits for it.`,
+      }
+    : {
+        title: "The laptop is out of reach",
+        text: `It last reported ${lastReport}; this is the state as of then. You can keep working: what is safe to do late is held and sent when it is back.`,
+      };
+}
+
 function notices(doc) {
   const out = [];
-  // Served from the edge with the laptop out of reach: say how old this
-  // is, and that working on is fine.
+  // Served from the edge with the laptop out of reach: say what is
+  // current and what is as old as its last report.
   if (doc === docs.core && hostSeen && Date.now() - hostSeen > HOST_QUIET_MS) {
-    out.push(
-      h(
-        "div",
-        { class: "card flag" },
-        h("h3", {}, "The laptop is out of reach"),
-        h(
-          "p",
-          { class: "meta" },
-          `It last reported ${ago(new Date(hostSeen).toISOString())}; this is the state as of then. You can keep working: what is safe to do late is held and sent when it is back.`,
-        ),
-      ),
-    );
+    const said = awayNotice(doc?.edge?.primary === true, ago(new Date(hostSeen).toISOString()));
+    out.push(h("div", { class: "card flag" }, h("h3", {}, said.title), h("p", { class: "meta" }, said.text)));
   }
   if (doc === docs.core && doc?.edge?.held > 0) {
     const n = doc.edge.held;
@@ -872,7 +877,7 @@ function viewMore() {
       tile("more/notify", "Notifications", "choose what reaches this device"),
       tile("more/phone", "Phones", "the Android app and its home-screen widget"),
       tile("more/signin", "Sign-in", "Google first, the emailed code as the fallback"),
-      tile("more/away", "Laptop away", "what Cloudflare does by itself when the laptop cannot be reached"),
+      tile("more/away", "Cloudflare", "what it does by itself, and what waits for a machine"),
       tile("more/releases", "Releases", "what is deployed, the Android app, and putting either out again"),
     ),
   ];
@@ -1585,19 +1590,44 @@ function collectUrl() {
 /** Sign-in: what is on, and the one part only the owner can do to put
  * Google first. Google lets nobody but a signed-in person make the
  * client its sign-in runs on; everything after that is done here. */
-/** What the edge says of acting by itself, read from its public health
- * answer. `served` is false when the app is coming straight from the
- * laptop and there is no edge to ask. */
+const REFUSED_SAID = {
+  "ask.send": "sending a prompt",
+  "ask.reply": "replying on a prompt",
+  "ask.close": "closing a prompt",
+  "issue.comment": "commenting on an issue",
+  "need.comment": "commenting on something that needs you",
+  "issue.rank": "ranking an issue",
+  "task.move": "moving a task",
+  "pr.merge": "merging",
+  "deploy.start": "starting a deploy",
+  "intake.send": "filing a note, a bug or a change",
+};
+
+/** What the edge says of doing the core itself, read from its public
+ * health answer. `served` is false when the app is coming straight from
+ * a machine and there is no edge to ask. */
 export function awayState(health) {
   if (!health || health.edge !== true) return { served: false };
   const kinds = health.selfCheck?.kinds || {};
   const names = { board: "The board", prs: "Pull requests", priorities: "Ranked issues", asks: "Your prompts" };
+  const on = health.directEnabled === true;
+  // What it still lacks, when the switch is on and it is not doing the
+  // core: said by name, so that it is plain what to look at.
+  const lacks = [];
+  if (on && health.githubTokenConfigured !== true) lacks.push("the repository token");
+  if (on && health.queueTokenConfigured !== true) lacks.push("the queue store token");
+  if (on && health.configured !== true) lacks.push("a machine's first report, which says where things are");
   return {
     served: true,
-    on: health.directEnabled === true,
-    // On, and holding both tokens with a laptop new enough to have said
-    // where things are: it will act once the laptop has been quiet.
-    ready: health.directEnabled === true && health.directReady === true,
+    on,
+    // On, holding both tokens, and told where things are: it does the
+    // core itself, with or without a machine. (An edge from before this
+    // was said under `primary` says it under `directReady`.)
+    ready: on && (health.primary === true || health.directReady === true),
+    lacks,
+    // What its token was refused for lately, in the owner's words: the
+    // laptop does these instead, for now.
+    refused: (Array.isArray(health.refused) ? health.refused : []).map((kind) => REFUSED_SAID[kind] || String(kind)),
     checkedAt: typeof health.selfCheck?.at === "number" ? health.selfCheck.at : null,
     checks: Object.keys(names)
       .filter((kind) => kinds[kind])
@@ -1605,9 +1635,9 @@ export function awayState(health) {
   };
 }
 
-/** Laptop away: whether Cloudflare acts by itself when the laptop cannot
- * be reached, what that covers, and the switch. The switch is the
- * owner's because turning it on hands the Worker two of his tokens. */
+/** Cloudflare: whether it does the core itself, what that covers, how
+ * its own reads are going, and the switch. The switch can be turned off
+ * because it is what puts two of the owner's tokens in the Worker. */
 async function viewAway() {
   let health = null;
   try {
@@ -1621,7 +1651,7 @@ async function viewAway() {
     return [
       card(
         h("h3", {}, "The app is coming straight from the laptop"),
-        h("p", { class: "meta" }, "It is not being served from Cloudflare right now, so nothing there can act while the laptop is away."),
+        h("p", { class: "meta" }, "It is not being served from Cloudflare right now, so this is the laptop doing everything."),
       ),
     ];
   }
@@ -1629,7 +1659,7 @@ async function viewAway() {
     const done = await act(
       "edge.direct",
       { on: !s.on },
-      s.on ? "Cloudflare no longer acts by itself" : "Cloudflare will act while the laptop is away",
+      s.on ? "Cloudflare no longer does the core itself" : "Cloudflare will do the core itself",
       e.target,
     );
     if (!done) return;
@@ -1648,30 +1678,37 @@ async function viewAway() {
     : null;
   return [
     card(
-      h("h3", {}, s.on ? "Cloudflare acts by itself while the laptop is away" : "While the laptop is away, Cloudflare only waits"),
+      h("h3", {}, s.ready ? "Cloudflare does the core itself" : s.on ? "Cloudflare is not doing the core yet" : "Cloudflare only serves and waits"),
       h(
         "p",
         { class: "meta" },
-        s.on
-          ? s.ready
-            ? "It starts once the laptop has been quiet for a minute, and stops when the laptop reports again."
-            : "It is on, but the Worker does not have everything it needs yet. Turning it off and on again gives it the tokens afresh."
-          : "The app still opens and shows what the laptop last reported. What you send is kept and done when the laptop is back.",
+        s.ready
+          ? "With the laptop connected or not. The laptop is a machine that reports what only it has and does what only it can."
+          : s.on
+            ? `The switch is on, and it still lacks ${s.lacks.join(" and ") || "something it has not said"}. The laptop hands the tokens over by itself every quarter of an hour; turning this off and on again does it now.`
+            : "The app still opens and shows what the laptop last reported. What you send is kept and done when the laptop is back.",
       ),
       checked,
       s.on && s.checkedAt ? h("p", { class: "meta" }, `Tried ${ago(new Date(s.checkedAt).toISOString())}.`) : null,
+      s.refused.length > 0
+        ? h(
+            "p",
+            { class: "why" },
+            `Its token was refused for ${s.refused.join(", ")}. Nothing was lost: the laptop does ${s.refused.length === 1 ? "that" : "those"} instead, and Cloudflare tries again within the hour.`,
+          )
+        : null,
+    ),
+    h("h2", {}, "What runs where"),
+    card(
+      h("p", {}, h("b", {}, "Cloudflare, by itself: "), "the board, your prompts, pull requests and their checks, ranked issues, the queue, roadmaps, bugs, intake and releases are read there; and it does these at once: ask, reply, close a prompt, comment, rank, move a task, merge, start a deploy, file a note, a bug or a change. It tells you when the fleet answers a prompt."),
+      h("p", {}, h("b", {}, "A machine (the laptop): "), "sessions, questions, things for your hands, its units and agents, messages to agents, sign-in settings; and filing a task in the queue, which Cloudflare leaves to it. What needs a machine that is out of reach is kept and done when one is back, or refused if it cannot be done late."),
     ),
     h("h2", {}, s.on ? "Turn it off" : "Turn it on"),
     card(
       h(
         "p",
         { class: "meta" },
-        "On, Cloudflare reads the board, pull requests, ranked issues and your prompts itself, and does these at once: reply to or close a prompt, comment, rank an issue, move a task. A new prompt is filed at once and queued for the fleet when the laptop is back.",
-      ),
-      h(
-        "p",
-        { class: "meta" },
-        "Turning it on gives the Worker two tokens from your secret store: the repository automation token and the queue store token. They are kept as the Worker's secrets in your Cloudflare account. Turning it off takes them away again. The laptop has to be reachable for either.",
+        "On is how this is set up: the laptop gives the Worker two tokens from your secret store, the repository automation token and the queue store token, and keeps them there. They are the Worker's secrets in your Cloudflare account. Turning it off takes them away again and is remembered; Cloudflare then only serves what the laptop reports and holds what you send. The laptop has to be reachable to change it.",
       ),
       h("div", { class: "row end" }, h("button", { class: s.on ? "ghost" : "", onclick: flip }, s.on ? "Turn off" : "Turn on")),
     ),
@@ -2125,7 +2162,7 @@ const VIEWS = {
   "more/notify": ["Notifications", viewNotify],
   "more/phone": ["Phones", viewPhone],
   "more/signin": ["Sign-in", viewSignin],
-  "more/away": ["Laptop away", viewAway],
+  "more/away": ["Cloudflare", viewAway],
   "more/releases": ["Releases", viewReleases],
   "more/roadmap": ["Roadmap", viewRoadmap],
   "more/bugs": ["Bugs", viewBugs],
