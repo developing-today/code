@@ -33,8 +33,8 @@
 //! The enumeration of a live per-user store (the slice-3 DO scaffold)
 //! and R2 blob fetching: `build_export` takes the object/blob sets as
 //! inputs, so the DO/R2 wiring is a follow-on that feeds it. Ingest
-//! itself (§6.2 step 4) follows the platform's normal rules and is
-//! likewise downstream of a verified import.
+//! itself (§6.2 step 4) lives in [`crate::hosted_ingest`], downstream
+//! of a verified import.
 
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};

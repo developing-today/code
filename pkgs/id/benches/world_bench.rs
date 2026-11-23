@@ -69,6 +69,10 @@
 //!   hash. Tier, seed, output root, and per-axis sizes are
 //!   overridable via `ID_BENCH_STRESS_TIER`, `ID_BENCH_STRESS_SEED`,
 //!   `ID_BENCH_STRESS_OUT`, and the `ID_BENCH_STRESS_*` axis knobs.
+//!   Generation materializes into a marker-verified staging sibling
+//!   of the output root and publishes by rename, so an interrupted
+//!   run is recoverable on retry and the output root only ever holds
+//!   a complete generation (#13181).
 //! - `bot_battle` (design only, not runnable yet) — a deterministic, mixed-
 //!   strategy territory workload for N=2/4/8 users is specified in
 //!   `../../../doc/2026-11-06T00-50-21Z_design_dynamic_world_tick_cost/`; its current-
@@ -120,6 +124,11 @@ use id::world_store::{FileJournal, open_world};
 // and their output lines are unchanged, as are all lines here.
 #[path = "../tests/common/loadgen.rs"]
 mod loadgen;
+
+// The stress generator's output lifecycle (#13181): staging,
+// identity verification, recovery, and atomic publication.
+#[path = "../tests/common/stress_output.rs"]
+mod stress_output;
 
 /// The fixed seed of every bench run on the core: a bench run must
 /// be replayable from its spec (#5891, determinism before realism).
@@ -2103,9 +2112,11 @@ fn generate_stress_world(
 
 /// The `stress_gen` profile (#13083): materialize the tier's world
 /// directory set plus its manifest under the output root. The output
-/// root is a pure function of (seed, tier): if it already holds a
-/// stress manifest it is regenerated in place; if it holds anything
-/// else the run refuses rather than deleting foreign content.
+/// root is a pure function of (seed, tier): generation materializes
+/// into a staging sibling and publishes by rename (#13181), so a
+/// completed generation is regenerated in place, an interrupted one
+/// is recovered on retry, and anything unverifiable is refused
+/// rather than deleted.
 fn bench_stress_gen(quick: bool) -> Result<()> {
     let tier = if quick {
         StressTier::quick()
@@ -2123,14 +2134,8 @@ fn bench_stress_gen(quick: bool) -> Result<()> {
         |_| std::env::temp_dir().join(format!("id-stress-{}-{}", tier.name, seed)),
         PathBuf::from,
     );
-    if out.exists() {
-        ensure!(
-            out.join("manifest.json").exists(),
-            "stress output root {out:?} exists and holds no stress manifest; refusing to overwrite it"
-        );
-        std::fs::remove_dir_all(&out)?;
-    }
-    std::fs::create_dir_all(&out)?;
+    let staging =
+        stress_output::prepare_stress_output(&out, seed, tier.name, loadgen::GENERATOR_VERSION)?;
     let started = Instant::now();
 
     // Idle worlds: durable headers only — a Created entry and nothing
@@ -2138,7 +2143,7 @@ fn bench_stress_gen(quick: bool) -> Result<()> {
     // a world that was opened and evicted without a guest.
     for index in 0..tier.idle_worlds {
         let name = format!("idle-{index:05}");
-        let dir = out.join(&name);
+        let dir = staging.join(&name);
         std::fs::create_dir_all(&dir)?;
         let entry = JournalEntry::Created {
             world_id: name,
@@ -2153,7 +2158,7 @@ fn bench_stress_gen(quick: bool) -> Result<()> {
     for index in 0..tier.active_worlds {
         let name = format!("active-{index:04}");
         records.push(generate_stress_world(
-            &out,
+            &staging,
             &name,
             "active",
             seed,
@@ -2179,7 +2184,7 @@ fn bench_stress_gen(quick: bool) -> Result<()> {
         }));
     }
     let hot = generate_stress_world(
-        &out,
+        &staging,
         "hot-000",
         "hot",
         seed,
@@ -2246,11 +2251,7 @@ fn bench_stress_gen(quick: bool) -> Result<()> {
             "events": total_events,
         },
     });
-    let manifest_path = out.join("manifest.json");
-    std::fs::write(
-        &manifest_path,
-        format!("{}\n", serde_json::to_string_pretty(&manifest)?),
-    )?;
+    let manifest_path = stress_output::publish_stress_output(&out, &staging, &manifest)?;
 
     println!(
         "profile stress_gen tier={} seed={} worlds={} measured_worlds={} events={} hot_state_hash={} walls={} elapsed_secs={:.3} out={} manifest={}",
