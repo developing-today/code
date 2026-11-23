@@ -2477,6 +2477,60 @@ esac
                     .count();
                 assert_eq!(positionals, n, "usage for {verb:?} positionals: {synopsis}");
             }
+            // Required-vs-optional is part of the contract (#13174): a
+            // flag the handler dies without must be written bare in the
+            // synopsis, and a flag written bare must be one the handler
+            // dies without. The requirement is read from the handlers'
+            // own die(2, ...) messages — "<verb>: --<flag> ... is
+            // required" and the "<verb> requires --<flag>" form — so a
+            // requirement added without its usage (or the reverse)
+            // fails here. Conditional requirements are phrased
+            // differently in the source (claim --bind's --session-id,
+            // lane's --limit-reason) and stay out of this set.
+            let mut source_required: Vec<String> = want
+                .iter()
+                .filter(|flag| {
+                    let colon_form = format!("{verb}: --{flag}");
+                    let requires_form = format!("{verb} requires --{flag}");
+                    if src.contains(&requires_form) {
+                        return true;
+                    }
+                    src.match_indices(&colon_form).any(|(at, _)| {
+                        let rest = &src[at + colon_form.len()..];
+                        let literal = &rest[..rest.find('"').unwrap_or(rest.len())];
+                        literal.contains("is required")
+                    })
+                })
+                .cloned()
+                .collect();
+            source_required.sort();
+            // Flags written outside any [...] group in the synopsis.
+            let mut depth = 0i32;
+            let mut documented_required: Vec<String> = Vec::new();
+            let mut chars = synopsis.chars().peekable();
+            while let Some(c) = chars.next() {
+                match c {
+                    '[' => depth += 1,
+                    ']' => depth -= 1,
+                    '-' if depth == 0 && chars.peek() == Some(&'-') => {
+                        chars.next();
+                        let name: String = chars
+                            .by_ref()
+                            .take_while(|c| c.is_ascii_alphanumeric() || *c == '-')
+                            .collect();
+                        if !name.is_empty() {
+                            documented_required.push(name);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            documented_required.sort();
+            documented_required.dedup();
+            assert_eq!(
+                documented_required, source_required,
+                "usage for {verb:?} must write required flags bare and optional flags bracketed: {synopsis}"
+            );
             checked += 1;
         }
         assert!(checked >= 30, "scanned only {checked} verbs");

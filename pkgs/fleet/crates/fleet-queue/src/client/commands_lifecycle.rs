@@ -1431,7 +1431,6 @@ pub(super) fn cmd_complete(rest: &[String]) -> i32 {
             "result-file",
             "telemetry",
             "execution",
-            "queue",
         ],
         &[],
     );
