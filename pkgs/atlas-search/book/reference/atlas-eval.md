@@ -10,11 +10,11 @@ Source: [pkgs/atlas-search/crates/atlas-core/src/bin/atlas-eval.rs](https://gith
 atlas-eval <eval.json> <dev|test>
 ```
 
-There are no flags. `--help`, `-h`, and `help` are not recognised: each falls into the wrong-arity path, prints the one-line usage text to stderr, and exits 2.
+There are no option flags. `--help` / `-h` prints the one-line usage text to stdout and exits 0; `--version` / `-V` prints `atlas-eval 0.1.0`, exit 0. The literal word `help` is not recognised: it falls into the wrong-arity path, prints the usage text to stderr, and exits 2.
 
 | Flag | Argument | Default | Meaning |
 |---|---|---|---|
-| (none) | — | — | This binary takes no `--flag` options at all. |
+| (none) | — | — | This binary takes no `--flag` options beyond `--help` / `--version`. |
 | `&lt;eval.json&gt;` (positional 1) | path to an `atlas-eval/v1` document | required | The evaluation input: queries, qrels, and saved rankings (see below). |
 | `&lt;dev\|test&gt;` (positional 2) | `dev` or `test` | required | Which split of the input document to score. Any other value is an error: `atlas-eval: unknown split "…" (want dev\|test)`. |
 
@@ -84,7 +84,7 @@ The report's per-signal means carry the four metrics above — `ndcg10`, `recall
 
 ## Failure shapes
 
-- Wrong number of arguments, or an unrecognised split: the usage line (or the `unknown split` message) on stderr, exit 2. This includes every spelling of a help request.
+- Wrong number of arguments, or an unrecognised split: the usage line (or the `unknown split` message) on stderr, exit 2.
 - The input file cannot be read: `atlas-eval: cannot read &lt;path&gt;: &lt;error&gt;`, exit 1.
 - The input parses but is invalid `atlas-eval/v1` data (any validation rule above), or evaluation itself fails: `atlas-eval: &lt;error&gt;`, exit 1. No partial report is printed.
 

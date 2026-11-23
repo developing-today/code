@@ -4,7 +4,7 @@ Source: [pkgs/atlas-search/crates/atlas-core/src/bin/atlas-sweep.rs](https://git
 
 `atlas-sweep` is the operator tool for the ingestion sweep: the periodic pass that walks a source class on a host, filters the candidates it finds, applies guardrails, and records what it did. The binary exposes the complete operator set for that core — pausing and resuming classes, running one sweep from a request file, managing the dead-letter store (items that failed repeatedly), and reading run reports. It creates and enables **no schedule**: cadence is an operator/platform decision, gated on Drew's go-ahead on #7969. State lives in a state directory the operator names on every invocation.
 
-There is no help output at all. The complete surface exists only in the source header; an unrecognised first token — including `--help` and `-h` — is an `unknown action` error.
+`--help` / `-h` prints the usage text to stdout, exit 0, and `--version` / `-V` prints `atlas-sweep 0.1.0`; the complete surface is otherwise in the source header, and any other unrecognised first token is an `unknown action` error.
 
 ## Invocation
 
@@ -79,7 +79,7 @@ The empty `dead-letter list` output and the `[]` cycle report are both successes
 
 ## Failure shapes
 
-Every failure in this binary goes through one path: `atlas-sweep: &lt;message&gt;` on stderr, exit 2. That includes missing `--state-dir`, a missing action (`missing action (pause-class|resume-class|run-once|dead-letter|report)`), an unknown action (including `--help`), an unknown source class, missing `--class`/`--host`/`REF`/`RUN_ID` values, an unreadable or unparseable `REQUEST.json`, and I/O and core errors from inside a run. There is no exit-1 path.
+Every failure in this binary goes through one path: `atlas-sweep: &lt;message&gt;` on stderr, exit 2. That includes missing `--state-dir`, a missing action (`missing action (pause-class|resume-class|run-once|dead-letter|report)`), an unknown action, an unknown source class, missing `--class`/`--host`/`REF`/`RUN_ID` values, an unreadable or unparseable `REQUEST.json`, and I/O and core errors from inside a run. There is no exit-1 path.
 
 ## Exit codes
 

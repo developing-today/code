@@ -12,9 +12,9 @@ Every Atlas configuration surface, in one place: the environment variables the b
 |---|---|---|
 | `ATLAS_SEARCH_MODEL` | clap env for `--model` (atlas-search; the Python CLI's argparse default) | `Snowflake/snowflake-arctic-embed-m-v2.0` when unset. |
 | `ATLAS_VEC_TABLE` | clap env for `--vec-table` (atlas-search; Python) | `vec_snowflake_m_v2_768_f32` when unset. |
-| `ATLAS_SEARCH_URL` | `service::base_url` / fleet `client::base_url`, when the `--service-url` flag is absent | `http://127.0.0.1:18760` (`DEFAULT_SERVICE_URL`); trailing `/` trimmed; empty string ignored. Fleet's chain is longer: flag → fleet.toml `[search] url` → this env → default. |
-| `ATLAS_SEARCH_SERVICE_CONFIG` | `resolve_service_config_path` (serve/init; the fleet serve/client host marker), when `--config` is absent | `~/.local/state/atlas-search/service.json`; empty string ignored. |
-| `ATLAS_SHARDS` | clap env for the hidden `--shards` flag (search) | Unset = monolith backend, no shard fan-out. Grammar: `dir:&lt;path&gt;` (local `atlas-core-*.db` files) or `turso` / `turso:&lt;org&gt;` (default org `dezren39`). |
+| `ATLAS_SEARCH_URL` | clap env for `--service-url` (atlas-search); fleet `client::base_url` reads it in its own chain | `http://127.0.0.1:18760` (`DEFAULT_SERVICE_URL`); trailing `/` trimmed; empty string ignored. Fleet's chain is longer: flag → fleet.toml `[search] url` → this env → default. |
+| `ATLAS_SEARCH_SERVICE_CONFIG` | clap env for `--config` (serve/init); the default path is resolved by `resolve_service_config_path` when the flag is absent | `~/.local/state/atlas-search/service.json`; empty string ignored. |
+| `ATLAS_SHARDS` | clap env for the `--shards` flag (search) | Unset = monolith backend, no shard fan-out. Grammar: `dir:&lt;path&gt;` (local `atlas-core-*.db` files) or `turso` / `turso:&lt;org&gt;` (default org `dezren39`). |
 | `ATLAS_SEARCH_VIA` | `service::via_env` / fleet `client::via_env` | Only the exact value `service` requests the via-service route; anything else, including unset, = not requested. Fleet delegation explicitly removes it from the standalone child's environment. |
 | `ATLAS_SEARCH_TOKEN` | `client_token()` (via-service clients: atlas-search and fleet) | First source tried; if unset or empty, resolution falls to the client-config file (`ATLAS_SEARCH_CLIENT_CONFIG`, below). Never printed or logged. |
 | `ATLAS_SEARCH_CLIENT_CONFIG` | `client_token()` file-path override | Default path `~/.config/atlas-search/client.json` — a JSON object with one `token` string field, expected mode 0600. |

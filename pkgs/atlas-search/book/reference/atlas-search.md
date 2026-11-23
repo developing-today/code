@@ -4,7 +4,7 @@ Source: `pkgs/atlas-search/crates/atlas-search/src/main.rs`, `pkgs/atlas-search/
 
 `atlas-search` is the Atlas access layer: hybrid search over the corpus. This chapter covers its two query verbs, `search` and `get-chunk`. The remaining verbs are in [atlas-search: serve, init, fetch-model, traces and feedback](atlas-search-admin.md).
 
-Standalone is the default and is complete: the query is embedded in-process and the tool talks to Turso (the hosted corpus database) or a local file directly. `--via-service` *prefers* a running service and falls back to standalone **loudly** on any service failure — a warning on stderr plus a note spliced into the result envelope's `notes`. Routing details, including the requests that disqualify the service route without any help text saying so, are under "Via-service vs standalone" below.
+Standalone is the default and is complete: the query is embedded in-process and the tool talks to Turso (the hosted corpus database) or a local file directly. `--via-service` *prefers* a running service and falls back to standalone **loudly** on any service failure — a warning on stderr plus a note spliced into the result envelope's `notes`. Routing details, including the requests that disqualify the service route (the `--via-service` help states them too), are under "Via-service vs standalone" below.
 
 ## Invocation
 
@@ -101,7 +101,7 @@ All 44 flags of `search` are listed below, in three groups: the verb's own flags
 | `--hydrate` | integer | `0` | Hydrate the top N results to full chunk + message content from the content store. This is **not** `--expand`, which keeps its neighbour-chunks meaning. Validated: at most 1000. |
 | `--raw-rows` | optional value: `ungrouped\|branches` | — (off) | Ungrouped output rows: bare `--raw-rows` means `ungrouped` (flat fused rows); `--raw-rows=branches` means pre-fusion branch rows. Distinct from `--raw` (verbatim query), which is not repurposed. |
 | `--text` | switch | off | Human-readable output instead of JSON. |
-| `--shards` | string | — (off) | **Hidden in help** (`hide = true`; it does not appear in `--help` output). Environment variable: `ATLAS_SHARDS`. EXPERIMENTAL, off by default: serve the vector branch from the Atlas core shard fan-out — `dir:&lt;path&gt;` for local shard files, or `turso` / `turso:&lt;org&gt;` for hosted shards. FTS, details and `--expand` stay on the backend. Skips `--via-service` entirely. |
+| `--shards` | string | — (off) | Shown in `--help` output. Environment variable: `ATLAS_SHARDS`. EXPERIMENTAL, off by default: serve the vector branch from the Atlas core shard fan-out — `dir:&lt;path&gt;` for local shard files, or `turso` / `turso:&lt;org&gt;` for hosted shards. FTS, details and `--expand` stay on the backend. Skips `--via-service` entirely. |
 
 ### Backend flags (flattened, shared with `get-chunk`)
 
@@ -110,7 +110,7 @@ All 44 flags of `search` are listed below, in three groups: the verb's own flags
 | `--backend` | `auto\|turso\|local` | `auto` | Data backend. `auto`: Turso when a token resolves, else local. |
 | `--db` | path | canonical `atlas.db` | Local backend: SQLite DB path. Resolution is covered in [Configuration and environment](configuration.md) (the `ATLAS_DB` variable is the first step). |
 | `--vecdb` | comma-separated paths | — (none) | Local backend: vector DB path(s), if the corpus DB has no vector table. |
-| `--via-service` | switch | off | Prefer a running Atlas service; fall back to standalone, loudly. |
+| `--via-service` | switch | off | Prefer a running Atlas service; fall back to standalone, loudly. The help states the eligibility restrictions, detailed under "Via-service vs standalone". |
 | `--service-url` | URL | `http://127.0.0.1:18760` | Service base URL for `--via-service`. Environment variable: `ATLAS_SEARCH_URL`. |
 
 ### Vector flags (flattened, `search` only)

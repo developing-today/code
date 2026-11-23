@@ -20,7 +20,7 @@ Commands:
   units      List units in a lifecycle state (open|closing|merged)
 ```
 
-There is **no `--version` / `-V`** on this binary: its command definition sets only a name and an about text, so both spellings are clap errors, exit 2. `-h, --help` works as usual for a clap binary.
+`--version` / `-V` prints `atlas-stage 0.1.0` (the crate version), exit 0 — the command definition carries a version, as `atlas-search`'s does. `-h, --help` works as usual for a clap binary.
 
 All output is one JSON object per line on stdout. Errors print `atlas-stage: &lt;msg&gt;` on stderr.
 
@@ -74,7 +74,7 @@ Stages one code/config artifact file as an embedding entry in an already-provisi
 | `--file` | path | — (required) | The local file whose bytes are staged. |
 | `--commit` | string | — (required) | The commit SHA the bytes were read at. |
 | `--kind` | `prose\|code\|config` | `config` | The entry kind. |
-| `--language` | string | `""` (see note) | The artifact language (yaml, toml, rust, …). **Source behaviour the help does not state:** an empty language is silently replaced by the staged file's extension before the entry is built — the help's `[default: ""]` is therefore misleading. |
+| `--language` | string | `""` (see note) | The artifact language (yaml, toml, rust, …). An empty language is replaced by the staged file's extension before the entry is built, as the help states. |
 | `--sensitivity` | `public\|internal\|secret` | `internal` | Staging tier vocabulary, as in `provision`. |
 | `--segments` | path | — (none) | Optional JSON file declaring the artifact's source-native classification segments: an array of `{"start": &lt;byte&gt;, "end": &lt;byte&gt;, "sensitivity": shareable\|personal\|local-only\|secret-bearing, "certain": &lt;bool, default true&gt;}` — note the segment sensitivities use the four-level ladder, not the tier vocabulary. When given, the artifact is staged classified: boundary-safe chunks plus one persisted classification record per chunk. Segment files are parsed strictly — missing or mistyped fields, or an unknown sensitivity name, are errors, never defaults. |
 
@@ -145,7 +145,6 @@ $ atlas-stage units --registry /tmp/toy-registry.db --state merged
 ## Failure shapes
 
 - Missing required flags or an unknown verb: a clap usage error, exit 2 — e.g. bare `atlas-stage lookup` fails on its required arguments.
-- `--version` / `-V`: a clap `error: unexpected argument`, exit 2 — this binary has no version surface.
 - Unknown unit in `lookup`: `atlas-stage: no staging unit "&lt;unit&gt;" in the registry`, exit 1.
 - Unknown sensitivity tier or unknown unit state: `atlas-stage: &lt;msg&gt;`, exit 1.
 - A malformed `--segments` file (missing/mistyped field, unknown sensitivity name): an error, exit 1 — never a defaulted segment.
@@ -158,4 +157,4 @@ $ atlas-stage units --registry /tmp/toy-registry.db --state merged
 |---|---|
 | 0 | Success. |
 | 1 | **All** runtime errors: unknown sensitivity/state, missing unit, file reads, embedder/model absence, registry/DB errors. |
-| 2 | Clap usage errors only: unknown verb, missing required flags, and `--version`/`-V`. |
+| 2 | Clap usage errors only: unknown verb, missing required flags. |

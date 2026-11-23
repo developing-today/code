@@ -3,7 +3,7 @@
 //! versioned schema, provisioning tool and registry; design
 //! `doc/2026-11-04T21-27-34Z_design_atlas_scaler_revision` section 4.1).
 //!
-//! Two verbs:
+//! Six verbs:
 //! * `atlas-stage provision --db <path> --unit <id> --owner <o>
 //!   [--sensitivity internal] --registry <path>` — create the unit's
 //!   staging DB, apply the v1 schema, and register the unit as `open`.
@@ -33,9 +33,11 @@
 //!   ONNX runtime (ATLAS_MODEL_DIR / ATLAS_ORT_LIB, the same
 //!   resolution the atlas-search binary uses).
 //!
-//! All three are offline: a staging DB is a local libSQL/SQLite file
-//! today; hosted Turso creation is the aggregator slice's deployment
-//! surface, not this foundation.
+//! Five of the six are offline: a staging DB is a local libSQL/SQLite
+//! file today; hosted Turso creation is the aggregator slice's
+//! deployment surface, not this foundation. `promote` is the
+//! exception: it needs the embedding model + ONNX runtime, as its
+//! entry above states.
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -47,6 +49,7 @@ use clap::{Parser, Subcommand};
 #[derive(Parser)]
 #[command(
     name = "atlas-stage",
+    version,
     about = "Provision Atlas staging units and read the staging registry (#5669)"
 )]
 struct Cli {
@@ -104,7 +107,8 @@ enum Command {
         /// The entry kind (prose|code|config).
         #[arg(long, default_value = "config")]
         kind: String,
-        /// The artifact language (yaml, toml, rust, ...).
+        /// The artifact language (yaml, toml, rust, ...); when empty,
+        /// the staged file's extension is used.
         #[arg(long, default_value = "")]
         language: String,
         /// Physical sensitivity level (public|internal|secret; default internal).
