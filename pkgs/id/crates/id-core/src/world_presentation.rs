@@ -21,6 +21,14 @@
 //! scene's text projection; a host that does not know the kind at all
 //! drops the document to the legacy text path (see [`parse_surface`]).
 //!
+//! A program may instead return a versioned `kind: audio` JSON document
+//! (`audio/1`, #12657): a bounded list of descriptive audio cues — named
+//! references with a closed format set, durations and repeat flags. Cues
+//! carry no embedded bytes, URLs or scripts: a presenter resolves each
+//! cue id against the world's own assets. A shell without an audio
+//! player uses the audio text projection; a host that does not know the
+//! kind at all drops the document to the legacy text path.
+//!
 //! Semantic token adapter contract (xterm-256 foreground, bold; 1-bit):
 //! | token | terminal | 1-bit | text |
 //! |---|---|---|---|
@@ -68,6 +76,14 @@ pub const MAX_SCENE_BYTES: usize = 64 * 1024;
 /// units. Keeps scene geometry in a range every presenter can scale
 /// without overflow.
 pub const MAX_SCENE_EXTENT: f64 = 1_000_000.0;
+/// Maximum cues accepted in one world audio document.
+pub const MAX_AUDIO_CUES: usize = 64;
+/// Maximum serialized audio document size in bytes.
+pub const MAX_AUDIO_BYTES: usize = 64 * 1024;
+/// Maximum duration of one audio cue, in milliseconds (one hour). Keeps
+/// a cue's stated length in a range every presenter can schedule
+/// without overflow.
+pub const MAX_AUDIO_DURATION_MS: u32 = 3_600_000;
 
 /// A validated view understood by more than one transport presenter.
 ///
@@ -86,6 +102,10 @@ pub enum WorldSurface {
     /// sizes, rendered by native shells; other shells use its text
     /// projection.
     Scene(SceneSurface),
+    /// An audio cue list (`audio/1`): named sound references with
+    /// formats, durations and repeat flags, played by shells with an
+    /// audio player; other shells use its text projection.
+    Audio(AudioSurface),
 }
 
 impl WorldSurface {
@@ -100,6 +120,7 @@ impl WorldSurface {
             Self::Text(text) => text.render_text(),
             Self::Form(form) => form.text_projection(),
             Self::Scene(scene) => scene.text_projection(),
+            Self::Audio(audio) => audio.text_projection(),
         }
     }
 }
@@ -958,6 +979,135 @@ impl SceneSurface {
     }
 }
 
+/// A versioned `audio/1` document: a bounded list of descriptive audio
+/// cues. Guest input is data only: a cue names a sound and describes it
+/// (format, duration, repeat) — there are no embedded bytes, URL,
+/// script or gain fields, so a presenter resolves each cue id against
+/// the world's own assets and derives everything audible from the
+/// description. The document shape is the struct shape, so a parsed
+/// audio document round-trips through [`parse_surface`].
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct AudioSurface {
+    /// Audio format version. `audio/1` defines version 1.
+    pub version: u8,
+    /// Optional caption naming the cue list; the text projection's
+    /// first line.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    /// The document's cues, in document order. Ids are unique.
+    pub cues: Vec<AudioCue>,
+}
+
+/// One named sound in an [`AudioSurface`].
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct AudioCue {
+    /// Stable identifier, unique within the document. A presenter
+    /// resolves it against the world's own assets.
+    pub id: String,
+    /// Human-readable name, used by the text projection and by
+    /// presenters that label cues.
+    pub label: String,
+    /// The referenced sound's encoding, from the closed format set.
+    pub format: AudioFormat,
+    /// The sound's length in milliseconds.
+    pub duration_ms: u32,
+    /// Whether the sound repeats until the view changes.
+    pub repeat: bool,
+}
+
+/// The closed set of sound encodings an `audio/1` cue may name. Guest
+/// documents reject unknown formats.
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AudioFormat {
+    /// Waveform audio (PCM WAV).
+    Wav,
+    /// Ogg container (Vorbis/Opus).
+    Ogg,
+    /// MP3 audio.
+    Mp3,
+}
+
+impl AudioFormat {
+    /// The document spelling of the format, used by the text projection.
+    #[must_use]
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::Wav => "wav",
+            Self::Ogg => "ogg",
+            Self::Mp3 => "mp3",
+        }
+    }
+}
+
+impl AudioSurface {
+    /// Validate the version, cue set, identifiers, safe text, duration
+    /// bounds and total size. Hosts run this before any presenter sees
+    /// the document (via [`parse_surface`]).
+    ///
+    /// # Errors
+    ///
+    /// Rejects unsupported versions, unsafe titles, empty or oversized
+    /// cue sets, duplicate ids, unsafe labels, out-of-bound durations,
+    /// and oversize documents.
+    pub fn validate(&self) -> Result<()> {
+        ensure!(
+            self.version == 1,
+            "unsupported world audio version {}",
+            self.version
+        );
+        ensure!(
+            self.title.as_deref().is_none_or(safe_form_text),
+            "invalid audio title"
+        );
+        ensure!(
+            !self.cues.is_empty() && self.cues.len() <= MAX_AUDIO_CUES,
+            "invalid audio cue count"
+        );
+        let mut ids = std::collections::HashSet::new();
+        for cue in &self.cues {
+            ensure!(
+                safe_form_id(&cue.id) && safe_form_text(&cue.label),
+                "invalid audio cue id or label"
+            );
+            ensure!(ids.insert(cue.id.as_str()), "duplicate audio cue id");
+            ensure!(
+                (1..=MAX_AUDIO_DURATION_MS).contains(&cue.duration_ms),
+                "audio cue duration out of bounds"
+            );
+        }
+        ensure!(
+            serde_json::to_vec(self)?.len() <= MAX_AUDIO_BYTES,
+            "audio exceeds {MAX_AUDIO_BYTES} bytes"
+        );
+        Ok(())
+    }
+
+    /// Deterministic escape-free projection: the title (or `Audio`),
+    /// then one numbered line per cue naming its label, format and
+    /// duration, with a `repeats` marker for looping cues. This is what
+    /// a shell without an audio player shows, so it is designed here,
+    /// with the kind, not discovered by the renderer slice.
+    #[must_use]
+    pub fn text_projection(&self) -> String {
+        let mut lines = vec![self.title.clone().unwrap_or_else(|| "Audio".to_owned())];
+        for (index, cue) in self.cues.iter().enumerate() {
+            let repeat = if cue.repeat { "; repeats" } else { "" };
+            lines.push(format!(
+                "{}. {} ({}; {} ms{})",
+                index + 1,
+                cue.label,
+                cue.format.as_str(),
+                cue.duration_ms,
+                repeat,
+            ));
+        }
+        lines.join("\n")
+    }
+}
+
 /// A cell-run delta between two consecutive screens (F12.11, first slice).
 ///
 /// A patch carries only the cells that changed, grouped into maximal runs of
@@ -1224,7 +1374,7 @@ pub fn parse_surface(data: &str) -> Result<Option<WorldSurface>> {
                     .as_ref()
                     .and_then(|value| value.get("kind"))
                     .and_then(Value::as_str);
-                if matches!(kind, Some("screen" | "text" | "form" | "scene"))
+                if matches!(kind, Some("screen" | "text" | "form" | "scene" | "audio"))
                     || top_level_kind_is_duplicated(data)
                 {
                     return Err(err).context("duplicate JSON object key in world presentation");
@@ -1254,6 +1404,16 @@ pub fn parse_surface(data: &str) -> Result<Option<WorldSurface>> {
                 serde_json::from_value(value).context("decode world scene presentation")?;
             scene.validate()?;
             return Ok(Some(WorldSurface::Scene(scene)));
+        }
+        Some("audio") => {
+            let mut value = value;
+            if let Some(object) = value.as_object_mut() {
+                object.remove("kind");
+            }
+            let audio: AudioSurface =
+                serde_json::from_value(value).context("decode world audio presentation")?;
+            audio.validate()?;
+            return Ok(Some(WorldSurface::Audio(audio)));
         }
         Some("text") => {
             let payload: TextPayload =
@@ -2369,18 +2529,119 @@ mod tests {
     }
 
     #[test]
+    fn audio_surface_parses_projects_and_round_trips() {
+        // Oracle: #12657 slice 1b — a versioned audio document is accepted
+        // by host validation, projects deterministically to text (the
+        // old-shell fallback), and round-trips through serialization.
+        let document = serde_json::json!({
+            "kind": "audio", "version": 1, "title": "Harbor Sounds",
+            "cues": [
+                {"id": "rain", "label": "Rain", "format": "ogg",
+                 "duration_ms": 90000, "repeat": true},
+                {"id": "bell", "label": "Bell", "format": "wav",
+                 "duration_ms": 2500, "repeat": false}
+            ]
+        });
+        let parsed = parse_surface(&document.to_string()).unwrap().unwrap();
+        assert_eq!(
+            parsed.text_projection(),
+            "Harbor Sounds\n1. Rain (ogg; 90000 ms; repeats)\n2. Bell (wav; 2500 ms)"
+        );
+        let serialized = serde_json::to_string(&parsed).unwrap();
+        assert_eq!(parse_surface(&serialized).unwrap(), Some(parsed));
+
+        // Without a title the projection still names what the view is.
+        let untitled = parse_surface(
+            r#"{"kind":"audio","version":1,"cues":[{"id":"a","label":"A","format":"mp3","duration_ms":1000,"repeat":false}]}"#,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(untitled.text_projection(), "Audio\n1. A (mp3; 1000 ms)");
+    }
+
+    #[test]
+    fn audio_surface_rejects_unsafe_or_oversize_documents() {
+        // Oracle: #12657 criterion — malformed or oversized rich surfaces
+        // are refused by host validation (an Err from parse_surface, which
+        // the host turns into an error frame), never silently dropped to
+        // the legacy text path and never accepted.
+        let cue = |id: &str| {
+            serde_json::json!({"id": id, "label": "A", "format": "ogg",
+                "duration_ms": 1000, "repeat": false})
+        };
+        let audio = |cues: Value| {
+            serde_json::json!({"kind": "audio", "version": 1, "cues": cues}).to_string()
+        };
+        // Bad versions.
+        assert!(parse_surface(
+            &serde_json::json!({"kind": "audio", "version": 2, "cues": [cue("a")]})
+                .to_string()
+        )
+        .is_err());
+        assert!(parse_surface(
+            &serde_json::json!({"kind": "audio", "version": 0, "cues": [cue("a")]})
+                .to_string()
+        )
+        .is_err());
+        // Unknown fields, top level and per cue (deny_unknown_fields) —
+        // in particular a cue carries no embedded bytes or URL.
+        assert!(parse_surface(
+            &serde_json::json!({"kind": "audio", "version": 1, "src": "x.ogg", "cues": [cue("a")]})
+                .to_string()
+        )
+        .is_err());
+        assert!(parse_surface(&audio(serde_json::json!([
+            {"id": "a", "label": "A", "format": "ogg", "duration_ms": 1000,
+             "repeat": false, "data": "AAAB"}
+        ])))
+        .is_err());
+        // Unknown format: the format set is closed.
+        assert!(parse_surface(&audio(serde_json::json!([
+            {"id": "a", "label": "A", "format": "flac", "duration_ms": 1000, "repeat": false}
+        ])))
+        .is_err());
+        // Empty and duplicate-id cue sets.
+        assert!(parse_surface(&audio(serde_json::json!([]))).is_err());
+        assert!(parse_surface(&audio(serde_json::json!([cue("a"), cue("a")]))).is_err());
+        // Too many cues: the bound is 64 (MAX_AUDIO_CUES).
+        let many: Vec<Value> = (0..65).map(|index| cue(&format!("c{index}"))).collect();
+        assert!(parse_surface(&audio(Value::Array(many))).is_err());
+        // Unsafe label text (a JSON-escaped ESC).
+        assert!(parse_surface(&audio(serde_json::json!([
+            {"id": "a", "label": "A\u{001b}[2J", "format": "ogg", "duration_ms": 1000, "repeat": false}
+        ])))
+        .is_err());
+        // Duration bounds: a cue lasts 1..=3_600_000 ms
+        // (MAX_AUDIO_DURATION_MS, one hour).
+        assert!(parse_surface(&audio(serde_json::json!([
+            {"id": "a", "label": "A", "format": "ogg", "duration_ms": 0, "repeat": false}
+        ])))
+        .is_err());
+        assert!(parse_surface(&audio(serde_json::json!([
+            {"id": "a", "label": "A", "format": "ogg", "duration_ms": 3600001, "repeat": false}
+        ])))
+        .is_err());
+        // Oversize document: the serialized cap is 65536 bytes
+        // (MAX_AUDIO_BYTES); a single huge label trips it.
+        assert!(parse_surface(&audio(serde_json::json!([
+            {"id": "a", "label": "x".repeat(70_000), "format": "ogg", "duration_ms": 1000, "repeat": false}
+        ])))
+        .is_err());
+    }
+
+    #[test]
     fn unknown_rich_surface_kinds_stay_on_the_legacy_path() {
         // Forward-compat seam (#12657 triage): a rich kind this host does
         // not know is not an error — the document drops to the legacy
         // plain-text path, so a new-kind document is safe on an old host.
-        // (Audio and widget kinds land in slices 1b/1c; today both are
-        // unknown here.)
+        // (The widget kind lands in slice 1c; today it is unknown here,
+        // as is any kind no slice has named.)
         assert_eq!(
-            parse_surface(r#"{"kind":"audio","version":1,"title":"Song"}"#).unwrap(),
+            parse_surface(r#"{"kind":"widget","version":1}"#).unwrap(),
             None
         );
         assert_eq!(
-            parse_surface(r#"{"kind":"widget","version":1}"#).unwrap(),
+            parse_surface(r#"{"kind":"hologram","version":1}"#).unwrap(),
             None
         );
     }
