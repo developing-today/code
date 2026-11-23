@@ -1094,7 +1094,7 @@ mod tests {
 
     const ABI_MD: &str = include_str!("../../../examples/roc-world/ABI.md");
 
-    const CONFORMANCE_MODULES: [(&str, &[u8]); 3] = [
+    const CONFORMANCE_MODULES: [(&str, &[u8]); 4] = [
         (
             "roc-counter",
             include_bytes!("../../../examples/roc-counter/counter.wasm"),
@@ -1102,6 +1102,10 @@ mod tests {
         (
             "rust-counter",
             include_bytes!("../../../examples/rust-counter/counter.wasm"),
+        ),
+        (
+            "zig-counter",
+            include_bytes!("../../../examples/zig-counter/counter.wasm"),
         ),
         (
             "tic-tac-toe",
