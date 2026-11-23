@@ -46,6 +46,39 @@
 //!   qrels must name known queries; violations are rejected at
 //!   parse/validation time.
 //!
+//! ## Ceiling/scope negatives and provenance (#8627)
+//!
+//! Three optional fields extend v1 compatibly (absent = today's
+//! behaviour, byte-identical reports) so the cross-corpus sets of
+//! the Atlas memory integration can state policy, not just
+//! relevance:
+//!
+//! - A query may carry `forbidden`: doc ids that must never appear
+//!   in any ranking for that query — the above-ceiling or
+//!   out-of-scope docs a correct system cannot return. A forbidden
+//!   doc may not also carry a positive grade for the same query
+//!   (the set would contradict itself); validation rejects that.
+//! - A query may carry `corpora`: the corpora it is scoped to. When
+//!   present, provenance is enforced for its rankings (below).
+//! - The document may carry `docs`: an attribution map of
+//!   `{"id": ..., "corpus": ...}` naming the corpus each doc
+//!   belongs to. It may cover docs no qrel or ranking mentions.
+//!
+//! Scoring still computes the metrics exactly as before — a
+//! forbidden doc is not merely grade 0. Instead, [`evaluate`]
+//! records a [`Violation`] in the signal's report for every
+//! forbidden doc a ranking surfaces (at any rank: retrieval itself
+//! is the leak) and, for a corpus-scoped query, for every surfaced
+//! doc whose attributed corpus is outside the query's scope —
+//! including docs with no attribution at all, since unattributable
+//! provenance is what the check exists to catch. A doc that is both
+//! forbidden and out of scope records the forbidden violation (its
+//! corpus is moot once it must not appear at all). A signal with
+//! any violation has failed the eval: the report says so
+//! ([`SignalReport::passed`]), [`select_best_signal`] refuses such
+//! a report, and the `atlas-eval` runner exits non-zero — a policy
+//! regression fails the eval, not just a code review.
+//!
 //! ## Metrics and reporting
 //!
 //! Per query: nDCG@10 (graded gains `2^grade − 1`, log2 discount),
@@ -104,6 +137,31 @@ pub struct QueryRec {
     /// Optional query text; carried for humans, never scored.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub text: Option<String>,
+    /// Doc ids that must never appear in a ranking for this query
+    /// (#8627): the ceiling/scope negative cases. A run surfacing
+    /// one records a hard-failure [`Violation`]; the doc still
+    /// scores grade 0 for the metrics, exactly as an unjudged doc
+    /// does — the failure is reported separately, not folded into
+    /// the metrics.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub forbidden: Vec<String>,
+    /// The corpora this query is scoped to (#8627). When present,
+    /// every doc a ranking surfaces for this query must be
+    /// attributed (via the document's `docs` map) to one of these
+    /// corpora; an out-of-scope or unattributed doc records a
+    /// provenance [`Violation`]. When absent, no provenance check
+    /// runs for the query.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub corpora: Option<Vec<String>>,
+}
+
+/// One doc's corpus attribution (the document-level `docs` map).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DocRec {
+    /// The doc/chunk id.
+    pub id: String,
+    /// The corpus the doc belongs to (`agent-memory`, `notes`, …).
+    pub corpus: String,
 }
 
 /// One judged (query, doc) relevance grade.
@@ -252,6 +310,10 @@ pub struct EvalData {
     pub qrels: Vec<Qrel>,
     /// The saved rankings to score.
     pub runs: Vec<Run>,
+    /// Doc → corpus attribution for the provenance checks (#8627).
+    /// Optional; may cover docs no qrel or ranking mentions.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub docs: Vec<DocRec>,
 }
 
 impl EvalData {
@@ -310,6 +372,61 @@ impl EvalData {
                     "duplicate qrel for query {:?} doc {:?}",
                     qrel.query, qrel.doc
                 )));
+            }
+        }
+        let mut doc_ids: HashSet<&str> = HashSet::new();
+        for doc in &self.docs {
+            if doc.corpus.is_empty() {
+                return Err(Error::fatal(format!(
+                    "docs entry for doc {:?} names an empty corpus",
+                    doc.id
+                )));
+            }
+            if !doc_ids.insert(doc.id.as_str()) {
+                return Err(Error::fatal(format!(
+                    "duplicate docs entry for doc {:?}",
+                    doc.id
+                )));
+            }
+        }
+        for q in &self.queries {
+            let mut forbidden: HashSet<&str> = HashSet::new();
+            for doc in &q.forbidden {
+                if !forbidden.insert(doc.as_str()) {
+                    return Err(Error::fatal(format!(
+                        "query {:?} lists forbidden doc {:?} twice",
+                        q.id, doc
+                    )));
+                }
+                let positive = self
+                    .qrels
+                    .iter()
+                    .any(|qrel| qrel.query == q.id && qrel.doc == *doc && qrel.grade >= 1);
+                if positive {
+                    return Err(Error::fatal(format!(
+                        "query {:?} forbids doc {:?} but also grades it relevant; \
+                         a doc cannot be both a positive judgment and a \
+                         ceiling/scope negative",
+                        q.id, doc
+                    )));
+                }
+            }
+            if let Some(corpora) = &q.corpora {
+                let mut seen: HashSet<&str> = HashSet::new();
+                for corpus in corpora {
+                    if corpus.is_empty() {
+                        return Err(Error::fatal(format!(
+                            "query {:?} lists an empty corpus in its scope",
+                            q.id
+                        )));
+                    }
+                    if !seen.insert(corpus.as_str()) {
+                        return Err(Error::fatal(format!(
+                            "query {:?} lists corpus {:?} twice in its scope",
+                            q.id, corpus
+                        )));
+                    }
+                }
             }
         }
         let mut signals: HashSet<&str> = HashSet::new();
@@ -416,6 +533,40 @@ pub struct PerQuery {
     pub grades: BTreeMap<String, u32>,
 }
 
+/// Which policy constraint a [`Violation`] records.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ViolationKind {
+    /// The ranking surfaced a doc the query forbids (above the
+    /// caller's ceiling or outside its scope by id).
+    Forbidden,
+    /// The ranking surfaced a doc outside the query's corpus
+    /// scope, or with no corpus attribution at all.
+    Provenance,
+}
+
+/// One hard-failure constraint violation in a signal's rankings
+/// (#8627). Metrics are computed exactly as if the doc were an
+/// ordinary unjudged result; the violation is the eval's verdict
+/// that the run broke policy, recorded separately so the numbers
+/// stay comparable while the run still fails.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Violation {
+    /// The query whose ranking broke the constraint.
+    pub query: String,
+    /// The doc the ranking surfaced.
+    pub doc: String,
+    /// 1-based rank of the doc in the ranking.
+    pub rank: usize,
+    /// Which constraint was broken.
+    pub kind: ViolationKind,
+    /// For a provenance violation, the doc's attributed corpus
+    /// (`None` when the doc has no attribution). Always `None`
+    /// for a forbidden-doc violation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub corpus: Option<String>,
+}
+
 /// One signal's scores within a split.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SignalReport {
@@ -431,6 +582,20 @@ pub struct SignalReport {
     pub per_class: BTreeMap<String, MetricMeans>,
     /// Per-query detail, sorted by query id.
     pub per_query: Vec<PerQuery>,
+    /// Hard-failure constraint violations (#8627), in query-id
+    /// then rank order. Empty for sets that declare no constraints
+    /// — and omitted from the serialized report then, so reports
+    /// for pre-#8627 sets stay byte-identical.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub violations: Vec<Violation>,
+}
+
+impl SignalReport {
+    /// Whether the signal passed the eval: no constraint
+    /// violations. Metrics alone never fail a signal.
+    pub fn passed(&self) -> bool {
+        self.violations.is_empty()
+    }
 }
 
 /// A complete evaluation report for one split.
@@ -442,6 +607,14 @@ pub struct EvalReport {
     pub split: Split,
     /// One entry per signal, sorted by signal name.
     pub signals: Vec<SignalReport>,
+}
+
+impl EvalReport {
+    /// Whether every signal in the report passed: no constraint
+    /// violations anywhere (#8627).
+    pub fn passed(&self) -> bool {
+        self.signals.iter().all(SignalReport::passed)
+    }
 }
 
 fn dcg(gains_in_rank_order: &[f64], k: usize) -> f64 {
@@ -571,6 +744,11 @@ pub fn evaluate(data: &EvalData, split: Split) -> Result<EvalReport> {
             "eval input has no queries in the {split:?} split"
         )));
     }
+    let corpus_of: BTreeMap<&str, &str> = data
+        .docs
+        .iter()
+        .map(|doc| (doc.id.as_str(), doc.corpus.as_str()))
+        .collect();
     let mut runs: Vec<&Run> = data.runs.iter().collect();
     runs.sort_by(|a, b| a.signal.cmp(&b.signal));
     let mut signals = Vec::with_capacity(runs.len());
@@ -578,10 +756,35 @@ pub fn evaluate(data: &EvalData, split: Split) -> Result<EvalReport> {
         let mut overall = Accum::default();
         let mut per_class: BTreeMap<String, Accum> = BTreeMap::new();
         let mut per_query = Vec::with_capacity(queries.len());
+        let mut violations: Vec<Violation> = Vec::new();
         for query in &queries {
             let grades = data.grades_for(&query.id);
             let empty: Vec<String> = Vec::new();
             let ranking = run.results.get(&query.id).unwrap_or(&empty);
+            for (i, doc) in ranking.iter().enumerate() {
+                if query.forbidden.contains(doc) {
+                    violations.push(Violation {
+                        query: query.id.clone(),
+                        doc: doc.clone(),
+                        rank: i + 1,
+                        kind: ViolationKind::Forbidden,
+                        corpus: None,
+                    });
+                    continue;
+                }
+                if let Some(scope) = &query.corpora {
+                    match corpus_of.get(doc.as_str()) {
+                        Some(corpus) if scope.iter().any(|c| c == *corpus) => {}
+                        attributed => violations.push(Violation {
+                            query: query.id.clone(),
+                            doc: doc.clone(),
+                            rank: i + 1,
+                            kind: ViolationKind::Provenance,
+                            corpus: attributed.map(|c| (*c).to_owned()),
+                        }),
+                    }
+                }
+            }
             let (relevant, raw) = query_metrics(ranking, &grades);
             if relevant > 0 {
                 overall.add(&raw);
@@ -609,6 +812,7 @@ pub fn evaluate(data: &EvalData, split: Split) -> Result<EvalReport> {
                 .map(|(class, acc)| (class.clone(), acc.means()))
                 .collect(),
             per_query,
+            violations,
         });
     }
     Ok(EvalReport {
@@ -625,14 +829,29 @@ pub fn evaluate(data: &EvalData, split: Split) -> Result<EvalReport> {
 /// # Errors
 ///
 /// Fails for a held-out **test**-split report (#5741: the test split
-/// is for final scoring only; tuning on it would invalidate it), and
-/// for a report with no signals.
+/// is for final scoring only; tuning on it would invalidate it), for
+/// a report with no signals, and for a report containing constraint
+/// violations (#8627: a policy-breaking run is not a selection
+/// candidate, however good its metrics look).
 pub fn select_best_signal(report: &EvalReport, metric: Metric) -> Result<String> {
     if report.split == Split::Test {
         return Err(Error::fatal(
             "held-out test results must not be used for parameter selection (#5741); \
              select on the dev split and score the test split once",
         ));
+    }
+    let failing: Vec<&str> = report
+        .signals
+        .iter()
+        .filter(|signal| !signal.passed())
+        .map(|signal| signal.signal.as_str())
+        .collect();
+    if !failing.is_empty() {
+        return Err(Error::fatal(format!(
+            "report contains constraint violations (#8627) in signal(s) {}; \
+             a run that breaks ceiling/scope policy cannot be selected from",
+            failing.join(", ")
+        )));
     }
     let mut best: Option<(&SignalReport, f64)> = None;
     for signal in &report.signals {
@@ -816,6 +1035,7 @@ mod tests {
                     },
                     per_class: BTreeMap::new(),
                     per_query: Vec::new(),
+                    violations: Vec::new(),
                 })
                 .collect(),
         }
@@ -1243,5 +1463,252 @@ mod tests {
         let test = evaluate(&d, Split::Test).unwrap();
         assert_eq!(test.signals[0].queries_total, 2);
         assert!(select_best_signal(&test, Metric::Ndcg10).is_err());
+    }
+
+    // Oracle: hand-built #8627 set. The forbidden doc is unjudged,
+    // so it scores grade 0 and the metrics are exactly the metrics
+    // of the same set without the `forbidden` declaration — but the
+    // run that surfaces it at rank 2 records a forbidden violation
+    // and fails, while the clean run passes.
+    #[test]
+    fn forbidden_doc_fails_the_run_without_changing_metrics() {
+        let base = serde_json::json!({
+            "format": "atlas-eval/v1",
+            "queries": [{
+                "id": "q1", "class": "memory", "split": "dev",
+                "corpora": ["agent-memory"]
+            }],
+            "docs": [
+                {"id": "mem-1", "corpus": "agent-memory"},
+                {"id": "secret-1", "corpus": "notes"}
+            ],
+            "qrels": [{"query": "q1", "doc": "mem-1", "grade": 2}],
+            "runs": [
+                {"signal": "clean", "results": {"q1": ["mem-1"]}},
+                {"signal": "leaky", "results": {"q1": ["mem-1", "secret-1"]}}
+            ]
+        });
+        let mut with_forbidden = base.clone();
+        with_forbidden["queries"][0]["forbidden"] = serde_json::json!(["secret-1"]);
+
+        let plain = evaluate(&data(base), Split::Dev).unwrap();
+        let guarded = evaluate(&data(with_forbidden), Split::Dev).unwrap();
+        for (plain_signal, guarded_signal) in plain.signals.iter().zip(&guarded.signals) {
+            assert_eq!(
+                plain_signal.overall, guarded_signal.overall,
+                "declaring a negative must not move the metrics"
+            );
+        }
+        let clean = &guarded.signals[0];
+        assert_eq!(clean.signal, "clean");
+        assert!(clean.passed());
+        let leaky = &guarded.signals[1];
+        assert_eq!(leaky.signal, "leaky");
+        assert!(!leaky.passed());
+        assert!(!guarded.passed());
+        assert_eq!(
+            leaky.violations,
+            vec![Violation {
+                query: "q1".to_owned(),
+                doc: "secret-1".to_owned(),
+                rank: 2,
+                kind: ViolationKind::Forbidden,
+                corpus: None,
+            }]
+        );
+    }
+
+    // Oracle: hand-built #8627 set. For a corpus-scoped query, a
+    // doc attributed to another corpus and a doc with no
+    // attribution at all are both provenance violations (in rank
+    // order, with the attributed corpus named); an unscoped query
+    // over the same docs map records nothing.
+    #[test]
+    fn provenance_violations_cover_wrong_corpus_and_unattributed() {
+        let d = data(serde_json::json!({
+            "format": "atlas-eval/v1",
+            "queries": [
+                {"id": "q1", "class": "memory", "split": "dev",
+                 "corpora": ["agent-memory"]},
+                {"id": "q2", "class": "memory", "split": "dev"}
+            ],
+            "docs": [
+                {"id": "mem-1", "corpus": "agent-memory"},
+                {"id": "notes-1", "corpus": "notes"}
+            ],
+            "qrels": [
+                {"query": "q1", "doc": "mem-1", "grade": 1},
+                {"query": "q2", "doc": "mem-1", "grade": 1}
+            ],
+            "runs": [{
+                "signal": "fused",
+                "results": {
+                    "q1": ["mem-1", "notes-1", "ghost-1"],
+                    "q2": ["notes-1", "ghost-1"]
+                }
+            }]
+        }));
+        let report = evaluate(&d, Split::Dev).unwrap();
+        let signal = &report.signals[0];
+        assert_eq!(
+            signal.violations,
+            vec![
+                Violation {
+                    query: "q1".to_owned(),
+                    doc: "notes-1".to_owned(),
+                    rank: 2,
+                    kind: ViolationKind::Provenance,
+                    corpus: Some("notes".to_owned()),
+                },
+                Violation {
+                    query: "q1".to_owned(),
+                    doc: "ghost-1".to_owned(),
+                    rank: 3,
+                    kind: ViolationKind::Provenance,
+                    corpus: None,
+                },
+            ]
+        );
+    }
+
+    // Oracle: the #8627 validation rules, one violation each. A
+    // grade-0 qrel on a forbidden doc is fine (it only restates
+    // non-relevance); a positive grade contradicts the negative.
+    #[test]
+    fn constraint_fields_validate() {
+        let base = serde_json::json!({
+            "format": "atlas-eval/v1",
+            "queries": [{
+                "id": "q1", "class": "memory", "split": "dev",
+                "corpora": ["agent-memory"], "forbidden": ["secret-1"]
+            }],
+            "docs": [{"id": "mem-1", "corpus": "agent-memory"}],
+            "qrels": [{"query": "q1", "doc": "secret-1", "grade": 0}],
+            "runs": [{"signal": "dense", "results": {"q1": ["mem-1"]}}]
+        });
+        assert!(EvalData::from_json(&base.to_string()).is_ok());
+
+        let mut positive = base.clone();
+        positive["qrels"][0]["grade"] = serde_json::json!(1);
+        let err = EvalData::from_json(&positive.to_string())
+            .expect_err("forbidden + relevant is a contradiction");
+        assert!(err.to_string().contains("forbids"), "{err}");
+
+        let mut dup_forbidden = base.clone();
+        dup_forbidden["queries"][0]["forbidden"] =
+            serde_json::json!(["secret-1", "secret-1"]);
+        assert!(EvalData::from_json(&dup_forbidden.to_string()).is_err());
+
+        let mut dup_corpus = base.clone();
+        dup_corpus["queries"][0]["corpora"] =
+            serde_json::json!(["agent-memory", "agent-memory"]);
+        assert!(EvalData::from_json(&dup_corpus.to_string()).is_err());
+
+        let mut dup_doc = base.clone();
+        dup_doc["docs"] = serde_json::json!([
+            {"id": "mem-1", "corpus": "agent-memory"},
+            {"id": "mem-1", "corpus": "notes"}
+        ]);
+        assert!(EvalData::from_json(&dup_doc.to_string()).is_err());
+
+        let mut empty_corpus = base.clone();
+        empty_corpus["docs"][0]["corpus"] = serde_json::json!("");
+        assert!(EvalData::from_json(&empty_corpus.to_string()).is_err());
+    }
+
+    // Oracle: the #8627 selection rule — a report carrying a
+    // violation cannot be selected from, and the refusal names the
+    // offending signal; the same set without the violating run
+    // selects normally.
+    #[test]
+    fn selection_refuses_a_report_with_violations() {
+        let d = data(serde_json::json!({
+            "format": "atlas-eval/v1",
+            "queries": [{
+                "id": "q1", "class": "memory", "split": "dev",
+                "forbidden": ["secret-1"]
+            }],
+            "qrels": [{"query": "q1", "doc": "mem-1", "grade": 2}],
+            "runs": [
+                {"signal": "clean", "results": {"q1": ["mem-1"]}},
+                {"signal": "leaky", "results": {"q1": ["secret-1", "mem-1"]}}
+            ]
+        }));
+        let report = evaluate(&d, Split::Dev).unwrap();
+        let err = select_best_signal(&report, Metric::Ndcg10)
+            .expect_err("a violating report must refuse selection");
+        assert!(err.to_string().contains("leaky"), "{err}");
+    }
+
+    // Oracle: backward compatibility. A pre-#8627 v1 document (no
+    // constraint fields anywhere) parses, round-trips without
+    // gaining the new keys, passes, and its report serializes
+    // without a `violations` key — byte-identical to the reports
+    // the harness emitted before the extension.
+    #[test]
+    fn pre_extension_sets_pass_and_serialize_unchanged() {
+        let d = data(serde_json::json!({
+            "format": "atlas-eval/v1",
+            "queries": [{"id": "q1", "class": "code", "split": "dev"}],
+            "qrels": [{"query": "q1", "doc": "d1", "grade": 1}],
+            "runs": [{"signal": "dense", "results": {"q1": ["d1"]}}]
+        }));
+        let reserialized = serde_json::to_string(&d).unwrap();
+        for key in ["\"forbidden\"", "\"corpora\"", "\"docs\""] {
+            assert!(
+                !reserialized.contains(key),
+                "round-trip must not gain {key}: {reserialized}"
+            );
+        }
+        let report = evaluate(&d, Split::Dev).unwrap();
+        assert!(report.passed());
+        let text = serde_json::to_string(&report).unwrap();
+        assert!(
+            !text.contains("violations"),
+            "report must not gain a violations key: {text}"
+        );
+    }
+
+    // Oracle: the checked-in negatives smoke fixture's designed
+    // outcome. `fused-clean` stays inside the query's corpus scope
+    // and passes; `fused-leaky` surfaces the forbidden doc at rank
+    // 2 (forbidden wins over provenance for the same doc) and an
+    // out-of-scope notes doc at rank 3. The fixture is synthetic —
+    // it exercises the harness, it is not a family baseline.
+    #[test]
+    fn fixture_negatives_smoke_records_the_designed_violations() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../fixtures/eval-negatives-smoke.json"
+        );
+        let text = std::fs::read_to_string(path).expect("negatives fixture exists");
+        let d = EvalData::from_json(&text).unwrap();
+        let report = evaluate(&d, Split::Dev).unwrap();
+        assert!(!report.passed());
+        let clean = &report.signals[0];
+        assert_eq!(clean.signal, "fused-clean");
+        assert!(clean.passed());
+        let leaky = &report.signals[1];
+        assert_eq!(leaky.signal, "fused-leaky");
+        assert_eq!(
+            leaky.violations,
+            vec![
+                Violation {
+                    query: "q-mem-1".to_owned(),
+                    doc: "notes-secret-1".to_owned(),
+                    rank: 2,
+                    kind: ViolationKind::Forbidden,
+                    corpus: None,
+                },
+                Violation {
+                    query: "q-mem-1".to_owned(),
+                    doc: "notes-1".to_owned(),
+                    rank: 3,
+                    kind: ViolationKind::Provenance,
+                    corpus: Some("notes".to_owned()),
+                },
+            ]
+        );
+        assert!(select_best_signal(&report, Metric::Ndcg10).is_err());
     }
 }
