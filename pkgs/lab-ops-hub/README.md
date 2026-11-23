@@ -79,7 +79,7 @@ needs `npm install`. CI installs that Python dependency and runs the same
 test command on every pull request touching
 `pkgs/lab-ops-hub/**` (`.github/workflows/lab-ops-hub.yml`).
 
-## Develop / deploy
+## Develop / release
 
 ```bash
 npm install
@@ -89,29 +89,66 @@ wrangler r2 bucket create labops-files
 wrangler kv namespace create CACHE
 wrangler queues create labops-jobs
 npm run db:init        # remote D1 schema
-npm run deploy         # deploys the Worker; build/push the Nix image below first
 npm run dev            # local dev (containers run via workerd locally too)
 ```
 
-**Preferred (issue #5767 phase 2):** `nix run .#lab-ops-hub-deploy`
-does the whole deploy as one command — builds + pushes the Nix
-container image below, then deploys the Worker from the flake package
-(`package.nix`, lockfile-pinned deps incl. the pinned wrangler; no
-deploy-time `npm install`). It is registered as the `lab-ops-hub`
-target of the `deploy` CLI. `-- --dry-run` validates the Worker
-config only. The manual sequence below remains the reference for how
-the image push works (registry credentials need the account-wide
-token — see the known-behaviour notes).
+Worker releases use the two manually dispatched workflows from `main`:
 
-Deploy auth: set `CLOUDFLARE_API_TOKEN` (scoped day-to-day token from
-Bitwarden) or use the repo-standard wrapper — never commit a token.
-Runtime API auth is separate: the `API_TOKEN` Worker secret above gates
-the deployed API itself.
+- `lab-ops-hub-worker-release.yml` builds Build Output v1, checks the
+  mapped config against `wrangler.jsonc`, checks the current single-version
+  100% baseline and uploads a tagged Worker Version with
+  `cf workers versions create`. It does not route traffic.
+- `lab-ops-hub-promote.yml` takes the successful upload workflow's numeric
+  GitHub Actions run ID. It verifies that run and its receipt, including the
+  uploaded version and baseline IDs, then rechecks the current 100% baseline
+  before explicitly deploying the receipt-bound version at 100% with
+  `cf workers deployments create`.
+
+Both workflows use Node `24.22.0`, `cf@1.0.0-rc.1`, and Wrangler
+`4.163.0`, and share a GitHub concurrency group. The upload and promotion
+jobs use the protected environment `lab-ops-hub-cloudflare-release`, with
+the environment variable `CLOUDFLARE_LAB_OPS_HUB_ACCOUNT_ID` and secret
+`CLOUDFLARE_LAB_OPS_HUB_API_TOKEN`. The token must have Cloudflare's
+Workers `Editor` role scoped to the individual `lab-ops-hub` Worker
+(`Individual Workers Editor` API permission). See Cloudflare's [Workers
+roles and permissions](https://developers.cloudflare.com/workers/authorization/).
+The
+secret is used only by the manually dispatched trusted workflows; there is
+no pull-request trigger or pull-request credential path. Configure the
+environment protection and credentials out of band before cutover; this
+change does not edit GitHub settings.
+
+**Current fail-closed hold:** Cloudflare's documented Worker Version GET
+includes the migration tag and container class, but omits the container image
+URI. The documented Containers application read schema also omits the image
+for this Durable Object-managed container. The workflows therefore can check
+`v2` but deliberately stop before upload or promotion when they cannot prove
+the exact `:v5` pin from read-only metadata. Do not grant broader account or
+registry permissions to bypass this check. Cutover needs a read-only image
+metadata field or a separately trusted image-publish attestation that binds
+the immutable image digest to the Worker release receipt.
+
+Cutover prerequisites: the `lab-ops-hub` Worker must already exist,
+Cloudflare must report migration tag `v2` as current, the exact pinned
+`lab-ops-hub-crawlercontainer:v5` image must be verified, and the protected
+environment/token must be configured. Keep the prior operator recovery
+available until this workflow has passed those checks. Pause all other
+Worker releases, including operator deploys, during the GHA promotion
+window: Cloudflare's deployment create API does not expose a compare-and-swap
+condition, so the repeated baseline checks and GitHub concurrency group
+cannot serialize deployments made outside these workflows. `cf workers
+versions create` refuses a pending Durable Object migration and cannot
+create a Worker that does not exist. The existing `v1` and `v2` migration
+records stay in `wrangler.jsonc`; this release path does not apply them. If
+any prerequisite is unknown or false, keep upload and promotion held.
+
+Runtime API auth is separate: the existing `API_TOKEN` Worker secret
+gates the deployed API itself.
 
 ## Container image without a Docker daemon (what this sandbox does)
 
-The Wrangler target references the pre-pushed registry image, so deployment
-does not build a Dockerfile. Build and push the image daemon-less:
+The Worker config references a pre-pushed registry image; the Worker release
+does not build or publish a container. Build and push the image separately:
 
 ```bash
 # 1. Build the OCI image with Nix (dockerTools) — pinned nixpkgs in container-image.nix
@@ -124,14 +161,26 @@ wrangler containers registries credentials --push   # prints a JWT
 #    (docker config auth entry for registry.cloudflare.com)
 nix run nixpkgs#crane -- push <image.tar> \
   registry.cloudflare.com/<account-id>/lab-ops-hub-crawlercontainer:v5
-# 4. wrangler.jsonc references the registry image (not ./Dockerfile),
-#    so `wrangler deploy` needs no Docker at all.
+# 4. wrangler.jsonc references the registry image (not ./Dockerfile);
+#    the separate GHA Worker release then uploads code referencing this pin.
 ```
 
 The Nix-built `container-image.nix` artifact is the only image build path.
 `wrangler.jsonc` points `CrawlerContainerV2` at the matching `:v5` registry
-image; `npm run deploy` deploys the Worker configuration but does not build or
-push that image.
+image. The operator app `nix run .#lab-ops-hub-image-push` builds and pushes
+only that image (use `-- --dry-run` to build without pushing). It does not
+upload or promote a Worker Version. `wrangler.jsonc` and the Build Output
+mapping both pin `CrawlerContainerV2` to the matching `:v5` image.
+
+### Legacy operator recovery
+
+Until the GHA release path has passed its cutover checks, keep
+`nix run .#lab-ops-hub-deploy` available as the prior operator recovery.
+It uses the pinned Wrangler from the Worker package, rebuilds and pushes
+the already-pinned `:v5` image, then runs `wrangler deploy`. This fallback
+is separate from the GHA Worker Version upload/promotion flow and retains
+its existing Bitwarden/SOPS and Cloudflare registry credential boundary;
+it is not a CI credential path. Use `-- --dry-run` for config validation.
 
 ### Known behaviour (observed 2026-10-20, D1-verified)
 

@@ -49,12 +49,12 @@ jobs:
     timeout-minutes: 10
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Set up Node
-        uses: actions/setup-node@v7
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
-          node-version: 24
+          node-version: 24.22.0
 
       - name: Set up Python
         uses: actions/setup-python@v7
@@ -68,3 +68,25 @@ jobs:
       - name: Run both crawl-validator suites
         working-directory: pkgs/lab-ops-hub
         run: npm test
+
+      - name: Install pinned Worker release toolchain
+        working-directory: pkgs/lab-ops-hub
+        run: |
+          npm ci --prefix release-tools
+          ln -s release-tools/node_modules node_modules
+
+      - name: Build and verify Build Output v1 parity
+        working-directory: pkgs/lab-ops-hub
+        run: |
+          ./node_modules/.bin/cf build
+          node release-tools/verify-build.mjs
+
+      - name: Dry-run Worker Version upload
+        working-directory: pkgs/lab-ops-hub
+        run: >-
+          ./node_modules/.bin/cf workers versions create
+          --prebuilt
+          --worker lab-ops-hub
+          --tag git-offlinecheck
+          --message offline-check
+          --dry-run

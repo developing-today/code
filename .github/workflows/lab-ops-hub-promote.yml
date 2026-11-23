@@ -1,0 +1,138 @@
+name: Lab Ops Hub Worker Version promotion
+
+on:
+  workflow_dispatch:
+    inputs:
+      upload_run_id:
+        description: "Successful trusted upload workflow run ID containing the Worker Version receipt"
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: lab-ops-hub-cloudflare-release
+  cancel-in-progress: false
+
+jobs:
+  promote:
+    if: github.repository == 'developing-today/code' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    environment: lab-ops-hub-cloudflare-release
+    steps:
+      - name: Validate upload run ID
+        env:
+          UPLOAD_RUN_ID: ${{ inputs.upload_run_id }}
+        run: |
+          set -euo pipefail
+          [[ "$UPLOAD_RUN_ID" =~ ^[1-9][0-9]{0,19}$ ]] || {
+            echo "::error::upload_run_id must be a numeric GitHub Actions run ID, not a Worker Version UUID"
+            exit 2
+          }
+
+      - name: Checkout the dispatched main commit for trusted receipt validation
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Set up Node 24.22.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: 24.22.0
+
+      - name: Download the receipt from the selected upload run
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: lab-ops-hub-version-receipt
+          run-id: ${{ inputs.upload_run_id }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/loh-receipt
+
+      - name: Verify the exact successful trusted upload run
+        id: receipt
+        env:
+          GH_TOKEN: ${{ github.token }}
+          UPLOAD_RUN_ID: ${{ inputs.upload_run_id }}
+        run: |
+          set -euo pipefail
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$UPLOAD_RUN_ID" > "$RUNNER_TEMP/loh-upload-run.json"
+          node pkgs/lab-ops-hub/release-tools/release-safety.mjs trust-receipt \
+            "$RUNNER_TEMP/loh-receipt/receipt.json" \
+            "$RUNNER_TEMP/loh-upload-run.json" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout the exact uploaded source commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ steps.receipt.outputs.source_sha }}
+
+      - name: Install pinned cf and Wrangler toolchain
+        working-directory: pkgs/lab-ops-hub
+        run: |
+          npm ci --prefix release-tools --no-audit --no-fund
+          test ! -e node_modules
+          ln -s release-tools/node_modules node_modules
+          node -e 'const p=require("./release-tools/package-lock.json"); if(p.packages["node_modules/cf"].version!=="1.0.0-rc.1" || p.packages["node_modules/wrangler"].version!=="4.163.0") process.exit(1)'
+          test "$(./node_modules/.bin/cf --version)" = "1.0.0-rc.1"
+
+      - name: Rebuild the uploaded source and verify configuration parity
+        working-directory: pkgs/lab-ops-hub
+        run: |
+          ./node_modules/.bin/cf build
+          node release-tools/verify-build.mjs
+          node --test release-tools/release-safety.test.mjs
+
+      - name: Verify receipt baseline, v2 metadata, and exact image pin
+        working-directory: pkgs/lab-ops-hub
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_LAB_OPS_HUB_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_LAB_OPS_HUB_API_TOKEN }}
+          BASELINE_VERSION_ID: ${{ steps.receipt.outputs.baseline_version_id }}
+          VERSION_ID: ${{ steps.receipt.outputs.version_id }}
+          VERSION_TAG: ${{ steps.receipt.outputs.version_tag }}
+        run: |
+          set -euo pipefail
+          test -n "$CLOUDFLARE_ACCOUNT_ID" || { echo "::error::missing environment variable CLOUDFLARE_LAB_OPS_HUB_ACCOUNT_ID"; exit 1; }
+          test -n "$CLOUDFLARE_API_TOKEN" || { echo "::error::missing protected environment secret CLOUDFLARE_LAB_OPS_HUB_API_TOKEN"; exit 1; }
+          ./node_modules/.bin/cf workers deployments list --worker lab-ops-hub > "$RUNNER_TEMP/loh-current-deployments.json"
+          node release-tools/release-safety.mjs verify-current "$RUNNER_TEMP/loh-current-deployments.json" "$BASELINE_VERSION_ID"
+          ./node_modules/.bin/cf workers versions get "$BASELINE_VERSION_ID" --worker lab-ops-hub > "$RUNNER_TEMP/loh-baseline-version.json"
+          node release-tools/release-safety.mjs verify-version "$RUNNER_TEMP/loh-baseline-version.json" "$BASELINE_VERSION_ID"
+          ./node_modules/.bin/cf workers versions get "$VERSION_ID" --worker lab-ops-hub > "$RUNNER_TEMP/loh-version.json"
+          node release-tools/release-safety.mjs verify-version "$RUNNER_TEMP/loh-version.json" "$VERSION_ID" "$VERSION_TAG"
+          node release-tools/release-safety.mjs deployment-versions "$RUNNER_TEMP/loh-receipt/receipt.json" "$RUNNER_TEMP/loh-versions.json"
+
+      - name: Recheck the serving baseline immediately before promotion
+        working-directory: pkgs/lab-ops-hub
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_LAB_OPS_HUB_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_LAB_OPS_HUB_API_TOKEN }}
+          BASELINE_VERSION_ID: ${{ steps.receipt.outputs.baseline_version_id }}
+        run: |
+          set -euo pipefail
+          ./node_modules/.bin/cf workers deployments list --worker lab-ops-hub > "$RUNNER_TEMP/loh-final-baseline.json"
+          node release-tools/release-safety.mjs verify-current "$RUNNER_TEMP/loh-final-baseline.json" "$BASELINE_VERSION_ID"
+
+      - name: Promote the receipt-bound version to 100%
+        working-directory: pkgs/lab-ops-hub
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_LAB_OPS_HUB_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_LAB_OPS_HUB_API_TOKEN }}
+        run: >-
+          ./node_modules/.bin/cf workers deployments create
+          --worker lab-ops-hub
+          --strategy percentage
+          --versions @${{ runner.temp }}/loh-versions.json
+
+      - name: Confirm the promoted version is the only version serving
+        working-directory: pkgs/lab-ops-hub
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_LAB_OPS_HUB_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_LAB_OPS_HUB_API_TOKEN }}
+          VERSION_ID: ${{ steps.receipt.outputs.version_id }}
+        run: |
+          set -euo pipefail
+          ./node_modules/.bin/cf workers deployments list --worker lab-ops-hub > "$RUNNER_TEMP/loh-promoted-deployments.json"
+          node release-tools/release-safety.mjs verify-deployed "$RUNNER_TEMP/loh-promoted-deployments.json" "$VERSION_ID"

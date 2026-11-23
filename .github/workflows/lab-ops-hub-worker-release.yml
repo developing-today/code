@@ -1,0 +1,103 @@
+name: Lab Ops Hub Worker Version upload
+
+on:
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: lab-ops-hub-cloudflare-release
+  cancel-in-progress: false
+
+jobs:
+  upload:
+    if: github.repository == 'developing-today/code' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    environment: lab-ops-hub-cloudflare-release
+    steps:
+      - name: Checkout the dispatched main commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Set up Node 24.22.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: 24.22.0
+
+      - name: Install pinned cf and Wrangler toolchain
+        working-directory: pkgs/lab-ops-hub
+        run: |
+          npm ci --prefix release-tools --no-audit --no-fund
+          test ! -e node_modules
+          ln -s release-tools/node_modules node_modules
+          node -e 'const p=require("./release-tools/package-lock.json"); if(p.packages["node_modules/cf"].version!=="1.0.0-rc.1" || p.packages["node_modules/wrangler"].version!=="4.163.0") process.exit(1)'
+          test "$(./node_modules/.bin/cf --version)" = "1.0.0-rc.1"
+
+      - name: Build Build Output v1 and verify Wrangler parity
+        working-directory: pkgs/lab-ops-hub
+        run: |
+          ./node_modules/.bin/cf build
+          node release-tools/verify-build.mjs
+          node --test release-tools/release-safety.test.mjs
+
+      - name: Dry-run Worker Version upload
+        working-directory: pkgs/lab-ops-hub
+        run: >-
+          ./node_modules/.bin/cf workers versions create
+          --prebuilt
+          --worker lab-ops-hub
+          --tag "git-${GITHUB_SHA::12}"
+          --message "git ${GITHUB_SHA}"
+          --dry-run
+
+      - name: Read the exact serving baseline and verify v2 plus the image pin
+        id: baseline
+        working-directory: pkgs/lab-ops-hub
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_LAB_OPS_HUB_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_LAB_OPS_HUB_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "$CLOUDFLARE_ACCOUNT_ID" || { echo "::error::missing environment variable CLOUDFLARE_LAB_OPS_HUB_ACCOUNT_ID"; exit 1; }
+          test -n "$CLOUDFLARE_API_TOKEN" || { echo "::error::missing protected environment secret CLOUDFLARE_LAB_OPS_HUB_API_TOKEN"; exit 1; }
+          ./node_modules/.bin/cf workers deployments list --worker lab-ops-hub > "$RUNNER_TEMP/loh-deployments.json"
+          baseline_id=$(node release-tools/release-safety.mjs baseline-id "$RUNNER_TEMP/loh-deployments.json")
+          ./node_modules/.bin/cf workers versions get "$baseline_id" --worker lab-ops-hub > "$RUNNER_TEMP/loh-baseline-version.json"
+          node release-tools/release-safety.mjs verify-version "$RUNNER_TEMP/loh-baseline-version.json" "$baseline_id"
+          echo "baseline_version_id=$baseline_id" >> "$GITHUB_OUTPUT"
+
+      - name: Upload Worker Version without promoting it
+        id: upload
+        working-directory: pkgs/lab-ops-hub
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_LAB_OPS_HUB_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_LAB_OPS_HUB_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          ./node_modules/.bin/cf workers versions create \
+            --prebuilt \
+            --worker lab-ops-hub \
+            --tag "git-${GITHUB_SHA::12}" \
+            --message "git ${GITHUB_SHA}" \
+            > "$RUNNER_TEMP/loh-upload.json"
+          version_id=$(node release-tools/release-safety.mjs upload-id "$RUNNER_TEMP/loh-upload.json")
+          ./node_modules/.bin/cf workers versions get "$version_id" --worker lab-ops-hub > "$RUNNER_TEMP/loh-version.json"
+          node release-tools/release-safety.mjs verify-version "$RUNNER_TEMP/loh-version.json" "$version_id" "git-${GITHUB_SHA::12}"
+          mkdir -p "$RUNNER_TEMP/loh-receipt"
+          node release-tools/release-safety.mjs receipt \
+            "$RUNNER_TEMP/loh-upload.json" \
+            "$RUNNER_TEMP/loh-version.json" \
+            "${{ steps.baseline.outputs.baseline_version_id }}" \
+            "$RUNNER_TEMP/loh-receipt/receipt.json"
+
+      - name: Save the exact upload receipt for a later promotion
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: lab-ops-hub-version-receipt
+          path: ${{ runner.temp }}/loh-receipt/receipt.json
+          if-no-files-found: error
+          retention-days: 14

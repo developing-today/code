@@ -10,7 +10,6 @@ on:
       - "pkgs/identity/**"
       - "pkgs/lab-ops-hub/container-image.nix"
       - "pkgs/lab-ops-hub/container/**"
-      - "pkgs/lab-ops-hub/wrangler.jsonc"
       - "pkgs/generic-containers/**"
       - "lib/default.nix"
       - "flake.nix"

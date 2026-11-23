@@ -4,6 +4,8 @@
 # config without pushing the image or deploying.
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")"
+# Reject malformed arguments before sourcing Bitwarden/SOPS credentials.
+LOH_CHECK_ARGS_ONLY=1 node deploy.mjs "$@"
 repo_root=$(git rev-parse --show-toplevel)
 # shellcheck source=/dev/null
 source "${repo_root}/lib/bitwarden-env.sh" >/dev/null

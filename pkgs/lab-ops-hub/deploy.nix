@@ -26,6 +26,7 @@ writeShellApplication {
     sops
   ];
   text = ''
+    LOH_CHECK_ARGS_ONLY=1 node ${./deploy.mjs} "$@"
     export LAB_OPS_HUB_PKG="${labOpsHub}"
     repo_root=$(git rev-parse --show-toplevel)
     exec bash "$repo_root/pkgs/lab-ops-hub/deploy.sh" "$@"

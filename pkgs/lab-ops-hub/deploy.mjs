@@ -1,6 +1,9 @@
-// Deploys the lab-ops-hub Worker AND its crawler container image as
-// one command — issue #5767, phase 2 ("worker deploy + its container
-// image push become one `deploy lab-ops-hub`"). Previously: build the
+// Legacy operator recovery: deploys the lab-ops-hub Worker AND its
+// crawler container image as one command — issue #5767, phase 2
+// ("worker deploy + its container image push become one `deploy
+// lab-ops-hub`"). The GHA cf Versions path is the separate normal
+// Worker release path; this operator command is retained until cutover.
+// Previously: build the
 // Nix image by hand, mint registry credentials by hand, crane push by
 // hand, then a raw `npm run deploy` in a checkout.
 //
@@ -61,6 +64,11 @@ for (const arg of args) {
     usageError(`unrecognized argument: ${arg}`);
   }
 }
+
+// The shell and Nix wrappers call this before reading Bitwarden/SOPS
+// credentials. It validates the complete command line without touching
+// the environment, filesystem, or network.
+if (process.env.LOH_CHECK_ARGS_ONLY === "1") process.exit(0);
 
 requireEnv("CLOUDFLARE_ACCOUNT_ID");
 const accountId = process.env.CLOUDFLARE_ACCOUNT_ID;
