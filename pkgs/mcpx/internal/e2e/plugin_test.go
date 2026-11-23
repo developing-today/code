@@ -395,3 +395,37 @@ func TestPluginRememberScopePersistsTheDaemonChoiceFromTheEnvironment(t *testing
 		t.Fatalf("the plugin.remember probe did not report a clean run:\n%s", out)
 	}
 }
+
+// TestPluginHeadlessSuppressesToastsFromTheEnvironment is the effect
+// probe for plugin.headless (#8472; the effect guard is #1971).
+//
+// The setting's whole effect lives in the opencode plugin host: when
+// discovery cannot settle on one daemon, the session plugin warns
+// the user with a toast — unless headless is set (MCPX_PLUGIN_HEADLESS
+// or the plugin option), because showToast succeeds whether or not
+// anyone is watching and a toast nobody can see is a leak, not a
+// notification. No Go caller produces the toast, so the probe drives
+// the host the way the plugin suite does — bun, the real session
+// plugin, two fake daemons on real sockets so boot discovery is
+// ambiguous — and the bun cases in
+// plugin/opencode/mcpx/headless.test.ts assert the observable
+// with/without difference: the warning toast arrives when headless
+// is cleared and never when it is set. A run that skipped the cases
+// is a run that did not check what this probe exists to check, so
+// skips fail it, as in TestThePluginSuiteRunsAgainstARealDaemon.
+func TestPluginHeadlessSuppressesToastsFromTheEnvironment(t *testing.T) {
+	bun := testsupport.RequireBinary(t, "bun")
+	recordSettingProbes(t)
+	cmd := exec.Command(bun, "test", "plugin/opencode/mcpx/headless.test.ts")
+	cmd.Dir = repoRoot(t)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("bun test plugin/opencode/mcpx/headless.test.ts: %v\n%s", err, out)
+	}
+	if strings.Contains(string(out), " skip") && !strings.Contains(string(out), " 0 skip") {
+		t.Fatalf("the plugin.headless probe cases were skipped:\n%s", out)
+	}
+	if !strings.Contains(string(out), " 0 fail") {
+		t.Fatalf("the plugin.headless probe did not report a clean run:\n%s", out)
+	}
+}
