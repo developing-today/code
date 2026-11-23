@@ -88,6 +88,73 @@ export interface MetadataRecord {
 export interface MetadataStore {
   insert(record: MetadataRecord): Promise<void>;
   get(repo: string, kind: "issue" | "pr", number: number): Promise<MetadataRecord | null>;
+  /** Every row belonging to one tenancy that matches the filter
+   * (#12587; design §7.1). Tenancy scoping lives in the store, not
+   * the route: a store can never be asked for another account's
+   * rows. A Turso-backed store pushes the filter onto its indexed
+   * extracted keys (#9060 §15); the fixture matches in memory with
+   * the same matcher the query surface applies to GitHub-fallback
+   * candidates, so both sources answer a filter identically. */
+  list(bindingId: string, filter: MetadataFilter): Promise<MetadataRecord[]>;
+}
+
+/** A Metadata query filter (#12587; #9060 §13 query path, design
+ * §7.1): list/filter by Metadata fields — direct parent, session,
+ * lane, host, queue id, link relation/status pairs. Every field is
+ * optional; a set field must match (AND across fields). The link
+ * relation and status, when both are set, must hold of the SAME
+ * link — they are a pair, not two independent existentials. */
+export interface MetadataFilter {
+  repo?: string;
+  kind?: "issue" | "pr";
+  directParent?: { repo: string; number: number };
+  sessionId?: string;
+  lane?: string;
+  host?: string;
+  queueId?: string;
+  linkRelation?: string;
+  linkStatus?: string;
+  linkTarget?: { repo: string; number: number };
+}
+
+/** Does a stored record's extracted key set name the same
+ * {repo, number} item reference? (§12 references are objects; a
+ * non-object value never matches a reference filter.) */
+function sameItemRef(value: unknown, ref: { repo: string; number: number }): boolean {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const v = value as Record<string, unknown>;
+  return v["repo"] === ref.repo && v["number"] === ref.number;
+}
+
+/** The one matcher for Metadata filters, applied to a record's
+ * extracted keys. The fixture store and the query surface's GitHub
+ * fallback share it, so a filter means the same thing over both
+ * sources (#9060 §13: one query path, two sources). */
+export function matchesMetadataFilter(record: MetadataRecord, filter: MetadataFilter): boolean {
+  if (filter.repo !== undefined && record.repo !== filter.repo) return false;
+  if (filter.kind !== undefined && record.kind !== filter.kind) return false;
+  const x = record.extracted;
+  if (filter.directParent !== undefined && !sameItemRef(x.directParent, filter.directParent)) {
+    return false;
+  }
+  if (filter.sessionId !== undefined && x.sessionId !== filter.sessionId) return false;
+  if (filter.lane !== undefined && x.lane !== filter.lane) return false;
+  if (filter.host !== undefined && x.host !== filter.host) return false;
+  if (filter.queueId !== undefined && x.queueId !== filter.queueId) return false;
+  if (
+    filter.linkRelation !== undefined ||
+    filter.linkStatus !== undefined ||
+    filter.linkTarget !== undefined
+  ) {
+    const hit = x.links.some(
+      (link) =>
+        (filter.linkRelation === undefined || link.relation === filter.linkRelation) &&
+        (filter.linkStatus === undefined || link.status === filter.linkStatus) &&
+        (filter.linkTarget === undefined || sameItemRef(link.target, filter.linkTarget)),
+    );
+    if (!hit) return false;
+  }
+  return true;
 }
 
 function cloneRecord(record: MetadataRecord): MetadataRecord {
@@ -117,6 +184,16 @@ export class FixtureMetadataStore implements MetadataStore {
   async get(repo: string, kind: "issue" | "pr", number: number): Promise<MetadataRecord | null> {
     const row = this.rows.get(this.key(repo, kind, number));
     return row ? cloneRecord(row) : null;
+  }
+
+  async list(bindingId: string, filter: MetadataFilter): Promise<MetadataRecord[]> {
+    const out: MetadataRecord[] = [];
+    for (const row of this.rows.values()) {
+      if (row.bindingId !== bindingId) continue;
+      if (!matchesMetadataFilter(row, filter)) continue;
+      out.push(cloneRecord(row));
+    }
+    return out;
   }
 }
 

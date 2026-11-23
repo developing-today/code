@@ -4,10 +4,11 @@
 // One Cloudflare Worker whose route modules (stamping, query, queue,
 // ingestion, sync) share the auth/tenancy plumbing in src/auth.ts,
 // src/jwt.ts and src/tenancy.ts. The skeleton (#12583) landed the
-// plumbing with stub doors; the session registry (#12584) and the
-// stamping create path (#12585) are real over the same plumbing. The
-// remaining doors are filled by their own issues (#12587 query,
-// #12589 queue door, #12590 ingestion, #12591 sync).
+// plumbing with stub doors; the session registry (#12584), the
+// stamping create path (#12585), and the Metadata query surface
+// (#12587) are real over the same plumbing. The remaining doors are
+// filled by their own issues (#12589 queue door, #12590 ingestion,
+// #12591 sync).
 
 import { configFromEnv, type HostedEnv } from "./config.ts";
 import { AppRotationGitHubWriter, FixtureGitHubWriter } from "./github.ts";
@@ -43,6 +44,9 @@ export default {
     const githubWriter = config.github
       ? new AppRotationGitHubWriter(config.github)
       : new FixtureGitHubWriter();
-    return dispatch(req, { config, sessions, metadataStore, githubWriter });
+    // The query door's read path (#12587) is the same object: both
+    // writer classes also implement GitHubItemSource over the same
+    // rotation / recorded items.
+    return dispatch(req, { config, sessions, metadataStore, githubWriter, githubItems: githubWriter });
   },
 };

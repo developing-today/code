@@ -101,14 +101,18 @@ test("an agent credential without lane/session claims is refused", async () => {
 });
 
 test("a service token resolves on its scoped doors and is refused outside them", async () => {
-  // The fixture token is scoped to stamping + query; the query door
-  // still stubs, so an in-scope call answers 501 (past the scope
-  // check), while the unscoped queue door refuses at the check.
+  // The fixture token is scoped to stamping + query. The stamping
+  // door is live (#12585), so an in-scope call gets past the scope
+  // check into the handler — which refuses 503 here (the harness
+  // config carries no stamp material) — while the unscoped queue
+  // door refuses at the check itself. (The probe used the query
+  // door's 501 stub until #12587 landed it.)
   const inScope = await dispatch(
-    bearerReq("/v1/query", SERVICE_TOKEN, { method: "POST" }),
+    bearerReq("/v1/stamps", SERVICE_TOKEN, { method: "POST" }),
     h.deps,
   );
-  assert.equal(inScope.status, 501);
+  assert.equal(inScope.status, 503);
+  assert.equal(((await inScope.json()) as { error: string }).error, "stamp_signing_not_configured");
 
   const outOfScope = await dispatch(
     bearerReq("/v1/queue", SERVICE_TOKEN, { method: "POST" }),

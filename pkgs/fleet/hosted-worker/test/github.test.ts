@@ -174,3 +174,110 @@ test("installation tokens are cached across creates within their lifetime", asyn
   await writer.createItem({ repo: "o/r", kind: "issue", title: "c", body: "d" });
   assert.equal(calls.filter((c) => c.url.includes("access_tokens")).length, 1);
 });
+
+// --- The read side (#12587): the same rotation class serves the
+// query surface's GitHubItemSource over the same tokens and the
+// same failover rule.
+
+/** A fake GitHub for reads: token exchanges succeed per
+ * installation; GETs are answered by the supplied behaviour, which
+ * sees the installation whose token the call carries. */
+function fakeGitHubReads(readBehaviour: (installation: number, url: string) => Response): {
+  fetchFn: FetchFn;
+  calls: RecordedCall[];
+} {
+  const calls: RecordedCall[] = [];
+  const tokenToInstallation = new Map<string, number>();
+  const fetchFn: FetchFn = async (url, init) => {
+    const headers = new Headers(init.headers);
+    calls.push({ url, authorization: headers.get("authorization") });
+    const exchange = /\/app\/installations\/(\d+)\/access_tokens$/.exec(url);
+    if (exchange) {
+      const installation = Number(exchange[1]);
+      const token = `installation-token-${installation}`;
+      tokenToInstallation.set(token, installation);
+      return jsonResponse(201, {
+        token,
+        expires_at: new Date(NOW_MS + 3600_000).toISOString(),
+      });
+    }
+    const auth = headers.get("authorization") ?? "";
+    const token = auth.replace(/^Bearer /, "");
+    const installation = tokenToInstallation.get(token);
+    assert.ok(installation, `read called with an unexchanged token: ${auth}`);
+    return readBehaviour(installation, url);
+  };
+  return { fetchFn, calls };
+}
+
+test("getItem reads an issue and a PR through the rotation, kinds from the pull_request marker", async () => {
+  const { fetchFn } = fakeGitHubReads((_installation, url) => {
+    if (url.endsWith("/issues/7")) {
+      return jsonResponse(200, { number: 7, html_url: "https://github.com/o/r/issues/7", body: "issue body" });
+    }
+    if (url.endsWith("/issues/8")) {
+      return jsonResponse(200, {
+        number: 8,
+        html_url: "https://github.com/o/r/pull/8",
+        body: "pr body",
+        pull_request: { url: "https://api.github.com/o/r/pulls/8" },
+      });
+    }
+    return jsonResponse(404, { message: "Not Found" });
+  });
+  const reader = new AppRotationGitHubWriter(config, fetchFn, () => NOW_MS);
+  assert.deepEqual(await reader.getItem("o/r", "issue", 7), {
+    repo: "o/r",
+    kind: "issue",
+    number: 7,
+    url: "https://github.com/o/r/issues/7",
+    body: "issue body",
+  });
+  assert.equal((await reader.getItem("o/r", "pr", 8))?.body, "pr body");
+  // Kind is checked against the marker: #8 is not an issue.
+  assert.equal(await reader.getItem("o/r", "issue", 8), null);
+  // A GitHub 404 is a null, not an error.
+  assert.equal(await reader.getItem("o/r", "issue", 99), null);
+});
+
+test("listItems follows the next link and stops at the page cap", async () => {
+  const page = (n: number) => [
+    { number: n, html_url: `https://github.com/o/r/issues/${n}`, body: `b${n}` },
+  ];
+  const { fetchFn, calls } = fakeGitHubReads((_installation, url) => {
+    if (url.includes("page=2")) {
+      return jsonResponse(200, page(2), {
+        link: `<https://api.github.com/repos/o/r/issues?state=all&per_page=100&page=3>; rel="next"`,
+      });
+    }
+    if (url.includes("page=3")) {
+      return jsonResponse(200, page(3));
+    }
+    return jsonResponse(200, page(1), {
+      link: `<https://api.github.com/repos/o/r/issues?state=all&per_page=100&page=2>; rel="next"`,
+    });
+  });
+  const reader = new AppRotationGitHubWriter(config, fetchFn, () => NOW_MS);
+  const items = await reader.listItems("o/r");
+  assert.deepEqual(items.map((i) => i.number), [1, 2, 3]);
+  assert.equal(calls.filter((c) => c.url.includes("/issues?")).length, 3);
+});
+
+test("reads fail over on rate-limit refusals and surface real failures", async () => {
+  const { fetchFn } = fakeGitHubReads((installation, url) => {
+    if (installation === 111) return jsonResponse(429, { message: "secondary rate limit" });
+    return jsonResponse(200, { number: 7, html_url: "https://github.com/o/r/issues/7", body: "b" });
+  });
+  const reader = new AppRotationGitHubWriter(config, fetchFn, () => NOW_MS);
+  assert.equal((await reader.getItem("o/r", "issue", 7))?.body, "b");
+
+  const failing = fakeGitHubReads(() => jsonResponse(500, { message: "boom" }));
+  const reader2 = new AppRotationGitHubWriter(config, failing.fetchFn, () => NOW_MS);
+  await assert.rejects(
+    () => reader2.getItem("o/r", "issue", 7),
+    (e: unknown) => {
+      assert.equal((e as { code?: string }).code, "github_read_failed");
+      return true;
+    },
+  );
+});
