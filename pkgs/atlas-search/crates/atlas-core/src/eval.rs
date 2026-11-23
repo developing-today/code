@@ -626,7 +626,7 @@ pub fn evaluate(data: &EvalData, split: Split) -> Result<EvalReport> {
 ///
 /// Fails for a held-out **test**-split report (#5741: the test split
 /// is for final scoring only; tuning on it would invalidate it), and
-/// for a report with no signals.
+/// for a report with no signals or a signal with no scored queries.
 pub fn select_best_signal(report: &EvalReport, metric: Metric) -> Result<String> {
     if report.split == Split::Test {
         return Err(Error::fatal(
@@ -636,6 +636,12 @@ pub fn select_best_signal(report: &EvalReport, metric: Metric) -> Result<String>
     }
     let mut best: Option<(&SignalReport, f64)> = None;
     for signal in &report.signals {
+        if signal.queries_scored == 0 {
+            return Err(Error::fatal(format!(
+                "cannot select a signal: {:?} has no scored development queries",
+                signal.signal
+            )));
+        }
         let value = metric.of(&signal.overall);
         if best.is_none_or(|(best_signal, best_value)| {
             value > best_value
@@ -798,6 +804,32 @@ mod tests {
         );
     }
 
+    // Oracle: a query needs a positive judgment to enter the comparison.
+    // An explicitly judged miss still has a defined score of zero.
+    #[test]
+    fn selection_requires_scored_queries() {
+        let mut d = data(serde_json::json!({
+            "format": "atlas-eval/v1",
+            "queries": [{"id": "q", "class": "code", "split": "dev"}],
+            "qrels": [{"query": "q", "doc": "a", "grade": 0}],
+            "runs": [
+                {"signal": "b", "results": {"q": []}},
+                {"signal": "a", "results": {"q": []}}
+            ]
+        }));
+        let unscored = evaluate(&d, Split::Dev).unwrap();
+        assert_eq!(unscored.signals[0].queries_scored, 0);
+        assert!(select_best_signal(&unscored, Metric::Ndcg10)
+            .unwrap_err()
+            .to_string()
+            .contains("no scored development queries"));
+
+        d.qrels[0].grade = 1;
+        let judged = evaluate(&d, Split::Dev).unwrap();
+        assert_eq!(judged.signals[0].queries_scored, 1);
+        assert_eq!(select_best_signal(&judged, Metric::Ndcg10).unwrap(), "a");
+    }
+
     fn report_with_scores(scores: &[(&str, f64)]) -> EvalReport {
         EvalReport {
             format: REPORT_FORMAT.to_owned(),
@@ -806,8 +838,8 @@ mod tests {
                 .iter()
                 .map(|(signal, ndcg10)| SignalReport {
                     signal: (*signal).to_owned(),
-                    queries_total: 0,
-                    queries_scored: 0,
+                    queries_total: 1,
+                    queries_scored: 1,
                     overall: MetricMeans {
                         ndcg10: *ndcg10,
                         recall100: 0.0,
