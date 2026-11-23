@@ -4596,6 +4596,146 @@ describe("the edge does the core itself", () => {
       result: null,
     });
   });
+
+  test("an older held action the laptop never took is done here first, under its own name", async () => {
+    const w = await primary();
+    const comment = (method: string, url: string) => method === "POST" && /\/issues\/\d+\/comments$/.test(url);
+    // This side is turned away for comments, so the older one waits.
+    w.ghRefuses.push(comment);
+    w.net.hostUp = false;
+    w.net.edgeUp = false;
+    const olderId = "0f000000-0000-4000-8000-000000000001";
+    expect(await (await w.act("issue.comment", { issue: 7, text: "older" }, olderId)).json()).toEqual({
+      ok: true,
+      held: true,
+      result: null,
+    });
+    expect((w.stored.get("held") as { id: string }[]).map((h) => h.id)).toEqual([olderId]);
+    // The token is put right and this side takes comments back.
+    w.ghRefuses.length = 0;
+    w.net.hostUp = true;
+    w.net.edgeUp = true;
+    expect((await w.act("edge.retry", {})).status).toBe(200);
+    // A newer comment about the same issue: the older one the laptop
+    // never took is done here first, under its own name, then the newer.
+    const newerId = "0f000000-0000-4000-8000-000000000002";
+    const second = await w.act("issue.comment", { issue: 7, text: "newer" }, newerId);
+    const done = (await second.json()) as { ok?: boolean; held?: boolean };
+    expect(done).toMatchObject({ ok: true });
+    expect(done.held).toBeUndefined();
+    const posted = w.githubCalls
+      .filter((c) => comment(c.method, c.url))
+      .map((c) => (JSON.parse(c.body ?? "{}") as { body?: string }).body);
+    // The refused first try is recorded too: the two that count come last, in order.
+    expect(posted.slice(-2)).toEqual(["older", "newer"]);
+    expect(w.stored.get("held") ?? []).toEqual([]);
+    expect(w.stored.get(`a:${olderId}`)).toMatchObject({ kind: "issue.comment", state: "done" });
+    expect(w.stored.get(`a:${newerId}`)).toMatchObject({ kind: "issue.comment", state: "done" });
+    expect(w.stored.get("handed") ?? []).toEqual([]);
+  });
+
+  test("a held rank is replaced by a newer rank about the same issue: the last one wins", async () => {
+    const w = await primary();
+    const labels = (method: string, url: string) => method === "POST" && /\/issues\/201\/labels$/.test(url);
+    // This side is turned away for labelling, so the older rank waits.
+    w.ghRefuses.push(labels);
+    w.net.hostUp = false;
+    w.net.edgeUp = false;
+    const olderId = "0f000000-0000-4000-8000-000000000011";
+    expect(await (await w.act("issue.rank", { issue: 201, rank: "next" }, olderId)).json()).toEqual({
+      ok: true,
+      held: true,
+      result: null,
+    });
+    expect((w.stored.get("held") as { id: string }[]).map((h) => h.id)).toEqual([olderId]);
+    // The token is put right and this side takes ranking back.
+    w.ghRefuses.length = 0;
+    w.net.hostUp = true;
+    w.net.edgeUp = true;
+    expect((await w.act("edge.retry", {})).status).toBe(200);
+    // A newer rank about the same issue: the older one is dropped as
+    // replaced, and only the newer is done.
+    const newerId = "0f000000-0000-4000-8000-000000000012";
+    const second = await w.act("issue.rank", { issue: 201, rank: "now" }, newerId);
+    expect(await second.json()).toMatchObject({ ok: true });
+    expect(w.stored.get("held") ?? []).toEqual([]);
+    expect(w.stored.get(`a:${olderId}`)).toMatchObject({ kind: "issue.rank", state: "done", status: 409 });
+    expect(w.stored.get(`a:${newerId}`)).toMatchObject({ kind: "issue.rank", state: "done" });
+    expect(w.ghLabels[201]).toContain("now");
+    expect(w.ghLabels[201]).not.toContain("next");
+  });
+
+  test("an older held action handed to the laptop blocks a newer one about the same thing", async () => {
+    const w = await primary();
+    const comment = (method: string, url: string) => method === "POST" && /\/issues\/\d+\/comments$/.test(url);
+    // This side is turned away for comments, so the older one waits.
+    w.ghRefuses.push(comment);
+    w.net.hostUp = false;
+    w.net.edgeUp = false;
+    const olderId = "0f000000-0000-4000-8000-000000000021";
+    expect(await (await w.act("issue.comment", { issue: 7, text: "older" }, olderId)).json()).toEqual({
+      ok: true,
+      held: true,
+      result: null,
+    });
+    // The token is put right and this side takes comments back.
+    w.ghRefuses.length = 0;
+    w.net.hostUp = true;
+    w.net.edgeUp = true;
+    expect((await w.act("edge.retry", {})).status).toBe(200);
+    // The laptop reports and is handed the older one, which it does.
+    await w.hostReads();
+    const answer = await w.link.now.once();
+    expect(answer?.commands.map((c) => c.id)).toEqual([olderId]);
+    expect(w.ran.filter((r) => r.kind === "issue.comment")).toHaveLength(1);
+    expect(w.stored.get("handed")).toEqual([olderId]);
+    // A newer comment about the same issue waits behind the handed one:
+    // it is kept, not done here.
+    const newerId = "0f000000-0000-4000-8000-000000000022";
+    const second = await w.act("issue.comment", { issue: 7, text: "newer" }, newerId);
+    expect(await second.json()).toEqual({ ok: true, held: true, result: null });
+    expect((w.stored.get("held") as { id: string }[]).map((h) => h.id)).toEqual([olderId, newerId]);
+    // Nothing was done here: the laptop did the older, the newer waits.
+    // The only call this side made was the older one's refused try.
+    expect(
+      w.githubCalls.filter((c) => comment(c.method, c.url)).map((c) => c.body),
+    ).toEqual(['{"body":"older"}']);
+    expect(w.ran.filter((r) => r.kind === "issue.comment")).toHaveLength(1);
+  });
+
+  test("a newer action about something else is not held behind an older one", async () => {
+    const w = await primary();
+    const comment = (method: string, url: string) => method === "POST" && /\/issues\/\d+\/comments$/.test(url);
+    // This side is turned away for comments, so the older one waits.
+    w.ghRefuses.push(comment);
+    w.net.hostUp = false;
+    w.net.edgeUp = false;
+    const olderId = "0f000000-0000-4000-8000-000000000031";
+    expect(await (await w.act("issue.comment", { issue: 7, text: "older" }, olderId)).json()).toEqual({
+      ok: true,
+      held: true,
+      result: null,
+    });
+    // The token is put right and this side takes comments back.
+    w.ghRefuses.length = 0;
+    w.net.hostUp = true;
+    w.net.edgeUp = true;
+    expect((await w.act("edge.retry", {})).status).toBe(200);
+    // A newer comment about another issue goes straight through.
+    const newerId = "0f000000-0000-4000-8000-000000000032";
+    const second = await w.act("issue.comment", { issue: 8, text: "unrelated" }, newerId);
+    const done = (await second.json()) as { ok?: boolean; held?: boolean };
+    expect(done).toMatchObject({ ok: true });
+    expect(done.held).toBeUndefined();
+    expect((w.stored.get("held") as { kind: string; args: Record<string, unknown> }[]).map((h) => h.args.issue)).toEqual([
+      7,
+    ]);
+    const posted = w.githubCalls
+      .filter((c) => comment(c.method, c.url))
+      .map((c) => (JSON.parse(c.body ?? "{}") as { body?: string }).body);
+    expect(posted.slice(-1)).toEqual(["unrelated"]);
+    expect(w.stored.get(`a:${newerId}`)).toMatchObject({ kind: "issue.comment", state: "done" });
+  });
 });
 
 describe("telling the owner, with no machine", () => {
