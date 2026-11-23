@@ -1606,6 +1606,9 @@ let
               grep -q "queue-transport-alert" list.txt
               grep -q "message-bridge" list.txt
               grep -q "secrets-broker" list.txt
+              grep -q "pm-aggregator" list.txt
+              grep -q "pm-projector" list.txt
+              grep -q "pm-tunnel" list.txt
               grep -q "quota-recorder" list.txt
               grep -q "session-proxy" list.txt
               grep -q "mcpx" list.txt

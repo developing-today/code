@@ -106,6 +106,12 @@ export function verifyStackToken(
     throw new Error("unsupported stack token header");
   }
   const raw = decode<Record<string, unknown>>(encodedPayload, "payload");
+  // Verification requires explicit timestamps: normalizeClaims substitutes
+  // minting defaults for absent iat/exp, which would let a correctly signed
+  // timestamp-less token verify indefinitely instead of expiring.
+  if (typeof raw.iat !== "number" || typeof raw.exp !== "number") {
+    throw new Error("invalid stack token timestamps");
+  }
   const claims = normalizeClaims(
     {
       sub: raw.sub as string,

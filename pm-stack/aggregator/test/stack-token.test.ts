@@ -1,3 +1,4 @@
+import { createHmac } from "node:crypto";
 import { describe, expect, test } from "bun:test";
 import {
   STACK_TOKEN_TTL_SECONDS,
@@ -34,6 +35,25 @@ describe("stack tokens", () => {
     expect(() => verifyStackToken(token, SECRET, "kaneo", NOW + 301_000)).toThrow(/expired/);
     expect(() => verifyStackToken(`${token}x`, SECRET, "kaneo", NOW + 1_000)).toThrow(/signature/);
     expect(() => mintStackToken(claims({ exp: NOW / 1000 + 301 }), SECRET, NOW)).toThrow(/ttl/);
+  });
+
+  test("rejects correctly signed tokens that omit explicit timestamps", () => {
+    const encode = (value: unknown): string =>
+      Buffer.from(JSON.stringify(value), "utf8").toString("base64url");
+    const handSigned = (payload: Record<string, unknown>): string => {
+      const body = `${encode({ alg: "HS256", typ: "JWT" })}.${encode(payload)}`;
+      const sig = createHmac("sha256", SECRET).update(body).digest("base64url");
+      return `${body}.${sig}`;
+    };
+    const base = { sub: "agent-7", role: "agent", aud: "kaneo", act: "task.write" };
+    for (const payload of [base, { ...base, iat: null, exp: null }]) {
+      const token = handSigned(payload);
+      expect(() => verifyStackToken(token, SECRET, "kaneo", NOW)).toThrow(/timestamps/);
+      // Still rejected years later: no fresh defaults are substituted.
+      expect(() => verifyStackToken(token, SECRET, "kaneo", NOW + 3 * 365 * 24 * 3600_000)).toThrow(
+        /timestamps/,
+      );
+    }
   });
 
   test("does not accept identity or role claims from an exchange body", () => {

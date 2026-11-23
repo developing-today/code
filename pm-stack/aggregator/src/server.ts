@@ -2446,7 +2446,7 @@ async function handler(req: Request): Promise<Response> {
     if (!access.ok) return json({ error: access.error }, access.status);
     if (!access.verified || !access.identity) return json({ error: "verified Access identity required" }, 403);
     const secret = cfg.stackTokenSecret;
-    if (secret === "") return json({ error: "stack token exchange is not configured" }, 503);
+    if (!secret) return json({ error: "stack token exchange is not configured" }, 503);
     const identity = access.identity.sub || access.identity.email;
     const role: StackTokenRole =
       access.author.kind === "drew" ? "owner" : await identityRegistryStore.roleFor(identity);

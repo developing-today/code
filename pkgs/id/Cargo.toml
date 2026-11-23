@@ -30,6 +30,7 @@ members = [
   "crates/id-web",
   "crates/id-render",
   "crates/id-native-shell",
+  "crates/id-hw-shell",
   "crates/id-cli",
   "crates/id-import-notion",
 ]

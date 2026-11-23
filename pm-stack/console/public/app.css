@@ -27,6 +27,12 @@
     --quiet: #5b6777;
     --accent: #0b63ce;
     --accent-ink: #ffffff;
+    /* The status colours above are made for a dark page: on a light one
+       they are too faint to read (2.2 to 3.4 to 1). These are at least
+       5 to 1 on every light surface here. */
+    --good: #18753a;
+    --warn: #8a5a00;
+    --bad: #c5222c;
   }
 }
 * {
@@ -42,8 +48,17 @@ body {
   padding: calc(var(--top-h) + env(safe-area-inset-top)) 0 calc(var(--tab-h) + env(safe-area-inset-bottom) + 12px);
   -webkit-tap-highlight-color: transparent;
 }
+/* A link in running text is underlined: its colour alone is too close
+   to the text's to tell it by. Links drawn as rows or buttons say what
+   they are by their shape. */
 a {
   color: var(--accent);
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 2px;
+}
+a.link,
+a.button {
   text-decoration: none;
 }
 [hidden] {
@@ -133,7 +148,9 @@ main {
   min-width: 18px;
   padding: 0 5px;
   border-radius: 9px;
-  background: var(--bad);
+  /* White on the theme's own red is too faint in either theme; this
+     red carries white at 5.4 to 1. */
+  background: #cf222e;
   color: #fff;
   font-size: 0.68rem;
   font-weight: 700;

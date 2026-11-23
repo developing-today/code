@@ -1379,6 +1379,19 @@
       "notes": "Existing nightly full-flake check runs test-sandbox over default workspace members; this crate's integration targets are distinct from the five explicit PR targets added by #10329."
     },
     {
+      "id": "id.rust.id-events.integration",
+      "paths": ["pkgs/id/crates/id-events/tests/append_list_state_machine.rs"],
+      "invocation": "nix flake check ./pkgs/id (check test-sandbox runs cargo nextest --all-features for default workspace members)",
+      "venue": {
+        "workflow": ".github/workflows/id-check.yml",
+        "job_step": "full-flake-check / Run full nix flake check",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped",
+      "notes": "Model-based append-admission state-machine oracle for A-GRAPH-9127-02 (#10237)."
+    },
+    {
       "id": "id.rust.id-currency-registry.integration",
       "paths": [
         "pkgs/id/crates/id-currency-registry/tests/acceptance.rs",

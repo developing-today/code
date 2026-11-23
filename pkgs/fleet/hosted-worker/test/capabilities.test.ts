@@ -2,8 +2,9 @@
 // `fleet capabilities` document shape (fleet-registry / print_capabilities)
 // for the mirrored fields, and the design §2 dispositions for the
 // hosted values. The document must be truthful: a domain reports
-// available only when its filling issue landed — so far only the
-// hosted-transformed `gh` domain, via the stamping door (#12585).
+// available only when its filling issue landed — the
+// hosted-transformed `gh` domain via the stamping door (#12585),
+// and the `queue` domain via the queue door (#12589).
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
@@ -62,6 +63,7 @@ test("capabilities mirrors the native shape with hosted values", async () => {
     assert.ok(Array.isArray(d.aliases));
     assert.ok(Array.isArray(d.capabilities));
     if (d.name === "gh") continue; // asserted below: landed by #12585
+    if (d.name === "queue") continue; // asserted below: landed by #12589
     // Truth: no other business domain is available at this door yet.
     assert.equal(d.available, false, `${d.name} must not report available yet`);
     assert.equal(d.state, "not-in-build");
@@ -74,8 +76,12 @@ test("capabilities mirrors the native shape with hosted values", async () => {
   // door): the domain reports available and its capability is listed.
   assert.equal(byName.get("gh")?.available, true);
   assert.equal(byName.get("gh")?.state, "available");
-  assert.deepEqual(doc.capabilities, ["gh"]);
-  assert.deepEqual(doc.compiled_capabilities, ["gh"]);
+  // #12589 landed the queue front door: the queue domain reports
+  // available too, ahead of gh in the registry's domain order.
+  assert.equal(byName.get("queue")?.available, true);
+  assert.equal(byName.get("queue")?.state, "available");
+  assert.deepEqual(doc.capabilities, ["queue", "gh"]);
+  assert.deepEqual(doc.compiled_capabilities, ["queue", "gh"]);
   assert.equal(byName.get("queue")?.hosted, "hosted-front-door");
   assert.equal(byName.get("queue")?.filling_issue, "#12589");
   assert.equal(byName.get("secrets")?.hosted, "native-only");
@@ -95,4 +101,8 @@ test("capabilities mirrors the native shape with hosted values", async () => {
   const doorById = new Map(doc.doors.map((d) => [d.id, d]));
   assert.equal(doorById.get("stamping")?.state, "live");
   assert.equal(doorById.get("query")?.state, "live");
+  assert.equal(doorById.get("queue")?.state, "live");
+  assert.equal(doorById.get("ingestion")?.state, "live");
+  // #12591 landed the sync door: every component-C door is live.
+  assert.equal(doorById.get("sync")?.state, "live");
 });
