@@ -60,6 +60,7 @@ pub mod local;
 pub mod manifest;
 pub mod memory;
 pub mod owner_inventory;
+pub mod remediation;
 pub mod search;
 pub mod shards;
 pub mod shingles;
