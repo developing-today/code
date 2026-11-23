@@ -661,6 +661,12 @@ skipped launcher phases).
 
 <!-- BEGIN GENERATED: settings.Registry(); `go test ./internal/settings -run TestTheDocumentationListsEverySetting -update` -->
 
+### adapters
+
+| setting | kind | default | scope | hot | flag | variable | governs |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `adapters.allowBare` | bool | `false` | client | no | `--adapters-allow-bare` | `MCPX_ADAPTERS_ALLOW_BARE` | permit bare (passthrough) adapter declarations to load |
+
 ### artifacts
 
 | setting | kind | default | scope | hot | flag | variable | governs |

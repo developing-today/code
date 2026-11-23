@@ -202,6 +202,7 @@ var EffectProbes = map[string]string{
 	"logging.trace":                      "TestLoggingTraceLogsEachCall",
 	"exec.where":                         "TestExecWhereRemoteRunsOnTheDaemon",
 	"paths.adapters":                     "TestPathsAdaptersFindsADeclarationFile",
+	"adapters.allowBare":                 "TestAdaptersAllowBareGatesABareDeclaration",
 	"paths.apis":                         "TestPathsAPIsFindsADeclarationFile",
 	"script.runtime":                     "TestScriptRuntimeSelectsTheRuntime",
 	"script.runtimeOrder":                "TestScriptRuntimeOrderRanksTheAutoPick",

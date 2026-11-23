@@ -24,7 +24,36 @@ type AdapterFile struct {
 
 // loadAdapters reads declarations from the configured paths.
 func (a *App) loadAdapters() ([]adapter.Spec, error) {
-	return loadAdapterFiles(splitPathList(a.Settings().String("paths.adapters")))
+	specs, err := loadAdapterFiles(splitPathList(a.Settings().String("paths.adapters")))
+	if err != nil {
+		return nil, err
+	}
+	if err := checkBareAllowed(specs, a.Settings().Bool("adapters.allowBare")); err != nil {
+		return nil, err
+	}
+	return specs, nil
+}
+
+// checkBareAllowed is the adapters.allowBare gate (#11147, from #1962).
+//
+// A bare declaration exposes a binary's whole argv surface, so loading
+// one is a policy decision, not just a parse: while the setting is off
+// (its default) any bare declaration fails the load, naming the setting
+// that would permit it, so an organisation can forbid passthrough
+// declarations centrally instead of auditing every file paths.adapters
+// might be pointed at.
+func checkBareAllowed(specs []adapter.Spec, allowBare bool) error {
+	if allowBare {
+		return nil
+	}
+	for _, s := range specs {
+		if s.Bare {
+			return fmt.Errorf("adapter %q is a bare (passthrough) declaration, and adapters.allowBare is off: "+
+				"set adapters.allowBare to true (or MCPX_ADAPTERS_ALLOW_BARE=true) to permit bare declarations, "+
+				"or remove \"bare\": true from the declaration", s.Name)
+		}
+	}
+	return nil
 }
 
 // loadAdapterFiles reads and validates declarations from these files.
@@ -210,6 +239,12 @@ func (a *App) CmdAdapter(ctx context.Context, args []string) error {
 		}
 		if len(fs.Args()) > 1 {
 			if specs, err = loadAdapterFiles(fs.Args()[1:]); err != nil {
+				return err
+			}
+			// The explicit files bypass loadAdapters, so the gate is
+			// applied here too: naming a file directly is not a way
+			// around adapters.allowBare.
+			if err := checkBareAllowed(specs, a.Settings().Bool("adapters.allowBare")); err != nil {
 				return err
 			}
 		}
