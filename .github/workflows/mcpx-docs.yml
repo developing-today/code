@@ -136,6 +136,9 @@ jobs:
       - name: Stage fleet book into site/fleet
         run: |
           rm -rf site/fleet
+          # site/ is a copy of a Nix store path: its directories are
+          # read-only, so make the root writable before adding fleet/.
+          chmod u+w site
           cp -rL result-fleet-docs site/fleet
           test -f site/fleet/index.html
 
