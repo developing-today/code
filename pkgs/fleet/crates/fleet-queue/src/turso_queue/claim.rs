@@ -42,11 +42,11 @@ pub(crate) fn verb_enqueue(t: &TursoBackend, req: &Value) -> Value {
     // own (label_enrich.rs has the semantics). The mirror is a read
     // model and never gates work: a failed lookup warns and the
     // enqueue proceeds exactly as it did before this change.
+    let dedupe = packet
+        .get("dedupe_key")
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
     if let Some(payload) = packet.get_mut("payload") {
-        let dedupe = packet
-            .get("dedupe_key")
-            .and_then(|v| v.as_str())
-            .map(str::to_string);
         if let Err(e) = enrich_payload_labels(t, payload, dedupe.as_deref()) {
             warnings.push(format!(
                 "payload.labels: GitHub mirror enrichment skipped ({e})"
