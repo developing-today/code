@@ -46,16 +46,17 @@ export const DIRECT_ACTIONS = [
  * the answer this side kept still stands. `write` is anything that may
  * have changed something. `limited` is a call turned away for being
  * one too many just now, not for what the token may do; `until` is
- * when GitHub says it may be asked again, where it says. A call this
- * side did not make, because GitHub had said not to ask before then,
- * is recorded as the 429 it would have been: it was not sent, so it
- * wrote nothing. */
+ * when GitHub says it may be asked again, where it says. `unsent` is a
+ * call this side did not make, because GitHub had said not to ask
+ * before then: it is recorded as the 429 it would have been, and as
+ * it was not sent it wrote nothing and GitHub answered nothing. */
 export interface Outward {
   to: "github" | "queue";
   write: boolean;
   status: number;
   limited?: boolean;
   until?: number;
+  unsent?: boolean;
 }
 
 /** Which of the two each section this side reads is read from. */
@@ -103,13 +104,24 @@ export interface KeptAnswer {
  * old tags only get full answers again.
  *
  * And when it said to ask again, after turning a call away for being
- * one too many: until then nothing is asked of it at all. */
+ * one too many, with the words it said it in: until then nothing that
+ * draws on the same allowance is asked of it at all. */
 export interface GitHubMemory {
   get(url: string): KeptAnswer | undefined;
   set(url: string, answer: KeptAnswer): void;
   delete(url: string): void;
-  /** Not to be asked before this time, in milliseconds; 0 when free to. */
-  quietUntil: number;
+  quiet: Partial<Record<Allowance, Quiet>>;
+}
+
+/** What a call draws on. GitHub counts searches apart, a few dozen to
+ * the minute, from everything else this side asks, which is counted by
+ * the hour: one running out says nothing of the other. */
+export type Allowance = "core" | "search";
+export const ALLOWANCES: readonly Allowance[] = ["core", "search"];
+/** Not to be asked before `until` (milliseconds), GitHub having said `why`. */
+export interface Quiet {
+  until: number;
+  why: string;
 }
 
 /** The longest this side stays quiet on GitHub's word: a little over
@@ -132,7 +144,7 @@ export function githubMemory(room = 12_000_000, most = 200): GitHubMemory & { he
     kept.delete(url);
   };
   return {
-    quietUntil: 0,
+    quiet: {},
     get(url) {
       const had = kept.get(url);
       if (!had) return undefined;
@@ -159,20 +171,29 @@ export function githubMemory(room = 12_000_000, most = 200): GitHubMemory & { he
 
 /** When GitHub says a caller it turned away for calling too often may
  * ask again, in milliseconds; undefined where it does not say. It says
- * it one of two ways: `retry-after`, a number of seconds from now, or,
- * when `x-ratelimit-remaining` is 0, `x-ratelimit-reset`, the second
- * the allowance for the hour comes back. Never further off than
- * QUIET_MOST_MS, and never in the past. */
-export function askAgainAt(headers: { get(name: string): string | null } | undefined, now: number): number | undefined {
+ * it one of two ways. `retry-after`, a number of seconds from now: the
+ * caller is going too fast, whatever it asks for (`whole`). Or, when
+ * `x-ratelimit-remaining` is 0, `x-ratelimit-reset`: the second the
+ * allowance the call drew on comes back, and only that one is spent.
+ * Never further off than QUIET_MOST_MS, and never in the past. */
+export function askAgainAt(
+  headers: { get(name: string): string | null } | undefined,
+  now: number,
+): { until: number; whole: boolean } | undefined {
   const within = (at: number) => Math.min(Math.max(at, now), now + QUIET_MOST_MS);
   const after = headers?.get("retry-after") ?? null;
-  if (after !== null && /^\d{1,9}$/.test(after.trim())) return within(now + Number(after.trim()) * 1000);
+  if (after !== null && /^\d{1,9}$/.test(after.trim())) {
+    return { until: within(now + Number(after.trim()) * 1000), whole: true };
+  }
   if (headers?.get("x-ratelimit-remaining")?.trim() === "0") {
     const reset = headers.get("x-ratelimit-reset") ?? "";
-    if (/^\d{1,12}$/.test(reset.trim())) return within(Number(reset.trim()) * 1000);
+    if (/^\d{1,12}$/.test(reset.trim())) return { until: within(Number(reset.trim()) * 1000), whole: false };
   }
   return undefined;
 }
+
+/** Which allowance a call draws on, by what follows GitHub's address. */
+export const drawsOn = (path: string): Allowance => (/^\/?search\//.test(path) ? "search" : "core");
 
 /** Said at the front of why a call failed, when GitHub said when to
  * ask again: the app reads the time back out of it (whySaid). */
@@ -230,12 +251,14 @@ async function ghApi(
   // GitHub said not to ask before a time that has not come: it is not
   // asked. Asking on while turned away is what it warns callers off,
   // and each such call would be one more of the same answer.
-  if (memory && memory.quietUntil > now()) {
-    seen?.({ to: "github", write, status: 429, limited: true, until: memory.quietUntil });
+  const draws = drawsOn(path);
+  const hush = memory?.quiet[draws];
+  if (hush && hush.until > now()) {
+    seen?.({ to: "github", write, status: 429, limited: true, until: hush.until, unsent: true });
     return {
       code: 1,
       stdout: "",
-      stderr: `${askAgainSaid(memory.quietUntil)}not asked, GitHub having turned this account away for calling too often (rate limit)`,
+      stderr: `${askAgainSaid(hush.until)}not asked again since GitHub answered: ${hush.why}`,
     };
   }
   // A list asked for before is asked for by its tag.
@@ -283,8 +306,21 @@ async function ghApi(
   // it uses for a token that may not do the thing, and says which in
   // the body; a 429 is always the former.
   const limited = res.status === 429 || (res.status === 403 && /rate limit/i.test(text));
-  const until = limited ? askAgainAt(res.headers, now()) : undefined;
-  if (until !== undefined && memory) memory.quietUntil = Math.max(memory.quietUntil, until);
+  const again = limited ? askAgainAt(res.headers, now()) : undefined;
+  const until = again?.until;
+  if (again && memory) {
+    // Going too fast is said of the caller, whatever it asks for; an
+    // allowance used up is said of the one the call drew on, which
+    // GitHub names (and which is this call's own, where it does not).
+    const named = res.headers?.get("x-ratelimit-resource")?.trim();
+    const spent: readonly Allowance[] = again.whole
+      ? ALLOWANCES
+      : [ALLOWANCES.find((allowance) => allowance === named) ?? draws];
+    const why = (text === "" ? `GitHub answered http ${res.status}` : text).slice(0, 300);
+    for (const allowance of spent) {
+      if ((memory.quiet[allowance]?.until ?? 0) < again.until) memory.quiet[allowance] = { until: again.until, why };
+    }
+  }
   seen?.({
     to: "github",
     write,

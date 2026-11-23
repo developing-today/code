@@ -16,6 +16,7 @@ import {
   directClasses,
   directConfig,
   directRead,
+  drawsOn,
   edgeRun,
   githubMemory,
   type KeptAnswer,
@@ -424,6 +425,8 @@ describe("what the edge remembers of GitHub", () => {
   test("each address has its own answer, and a write is never asked for by a tag", async () => {
     const g = tagging();
     await g.api(PULLS);
+    // (Changed twice before it is first read, so its tag is not the other list's.)
+    g.change(at(ISSUES), []);
     g.change(at(ISSUES), [{ number: 9 }]);
     expect((await g.api(ISSUES)).stdout).toBe('[{"number":9}]');
     expect((await g.api(PULLS)).stdout).toBe('[{"number":1}]');
@@ -483,10 +486,11 @@ describe("what the edge remembers of GitHub", () => {
     const back = g.clock.t + 40 * 60_000;
     g.state.limited = { "x-ratelimit-remaining": "0", "x-ratelimit-reset": String(back / 1000) };
     const turned = await g.api(PULLS);
+    const said = '{"message":"API rate limit exceeded for user ID 1."}';
     expect(turned).toEqual({
       code: 1,
       stdout: "",
-      stderr: `GitHub says to ask again at ${new Date(back).toISOString()}: {"message":"API rate limit exceeded for user ID 1."}`,
+      stderr: `GitHub says to ask again at ${new Date(back).toISOString()}: ${said}`,
     });
     expect(g.seen[1]).toEqual({ to: "github", write: false, status: 403, limited: true, until: back });
     // Until then nothing goes out: not a read, not a write, though GitHub would answer now.
@@ -496,47 +500,140 @@ describe("what the edge remembers of GitHub", () => {
     const read = await g.api(ISSUES);
     const write = await g.api("-X", "PUT", "repos/developing-today/code/pulls/55/merge");
     expect(g.calls.length).toBe(asked);
+    // Why is the time and GitHub's own words, so whoever reads it can tell which allowance it was.
     for (const held of [read, write]) {
-      expect(held.code).toBe(1);
-      expect(held.stderr).toStartWith(`GitHub says to ask again at ${new Date(back).toISOString()}: not asked`);
-      expect(held.stderr).toMatch(/rate limit/i);
+      expect(held).toEqual({
+        code: 1,
+        stdout: "",
+        stderr: `GitHub says to ask again at ${new Date(back).toISOString()}: not asked again since GitHub answered: ${said}`,
+      });
     }
-    // Each is recorded as the answer it would have had: not sent, so nothing written.
+    // Each is recorded as the answer it would have had, and as not sent: nothing was written.
     expect(g.seen.slice(2)).toEqual([
-      { to: "github", write: false, status: 429, limited: true, until: back },
-      { to: "github", write: true, status: 429, limited: true, until: back },
+      { to: "github", write: false, status: 429, limited: true, until: back, unsent: true },
+      { to: "github", write: true, status: 429, limited: true, until: back, unsent: true },
     ]);
     // The time comes: it is asked again, and what was kept is still asked for by its tag.
+    g.clock.t = back - 1;
+    await g.api(PULLS);
+    expect(g.calls.length).toBe(asked);
     g.clock.t = back;
     expect((await g.api(PULLS)).code).toBe(0);
     expect(g.calls[asked]).toEqual({ method: "GET", url: at(PULLS), tag: 'W/"1"' });
   });
 
+  test("searches are counted apart: their allowance running out does not hush the rest, nor the rest theirs; going too fast hushes both", async () => {
+    const SEARCH = "search/issues?q=repo%3Adeveloping-today%2Fcode+label%3Anow";
+    const g = tagging();
+    const start = g.clock.t;
+    // The minute's searches are used up, back in forty seconds.
+    g.state.limited = { "x-ratelimit-remaining": "0", "x-ratelimit-reset": String((start + 40_000) / 1000) };
+    expect((await g.api(SEARCH)).code).toBe(1);
+    g.state.limited = null;
+    expect(g.memory?.quiet).toEqual({
+      search: { until: start + 40_000, why: '{"message":"API rate limit exceeded for user ID 1."}' },
+    });
+    // The lists are asked for as before; another search is not.
+    expect((await g.api(PULLS)).code).toBe(0);
+    expect((await g.api(SEARCH)).stderr).toContain("not asked again");
+    expect(g.calls.map((call) => call.url)).toEqual([at(SEARCH), at(PULLS)]);
+    g.clock.t = start + 40_000;
+    expect((await g.api(SEARCH)).code).toBe(0);
+    // The hour's allowance used up, as a list is read: searches are still asked.
+    const back = g.clock.t + 30 * 60_000;
+    g.state.limited = { "x-ratelimit-remaining": "0", "x-ratelimit-reset": String(back / 1000) };
+    expect((await g.api(PULLS)).code).toBe(1);
+    g.state.limited = null;
+    const asked = g.calls.length;
+    expect((await g.api(SEARCH)).code).toBe(0);
+    expect((await g.api(ISSUES)).stderr).toContain("not asked again");
+    expect(g.calls.length).toBe(asked + 1);
+    // GitHub names the allowance it means, and is believed over the address asked at.
+    const named = tagging();
+    named.state.limited = {
+      "x-ratelimit-remaining": "0",
+      "x-ratelimit-reset": String((named.clock.t + 600_000) / 1000),
+      "x-ratelimit-resource": "core",
+    };
+    await named.api(SEARCH);
+    expect(Object.keys(named.memory?.quiet ?? {})).toEqual(["core"]);
+    // One it names that this side does not know is taken as the call's own.
+    const other = tagging();
+    other.state.limited = {
+      "x-ratelimit-remaining": "0",
+      "x-ratelimit-reset": String((other.clock.t + 600_000) / 1000),
+      "x-ratelimit-resource": "code_search",
+    };
+    await other.api(SEARCH);
+    expect(Object.keys(other.memory?.quiet ?? {})).toEqual(["search"]);
+    // Going too fast is said in seconds, of the caller: both are hushed, and a nearer time
+    // never shortens a further one.
+    const fast = tagging();
+    fast.state.limited = { "x-ratelimit-remaining": "0", "x-ratelimit-reset": String((fast.clock.t + 900_000) / 1000) };
+    await fast.api(PULLS);
+    fast.state.limited = { "retry-after": "60" };
+    await fast.api(SEARCH);
+    expect([fast.memory?.quiet.core?.until, fast.memory?.quiet.search?.until]).toEqual([
+      fast.clock.t + 900_000,
+      fast.clock.t + 60_000,
+    ]);
+  });
+
+  test("an answer is an answer: one that says nothing is left of the hour hushes nothing, and neither does being turned away with no time", async () => {
+    const g = tagging();
+    // The last call the hour allows is answered in full, and its headers say nothing is left.
+    const run = edgeRun(
+      directConfig(edgeConfig),
+      { githubToken: "gh-test", github: g.memory, now: () => g.clock.t },
+      (async () => ({
+        ok: true,
+        status: 200,
+        headers: new Headers({
+          etag: '"a"',
+          "x-ratelimit-remaining": "0",
+          "x-ratelimit-reset": String((g.clock.t + 1_800_000) / 1000),
+        }),
+        json: async () => [],
+      })) as unknown as Fetch,
+    );
+    expect((await run(["fleet", "gh", "api", PULLS])).code).toBe(0);
+    expect(g.memory?.quiet).toEqual({});
+    // Turned away with no time given: told as limited, and the next call is asked all the same.
+    g.state.limited = {};
+    expect((await g.api(ISSUES)).stderr).toBe('{"message":"API rate limit exceeded for user ID 1."}');
+    expect(g.seen.at(-1)).toEqual({ to: "github", write: false, status: 403, limited: true });
+    g.state.limited = null;
+    expect((await g.api(ISSUES)).code).toBe(0);
+    expect(g.memory?.quiet).toEqual({});
+  });
+
   test("when to ask again: the seconds GitHub gives, or the turn of the hour when nothing is left of it; never the past, never much over an hour", () => {
     const now = Date.UTC(2026, 10, 23, 17, 0, 0);
     const said = (headers: Record<string, string>) => askAgainAt(new Headers(headers), now);
-    expect(said({ "retry-after": "60" })).toBe(now + 60_000);
-    expect(said({ "retry-after": "0" })).toBe(now);
-    expect(said({ "x-ratelimit-remaining": "0", "x-ratelimit-reset": String(now / 1000 + 1500) })).toBe(
-      now + 1_500_000,
-    );
+    const reset = (seconds: number) => ({
+      "x-ratelimit-remaining": "0",
+      "x-ratelimit-reset": String(now / 1000 + seconds),
+    });
+    expect(said({ "retry-after": "60" })).toEqual({ until: now + 60_000, whole: true });
+    expect(said({ "retry-after": "0" })).toEqual({ until: now, whole: true });
+    expect(said(reset(1500))).toEqual({ until: now + 1_500_000, whole: false });
     // Both: the seconds are for this caller, now.
-    expect(
-      said({ "retry-after": "30", "x-ratelimit-remaining": "0", "x-ratelimit-reset": String(now / 1000 + 1500) }),
-    ).toBe(now + 30_000);
-    // Something left of the hour's allowance: the turn of the hour is not when to ask again.
+    expect(said({ "retry-after": "30", ...reset(1500) })).toEqual({ until: now + 30_000, whole: true });
+    // Something left of the allowance: the turn of the hour is not when to ask again.
     expect(said({ "x-ratelimit-remaining": "12", "x-ratelimit-reset": String(now / 1000 + 1500) })).toBeUndefined();
     expect(said({ "x-ratelimit-reset": String(now / 1000 + 1500) })).toBeUndefined();
     expect(said({})).toBeUndefined();
     expect(askAgainAt(undefined, now)).toBeUndefined();
     // A time that cannot be right is cut to a little over the hour; one already past is now.
-    expect(said({ "retry-after": "86400" })).toBe(now + QUIET_MOST_MS);
-    expect(said({ "x-ratelimit-remaining": "0", "x-ratelimit-reset": String(now / 1000 + 7 * 3600) })).toBe(
-      now + QUIET_MOST_MS,
-    );
-    expect(said({ "x-ratelimit-remaining": "0", "x-ratelimit-reset": String(now / 1000 - 30) })).toBe(now);
+    expect(said({ "retry-after": "86400" })?.until).toBe(now + QUIET_MOST_MS);
+    expect(said(reset(7 * 3600))?.until).toBe(now + QUIET_MOST_MS);
+    expect(said(reset(-30))?.until).toBe(now);
     // A date, as the header may also be written, is not read: no time is better than a wrong one.
     expect(said({ "retry-after": "Mon, 23 Nov 2026 18:00:00 GMT" })).toBeUndefined();
+    // Which allowance a call draws on is by what is asked for.
+    expect(
+      ["search/issues?q=x", "/search/code", "repos/o/r/pulls", "repos/o/search/x", "searches"].map(drawsOn),
+    ).toEqual(["search", "search", "core", "core", "core"]);
   });
 
   test("property: whatever GitHub's headers say, the time to ask again is none, or between now and a little over an hour on", () => {
@@ -566,7 +663,7 @@ describe("what the edge remembers of GitHub", () => {
       const headers: Record<string, string> = {};
       for (const name of ["retry-after", "x-ratelimit-remaining", "x-ratelimit-reset"])
         if (next() < 0.7) headers[name] = value();
-      const at = askAgainAt(new Headers(headers), now);
+      const at = askAgainAt(new Headers(headers), now)?.until;
       if (at === undefined) none++;
       else {
         some++;

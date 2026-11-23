@@ -658,3 +658,66 @@ Checked: 357 tests under bun, 4 beside the list. In a real Chrome
 against both demos, light and dark: the Platform screen's counts,
 groups, each kind of row and its links. axe-core over 22 screens: no
 violations.
+
+## 2026-11-23T18:10Z Update: after step 6 (review answered, and the shared allowance)
+
+**A review finding that arrived as #13487 merged.** The Worker-list
+parser had example tests only, and the testing doctrine
+(`doc/agents/testing-doctrine.md`) asks for property tests where code
+has invariants. It was right, and so it was for the two other parsers
+of this work. #13517 adds properties on the seeded generator the
+console's tests already use: rows and accounts built to keep every
+rule are read back as written, single faults refuse them, the list is
+held to a model written out in the test, and the device's and the
+platform's account of what an action is about are compared on
+generated actions. One fault was found by them: a machine's name cut
+at 63 characters just after a blank kept the blank. Fixed there.
+
+**The shared allowance (#13489), the half that needs no new
+identity.** The edge reads GitHub with the fleet's token, so it draws
+on the account's hourly allowance with the agents, who used the hour
+up twice on 2026-11-23.
+
+- _Asked by tag._ Each answer to a read is kept under its address
+  with GitHub's tag and asked for again by it. "Not modified" does not
+  count against the allowance, so a list that has not changed costs
+  nothing. GitHub is still asked every time and decides whether the
+  kept answer stands: this is not a cache with an age, and nothing
+  shown is older than it was before.
+- _GitHub's time is kept to._ Turned away for calling too often,
+  GitHub says when to ask again. Until then the edge asks it nothing
+  that draws on what ran out, where before it asked again every five
+  minutes for as long as the hour had left. Sixty-five minutes at
+  most, and the owner's "Try again now" lifts it.
+- _Two allowances, kept apart._ GitHub counts searches by the minute
+  and everything else by the hour. Ranked issues are a search, so they
+  are still read while the hour's allowance is spent, and a minute's
+  searches running out (the commoner case) no longer has anything to
+  do with the lists. Going too fast (`retry-after`) is said of the
+  caller and hushes both.
+- _Said in the app._ Why a read failed now carries that time and
+  GitHub's own words, and the notice says which it was ("the allowance
+  for the hour is used up" or "turned away for asking too often just
+  now"), "GitHub says it answers again at 12:00", and how old the copy
+  shown is.
+
+Considered and not done: serving the kept answers for a time without
+asking (a cache with an age). It would save the calls that change
+too, at the price of showing things late, and the edge is not what
+uses the hour up. And persisting the answers in the object's storage:
+a restart costs one full answer of each, which is less than the
+writes would.
+
+What this does not do: give the edge an allowance of its own. When
+the agents use the hour up the edge is still turned away until it
+turns. That takes an identity of its own on the account (a GitHub
+App's installation token), which is the owner's to make; #13489 stays
+open for it.
+
+**Not folded in, and next.** With the allowance used up and no
+machine, something the owner does is kept for a machine, as it was for
+the five minutes before. Now that the wait can be most of an hour, the
+edge should do what it holds itself once GitHub answers again, and not
+wait for a machine that may not come. That touches the rule against
+doing anything twice (a machine may already have been handed it), so
+it is its own change.

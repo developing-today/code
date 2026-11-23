@@ -29,6 +29,7 @@ import {
   DIRECT_READ_SECTIONS,
   type DirectClasses,
   directClasses,
+  ALLOWANCES,
   directRead,
   githubMemory,
   type Outward,
@@ -405,7 +406,7 @@ export class Edge {
           this.unread.clear();
           // The owner's word outweighs GitHub's "not before": if it is
           // still turned away, the first call says so again.
-          this.github.quietUntil = 0;
+          this.github.quiet = {};
           await this.saveAway();
           return { tried };
         },
@@ -877,9 +878,8 @@ export class Edge {
         now: this.now,
         github: this.github,
         seen: (call) => {
-          // Counted: what GitHub answered (not what was held back here,
-          // which is recorded as the 429 it would have been, with its time).
-          if (call.to === "github" && call.status !== 0 && !(call.status === 429 && call.until !== undefined)) {
+          // Counted: what GitHub answered, not what was held back here.
+          if (call.to === "github" && call.status !== 0 && !call.unsent) {
             this.githubAnswers.all++;
             if (call.status === 304) this.githubAnswers.unchanged++;
           }
@@ -1492,12 +1492,18 @@ export class Edge {
         // What GitHub answered this side since it started, how many of
         // those were "not modified" (which cost nothing of the hour's
         // allowance), how many answers are kept to ask by, and until
-        // when GitHub said not to ask, if it has.
+        // when GitHub said not to ask, if it has: for searches, which
+        // it counts apart by the minute, and for everything else.
         github: {
           answers: this.githubAnswers.all,
           unchanged: this.githubAnswers.unchanged,
           kept: this.github.size(),
-          quietUntil: this.github.quietUntil > this.now() ? this.github.quietUntil : null,
+          quiet: Object.fromEntries(
+            ALLOWANCES.map((allowance) => {
+              const until = this.github.quiet[allowance]?.until ?? 0;
+              return [allowance, until > this.now() ? until : null];
+            }),
+          ),
         },
         hostSeen: this.hostSeen || null,
         // The commit the host's console is running, as it last said.

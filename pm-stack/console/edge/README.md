@@ -203,9 +203,49 @@ it (the laptop's, the sign-in issuer's).
   queue is not a write; changing it is.
 - **Calling too often is not a refusal.** GitHub turns a caller away
   for that with the same 403 (and says so in its answer), or a 429.
-  It is handed on in the same way, but for five minutes, not an hour:
-  it passes by itself. The token is the fleet's too, and search is
-  what runs out first.
+  It is handed on in the same way, but not for the hour: it passes by
+  itself. GitHub says when, and that time is kept to: until it comes
+  the edge asks GitHub nothing that draws on what ran out, not a read,
+  not a write and not its own check, because asking on while turned
+  away is what GitHub warns callers off and every such call would get
+  the same answer. It says it one of two ways. `retry-after`, in
+  seconds, means the caller is going too fast whatever it asks, and
+  everything waits. `x-ratelimit-reset`, with nothing left
+  (`x-ratelimit-remaining: 0`), means one allowance is used up, and
+  GitHub counts two apart: searches, a few dozen to the minute, and
+  everything else, by the hour. Only what draws on the one that ran
+  out waits, so ranked issues (a search) are still read while the
+  hour's allowance is spent, and a minute's searches running out does
+  not stop the lists. Where GitHub gives no time it is five minutes
+  for what was being done, and nothing else waits. No time is kept to
+  for more than sixty-five minutes, since the longer allowance is
+  counted by the hour and a time further off is a header that cannot
+  be right. Why a read failed starts with the time ("GitHub says to ask
+  again at ...") and carries GitHub's own words, which is how the app
+  says when it answers again and which of the two it was. Health has
+  the times as `github.quiet.core` and `github.quiet.search`. "Try
+  again now" lifts both.
+- **A list that has not changed costs nothing.** The token is the
+  fleet's too: the agents draw on the same hourly allowance, which is
+  the account's, and twice on 2026-11-23 they used the hour up. So the
+  edge keeps each answer to a read under its address with the
+  tag GitHub gave it (`etag`) and asks again by that tag
+  (`if-none-match`). GitHub answers "not modified" for one that has not
+  changed, and a call answered so
+  [does not count against the allowance](https://docs.github.com/en/rest/using-the-rest-api/best-practices-for-using-the-rest-api#use-conditional-requests-if-appropriate).
+  A screen left open asks for the same lists every minute or two, so
+  most of what the edge asks is now free. Nothing is served from the
+  kept answers without asking: GitHub decides each time whether the
+  answer still stands, so what is shown is never older than it was
+  before. The answers live in the object's memory (twelve million
+  characters and two hundred answers at most, the one asked for longest
+  ago dropped first); a restart costs one full answer of each. A tag
+  belongs to the token it was given to, so after a new token the old
+  tags only get full answers. Health counts GitHub's answers and how
+  many were "not modified" (`github.answers`, `github.unchanged`).
+  This does not give the edge an allowance of its own: when the agents
+  use the hour up, the edge is turned away with them until it turns
+  (#13489 has what would change that).
 - **The same for what it reads.** A section the edge is refused for is
   the laptop's to read for the hour, exactly as it was before the edge
   read anything: the edge stops naming it under `owns`, the laptop's

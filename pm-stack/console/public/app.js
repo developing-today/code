@@ -509,7 +509,11 @@ export function awayNotice(primary, lastReport) {
       };
 }
 
-function notices(doc) {
+/** What is said above a screen about what it shows: that a machine is
+ * away, that something is waiting for one, and each list that could
+ * not be read just now, with why. A screen that shows only some of a
+ * document's lists names them (`only`), and is told of those alone. */
+function notices(doc, only = null) {
   const out = [];
   // Served from the edge with the laptop out of reach: say what is
   // current and what is as old as its last report.
@@ -523,12 +527,22 @@ function notices(doc) {
       h("div", { class: "card flag" }, h("p", { class: "meta" }, `${n} ${n === 1 ? "thing" : "things"} you did ${n === 1 ? "is" : "are"} waiting for the laptop. See “What you did” below.`)),
     );
   }
+  for (const said of unreadSaid(doc, only)) out.push(h("div", { class: "card flag" }, h("p", { class: "meta" }, said)));
+  return out;
+}
+
+/** What is said of each list a screen shows that could not be read
+ * just now: why, and how old the copy shown in its place is. `only`
+ * names the lists a screen shows, where it does not show all of the
+ * document's: it is told of those alone. */
+export function unreadSaid(doc, only = null, now = Date.now()) {
+  const out = [];
   for (const [name, s] of Object.entries(doc?.health || {})) {
-    if (!s.ok && s.error) {
-      out.push(
-        h("div", { class: "card flag" }, h("p", { class: "meta" }, `Could not read ${SECTION_SAID[name] || name} just now: ${whySaid(s.error)}. Showing the last good copy.`)),
-      );
-    }
+    if (only && !only.includes(name)) continue;
+    if (s.ok || !s.error) continue;
+    const what = name === "services" ? "the machine's units" : SECTION_SAID[name] || name;
+    const read = doc.read?.[name] ? `, read ${ago(doc.read[name], now)}` : "";
+    out.push(`Could not read ${what} just now: ${whySaid(s.error, now)}. Showing the last good copy${read}.`);
   }
   return out;
 }
@@ -538,12 +552,28 @@ function notices(doc) {
  * as a line of JSON with a request number in it; what it means is that
  * the account's allowance for the hour is used up, and the agents
  * share that allowance with this app. */
-export function whySaid(error) {
+export function whySaid(error, now = Date.now()) {
   const text = String(error || "").trim();
-  if (/rate limit/i.test(text)) {
-    return "GitHub's allowance for the hour is used up on this account, which the agents share; it is asked again every few minutes and answers when the hour turns";
-  }
-  return text || "no reason given";
+  // Where Cloudflare was the one turned away, it puts the time GitHub
+  // gave for asking again at the front of why (askAgainSaid in
+  // edge/src/direct.ts), and asks nothing of GitHub until then.
+  const until = Date.parse((/GitHub says to ask again at (\d{4}-\d{2}-\d{2}T[\d:.]+Z)/.exec(text) || [])[1] || "");
+  const timed = Number.isFinite(until);
+  if (!timed && !/rate limit/i.test(text)) return text || "no reason given";
+  // The hour's allowance, or only going too fast for a moment? GitHub
+  // says the first in these words; but it says them of searches too,
+  // which it counts by the minute, so a wait of a minute or two is the
+  // second whatever the words.
+  const soon = timed && until > now && until - now <= 2 * 60_000;
+  const hourly = /API rate limit exceeded/i.test(text) && !soon;
+  const when = !timed
+    ? `it is asked again every few minutes${hourly ? " and answers when the hour turns" : ""}`
+    : until > now
+      ? `GitHub says it answers again at ${new Date(until).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}, and it is not asked before then`
+      : "the time GitHub gave for asking again has come, and it is being asked";
+  return hourly
+    ? `GitHub's allowance for the hour is used up on this account, which the agents share; ${when}`
+    : `GitHub turned this account away for asking too often just now; ${when}`;
 }
 
 function viewNow() {
@@ -2784,6 +2814,7 @@ function viewPrs() {
   const ready = prs.filter((p) => !p.draft);
   const drafts = prs.filter((p) => p.draft);
   return [
+    ...notices(docs.ops, ["prs"]),
     h("h2", {}, `Ready (${ready.length})`),
     ...(ready.length ? ready.map(row) : [empty("No pull request is ready.")]),
     drafts.length ? h("h2", {}, `Drafts (${drafts.length})`) : null,
@@ -2795,6 +2826,7 @@ function viewIssues() {
   const list = docs.ops?.priorities;
   if (!list) return [empty("Loading…")];
   return [
+    ...notices(docs.ops, ["priorities"]),
     list.truncated ? empty("There are more ranked issues than this list reads. The most urgent may not all be here.") : null,
     ...(list.issues.length ? list.issues.map(issueCard) : [empty("No ranked issues.")]),
   ];
@@ -2835,6 +2867,7 @@ async function viewAgents() {
     unread = error.message;
   }
   return [
+    ...notices(docs.ops, ["agents"]),
     compose,
     h("h2", {}, `Agents (${agents.length})`),
     ...agents.map((a) =>
@@ -2897,7 +2930,13 @@ function viewServices() {
   };
   const failed = units.filter((u) => u.active === "failed");
   const rest = units.filter((u) => u.active !== "failed");
-  return [failed.length ? h("h2", {}, `Failed (${failed.length})`) : null, ...failed.map(row), h("h2", {}, `All units (${units.length})`), ...rest.map(row)];
+  return [
+    ...notices(docs.ops, ["services"]),
+    failed.length ? h("h2", {}, `Failed (${failed.length})`) : null,
+    ...failed.map(row),
+    h("h2", {}, `All units (${units.length})`),
+    ...rest.map(row),
+  ];
 }
 
 // ---- shell -------------------------------------------------------------

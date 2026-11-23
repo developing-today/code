@@ -1081,7 +1081,7 @@ describe("before the host's first report", () => {
       directReady: false,
       refused: [],
       selfCheck: null,
-      github: { answers: 0, unchanged: 0, kept: 0, quietUntil: null },
+      github: { answers: 0, unchanged: 0, kept: 0, quiet: { core: null, search: null } },
       hostSeen: null,
       hostVersion: null,
       androidBuild: null,
@@ -4331,7 +4331,12 @@ describe("the edge does the core itself", () => {
   const githubSaid = async (w: World) =>
     (
       (await (await w.browse("/console/health", { token: null })).json()) as {
-        github: { answers: number; unchanged: number; kept: number; quietUntil: number | null };
+        github: {
+          answers: number;
+          unchanged: number;
+          kept: number;
+          quiet: { core: number | null; search: number | null };
+        };
       }
     ).github;
 
@@ -4372,7 +4377,7 @@ describe("the edge does the core itself", () => {
     const said = await githubSaid(w);
     await settle(w);
     expect([said.unchanged, said.answers]).toEqual([w.ghTags.unchanged, w.githubCalls.length]);
-    expect([said.kept > 0, said.quietUntil]).toEqual([true, null]);
+    expect([said.kept > 0, said.quiet]).toEqual([true, { core: null, search: null }]);
     // A GitHub that gave no tags is the same to look at: every answer a full one.
     const plain = await primary();
     plain.ghTags.on = false;
@@ -4385,20 +4390,22 @@ describe("the edge does the core itself", () => {
     expect(plain.ghTags.unchanged).toBe(0);
   });
 
-  test("the hour's allowance used up: GitHub's own time is kept to, nothing is asked of it until then, and the last good copy says why and when", async () => {
+  test("the hour's allowance used up: GitHub's own time is kept to, nothing that draws on it is asked until then, and the last good copy says why and when", async () => {
     const w = await primary();
     const first = { core: (await w.core()).doc, ops: await opsDoc(w) };
     await settle(w);
     // No machine either: what this side kept is all there is to show.
     w.net.hostUp = false;
     w.net.edgeUp = false;
-    // GitHub: the account's allowance is used up, and comes back in forty minutes.
+    // GitHub: the account's allowance for the hour is used up, and comes back in forty minutes.
+    // Searches it counts apart, and those it still answers.
     w.now.t += 181_000;
     const back = Math.floor((w.now.t + 40 * 60_000) / 1000) * 1000;
-    w.ghLimits.push(() => true);
+    w.ghLimits.push((_method, url) => !url.includes("/search/"));
     w.ghLimitSays.headers = { "x-ratelimit-remaining": "0", "x-ratelimit-reset": String(back / 1000) };
-    const asked = () => w.githubCalls.length;
-    const before = asked();
+    const hourly = () => w.githubCalls.filter((c) => !c.url.includes("/search/")).length;
+    const searches = () => w.githubCalls.length - hourly();
+    const before = { hourly: hourly(), searches: searches() };
     const look = async () => {
       await w.core();
       await opsDoc(w);
@@ -4408,38 +4415,50 @@ describe("the edge does the core itself", () => {
       return seen;
     };
     const limited = await look();
-    // It was told once, by the first thing it asked. Nothing else was asked: not the
-    // other lists of that round, and not the second look.
-    expect(asked()).toBe(before + 1);
+    // It was told once, by the first thing it asked. Nothing else that draws on the hour was
+    // asked: not the other list of that round, and not the second look.
+    expect(hourly()).toBe(before.hourly + 1);
     expect([limited.ops.prs, limited.ops.priorities, limited.core.asks]).toEqual([
       first.ops.prs,
       first.ops.priorities,
       first.core.asks,
     ]);
-    const why = [limited.ops.health.prs, limited.ops.health.priorities, limited.core.health.asks];
-    for (const section of why) {
+    for (const section of [limited.ops.health.prs, limited.core.health.asks]) {
       expect(section.ok).toBe(false);
       expect(section.error).toContain(`GitHub says to ask again at ${new Date(back).toISOString()}`);
-      expect(section.error).toMatch(/rate limit/i);
+      expect(section.error).toMatch(/API rate limit exceeded/);
     }
-    // For the forty minutes: screens looked at, minutes passing, the check that health makes.
-    // None of it reaches GitHub.
-    for (let minute = 3; minute < 40; minute += 3) {
+    // Ranked issues are a search: read as ever.
+    expect(limited.ops.health.priorities.ok).toBe(true);
+    expect(searches()).toBeGreaterThan(before.searches);
+    // Twenty minutes with nobody looking: the two lists are still not this side's to read, and
+    // it has not claimed them back in between only to be turned away again.
+    const refused = async () =>
+      ((await (await w.browse("/console/health", { token: null })).json()) as { refused: string[] }).refused;
+    w.now.t += 20 * 60_000;
+    expect(await refused()).toEqual(["read.asks", "read.prs"]);
+    await settle(w);
+    // For the rest of the forty: screens looked at, minutes passing, the check that health
+    // makes. None of it asks GitHub for anything counted by the hour, and what is held back
+    // here is not counted as an answer of GitHub's.
+    for (let minute = 23; minute < 40; minute += 3) {
       w.now.t += 3 * 60_000;
       await look();
-      expect([minute, (await githubSaid(w)).quietUntil]).toEqual([minute, back]);
+      const said = await githubSaid(w);
       await settle(w);
+      expect([minute, said.quiet, said.answers]).toEqual([minute, { core: back, search: null }, w.githubCalls.length]);
+      expect([minute, hourly()]).toEqual([minute, before.hourly + 1]);
     }
     // Nor does something the owner does: it is kept, not sent and not lost.
     const tried = await w.act("issue.rank", { issue: 301, rank: "next" });
     expect(await tried.json()).toMatchObject({ ok: true, held: true });
-    expect(asked()).toBe(before + 1);
+    expect(hourly()).toBe(before.hourly + 1);
     // The time comes, and GitHub answers again: it is asked, and what it says is shown with nothing wrong.
     w.ghLimits.length = 0;
     w.now.t = back + 181_000;
     const after = await look();
-    expect(asked()).toBeGreaterThan(before + 1);
-    expect((await githubSaid(w)).quietUntil).toBeNull();
+    expect(hourly()).toBeGreaterThan(before.hourly + 1);
+    expect((await githubSaid(w)).quiet).toEqual({ core: null, search: null });
     expect([after.ops.health.prs.ok, after.ops.health.priorities.ok, after.core.health.asks.ok]).toEqual([
       true,
       true,
@@ -4465,7 +4484,7 @@ describe("the edge does the core itself", () => {
     await look();
     expect(pulls()).toBe(2);
     // (Health makes its own check of each read the first time it is asked: one more.)
-    expect((await githubSaid(w)).quietUntil).toBeNull();
+    expect((await githubSaid(w)).quiet).toEqual({ core: null, search: null });
     await settle(w);
     const before = pulls();
     expect(before).toBe(3);
@@ -4481,7 +4500,8 @@ describe("the edge does the core itself", () => {
     const told = w.now.t;
     await look();
     expect(pulls()).toBe(before + 2);
-    expect((await githubSaid(w)).quietUntil).toBe(told + 65 * 60_000);
+    // (Said in seconds, it is said of the caller: searches are hushed with the rest.)
+    expect((await githubSaid(w)).quiet).toEqual({ core: told + 65 * 60_000, search: told + 65 * 60_000 });
     // And the owner saying "try again now" is taken at their word: the list is asked for at
     // its next turn, not an hour on.
     await w.act("edge.retry", {});
@@ -4489,7 +4509,7 @@ describe("the edge does the core itself", () => {
     w.now.t += 91_000;
     await look();
     expect(pulls()).toBe(before + 3);
-    expect((await githubSaid(w)).quietUntil).toBeNull();
+    expect((await githubSaid(w)).quiet).toEqual({ core: null, search: null });
   });
 
   test("turned away for calling too often is not refused for the hour: the laptop does it meanwhile, and this side tries again in five minutes", async () => {
