@@ -1807,6 +1807,35 @@ describe("the host's report is the host's", () => {
     );
   };
 
+  test("a report under a key the edge has not seen is read to its end before the key is asked for", async () => {
+    // In the Worker runtime the report is sent to the state a second
+    // time, once the key is known, from a second copy of the same
+    // upload, and a first copy left unread holds the second back until
+    // the laptop gives up waiting. That cannot be seen under bun, which
+    // keeps the whole upload in memory; what can be seen is whether the
+    // first copy was read. (scripts/edge-smoke.ts shows the real thing,
+    // and runs before every deploy.)
+    const w = await setup();
+    const pair = await newKeyPair();
+    const body = new TextEncoder().encode(JSON.stringify({ v: 1, at: w.now.t, sections: [], have: {}, acks: [] }));
+    const first = new Request(`https://${HOST}/console/edge/sync`, {
+      method: "POST",
+      body,
+      headers: { "x-pm-key": await keyId(pair.publicJwk), "x-pm-signature": await sign(pair.privateJwk, body) },
+    });
+    const answer = await w.edge.now.fetch(first);
+    expect(answer.headers.get("x-pm-next")).toBe("key");
+    expect(first.bodyUsed).toBe(true);
+    // A second stranger within the same minute is refused, and that one is not read at all.
+    const second = new Request(`https://${HOST}/console/edge/sync`, {
+      method: "POST",
+      body,
+      headers: { "x-pm-key": await keyId(pair.publicJwk), "x-pm-signature": await sign(pair.privateJwk, body) },
+    });
+    expect((await w.edge.now.fetch(second)).status).toBe(401);
+    expect(second.bodyUsed).toBe(false);
+  });
+
   test("an address whose reports keep failing is refused unread, and nobody else is", async () => {
     const w = await setup();
     await w.hostReads();

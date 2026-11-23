@@ -123,8 +123,10 @@ sign-in issuer's).
 Pushes to `main` that touch the console deploy it
 (`.github/workflows/pm-console-edge-deploy.yml`): the console's tests,
 which drive this Worker's routing and state against the laptop's real
-handler; a bundle; the release; then a check that the deployed Worker
-answers its health check as that commit.
+handler; a bundle; a run of that bundle in the Worker runtime itself
+(`scripts/edge-smoke.ts`, below), because the tests run under bun and
+the two do not behave alike everywhere; the release; then a check that
+the deployed Worker answers its health check as that commit.
 
 The release is [`release.mjs`](release.mjs), and it starts from whatever
 is there, including nothing:

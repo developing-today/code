@@ -3,7 +3,17 @@
 // Oracles: the elapsed-time phrases and the device labels are written
 // out here by hand for real inputs (two real browser names).
 import { expect, test } from "bun:test";
-import { ago, androidSource, awayState, band, deviceLabel, endpointMark, subscriptionState } from "../public/app.js";
+import {
+  ago,
+  androidSource,
+  awayState,
+  band,
+  capital,
+  deviceLabel,
+  endpointMark,
+  prCheck,
+  subscriptionState,
+} from "../public/app.js";
 import { androidRelease } from "../src/edge-proto.ts";
 import { contact, endpointMark as serverMark } from "../src/push.ts";
 
@@ -164,4 +174,47 @@ test("a release's description is taken only when it is one", () => {
   for (const change of bad) expect(androidRelease({ ...good, ...change })).toBeNull();
   for (const not of [null, undefined, "", "version", 4, [], "<html>Not Found</html>"])
     expect(androidRelease(not)).toBeNull();
+});
+
+test("a pull request's check says what GitHub said, and nothing it did not", () => {
+  expect(
+    prCheck({
+      mergeable: true,
+      mergeable_state: "clean",
+      additions: 120,
+      deletions: 8,
+      changed_files: 5,
+      review_comments: 2,
+    }),
+  ).toBe("can merge (clean) · +120 −8 in 5 files · 2 review comments");
+  expect(
+    prCheck({
+      mergeable: false,
+      mergeable_state: "dirty",
+      additions: 1,
+      deletions: 0,
+      changed_files: 1,
+      review_comments: 1,
+    }),
+  ).toBe("cannot merge (dirty) · +1 −0 in 1 file · 1 review comment");
+  // GitHub works mergeability out after the fact: not known is not "cannot".
+  expect(
+    prCheck({
+      mergeable: null,
+      mergeable_state: "unknown",
+      additions: 3,
+      deletions: 3,
+      changed_files: 2,
+      review_comments: 0,
+    }),
+  ).toBe("mergeability not known yet · +3 −3 in 2 files · 0 review comments");
+  // An answer with parts missing never reads "undefined".
+  expect(prCheck({ mergeable: true })).toBe("can merge");
+  expect(prCheck({})).toBe("mergeability not known yet");
+  for (const nothing of [null, undefined, [], "x"]) expect(prCheck(nothing)).not.toContain("undefined");
+  expect(prCheck(null)).toBe("GitHub did not say.");
+});
+
+test("a button's word starts with a capital", () => {
+  expect(["start", "restart", "stop", "", "Logs"].map(capital)).toEqual(["Start", "Restart", "Stop", "", "Logs"]);
 });
