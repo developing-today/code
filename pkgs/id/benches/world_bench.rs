@@ -79,6 +79,17 @@
 //!   1M applied events), measured at full state through
 //!   `WorldInstance::metrics`. Prints one `profile frame_cost ...`
 //!   line per size; `ID_BENCH_FRAME_EVENTS` selects a single size.
+//! - `stress_mem` — the #6304 program's memory profile (#13086): RSS
+//!   per resident world at the selected tier (the tier's idle,
+//!   active, and hot worlds restored through `WorldCore::restore`
+//!   and held, with RSS sampled between phases), and the peak
+//!   additional RSS while compacting a journal of 2,000 and of
+//!   100,000 entries (bulk-written fixture, recovered through
+//!   `FileJournal::open`, restored, then replaced with the
+//!   compaction bench's checkpoint-sized set). Tier and seed follow
+//!   the `stress_gen` knobs; `ID_BENCH_STRESS_MEM_PART` selects
+//!   `all` (default), `compact`, or `resident`, so each measurement
+//!   can run in a fresh process when attribution matters.
 //! - `bot_battle` (design only, not runnable yet) — a deterministic, mixed-
 //!   strategy territory workload for N=2/4/8 users is specified in
 //!   `../../../doc/2026-11-06T00-50-21Z_design_dynamic_world_tick_cost/`; its current-
@@ -112,8 +123,8 @@ use anyhow::{Context, Result, ensure};
 use id::guest_burn::GuestBurnBudget;
 use id::sandbox::{GuestCall, Sandbox, SandboxLimits};
 use id::world::{
-    CapabilityBounds, JoinCapability, JournalEntry, WorldCore, WorldEvent, WorldEventKind,
-    WorldHandle, WorldJournal, WorldLimits, WorldProgram, WorldScopes,
+    CapabilityBounds, JoinCapability, JournalEntry, RestoredWorld, WorldCore, WorldEvent,
+    WorldEventKind, WorldHandle, WorldJournal, WorldLimits, WorldProgram, WorldScopes,
 };
 use id::world_hub::{HubLimits, OpenFuture, WorldHub, WorldOpener};
 use id::world_limits::RuntimeLimits;
@@ -2010,22 +2021,18 @@ fn stress_event(
     )
 }
 
-/// Generate one measured world directory (`<out>/<name>/journal.jsonl`)
-/// and verify it by restoring the written journal through the real
-/// restore path. The expected state hash is FNV-1a over the journal
-/// file's exact bytes followed by the restored core's current
-/// sequence (u64 little-endian): the journal determines the state,
-/// and the restore proves the journal is one the store accepts, at
-/// the sequence the manifest claims.
-fn generate_stress_world(
-    out: &Path,
-    name: &str,
-    role: &'static str,
+/// The journal entries of one generated stress world, in write
+/// order, with the per-shape event counts. Shared by the generator
+/// (which writes them to disk and verifies the file) and the memory
+/// profile (#13086, which restores them in-process): both must see
+/// exactly the same world for a given (seed, world, events, members).
+fn stress_world_entries(
     seed: u64,
+    name: &str,
     world_index: u32,
     events: u64,
     members: usize,
-) -> Result<StressWorldRecord> {
+) -> Result<(Vec<JournalEntry>, u64, u64, u64)> {
     ensure!(
         members >= 1,
         "stress world {name} needs at least one member"
@@ -2062,6 +2069,27 @@ fn generate_stress_world(
         }
         entries.push(JournalEntry::Committed { event });
     }
+    Ok((entries, chat, doc_edits, program_installs))
+}
+
+/// Generate one measured world directory (`<out>/<name>/journal.jsonl`)
+/// and verify it by restoring the written journal through the real
+/// restore path. The expected state hash is FNV-1a over the journal
+/// file's exact bytes followed by the restored core's current
+/// sequence (u64 little-endian): the journal determines the state,
+/// and the restore proves the journal is one the store accepts, at
+/// the sequence the manifest claims.
+fn generate_stress_world(
+    out: &Path,
+    name: &str,
+    role: &'static str,
+    seed: u64,
+    world_index: u32,
+    events: u64,
+    members: usize,
+) -> Result<StressWorldRecord> {
+    let (entries, chat, doc_edits, program_installs) =
+        stress_world_entries(seed, name, world_index, events, members)?;
 
     let dir = out.join(name);
     std::fs::create_dir_all(&dir)?;
@@ -2276,6 +2304,236 @@ fn bench_stress_gen(quick: bool) -> Result<()> {
     Ok(())
 }
 
+/// (Current RSS, peak RSS) of this process in bytes, from
+/// `/proc/self/status` (`VmRSS` / `VmHWM`). Linux-only by design:
+/// the reference machines are Linux, and a memory measurement that
+/// cannot read its own resident set must fail, never fabricate.
+fn rss_bytes() -> Result<(u64, u64)> {
+    let status = std::fs::read_to_string("/proc/self/status")
+        .context("read /proc/self/status for RSS sampling")?;
+    let mut rss_kib: Option<u64> = None;
+    let mut peak_kib: Option<u64> = None;
+    for line in status.lines() {
+        if let Some(value) = line.strip_prefix("VmRSS:") {
+            rss_kib = value.trim().trim_end_matches("kB").trim().parse().ok();
+        } else if let Some(value) = line.strip_prefix("VmHWM:") {
+            peak_kib = value.trim().trim_end_matches("kB").trim().parse().ok();
+        }
+    }
+    Ok((
+        rss_kib.context("VmRSS missing from /proc/self/status")? * 1024,
+        peak_kib.context("VmHWM missing from /proc/self/status")? * 1024,
+    ))
+}
+
+/// The tier + seed selection `stress_gen` runs under, shared with
+/// the memory profile so both measure the same fixture.
+fn stress_selection(quick: bool) -> Result<(StressTier, u64)> {
+    let tier = if quick {
+        StressTier::quick()
+    } else {
+        match std::env::var("ID_BENCH_STRESS_TIER") {
+            Ok(name) => StressTier::named(&name)?,
+            Err(_) => StressTier::tier_1x(),
+        }
+    };
+    let seed = std::env::var("ID_BENCH_STRESS_SEED")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(BENCH_SEED);
+    Ok((tier, seed))
+}
+
+/// One compaction measurement of the `stress_mem` profile (#13086):
+/// the peak additional resident memory while compacting a journal
+/// of `events` events. The journal is bulk-written in the store's
+/// on-disk format (a fixture, as in `stress_gen` — not the measured
+/// append path) with the generator's own entry construction, then
+/// the measured operation runs the stack's real path: recover
+/// through `FileJournal::open` (which parses every entry into
+/// memory), restore the world, hold it resident, and replace the
+/// journal through `FileJournal::compact` with the checkpoint-sized
+/// set the compaction bench uses (64 stand-in entries). The spike
+/// is (peak RSS during the operation) − (RSS just before it), so it
+/// attributes memory to the operation, not to whatever the process
+/// already held.
+fn bench_stress_mem_compact(dir: &Path, events: u64) -> Result<()> {
+    let name = "stress-mem-compact";
+    let (entries, ..) = stress_world_entries(BENCH_SEED, name, 0, events, 1)?;
+    let path = dir.join(format!("stress-mem-compact-{events}.jsonl"));
+    {
+        let mut bytes: Vec<u8> = Vec::new();
+        for entry in &entries {
+            serde_json::to_writer(&mut bytes, entry).context("serialize compact fixture entry")?;
+            bytes.push(b'\n');
+        }
+        std::fs::write(&path, &bytes)
+            .with_context(|| format!("write compact fixture journal {path:?}"))?;
+    }
+    drop(entries);
+    let replacement: Vec<JournalEntry> = (1..=64)
+        .map(|seq| JournalEntry::Committed {
+            event: chat_event(seq, "checkpoint stand-in payload"),
+        })
+        .collect();
+
+    let (rss_before, _) = rss_bytes()?;
+    let started = Instant::now();
+    let (mut journal, recovered) = FileJournal::open(&path, name)
+        .with_context(|| format!("open compact fixture journal {path:?}"))?;
+    ensure!(
+        recovered.len() as u64 == events + 2,
+        "compact fixture: recovered {} entries, wrote {}",
+        recovered.len(),
+        events + 2
+    );
+    let restored = WorldCore::restore(name, WorldLimits::default(), recovered)
+        .map_err(|e| anyhow::anyhow!("restore compact fixture world: {e:#}"))?;
+    black_box(&restored);
+    journal
+        .compact(&replacement)
+        .context("compact the fixture journal")?;
+    let elapsed = started.elapsed();
+    let (_, peak) = rss_bytes()?;
+    let spike = peak.saturating_sub(rss_before);
+    println!(
+        "profile stress_mem_compact events={} recovered_entries={} spike_bytes={} spike_mib={:.2} elapsed_us={}",
+        events,
+        events + 2,
+        spike,
+        spike as f64 / 1_048_576.0,
+        elapsed.as_micros(),
+    );
+    drop(restored);
+    drop(journal);
+    let _ = std::fs::remove_file(&path);
+    Ok(())
+}
+
+/// The resident-set measurement of the `stress_mem` profile
+/// (#13086): restore the tier's worlds through the real restore
+/// path and hold them all resident, sampling RSS between phases —
+/// idle worlds first (a lone `Created` header each: the resident
+/// form of a world opened and evicted without a guest), then the
+/// active worlds, then the hot world at the codified participant
+/// cap (the generator's wall, applied the same way). A restore
+/// failure stops the growth and is recorded as the tier's wall:
+/// per the design's run protocol a wall is a measured limit, not a
+/// failed run.
+fn bench_stress_mem_resident(tier: &StressTier, seed: u64) -> Result<()> {
+    let started = Instant::now();
+    let (rss_start, _) = rss_bytes()?;
+    let mut resident: Vec<RestoredWorld> = Vec::new();
+    let mut walls: Vec<String> = Vec::new();
+
+    for index in 0..tier.idle_worlds {
+        let name = format!("idle-{index:05}");
+        let entries = vec![JournalEntry::Created {
+            world_id: name.clone(),
+            version: 1,
+        }];
+        match WorldCore::restore(&name, WorldLimits::default(), entries) {
+            Ok(restored) => resident.push(restored),
+            Err(error) => {
+                walls.push(format!("idle world {name}: {error:#}"));
+                break;
+            }
+        }
+    }
+    let (rss_after_idle, _) = rss_bytes()?;
+    let idle_held = resident.len();
+
+    if walls.is_empty() {
+        for index in 0..tier.active_worlds {
+            let name = format!("active-{index:04}");
+            let (entries, ..) =
+                stress_world_entries(seed, &name, index as u32, tier.active_events, 1)?;
+            match WorldCore::restore(&name, WorldLimits::default(), entries) {
+                Ok(restored) => resident.push(restored),
+                Err(error) => {
+                    walls.push(format!("active world {name}: {error:#}"));
+                    break;
+                }
+            }
+        }
+    }
+    let (rss_after_active, _) = rss_bytes()?;
+    let active_held = resident.len() - idle_held;
+
+    let mut hot_held = 0_usize;
+    if walls.is_empty() {
+        let participant_cap = WorldLimits::default().participants;
+        let hot_members = tier.hot_members.min(participant_cap);
+        let (entries, ..) =
+            stress_world_entries(seed, "hot-000", u32::MAX, tier.hot_events, hot_members)?;
+        match WorldCore::restore("hot-000", WorldLimits::default(), entries) {
+            Ok(restored) => {
+                resident.push(restored);
+                hot_held = 1;
+            }
+            Err(error) => walls.push(format!("hot world: {error:#}")),
+        }
+    }
+    let (rss_final, peak) = rss_bytes()?;
+    black_box(&resident);
+
+    let held = resident.len();
+    let per_world =
+        |delta: u64, count: usize| -> u64 { if count == 0 { 0 } else { delta / count as u64 } };
+    println!(
+        "profile stress_mem tier={} seed={} worlds_held={} idle_held={} active_held={} hot_held={} rss_start_bytes={} rss_after_idle_bytes={} rss_after_active_bytes={} rss_final_bytes={} peak_rss_bytes={} rss_per_world_bytes={} rss_per_idle_world_bytes={} rss_per_active_world_bytes={} rss_hot_delta_bytes={} walls={} elapsed_secs={:.3}",
+        tier.name,
+        seed,
+        held,
+        idle_held,
+        active_held,
+        hot_held,
+        rss_start,
+        rss_after_idle,
+        rss_after_active,
+        rss_final,
+        peak,
+        per_world(rss_final.saturating_sub(rss_start), held),
+        per_world(rss_after_idle.saturating_sub(rss_start), idle_held),
+        per_world(rss_after_active.saturating_sub(rss_after_idle), active_held),
+        rss_final.saturating_sub(rss_after_active),
+        walls.len(),
+        started.elapsed().as_secs_f64(),
+    );
+    for wall in &walls {
+        println!("profile stress_mem_wall tier={} detail={wall}", tier.name);
+    }
+    Ok(())
+}
+
+/// The `stress_mem` profile (#13086): the memory profile of the
+/// world stack at scale — RSS per resident world at the selected
+/// tier, and the compaction spike at a 100,000-entry journal
+/// alongside the 2,000-entry size of the committed baseline. The
+/// compaction measurements run first and in increasing size order,
+/// so a fresh process attributes each spike cleanly;
+/// `ID_BENCH_STRESS_MEM_PART` (`all` / `compact` / `resident`)
+/// selects one part when a run wants it alone.
+fn bench_stress_mem(quick: bool) -> Result<()> {
+    let (tier, seed) = stress_selection(quick)?;
+    let part = std::env::var("ID_BENCH_STRESS_MEM_PART").unwrap_or_else(|_| "all".to_owned());
+    ensure!(
+        part == "all" || part == "compact" || part == "resident",
+        "unknown ID_BENCH_STRESS_MEM_PART '{part}' (valid: all, compact, resident)"
+    );
+    let dir = std::env::temp_dir().join(format!("id-stress-mem-{}", std::process::id()));
+    std::fs::create_dir_all(&dir)?;
+    if part != "resident" {
+        bench_stress_mem_compact(&dir, 2_000)?;
+        bench_stress_mem_compact(&dir, 100_000)?;
+    }
+    if part != "compact" {
+        bench_stress_mem_resident(&tier, seed)?;
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+    Ok(())
+}
+
 /// The `frame_cost` profile (#13085): view (and layout) fuel and wall
 /// time as a function of applied state size, for the Territory-class
 /// guest the scale design names as the frame-cost reference. The world
@@ -2361,7 +2619,7 @@ fn main() -> Result<()> {
     let dir = std::env::temp_dir().join(format!("id-bench-{}", std::process::id()));
     std::fs::create_dir_all(&dir)?;
 
-    const BENCHMARKS: [&str; 8] = [
+    const BENCHMARKS: [&str; 9] = [
         "journal_append_fsync",
         "checkpoint_compaction",
         "guest_replay",
@@ -2369,6 +2627,7 @@ fn main() -> Result<()> {
         "many_worlds",
         "fuel_spin_isolation",
         "stress_gen",
+        "stress_mem",
         "frame_cost",
     ];
     if let Some(name) = only
@@ -2438,6 +2697,10 @@ fn main() -> Result<()> {
 
     if run("stress_gen") {
         bench_stress_gen(quick)?;
+    }
+
+    if run("stress_mem") {
+        bench_stress_mem(quick)?;
     }
 
     if run("frame_cost") {
