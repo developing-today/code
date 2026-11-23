@@ -35,6 +35,9 @@ const FAST_MS = 5_000;
 const IDLE_MS = 30_000;
 const WATCHED_EVERY_MS = 60_000;
 const SYNC_TIMEOUT_MS = 20_000;
+/** After a report that carried the Android build did not get through,
+ * the build is left out of the reports that follow for this long. */
+const APK_AGAIN_MS = 10 * 60_000;
 const DONE_KEPT = 300;
 
 type Fate = "started" | { ok: boolean; error?: string };
@@ -72,6 +75,12 @@ export class EdgeLink {
   private watchedAt = 0;
   private timer: ReturnType<typeof setTimeout> | null = null;
   private busy = false;
+  /** The Android build is not put in a report before this time. */
+  private apkNotBefore = 0;
+  /** The last report left something out that the next should carry at
+   * once: the sections, when the build went alone, or everything but
+   * the build, when a report carrying it did not get through. */
+  private more = false;
   /** Actions being done right now, by the name the edge gave them. */
   private running = new Set<string>();
   private now: () => number;
@@ -180,6 +189,14 @@ export class EdgeLink {
     this.acks.push({ id: held.id, ...fate });
   }
 
+  /** The build could not be sent. It is left out of the reports that
+   * follow for a while: nothing about the build may stand in the way of
+   * an ordinary report, which is how the edge knows the host is there. */
+  private holdBuild(why: string): void {
+    this.apkNotBefore = this.now() + APK_AGAIN_MS;
+    this.log(`${why}; reporting without it for ten minutes`);
+  }
+
   /** One report to the edge. Returns its answer, or null if it could not
    * be reached or refused the report; nothing is lost either way. */
   async once(): Promise<SyncResponse | null> {
@@ -187,37 +204,63 @@ export class EdgeLink {
     this.busy = true;
     try {
       const pair = await this.keys();
+      this.more = false;
       const snapshot = this.o.docs.snapshot();
       let sections = snapshot.filter((s) => this.sent.get(s.name) !== s.hash || this.want.has(s.name));
       const acks = [...this.acks];
       const at = Math.max(this.now(), this.lastAt + 1);
       // The Android build: always what it is, and the build itself only
-      // when the edge has said it lacks this one.
+      // when the edge has said it lacks this one (and not for a while
+      // after it could not be sent).
       const build = (await this.o.apk?.().catch(() => null)) ?? null;
       const apk: ApkReport | null =
         build && build.size <= APK_LIMIT ? { sha256: build.sha256, size: build.size, at: build.at } : null;
-      if (apk && build && this.want.has("apk")) {
-        apk.data = Buffer.from(await build.read()).toString("base64");
-        // The build and large sections together could pass what the edge
-        // takes in one report, and a report refused as too large would be
-        // built the same way again and again. So the build goes alone
-        // then; the sections are not marked sent and follow next time.
-        const others = sections.reduce((sum, s) => sum + JSON.stringify(s.data).length, 0);
-        if (apk.data.length + others > REPORT_ROOM) sections = [];
+      if (apk && build && this.want.has("apk") && this.now() >= this.apkNotBefore) {
+        try {
+          apk.data = Buffer.from(await build.read()).toString("base64");
+        } catch (error) {
+          this.holdBuild(`the Android build could not be read (${(error as Error).message})`);
+        }
       }
-      const message: SyncRequest & { acts: unknown } = {
-        v: 1,
-        at,
-        ...(this.o.version ? { version: this.o.version } : {}),
-        ...(apk ? { apk } : {}),
-        config: await this.o.config(),
-        sections,
-        have: Object.fromEntries(snapshot.map((s) => [s.name, { hash: s.hash, at: s.at, error: s.error }])),
-        acks,
-        phones: await this.o.phones.links(),
-        acts: this.o.docs.recentActs(),
+      const config = await this.o.config();
+      const have = Object.fromEntries(snapshot.map((s) => [s.name, { hash: s.hash, at: s.at, error: s.error }]));
+      const phones = await this.o.phones.links();
+      const acts = this.o.docs.recentActs();
+      const encoded = (carried: typeof sections) => {
+        const message: SyncRequest & { acts: unknown } = {
+          v: 1,
+          at,
+          ...(this.o.version ? { version: this.o.version } : {}),
+          ...(apk ? { apk } : {}),
+          config,
+          sections: carried,
+          have,
+          acks,
+          phones,
+          acts,
+        };
+        return new TextEncoder().encode(JSON.stringify(message));
       };
-      const body = new TextEncoder().encode(JSON.stringify(message));
+      let body = encoded(sections);
+      // The build and large sections together could pass what the edge
+      // takes in one report. Measured on the report as it would be sent,
+      // in bytes: when it is past the room there is, the build goes
+      // alone; the sections are not marked sent and follow at once.
+      if (apk?.data && sections.length > 0 && body.byteLength > REPORT_ROOM) {
+        sections = [];
+        body = encoded(sections);
+        this.more = true;
+      }
+      // A report that carries the build is large and slow to send. If it
+      // does not get through, the same report again would not either, and
+      // while that went on the edge would hear nothing at all from this
+      // host. So the reports after it go without the build, the first of
+      // them at once.
+      const lost = () => {
+        if (!apk?.data) return;
+        this.holdBuild("a report carrying the Android build did not get through");
+        this.more = true;
+      };
       let res: Response;
       try {
         res = await this.fetchImpl(`${this.o.url}/console/edge/sync`, {
@@ -233,6 +276,7 @@ export class EdgeLink {
         });
       } catch (error) {
         if (this.last) this.log(`cannot reach the edge: ${(error as Error).message}`);
+        lost();
         this.last = null;
         return null;
       }
@@ -243,6 +287,7 @@ export class EdgeLink {
         // gives (it ran backwards): step past it.
         if (res.status === 409 && typeof answer?.last === "number") this.lastAt = Math.max(this.lastAt, answer.last);
         if (this.last) this.log(`the edge refused the report: http ${res.status} ${answer?.error ?? ""}`);
+        lost();
         this.last = null;
         return null;
       }
@@ -271,10 +316,11 @@ export class EdgeLink {
       void this.o.docs.current(WATCHED, 0);
     }
     const answer = await this.once();
-    // Something was done or is wanted: say so at once.
+    // Something was done, is wanted, or was left out of that report:
+    // say so at once.
     // (The Android build is not such a thing: it waits for the next
     // ordinary report, and half a megabyte is never sent in a hurry.)
-    if (this.acks.length > 0 || [...this.want].some((name) => name !== "apk")) return 500;
+    if (this.acks.length > 0 || this.more || [...this.want].some((name) => name !== "apk")) return 500;
     return answer?.watching || this.o.docs.watched() ? FAST_MS : IDLE_MS;
   }
 

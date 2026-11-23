@@ -2,7 +2,8 @@
   // The Worker in front of pm.security.cab: the app, its state,
   // notifications and the phone widget, served from Cloudflare.
   //
-  // Deployed by the pm-console-edge-deploy workflow (wrangler deploy).
+  // Deployed by the pm-console-edge-deploy workflow (release.mjs: an
+  // empty Worker from init/ if there is none, then this as a version).
   // It has no route here on purpose: scripts/expose.py on the host puts
   // the hostname's route on it once it answers its health check, and can
   // take the route away again, which is the whole rollback.
