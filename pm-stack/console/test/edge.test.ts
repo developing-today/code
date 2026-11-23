@@ -4454,6 +4454,37 @@ describe("the edge does the core itself", () => {
     const calls = asked(w);
     await w.browse("/console/health", { token: null });
     expect(asked(w)).toBe(calls);
+    // Nor an hour's worth of them: a check that read everything stands for the hour.
+    w.now.t += 59 * 60_000;
+    await w.browse("/console/health", { token: null });
+    expect(((await (await w.browse("/console/health", { token: null })).json()) as typeof health).selfCheck).toEqual(
+      selfCheck,
+    );
+  });
+
+  test("a check in which something could not be read is made again in five minutes, not left standing for the hour", async () => {
+    const w = await primary();
+    const check = async () =>
+      (
+        (await (await w.browse("/console/health", { token: null })).json()) as {
+          selfCheck: { at: number; kinds: Record<string, { ok: boolean; error?: string }> };
+        }
+      ).selfCheck;
+    // The hour's check comes round while GitHub is answering "one too many" for pull requests.
+    w.now.t += 61 * 60_000;
+    w.ghLimits.push((method, url) => method === "GET" && /\/pulls\?/.test(url));
+    const failed = await check();
+    expect(failed.at).toBe(w.now.t);
+    expect([failed.kinds.prs.ok, failed.kinds.board.ok]).toEqual([false, true]);
+    // GitHub answers again. Asked a minute later, the failed check still stands ...
+    w.ghLimits.length = 0;
+    w.now.t += 60_000;
+    expect((await check()).at).toBe(failed.at);
+    // ... and five minutes after it was made, it is made again, and reads everything.
+    w.now.t += 4 * 60_000 + 1;
+    const again = await check();
+    expect(again.at).toBe(w.now.t);
+    expect(Object.values(again.kinds).every((kind) => kind.ok)).toBe(true);
   });
 
   test("without the switch, or without a token, nothing is read or done here: the laptop does it, or it is held", async () => {

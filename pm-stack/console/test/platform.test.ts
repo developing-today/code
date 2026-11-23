@@ -42,6 +42,7 @@ test("a row of the list: what it must say, and what cannot both be true of it", 
     ["nothing said of what is next", { ...good, next: "" }],
     ["a path out of the repository", { ...good, path: "../elsewhere" }],
     ["a path that is not one", { ...good, path: "/etc/passwd" }],
+    ["a path that climbs out part-way", { ...good, path: "pkgs/../../elsewhere" }],
     ["a group there is not", { ...good, group: "misc" }],
     ["a state there is not", { ...good, state: "maybe" }],
     ["a way of deploying there is not", { ...good, deploy: "magic" }],
@@ -137,6 +138,17 @@ test("read through the fleet binary: the repository's list, with the last deploy
   expect(partial.workers.find((w) => w.name === "pm-console-edge")?.run).toEqual({
     error: expect.stringContaining("404"),
   });
+  // Two Workers that one workflow deploys: it is asked about once, and both show its run.
+  const shared = { ...good, deploy: "actions", workflow: "pm-console-edge-deploy.yml" };
+  const two = JSON.stringify({ checked: "2026-11-23", workers: [shared, { ...shared, name: "its-twin" }] });
+  const real = answers["repos/developing-today/code/contents/pm-stack/platform/workers.json"];
+  fails.clear();
+  answers["repos/developing-today/code/contents/pm-stack/platform/workers.json"] = () => ({ content: btoa(two) });
+  asked.length = 0;
+  const twins = await ops.platform();
+  expect(asked).toHaveLength(2);
+  expect(twins.workers.map((w) => (w.run as { commit: string }).commit)).toEqual(["2a96e875037d", "2a96e875037d"]);
+  answers["repos/developing-today/code/contents/pm-stack/platform/workers.json"] = real;
   // The list itself cannot be read, or is not a list: said as that.
   fails.add("repos/developing-today/code/contents/pm-stack/platform/workers.json");
   await expect(ops.platform()).rejects.toThrow();
