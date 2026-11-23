@@ -1,13 +1,14 @@
-// Store backend selection for the four aggregator stores that moved off
+// Store backend selection for the aggregator stores that moved off
 // laptop-local files in #6815 (actions, activity-ingestion, usage
-// snapshots, aa-last-good).
+// snapshots, aa-last-good) and #1744 (dashboard comments).
 //
 // `PM_AGG_STORE_BACKEND` is the single switch:
 //   - "file" (default): the historical laptop-local files. This is the
 //     dev/test path and the rollback target.
 //   - "turso": the canonical Turso tables from
 //     shared-schema/migrations/20261116_0001_aggregator_remote_stores.up.sql
-//     (plus agg_actions from 20261105_0001), via src/turso-stores.ts.
+//     (plus agg_actions from 20261105_0001 and shared_comments from
+//     20261122_0001), via src/turso-stores.ts.
 //
 // Exactly one backend is active. The stores never dual-write: in
 // turso mode the local files are not read or written by the store

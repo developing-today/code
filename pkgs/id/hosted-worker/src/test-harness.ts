@@ -6,7 +6,7 @@
 // routing context the front door would have set. This file is never an
 // application entry point; wrangler.toml does not reference it.
 
-import { HDR_BINDING, HDR_JURISDICTION, HDR_ROUTED } from "./user-do.ts";
+import { HDR_BINDING, HDR_IROH, HDR_JURISDICTION, HDR_ROUTED } from "./user-do.ts";
 
 export { UserDO } from "./user-do.ts";
 
@@ -26,6 +26,8 @@ export default {
     const headers = new Headers(req.headers);
     headers.set(HDR_BINDING, url.searchParams.get("binding") ?? "");
     headers.set(HDR_JURISDICTION, url.searchParams.get("jurisdiction") ?? "");
+    const iroh = url.searchParams.get("iroh");
+    if (iroh !== null) headers.set(HDR_IROH, iroh);
     if (url.searchParams.get("routed") !== "no") headers.set(HDR_ROUTED, "restricted");
     const stub = env.TEST_USERS.get(env.TEST_USERS.idFromName(name));
     const forwarded = new Request("https://do" + url.pathname, {

@@ -9,6 +9,7 @@
 // (the install manifest, its icons, the Android asset links) are public.
 // Two more paths carry their own check instead of the sign-in: a linked
 // phone's widget presents its own token there to read a short summary.
+import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync } from "node:fs";
 import { appendFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
@@ -30,6 +31,7 @@ import {
   manifest,
   type Phones,
   SECURITY,
+  sameEntity,
   sameSiteWrite,
 } from "./http.ts";
 import { Notifier } from "./notify.ts";
@@ -73,14 +75,19 @@ const IDLE_TIMEOUT_SECONDS = 120;
 
 // The page's four files, read once: nothing on the request path touches
 // the disk synchronously after the first hit.
-const fileCache = new Map<string, Uint8Array>();
-function file(name: string, type: string): Response {
-  let bytes = fileCache.get(name);
-  if (!bytes) {
-    bytes = readFileSync(join(PUBLIC_DIR, name));
-    fileCache.set(name, bytes);
+const fileCache = new Map<string, { bytes: Uint8Array; etag: string }>();
+function file(req: Request, name: string, type: string): Response {
+  let kept = fileCache.get(name);
+  if (!kept) {
+    const bytes = readFileSync(join(PUBLIC_DIR, name));
+    kept = { bytes, etag: `"${createHash("sha256").update(bytes).digest("base64url").slice(0, 22)}"` };
+    fileCache.set(name, kept);
   }
-  return new Response(bytes, { headers: { "Content-Type": type, "Cache-Control": "no-cache", ...SECURITY } });
+  // "no-cache" is "ask before using your copy": the tag is what the
+  // browser asks with, and a copy that is still the file is not sent again.
+  const headers = { "Content-Type": type, "Cache-Control": "no-cache", ETag: kept.etag, ...SECURITY };
+  if (sameEntity(req.headers.get("if-none-match"), kept.etag)) return new Response(null, { status: 304, headers });
+  return new Response(kept.bytes, { headers });
 }
 
 export { assetLinks, type Phones };
@@ -219,10 +226,10 @@ export async function handle(req: Request, deps: Deps, peer: string | null = nul
   const rest = path.slice(BASE.length).replace(/^\/+/, "");
   if (method === "GET" && rest === "") {
     if (path === BASE) return Response.redirect(`${BASE}/`, 308);
-    return file("index.html", "text/html; charset=utf-8");
+    return file(req, "index.html", "text/html; charset=utf-8");
   }
   const type = method === "GET" ? STATIC.get(rest) : undefined;
-  if (type !== undefined) return file(rest, type);
+  if (type !== undefined) return file(req, rest, type);
   // The Android app, for the signed-in owner: the phone gets it from the
   // site it opens, and nothing has to be published anywhere else.
   if (method === "GET" && rest === APK_NAME) {
@@ -276,6 +283,8 @@ export async function handle(req: Request, deps: Deps, peer: string | null = nul
             return json(await ops.services());
           case "prs":
             return json(await ops.prs());
+          case "releases":
+            return json(await ops.releases());
         }
       }
       if (seg.length === 2 && seg[0] === "doc" && deps.docs && DOC_NAMES.includes(seg[1] as DocName)) {
@@ -543,6 +552,43 @@ export function marked(res: Response): Response {
   return new Response(res.body, { status: res.status, statusText: res.statusText, headers });
 }
 
+/** The signed Android build at `path`, described for the edge. Its
+ * fingerprint is worked out again only when the file has changed. */
+export function androidBuild(path: string) {
+  let known: { mtime: number; size: number; sha256: string } | null = null;
+  return async () => {
+    const file = Bun.file(path);
+    if (!(await file.exists())) return null;
+    const { lastModified: mtime, size } = file;
+    if (!known || known.mtime !== mtime || known.size !== size) {
+      const sha256 = new Bun.CryptoHasher("sha256").update(await file.arrayBuffer()).digest("hex");
+      known = { mtime, size, sha256 };
+    }
+    return {
+      sha256: known.sha256,
+      size,
+      at: mtime,
+      read: async () => new Uint8Array(await Bun.file(path).arrayBuffer()),
+    };
+  };
+}
+
+/** The commit this console was started from, or nothing if it cannot
+ * be told (not a checkout, no git). The service is restarted when a
+ * merge is put into service, so this is the code that is running. */
+async function runningCommit(): Promise<string | undefined> {
+  try {
+    const git = Bun.spawn(["git", "-C", import.meta.dir, "rev-parse", "--short=12", "HEAD"], {
+      stdout: "pipe",
+      stderr: "ignore",
+    });
+    const said = (await new Response(git.stdout).text()).trim();
+    return (await git.exited) === 0 && /^[0-9a-f]{12}$/.test(said) ? said : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 if (import.meta.main) {
   // `--check` builds everything this service needs and stops before
   // listening: what a redeploy runs to learn that new code starts.
@@ -571,9 +617,12 @@ if (import.meta.main) {
   const link = cfg.edgeUrl
     ? new EdgeLink({
         url: cfg.edgeUrl,
+        version: await runningCommit(),
+        apk: androidBuild(cfg.androidApk),
         keys: fileStore(cfg.edgeKeyFile),
         done: fileStore(cfg.edgeDoneFile),
         docs,
+        phones: devices,
         config: async () => ({
           owners: cfg.owners,
           certNames: cfg.certNames,
@@ -583,6 +632,10 @@ if (import.meta.main) {
           androidPackage: cfg.androidPackage,
           androidFingerprints: cfg.androidFingerprints,
           androidApp: await Bun.file(cfg.androidApk).exists(),
+          queueDbUrl: cfg.queueDbUrl,
+          queueTokenName: cfg.queueTokenName,
+          promptLabel: cfg.promptLabel,
+          needsRepos: cfg.needsRepos,
         }),
         run: heldRunner(deps),
       })

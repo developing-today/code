@@ -1,0 +1,3 @@
+{"table": "agent.mirror_goals_goals", "conflict": ["goal_id"],
+ "jsonb_cols": ["payload"], "hash_payload": true,
+ "history_table": "agent.mirror_history_goals_goals", "mode": "update"}

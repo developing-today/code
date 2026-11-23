@@ -36,6 +36,14 @@ pub struct WorldRuntimeArgs {
     /// Total per-world logical memory budget, in MiB (1..=65536, #557 Phase 1).
     #[arg(long, default_value_t = 64, requires = "world", value_name = "MIB")]
     pub world_total_memory_mib: u64,
+    /// Concurrent synchronous guest burns admitted hub-wide
+    /// (#1067); 0 = auto (parallelism − 2).
+    #[arg(long, default_value_t = 0, requires = "world", value_name = "COUNT")]
+    pub world_guest_burn_concurrency: usize,
+    /// Concurrent synchronous guest burns admitted per charged
+    /// account (#1067 per-account quotas); 0 = no per-account bound.
+    #[arg(long, default_value_t = 0, requires = "world", value_name = "COUNT")]
+    pub world_guest_burn_per_account_concurrency: usize,
 }
 
 /// Phase 1 of the crate split (#3447): `RuntimeLimits::from_args` lives in
@@ -63,6 +71,12 @@ impl id_caps::world_limits::WorldLimitArgs for WorldRuntimeArgs {
     }
     fn world_total_memory_mib(&self) -> u64 {
         self.world_total_memory_mib
+    }
+    fn world_guest_burn_concurrency(&self) -> usize {
+        self.world_guest_burn_concurrency
+    }
+    fn world_guest_burn_per_account_concurrency(&self) -> usize {
+        self.world_guest_burn_per_account_concurrency
     }
 }
 
@@ -977,7 +991,8 @@ pub enum WorldCommand {
     /// is applied through the admin operations and journaled by the host.
     Apply(WorldApplyArgs),
     /// Print the versioned shell contract (the frame protocol every shell
-    /// speaks), or check a recorded session against it.
+    /// speaks), or check a recorded session against it. With `--check-suite`,
+    /// run the whole conformance suite from a manifest instead.
     ///
     /// A transcript has one JSON object per line:
     /// `{"from": "client"|"server", "frame": {...}}`. The check prints each
@@ -986,6 +1001,11 @@ pub enum WorldCommand {
         /// Transcript to check (`-` reads stdin); without it, print the contract.
         #[arg(long, value_name = "FILE")]
         check: Option<PathBuf>,
+        /// Suite manifest to run (`contract/shell-suite.v1.json`): every
+        /// shell's capability statement and recorded session, checked in
+        /// one pass. Fails if any shell fails.
+        #[arg(long, value_name = "FILE", conflicts_with = "check")]
+        check_suite: Option<PathBuf>,
     },
     /// Measure a compiled `.wasm` world program's fuel use, offline.
     ///

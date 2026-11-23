@@ -169,6 +169,57 @@ describe("resize clamps", () => {
 // ── Committed attrs on mouse-up ────────────────────────────────────
 
 describe("image alt-text editor accessibility", () => {
+  it.each(["Enter", " "])("opens the alt-text editor with %s", (key) => {
+    const { nv } = setup();
+    expect(nv.dom.getAttribute("role")).toBe("button");
+    expect(nv.dom.getAttribute("aria-label")).toBe("Edit image alt text: cat");
+    expect(nv.dom.tabIndex).toBe(0);
+
+    const event = new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true });
+    nv.dom.dispatchEvent(event);
+
+    expect(event.defaultPrevented).toBe(true);
+    if (key === " ") {
+      expect(nv.dom.querySelector(".pm-image-popover-input")).toBeNull();
+      nv.dom.dispatchEvent(new KeyboardEvent("keyup", { key, bubbles: true }));
+    }
+    expect(nv.dom.querySelector(".pm-image-popover-input")).not.toBeNull();
+  });
+
+  it.each(["Enter", " "])("leaves %s typed in the alt-text input to the input", (key) => {
+    const { nv } = setup();
+    nv.dom.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+    const input = nv.dom.querySelector(".pm-image-popover-input") as HTMLInputElement;
+    expect(input).not.toBeNull();
+
+    const down = new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true });
+    input.dispatchEvent(down);
+    input.dispatchEvent(new KeyboardEvent("keyup", { key, bubbles: true }));
+
+    if (key === " ") {
+      expect(down.defaultPrevented).toBe(false);
+      expect(nv.dom.querySelector(".pm-image-popover-input")).toBe(input);
+    } else {
+      // Enter commits and closes the editor; the figure must not reopen it.
+      expect(nv.dom.querySelector(".pm-image-popover")).toBeNull();
+    }
+  });
+
+  it("keeps the image description in the edit button's name as it changes", () => {
+    const { nv } = setup();
+    const image = (alt: string) => richSchema.nodes.image.create({ src: "/api/images/abc123", alt });
+    nv.update(image("a dog"));
+    expect(nv.dom.getAttribute("aria-label")).toBe("Edit image alt text: a dog");
+    nv.update(image(""));
+    expect(nv.dom.getAttribute("aria-label")).toBe("Edit image alt text");
+  });
+
+  it("does not open the alt-text editor for other keys", () => {
+    const { nv } = setup();
+    nv.dom.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+    expect(nv.dom.querySelector(".pm-image-popover")).toBeNull();
+  });
+
   it("associates the visible Alt text label with its input", () => {
     const { nv } = setup();
     nv.dom.dispatchEvent(new MouseEvent("click", { bubbles: true }));

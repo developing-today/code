@@ -1,0 +1,17 @@
+{
+  "target": "pm-stack-reachable",
+  "state": "down",
+  "severity": "critical",
+  "incidentId": "d50ada41-77a1-4fdd-a91f-4a3b79bbcf27",
+  "summary": "PM stack unreachable: <urlopen error [Errno 111] Connection refused>",
+  "caller": "slice-d-drill",
+  "firedAt": "2026-11-22T14:54:57.707170Z",
+  "elapsedSeconds": 3.105,
+  "incidentFile": "/tmp/c3-drill/pm-incidents.jsonl",
+  "throat": {
+    "posted": false,
+    "reason": "<urlopen error [Errno 111] Connection refused>"
+  },
+  "categoryNote": "health-hook pm-stack-reachable down @2026-11-22T14:54:57.707170Z caller=slice-d-drill incident=d50ada41-77a1-4fdd-a91f-4a3b79bbcf27 \u2014 PM stack unreachable: <urlopen error [Errno 111] Connection refused>",
+  "withinCap": true
+}

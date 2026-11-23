@@ -12,6 +12,8 @@ use anyhow::{Context, Result, bail, ensure};
 use std::collections::{BTreeSet, HashMap};
 use tokio::sync::oneshot;
 
+mod portal;
+
 impl WorldActor {
     /// Durably record `entry`, or turn the world read-only.
     pub(super) fn persist(&mut self, entry: JournalEntry) -> Result<()> {
@@ -138,6 +140,7 @@ impl WorldActor {
             JoinCapability,
             Vec<u8>,
             Option<SessionId>,
+            Option<serde_json::Value>,
             oneshot::Sender<Result<WorldEvent>>,
         );
         let mut items: std::collections::VecDeque<InputParts> = batch
@@ -147,16 +150,17 @@ impl WorldActor {
                     token,
                     input,
                     session_id,
+                    device_input,
                     signed_move: None,
                     reply,
-                } => Some((token, input, session_id, reply)),
+                } => Some((token, input, session_id, device_input, reply)),
                 // The run loop only drains unsigned Inputs into a batch.
                 _ => None,
             })
             .collect();
         if let Err(error) = self.check_writable() {
             let message = format!("{error:#}");
-            for (_, _, _, reply) in items {
+            for (_, _, _, _, reply) in items {
                 let _ = reply.send(Err(anyhow::anyhow!(message.clone())));
             }
             return;
@@ -169,7 +173,7 @@ impl WorldActor {
         let mut staged: Vec<Staged> = Vec::new();
         let mut staged_spends: HashMap<u64, u32> = HashMap::new();
         let mut failed: Option<(oneshot::Sender<Result<WorldEvent>>, anyhow::Error)> = None;
-        while let Some((token, input, session_id, reply)) = items.pop_front() {
+        while let Some((token, input, session_id, device_input, reply)) = items.pop_front() {
             let sequence = self.core.sequence + staged.len() as u64 + 1;
             let candidate =
                 match self
@@ -198,6 +202,7 @@ impl WorldActor {
             }
             self.acting = Some(candidate.participant_id);
             self.acting_session = session_id;
+            self.acting_device_input = device_input;
             match self
                 .program
                 .update(&candidate)
@@ -264,11 +269,12 @@ impl WorldActor {
         }
         // Whatever the batch did not stage goes through the single-command
         // path, in order, with its semantics untouched.
-        for (token, input, session_id, reply) in items {
+        for (token, input, session_id, device_input, reply) in items {
             self.handle(WorldCommand::Input {
                 token,
                 input,
                 session_id,
+                device_input,
                 signed_move: None,
                 reply,
             })
@@ -1272,6 +1278,8 @@ impl WorldActor {
             "blob.put" => self.execute_blob_put(&request.args),
             "blob.get" => self.execute_blob_get(&request.args),
             "blob.delete" => self.execute_blob_delete(&request.args),
+            "http.fetch" => self.execute_http_fetch(&request.args),
+            "notify" => self.execute_notify(&request.args),
             "schedule.at" => self.execute_schedule_at(&request.args),
             "schedule.cancel" => self.execute_schedule_cancel(&request.args),
             _ => Err(CapError::unknown()),
@@ -1404,13 +1412,18 @@ impl WorldActor {
         if args_size > crate::world_caps::MAX_ARGS_BYTES {
             return Err(CapError::bad_args_with("args_too_large"));
         }
-        if let Some(manifest) = &self.device_manifest
-            && manifest
-                .display
-                .get("kind")
-                .and_then(serde_json::Value::as_str)
-                != Some("headless")
-            && let Err(error) = form.validate_device_input(&manifest.input)
+        let presenter_input = self.acting_device_input.as_ref().or_else(|| {
+            self.device_manifest.as_ref().and_then(|manifest| {
+                (manifest
+                    .display
+                    .get("kind")
+                    .and_then(serde_json::Value::as_str)
+                    != Some("headless"))
+                .then_some(&manifest.input)
+            })
+        });
+        if let Some(input) = presenter_input
+            && let Err(error) = form.validate_device_input(input)
         {
             let reason = if format!("{error:#}").contains("text entry unavailable") {
                 "text_entry_unavailable"
@@ -1880,6 +1893,82 @@ impl WorldActor {
         Ok(serde_json::json!({"hash": hash, "deleted": true}))
     }
 
+    /// `http.fetch` (#1062): a GET of an allowlisted URL. The core
+    /// check refuses a malformed URL, a host outside the admin
+    /// allowlist, and an exhausted rate window before any
+    /// connection is made; the attempt is then recorded (failed
+    /// fetches spend the budget too) and the fetch runs on its own
+    /// thread. No fetch state is journaled: a fetch is an effect
+    /// against the live network, not world state, so replay
+    /// applies nothing for one.
+    pub(super) fn execute_http_fetch(
+        &mut self,
+        args: &serde_json::Value,
+    ) -> Result<serde_json::Value, CapError> {
+        let url = args
+            .get("url")
+            .and_then(serde_json::Value::as_str)
+            .ok_or(CapError::bad_args())?;
+        if let Err(error) = self.core.check_http_fetch(url) {
+            tracing::debug!(
+                "world {}: http fetch refused: {error:#}",
+                self.core.world_id
+            );
+            return Err(CapError::bad_args_with(format!("{error:#}")));
+        }
+        self.core.note_http_fetch_attempt();
+        let allowed_hosts = self.core.limits.http_fetch_hosts.clone();
+        let outcome = super::super::http_fetch::fetch(url, &allowed_hosts)?;
+        Ok(serde_json::json!({
+            "url": outcome.url,
+            "status": outcome.status,
+            "body": super::super::blob_encode(&outcome.body),
+            "body_bytes": outcome.body.len(),
+        }))
+    }
+
+    /// `notify` (#1062): a user-visible outbound notification,
+    /// committed to the world's event stream as a `Notification`
+    /// event. The core check refuses an oversized or
+    /// empty-after-sanitizing text and an exhausted rate window
+    /// before anything is committed; the attempt is then recorded
+    /// (a notification whose commit fails spends the budget too)
+    /// and the event is journaled before the result is delivered,
+    /// in the `chat.say` discipline — so a sent notification is a
+    /// durable fact of the world's history, and the stale-wants
+    /// rule keeps it at-most-once across a reopen.
+    pub(super) fn execute_notify(
+        &mut self,
+        args: &serde_json::Value,
+    ) -> Result<serde_json::Value, CapError> {
+        let Some(text) = args.get("text").and_then(serde_json::Value::as_str) else {
+            return Err(CapError::bad_args());
+        };
+        if let Err(error) = self.core.check_notify(text) {
+            tracing::debug!("world {}: notify refused: {error:#}", self.core.world_id);
+            return Err(CapError::bad_args_with(format!("{error:#}")));
+        }
+        self.core.note_notify_attempt();
+        match self.core.prepare_notification(text) {
+            Ok(event) => {
+                if self
+                    .persist(JournalEntry::Committed {
+                        event: event.clone(),
+                    })
+                    .is_err()
+                {
+                    return Err(CapError::failed());
+                }
+                if self.core.commit_prepared(event.clone()).is_err() {
+                    return Err(CapError::failed());
+                }
+                let _ = self.event_sender.send(event.clone());
+                Ok(serde_json::json!({"sequence": event.sequence}))
+            }
+            Err(_) => Err(CapError::bad_args()),
+        }
+    }
+
     /// `chat.say` commits a host chat line; its result is the new sequence.
     pub(super) fn execute_chat(
         &mut self,
@@ -1958,257 +2047,6 @@ impl WorldActor {
         }
         self.core.schedule_receipts.insert(key);
         true
-    }
-
-    /// Record one F12.14 portal audit shape (code#1068 wiring
-    /// slice) in this world's retained audit log, in the exact
-    /// fields the kernel built it in.
-    pub(super) fn audit_portal_shape(&self, shape: &id_caps::portal::PortalAuditShape) {
-        self.audit_record(
-            "portal",
-            shape.action,
-            shape.parameters.clone(),
-            shape.outcome,
-        );
-    }
-
-    /// Refuse a portal send on this (sending) world: record the
-    /// refusal shape in this world's audit log and return it.
-    pub(super) fn refuse_portal_send(
-        &self,
-        refusal: id_caps::portal::PortalRefusal,
-        from_world: &str,
-        to_world: &str,
-        message_bytes: usize,
-    ) -> PortalSendError {
-        self.audit_portal_shape(&id_caps::portal::audit_for_refusal(
-            id_caps::portal::PORTAL_SEND_ACTION,
-            &refusal,
-            from_world,
-            to_world,
-            message_bytes,
-        ));
-        PortalSendError::Refused(refusal)
-    }
-
-    /// Phase 1 of a portal send (F12.14, code#1068 wiring slice):
-    /// this world must be writable — a read-only replica, a
-    /// storage-failed writer, or an actor that handed off its write
-    /// lease originates no portal effects (CodeRabbit finding on
-    /// PR #10840) — and must itself grant `target`. Writability is a
-    /// transport/fencing fact, so it answers `Unavailable` (no
-    /// policy decision, no audit entry); a missing or revoked local
-    /// grant is the kernel's refusal, audited here. This phase is
-    /// actor-local: it runs no cross-world await, so the command
-    /// loop is never held while waiting on a peer actor.
-    pub(super) fn portal_send_precheck(
-        &self,
-        target: &str,
-        bytes: usize,
-    ) -> Result<(), PortalSendError> {
-        if let Err(error) = self.check_writable() {
-            return Err(PortalSendError::Unavailable(format!(
-                "portal send fenced: {error}"
-            )));
-        }
-        let from_world = self.core.world_id().to_owned();
-        match self.core.portal_grants.state(target) {
-            Some(id_caps::portal::PortalGrantState::Granted) => Ok(()),
-            Some(id_caps::portal::PortalGrantState::Revoked) => Err(self.refuse_portal_send(
-                id_caps::portal::PortalRefusal::SenderRevoked {
-                    peer: target.to_owned(),
-                },
-                &from_world,
-                target,
-                bytes,
-            )),
-            None => Err(self.refuse_portal_send(
-                id_caps::portal::PortalRefusal::SenderNotGranted {
-                    peer: target.to_owned(),
-                },
-                &from_world,
-                target,
-                bytes,
-            )),
-        }
-    }
-
-    /// Phase 3 of a portal send: the full mutual check, run by the
-    /// actor against the peer book the handle fetched through the
-    /// transport while this loop was free (phase 2). Re-runs the
-    /// writability fence and the local grant check (a revocation
-    /// between phases refuses here), then `check_portal_message`
-    /// in full, then the delivered-envelope bound, then the
-    /// per-ordered-pair rate admission. On success replies with
-    /// this world's id, the source name the transport delivers
-    /// under. Every refusal is audited as `portal.send` refused.
-    pub(super) fn portal_send_admit(
-        &mut self,
-        target: &str,
-        peer_grants: &id_caps::portal::PortalGrants,
-        message: &str,
-    ) -> Result<String, PortalSendError> {
-        let from_world = self.core.world_id().to_owned();
-        let bytes = message.len();
-        if let Err(error) = self.check_writable() {
-            return Err(PortalSendError::Unavailable(format!(
-                "portal send fenced: {error}"
-            )));
-        }
-        if let Err(refusal) = id_caps::portal::check_portal_message(
-            &self.core.portal_grants,
-            peer_grants,
-            &from_world,
-            target,
-            bytes,
-        ) {
-            return Err(self.refuse_portal_send(refusal, &from_world, target, bytes));
-        }
-        // The 16 KiB bound is on the raw message; the delivered
-        // envelope is the serialized host event, whose escaping can
-        // carry it past the world event ceiling (a 16 KiB message
-        // of control characters escapes to ~96 KiB). Measure the
-        // envelope here so an undeliverable message refuses as
-        // message-too-large on the send side, with the envelope
-        // size and the event ceiling it exceeded, instead of being
-        // dropped by delivery as a bare Unavailable.
-        let envelope_bytes = portal_message_event(&from_world, message).len();
-        if envelope_bytes > crate::world_caps::MAX_EVENT_BYTES {
-            return Err(self.refuse_portal_send(
-                id_caps::portal::PortalRefusal::MessageTooLarge {
-                    bytes: envelope_bytes,
-                    max: crate::world_caps::MAX_EVENT_BYTES,
-                },
-                &from_world,
-                target,
-                bytes,
-            ));
-        }
-        let now_ms = self.core.clock().now_ms();
-        if let Err(refusal) = self
-            .portal_rate
-            .entry(target.to_owned())
-            .or_default()
-            .admit(now_ms)
-        {
-            return Err(self.refuse_portal_send(refusal, &from_world, target, bytes));
-        }
-        Ok(from_world)
-    }
-
-    /// Phase 5 of a portal send: record the send-side audit shape
-    /// for the delivery outcome the handle observed in phase 4.
-    /// `None` records `portal.send` accepted; `Some(refusal)`
-    /// records the refusal shape and replies `Refused`, mirroring
-    /// the target's verdict back to the caller.
-    pub(super) fn portal_send_record(
-        &self,
-        target: &str,
-        bytes: usize,
-        refusal: Option<id_caps::portal::PortalRefusal>,
-    ) -> Result<(), PortalSendError> {
-        let from_world = self.core.world_id().to_owned();
-        match refusal {
-            Some(refusal) => Err(self.refuse_portal_send(refusal, &from_world, target, bytes)),
-            None => {
-                self.audit_portal_shape(&id_caps::portal::audit_for_send(
-                    &from_world,
-                    target,
-                    bytes,
-                ));
-                Ok(())
-            }
-        }
-    }
-
-    /// Accept (or refuse) one portal message arriving from `source`
-    /// (F12.14, code#1068 wiring slice). The receiving side re-checks
-    /// its own book — the send-side check read a snapshot, and a
-    /// grant revoked in between must refuse here as revoked — and
-    /// the size bound, then delivers the message to the program as a
-    /// host event naming its source. Acceptance records
-    /// `portal.deliver` accepted in this world's audit log; refusal
-    /// records `portal.deliver` refused with the refusal's code.
-    pub(super) async fn accept_portal_delivery(
-        &mut self,
-        source: &str,
-        message: String,
-    ) -> Result<(), PortalSendError> {
-        let to_world = self.core.world_id().to_owned();
-        let bytes = message.len();
-        let refuse = |actor: &Self, refusal: id_caps::portal::PortalRefusal| {
-            actor.audit_portal_shape(&id_caps::portal::audit_for_refusal(
-                id_caps::portal::PORTAL_DELIVER_ACTION,
-                &refusal,
-                source,
-                &to_world,
-                bytes,
-            ));
-            PortalSendError::Refused(refusal)
-        };
-        match self.core.portal_grants.state(source) {
-            Some(id_caps::portal::PortalGrantState::Granted) => {}
-            Some(id_caps::portal::PortalGrantState::Revoked) => {
-                return Err(refuse(
-                    self,
-                    id_caps::portal::PortalRefusal::PeerRevoked {
-                        peer: source.to_owned(),
-                    },
-                ));
-            }
-            None => {
-                return Err(refuse(
-                    self,
-                    id_caps::portal::PortalRefusal::PeerNotGranted {
-                        peer: source.to_owned(),
-                    },
-                ));
-            }
-        }
-        if bytes > id_caps::portal::MAX_PORTAL_MESSAGE_BYTES {
-            return Err(refuse(
-                self,
-                id_caps::portal::PortalRefusal::MessageTooLarge {
-                    bytes,
-                    max: id_caps::portal::MAX_PORTAL_MESSAGE_BYTES,
-                },
-            ));
-        }
-        // The delivered envelope is the serialized host event: a
-        // raw message inside the 16 KiB bound can still escape past
-        // the world event ceiling, in which case delivery would
-        // drop it and misreport the cause as Unavailable. Refuse
-        // it here as message-too-large, carrying the envelope size
-        // and the event ceiling it exceeded (the send side runs
-        // the same measurement in PortalSendAdmit).
-        let event = portal_message_event(source, &message);
-        if event.len() > crate::world_caps::MAX_EVENT_BYTES {
-            return Err(refuse(
-                self,
-                id_caps::portal::PortalRefusal::MessageTooLarge {
-                    bytes: event.len(),
-                    max: crate::world_caps::MAX_EVENT_BYTES,
-                },
-            ));
-        }
-        // Full writability fence, not just the replica flag: an
-        // actor that handed off its write lease (or whose storage
-        // failed) must not acknowledge a mutation past the
-        // ownership boundary (CodeRabbit finding on PR #10840).
-        if let Err(error) = self.check_writable() {
-            return Err(PortalSendError::Unavailable(format!(
-                "portal delivery fenced: {error}"
-            )));
-        }
-        if !self.deliver(event).await {
-            return Err(PortalSendError::Unavailable(
-                "target program did not accept the portal message".to_owned(),
-            ));
-        }
-        self.audit_portal_shape(&id_caps::portal::audit_for_deliver(
-            source, &to_world, bytes,
-        ));
-        Ok(())
     }
 
     /// `schedule.at`: pend a fire of `id` at `at` (unix ms). With

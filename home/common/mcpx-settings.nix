@@ -12,6 +12,19 @@
 {
   "$schema" = "https://raw.githubusercontent.com/dezren39/mcpx/main/schema/mcpx.schema.json";
   "mcpServers" = {
+    "atlas" = {
+      # Atlas search (#8625): the atlas-search Worker's MCP
+      # endpoint (pkgs/atlas-search/worker, POST /mcp). The gate
+      # token is expanded from the daemon's environment at
+      # runtime (see services.mcpx.environmentFile in
+      # home/common/default.nix); the value never lands here or
+      # in the Nix store.
+      url = "https://atlas-search.developing-today.workers.dev/mcp";
+      auth = {
+        type = "bearer";
+        token = "\${ATLAS_SEARCH_GATE_TOKEN}";
+      };
+    };
     "antigravity" = {
       "args" = [
         "-y"

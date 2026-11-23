@@ -3,7 +3,9 @@
 //! A world directory holds:
 //!
 //! ```text
-//! <dir>/journal.jsonl            one JournalEntry per line, fsynced per append
+//! <dir>/journal.jsonl            one JournalEntry per line, synced per the
+//!                                journal's ack mode (fsynced per append
+//!                                in the default mode)
 //! <dir>/modules/<blake3>.wasm    every module the world has installed
 //! ```
 //!
@@ -24,14 +26,12 @@
 use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::{self, Receiver, Sender, SyncSender};
-use std::thread::{self, JoinHandle};
 
 use anyhow::{Context, Result, bail, ensure};
 
 use crate::world::{
-    JOURNAL_VERSION, JournalEntry, WorldCore, WorldEventKind, WorldHandle, WorldJournal,
-    WorldLimits, WorldProgram, journal_version_required_by,
+    JOURNAL_VERSION, JournalAckMode, JournalEntry, WorldCore, WorldEventKind, WorldHandle,
+    WorldJournal, WorldLimits, WorldProgram, journal_version_required_by,
 };
 use crate::world_session::{WorldService, module_hash};
 
@@ -50,10 +50,22 @@ use crate::world_session::{WorldService, module_hash};
 /// is back under the cap.
 pub const MAX_JOURNAL_BYTES: u64 = 64 * 1024 * 1024;
 
-/// Append-only, fsynced JSON-lines journal.
+/// Appends per sync in [`JournalAckMode::Batched`]: the journal issues
+/// one `sync_data` per this many appends (counted across `append` and
+/// `append_batch` entries), so at most `JOURNAL_ACK_BATCH_SIZE - 1`
+/// acknowledged appends are ever waiting on their batch's sync. The
+/// bound is the mode's whole loss window — an OS crash can drop the
+/// unsynced tail, never more than one partial batch — so it is a
+/// durability choice, not a tuning knob: 64 inputs is ~3 s of one
+/// world's F12.12 input rate (20 ev/s), small enough to lose, large
+/// enough to cut syncs per input by ~64x where sync latency binds.
+pub const JOURNAL_ACK_BATCH_SIZE: u64 = 64;
+
+/// Append-only JSON-lines journal, synced per its [`JournalAckMode`]
+/// (fsynced per append in the default mode).
 #[derive(Debug)]
 pub struct FileJournal {
-    writer: JournalWriter,
+    file: File,
     path: PathBuf,
     /// Set when a compaction left durability uncertain; appends then fail so
     /// no acknowledged event can be lost.
@@ -66,95 +78,76 @@ pub struct FileJournal {
     bytes: u64,
     /// The byte cap this journal enforces (see [`MAX_JOURNAL_BYTES`]).
     max_bytes: u64,
+    /// When appends are acknowledged relative to the sync that makes
+    /// them durable, chosen at open (see [`JournalAckMode`]). Never
+    /// changes over the journal's life and never affects how existing
+    /// bytes are read back.
+    ack_mode: JournalAckMode,
+    /// Appends written since the last completed sync. Always zero in
+    /// [`JournalAckMode::Sync`]; in the relaxed modes it is exactly
+    /// the set of acknowledged appends an OS crash could still lose,
+    /// and it returns to zero at every sync point (a batch-boundary
+    /// sync, [`WorldJournal::sync`], a transaction, a compaction).
+    unsynced_appends: u64,
     /// Lock on a stable sibling file. The journal itself is replaced by
     /// compaction, so locking its inode would not protect the path lifetime.
-    /// Keep this last so the writer is shut down before ownership is released.
+    /// Keep this last so the journal file is closed before ownership is
+    /// released.
     _lock: File,
 }
 
-#[derive(Debug)]
-struct JournalWriter {
-    sender: Option<Sender<JournalWriterRequest>>,
-    thread: Option<JoinHandle<()>>,
-}
-
-#[derive(Debug)]
-enum JournalWriterRequest {
-    Append {
-        line: Vec<u8>,
-        reply: SyncSender<std::io::Result<()>>,
-    },
-    Replace {
-        file: File,
-        reply: SyncSender<()>,
-    },
-}
-
-/// Wait for a journal writer reply without parking a shared Tokio
-/// worker for the duration of the write+sync: on a multi-thread
-/// runtime the wait runs under `block_in_place`, so the runtime hands
+/// Run `op` under the worker-parking guard the first #557 fix
+/// established for journal I/O: on a multi-thread runtime the
+/// blocking I/O runs under `block_in_place`, so the runtime hands
 /// this worker's other tasks to a replacement thread while the caller
-/// waits for durability. Everywhere else (plain threads,
-/// `spawn_blocking`, current-thread test runtimes) the wait is direct.
-/// Without this, W runtime workers cap the whole hub at W appends per
-/// sync latency — the #557 many-worlds profile measured exactly that
-/// ceiling (4 workers / 46 ms ≈ 87 appends/s against 2,000 offered).
-fn recv_writer_reply<T>(result: &Receiver<T>) -> Result<T, mpsc::RecvError> {
+/// waits; everywhere else (plain threads, `spawn_blocking`,
+/// current-thread test runtimes) it is direct. Without this, W
+/// runtime workers cap the whole hub at W appends per sync latency —
+/// the #557 many-worlds profile measured exactly that ceiling
+/// (4 workers / 46 ms ≈ 87 appends/s against 2,000 offered).
+fn in_durability_guard<T>(op: impl FnOnce() -> std::io::Result<T>) -> std::io::Result<T> {
     if tokio::runtime::Handle::try_current()
         .is_ok_and(|handle| handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread)
     {
-        tokio::task::block_in_place(|| result.recv())
+        tokio::task::block_in_place(op)
     } else {
-        result.recv()
+        op()
     }
 }
 
-impl JournalWriter {
-    fn new(file: File) -> Result<Self> {
-        let (sender, receiver) = mpsc::channel();
-        let thread = thread::Builder::new()
-            .name("world-journal-writer".to_owned())
-            .spawn(move || journal_writer_loop(file, receiver))
-            .context("spawn world journal writer")?;
-        Ok(Self {
-            sender: Some(sender),
-            thread: Some(thread),
-        })
-    }
-
-    fn append(&self, line: Vec<u8>) -> Result<()> {
-        let (reply, result) = mpsc::sync_channel(0);
-        self.send(JournalWriterRequest::Append { line, reply })?;
-        recv_writer_reply(&result)
-            .context("world journal writer stopped before append completed")?
-            .context("write and sync world journal")
-    }
-
-    fn replace(&self, file: File) -> Result<()> {
-        let (reply, result) = mpsc::sync_channel(0);
-        self.send(JournalWriterRequest::Replace { file, reply })?;
-        recv_writer_reply(&result)
-            .context("world journal writer stopped before replacing its file")
-    }
-
-    fn send(&self, request: JournalWriterRequest) -> Result<()> {
-        self.sender
-            .as_ref()
-            .context("world journal writer is stopped")?
-            .send(request)
-            .context("world journal writer stopped")
-    }
+/// Write `line` to the journal file and sync it durable — the whole
+/// durable cost of one append (one `write_all` + one `sync_data`).
+///
+/// The write+sync runs inline in the caller, under the
+/// [`in_durability_guard`] worker-parking guard.
+///
+/// The journal used to hand each append to a dedicated writer thread
+/// over a channel and rendezvous on its reply. That hop bought
+/// nothing: the journal's only producer is its owning actor, which
+/// reaches it through `&mut` and cannot have a second append in flight
+/// while one waits for durability, so the writer's queue was empty at
+/// every dequeue by construction and each append paid a channel send,
+/// a thread wake, and a rendezvous reply around the same sync. Writing
+/// inline removes those hops (and one thread per world) with no
+/// durability or ordering change: an append is still acknowledged
+/// only after the sync that covers its bytes completes.
+fn sync_journal_write(file: &mut File, line: &[u8]) -> std::io::Result<()> {
+    in_durability_guard(|| file.write_all(line).and_then(|()| file.sync_data()))
 }
 
-impl Drop for JournalWriter {
-    fn drop(&mut self) {
-        // Closing the channel lets the writer finish any queued request and
-        // exit before its file descriptor is released.
-        drop(self.sender.take());
-        if let Some(thread) = self.thread.take() {
-            let _ = thread.join();
-        }
-    }
+/// Write `line` to the journal file WITHOUT syncing it — the relaxed
+/// [`JournalAckMode`]s' half of an append. The bytes are in the OS
+/// (and survive a process crash) but are not durable until a later
+/// sync covers them.
+fn write_journal_line(file: &mut File, line: &[u8]) -> std::io::Result<()> {
+    in_durability_guard(|| file.write_all(line))
+}
+
+/// Sync the journal file, making every byte written so far durable —
+/// the deferred half of a relaxed-mode append, run at the mode's sync
+/// points.
+fn sync_journal_file(file: &mut File) -> std::io::Result<()> {
+    in_durability_guard(|| file.sync_data())
 }
 
 fn acquire_journal_lock(path: &Path) -> Result<File> {
@@ -188,24 +181,6 @@ fn acquire_journal_lock(path: &Path) -> Result<File> {
     }
 }
 
-fn journal_writer_loop(mut file: File, receiver: Receiver<JournalWriterRequest>) {
-    while let Ok(request) = receiver.recv() {
-        match request {
-            JournalWriterRequest::Append { line, reply } => {
-                let result = file.write_all(&line).and_then(|()| file.sync_data());
-                let _ = reply.send(result);
-            }
-            JournalWriterRequest::Replace {
-                file: replacement,
-                reply,
-            } => {
-                file = replacement;
-                let _ = reply.send(());
-            }
-        }
-    }
-}
-
 impl FileJournal {
     /// Open (or create) a journal and return its entries.
     ///
@@ -217,7 +192,7 @@ impl FileJournal {
     ///
     /// I/O failures, or a malformed entry before the last line.
     pub fn open(path: &Path, world_id: &str) -> Result<(Self, Vec<JournalEntry>)> {
-        Self::open_with_max_bytes(path, world_id, MAX_JOURNAL_BYTES)
+        Self::open_impl(path, world_id, MAX_JOURNAL_BYTES, JournalAckMode::Sync)
     }
 
     /// Open (or create) a journal enforcing an explicit byte cap.
@@ -230,6 +205,28 @@ impl FileJournal {
         path: &Path,
         world_id: &str,
         max_bytes: u64,
+    ) -> Result<(Self, Vec<JournalEntry>)> {
+        Self::open_impl(path, world_id, max_bytes, JournalAckMode::Sync)
+    }
+
+    /// Open (or create) a journal running the given acknowledgement
+    /// mode (see [`JournalAckMode`]) under the production byte cap.
+    /// The mode governs only what future appends promise; the entries
+    /// already in the journal are read back exactly as any other mode
+    /// would read them.
+    pub fn open_with_ack_mode(
+        path: &Path,
+        world_id: &str,
+        ack_mode: JournalAckMode,
+    ) -> Result<(Self, Vec<JournalEntry>)> {
+        Self::open_impl(path, world_id, MAX_JOURNAL_BYTES, ack_mode)
+    }
+
+    fn open_impl(
+        path: &Path,
+        world_id: &str,
+        max_bytes: u64,
+        ack_mode: JournalAckMode,
     ) -> Result<(Self, Vec<JournalEntry>)> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)
@@ -263,12 +260,14 @@ impl FileJournal {
             _ => JOURNAL_VERSION,
         };
         let mut journal = Self {
-            writer: JournalWriter::new(file)?,
+            file,
             path: path.to_owned(),
             broken: false,
             version,
             bytes: good_len,
             max_bytes,
+            ack_mode,
+            unsynced_appends: 0,
             _lock: lock,
         };
         if entries.is_empty() {
@@ -395,9 +394,69 @@ impl FileJournal {
         }
         Ok(total)
     }
+
+    /// The acknowledgement mode this journal was opened with (see
+    /// [`JournalAckMode`]).
+    #[must_use]
+    pub fn ack_mode(&self) -> JournalAckMode {
+        self.ack_mode
+    }
+
+    /// Appends acknowledged since the last completed sync — exactly
+    /// the acknowledged history an OS crash could still lose. Always
+    /// zero in [`JournalAckMode::Sync`].
+    #[must_use]
+    pub fn unsynced_appends(&self) -> u64 {
+        self.unsynced_appends
+    }
+
+    /// Write one already-encoded append payload (`appends` counts the
+    /// entries in it: 1 for `append`, the batch length for
+    /// `append_batch`) and treat it per this journal's ack mode: sync
+    /// it durable before returning ([`JournalAckMode::Sync`]), or
+    /// write it and count it toward the next sync point (the relaxed
+    /// modes), flushing when a `Batched` batch fills.
+    fn append_write(&mut self, payload: &[u8], appends: u64) -> std::io::Result<()> {
+        match self.ack_mode {
+            JournalAckMode::Sync => sync_journal_write(&mut self.file, payload),
+            JournalAckMode::Batched | JournalAckMode::Async => {
+                write_journal_line(&mut self.file, payload)?;
+                self.unsynced_appends += appends;
+                if self.ack_mode == JournalAckMode::Batched
+                    && self.unsynced_appends >= JOURNAL_ACK_BATCH_SIZE
+                {
+                    self.sync_durable()?;
+                }
+                Ok(())
+            }
+        }
+    }
+
+    /// Sync the journal file if any acknowledged append is still
+    /// uncovered; on success every append so far is durable and
+    /// [`Self::unsynced_appends`] is zero. A failed sync leaves the
+    /// count standing — the appends are still uncovered — and reports
+    /// the error, so the caller fails the current append rather than
+    /// acknowledging past a sync point that did not happen.
+    fn sync_durable(&mut self) -> std::io::Result<()> {
+        if self.unsynced_appends == 0 {
+            return Ok(());
+        }
+        sync_journal_file(&mut self.file)?;
+        self.unsynced_appends = 0;
+        Ok(())
+    }
 }
 
 impl WorldJournal for FileJournal {
+    fn ack_mode(&self) -> JournalAckMode {
+        self.ack_mode
+    }
+
+    fn sync(&mut self) -> Result<()> {
+        self.sync_durable().context("sync world journal")
+    }
+
     fn append(&mut self, entry: &JournalEntry) -> Result<()> {
         ensure!(
             !self.broken,
@@ -425,7 +484,8 @@ impl WorldJournal for FileJournal {
             self.path.display(),
             self.max_bytes
         );
-        self.writer.append(line)?;
+        self.append_write(&line, 1)
+            .context("write world journal append")?;
         self.bytes = new_bytes;
         Ok(())
     }
@@ -465,9 +525,11 @@ impl WorldJournal for FileJournal {
             self.path.display(),
             self.max_bytes
         );
-        // JournalWriter::append is one write_all + one sync_data, so the
-        // concatenated batch is durable after a single sync.
-        self.writer.append(batch)?;
+        // The concatenated batch is ONE journal write: in Sync mode a
+        // single sync_data makes it durable as a whole; the relaxed
+        // modes count its entries toward their next sync point.
+        self.append_write(&batch, entries.len() as u64)
+            .context("write world journal batch")?;
         self.bytes = new_bytes;
         Ok(())
     }
@@ -594,10 +656,7 @@ impl WorldJournal for FileJournal {
         // The new file is now the journal, and the open handle follows its
         // inode. If the directory entry cannot be made durable, a crash could
         // resurrect the old journal and lose later appends: refuse them.
-        if let Err(error) = self.writer.replace(file) {
-            self.broken = true;
-            return Err(error.context("replace world journal writer file"));
-        }
+        self.file = file;
         let synced = self.path.parent().map_or(Ok(()), |parent| {
             File::open(parent).and_then(|dir| dir.sync_all())
         });
@@ -612,6 +671,10 @@ impl WorldJournal for FileJournal {
         // (this is how a checkpoint trim brings an over-cap journal back
         // under its cap, and how transactions account for their bytes).
         self.bytes = compacted_bytes;
+        // The replacement was built, synced and renamed before this
+        // point, so every entry it holds is durable: a compaction is a
+        // sync point in every ack mode.
+        self.unsynced_appends = 0;
         Ok(())
     }
 }
@@ -735,10 +798,12 @@ pub async fn open_world(
 ) -> Result<(WorldService, OpenReport)> {
     let journal_path = dir.join("journal.jsonl");
     let id = world_id.to_owned();
-    let (journal, entries) =
-        tokio::task::spawn_blocking(move || FileJournal::open(&journal_path, &id))
-            .await
-            .context("journal open task")??;
+    let ack_mode = limits.journal_ack_mode;
+    let (journal, entries) = tokio::task::spawn_blocking(move || {
+        FileJournal::open_with_ack_mode(&journal_path, &id, ack_mode)
+    })
+    .await
+    .context("journal open task")??;
     let journal_entries = entries.len();
     let mut restored = WorldCore::restore_with_runtime(world_id, limits, runtime, entries)?;
     let directory_path = dir.join("directory.jsonl");
@@ -772,6 +837,7 @@ pub async fn open_world(
         None => Box::new(EmptyProgram),
         Some(spec) => match restore_program(
             &modules,
+            world_id,
             spec,
             &restored.replay,
             restored.core.execution_profile().resolve(runtime)?,
@@ -1010,6 +1076,7 @@ async fn open_replica_impl(
         None => Box::new(EmptyProgram),
         Some(spec) => match restore_program(
             &modules,
+            world_id,
             spec,
             &restored.replay,
             core.execution_profile().resolve(runtime)?,
@@ -1254,11 +1321,13 @@ impl WorldProgram for EmptyProgram {}
 /// start from the checkpoint snapshot when the journal has one.
 async fn restore_program(
     modules: &ModuleDir,
+    world_id: &str,
     spec: &crate::world::RestoredProgram,
     replay: &[crate::world::WorldEvent],
     runtime: crate::world_limits::RuntimeLimits,
 ) -> Result<(Box<dyn WorldProgram>, Vec<u8>)> {
     let modules = modules.clone();
+    let world_id = world_id.to_owned();
     let spec = spec.clone();
     let replay = replay.to_vec();
     tokio::task::spawn_blocking(move || {
@@ -1277,6 +1346,22 @@ async fn restore_program(
             {
                 let mut guest =
                     crate::sandbox::Sandbox::compile(&wasm, runtime.sandbox)?.instantiate(seed)?;
+                // Charge this world's burns to its world id, against
+                // the hub's configured burn budget (#1067). The
+                // per-account bound and the admin account registry
+                // ride along (#1067 per-account quotas): the bound
+                // applies to the shared budget itself (0 = none, the
+                // budget's own configuration point), and the guest
+                // resolves its charge account against the registry
+                // the serve path installed.
+                guest.set_charge_key(world_id.clone());
+                let burn_budget =
+                    crate::guest_burn::GuestBurnBudget::shared_for(runtime.guest_burn_concurrency);
+                if runtime.guest_burn_per_account_concurrency > 0 {
+                    burn_budget.set_account_bound(Some(runtime.guest_burn_per_account_concurrency));
+                }
+                guest.set_burn_budget(burn_budget);
+                guest.set_account_registry(crate::account_charge::WorldAccountRegistry::shared());
                 if let Some(snapshot) = &spec.snapshot {
                     guest
                         .restore(snapshot.as_bytes())
@@ -1423,6 +1508,201 @@ mod tests {
             }
         ));
         assert!(matches!(entries[2], JournalEntry::ExecutionProfile { .. }));
+    }
+
+    // #557 (ack modes): the default journal is Sync, and its on-disk
+    // image is byte-for-byte the pre-mode contract — the header and
+    // each entry as one JSON line, every append synced before it
+    // returns (unsynced_appends never leaves zero).
+    #[test]
+    fn journal_default_ack_mode_is_sync_and_writes_the_exact_old_bytes() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("journal.jsonl");
+        let entries: Vec<JournalEntry> = (0..3)
+            .map(|n| JournalEntry::CapsGranted {
+                granted: vec![format!("cap-{n}")],
+            })
+            .collect();
+        let mut expected = journal_line(&JournalEntry::Created {
+            world_id: "w".to_owned(),
+            version: JOURNAL_VERSION,
+        });
+        {
+            let (mut journal, _) = FileJournal::open(&path, "w").unwrap();
+            assert_eq!(journal.ack_mode(), JournalAckMode::Sync);
+            assert_eq!(
+                <FileJournal as WorldJournal>::ack_mode(&journal),
+                JournalAckMode::Sync
+            );
+            assert_eq!(journal.unsynced_appends(), 0, "the header append syncs");
+            for entry in &entries {
+                journal.append(entry).unwrap();
+                assert_eq!(
+                    journal.unsynced_appends(),
+                    0,
+                    "a sync-mode append is durable when it returns"
+                );
+                expected.extend_from_slice(&journal_line(entry));
+            }
+        }
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            expected,
+            "the default mode writes exactly the bytes the old code wrote"
+        );
+    }
+
+    // #557 (ack modes): WorldLimits carries the mode and defaults to
+    // Sync, so every existing world keeps the old contract.
+    #[test]
+    fn world_limits_default_ack_mode_is_sync() {
+        assert_eq!(
+            WorldLimits::default().journal_ack_mode,
+            JournalAckMode::Sync
+        );
+    }
+
+    // #557 (ack modes): Async acknowledges after the write and before
+    // any sync — the journal's own accounting shows the appends
+    // uncovered — and an explicit sync point flushes them; everything
+    // written replays on reopen, in order.
+    #[test]
+    fn journal_async_mode_acks_before_sync_and_sync_point_flushes() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("journal.jsonl");
+        let entries: Vec<JournalEntry> = (0..3)
+            .map(|n| JournalEntry::CapsGranted {
+                granted: vec![format!("cap-{n}")],
+            })
+            .collect();
+        {
+            let (mut journal, _) =
+                FileJournal::open_with_ack_mode(&path, "w", JournalAckMode::Async).unwrap();
+            assert_eq!(journal.ack_mode(), JournalAckMode::Async);
+            assert_eq!(
+                journal.unsynced_appends(),
+                1,
+                "even the header waits for a sync point in async mode"
+            );
+            for entry in &entries {
+                journal.append(entry).unwrap();
+            }
+            assert_eq!(
+                journal.unsynced_appends(),
+                1 + entries.len() as u64,
+                "no append synced on the ack path"
+            );
+            // The bytes are written (a reopen would read them); they
+            // are simply not durable yet.
+            assert_eq!(journal_entries(dir.path()).len(), 1 + entries.len());
+            <FileJournal as WorldJournal>::sync(&mut journal).unwrap();
+            assert_eq!(journal.unsynced_appends(), 0, "the sync point flushes");
+        }
+        let (_journal, replayed) = FileJournal::open(&path, "w").unwrap();
+        assert_eq!(&replayed[1..], entries.as_slice());
+    }
+
+    // #557 (ack modes): Batched syncs exactly when the pending count
+    // reaches JOURNAL_ACK_BATCH_SIZE — never before — counted across
+    // append and append_batch entries; the loss window is the partial
+    // batch, and a sync point flushes it early.
+    #[test]
+    fn journal_batched_mode_syncs_once_per_batch() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("journal.jsonl");
+        let entry = JournalEntry::CapsGranted {
+            granted: vec!["chat".to_owned()],
+        };
+        let (mut journal, _) =
+            FileJournal::open_with_ack_mode(&path, "w", JournalAckMode::Batched).unwrap();
+        assert_eq!(journal.unsynced_appends(), 1, "the header is pending");
+        // Fill to one short of the bound: still no sync.
+        for _ in 1..JOURNAL_ACK_BATCH_SIZE - 1 {
+            journal.append(&entry).unwrap();
+        }
+        assert_eq!(journal.unsynced_appends(), JOURNAL_ACK_BATCH_SIZE - 1);
+        // The append that fills the batch flushes it.
+        journal.append(&entry).unwrap();
+        assert_eq!(
+            journal.unsynced_appends(),
+            0,
+            "the batch boundary syncs exactly once"
+        );
+        // A batch append counts its entries toward the same bound:
+        // BATCH-1 entries pend without flushing, and one more single
+        // append crosses the bound and flushes for all of them.
+        let batch = vec![entry.clone(); (JOURNAL_ACK_BATCH_SIZE - 1) as usize];
+        journal.append_batch(&batch).unwrap();
+        assert_eq!(journal.unsynced_appends(), JOURNAL_ACK_BATCH_SIZE - 1);
+        journal.append(&entry).unwrap();
+        assert_eq!(journal.unsynced_appends(), 0);
+        // A partial batch waits, and sync() flushes it early.
+        journal.append(&entry).unwrap();
+        assert_eq!(journal.unsynced_appends(), 1);
+        <FileJournal as WorldJournal>::sync(&mut journal).unwrap();
+        assert_eq!(journal.unsynced_appends(), 0);
+        drop(journal);
+        let (_journal, replayed) = FileJournal::open(&path, "w").unwrap();
+        assert_eq!(
+            replayed.len() as u64,
+            1 + 2 * JOURNAL_ACK_BATCH_SIZE,
+            "every batched append replayed: {replayed:?}"
+        );
+    }
+
+    // #557 (ack modes): the mode never reinterprets existing state —
+    // a journal written under one mode replays identically under any
+    // other, including async appends that never reached a sync point
+    // (written bytes survive a process exit; only an OS crash could
+    // have dropped them, which is the mode's documented window).
+    #[test]
+    fn journal_mode_switch_on_reopen_replays_identically() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("journal.jsonl");
+        let entries: Vec<JournalEntry> = (0..4)
+            .map(|n| JournalEntry::CapsGranted {
+                granted: vec![format!("cap-{n}")],
+            })
+            .collect();
+        {
+            let (mut journal, _) =
+                FileJournal::open_with_ack_mode(&path, "w", JournalAckMode::Async).unwrap();
+            for entry in &entries {
+                journal.append(entry).unwrap();
+            }
+            // No sync point: drop is a process exit, not an OS crash.
+        }
+        {
+            let (mut journal, replayed) = FileJournal::open(&path, "w").unwrap();
+            assert_eq!(&replayed[1..], entries.as_slice());
+            journal.append(&entries[0]).unwrap();
+        }
+        let (_journal, replayed) =
+            FileJournal::open_with_ack_mode(&path, "w", JournalAckMode::Batched).unwrap();
+        assert_eq!(replayed.len(), 1 + entries.len() + 1);
+        assert_eq!(&replayed[1..=entries.len()], entries.as_slice());
+    }
+
+    // #557 (ack modes): a compaction is a sync point in every mode —
+    // the rewrite is built, synced and renamed, so afterwards nothing
+    // acknowledged is left uncovered.
+    #[test]
+    fn journal_async_mode_compaction_is_a_sync_point() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("journal.jsonl");
+        let (mut journal, mut entries) =
+            FileJournal::open_with_ack_mode(&path, "w", JournalAckMode::Async).unwrap();
+        let entry = JournalEntry::CapsGranted {
+            granted: vec!["chat".to_owned()],
+        };
+        journal.append(&entry).unwrap();
+        entries.push(entry);
+        assert!(journal.unsynced_appends() > 0);
+        journal.compact(&entries).unwrap();
+        assert_eq!(journal.unsynced_appends(), 0);
+        drop(journal);
+        let (_journal, replayed) = FileJournal::open(&path, "w").unwrap();
+        assert_eq!(replayed, entries);
     }
 
     // #560 (option B): appends refuse at the byte cap, the file never

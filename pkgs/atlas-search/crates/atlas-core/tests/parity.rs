@@ -30,8 +30,8 @@ use atlas_core::filters::{Filters, TURSO_SHAPE, branch_queries};
 use atlas_core::turso::{PipelineTransport, TursoBackend};
 use atlas_core::types::{Row, Stmt, Value};
 use atlas_core::{
-    DEFAULT_VEC_TABLE, FixedEmbedder, LocalBackend, SearchMode, SearchOptions, VectorBackend,
-    run_get_chunk, run_search,
+    DEFAULT_VEC_TABLE, DisclosureContext, FixedEmbedder, LocalBackend, SearchMode, SearchOptions,
+    VectorBackend, run_get_chunk, run_search,
 };
 use serde_json::Value as Json;
 
@@ -125,6 +125,9 @@ fn dns_config_source_is_retrievable_by_vector_search_fixture() {
     let mut options = SearchOptions::new(query);
     options.mode = SearchMode::Vector;
     options.k = 1;
+    // Parity harnesses model the local Python CLI surface:
+    // state its local-owner disclosure context (#12404).
+    options.context = DisclosureContext::LocalOwner;
     let got = run_search(
         &be,
         &FixedEmbedder { raw: query_vector },
@@ -173,6 +176,9 @@ fn default_filters() -> Filters {
 
 fn case_request(name: &str) -> (SearchOptions, Filters) {
     let mut o = SearchOptions::new("how do we back up the database");
+    // The recorded Python envelopes come from the local CLI:
+    // state the local-owner disclosure context (#12404).
+    o.context = DisclosureContext::LocalOwner;
     let f = match name {
         "hybrid_default" => default_filters(),
         "hybrid_secret_ceiling" => filters(&[], &[], &[], &[], "secret-bearing", None, None),
@@ -275,6 +281,7 @@ fn grouped_wrap_range_k_considers_all_candidates() {
     let embedder = FixedEmbedder { raw: qvec_raw };
     let run = |k: usize| {
         let mut o = SearchOptions::new("how do we back up the database");
+        o.context = DisclosureContext::LocalOwner;
         o.group_by_session = true;
         o.pool = 2;
         o.k = k;

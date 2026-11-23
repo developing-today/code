@@ -136,6 +136,38 @@ default.nix                 the four variant packages (see below)
 smoke.sh                    per-variant smoke suite (post-build)
 ```
 
+## Session identity in worktrees (#9075)
+
+`fleet session bind [--session-id ID]` is the explicit, validated boundary for
+binding an identity. It resolves the explicit value, then `FLEET_SESSION_ID`,
+then `OPENCODE_SESSION_ID`, then the worktree's plain-text `.fleet-session-id`.
+The OpenCode session plugin exports its session ID as `FLEET_SESSION_ID` to
+shell commands. `fleet init` and supported Fleet domain invocations bind that
+identity before starting work, persist it at the current worktree root, and
+pass it to Fleet child processes through the inherited environment.
+Every source must match the `ses_` plus ASCII alphanumeric format. Supplied
+identities are persisted at the Git worktree root (not the common Git
+directory), so linked worktrees can track different sessions; Git ignores this
+runtime marker. A recovered marker is accepted only when the local OpenCode
+server returns a matching, non-archived session record; the check uses
+`OPENCODE_URL`, then `OPENCODE_SERVER_URL`, and the OpenCode Basic-auth password
+from `OPENCODE_AUTH_FILE` or `~/.local/state/opencode/service-prod.json`. An
+ended or unverifiable marker fails closed. A malformed nonempty session ID in
+either environment variable also fails closed for supported Fleet invocations;
+clear or correct that variable to resume unrelated commands.
+`fleet init` validates help and extra arguments before session resolution, and
+`fleet proxy init` resolves identity only once.
+Dispatcher-handled help, dispatcher argument-shape errors, and unavailable
+domains return before session resolution. Supported invocations resolve
+identity before entering their domain handlers; domain-specific help and usage
+errors can therefore be reported after marker resolution. A successfully
+completed Fleet-owned `gh issue|pr close|reopen` also resolves the session
+identity for its closure record, so a live marker is effective there even when
+the parent environment did not carry the id. Create-path
+`provenance.session_id` (tracked separately by #9073) remains outside this
+checkpoint. A malformed inherited session ID causes supported domain
+invocations and `fleet init` to exit with code 2 before starting work.
+
 ## Versioning — derived per-app versions (#8566; policy #5790)
 
 A fleet binary's version is **derived, never hand-maintained**. The
@@ -266,22 +298,12 @@ build forgot. The registered domains are `fleet queue`, `fleet serve`,
 `fleet proxy`, `fleet dispatch`, `fleet dispatch-test`,
 `fleet secrets`, `fleet gh`, `fleet bridge`, `fleet agent`,
 `fleet shell`, `fleet search` and `fleet laptop-agent`, plus the
-built-ins `fleet init`, `fleet version`, `fleet capabilities` and
-`fleet help`.
+built-ins `fleet init`, `fleet session`, `fleet version`,
+`fleet capabilities` and `fleet help`.
 
-One staleness, stated honestly: the registry's per-domain
-`subcommands` arrays are descriptive, and for the `queue` domain they
-run behind the real dispatch — the code is the source of truth for
-verbs. The full queue verb surface (validate, list, enqueue, claim,
-release, lane, bind, heartbeat, checkpoint, park, wake, block,
-unblock, dep-recheck, quarantine-recheck, cancel, revive, fail,
-complete, verify-disposition, timeline, history, models, health,
-signal, fallback, dispatch, session, surfaces, outbox, stack) is
-contracted in [`docs/verbs.md`](docs/verbs.md); confirm an unfamiliar
-verb against the dispatch in
-[`crates/fleet-queue/src/client.rs`](crates/fleet-queue/src/client.rs)
-before scripting it.
+The per-domain `subcommands` arrays are the top-level command inventory rendered by `fleet <domain> --help`. The argument grammar and nested leaves live in the domain handlers and are documented in [`docs/verbs.md`](docs/verbs.md). That reference covers all shipped Fleet domains, top-level verbs, nested queue and agent commands, and where to ask a leaf for exact usage.
 
+The queue client dispatches 32 top-level verbs, including `show`; grouped surfaces (`fallback`, `dispatch`, `session`, `surfaces`, `outbox`, and `stack`) document their nested commands and flags in the same reference. Before scripting an unfamiliar command, check `fleet capabilities` and the leaf's `--help`.
 Shipped examples — every verb below is dispatchable today:
 
 ```sh
@@ -375,12 +397,13 @@ never in place):
 
 ### Contributor contract
 
-One registry: a new domain or verb updates
+Keep the command contract together: update
 [`crates/fleet-registry/src/lib.rs`](crates/fleet-registry/src/lib.rs)
-— and [`docs/verbs.md`](docs/verbs.md) when the real dispatch surface
-moves — in the same change; never keep a second hand-maintained
-list. Docs must not present a designed spelling as shipped: the
-registry, not a design doc, is what a binary can run. And a change
+when a top-level help inventory changes, and update
+[`docs/verbs.md`](docs/verbs.md) for every changed or added command,
+including nested leaves and examples, in the same change. Docs must
+not present a designed spelling as shipped: the runtime dispatch is
+the authority on what a binary can run. And a change
 to any settled semantic this section records (claim/park/resume,
 supervision and stop authority, cap policy, attribution/logging)
 requires a decision record in the same body of work — see

@@ -2,7 +2,8 @@
   // The Worker in front of pm.security.cab: the app, its state,
   // notifications and the phone widget, served from Cloudflare.
   //
-  // Deployed by the pm-console-edge-deploy workflow (wrangler deploy).
+  // Deployed by the pm-console-edge-deploy workflow (release.mjs: an
+  // empty Worker from init/ if there is none, then this as a version).
   // It has no route here on purpose: scripts/expose.py on the host puts
   // the hostname's route on it once it answers its health check, and can
   // take the route away again, which is the whole rollback.
@@ -28,8 +29,11 @@
   },
   // One object holds the state: the copy of what the host last
   // reported, what is held for it, notification subscriptions and keys,
-  // linked phones. No secrets are configured: every key it uses it made
-  // itself, or was published by the host.
+  // linked phones. Three secrets are optional, put there by
+  // scripts/expose.py --edge-direct (off by default): GITHUB_TOKEN and
+  // QUEUE_TOKEN, which let the Worker read and write GitHub and the
+  // queue store itself while the laptop is away, and EDGE_DIRECT, the
+  // explicit opt-in that must read `on` for either to be used.
   "durable_objects": { "bindings": [{ "name": "PM", "class_name": "PmEdge" }] },
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["PmEdge"] }]
 }

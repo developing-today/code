@@ -81,6 +81,10 @@ if [ -n "$inventory" ] && [ ! -f "$inventory" ]; then
   echo "inventory file missing: $inventory" >&2
   exit 2
 fi
+if [ -n "$inventory" ] && [ ! -r "$inventory" ]; then
+  echo "inventory file not readable: $inventory" >&2
+  exit 2
+fi
 
 # The whole comparison is one awk pass: manifest and live counts are
 # loaded first, the inventory check runs at END.
@@ -140,11 +144,15 @@ exec awk -v inventory="$inventory" '
   }
   END {
     if (inventory != "") {
-      while ((getline line < inventory) > 0) {
+      inv_status = 0
+      while ((inv_status = (getline line < inventory)) > 0) {
         if (line == "") continue
         if (!(line in in_manifest)) {
           fail(line ": in source inventory but MISSING from the manifest — silence is not a disposition")
         }
+      }
+      if (inv_status < 0) {
+        fail("source inventory file could not be read: " inventory " — an unreadable inventory is not a pass")
       }
     }
     printf "----\n%s: %d failure(s), %d info line(s)\n", (fails > 0 ? "GATE FAILED" : "GATE PASSED"), fails, infos

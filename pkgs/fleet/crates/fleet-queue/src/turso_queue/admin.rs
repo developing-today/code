@@ -649,10 +649,89 @@ pub(crate) fn verb_dep_recheck(t: &TursoBackend, req: &Value) -> Value {
 /// the event names who overrode and what was discarded. The
 /// rechecker's automatic paths never impersonate this: an
 /// override is a human/agent decision, audited as one.
+/// /unblock with drop specs (#12777): remove only the named
+/// dep entries from a blocked task's record — the correction
+/// path for a bogus entry (a self-loop, a mistyped ref) that
+/// leaves the real deps watched. The drop is all-or-nothing:
+/// a spec that matches nothing refuses the whole request and
+/// writes nothing. When the last entry goes, the task releases
+/// exactly like the full override; while entries remain it
+/// stays blocked on them, recheck schedule untouched, and the
+/// audit event names what was dropped and what remains.
+fn unblock_drop(
+    t: &TursoBackend,
+    task_id: i64,
+    worker: &str,
+    reason: &str,
+    row: &Value,
+    drops: &[Value],
+) -> Result<Value, String> {
+    let current = deps_of(row);
+    if current.is_empty() {
+        return Err(format!(
+            "unblock_task: task {task_id} carries no dep record; there is nothing to drop"
+        ));
+    }
+    let (remaining, dropped) = remove_deps(&current, drops).map_err(|unmatched| {
+        format!(
+            "unblock_task: task {task_id} has no dep matching {}",
+            dep_label(&unmatched[0])
+        )
+    })?;
+    if remaining.is_empty() {
+        t.exec(
+            "UPDATE tasks SET status = 'queued', blocked_deps = NULL, \
+               dep_next_recheck_at = NULL, dep_blocked_until = NULL, \
+               dep_recheck_seconds = NULL, updated_at = ? \
+             WHERE id = ? AND status = 'blocked'",
+            &[Arg::Text(now_iso()), Arg::Int(task_id)],
+        )?;
+        event(
+            t,
+            Some(worker),
+            Some(task_id),
+            "dep_unblock_override",
+            &with_marks(
+                &json!({"reason": reason, "discarded_deps": dropped,
+                        "via": "unblock_task_turso", "via_drop": true}),
+                row,
+            ),
+        )?;
+    } else {
+        t.exec(
+            "UPDATE tasks SET blocked_deps = ?, updated_at = ? \
+             WHERE id = ? AND status = 'blocked'",
+            &[
+                Arg::Text(json!(remaining).to_string()),
+                Arg::Text(now_iso()),
+                Arg::Int(task_id),
+            ],
+        )?;
+        event(
+            t,
+            Some(worker),
+            Some(task_id),
+            "dep_entry_dropped",
+            &with_marks(
+                &json!({"reason": reason, "dropped_deps": dropped,
+                        "remaining_deps": remaining,
+                        "via": "unblock_task_turso"}),
+                row,
+            ),
+        )?;
+    }
+    get_task(t, task_id).map(|r| r.unwrap_or(Value::Null))
+}
+
 pub(crate) fn verb_unblock(t: &TursoBackend, req: &Value) -> Value {
     let task_id = req_i64(req, "task_id").unwrap_or(0);
     let worker = req_str(req, "worker").unwrap_or("").to_string();
     let reason = req_str(req, "reason").unwrap_or("").to_string();
+    // #12777: the surgical form — drop named dep entries only.
+    let drops = match parse_drop_deps(req) {
+        Ok(d) => d,
+        Err(e) => return fail(2, e),
+    };
     let work = (|| -> Result<Value, String> {
         let Some(row) = get_task(t, task_id).map_err(|e| e)? else {
             return Err(format!("unblock_task: task {task_id} does not exist"));
@@ -666,6 +745,9 @@ pub(crate) fn verb_unblock(t: &TursoBackend, req: &Value) -> Value {
             return Err(format!(
                 "unblock_task: task {task_id} is {status}, not blocked"
             ));
+        }
+        if let Some(drops) = &drops {
+            return unblock_drop(t, task_id, &worker, &reason, &row, drops);
         }
         let prev_deps = deps_of(&row);
         t.exec(
@@ -865,6 +947,12 @@ pub(crate) enum CompletionClass {
     /// Work that produces an artifact: completion requires an
     /// evidence reference recorded on the task.
     Fix,
+    /// A feature slice delivers one criterion of a larger issue
+    /// (#12233 F2c): completion requires evidence of the delivered
+    /// slice, but the parent issue stays open by design, so no
+    /// verified-disposition readback — that would demand closure
+    /// or a follow-up for work that is meant to continue.
+    Slice,
     /// Triage annotates and validates; it never completes the
     /// issue. Completion re-enqueues the follow-on by default.
     Triage,
@@ -876,6 +964,7 @@ pub(crate) enum CompletionClass {
 pub(crate) fn completion_class(payload: &Value) -> CompletionClass {
     match payload.get("kind").and_then(|k| k.as_str()) {
         Some("small_fix") | Some("ci_investigation") | Some("pr_shepherd") => CompletionClass::Fix,
+        Some("feature_slice") => CompletionClass::Slice,
         Some("triage") => CompletionClass::Triage,
         _ => CompletionClass::Ungated,
     }
@@ -965,6 +1054,20 @@ pub(crate) fn gate_completion(
                     .to_string());
             }
             verified(result, ctx)?;
+            Ok(None)
+        }
+        CompletionClass::Slice => {
+            // #12233 F2c: a slice completes on evidence of the
+            // delivered slice alone — no verified disposition, so
+            // the parent issue may stay open while slices land.
+            if evidence_ref(result).is_none() {
+                return Err(
+                    "complete_task: feature_slice completion requires an evidence \
+                     reference on the result (merged PR, commit, or \
+                     verified-closure note); the task remains claimed"
+                        .to_string(),
+                );
+            }
             Ok(None)
         }
         CompletionClass::Triage => {
@@ -1187,6 +1290,15 @@ pub(crate) fn verb_complete(t: &TursoBackend, req: &Value) -> Value {
                                 json!({"from_task": task_id, "at": now_iso()}),
                             );
                         }
+                        // #12744: carry the issue's labels onto the
+                        // follow-on from the GitHub mirror when the
+                        // triage payload carries none of its own, so
+                        // the band selection below sees them even
+                        // for triage rows enqueued before label
+                        // carriage landed. Best-effort by design:
+                        // the mirror never gates work, and the
+                        // inherited priority stands on any failure.
+                        let _ = enrich_payload_labels(t, &mut fpayload, Some(&triage_key));
                         let fprogress = match &terminal {
                             Some(pred) => json!({
                                 "triage_source_task": task_id,
@@ -1209,10 +1321,18 @@ pub(crate) fn verb_complete(t: &TursoBackend, req: &Value) -> Value {
                                 arg_str(row.get("body").and_then(|v| v.as_str())),
                                 Arg::Text(fpayload.to_string()),
                                 Arg::Text(fix_key.clone()),
-                                row.get("priority")
-                                    .and_then(|v| v.as_i64())
-                                    .map(Arg::Int)
-                                    .unwrap_or(Arg::Null),
+                                // #12744: Drew's label band when the
+                                // follow-on payload carries a band
+                                // label, the triage row's stored
+                                // priority otherwise — the same
+                                // label-wins rule task_from_packet
+                                // applies at enqueue.
+                                band_or_inherited(
+                                    &fpayload,
+                                    row.get("priority").and_then(|v| v.as_i64()),
+                                )
+                                .map(Arg::Int)
+                                .unwrap_or(Arg::Null),
                                 Arg::Int(
                                     fpayload
                                         .get("max_attempts")
@@ -1293,7 +1413,7 @@ pub(crate) fn verb_list(t: &TursoBackend, req: &Value) -> Value {
     let select = if rich {
         "id, queue, title, priority, status, dedupe_key, created_at, not_before, \
          worker_id, claimed_at, lease_until, lane_id, platform, attempts, max_attempts, \
-         claim_provider, claim_model, claim_variant, progress, payload, \
+         claim_provider, claim_model, claim_variant, claim_session_id, progress, payload, \
          blocked_deps, dep_next_recheck_at, dep_blocked_until"
     } else {
         "id, queue, title, priority, status, dedupe_key, created_at, not_before, platform"

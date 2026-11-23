@@ -171,6 +171,7 @@
     "hookTimeout": "60s",
     "resolveTimeout": "3m",
     "resolveWaitDelay": "2s",
+    "callHistoryTtl": "10m",
     "workDirs": 8,
     "programs": 64,
     "entries": 8,

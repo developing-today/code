@@ -199,6 +199,9 @@ function updateCursorChrome(viewState: CursorViewState): void {
   modeButton.addEventListener("click", () => {
     viewState.tooltipMode = nextTooltipMode(viewState.tooltipMode);
     refreshCursorUx(viewState);
+    // updateCursorChrome rebuilds the controls; keep keyboard focus on the
+    // replacement toggle instead of dropping it onto the document body.
+    chrome.querySelector<HTMLButtonElement>(".collab-cursor-mode")?.focus();
   });
   chrome.appendChild(modeButton);
 

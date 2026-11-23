@@ -55,7 +55,7 @@ const QUEUE_VERBS: &[&str] = &[
 
 /// Root built-ins the multicall dispatch answers directly
 /// (`crates/fleet/src/main.rs`).
-const BUILTINS: &[&str] = &["init", "version", "capabilities", "help"];
+const BUILTINS: &[&str] = &["init", "session", "version", "capabilities", "help"];
 
 fn readme() -> String {
     let path: PathBuf = [env!("CARGO_MANIFEST_DIR"), "..", "..", "README.md"]

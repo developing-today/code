@@ -238,20 +238,23 @@ pub(crate) fn claim_preamble(
         let l = match lanes.into_iter().next() {
             Some(l) => l,
             None => {
-                // Wildcard acceptance (Drew, 2026-11-16; #6853): a
-                // lane id in a known family (<family>-<suffix>, see
-                // lane_family_of) with no registry row yet is
-                // provisioned on first claim -- owned by the
-                // claiming worker, enabled, unbound queue -- and
-                // then validated by the same checks below. An
-                // existing row always takes precedence: a lane
-                // disabled by hand keeps refusing. Ids outside
-                // every known family keep the unknown-lane refusal.
-                if lane_family_of(lane_id).is_none() {
-                    return Err(unknown_lane_error(lane_id));
-                }
+                // Auto-registration (Drew, 2026-11-22; #12544): the
+                // lane registry is not a gate. A claim naming a
+                // lane with no registry row registers the lane on
+                // the spot -- owned by the claiming worker, enabled,
+                // unbound queue -- and the claim proceeds through
+                // the same checks below. Any name may register: an
+                // agent name ("archer"), a bare family name, a name
+                // in no known family at all. An existing row always
+                // takes precedence: a lane disabled by hand keeps
+                // refusing (an explicit admin act, not an unknown
+                // name), and a lane owned by another worker keeps
+                // its owner. This supersedes the 2026-11-16
+                // known-family wildcard (#6853), which provisioned
+                // only <family>-<suffix> ids in LANE_FAMILIES and
+                // refused everything else as "unknown lane_id".
                 t.exec(
-                    "INSERT OR IGNORE INTO lanes (lane_id, worker_id, queue, enabled) VALUES (?, ?, '*', 1)",
+                    lane_provision_sql(),
                     &[Arg::Text(lane_id.clone()), Arg::Text(worker.to_string())],
                 )?;
                 let lanes = t.query_objs(
@@ -262,7 +265,9 @@ pub(crate) fn claim_preamble(
                 match lanes.into_iter().next() {
                     Some(l) => l,
                     None => {
-                        return Err(unknown_lane_error(lane_id));
+                        return Err(format!(
+                            "claim_repo_task: lane {lane_id} registration did not land"
+                        ));
                     }
                 }
             }
@@ -449,7 +454,7 @@ pub(crate) fn claim_pick_once(
         // lookup claims the row exactly as before.
         if !handoff_pick {
             if let Some(stale) = stale_pick(t, &candidate) {
-                retire_stale(t, &worker, &candidate, &stale)?;
+                retire_stale(t, &worker, &candidate, &stale, "claim_staleness_check")?;
                 retired += 1;
                 if retired >= MAX_STALENESS_RETIRES_PER_CALL {
                     return Ok(None);
@@ -1472,12 +1477,73 @@ pub(crate) fn claimed_by(
             }
             Ok(row)
         }
-        Ok(_) => Err(fail(
-            5,
-            format!("{verb}: task {task_id} is not claimed by {worker}"),
-        )),
+        Ok(row) => {
+            // #12618: say what the task is now, so a worker whose
+            // claim lapsed can tell that from a claim held under
+            // another name. The latest claim or lease expiry is read
+            // fail-soft: a miss only drops the lease detail.
+            let last_event = row.as_ref().and_then(|_| {
+                t.query_objs(
+                    "SELECT worker_id, kind, created_at FROM events WHERE task_id = ? \
+                     AND kind IN ('claimed', 'lease_expired') ORDER BY id DESC LIMIT 1",
+                    &[Arg::Int(task_id)],
+                    &[],
+                )
+                .ok()
+                .and_then(|rows| rows.into_iter().next())
+            });
+            Err(fail(
+                5,
+                format!(
+                    "{verb}: task {task_id} is not claimed by {worker}: {}",
+                    not_claimed_reason(row.as_ref(), last_event.as_ref(), worker)
+                ),
+            ))
+        }
         Err(e) => Err(terr(e)),
     }
+}
+
+/// Why a task is not claimed by `worker`, for the claimed-by
+/// refusal (#12618): the task's status and holder, and, when the
+/// task's latest claim or lease expiry (`last_event`) is this
+/// worker's own lease expiring, that the claim
+/// lapsed and the task went back to the queue, so it must be claimed
+/// again before it can be completed.
+pub(crate) fn not_claimed_reason(
+    row: Option<&Value>,
+    last_event: Option<&Value>,
+    worker: &str,
+) -> String {
+    let Some(row) = row else {
+        return "no such task".to_string();
+    };
+    let status = row
+        .get("status")
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown");
+    let holder = row
+        .get("worker_id")
+        .and_then(|v| v.as_str())
+        .filter(|w| !w.is_empty());
+    let mut reason = match (status, holder) {
+        ("claimed", Some(h)) => format!("it is claimed by {h}"),
+        (s, _) => format!("it is {s}"),
+    };
+    let field = |key: &str| last_event.and_then(|e| e.get(key)).and_then(|v| v.as_str());
+    if status != "claimed"
+        && field("kind") == Some("lease_expired")
+        && field("worker_id") == Some(worker)
+    {
+        reason.push_str(&format!(
+            "; {worker}'s lease expired{} and the task went back to the queue, so claim it \
+             again before completing it (heartbeat or checkpoint to keep a lease)",
+            field("created_at")
+                .map(|at| format!(" at {at}"))
+                .unwrap_or_default()
+        ));
+    }
+    reason
 }
 
 /// The (holder lane, caller lane) pair when a claimed row's lane

@@ -53,6 +53,7 @@ import {
   planEscalation,
   planRecovery,
   recordEscalation,
+  recordReEscalation,
   surfacingLine,
   type EscalationContext,
   type EscalationEffectors,
@@ -362,51 +363,6 @@ function productionEscalationEffectors(live: boolean): EscalationEffectors {
       await writeFile(file, action.body);
       await run(["gh", "issue", "comment", String(action.issueNumber), "--repo", action.repo, "--body-file", file]);
     },
-    async closeIssue(action) {
-      guard();
-      await run(["gh", "issue", "close", String(action.issueNumber), "--repo", action.repo]);
-    },
-    async completeTask(action) {
-      guard();
-      // Recovery resolution of the escalation task, best-effort at
-      // every step (task 20118 live demo): `complete` requires
-      // holding the claim, and the watchdog never claims — so for a
-      // task still sitting queued it always fails with "not claimed
-      // by repo-worker-code". That case is the common one (the
-      // source healed before any fixer picked the task up), and the
-      // honest terminal verb for it is `cancel` with the recovery
-      // reason — but cancel also cancels CLAIMED tasks, so it is
-      // only safe when the task is untouched: an unclaimed task has
-      // no timeline records. A task with records has an owner; leave
-      // it to them — the auto-closed incident issue is their signal,
-      // and their own completion closes the task out.
-      const completed = await run([
-        "fleet",
-        "queue",
-        "complete",
-        action.queueTaskId,
-        "--worker",
-        "repo-worker-code",
-        "--result",
-        JSON.stringify({ outcome: "already_done", note: "watchdog recovery: source healthy again (#6033)" }),
-      ])
-        .then(() => true)
-        .catch(() => false);
-      if (completed) return;
-      const timeline = await run(["fleet", "queue", "timeline", action.queueTaskId]).catch(() => "");
-      if (timeline.includes("no timeline records")) {
-        await run([
-          "fleet",
-          "queue",
-          "cancel",
-          action.queueTaskId,
-          "--worker",
-          "repo-worker-code",
-          "--reason",
-          "watchdog recovery: source healthy again; the repair this task commissioned is no longer needed (#6033)",
-        ]).catch(() => "");
-      }
-    },
   };
 }
 
@@ -657,12 +613,13 @@ export async function runTick(
         adapterRef: `adapters/${adapter.name}.json`,
         historyRef: opts.historyFile,
       };
-      const plan = planEscalation(health, ctx);
+      const plan = planEscalation(health, ctx, now.getTime());
       if (plan.actions.length > 0) {
         if (opts.liveEscalation) {
           try {
             const refs = await applyEscalationActions(plan.actions, opts.effects.escalation);
             health = recordEscalation(health, ctx, refs, at);
+            if (plan.reEscalated) health = recordReEscalation(health, at);
           } catch (e) {
             if (e instanceof EscalationPartialError) {
               health = recordEscalation(health, ctx, e.refs, at);

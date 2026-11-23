@@ -107,6 +107,19 @@ pub struct WorldCore {
     /// its result is delivered, and replay rebuilds the set from the
     /// journal, verifying each blob against its address.
     pub(crate) blobs: BTreeMap<String, Vec<u8>>,
+    /// `http.fetch` attempt timestamps (#1062), world-clock
+    /// milliseconds, oldest first: the rolling rate window
+    /// (`MAX_HTTP_FETCH_BURST` per `HTTP_FETCH_RATE_WINDOW_MS`).
+    /// Ephemeral by design — the rate window is not journaled,
+    /// and a restart resets it.
+    pub(crate) http_fetch_attempts: VecDeque<u64>,
+    /// `notify` attempt timestamps (#1062), world-clock
+    /// milliseconds, oldest first: the rolling rate window
+    /// (`MAX_NOTIFY_BURST` per `NOTIFY_RATE_WINDOW_MS`).
+    /// Ephemeral by design, like the fetch window — the bound
+    /// shapes a live program's interruptions, and a restart
+    /// resets it.
+    pub(crate) notify_attempts: VecDeque<u64>,
     /// Schedule-delivery consent by peer world (#1355 part 2): this
     /// world's half of the reciprocal F12.14 grant pair.
     pub(crate) schedule_grants: BTreeMap<String, ScheduleGrant>,
@@ -396,6 +409,8 @@ impl WorldCore {
             schedules: BTreeMap::new(),
             kv: BTreeMap::new(),
             blobs: BTreeMap::new(),
+            http_fetch_attempts: VecDeque::new(),
+            notify_attempts: VecDeque::new(),
             schedule_grants: BTreeMap::new(),
             portal_grants: id_caps::portal::PortalGrants::new(),
             schedule_receipts: BTreeSet::new(),
@@ -1394,6 +1409,10 @@ impl WorldCore {
                             "host system events must use the unsequenced system journal entry"
                         ),
                         WorldEventKind::Chat(_) => {}
+                        // A notification is history, not program input:
+                        // it is retained by `commit_prepared` below and
+                        // never fed to the program's replay (#1062).
+                        WorldEventKind::Notification { .. } => {}
                     }
                     core.commit_prepared(event)?;
                 }
@@ -1726,7 +1745,9 @@ impl WorldCore {
                 Some((WorldScopes::INPUT, "INPUT"))
             }
             WorldEventKind::Chat(_) => Some((WorldScopes::CHAT, "CHAT")),
-            WorldEventKind::System { .. } | WorldEventKind::ProgramInstalled { .. } => None,
+            WorldEventKind::System { .. }
+            | WorldEventKind::ProgramInstalled { .. }
+            | WorldEventKind::Notification { .. } => None,
         };
         if let Some((scope, name)) = required_scope {
             ensure!(

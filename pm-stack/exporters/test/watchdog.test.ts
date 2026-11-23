@@ -101,12 +101,6 @@ async function harness(
         commentIssue: async (a) => {
           escCalls.push(`comment:${a.issueNumber}`);
         },
-        closeIssue: async (a) => {
-          escCalls.push(`close:${a.issueNumber}`);
-        },
-        completeTask: async (a) => {
-          escCalls.push(`complete:${a.queueTaskId}`);
-        },
       } satisfies EscalationEffectors,
       log: (line) => logs.push(line),
     },
@@ -223,7 +217,7 @@ describe("watchdog entry point — acceptance fixtures", () => {
     await rm(h.dir, { recursive: true, force: true });
   });
 
-  test("recovery: a healthy tick after escalation comments, closes, and completes the hand-off", async () => {
+  test("recovery: a healthy tick records recovery without disposing the issue or task", async () => {
     const h = await harness();
     for (let min = 0; min <= 6; min++) {
       await h.setDoc(failDoc(min, "mystery-failure"));
@@ -234,8 +228,8 @@ describe("watchdog entry point — acceptance fixtures", () => {
     const { state } = await h.tick(10);
     expect(state.sources.fixture.incident).toBeNull();
     expect(h.escCalls).toContain("comment:777");
-    expect(h.escCalls).toContain("close:777");
-    expect(h.escCalls).toContain("complete:4242");
+    expect(h.escCalls).not.toContain("close:777");
+    expect(h.escCalls).not.toContain("complete:4242");
     await rm(h.dir, { recursive: true, force: true });
   });
 });

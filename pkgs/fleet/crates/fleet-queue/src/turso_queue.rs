@@ -45,15 +45,19 @@ use crate::validate::{task_from_packet, validate_packet};
 
 mod admin;
 mod claim;
+mod closed_bound;
 mod core;
+mod label_enrich;
 mod lifecycle;
 mod stacks_outbox;
 mod staleness;
 mod work_identity;
 
 pub use admin::*;
+pub use closed_bound::*;
 pub use claim::*;
 pub use core::*;
+pub use label_enrich::*;
 pub use lifecycle::*;
 pub use stacks_outbox::*;
 pub use staleness::*;
@@ -62,18 +66,24 @@ pub use work_identity::*;
 #[cfg(test)]
 mod tests {
 
-    /// The full backend source, concatenated in original file order
-    /// across the #8589 module split (parent file last, so the
-    /// cfg(test) marker still terminates the production text).
+    /// The full backend source, concatenated across the #8589
+    /// module split (parent file last, so the cfg(test) marker
+    /// still terminates the production text). Production-only
+    /// modules come first; modules with inline test mods
+    /// (staleness, work_identity, closed_bound) come after, so
+    /// the first `#[cfg(test)]` in the concat stays behind every
+    /// production module the source-content tests read.
     fn test_source() -> String {
         [
             include_str!("turso_queue/core.rs"),
             include_str!("turso_queue/claim.rs"),
+            include_str!("turso_queue/label_enrich.rs"),
             include_str!("turso_queue/lifecycle.rs"),
             include_str!("turso_queue/admin.rs"),
             include_str!("turso_queue/stacks_outbox.rs"),
             include_str!("turso_queue/staleness.rs"),
             include_str!("turso_queue/work_identity.rs"),
+            include_str!("turso_queue/closed_bound.rs"),
             include_str!("turso_queue.rs"),
         ]
         .concat()
@@ -273,6 +283,297 @@ mod tests {
         let out = verb_enqueue(&backend, &req);
         assert_eq!(out["ok"], true, "{out}");
         assert_eq!(out["task"]["max_attempts"], 1000, "{out}");
+    }
+
+    /// A one-shot stub of the Turso pipeline endpoint for the
+    /// #12744 tests: captures the first request body it receives
+    /// and answers it with the canned pipeline response. The
+    /// thread is detached — a code path that never queries leaves
+    /// it parked on accept, which is exactly the fail-before shape
+    /// (the assertions on the reply and the capture then fail).
+    fn stub_pipeline(
+        response_body: String,
+    ) -> (String, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
+        use std::io::{BufRead, BufReader, Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let captured = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = captured.clone();
+        std::thread::spawn(move || {
+            let (mut sock, _) = listener.accept().unwrap();
+            let mut reader = BufReader::new(sock.try_clone().unwrap());
+            let mut content_length = 0usize;
+            loop {
+                let mut line = String::new();
+                if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                    break;
+                }
+                let trimmed = line.trim();
+                if trimmed.is_empty() {
+                    break;
+                }
+                if let Some((name, value)) = trimmed.split_once(':') {
+                    if name.trim().eq_ignore_ascii_case("content-length") {
+                        content_length = value.trim().parse().unwrap_or(0);
+                    }
+                }
+            }
+            let mut body = vec![0u8; content_length];
+            reader.read_exact(&mut body).unwrap();
+            sink.lock()
+                .unwrap()
+                .push(String::from_utf8_lossy(&body).to_string());
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\
+                 Content-Length: {}\r\nConnection: close\r\n\r\n{}",
+                response_body.len(),
+                response_body
+            );
+            sock.write_all(resp.as_bytes()).unwrap();
+        });
+        (format!("http://{addr}"), captured)
+    }
+
+    /// A canned pipeline reply carrying one github_mirror_issues
+    /// row whose labels column is `labels_json` (or no rows when
+    /// None).
+    fn mirror_pipeline_reply(labels_json: Option<&str>) -> String {
+        let rows = match labels_json {
+            Some(l) => json!([[{"type": "text", "value": l}]]),
+            None => json!([]),
+        };
+        json!({"results": [
+            {"type": "ok", "response": {"type": "execute", "result": {
+                "cols": [{"name": "labels"}],
+                "rows": rows,
+                "affected_row_count": 0,
+                "last_insert_rowid": null}}},
+            {"type": "ok", "response": {"type": "close"}}
+        ]})
+        .to_string()
+    }
+
+    /// A valid repo-task/v1 packet for an issue, in the shape the
+    /// #8973 dry-run test established, with a stated priority and
+    /// NO payload.labels — the production shape #12744 is about.
+    fn packet_12744(issue: i64, stated: i64) -> Value {
+        json!({
+            "title": "probe", "priority": stated,
+            "dedupe_key": format!("repo-health:v1:fix:developing-today/code:issue:{issue}"),
+            "payload": {
+                "schema": "repo-task/v1",
+                "kind": "small_fix",
+                "repo": "developing-today/code",
+                "problem": "p",
+                "priority_reason": "r",
+                "evidence": ["e"],
+                "acceptance": ["a"],
+                "tests": ["t"],
+                "context_refs": [],
+                "scope": {"include": ["x"], "exclude": ["y"] },
+                "risk": {"level": "low", "flags": [] },
+                "timebox_minutes": 45,
+                "issue": {"number": issue },
+                "dedupe": {"checked_at": "2026-11-14T00:00:00Z", "basis": "test" }
+            }
+        })
+    }
+
+    #[test]
+    fn enqueue_mirror_labels_select_band_12744() {
+        // #12744 acceptance oracle, at the verb: a producer-path
+        // enqueue for an expedite-labelled issue whose packet
+        // carries no labels stores at the ratified band 15 with
+        // the mirror's labels on the payload — no manual update.
+        // The mirror row is the stub's; the band is Drew's.
+        let (url, captured) =
+            stub_pipeline(mirror_pipeline_reply(Some("[\"expedite\",\"kind/bug\"]")));
+        let backend = TursoBackend::new(url, "test".to_string(), ureq::agent());
+        let req = json!({
+            "queue": "repo-health-code-pilot",
+            "packet": packet_12744(12228, 30),
+            "dry_run": true
+        });
+        let out = verb_enqueue(&backend, &req);
+        assert_eq!(out["ok"], true, "{out}");
+        assert_eq!(out["task"]["priority"], 15, "{out}");
+        assert_eq!(
+            out["task"]["payload"]["labels"],
+            json!(["expedite", "kind/bug"]),
+            "{out}"
+        );
+        let bodies = captured.lock().unwrap();
+        assert_eq!(bodies.len(), 1, "{bodies:?}");
+        assert!(bodies[0].contains("github_mirror_issues"), "{bodies:?}");
+        assert!(bodies[0].contains("developing-today/code"), "{bodies:?}");
+    }
+
+    #[test]
+    fn enqueue_producer_labels_stand_over_mirror_12744() {
+        // A packet that carries its own labels array keeps it —
+        // the mirror is a fill, never an override. The backend is
+        // unreachable, so any lookup attempt would surface as an
+        // enrichment warning on the reply; none may appear.
+        let backend = TursoBackend::new(
+            "http://127.0.0.1:0".to_string(),
+            "test".to_string(),
+            ureq::agent(),
+        );
+        let mut packet = packet_12744(12228, 90);
+        packet["payload"]["labels"] = json!(["next-up"]);
+        let req = json!({
+            "queue": "repo-health-code-pilot",
+            "packet": packet,
+            "dry_run": true
+        });
+        let out = verb_enqueue(&backend, &req);
+        assert_eq!(out["ok"], true, "{out}");
+        assert_eq!(out["task"]["priority"], 25, "{out}");
+        assert_eq!(
+            out["task"]["payload"]["labels"],
+            json!(["next-up"]),
+            "{out}"
+        );
+        let warnings = out["warnings"].to_string();
+        assert!(!warnings.contains("mirror enrichment"), "{out}");
+    }
+
+    #[test]
+    fn enqueue_mirror_miss_keeps_stated_priority_12744() {
+        // No mirror row for the issue: the packet stands exactly
+        // as producers have always filed it — stated priority, no
+        // labels key written.
+        let (url, _captured) = stub_pipeline(mirror_pipeline_reply(None));
+        let backend = TursoBackend::new(url, "test".to_string(), ureq::agent());
+        let req = json!({
+            "queue": "repo-health-code-pilot",
+            "packet": packet_12744(424242, 30),
+            "dry_run": true
+        });
+        let out = verb_enqueue(&backend, &req);
+        assert_eq!(out["ok"], true, "{out}");
+        assert_eq!(out["task"]["priority"], 30, "{out}");
+        assert!(out["task"]["payload"].get("labels").is_none(), "{out}");
+    }
+
+    #[test]
+    fn enqueue_mirror_error_warns_and_proceeds_12744() {
+        // A store without the mirror tables (a fresh or test DB):
+        // the lookup fails, the enqueue warns and proceeds — the
+        // mirror never gates work.
+        let (url, _captured) = stub_pipeline(
+            json!({"results": [
+                {"type": "error", "error": {"message": "no such table: github_mirror_issues"}}
+            ]})
+            .to_string(),
+        );
+        let backend = TursoBackend::new(url, "test".to_string(), ureq::agent());
+        let req = json!({
+            "queue": "repo-health-code-pilot",
+            "packet": packet_12744(12228, 30),
+            "dry_run": true
+        });
+        let out = verb_enqueue(&backend, &req);
+        assert_eq!(out["ok"], true, "{out}");
+        assert_eq!(out["task"]["priority"], 30, "{out}");
+        assert!(
+            out["warnings"]
+                .to_string()
+                .contains("mirror enrichment skipped"),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn payload_issue_ref_shapes_12744() {
+        // The identity the enrichment keys on: the payload's own
+        // repo first, the repo-health dedupe key as fallback, and
+        // nothing for shapes that cannot key the mirror.
+        let p = json!({"repo": "developing-today/code", "issue": {"number": 7}});
+        assert_eq!(
+            payload_issue_ref(&p, None),
+            Some(("developing-today/code".to_string(), 7))
+        );
+        let p = json!({"issue": {"number": 7}});
+        assert_eq!(
+            payload_issue_ref(
+                &p,
+                Some("repo-health:v1:triage:developing-today/code:issue:7")
+            ),
+            Some(("developing-today/code".to_string(), 7))
+        );
+        assert_eq!(payload_issue_ref(&p, None), None);
+        assert_eq!(
+            payload_issue_ref(&p, Some("repo-health:v1:pr:developing-today/code:pr:7")),
+            None
+        );
+        let p = json!({"repo": "code", "issue": {"number": 7}});
+        assert_eq!(payload_issue_ref(&p, None), None);
+        let p = json!({"repo": "developing-today/code"});
+        assert_eq!(payload_issue_ref(&p, None), None);
+    }
+
+    #[test]
+    fn follow_on_band_or_inherited_12744() {
+        // The triage follow-on's stored priority: the label band
+        // wins over the inherited row priority (the label is
+        // Drew's signal), the inherited value stands without one.
+        assert_eq!(
+            band_or_inherited(&json!({"labels": ["expedite"]}), Some(30)),
+            Some(15)
+        );
+        assert_eq!(
+            band_or_inherited(&json!({"labels": ["next-up"]}), Some(30)),
+            Some(25)
+        );
+        assert_eq!(band_or_inherited(&json!({}), Some(30)), Some(30));
+        assert_eq!(band_or_inherited(&json!({}), None), None);
+        assert_eq!(
+            band_or_inherited(&json!({"labels": ["expedite"]}), None),
+            Some(15)
+        );
+    }
+
+    #[test]
+    fn not_claimed_reason_names_a_lapsed_lease_12618() {
+        // #12618 oracle: a worker whose lease expired is told the task
+        // went back to the queue, not just that it is "not claimed";
+        // a claim held by another worker names that worker; a missing
+        // task says so; and an expiry by someone else, or one followed
+        // by a new claim, adds no lease detail.
+        let queued = json!({"status": "queued", "worker_id": null});
+        let expired = json!({
+            "worker_id": "archer",
+            "kind": "lease_expired",
+            "created_at": "2026-11-22T16:00:00Z",
+        });
+        let reason = not_claimed_reason(Some(&queued), Some(&expired), "archer");
+        assert!(
+            reason.starts_with("it is queued; archer's lease expired at 2026-11-22T16:00:00Z"),
+            "{reason}"
+        );
+        assert!(
+            reason.contains("claim it again before completing it"),
+            "{reason}"
+        );
+
+        let held = json!({"status": "claimed", "worker_id": "felix"});
+        assert_eq!(
+            not_claimed_reason(Some(&held), None, "archer"),
+            "it is claimed by felix"
+        );
+        assert_eq!(not_claimed_reason(None, None, "archer"), "no such task");
+
+        let other = json!({"worker_id": "felix", "kind": "lease_expired"});
+        assert_eq!(
+            not_claimed_reason(Some(&queued), Some(&other), "archer"),
+            "it is queued"
+        );
+        let reclaimed = json!({"worker_id": "archer", "kind": "claimed"});
+        assert_eq!(
+            not_claimed_reason(Some(&queued), Some(&reclaimed), "archer"),
+            "it is queued"
+        );
     }
 
     #[test]
@@ -628,8 +929,11 @@ mod tests {
 
     #[test]
     fn lane_family_of_accepts_known_families_and_rejects_garbage() {
-        // The claim-time wildcard (Drew, 2026-11-16): known
-        // family + nonempty lowercase alphabetic suffix.
+        // The family rule (Drew, 2026-11-16), kept for
+        // execution_lane_fields' mode derivation (#7598): known
+        // family + nonempty lowercase alphabetic suffix. Claims no
+        // longer consult it (#12544): any lane name auto-registers
+        // on first claim, whatever family it parses to (or none).
         for (id, family) in [
             ("code-a", "code"),
             ("code-z", "code"),
@@ -664,21 +968,65 @@ mod tests {
     }
 
     #[test]
-    fn a_bare_family_lane_id_is_refused_with_the_shape_to_pass() {
-        // #6853 recurrence: scheduled lanes passed `--lane not-code`
-        // for not-code-d. The refusal keeps the unknown-lane verdict
-        // but says what to pass, so the caller can correct itself.
-        let bare = unknown_lane_error("not-code");
-        assert!(
-            bare.starts_with("claim_repo_task: unknown lane_id not-code"),
-            "{bare}"
-        );
-        assert!(bare.contains("lane family"), "{bare}");
-        assert!(bare.contains("not-code-<suffix>"), "{bare}");
-        // Ids that are not a family keep the plain refusal.
+    fn lane_provision_sql_registers_enabled_unbound_for_the_claimer_12544() {
+        // #12544 oracle (auto-register): the statement
+        // claim_preamble runs for a lane with no registry row
+        // registers exactly the canonical row shape -- the
+        // claiming worker as owner (the second bound parameter),
+        // the one-queue binding "*", enabled = 1 -- and INSERT OR
+        // IGNORE means an existing row (in particular one
+        // disabled by hand) is never overwritten by a registration
+        // attempt. After this insert the preamble re-reads the
+        // row, so a claim under a never-seen name ("archer",
+        // "banana-1", a bare "not-code") proceeds with the lane
+        // present and enabled in the registry.
         assert_eq!(
-            unknown_lane_error("banana-1"),
-            "claim_repo_task: unknown lane_id banana-1"
+            lane_provision_sql(),
+            "INSERT OR IGNORE INTO lanes (lane_id, worker_id, queue, enabled) \
+             VALUES (?, ?, '*', 1)"
+        );
+    }
+
+    #[test]
+    fn claim_preamble_auto_registers_instead_of_refusing_unknown_lanes_12544() {
+        // #12544 oracle (unknown-lane errors are gone; the
+        // existing-row refusals stay): the claim preamble
+        // provisions a missing lane via lane_provision_sql and
+        // never refuses a name as unknown -- the unknown-lane
+        // verdict function is deleted outright -- while the
+        // checks an EXISTING row carries keep their refusals in
+        // the same preamble: worker ownership (a lane disabled or
+        // owned is an explicit recorded state, not an unknown
+        // name) and the disabled flag both still refuse, and the
+        // stream-binding check stays.
+        let src = &test_source();
+        let preamble = seg8217(src, "fn claim_preamble(", "\nfn claim_pick_once(");
+        assert!(
+            preamble.contains("lane_provision_sql()"),
+            "preamble auto-registers a missing lane"
+        );
+        assert!(
+            !preamble.contains("unknown_lane_error"),
+            "preamble never refuses a lane as unknown"
+        );
+        // The banned needle is built with format! so this test
+        // file does not itself contain the literal it bans.
+        let verdict_fn = format!("fn unknown_lane_{}", "error");
+        assert!(
+            !src.contains(&verdict_fn),
+            "the unknown-lane verdict is gone from the backend"
+        );
+        assert!(
+            preamble.contains("belongs to worker"),
+            "an existing row's owner still binds the lane"
+        );
+        assert!(
+            preamble.contains("is disabled"),
+            "a lane disabled by hand still refuses"
+        );
+        assert!(
+            preamble.contains("lane_queue_binds("),
+            "preamble honors the unbound registration marker"
         );
     }
 
@@ -1933,6 +2281,115 @@ mod tests {
     }
 
     #[test]
+    fn dep_drop_12777() {
+        // Oracle (#12777): the surgical unblock. A stored dep
+        // record drops exactly the entries a spec names — kind
+        // is part of the identity, so an issue spec never eats
+        // a pr record with the same repo and number — and a
+        // spec that matches nothing fails the whole correction.
+        let issue_dep = json!({"kind": "issue", "repo": "developing-today/code",
+            "number": 9513, "state": "open", "reason": "gate"});
+        let pr_dep = json!({"kind": "pr", "repo": "developing-today/code",
+            "number": 9513, "state": "open"});
+        let self_loop = json!({"kind": "task", "task_id": 20408, "state": "open"});
+        let ci_dep = json!({"kind": "ci", "repo": "developing-today/code",
+            "run_id": 777, "state": "open"});
+        let deps = vec![
+            self_loop.clone(),
+            issue_dep.clone(),
+            pr_dep.clone(),
+            ci_dep.clone(),
+        ];
+        // The #12777 case: drop the bogus self-loop entry, keep
+        // the real deps watched, order preserved.
+        let (remaining, dropped) = remove_deps(&deps, &[json!({"kind": "task", "task_id": 20408})])
+            .expect("the self-loop spec matches its record");
+        assert_eq!(dropped, vec![self_loop.clone()]);
+        assert_eq!(
+            remaining,
+            vec![issue_dep.clone(), pr_dep.clone(), ci_dep.clone()]
+        );
+        // Kind is part of the identity.
+        let (remaining, dropped) = remove_deps(
+            &deps,
+            &[json!({"kind": "issue", "repo": "developing-today/code", "number": 9513})],
+        )
+        .expect("the issue spec matches its record");
+        assert_eq!(dropped, vec![issue_dep]);
+        assert!(remaining.contains(&pr_dep));
+        // CI deps match on run_id, not number.
+        let (_, dropped) = remove_deps(
+            &deps,
+            &[json!({"kind": "ci", "repo": "developing-today/code", "run_id": 777})],
+        )
+        .expect("the ci spec matches its record");
+        assert_eq!(dropped, vec![ci_dep]);
+        // Dropping every entry empties the record — the broker
+        // releases the task on exactly this outcome.
+        let (remaining, dropped) = remove_deps(
+            &deps,
+            &[
+                json!({"kind": "task", "task_id": 20408}),
+                json!({"kind": "issue", "repo": "developing-today/code", "number": 9513}),
+                json!({"kind": "pr", "repo": "developing-today/code", "number": 9513}),
+                json!({"kind": "ci", "repo": "developing-today/code", "run_id": 777}),
+            ],
+        )
+        .expect("all four specs match");
+        assert!(remaining.is_empty());
+        assert_eq!(dropped.len(), 4);
+        // A spec that matches nothing fails the whole correction
+        // and names itself for the refusal message.
+        let err = remove_deps(
+            &deps,
+            &[json!({"kind": "issue", "repo": "developing-today/code", "number": 9999})],
+        )
+        .unwrap_err();
+        assert_eq!(err.len(), 1);
+        assert_eq!(dep_label(&err[0]), "issue developing-today/code#9999");
+        assert_eq!(dep_label(&self_loop), "task 20408");
+        // parse_drop_deps: the broker-side validation of the
+        // wire shape — strict refs, identity-only specs, and
+        // None for the classic full override.
+        assert_eq!(parse_drop_deps(&json!({})).expect("no field"), None);
+        assert_eq!(
+            parse_drop_deps(&json!({"drop_deps": []})).expect("empty list"),
+            None
+        );
+        assert_eq!(
+            parse_drop_deps(&json!({"drop_deps": [{"kind": "task", "task_id": 20408}]}))
+                .expect("task spec"),
+            Some(vec![json!({"kind": "task", "task_id": 20408})])
+        );
+        assert!(parse_drop_deps(&json!({"drop_deps": "task:20408"})).is_err());
+        assert!(
+            parse_drop_deps(&json!({"drop_deps": [{"kind": "issue", "repo": "bad", "number": 1}]}))
+                .is_err()
+        );
+        assert!(parse_drop_deps(&json!({"drop_deps": [{"kind": "task", "task_id": 0}]})).is_err());
+        assert!(parse_drop_deps(&json!({"drop_deps": [{"kind": "bogus", "task_id": 1}]})).is_err());
+        // Wiring: the client flag and parser, the broker's
+        // audit kind for a partial drop.
+        let client_src = [
+            include_str!("client/transport.rs"),
+            include_str!("client/support.rs"),
+            include_str!("client/commands_query.rs"),
+            include_str!("client/commands_lifecycle.rs"),
+            include_str!("client/fallback_stack.rs"),
+            include_str!("client.rs"),
+        ]
+        .concat();
+        assert!(client_src.contains("drop-dep"), "client flag drop-dep");
+        assert!(client_src.contains("parse_drop_dep_list"));
+        assert!(client_src.contains("\"drop_deps\""));
+        let src = test_source();
+        let impl_src = src.split("#[cfg(test)]").next().unwrap_or("");
+        assert!(impl_src.contains("\"dep_entry_dropped\""));
+        assert!(impl_src.contains("parse_drop_deps"));
+        assert!(impl_src.contains("unblock_drop"));
+    }
+
+    #[test]
     fn quarantine_atomic_sql_10671() {
         // Oracle: synthetic interleavings execute the exact production SQL
         // against SQLite, not a mocked affected-row count or live broker.
@@ -2401,6 +2858,33 @@ mod tests {
                 &json!({"pr_url": "https://x/pull/2", "disposition": merged})
             )
             .is_err()
+        );
+    }
+
+    #[test]
+    fn completion_gate_slice_class_requires_evidence() {
+        // #12233 F2c: a feature_slice completion with no artifact is
+        // rejected, exactly like a fix — the gate is the actual
+        // completion path (verb_complete runs gate_completion before
+        // any mutation), not just the class mapping.
+        let slice = CompletionClass::Slice;
+        assert!(gate(&slice, &json!({})).is_err());
+        assert!(gate(&slice, &json!({"note": "did stuff"})).is_err());
+        assert!(gate(&slice, &json!({"evidence": ""})).is_err());
+        assert!(gate(&slice, &json!({"evidence": []})).is_err());
+        // Evidence of the delivered slice completes — and, unlike a
+        // fix, needs no verified disposition: the parent issue stays
+        // open while slices land, so an open parent with no
+        // disposition is not a rejection.
+        let evidence = json!({"pr_url": "https://github.com/developing-today/code/pull/12570"});
+        assert!(gate(&slice, &evidence).is_ok());
+        assert!(
+            gate_with(&slice, Some(1062), false, &[], &evidence).is_ok(),
+            "an open parent issue must not block a slice completion"
+        );
+        assert!(
+            gate(&slice, &json!({"commit": "abc123"})).is_ok(),
+            "a commit is slice evidence too"
         );
     }
 
@@ -2999,6 +3483,10 @@ mod tests {
             completion_class(&json!({"kind": "triage"})),
             CompletionClass::Triage
         );
+        assert_eq!(
+            completion_class(&json!({"kind": "feature_slice"})),
+            CompletionClass::Slice
+        );
         assert_eq!(completion_class(&json!({})), CompletionClass::Ungated);
         // Ungated completions never gate, whatever the result.
         assert_eq!(gate(&CompletionClass::Ungated, &json!({})).unwrap(), None);
@@ -3156,6 +3644,124 @@ mod tests {
         fn prop_other_repo_never_matches(n in 1i64..10_000_000i64) {
             let key = format!("repo-health:v1:triage:developing-today-forks/opencode:issue:{n}");
             prop_assert_eq!(issue_number_from_dedupe(&key, "developing-today/code"), None);
+        }
+    }
+
+    // -- /coverage PR half (#12280): a ready PR is covered iff a LIVE
+    // -- task's dedupe key names it. The parser decides which keys name
+    // -- a PR; the live-status rule is the same SQL filter as issues.
+
+    #[test]
+    fn pr_number_parses_warden_and_merge_watch_keys() {
+        let repo = "developing-today/code";
+        // The stale-PR warden's shepherd key.
+        assert_eq!(
+            pr_number_from_dedupe("repo-health:v1:pr:developing-today/code:pr:12206", repo),
+            Some(12206)
+        );
+        // The coverage reconciliation's merge-watch key (#4951) — a live
+        // merge-watch is a live pr_shepherd naming the PR, so it must
+        // count as coverage or the fallback would double-file.
+        assert_eq!(
+            pr_number_from_dedupe(
+                "repo-health:v1:merge-watch:developing-today/code:pr:12206",
+                repo
+            ),
+            Some(12206)
+        );
+        // Dispatch-suffixed variants parse like the issue classes do.
+        assert_eq!(
+            pr_number_from_dedupe(
+                "repo-health:v1:pr:developing-today/code:pr:12206:dispatch:abc123",
+                repo
+            ),
+            Some(12206)
+        );
+    }
+
+    #[test]
+    fn pr_number_rejects_other_repos_and_non_pr_keys() {
+        let repo = "developing-today/code";
+        // A different repo's PR is not coverage for this one.
+        assert_eq!(
+            pr_number_from_dedupe(
+                "repo-health:v1:pr:developing-today-forks/opencode:pr:2496",
+                repo
+            ),
+            None
+        );
+        // An issue key never reads as PR coverage: triage for issue 5
+        // does not name PR 5.
+        assert_eq!(
+            pr_number_from_dedupe("repo-health:v1:triage:developing-today/code:issue:5", repo),
+            None
+        );
+        // And a PR key never reads as issue coverage.
+        assert_eq!(
+            issue_number_from_dedupe("repo-health:v1:pr:developing-today/code:pr:5", repo),
+            None
+        );
+        // No number at all, and the malformed-tail rule.
+        assert_eq!(
+            pr_number_from_dedupe("repo-health:v1:pr:developing-today/code:pr:", repo),
+            None
+        );
+        assert_eq!(
+            pr_number_from_dedupe("repo-health:v1:pr:developing-today/code:pr:12abc", repo),
+            None
+        );
+    }
+
+    #[test]
+    fn pr_number_matches_legacy_repo_aliases() {
+        // A shepherd filed under the pre-rename repo name is coverage
+        // when the caller names the current one, and vice versa.
+        assert_eq!(
+            pr_number_for_repo(
+                "repo-health:v1:pr:developing-today/opencode:pr:2496",
+                "developing-today-forks/opencode"
+            ),
+            Some(2496)
+        );
+        assert_eq!(
+            pr_number_for_repo(
+                "repo-health:v1:merge-watch:developing-today-forks/openchamber:pr:81",
+                "developing-today/openchamber"
+            ),
+            Some(81)
+        );
+        // Aliases never cross into a different repo.
+        assert_eq!(
+            pr_number_for_repo(
+                "repo-health:v1:pr:developing-today/opencode:pr:1",
+                "developing-today/code"
+            ),
+            None
+        );
+    }
+
+    proptest! {
+        /// Canonical PR keys round-trip for both PR-naming classes,
+        /// with or without a dispatch suffix.
+        #[test]
+        fn prop_pr_number_round_trips(
+            n in 1i64..10_000_000i64,
+            class in prop::sample::select(vec!["pr", "merge-watch"]),
+            suffix in prop::option::of("[a-z0-9]{1,12}"),
+        ) {
+            let repo = "developing-today/code";
+            let mut key = format!("repo-health:v1:{class}:{repo}:pr:{n}");
+            if let Some(s) = &suffix {
+                key.push_str(&format!(":dispatch:{s}"));
+            }
+            prop_assert_eq!(pr_number_from_dedupe(&key, repo), Some(n));
+        }
+
+        /// A PR key for a different repo never matches.
+        #[test]
+        fn prop_pr_other_repo_never_matches(n in 1i64..10_000_000i64) {
+            let key = format!("repo-health:v1:pr:developing-today-forks/opencode:pr:{n}");
+            prop_assert_eq!(pr_number_from_dedupe(&key, "developing-today/code"), None);
         }
     }
 

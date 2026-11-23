@@ -8,8 +8,10 @@
 //! entry recording its verdicts. This module implements the git
 //! source mechanism (§2.1: tree diff, never working-tree reads), the
 //! plain-tree mechanism (§2.2: stat pass, then a BLAKE3 hash pass over
-//! suspects only; issue #9980) and the persisted ledger that makes
-//! every pass auditable (§2.4).
+//! suspects only; issue #9980), the row-store mechanism (§2.3:
+//! update-sensitive watermark + landed row hashes + tombstone sweep;
+//! issue #9982) and the persisted ledger that makes every pass
+//! auditable (§2.4).
 //!
 //! Git sources are detected by commit, not by reading the working
 //! tree: a re-ingest at commit `C` with last-landed commit `L` is the
@@ -51,6 +53,9 @@ pub enum Mechanism {
     /// Stat pre-filter, then a BLAKE3 hash walk of the suspects, over a
     /// plain directory tree (§2.2).
     PlainTreeHashWalk,
+    /// Update-sensitive watermark + landed row hashes + tombstone
+    /// sweep, over a row store (§2.3).
+    RowWatermark,
 }
 
 impl Mechanism {
@@ -58,6 +63,7 @@ impl Mechanism {
         match self {
             Mechanism::GitTreeDiff => "git_tree_diff",
             Mechanism::PlainTreeHashWalk => "plain_tree_hash_walk",
+            Mechanism::RowWatermark => "row_watermark",
         }
     }
 }
@@ -131,6 +137,39 @@ pub struct LandedState {
     /// against (§2.2 stage 1). Empty for git sources.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub stats: BTreeMap<String, FileStat>,
+    /// Row stores only: per-table landed state (§2.3) — the landed
+    /// watermark and the landed row hash per key. Empty for git and
+    /// plain-tree sources.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub tables: BTreeMap<String, LandedTable>,
+}
+
+/// One table's landed state in a row store (§2.3).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LandedTable {
+    /// The watermark the last pass landed at: every row at or below
+    /// it is presumed unchanged, verified per row only in the
+    /// boundary region (rows sharing its primary value). `None` when
+    /// the table's detector runs in hash-every-row fallback mode, or
+    /// when the table was empty at landing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub watermark: Option<WatermarkValue>,
+    /// Landed row hashes by rendered row key: BLAKE3 over the row's
+    /// canonical encoding (see [`row_store_detection`]).
+    #[serde(default)]
+    pub rows: BTreeMap<String, String>,
+}
+
+/// A watermark position in a row store (§2.3): a store-maintained,
+/// monotonically increasing primary value (rowid, sequence, or
+/// `updated_at`) plus a tiebreaker that makes the position unique
+/// per row (the row key, unless the table declares its own
+/// tiebreaker column). Ordering is primary first, then tiebreaker.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct WatermarkValue {
+    pub primary: i64,
+    #[serde(default)]
+    pub tiebreaker: String,
 }
 
 /// The metadata the §2.2 stat pass compares: a file whose size and
@@ -181,6 +220,66 @@ impl PlainTreeOptions {
     }
 }
 
+/// The watermark a table declares (§2.3). The watermark must be
+/// **update-sensitive**: it must advance when an existing row is
+/// edited, not only when rows are appended.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WatermarkSpec {
+    /// A bare append-only sequence (a `rowid` or a sequence that
+    /// never bumps on update). Permitted **only** for tables that
+    /// are immutable and append-only by construction: an in-place
+    /// update does not advance it, so an edited row would stay below
+    /// the landed watermark forever — invisible to hash comparison,
+    /// and invisible to the tombstone sweep too (its key still
+    /// exists). Declaring this for a mutable table is refused.
+    Sequence { column: String },
+    /// A store-maintained value that advances on every update
+    /// (`updated_at`, or a version/sequence that bumps on update).
+    /// `tiebreaker` names the column that makes a watermark position
+    /// unique per row; the default is the row key.
+    UpdateSensitive {
+        column: String,
+        tiebreaker: Option<String>,
+    },
+    /// No usable watermark column: the table falls back to §2.2 at
+    /// row granularity (hash every row), never to a rowid watermark.
+    None,
+}
+
+/// One table's declaration for a row-store pass (§2.3).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TableSpec {
+    pub table: String,
+    /// The column(s) forming the row key, in key order. A single
+    /// column is the common case.
+    pub key_columns: Vec<String>,
+    pub watermark: WatermarkSpec,
+    /// Whether the table is immutable and append-only by
+    /// construction — the only tables that may declare
+    /// [`WatermarkSpec::Sequence`].
+    pub append_only: bool,
+}
+
+/// The tables a row-store pass detects, declared by the ingest
+/// configuration (§2.3: "each ingested table declares a watermark
+/// column").
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RowStoreSpec {
+    pub tables: Vec<TableSpec>,
+}
+
+/// Options for a row-store pass (§2.3).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct RowDetectOptions {
+    /// Run the tombstone sweep for watermark-mode tables: a full
+    /// key listing (keys only — narrow, index-served, cheap) whose
+    /// absences are hard deletes the watermark cannot see. The
+    /// design runs it on a slow cadence (daily, or on operator
+    /// request), not on every pass. Fallback-mode tables read every
+    /// row anyway, so their deletes are always detected.
+    pub tombstone_sweep: bool,
+}
+
 /// One detection pass, appended to the ledger per source (§2.4).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DetectionPass {
@@ -208,6 +307,44 @@ pub struct DetectionPass {
     /// unchanged objects is visible as a write the pass did not make.
     #[serde(default)]
     pub verdicts: Vec<PathVerdict>,
+    /// Row stores only: the per-table record of a §2.3 pass (mode,
+    /// counts, watermark movement). Empty for git and plain-tree
+    /// passes.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tables: Vec<TablePass>,
+}
+
+/// How one table was detected in a §2.3 pass.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RowMode {
+    /// The table declared an update-sensitive watermark (or an
+    /// append-only sequence for an append-only table): rows at or
+    /// below the landed watermark are presumed unchanged, verified
+    /// per row in the boundary region only.
+    Watermark,
+    /// No usable watermark column: §2.2 at row granularity — every
+    /// row is hashed and compared against the ledger.
+    HashEveryRow,
+}
+
+/// One table's record in a row-store detection pass (§2.3, §2.4).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TablePass {
+    pub table: String,
+    pub mode: RowMode,
+    pub counts: VerdictCounts,
+    /// The watermark this pass started from (`None` on a first
+    /// ingest, or in fallback mode).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub watermark_from: Option<WatermarkValue>,
+    /// The watermark this pass landed at. It never rewinds: a table
+    /// that shrank keeps its landed watermark.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub watermark_to: Option<WatermarkValue>,
+    /// Whether this pass ran the tombstone sweep (full key listing)
+    /// for the table.
+    pub swept: bool,
 }
 
 /// The persisted detection ledger: one section per source.
@@ -340,6 +477,7 @@ impl DetectionLedger {
             commit: target.to_string(),
             objects,
             stats: BTreeMap::new(),
+            tables: BTreeMap::new(),
         });
         Ok(pass)
     }
@@ -376,6 +514,46 @@ impl DetectionLedger {
         }
         let previous = section.and_then(|s| s.landed.as_ref());
         let (pass, landed) = plain_tree_detection(root, &source, previous, options)?;
+
+        let section = self.sources.entry(source).or_default();
+        section.passes.push(pass.clone());
+        section.landed = Some(landed);
+        Ok(pass)
+    }
+
+    /// Detect changes for a row store (a SQLite database) and record
+    /// the pass (§2.3).
+    ///
+    /// The landed state is taken from the ledger; a source with none
+    /// is a first ingest (every row is hashed and `New`). The pass
+    /// appends to the ledger and replaces the landed state with what
+    /// the pass landed. Rows whose verdict is unchanged keep their
+    /// landed hash untouched — the ledger-side half of the #6028
+    /// guarantee.
+    ///
+    /// A source whose last pass used another mechanism is refused:
+    /// its landed object ids are not row hashes, so every row would
+    /// read as changed.
+    pub fn detect_row_store(
+        &mut self,
+        db: &Path,
+        source: impl Into<String>,
+        spec: &RowStoreSpec,
+        options: &RowDetectOptions,
+    ) -> Result<DetectionPass> {
+        let source = source.into();
+        let section = self.sources.get(&source);
+        if let Some(last) = section.and_then(|s| s.passes.last())
+            && last.mechanism != Mechanism::RowWatermark
+        {
+            return Err(Error::backend(format!(
+                "detection ledger: source {source:?} was last detected with {}, not {}",
+                last.mechanism.as_str(),
+                Mechanism::RowWatermark.as_str()
+            )));
+        }
+        let previous = section.and_then(|s| s.landed.as_ref());
+        let (pass, landed) = row_store_detection(db, &source, previous, spec, options)?;
 
         let section = self.sources.entry(source).or_default();
         section.passes.push(pass.clone());
@@ -481,13 +659,532 @@ pub fn plain_tree_detection(
         bytes_read,
         elapsed_ms: started.elapsed().as_millis() as u64,
         verdicts,
+        tables: Vec::new(),
     };
     let landed = LandedState {
         commit: to,
         objects,
         stats,
+        tables: BTreeMap::new(),
     };
     Ok((pass, landed))
+}
+
+/// Run the §2.3 row-store pass for one source without recording it.
+///
+/// Returns the pass and the landed state it leaves behind. The store
+/// is opened read-only: detection writes nothing to it, ever. Landed
+/// tables the spec no longer declares are carried over untouched —
+/// they are not this pass's business.
+///
+/// Per table, in declaration order:
+///
+/// - The declaration is validated against the §2.3 watermark rules
+///   before any row is read: a mutable table declaring an append-only
+///   sequence watermark is refused (never a rowid watermark for a
+///   mutable table).
+/// - Watermark mode: rows below the landed watermark's primary value
+///   are presumed unchanged and never read. The boundary region —
+///   rows sharing the landed primary — and everything after it are
+///   read, hashed, and compared against the landed row hashes: an
+///   existing key with a new hash is an _edit_ (the verdict names
+///   the superseded hash in `previous_blob`; supersession is not
+///   retirement — preserving the superseded version until the
+///   retention record permits retirement is the ingest path's
+///   business, downstream of this verdict), a new key is new. The
+///   landed watermark advances to the highest position read and
+///   never rewinds.
+/// - Fallback mode (no usable watermark column): every row is
+///   hashed and compared, per §2.2 at row granularity; deletes are
+///   visible in the same pass.
+/// - The tombstone sweep (watermark mode, when
+///   [`RowDetectOptions::tombstone_sweep`] is set) lists every key —
+///   keys only, never content — and reports landed keys absent from
+///   the listing as gone: the hard deletes the watermark cannot see.
+///
+/// A row's hash is BLAKE3 over its canonical encoding: for each
+/// column, in table-definition order, one tag byte (`n` null, `i`
+/// integer, `f` float, `t` text, `b` blob), an 8-byte big-endian
+/// length, and the payload (integers as big-endian `i64`, floats as
+/// big-endian `f64` bits, text and blobs as their raw bytes). A
+/// row's key renders its key-column values in the same tagged form
+/// (`i:42`, `t:abc`, …), joined by U+001F.
+///
+/// A watermark value that is not an integer is a hard error: the
+/// detector fails closed rather than guess at an ordering it cannot
+/// trust.
+pub fn row_store_detection(
+    db: &Path,
+    source: &str,
+    landed: Option<&LandedState>,
+    spec: &RowStoreSpec,
+    options: &RowDetectOptions,
+) -> Result<(DetectionPass, LandedState)> {
+    let started = Instant::now();
+    let mut seen_tables = std::collections::BTreeSet::new();
+    for table in &spec.tables {
+        if !seen_tables.insert(table.table.as_str()) {
+            return Err(Error::backend(format!(
+                "row store: table {:?} is declared twice",
+                table.table
+            )));
+        }
+    }
+    let con = rusqlite::Connection::open_with_flags(db, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .map_err(|e| Error::backend(format!("row store {}: {e}", db.display())))?;
+
+    // Landed tables the spec no longer declares carry over untouched.
+    let mut landed_tables = landed.map(|l| l.tables.clone()).unwrap_or_default();
+    let mut verdicts = Vec::new();
+    let mut tables = Vec::new();
+    let mut bytes_read = 0u64;
+    let mut presumed = 0u64;
+    let mut prior_rows = 0u64;
+    let mut new_rows = 0u64;
+
+    for table_spec in &spec.tables {
+        let previous = landed.and_then(|l| l.tables.get(&table_spec.table));
+        prior_rows += previous.map_or(0, |p| p.rows.len() as u64);
+        let outcome = detect_table(&con, table_spec, previous, options.tombstone_sweep)?;
+        bytes_read += outcome.bytes_read;
+        presumed += outcome.presumed;
+        new_rows += outcome
+            .verdicts
+            .iter()
+            .filter(|v| v.verdict == Verdict::New)
+            .count() as u64;
+        verdicts.extend(outcome.verdicts);
+        tables.push(outcome.table_pass);
+        landed_tables.insert(table_spec.table.clone(), outcome.landed);
+    }
+
+    let mut counts = VerdictCounts::default();
+    for verdict in &verdicts {
+        counts.add(verdict.verdict);
+    }
+    // Every landed row of a declared table is accounted for: edited
+    // (changed), swept away (gone), or — read or not — unchanged.
+    counts.unchanged = prior_rows.saturating_sub(counts.changed + counts.gone);
+
+    let stat_presumption_rate = landed.and_then(|_| {
+        let total = prior_rows + new_rows;
+        (total > 0).then(|| presumed as f64 / total as f64)
+    });
+    let to = row_state_digest(&landed_tables);
+    let pass = DetectionPass {
+        source: source.to_string(),
+        mechanism: Mechanism::RowWatermark,
+        from: landed.map(|l| l.commit.clone()),
+        to: to.clone(),
+        counts,
+        stat_presumption_rate,
+        bytes_read,
+        elapsed_ms: started.elapsed().as_millis() as u64,
+        verdicts,
+        tables,
+    };
+    let landed = LandedState {
+        commit: to,
+        objects: BTreeMap::new(),
+        stats: BTreeMap::new(),
+        tables: landed_tables,
+    };
+    Ok((pass, landed))
+}
+
+/// The outcome of detecting one table: its verdicts, its ledger
+/// record, the landed state it leaves, and the pass's cost counters.
+struct TableOutcome {
+    verdicts: Vec<PathVerdict>,
+    table_pass: TablePass,
+    landed: LandedTable,
+    bytes_read: u64,
+    /// Landed rows this pass never read (watermark mode only).
+    presumed: u64,
+}
+
+/// Detect one declared table against its landed state (§2.3).
+fn detect_table(
+    con: &rusqlite::Connection,
+    spec: &TableSpec,
+    previous: Option<&LandedTable>,
+    sweep: bool,
+) -> Result<TableOutcome> {
+    // Validate the declaration against the §2.3 watermark rules
+    // before reading a single row.
+    let (watermark_column, tiebreaker_column) = match &spec.watermark {
+        WatermarkSpec::Sequence { column } => {
+            if !spec.append_only {
+                return Err(Error::backend(format!(
+                    "row store: table {:?} is mutable but declares append-only sequence \
+                     watermark {column:?}; §2.3 permits a bare sequence watermark only \
+                     for immutable append-only tables — declare an update-sensitive \
+                     watermark or none",
+                    spec.table
+                )));
+            }
+            (Some(column.as_str()), None)
+        }
+        WatermarkSpec::UpdateSensitive { column, tiebreaker } => {
+            (Some(column.as_str()), tiebreaker.as_deref())
+        }
+        WatermarkSpec::None => (None, None),
+    };
+    if spec.key_columns.is_empty() {
+        return Err(Error::backend(format!(
+            "row store: table {:?} declares no key columns",
+            spec.table
+        )));
+    }
+    let columns = table_columns(con, &spec.table)?;
+    let column_index = |name: &str| -> Result<usize> {
+        columns.iter().position(|c| c == name).ok_or_else(|| {
+            Error::backend(format!(
+                "row store: table {:?} has no column {name:?}",
+                spec.table
+            ))
+        })
+    };
+    let mut key_index = Vec::new();
+    for key_column in &spec.key_columns {
+        key_index.push(column_index(key_column)?);
+    }
+    let watermark_index = watermark_column.map(column_index).transpose()?;
+    let tiebreaker_index = tiebreaker_column.map(column_index).transpose()?;
+    let mode = if watermark_index.is_some() {
+        RowMode::Watermark
+    } else {
+        RowMode::HashEveryRow
+    };
+
+    let landed_rows: BTreeMap<String, String> =
+        previous.map(|p| p.rows.clone()).unwrap_or_default();
+    let landed_watermark = previous.and_then(|p| p.watermark.clone());
+
+    // Read the rows this pass must see: in watermark mode with a
+    // landed watermark, the boundary region and everything after it
+    // (watermark >= landed primary); otherwise the whole table.
+    let quoted = quote_ident(&spec.table);
+    let (sql, boundary_primary) = match (watermark_index, &landed_watermark) {
+        (Some(_), Some(w)) => (
+            format!(
+                "SELECT * FROM {quoted} WHERE {} >= ?1",
+                quote_ident(watermark_column.unwrap())
+            ),
+            Some(w.primary),
+        ),
+        _ => (format!("SELECT * FROM {quoted}"), None),
+    };
+    let mut stmt = con
+        .prepare(&sql)
+        .map_err(|e| Error::backend(format!("row store {}: {e}", spec.table)))?;
+    let mut rows = match boundary_primary {
+        Some(primary) => stmt.query([primary]),
+        None => stmt.query([]),
+    }
+    .map_err(|e| Error::backend(format!("row store {}: {e}", spec.table)))?;
+
+    let mut verdicts = Vec::new();
+    let mut counts = VerdictCounts::default();
+    let mut new_rows_map = BTreeMap::new();
+    let mut seen = std::collections::BTreeSet::new();
+    let mut fetched_landed = 0u64;
+    let mut bytes_read = 0u64;
+    let mut watermark_to = landed_watermark.clone();
+    while let Some(row) = rows
+        .next()
+        .map_err(|e| Error::backend(format!("row store {}: {e}", spec.table)))?
+    {
+        let mut values = Vec::with_capacity(columns.len());
+        for i in 0..columns.len() {
+            values.push(
+                row.get::<usize, rusqlite::types::Value>(i)
+                    .map_err(|e| Error::backend(format!("row store {}: {e}", spec.table)))?,
+            );
+        }
+        let key = row_key(&values, &key_index);
+        seen.insert(key.clone());
+        if landed_rows.contains_key(&key) {
+            fetched_landed += 1;
+        }
+        if let Some(index) = watermark_index {
+            let position = watermark_of(&spec.table, &values, index, tiebreaker_index, &key)?;
+            if watermark_to.as_ref().is_none_or(|w| position > *w) {
+                watermark_to = Some(position);
+            }
+        }
+        let canonical = canonical_row(&values);
+        bytes_read += canonical.len() as u64;
+        let hash = blake3::hash(&canonical).to_hex().to_string();
+        match landed_rows.get(&key) {
+            Some(old) if *old == hash => {}
+            Some(old) => {
+                verdicts.push(PathVerdict {
+                    path: format!("{}/{key}", spec.table),
+                    previous_path: None,
+                    verdict: Verdict::Changed,
+                    blob: Some(hash.clone()),
+                    previous_blob: Some(old.clone()),
+                });
+            }
+            None => {
+                verdicts.push(PathVerdict {
+                    path: format!("{}/{key}", spec.table),
+                    previous_path: None,
+                    verdict: Verdict::New,
+                    blob: Some(hash.clone()),
+                    previous_blob: None,
+                });
+            }
+        }
+        new_rows_map.insert(key, hash);
+    }
+    drop(rows);
+    drop(stmt);
+
+    // Deletes. Fallback mode read every row, so its absences are
+    // already visible. Watermark mode sees them only in the sweep's
+    // full key listing (keys only — never content).
+    let swept = sweep && mode == RowMode::Watermark;
+    let mut gone: Vec<String> = Vec::new();
+    if mode == RowMode::HashEveryRow {
+        gone = landed_rows
+            .keys()
+            .filter(|key| !seen.contains(*key))
+            .cloned()
+            .collect();
+    } else if swept {
+        let key_columns = spec
+            .key_columns
+            .iter()
+            .map(|c| quote_ident(c))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let mut stmt = con
+            .prepare(&format!("SELECT {key_columns} FROM {quoted}"))
+            .map_err(|e| Error::backend(format!("row store {}: {e}", spec.table)))?;
+        let mut listing = stmt
+            .query([])
+            .map_err(|e| Error::backend(format!("row store {}: {e}", spec.table)))?;
+        let mut current = std::collections::BTreeSet::new();
+        while let Some(row) = listing
+            .next()
+            .map_err(|e| Error::backend(format!("row store {}: {e}", spec.table)))?
+        {
+            let mut values = Vec::with_capacity(key_index.len());
+            for i in 0..key_index.len() {
+                values.push(
+                    row.get::<usize, rusqlite::types::Value>(i)
+                        .map_err(|e| Error::backend(format!("row store {}: {e}", spec.table)))?,
+                );
+            }
+            // The listing selects the key columns in declaration
+            // order, so the key renders from positions 0..n.
+            let positions: Vec<usize> = (0..key_index.len()).collect();
+            current.insert(row_key(&values, &positions));
+        }
+        gone = landed_rows
+            .keys()
+            .filter(|key| !current.contains(*key))
+            .cloned()
+            .collect();
+    }
+    for key in &gone {
+        verdicts.push(PathVerdict {
+            path: format!("{}/{key}", spec.table),
+            previous_path: None,
+            verdict: Verdict::Gone,
+            blob: None,
+            previous_blob: landed_rows.get(key).cloned(),
+        });
+    }
+    for verdict in &verdicts {
+        counts.add(verdict.verdict);
+    }
+    counts.unchanged = (landed_rows.len() as u64).saturating_sub(counts.changed + counts.gone);
+
+    // Land: start from the landed rows, drop the gone, overwrite the
+    // changed and the new. Unchanged rows keep their landed hash —
+    // no write of any kind (§2.4).
+    let mut rows = landed_rows;
+    for key in &gone {
+        rows.remove(key);
+    }
+    for (key, hash) in new_rows_map {
+        rows.insert(key, hash);
+    }
+    let presumed = match mode {
+        RowMode::Watermark => previous
+            .map_or(0, |p| p.rows.len() as u64)
+            .saturating_sub(fetched_landed),
+        RowMode::HashEveryRow => 0,
+    };
+    let table_pass = TablePass {
+        table: spec.table.clone(),
+        mode,
+        counts,
+        watermark_from: landed_watermark,
+        watermark_to: watermark_to.clone(),
+        swept,
+    };
+    let landed = LandedTable {
+        watermark: match mode {
+            RowMode::Watermark => watermark_to,
+            RowMode::HashEveryRow => None,
+        },
+        rows,
+    };
+    Ok(TableOutcome {
+        verdicts,
+        table_pass,
+        landed,
+        bytes_read,
+        presumed,
+    })
+}
+
+/// The column names of a table, in table-definition order (the
+/// canonical encoding's order). A missing table is an error: a
+/// detector that invented an empty table would report every landed
+/// row gone.
+fn table_columns(con: &rusqlite::Connection, table: &str) -> Result<Vec<String>> {
+    let mut stmt = con
+        .prepare(&format!("PRAGMA table_info({})", quote_ident(table)))
+        .map_err(|e| Error::backend(format!("row store {table}: {e}")))?;
+    let mut rows = stmt
+        .query([])
+        .map_err(|e| Error::backend(format!("row store {table}: {e}")))?;
+    let mut columns = Vec::new();
+    while let Some(row) = rows
+        .next()
+        .map_err(|e| Error::backend(format!("row store {table}: {e}")))?
+    {
+        columns.push(
+            row.get::<usize, String>(1)
+                .map_err(|e| Error::backend(format!("row store {table}: {e}")))?,
+        );
+    }
+    if columns.is_empty() {
+        return Err(Error::backend(format!(
+            "row store: no such table {table:?}"
+        )));
+    }
+    Ok(columns)
+}
+
+/// A row's watermark position (§2.3). The primary must be an
+/// integer; anything else fails closed.
+fn watermark_of(
+    table: &str,
+    values: &[rusqlite::types::Value],
+    index: usize,
+    tiebreaker_index: Option<usize>,
+    key: &str,
+) -> Result<WatermarkValue> {
+    let primary = match &values[index] {
+        rusqlite::types::Value::Integer(i) => *i,
+        other => {
+            return Err(Error::backend(format!(
+                "row store {table}: watermark value {other:?} is not an integer; \
+                 refusing to order by it"
+            )));
+        }
+    };
+    let tiebreaker = match tiebreaker_index {
+        Some(i) => render_value(&values[i]),
+        None => key.to_string(),
+    };
+    Ok(WatermarkValue {
+        primary,
+        tiebreaker,
+    })
+}
+
+/// A row's key: its key-column values in tagged rendered form,
+/// joined by U+001F.
+fn row_key(values: &[rusqlite::types::Value], key_index: &[usize]) -> String {
+    key_index
+        .iter()
+        .map(|&i| render_value(&values[i]))
+        .collect::<Vec<_>>()
+        .join("\u{1f}")
+}
+
+/// Render one value in tagged form (`n:` / `i:42` / `f:<bits>` /
+/// `t:<text>` / `b:<hex>`). Used for row keys and tiebreakers, where
+/// the rendering must be deterministic and type-unambiguous.
+fn render_value(value: &rusqlite::types::Value) -> String {
+    use rusqlite::types::Value;
+    match value {
+        Value::Null => "n:".to_string(),
+        Value::Integer(i) => format!("i:{i}"),
+        Value::Real(f) => format!("f:{}", f.to_bits()),
+        Value::Text(t) => format!("t:{t}"),
+        Value::Blob(b) => format!("b:{}", hex(b)),
+    }
+}
+
+fn hex(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        out.push_str(&format!("{byte:02x}"));
+    }
+    out
+}
+
+/// The canonical encoding a row hash is taken over (§2.3): per
+/// column, in table-definition order, one tag byte, an 8-byte
+/// big-endian length, and the payload.
+fn canonical_row(values: &[rusqlite::types::Value]) -> Vec<u8> {
+    use rusqlite::types::Value;
+    let mut out = Vec::new();
+    for value in values {
+        let (tag, payload): (u8, Vec<u8>) = match value {
+            Value::Null => (b'n', Vec::new()),
+            Value::Integer(i) => (b'i', i.to_be_bytes().to_vec()),
+            Value::Real(f) => (b'f', f.to_bits().to_be_bytes().to_vec()),
+            Value::Text(t) => (b't', t.as_bytes().to_vec()),
+            Value::Blob(b) => (b'b', b.clone()),
+        };
+        out.push(tag);
+        out.extend_from_slice(&(payload.len() as u64).to_be_bytes());
+        out.extend_from_slice(&payload);
+    }
+    out
+}
+
+/// The row-store analogue of a commit id: BLAKE3 over every landed
+/// table's watermark and sorted key/hash pairs. Computed from state
+/// the pass already holds, so it costs no reads.
+fn row_state_digest(tables: &BTreeMap<String, LandedTable>) -> String {
+    let mut hasher = blake3::Hasher::new();
+    for (table, landed) in tables {
+        hasher.update(table.as_bytes());
+        hasher.update(b"\0");
+        match &landed.watermark {
+            Some(w) => {
+                hasher.update(&w.primary.to_be_bytes());
+                hasher.update(w.tiebreaker.as_bytes());
+            }
+            None => {
+                hasher.update(b"none");
+            }
+        };
+        hasher.update(b"\n");
+        for (key, hash) in &landed.rows {
+            hasher.update(key.as_bytes());
+            hasher.update(b"\0");
+            hasher.update(hash.as_bytes());
+            hasher.update(b"\n");
+        }
+    }
+    format!("blake3:{}", hasher.finalize().to_hex())
+}
+
+/// Quote a SQLite identifier (table or column name from the ingest
+/// declaration), escaping embedded quotes.
+fn quote_ident(name: &str) -> String {
+    format!("\"{}\"", name.replace('"', "\"\""))
 }
 
 /// Stage 1: readdir + lstat only, no content reads. Collects regular
@@ -624,6 +1321,7 @@ pub fn git_tree_detection(
         bytes_read: 0,
         elapsed_ms: 0,
         verdicts,
+        tables: Vec::new(),
     })
 }
 

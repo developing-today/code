@@ -44,9 +44,11 @@
 /// advertise against, owned by `id-core` (slice 9110-02, #10160).
 pub use id_core::port;
 
+pub mod account_charge;
 pub mod blob_gate;
 pub mod chat_anchor_render;
 pub mod groups;
+pub mod guest_burn;
 pub mod program_bundle;
 pub mod program_gallery;
 pub mod program_gallery_admission;
@@ -68,12 +70,12 @@ pub mod world_hub;
 pub mod world_line;
 pub mod world_native;
 pub mod world_net;
+pub mod world_owner_report;
 pub mod world_records;
 pub mod world_replication_net;
 pub mod world_session;
 #[cfg(feature = "ssh")]
 pub mod world_ssh;
-pub mod world_owner_report;
 pub mod world_storage;
 pub mod world_store;
 pub mod world_terminal;
@@ -101,3 +103,69 @@ pub use id_sync::envelope_outbox;
 
 #[cfg(test)]
 pub(crate) use id_core::test_forgeries;
+
+/// Venue capability probe for the QUIC (UDP) test suites (#12488).
+///
+/// The `world_net` / `world_records` / `world_replication_net` tests dial
+/// iroh endpoints over loopback UDP. Some venues forbid UDP outright —
+/// in the Muse sandbox `sendto` fails with EPERM even on loopback — so
+/// there a handshake can never complete, no matter how generous the
+/// deadline, and every dial test burns its full connect timeout before
+/// failing. A test that needs the transport calls
+/// [`test_transport::skip_if_no_udp_loopback`] first: where UDP loopback
+/// works nothing changes; where it cannot, the test skips with a printed
+/// line naming the test and the venue defect instead of a bare timeout.
+#[cfg(test)]
+pub(crate) mod test_transport {
+    use std::net::UdpSocket;
+    use std::sync::OnceLock;
+    use std::time::Duration;
+
+    /// `Some(reason)` when this venue cannot move a UDP datagram over
+    /// loopback, with the OS error that proved it; `None` when it can.
+    /// Probed once per test process.
+    fn udp_loopback_unusable_reason() -> Option<&'static str> {
+        static PROBE: OnceLock<Option<String>> = OnceLock::new();
+        PROBE
+            .get_or_init(|| {
+                let probe = (|| {
+                    let socket = UdpSocket::bind("127.0.0.1:0")?;
+                    socket.set_read_timeout(Some(Duration::from_secs(2)))?;
+                    let addr = socket.local_addr()?;
+                    socket.send_to(b"udp-loopback-probe", addr)?;
+                    let mut buf = [0_u8; 32];
+                    let (n, _) = socket.recv_from(&mut buf)?;
+                    if buf[..n] == *b"udp-loopback-probe" {
+                        Ok(())
+                    } else {
+                        Err(std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            "probe payload mismatch",
+                        ))
+                    }
+                })();
+                match probe {
+                    Ok(()) => None,
+                    Err(err) => Some(err.to_string()),
+                }
+            })
+            .as_deref()
+    }
+
+    /// Guard for a test that dials or syncs over iroh/QUIC. Returns
+    /// `true` — after printing the skip line naming `test` — when the
+    /// venue has no UDP loopback and the test must skip; `false` when
+    /// the test should run normally.
+    pub(crate) fn skip_if_no_udp_loopback(test: &str) -> bool {
+        match udp_loopback_unusable_reason() {
+            Some(reason) => {
+                eprintln!(
+                    "skipping {test}: UDP loopback transport unavailable in this venue \
+                     ({reason}); QUIC/iroh tests need UDP — see #12488"
+                );
+                true
+            }
+            None => false,
+        }
+    }
+}

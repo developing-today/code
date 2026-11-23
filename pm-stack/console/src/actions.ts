@@ -9,7 +9,7 @@ import type { Docs } from "./docs.ts";
 import { OpError } from "./errors.ts";
 import type { Ops } from "./ops.ts";
 import type { Push } from "./push.ts";
-import type { Work } from "./work.ts";
+import { promptPacket, type Work } from "./work.ts";
 
 type Args = Record<string, unknown>;
 export interface Action {
@@ -69,6 +69,35 @@ export function actions(ops: Ops, work: Work, push?: Push, devices?: Devices): R
     "ask.send": { run: (a) => work.ask(a), touch: ["asks", "board"], audit: () => ({}) },
     "ask.reply": { run: (a) => work.askReply(a), touch: ["asks", "board"], audit: ids("issue") },
     "ask.close": { run: (a) => work.askClose(a), touch: ["asks"], audit: ids("issue") },
+    // The second half of a prompt the edge filed while the laptop was
+    // away: the issue already exists, so only its queue task is left.
+    // The edge holds this, never the whole ask, so the issue is never
+    // filed twice. The arguments are checked again here: the edge is
+    // trusted for the held actions it sends, and a bad one is refused
+    // rather than enqueued.
+    "prompt.enqueue": {
+      run: async (a) => {
+        const issue = Number(a.issue);
+        if (!Number.isSafeInteger(issue) || issue <= 0) throw new OpError(400, "issue: a positive whole number");
+        if (typeof a.text !== "string" || a.text.trim() === "" || a.text.length > 8000)
+          throw new OpError(400, "text: required, at most 8000 characters");
+        if (typeof a.at !== "string" || a.at === "") throw new OpError(400, "at: required");
+        // A failed enqueue is thrown, not answered as "not queued": this
+        // runs late, so nobody is listening for the answer, and a
+        // `queued: false` would be recorded done and the held prompt
+        // acknowledged as sent with no queue task behind it.
+        const queued = await ops.enqueue(promptPacket(ops.cfg.repo, ops.cfg.queue, issue, a.text, a.at));
+        if (queued.code !== 0) {
+          throw new OpError(
+            502,
+            `the queue task could not be filed: ${(queued.stderr || queued.stdout || "the queue did not answer").trim().slice(0, 200)}`,
+          );
+        }
+        return { issue, queued: true };
+      },
+      touch: ["board"],
+      audit: ids("issue"),
+    },
     "question.answer": {
       run: (a) => work.answer(a),
       touch: ["questions", "questionCount"],
@@ -100,6 +129,10 @@ export function actions(ops: Ops, work: Work, push?: Push, devices?: Devices): R
     "issue.rank": { run: (a) => ops.setRank(a.issue, a.rank), touch: ["priorities"], audit: ids("issue", "rank") },
     "issue.comment": { run: (a) => ops.comment(a.issue, a.text), touch: [], audit: ids("issue") },
     "pr.merge": { run: (a) => ops.mergePr(a.pr), touch: ["prs"], audit: ids("pr") },
+    // Start the site's deploy or the app's build again. Never held to
+    // be done late: a deploy that starts hours after it was asked for
+    // is a surprise.
+    "deploy.start": { run: (a) => ops.deploy(a.what, a.scratch), touch: [], audit: ids("what", "scratch") },
     "unit.act": {
       run: (a) => ops.serviceAct(a.unit, a.action),
       touch: ["services"],
@@ -109,6 +142,9 @@ export function actions(ops: Ops, work: Work, push?: Push, devices?: Devices): R
     // written to the record of what was done, and the action is never
     // held anywhere to be done late.
     "sso.google": { run: (a) => ops.googleSignin(a.clientId, a.clientSecret), touch: [], audit: () => ({}) },
+    // The owner's switch for the edge acting by itself while the laptop
+    // is away. Done on the laptop, where the tokens are, and never held.
+    "edge.direct": { run: (a) => ops.edgeDirect(a.on), touch: [], audit: (a) => ({ on: a.on === true }) },
     "message.send": {
       run: (a) => ops.send(a.to, a.text, a.command),
       touch: [],

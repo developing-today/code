@@ -25,6 +25,7 @@ rec {
       lib.make-mcpx-overlay
       lib.make-mcpx-modules
       lib.make-pm-stack
+      lib.make-archer-slack
       lib.make-laptop-backups-checks
       lib.make-fleet
       lib.make-deploy
@@ -190,13 +191,6 @@ rec {
       inputs.flake-parts.follows = "flake-parts";
       inputs.neovim-src.follows = "neovim-src";
     };
-    git-hooks = {
-      url = "github:cachix/git-hooks.nix"; # ?shallow=1";
-      # TODO: revert to nixpkgs, relates to 26 breaking changings, either impermanence/nix-sops conflict with systemd-mounts change or the breaking wireless hardening changes
-      #inputs.nixpkgs.follows = "nixpkgs";
-      inputs.nixpkgs.follows = "nixpkgs-unstable";
-      inputs.flake-compat.follows = "flake-compat";
-    };
     zig-overlay = {
       url = "github:mitchellh/zig-overlay"; # ?shallow=1";
       # TODO: revert to nixpkgs, relates to 26 breaking changings, either impermanence/nix-sops conflict with systemd-mounts change or the breaking wireless hardening changes
@@ -232,14 +226,6 @@ rec {
       # TODO: revert to nixpkgs, relates to 26 breaking changings, either impermanence/nix-sops conflict with systemd-mounts change or the breaking wireless hardening changes
       #inputs.nixpkgs.follows = "nixpkgs";
       inputs.nixpkgs.follows = "nixpkgs-unstable";
-    };
-    pre-commit-hooks = {
-      # TODO: use this?
-      url = "github:cachix/pre-commit-hooks.nix"; # ?shallow=1";
-      # TODO: revert to nixpkgs, relates to 26 breaking changings, either impermanence/nix-sops conflict with systemd-mounts change or the breaking wireless hardening changes
-      #inputs.nixpkgs.follows = "nixpkgs";
-      inputs.nixpkgs.follows = "nixpkgs-unstable";
-      inputs.flake-compat.follows = "flake-compat";
     };
     # hyprlang = {
     #   url = "github:hyprwm/hyprlang";

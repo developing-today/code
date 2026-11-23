@@ -356,6 +356,13 @@ impl Sandbox {
             limits: self.limits,
             metrics,
             trap_fuel: None,
+            burn_budget: crate::guest_burn::GuestBurnBudget::shared(),
+            charge_key: next_guest_charge_key(),
+            charge_config: crate::account_charge::WorldChargeConfig::default(),
+            account_registry: None,
+            creator_account: None,
+            caller_account: None,
+            active_permit: None,
             store,
             memory,
             alloc,
@@ -386,6 +393,33 @@ pub struct WorldInstance {
     /// Fuel a trapped call had spent, captured before the diagnostic getters
     /// refill the store; taken by [`Self::settle`].
     trap_fuel: Option<u64>,
+    /// The burn budget this guest's calls are admitted against
+    /// (#1067): the process-wide shared budget unless the
+    /// composition layer substitutes a dedicated one.
+    burn_budget: std::sync::Arc<crate::guest_burn::GuestBurnBudget>,
+    /// The key this guest's burns are charged to: the world id where
+    /// the composition layer knows it, else a unique per-instance
+    /// label (a live world has exactly one live instance, so the
+    /// two coincide while the world is live).
+    charge_key: String,
+    /// The world's local charge configuration (#1067 quotas): its
+    /// charging mode and explicit account, used unless the account
+    /// registry has an entry for this world. See
+    /// [`crate::account_charge`].
+    charge_config: crate::account_charge::WorldChargeConfig,
+    /// The admin world→account registry the composition layer
+    /// installed, where it installed one.
+    account_registry: Option<std::sync::Arc<crate::account_charge::WorldAccountRegistry>>,
+    /// The world's recorded creator account, where it carries one.
+    creator_account: Option<String>,
+    /// The calling account this guest's calls are charged to under
+    /// the default mode, where the composition layer knows it.
+    caller_account: Option<String>,
+    /// The permit of the call currently inside
+    /// [`Self::run_guest_call`]; taken and settled by
+    /// [`Self::settle`] with the call's measured fuel spend, the
+    /// same shape as `trap_fuel`.
+    active_permit: Option<crate::guest_burn::GuestBurnPermit>,
     store: Store<StoreLimits>,
     memory: Memory,
     alloc: TypedFunc<i32, i32>,
@@ -418,11 +452,151 @@ fn fuel_spent(store: &Store<StoreLimits>, limit: u64) -> u64 {
     limit.saturating_sub(store.get_fuel().unwrap_or(limit))
 }
 
+/// Unique default charge key for a guest instance whose composition
+/// layer did not name one (see [`WorldInstance::set_charge_key`]).
+fn next_guest_charge_key() -> String {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    format!(
+        "guest-{}",
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    )
+}
+
 impl WorldInstance {
     /// Fuel statistics per guest call kind since this instance was created.
     /// In-memory only: never journaled, sent on the wire, or snapshotted.
     pub const fn metrics(&self) -> &CallMetrics {
         &self.metrics
+    }
+
+    /// Name the key this guest's burns are charged to (the world id,
+    /// where the composition layer knows it). See
+    /// [`crate::guest_burn`] for how the charge is used.
+    pub fn set_charge_key(&mut self, key: String) {
+        self.charge_key = key;
+    }
+
+    /// Substitute the burn budget this guest's calls are admitted
+    /// against, replacing the process-wide shared default.
+    pub fn set_burn_budget(&mut self, budget: std::sync::Arc<crate::guest_burn::GuestBurnBudget>) {
+        self.burn_budget = budget;
+    }
+
+    /// Install the world's local charge configuration (#1067
+    /// quotas): its charging mode and explicit account. A registry
+    /// entry for this world replaces it; see
+    /// [`crate::account_charge`].
+    pub fn set_charge_config(&mut self, config: crate::account_charge::WorldChargeConfig) {
+        self.charge_config = config;
+    }
+
+    /// Install the admin world→account registry this guest's
+    /// charges resolve against.
+    pub fn set_account_registry(
+        &mut self,
+        registry: std::sync::Arc<crate::account_charge::WorldAccountRegistry>,
+    ) {
+        self.account_registry = Some(registry);
+    }
+
+    /// Record the world's creator account, where the world carries
+    /// one, for creator-principal charging.
+    pub fn set_creator_account(&mut self, creator: Option<String>) {
+        self.creator_account = creator;
+    }
+
+    /// Record the calling account this guest's calls are charged
+    /// to under the default (caller) mode, where the composition
+    /// layer knows it.
+    pub fn set_caller_account(&mut self, caller: Option<String>) {
+        self.caller_account = caller;
+    }
+
+    /// Run one guest call under burn admission (#1067), without
+    /// parking a shared Tokio worker for its duration: on a
+    /// multi-thread runtime the call runs under `block_in_place`, so
+    /// the runtime hands this worker's other tasks to a replacement
+    /// thread while the guest executes. Everywhere else (plain
+    /// threads, `spawn_blocking`, current-thread test runtimes) the
+    /// call is direct. A guest call may burn its whole fuel budget —
+    /// the default is 10,000,000 — in one synchronous execution;
+    /// without this, one spinning world monopolizes a hub worker for
+    /// that whole span and every other world's actor sharing the
+    /// runtime waits behind it (#1067, F12.10). Same guard as
+    /// `world_store::recv_writer_reply` (#557). Fuel, ordering, and
+    /// poisoning semantics are unchanged: the same call runs, just
+    /// in blocking context.
+    ///
+    /// Admission is acquired inside the blocking context, so a call
+    /// waiting for a burn permit parks a blocking thread, never a
+    /// shared worker. The permit is settled by [`Self::settle`] with
+    /// the call's measured fuel spend.
+    ///
+    /// Before admission, the call's charge account is resolved
+    /// (#1067 quotas; [`Self::resolve_guest_charge`]).
+    ///
+    /// # Errors
+    ///
+    /// The charge account cannot be resolved — the world is
+    /// configured for creator-principal charging and carries no
+    /// recorded creator. The call does not run and nothing is
+    /// charged; see [`crate::account_charge`].
+    fn run_guest_call<T>(&mut self, call: impl FnOnce(&mut Self) -> T) -> Result<T> {
+        let account = self.resolve_guest_charge()?;
+        let budget = std::sync::Arc::clone(&self.burn_budget);
+        let key = self.charge_key.clone();
+        let allowance = self.limits.fuel;
+        let admitted = |instance: &mut Self| {
+            let permit = budget.acquire_charged(&key, &account, allowance);
+            let result = call(instance);
+            (result, permit)
+        };
+        let (result, permit) = if tokio::runtime::Handle::try_current().is_ok_and(|handle| {
+            handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread
+        }) {
+            tokio::task::block_in_place(|| admitted(self))
+        } else {
+            admitted(self)
+        };
+        self.active_permit = Some(permit);
+        Ok(result)
+    }
+
+    /// Resolve the account this guest's calls are charged to, in
+    /// the ownership decision's precedence (registry, then
+    /// creator-principal configuration, then the caller). The
+    /// registry entry for this world, where it has one, is the
+    /// effective configuration; otherwise the locally installed
+    /// charge configuration applies.
+    ///
+    /// # Errors
+    ///
+    /// The world is configured for creator-principal charging and
+    /// carries no recorded creator. The failure is logged and
+    /// returned rather than silently charging the caller — the
+    /// caller's money was never this world's to spend by default
+    /// once its admin chose creator charging.
+    fn resolve_guest_charge(&self) -> Result<String> {
+        let config = self
+            .account_registry
+            .as_deref()
+            .and_then(|registry| registry.config_for(&self.charge_key))
+            .cloned()
+            .unwrap_or_else(|| self.charge_config.clone());
+        crate::account_charge::resolve_charge_account(
+            &self.charge_key,
+            &config,
+            self.creator_account.as_deref(),
+            self.caller_account.as_deref(),
+        )
+        .map_err(|error| {
+            tracing::warn!(
+                world = %self.charge_key,
+                %error,
+                "guest call refused: charge account cannot be resolved"
+            );
+            anyhow::Error::from(error)
+        })
     }
 
     /// Fuel the most recent `call` spent; zero if it has not run.
@@ -432,12 +606,18 @@ impl WorldInstance {
 
     /// Record the fuel the call that just finished spent. Runs after every
     /// call that reached the guest, whether it succeeded or trapped.
+    /// Also settles the call's burn permit with the same measured
+    /// spend, so the budget's per-key charge is the actual burn,
+    /// not the allowance the admission decision priced in (#1067).
     fn settle(&mut self, call: GuestCall) {
         let spent = self
             .trap_fuel
             .take()
             .unwrap_or_else(|| fuel_spent(&self.store, self.limits.fuel));
         self.metrics.record(call, spent);
+        if let Some(permit) = self.active_permit.take() {
+            permit.settle(spent);
+        }
     }
 
     /// Apply one event from `participant`. The model pointer is committed
@@ -451,7 +631,7 @@ impl WorldInstance {
         // The world's participant limit keeps IDs far below i32::MAX; clamp
         // defensively so a hostile caller can never wrap the guest argument.
         let participant = i32::try_from(participant).unwrap_or(i32::MAX);
-        let result = self.update_inner(participant, event);
+        let result = self.run_guest_call(|instance| instance.update_inner(participant, event))?;
         self.settle(GuestCall::Update);
         if result.is_err() {
             self.poisoned = true;
@@ -492,7 +672,7 @@ impl WorldInstance {
             !self.poisoned,
             "world guest is poisoned after a previous failure"
         );
-        let result = self.view_inner();
+        let result = self.run_guest_call(|instance| instance.view_inner())?;
         self.settle(GuestCall::View);
         // A trapped view does not poison the instance: rendering never changes
         // the model, so the next event retries against intact state (F11.17).
@@ -527,7 +707,8 @@ impl WorldInstance {
         let Some(layout) = self.layout.clone() else {
             return self.view();
         };
-        let result = self.layout_inner(&layout, width, height);
+        let result =
+            self.run_guest_call(|instance| instance.layout_inner(&layout, width, height))?;
         self.settle(GuestCall::Layout);
         // As with `view`, a trapped layout does not poison the instance.
         result
@@ -568,7 +749,7 @@ impl WorldInstance {
         let Some(records) = self.records.clone() else {
             return Ok(None);
         };
-        let result = self.records_inner(&records);
+        let result = self.run_guest_call(|instance| instance.records_inner(&records))?;
         self.settle(GuestCall::Records);
         if result.is_err() {
             self.poisoned = true;
@@ -598,7 +779,7 @@ impl WorldInstance {
         let Some(wants) = self.wants.clone() else {
             return Ok(None);
         };
-        let result = self.wants_inner(&wants);
+        let result = self.run_guest_call(|instance| instance.wants_inner(&wants))?;
         self.settle(GuestCall::Wants);
         if result.is_err() {
             self.poisoned = true;
@@ -629,7 +810,7 @@ impl WorldInstance {
         let Some(snapshot) = self.snapshot.clone() else {
             return Ok(None);
         };
-        let result = self.snapshot_inner(&snapshot);
+        let result = self.run_guest_call(|instance| instance.snapshot_inner(&snapshot))?;
         self.settle(GuestCall::Snapshot);
         if result.is_err() {
             self.poisoned = true;
@@ -663,7 +844,7 @@ impl WorldInstance {
             anyhow::bail!("guest exports no `plaza_restore`");
         };
         self.check_message_size(snapshot)?;
-        let result = self.restore_inner(&restore, snapshot);
+        let result = self.run_guest_call(|instance| instance.restore_inner(&restore, snapshot))?;
         self.settle(GuestCall::Restore);
         if result.is_err() {
             self.poisoned = true;
@@ -835,8 +1016,11 @@ impl crate::world::WorldProgram for WorldInstance {
             crate::world::WorldEventKind::System { event } => {
                 Self::update(self, 0, event.as_bytes())
             }
+            // A notification is addressed to the world's users, not
+            // to the program that originated it (#1062).
             crate::world::WorldEventKind::Chat(_)
-            | crate::world::WorldEventKind::ProgramInstalled { .. } => Ok(()),
+            | crate::world::WorldEventKind::ProgramInstalled { .. }
+            | crate::world::WorldEventKind::Notification { .. } => Ok(()),
         }
     }
 
@@ -922,9 +1106,279 @@ mod tests {
           (func (export "plaza_out_len") (result i32) (i32.const 5)))
     "#;
 
+    /// A guest whose update never returns: only fuel exhaustion ends
+    /// the call. Same fixture shape as the `fuel_spin_isolation`
+    /// benchmark in `pkgs/id/benches/world_bench.rs`.
+    const SPIN: &str = r#"
+        (module
+          (memory (export "memory") 1 1)
+          (func (export "plaza_alloc") (param i32) (result i32) (i32.const 0))
+          (func (export "plaza_free") (param i32 i32))
+          (func (export "plaza_init") (param i64) (result i32) (i32.const 0))
+          (func (export "plaza_update") (param i32 i32 i32 i32) (result i32)
+            (i32.const 0)
+            (loop $again (br $again)))
+          (func (export "plaza_view") (param i32) (result i32) (i32.const 0))
+          (func (export "plaza_out_len") (result i32) (i32.const 0)))
+    "#;
+
     fn compile(wat: &str, limits: SandboxLimits) -> Result<Sandbox> {
         let wasm = wat::parse_str(wat)?;
         Sandbox::compile(&wasm, limits)
+    }
+
+    #[test]
+    fn spinning_guest_does_not_monopolize_a_runtime_worker() {
+        // Oracle (#1067, F12.10): guest calls execute inside world
+        // actors that share one Tokio runtime. On a one-worker
+        // multi-thread runtime, a guest call burning a large fuel
+        // budget must not stop another world's guest call from
+        // completing first: the call runs in blocking context, so the
+        // runtime hands the worker to a replacement thread for the
+        // call's duration. Without that, the victim call below can
+        // only run after the spin has exhausted its whole budget, and
+        // the `spin_done` assertion fails.
+        const SPIN_FUEL: u64 = 4_000_000_000;
+        let spin_runner = compile(
+            SPIN,
+            SandboxLimits {
+                fuel: SPIN_FUEL,
+                ..SandboxLimits::default()
+            },
+        )
+        .unwrap();
+        let mut spin_world = spin_runner.instantiate(1).unwrap();
+        let echo_runner = compile(ECHO, SandboxLimits::default()).unwrap();
+        let mut echo_world = echo_runner.instantiate(2).unwrap();
+        // This oracle is about worker placement, not burn admission
+        // (#1067 slice 2): a dedicated budget of two admits both
+        // calls, so what differs is where the spin executes. The
+        // shared default budget might admit only one call at a time
+        // on a small machine, which would serialize the calls and
+        // measure admission instead.
+        let budget = std::sync::Arc::new(crate::guest_burn::GuestBurnBudget::new(2));
+        spin_world.set_burn_budget(std::sync::Arc::clone(&budget));
+        echo_world.set_burn_budget(budget);
+
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_all()
+            .build()
+            .unwrap();
+        let spin_done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let spin_flag = spin_done.clone();
+        runtime.block_on(async move {
+            let spin = tokio::spawn(async move {
+                let result = spin_world.update(1, b"spin until fuel is gone");
+                spin_flag.store(true, std::sync::atomic::Ordering::SeqCst);
+                result
+            });
+            // Let the spin task enter its guest call before contending
+            // with it. The sleep itself can only complete once a worker
+            // is free to poll this task again, which is part of what
+            // the oracle measures.
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            echo_world.update(1, b"event").unwrap();
+            assert_eq!(echo_world.view().unwrap(), b"hello");
+            assert!(
+                !spin_done.load(std::sync::atomic::Ordering::SeqCst),
+                "victim guest call waited for the spinning guest's whole fuel budget"
+            );
+            let result = spin.await.unwrap();
+            let message = format!("{:#}", result.unwrap_err());
+            assert!(
+                message.contains("fuel exhausted"),
+                "spin ended without fuel exhaustion: {message}"
+            );
+        });
+    }
+
+    #[test]
+    fn two_spinning_guests_sharing_a_budget_of_one_serialize_their_burns() {
+        // Oracle (#1067, F12.10 slice 2): burn admission bounds how
+        // many guests burn at once, charged per key. Two spinning
+        // guests on one budget of a single permit must never burn
+        // concurrently — the second burn runs only after the first
+        // exhausts its fuel (the budget's in-flight high-water mark
+        // is the direct evidence) — and each spin's full burn lands
+        // on its own key's charge.
+        const SPIN_FUEL: u64 = 200_000_000;
+        let runner = compile(
+            SPIN,
+            SandboxLimits {
+                fuel: SPIN_FUEL,
+                ..SandboxLimits::default()
+            },
+        )
+        .unwrap();
+        let budget = std::sync::Arc::new(crate::guest_burn::GuestBurnBudget::new(1));
+        let mut threads = Vec::new();
+        for (seed, key) in [(1_u64, "spinner-a"), (2_u64, "spinner-b")] {
+            let mut world = runner.clone().instantiate(seed).unwrap();
+            world.set_charge_key(key.to_owned());
+            world.set_burn_budget(std::sync::Arc::clone(&budget));
+            threads.push(std::thread::spawn(move || {
+                let result = world.update(1, b"spin until fuel is gone");
+                let message = format!("{:#}", result.unwrap_err());
+                assert!(
+                    message.contains("fuel exhausted"),
+                    "spin ended without fuel exhaustion: {message}"
+                );
+            }));
+        }
+        for thread in threads {
+            thread.join().unwrap();
+        }
+        let snapshot = budget.snapshot();
+        assert_eq!(snapshot.in_flight_max, 1);
+        assert_eq!(snapshot.in_flight, 0);
+        for key in ["spinner-a", "spinner-b"] {
+            let charge = &snapshot.keys[key];
+            assert_eq!(charge.admitted, 1, "{key} admitted once");
+            assert_eq!(
+                charge.settled_fuel, SPIN_FUEL,
+                "{key} charged its full burn"
+            );
+        }
+    }
+
+    #[test]
+    fn a_registry_entry_charges_the_registry_account() {
+        // Oracle (#1067 per-account quotas): a world with an admin
+        // registry entry is charged to the registry's account, not
+        // to its caller and not to its own bucket — the entry wins
+        // resolution at the charge path itself.
+        let runner = compile(ECHO, SandboxLimits::default()).unwrap();
+        let budget = std::sync::Arc::new(crate::guest_burn::GuestBurnBudget::new(2));
+        let mut world = runner.instantiate(3).unwrap();
+        world.set_charge_key("world-registered".to_owned());
+        world.set_burn_budget(std::sync::Arc::clone(&budget));
+        world.set_caller_account(Some("acct-caller".to_owned()));
+        let mut registry = crate::account_charge::WorldAccountRegistry::new();
+        registry.insert(
+            "world-registered",
+            crate::account_charge::WorldChargeConfig {
+                account: Some("acct-registry".to_owned()),
+                mode: crate::account_charge::ChargeMode::Caller,
+            },
+        );
+        world.set_account_registry(std::sync::Arc::new(registry));
+
+        world.update(1, b"event").unwrap();
+
+        let snapshot = budget.snapshot();
+        let account = &snapshot.accounts["acct-registry"];
+        assert_eq!(account.admitted, 1);
+        assert_eq!(
+            account.settled_fuel,
+            world.last_fuel(GuestCall::Update),
+            "the account is charged the call's actual fuel"
+        );
+        assert!(!snapshot.accounts.contains_key("acct-caller"));
+        assert_eq!(snapshot.keys["world-registered"].admitted, 1);
+    }
+
+    #[test]
+    fn a_creator_mode_guest_charges_its_creator_and_a_caller_mode_guest_its_caller() {
+        // Oracle (#1067): the (a) and (d) modes at the funnel —
+        // creator-configured worlds charge the recorded creator;
+        // default worlds charge the installed caller.
+        let runner = compile(ECHO, SandboxLimits::default()).unwrap();
+        let budget = std::sync::Arc::new(crate::guest_burn::GuestBurnBudget::new(4));
+
+        let mut created = runner.instantiate(4).unwrap();
+        created.set_charge_key("world-created".to_owned());
+        created.set_burn_budget(std::sync::Arc::clone(&budget));
+        created.set_charge_config(crate::account_charge::WorldChargeConfig {
+            account: None,
+            mode: crate::account_charge::ChargeMode::Creator,
+        });
+        created.set_creator_account(Some("acct-creator".to_owned()));
+        created.set_caller_account(Some("acct-caller".to_owned()));
+        created.update(1, b"event").unwrap();
+
+        let mut called = runner.instantiate(5).unwrap();
+        called.set_charge_key("world-called".to_owned());
+        called.set_burn_budget(std::sync::Arc::clone(&budget));
+        called.set_caller_account(Some("acct-caller".to_owned()));
+        called.update(1, b"event").unwrap();
+
+        let snapshot = budget.snapshot();
+        assert_eq!(snapshot.accounts["acct-creator"].admitted, 1);
+        assert_eq!(snapshot.accounts["acct-caller"].admitted, 1);
+        assert!(
+            !snapshot.accounts.contains_key("world-created"),
+            "the creator-mode world never lands in its own bucket"
+        );
+        assert!(
+            !snapshot.accounts.contains_key("world-called"),
+            "the caller-mode world never lands in its own bucket"
+        );
+    }
+
+    #[test]
+    fn a_creator_mode_guest_without_a_creator_fails_visibly_and_charges_nothing() {
+        // Oracle (#1067): a world configured for creator-principal
+        // charging with no recorded creator must not quietly charge
+        // its caller instead — the call fails with the reason, no
+        // permit is taken, and the failure repeats identically (the
+        // instance is not poisoned into a different message).
+        let runner = compile(ECHO, SandboxLimits::default()).unwrap();
+        let budget = std::sync::Arc::new(crate::guest_burn::GuestBurnBudget::new(2));
+        let mut world = runner.instantiate(6).unwrap();
+        world.set_charge_key("world-creatorless".to_owned());
+        world.set_burn_budget(std::sync::Arc::clone(&budget));
+        world.set_charge_config(crate::account_charge::WorldChargeConfig {
+            account: None,
+            mode: crate::account_charge::ChargeMode::Creator,
+        });
+        world.set_caller_account(Some("acct-caller".to_owned()));
+
+        let error = world.update(1, b"event").unwrap_err();
+        let message = format!("{error:#}");
+        assert!(
+            message.contains("world-creatorless") && message.contains("no recorded creator"),
+            "the failure names the world and the reason: {message}"
+        );
+        let view_error = world.view().unwrap_err();
+        assert!(
+            format!("{view_error:#}").contains("no recorded creator"),
+            "the failure is the resolution error, not a poisoned-guest message: {view_error:#}"
+        );
+
+        let snapshot = budget.snapshot();
+        assert_eq!(snapshot.in_flight, 0);
+        assert!(
+            snapshot.keys.is_empty() && snapshot.accounts.is_empty(),
+            "nothing was charged to anyone: {snapshot:?}"
+        );
+    }
+
+    #[test]
+    fn guest_calls_under_a_runtime_match_plain_thread_results_and_fuel() {
+        // The blocking-context wrap (#1067) must not change what a call
+        // does: same result and same fuel accounting on a multi-thread
+        // runtime as on a plain thread.
+        let runner = compile(ECHO, SandboxLimits::default()).unwrap();
+        let mut plain = runner.instantiate(7).unwrap();
+        plain.update(1, b"event").unwrap();
+        let plain_view = plain.view().unwrap();
+        let plain_fuel = plain.last_fuel(GuestCall::Update);
+
+        let mut on_runtime = runner.instantiate(7).unwrap();
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .unwrap();
+        let (runtime_view, runtime_fuel) = runtime.block_on(async move {
+            on_runtime.update(1, b"event").unwrap();
+            let view = on_runtime.view().unwrap();
+            (view, on_runtime.last_fuel(GuestCall::Update))
+        });
+        assert_eq!(runtime_view, plain_view);
+        assert_eq!(runtime_fuel, plain_fuel);
+        assert!(runtime_fuel > 0);
     }
 
     #[test]

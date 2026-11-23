@@ -238,11 +238,14 @@ describe("batch summaries", () => {
     expect(out.every((b) => b.fingerprint === null)).toBe(true);
   });
 
-  test("cache entries may carry a numeric sql revision (#8817)", () => {
+  test("cache entries validate measurement scope and fingerprint (#10042)", () => {
     const base = { batch: B1, configFingerprint: "c", fingerprint: "f", builtAt: "t", section: {} };
     expect(isAaBatchCacheEntry(base)).toBe(true);
     expect(isAaBatchCacheEntry({ ...base, sqlRevision: 1 })).toBe(true);
     expect(isAaBatchCacheEntry({ ...base, sqlRevision: "1" })).toBe(false);
+    expect(isAaBatchCacheEntry({ ...base, measurementsScope: "current", measurementsFingerprint: "m" })).toBe(true);
+    expect(isAaBatchCacheEntry({ ...base, measurementsScope: "latest" })).toBe(false);
+    expect(isAaBatchCacheEntry({ ...base, measurementsFingerprint: 42 })).toBe(false);
   });
 
   test("cache names are uuid-only and label is human-readable", () => {

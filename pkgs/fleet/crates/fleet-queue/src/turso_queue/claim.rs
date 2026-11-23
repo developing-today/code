@@ -8,8 +8,8 @@
 use super::*;
 
 pub(crate) fn verb_enqueue(t: &TursoBackend, req: &Value) -> Value {
-    let packet = req.get("packet").cloned().unwrap_or(Value::Null);
-    let (errors, warnings) = validate_packet(&packet);
+    let mut packet = req.get("packet").cloned().unwrap_or(Value::Null);
+    let (errors, mut warnings) = validate_packet(&packet);
     if !errors.is_empty() {
         return json!({
             "ok": false, "exit": 2,
@@ -33,6 +33,25 @@ pub(crate) fn verb_enqueue(t: &TursoBackend, req: &Value) -> Value {
                  (CLI: --shadow-intent) to enqueue there deliberately"
             ),
         );
+    }
+    // #12744: label carriage. No producer writes payload.labels, so
+    // the #7030 band selection in task_from_packet never fired on a
+    // live packet. Before the row is built, fill the payload's
+    // labels from the GitHub mirror in this same store when the
+    // packet identifies an issue and carries no labels array of its
+    // own (label_enrich.rs has the semantics). The mirror is a read
+    // model and never gates work: a failed lookup warns and the
+    // enqueue proceeds exactly as it did before this change.
+    let dedupe = packet
+        .get("dedupe_key")
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
+    if let Some(payload) = packet.get_mut("payload") {
+        if let Err(e) = enrich_payload_labels(t, payload, dedupe.as_deref()) {
+            warnings.push(format!(
+                "payload.labels: GitHub mirror enrichment skipped ({e})"
+            ));
+        }
     }
     let mut task = task_from_packet(&packet, &queue);
     // #8097 Rule 2: the optional coarse platform selector. The
@@ -186,6 +205,24 @@ pub(crate) fn verb_enqueue(t: &TursoBackend, req: &Value) -> Value {
             )?;
         }
         let row = get_task(t, id).map(|r| r.unwrap_or(Value::Null))?;
+        // #12966 (proposal step 5 of #10626): the filing-time state
+        // re-check. A packet whose issue stamp is older than the
+        // bound is re-verified now, at filing, instead of riding
+        // the queue until the claim-time check catches it: when the
+        // linked work already landed, the fresh row retires in
+        // place with the same evidence and event the claim path
+        // writes. A fresh or missing stamp files exactly as before.
+        if let Some(stale) = filing_recheck(t, &row) {
+            retire_stale(
+                t,
+                "enqueue_repo_task",
+                &row,
+                &stale,
+                "enqueue_staleness_check",
+            )?;
+            let row = get_task(t, id).map(|r| r.unwrap_or(Value::Null))?;
+            return Ok((row, predecessor, None));
+        }
         Ok((row, predecessor, None))
     })();
     match work {

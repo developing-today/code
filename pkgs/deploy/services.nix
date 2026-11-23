@@ -15,6 +15,7 @@
   laptopAgent,
   mcpx,
   routeProxy,
+  quotaRecorder,
   idMailDeploy,
   pkarrDeploy,
   developingTodayBackupDeploy,
@@ -23,6 +24,10 @@
   cfContainerHelloDeploy,
   queueTransportAlertDeploy,
   messageBridgeDeploy,
+  pmAggregator,
+  pmProjector,
+  pmTunnel,
+  readyForAgent,
 }:
 {
   queue-broker = {
@@ -95,6 +100,44 @@
     healthCheck = null;
     targets = [ "laptop" ];
     class = "systemd";
+  };
+
+  # Sandbox quota recorder - issue #5770, migration M3 of the
+  # deployment architecture (design §4.4/§7): the first sandbox-class
+  # target. The recorder had no installer of record — its units lived
+  # as templates in the sandbox's ~/tools and were re-copied by hand
+  # after every recycle. As a target, its generation lives in the
+  # sandbox's home profile and the generic restorer (deploy.py slice
+  # 4 / restore.py) links its rendered units into /etc/systemd/system
+  # on every boot. The cadence is the incumbent template's: a
+  # 5-minute oneshot under a persistent timer — expressed with the
+  # optional `timer` field slice 4 adds to the §3 shape (the shape
+  # had no way to name a timer-driven service). The data path is
+  # untouched (file-first, Turso landing per #5690; #5703's
+  # boundary): the recorder resolves its DB token by name at flush
+  # time, so the name is declared here and no value is carried.
+  quota-recorder = {
+    package = quotaRecorder;
+    entryPoint = "bin/quota-recorder";
+    args = [ ];
+    environment = {
+      # The incumbent unit's only environment: the recorder resolves
+      # its output paths from HOME (the sandbox user's home, not
+      # root's), exactly as the hand-copied unit ran it.
+      HOME = "/home/hatch";
+    };
+    secrets = [ "turso.fleet-platform-rw-token" ];
+    user = "root"; # sandbox system units run as root; there is no user bus
+    ports = [ ];
+    restart = "no"; # a oneshot under its timer, not a daemon
+    healthCheck = null; # no HTTP surface; activation verifies the timer is active
+    targets = [ "sandbox" ];
+    class = "sandbox";
+    timer = {
+      onCalendar = "*:0/5";
+      persistent = true;
+      randomizedDelaySec = 20;
+    };
   };
 
   session-proxy = {
@@ -294,6 +337,118 @@
     # A real request through :18750 (the proxy's own health route),
     # not a process or port check.
     healthCheck = "http://127.0.0.1:18750/health";
+    targets = [ "laptop" ];
+    class = "systemd";
+  };
+
+  # PM stack - issue #12768: the aggregator, projector, and tunnel
+  # join the registry. Their units of record today live in the NixOS
+  # pm-stack module (nixos/services/pm-stack), which callPackages the
+  # same packages and carries the services' full runtime environment:
+  # the state .env files under ~/.local/state/pm-aggregator and
+  # ~/.local/state/pm-projector (mode 600, rendered from the pm-stack
+  # SOPS file; credentials carried BY NAME there) and the tunnel token
+  # file rendered by the pm-kaneo deploy flow. These definitions are
+  # registration only - the activation cutover is the bundled slice
+  # Drew ruled on 2026-11-22, and it must port the module's full
+  # Environment/EnvironmentFile set before any of these targets is
+  # activated through the deploy CLI.
+  pm-aggregator = {
+    package = pmAggregator;
+    entryPoint = "bin/pm-aggregator";
+    args = [ ];
+    environment = {
+      PM_AGG_PORT = "4870"; # services.pm-stack.aggregatorPort default
+      PM_PROJECTOR_URL = "http://127.0.0.1:7801";
+      # The package bundles kaneo-projects.json; the module pins the
+      # reader at the bundled copy the same way.
+      PM_KANEO_PROJECTS_FILE = "${pmAggregator}/libexec/pm-aggregator/kaneo-projects.json";
+    };
+    # Credentials arrive via the state .env (the unit's
+    # EnvironmentFile) and the BWS token file the app reads itself -
+    # no broker-resolved secret names, the laptop-agent shape.
+    secrets = [ ];
+    user = "user";
+    ports = [
+      4870 # dashboard HTTP
+      4871 # freshness /publish IPC, loopback
+    ];
+    restart = "on-failure";
+    healthCheck = "http://127.0.0.1:4870/health";
+    targets = [ "laptop" ];
+    class = "systemd";
+  };
+
+  pm-projector = {
+    package = pmProjector;
+    entryPoint = "bin/pm-projector";
+    args = [ ];
+    environment = {
+      PORT = "7801"; # services.pm-stack.projectorPort default
+    };
+    # DATABASE_URL and PM_PROJECTOR_API_TOKEN arrive via the state
+    # .env (the unit's EnvironmentFile), not broker-resolved names.
+    secrets = [ ];
+    user = "user";
+    ports = [ 7801 ];
+    restart = "on-failure";
+    healthCheck = "http://127.0.0.1:7801/health";
+    targets = [ "laptop" ];
+    class = "systemd";
+  };
+
+  pm-tunnel = {
+    package = pmTunnel; # pkgs.cloudflared, the package the pm-stack module runs
+    entryPoint = "bin/cloudflared";
+    args = [
+      "tunnel"
+      "--no-autoupdate"
+      # --protocol http2 (#5647): QUIC kept dropping on this host's
+      # network path; HTTP/2 runs over TCP.
+      "--protocol"
+      "http2"
+      "--metrics"
+      "127.0.0.1:20242"
+      "run"
+      # The token is read from the file by cloudflared itself
+      # (#8933: it never enters the process argv). The file is
+      # rendered by the pm-kaneo deploy flow (pm-stack/deploy.sh)
+      # into the deployment dir, the module's stackDir.
+      "--token-file"
+      "/home/user/pm-stack/tunnel.token"
+    ];
+    environment = { };
+    secrets = [ ]; # the tunnel token arrives via --token-file, above
+    user = "user";
+    ports = [ 20242 ]; # cloudflared metrics + /ready, loopback
+    restart = "on-failure";
+    # cloudflared's own /ready: 200 = at least one live edge
+    # connection (the pm-tunnel watchdog reads the same endpoint).
+    healthCheck = "http://127.0.0.1:20242/ready";
+    targets = [ "laptop" ];
+    class = "systemd";
+  };
+
+  # ready-for-agent (#12909): the Harness UI + operator CLI. Its
+  # deployment of record is still the NixOS pm-apps module under
+  # #1752, whose unit runs the imperative ~/.local install
+  # (pm-stack/ready-for-agent/install.sh) — this definition is
+  # registration only, like the other pm-stack targets above, until
+  # the bundled cutover (#12768) switches the unit's ExecStart to
+  # this derivation.
+  ready-for-agent = {
+    package = readyForAgent;
+    entryPoint = "bin/ready-for-agent";
+    args = [
+      "start"
+      "--no-open"
+    ];
+    environment = { };
+    secrets = [ ]; # the harness reads its own on-disk config; no broker-resolved names
+    user = "user";
+    ports = [ 6056 ]; # Harness UI + GraphQL, loopback
+    restart = "on-failure";
+    healthCheck = "http://127.0.0.1:6056/";
     targets = [ "laptop" ];
     class = "systemd";
   };

@@ -1702,9 +1702,10 @@ mod tests {
         // version 8 for recurring schedules (#1355); the lease entries
         // still require exactly 7.
         // Version 12 (#11960) records join and revoke times, version
-        // 13 the kv store entries and version 14 the blob store
-        // entries (both #1062).
-        assert_eq!(MAX_JOURNAL_VERSION, JOURNAL_VERSION_BLOB);
+        // 13 the kv store entries, version 14 the blob store entries,
+        // and version 15 the notify provider's `Notification` events
+        // (all #1062).
+        assert_eq!(MAX_JOURNAL_VERSION, JOURNAL_VERSION_NOTIFY);
         // A checkpoint carrying a non-bootstrap lease also requires
         // version 7; one without a lease keeps its existing version.
         let mut lease = WriteLease::bootstrap();
@@ -2865,7 +2866,9 @@ mod tests {
                     self.asks += 1;
                 }
                 WorldEventKind::System { event } => self.received.push(event.clone()),
-                WorldEventKind::Chat(_) | WorldEventKind::ProgramInstalled { .. } => {}
+                WorldEventKind::Chat(_)
+                | WorldEventKind::ProgramInstalled { .. }
+                | WorldEventKind::Notification { .. } => {}
             }
             Ok(())
         }
@@ -7708,7 +7711,9 @@ mod tests {
                             self.read_key = key.to_owned();
                         }
                     }
-                    WorldEventKind::Chat(_) | WorldEventKind::ProgramInstalled { .. } => {}
+                    WorldEventKind::Chat(_)
+                    | WorldEventKind::ProgramInstalled { .. }
+                    | WorldEventKind::Notification { .. } => {}
                 }
                 Ok(())
             }
@@ -9630,7 +9635,9 @@ mod schedule_tests {
                         _ => {}
                     }
                 }
-                WorldEventKind::Chat(_) | WorldEventKind::ProgramInstalled { .. } => {}
+                WorldEventKind::Chat(_)
+                | WorldEventKind::ProgramInstalled { .. }
+                | WorldEventKind::Notification { .. } => {}
             }
             Ok(())
         }
@@ -9729,6 +9736,7 @@ mod schedule_tests {
                 token: token.clone(),
                 input: document.to_string().into_bytes(),
                 session_id: None,
+                device_input: None,
                 signed_move: None,
                 reply,
             })
@@ -9829,6 +9837,7 @@ mod schedule_tests {
                 token: token.clone(),
                 input: input.to_vec(),
                 session_id: None,
+                device_input: None,
                 signed_move: None,
                 reply,
             });
@@ -9920,6 +9929,7 @@ mod schedule_tests {
                     token: token.clone(),
                     input: b"{}".to_vec(),
                     session_id: Some(session_id),
+                    device_input: None,
                     signed_move: None,
                     reply,
                 })
@@ -10900,6 +10910,762 @@ mod schedule_tests {
             });
         }
         assert!(WorldCore::restore("w", WorldLimits::default(), entries).is_err());
+    }
+
+    // ---- F12.5 http.fetch provider (#1062) ----
+
+    /// A hermetic HTTP/1.1 server on a loopback port: one canned
+    /// response per path, `Connection: close` on every reply, and
+    /// a hit count so refusal tests can prove no request arrived.
+    /// No test in this section touches the live internet.
+    struct FetchServer {
+        port: u16,
+        hits: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl FetchServer {
+        fn hits(&self) -> usize {
+            self.hits.load(std::sync::atomic::Ordering::SeqCst)
+        }
+
+        fn url(&self, path: &str) -> String {
+            format!("http://127.0.0.1:{}{path}", self.port)
+        }
+
+        /// The allowlist entry for this server: its host and port.
+        /// A bare `127.0.0.1` would admit only port 80.
+        fn entry(&self) -> String {
+            format!("127.0.0.1:{}", self.port)
+        }
+    }
+
+    fn fetch_server() -> FetchServer {
+        use std::io::{Read as _, Write as _};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let hits = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counted = hits.clone();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { continue };
+                counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let mut request = Vec::new();
+                let mut buffer = [0u8; 1024];
+                loop {
+                    match stream.read(&mut buffer) {
+                        Ok(0) | Err(_) => break,
+                        Ok(read) => {
+                            request.extend_from_slice(&buffer[..read]);
+                            if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                                break;
+                            }
+                        }
+                    }
+                }
+                let text = String::from_utf8_lossy(&request);
+                let path = text.split_whitespace().nth(1).unwrap_or("/").to_owned();
+                let (status, headers, body): (&str, String, Vec<u8>) = match path.as_str() {
+                    "/hello" => ("200 OK", String::new(), b"hello fetch".to_vec()),
+                    "/hop" => ("302 Found", "Location: /hello\r\n".to_owned(), Vec::new()),
+                    "/away" => (
+                        "302 Found",
+                        format!("Location: http://localhost:{port}/hello\r\n"),
+                        Vec::new(),
+                    ),
+                    "/default-port" => (
+                        "302 Found",
+                        "Location: http://127.0.0.1/hello\r\n".to_owned(),
+                        Vec::new(),
+                    ),
+                    "/loop" => ("302 Found", "Location: /loop\r\n".to_owned(), Vec::new()),
+                    "/big" => (
+                        "200 OK",
+                        String::new(),
+                        vec![b'x'; crate::world_caps::MAX_HTTP_FETCH_RESPONSE_BYTES + 1],
+                    ),
+                    _ => ("404 Not Found", String::new(), b"nope".to_vec()),
+                };
+                let head = format!(
+                    "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n{headers}\r\n",
+                    body.len()
+                );
+                let _ = stream.write_all(head.as_bytes());
+                let _ = stream.write_all(&body);
+                let _ = stream.flush();
+            }
+        });
+        FetchServer { port, hits }
+    }
+
+    /// An actor for `http.fetch` tests, on `scheduling_actor`'s
+    /// pattern. `enabled` performs the operator's two ceiling
+    /// acts — naming the provider in the server caps and in the
+    /// world's own ceiling; without them the provider stays off
+    /// by default however it is granted.
+    fn http_fetch_actor(
+        id: &str,
+        grants: &[&str],
+        hosts: &[&str],
+        enabled: bool,
+    ) -> (WorldActor, Arc<ManualClock>, JoinCapability, Recorded) {
+        let journal = Recorded::for_world(id);
+        let clock: Arc<ManualClock> = Arc::new(ManualClock::new(EPOCH_MS));
+        let mut limits = WorldLimits::default();
+        if enabled {
+            limits.server_caps.insert("http.fetch".to_owned());
+        }
+        limits.http_fetch_hosts = hosts.iter().map(|host| (*host).to_owned()).collect();
+        let mut core = WorldCore::new_with_clock(id, limits, clock.clone()).unwrap();
+        if enabled {
+            core.caps_ceiling.insert("http.fetch".to_owned());
+            core.sync_ledger_ceiling();
+        }
+        core.ledger
+            .set_granted(grants.iter().map(|grant| (*grant).to_owned()).collect());
+        let (ann, token) = core
+            .issue_capability("ann", WorldScopes::GUEST, CapabilityBounds::default())
+            .unwrap();
+        let issued = core.issued_entry(ann.id).unwrap();
+        super::tests::push_bumped(&mut journal.0.lock().unwrap(), &issued);
+        let program = Scheduler::default();
+        let actor = WorldActor::for_test(core, Box::new(program), Some(Box::new(journal.clone())));
+        (actor, clock, token, journal)
+    }
+
+    #[test]
+    fn http_fetch_checks_refuse_each_violation_with_a_reason() {
+        let clock: Arc<ManualClock> = Arc::new(ManualClock::new(EPOCH_MS));
+        let mut limits = WorldLimits::default();
+        // An unnormalized entry still matches: entries and URL
+        // hosts pass through the same normalization.
+        limits.http_fetch_hosts = ["EXAMPLE.com."].into_iter().map(str::to_owned).collect();
+        let mut core = WorldCore::new_with_clock("w", limits, clock.clone()).unwrap();
+
+        let host = core.check_http_fetch("https://example.com/a?b=1").unwrap();
+        assert_eq!(host, "example.com");
+        let error = core.check_http_fetch("not a url").unwrap_err();
+        assert!(error.to_string().contains("malformed"), "{error}");
+        let error = core.check_http_fetch("ftp://example.com/").unwrap_err();
+        assert!(error.to_string().contains("scheme"), "{error}");
+        let error = core
+            .check_http_fetch("https://user@example.com/")
+            .unwrap_err();
+        assert!(error.to_string().contains("credentials"), "{error}");
+        let error = core.check_http_fetch("https://other.example/").unwrap_err();
+        assert!(
+            error.to_string().contains("not in the allowlist"),
+            "{error}"
+        );
+        // Subdomains are not implied by listing the parent.
+        let error = core
+            .check_http_fetch("https://api.example.com/")
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("not in the allowlist"),
+            "{error}"
+        );
+        // A bare host admits only the scheme's default port.
+        assert!(core.check_http_fetch("https://example.com:443/").is_ok());
+        let error = core
+            .check_http_fetch("https://example.com:8443/")
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("not in the allowlist"),
+            "{error}"
+        );
+        // Listing `host:port` opens that port and no other.
+        core.limits
+            .http_fetch_hosts
+            .insert("example.com:8443".to_owned());
+        assert!(core.check_http_fetch("https://example.com:8443/").is_ok());
+        let error = core
+            .check_http_fetch("https://example.com:8444/")
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("not in the allowlist"),
+            "{error}"
+        );
+
+        // The rate bound: a full window of attempts refuses the
+        // next check, and the window admits again once it passes.
+        for _ in 0..crate::world_caps::MAX_HTTP_FETCH_BURST {
+            core.check_http_fetch("https://example.com/").unwrap();
+            core.note_http_fetch_attempt();
+        }
+        let error = core.check_http_fetch("https://example.com/").unwrap_err();
+        assert!(error.to_string().contains("rate"), "{error}");
+        clock.advance(crate::world_caps::HTTP_FETCH_RATE_WINDOW_MS + 1);
+        assert!(core.check_http_fetch("https://example.com/").is_ok());
+    }
+
+    #[tokio::test]
+    async fn http_fetch_is_off_by_default() {
+        let server = fetch_server();
+        // Granted, and the host allowlisted — but the operator
+        // never named the provider in a ceiling, so the default
+        // ceiling refuses it before any provider code runs.
+        let (mut actor, _clock, token, _journal) = http_fetch_actor(
+            "fetch-default-off",
+            &["http.fetch"],
+            &[server.entry().as_str()],
+            false,
+        );
+        ask(
+            &mut actor,
+            &token,
+            serde_json::json!({"requests": [
+                {"id": "f1", "cap": "http.fetch", "args": {"url": server.url("/hello")}},
+            ]}),
+        )
+        .await;
+        assert_eq!(
+            schedule_result(&actor, "f1").unwrap()["error"],
+            "outside_ceiling"
+        );
+        assert_eq!(server.hits(), 0, "a refused fetch connects nowhere");
+    }
+
+    #[tokio::test]
+    async fn an_ungranted_http_fetch_is_refused_and_counted() {
+        let server = fetch_server();
+        let (mut actor, _clock, token, _journal) =
+            http_fetch_actor("fetch-ungranted", &[], &[server.entry().as_str()], true);
+        ask(
+            &mut actor,
+            &token,
+            serde_json::json!({"requests": [
+                {"id": "f1", "cap": "http.fetch", "args": {"url": server.url("/hello")}},
+            ]}),
+        )
+        .await;
+        assert_eq!(
+            schedule_result(&actor, "f1").unwrap()["error"],
+            "cap_denied"
+        );
+        assert!(
+            actor.core.ledger.usage()["http.fetch"].denied > 0,
+            "{:?}",
+            actor.core.ledger.usage()
+        );
+        assert_eq!(server.hits(), 0, "a refused fetch connects nowhere");
+    }
+
+    #[tokio::test]
+    async fn an_unlisted_host_is_refused() {
+        let server = fetch_server();
+        // Enabled and granted, but the allowlist names another
+        // host: the fetch is refused before any connection.
+        let (mut actor, _clock, token, _journal) =
+            http_fetch_actor("fetch-unlisted", &["http.fetch"], &["example.org"], true);
+        ask(
+            &mut actor,
+            &token,
+            serde_json::json!({"requests": [
+                {"id": "f1", "cap": "http.fetch", "args": {"url": server.url("/hello")}},
+            ]}),
+        )
+        .await;
+        let refused = schedule_result(&actor, "f1").unwrap();
+        assert_eq!(refused["error"], "bad_args", "{refused}");
+        assert!(
+            refused["reason"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("not in the allowlist"),
+            "{refused}"
+        );
+        assert_eq!(server.hits(), 0, "an unlisted host is never contacted");
+    }
+
+    #[tokio::test]
+    async fn a_bare_host_entry_refuses_a_non_default_port() {
+        let server = fetch_server();
+        // The host is listed without a port, so only port 80 is
+        // open; the server's own port is refused before any
+        // connection is made.
+        let (mut actor, _clock, token, _journal) =
+            http_fetch_actor("fetch-bare-host", &["http.fetch"], &["127.0.0.1"], true);
+        ask(
+            &mut actor,
+            &token,
+            serde_json::json!({"requests": [
+                {"id": "f1", "cap": "http.fetch", "args": {"url": server.url("/hello")}},
+            ]}),
+        )
+        .await;
+        let refused = schedule_result(&actor, "f1").unwrap();
+        assert_eq!(refused["error"], "bad_args", "{refused}");
+        assert!(
+            refused["reason"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("not in the allowlist"),
+            "{refused}"
+        );
+        assert_eq!(server.hits(), 0, "an unlisted port is never contacted");
+    }
+
+    #[tokio::test]
+    async fn http_fetch_round_trip_through_the_actor() {
+        let server = fetch_server();
+        let (mut actor, _clock, token, _journal) = http_fetch_actor(
+            "fetch-round-trip",
+            &["http.fetch"],
+            &[server.entry().as_str()],
+            true,
+        );
+        ask(
+            &mut actor,
+            &token,
+            serde_json::json!({"requests": [
+                {"id": "f1", "cap": "http.fetch", "args": {"url": server.url("/hello")}},
+                {"id": "f2", "cap": "http.fetch", "args": {"url": server.url("/hop")}},
+                {"id": "f3", "cap": "http.fetch", "args": {"url": server.url("/missing")}},
+            ]}),
+        )
+        .await;
+        let fetched = schedule_result(&actor, "f1").unwrap();
+        assert_eq!(fetched["ok"], true, "{fetched}");
+        assert_eq!(fetched["value"]["status"], 200, "{fetched}");
+        assert_eq!(fetched["value"]["url"], server.url("/hello"), "{fetched}");
+        assert_eq!(
+            fetched["value"]["body"],
+            blob_encode(b"hello fetch"),
+            "{fetched}"
+        );
+        assert_eq!(fetched["value"]["body_bytes"], 11, "{fetched}");
+        // An on-list redirect is followed to its target.
+        let hopped = schedule_result(&actor, "f2").unwrap();
+        assert_eq!(hopped["ok"], true, "{hopped}");
+        assert_eq!(hopped["value"]["status"], 200, "{hopped}");
+        assert_eq!(hopped["value"]["url"], server.url("/hello"), "{hopped}");
+        assert_eq!(hopped["value"]["body"], blob_encode(b"hello fetch"));
+        // A status is a result, not a refusal: only policy and
+        // transport failures refuse a fetch.
+        let missing = schedule_result(&actor, "f3").unwrap();
+        assert_eq!(missing["ok"], true, "{missing}");
+        assert_eq!(missing["value"]["status"], 404, "{missing}");
+    }
+
+    #[tokio::test]
+    async fn http_fetch_refuses_redirects_off_the_list_and_past_the_hop_cap() {
+        let server = fetch_server();
+        let (mut actor, _clock, token, _journal) = http_fetch_actor(
+            "fetch-redirects",
+            &["http.fetch"],
+            &[server.entry().as_str()],
+            true,
+        );
+        ask(
+            &mut actor,
+            &token,
+            serde_json::json!({"requests": [
+                {"id": "f1", "cap": "http.fetch", "args": {"url": server.url("/away")}},
+                {"id": "f2", "cap": "http.fetch", "args": {"url": server.url("/loop")}},
+                {"id": "f3", "cap": "http.fetch", "args": {"url": server.url("/big")}},
+                {"id": "f4", "cap": "http.fetch", "args": {"url": server.url("/default-port")}},
+            ]}),
+        )
+        .await;
+        // /away redirects to localhost, which is not allowlisted:
+        // refused before the second connection is made.
+        let away = schedule_result(&actor, "f1").unwrap();
+        assert_eq!(away["error"], "bad_args", "{away}");
+        assert!(
+            away["reason"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("host_not_allowed"),
+            "{away}"
+        );
+        let looping = schedule_result(&actor, "f2").unwrap();
+        assert_eq!(looping["error"], "failed", "{looping}");
+        assert!(
+            looping["reason"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("too_many_redirects"),
+            "{looping}"
+        );
+        let big = schedule_result(&actor, "f3").unwrap();
+        assert_eq!(big["error"], "failed", "{big}");
+        assert!(
+            big["reason"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("response_too_large"),
+            "{big}"
+        );
+        // /default-port redirects to the same host on port 80,
+        // which the `host:port` entry does not list: refused.
+        let other_port = schedule_result(&actor, "f4").unwrap();
+        assert_eq!(other_port["error"], "bad_args", "{other_port}");
+        assert!(
+            other_port["reason"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("host_not_allowed"),
+            "{other_port}"
+        );
+        // Exactly the requests made: /away once (the redirect was
+        // not followed), /loop for the initial fetch plus the hop
+        // cap of follows, /big once, /default-port once.
+        assert_eq!(
+            server.hits(),
+            1 + (1 + crate::world_caps::MAX_HTTP_FETCH_REDIRECTS) + 1 + 1
+        );
+    }
+
+    #[tokio::test]
+    async fn http_fetches_journal_nothing_and_replay_is_unaffected() {
+        let server = fetch_server();
+        let (mut actor, _clock, token, journal) = http_fetch_actor(
+            "fetch-replay",
+            &["kv.set", "http.fetch"],
+            &[server.entry().as_str()],
+            true,
+        );
+        ask(
+            &mut actor,
+            &token,
+            serde_json::json!({"requests": [
+                {"id": "k1", "cap": "kv.set", "args": {"key": "a", "value": 1}},
+            ]}),
+        )
+        .await;
+        let before = journal.entries();
+        ask(
+            &mut actor,
+            &token,
+            serde_json::json!({"requests": [
+                {"id": "f1", "cap": "http.fetch", "args": {"url": server.url("/hello")}},
+            ]}),
+        )
+        .await;
+        assert_eq!(
+            schedule_result(&actor, "f1").unwrap()["ok"],
+            true,
+            "the fetch itself succeeded"
+        );
+        // The fetch ask adds only the entries every request adds:
+        // the input's committed event and the result's system
+        // event (the delivery replay feeds the program, as for a
+        // `kv.get`). No entry describes the fetch as state for
+        // replay to apply — there is no fetch entry kind at all.
+        let after = journal.entries();
+        let added = &after[before.len()..];
+        assert!(
+            added.iter().all(|entry| matches!(
+                entry,
+                JournalEntry::Committed { .. } | JournalEntry::System { .. }
+            )),
+            "a fetch journals no state of its own: {added:?}"
+        );
+        // And the journal — written across the fetch — restores
+        // exactly the state the journaled writes describe.
+        let restored = WorldCore::restore("fetch-replay", WorldLimits::default(), after).unwrap();
+        assert_eq!(restored.core.kv["a"], "1");
+        assert!(restored.core.blobs.is_empty());
+    }
+
+    /// An actor for `notify` tests, on `http_fetch_actor`'s
+    /// pattern. `enabled` performs the operator's two ceiling
+    /// acts — naming the provider in the server caps and in the
+    /// world's own ceiling; without them the provider stays off
+    /// by default however it is granted.
+    fn notify_actor(
+        id: &str,
+        grants: &[&str],
+        enabled: bool,
+    ) -> (WorldActor, Arc<ManualClock>, JoinCapability, Recorded) {
+        let journal = Recorded::for_world(id);
+        let clock: Arc<ManualClock> = Arc::new(ManualClock::new(EPOCH_MS));
+        let mut limits = WorldLimits::default();
+        if enabled {
+            limits.server_caps.insert("notify".to_owned());
+        }
+        let mut core = WorldCore::new_with_clock(id, limits, clock.clone()).unwrap();
+        if enabled {
+            core.caps_ceiling.insert("notify".to_owned());
+            core.sync_ledger_ceiling();
+        }
+        core.ledger
+            .set_granted(grants.iter().map(|grant| (*grant).to_owned()).collect());
+        let (ann, token) = core
+            .issue_capability("ann", WorldScopes::GUEST, CapabilityBounds::default())
+            .unwrap();
+        let issued = core.issued_entry(ann.id).unwrap();
+        super::tests::push_bumped(&mut journal.0.lock().unwrap(), &issued);
+        let program = Scheduler::default();
+        let actor = WorldActor::for_test(core, Box::new(program), Some(Box::new(journal.clone())));
+        (actor, clock, token, journal)
+    }
+
+    #[test]
+    fn notify_checks_refuse_each_violation_with_a_reason() {
+        let clock: Arc<ManualClock> = Arc::new(ManualClock::new(EPOCH_MS));
+        let mut core =
+            WorldCore::new_with_clock("w", WorldLimits::default(), clock.clone()).unwrap();
+
+        core.check_notify("the match has ended").unwrap();
+        // Oversized: past the world's chat byte limit — the bound
+        // a notification shares with the host's own chat lines.
+        let big = "x".repeat(core.limits.chat_bytes + 1);
+        let error = core.check_notify(&big).unwrap_err();
+        assert!(error.to_string().contains("exceeds"), "{error}");
+        // Empty, and empty once the sanitizer strips it.
+        let error = core.check_notify("").unwrap_err();
+        assert!(error.to_string().contains("empty"), "{error}");
+        let error = core.check_notify("\u{1}\u{2}").unwrap_err();
+        assert!(error.to_string().contains("empty"), "{error}");
+
+        // The rate bound: a full window of attempts refuses the
+        // next check, and the window admits again once it passes.
+        for _ in 0..crate::world_caps::MAX_NOTIFY_BURST {
+            core.check_notify("again").unwrap();
+            core.note_notify_attempt();
+        }
+        let error = core.check_notify("again").unwrap_err();
+        assert!(error.to_string().contains("rate"), "{error}");
+        clock.advance(crate::world_caps::NOTIFY_RATE_WINDOW_MS + 1);
+        assert!(core.check_notify("again").is_ok());
+    }
+
+    #[tokio::test]
+    async fn notify_is_off_by_default() {
+        // Granted — but the operator never named the provider in a
+        // ceiling, so the default ceiling refuses it before any
+        // provider code runs, and nothing is committed.
+        let (mut actor, _clock, token, _journal) =
+            notify_actor("notify-default-off", &["notify"], false);
+        ask(
+            &mut actor,
+            &token,
+            serde_json::json!({"requests": [
+                {"id": "n1", "cap": "notify", "args": {"text": "hello"}},
+            ]}),
+        )
+        .await;
+        assert_eq!(
+            schedule_result(&actor, "n1").unwrap()["error"],
+            "outside_ceiling"
+        );
+        assert!(
+            actor
+                .core
+                .events
+                .iter()
+                .all(|event| !matches!(event.kind, WorldEventKind::Notification { .. })),
+            "a refused notify commits no event"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_ungranted_notify_is_refused_and_counted() {
+        let (mut actor, _clock, token, _journal) = notify_actor("notify-ungranted", &[], true);
+        ask(
+            &mut actor,
+            &token,
+            serde_json::json!({"requests": [
+                {"id": "n1", "cap": "notify", "args": {"text": "hello"}},
+            ]}),
+        )
+        .await;
+        assert_eq!(
+            schedule_result(&actor, "n1").unwrap()["error"],
+            "cap_denied"
+        );
+        assert!(
+            actor.core.ledger.usage()["notify"].denied > 0,
+            "{:?}",
+            actor.core.ledger.usage()
+        );
+        assert!(
+            actor
+                .core
+                .events
+                .iter()
+                .all(|event| !matches!(event.kind, WorldEventKind::Notification { .. })),
+            "a refused notify commits no event"
+        );
+    }
+
+    #[tokio::test]
+    async fn notify_round_trip_through_the_actor() {
+        let (mut actor, _clock, token, _journal) =
+            notify_actor("notify-round-trip", &["notify"], true);
+        let mut broadcast = actor.event_sender.subscribe();
+        ask(
+            &mut actor,
+            &token,
+            serde_json::json!({"requests": [
+                {"id": "n1", "cap": "notify", "args": {"text": "the match has ended\u{7}"}},
+            ]}),
+        )
+        .await;
+        let sent = schedule_result(&actor, "n1").unwrap();
+        assert_eq!(sent["ok"], true, "{sent}");
+        let sequence = sent["value"]["sequence"].as_u64().unwrap();
+        // The committed event is in the world's log, host-authored,
+        // carrying the sanitized text (the bell is stripped).
+        let event = actor
+            .core
+            .events
+            .iter()
+            .find(|event| event.sequence == sequence)
+            .expect("the notification is in the event log");
+        assert_eq!(event.participant_id, 0);
+        match &event.kind {
+            WorldEventKind::Notification { text } => {
+                assert_eq!(text, "the match has ended");
+            }
+            other => panic!("expected a notification event, got {other:?}"),
+        }
+        // And it went out on the broadcast channel the sessions
+        // read (the ask's own input event may precede it there).
+        let mut aired = None;
+        while let Ok(event) = broadcast.try_recv() {
+            if matches!(event.kind, WorldEventKind::Notification { .. }) {
+                aired = Some(event);
+            }
+        }
+        let aired = aired.expect("the notification was broadcast");
+        assert_eq!(aired.sequence, sequence);
+    }
+
+    #[tokio::test]
+    async fn notify_refuses_past_the_rate_bound() {
+        let (mut actor, _clock, token, _journal) = notify_actor("notify-rate", &["notify"], true);
+        // One wants document, burst + 1 requests: the window
+        // admits the burst and refuses the next in the same change.
+        let requests: Vec<serde_json::Value> = (1..=crate::world_caps::MAX_NOTIFY_BURST + 1)
+            .map(|index| {
+                serde_json::json!({"id": format!("n{index}"), "cap": "notify", "args": {"text": "ping"}})
+            })
+            .collect();
+        ask(
+            &mut actor,
+            &token,
+            serde_json::json!({"requests": requests}),
+        )
+        .await;
+        for index in 1..=crate::world_caps::MAX_NOTIFY_BURST {
+            assert_eq!(
+                schedule_result(&actor, &format!("n{index}")).unwrap()["ok"],
+                true,
+                "attempt {index} is inside the burst"
+            );
+        }
+        let refused = schedule_result(
+            &actor,
+            &format!("n{}", crate::world_caps::MAX_NOTIFY_BURST + 1),
+        )
+        .unwrap();
+        assert_eq!(refused["error"], "bad_args", "{refused}");
+        assert!(
+            refused["reason"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("rate"),
+            "{refused}"
+        );
+    }
+
+    #[tokio::test]
+    async fn notify_journals_a_committed_event_and_replay_restores_it() {
+        let (mut actor, _clock, token, journal) = notify_actor("notify-replay", &["notify"], true);
+        let before = journal.entries();
+        ask(
+            &mut actor,
+            &token,
+            serde_json::json!({"requests": [
+                {"id": "n1", "cap": "notify", "args": {"text": "server restarting soon"}},
+            ]}),
+        )
+        .await;
+        assert_eq!(schedule_result(&actor, "n1").unwrap()["ok"], true);
+        // The notify ask adds the entries every request adds (the
+        // input's committed event, the result's system event) plus
+        // exactly one of its own: the committed notification.
+        let after = journal.entries();
+        let added = &after[before.len()..];
+        let notifications: Vec<&JournalEntry> = added
+            .iter()
+            .filter(|entry| {
+                matches!(
+                    entry,
+                    JournalEntry::Committed { event }
+                        if matches!(event.kind, WorldEventKind::Notification { .. })
+                )
+            })
+            .collect();
+        assert_eq!(notifications.len(), 1, "{added:?}");
+        assert!(
+            added.iter().all(|entry| matches!(
+                entry,
+                JournalEntry::Committed { .. } | JournalEntry::System { .. }
+            )),
+            "a notify journals no state of its own beyond its event: {added:?}"
+        );
+        // The notification entry is a version-15 entry: a journal
+        // carrying one is refused by older binaries at the header
+        // check, never failed mid-replay.
+        assert_eq!(
+            journal_version_required_by(notifications[0]),
+            JOURNAL_VERSION_NOTIFY
+        );
+        // Restoring from the journal rebuilds the event log with
+        // the notification intact at its sequence.
+        let restored = WorldCore::restore("notify-replay", WorldLimits::default(), after).unwrap();
+        assert!(
+            restored.core.events.iter().any(|event| matches!(
+                &event.kind,
+                WorldEventKind::Notification { text } if text == "server restarting soon"
+            )),
+            "{:?}",
+            restored.core.events
+        );
+    }
+
+    #[test]
+    fn notify_events_require_journal_version_15() {
+        let event = WorldEvent {
+            sequence: 1,
+            participant_id: 0,
+            kind: WorldEventKind::Notification {
+                text: "hi".to_owned(),
+            },
+        };
+        assert_eq!(
+            journal_version_required_by(&JournalEntry::Committed {
+                event: event.clone()
+            }),
+            JOURNAL_VERSION_NOTIFY
+        );
+        // A checkpoint retaining one requires it too, and it is
+        // the newest version this binary reads.
+        let checkpoint = JournalEntry::Checkpoint {
+            sequence: 1,
+            module_hash: "h".to_owned(),
+            seed: 1,
+            provenance: None,
+            execution_profile: None,
+            caps_ceiling: None,
+            schedules: None,
+            kv: None,
+            blobs: None,
+            transfers: None,
+            lease: None,
+            snapshot: "s".to_owned(),
+            events: vec![event],
+            open_presence: None,
+            admin_history: None,
+        };
+        assert_eq!(
+            journal_version_required_by(&checkpoint),
+            JOURNAL_VERSION_NOTIFY
+        );
+        assert_eq!(MAX_JOURNAL_VERSION, JOURNAL_VERSION_NOTIFY);
     }
 
     #[tokio::test]

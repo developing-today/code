@@ -21,7 +21,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::fs::OpenOptions;
 use std::io::{Read, Write};
-use std::net::{SocketAddr, TcpListener, TcpStream};
+use std::net::{SocketAddr, TcpListener};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -29,10 +29,11 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use atlas_core::types::BranchPools;
 use atlas_core::{
-    BranchPoolExecutor, BranchQuery, Error as CoreError, Filters, JsonlFeedbackSink,
-    JsonlTraceSink, QueryEmbedder, SearchBackend, SearchMode as CoreSearchMode, SearchOptions,
-    Sensitivity as CoreSensitivity, TraceContext, VectorBackend as CoreVectorBackend, feedback_for,
-    load_feedback_dir, record_feedback, run_get_chunk, run_search_with_executor_traced,
+    BranchPoolExecutor, BranchQuery, DisclosureContext, Error as CoreError, Filters,
+    JsonlFeedbackSink, JsonlTraceSink, QueryEmbedder, SearchBackend, SearchMode as CoreSearchMode,
+    SearchOptions, Sensitivity as CoreSensitivity, TraceContext,
+    VectorBackend as CoreVectorBackend, chunk_classification, feedback_for, load_feedback_dir,
+    record_feedback, run_get_chunk, run_search_with_executor_traced,
 };
 use atlas_proto::{
     BranchState, BranchStates, EmbedRequest, EmbedResponse, ErrorResponse, HealthResponse,
@@ -42,6 +43,22 @@ use atlas_proto::{
 };
 use serde::Deserialize;
 use serde_json::{Value as Json, json};
+
+/// The disclosure context a service request runs under
+/// (#12404, #9096 design section 4): a stated context resolves
+/// fail-closed — an unknown value means `public-surface` — and
+/// an unstated one takes this surface's stated default. The
+/// service's callers are authenticated fleet surfaces (the job
+/// API requires a client credential), so the default is
+/// `fleet-internal`; a caller preparing output for any other
+/// destination states that destination's context, and sinks
+/// beyond this service apply their own.
+fn request_context(req: &SearchRequest) -> DisclosureContext {
+    match req.context.as_deref() {
+        Some(name) => DisclosureContext::for_outbound(Some(name)),
+        None => DisclosureContext::FleetInternal,
+    }
+}
 
 // -------------------------------------------------------------- time ----
 
@@ -697,6 +714,7 @@ where
             trunc: request.trunc,
             vector_backend: core_vector_backend(request.vector_backend),
             parameters: request.parameters.clone(),
+            context: request_context(request),
         };
         let executor = ConcurrentBranchExecutor {
             backend: self.backend.as_ref(),
@@ -745,7 +763,13 @@ where
             .and_then(CoreSensitivity::from_name)
             .map(|s| s <= core_sensitivity(ceiling))
             .unwrap_or(false);
-        if !allowed {
+        // Excluded content (#12404): `excluded_personal_life`
+        // is ineligible in every disclosure context. The label
+        // is not a ladder value, so the check above already
+        // refuses it; this states the rule explicitly so it
+        // survives any change to the label mapping.
+        let excluded = chunk_classification(detail.eff_sensitivity.as_deref()).is_excluded();
+        if !allowed || excluded {
             return Err(not_found());
         }
         run_get_chunk(self.backend.as_ref(), chunk_id, neighbors)
@@ -951,11 +975,13 @@ where
 //   (query, mode, k, pool, group_by_session, expand, with_message,
 //    model, embedder, trunc, vector_backend,
 //    kind[], topic[], project[], client[], since, until,
-//    effective_ceiling)
+//    effective_ceiling, disclosure_context)
 //
 // Exact-key sharing only: the effective ceiling is IN the key, so
 // a lower-ceiling request can never be served from a
-// higher-ceiling entry; filters are in the key, so a filtered
+// higher-ceiling entry; the disclosure context is in the key for
+// the same reason (#12404) — a payload filtered for one
+// destination surface is never served to another; filters are in the key, so a filtered
 // request is never answered by subsetting an unfiltered ranking
 // (or vice versa). An identical submit while a matching
 // computation is queued/running COALESCES onto it (no second
@@ -997,6 +1023,11 @@ struct CacheKey {
     since: Option<String>,
     until: Option<String>,
     effective_ceiling: ProtoSensitivity,
+    /// The resolved disclosure context (#12404): cached and
+    /// coalesced payloads are context-filtered, so the context
+    /// is part of the effective request exactly like the
+    /// ceiling.
+    context: DisclosureContext,
 }
 
 impl CacheKey {
@@ -1042,6 +1073,7 @@ impl CacheKey {
             since: req.filters.since.clone(),
             until: req.filters.until.clone(),
             effective_ceiling,
+            context: request_context(req),
         }
     }
 }
@@ -2013,210 +2045,9 @@ fn parse_cursor(cursor: &str) -> Result<usize, ServerError> {
 
 // -------------------------------------------------------------- HTTP ----
 
-struct HttpRequest {
-    method: String,
-    path: String,
-    query: HashMap<String, String>,
-    headers: HashMap<String, String>,
-    body: Vec<u8>,
-}
+mod server_http;
 
-impl HttpRequest {
-    fn bearer(&self) -> Option<&str> {
-        let h = self.headers.get("authorization")?;
-        h.strip_prefix("Bearer ")
-            .or_else(|| h.strip_prefix("bearer "))
-    }
-
-    fn json<T: serde::de::DeserializeOwned>(&self) -> Result<T, ServerError> {
-        serde_json::from_slice(&self.body)
-            .map_err(|e| ServerError::bad_request(format!("invalid JSON body: {e}")))
-    }
-}
-
-struct HttpResponse {
-    status: u16,
-    body: Json,
-    retry_after_seconds: Option<u64>,
-}
-
-impl HttpResponse {
-    fn json(status: u16, body: Json) -> HttpResponse {
-        HttpResponse {
-            status,
-            body,
-            retry_after_seconds: None,
-        }
-    }
-
-    fn from_error(e: &ServerError) -> HttpResponse {
-        HttpResponse {
-            status: e.status,
-            body: serde_json::to_value(&e.body).unwrap_or_else(
-                |_| json!({"error": {"code": "internal", "message": "unserializable error"}}),
-            ),
-            retry_after_seconds: e.body.error.retry_after_seconds,
-        }
-    }
-}
-
-fn reason(status: u16) -> &'static str {
-    match status {
-        200 => "OK",
-        202 => "Accepted",
-        400 => "Bad Request",
-        401 => "Unauthorized",
-        403 => "Forbidden",
-        404 => "Not Found",
-        405 => "Method Not Allowed",
-        409 => "Conflict",
-        410 => "Gone",
-        429 => "Too Many Requests",
-        500 => "Internal Server Error",
-        504 => "Gateway Timeout",
-        _ => "Response",
-    }
-}
-
-fn url_decode(s: &str) -> String {
-    let mut out = Vec::new();
-    let bytes = s.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() {
-        match bytes[i] {
-            b'%' if i + 2 < bytes.len() => {
-                let hex = std::str::from_utf8(&bytes[i + 1..i + 3]).unwrap_or("");
-                match u8::from_str_radix(hex, 16) {
-                    Ok(b) => {
-                        out.push(b);
-                        i += 3;
-                    }
-                    Err(_) => {
-                        out.push(bytes[i]);
-                        i += 1;
-                    }
-                }
-            }
-            b'+' => {
-                out.push(b' ');
-                i += 1;
-            }
-            b => {
-                out.push(b);
-                i += 1;
-            }
-        }
-    }
-    String::from_utf8_lossy(&out).into_owned()
-}
-
-fn read_request(stream: &mut TcpStream) -> Result<Option<HttpRequest>, ServerError> {
-    stream
-        .set_read_timeout(Some(Duration::from_secs(60)))
-        .map_err(|e| ServerError::new(500, "internal", e.to_string()))?;
-    let mut buf: Vec<u8> = Vec::new();
-    let mut chunk = [0u8; 8192];
-    let header_end = loop {
-        if let Some(pos) = find_subslice(&buf, b"\r\n\r\n") {
-            break pos + 4;
-        }
-        if buf.len() > 64 * 1024 {
-            return Err(ServerError::bad_request("request headers too large"));
-        }
-        let n = stream
-            .read(&mut chunk)
-            .map_err(|e| ServerError::new(400, "bad_request", format!("read failed: {e}")))?;
-        if n == 0 {
-            if buf.is_empty() {
-                return Ok(None);
-            }
-            return Err(ServerError::bad_request("connection closed mid-request"));
-        }
-        buf.extend_from_slice(&chunk[..n]);
-    };
-    let head = String::from_utf8_lossy(&buf[..header_end]).into_owned();
-    let mut lines = head.lines();
-    let request_line = lines.next().unwrap_or("");
-    let mut parts = request_line.split_whitespace();
-    let method = parts.next().unwrap_or("").to_string();
-    let target = parts.next().unwrap_or("").to_string();
-    if method.is_empty() || target.is_empty() {
-        return Err(ServerError::bad_request("malformed request line"));
-    }
-    let mut headers = HashMap::new();
-    for line in lines {
-        if let Some((k, v)) = line.split_once(':') {
-            headers.insert(k.trim().to_ascii_lowercase(), v.trim().to_string());
-        }
-    }
-    if headers
-        .get("expect")
-        .map(|v| v.to_ascii_lowercase().contains("100-continue"))
-        .unwrap_or(false)
-    {
-        let _ = stream.write_all(b"HTTP/1.1 100 Continue\r\n\r\n");
-    }
-    let content_length: usize = headers
-        .get("content-length")
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(0);
-    if content_length > 4 * 1024 * 1024 {
-        return Err(ServerError::bad_request("request body too large"));
-    }
-    let mut body: Vec<u8> = buf[header_end..].to_vec();
-    while body.len() < content_length {
-        let n = stream
-            .read(&mut chunk)
-            .map_err(|e| ServerError::new(400, "bad_request", format!("read failed: {e}")))?;
-        if n == 0 {
-            return Err(ServerError::bad_request("connection closed mid-body"));
-        }
-        body.extend_from_slice(&chunk[..n]);
-    }
-    body.truncate(content_length);
-    let (path, query) = match target.split_once('?') {
-        Some((p, q)) => {
-            let mut map = HashMap::new();
-            for pair in q.split('&').filter(|s| !s.is_empty()) {
-                let (k, v) = pair.split_once('=').unwrap_or((pair, ""));
-                map.insert(url_decode(k), url_decode(v));
-            }
-            (url_decode(p), map)
-        }
-        None => (url_decode(&target), HashMap::new()),
-    };
-    Ok(Some(HttpRequest {
-        method,
-        path,
-        query,
-        headers,
-        body,
-    }))
-}
-
-fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-    haystack.windows(needle.len()).position(|w| w == needle)
-}
-
-fn write_response(stream: &mut TcpStream, resp: &HttpResponse) {
-    let body = serde_json::to_string(&resp.body).unwrap_or_else(|_| "{}".to_string());
-    let mut head = format!(
-        "HTTP/1.1 {} {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n",
-        resp.status,
-        reason(resp.status),
-        body.len()
-    );
-    if resp.status == 401 {
-        head.push_str("WWW-Authenticate: Bearer\r\n");
-    }
-    if let Some(secs) = resp.retry_after_seconds {
-        head.push_str(&format!("Retry-After: {secs}\r\n"));
-    }
-    head.push_str("\r\n");
-    let _ = stream.write_all(head.as_bytes());
-    let _ = stream.write_all(body.as_bytes());
-    let _ = stream.flush();
-}
+use server_http::*;
 
 // ---------------------------------------------------------- feedback ----
 
@@ -2500,6 +2331,7 @@ mod tests {
     use super::*;
     use atlas_core::types::{BranchHit, ChunkDetail, MessageRow, NeighborRow};
     use atlas_core::{FixedEmbedder, SearchBackend};
+    use std::net::TcpStream;
     use std::sync::Condvar;
 
     // ----- stub backend -------------------------------------------------
@@ -3668,10 +3500,16 @@ mod tests {
         let (handle, calls) = start(RuntimeLimits::default(), None);
         let addr = handle.addr;
 
+        // Both jobs state the local-owner disclosure context
+        // (#12404): the canary is secret-bearing, and under the
+        // service's fleet-internal default context it is now
+        // withheld from every caller — only the owner's local
+        // surface may receive it. The variable under test here
+        // stays the effective ceiling.
         let low = submit(
             addr,
             PERSONAL_TOKEN,
-            json!({"query": "secret canary", "ceiling": "secret-bearing"}),
+            json!({"query": "secret canary", "ceiling": "secret-bearing", "context": "local-owner"}),
         );
         let low_id = low.body["job_id"].as_str().unwrap().to_string();
         let low_tok = low.body["job_token"].as_str().unwrap().to_string();
@@ -3683,7 +3521,7 @@ mod tests {
         let high = submit(
             addr,
             SECRET_TOKEN,
-            json!({"query": "secret canary", "ceiling": "secret-bearing"}),
+            json!({"query": "secret canary", "ceiling": "secret-bearing", "context": "local-owner"}),
         );
         assert_eq!(high.body["effective_ceiling"], "secret-bearing");
         let high_id = high.body["job_id"].as_str().unwrap().to_string();
@@ -3715,6 +3553,64 @@ mod tests {
         assert!(
             result_ids(&high_page.body).contains(&3),
             "higher-ceiling job sees its own canary"
+        );
+    }
+
+    #[test]
+    fn dedupe_never_crosses_disclosure_contexts() {
+        // #12404: the caller's ceiling is identical and maximal
+        // for both jobs; only the destination context differs.
+        // The context is part of the cache key, so the public
+        // job executes separately and its stored payload is the
+        // context-filtered one — the owner's unfiltered-by-
+        // context ranking must never be served into it.
+        let (handle, calls) = start(RuntimeLimits::default(), None);
+        let addr = handle.addr;
+
+        let owner = submit(
+            addr,
+            SECRET_TOKEN,
+            json!({"query": "secret canary", "ceiling": "secret-bearing", "context": "local-owner"}),
+        );
+        let owner_id = owner.body["job_id"].as_str().unwrap().to_string();
+        let owner_tok = owner.body["job_token"].as_str().unwrap().to_string();
+        wait_done(addr, &owner_id, &owner_tok);
+        let calls_after_owner = calls.lock().unwrap().len();
+
+        let public = submit(
+            addr,
+            SECRET_TOKEN,
+            json!({"query": "secret canary", "ceiling": "secret-bearing", "context": "public-surface"}),
+        );
+        let public_id = public.body["job_id"].as_str().unwrap().to_string();
+        let public_tok = public.body["job_token"].as_str().unwrap().to_string();
+        wait_done(addr, &public_id, &public_tok);
+        assert!(
+            calls.lock().unwrap().len() > calls_after_owner,
+            "different disclosure context must execute separately"
+        );
+
+        let public_page = http(
+            addr,
+            "GET",
+            &format!("/v1/search/jobs/{public_id}/results"),
+            Some(&public_tok),
+            None,
+        );
+        assert!(
+            !result_ids(&public_page.body).contains(&3),
+            "canary must not cross to the public context"
+        );
+        let owner_page = http(
+            addr,
+            "GET",
+            &format!("/v1/search/jobs/{owner_id}/results"),
+            Some(&owner_tok),
+            None,
+        );
+        assert!(
+            result_ids(&owner_page.body).contains(&3),
+            "owner-context job sees its own canary"
         );
     }
 
