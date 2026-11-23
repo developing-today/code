@@ -69,9 +69,11 @@ repo-queue remains its system of record)".
 For machine-readable output, add `--json`. A dry run's object carries
 `job`, `decision`, `reasoning` and `"mode": "dry-run (no session written;
 pass --dispatch to submit)"`, plus a `note` when a testing override was
-used and `load_read_errors` when an owner's load could not be read (load
-failures are soft: that owner's load counts as 0 and the error is
-reported, not hidden).
+used, `load_read_errors` when any load read failed, and
+`owner_load_coverage` — per owner: whether its load was measured,
+partial, unknown, or simulated, the known subtotal, the cap, and which
+reads are missing. Load failures are soft, but an owner whose load could
+not be read is reported as unknown capacity, never as an idle zero.
 
 What can go wrong, and the fix:
 
