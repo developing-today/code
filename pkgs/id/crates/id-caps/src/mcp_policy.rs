@@ -658,6 +658,11 @@ impl PolicySession {
     /// Returns a [`RefusalKind::Ceiling`] refusal if the new ceiling
     /// does not cover the session's world: a session never runs
     /// under a ceiling that does not name its world.
+    //
+    // PolicyRefusal carries the full park event for the driver; a
+    // ceiling refresh runs at owner-operation cadence, so the large
+    // Err payload never sits in a hot path.
+    #[allow(clippy::result_large_err)]
     pub fn refresh_ceiling(&mut self, ceiling: CapabilityCeiling) -> Result<(), PolicyRefusal> {
         if !ceiling.worlds.contains(&self.grant.world) {
             return Err(PolicyRefusal {
