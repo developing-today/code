@@ -149,13 +149,15 @@ export class PromptAttachmentsStore {
     return saved;
   }
 
-  async read(ref: string): Promise<{ meta: PromptAttachmentMeta; bytes: Buffer } | null> {
+  async read(ref: string): Promise<{ meta: PromptAttachmentMeta; bytes: Uint8Array<ArrayBuffer> } | null> {
     const uuid = this.uuidOf(ref);
     if (!uuid) return null;
     try {
       const meta = JSON.parse(await readFile(this.sidecarPath(uuid), "utf8")) as PromptAttachmentMeta;
       if (meta.ref !== ref) return null;
-      const bytes = await readFile(this.blobPath(uuid));
+      // Copied onto a fresh ArrayBuffer so the bytes are a valid
+      // Response BodyInit under the package's typings.
+      const bytes = new Uint8Array(await readFile(this.blobPath(uuid)));
       return { meta, bytes };
     } catch {
       return null;
