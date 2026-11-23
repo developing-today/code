@@ -34,6 +34,15 @@ class WorkflowDeployGuardTest(unittest.TestCase):
         self.assertIn('["HelloContainer"]', config)
         self.assertIn('["CrawlerProbe", "HelloLite"]', config)
 
+    def test_native_build_gate_precedes_prebuilt_versions_dry_run(self):
+        workflow = WORKFLOW.read_text().split("  stage-versions:\n", 1)[1]
+        self.assertLess(workflow.index("node_modules/.bin/cf build"), workflow.index("node release-tools/verify-build.mjs"))
+        self.assertLess(workflow.index("node release-tools/verify-build.mjs"), workflow.index("cf workers versions create"))
+        versions = workflow.split("cf workers versions create", 1)[1]
+        self.assertIn("--prebuilt", versions)
+        self.assertIn("--dry-run", versions)
+        self.assertNotIn("--versions", versions)
+
 
 if __name__ == "__main__":
     unittest.main()
