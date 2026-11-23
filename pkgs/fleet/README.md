@@ -231,6 +231,13 @@ own release.
 5. **Deploy truth.** What a target runs is read from the deployed
    binary's own `Derived version:` line, never from paperwork
    (that read is the #5760 deployed-state check's input).
+6. **Who cuts them.** The workflow of record is the release-workflow
+   design record (`doc/2026-11-23T13-09-25Z_design_release-workflow-per-app-tags/`):
+   releases are cut only by `deploy release <app>` (pkgs/deploy,
+   #13306), which attests the main-gate for the tagged commit in the
+   tag's `release-attestation:v1` block, records the release in the
+   deploy ledger, and refuses a release-claiming deploy with no
+   attested tag behind it.
 
 ## Variants
 
