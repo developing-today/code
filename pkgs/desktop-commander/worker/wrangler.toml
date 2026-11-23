@@ -1,0 +1,23 @@
+# desktop-commander Worker (#13404). The self-hosted replacement for the
+# vendor's metered Remote Desktop Commander relay: an Access-gated MCP
+# front door that proxies to the Desktop Commander bridge on the laptop.
+#
+# workers_dev is OFF: the only door is the custom domain
+# commander.security.cab, which sits behind a Cloudflare Access app
+# (owner Google identity + a service-token policy). The Worker itself
+# refuses any request that arrives without an Access JWT assertion.
+#
+# Secrets (uploaded per version with --secrets-file at publish time;
+# values never in this file):
+#   ACCESS_CLIENT_ID      Cloudflare Access service token for the
+#   ACCESS_CLIENT_SECRET  bridge door, commander-link.security.cab
+#                         (fleet secrets:
+#                          cloudflare.access.desktop-commander-link-client-id
+#                          cloudflare.access.desktop-commander-link-client-secret)
+name = "desktop-commander"
+main = "src/index.ts"
+compatibility_date = "2025-09-15"
+workers_dev = false
+
+[vars]
+BRIDGE_BASE = "https://commander-link.security.cab"
