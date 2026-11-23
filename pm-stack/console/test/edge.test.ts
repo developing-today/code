@@ -12,6 +12,7 @@
 // "run once" is counted on the host; a signature is made here with a key
 // the edge was never given; stored values are measured in the map.
 import { beforeEach, describe, expect, test } from "bun:test";
+import { queueWrites } from "../edge/src/direct.ts";
 import { Edge, type KV, SILENT_MS } from "../edge/src/edge.ts";
 import { forgetPoke, type Io, route } from "../edge/src/entry.ts";
 import type { Action } from "../src/actions.ts";
@@ -176,6 +177,15 @@ async function setup(options: { direct?: boolean } = {}) {
   /** Calls GitHub refuses this side's token for (403), and calls it
    * fails on its own account (500). */
   const ghRefuses: ((method: string, url: string) => boolean)[] = [];
+  /** Calls GitHub turns away for being one too many just now: the same
+   * 403, with other words. */
+  const ghLimits: ((method: string, url: string) => boolean)[] = [];
+  /** The queue store taking this side's token for reading only. */
+  const queueReadOnly = { on: false };
+  /** Calls GitHub gives no answer to at all, and calls it is slow to
+   * answer: held until the test lets them go. */
+  const ghDrops: ((method: string, url: string) => boolean)[] = [];
+  const ghHolds: { match: (method: string, url: string) => boolean; wait: Promise<void> }[] = [];
   const ghBreaks: ((method: string, url: string) => boolean)[] = [];
   /** GitHub answering a new issue with no number on it: not something
    * it does, and exactly what must not be passed on as a task. */
@@ -516,12 +526,21 @@ async function setup(options: { direct?: boolean } = {}) {
     const method = init?.method ?? "GET";
     if (u.startsWith("https://api.github.com/")) {
       githubCalls.push({ method, url: u, body: init?.body });
+      for (const held of ghHolds) if (held.match(method, u)) await held.wait;
+      if (ghDrops.some((drops) => drops(method, u))) throw new Error("socket hang up");
       // A token that may not do this, as GitHub says it.
       if (ghRefuses.some((refuse) => refuse(method, u))) {
         return {
           ok: false,
           status: 403,
           json: async () => ({ message: "Resource not accessible by personal access token", status: "403" }),
+        };
+      }
+      if (ghLimits.some((limits) => limits(method, u))) {
+        return {
+          ok: false,
+          status: 403,
+          json: async () => ({ message: "API rate limit exceeded for user ID 1.", status: "403" }),
         };
       }
       if (ghBreaks.some((breaks) => breaks(method, u))) {
@@ -534,6 +553,9 @@ async function setup(options: { direct?: boolean } = {}) {
       if (queueRefuses.on) {
         queueRefused.n++;
         return { ok: false, status: 401, json: async () => ({ error: "unauthorized" }) };
+      }
+      if (queueReadOnly.on && queueWrites(init?.body)) {
+        return { ok: false, status: 403, json: async () => ({ error: "read only" }) };
       }
       const parsed = JSON.parse(init?.body ?? "{}") as {
         requests?: { stmt?: { sql: string; args: { value: string }[] } }[];
@@ -933,6 +955,10 @@ async function setup(options: { direct?: boolean } = {}) {
     ghStarted,
     ghOdd,
     ghRefuses,
+    ghLimits,
+    ghDrops,
+    ghHolds,
+    queueReadOnly,
     ghBreaks,
     queueRefuses,
     queueRefused,
@@ -3435,6 +3461,122 @@ describe("the edge does the core itself", () => {
     expect((await w.link.now.once())?.owns).not.toContain("board");
   });
 
+  test("a token that may read the queue and not change it: the laptop moves the task, though this side had read it", async () => {
+    const w = await primary();
+    const before = w.queueTasks.find((t) => t.id === 21048)?.priority;
+    w.queueReadOnly.on = true;
+    const queue = w.queueCalls.length;
+    const res = await w.act("task.move", { task: 21048, to: "first" });
+    // It read where the task stood, here, and was then refused the
+    // change. Reading wrote nothing, so the laptop does it from the start.
+    expect(w.queueCalls.length).toBeGreaterThan(queue);
+    expect(await res.json()).toMatchObject({ ok: true, result: { task: 21048, priority: 10 } });
+    expect(w.ran).toEqual([{ kind: "task.move", args: { task: 21048, to: "first" } }]);
+    expect(w.queueTasks.find((t) => t.id === 21048)?.priority).toBe(before);
+    // The board is still read here: it was the change that was refused.
+    expect(
+      ((await (await w.browse("/console/health", { token: null })).json()) as { refused: string[] }).refused,
+    ).toEqual(["task.move"]);
+    expect((await w.core()).doc.board.counts).toEqual(QUEUE_NOW);
+  });
+
+  test("turned away for calling too often is not refused for the hour: the laptop does it meanwhile, and this side tries again in five minutes", async () => {
+    const w = await primary();
+    const health = async () =>
+      ((await (await w.browse("/console/health", { token: null })).json()) as { refused: string[] }).refused;
+    const merges = () => w.githubCalls.filter((c) => c.method === "PUT" && c.url.endsWith("/pulls/55/merge")).length;
+    w.ghLimits.push((method, url) => method === "PUT" && url.includes("/merge"));
+    expect((await w.act("pr.merge", { pr: 55 })).status).toBe(200);
+    expect(w.ran).toEqual([{ kind: "pr.merge", args: { pr: 55 } }]);
+    expect(merges()).toBe(1);
+    expect(await health()).toEqual(["pr.merge"]);
+    // Within the five minutes it goes straight to the laptop.
+    w.now.t += 4 * 60_000;
+    await w.act("pr.merge", { pr: 55 });
+    expect(merges()).toBe(1);
+    expect(w.ran).toHaveLength(2);
+    // After them this side tries again, and GitHub takes it.
+    w.ghLimits.length = 0;
+    w.now.t += 61_000;
+    expect(await health()).toEqual([]);
+    const again = await w.act("pr.merge", { pr: 55 });
+    expect(await again.json()).toEqual({ ok: true, result: { number: 55, merged: true, sha: "5a5a5a5a5a5a" } });
+    expect(w.ran).toHaveLength(2);
+    // The same for what it reads: the ranked issues are searched for,
+    // and search is what runs out first.
+    await w.browse("/console/api/doc/ops");
+    await settle(w);
+    w.ghLimits.push((method, url) => method === "GET" && url.includes("/search/issues"));
+    w.now.t += 181_000;
+    await w.browse("/console/api/doc/ops");
+    await settle(w);
+    expect(await health()).toEqual(["read.priorities"]);
+    w.now.t += 1_000;
+    expect((await w.link.now.once())?.owns).toEqual(["board", "prs", "asks"]);
+    w.ghLimits.length = 0;
+    w.now.t += 4 * 60_000;
+    expect(await health()).toEqual(["read.priorities"]);
+    w.now.t += 61_000;
+    expect(await health()).toEqual([]);
+    await w.hostReads();
+    expect((await w.link.now.once())?.owns).toEqual(["board", "prs", "priorities", "asks"]);
+  });
+
+  test("a section is judged by its own sources: the queue refusing does not hand the laptop what is read from GitHub", async () => {
+    const w = await primary();
+    await w.core();
+    await w.browse("/console/api/doc/ops");
+    await settle(w);
+    // GitHub is slow with the list of pull requests, and will fail on
+    // its own account. While that read is under way, the queue store
+    // refuses this side's token.
+    let letGo = () => {};
+    const wait = new Promise<void>((r) => {
+      letGo = r;
+    });
+    const list = (method: string, url: string) => method === "GET" && /\/pulls\?/.test(url);
+    w.ghHolds.push({ match: list, wait });
+    w.ghBreaks.push(list);
+    w.queueRefuses.on = true;
+    w.now.t += 200_000;
+    await w.browse("/console/api/doc/ops"); // the list starts to be read, and waits
+    await w.core(); // the board and the prompts are read, and refused
+    await new Promise((r) => setTimeout(r, 5));
+    expect(w.queueRefused.n).toBeGreaterThan(0);
+    letGo();
+    await settle(w);
+    const refused = ((await (await w.browse("/console/health", { token: null })).json()) as { refused: string[] })
+      .refused;
+    // The board and the prompts are read from the queue store, and are
+    // the laptop's now. The pull requests only failed, and the refusal
+    // that came while they were being read was not theirs: still read here.
+    expect(refused).toEqual(["read.asks", "read.board"]);
+  });
+
+  test("a write that got no answer while another action was refused: that one is not handed on either", async () => {
+    const w = await primary();
+    // A merge is refused, but GitHub is slow to say so ...
+    let letGo = () => {};
+    const wait = new Promise<void>((r) => {
+      letGo = r;
+    });
+    const merge = (method: string, url: string) => method === "PUT" && url.includes("/merge");
+    w.ghHolds.push({ match: merge, wait });
+    w.ghRefuses.push(merge);
+    const merging = w.act("pr.merge", { pr: 55 });
+    await new Promise((r) => setTimeout(r, 5));
+    // ... and meanwhile a deploy is started, and gets no answer at all:
+    // it may have been taken.
+    w.ghDrops.push((method, url) => method === "POST" && url.includes("/dispatches"));
+    expect((await w.act("deploy.start", { what: "site" })).status).toBe(502);
+    letGo();
+    // What was written while the merge ran cannot be told from the
+    // merge's own, so the merge is said as it failed, not done again
+    // by the laptop. (It errs on that side only.)
+    expect((await merging).status).toBe(502);
+    expect(w.ran).toEqual([]);
+  });
+
   test("a read GitHub refuses this side's token for is asked of the laptop", async () => {
     const w = await primary();
     w.ghRefuses.push((method, url) => method === "GET" && url.endsWith("/pulls/55"));
@@ -3695,6 +3837,34 @@ describe("telling the owner, with no machine", () => {
     expect(w.pushes).toHaveLength(1);
   });
 
+  test("turned away while reading for the owner, the wakes do not end: it is tried again when its time is up", async () => {
+    const { w, phone } = await subscribed();
+    w.net.hostUp = false;
+    w.net.edgeUp = false;
+    w.now.t = w.alarm.at;
+    await w.edge.now.alarm();
+    // GitHub turns this side away for calling too often, as it reads the prompts.
+    w.ghLimits.push((method, url) => method === "GET" && /\/issues\?/.test(url));
+    w.now.t = w.alarm.at;
+    await w.edge.now.alarm();
+    const limitedAt = w.now.t;
+    expect(w.pushes).toHaveLength(0);
+    // Not a minute from now, when it would only be turned away again:
+    // when the five minutes are up. Nobody is looking and no laptop
+    // reports, so this wake is all that will notice.
+    expect(w.alarm.at).toBe(limitedAt + 5 * 60_000 + 1_000);
+    // Meanwhile the fleet answers.
+    w.ghLimits.length = 0;
+    w.now.t += 60_000;
+    reply(w, 202, "Done while you were turned away.");
+    w.now.t = w.alarm.at;
+    await w.edge.now.alarm();
+    expect(w.pushes).toHaveLength(1);
+    expect(JSON.parse(await phone.open(w.pushes[0].body))).toMatchObject({ title: "The fleet replied on #202" });
+    // And it is back to a wake a minute.
+    expect(w.alarm.at).toBe(w.now.t + 60_000);
+  });
+
   test("a look at the app starts the wakes again if the object has none asked for", async () => {
     const { w } = await subscribed();
     // A new object, as after being put away, with its wake lost.
@@ -3733,6 +3903,24 @@ describe("telling the owner, with no machine", () => {
     await off.link.now.once();
     await off.act("push.on", { subscription: phone.subscription, label: "Pocket" });
     expect(off.alarm.at).toBe(START + SILENT_MS + 1000);
+    // Nor does being turned away ask for a wake when there is nobody
+    // to tell: the next look, or the laptop's next report, tries again.
+    clearJwksCache();
+    const alone = await setup({ direct: true });
+    await alone.hostReads();
+    await alone.link.now.once();
+    await alone.core();
+    await Promise.all(alone.behind.splice(0));
+    alone.ghLimits.push((method, url) => method === "GET" && /\/issues\?/.test(url));
+    alone.now.t += 46_000;
+    await alone.core();
+    await Promise.all(alone.behind.splice(0));
+    expect(
+      ((await (await alone.browse("/console/health", { token: null })).json()) as { refused: string[] }).refused,
+    ).toEqual(["read.asks"]);
+    alone.now.t += 1_000;
+    await alone.link.now.once();
+    expect(alone.alarm.at).toBe(alone.now.t + SILENT_MS + 1000);
   });
 
   test("the laptop going quiet is told once, in words that say this side carries on; a telling that fails is tried again in a minute", async () => {

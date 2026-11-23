@@ -31,6 +31,7 @@ import {
   directClasses,
   directRead,
   type Outward,
+  READ_FROM,
 } from "./direct.ts";
 import { Devices, KeyedLimiter, Limiter } from "../../src/devices.ts";
 import { type Act, DOC_NAMES, type DocName, Docs, fingerprint, Stamped } from "../../src/docs.ts";
@@ -147,9 +148,12 @@ const ALARM_RETRY_MS = 60_000;
 /** A copy read here that has not changed has its time written down
  * again no more often than this. */
 const OWN_TIME_EVERY_MS = 5 * 60_000;
-/** An action this side's token was refused for is left to a machine
- * for this long before this side tries it again. */
+/** An action or a section this side's token was refused for is left
+ * to a machine for this long before this side tries it again. */
 const REFUSED_FOR_MS = 60 * 60_000;
+/** The same, when it was turned away for calling too often: that
+ * passes by itself, and soon. */
+const LIMITED_FOR_MS = 5 * 60_000;
 /** What a section says while this side's token is refused for it and
  * no machine has sent its copy yet. */
 const REFUSED_READ = "Cloudflare's token was refused for this, and no machine has reported it yet";
@@ -239,10 +243,12 @@ export class Edge {
   /** This side's latest calls of GitHub and the queue store, numbered. */
   private outward: (Outward & { n: number })[] = [];
   private outwardN = 0;
-  /** Actions this side's token was refused for, and when. */
+  /** Actions this side's token was turned away for, and until when
+   * they are left to a machine. */
   private refused = new Map<string, number>();
-  /** Sections this side's token was refused for, and when: a machine's
-   * to read, as they were before this side read anything. */
+  /** Sections this side's token was turned away for, and until when
+   * they are a machine's to read, as they were before this side read
+   * anything. */
   private unread = new Map<string, number>();
   /** The time this object last asked to be woken at. */
   private alarmFor = 0;
@@ -667,10 +673,10 @@ export class Edge {
     return DIRECT_READ_SECTIONS.filter((name) => !refused.includes(name));
   }
 
-  /** Sections this side's token was refused for within the hour. */
+  /** Sections this side's token was turned away for, and still is. */
   private refusedReads(): string[] {
     const now = this.now();
-    for (const [name, at] of this.unread) if (now - at >= REFUSED_FOR_MS) this.unread.delete(name);
+    for (const [name, until] of this.unread) if (now >= until) this.unread.delete(name);
     return [...this.unread.keys()].sort();
   }
 
@@ -728,11 +734,13 @@ export class Edge {
     try {
       data = await directRead(name, mine.ops, mine.work);
     } catch (error) {
-      // This side's token may not read this. For the next hour it is a
-      // machine's to read, as it was before: the copy a machine sent is
-      // shown if there is one here, and its next reports bring it.
-      if (!this.refusedCleanly(from)) throw error;
-      this.unread.set(name, this.now());
+      // This side's token may not read this. For the next hour (or, if
+      // it was only calling too often, a few minutes) it is a machine's
+      // to read, as it was before: the copy a machine sent is shown if
+      // there is one here, and its next reports bring it.
+      const away = this.away(from, READ_FROM[name as keyof typeof READ_FROM]);
+      if (away === null) throw error;
+      this.unread.set(name, this.now() + away);
       console.error(`pm-edge: reading ${name} was refused here; left to a machine`);
       const theirs = await this.mirror(name);
       if (!theirs || theirs.own) throw error;
@@ -766,25 +774,33 @@ export class Edge {
     return this.owned(cfg).filter((name) => NOTIFIED.includes(name));
   }
 
-  /** Whether a failure since call number `from` was this side's token
-   * being refused before anything was written. Then nothing was done,
-   * and a machine, which has its own way in, may do it instead. A write
-   * that got no answer may have been taken, and counts as written.
-   * Calls made at the same time by something else are counted too: that
-   * can only make this say no where it might have said yes, never the
-   * other way. */
-  private refusedCleanly(from: number): boolean {
-    const mine = this.outward.filter((call) => call.n > from);
-    return (
-      mine.some((call) => call.status === 401 || call.status === 403) &&
-      !mine.some((call) => call.write && (call.status === 0 || (call.status >= 200 && call.status < 300)))
+  /** Whether this side's token was turned away in a call since number
+   * `from` (of these services only, if any are named), and if so for
+   * how long what was being done is left to a machine: an hour when it
+   * may not do the thing (401, 403), a few minutes when it was only
+   * calling too often. Calls made at the same time by something else
+   * are counted too: that can only hand a machine something this side
+   * could have done, never keep from it what this side cannot. */
+  private away(from: number, to?: Outward["to"][]): number | null {
+    const mine = this.outward.filter((call) => call.n > from && (to === undefined || to.includes(call.to)));
+    if (mine.some((call) => (call.status === 401 || call.status === 403) && !call.limited)) return REFUSED_FOR_MS;
+    if (mine.some((call) => call.limited)) return LIMITED_FOR_MS;
+    return null;
+  }
+
+  /** Whether something was written since call number `from`, or may
+   * have been: a write that got no answer may have been taken. What
+   * failed after that is not a machine's to do again from the start. */
+  private wrote(from: number): boolean {
+    return this.outward.some(
+      (call) => call.n > from && call.write && (call.status === 0 || (call.status >= 200 && call.status < 300)),
     );
   }
 
-  /** Actions this side's token was refused for within the hour. */
+  /** Actions this side's token was turned away for, and still is. */
   private refusedKinds(): string[] {
     const now = this.now();
-    for (const [kind, at] of this.refused) if (now - at >= REFUSED_FOR_MS) this.refused.delete(kind);
+    for (const [kind, until] of this.refused) if (now >= until) this.refused.delete(kind);
     return [...this.refused.keys()].sort();
   }
 
@@ -902,10 +918,12 @@ export class Edge {
       if (action.touch.some((n) => WATCHED.includes(n))) await this.tell(cfg).catch(() => {});
       return json({ ok: true, result });
     } catch (error) {
-      if (this.refusedCleanly(from)) {
+      const away = this.wrote(from) ? null : this.away(from);
+      if (away !== null) {
         // The token here may not do this, and nothing was written: it
-        // is a machine's to do, now and for the next hour.
-        this.refused.set(kind, this.now());
+        // is a machine's to do, now and for the next hour (a few
+        // minutes, if it was only calling too often).
+        this.refused.set(kind, this.now() + away);
         await this.audit({ ...base, phase: "done", ok: false, error: "refused here; left to a machine" });
         throw new HandOver((error as Error).message);
       }
@@ -1166,6 +1184,14 @@ export class Edge {
       wakes.push(Math.max(this.hostSeen + SILENT_MS + 1000, now + ALARM_RETRY_MS));
     }
     if (await this.clockWanted(cfg)) wakes.push(Math.max(now + 1000, this.clockAt + OWN_CLOCK_MS));
+    // Something the owner is told about that this side was turned away
+    // for is tried again when its time is up; with nobody looking and
+    // no machine reporting, only a wake would notice that it is.
+    if (this.primary(cfg) && (await this.push.status()).devices > 0) {
+      for (const [name, until] of this.unread) {
+        if (NOTIFIED.includes(name)) wakes.push(Math.max(now + 1000, until + 1000));
+      }
+    }
     if (wakes.length > 0) await this.setAlarm(Math.min(...wakes));
   }
 
@@ -1387,7 +1413,7 @@ export class Edge {
             // Refused here: a machine has its own way in, and a read may
             // be asked twice. Anything else is said as it is; so is this,
             // when there is no machine to ask.
-            if (!this.refusedCleanly(from)) throw error;
+            if (this.away(from) === null) throw error;
             if (!this.machineThere()) {
               throw new OpError(
                 503,
@@ -1399,7 +1425,7 @@ export class Edge {
           // failing (a list with its error beside it). One that was
           // refused part-way is a machine's too, when one is there; with
           // none, what could be read is better than nothing.
-          if (read !== undefined && !(this.refusedCleanly(from) && this.machineThere())) return json(read);
+          if (read !== undefined && !(this.away(from) !== null && this.machineThere())) return json(read);
         }
         // Everything else is read from the host as it is now.
         return next("relay", { mode: "live" });

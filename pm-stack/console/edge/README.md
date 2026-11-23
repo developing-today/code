@@ -189,14 +189,27 @@ it (the laptop's, the sign-in issuer's).
   an hour, and `/console/health` lists the kinds under `refused`, which
   is how a missing permission is seen. A refusal after a write was
   taken, a write that got no answer, and any failure that is not a
-  refusal are not handed on: they are said as they are.
+  refusal are not handed on: they are said as they are. Reading the
+  queue is not a write; changing it is.
+- **Calling too often is not a refusal.** GitHub turns a caller away
+  for that with the same 403 (and says so in its answer), or a 429.
+  It is handed on in the same way, but for five minutes, not an hour:
+  it passes by itself. The token is the fleet's too, and search is
+  what runs out first.
 - **The same for what it reads.** A section the edge is refused for is
   the laptop's to read for the hour, exactly as it was before the edge
   read anything: the edge stops naming it under `owns`, the laptop's
   next reports bring its copy, and health lists it as
-  `read.<section>`. A copy of the laptop's that is already here is
-  shown without a gap; a copy the edge read itself is shown with the
-  reason beside it until the laptop's comes. A screen read on request
+  `read.<section>`. A section is judged by the answers of the services
+  it is read from (the board from the queue store, pull requests and
+  ranked issues from GitHub, the prompts from both), so one service
+  refusing does not hand over what is read from the other. While a
+  device takes notifications and the prompts are the laptop's, the
+  object asks to be woken when their time is up, so that with nobody
+  looking and no laptop reporting it still tries again. A copy of the
+  laptop's that is already here is shown without a gap; a copy the edge
+  read itself is shown with the reason beside it until the laptop's
+  comes. A screen read on request
   (a pull request, the deploys, a roadmap) that is refused, or that
   answers in part because one of its reads was, is asked of the laptop
   while one is reporting; with none, what could be read is shown, or

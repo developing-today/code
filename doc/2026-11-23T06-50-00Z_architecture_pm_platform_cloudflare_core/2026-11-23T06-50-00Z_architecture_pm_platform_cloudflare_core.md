@@ -317,7 +317,28 @@ are closed in the same change, before it was merged.
   change it now waits for that read and reads once more
   (`Docs.reread`); on the laptop too.
 
-Checked again: 290 tests (265 under bun, the keeper's 25). 24 more
-planted faults in these fixes, 23 caught and one that changes nothing;
-3 in the keeper's fix, all caught. The bundle in the Worker runtime with
-the switch on: all checks passed.
+Three more came out of building those, each a way the hand-over itself
+could have gone wrong:
+
+- **Calling too often looked like a refusal.** GitHub answers both
+  with a 403. The token is the fleet's too, and search (which the
+  ranked issues are read with) is what runs out first; an hour with a
+  machine for that is too long when no machine is there. It is told
+  apart by GitHub's own words, and handed on for five minutes.
+- **Reading the queue counted as having written.** Every call of the
+  queue store was noted as a write, so an action refused after it had
+  only read the queue was said as a failure when a machine could have
+  done it, and a section's refusal could be hidden by another
+  section's good read at the same moment. A request of the queue store
+  is now a write only if a statement in it is not a SELECT, and a
+  section is judged by the answers of the services it is read from.
+- **Turned away with nobody looking, the wakes would have ended.** The
+  minute's wake runs only while the edge reads the prompts. When it is
+  turned away for them the object now asks to be woken when that time
+  is up, if a device is there to tell.
+
+Checked again: 298 tests (273 under bun, the keeper's 25). 50 more
+planted faults in all of this: 48 caught, two that change nothing that
+can be seen (a section a machine reads being read once more from the
+copy here; a wake that would find nothing to do). The bundle in the
+Worker runtime with the switch on: all checks passed.

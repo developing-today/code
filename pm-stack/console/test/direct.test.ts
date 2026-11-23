@@ -6,7 +6,15 @@
 // headers, body), and the exact RunResult the classes see back.
 import { describe, expect, test } from "bun:test";
 import { readConfig } from "../src/config.ts";
-import { directClasses, directConfig, directRead, edgeRun } from "../edge/src/direct.ts";
+import {
+  directClasses,
+  directConfig,
+  directRead,
+  edgeRun,
+  type Outward,
+  queueWrites,
+  READ_FROM,
+} from "../edge/src/direct.ts";
 import type { Fetch } from "../src/ops.ts";
 import type { EdgeConfig } from "../src/edge-proto.ts";
 import { asThePlatformFetch } from "./support.ts";
@@ -230,6 +238,101 @@ describe("a local run's stand-ins", () => {
       code: 1,
       stdout: "",
       stderr: "GitHub could not be reached: connection refused",
+    });
+  });
+});
+
+describe("what this side notes of each call it makes", () => {
+  const answering = (status: number, body: unknown) =>
+    (async () => ({ ok: status >= 200 && status < 300, status, json: async () => body })) as unknown as Fetch;
+  const github = async (status: number, body: unknown, argv = ["repos/developing-today/code/pulls"]) => {
+    const seen: Outward[] = [];
+    const run = edgeRun(
+      directConfig(edgeConfig),
+      { githubToken: "gh-test", queueToken: "queue-test", seen: (call) => seen.push(call) },
+      answering(status, body),
+    );
+    await run(["fleet", "gh", "api", ...argv]);
+    return seen;
+  };
+
+  test("a token that may not do the thing and one calling too often are told apart, though GitHub answers both 403", async () => {
+    expect(await github(200, [])).toEqual([{ to: "github", write: false, status: 200 }]);
+    expect(await github(403, { message: "Resource not accessible by personal access token" })).toEqual([
+      { to: "github", write: false, status: 403 },
+    ]);
+    expect(await github(403, { message: "API rate limit exceeded for user ID 1." })).toEqual([
+      { to: "github", write: false, status: 403, limited: true },
+    ]);
+    expect(
+      await github(403, { message: "You have exceeded a secondary rate limit. Please wait a few minutes." }),
+    ).toEqual([{ to: "github", write: false, status: 403, limited: true }]);
+    expect(await github(429, { message: "Too many requests" })).toEqual([
+      { to: "github", write: false, status: 429, limited: true },
+    ]);
+    // A 404 that happens to speak of limits is not one.
+    expect(await github(404, { message: "rate limit" })).toEqual([{ to: "github", write: false, status: 404 }]);
+    // Anything but a GET may have changed something.
+    expect(await github(403, { message: "no" }, ["-X", "PUT", "repos/developing-today/code/pulls/55/merge"])).toEqual([
+      { to: "github", write: true, status: 403 },
+    ]);
+  });
+
+  test("a request of the queue store is a write only if a statement in it is not a SELECT", async () => {
+    const request = (...sql: string[]) =>
+      JSON.stringify({
+        requests: [...sql.map((q) => ({ type: "execute", stmt: { sql: q, args: [] } })), { type: "close" }],
+      });
+    expect(queueWrites(request("SELECT 1"))).toBe(false);
+    expect(queueWrites(request("  select status FROM tasks", "SELECT 2"))).toBe(false);
+    expect(queueWrites(request("SELECT 1", "UPDATE tasks SET priority = 10"))).toBe(true);
+    expect(queueWrites(request("INSERT INTO tasks DEFAULT VALUES"))).toBe(true);
+    // Not to be fooled by a name that begins the same way.
+    expect(queueWrites(request("SELECTED"))).toBe(true);
+    // What cannot be read is taken to be one.
+    expect(queueWrites(undefined)).toBe(true);
+    expect(queueWrites("not json")).toBe(true);
+    expect(queueWrites(JSON.stringify({ requests: "no" }))).toBe(true);
+    // And that is what is noted of a call made through the classes.
+    const seen: Outward[] = [];
+    const rows = { ok: true, status: 200, json: async () => ({ results: [] }) };
+    const { ops } = directClasses(edgeConfig, {
+      githubToken: "g",
+      queueToken: "q",
+      fetchImpl: (async () => rows) as unknown as Fetch,
+      seen: (call) => seen.push(call),
+    });
+    await ops.reads([{ sql: "SELECT 1", args: [] }]).catch(() => {});
+    expect(seen).toEqual([{ to: "queue", write: false, status: 200 }]);
+    // The queue store saying "too many" is noted as that, and one that
+    // gave no answer as no answer.
+    const noted = async (fetchImpl: Fetch) => {
+      const calls: Outward[] = [];
+      const made = directClasses(edgeConfig, {
+        githubToken: "g",
+        queueToken: "q",
+        fetchImpl,
+        seen: (call) => calls.push(call),
+      });
+      await made.ops.reads([{ sql: "SELECT 1", args: [] }]).catch(() => {});
+      return calls;
+    };
+    expect(await noted((async () => ({ ok: false, status: 429, json: async () => ({}) })) as unknown as Fetch)).toEqual(
+      [{ to: "queue", write: false, status: 429, limited: true }],
+    );
+    expect(
+      await noted((async () => {
+        throw new Error("no route");
+      }) as unknown as Fetch),
+    ).toEqual([{ to: "queue", write: false, status: 0 }]);
+  });
+
+  test("each section this side reads names where it is read from", () => {
+    expect(READ_FROM).toEqual({
+      board: ["queue"],
+      prs: ["github"],
+      priorities: ["github"],
+      asks: ["github", "queue"],
     });
   });
 });

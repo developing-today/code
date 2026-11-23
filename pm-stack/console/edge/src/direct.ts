@@ -43,13 +43,22 @@ export const DIRECT_ACTIONS = [
 
 /** One call this side made of GitHub or the queue store, and how it was
  * answered: `status` 0 is no answer at all. `write` is anything that
- * may have changed something (for the queue store, every call: its
- * reads and writes travel alike). */
+ * may have changed something. `limited` is a call turned away for
+ * being one too many just now, not for what the token may do. */
 export interface Outward {
   to: "github" | "queue";
   write: boolean;
   status: number;
+  limited?: boolean;
 }
+
+/** Which of the two each section this side reads is read from. */
+export const READ_FROM: Record<(typeof DIRECT_READ_SECTIONS)[number], Outward["to"][]> = {
+  board: ["queue"],
+  prs: ["github"],
+  priorities: ["github"],
+  asks: ["github", "queue"],
+};
 
 export interface DirectSecrets {
   githubToken?: string;
@@ -134,7 +143,6 @@ async function ghApi(
     seen?.({ to: "github", write, status: 0 });
     return { code: 1, stdout: "", stderr: `GitHub could not be reached: ${(error as Error).message}` };
   }
-  seen?.({ to: "github", write, status: res.status });
   // The body is read as JSON and written back out, so an empty answer
   // (a 204) stays empty and an error body keeps its own words for the
   // caller.
@@ -145,6 +153,11 @@ async function ghApi(
       return "";
     }
   })();
+  // GitHub turns a caller away for calling too often with the same 403
+  // it uses for a token that may not do the thing, and says which in
+  // the body; a 429 is always the former.
+  const limited = res.status === 429 || (res.status === 403 && /rate limit/i.test(text));
+  seen?.({ to: "github", write, status: res.status, ...(limited ? { limited } : {}) });
   if (!res.ok) {
     return { code: 1, stdout: "", stderr: text === "" ? `GitHub answered http ${res.status}` : text };
   }
@@ -226,12 +239,13 @@ export function directClasses(edge: EdgeConfig, options: DirectOptions): DirectC
   // The queue store is reached by Ops itself, with the fetch it is
   // given: that one tells of each call too.
   const queueFetch: Fetch = async (url, init) => {
+    const write = queueWrites(init.body);
     try {
       const res = await fetchImpl(url, init);
-      options.seen?.({ to: "queue", write: true, status: res.status });
+      options.seen?.({ to: "queue", write, status: res.status, ...(res.status === 429 ? { limited: true } : {}) });
       return res;
     } catch (error) {
-      options.seen?.({ to: "queue", write: true, status: 0 });
+      options.seen?.({ to: "queue", write, status: 0 });
       throw error;
     }
   };
@@ -239,6 +253,19 @@ export function directClasses(edge: EdgeConfig, options: DirectOptions): DirectC
   const clock = options.now ? () => new Date((options.now as () => number)()) : undefined;
   const work = new Work(ops, undefined, clock);
   return { ops, work, plan: new Plan(ops, work, clock) };
+}
+
+/** Whether a request of the queue store may change something: any
+ * statement in it that is not a SELECT. One that cannot be read is
+ * taken to. */
+export function queueWrites(body: string | undefined): boolean {
+  try {
+    const requests = (JSON.parse(body ?? "") as { requests?: { stmt?: { sql?: unknown } }[] }).requests;
+    if (!Array.isArray(requests)) return true;
+    return requests.some((r) => r?.stmt !== undefined && !/^\s*select\b/i.test(String(r.stmt.sql ?? "")));
+  } catch {
+    return true;
+  }
 }
 
 /** One section, read by the class that reads it on the laptop. */
