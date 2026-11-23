@@ -153,9 +153,7 @@ fn builder_sent_kinds() -> BTreeSet<String> {
         .present(Some(&surface))
         .expect("trusted form presents");
     let form = presenter.active().expect("form is active");
-    record(
-        &form_result_frame(form, "submit", &Map::new()).expect("form result builds"),
-    );
+    record(&form_result_frame(form, "submit", &Map::new()).expect("form result builds"));
 
     // provider_offer / provider_reply: the adapter with the file-read
     // grant in force for one world.
@@ -284,7 +282,9 @@ fn statement_presents_exactly_what_the_session_folds() {
     for (frame, expected) in presented_frames() {
         let kind = frame["type"].as_str().expect("frame type").to_owned();
         assert_eq!(
-            state.apply_server_frame(frame).expect("presented frame folds"),
+            state
+                .apply_server_frame(frame)
+                .expect("presented frame folds"),
             expected,
             "{kind} folds as its named update"
         );
