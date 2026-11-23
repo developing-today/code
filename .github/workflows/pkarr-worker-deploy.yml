@@ -39,23 +39,32 @@ jobs:
     if: github.event_name == 'workflow_dispatch' && github.repository == 'developing-today/code' && github.ref == 'refs/heads/main' && inputs.confirm == true
     runs-on: ubuntu-latest
     timeout-minutes: 2
+    outputs:
+      environment: ${{ steps.protection.outputs.environment }}
     steps:
-      - name: Require the pre-existing protected environment
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Require the pre-existing exactly main-only protected environment
+        id: protection
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          gh api repos/developing-today/code/environments/pkarr-worker-production |
-            jq -e '
-              .name == "pkarr-worker-production" and
-              any(.protection_rules[]?; .type == "required_reviewers" and .prevent_self_review == true and (.reviewers | length > 0)) and
-              (.deployment_branch_policy.protected_branches == true or .deployment_branch_policy.custom_branch_policies == true)
-            ' > /dev/null
+          umask 077
+          endpoint="repos/developing-today/code/environments/pkarr-worker-production"
+          gh api "$endpoint" > "$RUNNER_TEMP/pkarr-environment.json"
+          gh api "$endpoint/deployment-branch-policies?per_page=2" > "$RUNNER_TEMP/pkarr-branches.json"
+          node pkgs/pkarr-worker/gha-publish.mjs environment \
+            "$RUNNER_TEMP/pkarr-environment.json" "$RUNNER_TEMP/pkarr-branches.json"
+          echo 'environment=pkarr-worker-production' >> "$GITHUB_OUTPUT"
 
   deploy:
     needs: preflight
     if: github.event_name == 'workflow_dispatch' && github.repository == 'developing-today/code' && github.ref == 'refs/heads/main' && inputs.confirm == true
-    environment: pkarr-worker-production
+    environment:
+      name: ${{ needs.preflight.outputs.environment }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
@@ -120,9 +129,12 @@ jobs:
           get deployments > "$RUNNER_TEMP/pkarr-before.json"
           # Refuse to upload unless the provider's prior serving state was readable.
           node gha-publish.mjs unchanged "$RUNNER_TEMP/pkarr-before.json" "$RUNNER_TEMP/pkarr-before.json"
-          ./node_modules/.bin/cf -q workers versions create --worker pkarr --prebuilt --tag "$GITHUB_SHA" \
-            --message "pkarr $GITHUB_SHA run $GITHUB_RUN_ID attempt $GITHUB_RUN_ATTEMPT" > "$RUNNER_TEMP/pkarr-cf-response.json"
-          VERSION_ID="$(node gha-publish.mjs upload-id "$RUNNER_TEMP/pkarr-cf-response.json")"
+          cf_receipt="$RUNNER_TEMP/pkarr-cf-upload.jsonl"
+          [[ ! -e "$cf_receipt" ]]
+          WRANGLER_OUTPUT_FILE_PATH="$cf_receipt" ./node_modules/.bin/cf -q workers versions create \
+            --worker pkarr --prebuilt --tag "$GITHUB_SHA" \
+            --message "pkarr $GITHUB_SHA run $GITHUB_RUN_ID attempt $GITHUB_RUN_ATTEMPT" > /dev/null
+          VERSION_ID="$(node gha-publish.mjs upload-id "$cf_receipt")"
           export VERSION_ID
           [[ "$VERSION_ID" =~ ^[a-f0-9-]{36}$ ]]
           export UPLOAD_RUN_ID="$GITHUB_RUN_ID" UPLOAD_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" UPLOAD_SOURCE_SHA="$GITHUB_SHA"
@@ -179,5 +191,5 @@ jobs:
           versions="$(jq -cn --arg id "$VERSION_ID" '[{version_id:$id,percentage:100}]')"
           ./node_modules/.bin/cf -q workers deployments create --worker pkarr --strategy percentage --versions "$versions" > "$RUNNER_TEMP/pkarr-promotion.json"
           get deployments > "$RUNNER_TEMP/pkarr-promoted.json"
-          node gha-publish.mjs verify "$RUNNER_TEMP/pkarr-promoted.json" "$receipt"
+          node gha-publish.mjs verify "$RUNNER_TEMP/pkarr-promoted.json" "$receipt" "$RUNNER_TEMP/pkarr-promotion.json"
           curl --fail --silent --show-error --max-time 15 https://pkarr.developing-today.workers.dev/healthz | grep -Fxq ok
