@@ -1787,7 +1787,7 @@ mod tests {
             currency: currency.compact_hash(),
             amount,
             to: issuer_id(&fx.bob.account_key),
-            seq_ref: seq,
+            seq_ref: u64::from(seq),
             memo: None,
         };
         let event = sign_transfer(&fx.alice.account_key, seq, backlink, &token, vec![])
@@ -2207,7 +2207,7 @@ mod tests {
         assert!(
             report.findings.iter().any(|f| matches!(
                 f,
-                IntentFinding::PostedIntentTransferMismatch { transfer_id }
+                IntentFinding::PostedIntentTransferMismatch { transfer_id, .. }
                 if *transfer_id == transfer_intent.idempotency
             )),
             "run a findings: {:?}",
