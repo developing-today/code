@@ -23,8 +23,8 @@ const okNoInfo = result => new Response(JSON.stringify({ success: true, result }
 const missing = (code = 10007, message = 'Worker not found.') =>
   new Response(JSON.stringify({ success: false, errors: [{ code, message }] }), { status: 404 });
 
-function fixture({ worker = null, createdWorker = safeWorker(), route = null, zones = [{ id: zoneId, account: { id: accountId } }], zoneResultInfo, versions = [], versionResultInfo, deployments = [], deploymentResultInfo, deploymentNoInfo = false, createResult = null, authFailure = false, writeAuthFailure = false, missingCode = 10007, missingMessage = 'Worker not found.' } = {}) {
-  const state = { worker, createdWorker, route, zones, zoneResultInfo, versions, versionResultInfo, deployments, deploymentResultInfo, deploymentNoInfo, createResult, authFailure, writeAuthFailure, missingCode, missingMessage, calls: [] };
+function fixture({ worker = null, createdWorker = safeWorker(), route = null, zones = [{ id: zoneId, account: { id: accountId } }], zoneResultInfo, zonePages, versions = [], versionResultInfo, deployments = [], deploymentResultInfo, deploymentNoInfo = false, createResult = null, authFailure = false, writeAuthFailure = false, missingCode = 10007, missingMessage = 'Worker not found.' } = {}) {
+  const state = { worker, createdWorker, route, zones, zoneResultInfo, zonePages, versions, versionResultInfo, deployments, deploymentResultInfo, deploymentNoInfo, createResult, authFailure, writeAuthFailure, missingCode, missingMessage, calls: [] };
   const fetchImpl = async (url, init = {}) => {
     const parsed = new URL(url);
     const method = init.method ?? 'GET';
@@ -36,7 +36,14 @@ function fixture({ worker = null, createdWorker = safeWorker(), route = null, zo
     if (state.writeAuthFailure && method === 'POST' && token === `Bearer ${writeToken}`) {
       return new Response(JSON.stringify({ success: false, errors: [{ code: 10000, message: 'Authentication error' }] }), { status: 403 });
     }
-    if (parsed.pathname === '/client/v4/zones') return ok(state.zones, state.zoneResultInfo);
+    if (parsed.pathname === '/client/v4/zones') {
+      if (state.zonePages) {
+        const page = Number(parsed.searchParams.get('page'));
+        const result = state.zonePages[page - 1] ?? [];
+        return ok(result, { total_pages: state.zonePages.length, page, per_page: 50, total_count: state.zonePages.flat().length, count: result.length });
+      }
+      return ok(state.zones, state.zoneResultInfo);
+    }
     if (parsed.pathname.endsWith('/workers/routes')) return ok(state.route ? [state.route] : []);
     if (parsed.pathname.endsWith(`/workers/workers/${WORKER_NAME}`) && method === 'GET') {
       return state.worker ? ok(state.worker, undefined) : missing(state.missingCode, state.missingMessage);
@@ -96,6 +103,13 @@ test('read and write credentials must be different before any request', async ()
   assert.equal(state.calls.length, 0);
 });
 
+test('missing credentials fail before any network request', async () => {
+  const { state, fetchImpl } = fixture();
+  await assert.rejects(run({ fetchImpl, writeToken: '' }), /write credential is missing/);
+  await assert.rejects(run({ fetchImpl, readToken: '' }), /read-only credential is missing/);
+  assert.equal(state.calls.length, 0);
+});
+
 test('only the documented Worker-specific 404 means absent', async () => {
   const generic = fixture({ missingCode: 10000, missingMessage: 'Resource not found' });
   await assert.rejects(run({ fetchImpl: generic.fetchImpl }), /API request failed/);
@@ -131,6 +145,15 @@ test('zone scan requires owner, unique IDs and exact full-account inventory', as
       assert.equal(f.state.calls.some(call => call.method === 'POST'), false);
     });
   }
+});
+
+test('complete multi-page route inventory is compared to protected zone IDs', async () => {
+  const ids = Array.from({ length: 51 }, (_, index) => index.toString(16).padStart(32, '0'));
+  const zones = ids.map(id => ({ id, account: { id: accountId } }));
+  const f = fixture({ zonePages: [zones.slice(0, 50), zones.slice(50)] });
+  assert.equal(await run({ fetchImpl: f.fetchImpl, expectedZoneIds: ids }), 'created');
+  const zoneRequests = f.state.calls.filter(call => call.url.pathname === '/client/v4/zones');
+  assert.equal(zoneRequests.length, 4); // two complete scans: before and after create
 });
 
 test('known zero-zone inventory is accepted only when explicitly configured', async () => {
