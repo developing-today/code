@@ -149,7 +149,7 @@ export class PromptAttachmentsStore {
     return saved;
   }
 
-  async read(ref: string): Promise<{ meta: PromptAttachmentMeta; bytes: Uint8Array } | null> {
+  async read(ref: string): Promise<{ meta: PromptAttachmentMeta; bytes: Buffer } | null> {
     const uuid = this.uuidOf(ref);
     if (!uuid) return null;
     try {
