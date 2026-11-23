@@ -387,6 +387,124 @@ describe("what needs the owner's hands", () => {
     expect(s.waiting).toEqual([{ id: "p", title: "log in", ref: "gh:x/y#1", why: "" }]);
   });
 
+  test("the census is read from GitHub, by label, in the repositories on the list (#13491)", async () => {
+    const item = (repo: string, n: number, labels: string[], title: string, body: string) => ({
+      number: n,
+      title,
+      body,
+      html_url: `https://github.com/${repo}/issues/${n}`,
+      state: "open",
+      updated_at: "2026-11-23T10:00:00Z",
+      labels: labels.map((name) => ({ name })),
+    });
+    const search = (argv: string[]) => {
+      const q = argv.find((a) => a.startsWith("q="))?.slice(2) ?? "";
+      const m = /repo:([^ ]+) state:open label:"([^"]+)"/.exec(q);
+      const page = Number(argv.find((a) => a.startsWith("page="))?.slice(5) ?? "1");
+      const repo = m?.[1] ?? "";
+      const label = m?.[2] ?? "";
+      if (repo === REPO && label === "user/review")
+        return { items: [item(repo, 10, ["user/review", "user/escalated"], "Review the plan", "")], total_count: 1 };
+      if (repo === REPO && label === "user/escalated")
+        return {
+          items: [
+            item(repo, 10, ["user/review", "user/escalated"], "Review the plan", ""),
+            item(
+              repo,
+              11,
+              ["user/escalated"],
+              "Fix the host",
+              'Please do this.\n\n<!-- hands:v1 kind=physical action="Power on the host." -->',
+            ),
+            item(repo, 12, ["user/escalated"], "Why is this stuck", "Escalated: the queue is wedged"),
+          ],
+          total_count: 3,
+        };
+      if (repo === "developing-today/opencode" && label === "user/review") {
+        const first = Array.from({ length: 100 }, (_, i) =>
+          item(repo, 1000 + i, ["user/review"], `Review ${1000 + i}`, ""),
+        );
+        return page === 1
+          ? { items: first, total_count: 101 }
+          : { items: [item(repo, 1100, ["user/review"], "Review 1100", "")], total_count: 101 };
+      }
+      return { items: [], total_count: 0 };
+    };
+    const w = world({
+      commands: (argv) => (argv.includes("search/issues") ? JSON.stringify(search(argv)) : "{}"),
+    });
+    const work = new Work(w.ops, undefined, () => new Date("2026-11-23T12:00:00Z"));
+    const c = await work.censusFromGitHub();
+    // One search per repository and label, in the list's order; the
+    // paged one is read to its end.
+    const q = (repo: string, label: string, page = 1) => [
+      "-X",
+      "GET",
+      "search/issues",
+      "-f",
+      `q=repo:${repo} state:open label:"${label}"`,
+      "-f",
+      "per_page=100",
+      "-f",
+      `page=${page}`,
+    ];
+    expect(w.gh()).toEqual([
+      q(REPO, "user/review"),
+      q(REPO, "user/escalated"),
+      q("developing-today/opencode", "user/review"),
+      q("developing-today/opencode", "user/review", 2),
+      q("developing-today/opencode", "user/escalated"),
+      q("developing-today/openchamber", "user/review"),
+      q("developing-today/openchamber", "user/escalated"),
+      q("dezren39/nix", "user/review"),
+      q("dezren39/nix", "user/escalated"),
+    ]);
+    expect(c.at).toBe("2026-11-23T12:00:00.000Z");
+    expect(c.complete).toBe(true);
+    expect(c.hands.map((i) => [i.ref, i.kind, i.action])).toEqual([
+      [`${REPO}#11`, "physical", "Power on the host."],
+    ]);
+    // Carrying both labels, #10 is one item, and a review, not two.
+    expect(c.reviews.map((i) => i.ref)).toEqual([
+      `${REPO}#10`,
+      ...Array.from({ length: 101 }, (_, i) => `developing-today/opencode#${1000 + i}`),
+    ]);
+    expect(c.other.map((i) => [i.ref, i.why])).toEqual([[`${REPO}#12`, "the queue is wedged"]]);
+  });
+
+  test("a source GitHub cannot answer leaves the census incomplete, and none at all fails the read", async () => {
+    const item = (n: number) => ({
+      number: n,
+      title: "Review",
+      body: "",
+      html_url: `https://github.com/x/issues/${n}`,
+      state: "open",
+      updated_at: "2026-11-23T10:00:00Z",
+      labels: [{ name: "user/review" }],
+    });
+    const w = world({
+      commands: (argv) => {
+        if (!argv.includes("search/issues")) return "{}";
+        const q = argv.find((a) => a.startsWith("q="))?.slice(2) ?? "";
+        if (q.includes("dezren39/nix")) return { code: 1, stderr: "GitHub answered http 500" };
+        return JSON.stringify({ items: [item(10)], total_count: 1 });
+      },
+    });
+    const work = new Work(w.ops, undefined, () => new Date("2026-11-23T12:00:00Z"));
+    const c = await work.censusFromGitHub();
+    expect(c.complete).toBe(false);
+    expect(c.reviews.map((i) => i.ref)).toEqual([
+      "developing-today/code#10",
+      "developing-today/opencode#10",
+      "developing-today/openchamber#10",
+    ]);
+    const down = world({
+      commands: (argv) =>
+        argv.includes("search/issues") ? { code: 1, stderr: "GitHub answered http 500" } : "{}",
+    });
+    await expect(new Work(down.ops).censusFromGitHub()).rejects.toThrow(/could not be read from GitHub/);
+  });
+
   test("done means a comment and the label gone, only for a repository on the list", async () => {
     const w = world({});
     const work = new Work(w.ops);

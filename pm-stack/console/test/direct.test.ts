@@ -174,12 +174,86 @@ describe("the direct classes", () => {
       prs: async () => (seen.push("prs"), [] as unknown[]),
       priorities: async () => (seen.push("priorities"), {}),
     };
-    const work = { board: async () => (seen.push("board"), {}), asks: async () => (seen.push("asks"), []) };
-    for (const section of ["board", "prs", "priorities", "asks"]) {
+    const work = {
+      board: async () => (seen.push("board"), {}),
+      asks: async () => (seen.push("asks"), []),
+      censusFromGitHub: async () => (seen.push("census"), {}),
+    };
+    for (const section of ["board", "prs", "priorities", "asks", "census"]) {
       await directRead(section, ops as never, work as never);
     }
-    expect(seen).toEqual(["board", "prs", "priorities", "asks"]);
+    expect(seen).toEqual(["board", "prs", "priorities", "asks", "census"]);
     await expect(directRead("sessions", ops as never, work as never)).rejects.toThrow(/not a section the edge reads/);
+  });
+
+  test("the census is read from GitHub, by label, in the repositories on the list (#13491)", async () => {
+    const calls: string[] = [];
+    const fetchImpl = (async (url: string) => {
+      calls.push(url);
+      const q = new URL(url).searchParams.get("q") ?? "";
+      const m = /repo:([^ ]+) state:open label:"([^"]+)"/.exec(q);
+      const repo = m?.[1] ?? "";
+      const label = m?.[2] ?? "";
+      const item = (n: number, labels: string[], title: string, body: string) => ({
+        number: n,
+        title,
+        body,
+        html_url: `https://github.com/${repo}/issues/${n}`,
+        state: "open",
+        updated_at: "2026-11-23T10:00:00Z",
+        labels: labels.map((name) => ({ name })),
+      });
+      const items =
+        repo === "developing-today/code" && label === "user/review"
+          ? [item(10, ["user/review"], "Review the plan", "")]
+          : repo === "developing-today/code" && label === "user/escalated"
+            ? [
+                item(
+                  11,
+                  ["user/escalated"],
+                  "Fix the host",
+                  '<!-- hands:v1 kind=physical action="Power on the host." -->',
+                ),
+              ]
+            : [];
+      return { ok: true, status: 200, json: async () => ({ items, total_count: items.length }) };
+    }) as unknown as Fetch;
+    const { ops, work } = directClasses(edgeConfig, {
+      githubToken: "gh-test",
+      queueToken: "queue-test",
+      fetchImpl,
+      now: () => Date.parse("2026-11-23T12:00:00Z"),
+    });
+    const c = await directRead("census", ops, work);
+    expect(calls).toHaveLength(8);
+    expect(calls[0]).toBe(
+      "https://api.github.com/search/issues?q=repo%3Adeveloping-today%2Fcode+state%3Aopen+label%3A%22user%2Freview%22&per_page=100&page=1",
+    );
+    expect(c).toEqual({
+      at: "2026-11-23T12:00:00.000Z",
+      complete: true,
+      hands: [
+        {
+          ref: "developing-today/code#11",
+          title: "Fix the host",
+          url: "https://github.com/developing-today/code/issues/11",
+          pr: false,
+          updated: "2026-11-23T10:00:00",
+          kind: "physical",
+          action: "Power on the host.",
+        },
+      ],
+      reviews: [
+        {
+          ref: "developing-today/code#10",
+          title: "Review the plan",
+          url: "https://github.com/developing-today/code/issues/10",
+          pr: false,
+          updated: "2026-11-23T10:00:00",
+        },
+      ],
+      other: [],
+    });
   });
 
   test("the classes run unchanged on the stand-ins: the queue store is reached by fetch", async () => {
@@ -333,6 +407,7 @@ describe("what this side notes of each call it makes", () => {
       prs: ["github"],
       priorities: ["github"],
       asks: ["github", "queue"],
+      census: ["github"],
     });
   });
 });
