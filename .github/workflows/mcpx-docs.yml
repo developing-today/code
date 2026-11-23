@@ -116,6 +116,29 @@ jobs:
           cp -rL result site
           test -f site/index.html
 
+      # The fleet book (#13165, pkgs/fleet/book) shares this
+      # repository's single Pages site: a deployment replaces the
+      # whole site, so the fleet book is built with its own siteUrl
+      # and staged under fleet/ here, in the same deploy — a separate
+      # fleet-only deploy would wipe the mcpx book. Its build-only
+      # workflow is fleet-docs.yml; see the book's "Deploying this
+      # book" chapter (pkgs/fleet/book/operations/deploying-this-book.md).
+      - name: Nix build (fleet book, siteUrl /code/fleet/)
+        run: |
+          # Intentional: the single-quoted string in this block is a Nix expression
+          # evaluated by nix, not the shell -- ${builtins.currentSystem} in it is
+          # Nix's, and letting the shell expand it would break the build.
+          # shellcheck disable=SC2016
+          nix build --impure --print-build-logs --expr \
+            '(builtins.getFlake (toString ./.)).packages.${builtins.currentSystem}.fleet-docs.override { siteUrl = "/code/fleet/"; }' \
+            --out-link result-fleet-docs
+
+      - name: Stage fleet book into site/fleet
+        run: |
+          rm -rf site/fleet
+          cp -rL result-fleet-docs site/fleet
+          test -f site/fleet/index.html
+
       - uses: actions/configure-pages@v6
 
       - uses: actions/upload-pages-artifact@v5
