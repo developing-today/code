@@ -44,7 +44,7 @@ Two memory connectors from the memory-integration programme belong to this pass'
 
 ### Gmail — a future source only
 
-Gmail is named here for exactly one reason: so that its absence from the pipeline is a recorded decision, not an oversight. The user has paused all Gmail background checks (2026-11-22), regardless of connection state. This design therefore does not design a Gmail pipeline — no collection shape, no cadence, no classification rule beyond naming it a future source that would be personal or local-only tier by default if it were ever unpaused. Any future mail ingest needs both reconnection and the user lifting the pause, as its own decision.
+Gmail is named here for exactly one reason: so that its absence from the pipeline is a recorded decision, not an oversight. The user has paused all Gmail background checks (2026-11-22), regardless of connection state. This design therefore does not design a Gmail pipeline — no collection shape, no cadence, no classification rule beyond naming it a future source that would sit at the internal or private rung by default (code spellings `personal` / `local-only`) if it were ever unpaused. Any future mail ingest needs both reconnection and the user lifting the pause, as its own decision.
 
 ### Standing constraints on every source
 

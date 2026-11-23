@@ -602,3 +602,59 @@ screen with nothing in front of the machine and with the edge in front;
 something held while the machine is out of reach, listed in the owner's
 words, taken back after a question, and recorded as not sent. axe-core
 over 21 screens and the new dialog: no violations.
+
+## 2026-11-23T17:20Z Update: step 5 in service, and step 6 begun (one platform)
+
+**Step 5 is in service.** Merged as #13471 after one round of review
+(two findings, both real). At 17:00Z the Worker ran `cf40e59c6e92`.
+
+**The Workers, counted.** The repository holds eighteen. Asked at their
+addresses from outside today, fourteen answered and four did not exist
+(the fleet's hosted front door and three of id's, all local-only by
+their own account). Of the fourteen, two are deployed from Actions (the
+PM console, the pkarr door). Twelve were deployed by hand from a
+machine: nothing in the repository says which commit each runs, and
+none can be put back from the app.
+
+**What is built: the list, and the screen.** "One platform" starts as
+one list that is true. `pm-stack/platform/workers.json` names every
+Worker, where it lives, what it does, whether it is in service, how it
+gets there, and what joining the platform means for it; a test beside
+it holds it to the repository, so it cannot quietly go stale. The edge
+reads it from the repository with the latest run of each deploy
+workflow, and More, Platform shows it with no machine. What joining
+means is written down in `pm-stack/platform/README.md`: deployed from
+Actions with a check and a way back, saying its version, its secrets
+set by the deploy, seen from the app.
+
+**What is not built.** No Worker was moved to Actions in this change:
+each has its own secrets and bindings, and deploying one I have not
+stood up from nothing would be a guess with someone's service. Each is
+its own issue, filed with the gaps, in the order the list gives.
+Whether each is in service is not checked by the edge itself: a Worker
+cannot ask another on the same account by its public address without a
+setting the console does not have, and changing how the console reaches
+out needs its own care (the same setting changes how it reaches the
+laptop).
+
+**Seen in service, and fixed here.** The Worker's own check of its
+reads had failed once on GitHub's rate limit and stood as failed for
+the hour, on the Cloudflare screen too. A check in which something
+could not be read is now made again in five minutes.
+
+**Every gap is an issue.** Sixteen, under the tracker #13504: the
+edge's own GitHub allowance (#13489), queue tasks from Cloudflare
+(#13490), questions and sessions with no machine (#13491), a message
+to an agent with no machine (#13502), the ordering case left out
+(#13398), a second machine (#13492), the twelve Workers deployed from
+Actions (#13493), the edge checking each Worker (#13494), platform
+settings from Actions (#13495), the stores managed from the app
+(#13496), the fold-in of two Workers (#13503), roadmap files for fleet
+and atlas (#13497), a type check (#13498), the signed-in flows in the
+real runtime (#13499), the Android app on a device (#13500), and what
+is left of offline (#13501). The PM stack's roadmap file has the rows.
+
+Checked: 357 tests under bun, 4 beside the list. In a real Chrome
+against both demos, light and dark: the Platform screen's counts,
+groups, each kind of row and its links. axe-core over 22 screens: no
+violations.
