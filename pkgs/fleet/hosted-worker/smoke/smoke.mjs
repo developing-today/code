@@ -10,7 +10,9 @@
 // claim, complete — plus a fallback claim over the comment
 // surface (#12589), and the ingestion door stores the created
 // item into a fresh metadata store from a signed webhook
-// delivery, then re-checks it by sweep (#12590). For a wrangler
+// delivery, then re-checks it by sweep (#12590), and the sync
+// door runs project-reconcile's write set end to end and posts
+// a verdict flow note exactly once (#12591). For a wrangler
 // dev run instead: set
 // RP_ISSUER / TENANCY_FIXTURE_JSON in the environment and
 // `npm run dev`, then curl /health and /capabilities.
@@ -412,6 +414,90 @@ await check(
   if (!okSweep) {
     failures++;
     console.log(`     body: ${JSON.stringify(sweepDoc)}`);
+  }
+}
+
+// Sync door (#12591): project-reconcile's write set (an
+// item-add with its initial status + a Status set) runs end to
+// end over a fixture project; a full retry writes nothing
+// twice; a verdict flow posts its marked note exactly once.
+{
+  const syncWriter = new FixtureGitHubWriter();
+  syncWriter.seedItem({ repo: "developing-today/code", kind: "issue", number: 7, body: "tracked" });
+  syncWriter.seedItem({ repo: "developing-today/code", kind: "issue", number: 42, body: "discovered" });
+  syncWriter.seedProject({
+    owner: "developing-today",
+    number: 3,
+    items: [{ repo: "developing-today/code", kind: "issue", number: 7, values: { Status: "Todo" } }],
+  });
+  const syncDeps = {
+    ...h.deps,
+    sessions: new FixtureSessionRegistry(),
+    githubProjects: syncWriter,
+    githubComments: syncWriter,
+  };
+  const syncToken = await h.sign(h.rpPayload());
+  const syncPost = (path, body) =>
+    dispatch(
+      bearerReq(path, syncToken, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      }),
+      syncDeps,
+    );
+  const ops = {
+    project: { owner: "developing-today", number: 3 },
+    ops: [
+      { op: "add-issue", repo: "developing-today/code", number: 42, status: "Todo" },
+      { op: "set-status", issue: "developing-today/code#7", to: "Done" },
+    ],
+  };
+  const syncRes = await syncPost("/v1/sync/project", ops);
+  const syncDoc = await syncRes.json();
+  const okSync =
+    syncRes.status === 200 &&
+    syncDoc.results?.[0]?.outcome === "added" &&
+    syncDoc.results?.[1]?.outcome === "status_set" &&
+    syncDoc.counts?.applied === 2;
+  console.log(`${okSync ? "ok  " : "FAIL"} POST /v1/sync/project (reconcile write set end to end): HTTP ${syncRes.status}`);
+  if (!okSync) {
+    failures++;
+    console.log(`     body: ${JSON.stringify(syncDoc)}`);
+  }
+
+  const retryRes = await syncPost("/v1/sync/project", ops);
+  const retryDoc = await retryRes.json();
+  const okRetry =
+    retryRes.status === 200 &&
+    retryDoc.results?.every((r) => r.outcome.startsWith("already")) &&
+    retryDoc.counts?.already === 2;
+  console.log(`${okRetry ? "ok  " : "FAIL"} POST /v1/sync/project (full retry writes nothing twice): HTTP ${retryRes.status}`);
+  if (!okRetry) {
+    failures++;
+    console.log(`     body: ${JSON.stringify(retryDoc)}`);
+  }
+
+  const flow = {
+    flow: "verdict",
+    repo: "developing-today/code",
+    number: 7,
+    marker: "smoke-cycle-1",
+    body: "Stewardship verdict: accept.",
+  };
+  const flowRes = await syncPost("/v1/sync/queue-github", flow);
+  const flowDoc = await flowRes.json();
+  const flowRetryRes = await syncPost("/v1/sync/queue-github", flow);
+  const flowRetryDoc = await flowRetryRes.json();
+  const okFlow =
+    flowRes.status === 200 &&
+    flowDoc.comment?.outcome === "posted" &&
+    flowRetryDoc.comment?.outcome === "already_posted" &&
+    syncWriter.comments.length === 1;
+  console.log(`${okFlow ? "ok  " : "FAIL"} POST /v1/sync/queue-github (verdict posts exactly once): HTTP ${flowRes.status}`);
+  if (!okFlow) {
+    failures++;
+    console.log(`     body: ${JSON.stringify(flowDoc)} / ${JSON.stringify(flowRetryDoc)}`);
   }
 }
 

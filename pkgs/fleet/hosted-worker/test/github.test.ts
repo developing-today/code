@@ -263,6 +263,210 @@ test("listItems follows the next link and stops at the page cap", async () => {
   assert.equal(calls.filter((c) => c.url.includes("/issues?")).length, 3);
 });
 
+// --- The project surface (#12591): Projects V2 over GraphQL,
+// through the same rotation and the same failover rule. The
+// acceptance case: a forced rate-limit mid-flow (the add
+// mutation, after the reads landed) fails over to the next
+// installation WITHOUT duplicating the write.
+
+interface FakeProjectItem {
+  itemId: string;
+  number: number;
+  values: Record<string, string>;
+}
+
+/** A stateful fake GraphQL GitHub: token exchanges succeed per
+ * installation; GraphQL calls are answered from a tiny project
+ * model unless the supplied behaviour intercepts (per
+ * installation + query). successfulAdds counts mutations GitHub
+ * actually executed — the no-duplicate-writes oracle. */
+function fakeGraphQL(behaviour?: (
+  installation: number,
+  query: string,
+  variables: Record<string, unknown>,
+) => Response | null): {
+  fetchFn: FetchFn;
+  items: FakeProjectItem[];
+  successfulAdds: () => number;
+} {
+  const tokenToInstallation = new Map<string, number>();
+  const items: FakeProjectItem[] = [
+    { itemId: "PVTI_gql_1", number: 7, values: { Status: "Todo" } },
+  ];
+  let adds = 0;
+  let itemCounter = 1;
+  const projectPayload = () => ({
+    data: {
+      organization: {
+        projectV2: {
+          id: "PVT_gql",
+          fields: {
+            nodes: [
+              {
+                id: "F_status",
+                name: "Status",
+                options: [
+                  { id: "opt_todo", name: "Todo" },
+                  { id: "opt_done", name: "Done" },
+                ],
+              },
+            ],
+          },
+          items: {
+            pageInfo: { hasNextPage: false, endCursor: null },
+            nodes: items.map((item) => ({
+              id: item.itemId,
+              content: {
+                __typename: "Issue",
+                number: item.number,
+                repository: { nameWithOwner: "o/r" },
+              },
+              fieldValues: {
+                nodes: Object.entries(item.values).map(([field, name]) => ({
+                  name,
+                  field: { name: field },
+                })),
+              },
+            })),
+          },
+        },
+      },
+      user: null,
+    },
+  });
+  const fetchFn: FetchFn = async (url, init) => {
+    const headers = new Headers(init.headers);
+    const exchange = /\/app\/installations\/(\d+)\/access_tokens$/.exec(url);
+    if (exchange) {
+      const installation = Number(exchange[1]);
+      tokenToInstallation.set(`installation-token-${installation}`, installation);
+      return jsonResponse(201, {
+        token: `installation-token-${installation}`,
+        expires_at: new Date(NOW_MS + 3600_000).toISOString(),
+      });
+    }
+    const token = (headers.get("authorization") ?? "").replace(/^Bearer /, "");
+    const installation = tokenToInstallation.get(token);
+    assert.ok(installation, `GraphQL called with an unexchanged token`);
+    const body = JSON.parse(String(init.body)) as {
+      query: string;
+      variables: Record<string, unknown>;
+    };
+    const intercepted = behaviour?.(installation, body.query, body.variables);
+    if (intercepted) return intercepted;
+    if (body.query.includes("addProjectV2ItemById")) {
+      adds += 1;
+      itemCounter += 1;
+      const itemId = `PVTI_gql_${itemCounter}`;
+      const number = Number(String(body.variables["contentId"]).replace("I_", ""));
+      items.push({ itemId, number, values: {} });
+      return jsonResponse(200, { data: { addProjectV2ItemById: { item: { id: itemId } } } });
+    }
+    if (body.query.includes("updateProjectV2ItemFieldValue")) {
+      const item = items.find((i) => i.itemId === body.variables["itemId"]);
+      if (item) {
+        item.values["Status"] = body.variables["optionId"] === "opt_done" ? "Done" : "Todo";
+      }
+      return jsonResponse(200, {
+        data: { updateProjectV2ItemFieldValue: { projectV2Item: { id: body.variables["itemId"] } } },
+      });
+    }
+    if (body.query.includes("projectV2")) {
+      return jsonResponse(200, projectPayload());
+    }
+    if (body.query.includes("repository(")) {
+      const number = Number(body.variables["number"]);
+      return jsonResponse(200, {
+        data: {
+          repository: {
+            issue: number === 42 ? { id: "I_42" } : null,
+            pullRequest: null,
+          },
+        },
+      });
+    }
+    throw new Error(`fake GraphQL: unhandled query ${body.query.slice(0, 60)}`);
+  };
+  return { fetchFn, items, successfulAdds: () => adds };
+}
+
+test("the project surface reads state and resolves content over GraphQL", async () => {
+  const { fetchFn } = fakeGraphQL();
+  const surface = new AppRotationGitHubWriter(config, fetchFn, () => NOW_MS);
+  const state = await surface.getProjectState("o", 3);
+  assert.equal(state?.projectId, "PVT_gql");
+  assert.deepEqual(state?.fields, [
+    {
+      id: "F_status",
+      name: "Status",
+      options: [
+        { id: "opt_todo", name: "Todo" },
+        { id: "opt_done", name: "Done" },
+      ],
+    },
+  ]);
+  assert.deepEqual(state?.items, [
+    { itemId: "PVTI_gql_1", repo: "o/r", kind: "issue", number: 7, values: { Status: "Todo" } },
+  ]);
+  assert.equal(await surface.resolveContentId("o/r", "issue", 42), "I_42");
+  assert.equal(await surface.resolveContentId("o/r", "issue", 99), null);
+});
+
+test("a forced rate-limit mid-flow fails over without duplicate writes", async () => {
+  // Installation 111 serves the reads, then rate-limits the add
+  // mutation — the middle of the flow. The rotation fails the
+  // add over to 222, which executes it exactly once.
+  const { fetchFn, items, successfulAdds } = fakeGraphQL((installation, query) => {
+    if (installation === 111 && query.includes("addProjectV2ItemById")) {
+      return jsonResponse(403, { message: "API rate limit exceeded" }, { "x-ratelimit-remaining": "0" });
+    }
+    return null;
+  });
+  const surface = new AppRotationGitHubWriter(config, fetchFn, () => NOW_MS);
+  const state = await surface.getProjectState("o", 3);
+  assert.equal(state?.items.length, 1);
+  const contentId = await surface.resolveContentId("o/r", "issue", 42);
+  const { itemId } = await surface.addProjectItem(state!.projectId, contentId!);
+  await surface.setProjectItemSingleSelect(state!.projectId, itemId, "F_status", "opt_todo");
+
+  assert.equal(successfulAdds(), 1, "the add mutation executed exactly once");
+  assert.equal(items.filter((i) => i.number === 42).length, 1, "exactly one project item for #42");
+  assert.equal(items.find((i) => i.number === 42)?.values["Status"], "Todo");
+});
+
+test("a GraphQL rate-limit errors payload at HTTP 200 also fails over", async () => {
+  const { fetchFn } = fakeGraphQL((installation, query) => {
+    if (installation === 111 && query.includes("projectV2")) {
+      return jsonResponse(200, { errors: [{ message: "API rate limit exceeded for user ID 1" }] });
+    }
+    return null;
+  });
+  const surface = new AppRotationGitHubWriter(config, fetchFn, () => NOW_MS);
+  const state = await surface.getProjectState("o", 3);
+  assert.equal(state?.projectId, "PVT_gql");
+});
+
+test("a non-failover GraphQL failure surfaces value-free", async () => {
+  const { fetchFn } = fakeGraphQL((_installation, query) => {
+    if (query.includes("projectV2")) {
+      return jsonResponse(200, {
+        errors: [{ message: "Boom involving node PVT_secret_123 and token hunter2" }],
+      });
+    }
+    return null;
+  });
+  const surface = new AppRotationGitHubWriter(config, fetchFn, () => NOW_MS);
+  await assert.rejects(
+    () => surface.getProjectState("o", 3),
+    (e: unknown) => {
+      assert.equal((e as { code?: string }).code, "github_project_failed");
+      assert.ok(!(e as Error).message.includes("PVT_secret_123"), "provider values never surface");
+      assert.ok(!(e as Error).message.includes("hunter2"), "provider values never surface");
+      return true;
+    },
+  );
+});
+
 test("reads fail over on rate-limit refusals and surface real failures", async () => {
   const { fetchFn } = fakeGitHubReads((installation, url) => {
     if (installation === 111) return jsonResponse(429, { message: "secondary rate limit" });
