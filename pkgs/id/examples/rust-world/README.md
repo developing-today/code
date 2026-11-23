@@ -17,7 +17,7 @@ arrive in `plaza_alloc` memory the host frees with `plaza_free`.
 `../rust-counter` is the playable example built on this SDK — the Rust
 twin of `../roc-counter`, with the same events, screen, records, and
 snapshot text, and its checked-in module runs in the host's F12.7
-conformance suite (`pkgs/id/src/sandbox.rs`).
+conformance suite (`pkgs/id/crates/id-worlds/src/sandbox.rs`).
 
 ## Component model / WIT
 
