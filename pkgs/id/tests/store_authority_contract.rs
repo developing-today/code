@@ -226,7 +226,9 @@ fn identity_profiles_differ_in_facts_not_just_names() {
     // The algorithm family, ignoring the report's "(observed)"
     // qualifier on the Atlas entry (its algorithm is an observation
     // about stored values, not a producer-pinned fact).
-    let family = |algorithm: &str| algorithm.strip_suffix(" (observed)").unwrap_or(algorithm);
+    fn family(algorithm: &str) -> &str {
+        algorithm.strip_suffix(" (observed)").unwrap_or(algorithm)
+    }
     // The two BLAKE3 profiles share an algorithm and differ in what
     // is hashed and where the commitment lives; the two SHA-256
     // profiles likewise. Neither pair is interchangeable.
