@@ -141,6 +141,13 @@ test("each action is said in a line the owner will know it by", () => {
   expect(O.sayOf("ask.close")).toBe("Mark prompt #undefined done");
 });
 
+test("the platform's own second half of something it filed is said in words too, where what waits for a machine is listed", () => {
+  expect(O.sayOf("prompt.enqueue", { issue: 201, text: "x" })).toBe("File the queue task for prompt #201");
+  expect(O.sayOf("triage.enqueue", { issue: 301 })).toBe("File the triage task for #301");
+  // Neither is ever kept on the device: only the platform makes them.
+  expect([O.rule("prompt.enqueue"), O.rule("triage.enqueue"), O.rule("held.drop")]).toEqual(["now", "now", "now"]);
+});
+
 test("an entry is the action as it stood, under a name of its own", () => {
   const a = O.make("pr.merge", { pr: 55 }, T0);
   const b = O.make("pr.merge", { pr: 55 }, T0);

@@ -96,6 +96,8 @@ const link = new EdgeLink({
   done: memoryStore(),
   // One record with the host's own handler, as on the real host.
   named: demoDeps.named as Named,
+  machine: () => ({ name: "framework", actions: Object.keys(demoDeps.actions ?? {}).sort() }),
+  version: "0123abcd4567",
   docs: demoDocs,
   phones: demoDeps.phones!.devices,
   config: async () => ({

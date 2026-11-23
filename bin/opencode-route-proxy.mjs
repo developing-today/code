@@ -470,36 +470,110 @@ const knownExhaustedPairs = (now) => {
   }
 };
 
-// Exclude known-exhausted candidates (#5295), following the
-// credential-less exclusion pattern (#3228) — but fail-safe: if the
-// gate would empty the candidate list, the demoted order is kept as
-// it was, because a known-exhausted leg as last resort beats no
-// route at all. Gate decisions are recorded on stderr, the proxy's
-// diagnostics stream.
+// The bench a 401/403 earns (#12228): an auth failure marks the door
+// DEAD — the _antigravity ToS 403 shape — so it must stop taking new
+// sessions at once, not after demotion's three-failure threshold, and
+// not only after a quota wall names a reset. There is no stated reset
+// for an auth failure, so the bench is bounded: once it expires the
+// next seating is the probe, and any recorded success re-admits the
+// pair immediately (the probe succeeded). Same ledger-only source and
+// completion-time ordering as the quota gate above.
+const AUTH_BENCH_MS = 15 * 60 * 1000;
+const authBenchedPairs = (now) => {
+  let db = null;
+  try {
+    db = openDb();
+    const since = now - EXHAUSTED_LOOKBACK_MS;
+    const authRows = db
+      .prepare(
+        `SELECT provider_id, model_id, time_ended FROM route_attempt
+         WHERE outcome != 'success' AND error_tag = 'Authentication'
+           AND error_status IN (401, 403) AND time_ended > ?
+           AND time_ended = (
+             SELECT MAX(time_ended) FROM route_attempt r2
+             WHERE r2.provider_id = route_attempt.provider_id
+               AND r2.model_id = route_attempt.model_id
+               AND r2.outcome != 'success'
+               AND r2.error_tag = 'Authentication'
+               AND r2.error_status IN (401, 403)
+               AND r2.time_ended > ?
+           )`,
+      )
+      .all(since, since);
+    const successRows = db
+      .prepare(
+        `SELECT provider_id, model_id, MAX(time_ended) AS latest
+         FROM route_attempt
+         WHERE outcome = 'success' AND time_ended > ?
+         GROUP BY provider_id, model_id`,
+      )
+      .all(since);
+    const latestSuccess = new Map(
+      successRows.map((r) => [`${r.provider_id}/${r.model_id}`, r.latest]),
+    );
+    const out = new Map();
+    for (const r of authRows) {
+      const until = r.time_ended + AUTH_BENCH_MS;
+      if (until <= now) continue;
+      const key = `${r.provider_id}/${r.model_id}`;
+      const successAt = latestSuccess.get(key);
+      if (successAt !== undefined && successAt > r.time_ended) continue;
+      out.set(key, until);
+    }
+    return out;
+  } catch {
+    return new Map();
+  } finally {
+    try {
+      db?.close();
+    } catch {}
+  }
+};
+
+// Exclude known-exhausted and auth-benched candidates (#5295,
+// #12228), following the credential-less exclusion pattern (#3228) —
+// but fail-safe: if the gate would empty the candidate list, the
+// demoted order is kept as it was, because a benched leg as last
+// resort beats no route at all. Gate decisions are recorded on
+// stderr, the proxy's diagnostics stream.
 const applyKnownExhaustedGate = (cfg, candidates) => {
   if (!candidates.length) return candidates;
-  const exhausted = knownExhaustedPairs(nowMs());
-  if (!exhausted.size) return candidates;
+  const now = nowMs();
+  const exhausted = knownExhaustedPairs(now);
+  const authBenched = authBenchedPairs(now);
+  if (!exhausted.size && !authBenched.size) return candidates;
   const key = (c) => `${c.providerId}/${c.modelKey}`;
-  const kept = candidates.filter((c) => !exhausted.has(key(c)));
+  const kept = candidates.filter(
+    (c) => !exhausted.has(key(c)) && !authBenched.has(key(c)),
+  );
   // The fail-safe is evaluated against CREDENTIALED survivors: the
   // credential-less filter (#3228) runs after this gate, so a kept
   // list whose only members have no credential would still empty the
-  // route — and the exhausted leaf must then stay as the last resort
+  // route — and the benched leaf must then stay as the last resort
   // instead of the request failing with "no credentialed members".
   if (!kept.some((c) => hasCredential(cfg, c.providerId))) {
+    const reasons = [
+      ...(exhausted.size ? ["known-exhausted"] : []),
+      ...(authBenched.size ? ["auth bench"] : []),
+    ].join(" + ");
     console.error(
-      "opencode-route-proxy: known-exhausted gate bypassed — no credentialed " +
-        "candidate survives it; keeping the demoted order (#5295)",
+      `opencode-route-proxy: ${reasons} gate bypassed — no credentialed ` +
+        "candidate survives it; keeping the demoted order (#5295, #12228)",
     );
     return candidates;
   }
-  for (const c of candidates)
+  for (const c of candidates) {
     if (exhausted.has(key(c)))
       console.error(
         `opencode-route-proxy: known-exhausted gate excluded ${key(c)} ` +
           `until ${new Date(exhausted.get(key(c))).toISOString()} (#5295)`,
       );
+    else if (authBenched.has(key(c)))
+      console.error(
+        `opencode-route-proxy: auth bench excluded ${key(c)} until ` +
+          `${new Date(authBenched.get(key(c))).toISOString()} (#12228)`,
+      );
+  }
   return kept;
 };
 
@@ -875,6 +949,16 @@ const classifyHttp = (status, headers, bodyText) => {
       headers: { "retry-after": retryAfter },
     });
   }
+  if (status === 429 && quota === null) {
+    // A quota wall that names its reset in the BODY with no
+    // Retry-After header still walls the leaf (#12228): the _muse
+    // wall reads "Your usage window resets at 2026-11-16T00:00:00Z"
+    // with no header, and dropping it kept new sessions routing
+    // into the wall until demotion (reorder-only) kicked in.
+    const resetMs = bodyResetMs(bodyText);
+    if (resetMs !== null)
+      quota = JSON.stringify({ resetsAt: new Date(resetMs).toISOString() });
+  }
   if (status === 429)
     return new LeafError(`leaf HTTP 429: ${bodyText.slice(0, 200)}`, {
       tag: "RateLimit",
@@ -897,6 +981,58 @@ const classifyHttp = (status, headers, bodyText) => {
     tag: "ProviderInternal",
     status,
   });
+};
+
+// The reset instant a 429 BODY promises, if it names one (#12228).
+// Shapes: explicit JSON fields ({"resetsAt": "<iso>"}, epoch seconds
+// or ms under a reset/retry/renew key) or free prose with a reset
+// word next to an ISO instant ("window resets at ...Z"). Only future
+// instants are returned: a past instant cannot wall, and recording one
+// would just add noise to the ledger. Returns epoch ms or null.
+const bodyResetMs = (bodyText) => {
+  if (!bodyText) return null;
+  const futureMs = (ms) =>
+    Number.isFinite(ms) && ms > Date.now() ? ms : null;
+  try {
+    const parsed = JSON.parse(bodyText);
+    const findKeyed = (v, depth) => {
+      if (depth > 4 || v === null || typeof v !== "object") return null;
+      const entries = Array.isArray(v)
+        ? v.map((item, i) => [i, item])
+        : Object.entries(v);
+      for (const [k, item] of entries) {
+        if (
+          (typeof item === "string" || typeof item === "number") &&
+          /reset|retry|renew/i.test(String(k))
+        ) {
+          const ms =
+            typeof item === "number"
+              ? item > 1e12
+                ? item
+                : item > 1e9 && item < 1e11
+                  ? item * 1000
+                  : NaN
+              : Date.parse(item);
+          const ok = futureMs(ms);
+          if (ok !== null) return ok;
+        } else if (item !== null && typeof item === "object") {
+          const inner = findKeyed(item, depth + 1);
+          if (inner !== null) return inner;
+        }
+      }
+      return null;
+    };
+    const keyed = findKeyed(parsed, 0);
+    if (keyed !== null) return keyed;
+  } catch {}
+  const prose = bodyText.match(
+    /(?:reset|resum|renew|reinstat|available|back)[^\d]{0,20}(\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d{1,3})?)?(?:Z|[+-]\d{2}:?\d{2})?)/i,
+  );
+  if (prose) {
+    const ok = futureMs(Date.parse(prose[1]));
+    if (ok !== null) return ok;
+  }
+  return null;
 };
 
 const classifyStreamError = (providerError, headers) => {

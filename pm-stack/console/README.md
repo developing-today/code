@@ -178,6 +178,40 @@ Set `PM_CONSOLE_EDGE_URL` to turn the reporting on; `scripts/expose.py`
 does that when it sends the hostname through the Worker. Without it this
 service reports to nobody and serves the app itself, as before.
 
+### Machines
+
+This host is a machine, and the platform treats it as one of however
+many there are. A machine is anything that reports to the edge under a
+key the edge knows. In every report it says what it is called
+(`PM_CONSOLE_MACHINE`, or the host's own name) and what it can do: the
+kinds of action it has, and the sections it reads. Nothing about a
+machine is assumed from its being "the laptop".
+
+More, Machines shows:
+
+- **Cloudflare's own part**: whether it does the core itself, and what
+  it was turned away for lately.
+- **Each machine**: whether it is reporting and when it was last heard
+  from, the commit it runs, and what only it reports and only it can
+  do, in words. What Cloudflare does itself is not counted as the
+  machine's.
+- **What waits for a machine**: everything the owner did that is held
+  until one is back, oldest first, each with "Take back" (`held.drop`).
+  Taken back, it is recorded as not sent under its name, so the device
+  that sent it shows it under "could not be done"; offered again by a
+  device that never heard it was kept, it stays taken back.
+
+The screen keeps itself current while it is open: a machine going
+quiet or coming back, or something new waiting, draws it again.
+
+The edge answers that screen itself, so it is there with every machine
+away. Served straight from a machine, the machine answers with itself.
+
+One machine can report today: the one the tunnel leads to, whose key is
+the only one the edge takes reports under. Enrolling another under its
+own key, and sending each action to a machine that can do it, are not
+built.
+
 ### With no connection
 
 The app opens and can be used with no connection, in a browser and in
@@ -333,21 +367,22 @@ the route if the console does not come up with its sign-in settings.
 
 ## Configuration
 
-| Variable                                                  | Default                                            | Meaning                                            |
-| --------------------------------------------------------- | -------------------------------------------------- | -------------------------------------------------- |
-| `PM_CONSOLE_PORT`, `PM_CONSOLE_BIND`                      | `4872`, `127.0.0.1`                                | Listener; the address must be loopback             |
-| `PM_CONSOLE_OWNER_EMAILS`                                 | none (nobody)                                      | Comma-separated owner addresses                    |
-| `PM_CONSOLE_ACCESS_TEAM_DOMAIN`, `PM_CONSOLE_ACCESS_AUD`  | unset                                              | The Access issuer; set together                    |
-| `PM_CONSOLE_ISSUERS_FILE`                                 | unset                                              | JSON list of further issuers                       |
-| `PM_CONSOLE_CERT_NAMES`                                   | none                                               | Certificate common names that are the owner        |
-| `PM_CONSOLE_DASHBOARD_URL`                                | `http://127.0.0.1:4870`                            | The dashboard behind the gate; loopback, or empty  |
-| `PM_CONSOLE_UNITS`, `PM_CONSOLE_PROTECTED_UNITS`          | the stack's units                                  | Units the console manages; units it will not stop  |
-| `PM_CONSOLE_ANDROID_PACKAGE`, `PM_CONSOLE_ANDROID_SHA256` | `today.developing.pmconsole`, none                 | The Android app's identity in the asset-links file |
-| `PM_CONSOLE_ANDROID_APK`                                  | `~/.local/state/pm-console/android/pm-console.apk` | The signed build the console hands to the owner    |
-| `PM_CONSOLE_DEVICES_FILE`                                 | `~/.local/state/pm-console/devices.json`           | Linked phones (hashes of their tokens)             |
-| `PM_CONSOLE_EDGE_URL`                                     | unset (reports to nobody)                          | The public address the edge answers on, `https://` |
-| `PM_CONSOLE_EDGE_KEY_FILE`, `PM_CONSOLE_EDGE_DONE_FILE`   | `edge-key.json`, `edge-done.json` in the state dir | This host's signing key; what it ran for the edge  |
-| `PM_CONSOLE_REPO`, `PM_CONSOLE_QUEUE`                     | `developing-today/code`, `repo-health-code-pilot`  | What it operates on                                |
+| Variable                                                  | Default                                            | Meaning                                               |
+| --------------------------------------------------------- | -------------------------------------------------- | ----------------------------------------------------- |
+| `PM_CONSOLE_PORT`, `PM_CONSOLE_BIND`                      | `4872`, `127.0.0.1`                                | Listener; the address must be loopback                |
+| `PM_CONSOLE_OWNER_EMAILS`                                 | none (nobody)                                      | Comma-separated owner addresses                       |
+| `PM_CONSOLE_ACCESS_TEAM_DOMAIN`, `PM_CONSOLE_ACCESS_AUD`  | unset                                              | The Access issuer; set together                       |
+| `PM_CONSOLE_ISSUERS_FILE`                                 | unset                                              | JSON list of further issuers                          |
+| `PM_CONSOLE_CERT_NAMES`                                   | none                                               | Certificate common names that are the owner           |
+| `PM_CONSOLE_DASHBOARD_URL`                                | `http://127.0.0.1:4870`                            | The dashboard behind the gate; loopback, or empty     |
+| `PM_CONSOLE_UNITS`, `PM_CONSOLE_PROTECTED_UNITS`          | the stack's units                                  | Units the console manages; units it will not stop     |
+| `PM_CONSOLE_ANDROID_PACKAGE`, `PM_CONSOLE_ANDROID_SHA256` | `today.developing.pmconsole`, none                 | The Android app's identity in the asset-links file    |
+| `PM_CONSOLE_ANDROID_APK`                                  | `~/.local/state/pm-console/android/pm-console.apk` | The signed build the console hands to the owner       |
+| `PM_CONSOLE_DEVICES_FILE`                                 | `~/.local/state/pm-console/devices.json`           | Linked phones (hashes of their tokens)                |
+| `PM_CONSOLE_EDGE_URL`                                     | unset (reports to nobody)                          | The public address the edge answers on, `https://`    |
+| `PM_CONSOLE_EDGE_KEY_FILE`, `PM_CONSOLE_EDGE_DONE_FILE`   | `edge-key.json`, `edge-done.json` in the state dir | This host's signing key; what it ran for the edge     |
+| `PM_CONSOLE_MACHINE`                                      | the host's own name                                | What this machine is called where machines are listed |
+| `PM_CONSOLE_REPO`, `PM_CONSOLE_QUEUE`                     | `developing-today/code`, `repo-health-code-pilot`  | What it operates on                                   |
 
 A malformed port, a listen address or dashboard address that is not
 loopback, an edge address that is not plain `https://host`, or a
