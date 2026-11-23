@@ -398,6 +398,11 @@ jobs:
         if: ${{ matrix.mode == 'single' }}
         env:
           ORG_RUN_COMMAND: ${{ matrix.command }}
+          # The published image runs as root but ships a multi-user Nix
+          # setting for a nixbld group it does not contain. Use Nix's
+          # single-user mode for container legs; callers still choose any
+          # extra experimental features they need in their command.
+          NIX_CONFIG: "build-users-group =\nextra-experimental-features = nix-command flakes"
         run: |
           git config --global --add safe.directory '*'
           cd "$GITHUB_WORKSPACE/target"
@@ -408,6 +413,7 @@ jobs:
         env:
           CHECKOUTS_JSON: ${{ toJSON(matrix.checkouts) }}
           ORG_RUN_COMMAND: ${{ matrix.command }}
+          NIX_CONFIG: "build-users-group =\nextra-experimental-features = nix-command flakes"
         run: |
           git config --global --add safe.directory '*'
           cd "$GITHUB_WORKSPACE"
