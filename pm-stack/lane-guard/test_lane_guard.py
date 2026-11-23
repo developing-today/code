@@ -60,6 +60,37 @@ TRANSITION_PARKED = (
     "lane: oc-code-07 task: 20028 summary: Fresh verification"
 )
 PR_OPENED = "agent-note:v1\nstate: pr_opened\ntask: 20028\nlane: oc-code-04\n\nOpened PR #12100."
+# Triage verdict notes (#12233 F2a): the same verdict recorded by two
+# different queue tasks, in the HTML and YAML shapes. Each records a
+# fingerprint of the issue body it was triaged against (see
+# body_fingerprint); ISSUE_BODY is that body.
+ISSUE_BODY = "Triage me: still blocked on F12.4 (#1061).\n\nDetails here."
+HTML_TRIAGED = (
+    lg.note_header("11111", "triaged", verdict="still_blocked", body=ISSUE_BODY)
+    + "\nTriaged: still blocked on F12.4 (#1061)."
+)
+YAML_TRIAGED = (
+    "agent-note:v1\nstate: triaged\ntask: 22222\nverdict: still_blocked\n"
+    f"body_fp: {lg.body_fingerprint(ISSUE_BODY)}\n\n"
+    "Verdict: still blocked on F12.4 (#1061)."
+)
+# A YAML verdict note whose verdict is the last metadata field,
+# followed by narrative: the verdict value must stop at the end of
+# its line, not swallow the narrative below it into the verdict.
+YAML_TRIAGED_VERDICT_LAST = (
+    "agent-note:v1\nstate: triaged\ntask: 22222\n"
+    f"body_fp: {lg.body_fingerprint(ISSUE_BODY)}\nverdict: still_blocked\n\n"
+    "Still blocked on F12.4 (#1061)."
+)
+HTML_TRIAGED_LEGACY = (
+    "<!-- agent-note:v1 state=triaged task=11111 verdict=still_blocked -->\n"
+    "Triaged: still blocked on F12.4 (#1061)."
+)
+TRIAGED_NO_VERDICT = "agent-note:v1\nstate: triaged\ntask: 22222\n\nStill live."
+
+
+def at(minutes_ago):
+    return (NOW - timedelta(minutes=minutes_ago)).isoformat().replace("+00:00", "Z")
 
 
 class HoldVerdict(unittest.TestCase):
@@ -155,6 +186,61 @@ class ParseNote(unittest.TestCase):
             {"state": "parked", "task": "20028"},
         )
 
+    def test_verdict_field_is_parsed_and_normalised(self):
+        body = "agent-note:v1\nstate: triaged\ntask: 22222\nverdict: Still Blocked!\n"
+        self.assertEqual(
+            lg.parse_note(body),
+            {"state": "triaged", "task": "22222", "verdict": "still_blocked"},
+        )
+
+    def test_canonical_header_with_verdict_round_trips(self):
+        self.assertEqual(
+            lg.parse_note(
+                lg.note_header("20028", "triaged", verdict="still blocked")
+                + "\nTriaged."
+            ),
+            {"state": "triaged", "task": "20028", "verdict": "still_blocked"},
+        )
+
+    def test_body_fingerprint_round_trips_in_header(self):
+        header = lg.note_header(
+            "20028", "triaged", verdict="still blocked", body=ISSUE_BODY
+        )
+        parsed = lg.parse_note(header + "\nTriaged.")
+        self.assertEqual(
+            parsed,
+            {
+                "state": "triaged",
+                "task": "20028",
+                "verdict": "still_blocked",
+                "body_fp": lg.body_fingerprint(ISSUE_BODY),
+            },
+        )
+
+    def test_body_fingerprint_is_stable(self):
+        # 16 hex chars; surrounding whitespace and CRLF do not change
+        # the fingerprint, so a trivial reformat does not re-triage.
+        fp = lg.body_fingerprint(ISSUE_BODY)
+        self.assertRegex(fp, r"^[0-9a-f]{16}$")
+        self.assertEqual(lg.body_fingerprint("  " + ISSUE_BODY + "\n\n"), fp)
+        self.assertEqual(
+            lg.body_fingerprint(ISSUE_BODY.replace("\n", "\r\n")), fp
+        )
+        self.assertNotEqual(lg.body_fingerprint(ISSUE_BODY + " edited"), fp)
+
+    def test_verdict_value_stops_at_end_of_line(self):
+        # The verdict is the last metadata field; the narrative
+        # below it must not become part of the verdict key.
+        self.assertEqual(
+            lg.parse_note(YAML_TRIAGED_VERDICT_LAST),
+            {
+                "state": "triaged",
+                "task": "22222",
+                "verdict": "still_blocked",
+                "body_fp": lg.body_fingerprint(ISSUE_BODY),
+            },
+        )
+
     def test_plain_comment_is_not_a_note(self):
         self.assertIsNone(lg.parse_note("Looks good, ship it."))
         self.assertIsNone(lg.parse_note(None))
@@ -230,6 +316,156 @@ class NoteVerdict(unittest.TestCase):
         self.assertEqual(len(posted), 1)
 
 
+class VerdictNote(unittest.TestCase):
+    """#12233 F2a: a triage verdict is posted once per verdict per
+    unchanged issue, across task ids."""
+
+    def verdict(self, cs, task="99999", verdict="still_blocked", changes=(),
+                body=ISSUE_BODY):
+        return lg.note_verdict(
+            cs, task, "triaged", now=NOW, verdict=verdict, changes=changes,
+            body=body,
+        )
+
+    def test_same_verdict_other_task_unchanged_issue_is_skipped(self):
+        # The F2a done-test: two tasks, one unchanged issue — the
+        # second task's identical verdict note is skipped.
+        for body in (HTML_TRIAGED, YAML_TRIAGED):
+            with self.subTest(body=body[:30]):
+                v = self.verdict([comment(body, 40)])
+                self.assertFalse(v["post"])
+                self.assertIn("duplicate verdict", v["reason"])
+
+    def test_verdict_spelling_is_normalised(self):
+        v = self.verdict([comment(HTML_TRIAGED, 40)], verdict="Still blocked!")
+        self.assertFalse(v["post"])
+
+    def test_new_commit_after_verdict_posts(self):
+        # The other half of the F2a done-test: a third note, after a
+        # new commit lands on the issue, is posted.
+        changes = [{"kind": "commit", "at": at(10)}]
+        v = self.verdict([comment(HTML_TRIAGED, 40)], changes=changes)
+        self.assertTrue(v["post"])
+        self.assertIn("commit", v["reason"])
+
+    def test_label_change_after_verdict_posts(self):
+        changes = [{"kind": "label", "at": at(10)}]
+        v = self.verdict([comment(HTML_TRIAGED, 40)], changes=changes)
+        self.assertTrue(v["post"])
+        self.assertIn("label", v["reason"])
+
+    def test_body_edit_after_verdict_posts(self):
+        # The review finding: the timeline never reports body edits,
+        # so the fingerprint is the signal. A changed body re-opens
+        # the verdict even with no comment, label or commit since.
+        v = self.verdict(
+            [comment(HTML_TRIAGED, 40)], body=ISSUE_BODY + "\nEdited: new scope."
+        )
+        self.assertTrue(v["post"])
+        self.assertIn("body", v["reason"])
+
+    def test_body_unchanged_after_verdict_skips(self):
+        v = self.verdict([comment(HTML_TRIAGED, 40)], body=ISSUE_BODY)
+        self.assertFalse(v["post"])
+        self.assertIn("duplicate verdict", v["reason"])
+
+    def test_verdict_last_field_still_dedupes(self):
+        # The verdict is the last metadata field with narrative
+        # below it; the unchanged issue still dedupes.
+        v = self.verdict([comment(YAML_TRIAGED_VERDICT_LAST, 40)])
+        self.assertFalse(v["post"])
+        self.assertIn("duplicate verdict", v["reason"])
+
+    def test_cleared_body_after_verdict_posts(self):
+        # A body cleared to null is a known-empty body, not an
+        # unknown one: it invalidates the stored fingerprint.
+        v = self.verdict([comment(HTML_TRIAGED, 40)], body="")
+        self.assertTrue(v["post"])
+        self.assertIn("body", v["reason"])
+
+    def test_verdict_without_body_fingerprint_posts_once(self):
+        # A legacy verdict note records no fingerprint, so a body
+        # edit since it cannot be ruled out: post once, and the new
+        # note (via the CLI header) records one.
+        v = self.verdict([comment(HTML_TRIAGED_LEGACY, 40)])
+        self.assertTrue(v["post"])
+        self.assertIn("fingerprint", v["reason"])
+
+    def test_change_before_the_verdict_does_not_reopen_it(self):
+        changes = [{"kind": "commit", "at": at(50)}]
+        v = self.verdict([comment(HTML_TRIAGED, 40)], changes=changes)
+        self.assertFalse(v["post"])
+
+    def test_different_verdict_posts(self):
+        v = self.verdict([comment(HTML_TRIAGED, 40)], verdict="needs_slice")
+        self.assertTrue(v["post"])
+        self.assertIn("needs_slice", v["reason"])
+
+    def test_verdict_has_no_dedupe_window(self):
+        # A verdict stands until the issue changes: three days on,
+        # the repeat is still skipped (park notes expire in 24h).
+        v = self.verdict([comment(HTML_TRIAGED, 3 * 24 * 60)])
+        self.assertFalse(v["post"])
+
+    def test_human_comment_after_verdict_posts(self):
+        cs = [comment(HTML_TRIAGED, 40), comment("Drew: take another look.", 10)]
+        self.assertTrue(self.verdict(cs)["post"])
+
+    def test_bot_comment_after_verdict_still_skips(self):
+        cs = [comment(HTML_TRIAGED, 40), comment("CI summary", 10, user_type="Bot")]
+        self.assertFalse(self.verdict(cs)["post"])
+
+    def test_newest_note_not_a_verdict_posts(self):
+        v = self.verdict([comment(YAML_PARKED, 10)])
+        self.assertTrue(v["post"])
+        self.assertIn("not a triage verdict", v["reason"])
+
+    def test_state_only_verdicts_match_across_tasks(self):
+        # Notes recorded before --verdict existed carry only the
+        # state; two of those still dedupe.
+        v = lg.note_verdict(
+            [comment(TRIAGED_NO_VERDICT, 40)], "99999", "triaged", now=NOW
+        )
+        self.assertFalse(v["post"])
+
+    def test_recorded_verdict_does_not_match_unrecorded(self):
+        v = lg.note_verdict(
+            [comment(HTML_TRIAGED, 40)], "99999", "triaged", now=NOW
+        )
+        self.assertTrue(v["post"])
+
+    def test_first_verdict_posts(self):
+        self.assertTrue(self.verdict([])["post"])
+
+
+class ChangesFromTimeline(unittest.TestCase):
+    def test_maps_change_events(self):
+        # No `edited` event: GitHub's REST timeline exposes no such
+        # event type, so a body edit must never be expected here —
+        # it is detected by body fingerprint instead.
+        events = [
+            {"event": "labeled", "created_at": at(50)},
+            {"event": "commented", "created_at": at(45)},
+            {"event": "referenced", "commit_id": "abc123", "created_at": at(40)},
+            {"event": "referenced", "created_at": at(35)},  # cross-ref, no commit
+            {"event": "edited", "created_at": at(30)},  # not a real timeline event
+            {"event": "unlabeled", "created_at": at(25)},
+            {"event": "assigned", "created_at": at(20)},
+        ]
+        self.assertEqual(
+            lg.changes_from_timeline(events),
+            [
+                {"kind": "label", "at": at(50)},
+                {"kind": "commit", "at": at(40)},
+                {"kind": "label", "at": at(25)},
+            ],
+        )
+
+    def test_junk_events_are_ignored(self):
+        self.assertEqual(lg.changes_from_timeline([]), [])
+        self.assertEqual(lg.changes_from_timeline([None, {}, {"event": "labeled"}]), [])
+
+
 class Cli(unittest.TestCase):
     def run_cli(self, argv, gh, now=NOW):
         buf = io.StringIO()
@@ -277,6 +513,142 @@ class Cli(unittest.TestCase):
         self.assertFalse(out["post"])
         self.assertEqual(
             out["header"], "<!-- agent-note:v1 state=parked task=20028 -->"
+        )
+
+    def test_note_cli_verdict_fetches_timeline_and_skips_duplicate(self):
+        seen = []
+
+        def gh(path):
+            seen.append(path)
+            if "timeline" in path:
+                return []
+            if "comments" in path:
+                return [comment(HTML_TRIAGED, 5)]
+            return {"body": ISSUE_BODY}
+
+        code, out = self.run_cli(
+            [
+                "note",
+                "--repo",
+                "o/r",
+                "--issue",
+                "1062",
+                "--task",
+                "20028",
+                "--state",
+                "triaged",
+                "--verdict",
+                "still_blocked",
+            ],
+            gh=gh,
+        )
+        self.assertEqual(
+            seen,
+            [
+                "repos/o/r/issues/1062/comments?per_page=100",
+                "repos/o/r/issues/1062",
+                "repos/o/r/issues/1062/timeline?per_page=100",
+            ],
+        )
+        self.assertEqual(code, lg.EXIT_STOP)
+        self.assertFalse(out["post"])
+        self.assertEqual(
+            out["header"],
+            "<!-- agent-note:v1 state=triaged task=20028 "
+            f"verdict=still_blocked body_fp={lg.body_fingerprint(ISSUE_BODY)} -->",
+        )
+
+    def test_note_cli_verdict_posts_after_a_commit(self):
+        def gh(path):
+            if "timeline" in path:
+                return [
+                    {"event": "referenced", "commit_id": "abc123", "created_at": at(1)}
+                ]
+            if "comments" in path:
+                return [comment(HTML_TRIAGED, 5)]
+            return {"body": ISSUE_BODY}
+
+        code, out = self.run_cli(
+            [
+                "note",
+                "--repo",
+                "o/r",
+                "--issue",
+                "1062",
+                "--task",
+                "20028",
+                "--state",
+                "triaged",
+                "--verdict",
+                "still_blocked",
+            ],
+            gh=gh,
+        )
+        self.assertEqual(code, lg.EXIT_GO)
+        self.assertTrue(out["post"])
+        self.assertIn("commit", out["reason"])
+
+    def test_note_cli_verdict_posts_after_a_body_edit(self):
+        def gh(path):
+            if "timeline" in path:
+                return []
+            if "comments" in path:
+                return [comment(HTML_TRIAGED, 5)]
+            return {"body": ISSUE_BODY + "\nEdited: new scope."}
+
+        code, out = self.run_cli(
+            [
+                "note",
+                "--repo",
+                "o/r",
+                "--issue",
+                "1062",
+                "--task",
+                "20028",
+                "--state",
+                "triaged",
+                "--verdict",
+                "still_blocked",
+            ],
+            gh=gh,
+        )
+        self.assertEqual(code, lg.EXIT_GO)
+        self.assertTrue(out["post"])
+        self.assertIn("body", out["reason"])
+
+    def test_note_cli_verdict_posts_after_body_cleared(self):
+        def gh(path):
+            if "timeline" in path:
+                return []
+            if "comments" in path:
+                return [comment(HTML_TRIAGED, 5)]
+            return {"body": None}
+
+        code, out = self.run_cli(
+            [
+                "note",
+                "--repo",
+                "o/r",
+                "--issue",
+                "1062",
+                "--task",
+                "20028",
+                "--state",
+                "triaged",
+                "--verdict",
+                "still_blocked",
+            ],
+            gh=gh,
+        )
+        self.assertEqual(code, lg.EXIT_GO)
+        self.assertTrue(out["post"])
+        self.assertIn("body", out["reason"])
+        # A null body is known-empty: the new note still records a
+        # fingerprint, of the empty body.
+        self.assertEqual(
+            out["header"],
+            "<!-- agent-note:v1 state=triaged task=20028 "
+            f"verdict=still_blocked body_fp={lg.body_fingerprint('')} -->",
         )
 
     def test_gh_failure_is_exit_2(self):
