@@ -387,7 +387,10 @@ export class BridgeStore {
         };
       }
       if (event.seq === proof.seq) {
+        // The contest is among everything known at the fork point:
+        // the proof pair, any stored or held rival, and this event.
         const pair = twoLowest([
+          ...conflicts,
           { id: proof.first_id, bytes: this.bytesOf(proof.first_id) },
           { id: proof.second_id, bytes: this.bytesOf(proof.second_id) },
           { id: event.id, bytes: event.bytes },
@@ -420,6 +423,7 @@ export class BridgeStore {
       const storedPrev = this.storedCheckpoint(prevHex);
       if (storedPrev) {
         const sameSession =
+          storedPrev.author === event.authorHex &&
           storedPrev.header !== null &&
           bytesToHex(storedPrev.header) === bytesToHex(event.checkpoint.headerEncoding);
         const previousSegment =
@@ -692,13 +696,16 @@ export class BridgeStore {
     return rows.map((r) => this.waitingRow(r));
   }
 
-  private storedCheckpoint(id: string): { header: Uint8Array | null; seq: string | null } | null {
+  private storedCheckpoint(
+    id: string,
+  ): { author: string; header: Uint8Array | null; seq: string | null } | null {
     const rows = this.sql.exec(
-      "SELECT checkpoint_header, checkpoint_seq FROM bridge_events WHERE id = ?",
+      "SELECT author, checkpoint_header, checkpoint_seq FROM bridge_events WHERE id = ?",
       id,
     ).toArray();
     if (rows.length === 0) return null;
     return {
+      author: rows[0].author as string,
       header: rows[0].checkpoint_header ? blobBytes(rows[0].checkpoint_header) : null,
       seq: (rows[0].checkpoint_seq as string | null) ?? null,
     };

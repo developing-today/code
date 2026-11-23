@@ -249,6 +249,14 @@ test("checkpoint predecessors: accept the next segment, refuse a skip, wait on a
   const other = await importIdKey(new Uint8Array(32).fill(37));
   const orphan = await signEvent(other, { seq: 0, kind: "session.checkpoint", extra: checkpointDraft(1n, new Uint8Array(32).fill(55)) });
   assert.equal(store.ingestBatch([orphan], NOW)[0].kind, "waiting");
+  // A checkpoint naming ANOTHER author's checkpoint as predecessor —
+  // even with the same session header copied — is not the previous
+  // segment of its own session chain: refused as malformed.
+  const third = await importIdKey(new Uint8Array(32).fill(38));
+  const foreign = await signEvent(third, { seq: 0, kind: "session.checkpoint", extra: checkpointDraft(1n, cp0.idBytes) });
+  const foreignOutcome = store.ingestBatch([foreign], NOW)[0];
+  assert.equal(foreignOutcome.kind, "refused");
+  if (foreignOutcome.kind === "refused") assert.equal(foreignOutcome.reason, "malformed");
   // The canonical encoding helper is exercised by signEvent; assert
   // the encoding of a null is the CBOR null byte.
   assert.equal(encodeCanonical({ kind: "null" })[0], 0xf6);
