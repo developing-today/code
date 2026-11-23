@@ -514,6 +514,13 @@ mod tests {
     /// ID; a same-number result from another repository is not a hit.
     #[test]
     fn work_inspect_by_id_rejects_nonmatching_result() {
+        assert_eq!(
+            resolve_work_inspection_by_id("842", &[inspection("developing-today/code", "843")]),
+            Err(WorkInspectionLookupError::NotFoundById {
+                work_id: "842".to_string(),
+            })
+        );
+
         let requested = WorkRef::new("developing-today/code", "842").unwrap();
         let result_from_another_repo = [inspection("developing-today/fleet", "842")];
 
