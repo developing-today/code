@@ -4,7 +4,7 @@ buildGoModule {
   pname = "fleet-placement-record";
   version = "0.1.0";
   src = lib.cleanSource ./.;
-  vendorHash = lib.fakeHash;
+  vendorHash = "sha256-g+yaVIx4jxpAQ/+WrGKxhVeliYx7nLQe/zsGpxV4Fn4=";
   subPackages = [ "cmd/placement-record" ];
 
   postInstall = ''
