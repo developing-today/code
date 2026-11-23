@@ -51,6 +51,59 @@ pub fn generate_key(algo: AlgorithmId) -> Result<KeyPair> {
     Ok(key)
 }
 
+/// An ML-DSA-44 signer wrapping aws-lc-rs directly.
+///
+/// rcgen 0.14 generates ML-DSA keys but cannot *reload* them: its
+/// PKCS#8 loaders have no PQ branch (the typed loader panics, the
+/// detecting loader returns CouldNotParseKeyPair). The signing
+/// traits rcgen exposes are public, though, so this wrapper carries
+/// a reloaded `PqdsaKeyPair` through the same `Issuer` machinery as
+/// every classical key — one TBS builder, one extension profile,
+/// no second certificate engine.
+pub struct MlDsa44Signer {
+    key: aws_lc_rs::signature::PqdsaKeyPair,
+    public_key: Vec<u8>,
+}
+
+impl MlDsa44Signer {
+    pub fn from_pkcs8(der: &[u8]) -> Result<Self> {
+        let key = aws_lc_rs::signature::PqdsaKeyPair::from_pkcs8(
+            &aws_lc_rs::signature::ML_DSA_44_SIGNING,
+            der,
+        )
+        .map_err(|e| CertError::engine(format!("ML-DSA-44 key load failed: {e}")))?;
+        let public_key = aws_lc_rs::signature::KeyPair::public_key(&key)
+            .as_ref()
+            .to_vec();
+        Ok(MlDsa44Signer { key, public_key })
+    }
+}
+
+impl rcgen::PublicKeyData for MlDsa44Signer {
+    fn der_bytes(&self) -> &[u8] {
+        &self.public_key
+    }
+    fn algorithm(&self) -> &'static rcgen::SignatureAlgorithm {
+        &PKCS_ML_DSA_44
+    }
+}
+
+impl rcgen::SigningKey for MlDsa44Signer {
+    fn sign(&self, msg: &[u8]) -> std::result::Result<Vec<u8>, rcgen::Error> {
+        let mut signature = vec![0; self.key.algorithm().signature_len()];
+        self.key
+            .sign(msg, &mut signature)
+            .map_err(|_| rcgen::Error::RingUnspecified)?;
+        Ok(signature)
+    }
+}
+
+/// A loaded CA signing key, whatever the algorithm.
+pub enum CaSigner {
+    Classical(KeyPair),
+    MlDsa(Box<MlDsa44Signer>),
+}
+
 /// Load a signing key from an explicit signer source: the PKCS#8
 /// file named `file_name` inside `source.key_dir`. This is the only
 /// key-loading path in the crate (§24.3).
@@ -58,7 +111,7 @@ pub fn load_signer_key(
     source: &crate::model::SignerSource,
     file_name: &str,
     algo: AlgorithmId,
-) -> Result<KeyPair> {
+) -> Result<CaSigner> {
     let path = source.key_dir.join(file_name);
     let der = std::fs::read(&path).map_err(|e| {
         CertError::policy(format!(
@@ -67,16 +120,21 @@ pub fn load_signer_key(
             source.key_dir.display()
         ))
     })?;
-    let sign_alg: &'static rcgen::SignatureAlgorithm = match algo {
-        AlgorithmId::Ed25519 => &PKCS_ED25519,
-        AlgorithmId::P256 => &PKCS_ECDSA_P256_SHA256,
-        AlgorithmId::Rsa4096 | AlgorithmId::Rsa2048 => &PKCS_RSA_SHA256,
-        AlgorithmId::MlDsa44 => &PKCS_ML_DSA_44,
-    };
-    Ok(KeyPair::from_pkcs8_der_and_sign_algo(
-        &rustls_pki_types::PrivatePkcs8KeyDer::from(der),
-        sign_alg,
-    )?)
+    match algo {
+        AlgorithmId::MlDsa44 => Ok(CaSigner::MlDsa(Box::new(MlDsa44Signer::from_pkcs8(&der)?))),
+        _ => {
+            let sign_alg: &'static rcgen::SignatureAlgorithm = match algo {
+                AlgorithmId::Ed25519 => &PKCS_ED25519,
+                AlgorithmId::P256 => &PKCS_ECDSA_P256_SHA256,
+                AlgorithmId::Rsa4096 | AlgorithmId::Rsa2048 => &PKCS_RSA_SHA256,
+                AlgorithmId::MlDsa44 => unreachable!(),
+            };
+            Ok(CaSigner::Classical(KeyPair::from_pkcs8_der_and_sign_algo(
+                &rustls_pki_types::PrivatePkcs8KeyDer::from(der),
+                sign_alg,
+            )?))
+        }
+    }
 }
 
 fn random_serial() -> SerialNumber {
@@ -144,13 +202,23 @@ fn ca_params_for(
 /// A loaded CA: everything needed to sign with it.
 struct CaHandle {
     params: CertificateParams,
-    key: KeyPair,
+    signer: CaSigner,
     cert: CertInfo,
 }
 
 impl CaHandle {
-    fn issuer<'a>(&'a self) -> Issuer<'a, &'a KeyPair> {
-        Issuer::new(self.params.clone(), &self.key)
+    /// Sign `subject_params` for `subject_key` with this CA.
+    fn sign(
+        &self,
+        subject_params: &CertificateParams,
+        subject_key: &KeyPair,
+    ) -> Result<rcgen::Certificate> {
+        match &self.signer {
+            CaSigner::Classical(key) => Ok(subject_params
+                .signed_by(subject_key, &Issuer::new(self.params.clone(), key))?),
+            CaSigner::MlDsa(signer) => Ok(subject_params
+                .signed_by(subject_key, &Issuer::new(self.params.clone(), signer.as_ref()))?),
+        }
     }
 }
 
@@ -191,7 +259,7 @@ fn load_ca(
             "root" => format!("{}.pk8", record.algorithm.name()),
             _ => format!("{}-{}.pk8", record.algorithm.name(), record.partition),
         });
-    let key = load_signer_key(signer, &key_file, record.algorithm)?;
+    let signer_key = load_signer_key(signer, &key_file, record.algorithm)?;
     let params = ca_params_for(
         org,
         country,
@@ -201,7 +269,11 @@ fn load_ca(
         cert.not_before,
         cert.not_after,
     );
-    Ok(CaHandle { params, key, cert })
+    Ok(CaHandle {
+        params,
+        signer: signer_key,
+        cert,
+    })
 }
 
 // ---------------------------------------------------------------- records
@@ -668,7 +740,7 @@ pub fn create_issuer_set(req: &IssuerCreateRequest, out_dir: &Path) -> Result<Bu
             variant_params.not_before = snb.0;
             variant_params.not_after = sna.0;
             variant_params.serial_number = Some(random_serial());
-            let cert = variant_params.signed_by(&key, &signer.issuer())?;
+            let cert = signer.sign(&variant_params, &key)?;
             let der = cert.der().to_vec();
             let rel = format!(
                 "public/certs/{}/{}/signed-by-{}.crt.pem",
@@ -856,7 +928,7 @@ pub fn issue_leaf(req: &LeafIssueRequest, out_dir: &Path) -> Result<BundleManife
     params.not_after = na.0;
     params.serial_number = Some(random_serial());
     params.use_authority_key_identifier_extension = true;
-    let cert = params.signed_by(&key, &issuer.issuer())?;
+    let cert = issuer.sign(&params, &key)?;
     let der = cert.der().to_vec();
 
     let (key_dir, key_location) = key_destination(out_dir, &req.private_store);
