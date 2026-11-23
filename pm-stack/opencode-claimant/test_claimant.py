@@ -1643,6 +1643,41 @@ class TestBoundedPoll(unittest.TestCase):
         })
 
 
+class TestSinkClaimDiagnostics(unittest.TestCase):
+    def test_fixed_categories_do_not_copy_cli_output_and_preserve_attempts(self):
+        fixtures = (
+            (subprocess.TimeoutExpired(["private"], 15, stderr=b"private"), "timeout"),
+            (OSError("private"), "spawn_error"),
+            (Result(13, "private"), "cli_nonzero"),
+            (Result(0, "private"), "invalid_json"),
+            (Result(0, '{"task":null,"ignored":"private"}'), "no_match"),
+            (Result(0, '{"ignored":"private"}'), "missing_claim_row"),
+        )
+        for fixture, category in fixtures:
+            with self.subTest(category=category), patch.object(
+                claimant.subprocess, "run", side_effect=[fixture]
+            ) as run, patch.object(claimant.time, "monotonic", side_effect=[10.0, 10.25]):
+                diagnostic = {}
+                self.assertEqual(
+                    claimant._collect_handed_offs("fixture", 3, diagnostic=diagnostic), {}
+                )
+                self.assertEqual(diagnostic, {"category": category, "elapsed_ms": 250})
+                run.assert_called_once()
+                self.assertIn("--handoff", run.call_args.args[0])
+                self.assertNotIn("--task", run.call_args.args[0])
+                self.assertEqual(run.call_args.kwargs["timeout"], 15)
+
+    def test_diagnostic_does_not_change_preexisting_acceptance_of_returned_row(self):
+        row = {"id": 42, "private": "not surfaced"}
+        with patch.object(claimant.subprocess, "run", return_value=Result(1, json.dumps(row))):
+            diagnostic = {}
+            self.assertEqual(
+                claimant._collect_handed_offs("fixture", 1, diagnostic=diagnostic), {42: row}
+            )
+        self.assertEqual(diagnostic["category"], "row_returned")
+        self.assertEqual(set(diagnostic), {"category", "elapsed_ms"})
+
+
 if __name__ == "__main__":
     unittest.main()
 

@@ -1173,7 +1173,7 @@ def _take_prompt_wall() -> "str | None":
     return wall
 
 
-def _collect_handed_offs(queue: str, want: int) -> Dict[int, Dict]:
+def _collect_handed_offs(queue: str, want: int, *, diagnostic=None) -> Dict[int, Dict]:
     """Collect up to `want` recorded handoffs from `queue`'s
     handoff sink WITHOUT naming a task id (#8097 Rule 1): each
     `repo-queue claim --handoff` lets the BROKER pick the next
@@ -1195,6 +1195,8 @@ def _collect_handed_offs(queue: str, want: int) -> Dict[int, Dict]:
     `muse` selector is not the opencode claimant's to collect.
     """
     collected: Dict[int, Dict] = {}
+    started = time.monotonic()
+    outcome = "not_attempted"
     for _ in range(max(want, 0)):
         try:
             result = subprocess.run(
@@ -1217,16 +1219,41 @@ def _collect_handed_offs(queue: str, want: int) -> Dict[int, Dict]:
                 text=True,
                 timeout=15,
             )
-            data = json.loads(result.stdout) if result.stdout.strip() else None
+        except subprocess.TimeoutExpired:
+            outcome = "timeout"
+            break
+        except OSError:
+            outcome = "spawn_error"
+            break
         except Exception:
+            outcome = "unexpected_error"
+            break
+        try:
+            data = json.loads(result.stdout) if result.stdout.strip() else None
+        except ValueError:
+            outcome = "invalid_json" if result.returncode == 0 else "cli_nonzero"
+            break
+        except Exception:
+            outcome = "unexpected_error"
             break
         # cmd_claim prints the claimed row itself ({"task": null}
         # when nothing was claimed).
         row = data if isinstance(data, dict) else None
         claimed_id = row.get("id") if isinstance(row, dict) else None
         if claimed_id is None:
+            if result.returncode != 0:
+                outcome = "cli_nonzero"
+            elif row is not None and "task" in row and row["task"] is None:
+                outcome = "no_match"
+            else:
+                outcome = "missing_claim_row"
             break
         collected[claimed_id] = row
+        outcome = "row_returned"
+    if diagnostic is not None:
+        diagnostic.update(
+            category=outcome, elapsed_ms=round((time.monotonic() - started) * 1000)
+        )
     return collected
 
 
@@ -1664,8 +1691,13 @@ def launch_step(
                     handed_off_by_queue.get(c["queue"], 0) + 1
                 )
         collected: Dict[int, Dict] = {}
+        sink_diagnostics = {}
         for queue_name, want in handed_off_by_queue.items():
-            collected.update(_collect_handed_offs(queue_name, want))
+            diagnostic = {}
+            collected.update(_collect_handed_offs(queue_name, want, diagnostic=diagnostic))
+            if diagnostic.get("category") == "row_returned":
+                diagnostic["category"] = "different_row"
+            sink_diagnostics[queue_name] = diagnostic
 
         for candidate in unbound_opencode:
             if provider_wall is not None:
@@ -1694,7 +1726,13 @@ def launch_step(
             # is never improvised.
             if candidate.get("status") == "handed_off":
                 if task_id not in collected:
-                    skips.append({"task_id": task_id, "reason": "sink_claim_failed"})
+                    skips.append(
+                        {
+                            "task_id": task_id,
+                            "reason": "sink_claim_failed",
+                            "sink_claim": sink_diagnostics[candidate["queue"]],
+                        }
+                    )
                     continue
                 candidate["status"] = "claimed"
                 candidate["worker_id"] = CLAIMANT_WORKER
