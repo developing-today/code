@@ -3,8 +3,7 @@
   "version": "0.0.1",
   "private": true,
   "scripts": {
-    "deploy": "node deploy.mjs activate",
-    "publish-image": "node deploy.mjs publish-image",
+    "deploy": "wrangler deploy",
     "test": "python3 -m unittest discover -s test -p \"test_*.py\""
   },
   "dependencies": {

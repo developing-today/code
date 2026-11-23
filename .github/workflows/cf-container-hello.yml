@@ -36,19 +36,11 @@ on:
     - cron: "17 7 * * *"
   workflow_dispatch:
     inputs:
-      operation:
-        description: "Choose the standalone probe operation"
+      stage_versions:
+        description: "Build and dry-run an unpromoted Worker Version (no upload)"
         required: true
-        type: choice
-        default: test
-        options:
-          - test
-          - publish-image
-          - activate
-      version_id:
-        description: "Worker version ID returned by publish-image (activate only)"
-        required: false
-        type: string
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -64,7 +56,6 @@ concurrency:
 
 jobs:
   test:
-    if: github.event_name != 'workflow_dispatch' || inputs.operation == 'test'
     name: test
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -89,49 +80,34 @@ jobs:
         working-directory: pkgs/cf-container-hello
         run: npm test
 
-  publish-image:
-    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.operation == 'publish-image'
-    name: publish image reference
-    runs-on: ubuntu-latest
-    environment: cf-container-hello
+  stage-versions:
+    if: github.event_name == 'workflow_dispatch' && inputs.stage_versions == true && github.repository == 'developing-today/code' && github.ref == 'refs/heads/main'
+    name: validate Worker Version staging (dry-run)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
     steps:
-      - name: Checkout
-        uses: actions/checkout@v7
-      - name: Report image
-        working-directory: pkgs/cf-container-hello
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CF_CONTAINER_HELLO_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          CF_VERSION_TAG: git-${{ github.sha }}
-        run: node deploy.mjs publish-image
-
-  activate:
-    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.operation == 'activate'
-    name: activate probe Worker
-    runs-on: ubuntu-latest
-    environment: cf-container-hello
-    steps:
-      - name: Checkout
+      - name: Checkout main source
         uses: actions/checkout@v7
       - name: Set up Node
         uses: actions/setup-node@v7
         with:
-          node-version: 24
-      - name: Install dependencies
-        working-directory: pkgs/cf-container-hello
-        run: npm ci
-      - name: Validate version ID
-        env:
-          CF_VERSION_ID: ${{ inputs.version_id }}
+          node-version: 24.22.0
+      - name: Install isolated pinned cf toolchain
+        working-directory: pkgs/cf-container-hello/release-tools
         run: |
-          if [[ ! "$CF_VERSION_ID" =~ ^[[:xdigit:]]{8}-[[:xdigit:]]{4}-[[:xdigit:]]{4}-[[:xdigit:]]{4}-[[:xdigit:]]{12}$ ]]; then
-            echo "version_id must be a UUID" >&2
-            exit 2
-          fi
-      - name: Activate Worker
+          npm ci --no-audit --no-fund
+          test ! -e ../node_modules
+          ln -s release-tools/node_modules ../node_modules
+          test "$(../node_modules/.bin/cf --version)" = "1.0.0-rc.1"
+      - name: Verify standalone probe bindings and image refs
         working-directory: pkgs/cf-container-hello
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CF_CONTAINER_HELLO_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          CF_VERSION_TAG: git-${{ github.sha }}
-        run: npm run deploy -- activate --version "$CF_VERSION_ID"
+        run: |
+          node release-tools/verify-config.mjs
+      - name: Dry-run Workers Versions upload only
+        working-directory: pkgs/cf-container-hello
+        run: >-
+          ./release-tools/node_modules/.bin/cf workers versions create
+          --worker cf-container-hello
+          --tag "git-${GITHUB_SHA::12}"
+          --message "git ${GITHUB_SHA}"
+          --dry-run

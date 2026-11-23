@@ -58,26 +58,19 @@ pkgs/lab-ops-hub) crawler image recipe is what the probe runs.
 npm test   # python3 -m unittest discover -s test -p "test_*.py"
 ```
 
-## Publishing and activation
+## Versions staging preview
 
-This package keeps its standalone `cf-container-hello` Worker identity. The
-`HelloContainer` and `HelloLite` bindings use Cloudflare's official
-`hello-world:v1` image, already present in the Cloudflare registry. There is
-no locally built image to upload. `npm run publish-image` uses the pinned
-Cloudflare `cf@1.0.0-beta.20 workers versions create` command to upload a
-Worker version tagged with the commit SHA, without activating it. Then activate
-that specific version with `npm run deploy -- activate --version <id>`. The
-manual workflow verifies that version's tag matches the current main commit,
-then reads back deployments to confirm the version serves at 100%.
-Use `--dry-run` on publish-image to validate locally without an upload;
-activation dry-run makes no API call.
+The workflow has an optional manual `stage_versions` input, defaulting to
+false. If enabled on the trusted `main` branch, it installs the isolated,
+lockfile-pinned `cf`/Wrangler toolchain, checks this Worker's image pins and
+SQLite Durable Object exports, then runs `cf workers versions create --dry-run`.
+It does not upload a version or activate one; the normal `npm run deploy`
+operator path remains `wrangler deploy`.
 
-The workflow's manual `operation` input offers `test`, `publish-image`, and
-`activate` as separate choices. Both upload and activation use the pinned cf
-CLI and the `CF_CONTAINER_HELLO_API_TOKEN` secret in the protected
-`cf-container-hello` environment. The uploaded image reference remains the
-official hello-world image;
-this flow versions the Worker bundle, it does not publish an OCI image.
+The crawler image pin is the `:v5` tag. Cloudflare's available version and
+container metadata does not establish an immutable image digest, so this
+preview cannot prove a release receipt or promotion candidate. Real staging
+and promotion remain blocked until an immutable image digest can be verified.
 
 `test/test_probe_hardening.py` pins the #955 regression: the production
 validator the probe now runs refuses `file://`, loopback, private-IP
