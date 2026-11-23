@@ -10,6 +10,7 @@ use id_config::{
     Behavior, CeilingOverride, Ceilings, LayerOverride, Mode, ResolutionInput, ResolveError,
     SyncScope, Tier, resolve,
 };
+use proptest::prelude::*;
 
 fn ceilings(max_hops: u32) -> Ceilings {
     Ceilings {
@@ -145,4 +146,62 @@ fn a_scope_cannot_widen_the_current_resource_ceiling() {
             ..
         })
     ));
+}
+
+proptest! {
+    #[test]
+    fn generated_layer_combinations_match_independent_precedence_model(
+        values in prop::collection::vec((
+            prop::option::of(1u32..=5),
+            prop::option::of(0u8..=1),
+            prop::option::of(0u8..=2),
+        ), 5)
+    ) {
+        let mut input = base();
+        input.authority_sync_scopes = vec![SyncScope::Metadata, SyncScope::Full];
+        let scopes = ["tenant", "peer", "link", "storage", "operation"];
+        let mut expected_hops = Mode::HostedTenant.defaults().max_hops;
+        let mut expected_scope = Mode::HostedTenant.defaults().sync_scope;
+        let mut expected_tier = Mode::HostedTenant.defaults().tier;
+
+        for (index, (hops, sync, tier)) in values.into_iter().enumerate() {
+            let behavior = Behavior {
+                max_hops: hops,
+                sync_scope: sync.map(|v| if v == 0 { SyncScope::Metadata } else { SyncScope::Full }),
+                tier: tier.map(|v| match v {
+                    0 => Tier::Cold,
+                    1 => Tier::Warm,
+                    _ => Tier::Hot,
+                }),
+            };
+            // Independent reference model: apply each field in the declared
+            // fixed order; None retains the last value.
+            if let Some(value) = hops { expected_hops = value; }
+            if let Some(value) = behavior.sync_scope { expected_scope = value; }
+            if let Some(value) = behavior.tier { expected_tier = value; }
+            let scope_layer = layer(scopes[index], behavior);
+            match index {
+                0 => input.tenant = Some(scope_layer),
+                1 => input.peer = Some(scope_layer),
+                2 => input.link = Some(scope_layer),
+                3 => input.storage = Some(scope_layer),
+                _ => input.operation = Some(scope_layer),
+            }
+        }
+
+        let actual = resolve(&input).unwrap();
+        prop_assert_eq!(actual.behavior.max_hops, expected_hops);
+        prop_assert_eq!(actual.behavior.sync_scope, expected_scope);
+        prop_assert_eq!(actual.behavior.tier, expected_tier);
+        prop_assert!(actual.behavior.max_hops <= actual.ceilings.max_hops);
+        prop_assert!(input.authority_sync_scopes.contains(&actual.behavior.sync_scope));
+    }
+}
+
+#[test]
+fn mode_default_is_constrained_by_authority_without_explicit_override() {
+    let input = base(); // HostedTenant defaults Full; authority allows Metadata only.
+    let actual = resolve(&input).unwrap();
+    assert_eq!(actual.behavior.sync_scope, SyncScope::Metadata);
+    assert_eq!(actual.provenance["sync_scope"], "authority:default");
 }

@@ -122,6 +122,22 @@ pub fn resolve(input: &ResolutionInput) -> Result<ResolvedLayers, ResolveError> 
     };
     apply_behavior(&mut state, &input.deployment, "deployment")?;
     apply_mode(&mut state, input.mode)?;
+    // Mode bundles are inherited defaults, not authority grants. Constrain
+    // their default to the narrowest authorized scope; later explicit scope
+    // overrides are still checked and rejected if unauthorized.
+    if !input
+        .authority_sync_scopes
+        .contains(&state.behavior.sync_scope)
+    {
+        state.behavior.sync_scope = if input.authority_sync_scopes.contains(&SyncScope::Metadata) {
+            SyncScope::Metadata
+        } else {
+            input.authority_sync_scopes[0]
+        };
+        state
+            .provenance
+            .insert("sync_scope".to_owned(), "authority:default".to_owned());
+    }
     for layer in [
         input.tenant.as_ref(),
         input.peer.as_ref(),
