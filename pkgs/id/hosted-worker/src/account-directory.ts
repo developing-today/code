@@ -33,6 +33,41 @@ export interface NewHostedAccount {
 }
 
 /**
+ * In-memory hosted account directory keyed by the unique pseudonymous
+ * subject key (design doc/2026-11-01_jurisdiction_aware_user_store_design.md:
+ * "Duplicate signup reads the existing row; it never overwrites it or
+ * resets the policy").
+ *
+ * This is the contract the persistent unique-subject transaction slice
+ * will implement against durable storage; it holds no production state
+ * and enables no signup or migration path on its own.
+ */
+export class HostedAccountDirectory {
+  private readonly rows = new Map<string, HostedAccountRecord>();
+
+  get size(): number {
+    return this.rows.size;
+  }
+
+  signup(input: NewHostedAccount): HostedAccountRecord {
+    const existing = this.rows.get(input.subjectKey);
+    if (existing !== undefined) {
+      if (existing.bindingId !== input.bindingId) {
+        throw new FailClosed(
+          409,
+          "duplicate_subject_conflict",
+          "subject key is already bound to a different binding id; failing closed",
+        );
+      }
+      return existing;
+    }
+    const record = createHostedAccountRecord(input);
+    this.rows.set(record.subjectKey, record);
+    return record;
+  }
+}
+
+/**
  * Validate the identity and explicit jurisdiction before constructing the
  * first directory row. There is deliberately no policy default: missing or
  * unsupported jurisdiction cannot create metadata that could later route to
