@@ -918,6 +918,40 @@ export function subscriptionState(madeFor, mark, status) {
   return (status.known || []).includes(mark) ? "keep" : "again";
 }
 
+/** Where this device stands: "on" (it is subscribed and the sender has
+ * it), "unfinished" (the browser said yes but the sender does not have
+ * this device, so nothing would arrive), or "off". `state` is
+ * subscriptionState's answer for this device's subscription. */
+export function deviceState(permission, subscribed, state) {
+  if (!subscribed || permission !== "granted") return "off";
+  return state === "keep" ? "on" : "unfinished";
+}
+
+const SENT_FOR = {
+  replies: "a reply from the fleet",
+  needs: "something that needs you",
+  questions: "a question for you",
+  trouble: "a unit that failed",
+  test: "a test",
+};
+const devices = (n) => `${n} device${n === 1 ? "" : "s"}`;
+
+/** What came of the last notification, in a sentence or two. A push
+ * service taking a message is not the phone showing it, so this says
+ * "took", not "delivered". */
+export function deliveryNote(last, now = Date.now()) {
+  if (!last) return "Nothing has been sent yet.";
+  const said = [`Last sent ${ago(last.at, now) || "at an unknown time"}: ${SENT_FOR[last.class] || "a notification"}.`];
+  if (last.sent) said.push(`The push service took it for ${devices(last.sent)}.`);
+  if (last.failed) {
+    const first = (last.refused || [])[0];
+    const why = first ? `: ${first.host} ${first.status ? `answered ${first.status}` : "did not answer"}` : "";
+    said.push(`Not taken for ${devices(last.failed)}${why}.`);
+  }
+  if (last.gone) said.push(`${devices(last.gone)} no longer subscribed ${last.gone === 1 ? "was" : "were"} forgotten.`);
+  return said.join(" ");
+}
+
 /** Notifications that are on for this device stay on: nothing is asked,
  * because the owner already said yes on this device. A device where
  * they are off is left alone. */
@@ -943,6 +977,13 @@ function keyBytes(b64) {
   return Uint8Array.from(text, (c) => c.charCodeAt(0));
 }
 
+/** What a test send came to, for the line shown when it is done. */
+export function testSaid(r) {
+  if (r.sent && !r.failed) return `Test sent to ${devices(r.sent)}`;
+  if (r.sent) return `Test sent to ${devices(r.sent)}; not taken for ${devices(r.failed)}`;
+  return r.failed ? "The push service did not take the test" : "No device took the test";
+}
+
 async function viewNotify() {
   if (!("serviceWorker" in navigator) || !("PushManager" in window) || !("Notification" in window)) {
     return [empty("This browser cannot receive notifications. On Android, use Chrome or the app.")];
@@ -950,7 +991,12 @@ async function viewNotify() {
   const status = await api("push");
   const reg = await navigator.serviceWorker.getRegistration("/console/");
   const sub = reg ? await reg.pushManager.getSubscription() : null;
-  const on = Boolean(sub) && Notification.permission === "granted";
+  // The browser being subscribed is half of it: the sender has to hold
+  // this device too, or nothing would arrive.
+  const madeFor = sub?.options?.applicationServerKey;
+  const state = sub ? subscriptionState(madeFor ? b64url(new Uint8Array(madeFor)) : "", await endpointMark(sub.endpoint), status) : "keep";
+  const where = deviceState(Notification.permission, Boolean(sub), state);
+  const on = where === "on";
   const turnOn = async (e) => {
     e.target.disabled = true;
     try {
@@ -959,8 +1005,14 @@ async function viewNotify() {
       }
       const r = await navigator.serviceWorker.register("/console/sw.js", { scope: "/console/" });
       await navigator.serviceWorker.ready;
+      // A subscription made for another sender's key cannot be reused.
+      if (state === "renew") await (await r.pushManager.getSubscription())?.unsubscribe();
       const s = await r.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: keyBytes(status.key) });
-      await act("push.on", { subscription: s.toJSON(), label: deviceLabel() }, "Notifications are on for this device");
+      // Refused by the sender: the reason is on screen, and the button
+      // is there to press again.
+      if (!(await act("push.on", { subscription: s.toJSON(), label: deviceLabel() }, "Notifications are on for this device"))) {
+        e.target.disabled = false;
+      }
     } catch (error) {
       toast(error.message, true);
       e.target.disabled = false;
@@ -973,15 +1025,18 @@ async function viewNotify() {
   };
   return [
     card(
-      h("h3", {}, on ? "On for this device" : "Off for this device"),
-      h("p", { class: "meta" }, `${status.devices} device${status.devices === 1 ? "" : "s"} subscribed in all.`),
+      h("h3", {}, on ? "On for this device" : where === "unfinished" ? "Not finished on this device" : "Off for this device"),
+      where === "unfinished"
+        ? h("p", { class: "why" }, "This device said yes, but the sender of notifications does not have it, so nothing would arrive here.")
+        : null,
+      h("p", { class: "meta" }, `${devices(status.devices)} subscribed in all. ${deliveryNote(status.last)}`),
       Notification.permission === "denied" ? h("p", { class: "why" }, "This browser is set to block notifications from this site.") : null,
       h(
         "div",
         { class: "row end" },
         on ? h("button", { class: "small ghost", onclick: turnOff }, "Turn off") : null,
-        on ? h("button", { class: "small ghost", onclick: (e) => act("push.test", {}, (r) => (r.sent ? `Test sent to ${r.sent} device${r.sent === 1 ? "" : "s"}` : "No device took the test"), e.target) }, "Send a test") : null,
-        on ? null : h("button", { onclick: turnOn }, "Turn on for this device"),
+        on ? h("button", { class: "small ghost", onclick: (e) => act("push.test", {}, testSaid, e.target) }, "Send a test") : null,
+        on ? null : h("button", { onclick: turnOn }, where === "unfinished" ? "Finish turning on" : "Turn on for this device"),
       ),
     ),
     h("h2", {}, "Tell me when"),
