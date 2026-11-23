@@ -465,6 +465,14 @@ mod tests {
         }
     }
 
+    fn assert_fixture_provenance<T>(observation: &ProjectionObservation<T>) {
+        assert!(matches!(
+            observation,
+            ProjectionObservation::Unknown { provenance }
+                if provenance.source == "test-fixture"
+        ));
+    }
+
     fn inspection(authority_id: &str, work_id: &str) -> WorkInspection {
         WorkInspection {
             identity: WorkRef::new(authority_id, work_id).unwrap(),
@@ -496,18 +504,10 @@ mod tests {
                 ],
             })
         );
-        for observation in [
-            &inspections[0].workflow,
-            &inspections[0].readiness,
-            &inspections[0].ownership_execution,
-            &inspections[0].remote_resources,
-        ] {
-            assert!(matches!(
-                observation,
-                ProjectionObservation::Unknown { provenance }
-                    if provenance.source == "test-fixture"
-            ));
-        }
+        assert_fixture_provenance(&inspections[0].workflow);
+        assert_fixture_provenance(&inspections[0].readiness);
+        assert_fixture_provenance(&inspections[0].ownership_execution);
+        assert_fixture_provenance(&inspections[0].remote_resources);
     }
 
     /// Oracle: an explicit identity must match both authority and work
