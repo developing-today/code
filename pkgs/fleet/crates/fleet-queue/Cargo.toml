@@ -15,6 +15,7 @@ description = "The fleet queue domain: the repo-queue client surface plus the qu
 client = ["dep:fleet-config", "dep:ureq"]
 queue-broker = [
   "client",
+  "dep:ring",
   "dep:tiny_http",
   "dep:ureq",
   "dep:fleet-config",
@@ -40,6 +41,9 @@ ureq = { version = "3", features = ["rustls", "json", "platform-verifier"], opti
 # the broker surfaces need no system SQLite (atlas-core pins the same
 # stack). Only the queue-broker surface carries the replica.
 rusqlite = { version = "0.42", features = ["bundled"], optional = true }
+# #13774: RS256 verification of the Actions OIDC token in the
+# actions-exec broker verbs (JWKS modulus/exponent -> ring RSA).
+ring = { version = "0.17", optional = true }
 
 # Standalone artifacts — the migration's rollback inventory (design
 # note §7): the same code as the fleet binary's queue domain, shipped

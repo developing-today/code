@@ -822,10 +822,7 @@ impl TursoBackend {
     /// #13146: several statements in one pipeline request (the
     /// placement-sync batch insert). Same per-statement results as
     /// repeated `exec` calls, one round trip.
-    pub(crate) fn exec_batch(
-        &self,
-        stmts: &[(&str, Vec<Arg>)],
-    ) -> Result<Vec<StmtResult>, TErr> {
+    pub(crate) fn exec_batch(&self, stmts: &[(&str, Vec<Arg>)]) -> Result<Vec<StmtResult>, TErr> {
         self.pipeline(stmts)
     }
 
@@ -986,7 +983,7 @@ impl Clone for Arg {
     }
 }
 
-pub(crate) const SCHEMA: [&str; 19] = [
+pub(crate) const SCHEMA: [&str; 24] = [
     "CREATE TABLE IF NOT EXISTS tasks (\
         id INTEGER PRIMARY KEY AUTOINCREMENT, \
         queue TEXT NOT NULL, title TEXT, body TEXT, \
@@ -1072,6 +1069,13 @@ pub(crate) const SCHEMA: [&str; 19] = [
         created_at TEXT NOT NULL, updated_at TEXT NOT NULL)",
     "CREATE INDEX IF NOT EXISTS placement_sessions_created \
         ON placement_sessions(created_at)",
+    // #13774: actions exec sessions — DDL of record in the
+    // actions_exec module.
+    crate::turso_queue::ACTIONS_EXEC_DDL_SESSIONS,
+    crate::turso_queue::ACTIONS_EXEC_DDL_COMMANDS,
+    crate::turso_queue::ACTIONS_EXEC_DDL_COMMANDS_IDX,
+    crate::turso_queue::ACTIONS_EXEC_DDL_IO,
+    crate::turso_queue::ACTIONS_EXEC_DDL_IO_IDX,
 ];
 
 // ---------------------------------------------------------------------------

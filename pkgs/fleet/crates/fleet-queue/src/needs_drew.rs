@@ -210,6 +210,55 @@ pub fn post_plain_alert_to(url: &str, token: &str, body: &Value) -> Result<(), S
     post_json(url, token, body).map(|_| ())
 }
 
+/// Build the alerts-intake body for a fleet actions exec
+/// emergency-extension request (#13774). The PM stack renders the
+/// needsDrew block as Drew's approve/deny choice; the answer comes
+/// back as a seat-run `/actions-exec-extend-decide` (the phone ->
+/// broker write-back is the PM stack's next phase). Deduped by the
+/// throat on (source, key), one live request per session handle.
+pub fn build_extension_alert_body(
+    handle: &str,
+    host_repo: &str,
+    run_id: Option<i64>,
+    extend_s: i64,
+    grace_until: &str,
+    reason: &str,
+) -> Value {
+    let minutes = (extend_s + 59) / 60;
+    let question =
+        format!("Extend actions exec session {handle} past its max lifespan by {minutes} min?");
+    let mut context = format!(
+        "Session {handle} on {host_repo} reached its max lifespan cap.          Approving adds {extend_s}s to the max and the lease; denying lets          the session expire (decision grace runs to {grace_until})."
+    );
+    if !reason.is_empty() {
+        context.push_str(&format!(" Reason given: {reason}"));
+    }
+    let mut links = vec!["https://github.com/developing-today/code/issues/13774".to_string()];
+    if let Some(id) = run_id {
+        links.insert(
+            0,
+            format!("https://github.com/{host_repo}/actions/runs/{id}"),
+        );
+    }
+    json!({
+        "source": "fleet-actions-exec",
+        "key": format!("actions-exec-ext:{handle}"),
+        "severity": "warning",
+        "title": question,
+        "body": context,
+        "needsDrew": {
+            "ledgerId": format!("actions-exec-ext:{handle}"),
+            "question": question,
+            "context": context,
+            "options": [
+                {"id": "approve", "label": format!("Approve +{minutes} min")},
+                {"id": "deny", "label": "Deny — let it expire"},
+            ],
+            "links": links,
+        },
+    })
+}
+
 /// Parse the snake_case `needs_drew` object the /block body
 /// carries (the shape cmd_block sends and the broker receives):
 /// {ledger_id, question, context?, options?, links?}, with

@@ -43,6 +43,7 @@ use serde_json::{Map, Value, json};
 
 use crate::validate::{task_from_packet, validate_packet};
 
+mod actions_exec;
 mod admin;
 mod claim;
 mod closed_bound;
@@ -55,6 +56,7 @@ mod stacks_outbox;
 mod staleness;
 mod work_identity;
 
+pub use actions_exec::*;
 pub use admin::*;
 pub use claim::*;
 pub use closed_bound::*;
