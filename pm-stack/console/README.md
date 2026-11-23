@@ -18,13 +18,13 @@ public, matched exactly: `/manifest.webmanifest` and the four icons under
 `/console/` is one page with five tabs. The first four are what the
 owner does every day; everything else is under More.
 
-| Tab      | What it is for                                                                                                   |
-| -------- | ---------------------------------------------------------------------------------------------------------------- |
-| Now      | Tasks in progress with their next step, sessions that are moving, and what the owner did lately                  |
-| Next     | The queue in the order it will be claimed; move a task first, sooner or later; why tasks are blocked             |
-| Needs me | Open questions (one tap to answer, undo for a few seconds), things only hands can do, reviews                    |
-| Ask      | Say what you want in your own words (typed or dictated). It becomes an issue and a top-of-queue task in one pass |
-| More     | Queue by state, pull requests, ranked issues, agents, services, notifications, phones, and the dashboard's pages |
+| Tab      | What it is for                                                                                                             |
+| -------- | -------------------------------------------------------------------------------------------------------------------------- |
+| Now      | Tasks in progress with their next step, sessions that are moving, and what the owner did lately                            |
+| Next     | The queue in the order it will be claimed; move a task first, sooner or later; why tasks are blocked                       |
+| Needs me | Open questions (one tap to answer, undo for a few seconds), things only hands can do, reviews                              |
+| Ask      | Say what you want in your own words (typed or dictated). It becomes an issue and a top-of-queue task in one pass           |
+| More     | Queue by state, pull requests, ranked issues, agents, services, notifications, phones, releases, and the dashboard's pages |
 
 The page never waits on a live fan-out. The server keeps three documents
 ready (`core`, `questions`, `ops`), each built from sections that are
@@ -68,6 +68,25 @@ run that the next run mends says nothing; five minutes of failing run
 after run is reported once ("A unit keeps failing", with what the unit
 is for), and so is its mending. That is what tells the owner when the
 laptop's checkout has stopped following `main`.
+
+### Releases
+
+More, Releases says what is out and lets either be put out again. A
+merge already does both by itself; this is for looking, and for doing it
+over.
+
+- **This site**: which commit Cloudflare serves and whether the laptop
+  runs the same (from the edge's health answer), and the last deploys as
+  GitHub records them. "Deploy again" starts the deploy workflow on
+  `main`; "From nothing first" has it stand a throwaway copy of the
+  Worker up from nothing, check it and remove it before deploying.
+- **Android app**: the build that is released, the last builds, a
+  download, and "Build again".
+
+The runs are read, and a run is started, through the laptop
+(`fleet gh`); with the laptop away the screen still says what is being
+served and what is released. Starting one is never held to be done
+late.
 
 ### Phones
 
