@@ -554,6 +554,36 @@ summary {
   font-size: 0.8rem;
   color: var(--quiet);
 }
+/* A form in a dialog: a note, a change, a new item. */
+dialog.sheet {
+  width: min(560px, calc(100vw - 24px));
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--panel);
+  color: var(--text);
+  padding: 16px;
+}
+dialog.sheet::backdrop {
+  background: rgba(0, 0, 0, 0.55);
+}
+dialog.sheet label {
+  display: block;
+  margin: 10px 0 4px;
+  font-size: 0.86rem;
+  color: var(--quiet);
+}
+dialog.sheet label.check {
+  display: flex;
+  color: var(--text);
+}
+dialog.sheet textarea,
+dialog.sheet select,
+dialog.sheet input[type="text"] {
+  width: 100%;
+}
+.chip + .chip {
+  margin-left: 6px;
+}
 /* A list of runs, each a link to its page: a line tall enough to tap. */
 .runs a {
   display: block;

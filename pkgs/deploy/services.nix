@@ -27,6 +27,7 @@
   pmAggregator,
   pmProjector,
   pmTunnel,
+  readyForAgent,
 }:
 {
   queue-broker = {
@@ -428,13 +429,27 @@
     class = "systemd";
   };
 
-  # ready-for-agent - NOT registered here yet, deliberately, on
-  # issue #12768's own terms: it has no Nix derivation to point a
-  # definition at (it is an npm-pinned 1.1.0 install into ~/.local by
-  # pm-stack/ready-for-agent/install.sh), and its deployment of
-  # record is the NixOS pm-apps module under #1752. Registration
-  # waits on the packaging slice, #12909; when that lands, its
-  # definition (bin/ready-for-agent, args [ "start" "--no-open" ],
-  # ports [ 6056 ], healthCheck http://127.0.0.1:6056/) replaces
-  # this comment.
+  # ready-for-agent (#12909): the Harness UI + operator CLI. Its
+  # deployment of record is still the NixOS pm-apps module under
+  # #1752, whose unit runs the imperative ~/.local install
+  # (pm-stack/ready-for-agent/install.sh) — this definition is
+  # registration only, like the other pm-stack targets above, until
+  # the bundled cutover (#12768) switches the unit's ExecStart to
+  # this derivation.
+  ready-for-agent = {
+    package = readyForAgent;
+    entryPoint = "bin/ready-for-agent";
+    args = [
+      "start"
+      "--no-open"
+    ];
+    environment = { };
+    secrets = [ ]; # the harness reads its own on-disk config; no broker-resolved names
+    user = "user";
+    ports = [ 6056 ]; # Harness UI + GraphQL, loopback
+    restart = "on-failure";
+    healthCheck = "http://127.0.0.1:6056/";
+    targets = [ "laptop" ];
+    class = "systemd";
+  };
 }

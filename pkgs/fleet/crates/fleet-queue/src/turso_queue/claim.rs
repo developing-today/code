@@ -205,6 +205,24 @@ pub(crate) fn verb_enqueue(t: &TursoBackend, req: &Value) -> Value {
             )?;
         }
         let row = get_task(t, id).map(|r| r.unwrap_or(Value::Null))?;
+        // #12966 (proposal step 5 of #10626): the filing-time state
+        // re-check. A packet whose issue stamp is older than the
+        // bound is re-verified now, at filing, instead of riding
+        // the queue until the claim-time check catches it: when the
+        // linked work already landed, the fresh row retires in
+        // place with the same evidence and event the claim path
+        // writes. A fresh or missing stamp files exactly as before.
+        if let Some(stale) = filing_recheck(t, &row) {
+            retire_stale(
+                t,
+                "enqueue_repo_task",
+                &row,
+                &stale,
+                "enqueue_staleness_check",
+            )?;
+            let row = get_task(t, id).map(|r| r.unwrap_or(Value::Null))?;
+            return Ok((row, predecessor, None));
+        }
         Ok((row, predecessor, None))
     })();
     match work {

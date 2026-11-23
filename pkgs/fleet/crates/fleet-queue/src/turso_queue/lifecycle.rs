@@ -454,7 +454,7 @@ pub(crate) fn claim_pick_once(
         // lookup claims the row exactly as before.
         if !handoff_pick {
             if let Some(stale) = stale_pick(t, &candidate) {
-                retire_stale(t, &worker, &candidate, &stale)?;
+                retire_stale(t, &worker, &candidate, &stale, "claim_staleness_check")?;
                 retired += 1;
                 if retired >= MAX_STALENESS_RETIRES_PER_CALL {
                     return Ok(None);

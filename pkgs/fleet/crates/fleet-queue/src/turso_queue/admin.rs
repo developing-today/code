@@ -649,10 +649,89 @@ pub(crate) fn verb_dep_recheck(t: &TursoBackend, req: &Value) -> Value {
 /// the event names who overrode and what was discarded. The
 /// rechecker's automatic paths never impersonate this: an
 /// override is a human/agent decision, audited as one.
+/// /unblock with drop specs (#12777): remove only the named
+/// dep entries from a blocked task's record — the correction
+/// path for a bogus entry (a self-loop, a mistyped ref) that
+/// leaves the real deps watched. The drop is all-or-nothing:
+/// a spec that matches nothing refuses the whole request and
+/// writes nothing. When the last entry goes, the task releases
+/// exactly like the full override; while entries remain it
+/// stays blocked on them, recheck schedule untouched, and the
+/// audit event names what was dropped and what remains.
+fn unblock_drop(
+    t: &TursoBackend,
+    task_id: i64,
+    worker: &str,
+    reason: &str,
+    row: &Value,
+    drops: &[Value],
+) -> Result<Value, String> {
+    let current = deps_of(row);
+    if current.is_empty() {
+        return Err(format!(
+            "unblock_task: task {task_id} carries no dep record; there is nothing to drop"
+        ));
+    }
+    let (remaining, dropped) = remove_deps(&current, drops).map_err(|unmatched| {
+        format!(
+            "unblock_task: task {task_id} has no dep matching {}",
+            dep_label(&unmatched[0])
+        )
+    })?;
+    if remaining.is_empty() {
+        t.exec(
+            "UPDATE tasks SET status = 'queued', blocked_deps = NULL, \
+               dep_next_recheck_at = NULL, dep_blocked_until = NULL, \
+               dep_recheck_seconds = NULL, updated_at = ? \
+             WHERE id = ? AND status = 'blocked'",
+            &[Arg::Text(now_iso()), Arg::Int(task_id)],
+        )?;
+        event(
+            t,
+            Some(worker),
+            Some(task_id),
+            "dep_unblock_override",
+            &with_marks(
+                &json!({"reason": reason, "discarded_deps": dropped,
+                        "via": "unblock_task_turso", "via_drop": true}),
+                row,
+            ),
+        )?;
+    } else {
+        t.exec(
+            "UPDATE tasks SET blocked_deps = ?, updated_at = ? \
+             WHERE id = ? AND status = 'blocked'",
+            &[
+                Arg::Text(json!(remaining).to_string()),
+                Arg::Text(now_iso()),
+                Arg::Int(task_id),
+            ],
+        )?;
+        event(
+            t,
+            Some(worker),
+            Some(task_id),
+            "dep_entry_dropped",
+            &with_marks(
+                &json!({"reason": reason, "dropped_deps": dropped,
+                        "remaining_deps": remaining,
+                        "via": "unblock_task_turso"}),
+                row,
+            ),
+        )?;
+    }
+    get_task(t, task_id).map(|r| r.unwrap_or(Value::Null))
+}
+
 pub(crate) fn verb_unblock(t: &TursoBackend, req: &Value) -> Value {
     let task_id = req_i64(req, "task_id").unwrap_or(0);
     let worker = req_str(req, "worker").unwrap_or("").to_string();
     let reason = req_str(req, "reason").unwrap_or("").to_string();
+    // #12777: the surgical form — drop named dep entries only.
+    let drops = match parse_drop_deps(req) {
+        Ok(d) => d,
+        Err(e) => return fail(2, e),
+    };
     let work = (|| -> Result<Value, String> {
         let Some(row) = get_task(t, task_id).map_err(|e| e)? else {
             return Err(format!("unblock_task: task {task_id} does not exist"));
@@ -666,6 +745,9 @@ pub(crate) fn verb_unblock(t: &TursoBackend, req: &Value) -> Value {
             return Err(format!(
                 "unblock_task: task {task_id} is {status}, not blocked"
             ));
+        }
+        if let Some(drops) = &drops {
+            return unblock_drop(t, task_id, &worker, &reason, &row, drops);
         }
         let prev_deps = deps_of(&row);
         t.exec(

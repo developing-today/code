@@ -152,6 +152,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use anyhow::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
 
+use crate::cap_class;
+
 /// Version of the `wants` document the host understands.
 pub const WANTS_VERSION: u64 = 1;
 
@@ -332,6 +334,14 @@ pub struct ProviderManifest {
     /// namespace with an excluded default ceiling (see
     /// [`ProviderManifest::side_contract_violation`]).
     pub side: ProviderSide,
+    /// The capability class this provider's name maps to for
+    /// change-notice disclosure: an id in the shipped class table
+    /// ([`crate::cap_class::CAP_CLASSES`]), carried as registry data —
+    /// never derived from the name (#5999 §2.4). A name whose class
+    /// assignment has not been designed yet carries
+    /// [`crate::cap_class::CLASS_UNKNOWN`] and so always discloses,
+    /// until a design pass assigns it a class.
+    pub class: &'static str,
 }
 
 /// Existing catalog entries as full manifests. The macro generates the
@@ -345,6 +355,7 @@ macro_rules! define_provider_registry {
             bounds: $bounds:expr,
             required_scope: $required_scope:expr,
             default_ceiling: $default_ceiling:expr,
+            class: $class:expr,
         },
     )+) => {
         /// All statically registered production providers, in stable catalog
@@ -361,6 +372,7 @@ macro_rules! define_provider_registry {
                 required_scope: $required_scope,
                 default_ceiling: $default_ceiling,
                 side: ProviderSide::Host,
+                class: $class,
             }),+
         ];
 
@@ -634,6 +646,7 @@ define_provider_registry! {
         bounds: COMMON_REQUEST_BOUNDS,
         required_scope: RequiredScope::Join,
         default_ceiling: DefaultCeiling::Included,
+        class: cap_class::CLASS_NONE,
     },
     "time.tick" => {
         version: 1,
@@ -642,6 +655,7 @@ define_provider_registry! {
         bounds: TICK_BOUNDS,
         required_scope: RequiredScope::Join,
         default_ceiling: DefaultCeiling::Included,
+        class: cap_class::CLASS_NONE,
     },
     "random.u64" => {
         version: 1,
@@ -650,6 +664,7 @@ define_provider_registry! {
         bounds: COMMON_REQUEST_BOUNDS,
         required_scope: RequiredScope::Join,
         default_ceiling: DefaultCeiling::Included,
+        class: cap_class::CLASS_NONE,
     },
     "players" => {
         version: 1,
@@ -658,6 +673,7 @@ define_provider_registry! {
         bounds: &[],
         required_scope: RequiredScope::Join,
         default_ceiling: DefaultCeiling::Included,
+        class: cap_class::CLASS_WORLD_PRESENCE,
     },
     "players.list" => {
         version: 1,
@@ -666,6 +682,7 @@ define_provider_registry! {
         bounds: COMMON_REQUEST_BOUNDS,
         required_scope: RequiredScope::Join,
         default_ceiling: DefaultCeiling::Included,
+        class: cap_class::CLASS_WORLD_PRESENCE,
     },
     "chat.say" => {
         version: 1,
@@ -674,6 +691,7 @@ define_provider_registry! {
         bounds: CHAT_SAY_BOUNDS,
         required_scope: RequiredScope::Chat,
         default_ceiling: DefaultCeiling::Included,
+        class: cap_class::CLASS_CHAT_WRITE,
     },
     "chat.history" => {
         version: 1,
@@ -682,6 +700,7 @@ define_provider_registry! {
         bounds: CHAT_HISTORY_BOUNDS,
         required_scope: RequiredScope::ChatRead,
         default_ceiling: DefaultCeiling::Included,
+        class: cap_class::CLASS_CHAT_READ,
     },
     "records.read" => {
         version: 1,
@@ -690,6 +709,7 @@ define_provider_registry! {
         bounds: RECORDS_READ_BOUNDS,
         required_scope: RequiredScope::Join,
         default_ceiling: DefaultCeiling::Included,
+        class: cap_class::CLASS_WORLD_RECORDS,
     },
     // The F12.5 `kv` store (#1062): a bounded, durable, per-world
     // key-value store. Inward-facing like `records.read` and
@@ -702,6 +722,7 @@ define_provider_registry! {
         bounds: KV_GET_BOUNDS,
         required_scope: RequiredScope::Join,
         default_ceiling: DefaultCeiling::Included,
+        class: cap_class::CLASS_UNKNOWN,
     },
     "kv.set" => {
         version: 1,
@@ -710,6 +731,7 @@ define_provider_registry! {
         bounds: KV_SET_BOUNDS,
         required_scope: RequiredScope::Join,
         default_ceiling: DefaultCeiling::Included,
+        class: cap_class::CLASS_UNKNOWN,
     },
     "kv.delete" => {
         version: 1,
@@ -718,6 +740,7 @@ define_provider_registry! {
         bounds: KV_DELETE_BOUNDS,
         required_scope: RequiredScope::Join,
         default_ceiling: DefaultCeiling::Included,
+        class: cap_class::CLASS_UNKNOWN,
     },
     // The F12.5 `blob` store (#1062): a bounded, durable, per-world
     // set of content-addressed blobs. Inward-facing like `kv.*` and
@@ -730,6 +753,7 @@ define_provider_registry! {
         bounds: BLOB_PUT_BOUNDS,
         required_scope: RequiredScope::Join,
         default_ceiling: DefaultCeiling::Included,
+        class: cap_class::CLASS_UNKNOWN,
     },
     "blob.get" => {
         version: 1,
@@ -738,6 +762,7 @@ define_provider_registry! {
         bounds: BLOB_GET_BOUNDS,
         required_scope: RequiredScope::Join,
         default_ceiling: DefaultCeiling::Included,
+        class: cap_class::CLASS_UNKNOWN,
     },
     "blob.delete" => {
         version: 1,
@@ -746,6 +771,7 @@ define_provider_registry! {
         bounds: BLOB_DELETE_BOUNDS,
         required_scope: RequiredScope::Join,
         default_ceiling: DefaultCeiling::Included,
+        class: cap_class::CLASS_UNKNOWN,
     },
     // The F12.5 `http.fetch` provider (#1062): an outbound GET
     // against an admin allowlist. Outward-facing, unlike `kv.*`
@@ -760,6 +786,7 @@ define_provider_registry! {
         bounds: HTTP_FETCH_BOUNDS,
         required_scope: RequiredScope::Join,
         default_ceiling: DefaultCeiling::Excluded,
+        class: cap_class::CLASS_NET_OUT,
     },
     // The F12.5 `notify` provider (#1062): a user-visible outbound
     // notification, committed to the world's event stream as a
@@ -776,6 +803,7 @@ define_provider_registry! {
         bounds: NOTIFY_BOUNDS,
         required_scope: RequiredScope::Join,
         default_ceiling: DefaultCeiling::Excluded,
+        class: cap_class::CLASS_UNKNOWN,
     },
     "schedule.at" => {
         version: 1,
@@ -784,6 +812,7 @@ define_provider_registry! {
         bounds: SCHEDULE_AT_BOUNDS,
         required_scope: RequiredScope::Join,
         default_ceiling: DefaultCeiling::Included,
+        class: cap_class::CLASS_WORLD_SCHEDULE,
     },
     "schedule.cancel" => {
         version: 1,
@@ -792,6 +821,7 @@ define_provider_registry! {
         bounds: SCHEDULE_CANCEL_BOUNDS,
         required_scope: RequiredScope::Join,
         default_ceiling: DefaultCeiling::Included,
+        class: cap_class::CLASS_WORLD_SCHEDULE,
     },
     "world.info" => {
         version: 1,
@@ -800,6 +830,7 @@ define_provider_registry! {
         bounds: COMMON_REQUEST_BOUNDS,
         required_scope: RequiredScope::Join,
         default_ceiling: DefaultCeiling::Included,
+        class: cap_class::CLASS_NONE,
     },
     "device.info" => {
         version: 1,
@@ -808,6 +839,7 @@ define_provider_registry! {
         bounds: COMMON_REQUEST_BOUNDS,
         required_scope: RequiredScope::Join,
         default_ceiling: DefaultCeiling::Included,
+        class: cap_class::CLASS_UNKNOWN,
     },
     "form.present" => {
         version: 1,
@@ -816,6 +848,7 @@ define_provider_registry! {
         bounds: FORM_BOUNDS,
         required_scope: RequiredScope::Join,
         default_ceiling: DefaultCeiling::Included,
+        class: cap_class::CLASS_UNKNOWN,
     },
     "form.result" => {
         version: 1,
@@ -824,6 +857,7 @@ define_provider_registry! {
         bounds: &[ProviderBound::ResponseBytes(MAX_EVENT_BYTES)],
         required_scope: RequiredScope::Join,
         default_ceiling: DefaultCeiling::Included,
+        class: cap_class::CLASS_UNKNOWN,
     },
     "form.cancel" => {
         version: 1,
@@ -832,6 +866,7 @@ define_provider_registry! {
         bounds: FORM_BOUNDS,
         required_scope: RequiredScope::Join,
         default_ceiling: DefaultCeiling::Included,
+        class: cap_class::CLASS_UNKNOWN,
     },
     // Sensor caps (#2341): excluded from default ceilings, so a world
     // reaches them only through an explicit ceiling entry and an
@@ -843,6 +878,7 @@ define_provider_registry! {
         bounds: LOC_POSITION_BOUNDS,
         required_scope: RequiredScope::Join,
         default_ceiling: DefaultCeiling::Excluded,
+        class: cap_class::CLASS_DEVICE_LOCATION,
     },
     "loc.watch" => {
         version: 1,
@@ -851,6 +887,7 @@ define_provider_registry! {
         bounds: LOC_WATCH_BOUNDS,
         required_scope: RequiredScope::Join,
         default_ceiling: DefaultCeiling::Excluded,
+        class: cap_class::CLASS_DEVICE_LOCATION,
     },
     // Microphone capabilities require an explicit ceiling/grant and a
     // per-use consent decision. Capture frames share the media event ceiling.
@@ -861,6 +898,7 @@ define_provider_registry! {
         bounds: COMMON_REQUEST_BOUNDS,
         required_scope: RequiredScope::Join,
         default_ceiling: DefaultCeiling::Excluded,
+        class: cap_class::CLASS_UNKNOWN,
     },
     "speech.capture" => {
         version: 1,
@@ -869,6 +907,7 @@ define_provider_registry! {
         bounds: SPEECH_CAPTURE_BOUNDS,
         required_scope: RequiredScope::Join,
         default_ceiling: DefaultCeiling::Excluded,
+        class: cap_class::CLASS_UNKNOWN,
     },
     "speech.synthesize" => {
         version: 1,
@@ -877,6 +916,7 @@ define_provider_registry! {
         bounds: COMMON_REQUEST_BOUNDS,
         required_scope: RequiredScope::Join,
         default_ceiling: DefaultCeiling::Included,
+        class: cap_class::CLASS_UNKNOWN,
     },
     "Key" => {
         version: 1,
@@ -885,6 +925,7 @@ define_provider_registry! {
         bounds: &[],
         required_scope: RequiredScope::Join,
         default_ceiling: DefaultCeiling::Included,
+        class: cap_class::CLASS_DEVICE_KEYBOARD,
     },
     "Screen" => {
         version: 1,
@@ -893,6 +934,7 @@ define_provider_registry! {
         bounds: &[],
         required_scope: RequiredScope::Join,
         default_ceiling: DefaultCeiling::Included,
+        class: cap_class::CLASS_DEVICE_SCREEN,
     },
     "RocJson" => {
         version: 1,
@@ -901,6 +943,7 @@ define_provider_registry! {
         bounds: &[],
         required_scope: RequiredScope::Join,
         default_ceiling: DefaultCeiling::Included,
+        class: cap_class::CLASS_NONE,
     },
     "RocGrid" => {
         version: 1,
@@ -909,6 +952,7 @@ define_provider_registry! {
         bounds: &[],
         required_scope: RequiredScope::Join,
         default_ceiling: DefaultCeiling::Included,
+        class: cap_class::CLASS_NONE,
     },
     "RocCap" => {
         version: 1,
@@ -917,6 +961,7 @@ define_provider_registry! {
         bounds: &[],
         required_scope: RequiredScope::Join,
         default_ceiling: DefaultCeiling::Included,
+        class: cap_class::CLASS_NONE,
     },
     "RocText" => {
         version: 1,
@@ -925,6 +970,7 @@ define_provider_registry! {
         bounds: &[],
         required_scope: RequiredScope::Join,
         default_ceiling: DefaultCeiling::Included,
+        class: cap_class::CLASS_NONE,
     },
 }
 
@@ -951,6 +997,7 @@ const TEST_PROVIDER_MANIFEST: ProviderManifest = ProviderManifest {
     required_scope: RequiredScope::Join,
     default_ceiling: DefaultCeiling::Excluded,
     side: ProviderSide::Host,
+    class: cap_class::CLASS_NONE,
 };
 
 /// The name of the first client-side provider (F13.7 step 5).
@@ -992,6 +1039,7 @@ pub const CLIENT_FILE_READ_MANIFEST: ProviderManifest = ProviderManifest {
     required_scope: RequiredScope::Join,
     default_ceiling: DefaultCeiling::Excluded,
     side: ProviderSide::Client,
+    class: cap_class::CLASS_UNKNOWN,
 };
 
 /// The name of the client-side notification provider for the mobile
@@ -1045,6 +1093,7 @@ pub const CLIENT_NOTIFY_MANIFEST: ProviderManifest = ProviderManifest {
     required_scope: RequiredScope::Join,
     default_ceiling: DefaultCeiling::Excluded,
     side: ProviderSide::Client,
+    class: cap_class::CLASS_UNKNOWN,
 };
 
 /// Production client-side entries, assembled into the registry after
@@ -3131,6 +3180,7 @@ mod tests {
             required_scope: RequiredScope::Join,
             default_ceiling,
             side: ProviderSide::Host,
+            class: cap_class::CLASS_UNKNOWN,
         }
     }
 

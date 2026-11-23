@@ -7,6 +7,9 @@ cd "$(dirname "${BASH_SOURCE[0]}")"
 # Check arguments before Bitwarden or sops are touched, so a typo never
 # triggers a credential prompt, a decrypt or a deploy of HEAD.
 node deploy-lib.mjs "$@"
+if [ "${QTA_GHA:-}" = 1 ]; then
+  exec node deploy.mjs "$@"
+fi
 repo_root=$(git rev-parse --show-toplevel)
 if [ -z "${BWS_ACCESS_TOKEN:-}" ]; then
   # shellcheck source=/dev/null

@@ -23,6 +23,8 @@
 
 pub mod announcement;
 pub mod artifact;
+pub mod bridge;
+pub mod bridge_http;
 pub mod chained_message;
 mod checked_json;
 pub mod dht;
@@ -32,6 +34,7 @@ pub mod envelope_outbox;
 pub mod fanout_answer;
 pub mod federation;
 pub mod fileops;
+pub mod graph_frontier;
 pub(crate) mod hex;
 pub mod host;
 pub mod log_sync;
