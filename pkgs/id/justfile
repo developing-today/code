@@ -314,11 +314,12 @@ test-native-shell:
 test-hw-shell:
     cargo nextest run -p id-hw-shell
 
-# Run the Rust example-guest unit tests (#7904): plaza-sdk (examples/rust-world, 9 tests) and rust-counter (examples/rust-counter, 2 tests) are standalone crates outside the pkgs/id workspace, so the workspace test recipes never run them.
+# Run the Rust example-guest unit tests (#7904): plaza-sdk (examples/rust-world, 9 tests) and the rust-counter and rust-cells guests are standalone crates outside the pkgs/id workspace, so the workspace test recipes never run them.
 [group('test')]
 test-rust-examples:
     cargo test --manifest-path examples/rust-world/Cargo.toml
     cargo test --manifest-path examples/rust-counter/Cargo.toml
+    cargo test --manifest-path examples/rust-cells/Cargo.toml --locked
 
 # Run the F11.8 benchmark harness (issue #539): journal append+fsync, checkpoint compaction, guest replay, session fan-out
 bench *args:
