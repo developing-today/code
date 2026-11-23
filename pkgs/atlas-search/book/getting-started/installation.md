@@ -17,8 +17,7 @@ Source: https://github.com/developing-today/code/blob/main/pkgs/atlas-search/def
 Atlas lives in the repository at `pkgs/atlas-search/`, a self-contained
 package with its own Cargo workspace, its own `flake.nix`, and a
 `rust-toolchain.toml` pinning the Rust toolchain (the file itself reads
-channel 1.99.1; the `flake.nix` comment and CI still say 1.99.0 — the file
-wins for what a build actually uses, and the disagreement is recorded in
+channel 1.99.1; the `flake.nix` comment and CI agree — see
 [Building and testing](../development/building.md)).
 
 **Route 1 — the package's own sub-flake.** From the repository root:

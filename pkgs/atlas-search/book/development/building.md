@@ -76,23 +76,18 @@ cargo test -p atlas-core
 cargo test -p atlas-search
 ```
 
-Per-crate runs mirror what CI does (below). Two facts about the toolchain
-pin, stated exactly as the sources give them, because they do not quite
-agree:
-
-- CI installs **1.99.0** (`rustup toolchain install 1.99.0 --profile minimal`)
-  and the `flake.nix` comment describes the pin as "the pinned toolchain
-  (`rust-toolchain.toml`, channel 1.99.0) — the same rustup toolchain the
-  step 1–4 gates ran under on the laptop".
-- The `rust-toolchain.toml` file itself, as checked on the laptop for this
-  book, reads `channel = "1.99.1"` (with `rustfmt` and `clippy`
-  components, profile `default`). The file also carries the warning that
-  changing the channel may cause rustc itself to build, so a channel bump
-  is committed only once nixpkgs has the new compiler cached.
-
-Per this book's rule — where sources disagree, state the source behaviour
-and say so — the file wins for what a Nix or rustup build actually uses,
-and the CI/comment figure is recorded here as the discrepancy it is.
+Per-crate runs mirror what CI does (below). The toolchain pin agrees
+across its sources: CI installs **1.99.1** (`rustup toolchain install
+1.99.1 --profile minimal`), the `flake.nix` comment describes the pin as
+"the pinned toolchain (`rust-toolchain.toml`, channel 1.99.1) — the same
+rustup toolchain the step 1–4 gates ran under on the laptop", and the
+`rust-toolchain.toml` file itself reads `channel = "1.99.1"` (with
+`rustfmt` and `clippy` components, profile `default`). The file also
+carries the warning that changing the channel may cause rustc itself to
+build, so a channel bump is committed only once nixpkgs has the new
+compiler cached. (CI and the comment briefly said 1.99.0 while the file
+said 1.99.1; #13286 aligned them on the file's value, since the file is
+what Nix and rustup builds actually use.)
 Separately, the workspace manifest's `rust-version = 1.96` is a *minimum*
 (the oldest compiler the code claims to support), not the pin.
 
@@ -117,11 +112,11 @@ presentation somewhere, and the `on:` block is the truth in each case.
   exists in the file; the header cites the 2026-11-16 nightly-main-CI
   policy, and the name is the stale part.
 - One job ("basic: atlas-search Rust checks"), `ubuntu-latest`, 30-minute
-  timeout, `contents: read`: checkout, install the 1.99.0 toolchain, then
+  timeout, `contents: read`: checkout, install the 1.99.1 toolchain, then
   four test steps — one per crate, each of the shape:
 
   ```sh
-  cargo +1.99.0 test --manifest-path pkgs/atlas-search/Cargo.toml --all-targets -p atlas-core
+  cargo +1.99.1 test --manifest-path pkgs/atlas-search/Cargo.toml --all-targets -p atlas-core
   ```
 
   for `-p atlas-search`, `-p atlas-core`, `-p atlas-proto`, `-p atlas-embed`.
