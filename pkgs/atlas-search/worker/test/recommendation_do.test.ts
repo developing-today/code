@@ -105,7 +105,7 @@ async function next(
     body: JSON.stringify({ tenant, subject, ...(cursor === undefined ? {} : { cursor }) }),
   }));
   return { response, body: await response.json() as {
-    envelope?: { body: { parent_snapshot_id: string; position: number; entries: Array<{ id: string }>; done: boolean }; signature_hex: string };
+    envelope?: { body: PageEnvelope["body"]; signature_hex: string };
     envelope_id?: string;
     next_cursor?: { parent_snapshot_id: string; position: number };
     error?: { code: string };
