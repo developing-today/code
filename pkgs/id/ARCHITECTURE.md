@@ -1,10 +1,10 @@
 # Architecture
 
-System architecture for the `id` peer-to-peer file sharing CLI.
+System architecture for the `id` peer-to-peer platform and Rust facade.
 
 ## Overview
 
-`id` is built on [Iroh](https://iroh.computer), a peer-to-peer networking library that provides content-addressed blob storage and document synchronization. The application layers a CLI interface, interactive REPL, and optional web UI on top of Iroh's primitives.
+`id` is built on [Iroh](https://iroh.computer). The workspace separates the facade and command application from core, capability/policy, sync, world, directory, web, and other service crates. The facade retains historical `id::` paths by re-exporting the split modules.
 
 ```
 ┌──────────────────────────────────────────────────────────────────┐
@@ -39,14 +39,15 @@ crate is consumed outside `pkgs/id/`).
 
 | Crate | Classification | Notes |
 |-------|----------------|-------|
-| `id` (root, `src/`) | Public surface | The only crate whose `lib.rs` re-exports the API; the CLI and binaries build on it. |
-| `id-core` | Public surface (shared core) | Depended on by 10 crates. The root re-exports a subset (`abuse`, `access`, `connectivity`, `discovery`, `frames`, `holders`, `membership`, `rejection`, `residency`, `sync_method`, `tuple`, `waiting`, plus `KEY_FILE`, `CLIENT_KEY_FILE`, `SERVE_LOCK`, `is_node_id`). Modules not re-exported by `id` are internal to the workspace. |
+| `id` (root, `src/`) | Public facade and binary | Re-exports the workspace API at historical `id::` paths; command parsing and dispatch are implemented in `id-cli`. |
+| `id-core` | Shared core | Depended on by workspace crates. The facade re-exports a selected subset; it also includes `admission_gate`, `migration_control`, `petname`, `world_presentation`, and feature-gated `qr`. See `src/lib.rs` for the authoritative list. |
 | `id-caps`, `id-store`, `id-events`, `id-groups`, `id-sync`, `id-worlds`, `id-directory`, `id-web` | Internal | Used only by sibling crates and the root. |
 | `id-cli` | Internal (binary) | Only the root depends on it. |
-| `id-config` | Internal | Only the root depends on it. |
+| `id-config` | Internal | The facade lists it as a dev-dependency for invariant tests; it has no production dependent. |
 | `id-currency-registry` | Internal | Only the root depends on it. |
-| `id-native-shell`, `id-hw-shell` | Internal (app) | Workspace members, but not default members; no dependents. |
-| `id-render`, `id-import-notion` | Internal, no dependents | Candidates for removal or for documenting as unused. |
+| `id-native-shell`, `id-hw-shell` | Internal (app) | Workspace members, not default members; both production-depend on the facade. `id-native-shell` rejects `--help` and unknown flags; it has no `--version` option. |
+| `id-render` | Internal compiler library | Rendering-pipeline compiler core: semantic-markup parsing and vocabulary validation, with composition/lowering/emission stages. |
+| `id-import-notion` | Internal importer library | Notion importer manifest and inventory primitives, with maintained integration tests. |
 
 Standalone examples and benchmarks (`examples/`, `benchmarks`) are not
 public API. Vendored crates (`vendor/p2panda-sync`, `vendor/p2panda-encryption`)
@@ -59,7 +60,7 @@ crate. `missing_docs = "warn"` is set in both `Cargo.toml` files.
 
 ### Entry Point (`main.rs`, `lib.rs`)
 
-`main.rs` parses CLI args and dispatches to command handlers. `lib.rs` exports the library API and contains `start_node()` which bootstraps an Iroh node with blob storage, document sync, and peer discovery.
+`main.rs` starts the facade binary; command parsing and dispatch are implemented in `id-cli` and re-exported at the historical facade paths. Node services are composed by the current command/server layers.
 
 ### CLI (`cli.rs`)
 

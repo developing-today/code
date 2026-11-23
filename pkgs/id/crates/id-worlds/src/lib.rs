@@ -24,15 +24,9 @@
 //!   to move together with the bridge; it cannot live in `id-groups`,
 //!   which is below this crate and must not name world types).
 //! - The directory cluster — [`directory`], [`directory_auth`],
-//!   [`directory_view`], [`directory_mail`] — the world runtime's own
-//!   state: `WorldCore` holds the directory, the world actor executes
-//!   directory actions against it, and `world_store` persists it
-//!   beside the journal, so the cluster moves as the consumer side
-//!   (the seam-6 pattern). Seam 10's remaining half is unchanged:
-//!   step 6's `id-directory` extraction must still invert or re-home
-//!   `WorldCore`'s hold on the directory, exactly as it would have
-//!   had to from the facade. The facade re-exports these modules at
-//!   their historical `id::` paths until then.
+//!   [`directory_view`], [`directory_mail`] — is owned by `id-directory`.
+//!   This crate re-exports those modules for compatibility; `WorldCore`
+//!   persists directory state as part of the world runtime.
 //!
 //! The facade re-exports each module at its historical `id::` path,
 //! so no call site outside the moved modules changed. The module

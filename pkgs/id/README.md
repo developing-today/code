@@ -1,6 +1,6 @@
 # id
 
-A peer-to-peer file sharing CLI built with [Iroh](https://iroh.computer). Store, retrieve, and share files across a decentralized network with optional collaborative web editing.
+The `id` platform and Rust facade, built with [Iroh](https://iroh.computer). It includes peer-to-peer file sharing, a sandboxed world runtime, directory and group services, sync, currency registry, and optional web editing. The command layer lives in `id-cli` and is re-exported by the facade.
 
 ## The book
 
