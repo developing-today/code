@@ -30,7 +30,7 @@ use sha2::{Digest, Sha256};
 
 use crate::shortlist::{self, Entry, rank_of};
 use crate::{
-    DEFAULT_REPO, EXIT_NO_WORK, EXIT_OK, R, World, argv, check_name, check_repo, parse, usage,
+    DEFAULT_REPO, EXIT_NO_WORK, EXIT_OK, Out, R, World, argv, check_name, check_repo, parse, usage,
 };
 
 /// Labels that hold an issue (FDR-0012): a person set them on purpose.
@@ -352,6 +352,57 @@ fn tried(list: &mut Vec<Value>, rung: &str, result: &str, why: impl Into<String>
     list.push(json!({"rung": rung, "result": result, "why": why.into()}));
 }
 
+/// How the broker spells a lane verdict: every refusal that is about
+/// the lane itself — it belongs to another worker, it is disabled, it
+/// is bound to another queue, its registration did not land — is a
+/// `claim_repo_task: lane ...` error (fleet-queue's claim path).
+const LANE_VERDICT_MARKER: &str = "claim_repo_task: lane ";
+
+/// The lane verdict in a failed claim's answer, when the failure is
+/// one (#6853, criterion 2). A verdict means the claim reached the
+/// broker and the broker refused this lane: the queue rung is
+/// `rejected`, not `down`, so a reader does not mistake a healthy
+/// broker's refusal for a store outage and go fix the wrong thing.
+///
+/// The verdict reaches this process in two spellings of the same
+/// answer: the queue verb's fallback switch puts it in the JSON
+/// envelope's `error` field on stdout (and repeats it inside its
+/// stderr wrapper line), while the plain die-on-error path carries
+/// it as the error text itself. Both are searched.
+fn lane_verdict(out: &Out) -> Option<String> {
+    let envelope = out
+        .json()
+        .and_then(|v| v.get("error").and_then(Value::as_str).map(str::to_owned));
+    let texts: Vec<&str> = envelope
+        .iter()
+        .map(String::as_str)
+        .chain([out.stderr.as_str(), out.stdout.as_str()])
+        .collect();
+    for text in texts {
+        let Some(at) = text.find(LANE_VERDICT_MARKER) else {
+            continue;
+        };
+        // The verdict runs to the end of its line; the fallback
+        // wrapper appends its own sentence after a `;`, and a raw
+        // envelope would continue with more JSON — stop at either.
+        let verdict: String = text[at..]
+            .lines()
+            .next()
+            .unwrap_or("")
+            .split([';', '"'])
+            .next()
+            .unwrap_or("")
+            .trim()
+            .chars()
+            .take(200)
+            .collect();
+        if !verdict.is_empty() {
+            return Some(verdict);
+        }
+    }
+    None
+}
+
 /// The queue validates lane IDs as a known family plus a lowercase
 /// alphabetic suffix. Preserve a full lane ID supplied as the agent
 /// name; otherwise give a standalone agent an unfiltered `any-*` lane.
@@ -586,7 +637,10 @@ pub fn next(world: &dyn World, args: &[String]) -> R<(Value, i32)> {
                 return Ok(answer("queue", task, then, log));
             }
             (0, None) | (EXIT_NO_WORK, _) => tried(&mut log, "queue", "empty", "no task claimable"),
-            _ => tried(&mut log, "queue", "down", out.why()),
+            _ => match lane_verdict(&out) {
+                Some(verdict) => tried(&mut log, "queue", "rejected", verdict),
+                None => tried(&mut log, "queue", "down", out.why()),
+            },
         }
     }
 
