@@ -48,6 +48,7 @@ import {
 } from "./activity.ts";
 import { GithubHotListConsumer, unconfiguredGithubStatus } from "./github-hot-list.ts";
 import { FileOutcomeBindingSource, GithubOutcomeConsumer } from "./outcome-consumer.ts";
+import { buildOutcomeView, drillOutcomeFacts, type OutcomeDrillSelector } from "./outcome-view.ts";
 import { OutcomeFactStore } from "./outcome-attribution.ts";
 import { RoadmapAnnotationsStore, validateNewRoadmapAnnotation } from "./roadmap-annotations.ts";
 import { createAccessAuthorEnforcer, enforceAccessAuthor } from "./access-identity.ts";
@@ -3276,6 +3277,53 @@ async function handler(req: Request): Promise<Response> {
     return json({
       generatedAt: new Date().toISOString(),
       ...computeFlowAnalytics(cutoffs),
+    });
+  }
+
+  if (path === "/api/outcomes.json") {
+    // #10910: the outcome/rollup view over the append-only outcome-fact
+    // ledger (outcome-view.ts) — totals plus per-job/model/session
+    // groups, with drill-through (?drill=job&key=..., ?drill=session&key=...,
+    // ?drill=model&provider=...&model=..., ?drill=issue&ref=...,
+    // ?drill=unattributed&reason=...) returning the exact facts behind
+    // an aggregate, each with its canonical source URL. A corrupt
+    // ledger is an explicit error, never an empty view: a gap in the
+    // evidence must not render as zero activity.
+    let outcomeFacts: Awaited<ReturnType<OutcomeFactStore["readFacts"]>>;
+    try {
+      outcomeFacts = await new OutcomeFactStore(cfg.outcomeFile).readFacts();
+    } catch {
+      return json({ error: "outcome_fact_store_corrupt" }, 500);
+    }
+    const drill = url.searchParams.get("drill");
+    if (drill === null) {
+      return json({ generatedAt: new Date().toISOString(), ...buildOutcomeView(outcomeFacts) });
+    }
+    let selector: OutcomeDrillSelector | null = null;
+    if (drill === "job" || drill === "session") {
+      const key = url.searchParams.get("key")?.trim();
+      if (key) selector = { dimension: drill, key };
+    } else if (drill === "model") {
+      selector = {
+        dimension: "model",
+        providerID: url.searchParams.get("provider")?.trim() || null,
+        modelID: url.searchParams.get("model")?.trim() || null,
+      };
+    } else if (drill === "issue") {
+      const ref = url.searchParams.get("ref")?.trim();
+      if (ref) selector = { dimension: "issue", subjectRef: ref };
+    } else if (drill === "unattributed") {
+      const reason = url.searchParams.get("reason")?.trim();
+      selector = {
+        dimension: "unattributed",
+        reason: reason === "no-binding" || reason === "source-gap" ? reason : null,
+      };
+    }
+    if (!selector) return json({ error: "invalid_outcome_drill" }, 400);
+    return json({
+      generatedAt: new Date().toISOString(),
+      selector,
+      facts: drillOutcomeFacts(outcomeFacts, selector),
     });
   }
 
