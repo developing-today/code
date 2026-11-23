@@ -17,12 +17,26 @@ export const CREATE_BODY = Object.freeze({
 
 function fail(message) { throw new Error(message); }
 
-export function validateInputs({ accountId, writeToken, readToken }) {
-  if (!/^[a-f0-9]{32}$/i.test(accountId ?? '') || !accountId.toLowerCase().endsWith(ACCOUNT_SUFFIX)) {
-    fail('bootstrap account ID is missing or not the approved account');
+function parseExpectedZoneIds(value) {
+  let ids = value;
+  if (typeof ids === 'string') {
+    try { ids = JSON.parse(ids); } catch { fail('approved zone inventory configuration is invalid'); }
+  }
+  if (!Array.isArray(ids) || ids.some(id => typeof id !== 'string' || !/^[a-f0-9]{32}$/i.test(id))) {
+    fail('approved zone inventory configuration is missing or invalid');
+  }
+  if (new Set(ids.map(id => id.toLowerCase())).size !== ids.length) fail('approved zone inventory contains duplicate IDs');
+  return ids.map(id => id.toLowerCase()).sort();
+}
+
+export function validateInputs({ approvedAccountId, writeToken, readToken, expectedZoneIds }) {
+  if (!/^[a-f0-9]{32}$/i.test(approvedAccountId ?? '') || !approvedAccountId.toLowerCase().endsWith(ACCOUNT_SUFFIX)) {
+    fail('approved account configuration is missing or invalid');
   }
   if (typeof writeToken !== 'string' || writeToken.length < 20) fail('bootstrap write credential is missing');
   if (typeof readToken !== 'string' || readToken.length < 20) fail('bootstrap read-only credential is missing');
+  if (writeToken === readToken) fail('bootstrap read and write credentials must be distinct');
+  return { approvedAccountId, expectedZoneIds: parseExpectedZoneIds(expectedZoneIds) };
 }
 
 function parseEnvelope(response, payload) {
@@ -58,8 +72,8 @@ async function requestWithInfo(fetchImpl, url, token, { method = 'GET', body, al
   let payload;
   try { payload = await response.json(); } catch { fail(`Cloudflare returned invalid JSON (HTTP ${response.status})`); }
   if (response.status === 404 && allowWorkerNotFound) {
-    if (payload?.success === false && Array.isArray(payload.errors) && payload.errors.length > 0 &&
-        payload.errors.every(e => typeof e?.code === 'number' && /not found|does not exist|unknown worker/i.test(String(e.message)))) {
+    if (payload?.success === false && Array.isArray(payload.errors) && payload.errors.length === 1 &&
+        payload.errors[0]?.code === 10007 && /^worker not found\.?$/i.test(String(payload.errors[0].message))) {
       return { absent: true, resultInfo: payload.result_info };
     }
   }
@@ -104,9 +118,10 @@ async function listAll(fetchImpl, accountId, readToken, pathname, pageSize, para
   fail('Cloudflare pagination exceeded the hard page bound');
 }
 
-async function listZones(fetchImpl, accountId, readToken) {
+async function listZones(fetchImpl, accountId, readToken, expectedZoneIds) {
   const all = [];
   let expectedTotal;
+  let expectedPages;
   for (let page = 1; page <= 100; page += 1) {
     const query = new URLSearchParams({
       'account.id': accountId,
@@ -118,14 +133,30 @@ async function listZones(fetchImpl, accountId, readToken) {
     const url = `${API}/zones?${query}`;
     const { result, resultInfo } = await requestWithInfo(fetchImpl, url, readToken);
     if (!Array.isArray(result)) fail('Cloudflare zone response was not an array');
+    if (result.length > PAGE_SIZE) fail('Cloudflare zone page exceeded the requested bound');
+    const pageIds = new Set(all.map(zone => zone.id.toLowerCase()));
+    for (const zone of result) {
+      if (typeof zone?.id !== 'string' || !/^[a-f0-9]{32}$/i.test(zone.id) || zone?.account?.id?.toLowerCase() !== accountId.toLowerCase()) {
+        fail('Cloudflare zone inventory contains an invalid owner or ID');
+      }
+      const id = zone.id.toLowerCase();
+      if (pageIds.has(id)) {
+        fail('Cloudflare zone inventory contains a duplicate ID');
+      }
+      pageIds.add(id);
+    }
     all.push(...result);
-    if (!resultInfo || !Number.isInteger(resultInfo.total_pages) || resultInfo.total_pages < 0 || resultInfo.total_pages > 100 ||
-        !Number.isInteger(resultInfo.total_count) || resultInfo.total_count < 0) {
+    if (!resultInfo || resultInfo.page !== page || resultInfo.per_page !== PAGE_SIZE ||
+        !Number.isInteger(resultInfo.total_pages) || resultInfo.total_pages < 0 || resultInfo.total_pages > 100 ||
+        !Number.isInteger(resultInfo.total_count) || resultInfo.total_count !== expectedZoneIds.length ||
+        (resultInfo.total_count > 0 && resultInfo.total_pages !== Math.ceil(resultInfo.total_count / PAGE_SIZE)) ||
+        (resultInfo.count !== undefined && resultInfo.count !== result.length)) {
       fail('Cloudflare zone pagination metadata is missing or invalid');
     }
     if (expectedTotal === undefined) expectedTotal = resultInfo.total_count;
-    if (resultInfo.total_count !== expectedTotal) fail('Cloudflare zone inventory changed during pagination');
-    if (resultInfo.total_pages === 0 && page === 1 && expectedTotal === 0 && all.length === 0) return all;
+    if (expectedPages === undefined) expectedPages = resultInfo.total_pages;
+    if (resultInfo.total_count !== expectedTotal || resultInfo.total_pages !== expectedPages) fail('Cloudflare zone inventory changed during pagination');
+    if ((resultInfo.total_pages === 0 || resultInfo.total_pages === 1) && page === 1 && expectedTotal === 0 && all.length === 0) return all;
     if (resultInfo.total_pages < page) fail('Cloudflare zone pagination metadata is missing or invalid');
     if (page >= resultInfo.total_pages) {
       if (all.length !== expectedTotal) fail('Cloudflare zone inventory is incomplete');
@@ -135,13 +166,23 @@ async function listZones(fetchImpl, accountId, readToken) {
   fail('Cloudflare zone pagination exceeded the hard page bound');
 }
 
-async function assertNoRoutes(fetchImpl, accountId, readToken) {
-  const zones = await listZones(fetchImpl, accountId, readToken);
+async function assertNoRoutes(fetchImpl, accountId, readToken, expectedZoneIds) {
+  const zones = await listZones(fetchImpl, accountId, readToken, expectedZoneIds);
+  const seen = new Set();
   for (const zone of zones) {
-    if (typeof zone?.id !== 'string' || !zone.id) fail('Cloudflare zone inventory contains an invalid zone ID');
+    if (typeof zone?.id !== 'string' || !/^[a-f0-9]{32}$/i.test(zone.id) || zone?.account?.id?.toLowerCase() !== accountId.toLowerCase()) {
+      fail('Cloudflare zone inventory contains an invalid owner or ID');
+    }
+    const zoneId = zone.id.toLowerCase();
+    if (seen.has(zoneId)) fail('Cloudflare zone inventory contains a duplicate ID');
+    seen.add(zoneId);
     const { result } = await requestWithInfo(fetchImpl, `${API}/zones/${encodeURIComponent(zone.id)}/workers/routes`, readToken);
     if (!Array.isArray(result)) fail('Cloudflare route response was not an array');
     if (result.some(route => route?.script === WORKER_NAME)) fail('A Cloudflare route already targets the smoke Worker');
+  }
+  const actualIds = [...seen].sort();
+  if (actualIds.length !== expectedZoneIds.length || actualIds.some((id, index) => id !== expectedZoneIds[index])) {
+    fail('Cloudflare zone inventory does not match the approved full-account inventory');
   }
 }
 
@@ -149,7 +190,9 @@ async function assertNoVersionsAndDeployments(fetchImpl, accountId, readToken, w
   const versions = await listAll(fetchImpl, accountId, readToken, `/workers/workers/${encodeURIComponent(workerId)}/versions`, VERSION_PAGE_SIZE);
   if (versions.length !== 0) fail('Smoke Worker already has a version; no upload or deployment was attempted');
   const { result, resultInfo } = await request(fetchImpl, accountId, readToken, `/workers/scripts/${encodeURIComponent(WORKER_NAME)}/deployments?page=1&per_page=100`);
-  if (!result || !Array.isArray(result.deployments) || result.deployments.length !== 0 || resultInfo?.total_count !== 0) {
+  if (!result || typeof result !== 'object' || Array.isArray(result) || !Object.hasOwn(result, 'deployments') ||
+      !Array.isArray(result.deployments) || result.deployments.length !== 0 ||
+      (resultInfo?.total_count !== undefined && resultInfo.total_count !== 0)) {
     fail('Smoke Worker deployment history is non-empty or unverifiable');
   }
 }
@@ -159,26 +202,27 @@ async function readWorker(fetchImpl, accountId, readToken) {
   return response.absent ? null : assertWorker(response.result);
 }
 
-export async function bootstrapSmoke({ accountId, writeToken, readToken, fetchImpl = fetch }) {
-  validateInputs({ accountId, writeToken, readToken });
+export async function bootstrapSmoke({ approvedAccountId, writeToken, readToken, expectedZoneIds, fetchImpl = fetch }) {
+  const approved = validateInputs({ approvedAccountId, writeToken, readToken, expectedZoneIds });
+  const accountId = approved.approvedAccountId;
 
   const before = await readWorker(fetchImpl, accountId, readToken);
   if (before) {
-    await assertNoRoutes(fetchImpl, accountId, readToken);
+    await assertNoRoutes(fetchImpl, accountId, readToken, approved.expectedZoneIds);
     await assertNoVersionsAndDeployments(fetchImpl, accountId, readToken, before.id);
     return 'already-present';
   }
 
   // The complete account route inventory is checked immediately before the
   // only write. Any read/scope/pagination error exits before creation.
-  await assertNoRoutes(fetchImpl, accountId, readToken);
+  await assertNoRoutes(fetchImpl, accountId, readToken, approved.expectedZoneIds);
   const created = await request(fetchImpl, accountId, writeToken, '/workers/workers', { method: 'POST', body: CREATE_BODY });
   assertWorker(created.result);
 
   // Re-read using the read-only token, never the create credential.
   const after = await readWorker(fetchImpl, accountId, readToken);
   if (!after || after.id !== created.result.id) fail('Created Worker identity does not match read-only provider readback');
-  await assertNoRoutes(fetchImpl, accountId, readToken);
+  await assertNoRoutes(fetchImpl, accountId, readToken, approved.expectedZoneIds);
   await assertNoVersionsAndDeployments(fetchImpl, accountId, readToken, after.id);
   return 'created';
 }
@@ -186,7 +230,8 @@ export async function bootstrapSmoke({ accountId, writeToken, readToken, fetchIm
 if (process.argv[1] && new URL(import.meta.url).pathname === process.argv[1]) {
   try {
     const status = await bootstrapSmoke({
-      accountId: process.env.CF_SMOKE_INIT_ACCOUNT_ID,
+      approvedAccountId: process.env.CF_SMOKE_INIT_APPROVED_ACCOUNT_ID,
+      expectedZoneIds: process.env.CF_SMOKE_INIT_EXPECTED_ZONE_IDS,
       writeToken: process.env.CF_SMOKE_INIT_WRITE_TOKEN,
       readToken: process.env.CF_SMOKE_INIT_READ_TOKEN,
     });

@@ -203,8 +203,9 @@ has no inputs, accepts only the protected default-branch `workflow_dispatch`
 context, checks out the dispatch SHA (no caller-selected ref), and hard-codes
 `private-laptop-bridge-smoke`. It uses the dedicated `cloudflare-smoke-bootstrap`
 environment, not the routine release environment. The pinned Node script uses
-only built-in APIs. It checks account ID suffix `cbfa`, inventories all account
-zones and routes, and is idempotent: a safe existing empty Worker is verified
+only built-in APIs. It reads the approved full account ID from a protected
+environment secret and compares the full zone inventory to a second protected
+configuration value. It is idempotent: a safe existing empty Worker is verified
 without writing; an absent Worker gets one metadata-only Beta Create Worker
 POST; any mismatch fails without repair or retry. Read-only verification then
 requires disabled `workers.dev` and preview URLs, null `deployed_on`, no
@@ -214,8 +215,15 @@ Versions upload step.
 
 The environment must be configured and protected on `main` before a dispatch:
 required reviewer approval, self-review disabled, and environment-only secrets
-`CF_SMOKE_INIT_ACCOUNT_ID`, `CF_SMOKE_INIT_WRITE_TOKEN`, and
-`CF_SMOKE_INIT_READ_TOKEN`. The write token must be short-lived and limited to
+`CF_SMOKE_INIT_APPROVED_ACCOUNT_ID`, `CF_SMOKE_INIT_EXPECTED_ZONE_IDS`,
+`CF_SMOKE_INIT_WRITE_TOKEN`, and `CF_SMOKE_INIT_READ_TOKEN`. The account ID
+secret contains the full approved 32-hex ID; the zone inventory secret contains
+the exact verified JSON array of all zone IDs (`[]` only when a trusted owner
+has confirmed there are no zones). The script checks every returned zone's
+owner, uniqueness, complete pagination, and exact match to this protected
+inventory. It rejects identical read/write tokens. Only Cloudflare's
+documented Worker-specific `404` / error `10007` / `Worker not found` response
+counts as absent. The write token must be short-lived and limited to
 Cloudflare `Workers Scripts Write` (the Create Worker endpoint's minimum
 documented write permission); it is separate from the routine
 `cloudflare-staging-smoke` Individual Workers Editor credential. The read-only
@@ -229,7 +237,10 @@ the draft PR cannot yet run it. No merge or dispatch was attempted.
 The route check uses Cloudflare's paginated account zone list and zone-scoped
 Worker Routes API, failing closed if any page or route read is unavailable
 ([route API](https://developers.cloudflare.com/api/resources/workers/subresources/routes/methods/list/),
-[zone API](https://developers.cloudflare.com/api/resources/zones/methods/list/)).
+[zone API](https://developers.cloudflare.com/api/resources/zones/methods/list/)). A
+fresh-empty deployment response is accepted only with an explicit empty
+`deployments` array; if `result_info.total_count` is present, it must be zero.
+Missing deployment-list data alone never counts as an empty history.
 The [Sep. 2025 New Workers API changelog](https://developers.cloudflare.com/changelog/post/2025-09-03-new-workers-api/)
 explicitly demonstrates metadata-only Worker creation, Beta Worker version
 creation by returned ID, and the legacy `/scripts/{name}/deployments` API using

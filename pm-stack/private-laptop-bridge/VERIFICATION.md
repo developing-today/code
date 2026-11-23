@@ -207,13 +207,20 @@ no init workflow or provider action was run. The write token required by the
 official Create Worker endpoint is short-lived `Workers Scripts Write`,
 separate from the routine per-Worker Editor credential. The dedicated protected
 environment is `cloudflare-smoke-bootstrap` with environment-only secrets
-`CF_SMOKE_INIT_ACCOUNT_ID`, `CF_SMOKE_INIT_WRITE_TOKEN`, and
-`CF_SMOKE_INIT_READ_TOKEN`. The last token requires Worker metadata/version/
-deployment read, `Zone Read`, and `Workers Metadata Read-Only` for the complete
-route scan. The workflow checks required secrets and the account suffix before
-network calls; the script uses the read-only token for every GET and the write
-token only for its single metadata-create POST. The environment and credentials
-were not read or changed. Because `workflow_dispatch` must be on the default
+`CF_SMOKE_INIT_APPROVED_ACCOUNT_ID`, `CF_SMOKE_INIT_EXPECTED_ZONE_IDS`,
+`CF_SMOKE_INIT_WRITE_TOKEN`, and `CF_SMOKE_INIT_READ_TOKEN`. The first is the
+full approved account ID; the second is the exact owner-verified zone ID array.
+The last token requires Worker metadata/version/deployment read, `Zone Read`,
+and `Workers Metadata Read-Only` for the complete route scan. The script
+validates every zone's account owner, uniqueness, pagination, and exact match to
+the approved inventory before creating. It rejects identical read and write
+tokens and treats only the Worker-specific HTTP 404/error 10007 as absence.
+The script uses the read-only token for every GET and the write token only for
+its single metadata-create POST. A no-deployment result must contain an explicit
+empty `deployments` array; missing optional `result_info` is acceptable only
+when that array is present and empty, and any reported nonzero count is denied.
+The environment and credentials were not read or changed. Because
+`workflow_dispatch` must be on the default
 branch before it can run, this draft cannot dispatch it yet; no merge or
 dispatch was attempted. No Cloudflare resource or setting was changed, and no
 smoke version upload was attempted.
