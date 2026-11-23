@@ -226,6 +226,12 @@ Automatic selection honors `FLEET_SHELL_TARGET`, then prefers the current laptop
 
 ## `search` — Atlas
 
+`fleet search` is the Atlas corpus search surface: hybrid FTS+vector
+search over the fleet's session history and notes, with classification
+filters. It is the client half of the Atlas search service; the service
+itself runs on the laptop (`fleet serve search`, 127.0.0.1:18760), and
+the Cloudflare worker surface (pkgs/atlas-search/worker) forwards to it.
+
 | Command                                             | Purpose                                                                             |
 | --------------------------------------------------- | ----------------------------------------------------------------------------------- |
 | `fleet search QUERY` or `fleet search search QUERY` | Search the Atlas corpus using its filters and output modes.                         |
@@ -233,6 +239,55 @@ Automatic selection honors `FLEET_SHELL_TARGET`, then prefers the current laptop
 | `fleet search serve`                                | Start the search service role; prefer the equivalent `fleet serve search` spelling. |
 
 The `atlas-search` executable alias is supported. `init` and `fetch-model` belong to the standalone `atlas-search` artifact, not the Fleet client.
+
+### Usage
+
+`fleet search --help` prints the full client usage (every flag). The
+working set:
+
+- `fleet search 'queue broker lease' --k 5 --text` — top 5 hits,
+  human-readable (the default output is JSON).
+- Filters: `--kind`, `--topic`, `--project`, `--client` (CSV),
+  `--since` / `--until` (session dates), `--mode hybrid|fts|vector`,
+  `--group-by-session`, `--expand N` (neighboring chunks),
+  `--hydrate N` (full content for the top N), `--with-message`.
+- `fleet search get-chunk 112081 --neighbors 2 --text` — one chunk
+  with its provenance. get-chunk always runs through the standalone
+  atlas-search artifact (it is job-scoped in the protocol), with a
+  loud note when via-service is in effect.
+
+### Routing
+
+- Laptop seat (the serving host, marked by
+  `~/.local/state/atlas-search/service.json`): standalone by default.
+- Any other seat: via-service by default — the client reaches the
+  laptop's service through the loopback forward on the shared SSH
+  control connection (bootstrapped from `~/tools/laptop-ssh-real.sh`),
+  with a loud standalone fallback when the service is unreachable.
+- Explicit routing always wins: `--via-service` / `--standalone`,
+  then `ATLAS_SEARCH_VIA=service`, then fleet.toml `[search] via`.
+
+### Provisioning and ceilings
+
+The via-service client presents a per-seat bearer token:
+`ATLAS_SEARCH_TOKEN`, else `~/.config/atlas-search/client.json`
+(`{"token": "..."}`, mode 0600). Client identities are named in the
+service config — `drew-cli` (the laptop seat), `openchamber`,
+`fork-server`, `sandbox-scripts` (sandbox seats), `cf-worker` (the
+Cloudflare worker). The server clamps `--max-sensitivity` to the
+identity's ceiling (drew-cli: secret-bearing; sandbox-scripts:
+personal); the client adds no ceiling logic of its own. A seat with
+no client.json cannot use the service route. The worker's gate token
+and the cf-worker service token are vaulted
+(`atlas.search-worker-gate-token`, `atlas.search-cf-worker-token`);
+the seat client tokens are provisioned from the laptop's service
+config today (see #12782 for the vaulting follow-up).
+
+### Exit codes
+
+0 ok · 1 service-job/backend failure surfaced without a fallback ·
+2 usage/validation · 3 routing unavailable (no service and no
+standalone artifact).
 
 ## `laptop-agent` — laptop job broker
 
