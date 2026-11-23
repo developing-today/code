@@ -40,6 +40,10 @@ pub struct WorldRuntimeArgs {
     /// (#1067); 0 = auto (parallelism − 2).
     #[arg(long, default_value_t = 0, requires = "world", value_name = "COUNT")]
     pub world_guest_burn_concurrency: usize,
+    /// Concurrent synchronous guest burns admitted per charged
+    /// account (#1067 per-account quotas); 0 = no per-account bound.
+    #[arg(long, default_value_t = 0, requires = "world", value_name = "COUNT")]
+    pub world_guest_burn_per_account_concurrency: usize,
 }
 
 /// Phase 1 of the crate split (#3447): `RuntimeLimits::from_args` lives in
@@ -70,6 +74,9 @@ impl id_caps::world_limits::WorldLimitArgs for WorldRuntimeArgs {
     }
     fn world_guest_burn_concurrency(&self) -> usize {
         self.world_guest_burn_concurrency
+    }
+    fn world_guest_burn_per_account_concurrency(&self) -> usize {
+        self.world_guest_burn_per_account_concurrency
     }
 }
 
