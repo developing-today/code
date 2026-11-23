@@ -212,6 +212,17 @@ the only one the edge takes reports under. Enrolling another under its
 own key, and sending each action to a machine that can do it, are not
 built.
 
+### Platform
+
+More, Platform lists every Cloudflare Worker the repository holds, as
+one platform: where each lives, what it does, whether it is in service,
+whether it is deployed from Actions or by hand from a machine, how its
+last deploy went, and what joining the platform means for it. It is
+drawn from the repository's own list
+([`../platform/workers.json`](../platform/README.md)), read from GitHub
+with the latest run of each deploy workflow, so the edge answers it
+with no machine and the list changes with a merge.
+
 ### With no connection
 
 The app opens and can be used with no connection, in a browser and in

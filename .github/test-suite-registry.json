@@ -807,6 +807,18 @@
       "status": "mapped"
     },
     {
+      "id": "pm-stack.platform",
+      "paths": ["pm-stack/platform/*.test.ts"],
+      "invocation": "cd pm-stack/platform && bun test",
+      "venue": {
+        "workflow": ".github/workflows/pm-stack-tests.yml",
+        "job_step": "Test the list of Workers against the repository",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped"
+    },
+    {
       "id": "pm-stack.dispatch",
       "paths": ["pm-stack/dispatch/test/*.test.ts"],
       "invocation": "cd pm-stack/dispatch && bun test",
