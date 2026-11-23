@@ -46,6 +46,26 @@ cargo test -p id-native-shell    # unit + transcript + parity tests
 - Steps 3–4 (rich 3D/audio/widget surfaces) are conditional on the
   design's Q1 decision for Drew and are **not** in this crate.
 
+## Capability statement
+
+Per the shells v1 record (`doc/2026-11-10T20-40-00Z_design_more_shells_v1`,
+§2 and "The one gate"), this shell's capability statement is recorded
+in [`capability-statement.json`](capability-statement.json): the client
+frames it sends (`join`, `input`, `paste`, `resize`, `chat`,
+`screen_subscribe`, `form_result`, `provider_offer`, `provider_reply`),
+the server frames it presents (the `SessionState` fold, with `error`
+surfaced as a session refusal), the one capability provider it
+declares (`client.file.read`, F13.7), and what it excludes by name
+(rich surfaces, offline reading, mobile-native). The conformance run
+is wired into the check — the `test-native-shell` flake check runs
+this crate's whole test suite — and
+`tests/capability_statement.rs` pins the statement to the contract
+and to the code's actual builders, session fold, and provider
+adapter, so the record cannot drift from the shell it describes.
+Recording the statement completes issue #10928's Done alongside the
+already-landed conformance wiring and the behavioral checks
+(`tests/parity.rs`, `tests/live_session.rs`).
+
 ## Build prerequisites
 
 The window/render features link system libraries:
