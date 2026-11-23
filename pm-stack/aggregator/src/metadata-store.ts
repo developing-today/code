@@ -1,4 +1,6 @@
 /** Versioned PM Metadata storage contract for issue #9074. */
+import type { Database } from "bun:sqlite";
+
 export type JsonObject = Record<string, unknown>;
 
 export interface MetadataIndexes {
@@ -23,6 +25,29 @@ export interface ParsedPmMetadata {
 export type ParsePmMetadataResult =
   | { ok: true; value: ParsedPmMetadata }
   | { ok: false; error: string };
+
+export interface PmMetadataRecord {
+  artifactId: string;
+  repo: string;
+  itemNumber: number;
+  itemKind: string;
+  sourceUrl: string;
+  parsed: ParsedPmMetadata;
+  sourceUpdatedAt?: string;
+}
+
+export interface PmMetadataRow {
+  artifactId: string;
+  repo: string;
+  itemNumber: number;
+  itemKind: string;
+  sourceUrl: string;
+  schemaVersion: number;
+  metadata: JsonObject;
+  extras: JsonObject;
+  indexes: MetadataIndexes;
+  sourceUpdatedAt?: string;
+}
 
 export const PM_METADATA_SCHEMA_VERSION = 1;
 
@@ -63,6 +88,138 @@ export const PM_METADATA_STORE_DDL: readonly string[] = [
   "CREATE INDEX IF NOT EXISTS pm_metadata_link_status_idx ON pm_metadata_links (status, relation)",
   "CREATE INDEX IF NOT EXISTS pm_metadata_link_target_idx ON pm_metadata_links (target_repo, target_number)",
 ];
+
+/** Create the metadata tables and their rebuildable query indexes. */
+export function createPmMetadataStore(db: Database): void {
+  for (const statement of PM_METADATA_STORE_DDL) db.exec(statement);
+}
+
+/**
+ * Persist one parsed source row. The artifact ID is the identity boundary:
+ * replaying an artifact replaces its row and rebuilds its derived link rows.
+ * Oracle: one source artifact must have one current row and exactly its
+ * current derived links, regardless of replay count.
+ */
+export function upsertPmMetadata(db: Database, record: PmMetadataRecord): void {
+  if (!nonempty(record.artifactId)) throw new Error("artifactId must be non-empty");
+  if (!nonempty(record.repo)) throw new Error("repo must be non-empty");
+  if (!positiveInteger(record.itemNumber)) throw new Error("itemNumber must be a positive integer");
+  if (!nonempty(record.itemKind)) throw new Error("itemKind must be non-empty");
+  if (!nonempty(record.sourceUrl)) throw new Error("sourceUrl must be non-empty");
+
+  const { parsed } = record;
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    db.query(`
+    INSERT INTO pm_metadata_items (
+      artifact_id, repo, item_number, item_kind, source_url, schema_version,
+      metadata_json, extras_json, direct_parent_repo, direct_parent_number,
+      session_id, lane, host, queue_id, links_json, source_updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(artifact_id) DO UPDATE SET
+      repo = excluded.repo,
+      item_number = excluded.item_number,
+      item_kind = excluded.item_kind,
+      source_url = excluded.source_url,
+      schema_version = excluded.schema_version,
+      metadata_json = excluded.metadata_json,
+      extras_json = excluded.extras_json,
+      direct_parent_repo = excluded.direct_parent_repo,
+      direct_parent_number = excluded.direct_parent_number,
+      session_id = excluded.session_id,
+      lane = excluded.lane,
+      host = excluded.host,
+      queue_id = excluded.queue_id,
+      links_json = excluded.links_json,
+      source_updated_at = excluded.source_updated_at
+    `).run(
+      record.artifactId,
+      record.repo,
+      record.itemNumber,
+      record.itemKind,
+      record.sourceUrl,
+      parsed.schemaVersion,
+      JSON.stringify(parsed.metadata),
+      JSON.stringify(parsed.extras),
+      parsed.indexes.directParentRepo ?? null,
+      parsed.indexes.directParentNumber ?? null,
+      parsed.indexes.sessionId ?? null,
+      parsed.indexes.lane ?? null,
+      parsed.indexes.host ?? null,
+      parsed.indexes.queueId ?? null,
+      JSON.stringify(parsed.indexes.links),
+      record.sourceUpdatedAt ?? null,
+    );
+
+    // Derived link rows are deliberately rebuilt from the version adapter so a
+    // replay cannot leave stale rows behind after a source edit.
+    db.query("DELETE FROM pm_metadata_links WHERE artifact_id = ?").run(record.artifactId);
+    const insertLink = db.query(`
+    INSERT INTO pm_metadata_links (
+      artifact_id, link_index, target_repo, target_number, relation, status, link_json
+    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+    `);
+    for (const [linkIndex, link] of parsed.indexes.links.entries()) {
+      insertLink.run(
+        record.artifactId,
+        linkIndex,
+        link.targetRepo ?? null,
+        link.targetNumber ?? null,
+        link.relation ?? null,
+        link.status ?? null,
+        JSON.stringify(link),
+      );
+    }
+    db.exec("COMMIT");
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
+  }
+}
+
+const stringOrUndefined = (value: unknown): string | undefined => typeof value === "string" ? value : undefined;
+const numberOrUndefined = (value: unknown): number | undefined => typeof value === "number" ? value : undefined;
+
+/** Read a source row with its extracted query projection. */
+export function getPmMetadata(db: Database, artifactId: string): PmMetadataRow | null {
+  const row = db.query(`
+    SELECT artifact_id, repo, item_number, item_kind, source_url, schema_version,
+      metadata_json, extras_json, direct_parent_repo, direct_parent_number,
+      session_id, lane, host, queue_id, source_updated_at
+    FROM pm_metadata_items WHERE artifact_id = ?
+  `).get(artifactId) as Record<string, unknown> | null;
+  if (!row) return null;
+
+  const links = db.query(`
+    SELECT target_repo, target_number, relation, status
+    FROM pm_metadata_links WHERE artifact_id = ? ORDER BY link_index
+  `).all(artifactId) as Record<string, unknown>[];
+  return {
+    artifactId: String(row.artifact_id),
+    repo: String(row.repo),
+    itemNumber: Number(row.item_number),
+    itemKind: String(row.item_kind),
+    sourceUrl: String(row.source_url),
+    schemaVersion: Number(row.schema_version),
+    metadata: JSON.parse(String(row.metadata_json)) as JsonObject,
+    extras: JSON.parse(String(row.extras_json)) as JsonObject,
+    indexes: {
+      ...(stringOrUndefined(row.direct_parent_repo) ? { directParentRepo: String(row.direct_parent_repo) } : {}),
+      ...(numberOrUndefined(row.direct_parent_number) !== undefined ? { directParentNumber: Number(row.direct_parent_number) } : {}),
+      ...(stringOrUndefined(row.session_id) ? { sessionId: String(row.session_id) } : {}),
+      ...(stringOrUndefined(row.lane) ? { lane: String(row.lane) } : {}),
+      ...(stringOrUndefined(row.host) ? { host: String(row.host) } : {}),
+      ...(stringOrUndefined(row.queue_id) ? { queueId: String(row.queue_id) } : {}),
+      links: links.map((link) => ({
+        ...(stringOrUndefined(link.target_repo) ? { targetRepo: String(link.target_repo) } : {}),
+        ...(numberOrUndefined(link.target_number) !== undefined ? { targetNumber: Number(link.target_number) } : {}),
+        ...(stringOrUndefined(link.relation) ? { relation: String(link.relation) } : {}),
+        ...(stringOrUndefined(link.status) ? { status: String(link.status) } : {}),
+      })),
+    },
+    ...(stringOrUndefined(row.source_updated_at) ? { sourceUpdatedAt: String(row.source_updated_at) } : {}),
+  };
+}
 
 const isObject = (value: unknown): value is JsonObject =>
   typeof value === "object" && value !== null && !Array.isArray(value);
