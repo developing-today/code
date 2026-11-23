@@ -188,6 +188,8 @@ CONCURRENCY_CAP = 36
 # Recovery launched_by values
 LAUNCHED_BY_RECOVERY_ZERO_MESSAGE = "opencode-claimant-recovery:zero-message-deleted"
 LAUNCHED_BY_RECOVERY_GONE_SESSION = "opencode-claimant-recovery:gone-session"
+LAUNCHED_BY_RECOVERY_ERROR_STOPPED = "opencode-claimant-recovery:error-stopped"
+ERROR_STOPPED_OUTCOMES = frozenset(("error", "failed", "failure", "timeout", "timed_out"))
 
 
 # Where this process's mode came from (#10332): the file's path and
@@ -282,6 +284,7 @@ def log_fire(
     health: "str | None" = None,
     provider_wall: "Dict | None" = None,
     hand_back: "Dict | None" = None,
+    supervision: "List[Dict] | None" = None,
     babysitter: "Dict | None" = None,
     nudges: "Dict | None" = None,
 ) -> None:
@@ -310,6 +313,7 @@ def log_fire(
         "queue_health": health,
         "provider_wall": provider_wall,
         "hand_back": hand_back,
+        "supervision": supervision,
         "babysitter": babysitter,
         "nudges": nudges,
     }
@@ -518,6 +522,69 @@ def _fail_attempts_exhausted(task, session_id) -> bool:
     return result.returncode == 0
 
 
+def _recover_error_stopped(session_id, task_id, _binding=None) -> bool:
+    """Delete an error-stopped session, then atomically clear its
+    queue binding so the next claimant fire retries the task.
+
+    The compare-and-clear bind preserves the task's route and packet;
+    the normal launch path then applies the route's standard retry and
+    failover ladder. A failed delete or bind leaves the binding in place.
+    """
+    if not session_id or task_id is None:
+        return False
+    if not _delete_session(session_id):
+        return False
+    try:
+        result = subprocess.run(
+            [
+                str(REPO_QUEUE_CMD),
+                "bind",
+                str(task_id),
+                "--worker",
+                "opencode-claimant",
+                "--session-id",
+                str(session_id),
+                "--launched-by",
+                LAUNCHED_BY_RECOVERY_ERROR_STOPPED,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except Exception as e:
+        print(f"Failed to recover error-stopped task {task_id}: {e}")
+        return False
+    if result.returncode != 0:
+        print(f"Failed to clear error-stopped task {task_id}: {result.stderr}")
+        return False
+    return True
+
+
+def _session_error_outcome(session):
+    outcome = session.get("outcome") if isinstance(session, dict) else None
+    if not isinstance(outcome, str):
+        return None
+    normalized = outcome.strip().lower()
+    return normalized if normalized in ERROR_STOPPED_OUTCOMES else None
+
+
+def _recovery_binding(task, queue):
+    progress = task.get("progress") or {}
+    packet = task.get("packet")
+    if not isinstance(packet, dict):
+        packet = task.get("payload") if isinstance(task.get("payload"), dict) else {}
+    issue = progress.get("issue_number") or progress.get("issue")
+    packet_issue = packet.get("issue")
+    if issue is None and isinstance(packet_issue, dict):
+        issue = packet_issue.get("number")
+    return {
+        "task_id": task.get("id"),
+        "queue": queue,
+        "issue_number": issue,
+        "repo": packet.get("repo") or task.get("repo"),
+    }
+
+
 def supervision_step(mode: str) -> List[Dict]:
     """
     Step 1: Supervision - check bound sessions for recovery candidates.
@@ -532,10 +599,13 @@ def supervision_step(mode: str) -> List[Dict]:
     (terminal marker, active-set membership, recent activity, live
     lease, any unreadable read) leaves the task bound.
 
-    A bound task with attempts >= max_attempts is never skipped
-    silently (step 1e): a stuck zero-message session is deleted
-    first, a gone session's absence is already verified, and the
-    task is terminally failed with the
+    A terminal error outcome is handled after the lease expires by
+    deleting the failed session and compare-clearing its binding; the
+    next fire relaunches the task through its recorded route. A bound
+    task with attempts >= max_attempts is never skipped silently
+    (step 1e): a stuck zero-message or error-stopped session is
+    deleted first, a gone session's absence is already verified, and
+    the task is terminally failed with the
     launch_failed_attempts_exhausted execution record.
 
     Returns the list of tasks acted on (recovery candidates and
@@ -580,6 +650,38 @@ def supervision_step(mode: str) -> List[Dict]:
                 attempts = task.get("attempts", 0)
                 max_attempts = task.get("max_attempts", 5)
                 exhausted = attempts >= max_attempts
+                error_outcome = _session_error_outcome(_session)
+                if error_outcome:
+                    # A terminal provider/session error is safe to retry
+                    # only after the lease has expired; until then the
+                    # owning worker may still be reconciling it.
+                    lease_ms = poll.parse_lease_ms(task.get("lease_until"))
+                    if lease_ms is None or lease_ms > now_ms:
+                        continue
+                    if exhausted:
+                        if _delete_session(session_id) and _fail_attempts_exhausted(
+                            task, session_id
+                        ):
+                            recovery_candidates.append(
+                                {
+                                    "task_id": task["id"],
+                                    "session_id": session_id,
+                                    "reason": "attempts_exhausted",
+                                    "outcome": error_outcome,
+                                    "binding": _recovery_binding(task, queue),
+                                }
+                            )
+                        continue
+                    recovery_candidates.append(
+                        {
+                            "task_id": task["id"],
+                            "session_id": session_id,
+                            "reason": "error_stopped",
+                            "outcome": error_outcome,
+                            "binding": _recovery_binding(task, queue),
+                        }
+                    )
+                    continue
                 if verdict == "ok":
                     # Present session: poll.py is the only selector.
                     # A session absent from the verified list cannot
@@ -673,6 +775,14 @@ def supervision_step(mode: str) -> List[Dict]:
     # Process zero-message recovery candidates (attempts-exhausted
     # candidates were already terminally failed above).
     for candidate in recovery_candidates:
+        if candidate["reason"] == "error_stopped":
+            recovered = _recover_error_stopped(
+                candidate["session_id"],
+                candidate["task_id"],
+                candidate.get("binding"),
+            )
+            candidate["action"] = "requeued_retry" if recovered else "recovery_failed"
+            continue
         if candidate["reason"] != "zero_message":
             continue
         task_id = candidate["task_id"]
@@ -1787,9 +1897,11 @@ def _fire(mode: str):
     # recovers are eligible on the NEXT fire, not this one (#8038
     # item 7): their ids are excluded from this fire's launch set.
     recovered_ids = []
+    supervision_records = []
     if mode == "live":
         print("Running supervision step...")
         recovered = supervision_step(mode)
+        supervision_records = recovered
         recovered_ids = [c["task_id"] for c in recovered]
 
     # Babysitter round (#1338): one verdict round over ALL sessions
@@ -1838,6 +1950,7 @@ def _fire(mode: str):
             None,
             [{"reason": "gate_unknown"}],
             health=fire_health,
+            supervision=supervision_records,
             babysitter=babysitter_record,
             nudges=nudges_record,
         )
@@ -1852,6 +1965,7 @@ def _fire(mode: str):
             None,
             [{"reason": "no_candidates"}],
             health=fire_health,
+            supervision=supervision_records,
             babysitter=babysitter_record,
             nudges=nudges_record,
         )
@@ -1873,6 +1987,7 @@ def _fire(mode: str):
             None,
             [{"reason": "cap_unknown"}],
             health=fire_health,
+            supervision=supervision_records,
             babysitter=babysitter_record,
             nudges=nudges_record,
         )
@@ -1895,6 +2010,7 @@ def _fire(mode: str):
             [{"reason": "cap_saturated"}],
             health=fire_health,
             hand_back=hand_back,
+            supervision=supervision_records,
             babysitter=babysitter_record,
             nudges=nudges_record,
         )
@@ -1925,6 +2041,7 @@ def _fire(mode: str):
         skips,
         health=fire_health,
         provider_wall=_fire_provider_wall,
+        supervision=supervision_records,
         babysitter=babysitter_record,
         nudges=nudges_record,
     )
