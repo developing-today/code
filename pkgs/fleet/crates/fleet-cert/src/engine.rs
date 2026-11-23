@@ -845,27 +845,35 @@ pub fn issue_leaf(req: &LeafIssueRequest, out_dir: &Path) -> Result<BundleManife
         )));
     }
     let key_algo = req.key_algorithm.unwrap_or(profile.key_algorithm);
-    let issuer_algo = req.issuer_algorithm.unwrap_or(key_algo);
     let issuer_partition = req
         .issuer_partition
         .clone()
         .unwrap_or_else(|| "a".to_string())
         .to_ascii_lowercase();
-    // The primary variant record for the selected issuer slot.
+    // The primary variant record for the selected issuer slot. The
+    // signer selection defaults to the requested issuer algorithm,
+    // then the leaf key's algorithm, then the set's first primary
+    // slot in the partition — a signing profile whose key algorithm
+    // has no CA slot (idp-ca's RSA-2048 signing leaves) still signs
+    // from a real issuer key.
+    let wanted = req.issuer_algorithm.unwrap_or(key_algo);
     let slot_record = issuer_bundle
         .manifest
         .certificates
         .iter()
-        .find(|r| {
-            r.role == "issuer"
-                && r.primary
-                && r.algorithm == issuer_algo
-                && r.partition == issuer_partition
+        .filter(|r| r.role == "issuer" && r.primary && r.partition == issuer_partition)
+        .find(|r| r.algorithm == wanted)
+        .or_else(|| {
+            issuer_bundle
+                .manifest
+                .certificates
+                .iter()
+                .find(|r| r.role == "issuer" && r.primary && r.partition == issuer_partition)
         })
         .ok_or_else(|| {
             CertError::usage(format!(
                 "issuer set has no primary {} partition {} CA (slots: {})",
-                issuer_algo.name(),
+                wanted.name(),
                 issuer_partition.to_ascii_uppercase(),
                 issuer_bundle
                     .manifest
@@ -957,7 +965,7 @@ pub fn issue_leaf(req: &LeafIssueRequest, out_dir: &Path) -> Result<BundleManife
         bytes: chain.into_bytes(),
     });
     let mut rec = record_from_der(&der, "leaf", &issuer_partition, true, leaf_rel, key_path)?;
-    rec.signer_algorithm = Some(issuer_algo);
+    rec.signer_algorithm = Some(slot_record.algorithm);
 
     let parent = ParentRef {
         bundle_type: BundleType::IssuerSet,

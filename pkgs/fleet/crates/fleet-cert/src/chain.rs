@@ -269,55 +269,79 @@ fn is_self_signed(cert: &CertInfo) -> bool {
 
 /// Build a path from `leaf` through `pool` (intermediates and roots,
 /// any order) to a self-signed anchor admitted by `trust`. Every
-/// link is signature-verified. Returns the path leaf-first.
+/// link is signature-verified.
+///
+/// The search is iterative-deepening: the *shortest* valid path
+/// wins. That matters for cross-signing — a directly cross-signed
+/// issuer variant (§24.2) yields a shorter path than routing the
+/// same key through a root-level cross-certificate (§3.2), and the
+/// longer route can be genuinely invalid: a cross-certificate is a
+/// CA certificate in the path, so an anchor with pathLenConstraint
+/// 1 cannot top a leaf → issuer → cross → root path (2 CA below).
+/// Path-length feasibility is therefore pruned during the search
+/// (anchor constraints enforced, RFC 5280 §6.1 reading), not
+/// discovered after it.
 pub fn build_path(
     leaf: &CertInfo,
     pool: &[CertInfo],
     trust: TrustSelection,
 ) -> Option<Vec<CertInfo>> {
-    fn dfs(
-        current: &CertInfo,
-        pool: &[CertInfo],
-        trust: TrustSelection,
-        depth: usize,
-    ) -> Option<Vec<CertInfo>> {
-        if depth > 6 {
-            return None;
+    for limit in 1..=6 {
+        if let Some(path) = dfs(leaf, pool, trust, 0, limit, 0) {
+            return Some(path);
         }
-        // Anchor case: current is itself a trusted self-signed root.
-        if is_self_signed(current) && trust.root_admitted(current) {
-            return Some(vec![current.clone()]);
-        }
-        // Candidate issuers: name match, AKI→SKI when both present,
-        // and a signature that actually verifies.
-        let mut candidates: Vec<&CertInfo> = pool
-            .iter()
-            .filter(|cand| cand.subject_name_der == current.issuer_name_der)
-            .filter(|cand| {
-                match (&current.aki, &cand.ski) {
-                    (Some(aki), Some(ski)) => aki == ski,
-                    _ => true,
-                }
-            })
-            .filter(|cand| verify_signature(cand, current))
-            .collect();
-        // Prefer anchors, then primaries-by-name stability.
-        candidates.sort_by_key(|c| {
-            (
-                !is_self_signed(c),
-                c.fingerprint_sha256.clone(),
-            )
-        });
-        for cand in candidates {
-            if let Some(mut tail) = dfs(cand, pool, trust, depth + 1) {
-                let mut path = vec![current.clone()];
-                path.append(&mut tail);
-                return Some(path);
-            }
-        }
-        None
     }
-    dfs(leaf, pool, trust, 0)
+    None
+}
+
+fn dfs(
+    current: &CertInfo,
+    pool: &[CertInfo],
+    trust: TrustSelection,
+    depth: usize,
+    limit: usize,
+    ca_below_current: usize,
+) -> Option<Vec<CertInfo>> {
+    // Anchor case: current is itself a trusted self-signed root.
+    if is_self_signed(current) && trust.root_admitted(current) {
+        return Some(vec![current.clone()]);
+    }
+    if depth >= limit {
+        return None;
+    }
+    // Candidate issuers: name match, AKI→SKI when both present,
+    // a signature that actually verifies, CA flag set, and a
+    // path-length budget that fits the CAs already below it.
+    let mut candidates: Vec<&CertInfo> = pool
+        .iter()
+        .filter(|cand| cand.subject_name_der == current.issuer_name_der)
+        .filter(|cand| {
+            match (&current.aki, &cand.ski) {
+                (Some(aki), Some(ski)) => aki == ski,
+                _ => true,
+            }
+        })
+        .filter(|cand| cand.is_ca || is_self_signed(cand))
+        .filter(|cand| verify_signature(cand, current))
+        .filter(|cand| {
+            let ca_below_cand = ca_below_current + usize::from(depth > 0);
+            match cand.path_len {
+                Some(pl) => ca_below_cand <= pl as usize,
+                None => true,
+            }
+        })
+        .collect();
+    // Prefer anchors, then primaries-by-name stability.
+    candidates.sort_by_key(|c| (!is_self_signed(c), c.fingerprint_sha256.clone()));
+    for cand in candidates {
+        let ca_below_cand = ca_below_current + usize::from(depth > 0);
+        if let Some(mut tail) = dfs(cand, pool, trust, depth + 1, limit, ca_below_cand) {
+            let mut path = vec![current.clone()];
+            path.append(&mut tail);
+            return Some(path);
+        }
+    }
+    None
 }
 
 /// Validate a leaf against a pool and a trust selection at time
