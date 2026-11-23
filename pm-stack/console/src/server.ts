@@ -9,6 +9,7 @@
 // (the install manifest, its icons, the Android asset links) are public.
 // Two more paths carry their own check instead of the sign-in: a linked
 // phone's widget presents its own token there to read a short summary.
+import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync } from "node:fs";
 import { appendFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
@@ -30,6 +31,7 @@ import {
   manifest,
   type Phones,
   SECURITY,
+  sameEntity,
   sameSiteWrite,
 } from "./http.ts";
 import { Notifier } from "./notify.ts";
@@ -73,14 +75,19 @@ const IDLE_TIMEOUT_SECONDS = 120;
 
 // The page's four files, read once: nothing on the request path touches
 // the disk synchronously after the first hit.
-const fileCache = new Map<string, Uint8Array>();
-function file(name: string, type: string): Response {
-  let bytes = fileCache.get(name);
-  if (!bytes) {
-    bytes = readFileSync(join(PUBLIC_DIR, name));
-    fileCache.set(name, bytes);
+const fileCache = new Map<string, { bytes: Uint8Array; etag: string }>();
+function file(req: Request, name: string, type: string): Response {
+  let kept = fileCache.get(name);
+  if (!kept) {
+    const bytes = readFileSync(join(PUBLIC_DIR, name));
+    kept = { bytes, etag: `"${createHash("sha256").update(bytes).digest("base64url").slice(0, 22)}"` };
+    fileCache.set(name, kept);
   }
-  return new Response(bytes, { headers: { "Content-Type": type, "Cache-Control": "no-cache", ...SECURITY } });
+  // "no-cache" is "ask before using your copy": the tag is what the
+  // browser asks with, and a copy that is still the file is not sent again.
+  const headers = { "Content-Type": type, "Cache-Control": "no-cache", ETag: kept.etag, ...SECURITY };
+  if (sameEntity(req.headers.get("if-none-match"), kept.etag)) return new Response(null, { status: 304, headers });
+  return new Response(kept.bytes, { headers });
 }
 
 export { assetLinks, type Phones };
@@ -219,10 +226,10 @@ export async function handle(req: Request, deps: Deps, peer: string | null = nul
   const rest = path.slice(BASE.length).replace(/^\/+/, "");
   if (method === "GET" && rest === "") {
     if (path === BASE) return Response.redirect(`${BASE}/`, 308);
-    return file("index.html", "text/html; charset=utf-8");
+    return file(req, "index.html", "text/html; charset=utf-8");
   }
   const type = method === "GET" ? STATIC.get(rest) : undefined;
-  if (type !== undefined) return file(rest, type);
+  if (type !== undefined) return file(req, rest, type);
   // The Android app, for the signed-in owner: the phone gets it from the
   // site it opens, and nothing has to be published anywhere else.
   if (method === "GET" && rest === APK_NAME) {
