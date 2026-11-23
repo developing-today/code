@@ -170,6 +170,7 @@ Two names break the pattern. They stay as they are because other documents link 
 - [Atlas investigation research corpus](2026-11-23T23-45-44Z_research_atlas-investigation/2026-11-23T23-45-44Z_research_atlas-investigation.md) — the 2026-11-23 research behind the Atlas programme investigation (#13241): system state, sources and consumers, search technology.
 - [CNCF landscape investigation](2026-11-23T23-46-55Z_research_cncf-investigation/2026-11-23T23-46-55Z_research_cncf-investigation.md) — the 2026-11-23 CNCF survey (~150 projects, seven areas) with adopt/defer verdicts for the estate.
 - [Fleet investigation research corpus](2026-11-23T23-48-17Z_research_fleet-investigation/2026-11-23T23-48-17Z_research_fleet-investigation.md) — the 2026-11-23 research behind the fleet programme investigation (#13272): census, queue broker, agents/secrets/quota, designs.
+- [ID investigation research corpus](2026-11-23T23-50-00Z_research_id-investigation/2026-11-23T23-50-00Z_research_id-investigation.md) — the 2026-11-23 research behind the ID programme investigation (#13240): system state, technology, Roc research, the ID-100 list.
 
 ## Legacy places
 
