@@ -298,6 +298,16 @@ fn next_uses_the_registered_worker_for_a_known_lane() {
         ("not-code-e", "repo-worker-opencode"),
         ("not-code-f", "repo-worker-code"),
         ("not-code-g", "repo-worker-nix"),
+        // The `oc-*` scheduled lanes bind to the same worker as the
+        // bare family (#13073): a numeric suffix resolves by family,
+        // a letter suffix exactly like the bare lane.
+        ("oc-code-01", "repo-worker-code"),
+        ("oc-code-02", "repo-worker-code"),
+        ("oc-opencode-01", "repo-worker-opencode"),
+        ("oc-openchamber-01", "repo-worker-openchamber"),
+        ("oc-nix-01", "repo-worker-nix"),
+        ("oc-not-code-01", "repo-worker-code"),
+        ("oc-not-code-a", "repo-worker-nix"),
     ] {
         let fake = Fake::new();
         fake.on(INBOX, vec![empty_inbox()]).on(
@@ -329,6 +339,29 @@ fn next_uses_the_registered_worker_for_a_known_lane() {
                 .contains(&format!("--worker {worker}"))
         );
     }
+}
+
+#[test]
+fn next_keeps_the_agent_as_worker_for_an_unknown_oc_lane() {
+    // An `oc-` prefix alone does not register a lane: an unknown
+    // family under it still falls back to the agent name as worker,
+    // so the broker's ownership check keeps its say (#13073).
+    let fake = Fake::new();
+    fake.on(INBOX, vec![empty_inbox()]).on(
+        CLAIM,
+        vec![ok(
+            json!({"id": 10815, "queue": "fleet", "status": "claimed"}),
+        )],
+    );
+    let (out, code) = run(
+        &fake,
+        &["next", "--agent", "oc-bogus-02", "--lane", "oc-bogus-02"],
+    );
+    assert_eq!(code, EXIT_OK);
+    assert_eq!(out["rung"], "queue");
+    assert!(fake.called(
+        "fleet queue claim --worker oc-bogus-02 --lane oc-bogus-02 --lease-seconds 14400"
+    ));
 }
 
 #[test]
