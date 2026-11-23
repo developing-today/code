@@ -1144,6 +1144,19 @@
       "reason": "Wired by #7789: scripts-test.yml names the suite explicitly, following the sibling pattern for this directory. The workflow is active (the scripts.direct-python row's disabled_manually note is stale registry state for #6187 to refresh)."
     },
     {
+      "id": "scripts.restore-row-count-diff",
+      "paths": ["scripts/tests/test_restore_row_count_diff.py"],
+      "invocation": "python3 -m unittest discover -s scripts/tests -p 'test_restore_row_count_diff.py' -v",
+      "venue": {
+        "workflow": ".github/workflows/scripts-test.yml",
+        "job_step": "restore row-count diff contract tests (#12788)",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped",
+      "related_issues": [12788]
+    },
+    {
       "id": "scripts.research-workflow",
       "paths": [
         "scripts/tests/test_research_workflow.py",
