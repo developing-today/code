@@ -14,6 +14,16 @@ blocked by anything here. The conversion findings of #5971 are inputs, reused wh
 apply — most importantly its placement rule, which this tier inverts in an instructive way
 (§3.3).
 
+**Amendment (2026-11-23, Drewry's scope addition on #13630):** §§9–15 extend this record
+with the Tanmatsu review and the app/comms/gateway model Drewry directed after the base
+record landed: worlds working *as apps* on-device (§9–§10), MQTT and a simplified HTTPS
+gateway as first-class transports with embedded certificate identity (§11), capability
+classes with per-class app variants (§12), live vs batch/offline operation with automatic
+switching (§13), and gateway tiers reaching ESP-NOW / LoRa / Meshtastic leaves (§14). §15
+states what the amendment changes in the base conclusions — and what it does not. The base
+sections are unedited; where the amendment supersedes a base statement, §15 says so
+explicitly.
+
 ## 1. Where this starts: the presenter model already exists
 
 Done check against main at the time of writing (2026-11-23):
@@ -374,6 +384,429 @@ board.
 - **The P4 tier.** MIPI-DSI panels and hardware JPEG change §2–§3's numbers wholesale;
   revisit only when a >320×240 target is actually wanted.
 
+## 9. Amendment: the Tanmatsu review — a shipping app system on ESP32-class hardware
+
+Drewry named the Tanmatsu as the reference design for making worlds work "as an app" on
+this tier. The review below is of the board and of the app system its firmware uses
+(Nicolai Electronics / badge.team lineage; the board began as the WHY2025 badge design and
+is sold commercially). One correction to the framing this lane was given: **the Tanmatsu
+is not an ESP32-S3 board.** Its application processor is an **ESP32-P4** — the chip §2.1
+named as this tier's future larger-panel tier. The Tanmatsu is that tier, shipping.
+
+### 9.1 The board
+
+| Part | What it is |
+| --- | --- |
+| Application processor | ESP32-P4 (dual RISC-V @ 400 MHz, 768 KB SRAM, **32 MB PSRAM**, 16 MB flash) — runs the launcher and apps |
+| Radio coprocessor | ESP32-C6 module (WiFi 6, BLE 5.3, IEEE 802.15.4) over ESP-Hosted (SDIO) — the P4 has no radio of its own |
+| Management coprocessor | WCH CH32V203 (keyboard matrix + power management, an I2C peripheral to the P4; its firmware is updatable from the P4) |
+| Display | 3.97″ 800×480 MIPI-DSI (ST7701S), driven by Nicolai's `esp_lcd` MIPI-DSI component |
+| Input | 69-key QWERTY keyboard (no touchscreen) |
+| Extra radios | LoRa module (Ai-Thinker Ra-01S/SH, 433 or 868/915 MHz) on the C6 side; microSD slot |
+
+Software is MIT-licensed; hardware is CERN-OHL-P-2.0. Both are bundling-compatible
+postures under §6's method.
+
+### 9.2 The app system: launcher + AppFS
+
+The device boots into the **tanmatsu-launcher** firmware: an LVGL icon-grid menu with
+status bar and keyboard navigation. Everything else on the device is an **app**, and the
+mechanism is **AppFS** (badge.team's `badgeteam/appfs` ESP-IDF component, created by
+Jeroen Domburg for the PocketSprite and carried by badge.team since):
+
+- **An app is a standard, unmodified ESP-IDF application binary.** Apps require *no
+  changes* to run under AppFS; only the launcher links the component. A modified
+  second-stage bootloader (part of the component) can boot a binary stored in the AppFS
+  partition instead of an OTA slot — the app to start is selected via an RTC register,
+  so "which app runs" survives the reset that starts it.
+- **The AppFS partition is a pseudo-filesystem of app binaries** (partition type 0x43,
+  subtype 0x3; 8 MB on the Tanmatsu). Each entry carries three metadata fields: a
+  **slug** (unique, filename-safe, ≤48 bytes), a **title** (human-readable, ≤64 bytes),
+  and a **version** (uint16). The slug also couples the binary to its data: an app's
+  files live on the FAT partition (or SD card) under `/apps/<slug>/`, and the version
+  field couples binary to data files.
+- **A running app owns the device.** It takes the screen and input through the board
+  support package (`badgeteam/badge-bsp`, MIT) and returns to the launcher on exit.
+  There is no multitasking and no sandbox: one app, whole machine, launcher resumes
+  after — the badge world's proven model, and the right grain for presenter firmware.
+- **The launcher itself is ordinary firmware**: it occupies OTA partitions A/B (2 MB
+  each) and updates over the air; NVS and the FAT data partition sit outside the A/B
+  pair, which is why app data and identity survive both launcher updates and (see
+  §10.3) full standalone replacements.
+
+Stock P4 flash layout (16 MB), from the Tanmatsu flash-layout documentation:
+
+| Region | Size | Holds |
+| --- | --- | --- |
+| Bootloader + partition table + NVS + OTA data | ~128 KB | Boot chain and settings |
+| Firmware A / B | 2 MB + 2 MB | The launcher (OTA-updatable) |
+| **AppFS** | **8 MB** | Installed app binaries |
+| FAT filesystem | ~3.9 MB | `/apps/<slug>/` data, icons, user files |
+
+### 9.3 How apps get onto the device
+
+Four routes, all landing in the same AppFS partition with the same metadata:
+
+1. **The on-device app store.** The launcher's store app downloads the catalog over WiFi
+   from badge.team's **Hatchery** and installs chosen apps directly into AppFS. The
+   Hatchery carries the compatibility precedent §12 builds on: at publish time an author
+   selects which devices an app is compatible with, and a device's installer only offers
+   compatible apps.
+2. **BadgeLink (USB).** A host protocol (WebUSB from Chromium, or a Python tool) that
+   manages the device: `appfs list / usage / upload / download / delete`, `start <slug>`,
+   plus NVS read/write and FAT filesystem access. This is the developer/sideload route —
+   and, for this tier, the provisioning route (§11.3): anything that must be placed on
+   the device (an app, a certificate, a key) can be placed over BadgeLink during the
+   pairing ceremony.
+3. **Host-side image tools.** `appfs_generate.py` builds an AppFS partition image and
+   `appfs_add_file.py <image> <app.bin> <slug> <title> <version>` inserts apps into it
+   before flashing — i.e. **apps embedded in the firmware image at build time** (§10.2).
+4. **An app as main firmware.** The template project also supports installing one app
+   *as* the device firmware, replacing the launcher entirely (§10.3).
+
+### 9.4 What this tier adopts from the Tanmatsu model
+
+- **The presenter is an app.** The embedded presenter ships as a standard ESP-IDF app
+  binary with slug/title/version metadata — installable, listable, deletable, and
+  startable by whatever launcher the device runs, and equally able to *be* the firmware
+  on a dedicated device. Nothing presenter-specific is baked into a launcher.
+- **Slug-keyed data.** Presenter state (pairing record, offline queue, cached assets)
+  lives under the app's own data directory, keyed by slug — so the app and its data
+  version and move together, as AppFS's binary↔files coupling intends.
+- **BSP-shaped hardware access.** Apps touch hardware through a board support package,
+  never board-specific code — the same discipline as §3's `esp_lcd` uniformity, one
+  level up. A presenter app built this way ports across boards by swapping the BSP.
+- **A host management protocol.** BadgeLink's shape (list/install/start apps, read/write
+  settings, move files, over USB) is the provisioning and recovery surface a fleet of
+  presenter devices needs; §11.3 uses it for certificate placement.
+- **One honest gap:** stock AppFS bootloader support covers ESP32, ESP32-C6, and
+  ESP32-P4 — **not yet the ESP32-S3**, this tier's first target (§7). Adopting AppFS
+  literally on the S3 presenter waits on an upstream bootloader port (or a port carried
+  as part of a later slice). On P4-class hardware it works today. The app *shape* (§10)
+  is adoptable everywhere immediately, because it asks nothing of the app itself.
+
+## 10. Amendment: the app model — selection, embedding, and kiosk boot
+
+### 10.1 Selection among multiple installed apps
+
+The launcher enumerates the AppFS partition (slug, title, version) and presents it as
+the menu; the user picks, the bootloader boots that app, the app runs until it exits
+back to the launcher. For a presenter device the same mechanism reads differently:
+**one device can carry several world apps** — a presenter per world, or a glance
+presenter plus a diagnostics app plus a provisioning app — and selection is a launcher
+act, not a reflash. Two presenter-specific notes:
+
+- App switching is a reboot into the chosen app (the RTC-register selection), so it is
+  a mode change, not a task switch; a presenter app must therefore persist its session
+  and queue state in its data directory and resume cleanly (§13's queue lives there).
+- A "default app" notion is all kiosk mode needs (§10.3): the launcher needs one
+  remembered slug.
+
+### 10.2 Embedding one or more apps in the firmware image
+
+Because AppFS images are built host-side (§9.3, route 3), a shipped firmware image can
+carry **any set of apps pre-installed** in its AppFS partition alongside the launcher:
+the factory image for a presenter device is launcher + presenter app (+ provisioning
+app) composed at build time, with no on-device install step. The same composition is
+how a *bundle* ships: several world presenters, or a presenter plus its fallback
+variant (§12.3), embedded together and selected at runtime. Nothing about the apps
+changes — embedding is a packaging act on the partition image, which is exactly the
+property that makes it safe to adopt.
+
+### 10.3 Booting straight into a single app (kiosk mode)
+
+Two mechanisms exist in the field, with different trade-offs:
+
+| Mechanism | How | Cost / posture |
+| --- | --- | --- |
+| **Standalone app image** (proven: the wadamesh Tanmatsu build offers exactly this) | The app is built/flashed as the device firmware, replacing the launcher; the device boots into it directly | The launcher and other apps are gone (recoverable via the recovery site / reflash). Notably, the data partition is kept at the same address, so identity, contacts, and settings **survive** switching between app-mode and standalone mode — the precedent that identity must live outside the firmware partitions (§11.3) |
+| **Launcher auto-start** (mechanism present, setting not shipped) | The bootloader already boots an RTC-register-selected app; a launcher that records a default slug and selects it on boot gives kiosk behavior while keeping the launcher one exit away | Not a documented stock Tanmatsu feature — named here as this tier's design choice for dedicated presenters, because it preserves the recovery and provisioning surface that standalone mode gives up |
+
+Recommendation for this tier: **auto-start for dedicated presenters, standalone only
+for sealed appliances.** A world presenter that can still exit to a launcher can be
+re-paired, updated, and recovered in the field; a sealed one cannot.
+
+## 11. Amendment: alternate comms — MQTT and a simplified HTTPS gateway as first-class transports
+
+§4.2's bridge track said "WebSocket … (MQTT via ESP-IDF's `esp-mqtt` is the acceptable
+alternative shape)". Drewry's direction promotes the alternatives to first-class:
+the device↔bridge protocol gets **three coequal transports**, chosen per deployment,
+all carrying the same view frames and typed input events (the §4.2 rule that the bridge
+must be deletable later applies to all three):
+
+| Transport | Shape | When it is the right choice |
+| --- | --- | --- |
+| WebSocket (base record) | One long-lived TLS connection, frames both ways | LAN presenters with a host bridge awake; lowest latency |
+| **MQTT** (`esp-mqtt`, in ESP-IDF) | Publish/subscribe via a broker the gateway hosts | Fleets and intermittently-connected devices; the broker *is* the meeting point, so neither side needs the other awake |
+| **Simplified HTTPS gateway** | Plain HTTPS requests: the device POSTs input events and GETs its current view from a small gateway API | The weakest devices and the nastiest networks: no long-lived connection, no broker client, works through proxies and captive-ish networks; polling cost is paid in latency and radio time |
+
+### 11.1 MQTT maps onto the card model unusually well
+
+- **The current view is a retained message.** The gateway publishes the device's
+  current card stack to the device's view topic with the retain flag; a device that
+  connects (or reconnects) receives its current view immediately from the broker —
+  §3.4's full-view-on-attach rule, implemented by the broker instead of by session
+  logic. Updates are subsequent publishes; diffs remain an optimization, not a
+  correctness mechanism.
+- **Input events are publishes** on the device's event topic, QoS 1 (at-least-once,
+  deduplicated by the event's device sequence number, §13.2).
+- **Liveness is the Last Will.** The broker publishes the device's will message when it
+  drops ungracefully — which is precisely §4.3's "marked stale" state, surfaced by the
+  transport instead of by a timeout the world must run. Presence is a retained topic
+  for the same reason.
+- **The offline queue has a natural home at both ends** (§13.3): the broker holds
+  retained view + any queued commands while the device is away; the device holds its
+  unacknowledged event spool while the broker is away.
+
+### 11.2 The simplified HTTPS gateway
+
+Deliberately the smallest API that carries the model: `GET /view` (the device's
+current card stack, with a version/ETag so an unchanged view costs a 304), `POST
+/events` (a batch of queued input events — the same endpoint serves live single events
+and §13's batch drains), `GET /config` (mode, poll interval, staged commands). Every
+call is one short TLS session with the device certificate (§11.3). This is the
+transport of last resort and the batch mode's natural drain path (§13.4); its pull-only
+shape is also its honesty: a device on HTTPS polling is never *pushed* to, and §13
+says what that means for alerts.
+
+### 11.3 Embedded certificate/key: device identity for the alternate transports
+
+WebSocket, MQTT over TLS, and HTTPS all authenticate the same way: **mutual TLS with a
+per-device client certificate**, provisioned once and embedded in the device:
+
+- **Provisioning is part of the pairing ceremony** (§4.3). At pairing, the device
+  generates its keypair on-device (the private key never leaves it), shows its pairing
+  code on its own screen, and — once the owner confirms — receives its certificate from
+  the owner's gateway/CA, delivered over the local link (BLE provisioning channel, or
+  BadgeLink-class USB on launcher devices, §9.3). What is "embedded" in firmware is
+  therefore the *mechanism* (cert/key storage slots, the CA root), never a shared
+  secret: each device's key is its own.
+- **Storage** follows §4.3: key and certificate in NVS/flash under flash encryption,
+  in a data partition that survives firmware replacement (the Tanmatsu standalone
+  precedent, §10.3: the data partition address is stable across mode switches, so the
+  identity does too). ESP-IDF embeds cert/key material into the image or a partition
+  via its standard embedded-file mechanism, and `esp_crt_bundle` covers server
+  verification against public roots where the gateway is publicly hosted; a private
+  gateway CA is pinned instead.
+- **One identity across transports.** The certificate's identity *is* the device
+  identity §4.3 adopts it under — the same device presenting over WebSocket today and
+  MQTT tomorrow is one device, and on track 2 (§4.2) the same keypair discipline is
+  what an iroh endpoint key already is. Revocation is by the gateway refusing the
+  certificate; rotation is a re-provisioning, using the still-valid old credential to
+  authenticate the new one.
+
+## 12. Amendment: capability classes and per-class app variants
+
+The envelope of §2 is wide — a P4 palmtop and a 128×64 mono panel are not one device.
+Drewry's direction: **app compatibility is declared per capability class**, and devices
+run the variant built for their class. The Hatchery precedent (§9.3) is the store-side
+half of this: authors declare compatibility, installers filter by it. This section
+defines the class side.
+
+### 12.1 The classes
+
+A class is a device constant — like panel geometry in §3.3, it is known before any
+session exists, so variant selection is an install-time act, never a runtime probe.
+
+| Class | Exemplar hardware | Presenter form |
+| --- | --- | --- |
+| **A — palmtop** | Tanmatsu (P4 + C6, 800×480, keyboard, 32 MB PSRAM) | Full presenter app: card stacks, lists, text-capable input via keyboard; can host the gateway role (§14) |
+| **B — glance** | §7's target (S3 + PSRAM, round/small touch panel) | The §5 card presenter with the six-verb touch vocabulary |
+| **C — reduced** | S3/original ESP32 without PSRAM, or display-only panels | Card presenter without on-device JPEG/photo cards (gateway-rendered tiles, §3.4's fallback rung); display-only rotation where there is no touch |
+| **D — minimal** | C3-class, SSD1306 128×64 mono | Headline/ticker app (§5.4): one datum, no cards; or a leaf behind a §14 gateway |
+
+### 12.2 Declaring compatibility
+
+An app's store/launcher metadata gains a **class requirement** beside AppFS's
+slug/title/version: the minimum class, plus named feature requirements where a class
+is not granular enough (touch, PSRAM, panel-geometry family, keyboard, LoRa). The
+installer — on-device store, BadgeLink-class host tool, or factory image composer
+(§10.2) — refuses or filters apps whose requirements the device does not meet, in the
+Hatchery compatibility manner. A presenter app that silently degraded on a too-small
+device would violate §4.3's honesty rule in a new place; declared refusal is the
+correct failure.
+
+### 12.3 Variants and alternate apps
+
+- **Variants** are per-class builds of one app under one slug: the template project's
+  `make build DEVICE=<target>` is the working precedent — one source tree, per-device
+  binaries, the store/installer picking the binary that matches the device's class.
+  Variant selection happens at install; the device itself never downloads a binary
+  "for" another class.
+- **Alternate apps** cover the cases a variant cannot: where a class changes the
+  *interaction model* and not just the rendering (class D's ticker vs class B's card
+  stack; a display-only build with no input back-channel), the honest packaging is a
+  separate app under its own slug, declared as the alternate for that class — so a
+  fleet tool can answer "which presenter runs on this device" from metadata alone.
+- **Fallback within a session** stays §3.4's ladder (scene → gateway tiles → headline);
+  classes decide what an app *is*, the ladder decides how a given view is carried.
+  The two must not be conflated: a class B device receiving a photo card it cannot
+  decode takes the ladder's tile rung; it does not become class C.
+
+## 13. Amendment: live vs batch/offline — dedicated modes with automatic switching
+
+§4.3 specified disconnected behavior as a display rule (last card, marked stale). The
+amendment makes offline a **mode of operation**, not an error state: a presenter can be
+*deployed* offline-first (a garden sensor's display, a badge at a camp with no
+infrastructure — the badge world's normal case) as well as fall into offline when a
+live link dies.
+
+### 13.1 The two modes
+
+| | Live mode | Batch/offline mode |
+| --- | --- | --- |
+| View | Gateway pushes view changes as they happen (WS frame, MQTT publish) | The device renders from its last synced card stack; updates arrive at sync points |
+| Input | Each typed event is sent as it happens | Events are **recorded to the on-device queue** and uploaded in a batch when connected |
+| Alerts | Full-screen takeover on arrival | No push exists; an alert is shown at the next sync, or immediately if it was already staged on-device with an expiry |
+| Power posture | Radio associated, connection held | Radio sleeps between sync windows; touch/ button wake can force an early sync |
+
+A device is in exactly one mode at a time, and **the mode is visible**: the ambient
+card (§5.4) shows live/batch state and queue depth — a user must be able to see that
+their taps are being recorded for later, not delivered now. Invisible batching would
+break §4.3's staleness honesty in the input direction.
+
+### 13.2 The on-device queue
+
+- **Where:** the app's data directory (§9.4) — a small append-only log in flash (FAT
+  file on launcher devices; a dedicated data partition or NVS-backed log on bare
+  presenters). Sized for days of six-verb events, which are tens of bytes each; the
+  queue is events and small state notes, never media.
+- **Entry shape:** `(device sequence number, device timestamp, verb, card context)`.
+  The sequence number is the deduplication key (§11.1's QoS-1 duplicates are expected,
+  not an error); the timestamp is device time, recorded as such — on upload the
+  gateway stamps arrival time alongside, and the world sees both. Batched input enters
+  the world as input events *with their age attached*; presenters still never write
+  journals (§4.3), and a world that cannot accept aged input for a given card says so
+  in that card's contract (the view contract of §8 gains this question).
+- **Drain semantics:** on connection, the device uploads in sequence order and deletes
+  only acknowledged prefixes; a half-drained queue resumes where it stopped. The
+  gateway acknowledges by sequence number, so a crash on either side costs a re-send,
+  never a loss or a silent double-apply.
+
+### 13.3 Push and pull, in both modes
+
+| Direction | Live | Batch/offline |
+| --- | --- | --- |
+| World → device | **Push**: WS frame / MQTT publish (retained view topic keeps it idempotent) | **Staged pull**: the gateway holds the new view (retained MQTT message, or the HTTPS gateway's current-view document); the device pulls it at its next sync and takes the full view (§3.4) |
+| Device → world | **Push**: event sent on occurrence | **Push-at-sync**: the queue drains as one batch upload (MQTT publishes or one HTTPS `POST /events`) the moment connectivity returns |
+| Wake | n/a (connection held) | The sync trigger itself: timer, touch/button wake, or a §14 gateway's wake packet on the local link (ESP-NOW/BLE) telling the leaf a staged view exists |
+
+Pull is also the live mode's recovery: any reconnect, in any mode, begins with the
+device pulling its current view rather than trusting what it held (§3.4).
+
+### 13.4 Automatic switching
+
+Mode is a device-side policy with three inputs, in priority order: **(1) explicit**
+— a mode verb from the owner (a card action, a launcher setting, a gateway command in
+`/config`); **(2) power** — a battery device below its charge threshold drops to batch
+and lengthens sync intervals, because the radio is the power budget (§2.3); **(3)
+link reality** — *N* consecutive failed heartbeats/connect attempts (or an MQTT will
+from its own gateway session ending) switches live → batch, and the first successful
+sync switches batch → live, with hysteresis (a minimum dwell in each mode) so a
+flapping link produces one switch, not fifty. Every switch is itself queued as a
+state note, so the world learns the device was batching — and for how long — from the
+drain, not from a gap it must guess at.
+
+## 14. Amendment: gateway tiers — stronger boxes proxy, connected ESPs funnel
+
+§4.2's bridge was a host process. The amendment generalizes it into **two gateway
+tiers**, because Drewry's topology has devices that will never see a LAN: a presenter
+in range of another ESP but not of any infrastructure.
+
+### 14.1 The tiers
+
+| Tier | Hardware | World side | Device side |
+| --- | --- | --- | --- |
+| **G2 — full gateway** | Laptop/host/phone-class box (or a class A palmtop, §12) | A **real iroh endpoint** holding world sessions (this is §4.2 track 2, terminated on a box that can afford it) plus the bridge | Hosts the MQTT broker and/or HTTPS gateway (§11) and WebSocket bridge for LAN devices; holds per-device staged views and the durable copy of every queue |
+| **G1 — ESP funnel** | An ESP with connectivity (S3 on WiFi; a Tanmatsu-class device whose C6 gives it WiFi/BLE/802.15.4 and whose LoRa module is on board) | One upstream connection as a *client*: MQTT or HTTPS to a G2 (or directly to a broker) — a funnel ESP needs no world session of its own | Southbound links to leaves: **ESP-NOW**, **BLE**, **LoRa** (raw or Meshtastic, §14.3) |
+
+The rule that makes the tiers compose: **a gateway is a client upstream and a bridge
+downstream, and it holds no world authority of its own.** A leaf's input events travel
+leaf → G1 → G2 → world as input events at every hop (§4.3's rule, extended: every
+gateway is trusted for liveness, none for authority), and the G2's iroh endpoint
+identity is the *gateway's*, adopted for the worlds it serves — the devices behind it
+are adopted individually (§14.2), not by transitivity.
+
+### 14.2 What a far (leaf) device needs
+
+A leaf is a device whose only link is a southbound one (ESP-NOW/BLE/LoRa) to a G1:
+
+- **Its own identity.** A per-device keypair/certificate as in §11.3, provisioned at
+  pairing *through* the gateway (the ceremony's confirm step happens on whatever
+  presenter the owner has; the credential reaches the leaf over its local link during
+  the ceremony window). Where the leaf is too small for TLS (class D), the floor is a
+  provisioned per-device symmetric key plus device ID, used by the link-layer security
+  below — named as a floor, with its weaker revocation story stated, not hidden.
+- **A registered place at its gateway:** an ESP-NOW peer entry (MAC + per-peer key),
+  a LoRa/Meshtastic address, or a BLE pairing — plus the gateway's record of which
+  device identity that link address speaks for. Link addresses are routing facts, not
+  identities; the gateway's mapping is what §11.3's certificate authenticates when the
+  leaf's traffic reaches G2.
+- **Almost nothing else.** No IP stack, no TLS requirement on the far leg, no world
+  knowledge. A class D leaf needs: its key, its gateway's link address, the card/headline
+  rendering of §5.4, and the §13.2 queue discipline in miniature (below).
+
+### 14.3 The southbound links, honestly sized
+
+| Link | Envelope | Consequences for the model |
+| --- | --- | --- |
+| **ESP-NOW** (ESP-IDF, Apache-2.0) | 2.4 GHz, ~200 m line-of-sight, ≤250-byte packets, ≤20 peers (10 encrypted), per-peer AES-128 (CCMP), **no routing** — direct range only | View frames must be chunked with reassembly, or reduced to headline form for the far leg; forwarding beyond one hop is application-level (a G1 relaying to another G1), designed, not assumed |
+| **LoRa, raw** | Kilometres at kbps-and-below, small packets, duty-cycle limits in some bands | Only headline/ticker traffic and batched event drains fit; a photo card does not cross a LoRa leg in any form — §12's classes and §3.4's ladder both terminate at "headline" here |
+| **Meshtastic** (as a network to speak to) | LoRa mesh firmware with flood routing (hop limit 3 default, 7 max), store-and-forward facilities, per-channel keys + public-key DMs; **GPL-3.0** | **Interop only, never bundled** (§6's method): our gateway runs its own firmware and speaks Meshtastic's protocol over the air or to a Meshtastic radio over serial — the Tanmatsu's own Meshtastic arrangement is the precedent (GUI app on the P4, Meshtastic firmware on the C6 radio). Where a mesh stack must be *bundled* into gateway firmware, MeshCore (MIT) is the named candidate instead |
+
+### 14.4 Where the offline queue lives in this topology
+
+**At the first upstream node with durable storage and power — and mirrored at the
+device when it has storage of its own.** Concretely:
+
+- A leaf with flash (any class) keeps its §13.2 unacknowledged-outbox until its
+  gateway acknowledges receipt; the outbox is small because acks are one hop away.
+- **The gateway holds the durable queue**: per-leaf staged views waiting to go down,
+  and per-leaf event batches waiting to go up, in the gateway's flash (G1) or disk
+  (G2). If the G1→G2 leg is down, the G1 *is* the offline queue for its whole subtree —
+  which is §13's batch mode with the batch point moved up one tier, and the same
+  drain/ack discipline applied recursively.
+- A storage-less leaf (below class D, if such a presenter is ever built) holds nothing:
+  its gateway's per-leaf mailbox is its only queue, and its input is live-or-lost — a
+  posture to state on its class declaration (§12.2), never to discover in the field.
+
+## 15. Amendment: what changes in the base conclusions — and what does not
+
+- **§7's first target and first slice stand.** The Waveshare S3 round panel remains the
+  hardest-viewport-first target, and #13632's scope is unchanged: bridge-fed glance
+  card, six verbs, fixture. Felix is noting on #13632 the one build-shape consequence
+  of §9.4: slice 1's firmware is written as a standard installable app binary with
+  slug/title metadata from the start (asking nothing of the app is AppFS's whole
+  point), so it can drop into an AppFS partition or a minimal launcher later without
+  rework — and literal AppFS adoption on the S3 waits on the §9.4 bootloader gap.
+- **The P4 is promoted from "named, not targeted" (§2.1) to a named second hardware
+  track**: the Tanmatsu class (class A, §12.1) is now a target of the program, with
+  its own first slice filed from this amendment — **#13643**, the world presenter as
+  an AppFS app on Tanmatsu-class hardware. It is not enqueued (operator-managed
+  shortlist, the #13342 pattern; it also waits on a physical Tanmatsu on the desk).
+- **§4.2's transport paragraph is extended, not replaced**: WebSocket remains a
+  first-class transport; MQTT and the simplified HTTPS gateway join it as coequal
+  (§11), and §13's mode machinery is the connective tissue between all three.
+- **§6 gains rows, and one honest correction of emphasis.** The amendment's stack —
+  `badgeteam/appfs` (Beer-Ware for the component; Apache-2.0 for the bootloader
+  overrides), `badgeteam/badge-bsp` (MIT), the tanmatsu-launcher (MIT), ESP-NOW and
+  `esp-mqtt` (ESP-IDF, Apache-2.0), MeshCore (MIT, candidate) — is permissive
+  throughout, **with exactly one new license-checker case**: Beer-Ware is a permissive
+  custom license of the retain-notice kind §6 already admits (TJpgDec's class), and
+  #5985's checker must know it by name. Two exclusions by §6's own method: Meshtastic
+  (GPL-3.0) is interop/external only, and painlessMesh (GPL-3.0) is not used. One
+  provenance caveat, recorded because a field guide flagged it: the AppFS *host tools'*
+  circulating copies carry no license header — the component itself is licensed as
+  above, but the tier pins the registry component (`badgeteam/appfs`), not a copied
+  script.
+- **New open questions** (joining §8): the AppFS bootloader port for ESP32-S3 (upstream
+  gap; porting it is a slice candidate, not an assumption); whether the launcher
+  auto-start setting (§10.3) should be contributed upstream to the tanmatsu-launcher
+  or carried in this tier's own minimal launcher; the view contract's treatment of
+  aged batch input (§13.2); and the far-leg fragmentation format for view frames over
+  250-byte links (§14.3) — headline-only first, chunking only if a real deployment
+  asks for more.
+
 ## Sources
 
 In-repo records:
@@ -412,3 +845,39 @@ Web sources (surveyed 2026-11-23):
   https://www.iroh.computer/blog/iroh-on-esp32
 - SPI PSRAM flush-buffer pitfall (third-party firmware field report):
   https://github.com/isaacarbone/WatcherOS/blob/HEAD/README.md
+
+Web sources for the amendment (§§9–15, surveyed 2026-11-23):
+
+- Tanmatsu documentation (AppFS mechanics and metadata limits; BadgeLink app/NVS/FS
+  management; P4 flash layout; Meshtastic arrangement — GUI app on the P4, radio
+  firmware on the C6; template app build incl. `DEVICE=` targets and install-as-firmware):
+  https://docs.tanmatsu.cloud/software/appfs/ ·
+  https://docs.tanmatsu.cloud/software/badgelink/ ·
+  https://docs.tanmatsu.cloud/software/flash_layout/ ·
+  https://docs.tanmatsu.cloud/software/meshtastic/ ·
+  https://docs.tanmatsu.cloud/software/compiling_the_template_app/ ·
+  https://docs.tanmatsu.cloud/hardware/specifications/
+- AppFS component, registry entry (component Beer-Ware license; bootloader overrides
+  Apache-2.0) and release notes (RTC-register app selection):
+  https://components.espressif.com/components/badgeteam/appfs/versions/1.0.2/readme ·
+  https://github.com/badgeteam/esp32-component-appfs/releases/tag/v1.0.2
+- badge-bsp license (MIT):
+  https://components.espressif.com/components/badgeteam/badge-bsp/versions/2.0.2/license
+- Tanmatsu hardware composition and licensing posture (P4 + C6 + CH32, LoRa module,
+  800×480 ST7701S, software MIT / hardware CERN-OHL):
+  https://hackaday.com/2026/07/01/review-the-tanmatsu-a-year-on/ ·
+  https://www.hackster.io/news/renze-nicolai-s-tanmatsu-is-a-powerful-radio-packed-espressif-esp32-p4-pocket-terminal-b26b16524a76
+- A shipping app's Tanmatsu practice (AppFS sideload discipline; standalone build that
+  replaces the launcher while preserving the data partition; app-store install as the
+  recommended route):
+  https://www.wadamesh.com/tanmatsu.html ·
+  https://git.meshinfo.ru/shade/wadamesh/src/commit/82238d3f7c1d7c20910986d4fee22d5d8cf706f3/TANMATSU_SIDELOAD.md
+- Hatchery compatibility practice (authors select compatible devices at publish;
+  on-badge installer offers only compatible apps):
+  https://badge.team/docs/badges/campzone-2019/ ·
+  https://pixel.curious.supplies/docs/app-development/publishing/
+- ESP-NOW envelope (250-byte packets, peer limits, per-peer AES, no routing) and the
+  ESP mesh landscape (Meshtastic GPL-3.0 / MeshCore MIT; ESP-WIFI-MESH and ESP-NOW
+  Apache-2.0):
+  https://www.mesh101.com/news/post-24-esp-now/ ·
+  https://www.offlineprotocol.com/learning/embedded/esp32-mesh-network-options
