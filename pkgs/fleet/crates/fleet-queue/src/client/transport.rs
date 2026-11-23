@@ -553,7 +553,7 @@ pub(super) fn fallback_switch_json(verb: &str, code: i32, msg: &str) -> Value {
         "mode_line": mode_line_for(verb, legs_store_down()).json_value(),
         "broker_exit": code,
         "error": msg,
-        "hint": "continue this work with: fleet queue fallback scan|claim|heartbeat|release",
+        "hint": "continue this work with: fleet queue fallback scan|claim|heartbeat|release|unblock",
     })
 }
 

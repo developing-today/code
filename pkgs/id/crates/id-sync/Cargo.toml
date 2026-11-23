@@ -33,6 +33,7 @@ futures-util = { version = "0.3", features = ["sink"] }
 ed25519-dalek = { version = "3", features = ["rand_core"] }
 iroh-tickets = "1"
 rand = "0.10"
+reqwest = { version = "0.13", default-features = false, features = ["rustls"] }
 sha2 = "0.11"
 unicode-normalization = "0.1"
 id-core = { path = "../id-core", default-features = false }

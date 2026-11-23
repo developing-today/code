@@ -47,6 +47,8 @@ import {
   type ActivitySourceStatus,
 } from "./activity.ts";
 import { GithubHotListConsumer, unconfiguredGithubStatus } from "./github-hot-list.ts";
+import { FileOutcomeBindingSource, GithubOutcomeConsumer } from "./outcome-consumer.ts";
+import { OutcomeFactStore } from "./outcome-attribution.ts";
 import { RoadmapAnnotationsStore, validateNewRoadmapAnnotation } from "./roadmap-annotations.ts";
 import { createAccessAuthorEnforcer, enforceAccessAuthor } from "./access-identity.ts";
 import { IdentityRegistryStore, identityMappingAuditEvent, validateIdentityMapping } from "./identity-registry.ts";
@@ -207,6 +209,7 @@ import { buildBriefs } from "./brief.ts";
 import { buildDigest, listDigestArchives, readDigestArchive, type Digest, type DigestKind } from "./digest.ts";
 import { timingSafeEqual } from "node:crypto";
 import {
+  classEnabled,
   getAlertsStore,
   requestAlertTick,
   sendClassTestPush,
@@ -215,8 +218,9 @@ import {
   toPublicSubscription,
   validateNewIncident,
   validateNewSubscription,
+  type PushPayload,
 } from "./alerts.ts";
-import { recordSwProbe, swProbeSummary, VAPID_PUBLIC_KEY } from "./push.ts";
+import { recordSwProbe, sendPush, swProbeSummary, VAPID_PUBLIC_KEY } from "./push.ts";
 import { resolveBwsSecret, resolveBwsSecretLookup } from "./secrets.ts";
 import { SW_SOURCE } from "./sw-source.ts";
 import { renderAlerts, renderNotificationPreferences, renderNotifications, renderDigest, esc } from "./render.ts";
@@ -247,6 +251,9 @@ import { sampleSloFacets } from "./slo-sampler.ts";
 import { SLO_DEFINITIONS, summarizeSloFacet, type SloFacetSummary } from "./slo.ts";
 import { watchdogHeartbeatLine } from "./watchdog-heartbeat.ts";
 import { createWatchdogHeartbeatRecorder, finishWatchdogGapSync } from "./watchdog-runner.ts";
+import type { EscalationSink } from "./escalation.ts";
+import { createEscalationTicker, escalationDelivery, escalationJournalLine } from "./escalation-tick.ts";
+import { emptyState } from "./remediation.ts";
 import { computeFlowAnalytics } from "./flow-analytics.ts";
 import { fireOpenCodeWorkingHook } from "./health-hook-fire.ts";
 import {
@@ -404,6 +411,20 @@ const githubHotListConsumer =
         token: cfg.projector.apiToken,
         store: activityStore,
         events: eventsStore,
+      })
+    : null;
+
+/** #10910: the outcome consumer rides the same sweep as the hot-list
+ *  consumer, under its own projector checkpoint: it projects each fixed
+ *  high-water into the append-only outcome-fact ledger, joining events
+ *  to jobs/sessions/models only through the binding records. */
+const githubOutcomeConsumer =
+  cfg.source === "live" && cfg.projector.baseUrl && cfg.projector.apiToken
+    ? new GithubOutcomeConsumer({
+        baseUrl: cfg.projector.baseUrl,
+        token: cfg.projector.apiToken,
+        store: new OutcomeFactStore(cfg.outcomeFile),
+        bindings: new FileOutcomeBindingSource(cfg.outcomeBindingsFile),
       })
     : null;
 
@@ -5020,6 +5041,12 @@ if (githubHotListConsumer) {
     githubSyncRunning = true;
     try {
       await githubHotListConsumer.sync();
+      if (githubOutcomeConsumer) {
+        const outcome = await githubOutcomeConsumer.sync();
+        if (outcome.error) {
+          console.error(`[activity] WARNING: GitHub outcome sync ${outcome.state}: ${outcome.error}`);
+        }
+      }
     } catch (error) {
       console.error(
         `[activity] WARNING: GitHub hot-list worker failed: ${error instanceof Error ? error.message : String(error)}`,
@@ -5061,6 +5088,76 @@ if (cfg.source !== "fixtures") {
   timer.unref?.();
 }
 
+
+// #9991: the §4 escalation sinks — the real journal/feed/push surfaces
+// escalation.ts's delivery step was built against. Journal: the
+// aggregator's append-only watchdog journal (the SLO journal file,
+// where the watchdog heartbeat already rides). Feed: the activity
+// stream #1148's watchdog reports into. Push: the page-health-push
+// path — sendPush fanned out over the alerts store's subscriptions
+// with the incident class enabled, sends logged like the test-push
+// path (design §6 question 1 is unanswered, so the interim channel is
+// the existing one, per #9991's acceptance). The push sink receives
+// only the page payload, so its sends-ledger rows carry the stable
+// objectRef below; the journal and feed entries carry the facet.
+const ESCALATION_PAGE_OBJECT_REF = "watchdog-escalation";
+const escalationSink: EscalationSink = {
+  journal: async (entry) => {
+    await sloJournal.append([escalationJournalLine(entry)]);
+  },
+  feedEvent: async (entry) => {
+    const result = await recordActivity([escalationDelivery(entry)]);
+    if (result.failed > 0) {
+      throw new Error(`activity ingestion failed for ${result.failedIds.join(", ")}`);
+    }
+  },
+  push: async (page) => {
+    const store = await getAlertsStore();
+    if (!store) return { ok: false, gone: false, error: "alerts store unavailable" };
+    const subs = (await store.listSubscriptions()).filter((sub) => classEnabled(sub, "incident"));
+    if (subs.length === 0) {
+      return { ok: false, gone: false, error: "no push subscription has the incident class enabled" };
+    }
+    const payload: PushPayload = {
+      class: "incident",
+      objectRef: ESCALATION_PAGE_OBJECT_REF,
+      url: `${cfg.publicOrigin}/alerts`,
+      title: page.title,
+      body: page.body,
+    };
+    let sent = 0;
+    let lastError = "push was not delivered";
+    for (const sub of subs) {
+      const outcome = await sendPush(
+        { endpoint: sub.endpoint, p256dh: sub.p256dh, auth: sub.auth },
+        payload,
+      );
+      if (outcome.ok) {
+        sent += 1;
+        await store.logSend({ class: "incident", objectRef: ESCALATION_PAGE_OBJECT_REF, outcome: "sent" });
+        await store.noteSubscriptionAlive(sub.endpoint);
+      } else if (outcome.gone) {
+        await store.logSend({ class: "incident", objectRef: ESCALATION_PAGE_OBJECT_REF, outcome: "gone" });
+        await store.noteSubscriptionGone(sub.endpoint);
+        lastError = outcome.error;
+      } else {
+        await store.logSend({ class: "incident", objectRef: ESCALATION_PAGE_OBJECT_REF, outcome: "error" });
+        lastError = outcome.error;
+      }
+    }
+    return sent > 0 ? { ok: true, status: 201 } : { ok: false, gone: false, error: lastError };
+  },
+};
+
+const escalationTicker = createEscalationTicker({
+  summaries: (now) => sloSummaries(now),
+  // No remediation executor host exists yet (escalation-tick.ts's seam
+  // note): the empty state is the stack's actual remediation
+  // condition — nothing attempted, nothing in flight, no breaker open.
+  remediationState: (now) => emptyState(now),
+  sink: escalationSink,
+});
+
 // Watchdog derivation must not depend on dashboard traffic or push
 // subscriptions. Its heartbeat is written only after deriveWatchdogItems
 // completes health/audit reads and gap sync. Keep this timer independent
@@ -5077,6 +5174,16 @@ if (cfg.source === "live") {
       // A source failure is not a successful watchdog pass.
       await source.orchestration();
       await deriveWatchdogItems(source.diagnostics?.().orchestration, "scheduled");
+      // #9991: the §4 escalation pass rides the same scheduled tick,
+      // in its own try/catch — an escalation failure must not fail
+      // the watchdog pass whose heartbeat deriveWatchdogItems wrote.
+      try {
+        await escalationTicker.tick();
+      } catch (error) {
+        console.error(
+          `[watchdog] WARNING: escalation pass failed: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
     } catch (error) {
       console.error(
         `[watchdog] WARNING: scheduled derivation failed: ${error instanceof Error ? error.message : String(error)}`,

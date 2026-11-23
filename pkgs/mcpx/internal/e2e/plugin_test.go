@@ -139,6 +139,79 @@ func TestPluginBinInvokesTheConfiguredExecutableFromTheEnvironment(t *testing.T)
 	}
 }
 
+// TestPluginBinArgsPrependsTheConfiguredArgumentsFromTheEnvironment
+// is the effect probe for plugin.binArgs (#8472; the effect guard
+// is #1971).
+//
+// The setting's whole effect lives in the opencode plugin host:
+// whenever a tool call takes the binary path, runBin spawns the
+// mcpx executable with the arguments MCPX_PLUGIN_BIN_ARGS names
+// prepended to the call's own argv — a JSON array when the value
+// starts with "[", whitespace-split otherwise. No Go caller
+// prepends them, so the probe drives the host the way the plugin
+// suite does — bun, the real tool executors, options resolved
+// from the environment, and crucially the real runBin — and the
+// bun cases in plugin/opencode/v2/bin-args.test.ts assert the
+// observable differences: the configured arguments arrive first,
+// in order; a space inside a JSON-form argument survives as one
+// argv element; and with the setting unset the executable sees
+// only the call's own argv. A run that skipped the cases is a
+// run that did not check what this probe exists to check, so
+// skips fail it, as in TestThePluginSuiteRunsAgainstARealDaemon.
+func TestPluginBinArgsPrependsTheConfiguredArgumentsFromTheEnvironment(t *testing.T) {
+	bun := testsupport.RequireBinary(t, "bun")
+	recordSettingProbes(t)
+	cmd := exec.Command(bun, "test", "plugin/opencode/v2/bin-args.test.ts")
+	cmd.Dir = repoRoot(t)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("bun test plugin/opencode/v2/bin-args.test.ts: %v\n%s", err, out)
+	}
+	if strings.Contains(string(out), " skip") && !strings.Contains(string(out), " 0 skip") {
+		t.Fatalf("the plugin.binArgs probe cases were skipped:\n%s", out)
+	}
+	if !strings.Contains(string(out), " 0 fail") {
+		t.Fatalf("the plugin.binArgs probe did not report a clean run:\n%s", out)
+	}
+}
+
+// TestPluginToolsRegistersTheToolSetFromTheEnvironment is the
+// effect probe for plugin.tools (#8472; the effect guard is
+// #1971).
+//
+// The setting's whole effect lives in the opencode plugin host:
+// MCPX_PLUGIN_TOOLS is the opt-in that puts mcpx's own tool set
+// (discover / exec / observe) in front of the model — setup hands
+// the resolved value to registerTools as toolsEnabled, and the
+// same value feeds the daemon tools' default, so on also offers
+// the daemon tools while off registers nothing but the namespace.
+// No Go caller registers those tools, so the probe drives the
+// host the way the plugin suite does — bun, the real tool
+// runtime and the real registerTools, options resolved from the
+// environment, a recording editor as the oracle — and the bun
+// cases in plugin/opencode/v2/plugin-tools.test.ts assert the
+// observable differences: unset and explicit false register no
+// tools; true (and another truthy spelling) registers the full
+// set, daemon tools included. A run that skipped the cases is a
+// run that did not check what this probe exists to check, so
+// skips fail it, as in TestThePluginSuiteRunsAgainstARealDaemon.
+func TestPluginToolsRegistersTheToolSetFromTheEnvironment(t *testing.T) {
+	bun := testsupport.RequireBinary(t, "bun")
+	recordSettingProbes(t)
+	cmd := exec.Command(bun, "test", "plugin/opencode/v2/plugin-tools.test.ts")
+	cmd.Dir = repoRoot(t)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("bun test plugin/opencode/v2/plugin-tools.test.ts: %v\n%s", err, out)
+	}
+	if strings.Contains(string(out), " skip") && !strings.Contains(string(out), " 0 skip") {
+		t.Fatalf("the plugin.tools probe cases were skipped:\n%s", out)
+	}
+	if !strings.Contains(string(out), " 0 fail") {
+		t.Fatalf("the plugin.tools probe did not report a clean run:\n%s", out)
+	}
+}
+
 // TestPluginEnvLevelChangesShellEnvFromTheEnvironment is the effect
 // probe for plugin.env (#8472; the effect guard is #1971).
 //
@@ -169,5 +242,41 @@ func TestPluginEnvLevelChangesShellEnvFromTheEnvironment(t *testing.T) {
 	}
 	if !strings.Contains(string(out), " 0 fail") {
 		t.Fatalf("the plugin.env probe did not report a clean run:\n%s", out)
+	}
+}
+
+// TestPluginDaemonToolsAreOfferedFromTheEnvironment is the effect
+// probe for plugin.daemonTools (#8472; the effect guard is #1971).
+//
+// The setting's whole effect lives in the opencode plugin host: it
+// gates whether the session offers the three daemon tools
+// (mcpx_daemon_status, mcpx_daemon_select, mcpx_daemon_forget). The
+// resolution is a tri-state — the plugin option first, then
+// MCPX_PLUGIN_DAEMON_TOOLS parsed as a truthy value, then a fallback
+// to the main plugin.tools switch or an ambiguous discovery — and
+// "auto", the registry default, decides nothing on the first two
+// rungs. No Go caller offers those tools, so the probe drives the
+// host the way the plugin suite does — bun, the real session plugin,
+// options resolved from the environment — and the bun cases in
+// plugin/opencode/mcpx/daemon-tools.test.ts assert the observable
+// with/without differences in the returned tool map, with daemon
+// discovery isolated to empty state directories so the fallback arm
+// is deterministic. A run that skipped the cases is a run that did
+// not check what this probe exists to check, so skips fail it, as
+// in TestThePluginSuiteRunsAgainstARealDaemon.
+func TestPluginDaemonToolsAreOfferedFromTheEnvironment(t *testing.T) {
+	bun := testsupport.RequireBinary(t, "bun")
+	recordSettingProbes(t)
+	cmd := exec.Command(bun, "test", "plugin/opencode/mcpx/daemon-tools.test.ts")
+	cmd.Dir = repoRoot(t)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("bun test plugin/opencode/mcpx/daemon-tools.test.ts: %v\n%s", err, out)
+	}
+	if strings.Contains(string(out), " skip") && !strings.Contains(string(out), " 0 skip") {
+		t.Fatalf("the plugin.daemonTools probe cases were skipped:\n%s", out)
+	}
+	if !strings.Contains(string(out), " 0 fail") {
+		t.Fatalf("the plugin.daemonTools probe did not report a clean run:\n%s", out)
 	}
 }

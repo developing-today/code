@@ -31,6 +31,10 @@
 //!   with [`QueryError::CursorExpired`]. A cursor whose bytes
 //!   were tampered with fails authentication before any binding
 //!   is read.
+//! - The cursor string is untrusted input: a presented cursor
+//!   longer than [`MAX_CURSOR_LEN`] is refused as malformed
+//!   before any decoding allocates storage for it, and the
+//!   pager never issues a cursor longer than that bound.
 //! - Cancellation is observable: a [`CancelFlag`] checked while
 //!   a page is produced ends the stream with a terminal page
 //!   whose reason is [`TerminalReason::Cancelled`], never a
@@ -60,6 +64,24 @@ pub const SORT_PROFILE: &str = "address-asc/v1";
 
 /// Cursor format version bound into every cursor payload.
 const CURSOR_VERSION: u64 = 1;
+
+/// Maximum length, in hex characters, of a cursor string this
+/// module issues or accepts. A presented cursor is untrusted
+/// input: without a bound, a caller could hand in an arbitrarily
+/// long string and make every page request allocate roughly
+/// half its size in decoded bytes before authentication refuses
+/// it. The sealed form is two hex characters per byte; the
+/// payload's fixed fields (version, sort profile, the 32-byte
+/// snapshot token and the 32-byte MAC) total well under 200
+/// bytes, so this bound leaves roughly 16 KiB of sealed payload
+/// for the variable fields — the scope strings and the two
+/// bound array addresses — far beyond any scope or address the
+/// store admits in practice. [`CursorPager::seal_cursor`]
+/// enforces the same bound when issuing, so a pager never hands
+/// out a cursor it would later refuse as oversized: the bound
+/// is the supported cursor-size limit, enforced consistently on
+/// both the issuing and the accepting path.
+pub const MAX_CURSOR_LEN: usize = 32_768;
 
 /// A query row: one array address and its stored payload bytes.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -475,10 +497,17 @@ impl CursorPager {
         let mac = blake3::keyed_hash(&self.key, &payload);
         let mut sealed = payload;
         sealed.extend_from_slice(mac.as_bytes());
-        Ok(Cursor(hex_encode(&sealed)))
+        let encoded = hex_encode(&sealed);
+        if encoded.len() > MAX_CURSOR_LEN {
+            return Err(QueryError::CursorEncode);
+        }
+        Ok(Cursor(encoded))
     }
 
     fn open_cursor(&self, cursor: &Cursor) -> Result<BoundCursor, QueryError> {
+        if cursor.as_str().len() > MAX_CURSOR_LEN {
+            return Err(QueryError::MalformedCursor);
+        }
         let sealed = hex_decode(cursor.as_str()).ok_or(QueryError::MalformedCursor)?;
         if sealed.len() <= 32 {
             return Err(QueryError::MalformedCursor);

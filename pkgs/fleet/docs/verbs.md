@@ -280,8 +280,15 @@ personal); the client adds no ceiling logic of its own. A seat with
 no client.json cannot use the service route. The worker's gate token
 and the cf-worker service token are vaulted
 (`atlas.search-worker-gate-token`, `atlas.search-cf-worker-token`);
-the seat client tokens are provisioned from the laptop's service
-config today (see #12782 for the vaulting follow-up).
+Every seat client token is vaulted the same way, as
+`atlas.search-<client>-client-token` (for example
+`atlas.search-sandbox-scripts-client-token`), so a seat
+self-provisions during its normal secret sync: fetch its client's
+token (`fleet secrets get atlas.search-<client>-client-token`) and
+write it to `~/.config/atlas-search/client.json` as
+`{"token": "..."}` with mode 0600. Tokens are minted in the laptop's
+service config; on rotation, update the value there and re-vault it
+under the same name.
 
 ### Exit codes
 
