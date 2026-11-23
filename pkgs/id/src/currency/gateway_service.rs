@@ -55,16 +55,35 @@
 //! property above this type, but the type is the seam it guards:
 //! there is no second write path around it.
 //!
-//! **Scope, stated plainly.** The service executes the same op
+//! **Scope, stated plainly.** The service executes the op
 //! set the PoC proved — `register_currency`, `grant_minter`,
-//! `issue`, `transfer`. `convert` is phase 5 (#3801/#3802);
-//! `freeze`/`sunset` are authorized by F3 but the registry crate
-//! has no status-transition write yet, so the service refuses
-//! them by name rather than pretending; `balance`/`history` are
-//! reads and stay off the write pipeline (see
+//! `issue`, `transfer` — plus the lifecycle ops `freeze` and
+//! `sunset` (#13342, next bullet). `convert` is phase 5
+//! (#3801/#3802); `balance`/`history` are reads and stay off
+//! the write pipeline (see
 //! [`GatewayService::holder_balance`]). Abuse controls (design
 //! §4.3 step 6) and graph chain-continuity validation remain as
 //! absent as the PoC left them (its write-up items 10–11).
+//!
+//! - **Lifecycle ops (#13342).** `freeze`/`sunset` execute
+//!   through the registry's status-transition write and are
+//!   recorded as posted intents like registration and grants:
+//!   no ledger transfer exists to write ahead of, and the
+//!   transition itself is idempotent, so a retry whose intent
+//!   finalize was lost re-executes harmlessly and is answered
+//!   with the receipt it should have had. [`GatewayService::open`]
+//!   replays posted freeze/sunset intents over the rebuilt
+//!   registry records, so a status survives restart. Which
+//!   layer refuses what: F3 authorization refuses the value
+//!   ops (`issue`, `transfer`, `convert`, `grant_minter`) on a
+//!   non-active currency with `InactiveCurrency` — the view's
+//!   `active` flag is the registry record's status, so a
+//!   transition lands in authorization the moment it lands in
+//!   the registry; lifecycle ops are authorized on existence
+//!   plus issuer only (sunset must stay reachable from
+//!   frozen); the registry owns transition legality —
+//!   issuer-only there too, repeats idempotent, sunset
+//!   terminal ([`RegistryError::InvalidTransition`]).
 //!
 //! **Idempotency-key discipline.** The idempotency ID is a hash
 //! of (account, op, client request id). A client that reuses a
@@ -79,7 +98,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use id_currency_registry::{
-    AccountKind, Factory, FactoryError, InMemoryStore, RegisterAccount,
+    AccountKind, CurrencyStatus, Factory, FactoryError, InMemoryStore, RegisterAccount,
     RegisterCurrency as RegistryRegister, Registry, RegistryError, Store as _, StoreError,
     SupplyPolicy,
 };
@@ -840,6 +859,27 @@ impl<B: LedgerBackend, I: IntentStore> GatewayService<B, I> {
                 )));
             }
         }
+        // Replay posted lifecycle transitions over the rebuilt
+        // records (#13342). Transitions are monotone (Active ->
+        // Frozen -> Sunset, sunset terminal), so applying every
+        // posted freeze before every posted sunset reproduces
+        // the pre-restart status whatever order they posted in.
+        for target_op in ["freeze", "sunset"] {
+            for intent in &all {
+                if intent.state != IntentState::Posted || intent.op != target_op {
+                    continue;
+                }
+                let Some(currency_id) = &intent.currency_id else {
+                    continue;
+                };
+                let moved = if target_op == "freeze" {
+                    registry.freeze_currency(currency_id, intent.account.clone())
+                } else {
+                    registry.sunset_currency(currency_id, intent.account.clone())
+                };
+                moved.map_err(ServiceError::Registry)?;
+            }
+        }
         Ok(Self {
             registry,
             backend,
@@ -1041,6 +1081,18 @@ impl<B: LedgerBackend, I: IntentStore> GatewayService<B, I> {
             CurrencyOp::GrantMinter(op) => self.grant_minter(&authorized, op),
             CurrencyOp::Issue(op) => self.issue(&authorized, op, graph),
             CurrencyOp::Transfer(op) => self.transfer(&authorized, op, graph),
+            CurrencyOp::Freeze(op) => self.set_status(
+                &authorized,
+                &verified.request.op,
+                &op.currency,
+                CurrencyStatus::Frozen,
+            ),
+            CurrencyOp::Sunset(op) => self.set_status(
+                &authorized,
+                &verified.request.op,
+                &op.currency,
+                CurrencyStatus::Sunset,
+            ),
             other => Err(ServiceError::Unsupported(other.name())),
         }
     }
@@ -1275,6 +1327,69 @@ impl<B: LedgerBackend, I: IntentStore> GatewayService<B, I> {
             Some(&op.currency),
             record.ledger_id,
             Some(op.minter.clone()),
+            None,
+            receipt.clone(),
+        );
+        self.intents
+            .put(&intent)
+            .map_err(ServiceError::IntentStore)?;
+        Ok(sign_receipt_with(&self.gateway_key, receipt)?)
+    }
+
+    /// Execute a `freeze`/`sunset` (#13342): the registry's
+    /// status-transition write, recorded as a posted intent the
+    /// same way registration and grants are. There is no ledger
+    /// transfer to write ahead of; the write-ahead discipline
+    /// for these ops is the transition's own idempotence — if
+    /// the intent finalize is lost to a crash after the
+    /// transition landed, the client's retry re-executes a
+    /// repeat transition, which the registry answers as an
+    /// idempotent success, and the intent is recorded then.
+    /// [`GatewayService::open`] replays posted transitions over
+    /// the rebuilt registry records, so the status survives
+    /// restarts.
+    fn set_status(
+        &mut self,
+        authorized: &Authorized,
+        op: &CurrencyOp,
+        key: &[u8; 32],
+        target: CurrencyStatus,
+    ) -> Result<SignedReceipt, ServiceError> {
+        let currency_id = self
+            .currency_ids
+            .get(key)
+            .cloned()
+            .ok_or(ServiceError::UnknownCurrencyKey)?;
+        let record = match target {
+            CurrencyStatus::Frozen => self
+                .registry
+                .freeze_currency(&currency_id, authorized.account.clone())?,
+            CurrencyStatus::Sunset => self
+                .registry
+                .sunset_currency(&currency_id, authorized.account.clone())?,
+            CurrencyStatus::Active => {
+                return Err(ServiceError::Unsupported(
+                    "no gateway op transitions a currency to active",
+                ));
+            }
+        };
+        let receipt = Receipt {
+            op: op.name().to_owned(),
+            account: authorized.account.clone(),
+            idempotency: hex_encode(&authorized.idempotency.to_be_bytes()),
+            currency_id: Some(currency_id.clone()),
+            currency: Some(hex_encode(key)),
+            ledger_id: Some(record.ledger_id),
+            transfer_id: None,
+            graph_object: None,
+        };
+        let intent = GatewayIntent::posted_simple(
+            authorized,
+            op,
+            currency_id,
+            Some(key),
+            record.ledger_id,
+            None,
             None,
             receipt.clone(),
         );
@@ -1612,8 +1727,9 @@ impl<B: LedgerBackend, I: IntentStore> GatewayService<B, I> {
 mod tests {
     use super::*;
     use crate::currency::gateway::{
-        CurrencyRequest, Freeze as GwFreeze, GrantMinter as GwGrantMinter, Issue as GwIssue,
-        RegisterCurrency as GwRegister, Sunset as GwSunset, Transfer as GwTransfer, sign_request,
+        Balance as GwBalance, CurrencyRequest, Freeze as GwFreeze,
+        GrantMinter as GwGrantMinter, Issue as GwIssue, RegisterCurrency as GwRegister,
+        Sunset as GwSunset, Transfer as GwTransfer, sign_request,
     };
     use crate::currency::gateway_poc::verify_receipt;
     use crate::currency::graph::{SupplyCap, sign_definition, sign_issue, sign_transfer};
@@ -2368,28 +2484,235 @@ mod tests {
 
     /// Ops the envelope authorizes but this service does not
     /// execute are refused by name, not silently mishandled:
-    /// freeze/sunset wait on a registry status-transition write
-    /// that does not exist yet.
+    /// reads stay off the write pipeline (the module docs'
+    /// scope statement), so a balance read names itself
+    /// unsupported here.
     #[test]
     fn unsupported_ops_refuse_by_name() {
         let mut fx = fixture_with(InMemoryLedger::default(), InMemoryIntentStore::new());
         let (_register, currency, _definition) = registered(&mut fx);
         let key = *currency.compact_hash().as_bytes();
-        for (id, op) in [
-            (2_u128, CurrencyOp::Freeze(GwFreeze { currency: key })),
-            (3_u128, CurrencyOp::Sunset(GwSunset { currency: key })),
-        ] {
-            let request = CurrencyRequest {
-                client_request_id: id,
-                op,
-            };
-            let device_key = fx.issuer.device_key.clone();
-            let error = send(&mut fx, &device_key, &request, None)
-                .expect_err("unsupported op refused");
-            assert!(
-                matches!(error, ServiceError::Unsupported(_)),
-                "got {error:?}",
-            );
-        }
+        let request = CurrencyRequest {
+            client_request_id: 2,
+            op: CurrencyOp::Balance(GwBalance {
+                currency: key,
+                account: fx.alice.account.clone(),
+            }),
+        };
+        let device_key = fx.alice.device_key.clone();
+        let error = send(&mut fx, &device_key, &request, None).expect_err("unsupported op refused");
+        assert!(
+            matches!(error, ServiceError::Unsupported(_)),
+            "got {error:?}",
+        );
+    }
+
+    /// #13342: freeze executes through the registry transition
+    /// and is recorded as a posted intent; the value ops then
+    /// refuse at authorization (the F3 view's `active` flag is
+    /// the registry record's status); sunset stays reachable
+    /// from frozen; sunset is terminal.
+    #[test]
+    fn freeze_and_sunset_execute_and_value_ops_refuse() {
+        let mut fx = fixture_with(InMemoryLedger::default(), InMemoryIntentStore::new());
+        let (_register, currency, definition) = registered(&mut fx);
+        let key = *currency.compact_hash().as_bytes();
+        let (_receipt, _issue_event) = issue_to_alice(&mut fx, &currency, &definition, 2, 100, 1);
+
+        // Freeze by the issuer posts, verifies, and lands in
+        // the registry record.
+        let freeze = CurrencyRequest {
+            client_request_id: 10,
+            op: CurrencyOp::Freeze(GwFreeze { currency: key }),
+        };
+        let device_key = fx.issuer.device_key.clone();
+        let receipt = send(&mut fx, &device_key, &freeze, None).expect("freeze posts");
+        assert!(verify_receipt(&fx.gateway_vk, &receipt));
+        assert_eq!(receipt.receipt.op, "freeze");
+        assert_eq!(
+            fx.svc.registry_record(&key).map(|record| record.status),
+            Some(CurrencyStatus::Frozen)
+        );
+
+        // Issue and transfer now refuse at authorization.
+        let token = TokenIssue {
+            currency: currency.compact_hash(),
+            amount: 10,
+            to: issuer_id(&fx.alice.account_key),
+            memo: None,
+        };
+        let event = sign_issue(
+            &fx.issuer.account_key,
+            2,
+            Some(definition.id),
+            &currency,
+            &token,
+            vec![],
+        )
+        .expect("issue signs");
+        let body = token.body().expect("body");
+        let request = CurrencyRequest {
+            client_request_id: 11,
+            op: CurrencyOp::Issue(GwIssue {
+                currency: key,
+                amount: 10,
+                to: fx.alice.account.clone(),
+            }),
+        };
+        let device_key = fx.issuer.device_key.clone();
+        let error = send(&mut fx, &device_key, &request, Some((&event, &body)))
+            .expect_err("issue on a frozen currency refused");
+        assert!(
+            matches!(error, ServiceError::Gateway(GatewayError::InactiveCurrency)),
+            "got {error:?}",
+        );
+        let error = transfer_alice_to_bob(&mut fx, &currency, 12, 10, 0, None)
+            .expect_err("transfer on a frozen currency refused");
+        assert!(
+            matches!(error, ServiceError::Gateway(GatewayError::InactiveCurrency)),
+            "got {error:?}",
+        );
+
+        // Sunset from frozen posts; the currency is terminal.
+        let sunset = CurrencyRequest {
+            client_request_id: 13,
+            op: CurrencyOp::Sunset(GwSunset { currency: key }),
+        };
+        let device_key = fx.issuer.device_key.clone();
+        let receipt = send(&mut fx, &device_key, &sunset, None).expect("sunset posts");
+        assert!(verify_receipt(&fx.gateway_vk, &receipt));
+        assert_eq!(receipt.receipt.op, "sunset");
+        assert_eq!(
+            fx.svc.registry_record(&key).map(|record| record.status),
+            Some(CurrencyStatus::Sunset)
+        );
+
+        // Freeze after sunset: the registry's typed refusal.
+        let freeze = CurrencyRequest {
+            client_request_id: 14,
+            op: CurrencyOp::Freeze(GwFreeze { currency: key }),
+        };
+        let device_key = fx.issuer.device_key.clone();
+        let error = send(&mut fx, &device_key, &freeze, None)
+            .expect_err("freeze on a sunset currency refused");
+        assert!(
+            matches!(
+                error,
+                ServiceError::Registry(RegistryError::InvalidTransition { .. })
+            ),
+            "got {error:?}",
+        );
+    }
+
+    /// #13342: freeze is issuer-only at authorization, an exact
+    /// retry answers from the intent record, and a repeat under
+    /// a fresh request id succeeds idempotently.
+    #[test]
+    fn freeze_is_issuer_only_and_repeats_answer() {
+        let mut fx = fixture_with(InMemoryLedger::default(), InMemoryIntentStore::new());
+        let (_register, currency, _definition) = registered(&mut fx);
+        let key = *currency.compact_hash().as_bytes();
+        let freeze = CurrencyRequest {
+            client_request_id: 10,
+            op: CurrencyOp::Freeze(GwFreeze { currency: key }),
+        };
+
+        // A non-issuer is refused at authorization; nothing moves.
+        let device_key = fx.mallory.device_key.clone();
+        let error =
+            send(&mut fx, &device_key, &freeze, None).expect_err("non-issuer freeze refused");
+        assert!(
+            matches!(error, ServiceError::Gateway(GatewayError::NotIssuer)),
+            "got {error:?}",
+        );
+        assert_eq!(
+            fx.svc.registry_record(&key).map(|record| record.status),
+            Some(CurrencyStatus::Active)
+        );
+
+        // The issuer freezes; the exact retry replays the same
+        // receipt from the intent record.
+        let device_key = fx.issuer.device_key.clone();
+        let receipt = send(&mut fx, &device_key, &freeze, None).expect("freeze posts");
+        let replay = send(&mut fx, &device_key, &freeze, None).expect("freeze retry replays");
+        assert_eq!(replay.receipt, receipt.receipt);
+
+        // A repeat under a fresh request id is an idempotent
+        // success, not an error.
+        let repeat = CurrencyRequest {
+            client_request_id: 11,
+            op: CurrencyOp::Freeze(GwFreeze { currency: key }),
+        };
+        let device_key = fx.issuer.device_key.clone();
+        let receipt = send(&mut fx, &device_key, &repeat, None).expect("repeat freeze answers");
+        assert!(verify_receipt(&fx.gateway_vk, &receipt));
+        assert_eq!(
+            fx.svc.registry_record(&key).map(|record| record.status),
+            Some(CurrencyStatus::Frozen)
+        );
+    }
+
+    /// #13342: a posted freeze survives a restart — `open`
+    /// replays the transition over the registry record rebuilt
+    /// from the register intent, and value ops stay refused.
+    #[test]
+    fn freeze_survives_restart_via_intent_replay() {
+        let dir = temp_store_dir("freeze-restart");
+        let mut fx = fixture_with(
+            InMemoryLedger::default(),
+            FileIntentStore::open(dir.clone()).expect("store opens"),
+        );
+        let (_register, currency, definition) = registered(&mut fx);
+        let key = *currency.compact_hash().as_bytes();
+        let freeze = CurrencyRequest {
+            client_request_id: 10,
+            op: CurrencyOp::Freeze(GwFreeze { currency: key }),
+        };
+        let device_key = fx.issuer.device_key.clone();
+        send(&mut fx, &device_key, &freeze, None).expect("freeze posts");
+        let backend = fx.svc.into_backend();
+
+        // Restart: same backend, same store directory, fresh
+        // service state.
+        let mut fx = fixture_with(backend, FileIntentStore::open(dir.clone()).expect("reopen"));
+        assert_eq!(
+            fx.svc.registry_record(&key).map(|record| record.status),
+            Some(CurrencyStatus::Frozen),
+            "the freeze is replayed over the rebuilt registry record",
+        );
+
+        // And authorization still refuses value ops against it.
+        let token = TokenIssue {
+            currency: currency.compact_hash(),
+            amount: 10,
+            to: issuer_id(&fx.alice.account_key),
+            memo: None,
+        };
+        let event = sign_issue(
+            &fx.issuer.account_key,
+            1,
+            Some(definition.id),
+            &currency,
+            &token,
+            vec![],
+        )
+        .expect("issue signs");
+        let body = token.body().expect("body");
+        let request = CurrencyRequest {
+            client_request_id: 11,
+            op: CurrencyOp::Issue(GwIssue {
+                currency: key,
+                amount: 10,
+                to: fx.alice.account.clone(),
+            }),
+        };
+        let device_key = fx.issuer.device_key.clone();
+        let error = send(&mut fx, &device_key, &request, Some((&event, &body)))
+            .expect_err("issue after restart on a frozen currency refused");
+        assert!(
+            matches!(error, ServiceError::Gateway(GatewayError::InactiveCurrency)),
+            "got {error:?}",
+        );
+        let _ = fs::remove_dir_all(&dir);
     }
 }
