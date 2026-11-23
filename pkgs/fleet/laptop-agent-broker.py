@@ -133,7 +133,8 @@ def broker_tunnel_socket(port, timeout_s=None):
     """Broker-local CONNECT tunnel establishment (#9611 acceptance 2).
 
     Same wire behaviour as la.tunnel_socket (credential read from the
-    HTTPS_PROXY env and sent only inside the CONNECT request), but
+    seat's recorded tailnet proxy when one exists, else the HTTPS_PROXY
+    env, and sent only inside the CONNECT request), but
     with a hard bounded timeout and ordinary exceptions: the client's
     tunnel_socket can block up to 60 s waiting for the CONNECT response
     and raises SystemExit on a closed proxy — inside a broker thread
@@ -143,7 +144,14 @@ def broker_tunnel_socket(port, timeout_s=None):
     surfaces as a fast, logged OSError instead."""
     import base64
     import urllib.parse
-    raw = os.environ.get("HTTPS_PROXY")
+    # The recorded tailnet proxy beats the ambient env (#12426): a
+    # broker auto-started from a sandbox shell otherwise inherits the
+    # platform egress proxy and every tunnel fails while it looks
+    # alive. la is the deployed client; an older copy without the
+    # resolver leaves the ambient env in charge.
+    resolver = getattr(la, "tailnet_https_proxy", None)
+    raw = (resolver() if resolver is not None else None) \
+        or os.environ.get("HTTPS_PROXY")
     if not raw:
         raise OSError("HTTPS_PROXY must be set")
     u = urllib.parse.urlparse(raw)

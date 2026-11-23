@@ -852,6 +852,14 @@ function viewMore() {
   const b = docs.core.board || { counts: {} };
   const tile = (to, title, sub) => h("button", { class: "tile", onclick: () => go(to) }, title, h("span", {}, sub));
   const out = [
+    h("h2", {}, "Plan"),
+    h(
+      "div",
+      { class: "tiles" },
+      tile("more/roadmap", "Roadmap", "id, fleet, atlas, PM stack: built, in progress, planned"),
+      tile("more/bugs", "Bugs", "report one; see what is open and what was fixed"),
+      tile("more/intake", "Intake", "every note, bug and change you sent, and where it went"),
+    ),
     h("h2", {}, "Operations"),
     h(
       "div",
@@ -1051,6 +1059,427 @@ async function viewNotify() {
         ),
       ),
     ),
+  ];
+}
+
+// ---- the plan: roadmaps, bugs, intake ----------------------------------
+
+const PHASES = [
+  ["doing", "In progress"],
+  ["now", "Planned: immediately"],
+  ["next", "Planned: short term"],
+  ["later", "Planned: long term"],
+  ["built", "Built"],
+];
+/** Moving an issue between the planned phases is setting its rank. */
+const PHASE_RANK = { now: "now", next: "next", later: "none" };
+const URGENCY = [
+  ["keep", "Leave its rank as it is"],
+  ["expedite", "Expedite"],
+  ["now", "Now"],
+  ["next", "Next"],
+  ["none", "No rank"],
+];
+
+/** What a form came back with, as intake arguments: the owner's words
+ * untouched, and only the choices that were made. */
+export function intakeArgs(base, form) {
+  const args = { ...base, text: form.text };
+  if (form.rank && form.rank !== "keep") args.rank = form.rank;
+  if (form.session) args.mode = "session";
+  if (form.area) args.area = form.area;
+  if (!args.area) delete args.area;
+  return args;
+}
+
+/** What a "Change this item" form asks for, as the change it names:
+ * where to, only when moving; a name, only when adding under it. */
+export function changeAsked(form) {
+  const asked = { action: form.action };
+  if (form.action === "move") asked.to = form.to;
+  if (form.action === "add-under" && form.itemTitle) asked.title = form.itemTitle;
+  return asked;
+}
+
+/** What sending an intake item came to, for the line shown when it is done. */
+export function intakeSaid(r) {
+  if (!r) return "Sent";
+  const task = r.queued ? "" : "; its task follows when a machine is connected";
+  return r.commented ? `Note left on #${r.issue}${task}` : `Filed as #${r.issue}${task}`;
+}
+
+/** The heading of one phase of a roadmap page: how many it shows, and
+ * of how many when there are more than it lists. */
+export function phaseHeading(title, shown, more, days) {
+  if (!shown && !more) return title;
+  if (!more) return `${title} (${shown})`;
+  return `${title} (${shown} of ${shown + more}${days ? ` in the last ${days} days` : ""})`;
+}
+
+/** A form in a dialog. `fields` are { name, label, type, options, value,
+ * required, rows }; it answers with their values by name, or null when
+ * it was closed without sending. */
+function sheet({ title, text, fields, okLabel }) {
+  const inputs = {};
+  const body = fields.map((f) => {
+    const id = `sheet-${f.name}`;
+    let input;
+    if (f.type === "select") {
+      input = h(
+        "select",
+        { id },
+        f.options.map(([value, label]) => h("option", { value, selected: value === f.value }, label)),
+      );
+    } else if (f.type === "check") {
+      input = h("input", { id, type: "checkbox", checked: Boolean(f.value) });
+      inputs[f.name] = input;
+      return h("label", { class: "row check", for: id }, input, f.label);
+    } else if (f.type === "line") {
+      input = h("input", { id, type: "text", value: f.value || "", required: Boolean(f.required), maxlength: 200 });
+    } else {
+      input = h("textarea", { id, rows: f.rows || 4, required: Boolean(f.required), maxlength: 8000 }, f.value || "");
+    }
+    inputs[f.name] = input;
+    return [h("label", { for: id }, f.label), input];
+  });
+  const dialog = h(
+    "dialog",
+    { class: "sheet", "aria-labelledby": "sheet-title" },
+    h(
+      "form",
+      { method: "dialog" },
+      h("h2", { id: "sheet-title" }, title),
+      text ? h("p", { class: "meta" }, text) : null,
+      body,
+      h(
+        "div",
+        { class: "row end" },
+        h("button", { value: "cancel", class: "ghost", formnovalidate: true }, "Cancel"),
+        h("button", { value: "ok" }, okLabel || "Send"),
+      ),
+    ),
+  );
+  document.body.append(dialog);
+  return new Promise((resolve) => {
+    dialog.addEventListener(
+      "close",
+      () => {
+        const out = {};
+        for (const [name, el] of Object.entries(inputs)) out[name] = el.type === "checkbox" ? el.checked : el.value.trim();
+        dialog.remove();
+        resolve(dialog.returnValue === "ok" ? out : null);
+      },
+      { once: true },
+    );
+    dialog.showModal();
+    Object.values(inputs)[0]?.focus();
+  });
+}
+
+const WORDS = { name: "text", label: "In your own words", required: true, rows: 5 };
+const AS_SESSION = { name: "session", label: "Start a session on it now", type: "check" };
+const newId = () => crypto.randomUUID();
+
+/** Ask for a note and send it as an intake item about `base`. */
+async function noteOn(base, title, text, button) {
+  const form = await sheet({
+    title,
+    text,
+    fields: [WORDS, { name: "rank", label: "How soon", type: "select", options: URGENCY, value: "keep" }, AS_SESSION],
+  });
+  if (form === null) return;
+  await act("intake.send", { id: newId(), ...intakeArgs(base, form) }, intakeSaid, button);
+}
+
+/** Set by the refresh button: the next read of a plan screen asks
+ * GitHub again now, where a look within the minute is answered from
+ * the last read. */
+let wantFresh = false;
+function freshly(path) {
+  const fresh = wantFresh;
+  wantFresh = false;
+  return fresh ? `${path}${path.includes("?") ? "&" : "?"}fresh=1` : path;
+}
+let capabilities = null;
+/** The capabilities there are roadmaps for: the same list for as long as this page is open. */
+async function capabilityList() {
+  if (!capabilities) capabilities = await api("roadmaps");
+  return capabilities;
+}
+
+const unread = (part) => h("p", { class: "why" }, `Could not be read: ${part?.error || "no answer"}`);
+
+function planIssue(area, phase) {
+  return (i) =>
+    card(
+      h("h3", {}, ext(i.url, `#${i.number}`), ` ${i.title}`),
+      h(
+        "p",
+        { class: "meta" },
+        i.rank && i.rank !== "none" ? chip(i.rank, "accent") : null,
+        i.working ? chip("being worked on", "good") : null,
+        ` updated ${ago(i.updated)} · ${i.comments} comments`,
+      ),
+      i.state === "closed"
+        ? null
+        : h(
+            "div",
+            { class: "row end" },
+            h(
+              "select",
+              {
+                class: "narrow",
+                "aria-label": `Move #${i.number} to`,
+                onchange: (e) =>
+                  e.target.value &&
+                  act("issue.rank", { issue: i.number, rank: PHASE_RANK[e.target.value] }, `#${i.number} moved`, e.target),
+              },
+              h("option", { value: "" }, "Move to…"),
+              ["now", "next", "later"]
+                .filter((p) => p !== phase)
+                .map((p) => h("option", { value: p }, PHASES.find(([id]) => id === p)[1].replace("Planned: ", ""))),
+            ),
+            h(
+              "button",
+              {
+                class: "small",
+                "aria-label": `Note on #${i.number}`,
+                onclick: (e) =>
+                  noteOn({ kind: "note", area: area || i.area, about: { issue: i.number } }, `A note on #${i.number}`, i.title, e.target),
+              },
+              "Note",
+            ),
+          ),
+    );
+}
+
+function planRow(area, phase) {
+  return (r) => {
+    const about = { row: r.title, phase };
+    const change = async (e) => {
+      const form = await sheet({
+        title: "Change this item",
+        text: r.title,
+        fields: [
+          {
+            name: "action",
+            label: "What to do",
+            type: "select",
+            value: "move",
+            options: [
+              ["move", "Move it to another phase"],
+              ["add-under", "Add a sub-item under it"],
+              ["built", "Mark it as built"],
+              ["rewrite", "Rewrite it"],
+              ["drop", "Drop it from the roadmap"],
+            ],
+          },
+          { name: "to", label: "To (when moving)", type: "select", value: phase === "now" ? "next" : "now", options: PHASES },
+          { name: "itemTitle", label: "The sub-item's name (when adding one)", type: "line" },
+          { ...WORDS, label: "Why, in your own words" },
+          AS_SESSION,
+        ],
+      });
+      if (form === null) return;
+      const base = { kind: "change", area, about, change: changeAsked(form) };
+      await act("intake.send", { id: newId(), ...intakeArgs(base, { text: form.text, session: form.session }) }, intakeSaid, e.target);
+    };
+    return card(
+      h("h3", {}, r.title),
+      h(
+        "p",
+        { class: "meta" },
+        r.status ? chip(r.status) : null,
+        " ",
+        r.issues.map((n) => [ext(`https://github.com/${me.repo || "developing-today/code"}/issues/${n}`, `#${n}`), " "]),
+      ),
+      r.intent ? h("p", {}, r.intent) : null,
+      h(
+        "div",
+        { class: "row end" },
+        h("button", { class: "small ghost", "aria-label": `Change: ${r.title}`, onclick: change }, "Change"),
+        h(
+          "button",
+          {
+            class: "small",
+            "aria-label": `Note on: ${r.title}`,
+            onclick: (e) => noteOn({ kind: "note", area, about }, "A note on this item", r.title, e.target),
+          },
+          "Note",
+        ),
+      ),
+    );
+  };
+}
+
+let roadmapArea = null;
+/** Roadmap: one capability at a time. Its file's own rows and its
+ * issues, by where they stand; and from each, a note or a change in the
+ * owner's words. */
+async function viewRoadmap(sub) {
+  const caps = await capabilityList();
+  const has = (id) => caps.some((c) => c.id === id);
+  const area = has(sub) ? sub : has(roadmapArea) ? roadmapArea : caps[0].id;
+  roadmapArea = area;
+  const cap = await api(freshly(`roadmap?area=${encodeURIComponent(area)}`));
+  const addItem = async (e) => {
+    const form = await sheet({
+      title: `Add to ${cap.title}`,
+      fields: [
+        { name: "itemTitle", label: "What it is called", type: "line", required: true },
+        { name: "to", label: "Where it goes", type: "select", value: "next", options: PHASES.filter(([id]) => id !== "built") },
+        { ...WORDS, label: "What it is and why, in your own words" },
+        AS_SESSION,
+      ],
+    });
+    if (form === null) return;
+    const base = { kind: "change", area, change: { action: "add", to: form.to, title: form.itemTitle } };
+    await act("intake.send", { id: newId(), ...intakeArgs(base, { text: form.text, session: form.session }) }, intakeSaid, e.target);
+  };
+  const out = [
+    h(
+      "div",
+      { class: "seg", role: "group", "aria-label": "Capability" },
+      caps.map((c) => h("button", { "aria-pressed": String(c.id === area), onclick: () => go(`more/roadmap/${c.id}`) }, c.title)),
+    ),
+    h(
+      "div",
+      { class: "row end" },
+      h("button", { class: "small ghost", onclick: (e) => noteOn({ kind: "note", area }, `A note on ${cap.title}`, "", e.target) }, "Note"),
+      h("button", { class: "small", onclick: addItem }, "Add an item"),
+    ),
+    cap.file
+      ? null
+      : h("p", { class: "meta" }, `${cap.title} has no roadmap file yet: this is its issues, by where they stand. "Add an item" asks for one.`),
+  ];
+  const rowsRead = Array.isArray(cap.rows);
+  if (!rowsRead) out.push(h("p", { class: "why" }, `The roadmap file could not be read: ${cap.rows?.error || "no answer"}`));
+  const openRead = Array.isArray(cap.issues.doing);
+  if (!openRead) out.push(h("p", { class: "why" }, `Its open issues could not be read: ${cap.issues.doing?.error || "no answer"}`));
+  for (const [phase, title] of PHASES) {
+    const rows = rowsRead ? cap.rows.filter((r) => r.phase === phase) : [];
+    const part = cap.issues[phase];
+    const issues = Array.isArray(part) ? part : [];
+    const more = phase === "built" ? cap.more?.built || 0 : 0;
+    out.push(h("h2", {}, phaseHeading(title, rows.length + issues.length, more, phase === "built" ? cap.builtDays : 0)));
+    const drawn = [...rows.map(planRow(area, phase)), ...issues.map(planIssue(area, phase))];
+    if (phase === "built" && !Array.isArray(part)) drawn.push(unread(part));
+    out.push(...(drawn.length ? drawn : [h("p", { class: "meta" }, "Nothing here.")]));
+  }
+  const all = `https://github.com/${me.repo || "developing-today/code"}/issues?q=${encodeURIComponent(`is:issue is:open label:${cap.labels.map((l) => `"${l}"`).join(",")}`)}`;
+  out.push(
+    h(
+      "p",
+      { class: "meta" },
+      cap.more?.open ? `${cap.more.open} more ranked issues are not listed here. ` : "",
+      "Open issues with no rank are not on this page: ",
+      ext(all, `everything open under ${cap.title}`),
+      ".",
+    ),
+  );
+  return out;
+}
+
+/** Bugs: report one in a sentence; what is open, soonest first; what was fixed lately. */
+async function viewBugs() {
+  const [caps, bugs] = await Promise.all([capabilityList(), api(freshly("bugs"))]);
+  const words = h("textarea", { rows: 4, maxlength: 8000, "aria-label": "What went wrong", placeholder: "What went wrong, and what you expected" });
+  const where = h(
+    "select",
+    { "aria-label": "Where" },
+    h("option", { value: "" }, "Not sure where"),
+    caps.map((c) => h("option", { value: c.id, selected: c.id === "pm-stack" }, c.title)),
+  );
+  const soon = h(
+    "select",
+    { "aria-label": "How soon" },
+    [
+      ["now", "Now"],
+      ["expedite", "Expedite"],
+      ["next", "Next"],
+    ].map(([v, l]) => h("option", { value: v }, l)),
+  );
+  const session = h("input", { type: "checkbox", id: "bug-session" });
+  const report = async (e) => {
+    if (!words.value.trim()) return toast("Say what went wrong first", true);
+    const form = { text: words.value, area: where.value, rank: soon.value, session: session.checked };
+    const sent = await act("intake.send", { id: newId(), ...intakeArgs({ kind: "bug" }, form) }, intakeSaid, e.target);
+    if (sent) words.value = "";
+  };
+  return [
+    card(
+      h("h3", {}, "Report a bug"),
+      words,
+      h("div", { class: "row" }, where, soon),
+      h(
+        "div",
+        { class: "row end" },
+        h("label", { class: "row check meta", for: "bug-session" }, session, "Start a session on it now"),
+        h("button", { onclick: report }, "Report"),
+      ),
+    ),
+    h("h2", {}, phaseHeading("Open", bugs.open.length, bugs.more?.open || 0)),
+    ...(bugs.open.length ? bugs.open.map(planIssue(null, null)) : [h("p", { class: "meta" }, "No open bugs.")]),
+    h("h2", {}, phaseHeading("Fixed", bugs.fixed.length, bugs.more?.fixed || 0, bugs.builtDays)),
+    ...(bugs.fixed.length ? bugs.fixed.map(planIssue(null, null)) : [h("p", { class: "meta" }, "None closed lately.")]),
+  ];
+}
+
+const KIND_SAID = { bug: "Bug", note: "Note", session: "Session", change: "Change" };
+/** Intake: everything that was said through the app, where it went, and how it stands. */
+async function viewIntake() {
+  const [caps, list] = await Promise.all([capabilityList(), api(freshly("intake"))]);
+  const words = h("textarea", { rows: 3, maxlength: 8000, "aria-label": "A note", placeholder: "A note, an idea, a change of mind" });
+  const where = h(
+    "select",
+    { "aria-label": "About" },
+    h("option", { value: "" }, "About nothing in particular"),
+    caps.map((c) => h("option", { value: c.id }, c.title)),
+  );
+  const session = h("input", { type: "checkbox", id: "note-session" });
+  const send = async (e) => {
+    if (!words.value.trim()) return toast("Write the note first", true);
+    const form = { text: words.value, area: where.value, session: session.checked };
+    const sent = await act("intake.send", { id: newId(), ...intakeArgs({ kind: "note" }, form) }, intakeSaid, e.target);
+    if (sent) words.value = "";
+  };
+  const titleOf = (id) => caps.find((c) => c.id === id)?.title || id;
+  return [
+    card(
+      h("h3", {}, "Say something"),
+      words,
+      h("div", { class: "row" }, where),
+      h(
+        "div",
+        { class: "row end" },
+        h("label", { class: "row check meta", for: "note-session" }, session, "Start a session on it now"),
+        h("button", { onclick: send }, "Send"),
+      ),
+    ),
+    h("h2", {}, "Where things go"),
+    card(
+      ...Object.entries(list.routes || {}).map(([kind, r]) =>
+        h("p", { class: "meta" }, h("b", {}, `${KIND_SAID[kind] || capital(kind)}: `), `an issue ranked ${r.rank}, labelled ${r.labels.join(", ")} and its capability's label.`),
+      ),
+      h("p", { class: "meta" }, "A note about an existing issue is left on that issue. Anything sent as a session starts one with your words first."),
+    ),
+    h("h2", {}, `Sent (${list.items.length})`),
+    ...(list.items.length
+      ? list.items.map((i) =>
+          card(
+            h("h3", {}, ext(i.url, `#${i.number}`), ` ${i.title}`),
+            h(
+              "p",
+              { class: "meta" },
+              chip(KIND_SAID[i.kind] || i.kind),
+              i.area ? chip(titleOf(i.area)) : null,
+              i.rank !== "none" ? chip(i.rank, "accent") : null,
+              i.state === "closed" ? chip("done", "good") : i.working ? chip("being worked on", "good") : chip("open"),
+              ` updated ${ago(i.updated)}`,
+            ),
+          ),
+        )
+      : [h("p", { class: "meta" }, "Nothing has been sent from the app yet.")]),
   ];
 }
 
@@ -1698,6 +2127,9 @@ const VIEWS = {
   "more/signin": ["Sign-in", viewSignin],
   "more/away": ["Laptop away", viewAway],
   "more/releases": ["Releases", viewReleases],
+  "more/roadmap": ["Roadmap", viewRoadmap],
+  "more/bugs": ["Bugs", viewBugs],
+  "more/intake": ["Intake", viewIntake],
 };
 let route = "now";
 let drawSeq = 0;
@@ -1711,7 +2143,10 @@ function parse(hash) {
   if (VIEWS[r]) return [r, undefined];
   // The Android app asking for its phone to be linked: #more/link=<request>.
   if (r.startsWith("more/link=")) return ["more/phone", r.slice(5)];
-  const [top, sub] = r.split("/");
+  const parts = r.split("/");
+  // A screen under More with something chosen on it: more/roadmap/fleet.
+  if (parts.length >= 3 && VIEWS[`${parts[0]}/${parts[1]}`]) return [`${parts[0]}/${parts[1]}`, parts.slice(2).join("/")];
+  const [top, sub] = parts;
   return VIEWS[top] ? [top, sub] : ["now", undefined];
 }
 
@@ -1835,7 +2270,10 @@ async function refresh(force) {
 }
 
 if (typeof document !== "undefined" && view) {
-  $("refresh").addEventListener("click", () => refresh(true));
+  $("refresh").addEventListener("click", () => {
+    wantFresh = true;
+    refresh(true);
+  });
   $("back").addEventListener("click", () => go(route.split("/")[0]));
   addEventListener("hashchange", () => {
     shown = 12;

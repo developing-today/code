@@ -304,6 +304,34 @@ fn tampered_and_garbage_cursors_refuse() {
 }
 
 #[test]
+fn oversized_cursor_is_malformed_before_decoding() {
+    let rows: Vec<(Slots, Vec<u8>)> = (0u8..4).map(|i| (vec![Some(vec![i])], vec![i])).collect();
+    let snapshot = snapshot_of(&rows);
+    let pager = CursorPager::new(KEY);
+    let query = ArrayQuery::new(addr(vec![]));
+
+    // One hex character over the documented maximum: refused as
+    // malformed by the length check, before hex decoding can
+    // allocate storage proportional to the input size.
+    let oversized = "a".repeat(array_query::MAX_CURSOR_LEN + 1);
+    let cursor = array_query::Cursor::from_string(oversized);
+    assert_eq!(
+        pager.next_page(&scope(), &query, &snapshot, &cursor, 2, None),
+        Err(QueryError::MalformedCursor)
+    );
+
+    // Exactly at the maximum, the length check passes the string
+    // on to decoding and authentication, which refuse it on
+    // their own terms (here the tag does not verify).
+    let at_max = "a".repeat(array_query::MAX_CURSOR_LEN);
+    let cursor = array_query::Cursor::from_string(at_max);
+    assert_eq!(
+        pager.next_page(&scope(), &query, &snapshot, &cursor, 2, None),
+        Err(QueryError::UnauthenticatedCursor)
+    );
+}
+
+#[test]
 fn cancellation_is_an_observable_terminal_page() {
     let rows: Vec<(Slots, Vec<u8>)> = (0u8..5).map(|i| (vec![Some(vec![i])], vec![i])).collect();
     let snapshot = snapshot_of(&rows);

@@ -126,8 +126,7 @@ impl UrlParts {
 
         let last_path_part = path
             .split('/')
-            .filter(|segment| !segment.is_empty())
-            .next_back()
+            .rfind(|segment| !segment.is_empty())
             .map(str::to_string);
         let file_name = if path.ends_with('/') {
             None

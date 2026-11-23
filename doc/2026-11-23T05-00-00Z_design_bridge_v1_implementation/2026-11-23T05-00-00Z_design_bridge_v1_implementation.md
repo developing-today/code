@@ -115,9 +115,15 @@ the range session budget (64 MiB by default, charged per entry).
   and auth refusal. The cross-language fixtures
   (`pkgs/id/tests/bridge_fixtures.rs`) pin the contract underneath
   it: BLAKE3 agreement, TypeScript-signed events ingest natively,
-  Rust-signed events verify here. Still open after the dialer: the
-  one-shot HTTPS legs (challenge/heads/push/pull) as native calls,
-  and a live native-against-hosted session test.
+  Rust-signed events verify here. The one-shot HTTPS legs
+  (challenge/heads/push/pull) landed after the dialer, as
+  `crates/id-sync/src/bridge_http.rs`: a `BridgeHttpClient` over a
+  `BridgeHttp` request/response seam (reqwest in production),
+  fetching a fresh single-use nonce per leg and signing the same
+  bridge-auth transcript; its tests run the legs against a mirror
+  of the hosted routes over a native store — round trip, nonce
+  replay refusal, pagination, refused outcomes. Still open: a live
+  native-against-hosted session test.
 - **WebSocket hibernation.** Sessions are served on the classic
   accept() path; a DO eviction mid-session drops the session and
   the client's retry resumes it. Hibernation-API session
