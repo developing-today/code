@@ -179,7 +179,7 @@ test('bootstrap only accepts disabled no-ingress state; routed postflight verifi
   const incompleteRefs=structuredClone(noIngress);delete incompleteRefs.worker.references.queues;
   assert.throws(()=>verifyProviderState(incompleteRefs,{phase:'preflight',expectedZoneIds:[zoneId],sourceSha:sha,expectedWorkerId:workerId}),/metadata is missing/);
   const wrongBetaId=structuredClone(noIngress);wrongBetaId.worker.id='4'.repeat(32);
-  assert.throws(()=>verifyProviderState(wrongBetaId,{phase:'preflight',expectedZoneIds:[zoneId],sourceSha:sha,expectedWorkerId:workerId}),/pinned Beta identity/);
+  assert.throws(()=>verifyProviderState(wrongBetaId,{phase:'preflight',expectedZoneIds:[zoneId],sourceSha:sha,expectedWorkerId:workerId}),/immutable ID does not match/);
   const unexpectedDomain=structuredClone(noIngress);unexpectedDomain.worker.references.domains=[{id:'33333333-4444-5555-6666-777777777777',hostname:'other.example',zone_id:zoneId}];
   assert.throws(()=>verifyProviderState(unexpectedDomain,{phase:'init-postflight',expectedZoneIds:[zoneId],sourceSha:sha,expectedWorkerId:workerId}),/reverse domain references/);
   const extraVersion=structuredClone(noIngress);extraVersion.versions.push({id:'22222222-3333-4444-5555-666666666666',metadata:{},number:2});

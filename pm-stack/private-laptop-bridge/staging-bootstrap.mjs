@@ -244,10 +244,13 @@ function verifyVersion(version, namespaceId, expectedVersionId) {
 }
 
 function verifyWorkerMetadata(worker, expectedWorkerId) {
-  if (!worker || worker.name !== WORKER_NAME || !ID.test(worker.id ?? '') || worker.logpush !== false ||
-      worker.id.toLowerCase() !== expectedWorkerId.toLowerCase() || worker.observability?.enabled !== false || !worker.references ||
+  if (!worker || worker.name !== WORKER_NAME || !ID.test(worker.id ?? '')) {
+    fail('Worker identity metadata is missing or malformed');
+  }
+  if (worker.id.toLowerCase() !== expectedWorkerId.toLowerCase()) fail('Worker immutable ID does not match the protected Beta identity');
+  if (worker.logpush !== false || worker.observability?.enabled !== false || !worker.references ||
       !['dispatch_namespace_outbounds','domains','durable_objects','queues','workers'].every(key => Array.isArray(worker.references[key]))) {
-    fail('Worker metadata is missing or its domain or telemetry state is unverifiable');
+    fail('Worker reverse references or telemetry state are missing or unverifiable');
   }
   return worker.id;
 }
