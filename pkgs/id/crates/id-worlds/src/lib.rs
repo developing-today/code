@@ -44,6 +44,7 @@
 /// advertise against, owned by `id-core` (slice 9110-02, #10160).
 pub use id_core::port;
 
+pub mod account_charge;
 pub mod blob_gate;
 pub mod chat_anchor_render;
 pub mod groups;

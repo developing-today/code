@@ -1208,11 +1208,24 @@ async fn restore_program(
                 let mut guest =
                     crate::sandbox::Sandbox::compile(&wasm, runtime.sandbox)?.instantiate(seed)?;
                 // Charge this world's burns to its world id, against
-                // the hub's configured burn budget (#1067).
+                // the hub's configured burn budget (#1067). The
+                // per-account bound and the admin account registry
+                // ride along (#1067 per-account quotas): the bound
+                // applies to the shared budget itself (0 = none, the
+                // budget's own configuration point), and the guest
+                // resolves its charge account against the registry
+                // the serve path installed.
                 guest.set_charge_key(world_id.clone());
-                guest.set_burn_budget(crate::guest_burn::GuestBurnBudget::shared_for(
+                let burn_budget = crate::guest_burn::GuestBurnBudget::shared_for(
                     runtime.guest_burn_concurrency,
-                ));
+                );
+                if runtime.guest_burn_per_account_concurrency > 0 {
+                    burn_budget.set_account_bound(Some(
+                        runtime.guest_burn_per_account_concurrency,
+                    ));
+                }
+                guest.set_burn_budget(burn_budget);
+                guest.set_account_registry(crate::account_charge::WorldAccountRegistry::shared());
                 if let Some(snapshot) = &spec.snapshot {
                     guest
                         .restore(snapshot.as_bytes())
