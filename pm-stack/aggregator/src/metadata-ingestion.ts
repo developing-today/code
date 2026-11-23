@@ -337,7 +337,8 @@ export function buildTriagePacket(
       `Item: ${evidence.sourceUrl} — ${evidence.title}`,
       `State: ${snap.state}; author: ${snap.author}; labels: ${labelList}`,
     ].join("\n"),
-    dedupe_key: `repo-health:v1:triage:${evidence.repo}:${evidence.kind}:${evidence.number}`,
+    // Broker design: triage keys anchor to issue:<n> even for PR items.
+    dedupe_key: `repo-health:v1:triage:${evidence.repo}:issue:${evidence.number}`,
     priority: 30,
     payload: {
       schema: "repo-task/v1",
