@@ -318,6 +318,14 @@ PY
   fi
   unset jwt
 
+  # Non-sensitive provenance for failed reconstructions. The dump itself
+  # remains in the private scratch directory and is never printed.
+  local dump_bytes dump_sha256
+  dump_bytes="$(stat -c %s "${dump_sql}")" || return 1
+  dump_sha256="$(sha256sum "${dump_sql}")" || return 1
+  dump_sha256="${dump_sha256%% *}"
+  echo "turso export: ${name}: downloaded dump bytes=${dump_bytes} sha256=${dump_sha256}"
+
   # Repair pass (#1391): libsql registers virtual tables with an
   # INSERT INTO sqlite_schema whose embedded SQL is emitted verbatim
   # — single quotes inside it (an FTS5 content='...' table is the
