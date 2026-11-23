@@ -357,7 +357,12 @@ def _prs(text: str) -> list[int]:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    sub = parser.add_subparsers(dest="command", required=True)
+    # The subcommand dest is "subcommand", not "command": the log
+    # subcommand takes a --command option (the batch command to record),
+    # and a dest of "command" would let that option overwrite the
+    # subcommand name itself, so `gate.py log ...` would silently do
+    # nothing. (That was the pre-existing behaviour of the log CLI.)
+    sub = parser.add_subparsers(dest="subcommand", required=True)
 
     plan = sub.add_parser("plan", help="plan batches for ready PRs")
     plan.add_argument("--prs", required=True, help="comma-separated PR numbers")
@@ -398,23 +403,23 @@ def main(argv: list[str] | None = None) -> int:
 
     args = parser.parse_args(argv)
 
-    if args.command == "run":
+    if args.subcommand == "run":
         result = run_batch(_prs(args.prs), args.batch, log_path=Path(args.log))
         print(
             json.dumps({"batch": args.batch, "prs": _prs(args.prs), "result": result})
         )
-    elif args.command == "plan":
+    elif args.subcommand == "plan":
         batches = plan_batches(
             _prs(args.prs), batch_size=args.batch_size, enabled=not args.off
         )
         print(json.dumps({"batches": batches}))
-    elif args.command == "bisect":
+    elif args.subcommand == "bisect":
         red = set(_prs(args.red))
         culprits = find_culprits(
             _prs(args.batch), lambda subset: any(pr in red for pr in subset)
         )
         print(json.dumps({"culprits": culprits}))
-    elif args.command == "log":
+    elif args.subcommand == "log":
         append_batch_record(
             Path(args.file),
             args.batch,
@@ -423,7 +428,7 @@ def main(argv: list[str] | None = None) -> int:
             args.result,
             probe=args.probe,
         )
-    elif args.command == "status":
+    elif args.subcommand == "status":
         print(json.dumps(gate_status(read_log(Path(args.file)))))
     return 0
 
