@@ -64,7 +64,28 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 pub const PRIORITY_SCALE: [i64; 7] = [10, 20, 30, 40, 50, 70, 90];
 /// #7030: Drew's ratified label bands (ratified 2026-11-07): an issue
-/// carrying the `expedite` label queues at priority 15 (the 10–20
+/// carrying the     use proptest::prelude::*;
+
+    #[test]
+    fn issue_dispatch_dedupe_preserves_identity() {
+        assert!(match_dedupe("main-broken-run-45018365692-dispatch-create").is_none());
+        let base = "repo-health:v1:fix:developing-today/code:issue:12527";
+        for key in [base.to_string(), format!("{base}:dispatch:01234567"), format!("{base}:dispatch:0123456789abcdef")] {
+            let mut packet = json!({
+                "title": "MCPX repair",
+                "priority": 40,
+                "dedupe_key": key,
+                "payload": payload_with(json!({"issue": {"number": 12527}, "kind": "small_fix"})),
+            });
+            assert!(validate_packet(&packet).0.is_empty(), "{:?}", validate_packet(&packet).0);
+            packet["payload"]["issue"]["number"] = json!(12528);
+            assert!(validate_packet(&packet).0.iter().any(|e| e.contains("does not match payload.issue.number")));
+        }
+        for suffix in ["", "ab", "0123456g", "0123456789abcdef0", "00000000:extra"] {
+            assert!(match_dedupe(&format!("{base}:dispatch:{suffix}")).is_none());
+        }
+    }
+expedite` label queues at priority 15 (the 10–20
 /// band) and one carrying `next-up` at 25 (the 20–30 band). These are
 /// the ratified *stored* values — deliberately not on PRIORITY_SCALE,
 /// which constrains what a packet may state; the broker claims by
@@ -100,6 +121,7 @@ const BODY_WARN_WORDS: usize = 250;
 
 pub const DEDUPE_PATTERNS_DOC: &str = "fix:         repo-health:v1:fix:<repo>:issue:<n>\n\
 triage:      repo-health:v1:triage:<repo>:issue:<n>\n\
+dispatch:    fix/triage issue key may append :dispatch:<8-or-16-hex>\n\
 pr:          repo-health:v1:pr:<repo>:pr:<n>\n\
 pr-set:      repo-health:v1:pr-set:<repo>:<n>-<n>[-...] (sorted)\n\
 set:         repo-health:v1:set:<origin issue>:owed:<repo>\n\
@@ -426,6 +448,21 @@ fn canonical_number(s: &str) -> Option<i64> {
 }
 
 /// Hand-rolled equivalent of the DEDUPE_REGEXES family patterns.
+// Issue-scoped dispatch keys retain the issue-number cross-check. Support
+// existing random 8-hex retry suffixes and stable 16-hex request suffixes.
+fn issue_number_with_dispatch_suffix(tail: &str) -> Option<i64> {
+    let (number, suffix) = match tail.split_once(":dispatch:") {
+        Some((number, suffix)) => (number, Some(suffix)),
+        None => (tail, None),
+    };
+    if let Some(suffix) = suffix {
+        if !matches!(suffix.len(), 8 | 16) || !suffix.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return None;
+        }
+    }
+    canonical_number(number)
+}
+
 fn match_dedupe(key: &str) -> Option<DedupeMatch> {
     let rest = key.strip_prefix("repo-health:v1:")?;
     // set family has a different shape: set:<num>:owed:<repo>
@@ -463,7 +500,7 @@ fn match_dedupe(key: &str) -> Option<DedupeMatch> {
             match fam {
                 "fix" | "triage" => {
                     if let Some(n) = tail.strip_prefix("issue:") {
-                        if let Some(num) = canonical_number(n) {
+                        if let Some(num) = issue_number_with_dispatch_suffix(n) {
                             return Some(DedupeMatch {
                                 family: fam.into(),
                                 repo: repo.to_string(),
@@ -1216,8 +1253,7 @@ pub fn task_from_packet(packet: &Value, queue: &str) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use proptest::prelude::*;
-
+`
     #[test]
     fn packet_max_attempts_validation_and_selection() {
         let payload = payload_with(json!({"issue": {"number": 6423}}));
