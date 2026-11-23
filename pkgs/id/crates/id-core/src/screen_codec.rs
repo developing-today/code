@@ -254,7 +254,7 @@ fn decode_compressed_view_patch(bytes: &[u8]) -> Result<ViewPatchFrame, ScreenCo
 /// Inflates raw-DEFLATE bytes, refusing output past the shared frame limit
 /// instead of allocating on an untrusted claimed size.
 fn inflate_bounded(payload: &[u8]) -> Result<Vec<u8>, ScreenCodecError> {
-    let mut decoder = flate2::read::DeflateDecoder::new(payload);
+    let decoder = flate2::read::DeflateDecoder::new(payload);
     let mut out = Vec::new();
     decoder
         .take(u64::try_from(MAX_SCREEN_FRAME_BYTES).unwrap_or(u64::MAX) + 1)
