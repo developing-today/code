@@ -437,6 +437,126 @@ fn legs_that_are_down_are_named_and_the_shortlist_answers() {
 }
 
 #[test]
+fn a_lane_verdict_from_the_broker_is_a_rejected_rung_not_a_down_one() {
+    // #6853, criterion 2: the claim reached the broker and the broker
+    // refused this lane. The answer is scripted in the queue verb's
+    // fallback-switch spelling — exit 6, the verdict in the envelope's
+    // error field and repeated in the stderr wrapper — which is how
+    // the live recurrence arrived. The rung must read "rejected", not
+    // "down": the broker is healthy and answering.
+    let fake = Fake::new();
+    fake.on(INBOX, vec![empty_inbox()]).on(
+        CLAIM,
+        vec![Out {
+            code: 6,
+            stdout: json!({
+                "ok": false,
+                "fallback": true,
+                "switch_to": "github-fallback",
+                "verb": "/claim",
+                "broker_exit": 4,
+                "error": "claim_repo_task: lane code-h belongs to worker repo-worker-nix, not repo-worker-code",
+            })
+            .to_string(),
+            stderr: "repo-queue: primary queue store failed on /claim (exit 4): claim_repo_task: lane code-h belongs to worker repo-worker-nix, not repo-worker-code;          switching this work to the GitHub fallback".to_string(),
+        }],
+    );
+    // Four entries is above the low-water mark of three: a take, not a refill.
+    fake.seed(vec![
+        entry(900, 5, 10),
+        entry(557, 2, 20),
+        entry(805, 2, 15),
+        entry(1062, 3, 5),
+    ]);
+    let (out, code) = run(&fake, &["next", "--agent", "code-h"]);
+    assert_eq!(code, EXIT_OK);
+    assert_eq!(out["rung"], "shortlist");
+    let tried = rung_results(&out);
+    assert_eq!(
+        tried,
+        vec![
+            ("push".to_string(), "empty".to_string()),
+            ("queue".to_string(), "rejected".to_string())
+        ]
+    );
+    let why = out["tried"][1]["why"].as_str().unwrap();
+    assert!(
+        why.contains("lane code-h belongs to worker repo-worker-nix"),
+        "{why}"
+    );
+    // The wrapper's own sentence is not part of the verdict.
+    assert!(!why.contains("switching"), "{why}");
+}
+
+#[test]
+fn a_lane_verdict_on_the_plain_error_path_is_also_rejected() {
+    // With the fallback switch off, the same verdict arrives as a
+    // plain error: the broker's exit code, the message on stderr, no
+    // envelope. The classification must not depend on the spelling.
+    let fake = Fake::new();
+    fake.on(INBOX, vec![empty_inbox()]).on(
+        CLAIM,
+        vec![fail(4, "claim_repo_task: lane code-h is disabled")],
+    );
+    fake.seed(vec![
+        entry(900, 5, 10),
+        entry(557, 2, 20),
+        entry(805, 2, 15),
+        entry(1062, 3, 5),
+    ]);
+    let (out, code) = run(&fake, &["next", "--agent", "code-h"]);
+    assert_eq!(code, EXIT_OK);
+    assert_eq!(out["rung"], "shortlist");
+    let tried = rung_results(&out);
+    assert_eq!(
+        tried,
+        vec![
+            ("push".to_string(), "empty".to_string()),
+            ("queue".to_string(), "rejected".to_string())
+        ]
+    );
+    assert!(
+        out["tried"][1]["why"]
+            .as_str()
+            .unwrap()
+            .contains("lane code-h is disabled")
+    );
+}
+
+#[test]
+fn a_claim_failure_that_is_not_a_lane_verdict_stays_down() {
+    // Only the lane family of `claim_repo_task:` errors is a verdict.
+    // A different refusal under the same prefix — here a by-id
+    // transfer refusal — keeps the "down" reading it has today, as
+    // does any store failure.
+    let fake = Fake::new();
+    fake.on(INBOX, vec![empty_inbox()]).on(
+        CLAIM,
+        vec![fail(
+            4,
+            "claim_repo_task: transfer refused: the claim changed under the transfer",
+        )],
+    );
+    fake.seed(vec![
+        entry(900, 5, 10),
+        entry(557, 2, 20),
+        entry(805, 2, 15),
+        entry(1062, 3, 5),
+    ]);
+    let (out, code) = run(&fake, &["next", "--agent", "code-h"]);
+    assert_eq!(code, EXIT_OK);
+    assert_eq!(out["rung"], "shortlist");
+    let tried = rung_results(&out);
+    assert_eq!(
+        tried,
+        vec![
+            ("push".to_string(), "empty".to_string()),
+            ("queue".to_string(), "down".to_string())
+        ]
+    );
+}
+
+#[test]
 fn a_low_shortlist_makes_this_run_the_filler_and_only_this_run() {
     let fake = Fake::new();
     fake.on(INBOX, vec![empty_inbox()])
