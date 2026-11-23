@@ -10,6 +10,7 @@
     "test": "bun test",
     "report:generate": "bun run scripts/generate-report.ts",
     "backtest:quota-forecast": "bun run scripts/quota-forecast-backtest.ts",
+    "replay:quota-anomaly": "bun run scripts/quota-anomaly-replay.ts",
     "contract:check": "bun run scripts/check-contract-corpus.ts",
     "provenance:check": "bun run scripts/check-provenance-matrix.ts",
     "typecheck": "bunx tsc --noEmit",
