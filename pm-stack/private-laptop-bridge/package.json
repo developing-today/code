@@ -1,1 +1,18 @@
-{"name":"private-laptop-bridge-smoke","private":true,"type":"module","engines":{"node":">=24.22.0"},"devDependencies":{"cf":"1.0.0-rc.1","wrangler":"4.166.0"}}
+{
+  "name": "private-laptop-bridge",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test *.test.mjs",
+    "rehearse": "node --test --test-concurrency=1 *.test.mjs ../aggregator/test/bridge-snapshot.test.ts ../aggregator/test/bridge-refresh.test.ts",
+    "check:staging": "bash ./check-staging.sh"
+  },
+  "engines": {
+    "node": ">=24.22.0"
+  },
+  "devDependencies": {
+    "miniflare": "4.20260730.0",
+    "wrangler": "4.166.0",
+    "cf": "1.0.0-rc.1"
+  }
+}

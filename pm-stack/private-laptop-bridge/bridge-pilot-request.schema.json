@@ -1,0 +1,93 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://developing.today/schemas/private-laptop-bridge-pilot-request.schema.json",
+  "title": "Private Laptop Bridge bounded pilot request",
+  "description": "Review-only request format. It is not consumed by a Worker or deployment workflow and cannot activate a pilot.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "status", "request_id", "source_sha", "target", "host", "access", "window", "enabled", "kill_switch", "principals", "operations", "review"],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "status": { "const": "request-only" },
+    "request_id": { "type": "string", "pattern": "^[A-Za-z0-9._-]{8,80}$" },
+    "source_sha": { "type": "string", "pattern": "^[a-f0-9]{40}$" },
+    "target": {
+      "type": "object", "additionalProperties": false,
+      "required": ["worker", "worker_id"],
+      "properties": {
+        "worker": { "const": "private-laptop-bridge-staging" },
+        "worker_id": { "type": "string", "pattern": "^[0-9a-fA-F]{32}$" }
+      }
+    },
+    "host": { "const": "laptop-bridge-pilot.security.cab" },
+    "access": {
+      "type": "object", "additionalProperties": false,
+      "required": ["issuer", "audience", "application_id", "service_token_only", "browser_login", "bypass_count"],
+      "properties": {
+        "issuer": { "type": "string", "pattern": "^https://[a-z0-9-]+\\.cloudflareaccess\\.com$" },
+        "audience": { "type": "string", "pattern": "^[A-Za-z0-9_-]{20,128}$" },
+        "application_id": { "type": "string", "pattern": "^[A-Za-z0-9_-]{8,80}$" },
+        "service_token_only": { "const": true },
+        "browser_login": { "const": false },
+        "bypass_count": { "const": 0 }
+      }
+    },
+    "window": {
+      "type": "object", "additionalProperties": false,
+      "required": ["starts_at", "ends_at", "max_duration_minutes"],
+      "properties": {
+        "starts_at": { "type": "string", "format": "date-time" },
+        "ends_at": { "type": "string", "format": "date-time" },
+        "max_duration_minutes": { "const": 60 }
+      }
+    },
+    "enabled": { "const": false },
+    "kill_switch": {
+      "type": "object", "additionalProperties": false,
+      "required": ["enabled_by_default", "disable_on", "revoke_access_tokens", "remove_host_association"],
+      "properties": {
+        "enabled_by_default": { "const": false },
+        "disable_on": { "const": ["window_end", "any_identity_or_posture_failure", "owner_request"] },
+        "revoke_access_tokens": { "const": true },
+        "remove_host_association": { "const": true }
+      }
+    },
+    "principals": {
+      "type": "array", "minItems": 2, "maxItems": 2,
+      "prefixItems": [{
+        "type": "object", "additionalProperties": false,
+        "required": ["role", "principal_id", "access_client_id", "access_token_expires_at", "ed25519_public_key"],
+        "properties": {
+          "role": { "const": "aster-caller" },
+          "principal_id": { "type": "string", "pattern": "^[A-Za-z0-9._-]{8,128}$" },
+          "access_client_id": { "type": "string", "pattern": "^[A-Za-z0-9._-]{8,128}$" },
+          "access_token_expires_at": { "type": "string", "format": "date-time" },
+          "ed25519_public_key": { "type": "string", "pattern": "^[A-Za-z0-9_-]{43}$" }
+        }
+      }, {
+        "type": "object", "additionalProperties": false,
+        "required": ["role", "principal_id", "access_client_id", "access_token_expires_at", "ed25519_public_key"],
+        "properties": {
+          "role": { "const": "amd-device" },
+          "principal_id": { "type": "string", "pattern": "^[A-Za-z0-9._-]{8,128}$" },
+          "access_client_id": { "type": "string", "pattern": "^[A-Za-z0-9._-]{8,128}$" },
+          "access_token_expires_at": { "type": "string", "format": "date-time" },
+          "ed25519_public_key": { "type": "string", "pattern": "^[A-Za-z0-9_-]{43}$" }
+        }
+      }],
+      "items": false
+    },
+    "operations": {
+      "const": ["fleet.queue.list", "fleet.queue.health", "laptop.health", "laptop.diagnostics"]
+    },
+    "review": {
+      "type": "object", "additionalProperties": false,
+      "required": ["independent_source_reviewer", "identity_reviewer", "live_enable_approval"],
+      "properties": {
+        "independent_source_reviewer": { "type": "string", "minLength": 3 },
+        "identity_reviewer": { "type": "string", "minLength": 3 },
+        "live_enable_approval": { "const": false }
+      }
+    }
+  }
+}

@@ -1,0 +1,332 @@
+name: Private laptop bridge Workers release
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: Upload an immutable candidate or promote a candidate from an exact successful upload run
+        type: choice
+        required: true
+        options: [upload, promote]
+      worker:
+        description: Exact pre-existing Worker; each environment token is scoped to only this Worker
+        type: choice
+        required: true
+        options: [bridge]
+      upload_run_id:
+        description: Successful main-branch upload workflow run ID; required only for promote
+        type: string
+        required: false
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: private-laptop-bridge-${{ inputs.worker }}-release
+  cancel-in-progress: false
+
+jobs:
+  verify-release-environment:
+    if: github.repository == 'developing-today/code' && github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      environment: ${{ steps.gate.outputs.environment }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24.22.0
+      - name: Validate fixed request and existing protected environment before assignment
+        id: gate
+        working-directory: pm-stack/private-laptop-bridge
+        env:
+          ACTION_KIND: ${{ inputs.action }}
+          WORKER_KIND: ${{ inputs.worker }}
+          UPLOAD_RUN_ID: ${{ inputs.upload_run_id }}
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_API_URL: ${{ github.api_url }}
+          GITHUB_ACTOR_ID: ${{ github.actor_id }}
+          CF_BRIDGE_RELEASE_REVIEWER_IDS: ${{ vars.CF_BRIDGE_RELEASE_REVIEWER_IDS }}
+        run: |
+          set -euo pipefail
+          [[ "$ACTION_KIND" == upload && -z "$UPLOAD_RUN_ID" || "$ACTION_KIND" == promote && "$UPLOAD_RUN_ID" =~ ^[0-9]{1,20}$ ]]
+          [[ "$WORKER_KIND" == bridge ]]
+          node staging-bootstrap.mjs github-environment-release
+
+  release:
+    needs: verify-release-environment
+    if: needs.verify-release-environment.result == 'success' && needs.verify-release-environment.outputs.environment == 'cloudflare-staging' && github.repository == 'developing-today/code' && github.ref == 'refs/heads/main' && inputs.worker == 'bridge'
+    environment:
+      name: ${{ needs.verify-release-environment.outputs.environment }}
+    env:
+      CF_BRIDGE_ACCESS_ISSUER: ${{ vars.CF_BRIDGE_ACCESS_ISSUER }}
+      CF_BRIDGE_ACCESS_AUDIENCE: ${{ vars.CF_BRIDGE_ACCESS_AUDIENCE }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24.22.0
+          cache: npm
+          cache-dependency-path: pm-stack/private-laptop-bridge/package-lock.json
+      - name: Validate trusted request and fixed target
+        id: target
+        working-directory: pm-stack/private-laptop-bridge
+        env:
+          ACTION_KIND: ${{ inputs.action }}
+          WORKER_KIND: ${{ inputs.worker }}
+          UPLOAD_RUN_ID: ${{ inputs.upload_run_id }}
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_REPOSITORY" == developing-today/code && "$GITHUB_REF" == refs/heads/main && "$GITHUB_EVENT_NAME" == workflow_dispatch ]]
+          if [[ "$ACTION_KIND" == upload ]]; then [[ -z "$UPLOAD_RUN_ID" ]]; elif [[ "$ACTION_KIND" == promote ]]; then [[ "$UPLOAD_RUN_ID" =~ ^[0-9]{1,20}$ ]]; else exit 2; fi
+          [[ "$WORKER_KIND" == bridge ]]
+          echo "worker=private-laptop-bridge-staging" >> "$GITHUB_OUTPUT"
+          echo "environment=cloudflare-staging" >> "$GITHUB_OUTPUT"
+          echo "mode=bridge" >> "$GITHUB_OUTPUT"
+      - name: Download handoff from exact upload run
+        if: inputs.action == 'promote'
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: private-bridge-candidate-${{ inputs.upload_run_id }}
+          run-id: ${{ inputs.upload_run_id }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/private-bridge-handoff
+      - name: Read exact upload workflow run metadata
+        if: inputs.action == 'promote'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ inputs.upload_run_id }}
+        run: |
+          set -euo pipefail
+          curl --fail --silent --show-error --max-time 15 \
+            -H "Authorization: Bearer $GH_TOKEN" -H 'Accept: application/vnd.github+json' \
+            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID" > "$RUNNER_TEMP/upload-run.json"
+          curl --fail --silent --show-error --max-time 15 \
+            -H "Authorization: Bearer $GH_TOKEN" -H 'Accept: application/vnd.github+json' \
+            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID/jobs?per_page=100" > "$RUNNER_TEMP/upload-jobs.json"
+      - name: Validate upload run and artifact target provenance
+        if: inputs.action == 'promote'
+        id: provenance
+        working-directory: pm-stack/private-laptop-bridge
+        env:
+          TARGET_WORKER: ${{ steps.target.outputs.worker }}
+          TARGET_ENV: ${{ steps.target.outputs.environment }}
+          TARGET_MODE: ${{ steps.target.outputs.mode }}
+          CF_ACCOUNT_ID: ${{ secrets.CF_BRIDGE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          node release-artifact.mjs provenance \
+            "$RUNNER_TEMP/private-bridge-handoff/candidate.json" "$RUNNER_TEMP/upload-run.json" \
+            "$RUNNER_TEMP/upload-jobs.json" \
+            | tee "$RUNNER_TEMP/upload-source-sha"
+          echo "source_sha=$(cat "$RUNNER_TEMP/upload-source-sha")" >> "$GITHUB_OUTPUT"
+      - name: Verify owner proof unchanged since upload
+        if: inputs.action == 'promote'
+        working-directory: pm-stack/private-laptop-bridge
+        env:
+          CF_ACCOUNT_ID: ${{ secrets.CF_BRIDGE_ACCOUNT_ID }}
+          OWNER_PROOF_JSON: ${{ secrets.CF_BRIDGE_OWNER_PROOF_JSON }}
+          EXPECTED_WORKER_ID: ${{ vars.CF_BRIDGE_WORKER_ID }}
+          TARGET_WORKER: ${{ steps.target.outputs.worker }}
+          TARGET_ENV: ${{ steps.target.outputs.environment }}
+          SOURCE_SHA: ${{ steps.provenance.outputs.source_sha }}
+          HANDOFF: ${{ runner.temp }}/private-bridge-handoff/candidate.json
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin main
+          main_sha="$(git rev-parse FETCH_HEAD)"
+          [[ "$SOURCE_SHA" == "$main_sha" ]] || { echo 'Candidate is not from the current protected main head; upload a fresh candidate.' >&2; exit 1; }
+          node release-artifact.mjs current-proof "$HANDOFF"
+      - name: Check out the exact uploaded source commit
+        if: inputs.action == 'promote'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ steps.provenance.outputs.source_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Require source remains on current protected main history
+        if: inputs.action == 'promote'
+        env:
+          SOURCE_SHA: ${{ steps.provenance.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin main
+          git merge-base --is-ancestor "$SOURCE_SHA" FETCH_HEAD
+      - name: Install exact locked toolchain
+        working-directory: pm-stack/private-laptop-bridge
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Validate account owner proof before Cloudflare access
+        working-directory: pm-stack/private-laptop-bridge
+        env:
+          CF_ACCOUNT_ID: ${{ secrets.CF_BRIDGE_ACCOUNT_ID }}
+          OWNER_PROOF_JSON: ${{ secrets.CF_BRIDGE_OWNER_PROOF_JSON }}
+          EXPECTED_WORKER_ID: ${{ vars.CF_BRIDGE_WORKER_ID }}
+          TARGET_WORKER: ${{ steps.target.outputs.worker }}
+          TARGET_ENV: ${{ steps.target.outputs.environment }}
+        run: node release-artifact.mjs preflight
+      - name: Require existing exact Worker; never bootstrap from CI
+        working-directory: pm-stack/private-laptop-bridge
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_BRIDGE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CF_BRIDGE_API_TOKEN }}
+          TARGET_WORKER: ${{ steps.target.outputs.worker }}
+        run: npx --no-install cf -q workers get "$TARGET_WORKER" >/dev/null
+      - name: Verify source tests and effective local config
+        if: inputs.action == 'upload'
+        working-directory: pm-stack/private-laptop-bridge
+        env:
+          WORKER_KIND: ${{ inputs.worker }}
+        run: |
+          set -euo pipefail
+          node --test deployment-config.test.mjs release-contract.test.mjs
+          [[ "$WORKER_KIND" == bridge ]]
+          node --test gateway.test.mjs
+      - name: Build exact Build Output v1 from candidate source
+        if: inputs.action == 'upload' || inputs.action == 'promote'
+        working-directory: pm-stack/private-laptop-bridge
+        env:
+          TARGET_MODE: ${{ steps.target.outputs.mode }}
+          CF_BRIDGE_ACCESS_ISSUER: ${{ vars.CF_BRIDGE_ACCESS_ISSUER }}
+          CF_BRIDGE_ACCESS_AUDIENCE: ${{ vars.CF_BRIDGE_ACCESS_AUDIENCE }}
+        run: |
+          set -euo pipefail
+          if [[ "$TARGET_MODE" == bridge ]]; then npx --no-install cf build --mode bridge; else npx --no-install cf build; fi
+      - name: Check Wrangler and cf binding declarations
+        working-directory: pm-stack/private-laptop-bridge
+        env:
+          TARGET_MODE: ${{ steps.target.outputs.mode }}
+        run: node deployment-config.test.mjs
+      - name: Validate effective prebuilt upload payload
+        working-directory: pm-stack/private-laptop-bridge
+        env:
+          TARGET_WORKER: ${{ steps.target.outputs.worker }}
+          TARGET_MODE: ${{ steps.target.outputs.mode }}
+          CF_BRIDGE_ACCESS_ISSUER: ${{ vars.CF_BRIDGE_ACCESS_ISSUER }}
+          CF_BRIDGE_ACCESS_AUDIENCE: ${{ vars.CF_BRIDGE_ACCESS_AUDIENCE }}
+          DRY_RUN_OUTPUT: ${{ runner.temp }}/cf-version-dry-run.txt
+        run: |
+          set -euo pipefail
+          args=(workers versions create --worker "$TARGET_WORKER" --tag "${GITHUB_SHA}" --message "offline validation" --prebuilt --dry-run)
+          if [[ "$TARGET_MODE" == bridge ]]; then args+=(--mode bridge); fi
+          npx --no-install cf -q "${args[@]}" 2>&1 | tee "$DRY_RUN_OUTPUT"
+          node release-artifact.mjs dry-run
+      - name: Upload an immutable candidate and write exact provenance artifact
+        if: inputs.action == 'upload'
+        id: upload
+        working-directory: pm-stack/private-laptop-bridge
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_BRIDGE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CF_BRIDGE_API_TOKEN }}
+          CF_ACCOUNT_ID: ${{ secrets.CF_BRIDGE_ACCOUNT_ID }}
+          CF_BRIDGE_ACCESS_ISSUER: ${{ vars.CF_BRIDGE_ACCESS_ISSUER }}
+          CF_BRIDGE_ACCESS_AUDIENCE: ${{ vars.CF_BRIDGE_ACCESS_AUDIENCE }}
+          OWNER_PROOF_JSON: ${{ secrets.CF_BRIDGE_OWNER_PROOF_JSON }}
+          EXPECTED_WORKER_ID: ${{ vars.CF_BRIDGE_WORKER_ID }}
+          TARGET_WORKER: ${{ steps.target.outputs.worker }}
+          TARGET_ENV: ${{ steps.target.outputs.environment }}
+          TARGET_MODE: ${{ steps.target.outputs.mode }}
+          VERSION_RESPONSE: ${{ runner.temp }}/cf-version-response.json
+          WRANGLER_OUTPUT_FILE_PATH: ${{ runner.temp }}/cf-version-response.json
+          VERSION_LIST: ${{ runner.temp }}/cf-version-list.json
+          CANDIDATE_FILE: ${{ runner.temp }}/candidate.json
+        run: |
+          set -euo pipefail
+          rm -f "$VERSION_RESPONSE"
+          sha="$GITHUB_SHA"
+          digest_json="$(node release-artifact.mjs digest)"
+          config_digest="$(node -e 'let x="";process.stdin.on("data",d=>x+=d).on("end",()=>process.stdout.write(JSON.parse(x).config_digest))' <<< "$digest_json")"
+          build_digest="$(node -e 'let x="";process.stdin.on("data",d=>x+=d).on("end",()=>process.stdout.write(JSON.parse(x).build_digest))' <<< "$digest_json")"
+          preflight_digest="$(node -e 'let x="";process.stdin.on("data",d=>x+=d).on("end",()=>process.stdout.write(JSON.parse(x).preflight_digest))' <<< "$digest_json")"
+          provenance="$(node -e 'let x="";process.stdin.on("data",d=>x+=d).on("end",()=>{let j=JSON.parse(x);let c=require("node:crypto");process.stdout.write(c.createHash("sha256").update(JSON.stringify({worker:process.env.TARGET_WORKER,sourceSha:process.env.GITHUB_SHA,configDigest:j.config_digest,buildDigest:j.build_digest,preflightDigest:j.preflight_digest})).digest("hex"))})' <<< "$digest_json")"
+          args=(workers versions create --worker "$TARGET_WORKER" --tag "$sha" --message "provenance=$provenance" --prebuilt)
+          if [[ "$TARGET_MODE" == bridge ]]; then args+=(--mode bridge); fi
+          npx --no-install cf -q "${args[@]}"
+          npx --no-install cf -q workers versions list --worker-id "$TARGET_WORKER" > "$VERSION_LIST"
+          node release-artifact.mjs make-handoff "$VERSION_RESPONSE" "$VERSION_LIST" "$CANDIDATE_FILE"
+          echo "candidate_sha=$sha" >> "$GITHUB_OUTPUT"
+      - name: Preserve candidate artifact for fourteen days
+        if: inputs.action == 'upload'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: private-bridge-candidate-${{ github.run_id }}
+          path: ${{ runner.temp }}/candidate.json
+          if-no-files-found: error
+          retention-days: 14
+      - name: Verify artifact provenance, exact version and deployable set
+        if: inputs.action == 'promote'
+        working-directory: pm-stack/private-laptop-bridge
+        env:
+          CF_ACCOUNT_ID: ${{ secrets.CF_BRIDGE_ACCOUNT_ID }}
+          OWNER_PROOF_JSON: ${{ secrets.CF_BRIDGE_OWNER_PROOF_JSON }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_BRIDGE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CF_BRIDGE_API_TOKEN }}
+          EXPECTED_WORKER_ID: ${{ vars.CF_BRIDGE_WORKER_ID }}
+          TARGET_WORKER: ${{ steps.target.outputs.worker }}
+          TARGET_ENV: ${{ steps.target.outputs.environment }}
+          TARGET_MODE: ${{ steps.target.outputs.mode }}
+          CHECKED_OUT_SHA: ${{ steps.provenance.outputs.source_sha }}
+          HANDOFF: ${{ runner.temp }}/private-bridge-handoff/candidate.json
+          UPLOAD_RUN_JSON: ${{ runner.temp }}/upload-run.json
+          VERSION_LIST: ${{ runner.temp }}/cf-version-list.json
+          DEPLOYABLE_LIST: ${{ runner.temp }}/cf-deployable-list.json
+        run: |
+          set -euo pipefail
+          node release-artifact.mjs preflight
+          npx --no-install cf -q workers versions list --worker-id "$TARGET_WORKER" > "$VERSION_LIST"
+          curl --fail --silent --show-error --max-time 15 \
+            -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+            "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/scripts/$TARGET_WORKER/versions?deployable=true" > "$DEPLOYABLE_LIST"
+          node release-artifact.mjs verify-handoff "$HANDOFF" "$UPLOAD_RUN_JSON" "$RUNNER_TEMP/upload-jobs.json" "$VERSION_LIST" "$DEPLOYABLE_LIST"
+      - name: Revalidate current private proof immediately before promotion
+        if: inputs.action == 'promote'
+        working-directory: pm-stack/private-laptop-bridge
+        env:
+          CF_ACCOUNT_ID: ${{ secrets.CF_BRIDGE_ACCOUNT_ID }}
+          OWNER_PROOF_JSON: ${{ secrets.CF_BRIDGE_OWNER_PROOF_JSON }}
+          EXPECTED_WORKER_ID: ${{ vars.CF_BRIDGE_WORKER_ID }}
+          TARGET_WORKER: ${{ steps.target.outputs.worker }}
+          TARGET_ENV: ${{ steps.target.outputs.environment }}
+          SOURCE_SHA: ${{ steps.provenance.outputs.source_sha }}
+          HANDOFF: ${{ runner.temp }}/private-bridge-handoff/candidate.json
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin main
+          main_sha="$(git rev-parse FETCH_HEAD)"
+          [[ "$SOURCE_SHA" == "$main_sha" ]] || { echo 'Candidate is not from the current protected main head; upload a fresh candidate.' >&2; exit 1; }
+          node release-artifact.mjs current-proof "$HANDOFF"
+      - name: Promote only the exact artifact version
+        if: inputs.action == 'promote'
+        working-directory: pm-stack/private-laptop-bridge
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_BRIDGE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CF_BRIDGE_API_TOKEN }}
+          TARGET_WORKER: ${{ steps.target.outputs.worker }}
+          HANDOFF: ${{ runner.temp }}/private-bridge-handoff/candidate.json
+          DEPLOYMENTS: ${{ runner.temp }}/cf-deployments.json
+          DEPLOYMENT_CREATE_RESPONSE: ${{ runner.temp }}/cf-deployment-create.json
+          DEPLOYMENT_ID: ${{ runner.temp }}/cf-deployment-id.txt
+        run: |
+          set -euo pipefail
+          rm -f "$DEPLOYMENT_CREATE_RESPONSE" "$DEPLOYMENT_ID"
+          version_id="$(node -e 'let h=require(process.env.HANDOFF);process.stdout.write(h.version_id)')"
+          npx --no-install cf -q workers deployments create --worker "$TARGET_WORKER" --strategy percentage --versions "[{\"version_id\":\"$version_id\",\"percentage\":100}]" > "$DEPLOYMENT_CREATE_RESPONSE"
+          node release-artifact.mjs verify-deployment-create "$DEPLOYMENT_CREATE_RESPONSE" "$HANDOFF" "$DEPLOYMENT_ID"
+          for attempt in 1 2 3 4 5; do
+            npx --no-install cf -q workers deployments list --worker "$TARGET_WORKER" > "$DEPLOYMENTS"
+            if node release-artifact.mjs verify-deployment "$DEPLOYMENTS" "$HANDOFF" "$DEPLOYMENT_ID" 2>/dev/null; then exit 0; fi
+            if [[ "$attempt" -lt 5 ]]; then sleep 2; fi
+          done
+          echo 'Deployment readback did not show the returned deployment as latest within five attempts.' >&2
+          exit 1

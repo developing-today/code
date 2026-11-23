@@ -7,6 +7,8 @@ import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { dirname, join } from "node:path";
 import type { Config } from "../config.ts";
+import { publishBridgeQueueSnapshot } from "../bridge-snapshot.ts";
+import { startBridgeRefresh } from "../bridge-refresh.ts";
 import { applyBoardDonePolicy, isRetiredDoneTableTitle } from "../board-policy.ts";
 import { AA_PLAN_FACTS, aaApplyPriceOverlay, isAaSection } from "../aa.ts";
 import { aaCacheFileName, aaPricesFingerprint, isAaBatchCacheEntry } from "../aa-batches.ts";
@@ -561,6 +563,8 @@ export function isFeedAttentionEntry(v: unknown): v is SessionFeedEntry {
 export function liveSource(
   cfg: Config,
   opts?: {
+    /** Optional shutdown hook for the explicitly enabled one-hour queue pilot. */
+    bridgeRefreshSignal?: AbortSignal;
     standingAuto?: () => Promise<boolean>;
     // C3 health hook (#9571): fired when the laptop's OpenCode session
     // map cannot be read on an aggregator tick. Fire-and-forget.
@@ -1242,10 +1246,15 @@ export function liveSource(
           const token = await readBrokerToken(cfg.queueBrokerTokenFile);
           if (!token) throw new Error(`queue broker token file unreadable: ${cfg.queueBrokerTokenFile}`);
           const snap = await fetchQueueSnapshot(cfg.queueBrokerUrl, token);
+          // Optional local projection only; no additional broker call or credential.
+          await publishBridgeQueueSnapshot(snap).catch(() => {});
           queueCache = { value: snap, at: Date.now() };
           return snap;
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
+          // Revoke a recent good projection on a known read failure. If disk
+          // publication fails too, the bridge rejects it after its five-minute TTL.
+          await publishBridgeQueueSnapshot(unavailableQueueSnapshot(Date.now(), "unavailable")).catch(() => {});
           if (queueCache) {
             return { ...queueCache.value, available: false, stale: true, errors: [msg] };
           }
@@ -1257,6 +1266,14 @@ export function liveSource(
     }
     return queueInFlight;
   }
+  // Proposed/disabled one-hour pilot. Reuse exactly this collector and its
+  // single-flight cache; do not add a credential reader or fabricate timestamps.
+  // 65 seconds after completion exceeds the existing 60-second cache TTL.
+  startBridgeRefresh(queueSnapshot, {
+    snapshot: process.env.PM_AGG_BRIDGE_SNAPSHOT,
+    refresh: process.env.PM_AGG_BRIDGE_REFRESH,
+    signal: opts?.bridgeRefreshSignal,
+  });
   return {
     async board() {
       try {

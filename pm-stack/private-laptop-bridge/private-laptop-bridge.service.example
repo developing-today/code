@@ -1,0 +1,33 @@
+# REVIEW ONLY: no installation, enablement, credentials, or persistent access.
+# Owner must approve exact identity, key lifetime, service paths and operations.
+# USER unit: no User=root, no root helper, no system-level privilege.
+[Unit]
+Description=Private read-only Fleet laptop bridge (approval required)
+
+[Service]
+Type=simple
+# Replace these reviewed paths with pinned Nix store runtime/package paths.
+ExecStart=/APPROVED_NODE_PATH /APPROVED_BRIDGE_PATH/client.mjs --config %h/.config/private-laptop-bridge/device.json
+WorkingDirectory=%h
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+LockPersonality=true
+CapabilityBoundingSet=
+UMask=0077
+# A denied/revoked identity stops; no automatic restart loop after denial.
+Restart=no
+RuntimeMaxSec=3600
+# Optional approved per-process Gateway trust; never set globally:
+# Environment=NODE_EXTRA_CA_CERTS=/APPROVED_GATEWAY_PUBLIC_CA_PEM
+# ProtectHome=read-only is not a filesystem secrecy boundary. Before enabling,
+# review mount isolation exposing only device.json, bridge-queue.json and the
+# queue-broker socket. No other home reads are implemented by this program.
+# No [Install] section: cannot be enabled as distributed.
