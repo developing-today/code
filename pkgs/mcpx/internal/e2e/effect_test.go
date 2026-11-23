@@ -125,6 +125,7 @@ var implementedEffectProbes = map[string]string{
 	"protoTasks.maxTTL":                  "TestProtoTasksMaxTTLClampsATasksRetentionFromTheEnvironment",
 	"protoTasks.maxPerRequestor":         "TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment",
 	"protoTasks.perMinute":               "TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment",
+	"protoTasks.cancelGrace":             "TestProtoTasksCancelGraceExpiresACancelledTaskFromTheEnvironment",
 	"events.history":                     "TestEventsHistoryBoundsTheReplay",
 	"events.reconnect":                   "TestEventsReconnectWaitsForTheConfiguredDelay",
 	"script.checkOnUnsupported":          "TestScriptCheckOnUnsupportedDecidesWhatANonDenoCheckDoes",
@@ -366,6 +367,7 @@ var effectProbeFuncs = map[string]func(*testing.T){
 	"TestProtoTasksMaxTTLClampsATasksRetentionFromTheEnvironment":                    TestProtoTasksMaxTTLClampsATasksRetentionFromTheEnvironment,
 	"TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment":             TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment,
 	"TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment":                      TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment,
+	"TestProtoTasksCancelGraceExpiresACancelledTaskFromTheEnvironment":               TestProtoTasksCancelGraceExpiresACancelledTaskFromTheEnvironment,
 	"TestEventsHistoryBoundsTheReplay":                                               TestEventsHistoryBoundsTheReplay,
 	"TestEventsReconnectWaitsForTheConfiguredDelay":                                  TestEventsReconnectWaitsForTheConfiguredDelay,
 	"TestScriptCheckOnUnsupportedDecidesWhatANonDenoCheckDoes":                       TestScriptCheckOnUnsupportedDecidesWhatANonDenoCheckDoes,
@@ -1845,6 +1847,47 @@ func TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment(t *testing.T) {
 	}
 	if got := secondRead("MCPX_PROTO_TASKS_PER_MINUTE=1"); !strings.Contains(got, "admission window") {
 		t.Fatalf("protoTasks.perMinute=1 should refuse a second tasks/get:\n%s", got)
+	}
+}
+
+// protoTasks.cancelGrace is how long work on the modern tasks
+// extension path may still finish after a tasks/cancel before the
+// store records the cancellation anyway (cooperative Store.Cancel).
+// The task is a two-second script; cancelling it starts an unwind
+// that takes measurable time to record the script's own outcome, so
+// the window's edge is observable: a window no work can finish
+// inside loses the record to the cancellation, a wide one keeps it.
+// Oracle: with MCPX_PROTO_TASKS_CANCEL_GRACE=1us the store records
+// the task cancelled; with a 30s grace the work's own outcome
+// stands and the task reads completed.
+func TestProtoTasksCancelGraceExpiresACancelledTaskFromTheEnvironment(t *testing.T) {
+	statusAfterCancel := func(env ...string) string {
+		t.Helper()
+		rpc := tasksClient(t, env...)
+		res, _ := startSlowTask(t, rpc)["result"].(map[string]any)
+		id, _ := res["taskId"].(string)
+		if id == "" {
+			t.Fatalf("no task was started: %v", res)
+		}
+		rpc("tasks/cancel", map[string]any{"taskId": id})
+		// Read until the record turns terminal; either outcome
+		// lands within moments of the cancel.
+		deadline := time.Now().Add(10 * time.Second)
+		for {
+			got, _ := rpc("tasks/get", map[string]any{"taskId": id})["result"].(map[string]any)
+			status, _ := got["status"].(string)
+			if status == "cancelled" || status == "completed" || status == "failed" || time.Now().After(deadline) {
+				return status
+			}
+			time.Sleep(25 * time.Millisecond)
+		}
+	}
+
+	if got := statusAfterCancel("MCPX_PROTO_TASKS_CANCEL_GRACE=1us"); got != "cancelled" {
+		t.Fatalf("protoTasks.cancelGrace=1us should record the task cancelled once the grace expires, got status %q", got)
+	}
+	if got := statusAfterCancel("MCPX_PROTO_TASKS_CANCEL_GRACE=30s"); got != "completed" {
+		t.Fatalf("with a 30s protoTasks.cancelGrace the cancelled task's own outcome should stand, got status %q", got)
 	}
 }
 
