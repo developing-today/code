@@ -53,6 +53,9 @@ SSO never rebinds an id key (#2060).
 | `IDP_PROVIDER_ISSUER` | `http://127.0.0.1:8911` | Issuer URL used in discovery and endpoint URLs. |
 | `IDP_PROVIDER_BIND` | `127.0.0.1:8911` | Listen address. |
 | `IDP_PROVIDER_OIDC_CERT` | `pkgs/idp-pki/trust/oidc-signing.crt.pem` (relative to the repo checkout) | Path to the OIDC signing certificate PEM the JWKS is built from. |
+| `IDP_PROVIDER_OIDC_CERTS` | _(unset)_ | Comma-separated certificate list for the JWKS (Slice 5 rollover); overrides `IDP_PROVIDER_OIDC_CERT` when set. |
+| `IDP_PROVIDER_OIDC_KEYS` | _(unset)_ | Comma-separated signing-key list, parallel to `IDP_PROVIDER_OIDC_CERTS`; overrides `IDP_PROVIDER_OIDC_KEY` when set. |
+| `IDP_PROVIDER_OIDC_ACTIVE_KID` | _(first certificate's kid)_ | Which key in the set signs new tokens; the rest still verify. |
 | `IDP_PROVIDER_CONFIG` | _(unset)_ | Path to the provider registry config JSON. Unset = public-only mode (discovery + JWKS; flow endpoints refuse service). |
 | `IDP_PROVIDER_OIDC_KEY` | _(unset)_ | Path to the encrypted Slice 2 OIDC private key. Required when `IDP_PROVIDER_CONFIG` is set. |
 | `IDP_CA_PASSPHRASE` | _(unset)_ | Passphrase for the signing key, in process memory only (vault name `idp.ca-passphrase`). Required when `IDP_PROVIDER_CONFIG` is set. Never logged, never written to disk by the provider. |
@@ -127,6 +130,31 @@ hard-deleted while the account lives.
   identity's door login is denied (`identity_unlinked`, audited) —
   a login never silently undoes an unlink — while the account
   stays reachable via the other doors.
+
+## Key rollover (Slice 5)
+
+The signer is a *set* of keys, one per published certificate.
+Configure the set with `IDP_PROVIDER_OIDC_CERTS` /
+`IDP_PROVIDER_OIDC_KEYS` (comma-separated, parallel lists);
+the JWKS publishes every certificate, new tokens are signed
+with `IDP_PROVIDER_OIDC_ACTIVE_KID`, and verification accepts
+any key in the set, selected by the token's `kid`. A rollover
+is therefore three configurations of the same binary:
+
+1. **Overlap, old active** — both certificates/keys listed,
+   active = old kid. Relying parties pick up the new key
+   from the JWKS while tokens still carry the old kid.
+2. **Overlap, new active** — active = new kid. Pre-rollover
+   tokens keep verifying against the old key until they
+   expire (token TTL is 300 s, so the window is minutes).
+3. **Retired** — the old certificate/key leave the lists;
+   old-kid tokens are rejected (`unexpected jwt kid`). The
+   old key stays escrowed in the vault, so retirement is a
+   configuration change, not a destruction.
+
+Startup stays fail-closed throughout: the key and
+certificate counts must match, and every loaded key must
+match the certificate at its position in the list.
 
 ## kid convention
 

@@ -352,6 +352,9 @@ async fn harness() -> Harness {
         signing_key_path: None,
         audit_db_path: None,
         identity_db_path: None,
+        oidc_cert_paths: vec![],
+        signing_key_paths: vec![],
+        oidc_active_kid: None,
     };
     let app = build_app_with_flow(config, jwks, Some(flow));
     tokio::spawn(async move {
