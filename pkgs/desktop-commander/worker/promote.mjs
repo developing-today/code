@@ -81,7 +81,6 @@ const created = cfJson([
   "--worker", config.worker,
   "--strategy", "percentage",
   "--versions", JSON.stringify([{ version_id: manifest.versionId, percentage: 100 }]),
-  "--message", `promote ${manifest.tag} (${manifest.sha})`,
 ]);
 const deploymentId = created?.id ?? created?.deployment_id;
 console.log(`promoted ${config.worker} version ${manifest.versionId} (tag ${manifest.tag}) to 100%${deploymentId ? `; deployment ${deploymentId}` : ""}`);
