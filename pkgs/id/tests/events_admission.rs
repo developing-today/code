@@ -30,6 +30,8 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+mod common;
+
 use std::sync::{Arc, Mutex};
 
 use common::ingest::MemStorage;
@@ -385,7 +387,7 @@ fn happy_path_stores_the_event_through_the_pipeline() {
         panic!("the operation commits");
     };
     assert!(
-        matches!(ingest, Ingest::Accepted { id } if id == event.id),
+        matches!(ingest, Ingest::Accepted { id, .. } if id == event.id),
         "the store accepted the admitted event: {ingest:?}"
     );
     assert_eq!(policy_epoch, 3);
@@ -522,7 +524,7 @@ fn decided_store_outcomes_are_recorded_not_failed() {
         panic!("a waiting event still commits its admission");
     };
     assert!(
-        matches!(ingest, Ingest::Waiting { id } if id == event.id),
+        matches!(ingest, Ingest::Waiting { id, .. } if id == event.id),
         "the store held the event for its missing backlink: {ingest:?}"
     );
     assert!(rig.store.is_waiting(&event.id));
@@ -560,7 +562,7 @@ fn decided_store_outcomes_are_recorded_not_failed() {
         panic!("a duplicate event still commits its admission");
     };
     assert!(
-        matches!(ingest, Ingest::Duplicate { id } if id == first.id),
+        matches!(ingest, Ingest::Duplicate { id, .. } if id == first.id),
         "the store reported the duplicate: {ingest:?}"
     );
     assert!(rig.store.event_applied(&first.id).unwrap());
