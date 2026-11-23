@@ -8,9 +8,9 @@
 // input from the two production shapes: the router was only ever fed
 // hand-built incidents in its own tests, so no production caller
 // could use it. This module is that bridge. It is pure, like the two
-// modules it joins; the remaining wiring — calling routeEscalations
-// + deliverEscalations from the server's watchdog tick with the real
-// journal/feed/push sinks — is the next slice named on #9991.
+// modules it joins; the server's watchdog tick calls it through
+// escalation-tick.ts, which routes the built input and delivers it
+// with the real journal/feed/push sinks.
 import type { EscalationIncident, EscalationInput, IncidentPhase } from "./escalation.ts";
 import {
   CATALOGUE,
