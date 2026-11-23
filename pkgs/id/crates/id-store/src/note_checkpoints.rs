@@ -199,9 +199,14 @@ struct NotePolicy {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct NoteCheckpoints {
     events: Vec<AppliedNote>,
-    /// Per-note access policies, keyed by note ID. A note with no
-    /// entry is owner-created (by its create event's author) and
-    /// [`NoteAccess::Public`]: the Q3 default.
+    /// Per-note access policies, keyed by note ID. Only a note with
+    /// an explicitly set policy has an entry (see
+    /// [`Self::create_with_access`], [`Self::set_access`]). A note
+    /// with no entry is owner-created (by its create event's author)
+    /// and [`NoteAccess::Public`]: the Q3 default — that is what
+    /// [`Self::access`] reports. [`crate::read_authority`] instead
+    /// falls such a note through to the user default, then the server
+    /// default, before public, so "no policy set" stays observable.
     policies: HashMap<Hash, NotePolicy>,
 }
 
@@ -275,6 +280,14 @@ impl NoteCheckpoints {
     /// Establishes a note in the log: records the `note.create` event
     /// whose ID is the note's stable ID, carrying its first content.
     /// The create is also the note's first revision and its only head.
+    /// It records no access policy: the note reads as
+    /// [`NoteAccess::Public`] (the Q3 default) until a policy is set
+    /// with [`Self::create_with_access`] or [`Self::set_access`] — or
+    /// a default applies through [`crate::read_authority`], which
+    /// falls a note with no recorded policy through to the user
+    /// default, then the server default, before public. Recording
+    /// the default here would make "no policy set" unobservable and
+    /// the #5678 fall-through unreachable.
     ///
     /// # Errors
     ///
@@ -294,13 +307,6 @@ impl NoteCheckpoints {
             author,
             op,
         })?;
-        self.policies.insert(
-            event_id,
-            NotePolicy {
-                owner: author,
-                access: NoteAccess::Public,
-            },
-        );
         // A just-created note always folds; should it not, report the
         // note as unknown rather than panic.
         self.record(event_id)?
@@ -322,8 +328,8 @@ impl NoteCheckpoints {
     /// this note or the event ID is already in the log. On any error
     /// the log is unchanged.
     /// Establishes a note with an access policy (see
-    /// [`Self::create`], which is this with the Q3 default,
-    /// [`NoteAccess::Public`]). The creator is recorded as the
+    /// [`Self::create`], which records no policy: a note with none
+    /// reads as [`NoteAccess::Public`]). The creator is recorded as the
     /// note's owner.
     ///
     /// # Errors
