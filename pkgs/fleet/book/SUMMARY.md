@@ -58,6 +58,12 @@
 - [Release and rollout](development/release-and-rollout.md)
 - [Keeping this book current](development/keeping-this-book-current.md)
 
+- [Fleet research and implementation roadmap](development/program-roadmap.md)
+- [Queue, placement and seat contracts](development/queue-placement-seats.md)
+- [Brokers, remote builds and the release train](development/brokers-builds-releases.md)
+- [Quota, operator visibility and integration contracts](development/quota-status-integrations.md)
+- [Open Fleet issues and prerequisites](operations/program-issue-map.md)
+
 - [Running the brokers as services](operations/services.md)
 - [Health checks and the heal stack](operations/health-and-healing.md)
 - [Troubleshooting](operations/troubleshooting.md)
