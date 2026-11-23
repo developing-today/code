@@ -149,6 +149,14 @@ pub fn health_ok(base: &str) -> bool {
     }
 }
 
+/// Which on-disk wrapper bootstraps the shared laptop-ssh control
+/// connection for [`ensure_sandbox_forward`]: the seat's SSH entry
+/// under `~/tools`, or None when the seat has no wrapper tooling.
+pub(crate) fn ssh_bootstrap_wrapper(home: &PathBuf) -> Option<PathBuf> {
+    let old = home.join("tools/laptop-ssh.sh");
+    old.exists().then_some(old)
+}
+
 /// The sandbox seat's reachability step, following the deployed
 /// atlas-search wrapper's established pattern exactly (code#5356;
 /// the via-service client is proxy-blind, #5597 — this mirrors the
@@ -484,6 +492,42 @@ mod tests {
             }
         }
         String::from_utf8_lossy(&buf).to_string()
+    }
+
+    fn wrapper_test_home(tag: &str, real: bool, old: bool) -> PathBuf {
+        let home =
+            std::env::temp_dir().join(format!("fleet-search-wrapper-{tag}-{}", std::process::id()));
+        let tools = home.join("tools");
+        std::fs::create_dir_all(&tools).unwrap();
+        if real {
+            std::fs::write(tools.join("laptop-ssh-real.sh"), "#!/bin/sh\n").unwrap();
+        }
+        if old {
+            std::fs::write(tools.join("laptop-ssh.sh"), "#!/bin/sh\n").unwrap();
+        }
+        home
+    }
+
+    #[test]
+    fn ssh_bootstrap_wrapper_prefers_the_real_ssh_wrapper() {
+        // #12782: laptop-ssh.sh was retired as an SSH transport
+        // (#5343) — it is the laptop-agent redirect and starts no
+        // control master, so a forward bootstrapped through it
+        // silently never happens. The real wrapper is
+        // laptop-ssh-real.sh; the historical name is the fallback
+        // for seats that predate the retirement.
+        let home = wrapper_test_home("both", true, true);
+        assert_eq!(
+            ssh_bootstrap_wrapper(&home),
+            Some(home.join("tools/laptop-ssh-real.sh"))
+        );
+        let home = wrapper_test_home("old-only", false, true);
+        assert_eq!(
+            ssh_bootstrap_wrapper(&home),
+            Some(home.join("tools/laptop-ssh.sh"))
+        );
+        let home = wrapper_test_home("neither", false, false);
+        assert_eq!(ssh_bootstrap_wrapper(&home), None);
     }
 
     /// A stub atlas service: submit -> 202, status -> done, and a

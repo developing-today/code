@@ -542,6 +542,14 @@ fn cmd_search(config: &Config, raw: &[String]) -> i32 {
     }
 }
 
+/// Whether a `get-chunk` invocation asks for the verb's own help
+/// (`--help`/`-h` anywhere in its arguments; raw includes the
+/// `get-chunk` token).
+fn get_chunk_wants_help(raw: &[String]) -> bool {
+    let _ = raw;
+    false
+}
+
 fn cmd_get_chunk(config: &Config, raw: &[String]) -> i32 {
     // raw includes the `get-chunk` token. The verb always serves
     // standalone (job-scoped in the protocol — atlas-search's own
@@ -745,5 +753,26 @@ mod tests {
             split_csv(Some("a, b ,,c")),
             vec!["a".to_string(), "b".to_string(), "c".to_string()]
         );
+    }
+
+    #[test]
+    fn get_chunk_help_flag_is_recognized() {
+        // #12782: `get-chunk --help` must be answered by the fleet
+        // client with the verb's own usage, never delegated to the
+        // standalone artifact as if it were a chunk argument.
+        assert!(get_chunk_wants_help(&args(&["get-chunk", "--help"])));
+        assert!(get_chunk_wants_help(&args(&["get-chunk", "-h"])));
+        assert!(get_chunk_wants_help(&args(&[
+            "get-chunk",
+            "112081",
+            "--help"
+        ])));
+        assert!(!get_chunk_wants_help(&args(&["get-chunk", "112081"])));
+        assert!(!get_chunk_wants_help(&args(&[
+            "get-chunk",
+            "112081",
+            "--neighbors",
+            "2"
+        ])));
     }
 }
