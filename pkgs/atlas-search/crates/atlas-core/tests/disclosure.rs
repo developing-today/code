@@ -24,7 +24,8 @@ use atlas_core::types::{
     BranchHit, BranchPools, BranchQuery, ChunkDetail, MessageRow, NeighborRow,
 };
 use atlas_core::{
-    DisclosureContext, SearchMode, SearchOptions, run_get_chunk_with_context, run_search,
+    DisclosureContext, SearchMode, SearchOptions, Sensitivity, run_get_chunk_with_context,
+    run_search,
 };
 use atlas_proto::RawMode;
 use serde_json::Value as Json;
@@ -339,26 +340,56 @@ fn get_chunk_gates_on_context_and_never_serves_excluded() {
     // Excluded: not found even for the owner — and the error is
     // the same shape as a missing chunk, so the lookup cannot
     // confirm the content exists.
-    let err = run_get_chunk_with_context(&LeakBackend, 5, 0, DisclosureContext::LocalOwner)
-        .expect_err("excluded chunk must not be served");
+    let err = run_get_chunk_with_context(
+        &LeakBackend,
+        5,
+        0,
+        DisclosureContext::LocalOwner,
+        Sensitivity::SecretBearing,
+    )
+    .expect_err("excluded chunk must not be served");
     assert_eq!(err.to_string(), "chunk 5 not found");
     // Secret-bearing: served to the owner, withheld publicly.
-    let owner = run_get_chunk_with_context(&LeakBackend, 4, 0, DisclosureContext::LocalOwner)
-        .expect("owner get-chunk");
+    let owner = run_get_chunk_with_context(
+        &LeakBackend,
+        4,
+        0,
+        DisclosureContext::LocalOwner,
+        Sensitivity::SecretBearing,
+    )
+    .expect("owner get-chunk");
     assert_eq!(owner["text"], "SECRET production API key");
-    let err = run_get_chunk_with_context(&LeakBackend, 4, 0, DisclosureContext::PublicSurface)
-        .expect_err("secret chunk must not cross to a public surface");
+    let err = run_get_chunk_with_context(
+        &LeakBackend,
+        4,
+        0,
+        DisclosureContext::PublicSurface,
+        Sensitivity::SecretBearing,
+    )
+    .expect_err("secret chunk must not cross to a public surface");
     assert_eq!(err.to_string(), "chunk 4 not found");
     // Shareable crosses everywhere.
-    let public = run_get_chunk_with_context(&LeakBackend, 1, 0, DisclosureContext::PublicSurface)
-        .expect("public get-chunk");
+    let public = run_get_chunk_with_context(
+        &LeakBackend,
+        1,
+        0,
+        DisclosureContext::PublicSurface,
+        Sensitivity::SecretBearing,
+    )
+    .expect("public get-chunk");
     assert_eq!(public["text"], "shareable deployment notes");
 }
 
 #[test]
 fn get_chunk_neighbors_are_filtered() {
-    let out = run_get_chunk_with_context(&LeakBackend, 1, 2, DisclosureContext::FleetInternal)
-        .expect("get-chunk");
+    let out = run_get_chunk_with_context(
+        &LeakBackend,
+        1,
+        2,
+        DisclosureContext::FleetInternal,
+        Sensitivity::SecretBearing,
+    )
+    .expect("get-chunk");
     let after = out["context"]["after"].as_array().expect("after");
     assert_eq!(after.len(), 1);
     assert_eq!(after[0]["chunk_id"], 2);
@@ -692,5 +723,97 @@ fn unlocatable_sibling_span_withholds_the_whole_payload() {
             .unwrap_or("")
             .contains("could not be span-filtered")),
         "notes record the payload withholding: {out}"
+    );
+}
+
+/// Records the ceiling pair a get-chunk occurrence lookup receives:
+/// the tier fan-out ceiling and the full caller Sensitivity
+/// ceiling. The oracle is the intersection rule (#12404): the
+/// occurrence lookup must be gated by the SAME effective ceiling
+/// as the chunk itself, not by the destination context's standalone
+/// ceiling.
+struct OccurrenceCeilingProbe {
+    seen: std::sync::Mutex<Option<(atlas_core::shards::TierCeiling, Sensitivity)>>,
+}
+
+impl SearchBackend for OccurrenceCeilingProbe {
+    fn name(&self) -> &'static str {
+        "probe"
+    }
+    fn vec_table(&self) -> &str {
+        "vec_chunks"
+    }
+    fn notes(&self) -> Vec<String> {
+        Vec::new()
+    }
+    fn branch_pools(&self, _q: &BranchQuery, _f: &Filters) -> Result<BranchPools> {
+        Ok(BranchPools::default())
+    }
+    fn chunk_details(&self, ids: &[i64]) -> Result<Vec<ChunkDetail>> {
+        Ok(ids.iter().map(|&id| detail(id)).collect())
+    }
+    fn neighbors(&self, _m: &str, _i: i64, _n: i64) -> Result<Vec<NeighborRow>> {
+        Ok(Vec::new())
+    }
+    fn occurrences(
+        &self,
+        _canonical_hash: &str,
+        tier_ceiling: atlas_core::shards::TierCeiling,
+        caller_ceiling: Sensitivity,
+    ) -> Result<Vec<atlas_core::occurrences::ChunkOccurrence>> {
+        *self.seen.lock().unwrap() = Some((tier_ceiling, caller_ceiling));
+        Ok(Vec::new())
+    }
+    fn message(&self, _m: &str) -> Result<Option<MessageRow>> {
+        Ok(None)
+    }
+}
+
+#[test]
+fn get_chunk_occurrence_lookup_uses_the_effective_ceiling() {
+    use atlas_core::shards::{Tier, TierCeiling};
+
+    // A personal grant under fleet-internal (ceiling local-only):
+    // the intersection is personal. The occurrence lookup must ask
+    // for the INTERNAL tier (personal maps there) and the personal
+    // row ceiling — not the secret tier the bare LocalOwner context
+    // used to request (P1: a personal-capped caller on a
+    // secret-tier service received secret-tier source locators, or,
+    // on a personal-only service, every get-chunk failed).
+    let probe = OccurrenceCeilingProbe {
+        seen: std::sync::Mutex::new(None),
+    };
+    run_get_chunk_with_context(
+        &probe,
+        2,
+        0,
+        DisclosureContext::FleetInternal,
+        Sensitivity::Personal,
+    )
+    .expect("personal chunk under fleet-internal");
+    assert_eq!(
+        *probe.seen.lock().unwrap(),
+        Some((TierCeiling(Tier::Internal), Sensitivity::Personal)),
+        "occurrence lookup gated by grant ∩ context (personal ∩ local-only = personal)"
+    );
+
+    // A secret grant under public-surface: the intersection is
+    // shareable, so the lookup asks for the PUBLIC tier and the
+    // shareable row ceiling.
+    let probe = OccurrenceCeilingProbe {
+        seen: std::sync::Mutex::new(None),
+    };
+    run_get_chunk_with_context(
+        &probe,
+        1,
+        0,
+        DisclosureContext::PublicSurface,
+        Sensitivity::SecretBearing,
+    )
+    .expect("shareable chunk on a public surface");
+    assert_eq!(
+        *probe.seen.lock().unwrap(),
+        Some((TierCeiling(Tier::Public), Sensitivity::Shareable)),
+        "occurrence lookup gated by grant ∩ context (secret ∩ shareable = shareable)"
     );
 }

@@ -1,11 +1,7 @@
 import { env } from "cloudflare:test";
 import { beforeAll, describe, expect, it } from "vitest";
 import { HotCacheStore } from "../src/hot_cache";
-import {
-  InvalidationStore,
-  invalidationEventFromCompletionRecord,
-  invalidationStore,
-} from "../src/invalidation";
+import { InvalidationStore, invalidationEventFromCompletionRecord, invalidationStore } from "../src/invalidation";
 import schemaSql from "../migrations/0001_hot_cache.sql?raw";
 import invalidationSql from "../migrations/0002_hot_cache_invalidation.sql?raw";
 
@@ -62,9 +58,7 @@ describe("invalidation event extraction (piggyback contract)", () => {
   });
 
   it("fails loudly on a present but malformed event", () => {
-    expect(() => invalidationEventFromCompletionRecord({ invalidation: { new_watermark: "wm-9" } })).toThrow(
-      TypeError,
-    );
+    expect(() => invalidationEventFromCompletionRecord({ invalidation: { new_watermark: "wm-9" } })).toThrow(TypeError);
     expect(() =>
       invalidationEventFromCompletionRecord({
         invalidation: { tenant_id: "t", new_watermark: "wm-9", emitted_at: "soon" },

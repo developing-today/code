@@ -15,6 +15,14 @@ import { isMeteredModel } from './check-opencode-metered-providers.mjs';
 export const DEFAULT_CONFIG = '.opencode/opencode.jsonc';
 export const REQUIRED_TIERS = ['scout', 'workhorse', 'specialist', 'summit'];
 
+// Purpose designations (code#13675, 2026-11-23): closed vocabularies
+// for the top-level model_designations registry and for pool-level
+// "purpose" fields on model_routes entries (absent purpose = chat).
+export const DESIGNATION_PURPOSES = [
+  'chat', 'decision', 'embed', 'rerank', 'recommend', 'transcribe', 'speak', 'guard',
+];
+export const DESIGNATION_CAPABILITIES = ['visual', 'pdf', 'audio-in', 'audio-bidir', 'tts', 'stt'];
+
 // Class-level fallback layout (Drew 2026-11-13; full table in
 // .opencode/route-fallbacks.md). Semantics: a class route's own regular
 // chain always runs first and completely; the fallback targets appended
@@ -254,6 +262,116 @@ function formatCandidate(candidate) {
   return `${candidate.provider}/${candidate.model}${candidate.effort ? `#${candidate.effort}` : ''}`;
 }
 
+// Wall scoping (code#13693, 2026-11-23): the closed vocabulary for a
+// provider block's optional "wallScope" declaration -- the scope at
+// which the provider's quota cap actually binds. Absent = inferred
+// scope; a declared value is the override consumed when inference gets
+// a provider wrong.
+export const WALL_SCOPES = ['per-model', 'provider', 'account'];
+
+// The credential / endpoint declarations a provider block can carry, by
+// the labels the alias invariant compares. An alias must inherit these
+// from its base silently: re-declaring one with a DIFFERENT value would
+// quietly give the alias a different credential or endpoint than the
+// account it is an alias of.
+function providerConnectionDeclarations(block) {
+  const declarations = {};
+  if (!isObject(block)) return declarations;
+  const record = (label, value) => {
+    if (value !== undefined) declarations[label] = value;
+  };
+  record('apiKey', block.apiKey);
+  record('credential', block.credential);
+  record('baseURL', block.baseURL);
+  record('api', block.api);
+  if (isObject(block.options)) {
+    record('options.apiKey', block.options.apiKey);
+    record('options.credential', block.options.credential);
+    record('options.baseURL', block.options.baseURL);
+    record('options.api', block.options.api);
+  }
+  return declarations;
+}
+
+// Every concrete provider/model seat named anywhere in model_routes:
+// string targets, object targets, and weights keys (a weights key is a
+// seat the pool weighs, so it names the leaf exactly as a target does).
+function routeSeatReferences(config) {
+  const seats = [];
+  const modelRoutes = activeMap(config, 'model_routes');
+  if (!isObject(modelRoutes)) return seats;
+  for (const [routeName, route] of Object.entries(modelRoutes)) {
+    if (!isObject(route)) continue;
+    if (Array.isArray(route.targets)) {
+      route.targets.forEach((target, index) => {
+        const reference = typeof target === 'string' ? target : isObject(target) ? target.model : null;
+        const parsed = typeof reference === 'string' ? splitModelReference(reference) : null;
+        if (parsed) seats.push({ ...parsed, where: `model route "${routeName}" targets[${index}]` });
+      });
+    }
+    if (isObject(route.weights)) {
+      for (const key of Object.keys(route.weights)) {
+        const parsed = splitModelReference(key);
+        if (parsed) seats.push({ ...parsed, where: `model route "${routeName}" weights` });
+      }
+    }
+  }
+  return seats;
+}
+
+// Wall-scope declarations and the free/paid alias split invariants:
+// (a) a wallScope value outside the closed vocabulary fails, naming
+//     the provider;
+// (b) an instanceOf alias whose id ends in -free must not declare an
+//     apiKey/credential or baseURL that differs from its base
+//     provider's -- inheriting silently is the correct shape;
+// (c) a model in a -free alias's catalog must not also be seated under
+//     the paid base id anywhere in the routes -- that seat would let a
+//     wall on the base bench the free model the split exists to free.
+export function inspectProviderWallRules(config) {
+  const issues = [];
+  const providers = isObject(config?.provider) ? config.provider : {};
+  const wallScopeSet = new Set(WALL_SCOPES);
+  for (const [providerID, block] of Object.entries(providers)) {
+    if (!isObject(block)) continue;
+    if (block.wallScope !== undefined && !wallScopeSet.has(block.wallScope)) {
+      issues.push(
+        `wallScope: provider "${providerID}" declares unknown wallScope ${JSON.stringify(block.wallScope)} (closed vocabulary: ${WALL_SCOPES.join(', ')})`,
+      );
+    }
+  }
+
+  const seats = routeSeatReferences(config);
+  for (const [providerID, block] of Object.entries(providers)) {
+    if (!providerID.endsWith('-free') || !isObject(block) || typeof block.instanceOf !== 'string') continue;
+    const baseID = block.instanceOf;
+    const base = providers[baseID];
+
+    const aliasDeclarations = providerConnectionDeclarations(block);
+    const baseDeclarations = providerConnectionDeclarations(base);
+    for (const [label, value] of Object.entries(aliasDeclarations)) {
+      if (JSON.stringify(value) !== JSON.stringify(baseDeclarations[label])) {
+        issues.push(
+          `wallScope: free alias "${providerID}" declares ${label} ${JSON.stringify(value)} differing from its base provider "${baseID}" (${JSON.stringify(baseDeclarations[label]) ?? 'undeclared'}); a -free alias must inherit its base's credential and endpoint silently`,
+        );
+      }
+    }
+
+    if (isObject(block.models) && isObject(base)) {
+      for (const model of Object.keys(block.models)) {
+        for (const seat of seats) {
+          if (seat.provider === baseID && seat.model === model) {
+            issues.push(
+              `wallScope: model "${model}" is in free alias "${providerID}"'s catalog but is also seated under its paid base "${baseID}" at ${seat.where}; seat it via the alias so a wall on the base cannot bench it`,
+            );
+          }
+        }
+      }
+    }
+  }
+  return issues;
+}
+
 export function inspectRouteRules(config) {
   const issues = [];
   const issueSet = new Set();
@@ -466,6 +584,99 @@ export function inspectRouteRules(config) {
   for (const issue of inspectFallbackLayout(modelRoutes, CLASS_FALLBACKS, reportedCycleKeys)) {
     addIssue(issue);
   }
+
+  // Purpose designations (code#13675, 2026-11-23): walk EVERY pool in
+  // model_routes (not only the four tiers), resolving targets with the
+  // same resolver as the tier pass (provider-route expansion and
+  // instanceOf catalog following included), and enforce:
+  // (a) a leaf whose model id has a designation must have the pool's
+  //     purpose in its purposes list;
+  // (b) purposes/capabilities values (designation entries and pool
+  //     purpose fields) must be in the closed vocabularies above;
+  // (c) a model designated without chat must never resolve into a
+  //     chat-purpose pool -- rule (a) applied to chat pools, which
+  //     mechanises the systemone decision-only convention.
+  const designations = activeMap(config, 'model_designations');
+  if (designations !== undefined && designations !== null) {
+    if (!isObject(designations)) {
+      addIssue('designation: "model_designations" must be an object keyed by bare model id');
+    } else {
+      const purposeSet = new Set(DESIGNATION_PURPOSES);
+      const capabilitySet = new Set(DESIGNATION_CAPABILITIES);
+      for (const [modelId, entry] of Object.entries(designations)) {
+        if (!isObject(entry)) {
+          addIssue(`designation: model "${modelId}" designation must be an object with purposes/capabilities lists`);
+          continue;
+        }
+        if (!Array.isArray(entry.purposes) || entry.purposes.length === 0) {
+          addIssue(`designation: model "${modelId}" must declare a non-empty purposes list`);
+        } else {
+          for (const purpose of entry.purposes) {
+            if (!purposeSet.has(purpose)) {
+              addIssue(
+                `designation: model "${modelId}" has unknown purpose ${JSON.stringify(purpose)} (closed vocabulary: ${DESIGNATION_PURPOSES.join(', ')})`,
+              );
+            }
+          }
+        }
+        if (entry.source !== undefined && (typeof entry.source !== 'string' || entry.source.trim().length === 0)) {
+          addIssue(`designation: model "${modelId}" source must be a non-empty string naming its asserting source`);
+        }
+        if (entry.capabilities !== undefined) {
+          if (!Array.isArray(entry.capabilities)) {
+            addIssue(`designation: model "${modelId}" capabilities must be a list`);
+          } else {
+            for (const capability of entry.capabilities) {
+              if (!capabilitySet.has(capability)) {
+                addIssue(
+                  `designation: model "${modelId}" has unknown capability ${JSON.stringify(capability)} (closed vocabulary: ${DESIGNATION_CAPABILITIES.join(', ')})`,
+                );
+              }
+            }
+          }
+        }
+      }
+
+      if (isObject(modelRoutes)) {
+        // Resolving non-tier pools can surface ordinary resolver
+        // findings (missing tracked models, windows, cycles) that the
+        // tier pass deliberately does not judge for pools it never
+        // reaches. This pass judges designations only, so resolver
+        // findings first raised here are pruned below; designation
+        // findings keep the "designation:" prefix.
+        const issuesBeforeWalk = new Set(issues);
+        for (const [poolName, route] of Object.entries(modelRoutes)) {
+          if (!isObject(route)) continue;
+          const poolPurpose = route.purpose ?? 'chat';
+          if (!purposeSet.has(poolPurpose)) {
+            addIssue(
+              `designation: pool "${poolName}" declares unknown purpose ${JSON.stringify(route.purpose)} (closed vocabulary: ${DESIGNATION_PURPOSES.join(', ')})`,
+            );
+            continue;
+          }
+          const candidates = resolve(`opencode-route/${poolName}`, null, poolName, poolName, [], new Set());
+          for (const candidate of candidates) {
+            const entry = designations[candidate.model];
+            if (!isObject(entry) || !Array.isArray(entry.purposes)) continue;
+            if (!entry.purposes.includes(poolPurpose)) {
+              addIssue(
+                `designation: model "${candidate.model}" is designated for [${entry.purposes.join(', ')}] but resolves into pool "${poolName}" (purpose "${poolPurpose}") via ${candidate.trace}`,
+              );
+            }
+          }
+        }
+        for (let index = issues.length - 1; index >= 0; index -= 1) {
+          if (!issuesBeforeWalk.has(issues[index]) && !issues[index].startsWith('designation:')) {
+            issueSet.delete(issues[index]);
+            issues.splice(index, 1);
+          }
+        }
+      }
+    }
+  }
+
+  // Wall-scope declarations + free/paid alias invariants (code#13693).
+  for (const issue of inspectProviderWallRules(config)) addIssue(issue);
 
   return { tiers, issues };
 }

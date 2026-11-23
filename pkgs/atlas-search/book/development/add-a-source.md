@@ -41,7 +41,7 @@ and working tables. Two properties define the tier:
 
 - **Writes are free and unmediated.** Producers write directly, through
   `stage_artifact` in code or `atlas-stage ingest` from the shell.
-  Sensitivity at this tier is *recorded, not enforced*.
+  Sensitivity at this tier is _recorded, not enforced_.
 - **A staging database never stores vectors**, so it is cheap to write
   and cheap to branch. Embedding happens exactly once, at promotion
   (step 5).
@@ -83,7 +83,7 @@ offsets and effective sensitivity, in the item's metadata.
 
 - Segment files are parsed **strictly**: a missing or mistyped field, or
   an unknown sensitivity name, is a usage error — never a silent default.
-- Segment *declaration* stays with the producer (the classifier or
+- Segment _declaration_ stays with the producer (the classifier or
   boundary detector that knows the source); staging composes and
   persists. Do not move declaration into the staging layer.
 - Read-back fails closed per record: a malformed or unrecognised

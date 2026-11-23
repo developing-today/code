@@ -311,6 +311,108 @@ standalone artifact).
 
 Use `fleet laptop-agent --help` for exact forms. This daemon interface is distinct from `fleet queue dispatch --surface laptop`, which currently records a handoff and does not execute arbitrary laptop commands.
 
+## The laptop route forms — `laptop`, `commander`, `http`, `ssh` (#13717)
+
+The codified matrix for reaching the laptop: tier 0, 3 methods × 2
+shapes, and the `laptop-ssh` wrapper (T7, a shell script, not a
+Fleet domain). Circumstance decides the form; every form is tried
+as its own literal command; every result names the form that
+served it. The raw shapes (T4 raw curl to the commander endpoint,
+T5 raw curl to the daemon API, T6 raw `ssh`) are documented as
+literal recipes in the laptop mechanics doc, not here.
+
+## `laptop` — tier T0, the generic tiered command
+
+| Verb                                                              | Purpose                                                                                                                                                                   |
+| ----------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `tiers`                                                           | Print the codified form table (T0–T7) and the composition doctrine.                                                                                                       |
+| `exec [--form T1\|T2\|T3] [--timeout SECS] [--cwd DIR] -- CMD...` | Walk T1 → T2 → T3 (or one pinned tier), advancing only when a tier fails to serve; reports the serving tier. `--timeout` is per attempt and always applies (default 120). |
+
+## `commander` — tier T1 (commander/fleet)
+
+| Verb                                          | Purpose                                                                                                                                                                                                                                                                |
+| --------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `health`                                      | Initialize an MCP session, run `hostname`, report latency as JSON.                                                                                                                                                                                                     |
+| `exec [--cwd DIR] [--timeout SECS] -- CMD...` | Run a command line on the laptop through the Desktop Commander MCP endpoint; the remote exit code propagates. The bearer is resolved from the secrets broker by name at call time; spawned processes are polled to completion or force-terminated (timeout exits 124). |
+
+## `http` — tier T2 (http/fleet)
+
+The laptop-agent daemon's HTTP API as its own subcommand. The
+ladder is HTTP legs only (broker socket → Cloudflare tunnel →
+Tailscale CONNECT): this tier never falls through to ssh. The verb
+set mirrors `laptop-agent`'s; the difference is the contract —
+this domain is the route-form surface, `laptop-agent` is the
+daemon's general client.
+
+| Verb                                                    | Purpose                                                                              |
+| ------------------------------------------------------- | ------------------------------------------------------------------------------------ |
+| `health`                                                | Check daemon reachability through the HTTP ladder.                                   |
+| `jobs`                                                  | List daemon jobs.                                                                    |
+| `kill JOB`                                              | Stop a daemon job.                                                                   |
+| `exec [--cwd DIR] [--timeout SECS] [--shell] -- CMD...` | Execute a guarded command and wait; exit codes propagate (daemon timeout exits 124). |
+| `run [--cwd DIR] [--shell] -- CMD...`                   | Submit a guarded command as a job.                                                   |
+| `poll JOB [--wait SECS]`                                | Read a job result or wait for it to finish.                                          |
+| `fetch REMOTE_PATH LOCAL_PATH`                          | Fetch a file from the laptop.                                                        |
+
+## `ssh` — tier T3 (ssh/fleet)
+
+| Verb                                          | Purpose                                                                                                                                                                                                                           |
+| --------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `health`                                      | Run `hostname` over ssh; exit 0 iff the host answers.                                                                                                                                                                             |
+| `exec [--cwd DIR] [--timeout SECS] -- CMD...` | Run a command line over ssh under the binary-owned client contract (pinned host key, proxy CONNECT, fleet-owned multiplex master); the remote exit code propagates; the binary deadline exits 124. ssh's own failure exit is 255. |
+| `close`                                       | Tear down the fleet-owned multiplex master, if any.                                                                                                                                                                               |
+
+## `actions` — live exec sessions in Actions runners
+
+`fleet actions exec start --repo OWNER/REPO --timeout S
+[--max-lifespan S] [--ref R] [--target-repo OWNER/REPO]
+[--hide-logs] [--detach] [--broker-url URL]`
+
+Open a session at the queue broker, attempt the #13765
+coordinator claim (the singular fallback names itself in the
+output as `placement_path` while those verbs are not live),
+dispatch `fleet-exec.yml` with only the handle and non-secret
+inputs, bind the run, and print the handoff: the handle plus the
+portable `OWNER/REPO#RUN_ID` form and the run attempt. `--timeout`
+is the session lease and is required — there is no default;
+`--max-lifespan` defaults to 1800 s and caps at 7200 s. Without
+`--detach`, start attaches and streams session IO.
+
+`fleet actions exec run <ref> [--timeout S] -- <command...>` —
+enqueue one command on the session's runner, stream its output,
+exit with the command's exit code (default command timeout
+600 s). `<ref>` is a handle or the portable `OWNER/REPO#RUN_ID`
+form.
+
+`fleet actions exec attach <ref>` / `fleet actions exec watch
+<ref>` — stream the session's IO after handoff (watch also
+reports run/session status). `fleet actions exec renew <ref>
+--timeout S` extends the lease, clamped at the max lifespan;
+the reply names `extension_required` when the ask passed the
+max. `fleet actions exec extend <ref> [--minutes M] [--reason
+TEXT]` requests an emergency extension past the max: the broker
+records it and raises the needs-drew alert (source
+`fleet-actions-exec`, key `actions-exec-ext:<handle>`); `fleet
+actions exec decide <ref> --approve|--deny` records the answer
+(approval adds the minutes to the max and the lease). `fleet
+actions exec close <ref>` closes the session.
+
+`fleet actions agent --handle H --broker-url URL
+--lease-seconds S --max-seconds S --workdir D --outbox D
+[--hide-logs]` — the runner half, invoked by the
+fleet-exec-session composite action: registers with the job's
+GitHub OIDC token (never logged), long-polls for commands, runs
+them in the workdir, streams IO through the broker (echoed to
+the run log unless `--hide-logs`), installs `fleet-exec-put` on
+the session PATH, and exits at lease expiry even if partitioned.
+
+`fleet actions put <file>` — the egress helper (session PATH
+name `fleet-exec-put`): copies the file into the session outbox
+(the run's `fleet-exec-out` artifact) and, when the session
+carries `FLEET_EXEC_R2_*` credentials, PUTs it to R2 under
+`fleet-exec/<handle>/` with a SigV4 signature. Credential values
+are never printed.
+
 ## Exit and availability
 
 Usage errors generally exit 2. Capability stubs exit 69. Some domains define additional statuses, such as queue transport unavailable or `agent next` having no work. A successful command's exit code and output belong to its handler; preserve both when wrapping Fleet in scripts.

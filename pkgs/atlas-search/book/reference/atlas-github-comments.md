@@ -12,13 +12,13 @@ The complete surface exists only in the source header. `--help` / `-h` prints th
 atlas-github-comments --state <watermarks.json> --out <records.jsonl> [--repo <owner/name>]... [--skip-reviews] [--observed-date <YYYY-MM-DD>]
 ```
 
-| Flag | Argument | Default | Meaning |
-|---|---|---|---|
-| `--state` | path to a JSON watermark store | required | Per-repo progress: the stored `updated_at` watermark for each repository already extracted. Missing flag: `--state is required`, exit 1. |
-| `--out` | path to a JSONL file | required | Append target for the emitted `atlas-github-comment/v1` records. Missing flag: `--out is required`, exit 1. |
-| `--repo` | `&lt;owner&gt;/&lt;name&gt;` | — (whole estate) | Restrict the run to these repositories. Repeatable. With no `--repo`, the estate is enumerated from the GitHub API: the `developing-today` and `developing-today-forks` organisations plus the `dezren39` account — the #6023 our-repos estate. External repositories are never extracted here; that is gated on #6024. |
-| `--skip-reviews` | (switch) | off | Skip the per-PR reviews walk (issue comments and review comments are still extracted). |
-| `--observed-date` | `YYYY-MM-DD` | today, UTC (via `date -u +%F`) | The observation date stamped on the emitted documents. |
+| Flag              | Argument                       | Default                        | Meaning                                                                                                                                                                                                                                                                                                                 |
+| ----------------- | ------------------------------ | ------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--state`         | path to a JSON watermark store | required                       | Per-repo progress: the stored `updated_at` watermark for each repository already extracted. Missing flag: `--state is required`, exit 1.                                                                                                                                                                                |
+| `--out`           | path to a JSONL file           | required                       | Append target for the emitted `atlas-github-comment/v1` records. Missing flag: `--out is required`, exit 1.                                                                                                                                                                                                             |
+| `--repo`          | `&lt;owner&gt;/&lt;name&gt;`   | — (whole estate)               | Restrict the run to these repositories. Repeatable. With no `--repo`, the estate is enumerated from the GitHub API: the `developing-today` and `developing-today-forks` organisations plus the `dezren39` account — the #6023 our-repos estate. External repositories are never extracted here; that is gated on #6024. |
+| `--skip-reviews`  | (switch)                       | off                            | Skip the per-PR reviews walk (issue comments and review comments are still extracted).                                                                                                                                                                                                                                  |
+| `--observed-date` | `YYYY-MM-DD`                   | today, UTC (via `date -u +%F`) | The observation date stamped on the emitted documents.                                                                                                                                                                                                                                                                  |
 
 Any other argument — including the literal word `help` — is `atlas-github-comments: unknown argument: &lt;arg&gt;`, exit 1. A flag missing its value is named the same way, for example `--state needs a path`, exit 1.
 
@@ -64,7 +64,7 @@ Running the identical command again appends nothing for that repository unless n
 
 ## Exit codes
 
-| Code | Meaning |
-|---|---|
-| 0 | Success — including runs in which HTTP 451 repositories were skipped. |
-| 1 | **Everything else**: argument errors, `gh` failures, and file errors alike. This binary has no exit-2 path. |
+| Code | Meaning                                                                                                     |
+| ---- | ----------------------------------------------------------------------------------------------------------- |
+| 0    | Success — including runs in which HTTP 451 repositories were skipped.                                       |
+| 1    | **Everything else**: argument errors, `gh` failures, and file errors alike. This binary has no exit-2 path. |

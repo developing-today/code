@@ -21,7 +21,8 @@ const tracked = Bun.spawnSync(["git", "ls-files", "--", "*wrangler.toml", "*wran
   .split("\n")
   .filter(Boolean);
 /** The `name` a wrangler file gives its Worker. */
-const nameIn = (file: string) => /^\s*"?name"?\s*[:=]\s*"([^"]+)"/m.exec(readFileSync(join(ROOT, file), "utf8"))?.[1] ?? "";
+const nameIn = (file: string) =>
+  /^\s*"?name"?\s*[:=]\s*"([^"]+)"/m.exec(readFileSync(join(ROOT, file), "utf8"))?.[1] ?? "";
 
 test("the list reads whole: every entry is well formed, and no name is there twice", () => {
   expect(listed.malformed).toBe(0);
@@ -63,6 +64,10 @@ test("a Worker said to be deployed from Actions has a workflow that deploys it a
 
 test("what is not deployed has no address, and what is in service has one", () => {
   for (const w of listed.workers) {
-    expect([w.name, w.state === "in service", w.address !== null]).toEqual([w.name, w.address !== null, w.address !== null]);
+    expect([w.name, w.state === "in service", w.address !== null]).toEqual([
+      w.name,
+      w.address !== null,
+      w.address !== null,
+    ]);
   }
 });

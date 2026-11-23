@@ -27,7 +27,7 @@ host's:
 
 Exit-code conventions differ by host and are part of its contract:
 `atlas-search` uses 2 for usage/validation errors and 1 for runtime
-failures; `atlas-classify` and `atlas-sweep` route *every* failure to 2;
+failures; `atlas-classify` and `atlas-sweep` route _every_ failure to 2;
 `atlas-github-comments` routes every failure to 1; `atlas-stage` prints
 errors as `atlas-stage: &lt;msg&gt;` and exits 1. Match the host. Never invent a
 new code for a shape the host already has.

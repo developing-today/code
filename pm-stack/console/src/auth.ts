@@ -79,7 +79,7 @@ async function jwks(uri: string, fetchImpl: FetchLike, now: number, force = fals
   }
 }
 
-function b64url(text: string): Uint8Array {
+function b64url(text: string): Uint8Array<ArrayBuffer> {
   if (!/^[A-Za-z0-9_-]*$/.test(text)) throw new Error("not base64url");
   const pad = text.length % 4 === 0 ? "" : "=".repeat(4 - (text.length % 4));
   const bin = atob(text.replace(/-/g, "+").replace(/_/g, "/") + pad);

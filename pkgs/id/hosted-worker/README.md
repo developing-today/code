@@ -19,10 +19,19 @@ First local-only vertical slice of the hosted data plane (slice 3 of
   routed request binds the object immutably to its
   (binding_id, jurisdiction); a common guard runs before every read or
   write and fails closed on unrouted requests, identity mismatch, or a
-  runtime-reported jurisdiction mismatch. Routes: `GET /v1/state`,
-  `PUT|GET /v1/kv/<key>` (a minimal per-user store proving lazy
-  creation and isolation; R2 blobs, metering and caps are later
-  #3811 steps and are out of scope here).
+  runtime-reported jurisdiction mismatch. Routes (13 paths,
+  15 method routes): `GET /v1/state`; `GET /v1/usage` (usage,
+  ceiling, and `at_cap`); `GET /v1/export` (full KV plus blob index;
+  stays available at cap); `PUT|GET|DELETE /v1/kv/<key>` (per-user
+  store; the key must match `[A-Za-z0-9._-]{1,128}`); `PUT /v1/blobs`,
+  `GET|DELETE /v1/blobs/<64-hex>` (content-addressed blobs in R2,
+  deduplicated across users; DELETE drops only this user's
+  reference); and the signed-object bridge routes (`GET
+  /v1/bridge/challenge`, `GET /v1/bridge/heads`, `POST
+  /v1/bridge/push`, `POST /v1/bridge/pull`, `GET /v1/bridge/export`,
+  `GET /v1/bridge/ws`), covered in the bridge section below. Storage
+  metering and the per-user ceiling (`USER_CEILING_BYTES`) are
+  implemented, not later steps.
 
 ## Local reality check (verified 2026-11-03, wrangler dev / workerd)
 

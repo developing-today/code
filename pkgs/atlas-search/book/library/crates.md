@@ -30,12 +30,12 @@ it silently.
 
 ## The map
 
-| Crate | Role | What depends on it | Where its binaries live |
-|---|---|---|---|
-| `atlas-embed` | The Snowflake `snowflake-arctic-embed-m-v2.0` embedder: dynamically loaded ONNX Runtime, the model's own Unigram tokenizer, CLS pooling, full 768-dimension output | `atlas-core` | None — library only. It ships a Gate A test and a timing example instead |
-| `atlas-core` | The engine: search semantics, both backends, shard fan-out, staging, classification, the ingest gate, evaluation, traces and feedback | `atlas-search`; also the fleet binary's search domain, which consumes the workspace crates as-is | Four binaries in its own `src/bin/`: `atlas-classify`, `atlas-eval`, `atlas-github-comments`, `atlas-sweep` |
-| `atlas-proto` | The shared HTTP job-protocol types for the service and its via-service clients, plus the versioned query-parameter contract | `atlas-core` and `atlas-search`; the server and the CLI client both depend on it so their wire definitions cannot drift | None — serde types only: no HTTP, no storage, no search policy |
-| `atlas-search` | The process surface: the one-shot CLI, the via-service client, the loopback HTTP service, model fetching, and the staging tool | Nothing in the workspace; it is the top of the graph. Outside the workspace, the fleet binary re-homes its serve half | `atlas-search` from `src/main.rs`, and `atlas-stage` from `src/bin/atlas-stage.rs` |
+| Crate          | Role                                                                                                                                                               | What depends on it                                                                                                      | Where its binaries live                                                                                     |
+| -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| `atlas-embed`  | The Snowflake `snowflake-arctic-embed-m-v2.0` embedder: dynamically loaded ONNX Runtime, the model's own Unigram tokenizer, CLS pooling, full 768-dimension output | `atlas-core`                                                                                                            | None — library only. It ships a Gate A test and a timing example instead                                    |
+| `atlas-core`   | The engine: search semantics, both backends, shard fan-out, staging, classification, the ingest gate, evaluation, traces and feedback                              | `atlas-search`; also the fleet binary's search domain, which consumes the workspace crates as-is                        | Four binaries in its own `src/bin/`: `atlas-classify`, `atlas-eval`, `atlas-github-comments`, `atlas-sweep` |
+| `atlas-proto`  | The shared HTTP job-protocol types for the service and its via-service clients, plus the versioned query-parameter contract                                        | `atlas-core` and `atlas-search`; the server and the CLI client both depend on it so their wire definitions cannot drift | None — serde types only: no HTTP, no storage, no search policy                                              |
+| `atlas-search` | The process surface: the one-shot CLI, the via-service client, the loopback HTTP service, model fetching, and the staging tool                                     | Nothing in the workspace; it is the top of the graph. Outside the workspace, the fleet binary re-homes its serve half   | `atlas-search` from `src/main.rs`, and `atlas-stage` from `src/bin/atlas-stage.rs`                          |
 
 Dependency direction is one-way throughout: `atlas-search` depends on
 `atlas-core` and `atlas-proto`; `atlas-core` depends on `atlas-embed` and
@@ -79,7 +79,7 @@ creation and status, result pages, error and health responses, and the embed
 request and response — and it embeds the versioned defaults file
 `query-parameters-v1.json`, which is the single source the CLI defaults are
 derived from (k = 10, pool = 100, RRF k = 10, and the rest of the v1
-contract). Sensitivity clamping does *not* live here: this crate carries the
+contract). Sensitivity clamping does _not_ live here: this crate carries the
 requested ceiling and the server's reported effective ceiling, and the
 server does the clamping. One wart to know: its `Sensitivity`, `SearchMode`
 and `VectorBackend` types are wire duplicates of `atlas-core`'s types of the
@@ -116,7 +116,7 @@ Two consequences follow. First, the workspace can be built, tested and
 vendored without the rest of the repository: the fleet package path-depends
 on this package's crates, workspace manifest and schema directory, and
 reuses its vendored ONNX Runtime, precisely because the package is
-self-contained. Second, the model is *not* part of the package: the
+self-contained. Second, the model is _not_ part of the package: the
 Snowflake model snapshot is data, provisioned into a state directory by the
 `fetch-model` verb and verified against hashes recorded in the repo — see
 [Installation and provisioning](../getting-started/installation.md).

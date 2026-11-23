@@ -138,7 +138,7 @@ describe("multipart shaping", () => {
       page: "queue",
       prompt: "look at this",
       notify: "true",
-      refs: "[\"prompt:9\"]",
+      refs: '["prompt:9"]',
     });
     const shaped = submissionFieldsFromForm(form);
     expect(shaped).toEqual({

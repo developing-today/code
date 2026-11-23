@@ -21,6 +21,7 @@ use crate::trace::{TraceContext, TraceSink, build_trace_record, new_query_id};
 use crate::types::{
     BranchPools, BranchQuery, ChunkDetail, DEFAULT_MODEL, NeighborRow, VectorBackend, round6,
 };
+use crate::{classify::sha256_hex, shards::TierCeiling};
 
 /// The Python's `MESSAGE_TEXT_CAP`.
 pub const MESSAGE_TEXT_CAP: usize = 50_000;
@@ -657,7 +658,13 @@ fn hydrate_entry(
 /// `excluded_personal_life` content, ineligible in every
 /// context (design section 4).
 pub fn run_get_chunk(backend: &dyn SearchBackend, chunk_id: i64, neighbors: usize) -> Result<Json> {
-    run_get_chunk_with_context(backend, chunk_id, neighbors, DisclosureContext::LocalOwner)
+    run_get_chunk_with_context(
+        backend,
+        chunk_id,
+        neighbors,
+        DisclosureContext::LocalOwner,
+        Sensitivity::SecretBearing,
+    )
 }
 
 /// `run_get_chunk` under an explicit disclosure context: the
@@ -665,11 +672,19 @@ pub fn run_get_chunk(backend: &dyn SearchBackend, chunk_id: i64, neighbors: usiz
 /// chunk reads exactly like a missing one — the lookup must not
 /// confirm that classified content exists), and neighbor
 /// expansion is filtered by each neighbor's own classification.
+///
+/// `grant` is the caller's sensitivity ceiling. `get-chunk` stays
+/// an explicit-id tool with no caller ceiling on the chunk gate
+/// (the context alone decides, as the Python did), but every
+/// derived payload — occurrence provenance and neighbor
+/// expansion — is bounded by grant ∩ context, so a narrower
+/// caller never learns higher-ceiling source locators.
 pub fn run_get_chunk_with_context(
     backend: &dyn SearchBackend,
     chunk_id: i64,
     neighbors: usize,
     context: DisclosureContext,
+    grant: Sensitivity,
 ) -> Result<Json> {
     let details = backend.chunk_details(&[chunk_id])?;
     let Some(d) = details.iter().find(|d| d.chunk_id == chunk_id) else {
@@ -678,6 +693,7 @@ pub fn run_get_chunk_with_context(
     if !context.permits(chunk_classification(d.eff_sensitivity.as_deref())) {
         return Err(Error::fatal(format!("chunk {chunk_id} not found")));
     }
+    let effective = context.effective_ceiling(grant);
     let mut msg = Map::new();
     msg.insert("id".into(), Json::String(d.message_id.clone()));
     msg.insert(
@@ -694,10 +710,28 @@ pub fn run_get_chunk_with_context(
     out.insert("message".into(), Json::Object(msg));
     out.insert("session".into(), session_obj(d));
     out.insert("session_id".into(), Json::String(d.session_id.clone()));
+    // #3125 rule 3 read side: every recorded place this chunk's
+    // content was found. The lookup key is the canonical hash
+    // (content identity, not the per-shard chunk id); the caller's
+    // ceiling gates which tiers may contribute, exactly as the
+    // vector fan-out enforces it. Backends with no registry
+    // (monolith, local publish) report none, and the field is
+    // then absent rather than empty — same shape rule as `notes`.
+    let occurrences = backend.occurrences(
+        &sha256_hex(d.text.as_bytes()),
+        TierCeiling::from_sensitivity(effective),
+        effective,
+    )?;
+    if !occurrences.is_empty() {
+        out.insert(
+            "occurrences".into(),
+            Json::Array(occurrences.iter().map(|o| o.to_json()).collect()),
+        );
+    }
     if neighbors > 0 {
         out.insert(
             "context".into(),
-            neighbor_map(backend, d, neighbors, context, context.ceiling())?,
+            neighbor_map(backend, d, neighbors, context, effective)?,
         );
     }
     let notes = backend.notes();

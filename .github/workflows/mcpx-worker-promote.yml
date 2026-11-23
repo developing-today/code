@@ -1,0 +1,70 @@
+name: mcpx worker promote
+
+on:
+  workflow_dispatch:
+    inputs:
+      upload_run_id:
+        description: Successful mcpx publish run ID
+        required: true
+        type: string
+      upload_run_attempt:
+        description: Successful upload attempt number
+        required: true
+        type: string
+      confirm_promotion:
+        description: Promote the exact uploaded version to 100 percent
+        required: true
+        type: boolean
+        default: false
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: mcpx-worker-lifecycle
+  cancel-in-progress: false
+
+jobs:
+  promote-version:
+    if: github.ref == 'refs/heads/main' && inputs.confirm_promotion
+    name: Verify and promote mcpx Worker Version
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    environment: mcpx-production
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: 24.22.0
+          cache: npm
+          cache-dependency-path: pkgs/mcpx/worker/package-lock.json
+      - name: Install pinned cf CLI
+        working-directory: pkgs/mcpx/worker
+        run: npm ci --no-audit --no-fund
+      - name: Verify selected upload attempt
+        working-directory: pkgs/mcpx/worker
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          UPLOAD_RUN_ID: ${{ inputs.upload_run_id }}
+          UPLOAD_RUN_ATTEMPT: ${{ inputs.upload_run_attempt }}
+          VERIFIED_UPLOAD_RUN_FILE: ${{ runner.temp }}/mcpx-worker-verified-run.json
+        run: node verify-upload-run.mjs "$UPLOAD_RUN_ID" "$UPLOAD_RUN_ATTEMPT" "$VERIFIED_UPLOAD_RUN_FILE"
+      - uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4.1.8
+        with:
+          name: mcpx-worker-upload-${{ inputs.upload_run_id }}-${{ inputs.upload_run_attempt }}
+          path: ${{ runner.temp }}/mcpx-worker-provenance
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ inputs.upload_run_id }}
+      - name: Promote only the verified upload
+        working-directory: pkgs/mcpx/worker
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          MCPX_WORKER_CF_TOKEN: ${{ secrets.MCPX_WORKER_CF_TOKEN }}
+          MCPX_WORKER_VERIFIED_RUN_FILE: ${{ runner.temp }}/mcpx-worker-verified-run.json
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: node promote.mjs --manifest "${{ runner.temp }}/mcpx-worker-provenance/mcpx-worker-provenance.json" --promote

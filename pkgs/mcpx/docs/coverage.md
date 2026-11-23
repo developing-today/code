@@ -60,7 +60,7 @@ Three commands had no prose anywhere before this run:
 `skills` (now in the verb-set table and the running group),
 `supervise` and `upgrade` (parity rows and group-table
 entries, with the mechanism in the [Glossary](./glossary.md)
-under *supervise* and *takeover*).
+under _supervise_ and _takeover_).
 
 ## Flags
 
@@ -116,7 +116,7 @@ chapter's table.
 The schema names **246 `MCPX_*` environment variables** (some
 settings carry an alias); all 246 are in the book through the
 same inventory rows. One environment variable is deliberately
-*not* a setting: `TS_AUTHKEY`, the Tailscale auth key for the
+_not_ a setting: `TS_AUTHKEY`, the Tailscale auth key for the
 tsnet transport, kept out of the settings system so it can
 never land in a config file or a settings dump. It is
 documented with the transport, in [Reaching a daemon on
@@ -131,7 +131,7 @@ other 12 are the instances of the one templated family the
 API chapter names, `POST /v1/tools/{tool}` — one path per
 tool mcpx itself serves — and the chapter now enumerates the
 instances. The daemon's own served document additionally
-carries one path per tool in the *live* catalogue, generated
+carries one path per tool in the _live_ catalogue, generated
 per request; those exist by construction, not by enumeration,
 and the API chapter says so.
 

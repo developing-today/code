@@ -96,7 +96,14 @@ export class PmNotify {
     const targets = (state.snapshot?.subscriptions ?? []).filter(takesSilentClass);
     let record: DeliveryRecord;
     if (!this.env.VAPID_PRIVATE_KEY) {
-      record = { kind, at: new Date().toISOString(), sent: 0, gone: 0, failed: 0, error: "VAPID_PRIVATE_KEY not configured" };
+      record = {
+        kind,
+        at: new Date().toISOString(),
+        sent: 0,
+        gone: 0,
+        failed: 0,
+        error: "VAPID_PRIVATE_KEY not configured",
+      };
     } else {
       try {
         const summary = await sendPush(targets, payload, { vapidPrivateKey: this.env.VAPID_PRIVATE_KEY });

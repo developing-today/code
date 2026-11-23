@@ -13,9 +13,11 @@ set -euo pipefail
 FQ_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 UNIT_DIR="$HOME/.config/systemd/user"
 mkdir -p "$UNIT_DIR"
-for u in fleet-queue-backup-export.service fleet-queue-backup-export.timer; do
+for u in fleet-queue-backup-export.service fleet-queue-backup-export.timer \
+  fleet-queue-backup-d1-home.service fleet-queue-backup-d1-home.timer; do
   sed "s#__FQ_DIR__#$FQ_DIR#g" "$FQ_DIR/systemd/$u" >"$UNIT_DIR/$u"
 done
 systemctl --user daemon-reload
 systemctl --user enable --now fleet-queue-backup-export.timer
+systemctl --user enable --now fleet-queue-backup-d1-home.timer
 systemctl --user list-timers 'fleet-queue-backup-*' --no-pager

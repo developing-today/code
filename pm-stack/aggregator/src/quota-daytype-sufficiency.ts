@@ -49,11 +49,7 @@
 // adjustment_unavailable. Pools are the store's folded series keys
 // (the rename join's output); each row names the raw service ids
 // folded into it, so the join stays auditable.
-import {
-  FORECAST_WINDOW_METRICS,
-  FORECAST_WINDOWS,
-  indexPercentRecords,
-} from "./quota-forecast-accuracy.ts";
+import { FORECAST_WINDOW_METRICS, FORECAST_WINDOWS, indexPercentRecords } from "./quota-forecast-accuracy.ts";
 import type { SnapshotRecord } from "./model.ts";
 
 /** The C4 design §5 sufficiency gate: the independent samples a
@@ -282,9 +278,7 @@ export function renderDayTypeSufficiencyReport(m: DayTypeSufficiencyMeasurement)
     const cells = m.poolWindows.flatMap((pw) => pw.cells.filter((c) => c.grain === grain));
     const admitted = cells.filter((c) => c.state === "admitted").length;
     const max = cells.reduce((acc, c) => Math.max(acc, c.samples), 0);
-    lines.push(
-      `| ${grain} | ${cells.length} | ${admitted} | ${cells.length - admitted} | ${max} |`,
-    );
+    lines.push(`| ${grain} | ${cells.length} | ${admitted} | ${cells.length - admitted} | ${max} |`);
   }
   lines.push("");
 

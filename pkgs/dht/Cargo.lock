@@ -770,7 +770,7 @@ dependencies = [
 [[package]]
 name = "distributed-topic-tracker"
 version = "0.2.5"
-source = "git+https://github.com/rustonbsd/distributed-topic-tracker#c9bb5e670f69c83c68c6864c0f288795d35954df"
+source = "git+https://github.com/rustonbsd/distributed-topic-tracker?rev=c9bb5e670f69c83c68c6864c0f288795d35954df#c9bb5e670f69c83c68c6864c0f288795d35954df"
 dependencies = [
  "actor-helper",
  "anyhow",

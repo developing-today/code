@@ -59,6 +59,7 @@ pub mod join;
 pub mod local;
 pub mod manifest;
 pub mod memory;
+pub mod occurrences;
 pub mod owner_inventory;
 pub mod search;
 pub mod shards;
@@ -132,6 +133,7 @@ pub use manifest::{
     LoadedManifest, Manifest, ManifestRow, ManifestSource, builtin_manifest, load_manifest,
     parse_manifest_rows,
 };
+pub use occurrences::{ChunkOccurrence, lookup_by_hash};
 pub use owner_inventory::{
     INVENTORY_FORMAT, OwnerInventory, OwnerInventoryFinding, PatternClass, SECRET_REFERENCE_ENV,
 };

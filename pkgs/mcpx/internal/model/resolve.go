@@ -3,6 +3,7 @@ package model
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -230,6 +231,10 @@ func (r *profileRouter) generateProfile(ctx context.Context, name string, profil
 				resp.Provider = p.Name()
 			}
 			return resp, nil
+		}
+		var paymentRequired *PaymentRequiredError
+		if errors.As(callErr, &paymentRequired) {
+			return Response{}, callErr
 		}
 		if callErr == nil {
 			callErr = fmt.Errorf("provider returned empty output")

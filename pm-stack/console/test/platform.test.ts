@@ -18,7 +18,7 @@ import { Ops, type Run } from "../src/ops.ts";
 import { DEPLOYED, GROUPS, STATES, type WorkerRow, workerRow, workersList } from "../src/platform.ts";
 import { letters, pick, rng } from "./support.ts";
 
-const good = {
+const good: Omit<WorkerRow, "runDeploys"> = {
   name: "message-bridge",
   title: "Message bridge",
   group: "fleet",

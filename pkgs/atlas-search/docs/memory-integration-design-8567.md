@@ -61,6 +61,7 @@ through the existing stage/registry ingestion path
   openclaw-embedding service exists (home/openclaw) but is not part
   of the Atlas pipeline; slice 2's port-18791 unification below was
   not the shape built.
+
 - No new vector store is created. LanceDB remains OpenClaw's local
   store (its Phase-1 role); the Atlas index is built from it by the
   connector like any other corpus. If the LanceDB store and the

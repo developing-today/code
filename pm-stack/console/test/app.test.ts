@@ -319,7 +319,7 @@ test("a card's title is not announced as a skipped heading level", () => {
     const attrs: Record<string, string> = {};
     return { tagName, attrs, setAttribute: (k: string, v: string) => void (attrs[k] = v) };
   };
-  const levels = (tags: string[]) => {
+  const levels = (tags: string[]): (string | null)[] => {
     const els = tags.map(heading);
     levelHeadings(els);
     return els.map((e) => e.attrs["aria-level"] ?? null);
@@ -396,11 +396,23 @@ test("what a form on a plan screen sends is the owner's words and only the choic
 });
 
 test("a change form names a phase only when moving, and a name only when adding under", () => {
-  expect(changeAsked({ action: "move", to: "now", itemTitle: "left over from before" })).toEqual({
+  expect(
+    changeAsked({ action: "move", to: "now", itemTitle: "left over from before" }) as {
+      action: string;
+      to?: string;
+      title?: string;
+    },
+  ).toEqual({
     action: "move",
     to: "now",
   });
-  expect(changeAsked({ action: "add-under", to: "now", itemTitle: "Tiles" })).toEqual({
+  expect(
+    changeAsked({ action: "add-under", to: "now", itemTitle: "Tiles" }) as {
+      action: string;
+      to?: string;
+      title?: string;
+    },
+  ).toEqual({
     action: "add-under",
     title: "Tiles",
   });

@@ -44,9 +44,10 @@ just serve
 ### With Cargo
 
 ```bash
-# Library-only (no web UI)
-cargo build --no-default-features
-cargo run --no-default-features -- serve
+# Default build: sandbox and world included, no web UI
+# (--no-default-features would also remove sandbox and world)
+cargo build
+cargo run -- serve
 
 # With web UI (build assets first)
 cd web && bun install && bun run build && cd ..
@@ -66,8 +67,8 @@ id get myfile.txt
 # List all files
 id list
 
-# Find files by pattern
-id find "*.rs"
+# Find files by query (case-insensitive substring; no glob matching)
+id find ".rs"
 
 # Search files
 id search "hello"
@@ -256,7 +257,7 @@ it is — a valid world capability, minted by the host's admin with
 | `peek`         |                                | Preview with configurable head/tail lines               |
 | `find`         |                                | Find files by query, optionally output content          |
 | `search`       |                                | Search files and list all matches                       |
-| `list`         | `ls`                           | List all stored files                                   |
+| `list`         |                                | List all stored files                                   |
 | `tag`          | `label`, `link`                | Manage metadata tags on files                           |
 | `migrate-tags` | `migrate`                      | Add name/file auto-tags to existing files               |
 | `id`           |                                | Print local node public ID                              |
@@ -313,7 +314,8 @@ id repl
 > tag search author:Jane          # Structured search syntax
 > tag find readme                 # find = search alias
 > migrate-tags                    # Add name/file tags to all files
-> cat myfile.txt | head -5        # Pipe output to shell
+> !head -5 myfile.txt             # Shell escape: run any shell command
+> printf 'bread\n' |> put - bakery.txt  # Pipe shell output into a stored file
 > $(id id)                        # Subshell expansion
 > help                            # Show all commands
 ```
@@ -345,7 +347,7 @@ just test-rust         # Rust tests only (~408 unit + ~93 integration)
 just test-unit         # Unit tests only (fast, ~408 tests)
 just test-integration  # Integration tests only (~93 tests)
 just test-web-unit     # TypeScript unit tests (~304 assertions)
-just test-e2e          # Playwright E2E (chromium + firefox, 208 tests)
+just test-e2e          # Playwright E2E (chromium + firefox, 276 tests)
 just test-nix          # nix flake check (27 checks — runs everything)
 just ci                # Full CI check suite
 just check             # Fix + CI (run before committing)
@@ -367,50 +369,53 @@ just test-nixos-playwright-e2e  # Full Playwright in 4 NixOS VMs
 See [ARCHITECTURE.md](ARCHITECTURE.md) for detailed system architecture.
 
 ```
-src/
+src/                     # The `id` facade crate: entry point and node bootstrap,
+                         # plus the surfaces that compose the crates below
+                         # (file ops, currency gateway, hosted binding/export/ingest,
+                         # serve proxy, boards, grants)
 ├── main.rs              # Entry point
-├── lib.rs               # Library exports, node bootstrap
-├── cli.rs               # Clap argument definitions
-├── protocol.rs          # P2P request/response protocol
-├── store.rs             # Iroh blob store operations
-├── tags.rs              # Metadata tag system (alpha/omega dual-index)
-├── tuple.rs             # Sort-preserving binary key encoding
-├── helpers.rs           # Parsing and formatting utilities
-├── discovery.rs         # Peer discovery
-├── commands/            # Command implementations
-│   ├── put.rs, get.rs, find.rs, list.rs, peers.rs, id.rs, tag.rs
-│   ├── serve.rs         # Server with optional web UI
-│   ├── repl.rs          # REPL entry point
-│   └── client.rs        # Remote peer client
-├── repl/                # REPL internals
-│   ├── runner.rs        # Command dispatch and help
-│   └── input.rs         # Shell preprocessing (pipes, subshells, heredocs)
-└── web/                 # Web UI (feature-gated)
-    ├── routes.rs        # Axum HTTP handlers
-    ├── templates.rs     # HTML template rendering
-    ├── collab.rs        # WebSocket collaboration server
-    ├── tags_ws.rs       # WebSocket tag updates
-    ├── assets.rs        # rust-embed static asset serving
-    ├── content_mode.rs  # Content type detection
-    └── markdown.rs      # Markdown rendering
+└── lib.rs               # Library exports, node bootstrap
+
+crates/                  # The workspace crates the facade composes
+├── id-cli/              # Clap argument definitions, command implementations,
+│                        # REPL, server config
+├── id-core/             # Core types and abuse/budget policy
+├── id-store/            # Blob/content store, metadata tags (alpha/omega dual-index)
+├── id-events/           # Signed event store: ingest, chains, forks, range sync
+├── id-sync/             # Peer sync
+├── id-web/              # Web UI server (routes, collab, tags WS, world bridge,
+│                        # security layer)
+├── id-worlds/           # Worlds: sessions, journal, runtime
+├── id-caps/             # Capability surface and the MCP bridge
+├── id-groups/           # Groups
+├── id-directory/        # Directory
+├── id-config/           # Configuration
+├── id-currency-registry/ # Currency registry
+├── id-render/           # Rendering
+├── id-native-shell/     # Native shell
+├── id-hw-shell/         # Hardware shell
+└── id-import-notion/    # Notion importer
 
 web/                     # TypeScript frontend
-├── src/                 # ProseMirror editor, collab, themes, editor features
+├── src/                 # ProseMirror editor, collab, themes, editor features,
+│                        # world surface
 └── dist/                # Built assets (embedded in binary)
 
-e2e/                     # Playwright E2E tests (104 tests × 2 browsers = 208)
-├── tests/basic.spec.ts           # 19 UI fundamental tests
-├── tests/editor-features.spec.ts # 31 editor feature tests
-├── tests/file-operations.spec.ts # 18 file/tag operation tests
+e2e/                     # Playwright E2E tests (138 tests × 2 browsers = 276)
+├── tests/autosave.spec.ts        # 7 autosave tests
+├── tests/basic.spec.ts           # 20 UI fundamental tests
+├── tests/editor-features.spec.ts # 47 editor feature tests
+├── tests/file-operations.spec.ts # 20 file/tag operation tests
 ├── tests/navigation.spec.ts      # 17 navigation + SPA tests
-├── tests/websocket.spec.ts       # 19 WS + collaboration tests
+├── tests/websocket.spec.ts       # 22 WS + collaboration tests
+├── tests/world-surface.spec.ts   # 5 world surface tests
 └── playwright.config.ts          # 3-mode config: local / nix sandbox / VM test
 
 nix/tests/                   # NixOS VM integration tests
 ├── serve-test.nix           # HTTP API test (curl, ~15 assertions)
 ├── e2e-test.nix             # Chromium --dump-dom DOM test (~10 assertions)
 ├── integration-test.nix     # Full cli_integration suite including serve_tests
-└── playwright-e2e-test.nix  # 4-VM full Playwright (208 interactive tests)
+└── playwright-e2e-test.nix  # 4-VM full Playwright (276 interactive tests)
 
 tests/
 └── cli_integration.rs   # ~93 integration tests

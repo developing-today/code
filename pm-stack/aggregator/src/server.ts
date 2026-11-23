@@ -30,13 +30,7 @@ import {
   queuedComments,
   validateNewComment,
 } from "./comments.ts";
-import {
-  PROMPT_STATUSES,
-  PromptsStore,
-  syncBlockHttpResult,
-  validateNewPrompt,
-  type PromptStatus,
-} from "./prompts.ts";
+import { PROMPT_STATUSES, PromptsStore, syncBlockHttpResult, validateNewPrompt, type PromptStatus } from "./prompts.ts";
 import { createPromptWsSession, type PromptWsSession } from "./prompt-ws.ts";
 import {
   PromptAttachmentsStore,
@@ -53,6 +47,7 @@ import { FreshnessStore, type FreshnessInput } from "./freshness.ts";
 import { createFreshnessIpcHandler } from "./freshness-ipc.ts";
 import { freshnessDeliveryResponse } from "./freshness-delivery.ts";
 import { fleetFeedRevisionReader, FreshnessReconciler } from "./freshness-reconcile.ts";
+import { startPmCoreSchedulers } from "./pm-core-wiring.ts";
 import {
   IngestionStore,
   WatchdogEpisodeStabilizer,
@@ -2251,7 +2246,8 @@ async function withMetadataTempFile<T>(prefix: string, content: string, run: (pa
   }
 }
 
-const metadataDbPath = process.env.PM_METADATA_DB_PATH ?? join(homedir(), ".local/state/pm-aggregator/pm-metadata.sqlite");
+const metadataDbPath =
+  process.env.PM_METADATA_DB_PATH ?? join(homedir(), ".local/state/pm-aggregator/pm-metadata.sqlite");
 const metadataDb = openMetadataStore(metadataDbPath, (path) => new Database(path));
 const metadataWebhookHandler = createMetadataWebhookHandler({
   secret: () => resolveBwsSecret("pm-aggregator.github-webhook-secret"),
@@ -2275,7 +2271,7 @@ const metadataWebhookHandler = createMetadataWebhookHandler({
     const slugs: EpicSlugMap = new Map();
     for (const row of rows as { number?: unknown; labels?: ({ name?: unknown } | string)[] }[]) {
       if (!Number.isSafeInteger(row.number) || (row.number as number) < 1) continue;
-      const labels = (row.labels ?? []).map((label) => typeof label === "string" ? label : String(label.name ?? ""));
+      const labels = (row.labels ?? []).map((label) => (typeof label === "string" ? label : String(label.name ?? "")));
       if (!labels.includes("kind/epic")) continue;
       for (const label of labels) {
         const slug = /^epic\/(.+)$/.exec(label)?.[1]?.trim().toLowerCase();
@@ -2957,10 +2953,7 @@ async function handler(req: Request, remoteAddress?: string): Promise<Response> 
             );
           }
         } catch (err) {
-          return json(
-            { error: `outage queueing failed: ${err instanceof Error ? err.message : err}` },
-            500,
-          );
+          return json({ error: `outage queueing failed: ${err instanceof Error ? err.message : err}` }, 500);
         }
         return json({ error: actionAccess.error }, actionAccess.status);
       }
@@ -5513,6 +5506,15 @@ console.log(`freshness publisher listening on http://${freshnessIpcServer.hostna
 if (cfg.source === "live") {
   void freshnessReconciler.reconcile().catch(() => undefined);
   freshnessReconciler.start();
+}
+
+// #8570: pm-core consolidation — in live mode the quota gatherer and
+// the fleet-feed collector also run as in-process schedulers on the
+// seam's cadences (quota 15 minutes, fleet-feed 5 minutes), ahead of
+// the systemd timer-unit cutover (a later slice of this issue).
+// Shutdown is tied to process signals inside the wiring.
+if (cfg.source === "live") {
+  startPmCoreSchedulers({ feedFile: cfg.feedFile });
 }
 
 // Collector feeds are replaced on a ~5-minute cadence. Land their

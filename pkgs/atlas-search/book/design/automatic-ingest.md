@@ -28,7 +28,7 @@ All OpenCode sessions from the laptop's session store, plus OpenChamber session 
 
 ### All ID objects
 
-All objects from the ID system (the user's identity and object-graph programme), whose stores are its own laptop and hosted databases. The designed direction today runs the other way — Atlas objects publishing *into* the ID graph, via the #6062 publication format and the projector set #11182–#11186, all open and unstarted. This workstream asks for the reverse flow as well: ID objects into Atlas search, with automatic vectorization of ID content feeding ID's own search. Neither direction is built. See [Design: search integration for fleet and ID](fleet-and-id-integration.md).
+All objects from the ID system (the user's identity and object-graph programme), whose stores are its own laptop and hosted databases. The designed direction today runs the other way — Atlas objects publishing _into_ the ID graph, via the #6062 publication format and the projector set #11182–#11186, all open and unstarted. This workstream asks for the reverse flow as well: ID objects into Atlas search, with automatic vectorization of ID content feeding ID's own search. Neither direction is built. See [Design: search integration for fleet and ID](fleet-and-id-integration.md).
 
 ### The sources-inventory pass
 

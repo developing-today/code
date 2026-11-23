@@ -1484,6 +1484,71 @@ mod tests {
         assert_eq!(recon.unstamped_transfers, 0);
     }
 
+    /// Oracle: an off-chart sink receives exactly one unit. The discrepancy
+    /// stays one after returning 2^127 units to the issuer, even though both
+    /// accounts now have lifetime counters beyond the signed report range.
+    #[test]
+    fn reconcile_preserves_unit_drift_for_full_width_posted_counters() {
+        let mut fx = fixture_with(InMemoryLedger::default());
+        let (_, currency, definition) = registered(&mut fx);
+        let key = *currency.compact_hash().as_bytes();
+        issue_to_alice(&mut fx, &currency, &definition, 2, 1, 1);
+        let issuer = derived_id(&fx, &fx.issuer.account, AccountKind::Issuer);
+        let holder = derived_id(&fx, &fx.alice.account, AccountKind::Holder);
+        let sink = 987_654_321;
+        assert_eq!(
+            fx.svc.backend.create_accounts(&[LedgerAccount {
+                id: sink,
+                ledger: id_currency_registry::CURRENCY_RANGE_START,
+                code: 9,
+                flags: LedgerFlags::default(),
+            }]),
+            vec![Ok(())]
+        );
+        let large = 1_u128 << 127;
+        inject_transfer(&mut fx, 0x13542_0001, issuer, holder, large, 0);
+        inject_transfer(&mut fx, 0x13542_0002, holder, sink, 1, 0);
+        let currency_id = fx
+            .svc
+            .registry_record(&key)
+            .expect("registered")
+            .currency_id;
+        let ledger_id = id_currency_registry::CURRENCY_RANGE_START;
+        let report = fx.svc.reconcile(0);
+        assert!(report.currencies[0].supply.is_none());
+        assert_eq!(
+            report.findings,
+            vec![ReconFinding::SupplyOutsideReportRange {
+                currency_id: currency_id.clone(),
+                ledger_id,
+                issued: (large + 1).to_string(),
+                accounted: large.to_string(),
+                difference: "1".to_owned(),
+            }],
+        );
+        let serialized = serde_json::to_string(&report).expect("serialize wide totals");
+        let restored: crate::currency::reconcile::ReconReport =
+            serde_json::from_str(&serialized).expect("restore wide totals");
+        assert_eq!(report, restored);
+        assert!(!restored.is_clean());
+
+        inject_transfer(&mut fx, 0x13542_0003, holder, issuer, large, 0);
+        let report = fx.svc.reconcile(0);
+        assert_eq!(
+            report.findings,
+            vec![ReconFinding::SupplyMismatch {
+                currency_id,
+                ledger_id,
+                issued: 1,
+                accounted: 0,
+            }],
+        );
+        assert_eq!(
+            report.currencies[0].supply.as_ref().unwrap().difference(),
+            1
+        );
+    }
+
     /// F4 acceptance (#2320): a transfer whose `user_data_128`
     /// has no graph object is reported, not silently ignored —
     /// with the currency, the ledger, and the transfer named.

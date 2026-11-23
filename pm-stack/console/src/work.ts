@@ -141,7 +141,7 @@ export class Work {
     return this.ops.cfg.repo;
   }
 
-  private task = (r: Row) => ({
+  private task = (r: Row): Row & { url: string | null } => ({
     ...r,
     url: r.issue ? `https://github.com/${this.repo}/issues/${r.issue}` : null,
   });

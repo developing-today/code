@@ -45,12 +45,12 @@ Names used throughout: unit `toy-sailboats-001`, owner `tutorial`, registry file
 
 ## Step 4: run classification
 
-Classification in this surface is *declared by the producer and composed by staging*: you supply the source-native classification segments — byte ranges of the artifact, each with a sensitivity from the four-level ladder — and staging splits the artifact at those boundaries and persists one classification record per chunk. Classification may only change at a declared boundary; undeclared or uncertain text fails closed.
+Classification in this surface is _declared by the producer and composed by staging_: you supply the source-native classification segments — byte ranges of the artifact, each with a sensitivity from the four-level ladder — and staging splits the artifact at those boundaries and persists one classification record per chunk. Classification may only change at a declared boundary; undeclared or uncertain text fails closed.
 
 4. Write a segments file for the ballast note. This toy file declares its whole text as one `personal` segment (byte offsets are illustrative; a real producer computes them from its own boundary detection):
 
    ```json
-   [ { "start": 0, "end": 86, "sensitivity": "personal", "certain": true } ]
+   [{ "start": 0, "end": 86, "sensitivity": "personal", "certain": true }]
    ```
 
    Save it as `ballast.segments.json`. Segment files are parsed strictly: a missing or mistyped field, or an unknown sensitivity name, is an error — never a silent default.
@@ -64,7 +64,7 @@ Classification in this surface is *declared by the producer and composed by stag
      --segments ballast.segments.json
    ```
 
-   The chunks are now boundary-safe — they partition the source exactly and never cross the boundary the classification was cut on — and each chunk carries its persisted classification record (actor `atlas-stage`, method `boundary-split`). A record that later reads back malformed or unrecognized resolves to `secret-bearing`: fail closed, every time. The corpus-wide remainder sweep that classifies *unclassified* content in an existing corpus database is a different tool — [atlas-classify](../reference/atlas-classify.md) — and is not run against a staging database.
+   The chunks are now boundary-safe — they partition the source exactly and never cross the boundary the classification was cut on — and each chunk carries its persisted classification record (actor `atlas-stage`, method `boundary-split`). A record that later reads back malformed or unrecognized resolves to `secret-bearing`: fail closed, every time. The corpus-wide remainder sweep that classifies _unclassified_ content in an existing corpus database is a different tool — [atlas-classify](../reference/atlas-classify.md) — and is not run against a staging database.
 
 ## Step 5: inspect what is staged
 
@@ -139,4 +139,4 @@ atlas-sweep --state-dir &lt;state-dir&gt; dead-letter retry &lt;ref&gt;
 atlas-sweep --state-dir &lt;state-dir&gt; dead-letter drop &lt;ref&gt;
 ```
 
-`list` prints one reference per line (an empty store prints nothing and exits 0); `retry` and `drop` are silent on success. The distinction to keep: a gate quarantine is a batch held *before* publish with its audit record attached, resumable at the failing stage; a sweep dead letter is a source candidate set aside *by the scheduler* after repeated failure, resumable only by an explicit `retry`. Neither deletes anything.
+`list` prints one reference per line (an empty store prints nothing and exits 0); `retry` and `drop` are silent on success. The distinction to keep: a gate quarantine is a batch held _before_ publish with its audit record attached, resumable at the failing stage; a sweep dead letter is a source candidate set aside _by the scheduler_ after repeated failure, resumable only by an explicit `retry`. Neither deletes anything.

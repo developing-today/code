@@ -1776,9 +1776,7 @@ class TestCodeSourceFireLog(unittest.TestCase):
             not_a_repo.mkdir()
             with (
                 patch.object(claimant, "PRIMARY_CLONE", not_a_repo),
-                patch.object(
-                    claimant.subprocess, "run", self._fake_git(returncode=1)
-                ),
+                patch.object(claimant.subprocess, "run", self._fake_git(returncode=1)),
             ):
                 source = claimant.read_code_source()
         self.assertEqual(source["state"], "unreadable")

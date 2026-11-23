@@ -293,3 +293,203 @@ test('fallback escalation walk fires when the chain loops without reaching speci
     `expected an escalation walk issue, got: ${JSON.stringify(issues)}`,
   );
 });
+// --- purpose designations (code#13675, 2026-11-23) ---
+
+function configWithDesignations() {
+  const config = configWith();
+  config.model_designations = {
+    'decision-bot': { purposes: ['decision'] },
+    'embed-bot': { purposes: ['embed'] },
+    'stt-bot': { purposes: ['transcribe'], capabilities: ['stt', 'audio-in'] },
+  };
+  const routes = config.experimental.model_routes;
+  routes.deciders = { purpose: 'decision', targets: ['free/decision-bot#low'] };
+  routes.embedders = { purpose: 'embed', targets: ['free/embed-bot#low'] };
+  routes.transcribers = { purpose: 'transcribe', targets: ['free/stt-bot#low'] };
+  return config;
+}
+
+test('designated models pass when seated only in pools of their purpose', () => {
+  const result = inspectRouteRules(configWithDesignations());
+  assert.deepEqual(result.issues, []);
+});
+
+test('designation rule fires when a designated model is seated in a pool of another purpose', () => {
+  const config = configWithDesignations();
+  config.experimental.model_routes.embedders.targets = ['free/decision-bot#low'];
+  const issues = inspectRouteRules(config).issues;
+  assert.ok(
+    issues.some((issue) => issue.includes('designation:') && issue.includes('"decision-bot"') && issue.includes('"embedders"')),
+    `expected a designation issue for decision-bot in embedders, got: ${JSON.stringify(issues)}`,
+  );
+});
+
+test('a model designated without chat never resolves into a chat-purpose pool (systemone convention)', () => {
+  const config = configWithDesignations();
+  // scout is a chat-purpose tier (no purpose field = chat).
+  config.experimental.model_routes.scout.targets = ['good/model#low', 'free/embed-bot#low'];
+  const issues = inspectRouteRules(config).issues;
+  assert.ok(
+    issues.some((issue) => issue.includes('designation:') && issue.includes('"embed-bot"') && issue.includes('"scout"') && issue.includes('purpose "chat"')),
+    `expected a designation issue for embed-bot in scout, got: ${JSON.stringify(issues)}`,
+  );
+});
+
+test('designation rule follows provider-route expansion into pools', () => {
+  const config = configWithDesignations();
+  config.provider.good.models['decision-bot'] = { variants: { low: {} } };
+  config.experimental.model_routes.deciders.targets = ['plan/decision-bot#low'];
+  assert.deepEqual(inspectRouteRules(config).issues, []);
+  config.experimental.model_routes.workhorse.targets = ['plan/decision-bot#low'];
+  const issues = inspectRouteRules(config).issues;
+  assert.ok(
+    issues.some((issue) => issue.includes('designation:') && issue.includes('"decision-bot"') && issue.includes('"workhorse"')),
+    `expected a designation issue for decision-bot in workhorse, got: ${JSON.stringify(issues)}`,
+  );
+});
+
+test('unknown designation purposes and capabilities are flagged', () => {
+  const config = configWithDesignations();
+  config.model_designations['decision-bot'] = { purposes: ['decision', 'fly'] };
+  config.model_designations['stt-bot'] = { purposes: ['transcribe'], capabilities: ['stt', 'wings'] };
+  const issues = inspectRouteRules(config).issues;
+  assert.ok(issues.some((issue) => issue.includes('unknown purpose "fly"')), `got: ${JSON.stringify(issues)}`);
+  assert.ok(issues.some((issue) => issue.includes('unknown capability "wings"')), `got: ${JSON.stringify(issues)}`);
+});
+
+test('an unknown pool purpose is flagged', () => {
+  const config = configWithDesignations();
+  config.experimental.model_routes.deciders.purpose = 'teleport';
+  const issues = inspectRouteRules(config).issues;
+  assert.ok(
+    issues.some((issue) => issue.includes('designation:') && issue.includes('"deciders"') && issue.includes('unknown purpose "teleport"')),
+    `expected an unknown-purpose issue for deciders, got: ${JSON.stringify(issues)}`,
+  );
+});
+
+test('designations may also live under experimental like the other route maps', () => {
+  const config = configWithDesignations();
+  config.experimental.model_designations = config.model_designations;
+  delete config.model_designations;
+  config.experimental.model_routes.scout.targets = ['good/model#low', 'free/decision-bot#low'];
+  const issues = inspectRouteRules(config).issues;
+  assert.ok(
+    issues.some((issue) => issue.includes('designation:') && issue.includes('"decision-bot"') && issue.includes('"scout"')),
+    `expected a designation issue via experimental.model_designations, got: ${JSON.stringify(issues)}`,
+  );
+});
+
+test('designation source, when present, must be a non-empty string', () => {
+  const config = configWithDesignations();
+  config.model_designations['decision-bot'] = { purposes: ['decision'], source: 'models.dev' };
+  assert.deepEqual(inspectRouteRules(config).issues, []);
+  config.model_designations['decision-bot'] = { purposes: ['decision'], source: '' };
+  const issues = inspectRouteRules(config).issues;
+  assert.ok(
+    issues.some((issue) => issue.includes('designation:') && issue.includes('"decision-bot"') && issue.includes('source must be a non-empty string')),
+    `expected a source validation issue, got: ${JSON.stringify(issues)}`,
+  );
+  config.model_designations['decision-bot'] = { purposes: ['decision'], source: 42 };
+  assert.ok(inspectRouteRules(config).issues.some((issue) => issue.includes('source must be a non-empty string')));
+});
+
+// --- wallScope declarations + free/paid alias invariants (code#13693) ---
+import { WALL_SCOPES, inspectProviderWallRules } from './check-opencode-route-rules.mjs';
+
+function configWithWallSplit() {
+  const config = configWith();
+  config.provider.paid = {
+    models: { 'free-model': {}, 'paid-model': {} },
+    options: { baseURL: 'https://paid.example/v1' },
+  };
+  config.provider['paid-free'] = {
+    instanceOf: 'paid',
+    wallScope: 'per-model',
+    models: { 'free-model': {} },
+  };
+  config.provider.paid.wallScope = 'provider';
+  config.experimental.model_routes['free-pool'] = { targets: ['paid-free/free-model'] };
+  return config;
+}
+
+test('wallScope vocabulary is the closed set from the design', () => {
+  assert.deepEqual(WALL_SCOPES, ['per-model', 'provider', 'account']);
+});
+
+test('a well-formed wall split passes the wall rules and the full checker', () => {
+  const config = configWithWallSplit();
+  assert.deepEqual(inspectProviderWallRules(config), []);
+  assert.deepEqual(checkRouteRules(config), []);
+});
+
+test('an unknown wallScope value fails, naming the provider', () => {
+  const config = configWithWallSplit();
+  config.provider.groq = { wallScope: 'per-org', models: {} };
+  const issues = inspectProviderWallRules(config);
+  assert.ok(
+    issues.some((issue) => issue.includes('"groq"') && issue.includes('"per-org"')),
+    `expected a wallScope issue naming groq: ${issues}`,
+  );
+  assert.ok(checkRouteRules(config).some((issue) => issue.includes('wallScope')));
+});
+
+test('every closed-vocabulary wallScope value passes', () => {
+  for (const scope of WALL_SCOPES) {
+    const config = configWithWallSplit();
+    config.provider.groq = { wallScope: scope, models: {} };
+    assert.deepEqual(inspectProviderWallRules(config), [], );
+  }
+});
+
+test('a -free alias declaring a differing credential fails, naming both ids', () => {
+  const config = configWithWallSplit();
+  config.provider['paid-free'].options = { apiKey: 'a-different-key' };
+  const issues = inspectProviderWallRules(config);
+  assert.ok(
+    issues.some((issue) => issue.includes('"paid-free"') && issue.includes('"paid"') && issue.includes('options.apiKey')),
+    `expected an alias credential issue naming both ids: ${issues}`,
+  );
+});
+
+test('a -free alias declaring a differing baseURL fails, naming both ids', () => {
+  const config = configWithWallSplit();
+  config.provider['paid-free'].options = { baseURL: 'https://elsewhere.example/v1' };
+  const issues = inspectProviderWallRules(config);
+  assert.ok(
+    issues.some((issue) => issue.includes('"paid-free"') && issue.includes('"paid"') && issue.includes('options.baseURL')),
+    `expected an alias baseURL issue naming both ids: ${issues}`,
+  );
+});
+
+test('a -free alias re-declaring the base value verbatim does not differ and passes', () => {
+  const config = configWithWallSplit();
+  config.provider['paid-free'].options = { baseURL: 'https://paid.example/v1' };
+  assert.deepEqual(inspectProviderWallRules(config), []);
+});
+
+test('a free-alias model also seated under the paid base fails, naming the seat', () => {
+  const config = configWithWallSplit();
+  config.experimental.model_routes['paid-pool'] = { targets: ['paid/free-model'] };
+  const issues = inspectProviderWallRules(config);
+  assert.ok(
+    issues.some(
+      (issue) =>
+        issue.includes('"free-model"') && issue.includes('"paid-free"') && issue.includes('"paid"') && issue.includes('paid-pool'),
+    ),
+    `expected a split invariant issue naming the seat: ${issues}`,
+  );
+  assert.ok(checkRouteRules(config).some((issue) => issue.includes('wallScope')));
+});
+
+test('a free-alias model seated under the paid base via weights alone fails', () => {
+  const config = configWithWallSplit();
+  config.experimental.model_routes['paid-pool'] = {
+    targets: ['paid/paid-model'],
+    weights: { 'paid/free-model': 1, 'paid/paid-model': 1 },
+  };
+  const issues = inspectProviderWallRules(config);
+  assert.ok(
+    issues.some((issue) => issue.includes('"free-model"') && issue.includes('weights')),
+    `expected a split invariant issue naming the weights seat: ${issues}`,
+  );
+});

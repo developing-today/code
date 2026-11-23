@@ -344,7 +344,7 @@ export class Edge {
   constructor(options: EdgeOptions) {
     this.kv = options.kv;
     this.now = options.now ?? Date.now;
-    this.fetchImpl = plain(options.fetchImpl ?? fetch);
+    this.fetchImpl = plain(options.fetchImpl ?? fetch) as typeof fetch;
     this.direct = options.direct;
     const setAlarm = options.setAlarm ?? (async () => {});
     this.setAlarm = async (at) => {
