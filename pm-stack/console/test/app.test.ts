@@ -16,8 +16,13 @@ import {
   deviceLabel,
   deviceState,
   endpointMark,
+  everyRead,
+  flushSaid,
+  freshSaid,
   intakeArgs,
   intakeSaid,
+  keptGroups,
+  keptSaid,
   levelHeadings,
   phaseHeading,
   prCheck,
@@ -537,4 +542,140 @@ test("text on a status colour can be read, on the dark page and the light one", 
     const background = /background:\s*var\((--[a-z-]+)\)/.exec(body)?.[1];
     expect(body).toContain(`color: var(${background}-ink)`);
   }
+  // A button on a toast (Undo) is written in the toast's ink, not the page's.
+  expect(block(css.indexOf("\n.toast button {"))).toContain("color: inherit");
+});
+
+test("the corner of the header says live, how old, offline or signed out", () => {
+  const now = Date.parse("2026-11-23T12:00:00Z");
+  const at = (secondsAgo: number) => now - secondsAgo * 1000;
+  expect(freshSaid({ asOf: at(10) }, now)).toEqual({ text: "live", tone: "" });
+  expect(freshSaid({ asOf: at(120) }, now)).toEqual({ text: "as of 2 min ago", tone: "" });
+  expect(freshSaid({ asOf: at(600) }, now)).toEqual({ text: "as of 10 min ago", tone: "stale" });
+  // With no connection it never says "live", however recent the copy.
+  expect(freshSaid({ asOf: at(10), offline: true }, now)).toEqual({ text: "offline · just now", tone: "stale" });
+  expect(freshSaid({ asOf: at(7200), offline: true }, now)).toEqual({ text: "offline · 2 h ago", tone: "stale" });
+  expect(freshSaid({ offline: true }, now)).toEqual({ text: "offline", tone: "stale" });
+  // Signed out is said before anything else: it is what to act on.
+  expect(freshSaid({ asOf: at(10), offline: true, signedOut: true }, now)).toEqual({
+    text: "signed out",
+    tone: "down",
+  });
+  expect(freshSaid({}, now)).toEqual({ text: "", tone: "" });
+});
+
+test("the line under the header says there is no connection and what is kept, and nothing when there is nothing to say", () => {
+  expect(keptSaid({})).toBeNull();
+  expect(
+    keptSaid({ offline: false, signedOut: false, summary: { waiting: 0, stale: 0, failed: 0, held: 2, done: 5 } }),
+  ).toBeNull();
+  expect(keptSaid({ offline: true })).toEqual({
+    text: "No connection: this is what the device last saw.",
+    tone: "",
+    to: "more/device",
+  });
+  expect(keptSaid({ offline: true, summary: { waiting: 1 } })).toEqual({
+    text: "No connection: this is what the device last saw · 1 thing kept to send.",
+    tone: "",
+    to: "more/device",
+  });
+  // Connected, and something still waits (it is being sent, or waits for a machine).
+  expect(keptSaid({ summary: { waiting: 3 } })).toEqual({
+    text: "3 things kept to send.",
+    tone: "",
+    to: "more/device",
+  });
+  // What needs the owner is said as needing them.
+  expect(keptSaid({ summary: { waiting: 1, stale: 2, failed: 1 } })).toEqual({
+    text: "1 thing kept to send · 2 things kept back for you to look at · 1 thing could not be done.",
+    tone: "warn",
+    to: "more/device",
+  });
+  // Signed out: a tap signs in again, unless there is something to look at first.
+  expect(keptSaid({ signedOut: true, offline: true, summary: { waiting: 2 } })).toEqual({
+    text: "Signed out: tap to sign in again · 2 things kept to send.",
+    tone: "warn",
+    to: "reload",
+  });
+  expect(keptSaid({ signedOut: true, summary: { failed: 1 } })?.to).toBe("more/device");
+});
+
+test("what a send did is said in one line, and nothing is said of nothing", () => {
+  const e = (state: string) => ({ state });
+  expect(flushSaid([])).toBe("");
+  expect(flushSaid([e("waiting")])).toBe("");
+  expect(flushSaid([e("done")])).toBe("What you did offline: 1 sent.");
+  // Taken by the platform for a machine counts as sent: it has it.
+  expect(flushSaid([e("done"), e("held"), e("failed"), e("stale"), e("stale")])).toBe(
+    "What you did offline: 2 sent, 1 could not be done, 2 kept back for you to look at.",
+  );
+});
+
+test("what is kept is listed by what it needs: waiting, kept back, failed, with the platform, sent", () => {
+  const e = (id: string, state: string, at: number) => ({ id, state, at });
+  const groups = keptGroups([
+    e("d1", "done", 1),
+    e("w1", "waiting", 2),
+    e("w2", "waiting", 5),
+    e("f1", "failed", 3),
+    e("s1", "stale", 4),
+    e("h1", "held", 6),
+  ]);
+  expect(groups.map((g) => [g.title, g.can, g.entries.map((x: { id: string }) => x.id)])).toEqual([
+    ["Waiting to send", ["drop"], ["w2", "w1"]],
+    ["Kept back for you to look at", ["send", "drop"], ["s1"]],
+    ["Could not be done", ["again", "drop"], ["f1"]],
+    ["With the platform, waiting for a machine", [], ["h1"]],
+    ["Sent", [], ["d1"]],
+  ]);
+  // A group with nothing in it is not shown.
+  expect(keptGroups([e("w1", "waiting", 1)]).map((g) => g.state)).toEqual(["waiting"]);
+  expect(keptGroups([])).toEqual([]);
+});
+
+test("keeping a copy of every screen reads each under the address its screen asks for it by", () => {
+  const caps = [{ id: "id" }, { id: "pm-stack" }, { id: "repo-and-ci" }];
+  expect(everyRead(caps, true)).toEqual([
+    "doc/core",
+    "doc/questions",
+    "doc/ops",
+    "me",
+    "roadmaps",
+    "roadmap?area=id",
+    "roadmap?area=pm-stack",
+    "roadmap?area=repo-and-ci",
+    "bugs",
+    "intake",
+    "queue?status=blocked&q=",
+    "queue?status=queued&q=",
+    "queue?status=claimed&q=",
+    "queue?status=parked&q=",
+    "releases",
+    "messages?limit=15",
+    "push",
+    "devices",
+    "signin",
+    "android",
+  ]);
+  // Served straight from a machine there is no kept Android build to ask about.
+  expect(everyRead(caps, false)).not.toContain("android");
+  // The list of capabilities could not be read: the rest still is.
+  expect(everyRead(undefined, false)).toEqual([
+    "doc/core",
+    "doc/questions",
+    "doc/ops",
+    "me",
+    "roadmaps",
+    "bugs",
+    "intake",
+    "queue?status=blocked&q=",
+    "queue?status=queued&q=",
+    "queue?status=claimed&q=",
+    "queue?status=parked&q=",
+    "releases",
+    "messages?limit=15",
+    "push",
+    "devices",
+    "signin",
+  ]);
 });

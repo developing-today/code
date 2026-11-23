@@ -157,7 +157,7 @@ async function setup(options: { direct?: boolean } = {}) {
       html_url: "https://github.com/developing-today/code/pull/55",
       created_at: "2026-11-22T12:30:00Z",
       user: { login: "worker" },
-      head: { ref: "queue/55" },
+      head: { ref: "queue/55", sha: "5555555555555555555555555555555555555555" },
     },
   ];
   const ghSearch = [
@@ -185,11 +185,13 @@ async function setup(options: { direct?: boolean } = {}) {
   /** Calls GitHub gives no answer to at all, and calls it is slow to
    * answer: held until the test lets them go. */
   const ghDrops: ((method: string, url: string) => boolean)[] = [];
+  /** Calls GitHub answers in a way a test gives: a status and its words. */
+  const ghSays: { match: (method: string, url: string) => boolean; status: number; message: string }[] = [];
   const ghHolds: { match: (method: string, url: string) => boolean; wait: Promise<void> }[] = [];
   const ghBreaks: ((method: string, url: string) => boolean)[] = [];
   /** GitHub answering a new issue with no number on it: not something
    * it does, and exactly what must not be passed on as a task. */
-  const ghOdd = { noNumber: false };
+  const ghOdd = { noNumber: false, longAddress: false };
   /** Pull requests merged and workflows started through GitHub's API. */
   const ghMerged: { pr: number; body: unknown }[] = [];
   const ghStarted: { workflow: string; body: unknown }[] = [];
@@ -388,6 +390,11 @@ async function setup(options: { direct?: boolean } = {}) {
       const pr = ghPrs.find((p) => p.number === Number(prMatch[1]));
       if (!pr) return fail(404, { message: "Not Found" });
       if (method === "PUT" && prMatch[2]) {
+        // Asked to merge a commit it no longer stands at: GitHub's own words.
+        const asked = (JSON.parse(body ?? "{}") as { sha?: string }).sha;
+        if (asked !== undefined && asked !== pr.head.sha) {
+          return fail(409, { message: "Head branch was modified. Review and try the merge again." });
+        }
         ghMerged.push({ pr: pr.number, body: JSON.parse(body ?? "{}") });
         ghPrs.splice(ghPrs.indexOf(pr), 1);
         return ok({ merged: true, sha: "5a5a5a5a5a5a" });
@@ -469,7 +476,7 @@ async function setup(options: { direct?: boolean } = {}) {
         number: n,
         title: parsed.title ?? "",
         body: parsed.body ?? "",
-        html_url: `https://github.com/developing-today/code/issues/${n}`,
+        html_url: `https://github.com/developing-today/code/issues/${n}${ghOdd.longAddress ? `?${"x".repeat(5000)}` : ""}`,
         state: "open",
         created_at: new Date(now.t).toISOString(),
         updated_at: new Date(now.t).toISOString(),
@@ -546,6 +553,8 @@ async function setup(options: { direct?: boolean } = {}) {
       if (ghBreaks.some((breaks) => breaks(method, u))) {
         return { ok: false, status: 500, json: async () => ({ message: "Server Error" }) };
       }
+      const says = ghSays.find((say) => say.match(method, u));
+      if (says) return { ok: false, status: says.status, json: async () => ({ message: says.message }) };
       return githubAnswer(method, u, init?.body);
     }
     if (u === `${cfg.queueDbUrl}/v2/pipeline`) {
@@ -792,6 +801,7 @@ async function setup(options: { direct?: boolean } = {}) {
   const files = new Map([
     ["/console/index.html", "<!doctype html><title>PM</title>"],
     ["/console/app.js", "// app"],
+    ["/console/outbox.js", "// what is kept"],
     ["/icons/icon-192.png", "PNG"],
   ]);
   const io: Io = {
@@ -873,6 +883,7 @@ async function setup(options: { direct?: boolean } = {}) {
     publicKey: () => link.now.publicKey(),
     begin: (id) => link.now.begin(id),
     end: (id, fate) => link.now.end(id, fate),
+    seen: (id) => link.now.seen(id),
   };
 
   const token = (claims: Record<string, unknown> = {}) =>
@@ -910,8 +921,9 @@ async function setup(options: { direct?: boolean } = {}) {
       }),
       io,
     );
-  const act = (kind: string, args: Record<string, unknown> = {}) =>
-    browse("/console/api/act", { body: { kind, args } });
+  /** With `id`, the action goes under the name a device gave it. */
+  const act = (kind: string, args: Record<string, unknown> = {}, id?: string) =>
+    browse("/console/api/act", { body: id === undefined ? { kind, args } : { kind, args, id } });
   const core = async () => {
     const res = await browse("/console/api/doc/core");
     return { res, doc: (await res.json()) as Record<string, any> };
@@ -957,6 +969,7 @@ async function setup(options: { direct?: boolean } = {}) {
     ghRefuses,
     ghLimits,
     ghDrops,
+    ghSays,
     ghHolds,
     queueReadOnly,
     ghBreaks,
@@ -1099,6 +1112,14 @@ describe("the owner, at the edge", () => {
     expect(await page.text()).toContain("<title>PM</title>");
     expect(page.headers.get("content-security-policy")).toContain("default-src 'self'");
     expect((await w.browse("/console/app.js")).headers.get("content-type")).toBe("text/javascript; charset=utf-8");
+    // The file that keeps what the owner did with no connection is one
+    // of the app's files here too: the page and the worker both load it.
+    const outbox = await w.browse("/console/outbox.js");
+    expect([outbox.status, outbox.headers.get("content-type"), await outbox.text()]).toEqual([
+      200,
+      "text/javascript; charset=utf-8",
+      "// what is kept",
+    ]);
     // A visit does not download the app again. Each file says which
     // version of itself it is; a browser that names that version is told
     // "still that" and sent nothing, and any other is sent the file.
@@ -1475,6 +1496,98 @@ describe("actions", () => {
     expect(
       doc.acts.filter((a: { kind: string }) => a.kind === "ask.send").map((a: { status: string }) => a.status),
     ).toEqual(["done"]);
+  });
+
+  test("an action a device sends twice under one name is done once by the laptop, and answered the same", async () => {
+    const w = await setup();
+    await w.hostReads();
+    await w.link.now.once();
+    const id = "0a000000-0000-4000-8000-000000000001";
+    const first = await w.act("ask.send", { text: "once, please" }, id);
+    expect(await first.json()).toEqual({ ok: true, result: { issue: 101 } });
+    // The device never heard, and sends it again.
+    const second = await w.act("ask.send", { text: "once, please" }, id);
+    expect(second.status).toBe(200);
+    expect(await second.json()).toEqual({ ok: true, result: { issue: 101 }, again: true });
+    expect(w.ran).toHaveLength(1);
+    // It is on the record of what was done under the device's name for it.
+    const { doc } = await w.core();
+    expect(doc.acts.filter((a: { id: string }) => a.id === id).map((a: { status: string }) => a.status)).toEqual([
+      "done",
+    ]);
+    // One that failed is not tried again under the same name either:
+    // the device is told again why, with the status it had.
+    const bad = "0a000000-0000-4000-8000-000000000002";
+    const failed = await w.act("issue.comment", { issue: 13, text: "no such issue" }, bad);
+    expect([failed.status, await failed.json()]).toEqual([404, { error: "no such issue" }]);
+    const again = await w.act("issue.comment", { issue: 13, text: "no such issue" }, bad);
+    expect([again.status, await again.json()]).toEqual([404, { error: "no such issue", again: true }]);
+    expect(w.ran.filter((r) => r.kind === "issue.comment")).toHaveLength(1);
+    // A name that is not one (not a UUID) is no name: done each time, as before.
+    await w.act("issue.comment", { issue: 7, text: "a" }, "not-a-name");
+    await w.act("issue.comment", { issue: 7, text: "a" }, "not-a-name");
+    expect(w.ran.filter((r) => r.kind === "issue.comment")).toHaveLength(3);
+  });
+
+  test("sent again while the laptop is still doing it, the device is told to wait; sent again after the laptop restarted mid-way, that it is not known", async () => {
+    const w = await setup();
+    await w.hostReads();
+    await w.link.now.once();
+    const id = "0a000000-0000-4000-8000-000000000003";
+    let done = () => {};
+    w.gate.wait = new Promise<void>((resolve) => {
+      done = resolve;
+    });
+    const slow = w.act("need.comment", { ref: "developing-today/code#1", text: "slow" }, id);
+    await new Promise((r) => setTimeout(r, 5));
+    const meanwhile = await w.act("need.comment", { ref: "developing-today/code#1", text: "slow" }, id);
+    expect([meanwhile.status, await meanwhile.json()]).toEqual([
+      409,
+      { error: "This is still being done.", running: true },
+    ]);
+    done();
+    expect((await slow).status).toBe(200);
+    w.gate.wait = null;
+    expect(w.ran.filter((r) => r.kind === "need.comment")).toHaveLength(1);
+    // Started, and the laptop's console restarted before it ended.
+    const lost = "0a000000-0000-4000-8000-000000000004";
+    await w.link.now.begin(lost);
+    w.link.now = w.makeLink();
+    const asked = await w.act("need.comment", { ref: "developing-today/code#2", text: "lost" }, lost);
+    expect(asked.status).toBe(502);
+    expect(((await asked.json()) as { error: string }).error).toContain("restarted while doing this");
+    expect(w.ran.filter((r) => r.kind === "need.comment")).toHaveLength(1);
+  });
+
+  test("held twice under one name, an action waits once", async () => {
+    const w = await setup();
+    await w.hostReads();
+    await w.link.now.once();
+    w.net.hostUp = false;
+    const id = "0a000000-0000-4000-8000-000000000005";
+    expect(await (await w.act("ask.send", { text: "kept once" }, id)).json()).toEqual({
+      ok: true,
+      held: true,
+      result: null,
+    });
+    expect(await (await w.act("ask.send", { text: "kept once" }, id)).json()).toEqual({
+      ok: true,
+      held: true,
+      result: null,
+      again: true,
+    });
+    expect((w.stored.get("held") as { id: string }[]).map((h) => h.id)).toEqual([id]);
+    // The laptop comes back and does it once; sent yet again, the device
+    // is told how it came out.
+    w.net.hostUp = true;
+    w.now.t += 1_000;
+    await w.link.now.once();
+    w.now.t += 1_000;
+    await w.link.now.once();
+    expect(w.ran).toHaveLength(1);
+    const after = await w.act("ask.send", { text: "kept once" }, id);
+    expect(await after.json()).toMatchObject({ ok: true, again: true });
+    expect(w.ran).toHaveLength(1);
   });
 
   test("an action the host is still doing when the edge stops waiting is neither repeated nor reported early", async () => {
@@ -2588,6 +2701,7 @@ describe("the edge does the core itself", () => {
         created: "2026-11-22T12:30",
         author: "worker",
         branch: "queue/55",
+        head: "5555555555555555555555555555555555555555",
       },
     ]);
     expect(ops.priorities.issues.map((i) => [i.number, i.rank])).toEqual([[301, "now"]]);
@@ -2930,6 +3044,165 @@ describe("the edge does the core itself", () => {
       "deploy.start",
     ]);
     expect(JSON.stringify(audit)).not.toContain("Thanks");
+  });
+
+  test("an action a device sends twice under one name is done here once, and answered the same after a restart too", async () => {
+    const w = await primary();
+    const id = "0b000000-0000-4000-8000-000000000001";
+    const comments = () =>
+      w.githubCalls.filter((c) => c.method === "POST" && c.url.includes("/issues/201/comments")).length;
+    const first = await w.act("ask.reply", { issue: 201, text: "Only once." }, id);
+    expect(await first.json()).toEqual({ ok: true, result: { issue: 201, queued: true } });
+    const second = await w.act("ask.reply", { issue: 201, text: "Only once." }, id);
+    expect(await second.json()).toEqual({ ok: true, result: { issue: 201, queued: true }, again: true });
+    w.edge.now = w.makeEdge();
+    const third = await w.act("ask.reply", { issue: 201, text: "Only once." }, id);
+    expect(await third.json()).toEqual({ ok: true, result: { issue: 201, queued: true }, again: true });
+    expect(comments()).toBe(1);
+    // Its queue task is waiting for a machine once, too.
+    expect((w.stored.get("held") as { kind: string }[]).map((h) => h.kind)).toEqual(["prompt.enqueue"]);
+    // On this side's record of what was done, under the device's name for it.
+    expect(
+      (await w.core()).doc.acts.filter((a: { id: string }) => a.id === id).map((a: { status: string }) => a.status),
+    ).toEqual(["done"]);
+    expect(w.ran).toEqual([]);
+    // One that failed is answered the same again, not tried again: the
+    // device asks under a new name if the owner wants it tried.
+    const bad = "0b000000-0000-4000-8000-000000000002";
+    w.ghBreaks.push((method, url) => method === "PUT" && url.includes("/merge"));
+    const failed = await w.act("pr.merge", { pr: 55 }, bad);
+    expect(failed.status).toBe(502);
+    const said = (await failed.json()) as { error: string };
+    w.ghBreaks.length = 0;
+    const again = await w.act("pr.merge", { pr: 55 }, bad);
+    expect([again.status, await again.json()]).toEqual([502, { ...said, again: true }]);
+    expect(w.ghMerged).toEqual([]);
+    expect((await w.act("pr.merge", { pr: 55 }, "0b000000-0000-4000-8000-000000000003")).status).toBe(200);
+    expect(w.ghMerged).toHaveLength(1);
+    // What this side does of its own (a test notification, a device) goes the same way.
+    const own = "0b000000-0000-4000-8000-000000000004";
+    const tried = await w.act("edge.retry", {}, own);
+    expect(await tried.json()).toEqual({ ok: true, result: { tried: [] } });
+    expect(await (await w.act("edge.retry", {}, own)).json()).toEqual({ ok: true, result: { tried: [] }, again: true });
+  });
+
+  test("sent again while it is being done here, the device is told to wait; after this side restarted mid-way, that it is not known", async () => {
+    const w = await primary();
+    const id = "0b000000-0000-4000-8000-000000000005";
+    let letGo = () => {};
+    const wait = new Promise<void>((r) => {
+      letGo = r;
+    });
+    const merge = (method: string, url: string) => method === "PUT" && url.includes("/merge");
+    w.ghHolds.push({ match: merge, wait });
+    const merging = w.act("pr.merge", { pr: 55 }, id);
+    await new Promise((r) => setTimeout(r, 5));
+    const meanwhile = await w.act("pr.merge", { pr: 55 }, id);
+    expect([meanwhile.status, await meanwhile.json()]).toEqual([
+      409,
+      { error: "This is still being done.", running: true },
+    ]);
+    // The object is put away while the merge is still out, and the
+    // device asks the one that starts in its place.
+    w.edge.now = w.makeEdge();
+    const asked = await w.act("pr.merge", { pr: 55 }, id);
+    expect(asked.status).toBe(502);
+    expect(((await asked.json()) as { error: string }).error).toContain("Cloudflare restarted while doing this");
+    letGo();
+    await merging;
+    // GitHub was asked to merge once.
+    expect(w.githubCalls.filter((c) => merge(c.method, c.url))).toHaveLength(1);
+  });
+
+  test("handed on to the laptop, an action keeps the device's name for it: the laptop does it once", async () => {
+    const w = await primary();
+    const id = "0b000000-0000-4000-8000-000000000006";
+    w.ghRefuses.push((method, url) => method === "PUT" && url.includes("/merge"));
+    const first = await w.act("pr.merge", { pr: 55 }, id);
+    expect(await first.json()).toMatchObject({ ok: true, result: { merged: 55 } });
+    // Nothing was done here, so nothing is written down here under the name ...
+    expect(w.stored.has(`a:${id}`)).toBe(false);
+    // ... and sent again, it goes to the laptop, which knows it did it.
+    const second = await w.act("pr.merge", { pr: 55 }, id);
+    expect(await second.json()).toMatchObject({ ok: true, result: { merged: 55 }, again: true });
+    expect(w.ran).toEqual([{ kind: "pr.merge", args: { pr: 55 } }]);
+  });
+
+  test("the names remembered here are bounded: the oldest are forgotten, and an answer too long to keep is kept as how it went", async () => {
+    const w = await primary();
+    const name = (n: number) => `0c000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
+    for (let n = 1; n <= 302; n++) {
+      expect((await w.act("edge.retry", {}, name(n))).status).toBe(200);
+    }
+    expect(w.stored.has(`a:${name(1)}`)).toBe(false);
+    expect(w.stored.has(`a:${name(2)}`)).toBe(false);
+    expect(w.stored.has(`a:${name(3)}`)).toBe(true);
+    expect((w.stored.get("acted") as unknown[]).length).toBe(300);
+    // After a week a name is forgotten.
+    w.now.t += 7 * 24 * 3600_000 + 1;
+    await w.act("edge.retry", {}, name(999));
+    expect(w.stored.has(`a:${name(302)}`)).toBe(false);
+    expect((w.stored.get("acted") as unknown[]).length).toBe(1);
+    // An answer too long to keep is kept as how it went, without what it said.
+    const long = name(1000);
+    w.ghOdd.longAddress = true;
+    const filed = await w.act("ask.send", { text: "With a long address" }, long);
+    expect(filed.status).toBe(200);
+    expect(((await filed.json()) as { result: { url: string } }).result.url.length).toBeGreaterThan(5000);
+    const again = await w.act("ask.send", { text: "With a long address" }, long);
+    expect([again.status, await again.json()]).toEqual([200, { ok: true, result: null, again: true }]);
+    expect(w.githubCalls.filter((c) => c.method === "POST" && c.url.endsWith("/issues"))).toHaveLength(1);
+  });
+
+  test("served straight from the laptop, an action sent twice under one name is done once", async () => {
+    const w = await setup();
+    await w.hostReads();
+    const id = "0d000000-0000-4000-8000-000000000001";
+    const direct = async (body: unknown) =>
+      handle(
+        new Request(`https://${HOST}/console/api/act`, {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "x-pm-console": "1",
+            "cf-access-jwt-assertion": await w.token(),
+          },
+          body: JSON.stringify(body),
+        }),
+        w.hostDeps,
+        "127.0.0.1",
+      );
+    const first = await direct({ kind: "ask.send", args: { text: "no edge in between" }, id });
+    expect(await first.json()).toEqual({ ok: true, result: { issue: 101 } });
+    const second = await direct({ kind: "ask.send", args: { text: "no edge in between" }, id });
+    expect(await second.json()).toEqual({ ok: true, result: { issue: 101 }, again: true });
+    expect(w.ran).toHaveLength(1);
+    // Without a name it is done each time it is asked, as it always was.
+    await direct({ kind: "ask.send", args: { text: "no edge in between" } });
+    expect(w.ran).toHaveLength(2);
+  });
+
+  test("a merge asked for from the list is a merge of what the list showed, not of what was pushed since", async () => {
+    const w = await primary();
+    const shown = (
+      (await (await w.browse("/console/api/doc/ops")).json()) as { prs: { number: number; head: string }[] }
+    ).prs[0];
+    // Something is pushed to it after the owner looked (and, offline,
+    // asked for the merge).
+    w.ghPrs[0].head.sha = "6666666666666666666666666666666666666666";
+    const late = await w.act("pr.merge", { pr: shown.number, head: shown.head });
+    expect(late.status).toBe(502);
+    expect(((await late.json()) as { error: string }).error).toContain("Head branch was modified");
+    expect(w.ghMerged).toEqual([]);
+    // That was GitHub's answer to the question asked, not a refusal of
+    // this side's token: it is not handed to the laptop to merge blind.
+    expect(w.ran).toEqual([]);
+    // Looked at again and asked again, it is merged as it now stands.
+    const now = await w.act("pr.merge", { pr: shown.number, head: "6666666666666666666666666666666666666666" });
+    expect(now.status).toBe(200);
+    expect(w.ghMerged).toEqual([
+      { pr: 55, body: { merge_method: "merge", sha: "6666666666666666666666666666666666666666" } },
+    ]);
   });
 
   test("a new prompt is filed here and only its queue task waits for a machine, which files it once", async () => {

@@ -11,6 +11,7 @@ const view = $("view");
 const tabsEl = $("tabs");
 const toastEl = $("toast");
 const freshEl = $("fresh");
+const keptEl = $("kept");
 
 // ---- small helpers -----------------------------------------------------
 
@@ -134,6 +135,48 @@ const etags = {};
 const asOf = {};
 let me = {};
 let signedOut = false;
+/** The last answer came from the copy this device keeps, not from the
+ * network: there is no connection (or no sign-in), and what is shown is
+ * what the device last saw. */
+let offline = false;
+
+/** What the owner did, kept on this device until the platform has it
+ * (outbox.js). Without a page there is none. */
+const Outbox = typeof self !== "undefined" ? self.PMOutbox : undefined;
+let outbox = null;
+/** The entries, as last read: for the line that says what is kept. */
+let kept = [];
+
+/** Why a request got no answer: no sign-in, or no connection. Asked
+ * past the service worker, which would otherwise answer from its copy,
+ * and without following the way to the sign-in page, which is how the
+ * two are told apart. */
+async function probe() {
+  try {
+    const res = await fetch(`${API}me`, { redirect: "manual", cache: "no-store", headers: { "X-PM-Probe": "1" } });
+    signedOut = res.type === "opaqueredirect" || res.status === 401 || res.status === 403;
+    return true;
+  } catch {
+    signedOut = false;
+    return false;
+  }
+}
+
+/** Note whether an answer was the network's or this device's copy. */
+function noteAnswer(res) {
+  const was = offline;
+  offline = res.headers.get("x-pm-offline") === "1";
+  // Gone: find out which it is, a sign-in that ran out or no connection.
+  if (offline && !was) probe().then(drawKept);
+  // Back: send what was kept meanwhile.
+  if (!offline && was) {
+    signedOut = false;
+    flushOutbox();
+  }
+}
+
+const NO_ANSWER = "There is no connection, and this device has no copy of this yet.";
+const NO_SIGNIN = "Your sign-in has run out. Reload to sign in again.";
 
 async function api(path, body) {
   const init =
@@ -148,11 +191,12 @@ async function api(path, body) {
   try {
     res = await fetch(API + path, init);
   } catch {
-    // A sign-in that has run out answers with a redirect to another site,
-    // which a fetch may not follow.
-    signedOut = navigator.onLine !== false;
-    throw new Error(signedOut ? "Your sign-in may have run out. Reload to sign in again." : "You are offline.");
+    // No answer and no copy. A sign-in that has run out answers with a
+    // redirect to another site, which a fetch may not follow.
+    await probe();
+    throw new Error(signedOut ? NO_SIGNIN : NO_ANSWER);
   }
+  if (body === undefined) noteAnswer(res);
   let data = null;
   let read = true;
   try {
@@ -175,9 +219,10 @@ async function loadDoc(name) {
   try {
     res = await fetch(`${API}doc/${name}`, { headers: etags[name] ? { "If-None-Match": etags[name] } : {} });
   } catch {
-    signedOut = navigator.onLine !== false;
-    throw new Error(signedOut ? "Your sign-in may have run out. Reload to sign in again." : "You are offline.");
+    await probe();
+    throw new Error(signedOut ? NO_SIGNIN : NO_ANSWER);
   }
+  noteAnswer(res);
   if (res.headers.get("x-as-of")) asOf[name] = Number(res.headers.get("x-as-of"));
   // Served from the edge: when the laptop behind it last reported.
   if (res.headers.get("x-host-seen")) hostSeen = Number(res.headers.get("x-host-seen")) || null;
@@ -215,21 +260,151 @@ let hostSeen = null;
 const HOST_QUIET_MS = 3 * 60_000;
 const HELD_NOTE = "Held: the laptop cannot be reached. It will be sent when it is back.";
 
-/** Run one action, say how it went, and draw what changed. */
+const KEPT_NOTE = "Kept on this device. It is sent when you are connected.";
+
+/** Read what is kept, for the line that says so and the screen that lists it. */
+async function readKept() {
+  if (!outbox) return [];
+  try {
+    kept = (await outbox.all()).sort((a, b) => b.at - a.at);
+  } catch {
+    // The list as it was is better than none.
+  }
+  drawKept();
+  return kept;
+}
+
+/** Ask for what is kept to be sent when there is a connection, also if
+ * the app is closed by then (where the browser can do that). */
+function sendWhenConnected() {
+  navigator.serviceWorker?.ready.then((reg) => reg.sync?.register("pm-outbox")).catch(() => {});
+}
+
+/** What a flush did, in a line. */
+export function flushSaid(changed) {
+  const n = (state) => changed.filter((e) => e.state === state).length;
+  const sent = n("done") + n("held");
+  const parts = [
+    sent ? `${sent} sent` : "",
+    n("failed") ? `${n("failed")} could not be done` : "",
+    n("stale") ? `${n("stale")} kept back for you to look at` : "",
+  ].filter(Boolean);
+  return parts.length ? `What you did offline: ${parts.join(", ")}.` : "";
+}
+
+let flushing = null;
+/** Send what is waiting, if anything is. One at a time, here and in
+ * the service worker: whichever holds the lock sends. */
+function flushOutbox() {
+  if (!outbox || !Outbox) return Promise.resolve();
+  flushing ??= (async () => {
+    const run = async () => {
+      const out = await Outbox.flush(outbox, (entry) => Outbox.httpSend(entry));
+      if (out.signin) signedOut = true;
+      const said = flushSaid(out.changed);
+      if (said) {
+        toast(said, out.changed.some((e) => e.state === "failed"));
+        refresh(true);
+      }
+    };
+    try {
+      if (navigator.locks?.request) await navigator.locks.request("pm-outbox", { ifAvailable: true }, (lock) => (lock ? run() : undefined));
+      else await run();
+    } catch {
+      // Nothing was lost: what is waiting is still written down.
+    } finally {
+      flushing = null;
+      await readKept();
+      // Still something waiting (the connection went again, or was
+      // never there): the browser is asked to wake the worker for it,
+      // in case the app is closed by the time there is one.
+      if (kept.some((e) => e.state === "waiting")) sendWhenConnected();
+    }
+  })();
+  return flushing;
+}
+
+/** Give an action its name, write it down, and try to send it. Says
+ * what became of it: "done" (with its result), "held" (the platform
+ * has it, for a machine), "kept" (it waits on this device), or
+ * "failed"/"refused" (with why; nothing is kept). */
+async function submit(kind, args) {
+  if (!Outbox) return { state: "refused", note: "This page cannot send that." };
+  const entry = Outbox.make(kind, args, Date.now());
+  // What needs a connection by its nature is not written down.
+  let keeps = Outbox.rule(kind) !== "now" && outbox !== null;
+  if (keeps) {
+    try {
+      await outbox.put(entry);
+    } catch {
+      keeps = false;
+    }
+  }
+  const answer = await Outbox.httpSend(entry);
+  const out = Outbox.classify(answer);
+  const end = async (state, more = {}) => {
+    if (keeps) await outbox.put({ ...entry, ...more, state, tries: 1, triedAt: Date.now(), endedAt: Date.now() }).catch(() => {});
+  };
+  if (out.state === "done") {
+    await end("done", { result: out.result });
+    return { state: "done", result: out.result };
+  }
+  if (out.state === "held") {
+    await end("held", { note: out.note });
+    return { state: "held" };
+  }
+  if (out.state === "failed") {
+    // Said at once, to the owner's face: nothing to keep of it.
+    if (keeps) await outbox.remove(entry.id).catch(() => {});
+    return { state: "failed", note: out.note };
+  }
+  // Not taken: no connection, no sign-in, or nothing to take it just now.
+  if (out.signin) signedOut = true;
+  if (!keeps) {
+    const note = answer.network ? "This needs a connection." : out.signin ? NO_SIGNIN : out.note;
+    return { state: "refused", note };
+  }
+  if (out.note) await outbox.put({ ...entry, note: out.note, tries: 1, triedAt: Date.now() }).catch(() => {});
+  sendWhenConnected();
+  return { state: "kept", id: entry.id, note: out.signin ? "Kept on this device. Sign in again to send it." : out.note ? `Kept on this device: ${out.note}` : KEPT_NOTE };
+}
+
+/** Take back something kept that has not been sent. */
+async function unkeep(id) {
+  await outbox?.remove(id).catch(() => {});
+  toastEl.hidden = true;
+  await readKept();
+  draw();
+}
+
+/** Run one action, say how it went, and draw what changed. With no
+ * connection it is kept on this device and sent when there is one.
+ * Answers with the action's result when it was done; with something
+ * that is not nothing when the platform or this device has it to do
+ * later (so a form may be cleared: it will not be lost); and with null
+ * when it was not done and nothing was kept. */
 async function act(kind, args, done, button) {
   if (button) button.disabled = true;
-  try {
-    const { result, held } = await api("act", { kind, args });
-    // Held is not done: the caller is told nothing happened yet, and the
-    // owner is told where it is waiting.
-    toast(held ? HELD_NOTE : typeof done === "function" ? done(result) : done);
+  const out = await submit(kind, args);
+  await readKept();
+  if (out.state === "done") {
+    toast(typeof done === "function" ? done(out.result) : done);
     await refresh(true);
-    return held ? null : result;
-  } catch (error) {
-    toast(error.message, true);
-    if (button) button.disabled = false;
-    return null;
+    return out.result ?? { done: true };
   }
+  if (out.state === "held") {
+    toast(HELD_NOTE);
+    await refresh(true);
+    return { held: true };
+  }
+  if (out.state === "kept") {
+    toast(out.note, false, () => unkeep(out.id));
+    draw();
+    return { kept: true };
+  }
+  toast(out.note, true);
+  if (button) button.disabled = false;
+  return null;
 }
 
 // ---- now ---------------------------------------------------------------
@@ -479,15 +654,18 @@ function flushPending() {
 }
 
 async function sendAnswer(kind, args, key, said) {
-  try {
-    const { result, held } = await api("act", { kind, args });
-    if (result?.refused?.length) toast(`Not recorded: ${result.refused[0].why}`, true);
+  const out = await submit(kind, args);
+  await readKept();
+  if (out.state === "failed" || out.state === "refused") toast(out.note, true);
+  else {
+    if (out.result?.refused?.length) toast(`Not recorded: ${out.result.refused[0].why}`, true);
     else {
       answeredHere.add(key);
       // A choice was already acknowledged when it was made (with its
       // Undo); anything else says so now, or the question would simply
       // vanish.
-      if (held) toast(HELD_NOTE);
+      if (out.state === "held") toast(HELD_NOTE);
+      else if (out.state === "kept") toast(out.note);
       else if (said) toast(said);
     }
     picks.delete(key);
@@ -496,8 +674,6 @@ async function sendAnswer(kind, args, key, said) {
       docs.questions.questions.total = open.length;
       docs.questions.questions.open = open;
     }
-  } catch (error) {
-    toast(error.message, true);
   }
   // The list above is already right; only the counts need reading again.
   await loadDoc("core").catch(() => {});
@@ -878,6 +1054,7 @@ function viewMore() {
       tile("more/phone", "Phones", "the Android app and its home-screen widget"),
       tile("more/signin", "Sign-in", "Google first, the emailed code as the fallback"),
       tile("more/away", "Cloudflare", "what it does by itself, and what waits for a machine"),
+      tile("more/device", "On this device", "what is kept here to send, and what it shows with no connection"),
       tile("more/releases", "Releases", "what is deployed, the Android app, and putting either out again"),
     ),
   ];
@@ -888,7 +1065,18 @@ function viewMore() {
     h("h2", {}, "This app"),
     h("p", { class: "meta" }, `Signed in as ${me.email || me.certName || me.via || "…"}`),
     me.androidApp ? h("a", { class: "link", href: "/console/pm-console.apk" }, "Android app", h("span", {}, "Download the signed build for this phone")) : null,
-    h("a", { class: "link", href: "/cdn-cgi/access/logout" }, "Sign out"),
+    h(
+      "a",
+      {
+        class: "link",
+        href: "/cdn-cgi/access/logout",
+        // Signing out: the device forgets what the app last saw. What
+        // was done here and not yet sent is kept, and goes when the
+        // owner signs in again.
+        onclick: () => navigator.serviceWorker?.controller?.postMessage({ type: "forget" }),
+      },
+      "Sign out",
+    ),
   );
   return out;
 }
@@ -1736,6 +1924,174 @@ async function viewAway() {
   ];
 }
 
+/** What is kept on this device, in the groups the screen shows it in,
+ * newest first: `title`, the entries, and what can be done with each. */
+export function keptGroups(entries) {
+  const of = (state) => entries.filter((e) => e.state === state).sort((a, b) => b.at - a.at);
+  return [
+    { state: "waiting", title: "Waiting to send", can: ["drop"], entries: of("waiting") },
+    { state: "stale", title: "Kept back for you to look at", can: ["send", "drop"], entries: of("stale") },
+    { state: "failed", title: "Could not be done", can: ["again", "drop"], entries: of("failed") },
+    { state: "held", title: "With the platform, waiting for a machine", can: [], entries: of("held") },
+    { state: "done", title: "Sent", can: [], entries: of("done") },
+  ].filter((g) => g.entries.length > 0);
+}
+
+/** Everything the app's screens read, by the address each asks for it
+ * under: what "keep a copy of every screen" fetches. What is read only
+ * for one item when it is opened (a question's background, a pull
+ * request's checks, a service's log) is not in it. */
+export function everyRead(caps, edge) {
+  return [
+    "doc/core",
+    "doc/questions",
+    "doc/ops",
+    "me",
+    "roadmaps",
+    ...(caps || []).map((c) => `roadmap?area=${encodeURIComponent(c.id)}`),
+    "bugs",
+    "intake",
+    ...["blocked", "queued", "claimed", "parked"].map((status) => `queue?status=${status}&q=`),
+    "releases",
+    "messages?limit=15",
+    "push",
+    "devices",
+    "signin",
+    ...(edge ? ["android"] : []),
+  ];
+}
+
+/** On this device: what is kept here to send, what became of what was
+ * sent, and what the device keeps to show with no connection. */
+async function viewDevice() {
+  const entries = await readKept();
+  const n = Outbox ? Outbox.summary(entries) : { waiting: 0 };
+  const after = async (work) => {
+    await work();
+    await readKept();
+    draw();
+  };
+  const row = (group) => (e) =>
+    card(
+      h("h3", {}, e.said),
+      h(
+        "p",
+        { class: group.state === "failed" || group.state === "stale" ? "why" : "meta" },
+        [group.state === "done" ? `sent ${ago(new Date(e.endedAt ?? e.at).toISOString())}` : `${ago(new Date(e.at).toISOString())}`, e.note].filter(Boolean).join(" · "),
+      ),
+      group.can.length
+        ? h(
+            "div",
+            { class: "row end" },
+            group.can.includes("drop")
+              ? h("button", { class: "small ghost", onclick: () => after(() => outbox.remove(e.id)) }, group.state === "waiting" ? "Do not send" : "Discard")
+              : null,
+            group.can.includes("send")
+              ? h(
+                  "button",
+                  {
+                    class: "small",
+                    // Looked at again, and still wanted: it goes as it is.
+                    onclick: () => after(async () => {
+                      await outbox.put({ ...e, state: "waiting", sure: true, note: "" });
+                      await flushOutbox();
+                    }),
+                  },
+                  "Send it now",
+                )
+              : null,
+            group.can.includes("again")
+              ? h(
+                  "button",
+                  {
+                    class: "small",
+                    // Under a new name: the platform answers the old one as it did.
+                    onclick: () => after(async () => {
+                      await outbox.remove(e.id);
+                      await outbox.put({ ...Outbox.make(e.kind, e.args, Date.now(), e.said), sure: true });
+                      await flushOutbox();
+                    }),
+                  },
+                  "Try again",
+                )
+              : null,
+          )
+        : null,
+    );
+  const groups = keptGroups(entries);
+  const forget = async (e) => {
+    e.target.disabled = true;
+    const worker = (await navigator.serviceWorker?.ready.catch(() => null))?.active;
+    if (!worker) return toast("Nothing is kept: this browser has not set the app up to work offline.", true);
+    worker.postMessage({ type: "forget" });
+    toast("Forgotten. It keeps again from the next thing you look at.");
+    e.target.disabled = false;
+  };
+  // Before a flight: read every screen once, so the device has a copy
+  // of each. One at a time, and unhurried: some of it is searched for.
+  const keepAll = async (e) => {
+    const button = e.target;
+    button.disabled = true;
+    const caps = await api("roadmaps").catch(() => []);
+    const reads = everyRead(caps, me.edge);
+    let failed = 0;
+    for (const [i, path] of reads.entries()) {
+      button.textContent = `${i + 1} of ${reads.length}…`;
+      await api(path).catch(() => failed++);
+      if (offline) break;
+      await new Promise((resolve) => setTimeout(resolve, path.startsWith("roadmap?") ? 1200 : 150));
+    }
+    await fetch("/console/health", { cache: "no-store" }).catch(() => failed++);
+    button.textContent = "Keep a copy of every screen now";
+    button.disabled = false;
+    toast(
+      offline
+        ? "There is no connection: nothing new could be read."
+        : failed
+          ? `Kept what could be read; ${failed} screen${failed === 1 ? "" : "s"} could not.`
+          : `This device has a copy of every screen, as of now.`,
+      offline || failed > 0,
+    );
+  };
+  return [
+    card(
+      h("h3", {}, signedOut ? "Signed out" : offline ? "No connection" : "Connected"),
+      h(
+        "p",
+        { class: "meta" },
+        signedOut
+          ? "The sign-in has run out. What you see is what this device last saw; what you do is kept here until you sign in again."
+          : offline
+            ? "What you see is what this device last saw. What you do is kept here and sent by itself when the connection is back, whether or not the app is open."
+            : "What you do is sent at once. With no connection it is kept here, and sent by itself when the connection is back.",
+      ),
+      !outbox ? h("p", { class: "why" }, "This browser will not let the app keep anything: with no connection, what you do here cannot be kept.") : null,
+      signedOut
+        ? h("div", { class: "row end" }, h("button", { onclick: () => location.reload() }, "Sign in again"))
+        : n.waiting > 0 && !offline
+          ? h("div", { class: "row end" }, h("button", { onclick: (e) => ((e.target.disabled = true), after(flushOutbox)) }, "Send now"))
+          : null,
+    ),
+    ...groups.flatMap((g) => [h("h2", {}, `${g.title} (${g.entries.length})`), ...g.entries.map(row(g))]),
+    groups.length === 0 ? empty("Nothing is kept here to send.") : null,
+    h("h2", {}, "What this device keeps"),
+    card(
+      h(
+        "p",
+        { class: "meta" },
+        "The app's own files and the last answer to everything it showed, so that it opens and reads with no connection; and what you did that has not been sent. A merge, a deploy, a cancel, an unblock or a service action is sent by itself only within ten minutes of when you did it: after that it waits here for you to look again.",
+      ),
+      h("p", { class: "meta" }, "What sets the connection up or carries a secret (notifications, phones, sign-in, the Cloudflare switch) is never kept: it needs a connection."),
+      h(
+        "div",
+        { class: "row end" },
+        h("button", { class: "ghost", onclick: forget }, "Forget what it last saw"),
+        offline || signedOut ? null : h("button", { onclick: keepAll }, "Keep a copy of every screen now"),
+      ),
+    ),
+  ];
+}
+
 async function viewSignin() {
   let s;
   try {
@@ -2035,7 +2391,8 @@ function viewPrs() {
                 class: "small",
                 onclick: async (e) => {
                   const yes = await ask({ title: `Merge #${p.number}?`, text: p.title, okLabel: "Merge" });
-                  if (yes !== null) act("pr.merge", { pr: p.number }, `#${p.number} merged`, e.target);
+                  // As it stood when this list was read: not what was pushed since.
+                  if (yes !== null) act("pr.merge", { pr: p.number, head: p.head }, `#${p.number} merged`, e.target);
                 },
               },
               "Merge",
@@ -2184,6 +2541,7 @@ const VIEWS = {
   "more/phone": ["Phones", viewPhone],
   "more/signin": ["Sign-in", viewSignin],
   "more/away": ["Cloudflare", viewAway],
+  "more/device": ["On this device", viewDevice],
   "more/releases": ["Releases", viewReleases],
   "more/roadmap": ["Roadmap", viewRoadmap],
   "more/bugs": ["Bugs", viewBugs],
@@ -2243,15 +2601,59 @@ function drawTabs() {
   );
 }
 
+/** What the corner of the header says: live, how old, offline, or signed out. */
+export function freshSaid(state, now = Date.now()) {
+  const age = state.asOf ? (now - state.asOf) / 1000 : null;
+  const since = age === null ? "" : ago(new Date(state.asOf).toISOString(), now);
+  if (state.signedOut) return { text: "signed out", tone: "down" };
+  if (state.offline) return { text: since ? `offline · ${since}` : "offline", tone: "stale" };
+  if (age === null) return { text: "", tone: "" };
+  return age < 45 ? { text: "live", tone: "" } : { text: `as of ${since}`, tone: age > 180 ? "stale" : "" };
+}
+
 function drawFresh() {
-  const t = asOf.core;
-  const age = t ? (Date.now() - t) / 1000 : null;
-  freshEl.className = `fresh${signedOut ? " down" : age !== null && age > 180 ? " stale" : ""}`;
-  freshEl.textContent = signedOut ? "signed out" : age === null ? "" : age < 45 ? "live" : `as of ${ago(new Date(t).toISOString())}`;
+  const said = freshSaid({ asOf: asOf.core, offline, signedOut });
+  freshEl.className = `fresh${said.tone ? ` ${said.tone}` : ""}`;
+  freshEl.textContent = said.text;
+}
+
+/** The line under the header: that there is no connection or no
+ * sign-in, and what is kept on this device to send. Nothing to say,
+ * nothing shown. `to` is where a tap goes. */
+export function keptSaid(state) {
+  const n = state.summary || {};
+  const things = (count) => `${count} thing${count === 1 ? "" : "s"}`;
+  const parts = [];
+  if (state.signedOut) parts.push("Signed out: tap to sign in again");
+  else if (state.offline) parts.push("No connection: this is what the device last saw");
+  if (n.waiting) parts.push(`${things(n.waiting)} kept to send`);
+  if (n.stale) parts.push(`${things(n.stale)} kept back for you to look at`);
+  if (n.failed) parts.push(`${things(n.failed)} could not be done`);
+  if (parts.length === 0) return null;
+  const urgent = Boolean(state.signedOut || n.stale || n.failed);
+  return { text: `${parts.join(" · ")}.`, tone: urgent ? "warn" : "", to: state.signedOut && !n.stale && !n.failed ? "reload" : "more/device" };
+}
+
+function drawKept() {
+  if (!keptEl) return;
+  const said = keptSaid({ offline, signedOut, summary: Outbox ? Outbox.summary(kept) : {} });
+  keptEl.hidden = said === null;
+  if (!said) return;
+  keptEl.className = `kept${said.tone ? ` ${said.tone}` : ""}`;
+  keptEl.textContent = said.text;
+  keptEl.onclick = () => (said.to === "reload" ? location.reload() : go(said.to));
 }
 
 /** How many quick looks have been taken since the state was last fresh. */
 let catchUp = 0;
+/** Why the state could not be read, while there is none to show. */
+let loadError = "";
+const couldNotLoad = (why) =>
+  card(
+    h("h3", {}, "Could not load"),
+    h("p", { class: "why" }, why),
+    h("div", { class: "row end" }, h("button", { onclick: () => (signedOut ? location.reload() : refresh(true)) }, signedOut ? "Sign in again" : "Try again")),
+  );
 
 /** Draw the current section from what is already loaded. Only the latest
  * call may draw, so a slow section never lands on top of a newer one. */
@@ -2264,7 +2666,8 @@ async function draw() {
   $("back").hidden = !name.includes("/");
   drawTabs();
   drawFresh();
-  if (!docs.core) return view.replaceChildren(empty("Loading…"));
+  // Nothing to draw from yet: say so, or say why there will not be.
+  if (!docs.core) return view.replaceChildren(loadError ? couldNotLoad(loadError) : empty("Loading…"));
   if (extra && !docs[extra]) loadDoc(extra).then(() => seq === drawSeq && draw()).catch(() => {});
   // Moving to another screen: what the last one showed must not sit
   // under this one's name while this one is fetched. A screen that has
@@ -2305,10 +2708,17 @@ async function refresh(force) {
   let changed = false;
   try {
     changed = await loadDoc("core");
+    loadError = "";
     if (extra) changed = (await loadDoc(extra)) || changed;
     // An old copy means the laptop has just been told someone is
     // looking: look again shortly, a few times, instead of waiting out
     // the full interval.
+    // What the platform took for a machine: how it came out is on its
+    // record. And with an answer from the network, what waits is sent.
+    if (Outbox && outbox && kept.some((e) => e.state === "held")) {
+      Outbox.settle(outbox, docs.core?.acts).then((done) => done.length && readKept());
+    }
+    if (!offline && kept.some((e) => e.state === "waiting")) flushOutbox();
     const old = asOf.core && Date.now() - asOf.core > 60_000;
     if (!old) catchUp = 0;
     else if (catchUp < 4) {
@@ -2316,8 +2726,11 @@ async function refresh(force) {
       setTimeout(() => document.visibilityState === "visible" && refresh(false), 4_000);
     }
   } catch (error) {
-    if (!docs.core) view.replaceChildren(card(h("h3", {}, "Could not load"), h("p", { class: "why" }, error.message), h("div", { class: "row end" }, h("button", { onclick: () => location.reload() }, "Reload"))));
+    // With nothing to show, this is what the screen says until a read
+    // works (drawing again must not put "Loading" back over it).
+    if (!docs.core) loadError = error.message;
   }
+  drawKept();
   // An open dialog or a half-typed answer is not redrawn from under the reader.
   const busy = $("ask").open || pending.size > 0 || (document.activeElement && ["TEXTAREA", "INPUT", "SELECT"].includes(document.activeElement.tagName));
   if (force || (changed && !busy)) draw();
@@ -2353,8 +2766,43 @@ if (typeof document !== "undefined" && view) {
       me = m;
     })
     .catch(() => {});
-  // The worker shows notifications and opens the right screen when one is tapped.
-  if ("serviceWorker" in navigator) navigator.serviceWorker.register("/console/sw.js", { scope: "/console/" }).catch(() => {});
+  // The worker shows notifications, keeps the app and what it last saw
+  // for when there is no connection, and sends what was kept meanwhile.
+  if ("serviceWorker" in navigator) {
+    // The worker and the file it loads are always asked of the network,
+    // so a fix to either is not held back by a copy the browser kept.
+    navigator.serviceWorker.register("/console/sw.js", { scope: "/console/", updateViaCache: "none" }).catch(() => {});
+    navigator.serviceWorker.addEventListener("message", (event) => {
+      // The worker sent what was waiting (it was woken for it, and got
+      // there before this page did): say what became of it, as this
+      // page would have.
+      if (event.data?.type !== "outbox") return;
+      const changed = Array.isArray(event.data.changed) ? event.data.changed : [];
+      const said = flushSaid(changed);
+      if (said) toast(said, changed.some((e) => e.state === "failed"));
+      readKept().then(() => changed.length && refresh(true));
+    });
+    // The worker has just taken this page over. What the page read
+    // before then went past it and was not kept: read it again, whole,
+    // so that the device has a copy from the first visit on.
+    navigator.serviceWorker.addEventListener("controllerchange", () => {
+      for (const name of Object.keys(etags)) delete etags[name];
+      refresh(true);
+      for (const name of ["questions", "ops"]) loadDoc(name).catch(() => {});
+    });
+  }
+  // What the owner did is kept in the browser's own database; where
+  // there is none, for as long as the page lives.
+  if (Outbox) {
+    try {
+      outbox = typeof indexedDB === "undefined" ? null : Outbox.idbStore();
+    } catch {
+      outbox = null;
+    }
+    readKept().then(flushOutbox);
+    addEventListener("online", () => refresh(false).then(flushOutbox));
+    addEventListener("offline", () => refresh(false));
+  }
   // And a device that has notifications on keeps getting them when the
   // sender changed or lost track of it.
   keepSubscribed().catch(() => {});

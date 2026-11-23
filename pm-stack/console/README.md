@@ -178,6 +178,54 @@ Set `PM_CONSOLE_EDGE_URL` to turn the reporting on; `scripts/expose.py`
 does that when it sends the hostname through the Worker. Without it this
 service reports to nobody and serves the app itself, as before.
 
+### With no connection
+
+The app opens and can be used with no connection, in a browser and in
+the Android app alike (which is the same site in Chrome).
+
+- **It opens.** The service worker (`public/sw.js`) keeps the app's own
+  files, fetched when it is installed.
+- **It shows what the device last saw.** The worker keeps the last
+  answer to everything the app reads: the three documents and every
+  screen's own read, each under the address it was asked for. The
+  network is always asked first; a copy is shown only when the network
+  gives no answer (or is too slow to wait for), and is marked as a copy.
+  An answer that says no (a refusal, a way to the sign-in page, an
+  error) is passed on as it is and never papered over. The corner of
+  the header then says `offline` and how old the state is, and a line
+  under the header says there is no connection. A screen the device
+  has never seen says it has no copy of it. More, On this device has
+  "Keep a copy of every screen now", for before a flight.
+- **What the owner does is kept and sent once.** Every action is given
+  a name on the device (a UUID) and written to the browser's own
+  database before it is sent (`public/outbox.js`). With no connection it
+  waits there, and is sent when the connection is back: by the page if
+  the app is open, by the service worker if it is not (Background Sync,
+  where the browser has it). The platform does an action once under its
+  name however often it arrives, so sending again after an answer that
+  never came is safe: Cloudflare keeps the names it did (a week, three
+  hundred), and a machine keeps its own (`src/named.ts`).
+- **Not everything is sent unasked.** What the owner says or decides
+  (a prompt, a reply, a rank, a note, a bug, an answer) does not go
+  stale and goes whenever it can. A merge, a deploy, a cancel, an
+  unblock and a service action act on something that may have changed:
+  they are kept too, sent by themselves only within ten minutes of
+  being asked for, and after that wait under "kept back" until the
+  owner looks again and says to send them. A merge also carries the
+  commit the owner was shown, and GitHub merges only that. What sets
+  the connection up or carries a secret (notifications, phones,
+  sign-in, the Cloudflare switch) is never kept: it says it needs a
+  connection.
+- **A sign-in that ran out is not "offline".** The app tells the two
+  apart by asking past the worker without following the way to the
+  sign-in page. Signed out, it shows what it last saw, keeps what is
+  done, and says to sign in again; signing out by hand makes the device
+  forget what it last saw.
+
+More, On this device lists what is waiting, kept back, could not be
+done, is with the platform for a machine, and was sent; each can be
+dropped, sent, or tried again there.
+
 ### Merges deploy themselves
 
 `pm-console-redeploy.timer` runs `redeploy.sh` every minute. When the
@@ -289,3 +337,8 @@ itself, and More, Phones offers the newest release to the signed-in
 owner at `/console/pm-console.apk`, so the phone gets the app from the
 site it opens. Until then the host signs, and its build is what is
 offered. See its README.
+
+Because it is the site, it opens with no connection and keeps what is
+done there exactly as the site does (above, "With no connection"): text
+dictated or shared into it with no signal lands in Ask, is kept when
+sent, and goes when the phone is connected again.

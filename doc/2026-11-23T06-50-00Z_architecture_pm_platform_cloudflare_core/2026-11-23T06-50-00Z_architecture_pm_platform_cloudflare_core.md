@@ -362,3 +362,76 @@ Worker runtime with the switch on: all checks passed. A phone-sized
 Chrome over the Cloudflare screen in each state with the new control,
 and axe-core over the toasts and the danger dialog while they show,
 light and dark: no violations (three before the inks).
+
+## 2026-11-23T12:52Z Update: in service, and step 4 (with no connection)
+
+**Step 3 is in service.** Merged as #13205. At 12:00Z the public health
+answer said `primary: true`, both tokens present, nothing refused,
+and its own read of each kind (the board, pull requests, ranked issues,
+the prompts) good with the real tokens. Not checked: a write with the
+real token, which needs the owner's sign-in; a refusal would show under
+`refused` and be the laptop's to do.
+
+The deploy of that merge failed twice at its rehearsal on a scratch
+Worker: Cloudflare answered "This Worker does not exist" (10007) about
+a Worker wrangler had uploaded a second before. The real Worker was
+deployed by a manual run without the rehearsal; standing a Worker up is
+now made up to four times (#13235), and the next deploy passed on the
+third.
+
+**Step 4 is built: the app with no connection.** Decision 4 above, as
+it turned out:
+
+- **The device keeps a copy of everything it read.** The service
+  worker asks the network first and keeps each good answer under the
+  address it was asked for: the app's files, the three documents, and
+  every screen's own read. A copy is shown only when the network gives
+  no answer or is too slow to wait for, and is marked as one; an answer
+  that says no is never replaced by a copy. So nothing about a screen
+  had to change for it to work offline, and a screen added later works
+  offline from its first visit.
+- **Every action has a name, given on the device.** It is written to
+  the browser's database before it is sent, and sent at once when there
+  is a connection, as before. With none it waits, and goes when there
+  is one: from the page, or from the service worker if the app is
+  closed (Background Sync). One file (`public/outbox.js`) holds the
+  rules for both.
+- **Once, however often it arrives.** The edge writes down each name it
+  did with its answer; a machine does the same (`src/named.ts`, one
+  record for actions sent straight to it, relayed to it, and held for
+  it). A name offered again is answered from the record. This is the
+  rule that already protected a relayed action whose answer was lost,
+  extended back to where the action starts.
+- **What may have changed is not sent unasked.** The list the platform
+  already had for a machine that is away (what may be done late) is the
+  device's list too. A merge, a deploy, a cancel, an unblock and a
+  service action are kept, sent by themselves only within ten minutes,
+  and after that wait for the owner to look again. A merge now names
+  the commit the owner was shown, and GitHub merges only that: this
+  guards a merge asked for a second ago as much as one kept for hours.
+- **Signed out is told from offline** by asking past the service
+  worker without following the way to the sign-in page.
+
+What the owner sees: `offline` and how old the state is in the corner;
+a line under the header saying there is no connection and what is kept;
+More, On this device, where what is waiting, kept back, failed, with
+the platform or sent can be looked at, dropped, sent or tried again,
+and where a copy of every screen can be fetched before a flight.
+
+Checked: 321 tests under bun and the keeper's 25. Planted faults: 23 in
+the once-only rule on the edge and the laptop, 57 on the device (the
+outbox, the worker, the app's wording), all caught. In a real Chrome,
+against the demo laptop and the demo edge, light and dark: the app
+taken offline opens, shows each screen it had seen, says so, keeps
+three actions across a reload, sends each once when the connection is
+back, answers a repeat of each name without doing it again, keeps a
+three-hour-old merge back until it is confirmed, and forgets when
+asked; and with the app closed, the worker, woken as the browser wakes
+it, sends what was kept. axe-core over all 20 screens, the dialogs, the
+toasts and the new screen in each state: no violations.
+
+Not checked: a real phone with no signal, and the Android app (it is
+this site in Chrome, so nothing in it changed). Not done: copies are
+not encrypted on the device beyond what the device does itself; a
+screen never visited has no copy until it is visited or "keep a copy of
+every screen" is pressed.

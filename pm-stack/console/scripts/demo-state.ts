@@ -7,10 +7,12 @@ import { readConfig } from "../src/config.ts";
 import { Devices, Limiter } from "../src/devices.ts";
 import { Docs } from "../src/docs.ts";
 import { fileStore } from "../src/file-store.ts";
+import { Named } from "../src/named.ts";
 import { type Fetch, Ops, type Run } from "../src/ops.ts";
 import { Plan } from "../src/plan.ts";
 import { Push } from "../src/push.ts";
 import type { Deps } from "../src/server.ts";
+import { memoryStore } from "../src/store.ts";
 import { Work } from "../src/work.ts";
 
 const iso = (minutesAgo: number) => new Date(Date.now() - minutesAgo * 60_000).toISOString().slice(0, 19);
@@ -257,6 +259,7 @@ const state = {
       created: iso(60 * 20),
       author: "dezren39",
       branch: "task/suite-registry",
+      head: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     },
     {
       number: 12241,
@@ -266,6 +269,7 @@ const state = {
       created: iso(60 * 19),
       author: "dezren39",
       branch: "task/f12-11-frames",
+      head: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
     },
     {
       number: 12390,
@@ -275,6 +279,7 @@ const state = {
       created: iso(60 * 3),
       author: "dezren39",
       branch: "wip/talos",
+      head: "cccccccccccccccccccccccccccccccccccccccc",
     },
   ],
   priorities: {
@@ -660,6 +665,9 @@ export const demoDeps: Deps = {
     status: 201,
   })),
   actions: table,
+  // What was done under each name, as the real host keeps it: an action
+  // a device sends twice is done once here too.
+  named: new Named(memoryStore()),
   identify: async () => ({ via: "demo", email: "you@example.com" }),
   audit: async () => {},
 };

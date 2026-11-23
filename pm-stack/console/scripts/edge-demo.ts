@@ -14,6 +14,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { Edge } from "../edge/src/edge.ts";
 import { type Io, route } from "../edge/src/entry.ts";
+import type { Named } from "../src/named.ts";
 import { heldRunner, handle, marked } from "../src/server.ts";
 import { memoryStore } from "../src/store.ts";
 import { EdgeLink } from "../src/sync.ts";
@@ -93,6 +94,8 @@ const link = new EdgeLink({
   url: `http://${HOSTNAME}:${port}`,
   keys: memoryStore(),
   done: memoryStore(),
+  // One record with the host's own handler, as on the real host.
+  named: demoDeps.named as Named,
   docs: demoDocs,
   phones: demoDeps.phones!.devices,
   config: async () => ({

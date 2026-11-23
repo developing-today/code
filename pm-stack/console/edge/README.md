@@ -330,5 +330,17 @@ open nothing.
   laptop cannot repeat it; an action that was relayed and got no answer
   is only ever resolved by the laptop, which wrote its name down before
   starting. That is the rule against doing anything twice.
+- The same rule reaches the device. An action may come with a name the
+  device gave it (`id`, a UUID), because a device with no connection
+  keeps what the owner did and sends it later, and again if it never
+  heard back. What the edge does itself it writes down under that name
+  before starting and with its answer after (a week, three hundred
+  names, an answer of up to four thousand characters): the name offered
+  again is answered from that, marked `again`, and not done again. One
+  still being done is answered 409 `running`; one started by an object
+  that was put away before it ended is said to be unknown, once, and
+  not retried. What goes to the laptop goes under the same name, and
+  the laptop keeps the record. Held twice under one name, an action
+  waits once.
 - The storage is one Durable Object. A section larger than one stored
   value is kept in pieces.

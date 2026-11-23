@@ -119,7 +119,7 @@ const server = Bun.serve({
             html_url: "https://github.com/developing-today/code/pull/7",
             created_at: "2026-11-23T08:00:00Z",
             user: { login: "smoke" },
-            head: { ref: "smoke" },
+            head: { ref: "smoke", sha: "0123456789abcdef0123456789abcdef01234567" },
           },
         ]);
       }

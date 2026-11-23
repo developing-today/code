@@ -165,11 +165,28 @@ const SELF_CHECK_EVERY_MS = 60 * 60_000;
 const KEY_FETCH_EVERY_MS = 30_000;
 const STATIC: Record<string, string> = {
   "app.js": "text/javascript; charset=utf-8",
+  "outbox.js": "text/javascript; charset=utf-8",
   "app.css": "text/css; charset=utf-8",
   "icon.svg": "image/svg+xml",
   "sw.js": "text/javascript; charset=utf-8",
 };
 const ACT_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+/** How many actions done here under a name are remembered, for how
+ * long, and how much of each answer is kept with it. A device offline
+ * for longer than this that sends again is answered as if for the
+ * first time; the names are its own, so nobody else can collide. */
+const ACTED_KEPT = 300;
+const ACTED_FOR_MS = 7 * 24 * 60 * 60_000;
+const ACTED_BODY_CHARS = 4000;
+
+/** An action done here under the name the device sent it with. */
+interface Acted {
+  at: number;
+  kind: string;
+  state: "running" | "done";
+  status?: number;
+  body?: Record<string, unknown>;
+}
 const ICONS = /^\/icons\/(icon-192|icon-512|icon-maskable-512|apple-touch-icon)\.png$/;
 
 interface Mirror {
@@ -250,6 +267,8 @@ export class Edge {
    * they are a machine's to read, as they were before this side read
    * anything. */
   private unread = new Map<string, number>();
+  /** Names of actions this object is doing right now. */
+  private doing = new Set<string>();
   /** Both of those have been read back from storage. They are kept
    * there because this object is put away when idle: one that forgot
    * them would claim each section again on every start, and a machine,
@@ -930,14 +949,22 @@ export class Edge {
    * recorded before and after like own(). It is never sent to a machine,
    * so no machine can do it a second time. The sections it changed that
    * this side reads are read again before the answer goes back. */
-  private async directAct(kind: string, args: Record<string, unknown>, by: string, via: string): Promise<Response> {
+  private async directAct(
+    kind: string,
+    args: Record<string, unknown>,
+    by: string,
+    via: string,
+    id: string | null = null,
+  ): Promise<Response> {
     const cfg = await this.config();
     const direct = this.mine(cfg);
     if (!direct) throw new Error("this cannot be done from here right now");
     const action = direct.table[kind];
     const base = { at: new Date(this.now()).toISOString(), who: by, via, action: kind, args: action.audit(args) };
     await this.audit({ ...base, phase: "start" });
-    const entry = { id: crypto.randomUUID(), kind, at: base.at, by, note: "" };
+    // On the record under the name it was sent with, so the device that
+    // sent it can find how it came out.
+    const entry = { id: id ?? crypto.randomUUID(), kind, at: base.at, by, note: "" };
     /** The task of a prompt: the packet carries the issue's number, and
      * the text is the owner's own. */
     const prompt = (packet: unknown) =>
@@ -1483,7 +1510,7 @@ export class Edge {
       if (!sameSiteWrite(req)) return json({ error: "this request did not come from the console" }, 403);
       if (!(seg.length === 1 && seg[0] === "act")) return next("relay", { mode: "live" });
       if (Number(req.headers.get("content-length") ?? "0") > ACT_LIMIT) return json({ error: "too large" }, 413);
-      let body: { kind?: unknown; args?: unknown };
+      let body: { kind?: unknown; args?: unknown; id?: unknown };
       try {
         const text = await req.text();
         if (text.length > ACT_LIMIT) return json({ error: "too large" }, 413);
@@ -1497,6 +1524,9 @@ export class Edge {
       if (args === null || typeof args !== "object" || Array.isArray(args)) {
         return json({ error: "args: expected an object" }, 400);
       }
+      // The name the device gave this, if it gave one: whatever does
+      // it, here or on a machine, does it once under that name.
+      const id = typeof body.id === "string" && ACT_ID.test(body.id) ? body.id : null;
       if (!Object.hasOwn(this.table, kind)) {
         // One this side does itself: it runs here, through the
         // console's own classes, and is never sent to a machine, so no
@@ -1508,7 +1538,9 @@ export class Edge {
           !this.refusedKinds().includes(kind)
         ) {
           try {
-            return await this.directAct(kind, args as Record<string, unknown>, by, who.via);
+            return await this.once(id, kind, () =>
+              this.directAct(kind, args as Record<string, unknown>, by, who.via, id),
+            );
           } catch (error) {
             // Refused here before anything was done: a machine's, below.
             if (!(error instanceof HandOver)) throw error;
@@ -1516,33 +1548,110 @@ export class Edge {
         }
         // The host's to do. The stateless part relays it, and if the
         // host cannot be reached comes back to have it held.
-        // It is named here, before it goes anywhere. If the host's answer
-        // is lost on the way back, the action is held under the same
-        // name, and the host, which wrote the name down before starting,
-        // does not do it a second time.
+        // It goes under the device's name for it, or one given here,
+        // before it goes anywhere. If the host's answer is lost on the
+        // way back, the action is held under the same name, and the
+        // host, which wrote the name down before starting, does not do
+        // it a second time.
         return next("relay", {
           mode: "act",
-          id: crypto.randomUUID(),
+          id: id ?? crypto.randomUUID(),
           kind,
           args,
           who: by,
           holdable: HOLDABLE.has(kind),
         });
       }
-      return await this.own(kind, args as Record<string, unknown>, by, who.via);
+      return await this.once(id, kind, () => this.own(kind, args as Record<string, unknown>, by, who.via, id));
     } catch (error) {
-      if (error instanceof OpError) return json({ error: error.message }, error.status);
-      console.error(`pm-edge: ${method} ${path}: ${(error as Error).message}`);
-      return json({ error: "the edge could not do that" }, 500);
+      return this.failed(error, `${method} ${path}`);
     }
   }
 
+  /** What a thrown error is answered with. */
+  private failed(error: unknown, what: string): Response {
+    if (error instanceof OpError) return json({ error: error.message }, error.status);
+    console.error(`pm-edge: ${what}: ${(error as Error).message}`);
+    return json({ error: "the edge could not do that" }, 500);
+  }
+
+  /** Do something once under the name the device sent it with. A device
+   * that is offline keeps what the owner did and sends it when it is
+   * connected again, and sends it again if it never heard back: the
+   * second arrival is answered from what was written down, not done
+   * again. With no name it is simply done. `work` may hand the action
+   * over to a machine (HandOver): then nothing was done here, nothing
+   * is written down, and the machine keeps its own record under the
+   * same name. */
+  private async once(id: string | null, kind: string, work: () => Promise<Response>): Promise<Response> {
+    if (id === null) return work();
+    const key = `a:${id}`;
+    const before = ((await this.kv.get(key)) as Acted | undefined) ?? null;
+    if (before?.state === "done") return json({ ...before.body, again: true }, before.status ?? 200);
+    if (before?.state === "running") {
+      if (this.doing.has(id)) return json({ error: "This is still being done.", running: true }, 409);
+      // Started, and this object was put away before it ended. Whether
+      // it happened is not known, and doing it again could do it twice.
+      const body = { error: "Cloudflare restarted while doing this; check whether it happened before trying again." };
+      await this.kv.put(key, { at: this.now(), kind, state: "done", status: 502, body } satisfies Acted);
+      return json({ ...body, again: true }, 502);
+    }
+    this.doing.add(id);
+    try {
+      await this.kv.put(key, { at: this.now(), kind, state: "running" } satisfies Acted);
+      await this.actedIndex(id);
+      let res: Response;
+      try {
+        res = await work();
+      } catch (error) {
+        if (error instanceof HandOver) {
+          await this.kv.delete(key);
+          throw error;
+        }
+        res = this.failed(error, `${kind} (${id})`);
+      }
+      const body = (await res
+        .clone()
+        .json()
+        .catch(() => null)) as Record<string, unknown> | null;
+      const small = body !== null && JSON.stringify(body).length <= ACTED_BODY_CHARS;
+      await this.kv.put(key, {
+        at: this.now(),
+        kind,
+        state: "done",
+        status: res.status,
+        // An answer too long to keep is kept as how it went, without what it said.
+        body: small ? body : res.ok ? { ok: true, result: null } : { error: "it could not be done" },
+      } satisfies Acted);
+      return res;
+    } finally {
+      this.doing.delete(id);
+    }
+  }
+
+  /** Note a name as used, and forget the ones that are too old or too many. */
+  private async actedIndex(id: string): Promise<void> {
+    const now = this.now();
+    const index = ((await this.kv.get("acted")) as { id: string; at: number }[] | undefined) ?? [];
+    index.push({ id, at: now });
+    const keep = index.filter((entry) => now - entry.at < ACTED_FOR_MS).slice(-ACTED_KEPT);
+    const kept = new Set(keep.map((entry) => entry.id));
+    for (const entry of index) if (!kept.has(entry.id)) await this.kv.delete(`a:${entry.id}`);
+    await this.kv.put("acted", keep);
+  }
+
   /** An action this side runs itself, recorded before and after. */
-  private async own(kind: string, args: Record<string, unknown>, by: string, via: string): Promise<Response> {
+  private async own(
+    kind: string,
+    args: Record<string, unknown>,
+    by: string,
+    via: string,
+    id: string | null = null,
+  ): Promise<Response> {
     const action = this.table[kind];
     const base = { at: new Date(this.now()).toISOString(), who: by, via, action: kind, args: action.audit(args) };
     await this.audit({ ...base, phase: "start" });
-    const entry = { id: crypto.randomUUID(), kind, at: base.at, by, note: "" };
+    const entry = { id: id ?? crypto.randomUUID(), kind, at: base.at, by, note: "" };
     try {
       const result = await action.run(args);
       await this.audit({ ...base, phase: "done", ok: true });
@@ -1586,6 +1695,11 @@ export class Edge {
     }
     await this.ready();
     const held = await this.heldList();
+    // Offered again under a name that is already waiting (the device
+    // never heard that it was kept): it is kept once.
+    if (typeof body?.id === "string" && held.some((h) => h.id === body.id)) {
+      return json({ ok: true, held: true, result: null, again: true });
+    }
     if (held.length >= HELD_MAX) {
       return json({ error: "The laptop cannot be reached, and too much is already waiting for it." }, 503);
     }

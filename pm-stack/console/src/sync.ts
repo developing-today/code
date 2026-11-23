@@ -27,6 +27,7 @@ import {
   type SyncResponse,
   sign,
 } from "./edge-proto.ts";
+import { Named, type Outcome } from "./named.ts";
 import type { Store } from "./store.ts";
 
 /** Sections kept fresh for notifications and a phone's widget when
@@ -39,9 +40,6 @@ const SYNC_TIMEOUT_MS = 20_000;
 /** After a report that carried the Android build did not get through,
  * the build is left out of the reports that follow for this long. */
 const APK_AGAIN_MS = 10 * 60_000;
-const DONE_KEPT = 300;
-
-type Fate = "started" | { ok: boolean; error?: string };
 
 export interface LinkOptions {
   /** The public address the edge answers on, e.g. https://pm.example. */
@@ -50,6 +48,10 @@ export interface LinkOptions {
   keys: Store;
   /** What became of each held action, so none is run twice. */
   done: Store;
+  /** The same record, when something else keeps it too (the console's
+   * own handler, for actions sent straight to this host): one record,
+   * so a name means the same to both. Made over `done` if not given. */
+  named?: Named;
   docs: Docs;
   phones: { links(): Promise<PhoneLinks>; mergeLinks(value: unknown): Promise<void> };
   config: () => Promise<EdgeConfig>;
@@ -67,7 +69,6 @@ export interface LinkOptions {
 
 export class EdgeLink {
   private pair: { publicJwk: PublicKey; privateJwk: JsonWebKey; kid: string } | null = null;
-  private fates: Map<string, Fate> | null = null;
   /** What the edge is known to have, by fingerprint. */
   private sent = new Map<string, string>();
   private want = new Set<string>();
@@ -82,8 +83,9 @@ export class EdgeLink {
    * once: the sections, when the build went alone, or everything but
    * the build, when a report carrying it did not get through. */
   private more = false;
-  /** Actions being done right now, by the name the edge gave them. */
-  private running = new Set<string>();
+  /** What became of each action done under a name: the edge's held
+   * ones and the ones relayed or sent straight here alike. */
+  readonly named: Named;
   private now: () => number;
   private fetchImpl: typeof fetch;
   private log: (line: string) => void;
@@ -94,6 +96,7 @@ export class EdgeLink {
     this.now = o.now ?? Date.now;
     this.fetchImpl = plain(o.fetchImpl ?? fetch);
     this.log = o.log ?? ((line) => console.error(`pm-console: edge: ${line}`));
+    this.named = o.named ?? new Named(o.done);
   }
 
   private async keys() {
@@ -121,52 +124,34 @@ export class EdgeLink {
     return (await this.keys()).publicJwk;
   }
 
-  private async fate(): Promise<Map<string, Fate>> {
-    if (this.fates) return this.fates;
-    try {
-      this.fates = new Map(Object.entries(JSON.parse((await this.o.done.read()) ?? "{}") as Record<string, Fate>));
-    } catch {
-      this.fates = new Map();
-    }
-    return this.fates;
-  }
-
-  private async record(id: string, fate: Fate): Promise<void> {
-    const fates = await this.fate();
-    fates.delete(id);
-    fates.set(id, fate);
-    while (fates.size > DONE_KEPT) fates.delete(fates.keys().next().value as string);
-    await this.o.done.write(JSON.stringify(Object.fromEntries(fates)));
-  }
-
   /** The edge relayed an action under this name and it is about to be
    * done. Written down first, so that if the answer never reaches the
    * edge and the edge offers the action again, it is not done twice. */
-  async begin(id: string): Promise<void> {
-    this.running.add(id);
-    await this.record(id, "started");
+  begin(id: string): Promise<void> {
+    return this.named.begin(id);
   }
 
   /** How a relayed action came out. */
-  async end(id: string, fate: { ok: boolean; error?: string }): Promise<void> {
-    try {
-      await this.record(id, fate);
-    } finally {
-      this.running.delete(id);
-    }
+  end(id: string, fate: Outcome): Promise<void> {
+    return this.named.end(id, fate);
+  }
+
+  /** What is known of an action sent under this name. */
+  seen(id: string) {
+    return this.named.seen(id);
   }
 
   /** A held action from the edge: run it unless it has been seen before. */
   private async take(held: Held): Promise<void> {
     if (this.acks.some((a) => a.id === held.id)) return;
     // Still being done (its answer was slow, not lost): say nothing yet.
-    if (this.running.has(held.id)) return;
-    const seen = (await this.fate()).get(held.id);
+    if (this.named.isRunning(held.id)) return;
+    const seen = await this.named.get(held.id);
     if (seen === "started") {
       // The host stopped while this was running. Whether it happened is
       // not known, and running it again could do it twice.
       const fate = { ok: false, error: "the host restarted while doing this; check whether it happened" };
-      await this.record(held.id, fate);
+      await this.named.record(held.id, fate);
       this.acks.push({ id: held.id, ...fate });
       return;
     }
@@ -178,7 +163,7 @@ export class EdgeLink {
     if (!HOLDABLE.has(held.kind)) {
       fate = { ok: false, error: "this is not an action that may be done late" };
     } else {
-      await this.record(held.id, "started");
+      await this.named.record(held.id, "started");
       try {
         await this.o.run(held);
         fate = { ok: true };
@@ -186,7 +171,7 @@ export class EdgeLink {
         fate = { ok: false, error: (error as Error).message.slice(0, 300) };
       }
     }
-    await this.record(held.id, fate);
+    await this.named.record(held.id, fate);
     this.acks.push({ id: held.id, ...fate });
   }
 

@@ -1,7 +1,239 @@
-// The app's service worker: it shows a notification when one is pushed,
-// and opens the right screen when it is tapped.
-self.addEventListener("install", () => self.skipWaiting());
-self.addEventListener("activate", (event) => event.waitUntil(self.clients.claim()));
+// The app's service worker. Three jobs:
+//
+//   1. It shows a notification when one is pushed, and opens the right
+//      screen when it is tapped.
+//   2. It keeps a copy of the app's own files and of the last answer to
+//      everything the app reads, so the app opens and shows what it
+//      last saw with no connection. The network is always asked first:
+//      a copy is only shown when the network gives no answer.
+//   3. It sends what the owner did while offline (outbox.js) when the
+//      connection is back, if the app is not open to do it itself.
+//
+// Nothing here is written with a secret in it: what is kept is what the
+// app showed, and what the owner did.
+self.importScripts("/console/outbox.js");
+
+const KEPT = "pm-console-v1";
+/** The app's own files, fetched when the worker is installed so that
+ * the first visit is already enough to open it offline. */
+const FILES = ["/console/", "/console/app.js", "/console/outbox.js", "/console/app.css", "/console/icon.svg"];
+const EXTRAS = ["/manifest.webmanifest", "/icons/icon-192.png", "/icons/icon-512.png"];
+/** How long the network is waited for before a copy is shown instead.
+ * The network's answer still replaces the copy when it comes. */
+const PAGE_WAIT_MS = 4_000;
+const READ_WAIT_MS = 8_000;
+
+self.addEventListener("install", (event) => {
+  event.waitUntil(
+    (async () => {
+      const cache = await self.caches.open(KEPT);
+      // Each by itself: one that cannot be fetched (not signed in, say)
+      // does not stop the others, or the worker.
+      await Promise.all([...FILES, ...EXTRAS].map((path) => keep(cache, path).catch(() => {})));
+      await self.skipWaiting();
+    })(),
+  );
+});
+
+self.addEventListener("activate", (event) => {
+  event.waitUntil(
+    (async () => {
+      for (const name of await self.caches.keys()) {
+        if (name.startsWith("pm-console-") && name !== KEPT) await self.caches.delete(name);
+      }
+      await self.clients.claim();
+    })(),
+  );
+});
+
+/** Fetch one of the app's files and keep it. */
+async function keep(cache, path) {
+  const res = await self.fetch(path, { cache: "no-store", redirect: "manual" });
+  if (res.ok) await cache.put(path, res);
+}
+
+/** What a request is, to this worker: the app's page, one of its
+ * files, something it reads, or none of its business. */
+function kindOf(request, url) {
+  if (request.method !== "GET" || url.origin !== self.location.origin) return null;
+  // Asked on purpose past this worker: is there a sign-in, is there a network.
+  if (request.headers.get("x-pm-probe")) return null;
+  const path = url.pathname;
+  if (path.startsWith("/console/api/") || path === "/console/health") return "read";
+  if (EXTRAS.includes(path) || path.startsWith("/icons/")) return "file";
+  if (!path.startsWith("/console")) return null;
+  // The app is one page, at one address (its screens are after the #).
+  if (path === "/console/" || path === "/console") return "page";
+  return FILES.includes(path) ? "file" : null;
+}
+
+/** The address a copy is kept under: what was asked, without the mark
+ * that only says "ask the source again" (the answer is the same thing). */
+function keyOf(url, kind) {
+  if (kind === "page") return "/console/";
+  const params = new URLSearchParams(url.search);
+  params.delete("fresh");
+  const query = params.toString();
+  return url.pathname + (query ? `?${query}` : "");
+}
+
+/** Where it is noted that a copy was said to be current still. Not an
+ * address the app ever asks for. */
+const seenKey = (key) => `/console/__seen__/${encodeURIComponent(key)}`;
+
+/** A copy of an answer, marked with when it was kept. */
+async function stamped(res, extra) {
+  const headers = new Headers(res.headers);
+  for (const [name, value] of Object.entries(extra)) headers.set(name, value);
+  return new Response(await res.blob(), { status: res.status, statusText: res.statusText, headers });
+}
+
+const after = (ms) => new Promise((resolve) => self.setTimeout(() => resolve(null), ms));
+
+/** The network first; the copy when the network gives no answer, or is
+ * too slow to wait for. An answer that is not a plain success (a
+ * refusal, a way to the sign-in, an error) is passed on as it is and
+ * never replaced by a copy: the app has to see it. Gives what to show,
+ * and the keeping of the network's answer, which may come after. */
+function answer(request, kind) {
+  const key = keyOf(new URL(request.url), kind);
+  const opened = self.caches.open(KEPT);
+  const fromNetwork = (async () => {
+    const cache = await opened;
+    const res = await self.fetch(request);
+    if (res.status === 200) {
+      const copy = kind === "read" ? await stamped(res.clone(), { "x-pm-kept-at": String(Date.now()) }) : res.clone();
+      await cache.put(key, copy);
+    } else if (res.status === 304 && kind === "read") {
+      // The app's own copy is current, and so is the one kept here:
+      // nothing new to keep but when that was, which is small.
+      const seen = { "x-pm-kept-at": String(Date.now()), "x-as-of": res.headers.get("x-as-of") ?? "" };
+      await cache.put(seenKey(key), new Response("", { headers: seen }));
+    }
+    return res;
+  })();
+  const kept = async () => {
+    const cache = await opened;
+    const copy = await cache.match(key);
+    if (!copy) return null;
+    if (kind !== "read") return copy;
+    // As current as it was last said to be, which may be later than
+    // when it was last sent whole.
+    const marks = { "x-pm-offline": "1" };
+    const seen = await cache.match(seenKey(key));
+    if (seen && Number(seen.headers.get("x-pm-kept-at")) > Number(copy.headers.get("x-pm-kept-at"))) {
+      marks["x-pm-kept-at"] = seen.headers.get("x-pm-kept-at");
+      if (seen.headers.get("x-as-of")) marks["x-as-of"] = seen.headers.get("x-as-of");
+    }
+    return stamped(copy, marks);
+  };
+  const shown = (async () => {
+    const first = await Promise.race([
+      fromNetwork.then(
+        (res) => ({ res }),
+        () => ({ failed: true }),
+      ),
+      after(kind === "read" ? READ_WAIT_MS : PAGE_WAIT_MS),
+    ]);
+    if (first?.res) return first.res;
+    const copy = await kept();
+    if (copy) return copy;
+    // No copy to show: the network's answer, however long it takes, or its failure.
+    return fromNetwork;
+  })();
+  return {
+    shown,
+    // Whatever becomes of the race above, the network's answer is kept when it comes.
+    keeping: fromNetwork.then(
+      () => {},
+      () => {},
+    ),
+  };
+}
+
+self.addEventListener("fetch", (event) => {
+  const kind = kindOf(event.request, new URL(event.request.url));
+  if (!kind) return;
+  const { shown, keeping } = answer(event.request, kind);
+  event.respondWith(shown);
+  event.waitUntil(keeping);
+});
+
+// ---- what the owner did while offline ------------------------------------
+
+/** Send what is waiting. Told to every open page, so each shows it. */
+async function send() {
+  const store = self.PMOutbox.idbStore();
+  const flush = () =>
+    self.PMOutbox.flush(store, (entry) => self.PMOutbox.httpSend(entry, (url, init) => self.fetch(url, init)));
+  // One sender at a time, the app's page included: if it is sending
+  // now, this has nothing to add.
+  const locks = self.navigator?.locks;
+  const out = locks?.request ? await locks.request("pm-outbox", { ifAvailable: true }, (lock) => (lock ? flush() : null)) : await flush();
+  if (!out) return;
+  const windows = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
+  // What became of each, by state only: enough for a page to say it.
+  const became = out.changed.map((e) => ({ state: e.state }));
+  for (const client of windows) client.postMessage({ type: "outbox", changed: became });
+  // With no page open to show it, say what became of it.
+  const open = windows.some((client) => new URL(client.url).pathname.startsWith("/console"));
+  const done = out.changed.filter((e) => e.state === "done" || e.state === "held").length;
+  const failed = out.changed.filter((e) => e.state === "failed").length;
+  const stale = out.changed.filter((e) => e.state === "stale").length;
+  if (!open && done + failed + stale > 0 && self.Notification?.permission === "granted") {
+    const parts = [
+      done ? `${done} sent` : "",
+      failed ? `${failed} could not be done` : "",
+      stale ? `${stale} kept back for you to look at` : "",
+    ].filter(Boolean);
+    await self.registration.showNotification("What you did offline", {
+      body: `${parts.join(", ")}.`,
+      tag: "outbox",
+      icon: "/icons/icon-192.png",
+      badge: "/icons/icon-192.png",
+      data: { url: "/console/#more/device" },
+    });
+  }
+  // The sign-in has run out: nothing was sent, and nothing will be
+  // until the owner signs in. With no page open, that has to be said.
+  if (out.signin && !open && self.Notification?.permission === "granted") {
+    const waiting = (await store.all()).filter((e) => e.state === "waiting").length;
+    await self.registration.showNotification("Sign in to send what you did offline", {
+      body: `${waiting} thing${waiting === 1 ? " is" : "s are"} kept on this device until you do.`,
+      tag: "outbox",
+      icon: "/icons/icon-192.png",
+      badge: "/icons/icon-192.png",
+      data: { url: "/console/#more/device" },
+    });
+  }
+  // Still no connection: say so, and the browser will call again.
+  if (out.offline) throw new Error("still offline");
+}
+
+self.addEventListener("sync", (event) => {
+  if (event.tag === "pm-outbox") event.waitUntil(send());
+});
+
+self.addEventListener("message", (event) => {
+  if (event.data?.type === "forget") {
+    // The owner asked this device to forget what it keeps of the app's
+    // answers. What they did and has not been sent is not touched.
+    event.waitUntil(
+      (async () => {
+        const cache = await self.caches.open(KEPT);
+        for (const request of await cache.keys()) {
+          const path = new URL(request.url).pathname;
+          if (path.startsWith("/console/api/") || path.startsWith("/console/__seen__/") || path === "/console/health") {
+            await cache.delete(request);
+          }
+        }
+        event.source?.postMessage({ type: "forgotten" });
+      })(),
+    );
+  }
+});
+
+// ---- notifications -------------------------------------------------------
 
 self.addEventListener("push", (event) => {
   let data = {};
