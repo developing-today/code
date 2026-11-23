@@ -148,9 +148,9 @@ func fnv32(s string) uint32 {
 
 // VectorIndex holds tool embeddings in memory and optionally persists them to SQLite.
 type VectorIndex struct {
-	mu            sync.RWMutex
-	vectors       map[string]Vector
-	db            *sql.DB
+	mu      sync.RWMutex
+	vectors map[string]Vector
+	db      *sql.DB
 	// droppedOnLoad counts persisted rows loadFromDB skipped because their
 	// blob was not a VectorDim vector.
 	droppedOnLoad int
@@ -284,6 +284,19 @@ func (idx *VectorIndex) Get(key string) (Vector, bool) {
 	return v, ok
 }
 
+// GetIfCurrent retrieves a cached vector only when the caller's captured
+// embedding generation is still active. This prevents an in-flight search
+// using the retired embedder from reading a row populated by the new one.
+func (idx *VectorIndex) GetIfCurrent(key string, gen uint64) (Vector, bool) {
+	idx.mu.RLock()
+	defer idx.mu.RUnlock()
+	if idx.generation != gen {
+		return nil, false
+	}
+	v, ok := idx.vectors[key]
+	return v, ok
+}
+
 // Close closes the underlying SQLite database if open.
 func (idx *VectorIndex) Close() error {
 	idx.mu.Lock()
@@ -307,14 +320,17 @@ func (idx *VectorIndex) Generation() uint64 {
 // advances the generation. Call it when the active embedder is replaced: all
 // embedders share VectorDim, so a stale cache would silently mix vector
 // spaces with no dimension guard tripping.
-func (idx *VectorIndex) Flush() {
+func (idx *VectorIndex) Flush() error {
 	idx.mu.Lock()
 	defer idx.mu.Unlock()
+	if idx.db != nil {
+		if _, err := idx.db.Exec(`DELETE FROM tool_embeddings`); err != nil {
+			return fmt.Errorf("flush persisted embedding vectors: %w", err)
+		}
+	}
 	idx.vectors = make(map[string]Vector)
 	idx.generation++
-	if idx.db != nil {
-		_, _ = idx.db.Exec(`DELETE FROM tool_embeddings`)
-	}
+	return nil
 }
 
 // PutIfCurrent stores vec only when the index is still at generation gen.

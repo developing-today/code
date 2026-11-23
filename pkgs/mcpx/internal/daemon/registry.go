@@ -2076,7 +2076,7 @@ func (r *Registry) SearchSemanticOpts(query string, limit int, semantic bool, ta
 	for _, t := range all {
 		var tVec catalog.Vector
 		if vIdx != nil {
-			tVec, _ = vIdx.Get(t.Function)
+			tVec, _ = vIdx.GetIfCurrent(t.Function, gen)
 		}
 		if len(tVec) == 0 {
 			var err error
@@ -3283,11 +3283,15 @@ func (r *Registry) SwapEmbedder(set *settings.Set) error {
 	}
 	r.mu.Lock()
 	old := r.embedder
-	r.embedder = fresh
 	vIdx := r.vectorIdx
 	if vIdx != nil {
-		vIdx.Flush()
+		if err := vIdx.Flush(); err != nil {
+			r.mu.Unlock()
+			fresh.CloseWasm(context.Background())
+			return err
+		}
 	}
+	r.embedder = fresh
 	r.mu.Unlock()
 	if old, ok := old.(*catalog.CascadeEmbedder); ok {
 		old.CloseWasm(context.Background())
