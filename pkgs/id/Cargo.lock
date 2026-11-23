@@ -4867,6 +4867,7 @@ dependencies = [
  "iroh-tickets",
  "libc",
  "n0-mainline",
+ "num-bigint 0.4.8",
  "p2panda-auth",
  "p2panda-core",
  "p2panda-store",
