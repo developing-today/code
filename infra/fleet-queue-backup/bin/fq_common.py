@@ -313,6 +313,19 @@ def _create_defs(create_sql):
     return defs
 
 
+def _is_constraint_def(d):
+    """True when a CREATE TABLE definition is a constraint clause
+    rather than a column: its first token is exactly PRIMARY, FOREIGN,
+    UNIQUE, CHECK or CONSTRAINT. A first-token test, not a prefix
+    test -- the live tasks table has a column named check_outcome,
+    which a prefix test on CHECK silently swallowed (#8584)."""
+    parts = d.strip().split(None, 1)
+    if not parts:
+        return False
+    token = parts[0].strip('"`[]').upper()
+    return token in ("PRIMARY", "FOREIGN", "UNIQUE", "CHECK", "CONSTRAINT")
+
+
 def table_columns(create_sql):
     """Column names of a CREATE TABLE, in definition order.
 
@@ -325,9 +338,7 @@ def table_columns(create_sql):
     cols = []
     for d in _create_defs(create_sql) or []:
         d = d.strip()
-        if d.upper().startswith(
-            ("PRIMARY", "FOREIGN", "UNIQUE", "CHECK", "CONSTRAINT")
-        ):
+        if _is_constraint_def(d):
             continue
         m = re.match(
             r'^(?:"([^"]+)"|`([^`]+)`|\[([^\]]+)\]|([A-Za-z_][A-Za-z0-9_]*))\s',
@@ -355,9 +366,7 @@ def _pk_columns(create_sql):
             return [c.strip().strip('"`[]') for c in m.group(1).split(",")]
     for d in defs:
         d = d.strip()
-        if d.upper().startswith(
-            ("PRIMARY", "FOREIGN", "UNIQUE", "CHECK", "CONSTRAINT")
-        ):
+        if _is_constraint_def(d):
             continue
         m = re.match(r'"?([A-Za-z_][A-Za-z0-9_]*)"?\s+', d)
         if m and re.search(r"\bPRIMARY\s+KEY\b", d, re.IGNORECASE):

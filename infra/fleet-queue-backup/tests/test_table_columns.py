@@ -22,6 +22,26 @@ EVENTS = (
     "worker_id TEXT, task_id INTEGER, kind TEXT NOT NULL, "
     "detail TEXT NOT NULL DEFAULT '{}', created_at TEXT NOT NULL)"
 )
+TASKS = (
+    "CREATE TABLE tasks (id INTEGER PRIMARY KEY AUTOINCREMENT, "
+    "queue TEXT NOT NULL, title TEXT, body TEXT, "
+    "payload TEXT NOT NULL DEFAULT '{}', dedupe_key TEXT, "
+    "priority INTEGER, status TEXT NOT NULL DEFAULT 'queued', "
+    "not_before TEXT, worker_id TEXT, claimed_at TEXT, "
+    "lease_until TEXT, lane_id TEXT, "
+    "attempts INTEGER NOT NULL DEFAULT 0, "
+    "max_attempts INTEGER NOT NULL DEFAULT 4, "
+    "progress TEXT NOT NULL DEFAULT '{}', "
+    "result TEXT NOT NULL DEFAULT '{}', last_error TEXT, "
+    "park_kind TEXT, wait_kind TEXT, ready_condition TEXT, "
+    "last_checked_at TEXT, check_outcome TEXT, "
+    "created_at TEXT NOT NULL, updated_at TEXT NOT NULL, "
+    "completed_at TEXT, platform TEXT, claim_provider TEXT, "
+    "claim_model TEXT, claim_variant TEXT, blocked_deps TEXT, "
+    "dep_next_recheck_at TEXT, dep_blocked_until TEXT, "
+    "dep_recheck_seconds INTEGER, claim_session_id TEXT, "
+    "required_budget_minutes INTEGER)"
+)
 CHECKPOINTS = (
     'CREATE TABLE checkpoints (worker_id TEXT NOT NULL, "key" TEXT NOT NULL, '
     "value TEXT NOT NULL DEFAULT '{}', updated_at TEXT NOT NULL, "
@@ -36,6 +56,13 @@ class TestTableColumns(unittest.TestCase):
             ["id", "worker_id", "task_id", "kind", "detail", "created_at"],
         )
         self.assertEqual(fq_common._pk_columns(EVENTS), ["id"])
+
+    def test_column_named_like_a_constraint_keyword(self):
+        cols = fq_common.table_columns(TASKS)
+        self.assertEqual(len(cols), 36)
+        self.assertIn("check_outcome", cols)
+        self.assertEqual(cols[-1], "required_budget_minutes")
+        self.assertEqual(fq_common._pk_columns(TASKS), ["id"])
 
     def test_table_level_pk_schema_with_quoted_column(self):
         self.assertEqual(
