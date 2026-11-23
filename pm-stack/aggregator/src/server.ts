@@ -38,6 +38,13 @@ import {
   type PromptStatus,
 } from "./prompts.ts";
 import { createPromptWsSession, type PromptWsSession } from "./prompt-ws.ts";
+import {
+  PromptAttachmentsStore,
+  readMultipartForm,
+  submissionFieldsFromForm,
+  uploadedFilesFromForm,
+  type PromptAttachment,
+} from "./prompt-attachments.ts";
 import type { SavedView, ViewFilters, ViewItemLike } from "./views.ts";
 import { ViewsStore, filtersFromQuery, itemMatchesView, ownerKey } from "./views.ts";
 import { filterBoardForView, filterRoadmapForView, fragBoardUrl, linkedLike } from "./board-view.ts";
@@ -313,6 +320,7 @@ const cfg = loadConfig();
 // the first request after a deploy serves it instead of a 503.
 const dashboardResponseWithinDeadline = createDashboardResponseDeadline({ persistDir: cfg.lastGoodDir });
 const promptsStore = new PromptsStore(cfg.promptsFile);
+const promptAttachmentsStore = new PromptAttachmentsStore(cfg.promptAttachmentsDir);
 const roadmapAnnotationsStore = new RoadmapAnnotationsStore(cfg.roadmapAnnotationsFile);
 const coverageStore = new CoverageSnapshotStore(cfg.coverageSnapshotFile);
 const itemHistoryStore = new ItemHistoryStore(cfg.itemHistoryFile);
@@ -2680,8 +2688,37 @@ async function handler(req: Request, remoteAddress?: string): Promise<Response> 
   }
 
   if (req.method === "POST" && path === "/api/prompt") {
-    const parsed = validateNewPrompt(await readJsonBody(req).catch(() => null));
-    if (!parsed.ok) return json({ error: parsed.error }, 400);
+    // #10036 S7 (design #9539 §3.2/§6): a multipart submission carries
+    // file parts under "attachments"; its text fields are shaped into
+    // the same JSON body the validator accepts, the files are persisted
+    // to the attachments dir first, and the record carries their
+    // storage refs. The JSON path is unchanged.
+    let savedAttachments: PromptAttachment[] = [];
+    let parsed: ReturnType<typeof validateNewPrompt>;
+    if ((req.headers.get("content-type") ?? "").startsWith("multipart/form-data")) {
+      let form: FormData;
+      try {
+        form = await readMultipartForm(req);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        return json({ error: `invalid multipart body: ${message}` }, message === "body too large" ? 413 : 400);
+      }
+      try {
+        parsed = validateNewPrompt(submissionFieldsFromForm(form));
+      } catch (err) {
+        return json({ error: err instanceof Error ? err.message : String(err) }, 400);
+      }
+      if (!parsed.ok) return json({ error: parsed.error }, 400);
+      try {
+        savedAttachments = await promptAttachmentsStore.saveAll(await uploadedFilesFromForm(form));
+      } catch (err) {
+        return json({ error: err instanceof Error ? err.message : String(err) }, 400);
+      }
+      if (savedAttachments.length > 0) parsed.value.attachments = savedAttachments;
+    } else {
+      parsed = validateNewPrompt(await readJsonBody(req).catch(() => null));
+      if (!parsed.ok) return json({ error: parsed.error }, 400);
+    }
     try {
       const record = await promptsStore.add(parsed.value);
       // #10033 S3 (design §3.5/§3.7): a sync-block submission waits
@@ -2696,6 +2733,10 @@ async function handler(req: Request, remoteAddress?: string): Promise<Response> 
       }
       return json({ prompt: record }, 201);
     } catch (err) {
+      // A submission that failed to persist must not orphan its blobs.
+      for (const attachment of savedAttachments) {
+        await promptAttachmentsStore.remove(attachment.ref).catch(() => {});
+      }
       return json({ error: `prompt persistence failed: ${err instanceof Error ? err.message : err}` }, 500);
     }
   }
@@ -2732,6 +2773,35 @@ async function handler(req: Request, remoteAddress?: string): Promise<Response> 
     prompts.sort((a, b) => (a.createdAt < b.createdAt ? 1 : a.createdAt > b.createdAt ? -1 : 0));
     return json({ prompts });
   }
+  if (req.method === "GET" && path.startsWith("/api/prompt/") && path.includes("/attachments/")) {
+    // #10036 S7: fetch one attachment blob by its storage ref. The ref
+    // must be carried by the named prompt's record — a ref alone is not
+    // a capability — and the store revalidates the ref's shape before
+    // resolving it. Served as a download (never inline) with nosniff,
+    // so an uploaded HTML file cannot render as a stack page.
+    const rest = decodeURIComponent(path.slice("/api/prompt/".length));
+    const segments = rest.split("/");
+    if (segments.length !== 3 || segments[1] !== "attachments") {
+      return json({ error: "prompt not found" }, 404);
+    }
+    const [id, , ref] = segments;
+    const prompt = await promptsStore.get(id);
+    if (!prompt) return json({ error: "prompt not found" }, 404);
+    if (!prompt.attachments.some((a) => a.ref === ref)) {
+      return json({ error: "attachment not found" }, 404);
+    }
+    const found = await promptAttachmentsStore.read(ref);
+    if (!found) return json({ error: "attachment not found" }, 404);
+    return new Response(found.bytes, {
+      headers: {
+        "content-type": found.meta.contentType,
+        "content-length": String(found.bytes.byteLength),
+        "content-disposition": `attachment; filename="${found.meta.name.replace(/"/g, "")}"; filename*=UTF-8''${encodeURIComponent(found.meta.name)}`,
+        "x-content-type-options": "nosniff",
+        "cache-control": "private, no-store",
+      },
+    });
+  }
   if (req.method === "GET" && path.startsWith("/api/prompt/")) {
     const rest = decodeURIComponent(path.slice("/api/prompt/".length));
     if (rest === "thread" || rest.startsWith("thread/")) {
@@ -2750,6 +2820,7 @@ async function handler(req: Request, remoteAddress?: string): Promise<Response> 
       read: prompt.read,
       replyTo: prompt.replyTo,
       refs: prompt.refs,
+      attachments: prompt.attachments,
     });
   }
   if (req.method === "PATCH" && path.startsWith("/api/prompt/")) {

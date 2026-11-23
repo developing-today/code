@@ -55,6 +55,10 @@ export interface Config {
   /** Dashboard comments store (#906 §2) — the aggregator's own writable data. */
   commentsFile: string;
   promptsFile: string;
+  /** Prompt attachment blobs (#10036 S7, design #9539 §6): the storage
+   *  decision of record puts them in the pm-stack host data dir, next to
+   *  the prompts file by default (PM_AGG_PROMPT_ATTACHMENTS_DIR). */
+  promptAttachmentsDir: string;
   /** Sync-mode answer wait for prompt submissions (#10033 S3, design
    *  #9539 §3.5): a sync-block request blocks at most this long, and a
    *  sync-ws channel closes with a typed timeout outcome after it.
@@ -227,6 +231,7 @@ function parseAggregatorSource(env: Record<string, string | undefined>): "fixtur
 }
 
 export function loadConfig(env: Record<string, string | undefined> = process.env): Config {
+  const promptsFile = s(env.PM_AGG_PROMPTS_FILE, join(process.cwd(), "prompts.json"));
   return {
     storeBackend: parseStoreBackend(env),
     source: parseAggregatorSource(env),
@@ -234,7 +239,11 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     hosts: parseAggregatorHosts(env.PM_AGG_HOSTS),
     feedFile: s(env.PM_AGG_FEED_FILE, join(process.cwd(), "fleet-feed.json")),
     commentsFile: s(env.PM_AGG_COMMENTS_FILE, join(process.cwd(), "comments.json")),
-    promptsFile: s(env.PM_AGG_PROMPTS_FILE, join(process.cwd(), "prompts.json")),
+    promptsFile,
+    promptAttachmentsDir: s(
+      env.PM_AGG_PROMPT_ATTACHMENTS_DIR,
+      join(dirname(promptsFile), "prompt-attachments"),
+    ),
     promptSyncTimeoutMs: parseAggregatorCount(
       env.PM_AGG_PROMPT_SYNC_TIMEOUT_MS,
       "PM_AGG_PROMPT_SYNC_TIMEOUT_MS",
