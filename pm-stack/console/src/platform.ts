@@ -26,6 +26,11 @@ export interface WorkerRow {
   deploy: (typeof DEPLOYED)[number];
   /** The workflow that deploys it, when one does. */
   workflow: string | null;
+  /** A run of that workflow that succeeds has put its commit into
+   * service. False where a deploy goes in steps (a run may upload a
+   * version and leave what is serving as it was): its last run is
+   * then only its last run, and is said as that. */
+  runDeploys: boolean;
   /** Where it answers, when it is in service. */
   address: string | null;
   /** What joining the one platform means for it. */
@@ -57,6 +62,8 @@ export function workerRow(value: unknown): WorkerRow | null {
   // Deployed from Actions means there is a workflow that does it, and
   // nothing that is not in service has a way of getting there.
   if ((v.deploy === "actions") !== (workflow !== null)) return null;
+  if (v.runDeploys !== undefined && typeof v.runDeploys !== "boolean") return null;
+  if (v.runDeploys === true && workflow === null) return null;
   if ((v.state === "not deployed") !== (v.deploy === "none")) return null;
   const address = v.address === null || v.address === undefined ? null : v.address;
   if (address !== null && (typeof address !== "string" || !/^https:\/\/[a-z0-9.-]+(\/[^\s]*)?$/.test(address)))
@@ -71,6 +78,7 @@ export function workerRow(value: unknown): WorkerRow | null {
     state: v.state as WorkerRow["state"],
     deploy: v.deploy as WorkerRow["deploy"],
     workflow: workflow as string | null,
+    runDeploys: v.runDeploys === true,
     address: address as string | null,
     next,
   };

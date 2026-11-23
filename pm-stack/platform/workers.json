@@ -11,6 +11,7 @@
       "state": "in service",
       "deploy": "actions",
       "workflow": "pm-console-edge-deploy.yml",
+      "runDeploys": true,
       "address": "https://pm.security.cab",
       "next": "The platform the others join."
     },
@@ -156,7 +157,7 @@
       "deploy": "actions",
       "workflow": "pkarr-worker-deploy.yml",
       "address": "https://pkarr.developing-today.workers.dev",
-      "next": "Already deployed from Actions, in two confirmed steps. Listed here with its last deploy."
+      "next": "Already deployed from Actions, in two confirmed steps (upload, then promote), so a run that succeeded is not always a deploy. Listed here with its last run."
     },
     {
       "name": "id-hosted-worker",

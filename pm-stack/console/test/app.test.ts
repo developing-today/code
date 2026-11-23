@@ -888,7 +888,26 @@ test("a Worker's line on the Platform screen: how it gets into service, and how 
     url: "https://github.com/x/y/actions/runs/1",
     ...more,
   });
-  const from = (more: Record<string, unknown>) => ({ state: "in service", deploy: "actions", run: null, ...more });
+  // One whose deploy workflow puts what it ran on into service when it succeeds.
+  const from = (more: Record<string, unknown>) => ({
+    state: "in service",
+    deploy: "actions",
+    runDeploys: true,
+    run: null,
+    ...more,
+  });
+  // One that deploys in steps: a run that succeeded may only have uploaded a version.
+  const steps = (more: Record<string, unknown>) => ({ ...from(more), runDeploys: false });
+  expect(workerSaid(steps({ run: run("success") }), now)).toEqual({
+    text: "In service. The last run of its deploy workflow, 2 h ago, succeeded (0123456). It deploys in steps, so that run may not be what is serving.",
+    tone: "",
+  });
+  expect(workerSaid(steps({ run: run("failure") }), now)).toEqual({
+    text: "In service. The last run of its deploy workflow, 2 h ago, did not finish (failure) (0123456). It deploys in steps, so that run may not be what is serving.",
+    tone: "warn",
+  });
+  expect(workerSaid(steps({ run: run("in_progress") }), now).text).toContain("2 h ago, is in progress (0123456)");
+  expect(workerSaid(steps({ run: run("success") }), now).text).not.toContain("Last deploy");
   expect(workerSaid(from({ run: run("success") }), now)).toEqual({
     text: "In service. Last deploy 2 h ago, of 0123456.",
     tone: "good",

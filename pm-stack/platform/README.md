@@ -53,9 +53,17 @@ from the edge itself is part of the work to come (a Worker cannot ask
 another on the same account by its public address without a setting
 the console does not have yet).
 
+The Platform screen says "last deploy" only for a Worker whose list
+entry has `"runDeploys": true`: its workflow, when it succeeds, has put
+the commit it ran on into service (the PM console's does: it uploads,
+puts in service, checks, and fails otherwise). Where a deploy goes in
+steps (the pkarr door uploads a version in one run and promotes it in
+another) a run that succeeded is shown as a run, and nothing is claimed
+about what is serving.
+
 ## Adding a Worker
 
 Add it to `workers.json` in the same change that adds its wrangler
 file: `name` as in that file, `path` its directory, `group` what it
 belongs to, `state` and `deploy` as they are, `workflow` when Actions
-deploys it, `address` when it is in service, and `next` in a sentence.
+deploys it (and `runDeploys` when a run that succeeds is a deploy), `address` when it is in service, and `next` in a sentence.

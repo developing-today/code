@@ -2206,11 +2206,22 @@ export function workerSaid(w, now = Date.now()) {
   if (!run) return { text: "In service. Deployed from Actions; it has not run on main yet.", tone: "" };
   if (run.error) return { text: `In service. Deployed from Actions; its last run could not be read (${run.error}).`, tone: "warn" };
   const when = ago(run.at, now);
-  if (run.state === "success") return { text: `In service. Last deploy ${when}, of ${run.commit.slice(0, 7)}.`, tone: "good" };
+  const commit = run.commit.slice(0, 7);
+  // Where a deploy goes in steps, a run that succeeded may have uploaded
+  // a version and left what is serving as it was: it is said as a run,
+  // and nothing is claimed about what is in service.
+  if (!w.runDeploys) {
+    const how = run.state === "success" ? "succeeded" : run.state === "failure" || run.state === "cancelled" || run.state === "timed_out" ? `did not finish (${run.state.replace("_", " ")})` : `is ${run.state.replace("_", " ")}`;
+    return {
+      text: `In service. The last run of its deploy workflow, ${when}, ${how} (${commit}). It deploys in steps, so that run may not be what is serving.`,
+      tone: run.state === "success" || how.startsWith("is ") ? "" : "warn",
+    };
+  }
+  if (run.state === "success") return { text: `In service. Last deploy ${when}, of ${commit}.`, tone: "good" };
   if (run.state === "failure" || run.state === "cancelled" || run.state === "timed_out") {
     return { text: `In service. Its last deploy, ${when}, did not finish (${run.state.replace("_", " ")}).`, tone: "warn" };
   }
-  return { text: `In service. A deploy of ${run.commit.slice(0, 7)} is ${run.state.replace("_", " ")}, started ${when}.`, tone: "" };
+  return { text: `In service. A deploy of ${commit} is ${run.state.replace("_", " ")}, started ${when}.`, tone: "" };
 }
 
 /** The counts the Platform screen opens with. */

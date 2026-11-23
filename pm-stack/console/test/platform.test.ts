@@ -25,11 +25,16 @@ const good = {
 };
 
 test("a row of the list: what it must say, and what cannot both be true of it", () => {
-  expect(workerRow(good)).toEqual(good);
+  expect(workerRow(good)).toEqual({ ...good, runDeploys: false });
   expect(workerRow({ ...good, deploy: "actions", workflow: "bridge-deploy.yml" })).toMatchObject({
     deploy: "actions",
     workflow: "bridge-deploy.yml",
+    // Unless the list says a run that succeeds is a deploy, it is not taken for one.
+    runDeploys: false,
   });
+  expect(workerRow({ ...good, deploy: "actions", workflow: "bridge-deploy.yml", runDeploys: true })?.runDeploys).toBe(
+    true,
+  );
   expect(workerRow({ ...good, state: "not deployed", deploy: "none", address: null })).toMatchObject({
     state: "not deployed",
     address: null,
@@ -48,6 +53,11 @@ test("a row of the list: what it must say, and what cannot both be true of it", 
     ["a way of deploying there is not", { ...good, deploy: "magic" }],
     ["from Actions, with no workflow", { ...good, deploy: "actions", workflow: null }],
     ["by hand, with a workflow", { ...good, workflow: "bridge-deploy.yml" }],
+    ["a run that deploys, with no workflow to run", { ...good, runDeploys: true }],
+    [
+      "a run that deploys, said as something else than yes or no",
+      { ...good, deploy: "actions", workflow: "x.yml", runDeploys: "yes" },
+    ],
     ["a workflow that is not a file's name", { ...good, deploy: "actions", workflow: "../deploy.sh" }],
     ["in service, deployed by nothing", { ...good, deploy: "none" }],
     ["not deployed, and deployed by hand", { ...good, state: "not deployed", address: null }],
@@ -130,6 +140,8 @@ test("read through the fleet binary: the repository's list, with the last deploy
   });
   // A deploy that has never run on main has no run to show.
   expect(byName.get("pkarr")?.run).toBeNull();
+  // The console's deploy puts what it ran on into service; pkarr's goes in steps.
+  expect([byName.get("pm-console-edge")?.runDeploys, byName.get("pkarr")?.runDeploys]).toEqual([true, false]);
   expect(byName.get("voice-line")?.run).toBeNull();
   // Its runs cannot be read: that Worker says so, and the rest still show.
   fails.add("repos/developing-today/code/actions/workflows/pm-console-edge-deploy.yml/runs?branch=main&per_page=1");
