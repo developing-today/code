@@ -76,18 +76,6 @@ test('add starts from the freshly fetched base', () => {
   assert.equal(created.head, sh(['rev-parse', 'HEAD'], seed));
 });
 
-test('a base without a remote prefix is refused rather than silently stale (#12172)', () => {
-  const { dir, seed, repo, root } = fixture();
-  const local = sh(['rev-parse', 'main'], repo);
-  fs.writeFileSync(path.join(seed, 'README'), 'newer\n');
-  sh(['-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '-am', 'newer'], seed);
-  sh(['push', '-q', path.join(dir, 'origin.git'), 'main'], seed);
-  assert.throws(() => add({ repo, prefix: 'creator', root, base: 'main' }), refused(2, 'pass origin/main'));
-  assert.ok(!fs.existsSync(root) || fs.readdirSync(root).length === 0);
-  // Opting out of the fetch keeps a local base usable, at the local ref.
-  assert.equal(add({ repo, prefix: 'creator', root, base: 'main', fetch: false }).head, local);
-});
-
 test('a worktree add failure is reported, not masked', () => {
   const { repo, root } = fixture();
   assert.throws(() => add({ repo, prefix: 'creator', root, base: 'origin/no-such-branch' }), refused(4, 'git fetch'));

@@ -548,66 +548,10 @@ select coalesce((
 ), json('[]')) as prices
 `;
 
-/** Current measurement projection (v_current_measurements semantics). */
-const CURRENT_MEASUREMENTS = `(select * from (
-  select *, row_number() over (
-    partition by coalesce(model_variant_key, model_name), coalesce(effort, ''), benchmark, coalesce(benchmark_version, '')
-    order by source_date desc nulls last, ingested_at desc, id desc
-  ) as measurement_rank
-  from ainventory_measurement_events
-) where measurement_rank = 1)`;
-
-const CONFIGS_SELECT = (events: string, batch: string | null, current = false) => `
-    select json_group_array(json_object(
-      'modelName', model_name, 'benchmark', benchmark, 'effort', effort,
-      'intelligence', value_num, 'costPerTaskUsd', cost_per_task_usd, 'speedTps', output_tps
-    ) order by model_name, effort)
-    from ${events} br
-    where ${current ? "1=1" : `br.ingest_batch_id = (select me.ingest_batch_id from ainventory_measurement_events me
-      where me.source_kind = 'workbook-import'
-        and me.ingest_batch_id in (select s.import_batch from ainventory_sources s
-          where s.kind = 'drive-workbook'
-            and s.imported_at <= (select max(s2.imported_at) from ainventory_sources s2
-              where s2.import_batch = ${batchExpression(batch)} and s2.kind = 'drive-workbook'))
-      order by me.ingested_at desc limit 1)`}
-      and br.benchmark like 'AA Intelligence Index%'
-      and br.metric = 'intelligence_index'
-      and br.benchmark_version is null`;
-
-const CAI_SELECT = (events: string, batch: string | null, current = false) => `
-    select json_group_array(json_object(
-      'modelName', model_name, 'effort', effort, 'version', raw->>'benchmark_version',
-      'score', value_num, 'cost', cost_per_task_usd,
-      'wallSec', CAST(nullif(raw->>'time_per_task_seconds', '') AS REAL),
-      'tokensPerTask', CAST(nullif(raw->>'token_usage_per_task', '') AS REAL),
-      'harness', raw->>'agent_harness',
-      'creatorSlug', case when instr(raw->>'observation_key', '|') = 0 or instr(substr(raw->>'observation_key', instr(raw->>'observation_key', '|') + 1), '|') = 0 then '' when instr(substr(substr(raw->>'observation_key', instr(raw->>'observation_key', '|') + 1), instr(substr(raw->>'observation_key', instr(raw->>'observation_key', '|') + 1), '|') + 1), '|') = 0 then substr(substr(raw->>'observation_key', instr(raw->>'observation_key', '|') + 1), instr(substr(raw->>'observation_key', instr(raw->>'observation_key', '|') + 1), '|') + 1) else substr(substr(substr(raw->>'observation_key', instr(raw->>'observation_key', '|') + 1), instr(substr(raw->>'observation_key', instr(raw->>'observation_key', '|') + 1), '|') + 1), 1, instr(substr(substr(raw->>'observation_key', instr(raw->>'observation_key', '|') + 1), instr(substr(raw->>'observation_key', instr(raw->>'observation_key', '|') + 1), '|') + 1), '|') - 1) end,
-      'deepSwe', CAST(nullif(raw->>'deep_swe_v1_1_pct', '') AS REAL),
-      'terminalBench', CAST(nullif(raw->>'terminal_bench_4_0_pct', '') AS REAL),
-      'sweAtlas', CAST(nullif(raw->>'swe_atlas_qna_pct', '') AS REAL),
-      'snapshotDate', nullif(raw->>'snapshot_date', ''), 'sourceUrl', nullif(raw->>'source_url', '')
-    ) order by value_num desc nulls last, model_name)
-    from ${events} br
-    where ${current ? "1=1" : `br.ingest_batch_id = (select me.ingest_batch_id from ainventory_measurement_events me
-      where me.source_kind = 'workbook-import'
-        and me.ingest_batch_id in (select s.import_batch from ainventory_sources s
-          where s.kind = 'drive-workbook'
-            and s.imported_at <= (select max(s2.imported_at) from ainventory_sources s2
-              where s2.import_batch = ${batchExpression(batch)} and s2.kind = 'drive-workbook'))
-      order by me.ingested_at desc limit 1)`}
-      and br.benchmark like 'Artificial Analysis Coding Agent Index%'
-      and br.metric = 'cai_index_score'
-      and br.raw->>'benchmark_version' is not null`;
-
-/** Hash input for the exact current configs + CAI arrays rendered in latest. */
-export const AA_MEASUREMENTS_SQL = `select
-  json(coalesce((${CONFIGS_SELECT(CURRENT_MEASUREMENTS, null, true)}), json('[]'))) as configs,
-  json(coalesce((${CAI_SELECT(CURRENT_MEASUREMENTS, null, true)}), json('[]'))) as cai`;
-
 /**
- * The full AA section payload for one workbook batch. The optional current
- * measurement mode is used only by the latest collector payload; explicit
- * historical payloads retain the selected batch's AS-OF measurement scope.
+ * The full AA section payload for one batch (null = latest). This mirrors the
+ * collector's previous AA_SQL exactly except that every batch predicate and
+ * both latest-pinned views now take the same batch expression.
  *
  * Tranche 2 of code#4401 (2026-11-11): the 'configs' and 'cai' sections no
  * longer read the frozen ainventory_benchmark_results table; they read the
@@ -617,13 +561,14 @@ export const AA_MEASUREMENTS_SQL = `select
  * differences either way). benchmark_results is dropped;
  * measurement_events is the one canonical read path for benchmark facts.
  *
- * Historical payloads (#8817): measurement events ARE keyed by workbook import —
+ * code#8817: measurement events ARE keyed by workbook import —
  * ingest_batch_id is the importing batch's ainventory_sources.import_batch
  * (verified live 2026-11-12) — but not every workbook import produces
  * benchmark events (the imports after 2026-10-26 have none yet). The two
- * sections therefore scope AS-OF an explicit batch: the newest workbook-import
- * event batch imported at or before it. Historical batches reconstruct that
- * batch's own sections
+ * sections therefore scope AS-OF the selected batch: the newest
+ * workbook-import event batch imported at or before it. For the latest
+ * batch that is exactly the newest event batch (the previous behaviour);
+ * for a historical batch it reconstructs that batch's own sections
  * instead of silently mixing the newest sections into a payload cached
  * under the historical UUID; a batch older than every event batch gets
  * empty sections rather than another batch's data.
@@ -632,19 +577,16 @@ export const AA_MEASUREMENTS_SQL = `select
  * every cached batch payload with this number: entries built under older
  * SQL carry no revision (read as 0) and are rebuilt, never served as
  * current, once the payload semantics move. Bump when a change alters
- * what a cached payload means. (#8817 AS-OF history; #10042 current latest.) */
-export const AA_PAYLOAD_SQL_REVISION = 3;
+ * what a cached payload means. (#8817: configs/cai scoping.) */
+export const AA_PAYLOAD_SQL_REVISION = 2;
 
-export function aaPayloadSql(batch: string | null, currentMeasurements = false): string {
+export function aaPayloadSql(batch: string | null): string {
   const b = batchExpression(batch);
   const rankings = RANKINGS_BODY.replace("{{BATCH}}", b);
   const thresholds = THRESHOLD_BODY.replace("{{BATCH}}", b);
   // SQLite drops the JSON subtype when an aggregate crosses a scalar-subquery
   // boundary. Re-parse each array there so json_object embeds it as an array,
   // not as a quoted JSON string.
-  const measurementEvents = currentMeasurements ? CURRENT_MEASUREMENTS : "ainventory_measurement_events";
-  const configs = CONFIGS_SELECT(measurementEvents, batch, currentMeasurements);
-  const cai = CAI_SELECT(measurementEvents, batch, currentMeasurements);
   return `
 select json_object(
   'batch', ${b},
@@ -679,14 +621,54 @@ select json_object(
     ) order by test_run_key, target)
     from (${thresholds}) vt
   ), json('[]'))),
-  'configs', json(coalesce((${configs}), json('[]'))),
+  'configs', json(coalesce((
+    select json_group_array(json_object(
+      'modelName', model_name, 'benchmark', benchmark, 'effort', effort,
+      'intelligence', value_num, 'costPerTaskUsd', cost_per_task_usd, 'speedTps', output_tps
+    ) order by model_name, effort)
+    from ainventory_measurement_events br
+    where br.ingest_batch_id = (select me.ingest_batch_id from ainventory_measurement_events me
+      where me.source_kind = 'workbook-import'
+        and me.ingest_batch_id in (select s.import_batch from ainventory_sources s
+          where s.kind = 'drive-workbook'
+            and s.imported_at <= (select max(s2.imported_at) from ainventory_sources s2
+              where s2.import_batch = ${b} and s2.kind = 'drive-workbook'))
+      order by me.ingested_at desc limit 1)
+      and br.benchmark like 'AA Intelligence Index%'
+      and br.metric = 'intelligence_index'
+      and br.benchmark_version is null
+  ), json('[]'))),
   'testRunRows', json(coalesce((
     select json_group_array(json_object('rowIndex', row_index, 'cells', data->'cells') order by row_index)
     from ainventory_sheet_rows sr
     where sr.import_batch = ${b}
       and sr.sheet_name = 'Test_Runs'
   ), json('[]'))),
-  'cai', json(coalesce((${cai}), json('[]'))),
+  'cai', json(coalesce((
+    select json_group_array(json_object(
+      'modelName', model_name, 'effort', effort, 'version', raw->>'benchmark_version',
+      'score', value_num, 'cost', cost_per_task_usd,
+      'wallSec', CAST(nullif(raw->>'time_per_task_seconds', '') AS REAL),
+      'tokensPerTask', CAST(nullif(raw->>'token_usage_per_task', '') AS REAL),
+      'harness', raw->>'agent_harness',
+      'creatorSlug', case when instr(raw->>'observation_key', '|') = 0 or instr(substr(raw->>'observation_key', instr(raw->>'observation_key', '|') + 1), '|') = 0 then '' when instr(substr(substr(raw->>'observation_key', instr(raw->>'observation_key', '|') + 1), instr(substr(raw->>'observation_key', instr(raw->>'observation_key', '|') + 1), '|') + 1), '|') = 0 then substr(substr(raw->>'observation_key', instr(raw->>'observation_key', '|') + 1), instr(substr(raw->>'observation_key', instr(raw->>'observation_key', '|') + 1), '|') + 1) else substr(substr(substr(raw->>'observation_key', instr(raw->>'observation_key', '|') + 1), instr(substr(raw->>'observation_key', instr(raw->>'observation_key', '|') + 1), '|') + 1), 1, instr(substr(substr(raw->>'observation_key', instr(raw->>'observation_key', '|') + 1), instr(substr(raw->>'observation_key', instr(raw->>'observation_key', '|') + 1), '|') + 1), '|') - 1) end,
+      'deepSwe', CAST(nullif(raw->>'deep_swe_v1_1_pct', '') AS REAL),
+      'terminalBench', CAST(nullif(raw->>'terminal_bench_4_0_pct', '') AS REAL),
+      'sweAtlas', CAST(nullif(raw->>'swe_atlas_qna_pct', '') AS REAL),
+      'snapshotDate', nullif(raw->>'snapshot_date', ''), 'sourceUrl', nullif(raw->>'source_url', '')
+    ) order by value_num desc nulls last, model_name)
+    from ainventory_measurement_events br
+    where br.ingest_batch_id = (select me.ingest_batch_id from ainventory_measurement_events me
+      where me.source_kind = 'workbook-import'
+        and me.ingest_batch_id in (select s.import_batch from ainventory_sources s
+          where s.kind = 'drive-workbook'
+            and s.imported_at <= (select max(s2.imported_at) from ainventory_sources s2
+              where s2.import_batch = ${b} and s2.kind = 'drive-workbook'))
+      order by me.ingested_at desc limit 1)
+      and br.benchmark like 'Artificial Analysis Coding Agent Index%'
+      and br.metric = 'cai_index_score'
+      and br.raw->>'benchmark_version' is not null
+  ), json('[]'))),
   'prices', json(coalesce((
     select json_group_array(json_object(
       'modelName', model_name, 'inputPer1M', input_usd_per_1m, 'outputPer1M', output_usd_per_1m,
@@ -728,8 +710,8 @@ export function assertAaNumericInputs(rows: readonly { cell: unknown }[]): void 
 /** Execute sections separately on Turso MVCC: one giant nested JSON query
  * can exceed its planner/runtime limits (HTTP502). Split ONLY this module's
  * generated SQL at top-level argument boundaries; never parse external SQL. */
-export function aaSectionQueries(batch: string, currentMeasurements = false): Record<string, string> {
-  const sql = aaPayloadSql(batch, currentMeasurements);
+export function aaSectionQueries(batch: string): Record<string, string> {
+  const sql = aaPayloadSql(batch);
   const start = sql.indexOf("json_object(") + "json_object(".length;
   const end = sql.lastIndexOf(") as aa");
   const body = sql.slice(start, end);

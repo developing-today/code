@@ -864,7 +864,6 @@ class TestCapUnknownFireLog(unittest.TestCase):
                 ),
                 patch.object(claimant, "STATE_DIR", state_dir),
                 patch.object(claimant, "FIRES_FILE", fires),
-                patch.object(claimant, "fire_opencode_working_hook") as hook,
             ):
                 self.assertEqual(claimant.main(), 1)
             entries = [
@@ -873,8 +872,6 @@ class TestCapUnknownFireLog(unittest.TestCase):
         self.assertEqual(len(entries), 1)
         self.assertIsNone(entries[0]["cap_room"])
         self.assertEqual(entries[0]["skips"], [{"reason": "cap_unknown"}])
-        self.assertEqual(hook.call_count, 1)
-        self.assertEqual(hook.call_args.args[0], "lane-launch")
 
 
 class TestGateUnknownFireLog(unittest.TestCase):

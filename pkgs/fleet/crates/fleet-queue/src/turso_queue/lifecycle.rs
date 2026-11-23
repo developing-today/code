@@ -1477,73 +1477,12 @@ pub(crate) fn claimed_by(
             }
             Ok(row)
         }
-        Ok(row) => {
-            // #12618: say what the task is now, so a worker whose
-            // claim lapsed can tell that from a claim held under
-            // another name. The latest claim or lease expiry is read
-            // fail-soft: a miss only drops the lease detail.
-            let last_event = row.as_ref().and_then(|_| {
-                t.query_objs(
-                    "SELECT worker_id, kind, created_at FROM events WHERE task_id = ? \
-                     AND kind IN ('claimed', 'lease_expired') ORDER BY id DESC LIMIT 1",
-                    &[Arg::Int(task_id)],
-                    &[],
-                )
-                .ok()
-                .and_then(|rows| rows.into_iter().next())
-            });
-            Err(fail(
-                5,
-                format!(
-                    "{verb}: task {task_id} is not claimed by {worker}: {}",
-                    not_claimed_reason(row.as_ref(), last_event.as_ref(), worker)
-                ),
-            ))
-        }
+        Ok(_) => Err(fail(
+            5,
+            format!("{verb}: task {task_id} is not claimed by {worker}"),
+        )),
         Err(e) => Err(terr(e)),
     }
-}
-
-/// Why a task is not claimed by `worker`, for the claimed-by
-/// refusal (#12618): the task's status and holder, and, when the
-/// task's latest claim or lease expiry (`last_event`) is this
-/// worker's own lease expiring, that the claim
-/// lapsed and the task went back to the queue, so it must be claimed
-/// again before it can be completed.
-pub(crate) fn not_claimed_reason(
-    row: Option<&Value>,
-    last_event: Option<&Value>,
-    worker: &str,
-) -> String {
-    let Some(row) = row else {
-        return "no such task".to_string();
-    };
-    let status = row
-        .get("status")
-        .and_then(|v| v.as_str())
-        .unwrap_or("unknown");
-    let holder = row
-        .get("worker_id")
-        .and_then(|v| v.as_str())
-        .filter(|w| !w.is_empty());
-    let mut reason = match (status, holder) {
-        ("claimed", Some(h)) => format!("it is claimed by {h}"),
-        (s, _) => format!("it is {s}"),
-    };
-    let field = |key: &str| last_event.and_then(|e| e.get(key)).and_then(|v| v.as_str());
-    if status != "claimed"
-        && field("kind") == Some("lease_expired")
-        && field("worker_id") == Some(worker)
-    {
-        reason.push_str(&format!(
-            "; {worker}'s lease expired{} and the task went back to the queue, so claim it \
-             again before completing it (heartbeat or checkpoint to keep a lease)",
-            field("created_at")
-                .map(|at| format!(" at {at}"))
-                .unwrap_or_default()
-        ));
-    }
-    reason
 }
 
 /// The (holder lane, caller lane) pair when a claimed row's lane

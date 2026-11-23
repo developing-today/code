@@ -1235,9 +1235,6 @@ fn a_background_cargo_build_holds_its_target_lease_until_exit() {
             ),
         )
         .env_remove("CARGO_TARGET_DIR")
-        // The nix check sandbox exports CARGO_BUILD_JOBS, which the lock
-        // script honours; clear it so the half-the-cores default is tested.
-        .env_remove("CARGO_BUILD_JOBS")
         .current_dir(&home)
         .spawn()
         .unwrap();
@@ -1334,7 +1331,6 @@ fn a_leased_cargo_run_preserves_the_callers_stdin() {
         )
         .current_dir(&home)
         .env_remove("CARGO_TARGET_DIR")
-        .env_remove("CARGO_BUILD_JOBS")
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::null())
         .spawn()
@@ -1506,7 +1502,7 @@ printf '%s|%s|%s|%s\n' "$PWD" "$CARGO_TARGET_DIR" "$CARGO_BUILD_JOBS" "$*" > "$H
     let lock_script =
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fleet-build-lock");
     let manifest = workspace.join("Cargo.toml").display().to_string();
-    let output = std::process::Command::new("bash")
+    let output = std::process::Command::new("/bin/bash")
         .arg(&lock_script)
         .args([
             "cargo",
@@ -1526,7 +1522,6 @@ printf '%s|%s|%s|%s\n' "$PWD" "$CARGO_TARGET_DIR" "$CARGO_BUILD_JOBS" "$*" > "$H
             ),
         )
         .env_remove("CARGO_TARGET_DIR")
-        .env_remove("CARGO_BUILD_JOBS")
         .current_dir(&caller)
         .output()
         .unwrap();
@@ -1562,7 +1557,7 @@ printf '%s|%s|%s|%s\n' "$PWD" "$CARGO_TARGET_DIR" "$CARGO_BUILD_JOBS" "$*" > "$H
         vec!["cargo", "help", "build"],
         vec!["cargo", "fmt", "--package", "test"],
     ] {
-        let output = std::process::Command::new("bash")
+        let output = std::process::Command::new("/bin/bash")
             .arg(&lock_script)
             .args(args)
             .env("HOME", &home)
@@ -1575,7 +1570,6 @@ printf '%s|%s|%s|%s\n' "$PWD" "$CARGO_TARGET_DIR" "$CARGO_BUILD_JOBS" "$*" > "$H
                 ),
             )
             .env_remove("CARGO_TARGET_DIR")
-            .env_remove("CARGO_BUILD_JOBS")
             .current_dir(&caller)
             .output()
             .unwrap();
@@ -1590,7 +1584,7 @@ printf '%s|%s|%s|%s\n' "$PWD" "$CARGO_TARGET_DIR" "$CARGO_BUILD_JOBS" "$*" > "$H
         );
     }
 
-    let no_workspace = std::process::Command::new("bash")
+    let no_workspace = std::process::Command::new("/bin/bash")
         .arg(&lock_script)
         .args(["cargo", "install", "some-crate"])
         .env("HOME", &home)
@@ -1604,7 +1598,6 @@ printf '%s|%s|%s|%s\n' "$PWD" "$CARGO_TARGET_DIR" "$CARGO_BUILD_JOBS" "$*" > "$H
             ),
         )
         .env_remove("CARGO_TARGET_DIR")
-        .env_remove("CARGO_BUILD_JOBS")
         .current_dir(&caller)
         .output()
         .unwrap();
@@ -1623,7 +1616,7 @@ printf '%s|%s|%s|%s\n' "$PWD" "$CARGO_TARGET_DIR" "$CARGO_BUILD_JOBS" "$*" > "$H
         format!("{}||2|install some-crate\n", caller.display())
     );
 
-    let path_install = std::process::Command::new("bash")
+    let path_install = std::process::Command::new("/bin/bash")
         .arg(&lock_script)
         .args(["cargo", "install", "--path"])
         .arg(&workspace)
@@ -1637,7 +1630,6 @@ printf '%s|%s|%s|%s\n' "$PWD" "$CARGO_TARGET_DIR" "$CARGO_BUILD_JOBS" "$*" > "$H
             ),
         )
         .env_remove("CARGO_TARGET_DIR")
-        .env_remove("CARGO_BUILD_JOBS")
         .current_dir(&caller)
         .output()
         .unwrap();
@@ -1671,7 +1663,7 @@ printf '%s|%s|%s|%s\n' "$PWD" "$CARGO_TARGET_DIR" "$CARGO_BUILD_JOBS" "$*" > "$H
             "dev",
         ),
     ] {
-        let output = std::process::Command::new("bash")
+        let output = std::process::Command::new("/bin/bash")
             .arg(&lock_script)
             .args(&args)
             .env("HOME", &home)
@@ -1684,7 +1676,6 @@ printf '%s|%s|%s|%s\n' "$PWD" "$CARGO_TARGET_DIR" "$CARGO_BUILD_JOBS" "$*" > "$H
                 ),
             )
             .env_remove("CARGO_TARGET_DIR")
-            .env_remove("CARGO_BUILD_JOBS")
             .current_dir(&caller)
             .output()
             .unwrap();
@@ -1721,7 +1712,6 @@ fn run_local_plan(home: &std::path::Path, plan: &shell::Plan) -> std::process::O
             ),
         )
         .env_remove("CARGO_TARGET_DIR")
-        .env_remove("CARGO_BUILD_JOBS")
         .current_dir(home)
         .output()
         .expect("sh runs")

@@ -743,25 +743,6 @@ def cap_step() -> int:
     return cap_room
 
 
-OPENCODE_WORKING_HOOK = Path(__file__).resolve().parent.parent / "health-hooks" / "opencode-working.sh"
-
-
-def fire_opencode_working_hook(caller: str, detail: str) -> None:
-    """C3 health hook (#9571): fire-and-forget opencode-working when a
-    launch cannot read OpenCode's session state. Never raises and never
-    waits; the hook owns probing, dedup and recording."""
-    try:
-        subprocess.Popen(
-            [str(OPENCODE_WORKING_HOOK), "--caller", caller, "--detail", detail],
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            start_new_session=True,
-        )
-    except OSError as e:
-        print(f"Warning: could not fire opencode-working hook: {e}")
-
-
 def _post_prompt(session_id: str, prompt: str) -> bool:
     """One prompt POST through the verified transport; True iff the
     server answered 2xx. A non-2xx POST did not land, whatever
@@ -1551,7 +1532,6 @@ def _fire(mode: str):
 
     if cap_room == -1:
         print("Warning: Could not determine cap room. Exiting.")
-        fire_opencode_working_hook("lane-launch", "claimant cap step could not read OpenCode sessions")
         log_fire(
             mode,
             fire_candidates,

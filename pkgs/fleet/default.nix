@@ -40,8 +40,6 @@
   pkgsStatic,
   binutils,
   python3,
-  bash,
-  util-linux,
   callPackage,
   craneLib ? null,
   doCheck ? true,
@@ -60,15 +58,6 @@ let
   # the search serve role's baked library must be the release the
   # corpus and the Gate A fixtures are certified under (code#6765).
   onnxruntime = callPackage ../atlas-search/onnxruntime { };
-
-  # Tools the workspace test suite needs in the check phase: Python's
-  # sqlite3 for the concurrency regressions, and bash plus util-linux
-  # (setsid) for the fleet-agent shell tests.
-  checkTools = [
-    python3
-    bash
-    util-linux
-  ];
 
   # The search serve role (#5604) consumes atlas-core / atlas-embed /
   # atlas-proto by relative path (../atlas-search/crates/*, untouched),
@@ -213,10 +202,7 @@ let
           # run; the build keeps the -p fleet scope via
           # cargoExtraArgs.
           # SQLite concurrency regressions use Python's stdlib sqlite3.
-          # The fleet-agent shell tests run bash scripts and the
-          # target-lease plan's setsid; the build sandbox has neither
-          # /bin/bash nor util-linux on PATH unless listed here.
-          nativeCheckInputs = checkTools;
+          nativeCheckInputs = [ python3 ];
           inherit doCheck;
           checkPhaseCargoCommand = "cargoWithProfile test --locked";
 
@@ -243,7 +229,7 @@ let
         sourceRoot = "${fleetSrc.name}/fleet";
         cargoLock.lockFile = ./Cargo.lock;
 
-        nativeCheckInputs = checkTools;
+        nativeCheckInputs = [ python3 ];
         cargoBuildFlags = cargoFlags;
         inherit doCheck;
 
@@ -290,7 +276,7 @@ in
   # one of these; they retire only at the epic's close, not before.
   fleet-brokers = rustPlatform.buildRustPackage {
     pname = "fleet-brokers";
-    nativeCheckInputs = checkTools;
+    nativeCheckInputs = [ python3 ];
     version = "0.1.0";
     src = fleetSrc;
     sourceRoot = "${fleetSrc.name}/fleet";

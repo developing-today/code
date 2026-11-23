@@ -12,7 +12,6 @@ import os
 import re
 import subprocess
 import sys
-from urllib.parse import urlparse
 
 from ghb_common import backup_root, load_plan, mirror_path, valid_mirror
 
@@ -67,29 +66,6 @@ def _refs(source, *, remote=False):
     }
 
 
-def _github_repository(destination):
-    parsed = urlparse(destination)
-    if parsed.scheme != "https" or parsed.netloc != "github.com":
-        return None
-    parts = parsed.path.removesuffix(".git").strip("/").split("/")
-    if len(parts) != 2 or not all(REPO_PART.fullmatch(part) for part in parts):
-        return None
-    return "/".join(parts)
-
-
-def _gh(args):
-    try:
-        result = subprocess.run(
-            ["gh", "api", *args], capture_output=True, text=True, timeout=60
-        )
-    except subprocess.TimeoutExpired as exc:
-        raise RuntimeError("gh api timed out while preparing mirror push") from exc
-    if result.returncode:
-        detail = result.stderr.strip() or result.stdout.strip()
-        raise RuntimeError(f"gh api failed while preparing mirror push: {detail[:400]}")
-    return result.stdout.strip()
-
-
 def sync_mirror(source, destination):
     """Push all source refs and verify the destination has the identical set."""
     if not valid_mirror(source):
@@ -99,41 +75,6 @@ def sync_mirror(source, destination):
         raise ValueError(f"source mirror has no refs: {source}")
     # GitHub reserves refs/pull/* and rejects pushes to them. The durable Git
     # history contract for this plain mirror is the complete branch/tag set.
-    # Push replacement refs before changing GitHub metadata or pruning: GitHub
-    # refuses deletion of a repository's current default branch.
-    repository = _github_repository(destination)
-    default_branch = None
-    if repository:
-        default_branch = _gh([f"repos/{repository}", "--jq", ".default_branch"])
-    if default_branch and f"refs/heads/{default_branch}" not in expected:
-        source_default = _git(["--git-dir", source, "symbolic-ref", "HEAD"])
-        if not source_default.startswith("refs/heads/") or source_default not in expected:
-            raise RuntimeError(
-                "source default branch is unavailable; refusing to prune the "
-                "destination default branch"
-            )
-        # Without --prune this first push transfers the replacement branch but
-        # leaves the old default branch available until GitHub accepts the
-        # metadata change.
-        _git(
-            [
-                "--git-dir",
-                source,
-                "push",
-                destination,
-                "+refs/heads/*:refs/heads/*",
-                "+refs/tags/*:refs/tags/*",
-            ]
-        )
-        _gh(
-            [
-                f"repos/{repository}",
-                "--method",
-                "PATCH",
-                "-f",
-                f"default_branch={source_default.removeprefix('refs/heads/')}",
-            ]
-        )
     _git(
         [
             "--git-dir",

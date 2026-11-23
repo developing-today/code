@@ -276,48 +276,6 @@ mod tests {
     }
 
     #[test]
-    fn not_claimed_reason_names_a_lapsed_lease_12618() {
-        // #12618 oracle: a worker whose lease expired is told the task
-        // went back to the queue, not just that it is "not claimed";
-        // a claim held by another worker names that worker; a missing
-        // task says so; and an expiry by someone else, or one followed
-        // by a new claim, adds no lease detail.
-        let queued = json!({"status": "queued", "worker_id": null});
-        let expired = json!({
-            "worker_id": "archer",
-            "kind": "lease_expired",
-            "created_at": "2026-11-22T16:00:00Z",
-        });
-        let reason = not_claimed_reason(Some(&queued), Some(&expired), "archer");
-        assert!(
-            reason.starts_with("it is queued; archer's lease expired at 2026-11-22T16:00:00Z"),
-            "{reason}"
-        );
-        assert!(
-            reason.contains("claim it again before completing it"),
-            "{reason}"
-        );
-
-        let held = json!({"status": "claimed", "worker_id": "felix"});
-        assert_eq!(
-            not_claimed_reason(Some(&held), None, "archer"),
-            "it is claimed by felix"
-        );
-        assert_eq!(not_claimed_reason(None, None, "archer"), "no such task");
-
-        let other = json!({"worker_id": "felix", "kind": "lease_expired"});
-        assert_eq!(
-            not_claimed_reason(Some(&queued), Some(&other), "archer"),
-            "it is queued"
-        );
-        let reclaimed = json!({"worker_id": "archer", "kind": "claimed"});
-        assert_eq!(
-            not_claimed_reason(Some(&queued), Some(&reclaimed), "archer"),
-            "it is queued"
-        );
-    }
-
-    #[test]
     fn bind_rejects_malformed_session_id_8287() {
         // #8287 oracle: verb_bind refuses a malformed session id
         // as a usage error (exit 2) before any store access, so

@@ -475,10 +475,6 @@ PY
   if [ "$MODE" = userspace ]; then
     echo 'export HTTPS_PROXY=http://127.0.0.1:3130' >"$TS_STATE/fleet-proxy.env"
     say "tailnet: userspace mode; start fleet proxy with HTTPS_PROXY from $TS_STATE/fleet-proxy.env"
-  else
-    # Fleet's tailnet tunnels prefer this file over the ambient proxy,
-    # so a kernel-mode seat must not keep one from an earlier run.
-    rm -f "$TS_STATE/fleet-proxy.env"
   fi
   EFFECTIVE_HOSTNAME=$("$BIN/tailscale" --socket="$TS_SOCK" status --json 2>/dev/null |
     python3 -c 'import json,sys; print(json.load(sys.stdin).get("Self",{}).get("HostName",""))' 2>/dev/null || true)

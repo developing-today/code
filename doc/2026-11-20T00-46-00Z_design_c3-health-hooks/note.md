@@ -154,8 +154,7 @@ service-state / reachability to report down. Otherwise `transient`.
 ### Incident record (event-store shape, C6/C8 contract)
 
 Posted to the PM-stack event store via the alert throat (`POST /api/alerts`
-with the `stackHealth` extension and the full record riding as the
-`healthHook` extension, source `health-hook`), and also
+with the `stackHealth` extension, source `health-hook`), and also
 recorded as an `AuditEvent` (kind `health-hook-incident`) in the events
 stream. Shape (JSON):
 
@@ -176,7 +175,7 @@ stream. Shape (JSON):
   "evidence": {
     "reachability": { "ok": bool, "status": int|null, "error": string|null, "latencyMs": int },
     "serviceState": { "unit": string, "activeState": string, "subState": string, "result": string, "exitTimestamp": string|null },
-    "authHealth": { "status": "resolved|missing|unknown", "detail": string },
+    "authHealth": { "status": "resolved|missing|error", "detail": string },
     "recentChanges": { "commits": [string], "deployMarkerMtime": string|null, "gitSyncOk": bool|null },
     "hostHealth": { "collectedAt": string|null, "unitsDown": [string] } | null,
     "sessionLiveness": { "sessionsLastHour": int|null }  // opencode-working only
@@ -189,28 +188,6 @@ stream. Shape (JSON):
 `pm-stack-reachable` is down (Drew is blocked), `warning` when
 `opencode-working` is down, and `info` for recovery. `recoveryOf` links a
 recovery incident to the down incident it closes (by `incidentId`).
-
-### Where the record lives (two-store contract, #12599 decision b)
-
-The **alerts ledger** is the record of detail: the throat POST carries
-the full record as the `healthHook` extension alongside `stackHealth`,
-and the aggregator stores it on the incident's `opened` event `detail`
-(a down) and `closed` event `detail` (its recovery), readable per
-incident from the alerts read surface (`GET /api/alerts/:id`; the
-events also ride `/api/alerts.json`). The **events stream** is the
-audit index only: the `AuditEvent` of the append section below carries
-kind / ref / summary, never the evidence. The hook-local JSONL file is
-the hook's dedup/lineage working state, not a consumer surface —
-C6/C8 read the ledger, never the JSONL.
-
-`authHealth.status` vocabulary is `resolved | missing | unknown`:
-`resolved` — the lookup ran and the secret is there; `missing` — the
-lookup ran and no secret with that key exists; `unknown` — the lookup
-itself could not run, with the reason in `detail`.
-
-In the title templates above, `<target>` is the target's display name
-(e.g. `PM stack reachable`), the same name the `stackHealth` member
-carries as `name`.
 
 ### Category-chat note (insert-only, never reads the chat)
 

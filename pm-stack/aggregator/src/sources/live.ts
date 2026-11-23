@@ -888,9 +888,6 @@ export function liveSource(
   cfg: Config,
   opts?: {
     standingAuto?: () => Promise<boolean>;
-    // C3 health hook (#9571): fired when the laptop's OpenCode session
-    // map cannot be read on an aggregator tick. Fire-and-forget.
-    onLaptopUnreachable?: (detail: string) => void;
     onEvent?: (event: NewStreamEvent) => void;
     hasEvent?: (kind: string, ref: string) => Promise<boolean>;
     // The handler's return is the ingestion acknowledgment (#3321,
@@ -1385,7 +1382,6 @@ export function liveSource(
           laptopCache = { value: mapped, at: Date.now() };
         } else {
           laptopFailureAt = Date.now();
-          opts?.onLaptopUnreachable?.("laptop OpenCode session map unreachable on aggregator tick");
         }
         return mapped;
       })().finally(() => {
