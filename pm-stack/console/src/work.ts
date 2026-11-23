@@ -126,7 +126,6 @@ export function promptPacket(repo: string, queue: string, number: number, text: 
 }
 
 export class Work {
-  private labelReady = false;
   private replies = new Map<number, { updated: string; replies: { you: boolean; at: string; text: string }[] }>();
 
   constructor(
@@ -509,22 +508,11 @@ export class Work {
   }
 
   private async ensureLabel() {
-    if (this.labelReady) return;
-    const made = await this.ops.run(
-      [this.ops.cfg.fleetBin, "gh", "api", "-X", "POST", `repos/${this.repo}/labels`, "--input", "-"],
-      {
-        stdin: JSON.stringify({
-          name: this.ops.cfg.promptLabel,
-          color: "5319e7",
-          description: "An instruction from the owner, in his words (PM console)",
-        }),
-      },
+    await this.ops.ensureLabel(
+      this.ops.cfg.promptLabel,
+      "5319e7",
+      "An instruction from the owner, in his words (PM console)",
     );
-    // Exit 0: created. "already_exists": it was there. Anything else is a real failure.
-    if (made.code !== 0 && !/already_exists/.test(made.stdout + made.stderr)) {
-      throw new OpError(502, `could not prepare the ${this.ops.cfg.promptLabel} label`);
-    }
-    this.labelReady = true;
   }
 
   /** Turn the owner's words into an issue and a top-band task, in one pass.

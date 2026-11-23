@@ -91,7 +91,7 @@ export function parseUnits(text: string): Unit[] {
 
 /** Queue priority for owner-filed work, on the queue's design scale
  * (10, 20, 30, ...): lower is sooner and 30 is the bulk band. */
-const RANK_PRIORITY: Record<Rank, number> = {
+export const RANK_PRIORITY: Record<Rank, number> = {
   expedite: 10,
   "priority/critical": 10,
   now: 20,
@@ -202,6 +202,22 @@ export class Ops {
       body === undefined ? undefined : { stdin: JSON.stringify(body) },
     );
     return out.trim() === "" ? null : JSON.parse(out);
+  }
+
+  private labels = new Set<string>();
+  /** Make sure a label this service files under exists, with what it
+   * means written on it. Asked once per label while this runs. */
+  async ensureLabel(name: string, color: string, description: string) {
+    if (this.labels.has(name)) return;
+    const made = await this.run(
+      [this.cfg.fleetBin, "gh", "api", "-X", "POST", `repos/${this.cfg.repo}/labels`, "--input", "-"],
+      { stdin: JSON.stringify({ name, color, description }) },
+    );
+    // Exit 0: created. "already_exists": it was there. Anything else is a real failure.
+    if (made.code !== 0 && !/already_exists/.test(made.stdout + made.stderr)) {
+      throw new OpError(502, `could not prepare the ${name} label`);
+    }
+    this.labels.add(name);
   }
 
   // ---- queue -----------------------------------------------------------
