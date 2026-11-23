@@ -168,6 +168,7 @@ Usage: fleet gh <gh args...>
        fleet gh tiers
        fleet gh cache-serve [--bind <addr>]
        fleet gh cache-status
+       fleet gh closures [<item>]
        fleet gh [--cache-addr <addr>...] [--no-cache] <gh args...>
        fleet gh --raw <gh args...>
 
@@ -1355,6 +1356,20 @@ fn emit(attempt: &Attempt) {
     let _ = err.flush();
 }
 
+const TIERS_USAGE: &str = "\
+Usage: fleet gh tiers
+
+Probe every token-rotation source (the personal token, then the
+fleet's three GitHub Apps' installation tokens) and print each
+one's rate-limit headroom. Takes no arguments.";
+
+const CLOSURES_USAGE: &str = "\
+Usage: fleet gh closures [<item>]
+
+Print the close-guard closure records, one JSON object per line,
+optionally only those for one item number. Takes no other
+arguments.";
+
 /// `fleet gh tiers`: probe every rotation source and print its
 /// core and GraphQL rate-limit headroom. Labels and numbers only —
 /// token values never leave the provider. Exit 0 when every source
@@ -1483,6 +1498,10 @@ pub fn run(config: &Config, args: &[String]) -> i32 {
     // subcommands: real `gh` has no such verbs, so intercepting
     // them cannot shadow a passthrough call.
     if args.first().is_some_and(|a| a == "tiers") {
+        if args.len() == 2 && matches!(args[1].as_str(), "--help" | "-h") {
+            println!("{TIERS_USAGE}");
+            return EXIT_OK;
+        }
         if args.len() > 1 {
             return usage_error(&format!(
                 "unexpected argument '{}' for 'fleet gh tiers'",
@@ -1638,6 +1657,10 @@ pub fn run(config: &Config, args: &[String]) -> i32 {
 /// `fleet gh closures [<item>]`: print closure records, one JSON
 /// object per line, optionally only those for one item number.
 fn run_closures(tail: &[String]) -> i32 {
+    if tail.len() == 1 && matches!(tail[0].as_str(), "--help" | "-h") {
+        println!("{CLOSURES_USAGE}");
+        return EXIT_OK;
+    }
     if tail.len() > 1 {
         return usage_error(&format!(
             "unexpected argument '{}' for 'fleet gh closures'",

@@ -6,7 +6,7 @@ Every verb prints **one JSON object**. Exit codes for the domain: `0` ok · `2` 
 
 See also [Agents: enrolment, doctor and the intake ladder](../concepts/agents.md) and [fleet bridge](bridge.md).
 
-Known discrepancy: every per-verb help invocation returns **one shared USAGE text** for the whole domain — there is no per-verb help in source. The per-verb sections below are written from source semantics.
+Help: `fleet agent <verb> --help` prints that verb's own usage — its synopsis, a short description, and the shared output/exit-code footer. An unknown verb (or no verb) falls back to the shared domain USAGE. The per-verb sections below are written from source semantics.
 
 ## fleet agent kinds
 

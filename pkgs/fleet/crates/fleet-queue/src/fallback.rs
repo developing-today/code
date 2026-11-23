@@ -810,7 +810,7 @@ usage: repo-queue fallback <scan|status|claim|heartbeat|release|complete|unblock
 GitHub-backed queue used when the primary broker is down; issue\n\
 comments carry the claims. Run `repo-queue fallback <sub> --help`\n\
 for flags:\n\
-  scan <repo> <issue-number>  (--repo/--limit/--lease-min live on scan)\n\
+  scan [--repo <repo>] [--limit <1..100>] [--lease-min <minutes>]\n\
   status <repo> <issue-number>\n\
   claim <repo> <issue-number> --worker <id>\n\
   heartbeat <repo> <issue-number> --worker <id>\n\

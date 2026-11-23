@@ -101,7 +101,7 @@ usage: repo-queue checkpoint <task-id> [--worker <id>] [--lane <id>] [--stage <s
 
 **Behaviour.** Records progress + stage without touching the lease. The broker (`/checkpoint`) merges the progress (default `{}`) into the task row with `progress.last_checkpoint = {stage, at}` stamped in; upserts the per-worker KV row `checkpoints(worker_id, 'task:<id>') = {stage, progress, at}`; writes a `checkpoint` event. Fallback-switch path, like heartbeat: a primary-store failure switches, exit 6. Prints row + `mode_line`.
 
-Known discrepancy: help brackets `--stage` as optional (`[--stage <s>]`); source makes it **required** — missing → exit 2 `checkpoint: --stage is required`. This chapter documents the source behaviour.
+Help: the usage writes `--stage` bare — it is **required** — missing → exit 2 `checkpoint: --stage is required`.
 
 Exit codes: 0 ok · 2 usage / missing `--stage` / both progress flags · 3 transport · 4 broker store failure · 5 no matching claimed row · 6 fallback switch.
 
@@ -296,7 +296,7 @@ usage: repo-queue cancel <task-id> [--worker <id>] [--reason <text>]
 
 **Behaviour.** For a task that will never be worked (issue closed, self-assigned elsewhere, superseded). Sets status `cancelled`, clears worker/lease, deletes the lease row, records `result.reason_class = "cancelled"` + `result.cancel_reason`, writes a `cancelled` event. The original function only accepted `queued` or `parked` rows. Output: the row; cancel closes the timeline binding window.
 
-Known discrepancy: help brackets `--reason` as optional (`[--reason <text>]`); source makes it **required** (exit 2 without it). Source-only fact: cancel's `--worker` default is `fleet-monitor`, not `repo-worker-code`. This chapter documents the source behaviour.
+Help: the usage writes `--reason` bare — it is **required** (exit 2 without it) — and its description names cancel's `--worker` default: `fleet-monitor`, not `repo-worker-code`.
 
 Exit codes: 0 cancelled · 2 usage / missing `--reason` · 3 transport · 4 broker store failure · 5 no matching row.
 
@@ -344,7 +344,7 @@ usage: repo-queue fail <task-id> [--worker <id>] [--lane <id>] [--error <text>] 
 
 **Behaviour.** Terminal `failed`. Broker route `/fail`. Output: row or `{task, lane_ledger}`; fail closes the timeline binding window.
 
-Known discrepancy: help brackets `--error` as optional; source makes it **required** (exit 2 without it), and `--reason-class` is a closed enum (default `transient`) that help never mentions. This chapter documents the source behaviour.
+Help: the usage writes `--error` bare — it is **required** (exit 2 without it) — and its description names the `--reason-class` closed enum: `transient` (the default), `deterministic`, `blocked`.
 
 Exit codes: 0 failed · 2 usage / missing `--error` / invalid `--reason-class` · 3 transport · 4 broker store failure · 5 no matching claimed row.
 
@@ -385,7 +385,7 @@ Client-side completion dressing (all fail-soft, explicit caller values win):
 
 The gate is pure (no network): it parses the record, checks freshness (≤ **1800 s** old by default; >300 s in the future is unreadable clock skew), checks it describes the task's issue, checks the verdict against the readback, checks every PR the completion result links (`pr`/`pr_url`/`merged_pr` fields) appears in the readback, and checks any follow-up. **Every rejection leaves the task claimed** and names the defect ("…; the task remains claimed"). The five verdicts and their per-verdict rules are specified under `verify-disposition` below.
 
-Known discrepancy: `--queue` is present in help and in the client's flag list, but the source **never reads it** — it reaches no request body field. A dead flag. This chapter documents the source behaviour.
+Help: `complete` takes no `--queue` flag — an earlier dead `--queue` (parsed but never read by the source) was removed from the parser and the usage (#13174).
 
 Exit codes: 0 completed · 1 disposition gate rejection (task remains claimed) · 2 usage / non-object result / unknown telemetry field · 3 transport · 4 broker store failure · 5 no matching claimed row · 6 fallback switch.
 

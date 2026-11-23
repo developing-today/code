@@ -265,5 +265,5 @@ Actions/Blacksmith surface's host repo. Session state mapping from GitHub:
 `queued|waiting|pending|requested` → `queued`; `in_progress` → `running`;
 completed with conclusion `success|skipped|neutral` → `succeeded`,
 `cancelled` → `cancelled`, anything else → `failed`. Note that
-`session status --help` does not print help — `--help` is taken as the
-handle and errors; only bare `session --help` prints the usage.
+a help flag after the subcommand prints the session usage —
+`session status --help` is a help request, never a handle lookup.

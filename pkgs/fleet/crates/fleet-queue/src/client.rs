@@ -2536,6 +2536,49 @@ esac
         assert!(checked >= 30, "scanned only {checked} verbs");
     }
 
+    /// #13175: the parity test above cross-checks the per-verb
+    /// usages against the parsers, but TOP_USAGE — the text a cold
+    /// session reads first — drifted on its own (its fallback line
+    /// omitted `complete`; its lifecycle lines omitted `[--lane
+    /// <id>]`). Every single-verb TOP_USAGE line must list exactly
+    /// the flags of that verb's own usage synopsis. Group lines
+    /// (ending in `...`) summarize multi-verb surfaces whose own
+    /// usages carry the flags, and stay out of this check.
+    #[test]
+    fn top_usage_lines_match_per_verb_usage() {
+        let flags = |text: &str| -> Vec<String> {
+            let mut out: Vec<String> = text
+                .split(|c: char| c == ' ' || c == '[' || c == ']' || c == '|')
+                .filter_map(|w| w.strip_prefix("--"))
+                .map(|w| w.split('=').next().unwrap().to_string())
+                .collect();
+            out.sort();
+            out.dedup();
+            out
+        };
+        let mut checked = 0;
+        for line in TOP_USAGE.lines() {
+            let line = line.trim();
+            if line.is_empty() || line.ends_with("...") {
+                continue;
+            }
+            let verb = line.split_whitespace().next().unwrap_or("");
+            let text = usage(verb);
+            if text == TOP_USAGE {
+                // Not a verb with its own usage (header lines).
+                continue;
+            }
+            let synopsis = text.lines().next().unwrap();
+            assert_eq!(
+                flags(line),
+                flags(synopsis),
+                "TOP_USAGE line for {verb:?} must list exactly the flags of its usage: {line}"
+            );
+            checked += 1;
+        }
+        assert!(checked >= 25, "checked only {checked} TOP_USAGE lines");
+    }
+
     #[test]
     fn bare_list_note_fires_only_on_unfiltered_list() {
         let bare = parse_args_inner(&[], &["queue", "status", "limit"], &[]).unwrap();
