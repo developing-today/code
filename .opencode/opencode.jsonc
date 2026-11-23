@@ -1968,6 +1968,58 @@
         }
       }
     },
+    // openai-payg-free (2026-11-23, code#13677): the free half of the
+    // OpenAI free/paid alias split -- the same-model sibling of the
+    // _commandcode-free split (code#13693 slice C). The org behind
+    // openai-payg is enrolled in the data-sharing complimentary-token
+    // programme (OpenAI Help Center art. 10306912): eligible traffic
+    // is absorbed by daily token buckets BEFORE any billing. Two
+    // buckets, shared across the models in each group, resetting
+    // 00:00 UTC: the large-model group (the gpt-5 / gpt-5-codex /
+    // gpt-5-chat-latest / gpt-4.1 / gpt-4o / o1 / o3 families, incl.
+    // gpt-6-luna / -astra / -sol) at 1M tokens/day (250K for usage
+    // tiers 1-2), and the small-model group (the mini / nano
+    // families, o4-mini, codex-mini) at 10M/day (2.5M tiers 1-2). A
+    // request that would cross the day's bucket is billed in full;
+    // overage bills at normal rates; exhaustion is SILENT (no error
+    // -- the traffic just bills), so no failure-driven wall can ever
+    // fire for this alias. The bucket binds at the ORG across this
+    // alias's whole catalog (every model below is large-group),
+    // hence "wallScope": "account" -- the narrowest true scope for
+    // what is seated; a future small-group alias declares its own.
+    // instanceOf openai-payg with NO connection declarations: the
+    // alias inherits the base's credential and endpoint silently
+    // (checker rule b) -- same org, same key (BWS
+    // openai.payg-api-key); only the billing state of the traffic
+    // differs. Seats: gpt-6-luna rides free-first in luna-plan and
+    // systemone ahead of the openai-payg paid tail (checker rule c
+    // paid-tail exemption: same route, free seat at a strictly
+    // greater weight). gpt-6-astra / gpt-6-sol are defined here so
+    // future seats inherit the split; they are seated nowhere yet.
+    // gpt-6.2-astra / gpt-6.2-sol are NOT in this catalog: OpenAI's
+    // published eligible list (2026-10-20) does not name the 6.2
+    // family, so they stay paid-only under the base until OpenAI
+    // lists them. The metering wall that retires this alias's legs
+    // when the day's bucket is spent (response-usage counting in
+    // the route proxy) is filed separately -- until it lands,
+    // post-bucket traffic on these legs bills exactly as the paid
+    // tail does, bounded by the seats' weights.
+    "openai-payg-free": {
+      "instanceOf": "openai-payg",
+      "name": "OpenAI API (data-sharing complimentary tokens, free-first)",
+      "wallScope": "account",
+      "models": {
+        "gpt-6-luna": {
+          "name": "GPT-6 Luna"
+        },
+        "gpt-6-astra": {
+          "name": "GPT-6 Astra"
+        },
+        "gpt-6-sol": {
+          "name": "GPT-6 Sol"
+        }
+      }
+    },
     "claude-payg": {
       "npm": "@ai-sdk/anthropic",
       "name": "Claude API (PAYG, manual only)",
@@ -3469,6 +3521,14 @@
             "variants": { "xhigh": "high", "max": "high" }
           },
           "opencode-go-plans/gpt-6-luna",
+          // 2026-11-23 (code#13677): openai-payg-free/gpt-6-luna --
+          // the same Luna on the same org/key, drawing the daily
+          // data-sharing complimentary bucket (large-model group)
+          // before any billing. Seated ahead of the PAYG tail at
+          // weight 3; the tail stays last at 0.1 (checker rule c
+          // paid-tail exemption). Bucket mechanics + the metering-
+          // wall remainder are on the openai-payg-free block.
+          "openai-payg-free/gpt-6-luna",
           // 2026-11-23 (Drew, direct order): TEMPORARY PAYG tail --
           // openai-payg (the direct OpenAI API door) seated last at
           // low effort, at tier 0.1 below every plan leg. Remove
@@ -3490,6 +3550,7 @@
           "openai-plan/gpt-6-luna": 6,
           "opencode-go-plans/gpt-6-luna": 1,
           "opendesign/gpt-6-luna": 1,
+          "openai-payg-free/gpt-6-luna": 3,
           "openai-payg/gpt-6-luna": 0.1
         }
       },
@@ -4346,6 +4407,13 @@
         //   "zen-plans/gpt-6-luna-decision": 3,
         //   "zen-plans/gemini-decision-1": 3
         "targets": [
+          // 2026-11-23 (code#13677): openai-payg-free/gpt-6-luna --
+          // Luna drawing the daily data-sharing complimentary
+          // bucket (large-model group) before any billing, seated
+          // with the free legs at weight 3, ahead of the
+          // openai-payg paid tail at 0.1 (checker rule c paid-tail
+          // exemption). See the openai-payg-free provider block.
+          "openai-payg-free/gpt-6-luna",
           "zen-plans/jev-1.13-free",
           "google-free/gemini-decision-1",
           // 2026-11-23 (code#13675): Luna low seated last, after
@@ -4359,6 +4427,7 @@
         "selection": "round-robin",
         "autonomy": "rules",
         "weights": {
+          "openai-payg-free/gpt-6-luna": 3,
           "zen-plans/jev-1.13-free": 3,
           "google-free/gemini-decision-1": 3,
           "openai-payg/gpt-6-luna": 0.1
