@@ -673,7 +673,7 @@ acknowledgement is now a selectable mode (`JournalAckMode`):
 under, unchanged byte-for-byte), `batched` (one sync per 64 appends;
 loss bounded to the unsynced tail) and `async` (no sync on the ack
 path; durability at sync points only). Design and tradeoff record:
-`doc/2026-11-23T00-24-00Z_design_journal_ack_modes`.
+repo-root `doc/2026-11-23T00-24-00Z_design_journal_ack_modes`.
 
 No performance number is claimed for the relaxed modes here. The
 expectation that they cut the ack's sync wait is an inference from
