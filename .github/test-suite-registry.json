@@ -1362,6 +1362,7 @@
         "pkgs/id/crates/id-core/tests/numeric_order_prop.rs",
         "pkgs/id/crates/id-core/tests/numeric_value_prop.rs",
         "pkgs/id/crates/id-core/tests/signed_envelope_identity.rs",
+        "pkgs/id/crates/id-core/tests/world_definition.rs",
         "pkgs/id/crates/id-core/tests/screen_parity.rs",
         "pkgs/id/crates/id-core/tests/signer_bound_space.rs",
         "pkgs/id/crates/id-core/tests/succeeds_dag.rs",
