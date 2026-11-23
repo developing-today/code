@@ -1174,8 +1174,19 @@
     // serves /v1beta/decisions for Gemini Decision 1),
     // credential row cred_1a1e31a2756001K8DAZCcJAYfd
     // (integrationID google.muse), created 2026-11-16.
+    // 2026-11-23 (code#13693, wall-skip slice C): "wallScope" is a
+    // provider-block declaration of the scope at which that provider's
+    // quota cap actually binds -- "per-model" | "provider" | "account".
+    // Absent = the wall scope is inferred from gatherer/error evidence
+    // (the design's primary mechanism); a declared value is the override
+    // consumed when inference gets a provider wrong. Validated by
+    // bin/check-opencode-route-rules.mjs (closed vocabulary). Google's
+    // free tier caps per model per project, so each free google.*
+    // alias below declares "per-model": one capped model can never
+    // bench its free siblings on the same project.
     "google.muse": {
       "instanceOf": "google",
+      "wallScope": "per-model",
       "name": "Google AI Studio (Gemini Free - muse project)",
       "options": {
         "baseURL": "https://generativelanguage.googleapis.com/v1beta",
@@ -1191,6 +1202,7 @@
     // (integrationID google.gen-lang), created 2026-11-16.
     "google.gen-lang": {
       "instanceOf": "google",
+      "wallScope": "per-model",
       "name": "Google AI Studio (Gemini Free - gen-lang project)",
       "options": {
         "baseURL": "https://generativelanguage.googleapis.com/v1beta",
@@ -1206,6 +1218,7 @@
     // (integrationID google.personal), created 2026-11-16.
     "google.personal": {
       "instanceOf": "google",
+      "wallScope": "per-model",
       "name": "Google AI Studio (Gemini Free - personal project)",
       "options": {
         "baseURL": "https://generativelanguage.googleapis.com/v1beta",
@@ -1221,6 +1234,7 @@
     // (integrationID google.drew), created 2026-11-16.
     "google.drew": {
       "instanceOf": "google",
+      "wallScope": "per-model",
       "name": "Google AI Studio (Gemini Free - Drew project)",
       "options": {
         "baseURL": "https://generativelanguage.googleapis.com/v1beta",
@@ -1672,6 +1686,9 @@
     },
     "groq": {
       "npm": "@ai-sdk/openai-compatible",
+      // 2026-11-23 (code#13693): Groq's free caps bind per model
+      // per org, so its wall scope is per-model.
+      "wallScope": "per-model",
       "name": "Groq (Free Cloud)",
       "options": {
         "baseURL": "https://api.groq.com/openai/v1"
@@ -2010,6 +2027,12 @@
       "instanceOf": "opencode",
       "name": "OpenCode Zen (developing-today-0)"
     },
+    // 2026-11-23 (code#13693, wall-skip slice C): the free/paid alias
+    // split lands for this provider -- see the _commandcode-free block
+    // directly below it. _commandcode keeps the paid shelf only; its
+    // $10 monthly plan window binds provider-wide, so it declares
+    // "wallScope": "provider" (that provider-wide wall is exactly why
+    // the free models needed their own alias id).
     "_commandcode": {
           // 2026-11-05 (code#6117, opencode#1749): repointed from the CLI proxy
           // (:18748, @ai-sdk/openai-compatible) to the in-fork native commandcode
@@ -2039,6 +2062,7 @@
           // a burn.
           "npm": "@opencode/ai/providers/commandcode",
           "name": "Command Code (native wire emulation)",
+          "wallScope": "provider",
           "models": {
                 "deepseek/deepseek-v4-pro": {
                       "name": "DeepSeek v4 Pro (Command Code)"
@@ -2185,15 +2209,6 @@
                 "thinkingmachines/inkling-small": {
                       "name": "Inkling Small (Command Code)"
                 },
-                "poolside/laguna-s-2.1-free": {
-                      "name": "Laguna S 2.1 Free (Command Code)"
-                },
-                "inclusionai/ling-3.0-flash-sante:free": {
-                      "name": "Ling 3.0 Flash Sante:Free (Command Code)"
-                },
-                "inclusionai/ling-3.1-flash:free": {
-                      "name": "Ling 3.1 Flash:Free (Command Code)"
-                },
                 "stealth/space-bunny-alpha": {
                       "name": "Space Bunny Alpha (Command Code)"
                 },
@@ -2339,6 +2354,36 @@
 //                "qwen/qwen3.8-max-prime": {
 //                      "name": "qwen3.8 Max Prime (Command Code)"
 //                },
+          }
+    },
+    // 2026-11-23 (code#13693, wall-skip slice C): _commandcode-free is
+    // the free half of the free/paid alias split (the design's alias
+    // pattern): an instanceOf alias of _commandcode with the SAME
+    // credential source -- none declared here, exactly like the base:
+    // the native provider reads ~/.commandcode/auth.json in place, so
+    // the alias inherits silently (a differing apiKey/credential or
+    // baseURL on a -free alias fails the route-rules checker). Its
+    // catalog contains ONLY the five free models, and the paid
+    // _commandcode catalog no longer carries them, so the paid alias
+    // cannot serve them either. Walls key on provider id, so a paid
+    // wall on _commandcode (its $10 monthly plan window, declared
+    // "wallScope": "provider" on the base) can never take these free
+    // models down, and the free models' own caps bind per model
+    // ("wallScope": "per-model" here).
+    "_commandcode-free": {
+          "instanceOf": "_commandcode",
+          "name": "Command Code Free (native wire emulation)",
+          "wallScope": "per-model",
+          "models": {
+                "poolside/laguna-s-2.1-free": {
+                      "name": "Laguna S 2.1 Free (Command Code)"
+                },
+                "inclusionai/ling-3.0-flash-sante:free": {
+                      "name": "Ling 3.0 Flash Sante:Free (Command Code)"
+                },
+                "inclusionai/ling-3.1-flash:free": {
+                      "name": "Ling 3.1 Flash:Free (Command Code)"
+                },
                 "reflection/beam:free": {
                       "name": "beam:free (Command Code)"
                 },
@@ -3819,7 +3864,7 @@
         // Free, MiMo Flash Free, GLM Flash Free, Big Pickle) stay
         // last-resort in their own pools.
         "targets": [
-          // "_commandcode/reflection/beam:free",
+          // "_commandcode-free/reflection/beam:free",
           "opencode-go-plans/beam-free",
           "zen-plans/beam-free"
         ],
@@ -3834,7 +3879,7 @@
         "weights": {
           "opencode-go-plans/beam-free": 3,
           "zen-plans/beam-free": 3,
-          // "_commandcode/reflection/beam:free": 1
+          // "_commandcode-free/reflection/beam:free": 1
         }
       },
       "longcat-plan": {
@@ -4040,21 +4085,26 @@
         // bench these free legs together with the paid ones; the
         // free/paid alias split is the wall lane's design
         // (opencode#2256), not this pass.
+        // 2026-11-23 (code#13693, wall-skip slice C): that follow-up
+        // LANDED in this pass -- the seats below now name the
+        // _commandcode-free alias (see the provider block), so a
+        // provider-wide wall on _commandcode can no longer bench
+        // these free legs with the paid ones.
         "targets": [
-          "_commandcode/poolside/laguna-s-2.1-free",
-          "_commandcode/inclusionai/ling-3.0-flash-sante:free",
-          "_commandcode/inclusionai/ling-3.1-flash:free",
-          "_commandcode/reflection/beam:free",
-          "_commandcode/stealth/glyph-cluster:free"
+          "_commandcode-free/poolside/laguna-s-2.1-free",
+          "_commandcode-free/inclusionai/ling-3.0-flash-sante:free",
+          "_commandcode-free/inclusionai/ling-3.1-flash:free",
+          "_commandcode-free/reflection/beam:free",
+          "_commandcode-free/stealth/glyph-cluster:free"
         ],
         "selection": "round-robin",
         "autonomy": "rules",
         "weights": {
-          "_commandcode/poolside/laguna-s-2.1-free": 3,
-          "_commandcode/inclusionai/ling-3.0-flash-sante:free": 3,
-          "_commandcode/inclusionai/ling-3.1-flash:free": 3,
-          "_commandcode/reflection/beam:free": 3,
-          "_commandcode/stealth/glyph-cluster:free": 3
+          "_commandcode-free/poolside/laguna-s-2.1-free": 3,
+          "_commandcode-free/inclusionai/ling-3.0-flash-sante:free": 3,
+          "_commandcode-free/inclusionai/ling-3.1-flash:free": 3,
+          "_commandcode-free/reflection/beam:free": 3,
+          "_commandcode-free/stealth/glyph-cluster:free": 3
         }
       },
       "kilo-free-plan": {
