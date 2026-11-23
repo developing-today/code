@@ -221,6 +221,13 @@ API](https://developers.cloudflare.com/api/resources/workers/subresources/routes
 The current narrow Worker token cannot prove that no stale route in any account
 zone names this Worker. Therefore there is no safe check-then-create-and-verify
 sequence to run with the currently approved credentials.
+There is also an API compatibility proof missing: the metadata create endpoint
+is in Cloudflare's Beta Workers API (`/workers/workers/{worker_id}/versions`),
+while the pinned `cf workers versions create` uses the Scripts API
+(`/workers/scripts/{script_name}/versions`). The official API reference
+documents both surfaces separately and does not state that creating a Beta
+Worker makes it an existing Script for the pinned `cf` precheck/upload path.
+This is an inference from the published endpoint surfaces, not a live result.
 The existing-Worker precheck and pinned `cf@1.0.0-rc.1` Versions upload still
 fail closed for a missing target. No init or Versions upload was run.
 

@@ -218,3 +218,14 @@ main-only admission cannot be exercised from this draft. No secret, provider
 setting, route, version, or deployment was changed, and no smoke version upload
 was attempted. The bootstrap path remains blocked pending a credential and
 read-only proof arrangement that satisfy these scope limits.
+
+One further compatibility question remains unproven: the metadata creation
+endpoint is in the Beta Workers API and its versions path uses immutable
+`worker_id` (`/workers/workers/{worker_id}/versions`); pinned `cf` uses the
+separate Scripts API path keyed by `script_name`
+(`/workers/scripts/{script_name}/versions`). The published [Workers API
+reference](https://developers.cloudflare.com/api/resources/workers/) does not
+document that a Beta Worker created with the metadata endpoint is recognized
+as a Script by `cf`'s precheck and upload path. This is an API-surface inference,
+not an observed provider result. It must be resolved in a synthetic or otherwise
+approved environment before any smoke init/upload attempt.
