@@ -223,16 +223,20 @@ fn identity_profiles_differ_in_facts_not_just_names() {
             atlas["input"].as_str().unwrap().to_string(),
         )
     };
+    // The algorithm family, ignoring the report's "(observed)"
+    // qualifier on the Atlas entry (its algorithm is an observation
+    // about stored values, not a producer-pinned fact).
+    let family = |algorithm: &str| algorithm.strip_suffix(" (observed)").unwrap_or(algorithm);
     // The two BLAKE3 profiles share an algorithm and differ in what
     // is hashed and where the commitment lives; the two SHA-256
     // profiles likewise. Neither pair is interchangeable.
     let blob = facts("iroh-blob-blake3");
     let event = facts("event-payload-blake3");
-    assert_eq!(blob.0, event.0, "both profiles are BLAKE3-256");
+    assert_eq!(family(&blob.0), family(&event.0), "both profiles are BLAKE3-256");
     assert_ne!(blob, event, "blob and event BLAKE3 commitments differ in input");
     let artifact = facts("artifact-sha256");
     let atlas = facts("atlas-content-hash");
-    assert_eq!(artifact.0, atlas.0, "both profiles are SHA-256");
+    assert_eq!(family(&artifact.0), family(&atlas.0), "both profiles are SHA-256");
     assert_ne!(
         artifact, atlas,
         "artifact SHA-256 over canonical JSON differs from observed Atlas SHA-256 over chunk text"
