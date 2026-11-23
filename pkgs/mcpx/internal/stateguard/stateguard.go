@@ -68,7 +68,7 @@ func GuardCallerDaemons() func() error {
 				return fmt.Errorf(
 					"the suite disturbed the caller's real daemon records (#1992): %s; before=[%s] after=[%s]. "+
 						"Every record this suite writes belongs in its own state directory; see PinSuiteStateDirs in internal/stateguard. "+
-						"A daemon you started or stopped yourself mid-suite reads the same way.",
+						"A daemon you started or stopped yourself mid-suite reads the same way",
 					s.dir, strings.Join(s.set, " "), strings.Join(after, " "))
 			}
 		}
