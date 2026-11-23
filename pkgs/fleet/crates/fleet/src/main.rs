@@ -403,7 +403,7 @@ fn print_domain_help(surface: &Surface, d: &Domain) {
             "dispatch" => "included in this build",
             "dispatch-test" => "included in this build",
             "secrets" => "included in this build",
-            "search" => "included in this build",
+            "search" => "included in this build (options: fleet search --help)",
             "proxy" => "included in this build",
             "bridge" => "included in this build (options: fleet bridge <command> --help)",
             "agent" => "included in this build (options: fleet agent --help)",
@@ -758,6 +758,19 @@ fn run_domain_with_initializer(
         && surface.cap_state(Capability::SearchServe, d.name) == CapState::Available
     {
         println!("{}", fleet_search::serve::SERVE_USAGE);
+        return EXIT_OK;
+    }
+    // The search client's own usage answers `fleet search --help`
+    // (#12782): the registry's domain help names the verbs but not
+    // the flags a cold session needs, and the client surface is
+    // the documented one — the same carve-out the search serve
+    // role gets above (#6400).
+    #[cfg(feature = "search")]
+    if d.name == "search"
+        && args.first().is_some_and(|a| is_help_flag(a))
+        && surface.cap_state(Capability::Search, d.name) == CapState::Available
+    {
+        println!("{}", fleet_search::SEARCH_USAGE);
         return EXIT_OK;
     }
     // The proxy role under its serve spelling has its own usage

@@ -153,6 +153,15 @@ pub fn health_ok(base: &str) -> bool {
 /// connection for [`ensure_sandbox_forward`]: the seat's SSH entry
 /// under `~/tools`, or None when the seat has no wrapper tooling.
 pub(crate) fn ssh_bootstrap_wrapper(home: &PathBuf) -> Option<PathBuf> {
+    // #5343 retired laptop-ssh.sh as an SSH transport (it is the
+    // laptop-agent redirect now and starts no control master); the
+    // SSH wrapper proper is laptop-ssh-real.sh, carrying the same
+    // ControlPath/ProxyCommand options this module mirrors. Seats
+    // that predate the retirement only have the historical name.
+    let real = home.join("tools/laptop-ssh-real.sh");
+    if real.exists() {
+        return Some(real);
+    }
     let old = home.join("tools/laptop-ssh.sh");
     old.exists().then_some(old)
 }
@@ -163,22 +172,24 @@ pub(crate) fn ssh_bootstrap_wrapper(home: &PathBuf) -> Option<PathBuf> {
 /// wrapper's mechanism, it does not invent a second one):
 ///
 /// 1. bootstrap the shared laptop-ssh control connection
-///    (`~/tools/laptop-ssh.sh true`, idempotent);
+///    (`~/tools/laptop-ssh-real.sh true`, idempotent — see
+///    [`ssh_bootstrap_wrapper`] for the wrapper's name history);
 /// 2. ask the control master to forward loopback:<port> to the
 ///    laptop's service (`ssh -O forward -L ...` — a nonzero exit
 ///    also covers "already forwarded", so health is the real test);
 /// 3. the caller health-checks and proceeds.
 ///
 /// Sandbox-seat marker: the wrapper tooling exists under $HOME
-/// (`~/tools/laptop-ssh.sh`). On the laptop seat the service binds
+/// (`~/tools/laptop-ssh-real.sh`, or the historical
+/// `~/tools/laptop-ssh.sh`). On the laptop seat the service binds
 /// the same loopback directly and this is never called. Every step
 /// is best-effort: a failure here just means the service attempt
 /// that follows fails and the loud fallback engages.
 pub fn ensure_sandbox_forward(base: &str) {
     let home = home_dir();
-    if !home.join("tools/laptop-ssh.sh").exists() {
+    let Some(wrapper) = ssh_bootstrap_wrapper(&home) else {
         return;
-    }
+    };
     if health_ok(base) {
         return;
     }
@@ -215,7 +226,7 @@ pub fn ensure_sandbox_forward(base: &str) {
     .map(|s| s.to_string())
     .collect();
     let target = "user@100.99.113.103";
-    let _ = std::process::Command::new(home.join("tools/laptop-ssh.sh"))
+    let _ = std::process::Command::new(&wrapper)
         .arg("true")
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())

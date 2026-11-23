@@ -71,7 +71,7 @@ const EXIT_UNAVAILABLE: i32 = 3;
 
 const DEFAULT_MODEL: &str = "Snowflake/snowflake-arctic-embed-m-v2.0";
 
-const SEARCH_USAGE: &str = "\
+pub const SEARCH_USAGE: &str = "\
 usage: fleet search <query> [options]
        fleet search search <query> [options]   (atlas-search's own shape)
        fleet search get-chunk <chunk-id> [--neighbors N] [--text]
@@ -117,7 +117,45 @@ Routing defaults (Atlas Q3): the sandbox seat prefers the service,
 with a loud standalone fallback; the laptop seat (the serving host)
 defaults to standalone. get-chunk is job-scoped in the protocol, so
 it always runs standalone, with a loud note when via-service is in
-effect — atlas-search's own shape for that verb.";
+effect — atlas-search's own shape for that verb.
+
+get-chunk:
+  fleet search get-chunk <chunk-id> [--neighbors N] [--text]
+  Fetch one chunk with its provenance (session, client,
+  sensitivity). --neighbors N includes N chunks either side in
+  the same message; --text renders human-readable instead of
+  JSON. `fleet search get-chunk --help` prints the verb's usage.
+
+Provisioning (via-service): the client presents a per-seat
+bearer token — ATLAS_SEARCH_TOKEN, else the JSON file at
+~/.config/atlas-search/client.json (a JSON object with one
+token string field, mode 0600). Identities are named in the
+service config and the
+server clamps --max-sensitivity to the identity's ceiling
+(drew-cli secret-bearing; sandbox-scripts personal). A seat
+with no client.json cannot use the service route and falls
+back to standalone; see pkgs/fleet/docs/verbs.md, section
+`search` — Atlas, for how a seat is provisioned.
+
+Examples:
+  fleet search 'queue broker lease' --k 5 --text
+  fleet search search 'onnx build failure' --mode fts --since 2026-11-01
+  fleet search get-chunk 112081 --neighbors 2 --text";
+
+const GET_CHUNK_USAGE: &str = "\
+usage: fleet search get-chunk <chunk-id> [--neighbors N] [--text]
+
+Fetch one chunk from the Atlas corpus with its provenance — the
+chunk a `fleet search` hit named, with the session, client, and
+sensitivity it came from.
+
+  --neighbors N   include N chunks either side in the same message
+  --text          human-readable output instead of JSON
+
+get-chunk is job-scoped in the search protocol, so it always runs
+through the standalone atlas-search artifact, with a loud note
+when via-service is in effect — atlas-search's own shape for
+this verb.";
 
 /// Which route a search takes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -546,11 +584,16 @@ fn cmd_search(config: &Config, raw: &[String]) -> i32 {
 /// (`--help`/`-h` anywhere in its arguments; raw includes the
 /// `get-chunk` token).
 fn get_chunk_wants_help(raw: &[String]) -> bool {
-    let _ = raw;
-    false
+    raw.iter().any(|a| a == "--help" || a == "-h")
 }
 
 fn cmd_get_chunk(config: &Config, raw: &[String]) -> i32 {
+    // The verb answers its own help (#12782): a help flag is never
+    // delegated to the standalone artifact as a chunk argument.
+    if get_chunk_wants_help(raw) {
+        println!("{GET_CHUNK_USAGE}");
+        return EXIT_OK;
+    }
     // raw includes the `get-chunk` token. The verb always serves
     // standalone (job-scoped in the protocol — atlas-search's own
     // shape); when via-service was *requested* (flag, env, or
