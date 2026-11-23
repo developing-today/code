@@ -754,9 +754,11 @@ mod tests {
         // Oracle: the #805 acceptance as decided (design §7, Q2 option B):
         // complete logical View payload bytes, full snapshot and patch
         // encoded with the same negotiated version and codec, at 80x24
-        // and 200x60. The F11.9 raw guest-frame sizes are a different
-        // layer and stay out of the ratio.
-        for (width, height) in [(80_usize, 24_usize), (200_usize, 60_usize)] {
+        // and at the largest valid screen, 120x50 (the screen bounds
+        // are 120x50, so the design's 200x60 cannot be constructed).
+        // The F11.9 raw guest-frame sizes are a different layer and
+        // stay out of the ratio.
+        for (width, height) in [(80_usize, 24_usize), (120_usize, 50_usize)] {
             let full = document_screen(width, height);
             let changed = sparse_redraw(&full);
             let blank = ScreenSurface::from_cells(width, height, vec![
