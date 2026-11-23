@@ -170,14 +170,18 @@ def recover_interrupted_swap(home):
     swap marker (the incoming record, written before the first
     rename) plus the import record decide what their presence means:
     - marker present, and the import record is not the marker's
-      record: the swap never committed -- the live tables are a
-      partial new copy. Drop the whole live set and the staging
-      leftovers, rename the retiring set back, and recreate the
-      recorded schema's objects (indexes were dropped before the
-      renames; they and the views/triggers come back from the
-      record; with no record -- a first import that never committed
-      -- the tables come back and the objects are rebuilt by the
-      next successful export).
+      record: the swap never committed -- the live tables are a mix
+      of untouched old copies and renamed-in new copies. The marker
+      carries the pre-swap live set (`replaces`): drop a live table
+      only when its retiring copy exists (a new copy shadows it) or
+      it is an incoming table that did not exist before the swap;
+      keep every other live table, drop the staging leftovers,
+      rename the retiring set back, and recreate the recorded
+      schema's objects (indexes were dropped before the renames;
+      they and the views/triggers come back from the record; with
+      no record -- a first import that never committed -- the
+      tables come back and the objects are rebuilt by the next
+      successful export).
     - marker absent, or the import record is the marker's record:
       the swap committed and only the retiring cleanup was lost.
       Drop the retiring tables.
@@ -208,9 +212,14 @@ def recover_interrupted_swap(home):
         if marker is not None:
             _delete_meta(home, "swap")
         return False
-    live = {name for name, _sql in _tables(schema)}
+    incoming = set(marker["counts"])
+    replaced = set(marker.get("replaces", list(retiring)))
     _drop_objects(home, schema)
-    _drop_tables(home, list(live))
+    for name, _sql in _tables(schema):
+        if name.startswith((STAGE_PREFIX, RETIRE_PREFIX)):
+            continue
+        if name in retiring or (name in incoming and name not in replaced):
+            home.execute(f'DROP TABLE IF EXISTS "{name}"')
     _drop_tables(home, staging)
     for base, retired in retiring.items():
         home.execute(f'ALTER TABLE "{retired}" RENAME TO "{base}"')
@@ -303,8 +312,10 @@ def _swap(home, schema, counts, record):
         for name, _sql in _tables(current)
         if not name.startswith((STAGE_PREFIX, RETIRE_PREFIX))
     ]
+    marker = dict(record)
+    marker["replaces"] = live_tables
     try:
-        _write_meta(home, "swap", record)
+        _write_meta(home, "swap", marker)
         _drop_objects(home, current)
         for name in live_tables:
             home.execute(

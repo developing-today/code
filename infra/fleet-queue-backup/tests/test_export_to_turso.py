@@ -315,6 +315,41 @@ class TestSwapRecovery(ExportCase):
         result = self.run_export()
         self.assertEqual(result["rows"], 8)
 
+    def test_early_crash_keeps_untouched_live_tables(self):
+        """A swap that died during the rename-aside phase: one old
+        table retiring, the rest still live and untouched, one
+        incoming-only table already renamed in. Recovery must keep
+        the untouched old tables, drop the incoming-only one, and
+        rename the retiring table back."""
+        self.run_export()
+        before = {
+            t: table_rows(self.d1_conn, t)
+            for t in ("tasks", "notes", "seq", "_fleet_queue_backup_meta")
+        }
+        record = export_to_turso.read_import_record(self.home)
+        export_to_turso._write_meta(
+            self.home,
+            "swap",
+            {
+                **record,
+                "import_id": "incoming-never-committed",
+                "counts": {**record["counts"], "events": 1},
+                "replaces": ["tasks", "notes", "seq", "_fleet_queue_backup_meta"],
+            },
+        )
+        self.home_conn.execute(
+            f'ALTER TABLE "seq" RENAME TO "{export_to_turso.RETIRE_PREFIX}seq"'
+        )
+        self.home_conn.execute(
+            "CREATE TABLE events (id INTEGER PRIMARY KEY, kind TEXT)"
+        )
+        self.home_conn.execute("INSERT INTO events VALUES (1, 'partial')")
+        self.home_conn.commit()
+        self.assertTrue(export_to_turso.recover_interrupted_swap(self.home))
+        for table, rows in before.items():
+            self.assertEqual(table_rows(self.home_conn, table), rows)
+        self.assertNotIn("events", schema_names(self.home_conn, "table"))
+
     def test_committed_swap_leftover_retiring_is_cleaned_not_rolled_back(self):
         self.run_export()
         self.d1_conn = make_d1(2)
