@@ -95,6 +95,7 @@ var harnessSetMCPX = map[string]struct{}{
 // one. A variable the harness must control belongs in harnessSetMCPX, not
 // here.
 var safeMCPX = map[string]struct{}{
+	"MCPX_ADAPTERS_ALLOW_BARE":                  {},
 	"MCPX_ARTIFACTS_CHUNK_BYTES":                {},
 	"MCPX_ARTIFACTS_DELIVERY":                   {},
 	"MCPX_ARTIFACTS_DIR":                        {},
