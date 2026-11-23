@@ -934,7 +934,7 @@ describe("over HTTP", () => {
     const { d, w } = served((c) =>
       c.path.includes("/issues?labels=") ? [] : c.path.includes("/contents/") ? { content: "" } : { items: [] },
     );
-    const caps = await (await handle(get("/console/api/roadmaps"), d)).json();
+    const caps = (await (await handle(get("/console/api/roadmaps"), d)).json()) as { id: string; title: string; file: string | null }[];
     expect(caps.slice(0, 4)).toEqual([
       { id: "id", title: "id", file: "planning/roadmaps/id.md" },
       { id: "fleet", title: "Fleet", file: null },
@@ -956,7 +956,7 @@ describe("over HTTP", () => {
     expect((await handle(get("/console/api/roadmap?area=nonesuch"), d)).status).toBe(400);
     expect((await handle(get("/console/api/roadmap"), d)).status).toBe(400);
     expect(await (await handle(get("/console/api/bugs"), d)).json()).toMatchObject({ open: [], fixed: [] });
-    expect((await (await handle(get("/console/api/intake"), d)).json()).items).toEqual([]);
+    expect(((await (await handle(get("/console/api/intake"), d)).json()) as { items: unknown[] }).items).toEqual([]);
     const before = w.calls.length;
     await handle(get("/console/api/bugs?fresh=1"), d);
     await handle(get("/console/api/intake?fresh=1"), d);
@@ -983,7 +983,7 @@ describe("over HTTP", () => {
       d,
     );
     expect(res.status).toBe(200);
-    expect((await res.json()).result).toEqual({
+    expect(((await res.json()) as { result: Record<string, unknown> }).result).toEqual({
       issue: 13020,
       url: "https://github.com/x/y/issues/13020",
       commented: false,

@@ -76,7 +76,7 @@ async function setup(options: { direct?: boolean } = {}) {
   /** The release GitHub holds at the app's fixed address: its
    * description and its file, either of which may be missing; whether
    * GitHub can be reached at all; and every file asked for, in order. */
-  const github: { version: unknown; apk: Uint8Array | null; down: boolean; asked: string[] } = {
+  const github: { version: unknown; apk: Uint8Array<ArrayBuffer> | null; down: boolean; asked: string[] } = {
     version: null,
     apk: null,
     down: false,
@@ -803,7 +803,7 @@ async function setup(options: { direct?: boolean } = {}) {
   /** Each report the host sent, as it read. */
   const reports: { sections: { name: string }[]; have: Record<string, unknown> }[] = [];
   /** The signed Android build on the host, if any, and how often it was read to be sent. */
-  const build: { bytes: Uint8Array | null; at: number; reads: number; corrupt: boolean; unreadable: boolean } = {
+  const build: { bytes: Uint8Array<ArrayBuffer> | null; at: number; reads: number; corrupt: boolean; unreadable: boolean } = {
     bytes: null,
     at: 0,
     reads: 0,
@@ -1123,7 +1123,7 @@ describe("before the host's first report", () => {
     expect(answer).toMatchObject({ ok: true, watching: false, notify: false, want: [], commands: [] });
     // The key came from the host itself, through the tunnel.
     expect(w.hostSaw).toEqual(["GET /console/edge/key"]);
-    const kept = w.stored.get("key") as { kid: string; jwk: Record<string, string> };
+    const kept = w.stored.get("key") as { kid: string; jwk: { kty: string; crv: string; x: string; y: string } };
     expect(kept.jwk).toEqual(await w.link.now.publicKey());
     expect(JSON.stringify([...w.stored.entries()])).not.toContain('"d":'); // never a private key
     const health = (await (await w.browse("/console/health", { token: null })).json()) as Record<string, unknown>;
@@ -2164,7 +2164,7 @@ describe("the Android build", () => {
   });
 
   /** A release as android/release.sh describes it, for these bytes. */
-  const described = async (bytes: Uint8Array, name: string, code: number) => {
+  const described = async (bytes: Uint8Array<ArrayBuffer>, name: string, code: number) => {
     const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
     return {
       name,
@@ -2480,7 +2480,7 @@ describe("the host's report is the host's", () => {
     w.now.t += 100;
     const unread = await report(w, () => {}, hosts, undefined, flooder);
     expect(unread.status).toBe(429);
-    expect((await unread.json()).error).toMatch(/too many reports from this address/);
+    expect(((await unread.json()) as { error: string }).error).toMatch(/too many reports from this address/);
     // "Before anything is read" is meant literally: a body that fails
     // the moment it is touched is never touched.
     const untouchable = (headers: Record<string, string>) =>
@@ -3738,7 +3738,7 @@ describe("the edge does the core itself", () => {
       about: { issue: 301 },
       rank: "expedite",
     });
-    expect((await note.json()).result).toMatchObject({ issue: 301, commented: true, queued: true });
+    expect(((await note.json()) as { result: Record<string, unknown> }).result).toMatchObject({ issue: 301, commented: true, queued: true });
     expect((w.ghComments[301] ?? []).some((c) => c.body.startsWith("do this first\n\n---\n"))).toBe(true);
     expect(w.ghLabels[301]).toEqual(["owner/intake", "expedite"]);
     // As a session: the owner's prompt, with the routing labels added.
@@ -3748,7 +3748,7 @@ describe("the edge does the core itself", () => {
       text: "pick these up first",
       mode: "session",
     });
-    expect((await session.json()).result).toMatchObject({ issue: 501, commented: false, queued: true });
+    expect(((await session.json()) as { result: Record<string, unknown> }).result).toMatchObject({ issue: 501, commented: false, queued: true });
     expect(w.ghLabels[501]).toEqual(["owner/prompt", "expedite", "source/human", "owner/intake", "app/fleet"]);
     // Three tasks wait for a machine, each as the action that builds it there.
     const at = new Date(w.now.t).toISOString();

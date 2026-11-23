@@ -100,7 +100,7 @@ export async function route(request: Request, io: Io): Promise<Response> {
     });
   }
 
-  const forHost = request.clone();
+  const forHost = request.clone() as Request;
   let res = await io.state(request);
   let what = res.headers.get("x-pm-next");
 
