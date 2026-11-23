@@ -31,9 +31,9 @@
 //!   raw-CSS winner is recorded as a platform-default entry, not
 //!   carried as CSS text.
 //! * **States are not lowered.** As in the web lowering, #5851
-//!   §3.6-style state composition operates on the #5850 state
-//!   grammar, which reaches the pipeline through the `assert`
-//!   slot stage 2 still carries opaquely. On native targets the
+//!   §3.6-style state composition operates on state deltas, which
+//!   #5850 §5 fixes as target-derived — the `assert` slot names
+//!   no per-state styling. On native targets the
 //!   standard control's own state behaviour is the rendering
 //!   (#5852 §3.8), checked against the contract by conformance,
 //!   not re-created here.
