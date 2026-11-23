@@ -2,14 +2,45 @@
 // is synthetic; these tests do not prove Cloudflare Gateway/WARP/DNS enrollment.
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import {readFile} from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Miniflare } from 'miniflare';
 import { b64url, operations, signRequest } from './protocol.mjs';
+import bridgeWorker from './worker.mjs';
+import {gatewayFetch} from './gateway-fetch.mjs';
+import {BRIDGE_HOST,clearAccessKeyCacheForTests,verifyAccessServiceToken} from './access-auth.mjs';
 const here = dirname(fileURLToPath(import.meta.url));
 const host = 'private-bridge-staging.invalid';
 const account = 'a'.repeat(32), policy = '11111111-1111-1111-1111-111111111111', posture = '22222222-2222-2222-2222-222222222222';
 const email = 'synthetic-owner@example.invalid';
+
+test('configured gateway direct-fetch adapter preserves the Cloudflare Access context',async()=>{
+  const entrypoint=await readFile(new URL('./gateway.mjs',import.meta.url),'utf8');
+  assert.match(entrypoint,/fetch\(request, env, ctx\)\s*\{\s*return gatewayFetch\(bridge, request, env, ctx\);/);
+  clearAccessKeyCacheForTests();
+  const issuer='https://gateway-test.cloudflareaccess.com',audience='gateway-access-audience-1234567890';
+  const clientId='gateway-caller-client',nowMs=Date.now(),seconds=Math.floor(nowMs/1000);
+  const rsa=await crypto.subtle.generateKey({name:'RSASSA-PKCS1-v1_5',modulusLength:2048,publicExponent:new Uint8Array([1,0,1]),hash:'SHA-256'},true,['sign','verify']);
+  const jwk=await crypto.subtle.exportKey('jwk',rsa.publicKey);Object.assign(jwk,{kid:'gateway-key',alg:'RS256',use:'sig'});
+  const encode=value=>Buffer.from(JSON.stringify(value)).toString('base64url');
+  const head=encode({alg:'RS256',typ:'JWT',kid:'gateway-key'});
+  const claims=encode({type:'app',aud:[audience],exp:seconds+300,iat:seconds-1,iss:issuer,common_name:clientId,sub:''});
+  const input=`${head}.${claims}`;
+  const signature=Buffer.from(await crypto.subtle.sign('RSASSA-PKCS1-v1_5',rsa.privateKey,new TextEncoder().encode(input))).toString('base64url');
+  const request=new Request(`https://${BRIDGE_HOST}/v1/read`,{method:'POST',headers:{'cf-access-jwt-assertion':`${input}.${signature}`,'x-bridge-principal':'caller'}});
+  const ed=await crypto.subtle.generateKey('Ed25519',true,['sign','verify']);
+  const principal={id:'caller',role:'caller',device:'amd',publicKey:b64url(await crypto.subtle.exportKey('raw',ed.publicKey)),accessClientId:clientId,scopes:[...operations],issuedAt:nowMs-1000,expiresAt:nowMs+600000,revoked:false};
+  let received;
+  const env={ENABLED:'true',BRIDGE_HOST,ACCESS_ISSUER:issuer,ACCESS_AUDIENCE:audience,BRIDGE_REGISTRY:JSON.stringify({audience:'bridge-signing-audience',principals:[principal,{...principal,id:'device',role:'device',accessClientId:'gateway-device-client',publicKey:b64url(await crypto.subtle.exportKey('raw',(await crypto.subtle.generateKey('Ed25519',true,['sign','verify'])).publicKey))}]}),BRIDGE:{idFromName:id=>id,get:()=>({fetch:async req=>{received=req;return Response.json({ok:true});}})}};
+  const ctx={access:{aud:audience}};
+  await verifyAccessServiceToken(request,env,ctx,{fetchImpl:async()=>Response.json({keys:[jwk]}),nowMs});
+  const response=await gatewayFetch(bridgeWorker,request,env,ctx);
+  assert.equal(response.status,200);
+  assert.equal(received.headers.get('x-bridge-principal'),'caller');
+  assert.equal(received.headers.get('cf-access-jwt-assertion'),null);
+  assert.equal((await response.json()).ok,true);
+});
 const harnessSource = `
 export default {
  async fetch(request, env) {

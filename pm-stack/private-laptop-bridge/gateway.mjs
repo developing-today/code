@@ -2,6 +2,7 @@
 // Context contract: https://developers.cloudflare.com/cloudflare-one/traffic-controls/integrate-workers/available-context/
 import { WorkerEntrypoint } from 'cloudflare:workers';
 import bridge, {dispatchSignedRequest} from './worker.mjs';
+import {gatewayFetch} from './gateway-fetch.mjs';
 export { PrivateLaptopBridge } from './worker.mjs';
 
 const paths = new Set(['/v1/call', '/v1/poll', '/v1/result', '/v1/read']);
@@ -52,4 +53,4 @@ export class GatewayMiddleware extends WorkerEntrypoint {
 // The fixed custom hostname enters the Worker directly, but only after the
 // Worker validates Access's signed service-token JWT and the DO independently
 // validates the Ed25519 request. No proxy fallback or origin fetch exists.
-export default {fetch(request, env) { return bridge.fetch(request, env); }};
+export default {fetch(request, env, ctx) { return gatewayFetch(bridge, request, env, ctx); }};

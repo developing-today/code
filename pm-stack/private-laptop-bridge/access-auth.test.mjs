@@ -112,6 +112,11 @@ test('deployed fetch binds signed Access identity to the same Ed25519 principal 
   const crossRole=new Request(`https://${BRIDGE_HOST}/v1/poll`,{method:'POST',body:'{}',headers:{'x-bridge-principal':'aster-caller','cf-access-jwt-assertion':jwt}});
   assert.equal((await worker.fetch(crossRole,workerEnv,accessContext)).status,401);
   assert.equal(received,null);
+  const unknownJwt=await f.token({common_name:'unknown-client-123'},undefined,currentNow);
+  assert.equal(await verifyAccessServiceToken(new Request(`https://${BRIDGE_HOST}/v1/poll`,{method:'POST',headers:{'cf-access-jwt-assertion':unknownJwt}}),workerEnv,accessContext,{nowMs:currentNow,fetchImpl:f.fetchImpl}),'unknown-client-123');
+  const unknownPrincipal=new Request(`https://${BRIDGE_HOST}/v1/poll`,{method:'POST',body:'{}',headers:{'x-bridge-principal':'unknown-principal','cf-access-jwt-assertion':unknownJwt}});
+  assert.equal((await worker.fetch(unknownPrincipal,workerEnv,accessContext)).status,401);
+  assert.equal(received,null);
   principal.revoked=true;
   workerEnv.BRIDGE_REGISTRY=JSON.stringify({audience:'bridge-signing-audience',principals:[principal,caller]});
   assert.equal((await worker.fetch(req,workerEnv,accessContext)).status,401);
