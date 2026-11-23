@@ -40,7 +40,7 @@ pub enum NotifyMode {
 }
 
 /// One explicit follow: the subscriber's private subscription object.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BoardSubscription {
     /// Subscriber's canonical Ed25519 public key (hex).
@@ -55,6 +55,21 @@ pub struct BoardSubscription {
     /// Muted subscriptions keep the follow but leave the feed.
     #[serde(default)]
     pub muted: bool,
+}
+
+/// Redacted on purpose: the subscriber key is the follower's private
+/// identity (invariant 4), and `Debug` output lands in logs — it must
+/// never become an enumeration surface the API shape forbids (#13452).
+impl std::fmt::Debug for BoardSubscription {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BoardSubscription")
+            .field("subscriber", &"<redacted>")
+            .field("board", &self.board)
+            .field("created_at", &self.created_at)
+            .field("notify_mode", &self.notify_mode)
+            .field("muted", &self.muted)
+            .finish()
+    }
 }
 
 impl BoardSubscription {
@@ -78,10 +93,23 @@ impl BoardSubscription {
 ///
 /// Keyed by `(subscriber, board)`: one subscription per viewer per
 /// board, at most. The ONLY writer is [`SubscriptionStore::follow`];
-/// reads never insert.
-#[derive(Clone, Debug, Default)]
+/// reads never insert. `Debug` is redacted for the same reason the
+/// reads are per-subscriber: it renders a count, never the keyed map
+/// (#13452).
+#[derive(Clone, Default)]
 pub struct SubscriptionStore {
     subscriptions: BTreeMap<(String, ArtifactHash), BoardSubscription>,
+}
+
+/// Redacted on purpose: the derived form would dump every subscriber
+/// key with every board they follow — the whole follower graph — into
+/// any log line that formats the store (#13452).
+impl std::fmt::Debug for SubscriptionStore {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SubscriptionStore")
+            .field("subscription_count", &self.subscriptions.len())
+            .finish()
+    }
 }
 
 impl SubscriptionStore {
@@ -304,6 +332,33 @@ mod subscription_tests {
         assert!(store.get(&other_viewer(), &board).is_none());
         assert!(store.subscriptions_for(&other_viewer()).is_empty());
         assert_eq!(store.subscriptions_for(&viewer()).len(), 1);
+    }
+
+    #[test]
+    fn oracle_debug_output_never_renders_subscriber_keys() {
+        // Oracle invariant 4, via #13452: `Debug` is a log surface, so
+        // it must not render subscriber keys either — neither for one
+        // subscription nor for the store (whose derived form dumped
+        // the entire follower graph).
+        let mut store = SubscriptionStore::new();
+        let board = hash('a');
+        store.follow(&viewer(), &board, 1).unwrap();
+        store.follow(&other_viewer(), &board, 1).unwrap();
+        let store_rendered = format!("{store:?}");
+        assert!(
+            !store_rendered.contains(&viewer()),
+            "store Debug leaks subscriber key: {store_rendered}"
+        );
+        assert!(
+            !store_rendered.contains(&other_viewer()),
+            "store Debug leaks subscriber key: {store_rendered}"
+        );
+        let subscription = store.get(&viewer(), &board).unwrap();
+        let subscription_rendered = format!("{subscription:?}");
+        assert!(
+            !subscription_rendered.contains(&viewer()),
+            "subscription Debug leaks subscriber key: {subscription_rendered}"
+        );
     }
 
     #[test]
