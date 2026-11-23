@@ -5,17 +5,11 @@ import { appendFile, readFile, readdir, writeFile } from 'node:fs/promises';
 import { API, INIT_WORKFLOW, WORKER_NAME, verifySmokeEmptyTarget, verifySmokePostUpload } from './bootstrap-smoke.mjs';
 
 const REPOSITORY = 'developing-today/code';
-export const UPLOAD_WORKFLOW = '.github/workflows/private-laptop-bridge-smoke-upload.yml';
-// Pin the initializer and upload-side receipt contract, along with the exact validation/tool contract.
+// Compare only files executed by the initializer; upload-only changes do not invalidate its receipt.
 export const INIT_COMPAT_PATHS = [
   INIT_WORKFLOW,
-  UPLOAD_WORKFLOW,
   'pm-stack/private-laptop-bridge/bootstrap-smoke.mjs',
   'pm-stack/private-laptop-bridge/bootstrap-smoke.test.mjs',
-  'pm-stack/private-laptop-bridge/smoke-upload.mjs',
-  'pm-stack/private-laptop-bridge/smoke-upload.test.mjs',
-  'pm-stack/private-laptop-bridge/package.json',
-  'pm-stack/private-laptop-bridge/package-lock.json',
 ];
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const SHA = /^[0-9a-f]{40}$/;
