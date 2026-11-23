@@ -52,5 +52,6 @@ pub mod store_traits;
 pub mod tag_claims;
 pub mod tag_index;
 pub mod tags;
+pub mod turso;
 
 pub use store::STORE_PATH;

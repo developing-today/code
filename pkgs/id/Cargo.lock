@@ -5059,6 +5059,7 @@ name = "id-store"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "base64 0.22.1",
  "blake3",
  "cbor-core",
  "clap",
@@ -5078,6 +5079,7 @@ dependencies = [
  "postcard",
  "proptest",
  "redb 4.6.0",
+ "reqwest",
  "rusqlite",
  "serde",
  "serde_bytes",
