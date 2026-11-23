@@ -148,12 +148,15 @@ func fnv32(s string) uint32 {
 
 // VectorIndex holds tool embeddings in memory and optionally persists them to SQLite.
 type VectorIndex struct {
-	mu      sync.RWMutex
-	vectors map[string]Vector
-	db      *sql.DB
+	mu            sync.RWMutex
+	vectors       map[string]Vector
+	db            *sql.DB
 	// droppedOnLoad counts persisted rows loadFromDB skipped because their
 	// blob was not a VectorDim vector.
 	droppedOnLoad int
+	// generation increments on every embedder swap. Reads/writes must
+	// observe the same generation; a stale generation is rejected.
+	generation uint64
 }
 
 // DroppedOnLoad reports how many persisted rows loadFromDB skipped because
@@ -289,4 +292,55 @@ func (idx *VectorIndex) Close() error {
 		return idx.db.Close()
 	}
 	return nil
+}
+
+// Generation reports the current embedding-space generation. It increments
+// on every Flush, so a caller can detect that cached vectors were
+// invalidated while it was computing (#13616).
+func (idx *VectorIndex) Generation() uint64 {
+	idx.mu.RLock()
+	defer idx.mu.RUnlock()
+	return idx.generation
+}
+
+// Flush invalidates every cached tool vector, in memory and in SQLite, and
+// advances the generation. Call it when the active embedder is replaced: all
+// embedders share VectorDim, so a stale cache would silently mix vector
+// spaces with no dimension guard tripping.
+func (idx *VectorIndex) Flush() {
+	idx.mu.Lock()
+	defer idx.mu.Unlock()
+	idx.vectors = make(map[string]Vector)
+	idx.generation++
+	if idx.db != nil {
+		_, _ = idx.db.Exec(`DELETE FROM tool_embeddings`)
+	}
+}
+
+// PutIfCurrent stores vec only when the index is still at generation gen.
+// It reports whether the store happened. Semantic search captures the
+// generation before running inference and commits with it, so a swap that
+// lands mid-inference cannot repopulate the fresh cache with old-space
+// vectors.
+func (idx *VectorIndex) PutIfCurrent(key string, vec Vector, gen uint64) bool {
+	if err := checkDim(vec); err != nil {
+		return false
+	}
+	idx.mu.Lock()
+	defer idx.mu.Unlock()
+	if idx.generation != gen {
+		return false
+	}
+	idx.vectors[key] = vec
+	if idx.db != nil {
+		blob := make([]byte, len(vec)*4)
+		for i, v := range vec {
+			binary.LittleEndian.PutUint32(blob[i*4:(i+1)*4], math.Float32bits(v))
+		}
+		_, _ = idx.db.Exec(`
+			INSERT OR REPLACE INTO tool_embeddings (key, vector)
+			VALUES (?, ?)
+		`, key, blob)
+	}
+	return true
 }
