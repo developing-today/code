@@ -1365,6 +1365,43 @@ pub fn task_from_packet(packet: &Value, queue: &str) -> Value {
 
 #[cfg(test)]
 mod tests {
+    /// #13177: the published packet schema (pkgs/fleet/repo-task-v1.schema.json)
+    /// and this validator must agree on the kind and repo enums. The
+    /// validator is canonical: KINDS carries second_pass/feature_slice
+    /// (dedicated payload rules below) and FLEET_REPOS grandfathers the
+    /// pre-rename dezren39/nix name for in-flight dedupe keys.
+    #[test]
+    fn schema_enums_match_validator() {
+        let schema_path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../repo-task-v1.schema.json"
+        );
+        let raw = std::fs::read_to_string(schema_path)
+            .expect("repo-task-v1.schema.json must exist beside pkgs/fleet");
+        let schema: Value = serde_json::from_str(&raw).expect("schema must parse");
+        let enum_of = |field: &str| -> Vec<String> {
+            schema["properties"][field]["enum"]
+                .as_array()
+                .unwrap_or_else(|| panic!("schema properties.{field}.enum must be an array"))
+                .iter()
+                .map(|v| {
+                    v.as_str()
+                        .unwrap_or_else(|| panic!("schema {field} enum entries must be strings"))
+                        .to_string()
+                })
+                .collect()
+        };
+        assert_eq!(
+            enum_of("kind"),
+            KINDS,
+            "schema kind enum drifted from KINDS"
+        );
+        assert_eq!(
+            enum_of("repo"),
+            FLEET_REPOS,
+            "schema repo enum drifted from FLEET_REPOS"
+        );
+    }
     use super::*;
     use proptest::prelude::*;
 
