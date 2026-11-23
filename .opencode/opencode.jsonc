@@ -1174,8 +1174,19 @@
     // serves /v1beta/decisions for Gemini Decision 1),
     // credential row cred_1a1e31a2756001K8DAZCcJAYfd
     // (integrationID google.muse), created 2026-11-16.
+    // 2026-11-23 (code#13693, wall-skip slice C): "wallScope" is a
+    // provider-block declaration of the scope at which that provider's
+    // quota cap actually binds -- "per-model" | "provider" | "account".
+    // Absent = the wall scope is inferred from gatherer/error evidence
+    // (the design's primary mechanism); a declared value is the override
+    // consumed when inference gets a provider wrong. Validated by
+    // bin/check-opencode-route-rules.mjs (closed vocabulary). Google's
+    // free tier caps per model per project, so each free google.*
+    // alias below declares "per-model": one capped model can never
+    // bench its free siblings on the same project.
     "google.muse": {
       "instanceOf": "google",
+      "wallScope": "per-model",
       "name": "Google AI Studio (Gemini Free - muse project)",
       "options": {
         "baseURL": "https://generativelanguage.googleapis.com/v1beta",
@@ -1191,6 +1202,7 @@
     // (integrationID google.gen-lang), created 2026-11-16.
     "google.gen-lang": {
       "instanceOf": "google",
+      "wallScope": "per-model",
       "name": "Google AI Studio (Gemini Free - gen-lang project)",
       "options": {
         "baseURL": "https://generativelanguage.googleapis.com/v1beta",
@@ -1206,6 +1218,7 @@
     // (integrationID google.personal), created 2026-11-16.
     "google.personal": {
       "instanceOf": "google",
+      "wallScope": "per-model",
       "name": "Google AI Studio (Gemini Free - personal project)",
       "options": {
         "baseURL": "https://generativelanguage.googleapis.com/v1beta",
@@ -1221,6 +1234,7 @@
     // (integrationID google.drew), created 2026-11-16.
     "google.drew": {
       "instanceOf": "google",
+      "wallScope": "per-model",
       "name": "Google AI Studio (Gemini Free - Drew project)",
       "options": {
         "baseURL": "https://generativelanguage.googleapis.com/v1beta",
@@ -1672,6 +1686,9 @@
     },
     "groq": {
       "npm": "@ai-sdk/openai-compatible",
+      // 2026-11-23 (code#13693): Groq's free caps bind per model
+      // per org, so its wall scope is per-model.
+      "wallScope": "per-model",
       "name": "Groq (Free Cloud)",
       "options": {
         "baseURL": "https://api.groq.com/openai/v1"
@@ -1951,6 +1968,67 @@
         }
       }
     },
+    // openai-payg-free (2026-11-23, code#13677): the free half of the
+    // OpenAI free/paid alias split -- the same-model sibling of the
+    // _commandcode-free split (code#13693 slice C). The org behind
+    // openai-payg is enrolled in the data-sharing complimentary-token
+    // programme (OpenAI Help Center art. 10306912): eligible traffic
+    // is absorbed by daily token buckets BEFORE any billing. Two
+    // buckets, shared across the models in each group, resetting
+    // 00:00 UTC: the large-model group (the gpt-5 / gpt-5-codex /
+    // gpt-5-chat-latest / gpt-4.1 / gpt-4o / o1 / o3 families, incl.
+    // gpt-6-luna / -astra / -sol) at 1M tokens/day (250K for usage
+    // tiers 1-2), and the small-model group (the mini / nano
+    // families, o4-mini, codex-mini) at 10M/day (2.5M tiers 1-2). A
+    // request that would cross the day's bucket is billed in full;
+    // overage bills at normal rates; exhaustion is SILENT (no error
+    // -- the traffic just bills), so no failure-driven wall can ever
+    // fire for this alias. The bucket binds at the ORG across this
+    // alias's whole catalog (every model below is large-group),
+    // hence "wallScope": "account" -- the narrowest true scope for
+    // what is seated; a future small-group alias declares its own.
+    // instanceOf openai-payg with NO credential / endpoint
+    // declarations: those inherit from the base silently (checker
+    // rule b) -- same org, same key (BWS openai.payg-api-key); only
+    // the billing state of the traffic differs. Two runtime facts
+    // proven by live probes 2026-11-23 (record on code#13677): the
+    // credential store resolves by the ALIAS's own id, so a
+    // credential row for openai-payg-free (seeded from the same
+    // vault key) must exist or the leg is silently not a candidate;
+    // and the session runner does NOT inherit the base's npm
+    // package through instanceOf -- the alias re-declares it
+    // verbatim below, or resolution fails with
+    // SessionRunnerModel.UnsupportedPackageError. Seats: gpt-6-luna
+    // rides free-first in luna-plan and
+    // systemone ahead of the openai-payg paid tail (checker rule c
+    // paid-tail exemption: same route, free seat at a strictly
+    // greater weight). gpt-6-astra / gpt-6-sol are defined here so
+    // future seats inherit the split; they are seated nowhere yet.
+    // gpt-6.2-astra / gpt-6.2-sol are NOT in this catalog: OpenAI's
+    // published eligible list (2026-10-20) does not name the 6.2
+    // family, so they stay paid-only under the base until OpenAI
+    // lists them. The metering wall that retires this alias's legs
+    // when the day's bucket is spent (response-usage counting in
+    // the route proxy) is filed separately -- until it lands,
+    // post-bucket traffic on these legs bills exactly as the paid
+    // tail does, bounded by the seats' weights.
+    "openai-payg-free": {
+      "instanceOf": "openai-payg",
+      "npm": "@ai-sdk/openai",
+      "name": "OpenAI API (data-sharing complimentary tokens, free-first)",
+      "wallScope": "account",
+      "models": {
+        "gpt-6-luna": {
+          "name": "GPT-6 Luna"
+        },
+        "gpt-6-astra": {
+          "name": "GPT-6 Astra"
+        },
+        "gpt-6-sol": {
+          "name": "GPT-6 Sol"
+        }
+      }
+    },
     "claude-payg": {
       "npm": "@ai-sdk/anthropic",
       "name": "Claude API (PAYG, manual only)",
@@ -2010,6 +2088,12 @@
       "instanceOf": "opencode",
       "name": "OpenCode Zen (developing-today-0)"
     },
+    // 2026-11-23 (code#13693, wall-skip slice C): the free/paid alias
+    // split lands for this provider -- see the _commandcode-free block
+    // directly below it. _commandcode keeps the paid shelf only; its
+    // $10 monthly plan window binds provider-wide, so it declares
+    // "wallScope": "provider" (that provider-wide wall is exactly why
+    // the free models needed their own alias id).
     "_commandcode": {
           // 2026-11-05 (code#6117, opencode#1749): repointed from the CLI proxy
           // (:18748, @ai-sdk/openai-compatible) to the in-fork native commandcode
@@ -2039,6 +2123,7 @@
           // a burn.
           "npm": "@opencode/ai/providers/commandcode",
           "name": "Command Code (native wire emulation)",
+          "wallScope": "provider",
           "models": {
                 "deepseek/deepseek-v4-pro": {
                       "name": "DeepSeek v4 Pro (Command Code)"
@@ -2185,15 +2270,6 @@
                 "thinkingmachines/inkling-small": {
                       "name": "Inkling Small (Command Code)"
                 },
-                "poolside/laguna-s-2.1-free": {
-                      "name": "Laguna S 2.1 Free (Command Code)"
-                },
-                "inclusionai/ling-3.0-flash-sante:free": {
-                      "name": "Ling 3.0 Flash Sante:Free (Command Code)"
-                },
-                "inclusionai/ling-3.1-flash:free": {
-                      "name": "Ling 3.1 Flash:Free (Command Code)"
-                },
                 "stealth/space-bunny-alpha": {
                       "name": "Space Bunny Alpha (Command Code)"
                 },
@@ -2339,6 +2415,36 @@
 //                "qwen/qwen3.8-max-prime": {
 //                      "name": "qwen3.8 Max Prime (Command Code)"
 //                },
+          }
+    },
+    // 2026-11-23 (code#13693, wall-skip slice C): _commandcode-free is
+    // the free half of the free/paid alias split (the design's alias
+    // pattern): an instanceOf alias of _commandcode with the SAME
+    // credential source -- none declared here, exactly like the base:
+    // the native provider reads ~/.commandcode/auth.json in place, so
+    // the alias inherits silently (a differing apiKey/credential or
+    // baseURL on a -free alias fails the route-rules checker). Its
+    // catalog contains ONLY the five free models, and the paid
+    // _commandcode catalog no longer carries them, so the paid alias
+    // cannot serve them either. Walls key on provider id, so a paid
+    // wall on _commandcode (its $10 monthly plan window, declared
+    // "wallScope": "provider" on the base) can never take these free
+    // models down, and the free models' own caps bind per model
+    // ("wallScope": "per-model" here).
+    "_commandcode-free": {
+          "instanceOf": "_commandcode",
+          "name": "Command Code Free (native wire emulation)",
+          "wallScope": "per-model",
+          "models": {
+                "poolside/laguna-s-2.1-free": {
+                      "name": "Laguna S 2.1 Free (Command Code)"
+                },
+                "inclusionai/ling-3.0-flash-sante:free": {
+                      "name": "Ling 3.0 Flash Sante:Free (Command Code)"
+                },
+                "inclusionai/ling-3.1-flash:free": {
+                      "name": "Ling 3.1 Flash:Free (Command Code)"
+                },
                 "reflection/beam:free": {
                       "name": "beam:free (Command Code)"
                 },
@@ -3424,6 +3530,14 @@
             "variants": { "xhigh": "high", "max": "high" }
           },
           "opencode-go-plans/gpt-6-luna",
+          // 2026-11-23 (code#13677): openai-payg-free/gpt-6-luna --
+          // the same Luna on the same org/key, drawing the daily
+          // data-sharing complimentary bucket (large-model group)
+          // before any billing. Seated ahead of the PAYG tail at
+          // weight 3; the tail stays last at 0.1 (checker rule c
+          // paid-tail exemption). Bucket mechanics + the metering-
+          // wall remainder are on the openai-payg-free block.
+          "openai-payg-free/gpt-6-luna",
           // 2026-11-23 (Drew, direct order): TEMPORARY PAYG tail --
           // openai-payg (the direct OpenAI API door) seated last at
           // low effort, at tier 0.1 below every plan leg. Remove
@@ -3445,6 +3559,7 @@
           "openai-plan/gpt-6-luna": 6,
           "opencode-go-plans/gpt-6-luna": 1,
           "opendesign/gpt-6-luna": 1,
+          "openai-payg-free/gpt-6-luna": 3,
           "openai-payg/gpt-6-luna": 0.1
         }
       },
@@ -3819,7 +3934,7 @@
         // Free, MiMo Flash Free, GLM Flash Free, Big Pickle) stay
         // last-resort in their own pools.
         "targets": [
-          // "_commandcode/reflection/beam:free",
+          // "_commandcode-free/reflection/beam:free",
           "opencode-go-plans/beam-free",
           "zen-plans/beam-free"
         ],
@@ -3834,7 +3949,7 @@
         "weights": {
           "opencode-go-plans/beam-free": 3,
           "zen-plans/beam-free": 3,
-          // "_commandcode/reflection/beam:free": 1
+          // "_commandcode-free/reflection/beam:free": 1
         }
       },
       "longcat-plan": {
@@ -4040,21 +4155,26 @@
         // bench these free legs together with the paid ones; the
         // free/paid alias split is the wall lane's design
         // (opencode#2256), not this pass.
+        // 2026-11-23 (code#13693, wall-skip slice C): that follow-up
+        // LANDED in this pass -- the seats below now name the
+        // _commandcode-free alias (see the provider block), so a
+        // provider-wide wall on _commandcode can no longer bench
+        // these free legs with the paid ones.
         "targets": [
-          "_commandcode/poolside/laguna-s-2.1-free",
-          "_commandcode/inclusionai/ling-3.0-flash-sante:free",
-          "_commandcode/inclusionai/ling-3.1-flash:free",
-          "_commandcode/reflection/beam:free",
-          "_commandcode/stealth/glyph-cluster:free"
+          "_commandcode-free/poolside/laguna-s-2.1-free",
+          "_commandcode-free/inclusionai/ling-3.0-flash-sante:free",
+          "_commandcode-free/inclusionai/ling-3.1-flash:free",
+          "_commandcode-free/reflection/beam:free",
+          "_commandcode-free/stealth/glyph-cluster:free"
         ],
         "selection": "round-robin",
         "autonomy": "rules",
         "weights": {
-          "_commandcode/poolside/laguna-s-2.1-free": 3,
-          "_commandcode/inclusionai/ling-3.0-flash-sante:free": 3,
-          "_commandcode/inclusionai/ling-3.1-flash:free": 3,
-          "_commandcode/reflection/beam:free": 3,
-          "_commandcode/stealth/glyph-cluster:free": 3
+          "_commandcode-free/poolside/laguna-s-2.1-free": 3,
+          "_commandcode-free/inclusionai/ling-3.0-flash-sante:free": 3,
+          "_commandcode-free/inclusionai/ling-3.1-flash:free": 3,
+          "_commandcode-free/reflection/beam:free": 3,
+          "_commandcode-free/stealth/glyph-cluster:free": 3
         }
       },
       "kilo-free-plan": {
@@ -4296,6 +4416,13 @@
         //   "zen-plans/gpt-6-luna-decision": 3,
         //   "zen-plans/gemini-decision-1": 3
         "targets": [
+          // 2026-11-23 (code#13677): openai-payg-free/gpt-6-luna --
+          // Luna drawing the daily data-sharing complimentary
+          // bucket (large-model group) before any billing, seated
+          // with the free legs at weight 3, ahead of the
+          // openai-payg paid tail at 0.1 (checker rule c paid-tail
+          // exemption). See the openai-payg-free provider block.
+          "openai-payg-free/gpt-6-luna",
           "zen-plans/jev-1.13-free",
           "google-free/gemini-decision-1",
           // 2026-11-23 (code#13675): Luna low seated last, after
@@ -4309,6 +4436,7 @@
         "selection": "round-robin",
         "autonomy": "rules",
         "weights": {
+          "openai-payg-free/gpt-6-luna": 3,
           "zen-plans/jev-1.13-free": 3,
           "google-free/gemini-decision-1": 3,
           "openai-payg/gpt-6-luna": 0.1
