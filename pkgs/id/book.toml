@@ -1,0 +1,18 @@
+# mdBook configuration for the id book (#13332).
+# The book root is pkgs/id itself so the sources stay next to
+# the system they document: plain markdown under book/, readable on
+# GitHub exactly as written, and rendered as a book via the
+# .#id-docs flake output (pkgs/id/docs.nix).
+[book]
+title = "id"
+authors = ["developing-today"]
+language = "en"
+src = "book"
+
+[build]
+build-dir = "rendered"
+# Every chapter in SUMMARY.md must exist on disk; never invent stubs.
+create-missing = false
+
+[output.html]
+git-repository-url = "https://github.com/developing-today/code"
