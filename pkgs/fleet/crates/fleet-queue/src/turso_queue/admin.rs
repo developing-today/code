@@ -749,6 +749,24 @@ pub(crate) fn verb_unblock(t: &TursoBackend, req: &Value) -> Value {
         if let Some(drops) = &drops {
             return unblock_drop(t, task_id, &worker, &reason, &row, drops);
         }
+        // #13191 audit: a claim-path-quarantined row whose packet
+        // still fails the claim guard cannot be unblocked — the
+        // override would report it queued and the next claim
+        // would re-quarantine it. Refuse, name the quarantine,
+        // and point at repair, which fixes the packet in place.
+        // (The drop-dep form above stays available: it edits the
+        // dep record and leaves the row blocked, so it never
+        // misreports the row's state.)
+        let recorded = row.get("last_error").and_then(|v| v.as_str()).unwrap_or("");
+        if recorded.starts_with("quarantined by claim path") {
+            if let Some(guard) = claim_guard_reason(&row) {
+                return Err(format!(
+                    "unblock_task: task {task_id} is quarantined ({guard}); \
+                     unblock cannot clear a packet defect — repair the \
+                     packet first with `fleet queue repair {task_id}`"
+                ));
+            }
+        }
         let prev_deps = deps_of(&row);
         t.exec(
             "UPDATE tasks SET status = 'queued', blocked_deps = NULL, \

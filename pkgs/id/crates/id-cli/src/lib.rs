@@ -40,6 +40,7 @@ pub mod local_events {
 }
 pub mod app_manifest;
 pub mod boundary_evidence;
+pub mod boundary_gate;
 pub mod chat_presence;
 pub mod cli;
 pub mod commands;

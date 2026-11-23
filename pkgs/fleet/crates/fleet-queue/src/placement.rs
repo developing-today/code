@@ -17,12 +17,15 @@
 //!
 //! Sessions are server-side records keyed by an unguessable handle
 //! (`fp_` + 128-bit random), so any client can reconnect:
-//! `repo-queue session status|result|list`. STOPGAP (labeled, per
-//! the spec): records live in a local JSON store at
-//! `~/.local/state/fleet-place/sessions.json` — the same path and
-//! record shape the reference implementation used, so records
-//! migrate rather than being redesigned when the designed
-//! `agent.placement_sessions` table lands in the queue backend.
+//! `repo-queue session status|result|list`. Records live in the
+//! local JSON store at `~/.local/state/fleet-place/sessions.json`
+//! — the same path and record shape the reference implementation
+//! used — and mirror best-effort to the queue backend's
+//! `placement_sessions` table (#13146; the designed home the intake
+//! spec pointed at), so a handle resolves from any seat. The local
+//! store remains the always-available fallback and the only input
+//! to placement decisions: the mirror can neither fail nor stall a
+//! dispatch, and `FLEET_PLACE_REMOTE=off` disables it.
 //!
 //! Client interface (frozen v1):
 //!   repo-queue dispatch --repo <owner/name> --command '<cmd>'
@@ -293,9 +296,19 @@ fn first_token(lookups: &[&dyn Fn() -> Option<String>]) -> Option<String> {
 
 impl RealGh {
     fn new() -> Self {
+        // Platform root store, not webpki-roots alone: hosts
+        // behind a TLS-intercepting egress proxy present the
+        // proxy's CA, which only the platform store carries (the
+        // sandbox seat's dispatch died with UnknownIssuer before
+        // this — code#13122; same fix as fleet's gh.rs App leg).
         let agent: ureq::Agent = ureq::Agent::config_builder()
             .http_status_as_error(false)
             .timeout_global(Some(Duration::from_secs(60)))
+            .tls_config(
+                ureq::tls::TlsConfig::builder()
+                    .root_certs(ureq::tls::RootCerts::PlatformVerifier)
+                    .build(),
+            )
             .build()
             .into();
         RealGh {
@@ -707,8 +720,14 @@ fn with_store_lock<T>(f: impl FnOnce() -> R<T>) -> R<T> {
 /// Commit one new session record (and optionally its Blacksmith
 /// ledger entry) under the store lock, merging into the CURRENT
 /// store on disk — records written by other processes since this
-/// process loaded its snapshot are preserved.
-fn commit_new_session(rec: &Value, blacksmith_entry: Option<&Value>) -> R<()> {
+/// process loaded its snapshot are preserved. The local commit is
+/// the commit: afterwards the record mirrors best-effort to the
+/// queue backend (#13146), where a failure changes nothing locally.
+fn commit_new_session(
+    rec: &Value,
+    blacksmith_entry: Option<&Value>,
+    remote: &dyn remote::SessionRemote,
+) -> R<()> {
     let handle = rec
         .get("handle")
         .and_then(|h| h.as_str())
@@ -730,7 +749,9 @@ fn commit_new_session(rec: &Value, blacksmith_entry: Option<&Value>) -> R<()> {
             }
         }
         save_store(&store)
-    })
+    })?;
+    let _ = remote.put(rec);
+    Ok(())
 }
 
 fn load_store() -> Value {
@@ -837,6 +858,7 @@ fn submitted_by() -> String {
 // ---------------------------------------------------------------- adapters
 
 mod adapters;
+mod remote;
 use adapters::adapter_for;
 #[cfg(test)]
 use adapters::correlate_run;
@@ -1594,6 +1616,9 @@ fn run_dispatch(args: &[String]) -> R<i32> {
     };
     let registry = registry_value(&cli)?;
     let gh = RealGh::new();
+    // #13146: the session mirror to the queue backend. Best-effort
+    // throughout — nothing below may fail because it did.
+    let remote = remote::session_remote();
     // Reconcile outstanding Blacksmith sessions BEFORE the
     // placement decision (Codex P2 on PR #8325), so the budget
     // figure build_ctx sums reflects real run durations rather
@@ -1622,13 +1647,18 @@ fn run_dispatch(args: &[String]) -> R<i32> {
                 Ok(previous)
             })?
         } else {
-            load_store()
+            // #13146: the previous session may live only in the
+            // backend mirror (dispatched from another seat) — take
+            // the newer of the local and backend copies.
+            let local = load_store()
                 .get("sessions")
                 .and_then(Value::as_object)
                 .and_then(|sessions| sessions.get(handle))
-                .cloned()
+                .cloned();
+            let mirrored = remote.get(handle).ok().flatten();
+            remote::pick_session(local, mirrored)
                 .ok_or_else(|| Die(format!(
-                    "--followup {handle}: no session with this handle in the local Fleet placement store"
+                    "--followup {handle}: no session with this handle in the local or backend Fleet placement store"
                 )))?
         };
         let state = previous
@@ -1730,7 +1760,7 @@ fn run_dispatch(args: &[String]) -> R<i32> {
                 "created_at": now_iso(),
                 "updated_at": now_iso(),
             });
-            commit_new_session(&rec, None)?;
+            commit_new_session(&rec, None, &*remote)?;
             out.insert("handle".into(), json!(handle));
             out.insert("state".into(), json!("queued"));
         }
@@ -1805,7 +1835,7 @@ fn run_dispatch(args: &[String]) -> R<i32> {
             } else {
                 None
             };
-            commit_new_session(&Value::Object(rec), blacksmith_entry.as_ref())?;
+            commit_new_session(&Value::Object(rec), blacksmith_entry.as_ref(), &*remote)?;
             out.insert("handle".into(), json!(handle));
             if let Some(run_id) = result.run_id {
                 if !runner_repo.is_empty() {
@@ -1826,6 +1856,9 @@ fn run_dispatch(args: &[String]) -> R<i32> {
             );
         }
     }
+    // #13146: opportunistic migration — push any local records the
+    // backend still lacks (insert-or-ignore there; idempotent).
+    remote::sync_local_sessions(&*remote, &load_store());
     print_out(&Value::Object(out), cli.json, render_decision);
     Ok(0)
 }
@@ -1837,6 +1870,8 @@ fn run_session(args: &[String]) -> R<i32> {
     let (cli, rest) = extract_common(args)?;
     let sub = rest.first().map(|s| s.as_str()).unwrap_or("");
     let gh = RealGh::new();
+    // #13146: the session mirror to the queue backend (best-effort).
+    let remote = remote::session_remote();
     match sub {
         "status" | "result" => {
             let handle = rest
@@ -1847,12 +1882,32 @@ fn run_session(args: &[String]) -> R<i32> {
             let rec = if parse_portable_run_reference(&handle).is_some() {
                 resolve_portable_run_reference(&handle, &registry, &gh)?
             } else {
-                with_store_lock(|| {
+                // #13146: seed the local store from the backend
+                // mirror when it holds the newer copy (or the only
+                // copy — a session dispatched from another seat),
+                // refresh as usual, and mirror the refreshed record
+                // back. Any mirror failure leaves today's local-only
+                // behavior untouched.
+                let mirrored = remote.get(&handle).ok().flatten();
+                let rec = with_store_lock(|| {
                     let mut store = load_store();
+                    if let Some(m) = &mirrored {
+                        let local = store
+                            .get("sessions")
+                            .and_then(|s| s.get(&handle))
+                            .cloned();
+                        if let Some(winner) = remote::pick_session(local, Some(m.clone())) {
+                            if let Some(sessions) = store["sessions"].as_object_mut() {
+                                sessions.insert(handle.clone(), winner);
+                            }
+                        }
+                    }
                     let rec = refresh_session(&mut store, &handle, &registry, &gh)?;
                     save_store(&store)?;
                     Ok(rec)
-                })?
+                })?;
+                let _ = remote.put(&rec);
+                rec
             };
             if sub == "status" {
                 print_out(&rec, cli.json, |r| {
@@ -1893,11 +1948,19 @@ fn run_session(args: &[String]) -> R<i32> {
             let mine = rest.iter().any(|a| a == "--mine");
             let store = load_store();
             let me = submitted_by();
-            let mut sessions: Vec<Value> = store
+            let local_sessions: Vec<Value> = store
                 .get("sessions")
                 .and_then(|s| s.as_object())
                 .map(|m| m.values().cloned().collect())
                 .unwrap_or_default();
+            // #13146: union in the backend mirror's records (a
+            // failed mirror read lists local-only, as before), then
+            // take the chance to migrate local records upward.
+            let mirrored_sessions = remote
+                .list(if mine { Some(me.as_str()) } else { None }, 200)
+                .unwrap_or_default();
+            let mut sessions = remote::merge_session_records(local_sessions, mirrored_sessions);
+            remote::sync_local_sessions(&*remote, &store);
             sessions.sort_by(|a, b| {
                 b.get("created_at")
                     .and_then(|v| v.as_str())
@@ -2755,12 +2818,74 @@ mod tests {
         commit_new_session(
             &json!({ "handle": "fp_mine", "state": "queued" }),
             Some(&json!({ "handle": "fp_mine", "month": current_month(), "minutes": 0.0 })),
+            &remote::NullRemote,
         )
         .unwrap();
         let back = load_store();
         assert_eq!(back["sessions"]["fp_other"]["state"], json!("running"));
         assert_eq!(back["sessions"]["fp_mine"]["state"], json!("queued"));
         assert_eq!(back["blacksmith_dispatches"].as_array().unwrap().len(), 1);
+        unsafe { std::env::remove_var("FLEET_PLACE_STATE") };
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A placement-mirror fake for the commit wiring tests:
+    /// records puts, and can be told to fail (the backend-down
+    /// case).
+    struct RecordingRemote {
+        puts: RefCell<Vec<Value>>,
+        fail: bool,
+    }
+
+    impl remote::SessionRemote for RecordingRemote {
+        fn put(&self, rec: &Value) -> Result<(), String> {
+            if self.fail {
+                return Err("backend down".to_string());
+            }
+            self.puts.borrow_mut().push(rec.clone());
+            Ok(())
+        }
+        fn get(&self, _handle: &str) -> Result<Option<Value>, String> {
+            Err("not used by commit".to_string())
+        }
+        fn list(&self, _who: Option<&str>, _limit: usize) -> Result<Vec<Value>, String> {
+            Err("not used by commit".to_string())
+        }
+        fn sync(&self, _records: &[Value]) -> Result<i64, String> {
+            Err("not used by commit".to_string())
+        }
+    }
+
+    #[test]
+    fn commit_new_session_mirrors_and_survives_remote_failure() {
+        // Oracle (#13146): the local commit lands identically
+        // whether the mirror accepts the record or is down; when
+        // the mirror is up it receives exactly the committed
+        // record — the local store is the commit, the mirror is a
+        // mirror.
+        let _store_env_guard = STORE_ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let dir =
+            std::env::temp_dir().join(format!("fleet-place-test-mirror-{}", std::process::id()));
+        unsafe { std::env::set_var("FLEET_PLACE_STATE", &dir) };
+        let rec = json!({ "handle": "fp_mirror", "state": "queued" });
+        let up = RecordingRemote {
+            puts: RefCell::new(Vec::new()),
+            fail: false,
+        };
+        commit_new_session(&rec, None, &up).unwrap();
+        assert_eq!(up.puts.borrow().as_slice(), &[rec.clone()]);
+        assert_eq!(load_store()["sessions"]["fp_mirror"]["state"], json!("queued"));
+        let down = RecordingRemote {
+            puts: RefCell::new(Vec::new()),
+            fail: true,
+        };
+        commit_new_session(
+            &json!({ "handle": "fp_offline", "state": "queued" }),
+            None,
+            &down,
+        )
+        .unwrap();
+        assert_eq!(load_store()["sessions"]["fp_offline"]["state"], json!("queued"));
         unsafe { std::env::remove_var("FLEET_PLACE_STATE") };
         let _ = std::fs::remove_dir_all(&dir);
     }
