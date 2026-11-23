@@ -2819,6 +2819,7 @@
     "jev-1.13-free": { "purposes": ["decision"], "source": "opencode.ai/zen live /v1/models, 2026-11-23" },
     "jev-1.13": { "purposes": ["decision"], "source": "opencode.ai/zen live /v1/models, 2026-11-23" },
     "gpt-6-luna-decision": { "purposes": ["decision"], "source": "opencode.ai/zen live /v1/models, 2026-11-23" },
+    "gpt-6-luna": { "purposes": ["chat", "decision"], "source": "code#13675 Luna decision eval (PASS, 2026-11-23); models.dev" },
     "gemini-decision-1": { "purposes": ["decision"], "source": "generativelanguage.googleapis.com live /v1beta/models, 2026-11-23" },
     "gemini-embedding-2": { "purposes": ["embed"], "source": "generativelanguage.googleapis.com live /v1beta/models, 2026-11-23; models.dev" },
     "gemini-embedding-001": { "purposes": ["embed"], "source": "generativelanguage.googleapis.com live /v1beta/models, 2026-11-23; models.dev" },
@@ -4155,6 +4156,10 @@
         // answer (evidence on code#13675). The google.* aliases
         // carry the native endpoint descriptors (options.endpoints)
         // for this leg. The paid Zen legs below stay OFF.
+        // Third leg added 2026-11-23 (code#13675): Luna low
+        // (openai-payg/gpt-6-luna#low) is seated last in this pool,
+        // after the free legs, on the decision eval PASS (see the
+        // targets note below).
         // Paid legs — OFF by Drew's ruling 2026-11-14, kept here in
         // paste-ready form. To enable, add to targets:
         //   "zen-plans/jev-1.13",
@@ -4166,13 +4171,21 @@
         //   "zen-plans/gemini-decision-1": 3
         "targets": [
           "zen-plans/jev-1.13-free",
-          "google-free/gemini-decision-1"
+          "google-free/gemini-decision-1",
+          // 2026-11-23 (code#13675): Luna low seated last, after
+          // the free legs, on the eval PASS -- schema 36/36,
+          // accuracy 35/36 vs native baseline 36/36, spend
+          // ≈$0.08 -- riding the temporary PAYG tail Drew
+          // authorised 2026-11-23; remove when he lifts the
+          // temporary wiring.
+          "openai-payg/gpt-6-luna#low"
         ],
         "selection": "round-robin",
         "autonomy": "rules",
         "weights": {
           "zen-plans/jev-1.13-free": 3,
-          "google-free/gemini-decision-1": 3
+          "google-free/gemini-decision-1": 3,
+          "openai-payg/gpt-6-luna": 0.1
         }
       },
       "gemini-embed-plan": {
