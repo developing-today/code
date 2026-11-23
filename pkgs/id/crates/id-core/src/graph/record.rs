@@ -35,9 +35,6 @@
 //! No ID appears in its own preimage: a record whose `source_record` or
 //! any reference term names the record's own envelope or its own
 //! payload is rejected as [`RecordError::SelfReference`].
-//!
-//! Module wiring into `graph/mod.rs` and the crate root belongs to slice
-//! 9110-09; until then the integration test includes this file by path.
 
 use std::fmt;
 

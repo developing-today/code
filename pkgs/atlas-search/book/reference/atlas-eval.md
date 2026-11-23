@@ -45,7 +45,7 @@ Each per-query record in the report preserves the run's top-1000 document ids (f
 
 The two splits exist to keep measurement honest:
 
-- The **dev** split is for iteration and parameter selection. Compare signals on dev, and pick the winner on dev — the library function `select_best_signal` does exactly this.
+- The **dev** split is for iteration and parameter selection. Compare signals on dev, and pick the winner on dev — the library function `select_best_signal` does exactly this. Selection requires at least one scored development query for each signal. A split with no positive relevance judgments still produces a report for inspection. When judgments exist and every run misses, the zero scores are valid and the usual tie-break applies.
 - The **test** split is the held-out set: score it once, at decision time, for the single final scoring pass the protocol allows. Parameter selection on the test split is refused inside the library: `select_best_signal` rejects a test-split report outright. The binary will print a test report — that final pass is legitimate — but nothing in the harness will help you tune against it.
 
 See [Evaluation: golden sets and gates](../concepts/evaluation.md) for how golden sets and gates fit the wider programme.

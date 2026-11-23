@@ -120,6 +120,11 @@ let
       # role there needs ATLAS_ORT_LIB).
       envAttrs = {
         FLEET_SOURCE_REV = sourceRev;
+        # #13617: the gh_metadata conformance test reads the
+        # pm-metadata v1 fixture set from doc/ at the repository root,
+        # which the fleetSrc fileset does not carry; point the test at
+        # this store copy of the fixture instead.
+        PM_METADATA_V1_FIXTURE = "${../../doc/2026-11-21T17-56-24Z_design_atlas_metadata_schema_v1/fixtures/pm-metadata-v1.json}";
         # #8566: the binary's Derived version channel. An explicit
         # derivedVersion wins; otherwise a real sourceRev yields a
         # unique prerelease form (0.1.0-dev+g<rev7>) instead of the

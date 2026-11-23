@@ -91,11 +91,11 @@ const IDLE_TIMEOUT_SECONDS = 120;
 
 // The page's four files, read once: nothing on the request path touches
 // the disk synchronously after the first hit.
-const fileCache = new Map<string, { bytes: Uint8Array; etag: string }>();
+const fileCache = new Map<string, { bytes: Uint8Array<ArrayBuffer>; etag: string }>();
 function file(req: Request, name: string, type: string): Response {
   let kept = fileCache.get(name);
   if (!kept) {
-    const bytes = readFileSync(join(PUBLIC_DIR, name));
+    const bytes = new Uint8Array(readFileSync(join(PUBLIC_DIR, name)));
     kept = { bytes, etag: `"${createHash("sha256").update(bytes).digest("base64url").slice(0, 22)}"` };
     fileCache.set(name, kept);
   }
@@ -164,7 +164,7 @@ function gzipped(req: Request, bytes: Uint8Array, headers: Headers): Response | 
   if (!wantsGzip(req) || bytes.byteLength < COMPRESS_FROM_BYTES) return null;
   headers.set("content-encoding", "gzip");
   headers.append("vary", "accept-encoding");
-  return new Response(Bun.gzipSync(bytes), { headers });
+  return new Response(Bun.gzipSync(bytes as Uint8Array<ArrayBuffer>), { headers });
 }
 
 /** Pass one request to the dashboard and its answer back. `open` is for

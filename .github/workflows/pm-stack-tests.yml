@@ -71,6 +71,18 @@ jobs:
           fi
           bun test
 
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+
+      - name: Install the console's type-check tools
+        working-directory: pm-stack/console/edge
+        run: npm ci --no-audit --no-fund
+
+      - name: Type-check the console
+        working-directory: pm-stack/console/edge
+        run: npx tsc --noEmit -p ../tsconfig.json
+
       - name: Test console
         working-directory: pm-stack/console
         run: |

@@ -2444,14 +2444,44 @@ mod tests {
     // the stamp assembly round-trip; each `reject` case must fail
     // closed. Doctrine-projection expectations in the fixture are the
     // oracle for design §7 slice 2 and are not asserted here.
+    // The fixture set lives in doc/ at the repository root, while this
+    // crate sits at pkgs/fleet/crates/fleet in a checkout and at
+    // fleet/crates/fleet in the fleet derivation source — whose
+    // fileset carries no doc/ at all (#13617). Resolve it by the
+    // PM_METADATA_V1_FIXTURE override the derivation sets, else by the
+    // nearest ancestor of the crate dir that carries the fixture.
+    // Absence stays a loud failure: the set is the conformance oracle.
+    fn conformance_fixture_path() -> PathBuf {
+        const FIXTURE_SUFFIX: &str =
+            "doc/2026-11-21T17-56-24Z_design_atlas_metadata_schema_v1/fixtures/pm-metadata-v1.json";
+        if let Ok(override_path) = std::env::var("PM_METADATA_V1_FIXTURE") {
+            if !override_path.is_empty() {
+                return PathBuf::from(override_path);
+            }
+        }
+        let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        for ancestor in manifest_dir.ancestors() {
+            let candidate = ancestor.join(FIXTURE_SUFFIX);
+            if candidate.is_file() {
+                return candidate;
+            }
+        }
+        panic!(
+            "conformance fixture set not found: no ancestor of {} carries {FIXTURE_SUFFIX} \
+             and PM_METADATA_V1_FIXTURE is unset",
+            manifest_dir.display()
+        );
+    }
+
     #[test]
     fn pm_metadata_version_conformance_fixtures() {
-        let path = concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../../../doc/2026-11-21T17-56-24Z_design_atlas_metadata_schema_v1/fixtures/pm-metadata-v1.json"
-        );
-        let raw = std::fs::read_to_string(path)
-            .unwrap_or_else(|e| panic!("conformance fixture set unreadable at {path}: {e}"));
+        let path = conformance_fixture_path();
+        let raw = std::fs::read_to_string(&path).unwrap_or_else(|e| {
+            panic!(
+                "conformance fixture set unreadable at {}: {e}",
+                path.display()
+            )
+        });
         let set: Value = serde_json::from_str(&raw).expect("fixture set is valid JSON");
         let cases = set["cases"].as_array().expect("fixture set carries cases");
         assert!(!cases.is_empty(), "fixture set must not be empty");
