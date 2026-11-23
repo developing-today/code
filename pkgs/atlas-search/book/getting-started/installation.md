@@ -64,13 +64,13 @@ parity and evaluation instrument, not the install path.
 
 ## What gets installed
 
-One package installs exactly six binaries, all version `0.1.0` where a
-version surface exists:
+One package installs exactly six binaries, all version `0.1.0`,
+each with a `--version` surface:
 
 | Binary | What it is |
 | --- | --- |
 | `atlas-search` | The access layer: `search`, `get-chunk`, `serve`, `init`, `fetch-model`, `traces`, and `feedback`. The package's `mainProgram`. `--version` prints `atlas-search 0.1.0`. |
-| `atlas-stage` | Staging units and the staging registry: `provision`, `lookup`, `ingest`, `items`, `promote`, `units`. It has no `--version` flag — passing one is a usage error, exit 2 (source behaviour; the other hand-rolled tools below likewise have no version surface). |
+| `atlas-stage` | Staging units and the staging registry: `provision`, `lookup`, `ingest`, `items`, `promote`, `units`. `--version` prints `atlas-stage 0.1.0`. |
 | `atlas-classify` | The classification operating procedure: `run`, `schema-review`, `schema-apply` against a corpus database. |
 | `atlas-eval` | The offline ranking-evaluation runner: two positional arguments, an eval document and a `dev` or `test` split. |
 | `atlas-sweep` | The ingestion sweep runner: pause/resume a source class, run one sweep request, manage dead letters, report. It creates no schedule; cadence is an operator decision. |

@@ -74,7 +74,7 @@ enum Cmd {
     FetchModel,
     /// ingest query traces as a statistics-and-reports corpus, or run trace retention (design s4)
     Traces(TracesArgs),
-    /// cast a thumbs vote on a served result, or retrieve feedback by its IDs (design s6.1)
+    /// cast a thumbs vote on a served result, or retrieve feedback by its IDs (design s6.1); a vote requires exactly one of --up / --down — use --get to retrieve instead
     Feedback(FeedbackArgs),
 }
 
@@ -104,7 +104,7 @@ struct FeedbackArgs {
     /// stable requester id
     #[arg(long, default_value = "cli")]
     requester_id: String,
-    /// retrieve the feedback for --query [--chunk] instead of casting a vote
+    /// retrieve the feedback for --query [--chunk] instead of casting a vote (with --get, neither --up nor --down is needed; without it, exactly one of them is required)
     #[arg(long)]
     get: bool,
     /// feedback store directory (default: the JsonlFeedbackSink default dir)
@@ -114,7 +114,7 @@ struct FeedbackArgs {
     #[arg(long)]
     via_service: bool,
     /// service base URL for --via-service (env ATLAS_SEARCH_URL)
-    #[arg(long)]
+    #[arg(long, env = "ATLAS_SEARCH_URL")]
     service_url: Option<String>,
 }
 
@@ -132,7 +132,7 @@ enum TracesCmd {
     Retention(TraceRetentionArgs),
     /// daily batch aggregation over stored traces (design s5)
     Stats(TraceStatsArgs),
-    /// weekly statistics report into the statistics-and-reports source set (design s7)
+    /// weekly statistics report into the statistics-and-reports source set (design s7); also writes the report JSONL and a Markdown rendering into the traces dir and reports both paths as report_file / markdown_file
     Report(TraceReportArgs),
     /// agent normalisation pass over the raw feedback store (design s6.2)
     Normalise(TraceNormaliseArgs),
@@ -209,7 +209,7 @@ struct TraceNormaliseArgs {
 #[derive(Args)]
 struct ServeArgs {
     /// service config path (default: ~/.local/state/atlas-search/service.json; env ATLAS_SEARCH_SERVICE_CONFIG)
-    #[arg(long)]
+    #[arg(long, env = "ATLAS_SEARCH_SERVICE_CONFIG")]
     config: Option<PathBuf>,
     /// listen address override (loopback only)
     #[arg(long)]
@@ -225,7 +225,7 @@ struct ServeArgs {
 #[derive(Args)]
 struct InitArgs {
     /// service config path (default: ~/.local/state/atlas-search/service.json; env ATLAS_SEARCH_SERVICE_CONFIG)
-    #[arg(long)]
+    #[arg(long, env = "ATLAS_SEARCH_SERVICE_CONFIG")]
     config: Option<PathBuf>,
     /// replace an existing config (rotates every client token)
     #[arg(long)]
@@ -310,11 +310,15 @@ struct BackendArgs {
     /// local backend: comma-separated vector DB path(s) if the corpus DB has no vec table
     #[arg(long)]
     vecdb: Option<String>,
-    /// prefer a running atlas service; fall back to standalone, loudly
+    /// prefer a running atlas service; fall back to standalone, loudly.
+    /// The service route serves only the Turso backend with the
+    /// production vector table: --backend local or a non-default
+    /// --vec-table fall back with a note, and any --shards spec is
+    /// served standalone without attempting the service
     #[arg(long)]
     via_service: bool,
     /// service base URL for --via-service (env ATLAS_SEARCH_URL)
-    #[arg(long)]
+    #[arg(long, env = "ATLAS_SEARCH_URL")]
     service_url: Option<String>,
 }
 
@@ -436,7 +440,7 @@ struct SearchArgs {
     #[arg(long)]
     text: bool,
     /// EXPERIMENTAL, off by default: serve the vector branch from the atlas core shard fan-out (dir:<path> or turso[:<org>]); FTS, details and --expand stay on the backend (issue #5755). Skips --via-service.
-    #[arg(long, env = "ATLAS_SHARDS", hide = true)]
+    #[arg(long, env = "ATLAS_SHARDS")]
     shards: Option<String>,
     #[command(flatten)]
     backend: BackendArgs,

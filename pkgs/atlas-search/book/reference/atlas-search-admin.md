@@ -27,7 +27,7 @@ atlas-search serve [OPTIONS]
 
 | Flag | Argument | Default | Meaning |
 |---|---|---|---|
-| `--config` | path | `~/.local/state/atlas-search/service.json` | Service config path. Environment variable: `ATLAS_SEARCH_SERVICE_CONFIG` (honoured by the program, not by clap — the help text names it, the mechanism is a manual lookup). |
+| `--config` | path | `~/.local/state/atlas-search/service.json` | Service config path. Environment variable: `ATLAS_SEARCH_SERVICE_CONFIG` (a clap env binding on the flag; a set-but-empty value counts as absent, as the previous manual lookup treated it). |
 | `--listen` | address | from the config (`127.0.0.1:18760`) | Listen address override. Loopback only. |
 | `--job-ttl-ms` | integer (milliseconds) | `600000` | Completed-job TTL override: how long a finished job is retained. |
 | `--hard-ttl-ms` | integer (milliseconds) | `3600000` | Submit hard-cap override: the longest a submitted job may run. |
@@ -57,7 +57,7 @@ The config document body is `{"listen": "127.0.0.1:18760", "vec_table": &lt;defa
 
 | Flag | Argument | Default | Meaning |
 |---|---|---|---|
-| `--config` | path | `~/.local/state/atlas-search/service.json` | Service config path. Environment variable: `ATLAS_SEARCH_SERVICE_CONFIG` (honoured manually, as on `serve`). |
+| `--config` | path | `~/.local/state/atlas-search/service.json` | Service config path. Environment variable: `ATLAS_SEARCH_SERVICE_CONFIG` (a clap env binding, as on `serve`). |
 | `--force` | switch | off | Replace an existing config. This **rotates every client token**: all existing callers must be re-provisioned with the new tokens. |
 
 Without `--force`, an existing config is an exit-2 error. On success the output prints the config path and each client's cap — never token values.
@@ -107,7 +107,7 @@ The five sub-verbs:
 | `report` | Weekly statistics report into the statistics-and-reports source set. Takes `--dir`, `--today`, `--feedback`. See the undocumented files below. |
 | `normalise` | Agent normalisation pass over the raw feedback store, using the traces directory for query requester identities. Takes `--dir`, `--feedback-dir`, `--out-dir`, `--today`. |
 
-**The report files the help text never mentions.** `traces report`'s help says only "weekly statistics report into the statistics-and-reports source set". The source behaviour is more: the verb also writes the report JSON file **and a Markdown file**, `atlas-statistics-report-&lt;day&gt;.md`, into the traces dir, and reports both paths in its JSON output as `report_file` and `markdown_file`. This is source behaviour, stated here because the help text does not state it.
+**The report files.** `traces report` writes more than its one-line summary suggests: the verb writes the report JSON file **and a Markdown file**, `atlas-statistics-report-&lt;day&gt;.md`, into the traces dir, and reports both paths in its JSON output as `report_file` and `markdown_file`. The help text names both files.
 
 `--today` values are strictly calendar-validated in `retention`, `stats`, `report` and `normalise`: an invalid date is exit 2, `--today must be a valid YYYY-MM-DD date, got &lt;value&gt;`. The retention horizon is 180 days (`HOT_RETENTION_DAYS`).
 
@@ -136,7 +136,7 @@ atlas-search feedback [OPTIONS] --query <QUERY>
 | `--via-service` | switch | off | Go through a running service instead of the local store. |
 | `--service-url` | URL | the default service URL | Service base URL for `--via-service`. Environment variable: `ATLAS_SEARCH_URL`. |
 
-**The vote-shape rule the help text does not state.** Without `--get`, exactly one of `--up` / `--down` is required — but neither flag is marked required in the help, and the rule is enforced only at runtime: casting with neither is exit 2, `atlas-search: feedback needs exactly one of --up / --down (or --get to retrieve)`. Passing both is a clap conflict error, also exit 2. A `@file` comment whose file cannot be read is exit 1.
+**The vote-shape rule.** Without `--get`, exactly one of `--up` / `--down` is required — the help states the rule, and it is enforced at runtime: casting with neither is exit 2, `atlas-search: feedback needs exactly one of --up / --down (or --get to retrieve)`. Passing both is a clap conflict error, also exit 2. A `@file` comment whose file cannot be read is exit 1.
 
 ## Worked examples
 

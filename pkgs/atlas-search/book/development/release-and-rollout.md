@@ -133,9 +133,9 @@ them on. The standing examples:
   the `Install` section arrived at the step-6 cutover. A new service
   role follows the same shape — declared, inert, enabled by a separate
   deliberate change.
-- **Experimental search paths are off by default and hidden**: the
-  shard fan-out behind the hidden `--shards` flag is the CLI-side
-  example. Hidden and off is the correct posture for a path whose
+- **Experimental search paths are off by default**: the shard
+  fan-out behind the EXPERIMENTAL `--shards` flag is the CLI-side
+  example. Off by default is the correct posture for a path whose
   evidence is still being gathered.
 
 The rule for a new flag: name it, state its default as a literal value
