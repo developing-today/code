@@ -53,7 +53,7 @@ let
   atlasSearchPort = 18760;
   # The atlas-search package (pkgs/atlas-search), built with the
   # toolchain pinned by its own rust-toolchain.toml (channel
-  # 1.99.0) through the fleet's rust-overlay lock — the pkgs/id
+  # 1.99.1) through the fleet's rust-overlay lock — the pkgs/id
   # pattern (cf. rustToolchain in nixos/environment/default.nix).
   # Used as the atlas-search unit's ExecStart below and, since
   # the step-6 cutover (#5356), as a home package below so the
