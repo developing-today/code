@@ -101,7 +101,13 @@ macOS-specific load measurement anywhere.
 surface_id)`: least-loaded owner first; among equals, the
    least-recently-used owner (an owner never used sorts before all used
    owners); then registry priority; then per-surface last dispatch; then the
-   surface id alphabetically. The rotation is owner-first.
+   surface id alphabetically. The rotation is owner-first. Surfaces whose
+   owner load is not fully observed carry no numeric estimate; if no
+   eligible surface has measured headroom, one unknown-capacity surface may
+   still be picked — deterministically, by the same rotation order minus
+   load — under the unknown-capacity rule, which the pick's reasoning line
+   names. A surface whose known subtotal already reaches its cap is proven
+   saturated and is never picked this way.
 3. **Tier 2 — Blacksmith.** `blacksmith` surfaces in registry order; the
    first eligible one with `remaining_total_minutes > 0` wins.
 4. **Tier 3 — Codespaces.** `codespace` surfaces in registry order; the
@@ -125,9 +131,20 @@ that surface's token, placement reads only `total_count` from
 `GET /repos/{host}/actions/runs?status=in_progress&per_page=1` and the same
 with `status=queued` — the run lists themselves are never enumerated. Tier-1
 load per owner is `running + queued`, summed across its host repos. Failures
-are soft: no token, a non-200, or a transport error contributes 0 for that
-repo/status and adds a `load_read_errors` entry, which is surfaced in the
-dispatch output when non-empty. Owner and surface last-dispatch times come
+are soft but never silent: no token, a non-200, a transport error, or a
+200 whose body lacks a valid `total_count` makes that repo/status read
+*missing* rather than zero, adds a `load_read_errors` entry (surfaced in
+the dispatch output when non-empty), and is recorded in the owner's load
+coverage. Coverage is one of `measured` (every required read returned a
+count), `partial` (some did), `unknown` (none did), or `simulated` (an
+`--assume-owner-load` override supplied the figure). The decision output
+carries `owner_load_coverage` per owner — status, known running/queued
+subtotal, configured cap, read time, source, and the missing reads — and
+session records store the same fragment. The known subtotal is exact for
+measured/simulated coverage and a lower bound for partial coverage; only
+measured or simulated coverage (or proven saturation) yields a numeric
+free-slot estimate — any other owner reports unknown capacity instead of
+a dressed-up zero. Owner and surface last-dispatch times come
 from the local session store, not the API. Two testing overrides exist
 (`--assume-owner-load owner=N,…` and `--assume-blacksmith-used MINUTES`);
 they are simulation, are labelled as such in the output, and do not appear

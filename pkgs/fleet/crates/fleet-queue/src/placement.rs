@@ -192,6 +192,7 @@ impl Job {
 pub struct Ctx {
     pub owners: Value,
     pub owner_load: HashMap<String, (i64, i64)>, // owner -> (running, queued)
+    pub owner_load_coverage: HashMap<String, LoadCoverage>,
     pub owner_last_dispatch: HashMap<String, i64>,
     pub surface_last_dispatch: HashMap<String, i64>,
     pub owner_load_overridden: Vec<String>,
@@ -209,6 +210,99 @@ impl Ctx {
             .and_then(|c| c.as_i64())
             .unwrap_or(0)
     }
+}
+
+/// How completely an owner's live load was observed while building
+/// the context. The collector counts running+queued runs per owner
+/// through the GitHub API; every required read either yields a count
+/// or is recorded as missing, so a zero is only ever reported as a
+/// *measured* zero when every read succeeded. Before this existed, a
+/// missing token, a 403, or a malformed 200 all collapsed to the
+/// same numeric 0 as a genuinely idle account (issue #13611).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LoadCoverageStatus {
+    /// Every required host/status read returned a valid count.
+    Measured,
+    /// Some reads returned counts; the rest are missing. The known
+    /// subtotal is a lower bound on the owner's true load.
+    Partial,
+    /// No read returned a count; the owner's load is unknown.
+    Unknown,
+    /// The load was supplied by the explicit `--assume-owner-load`
+    /// simulation override, not read from GitHub.
+    Simulated,
+}
+
+impl LoadCoverageStatus {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            LoadCoverageStatus::Measured => "measured",
+            LoadCoverageStatus::Partial => "partial",
+            LoadCoverageStatus::Unknown => "unknown",
+            LoadCoverageStatus::Simulated => "simulated",
+        }
+    }
+}
+
+/// Per-owner load-read coverage: what was observed, what is known,
+/// and what could not be read. Carried into the decision JSON so an
+/// operator can tell a measured idle account from an unreadable one.
+#[derive(Debug, Clone)]
+pub struct LoadCoverage {
+    pub status: LoadCoverageStatus,
+    pub known_running: i64,
+    pub known_queued: i64,
+    pub cap: i64,
+    pub read_at: i64,
+    pub source: String,
+    pub missing_reads: Vec<String>,
+}
+
+impl LoadCoverage {
+    /// The observed running+queued subtotal: exact for measured and
+    /// simulated coverage, a lower bound for partial coverage.
+    pub fn known_load(&self) -> i64 {
+        self.known_running.saturating_add(self.known_queued)
+    }
+
+    /// A numeric free-slot estimate is only meaningful when the
+    /// load figure is complete (measured) or an explicitly labeled
+    /// simulation. Partial coverage still proves saturation when
+    /// the known subtotal already reaches the cap.
+    pub fn estimated_free(&self, cap: i64) -> Option<i64> {
+        match self.status {
+            LoadCoverageStatus::Measured | LoadCoverageStatus::Simulated => {
+                Some((cap - self.known_load()).max(0))
+            }
+            LoadCoverageStatus::Partial if self.known_load() >= cap => Some(0),
+            _ => None,
+        }
+    }
+
+    pub fn to_json(&self) -> Value {
+        json!({
+            "status": self.status.as_str(),
+            "known_running": self.known_running,
+            "known_queued": self.known_queued,
+            "known_load": self.known_load(),
+            "cap": self.cap,
+            "read_at": self.read_at,
+            "source": self.source,
+            "missing_reads": self.missing_reads,
+        })
+    }
+}
+
+/// The `owner_load_coverage` fragment of the decision JSON, keyed
+/// by owner in sorted order so the output is deterministic.
+pub fn owner_load_coverage_json(ctx: &Ctx) -> Value {
+    let mut owners: Vec<&String> = ctx.owner_load_coverage.keys().collect();
+    owners.sort();
+    let mut out = Map::new();
+    for owner in owners {
+        out.insert(owner.clone(), ctx.owner_load_coverage[owner].to_json());
+    }
+    Value::Object(out)
 }
 
 // ------------------------------------------------------- side-effect surface
@@ -909,10 +1003,15 @@ pub fn build_ctx(
         }
     }
     let mut owner_load: HashMap<String, (i64, i64)> = HashMap::new();
+    let mut owner_load_coverage: HashMap<String, LoadCoverage> = HashMap::new();
     let mut read_errors: Vec<String> = Vec::new();
+    let read_at = gh.now_epoch();
     for (owner, repos) in &hosts {
         let mut running: i64 = 0;
         let mut queued: i64 = 0;
+        let mut observed: usize = 0;
+        let mut expected: usize = 0;
+        let mut missing_reads: Vec<String> = Vec::new();
         for repo in repos {
             let minted = if user_repos.contains(repo) {
                 gh.user_token()
@@ -922,13 +1021,17 @@ pub fn build_ctx(
             let token = match minted {
                 Some(t) => t,
                 None => {
-                    read_errors.push(format!(
-                        "{repo}: no token available (not covered) — load counted as 0"
-                    ));
+                    expected += 2;
+                    let msg = format!(
+                        "{repo}: no token available (not covered) — load unobserved for this repo"
+                    );
+                    read_errors.push(msg.clone());
+                    missing_reads.push(msg);
                     continue;
                 }
             };
             for status_name in ["in_progress", "queued"] {
+                expected += 1;
                 match gh.api(
                     "GET",
                     &format!("/repos/{repo}/actions/runs?status={status_name}&per_page=1"),
@@ -936,28 +1039,72 @@ pub fn build_ctx(
                     None,
                 ) {
                     Ok((200, payload)) => {
-                        let total = payload
-                            .get("total_count")
-                            .and_then(|t| t.as_i64())
-                            .unwrap_or(0);
-                        if status_name == "in_progress" {
-                            running += total;
-                        } else {
-                            queued += total;
+                        match payload.get("total_count").and_then(|t| t.as_i64()) {
+                            Some(total) => {
+                                observed += 1;
+                                if status_name == "in_progress" {
+                                    running += total;
+                                } else {
+                                    queued += total;
+                                }
+                            }
+                            None => {
+                                let msg = format!(
+                                    "{repo} ({status_name}): HTTP 200 without a valid \
+                                     total_count — load unobserved"
+                                );
+                                read_errors.push(msg.clone());
+                                missing_reads.push(msg);
+                            }
                         }
                     }
                     Ok((code, _)) => {
-                        read_errors.push(format!("{repo} ({status_name}): HTTP {code}"))
+                        let msg = format!("{repo} ({status_name}): HTTP {code}");
+                        read_errors.push(msg.clone());
+                        missing_reads.push(msg);
                     }
-                    Err(e) => read_errors.push(format!("{repo} ({status_name}): {}", e.0)),
+                    Err(e) => {
+                        let msg = format!("{repo} ({status_name}): {}", e.0);
+                        read_errors.push(msg.clone());
+                        missing_reads.push(msg);
+                    }
                 }
             }
         }
+        let status = if overrides.contains_key(owner) {
+            LoadCoverageStatus::Simulated
+        } else if observed == expected {
+            LoadCoverageStatus::Measured
+        } else if observed > 0 {
+            LoadCoverageStatus::Partial
+        } else {
+            LoadCoverageStatus::Unknown
+        };
         if let Some(n) = overrides.get(owner) {
             running = *n;
             queued = 0;
         }
         owner_load.insert(owner.clone(), (running, queued));
+        owner_load_coverage.insert(
+            owner.clone(),
+            LoadCoverage {
+                status,
+                known_running: running,
+                known_queued: queued,
+                cap: owners
+                    .get(owner)
+                    .and_then(|o| o.get("concurrent_jobs_cap"))
+                    .and_then(|c| c.as_i64())
+                    .unwrap_or(0),
+                read_at,
+                source: if status == LoadCoverageStatus::Simulated {
+                    "--assume-owner-load override (simulation, not live counts)".to_string()
+                } else {
+                    "live GitHub Actions run counts over fleet runner hosts".to_string()
+                },
+                missing_reads,
+            },
+        );
     }
     let mut owner_last_dispatch: HashMap<String, i64> = HashMap::new();
     let mut surface_last_dispatch: HashMap<String, i64> = HashMap::new();
@@ -1020,6 +1167,7 @@ pub fn build_ctx(
     Ctx {
         owners,
         owner_load,
+        owner_load_coverage,
         owner_last_dispatch,
         surface_last_dispatch,
         owner_load_overridden: overridden,
@@ -1112,6 +1260,10 @@ pub fn decide(
     // distribute idle bursts evenly across accounts. Within an owner,
     // prefer its Fleet runner repo so followups can reuse that cache.
     let mut tier1: Vec<(i64, i64, i64, i64, String)> = Vec::new();
+    // Eligible surfaces whose owner load could not be fully read
+    // (and is not proven saturated): they carry no numeric estimate,
+    // but stay placeable under the unknown-capacity rule below.
+    let mut tier1_unknown: Vec<(i64, i64, i64, String)> = Vec::new();
     for s in &surfaces {
         if surf_str(s, "kind") != "github-actions" {
             continue;
@@ -1140,6 +1292,15 @@ pub fn decide(
             } else {
                 reasoning.push(format!("tier1 unavailable {id}: no free account slots"));
             }
+        } else {
+            let owner = surf_str(s, "owner");
+            let owner_last = ctx.owner_last_dispatch.get(owner).copied().unwrap_or(0);
+            let surface_last = ctx.surface_last_dispatch.get(&id).copied().unwrap_or(0);
+            let priority = s
+                .get("selection_priority")
+                .and_then(Value::as_i64)
+                .unwrap_or(50);
+            tier1_unknown.push((owner_last, priority, surface_last, id));
         }
     }
     if !tier1.is_empty() {
@@ -1153,6 +1314,31 @@ pub fn decide(
         let sid = tier1[0].4.clone();
         reasoning.push(format!(
             "tier1 pick {sid}: least-loaded eligible owner, with idle owners rotated by last dispatch"
+        ));
+        let surface = find_surface(registry, &sid).unwrap().clone();
+        return Ok((adapter_for(&surface), reasoning));
+    }
+    if !tier1_unknown.is_empty() {
+        // Unknown-capacity rule: with no measured headroom anywhere,
+        // an eligible free surface whose load is merely unreadable
+        // may still be picked — deterministically, and with the
+        // uncertainty named in the receipt. Unread load never
+        // authorizes paid overage: this tier is free GitHub-hosted
+        // capacity only, and tier 2 (Blacksmith) is not reached on
+        // the strength of an unknown.
+        tier1_unknown.sort_by(|a, b| {
+            a.0.cmp(&b.0)
+                .then_with(|| a.1.cmp(&b.1))
+                .then_with(|| a.2.cmp(&b.2))
+                .then_with(|| a.3.cmp(&b.3))
+        });
+        let sid = tier1_unknown[0].3.clone();
+        reasoning.push(format!(
+            "tier1 pick {sid}: unknown-capacity rule — no eligible surface has \
+             measured headroom, and this surface's owner load could not be \
+             fully read, so its occupancy is unknown rather than zero; picked \
+             deterministically among unknown-capacity surfaces (owner \
+             rotation, selection priority, surface last dispatch, surface id)"
         ));
         let surface = find_surface(registry, &sid).unwrap().clone();
         return Ok((adapter_for(&surface), reasoning));
@@ -1736,6 +1922,9 @@ fn run_dispatch(args: &[String]) -> R<i32> {
     if !ctx.load_read_errors.is_empty() {
         out.insert("load_read_errors".into(), json!(ctx.load_read_errors));
     }
+    if !ctx.owner_load_coverage.is_empty() {
+        out.insert("owner_load_coverage".into(), owner_load_coverage_json(&ctx));
+    }
     if !dispatch {
         out.insert(
             "mode".into(),
@@ -1752,6 +1941,7 @@ fn run_dispatch(args: &[String]) -> R<i32> {
                 "job": job.to_json(),
                 "surface": Value::Null,
                 "decision_reasoning": reasoning,
+                "owner_load_coverage": owner_load_coverage_json(&ctx),
                 "run_id": Value::Null,
                 "run_url": Value::Null,
                 "state": "queued",
@@ -1785,6 +1975,7 @@ fn run_dispatch(args: &[String]) -> R<i32> {
                 );
             }
             rec.insert("decision_reasoning".into(), json!(reasoning));
+            rec.insert("owner_load_coverage".into(), owner_load_coverage_json(&ctx));
             rec.insert(
                 "run_id".into(),
                 result.run_id.map(Value::from).unwrap_or(Value::Null),
@@ -2080,6 +2271,7 @@ mod tests {
         post_runs: Vec<Value>,
         runs_by_id: Map2<i64, Value>,
         load_by_repo: Map2<String, (i64, i64)>, // repo -> (in_progress, queued)
+        load_replies: Map2<(String, String), (u16, Value)>, // (repo, status) -> canned load reply; repo "*" matches any
         codespace_ok: bool,
         codespace_items: Vec<Value>,
         codespace_exit: i32,
@@ -2096,6 +2288,7 @@ mod tests {
                 post_runs: Vec::new(),
                 runs_by_id: Map2::new(),
                 load_by_repo: Map2::new(),
+                load_replies: Map2::new(),
                 codespace_ok: false,
                 codespace_items: Vec::new(),
                 codespace_exit: 0,
@@ -2173,6 +2366,21 @@ mod tests {
                     .next()
                     .unwrap_or("")
                     .to_string();
+                let status_name = if path.contains("status=in_progress") {
+                    "in_progress"
+                } else {
+                    "queued"
+                };
+                if let Some((code, payload)) = self
+                    .load_replies
+                    .get(&(repo.clone(), status_name.to_string()))
+                    .or_else(|| {
+                        self.load_replies
+                            .get(&("*".to_string(), status_name.to_string()))
+                    })
+                {
+                    return Ok((*code, payload.clone()));
+                }
                 let (running, queued) = self.load_by_repo.get(&repo).copied().unwrap_or((0, 0));
                 let total = if path.contains("status=in_progress") {
                     running
@@ -2261,9 +2469,38 @@ mod tests {
     }
 
     fn ctx(load: &[(&str, (i64, i64))], blacksmith_used: f64, laptop_busy: bool) -> Ctx {
+        let owners = registry()["owners"].clone();
+        let owner_load: HashMap<String, (i64, i64)> =
+            load.iter().map(|(k, v)| (k.to_string(), *v)).collect();
+        // Fixtures state load as fact, so coverage is measured for
+        // every registry owner (defaulting to an observed zero).
+        let owner_load_coverage = owners
+            .as_object()
+            .unwrap()
+            .iter()
+            .map(|(owner, o)| {
+                let (running, queued) = owner_load.get(owner).copied().unwrap_or((0, 0));
+                (
+                    owner.clone(),
+                    LoadCoverage {
+                        status: LoadCoverageStatus::Measured,
+                        known_running: running,
+                        known_queued: queued,
+                        cap: o
+                            .get("concurrent_jobs_cap")
+                            .and_then(Value::as_i64)
+                            .unwrap_or(0),
+                        read_at: FIXED_NOW,
+                        source: "test fixture".to_string(),
+                        missing_reads: vec![],
+                    },
+                )
+            })
+            .collect();
         Ctx {
-            owners: registry()["owners"].clone(),
-            owner_load: load.iter().map(|(k, v)| (k.to_string(), *v)).collect(),
+            owners,
+            owner_load,
+            owner_load_coverage,
             owner_last_dispatch: HashMap::new(),
             surface_last_dispatch: HashMap::new(),
             owner_load_overridden: vec![],
@@ -3289,5 +3526,233 @@ mod tests {
             "bogus",
             &args(&["bogus", "--help"])
         ));
+    }
+
+    /// A load-reply table answering every fixture-registry host
+    /// repo with one canned reply per status.
+    fn all_load_replies(code: u16, payload: Value) -> Map2<(String, String), (u16, Value)> {
+        let mut replies = Map2::new();
+        for repo in [
+            "dezren39/fleet",
+            "developing-today/code",
+            "developing-today/fleet",
+        ] {
+            for status in ["in_progress", "queued"] {
+                replies.insert(
+                    (repo.to_string(), status.to_string()),
+                    (code, payload.clone()),
+                );
+            }
+        }
+        replies
+    }
+
+    #[test]
+    fn coverage_measured_zero_yields_numeric_headroom() {
+        // Fixture oracle (issue #13611): a fully observed zero with
+        // cap 40 is a measured zero — numeric headroom, normal pick,
+        // no unknown-capacity reasoning.
+        let reg = registry();
+        let gh = FakeGh::default();
+        let c = build_ctx(&reg, &json!({}), false, "", None, &gh);
+        let cov = &c.owner_load_coverage["dezren39"];
+        assert_eq!(cov.status, LoadCoverageStatus::Measured);
+        assert_eq!(cov.known_load(), 0);
+        assert_eq!(cov.cap, 40);
+        assert_eq!(cov.read_at, FIXED_NOW);
+        assert!(cov.missing_reads.is_empty());
+        let j = owner_load_coverage_json(&c);
+        assert_eq!(j["dezren39"]["status"], json!("measured"));
+        assert_eq!(j["dezren39"]["known_load"], json!(0));
+        assert_eq!(j["dezren39"]["cap"], json!(40));
+        let ad = adapter_for(find_surface(&reg, "fleet-personal").unwrap()).unwrap();
+        assert_eq!(ad.capacity(&job(), &c).free_slots, Some(40));
+        let (picked, reasoning) = decide(&reg, &job(), &c, &gh).unwrap();
+        assert_eq!(surf_str(picked.unwrap().surface(), "id"), "fleet-personal");
+        assert!(
+            !reasoning.iter().any(|r| r.contains("unknown-capacity")),
+            "{reasoning:?}"
+        );
+    }
+
+    #[test]
+    fn coverage_missing_token_is_unknown_not_zero() {
+        // Fixture oracle: no covering token -> the owner's load is
+        // unknown; no numeric headroom may be reported for it.
+        let reg = registry();
+        let gh = FakeGh {
+            tokens_ok: false,
+            ..Default::default()
+        };
+        let c = build_ctx(&reg, &json!({}), false, "", None, &gh);
+        let cov = &c.owner_load_coverage["dezren39"];
+        assert_eq!(cov.status, LoadCoverageStatus::Unknown);
+        assert_eq!(cov.known_load(), 0);
+        assert!(!cov.missing_reads.is_empty());
+        assert!(
+            cov.missing_reads
+                .iter()
+                .all(|m| m.contains("no token available")),
+            "{:?}",
+            cov.missing_reads
+        );
+        let j = owner_load_coverage_json(&c);
+        assert_eq!(j["dezren39"]["status"], json!("unknown"));
+        let ad = adapter_for(find_surface(&reg, "fleet-personal").unwrap()).unwrap();
+        let cap = ad.capacity(&job(), &c);
+        assert_eq!(cap.free_slots, None);
+        assert!(cap.summary.contains("load unknown"), "{}", cap.summary);
+    }
+
+    #[test]
+    fn coverage_http_403_is_unknown_and_falls_back_by_rule() {
+        // Fixture oracle: every load read refused (403) -> unknown
+        // coverage; with no measured headroom anywhere, tier 1 may
+        // still pick a free surface, but only under the named
+        // unknown-capacity rule, deterministically.
+        let reg = registry();
+        let gh = FakeGh {
+            load_replies: all_load_replies(403, json!({ "message": "Forbidden" })),
+            ..Default::default()
+        };
+        let c = build_ctx(&reg, &json!({}), false, "", None, &gh);
+        let cov = &c.owner_load_coverage["dezren39"];
+        assert_eq!(cov.status, LoadCoverageStatus::Unknown);
+        assert!(
+            cov.missing_reads.iter().all(|m| m.contains("HTTP 403")),
+            "{:?}",
+            cov.missing_reads
+        );
+        let ad = adapter_for(find_surface(&reg, "fleet-personal").unwrap()).unwrap();
+        assert_eq!(ad.capacity(&job(), &c).free_slots, None);
+        let (picked, reasoning) = decide(&reg, &job(), &c, &gh).unwrap();
+        assert_eq!(surf_str(picked.unwrap().surface(), "id"), "fleet-personal");
+        assert!(
+            reasoning
+                .iter()
+                .any(|r| r.contains("unknown-capacity rule")),
+            "{reasoning:?}"
+        );
+    }
+
+    #[test]
+    fn coverage_malformed_200_is_unobserved_not_zero() {
+        // Fixture oracle: an HTTP 200 without a valid total_count
+        // observes nothing — it must not collapse to a measured 0.
+        let reg = registry();
+        let gh = FakeGh {
+            load_replies: all_load_replies(200, json!({ "workflow_runs": [] })),
+            ..Default::default()
+        };
+        let c = build_ctx(&reg, &json!({}), false, "", None, &gh);
+        let cov = &c.owner_load_coverage["dezren39"];
+        assert_eq!(cov.status, LoadCoverageStatus::Unknown);
+        assert!(
+            cov.missing_reads
+                .iter()
+                .all(|m| m.contains("without a valid total_count")),
+            "{:?}",
+            cov.missing_reads
+        );
+        let j = owner_load_coverage_json(&c);
+        assert_eq!(j["dezren39"]["status"], json!("unknown"));
+        let ad = adapter_for(find_surface(&reg, "fleet-personal").unwrap()).unwrap();
+        assert_eq!(ad.capacity(&job(), &c).free_slots, None);
+    }
+
+    #[test]
+    fn coverage_partial_keeps_known_subtotal_and_yields_no_estimate() {
+        // Fixture oracle: in_progress reads 3 while the queued read
+        // fails -> partial coverage; the known subtotal 3 is kept as
+        // a lower bound, no numeric headroom is reported, and a
+        // measured surface elsewhere still wins the pick.
+        let reg = registry();
+        let mut replies = Map2::new();
+        replies.insert(
+            ("dezren39/fleet".to_string(), "in_progress".to_string()),
+            (200, json!({ "total_count": 3 })),
+        );
+        replies.insert(
+            ("dezren39/fleet".to_string(), "queued".to_string()),
+            (500, json!({ "message": "boom" })),
+        );
+        let gh = FakeGh {
+            load_replies: replies,
+            ..Default::default()
+        };
+        let c = build_ctx(&reg, &json!({}), false, "", None, &gh);
+        let cov = &c.owner_load_coverage["dezren39"];
+        assert_eq!(cov.status, LoadCoverageStatus::Partial);
+        assert_eq!(cov.known_running, 3);
+        assert_eq!(cov.known_queued, 0);
+        assert_eq!(cov.known_load(), 3);
+        assert_eq!(cov.missing_reads.len(), 1);
+        let j = owner_load_coverage_json(&c);
+        assert_eq!(j["dezren39"]["status"], json!("partial"));
+        assert_eq!(j["dezren39"]["known_load"], json!(3));
+        let ad = adapter_for(find_surface(&reg, "fleet-personal").unwrap()).unwrap();
+        let cap = ad.capacity(&job(), &c);
+        assert_eq!(cap.free_slots, None);
+        assert!(cap.summary.contains("at least 3"), "{}", cap.summary);
+        let (picked, reasoning) = decide(&reg, &job(), &c, &gh).unwrap();
+        assert_eq!(surf_str(picked.unwrap().surface(), "id"), "org-run");
+        assert!(
+            !reasoning
+                .iter()
+                .any(|r| r.contains("unknown-capacity rule")),
+            "{reasoning:?}"
+        );
+    }
+
+    #[test]
+    fn coverage_partial_subtotal_at_cap_proves_saturation() {
+        // A known subtotal that already reaches the cap proves
+        // saturation even when the remaining reads are missing:
+        // the estimate is a proven 0, not an unknown.
+        let reg = registry();
+        let mut replies = Map2::new();
+        replies.insert(
+            ("dezren39/fleet".to_string(), "in_progress".to_string()),
+            (200, json!({ "total_count": 40 })),
+        );
+        replies.insert(
+            ("dezren39/fleet".to_string(), "queued".to_string()),
+            (500, json!({ "message": "boom" })),
+        );
+        let gh = FakeGh {
+            load_replies: replies,
+            ..Default::default()
+        };
+        let c = build_ctx(&reg, &json!({}), false, "", None, &gh);
+        let cov = &c.owner_load_coverage["dezren39"];
+        assert_eq!(cov.status, LoadCoverageStatus::Partial);
+        assert_eq!(cov.estimated_free(40), Some(0));
+        let ad = adapter_for(find_surface(&reg, "fleet-personal").unwrap()).unwrap();
+        let cap = ad.capacity(&job(), &c);
+        assert_eq!(cap.free_slots, Some(0));
+        assert!(cap.summary.contains("saturated"), "{}", cap.summary);
+        let (picked, _) = decide(&reg, &job(), &c, &gh).unwrap();
+        assert_eq!(surf_str(picked.unwrap().surface(), "id"), "org-run");
+    }
+
+    #[test]
+    fn coverage_override_is_labeled_simulated() {
+        // Fixture oracle: an explicit --assume-owner-load override
+        // is a simulation — labeled in the JSON and the summary —
+        // and may yield a numeric estimate on that basis alone.
+        let reg = registry();
+        let gh = FakeGh::default();
+        let c = build_ctx(&reg, &json!({}), false, "dezren39=5", None, &gh);
+        let cov = &c.owner_load_coverage["dezren39"];
+        assert_eq!(cov.status, LoadCoverageStatus::Simulated);
+        assert_eq!(cov.known_load(), 5);
+        assert!(cov.source.contains("simulation"), "{}", cov.source);
+        let j = owner_load_coverage_json(&c);
+        assert_eq!(j["dezren39"]["status"], json!("simulated"));
+        assert_eq!(j["dezren39"]["known_load"], json!(5));
+        let ad = adapter_for(find_surface(&reg, "fleet-personal").unwrap()).unwrap();
+        let cap = ad.capacity(&job(), &c);
+        assert_eq!(cap.free_slots, Some(35));
+        assert!(cap.summary.contains("simulated"), "{}", cap.summary);
     }
 }

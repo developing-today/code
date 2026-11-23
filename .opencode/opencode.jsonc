@@ -154,6 +154,17 @@
   // failed main's bin-tests CI. The provider, its definition, and
   // the key plumbing above are unchanged; see the REMOVED note on
   // the route for the two-step re-enable.
+  // 2026-11-23 (Drew, direct order): "deepseek" LEAVES the list
+  // again, TEMPORARILY. The two-step re-enable the 2026-11-06 note
+  // prescribes is executed in this pass: deepseek/deepseek-flash is
+  // re-seated as deepseek-flash-plan's LAST target (tier 0.1, with
+  // the metered guard's exception marker on the seat) in the same
+  // change that deletes the line below. The same order seats two
+  // more temporary PAYG tails -- claude-payg into haiku-plan and
+  // openai-payg into luna-plan, each last at low effort; both of
+  // those providers were already enabled, so no flip is needed for
+  // them. All three tails are temporary wiring on Drew's word;
+  // removing the seats and restoring this line is the revert.
   // 2026-10-30 (Drew, direct order): "meta" joins the list below.
   // The direct api.meta.ai door is dead by Meta's design — the plan
   // API key returns 403 client_attestation_denied from any
@@ -357,7 +368,6 @@
     "github-copilot",
     "cloudflare-workers-ai",
     "meta",
-    "deepseek",
     "_antigravity"
   ],
   // 2026-11-03 (Drew): muse, antigravity-ls, antigravity-agy, code-design,
@@ -2863,9 +2873,12 @@
         // API-leg seating was written against.
         "targets": [
           // Drew, 2026-11-18: promotion quota first on Go; retain DeepSeek fallback tiers.
-          "opencode-go-plans/glm-5.3",
+          // 2026-11-23 (Drew, direct order): the opencode-go-plans/glm-5.3
+          // seat is REMOVED -- GLM leaves the DeepSeek pools. Every
+          // remaining DeepSeek seat in this pool is pinned to low
+          // effort (#low) in the same pass.
           {
-            "model": "opencode-go-plans/deepseek-v4.1-flash",
+            "model": "opencode-go-plans/deepseek-v4.1-flash#low",
             "variants": { "medium": "high", "xhigh": "max" }
           },
           // 2026-11-17 (code#9961): the cline-pass seat is REMOVED from this
@@ -2882,10 +2895,18 @@
           // Drew, 2026-11-18: use OpenDesign Flash Eco (live /v1/models verified).
           // Same plan/seat/tier; no paid fallback. Eco can be slower for batch work.
           {
-            "model": "opendesign/deepseek-v4.1-flash-eco",
+            "model": "opendesign/deepseek-v4.1-flash-eco#low",
             "variants": { "xhigh": "high", "max": "high" }
           },
-          "_commandcode/deepseek/deepseek-v4.1-flash"
+          "_commandcode/deepseek/deepseek-v4.1-flash#low",
+          // 2026-11-23 (Drew, direct order): the DeepSeek PAYG tail
+          // is re-seated TEMPORARILY as this pool's last target --
+          // the two-step change the 2026-11-06 note prescribes, with
+          // "deepseek" leaving disabled_providers in the same pass
+          // (see the switchboard note). Tier 0.1, below every plan
+          // leg; remove when Drew lifts the temporary wiring.
+          // payg-exception: Drew direct order 2026-11-23 -- temporary DeepSeek PAYG tail seated last in deepseek-flash-plan
+          "deepseek/deepseek-flash#low"
         ],
         "selection": "round-robin",
         "autonomy": "rules",
@@ -2893,10 +2914,10 @@
         // stack note above. Higher tier serves first; rotation is
         // even within a tier.
         "weights": {
-          "opencode-go-plans/glm-5.3": 4,
           "opencode-go-plans/deepseek-v4.1-flash": 2,
           "opendesign/deepseek-v4.1-flash-eco": 1,
-          "_commandcode/deepseek/deepseek-v4.1-flash": 1
+          "_commandcode/deepseek/deepseek-v4.1-flash": 1,
+          "deepseek/deepseek-flash": 0.1
         },
         // #7927 (task 14574): the 10s default first-output deadline mass-killed
         // scheduled lane waves (81 sessions in 8h) when doors queued past 10s.
@@ -2943,9 +2964,12 @@
         // remains the named pool for direct calls.
         "targets": [
           // Drew, 2026-11-18: promotion quota first on Go; retain DeepSeek fallback tiers.
-          "opencode-go-plans/glm-5.3",
+          // 2026-11-23 (Drew, direct order): the opencode-go-plans/glm-5.3
+          // seat is REMOVED -- GLM leaves the DeepSeek pools. Every
+          // remaining DeepSeek seat in this pool is pinned to low
+          // effort (#low) in the same pass.
           {
-            "model": "opencode-go-plans/deepseek-v4-pro",
+            "model": "opencode-go-plans/deepseek-v4-pro#low",
             "variants": { "medium": "high", "xhigh": "max" }
           },
           // 2026-11-17 (code#9961): the cline-pass seat is REMOVED from this
@@ -2960,10 +2984,10 @@
                   // monthly <100%, AND a live completion through the door proves
                   // it answers again.
           {
-            "model": "opendesign/deepseek-v4-pro",
+            "model": "opendesign/deepseek-v4-pro#low",
             "variants": { "xhigh": "high", "max": "high" }
           },
-          "_commandcode/deepseek/deepseek-v4-pro"
+          "_commandcode/deepseek/deepseek-v4-pro#low"
         ],
         "selection": "round-robin",
         "autonomy": "rules",
@@ -2971,7 +2995,6 @@
         // opendesign legs were missing from this map — an unweighted
         // leg's tier placement is undefined. Weighted as minor legs.
         "weights": {
-          "opencode-go-plans/glm-5.3": 4,
           "opencode-go-plans/deepseek-v4-pro": 3,
           "_commandcode/deepseek/deepseek-v4-pro": 0.5,
           "opendesign/deepseek-v4-pro": 1
@@ -3013,6 +3036,12 @@
         // is the pool's live flat door today.
         "targets": [
           "_claude/claude-haiku-5-5",
+          // 2026-11-23 (Drew, direct order): TEMPORARY PAYG tail --
+          // claude-payg (the direct Anthropic API door) seated last
+          // at low effort, behind the Claude plan door. Ordered
+          // selection: it serves only when the plan door fails or
+          // is demoted. Remove with the temporary PAYG wiring.
+          "claude-payg/claude-haiku-5-5#low"
         ],
         "selection": "ordered",
         "autonomy": "rules"
@@ -3068,7 +3097,12 @@
             "model": "opendesign/gpt-6-luna",
             "variants": { "xhigh": "high", "max": "high" }
           },
-          "opencode-go-plans/gpt-6-luna"
+          "opencode-go-plans/gpt-6-luna",
+          // 2026-11-23 (Drew, direct order): TEMPORARY PAYG tail --
+          // openai-payg (the direct OpenAI API door) seated last at
+          // low effort, at tier 0.1 below every plan leg. Remove
+          // with the temporary PAYG wiring.
+          "openai-payg/gpt-6-luna#low"
         ],
         "selection": "round-robin",
         "autonomy": "rules",
@@ -3084,7 +3118,8 @@
         "weights": {
           "openai-plan/gpt-6-luna": 6,
           "opencode-go-plans/gpt-6-luna": 1,
-          "opendesign/gpt-6-luna": 1
+          "opendesign/gpt-6-luna": 1,
+          "openai-payg/gpt-6-luna": 0.1
         }
       },
       "luna-effort-rr": {

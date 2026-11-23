@@ -28,6 +28,7 @@ members = [
   "crates/fleet-search",
   "crates/fleet-bridge",
   "crates/fleet-agent",
+  "crates/fleet-kv",
   "crates/fleet",
 ]
 resolver = "2"
