@@ -1,6 +1,19 @@
 // Stand-ins the tests share: a browser that can open a push message,
-// and a sign-in issuer that mints tokens.
+// a sign-in issuer that mints tokens, and the seeded generator the
+// property tests draw from.
 import { expect } from "bun:test";
+
+/** A seeded generator for property tests: the same seed gives the same
+ * run, so a property that fails can be run again exactly as it failed. */
+export function rng(seed: number): () => number {
+  let s = seed >>> 0;
+  return () => (s = (Math.imul(s, 1664525) + 1013904223) >>> 0) / 2 ** 32;
+}
+/** One of these, by that generator. */
+export const pick = <T>(next: () => number, from: readonly T[]): T => from[Math.floor(next() * from.length)];
+/** A string of `min` to `max` characters of `alphabet`, by that generator. */
+export const letters = (next: () => number, alphabet: string, min: number, max: number): string =>
+  Array.from({ length: min + Math.floor(next() * (max - min + 1)) }, () => pick(next, [...alphabet])).join("");
 
 export const b64u = (b: ArrayBuffer | Uint8Array) => Buffer.from(b as ArrayBuffer).toString("base64url");
 export const raw = (s: string) => new Uint8Array(Buffer.from(s, "base64url"));

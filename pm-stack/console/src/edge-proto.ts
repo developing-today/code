@@ -95,7 +95,9 @@ export interface MachineReport {
   sections: string[];
 }
 
-const MACHINE_NAME = /^[A-Za-z0-9][A-Za-z0-9 ._-]{0,62}$/;
+// A letter or digit first, never a blank last (two names that differ
+// only by one would look the same on the screen), 63 at most.
+const MACHINE_NAME = /^[A-Za-z0-9](?:[A-Za-z0-9 ._-]{0,61}[A-Za-z0-9._-])?$/;
 const MACHINE_CAN = /^[A-Za-z][A-Za-z0-9._-]{0,47}$/;
 /** How many kinds of action, or sections, one machine may say it has. */
 const MACHINE_CAN_MAX = 200;
@@ -107,7 +109,9 @@ export function machineName(value: unknown): string {
     .trim()
     .replace(/[^A-Za-z0-9 ._-]+/g, "-")
     .replace(/^[^A-Za-z0-9]+/, "")
-    .slice(0, 63);
+    .slice(0, 63)
+    // The cut may land just after a blank.
+    .trimEnd();
   return MACHINE_NAME.test(name) ? name : "";
 }
 
