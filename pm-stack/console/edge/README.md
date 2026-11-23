@@ -249,7 +249,10 @@ is there, including nothing:
    ([`init/`](init/worker.ts): the Durable Object's class and an answer
    that says it is empty). A version cannot be uploaded to a Worker that
    does not exist, and the storage behind the class is only made by a
-   deploy.
+   deploy. This step is made up to four times: Cloudflare is sometimes
+   not done making a new Worker when wrangler, having uploaded it, goes
+   on to ask about it ("This Worker does not exist", code 10007), and
+   the command leaves the same empty Worker each time it is made.
 2. This commit is uploaded as a version. It serves nothing yet.
 3. That version is put at 100%.
 4. The Worker is asked which version it is. If it does not answer as
