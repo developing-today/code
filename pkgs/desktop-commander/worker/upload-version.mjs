@@ -85,10 +85,26 @@ function cfJson(argv) {
   return unwrapJson(output);
 }
 
+// First publish: the Worker does not exist yet, and cf answers the
+// deployments list with APIError 10007 (404) instead of an empty list.
+// That specific shape means "no baseline"; every other failure is a
+// real error and keeps propagating.
+function listDeployments() {
+  try {
+    return cfJson(["workers", "deployments", "list", "--worker", config.worker, "--per-page", "1"]);
+  } catch (err) {
+    const text = `${err.stdout ?? ""}\n${err.stderr ?? ""}\n${err.message ?? ""}`;
+    if (text.includes("10007") || text.includes("does not exist on your account")) {
+      return null;
+    }
+    throw err;
+  }
+}
+
 let baselineDeployment = null;
 if (!dryRun) {
-  const deployments = cfJson(["workers", "deployments", "list", "--worker", config.worker, "--per-page", "1"]);
-  baselineDeployment = firstDeployment(deployments);
+  const deployments = listDeployments();
+  baselineDeployment = deployments ? firstDeployment(deployments) : null;
   if (baselineDeployment) {
     if (typeof baselineDeployment?.versions?.[0]?.version_id !== "string" || !baselineDeployment.id) {
       throw new Error("cf could not identify the current active Worker deployment; refusing to upload");
