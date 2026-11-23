@@ -32,6 +32,12 @@ pub struct AccountFlags {
     pub debits_must_not_exceed_credits: bool,
     /// Reject a transfer whose posting would make credits exceed debits.
     pub credits_must_not_exceed_debits: bool,
+    /// Keep this account's individual transfer history (TigerBeetle's
+    /// `history` flag). Carried so the account factory's per-kind
+    /// flags (#2318) cross this seam unchanged — the factory sets it
+    /// on holder accounts; the in-memory backend records it but does
+    /// not otherwise act on it.
+    pub history: bool,
 }
 
 /// A TigerBeetle-shaped account. `code` is the application chart-of-

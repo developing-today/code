@@ -12,8 +12,13 @@
 # Filed as slice 1 of issue #4986; the placement-record schema below is
 # declared here so slice 2 (the PoC, gated on the #2024 review round)
 # consumes the same artifact. Refs #4986, #2024, #1157.
+#
+# v1.1 amendment (2026-11-22, #2179): the `machines` section below and
+# the placement record's `machine` / `machine_view` fields transcribe
+# §8 of the source doc (the machine dimension §6 deferred). The §1–§5
+# transcription above is unchanged.
 
-version: 1
+version: "1.1"
 source_doc: "doc/2026-11-03T15-10-56Z_design_task-placement-framework-v1/2026-11-03T15-10-56Z_design_task-placement-framework-v1.md"
 source_issue: 2024
 implementing_issue: 4986
@@ -272,6 +277,48 @@ exceptions:
     rule: "Exceptions are read in the framework's review round (with the orchestrator's review of #2024, then in the placement audit). Each reviewed exception ends as: rule amended, exception renewed deliberately, or placement class retired."
     outcomes: [rule_amended, exception_renewed, placement_class_retired]
 
+# ---------------------------------------------------------------- machines
+# §8 (v1.1, #2179) — the machine step: after option and pool/route,
+# pick the machine. Signals come only from the machine's registry
+# record (doc/fleet-machine-registry.yaml; shape per the machine
+# onboarding standard §3): declared state, declared capabilities and
+# capacity, and the watchdog health cache read through the §1.5 rule.
+machines:
+  source_issue: 2179
+  registry: "doc/fleet-machine-registry.yaml"
+  registry_standard: "doc/2026-11-04T05-15-02Z_design_machine-onboarding-standard-v1/2026-11-04T05-15-02Z_design_machine-onboarding-standard-v1.md"
+  reader: "scripts/fleet-machine-placement.py"
+  health_rule:
+    name: "placement_view (onboarding standard §1.5/§4)"
+    stale_after_seconds: 1800 # two watchdog cadences of 15 minutes
+    stale_reads_as: left
+    never_seen_reads_as: left
+    fresh_reads_as: "the recorded status (healthy | degraded | unreachable | unknown)"
+  rules:
+    - id: M1
+      name: "Declared-state gate"
+      condition: "The record's declared state is not `active` (declared, joining, draining, retired)"
+      effect: "Not eligible. declared/joining have not passed §2 steps 5-6; draining takes no new work (§4); retired is terminal. Evaluated before the health cache."
+    - id: M2
+      name: "Health gate"
+      condition: "Active, and the health view is unreachable, unknown, or left"
+      effect: "Not eligible. Unreachable and left are the departure shapes (§4); unknown is unearned — healthy is earned whole (§1.5)."
+    - id: M3
+      name: "Tier 1"
+      condition: "Active + health view healthy"
+      effect: "Eligible, tier 1 — place here first."
+    - id: M4
+      name: "Tier 2"
+      condition: "Active + health view degraded"
+      effect: "Eligible, tier 2 — only behind every tier-1 machine that can serve. The view names the failed checks."
+      decision: "v1.1 decision (a), recorded in §8 for the review round: degraded is eligible at tier 2 — a fresh, earned, named failure is not silence, and a one-node pool must not stop fleet-wide on one axis."
+    - id: M5
+      name: "Capability requirement"
+      condition: "The work requires a capability (queue_worker, opencode_sessions, builds, gpu)"
+      effect: "Only machines whose record declares that capability `true` are eligible at any tier (§1.4)."
+  unknown_decision: "v1.1 decision (b), recorded in §8: unknown is not eligible. Eligibility follows earned states only; this deliberately differs from burn rule B4, which governs quota reads, not machines."
+  intra_tier_ranking: "None in v1.1. The reader exposes declared capacity and the health session facts (listed, active_within_cadence) beside the §1.3 cap; activity is not concurrency, so the cap is reported, not gated on."
+
 # --------------------------------------------------------- placement record
 # The record every fleet dispatch emits (#4986). Declared here so the
 # slice-2 PoC — the queue-worker handoff path and the OpenChamber
@@ -304,3 +351,10 @@ placement_record:
     - name: supervision
       type: string
       note: "Who babysits/reviews the result (see each option's supervision field)."
+    - name: machine
+      type: string
+      note: "v1.1 (§8): the registry id of the machine the work was placed on, or `n/a` for options that run nowhere in the pool (Actions, Jules)."
+    - name: machine_view
+      type: string
+      required_when: "machine != n/a"
+      note: "v1.1 (§8): the health view and tier the machine step relied on (e.g. `healthy, tier 1`)."

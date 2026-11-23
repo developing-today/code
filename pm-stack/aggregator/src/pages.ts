@@ -105,6 +105,15 @@ export const PAGES: PageDef[] = [
     nav: "primary",
   },
   {
+    id: "reports",
+    title: "Reports",
+    route: "/reports",
+    api: "/api/reports.json",
+    blurb: "Review report versions and resolve prose conflicts without overwriting stored text.",
+    group: "work",
+    nav: "dropdown",
+  },
+  {
     id: "board",
     title: "Board",
     route: "/board",

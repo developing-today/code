@@ -29,7 +29,12 @@
 
 pub mod aggregate;
 pub mod backend;
+pub mod boundary;
+pub mod c8_profile;
+pub mod classification;
+pub mod classify;
 pub mod detect;
+pub mod disclosure;
 pub mod embed;
 pub mod embed_cache;
 pub mod error;
@@ -61,11 +66,18 @@ pub const MAX_EXPAND_NEIGHBORS: usize = 100;
 
 pub use aggregate::{PromoteReport, embed_unit_into_shard, tier_sensitivity_name};
 pub use backend::SearchBackend;
-pub use detect::{
-    DETECTION_LEDGER_SCHEMA, DetectionLedger, DetectionPass, FileStat, LandedState, Mechanism,
-    PathVerdict, PlainTreeOptions, SourceLedger, Verdict, VerdictCounts, default_ledger_path,
-    git_tree_detection, plain_tree_detection, resolve_commit,
+pub use c8_profile::{
+    C8Link, C8Page, C8Source, LinkEvidence, LinkKind, PageKind, UrlParts, extract_links,
+    sanitize_url,
 };
+pub use detect::{
+    DETECTION_LEDGER_SCHEMA, DetectionLedger, DetectionPass, FileStat, LandedState, LandedTable,
+    Mechanism, PathVerdict, PlainTreeOptions, RowDetectOptions, RowMode, RowStoreSpec,
+    SourceLedger, TablePass, TableSpec, Verdict, VerdictCounts, WatermarkSpec, WatermarkValue,
+    default_ledger_path, git_tree_detection, plain_tree_detection, resolve_commit,
+    row_store_detection,
+};
+pub use disclosure::{DisclosureContext, chunk_classification};
 pub use embed::{
     AtlasEmbedder, DocEmbedder, FixedDocEmbedder, FixedEmbedder, QUERY_PROMPT, QueryEmbedder,
 };
@@ -104,11 +116,14 @@ pub use owner_inventory::{
 };
 pub use search::{
     BackendBranchExecutor, BranchPoolExecutor, SearchMode, SearchOptions, TraceJob, run_get_chunk,
-    run_search, run_search_traced, run_search_with_executor, run_search_with_executor_traced,
+    run_get_chunk_with_context, run_search, run_search_traced, run_search_with_executor,
+    run_search_with_executor_traced,
 };
 pub use stage::{
-    REGISTRY_V1_DDL, Registry, STAGE_SCHEMA_VERSION, STAGE_V1_DDL, STAGE_V1_TABLES, StagingUnit,
-    UnitState, check_stage_schema, provision_staging_db, schema_version,
+    ChunkClassification, REGISTRY_V1_DDL, Registry, STAGE_SCHEMA_VERSION, STAGE_V1_DDL,
+    STAGE_V1_TABLES, StagingUnit, UnitState, check_stage_schema, chunk_classifications,
+    provision_staging_db, schema_version, stage_classified_artifact,
+    stage_classified_artifact_in_db,
 };
 pub use trace::{JsonlTraceSink, TRACE_SCHEMA, TraceContext, TraceSink};
 pub use trace_ingest::{

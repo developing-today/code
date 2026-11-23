@@ -8,15 +8,15 @@ license = "MIT OR Apache-2.0"
 
 # Compiler core for the rendering pipeline settled in decision record
 # #5855 (doc/2026-11-08_decision_id5855_rendering_pipeline_conformance.md),
-# implementation follow-up #7918. This crate implements stages 1-3
-# (parse, the vocabulary half of validate, compose) and stages 4-5
-# (lower, emit) for the web target. The vocabularies and mapping
-# tables are consumed as data (src/vocabulary.rs, src/web_table.rs),
-# never as pipeline code branches (#5855 invariant 6). The assertion
-# half of validation consumes the #5850 assertion vocabulary; #5850
-# is not settled yet, so the `assert` slot is carried opaquely until
-# it lands. Native (#5852) and custom-GUI (#5853) lowering are
-# follow-on work on #7918.
+# implementation follow-up #7918. This crate implements all five
+# stages — parse, validate, compose, and lower + emit for the web
+# (#5851), native (#5852), and custom-GUI (#5853) targets. The
+# vocabularies and mapping tables are consumed as data
+# (src/vocabulary.rs, src/assertion_vocabulary.rs, src/web_table.rs,
+# src/native_table.rs, src/gui_table.rs), never as pipeline code
+# branches (#5855 invariant 6). The assertion half of validation
+# consumes the #5850 assertion vocabulary, settled and consumed as
+# versioned data (the #5855 assumption A2 deferral is discharged).
 
 [dependencies]
 

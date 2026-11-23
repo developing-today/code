@@ -244,3 +244,30 @@ path keyed by `script_name` (`/workers/scripts/{script_name}/versions`). The
 changelog demonstrates cross-surface identity for deployments but not the
 pinned `cf` cold version upload. This remains unverified and is not inferred
 from a synthetic API fixture.
+
+## Main reconciliation checkpoint — 2026-11-23
+
+The bridge draft was reconciled against `main` at `40e0c2ac4418ecb4ecca021f809b87544aeabad0`. The smoke init workflow and its receipt verifier now match `main`; the smoke upload workflow and its active review paths were left exactly as on `main`. The bridge release workflow is now bridge-only, so smoke provisioning/upload remains in its separate main workflows.
+
+Focused local verification on the reconciled tree:
+
+```text
+node --test bootstrap-smoke.test.mjs deployment-config.test.mjs release-contract.test.mjs smoke-upload.test.mjs gateway.test.mjs
+60 passed, 0 failed
+npm run check:staging
+cf Build Output v1 bridge build completed; effective Build Output validated for private-laptop-bridge-staging
+YAML parse + bash -n for 16 embedded workflow shell blocks; passed
+bash -n check-staging.sh; passed
+git diff --check; passed
+```
+
+`check:staging` runs only a local build and `--dry-run`; it validates the built
+bridge payload's fixed target, disabled flags, absent routes/previews/triggers,
+CPU/observability limits, and SQLite Durable Object binding. No Cloudflare
+credentials were supplied and no API write or live provider read was made.
+`staging-preflight.json` remains `verified:false` and the target remains recorded
+as absent; same-Worker namespace/migration, account ownership, no-public-route,
+Gateway caller inventory, and protected environment evidence are still required
+before upload/promotion. No deployment, Gateway change, laptop change, traffic,
+or cutover was attempted. `actionlint` was unavailable locally, and the repo's
+automatic PR CI is disabled; these are local results, not hosted checks.

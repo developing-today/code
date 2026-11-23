@@ -125,10 +125,37 @@ def main():
         )
     ]
     # Upsert before removing stale rows; preserve first_seen atomically.
+    # Avoid rewriting an identical materialized row on a replay, even for
+    # nullable fields. Both the assignment and predicate use the same
+    # columns so a future SET field cannot be missed by the no-op guard.
+    update_fields = (
+        "tier",
+        "kind",
+        "title",
+        "source",
+        "state",
+        "reason",
+        "ref",
+        "since",
+        "last_seen_at",
+        "item",
+        "last_seen_run_id",
+    )
+    assignments = ",".join(f"{field}=excluded.{field}" for field in update_fields)
+    differs = " OR ".join(
+        f"orch_items.{field} IS NOT excluded.{field}" for field in update_fields
+    )
+    upsert_item = (
+        "INSERT INTO orch_items "
+        "(id,tier,kind,title,source,state,reason,ref,since,"
+        "last_seen_at,item,first_seen_run_id,last_seen_run_id) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?) "
+        f"ON CONFLICT(id) DO UPDATE SET {assignments} WHERE {differs}"
+    )
     for tier, item in items:
         stmts.append(
             (
-                "INSERT INTO orch_items (id,tier,kind,title,source,state,reason,ref,since,last_seen_at,item,first_seen_run_id,last_seen_run_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET tier=excluded.tier,kind=excluded.kind,title=excluded.title,source=excluded.source,state=excluded.state,reason=excluded.reason,ref=excluded.ref,since=excluded.since,last_seen_at=excluded.last_seen_at,item=excluded.item,last_seen_run_id=excluded.last_seen_run_id",
+                upsert_item,
                 [
                     item["id"],
                     tier,

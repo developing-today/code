@@ -11,8 +11,9 @@ const isolated = () => ({
   observability: {enabled: false, logs: {enabled: false}, traces: {enabled: false}},
 });
 
-// Staging deployment target is the bounded, stateless network smoke only.
-// The live bridge remains disabled pending a separately reviewed config.
+// The bridge mode is the sole real staging release definition. It remains disabled
+// until owner-approved account, namespace, Gateway, and laptop preflight is complete.
+// The default mode exists only for the separately managed synthetic smoke Worker.
 export default defineConfig(({mode}) => mode === 'bridge' ? ({
   worker: {
     ...isolated(),

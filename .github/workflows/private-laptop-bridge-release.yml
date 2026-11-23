@@ -12,7 +12,7 @@ on:
         description: Exact pre-existing Worker; each environment token is scoped to only this Worker
         type: choice
         required: true
-        options: [smoke, bridge]
+        options: [bridge]
       upload_run_id:
         description: Successful main-branch upload workflow run ID; required only for promote
         type: string
@@ -28,8 +28,8 @@ concurrency:
 
 jobs:
   release:
-    if: github.repository == 'developing-today/code' && github.ref == 'refs/heads/main' && (inputs.worker == 'bridge' || inputs.worker == 'smoke')
-    environment: ${{ inputs.worker == 'bridge' && 'cloudflare-staging' || inputs.worker == 'smoke' && 'cloudflare-staging-smoke' || 'invalid-worker-selection' }}
+    if: github.repository == 'developing-today/code' && github.ref == 'refs/heads/main' && inputs.worker == 'bridge'
+    environment: cloudflare-staging
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     steps:
@@ -54,11 +54,10 @@ jobs:
           set -euo pipefail
           [[ "$GITHUB_REPOSITORY" == developing-today/code && "$GITHUB_REF" == refs/heads/main && "$GITHUB_EVENT_NAME" == workflow_dispatch ]]
           if [[ "$ACTION_KIND" == upload ]]; then [[ -z "$UPLOAD_RUN_ID" ]]; elif [[ "$ACTION_KIND" == promote ]]; then [[ "$UPLOAD_RUN_ID" =~ ^[0-9]{1,20}$ ]]; else exit 2; fi
-          case "$WORKER_KIND" in
-            smoke) echo "worker=private-laptop-bridge-smoke" >> "$GITHUB_OUTPUT"; echo "environment=cloudflare-staging-smoke" >> "$GITHUB_OUTPUT"; echo "mode=default" >> "$GITHUB_OUTPUT" ;;
-            bridge) echo "worker=private-laptop-bridge-staging" >> "$GITHUB_OUTPUT"; echo "environment=cloudflare-staging" >> "$GITHUB_OUTPUT"; echo "mode=bridge" >> "$GITHUB_OUTPUT" ;;
-            *) exit 2 ;;
-          esac
+          [[ "$WORKER_KIND" == bridge ]]
+          echo "worker=private-laptop-bridge-staging" >> "$GITHUB_OUTPUT"
+          echo "environment=cloudflare-staging" >> "$GITHUB_OUTPUT"
+          echo "mode=bridge" >> "$GITHUB_OUTPUT"
       - name: Download handoff from exact upload run
         if: inputs.action == 'promote'
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
@@ -88,7 +87,7 @@ jobs:
           TARGET_WORKER: ${{ steps.target.outputs.worker }}
           TARGET_ENV: ${{ steps.target.outputs.environment }}
           TARGET_MODE: ${{ steps.target.outputs.mode }}
-          CF_ACCOUNT_ID: ${{ inputs.worker == 'bridge' && secrets.CF_BRIDGE_ACCOUNT_ID || inputs.worker == 'smoke' && secrets.CF_SMOKE_ACCOUNT_ID }}
+          CF_ACCOUNT_ID: ${{ secrets.CF_BRIDGE_ACCOUNT_ID }}
         run: |
           set -euo pipefail
           node release-artifact.mjs provenance \
@@ -100,8 +99,8 @@ jobs:
         if: inputs.action == 'promote'
         working-directory: pm-stack/private-laptop-bridge
         env:
-          CF_ACCOUNT_ID: ${{ inputs.worker == 'bridge' && secrets.CF_BRIDGE_ACCOUNT_ID || inputs.worker == 'smoke' && secrets.CF_SMOKE_ACCOUNT_ID }}
-          OWNER_PROOF_JSON: ${{ inputs.worker == 'bridge' && secrets.CF_BRIDGE_OWNER_PROOF_JSON || inputs.worker == 'smoke' && secrets.CF_SMOKE_OWNER_PROOF_JSON }}
+          CF_ACCOUNT_ID: ${{ secrets.CF_BRIDGE_ACCOUNT_ID }}
+          OWNER_PROOF_JSON: ${{ secrets.CF_BRIDGE_OWNER_PROOF_JSON }}
           TARGET_WORKER: ${{ steps.target.outputs.worker }}
           TARGET_ENV: ${{ steps.target.outputs.environment }}
           SOURCE_SHA: ${{ steps.provenance.outputs.source_sha }}
@@ -133,16 +132,16 @@ jobs:
       - name: Validate account owner proof before Cloudflare access
         working-directory: pm-stack/private-laptop-bridge
         env:
-          CF_ACCOUNT_ID: ${{ inputs.worker == 'bridge' && secrets.CF_BRIDGE_ACCOUNT_ID || inputs.worker == 'smoke' && secrets.CF_SMOKE_ACCOUNT_ID }}
-          OWNER_PROOF_JSON: ${{ inputs.worker == 'bridge' && secrets.CF_BRIDGE_OWNER_PROOF_JSON || inputs.worker == 'smoke' && secrets.CF_SMOKE_OWNER_PROOF_JSON }}
+          CF_ACCOUNT_ID: ${{ secrets.CF_BRIDGE_ACCOUNT_ID }}
+          OWNER_PROOF_JSON: ${{ secrets.CF_BRIDGE_OWNER_PROOF_JSON }}
           TARGET_WORKER: ${{ steps.target.outputs.worker }}
           TARGET_ENV: ${{ steps.target.outputs.environment }}
         run: node release-artifact.mjs preflight
       - name: Require existing exact Worker; never bootstrap from CI
         working-directory: pm-stack/private-laptop-bridge
         env:
-          CLOUDFLARE_ACCOUNT_ID: ${{ inputs.worker == 'bridge' && secrets.CF_BRIDGE_ACCOUNT_ID || inputs.worker == 'smoke' && secrets.CF_SMOKE_ACCOUNT_ID }}
-          CLOUDFLARE_API_TOKEN: ${{ inputs.worker == 'bridge' && secrets.CF_BRIDGE_API_TOKEN || inputs.worker == 'smoke' && secrets.CF_SMOKE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_BRIDGE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CF_BRIDGE_API_TOKEN }}
           TARGET_WORKER: ${{ steps.target.outputs.worker }}
         run: npx --no-install cf -q workers get "$TARGET_WORKER" >/dev/null
       - name: Verify source tests and effective local config
@@ -153,11 +152,8 @@ jobs:
         run: |
           set -euo pipefail
           node --test deployment-config.test.mjs release-contract.test.mjs
-          case "$WORKER_KIND" in
-            bridge) node --test gateway.test.mjs ;;
-            smoke) node --test smoke.test.mjs ;;
-            *) exit 2 ;;
-          esac
+          [[ "$WORKER_KIND" == bridge ]]
+          node --test gateway.test.mjs
       - name: Build exact Build Output v1 from candidate source
         if: inputs.action == 'upload' || inputs.action == 'promote'
         working-directory: pm-stack/private-laptop-bridge
@@ -188,10 +184,10 @@ jobs:
         id: upload
         working-directory: pm-stack/private-laptop-bridge
         env:
-          CLOUDFLARE_ACCOUNT_ID: ${{ inputs.worker == 'bridge' && secrets.CF_BRIDGE_ACCOUNT_ID || inputs.worker == 'smoke' && secrets.CF_SMOKE_ACCOUNT_ID }}
-          CLOUDFLARE_API_TOKEN: ${{ inputs.worker == 'bridge' && secrets.CF_BRIDGE_API_TOKEN || inputs.worker == 'smoke' && secrets.CF_SMOKE_API_TOKEN }}
-          CF_ACCOUNT_ID: ${{ inputs.worker == 'bridge' && secrets.CF_BRIDGE_ACCOUNT_ID || inputs.worker == 'smoke' && secrets.CF_SMOKE_ACCOUNT_ID }}
-          OWNER_PROOF_JSON: ${{ inputs.worker == 'bridge' && secrets.CF_BRIDGE_OWNER_PROOF_JSON || inputs.worker == 'smoke' && secrets.CF_SMOKE_OWNER_PROOF_JSON }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_BRIDGE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CF_BRIDGE_API_TOKEN }}
+          CF_ACCOUNT_ID: ${{ secrets.CF_BRIDGE_ACCOUNT_ID }}
+          OWNER_PROOF_JSON: ${{ secrets.CF_BRIDGE_OWNER_PROOF_JSON }}
           TARGET_WORKER: ${{ steps.target.outputs.worker }}
           TARGET_ENV: ${{ steps.target.outputs.environment }}
           TARGET_MODE: ${{ steps.target.outputs.mode }}
@@ -226,10 +222,10 @@ jobs:
         if: inputs.action == 'promote'
         working-directory: pm-stack/private-laptop-bridge
         env:
-          CF_ACCOUNT_ID: ${{ inputs.worker == 'bridge' && secrets.CF_BRIDGE_ACCOUNT_ID || inputs.worker == 'smoke' && secrets.CF_SMOKE_ACCOUNT_ID }}
-          OWNER_PROOF_JSON: ${{ inputs.worker == 'bridge' && secrets.CF_BRIDGE_OWNER_PROOF_JSON || inputs.worker == 'smoke' && secrets.CF_SMOKE_OWNER_PROOF_JSON }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ inputs.worker == 'bridge' && secrets.CF_BRIDGE_ACCOUNT_ID || inputs.worker == 'smoke' && secrets.CF_SMOKE_ACCOUNT_ID }}
-          CLOUDFLARE_API_TOKEN: ${{ inputs.worker == 'bridge' && secrets.CF_BRIDGE_API_TOKEN || inputs.worker == 'smoke' && secrets.CF_SMOKE_API_TOKEN }}
+          CF_ACCOUNT_ID: ${{ secrets.CF_BRIDGE_ACCOUNT_ID }}
+          OWNER_PROOF_JSON: ${{ secrets.CF_BRIDGE_OWNER_PROOF_JSON }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_BRIDGE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CF_BRIDGE_API_TOKEN }}
           TARGET_WORKER: ${{ steps.target.outputs.worker }}
           TARGET_ENV: ${{ steps.target.outputs.environment }}
           TARGET_MODE: ${{ steps.target.outputs.mode }}
@@ -250,8 +246,8 @@ jobs:
         if: inputs.action == 'promote'
         working-directory: pm-stack/private-laptop-bridge
         env:
-          CF_ACCOUNT_ID: ${{ inputs.worker == 'bridge' && secrets.CF_BRIDGE_ACCOUNT_ID || inputs.worker == 'smoke' && secrets.CF_SMOKE_ACCOUNT_ID }}
-          OWNER_PROOF_JSON: ${{ inputs.worker == 'bridge' && secrets.CF_BRIDGE_OWNER_PROOF_JSON || inputs.worker == 'smoke' && secrets.CF_SMOKE_OWNER_PROOF_JSON }}
+          CF_ACCOUNT_ID: ${{ secrets.CF_BRIDGE_ACCOUNT_ID }}
+          OWNER_PROOF_JSON: ${{ secrets.CF_BRIDGE_OWNER_PROOF_JSON }}
           TARGET_WORKER: ${{ steps.target.outputs.worker }}
           TARGET_ENV: ${{ steps.target.outputs.environment }}
           SOURCE_SHA: ${{ steps.provenance.outputs.source_sha }}
@@ -266,8 +262,8 @@ jobs:
         if: inputs.action == 'promote'
         working-directory: pm-stack/private-laptop-bridge
         env:
-          CLOUDFLARE_ACCOUNT_ID: ${{ inputs.worker == 'bridge' && secrets.CF_BRIDGE_ACCOUNT_ID || inputs.worker == 'smoke' && secrets.CF_SMOKE_ACCOUNT_ID }}
-          CLOUDFLARE_API_TOKEN: ${{ inputs.worker == 'bridge' && secrets.CF_BRIDGE_API_TOKEN || inputs.worker == 'smoke' && secrets.CF_SMOKE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_BRIDGE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CF_BRIDGE_API_TOKEN }}
           TARGET_WORKER: ${{ steps.target.outputs.worker }}
           HANDOFF: ${{ runner.temp }}/private-bridge-handoff/candidate.json
           DEPLOYMENTS: ${{ runner.temp }}/cf-deployments.json

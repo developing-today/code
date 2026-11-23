@@ -865,6 +865,12 @@ pub(crate) enum CompletionClass {
     /// Work that produces an artifact: completion requires an
     /// evidence reference recorded on the task.
     Fix,
+    /// A feature slice delivers one criterion of a larger issue
+    /// (#12233 F2c): completion requires evidence of the delivered
+    /// slice, but the parent issue stays open by design, so no
+    /// verified-disposition readback — that would demand closure
+    /// or a follow-up for work that is meant to continue.
+    Slice,
     /// Triage annotates and validates; it never completes the
     /// issue. Completion re-enqueues the follow-on by default.
     Triage,
@@ -876,6 +882,7 @@ pub(crate) enum CompletionClass {
 pub(crate) fn completion_class(payload: &Value) -> CompletionClass {
     match payload.get("kind").and_then(|k| k.as_str()) {
         Some("small_fix") | Some("ci_investigation") | Some("pr_shepherd") => CompletionClass::Fix,
+        Some("feature_slice") => CompletionClass::Slice,
         Some("triage") => CompletionClass::Triage,
         _ => CompletionClass::Ungated,
     }
@@ -965,6 +972,20 @@ pub(crate) fn gate_completion(
                     .to_string());
             }
             verified(result, ctx)?;
+            Ok(None)
+        }
+        CompletionClass::Slice => {
+            // #12233 F2c: a slice completes on evidence of the
+            // delivered slice alone — no verified disposition, so
+            // the parent issue may stay open while slices land.
+            if evidence_ref(result).is_none() {
+                return Err(
+                    "complete_task: feature_slice completion requires an evidence \
+                     reference on the result (merged PR, commit, or \
+                     verified-closure note); the task remains claimed"
+                        .to_string(),
+                );
+            }
             Ok(None)
         }
         CompletionClass::Triage => {
@@ -1187,6 +1208,15 @@ pub(crate) fn verb_complete(t: &TursoBackend, req: &Value) -> Value {
                                 json!({"from_task": task_id, "at": now_iso()}),
                             );
                         }
+                        // #12744: carry the issue's labels onto the
+                        // follow-on from the GitHub mirror when the
+                        // triage payload carries none of its own, so
+                        // the band selection below sees them even
+                        // for triage rows enqueued before label
+                        // carriage landed. Best-effort by design:
+                        // the mirror never gates work, and the
+                        // inherited priority stands on any failure.
+                        let _ = enrich_payload_labels(t, &mut fpayload, Some(&triage_key));
                         let fprogress = match &terminal {
                             Some(pred) => json!({
                                 "triage_source_task": task_id,
@@ -1209,10 +1239,18 @@ pub(crate) fn verb_complete(t: &TursoBackend, req: &Value) -> Value {
                                 arg_str(row.get("body").and_then(|v| v.as_str())),
                                 Arg::Text(fpayload.to_string()),
                                 Arg::Text(fix_key.clone()),
-                                row.get("priority")
-                                    .and_then(|v| v.as_i64())
-                                    .map(Arg::Int)
-                                    .unwrap_or(Arg::Null),
+                                // #12744: Drew's label band when the
+                                // follow-on payload carries a band
+                                // label, the triage row's stored
+                                // priority otherwise — the same
+                                // label-wins rule task_from_packet
+                                // applies at enqueue.
+                                band_or_inherited(
+                                    &fpayload,
+                                    row.get("priority").and_then(|v| v.as_i64()),
+                                )
+                                .map(Arg::Int)
+                                .unwrap_or(Arg::Null),
                                 Arg::Int(
                                     fpayload
                                         .get("max_attempts")
@@ -1293,7 +1331,7 @@ pub(crate) fn verb_list(t: &TursoBackend, req: &Value) -> Value {
     let select = if rich {
         "id, queue, title, priority, status, dedupe_key, created_at, not_before, \
          worker_id, claimed_at, lease_until, lane_id, platform, attempts, max_attempts, \
-         claim_provider, claim_model, claim_variant, progress, payload, \
+         claim_provider, claim_model, claim_variant, claim_session_id, progress, payload, \
          blocked_deps, dep_next_recheck_at, dep_blocked_until"
     } else {
         "id, queue, title, priority, status, dedupe_key, created_at, not_before, platform"

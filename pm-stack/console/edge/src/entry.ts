@@ -7,7 +7,7 @@
 // file of the app, fetch the host's key, or pass the request to the host
 // behind the tunnel. If the host cannot be reached, an action that may
 // be done late is handed back to the state to hold.
-import { SECURITY } from "../../src/http.ts";
+import { SECURITY, sameEntity } from "../../src/http.ts";
 
 export interface Io {
   /** The object with the state (edge.ts). */
@@ -93,7 +93,9 @@ export async function route(request: Request, io: Io): Promise<Response> {
   }
   if (url.pathname === "/console/health" && request.method === "GET") {
     const body = (await (await io.state(request)).json()) as Record<string, unknown>;
-    return new Response(JSON.stringify({ ...body, version: io.version }), {
+    // The hostname it is built for is said too: the host's setup script
+    // will not put any other hostname behind this Worker.
+    return new Response(JSON.stringify({ ...body, version: io.version, host: io.publicHost }), {
       headers: { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store", ...SECURITY },
     });
   }
@@ -132,9 +134,21 @@ export async function route(request: Request, io: Io): Promise<Response> {
   if (what === "asset") {
     const file = await io.asset(String(detail.path));
     if (!file.ok) return new Response("not found", { status: 404, headers: SECURITY });
-    return new Response(request.method === "HEAD" ? null : file.body, {
-      headers: { "Content-Type": String(detail.type), "Cache-Control": "no-cache", ...SECURITY },
-    });
+    // "no-cache" is "ask before using your copy". The file's tag is what
+    // the browser asks with; when its copy is still the file, the answer
+    // is that and nothing else, so a visit does not download the app again.
+    const headers: Record<string, string> = {
+      "Content-Type": String(detail.type),
+      "Cache-Control": "no-cache",
+      ...SECURITY,
+    };
+    const etag = file.headers.get("etag");
+    if (etag) headers.ETag = etag;
+    if (sameEntity(request.headers.get("if-none-match"), etag)) {
+      await file.body?.cancel();
+      return new Response(null, { status: 304, headers });
+    }
+    return new Response(request.method === "HEAD" ? null : file.body, { headers });
   }
 
   // Everything below is for the host. Away from the routed hostname
@@ -142,7 +156,11 @@ export async function route(request: Request, io: Io): Promise<Response> {
   if (!routed) return offline("this address has no host behind it");
 
   if (detail.mode === "act") {
-    const answer = await io.host(withHeader(forHost, "x-pm-edge", "1"), ACT_MS);
+    // The host is told the action's name with the action. No answer may
+    // mean the host never got it, or did it and the answer was lost: it
+    // is held under that name, and the host sorts out which.
+    const named = withHeader(withHeader(forHost, "x-pm-edge", "1"), "x-pm-act", String(detail.id ?? ""));
+    const answer = await io.host(named, ACT_MS);
     if (answer === null) return tell("/internal/hold", detail);
     // The host's answer says what it read again; keep that here, and
     // send the owner the rest.

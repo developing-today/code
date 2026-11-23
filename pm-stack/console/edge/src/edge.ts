@@ -17,11 +17,17 @@
 // presents a sign-in token that verifies; the host is whoever signs with
 // the key the host itself published through its tunnel; a phone is
 // whoever holds a token this service issued.
-import { type Action, ownActions } from "../../src/actions.ts";
+import { actions, type Action, ownActions } from "../../src/actions.ts";
 import { AuthError, type Identity, identify } from "../../src/auth.ts";
-import { Devices, Limiter } from "../../src/devices.ts";
+import { DIRECT_ACTIONS, DIRECT_READ_SECTIONS, directClasses, directRead } from "./direct.ts";
+import { Devices, KeyedLimiter, Limiter } from "../../src/devices.ts";
 import { type Act, DOC_NAMES, type DocName, Docs, Stamped } from "../../src/docs.ts";
 import {
+  type AndroidRelease,
+  androidRelease,
+  APK_LIMIT,
+  type ApkReport,
+  apkReport,
   type EdgeConfig,
   edgeConfig,
   HELD_FOR_MS,
@@ -46,10 +52,12 @@ import {
   json,
   manifest,
   type Phones,
+  SECURITY,
   sameSiteWrite,
 } from "../../src/http.ts";
+import { plain } from "../../src/plain.ts";
 import { Notifier } from "../../src/notify.ts";
-import { Push } from "../../src/push.ts";
+import { contact, Push } from "../../src/push.ts";
 import type { Store } from "../../src/store.ts";
 
 /** The edge's own storage: small values by key. */
@@ -79,6 +87,34 @@ const WATCHED = ["board", "asks", "census", "sessions", "questionCount", "servic
 /** One stored value holds at most this many characters of a section. */
 const CHUNK = 600_000;
 const SYNC_LIMIT = 8 * 1024 * 1024;
+/** A report's signature: 64 bytes, as unpadded base64url. */
+const SIGNATURE = /^[A-Za-z0-9_-]{86}$/;
+/** Reports from one address that may fail their checks in a minute
+ * before that address is refused unread. The host's own never fail. */
+const SYNC_REFUSALS = 20;
+/** The Android build is kept in pieces of this many bytes. */
+const APK_CHUNK = 512 * 1024;
+/** The most pieces a build that may be carried can take. */
+const APK_PIECES = Math.ceil(APK_LIMIT / APK_CHUNK);
+/** A build that could not be kept is asked for again no sooner than this. */
+const APK_RETRY_MS = 10 * 60_000;
+/** With no report for this long, the laptop is not there to ask. */
+const HOST_QUIET_MS = 60_000;
+/** The GitHub release whose address always holds the app's newest build. */
+const RELEASE_TAG = "pm-console-android";
+/** GitHub is asked what that release holds no more often than this, */
+const RELEASE_EVERY_MS = 10 * 60_000;
+/** this soon again when it could not be asked, */
+const RELEASE_RETRY_MS = 60_000;
+/** and is given this long to answer, and this long to send the build. */
+const RELEASE_ASK_MS = 8_000;
+const RELEASE_FETCH_MS = 25_000;
+
+interface ApkMeta {
+  sha256: string;
+  size: number;
+  at: number;
+}
 const ACT_LIMIT = 256 * 1024;
 const HELD_MAX = 100;
 const ACTS_KEPT = 30;
@@ -87,6 +123,10 @@ const AUDIT_KEPT = 300;
 const WATCHING_MS = 90_000;
 /** The host is reported silent after this long without a sync. */
 export const SILENT_MS = 10 * 60_000;
+/** The laptop is quiet long enough to bypass it for safe reads and writes. */
+const DIRECT_READ_AFTER_MS = 60_000;
+/** How often the self-check may run again. */
+const SELF_CHECK_EVERY_MS = 60 * 60_000;
 const KEY_FETCH_EVERY_MS = 30_000;
 const STATIC: Record<string, string> = {
   "app.js": "text/javascript; charset=utf-8",
@@ -94,6 +134,7 @@ const STATIC: Record<string, string> = {
   "icon.svg": "image/svg+xml",
   "sw.js": "text/javascript; charset=utf-8",
 };
+const ACT_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const ICONS = /^\/icons\/(icon-192|icon-512|icon-maskable-512|apple-touch-icon)\.png$/;
 
 interface Mirror {
@@ -122,6 +163,14 @@ export interface EdgeOptions {
   now?: () => number;
   /** Reaches the sign-in issuer's keys and the push services. */
   fetchImpl?: typeof fetch;
+  /** What the edge may do itself while the laptop is away: the switch,
+   * the two tokens, and the fetch the direct reads and writes use. */
+  direct?: {
+    enabled: boolean;
+    githubToken?: string;
+    queueToken?: string;
+    fetchImpl?: typeof fetch;
+  };
   /** Ask to be woken at a time: the check for a silent host. */
   setAlarm?: (at: number) => Promise<void>;
 }
@@ -130,6 +179,12 @@ export class Edge {
   private kv: KV;
   private now: () => number;
   private fetchImpl: typeof fetch;
+  private direct?: EdgeOptions["direct"];
+  /** When each section was last read directly, so a fresh read is not
+   * made more often than the section's own interval. */
+  private directAt = new Map<string, number>();
+  /** The last self-check: one direct read of each kind, and how it went. */
+  private selfCheckResult: { at: number; kinds: Record<string, { ok: boolean; error?: string }> } | null = null;
   private setAlarm: (at: number) => Promise<void>;
   private cfg: EdgeConfig | null | undefined;
   private mirrors = new Map<string, Mirror | null>();
@@ -142,9 +197,18 @@ export class Edge {
   private hostSeq: number | null = null;
   /** For each section, the content the host last said it has and when
    * it read it: a copy with that content is current as of that read. */
-  private confirmed: Record<string, { hash: string; at: number }> = {};
+  private confirmed: Record<string, { hash: string; at: number; error: string | null }> = {};
   private sure = 0;
   private unsure = 0;
+  private hostVersion: string | null = null;
+  private latestApk: ApkMeta | null | undefined;
+  private keptApk: (ApkMeta & { chunks: number }) | null | undefined;
+  /** The build that could not be kept when it was last sent, and when. */
+  private apkFailed: { sha256: string; at: number } | null = null;
+  /** What GitHub last said of the released build, when, whether it
+   * could be asked at all, and if not, why. */
+  private released: { at: number; asked: boolean; found: AndroidRelease | null; trouble: string | null } | null = null;
+  private syncRefused: KeyedLimiter;
   readonly docs: Docs;
   readonly push: Push;
   readonly phones: Phones;
@@ -154,8 +218,10 @@ export class Edge {
   constructor(options: EdgeOptions) {
     this.kv = options.kv;
     this.now = options.now ?? Date.now;
-    this.fetchImpl = options.fetchImpl ?? fetch;
+    this.fetchImpl = plain(options.fetchImpl ?? fetch);
+    this.direct = options.direct;
     this.setAlarm = options.setAlarm ?? (async () => {});
+    this.syncRefused = new KeyedLimiter(SYNC_REFUSALS, 60_000, this.now);
     this.docs = new Docs(
       Object.fromEntries(
         Object.entries(SECTIONS).map(([name, ttlMs]) => [
@@ -165,7 +231,8 @@ export class Edge {
             load: async () => {
               const m = await this.mirror(name);
               if (!m) throw new Error("the laptop has not reported this yet");
-              return new Stamped(m.data, m.at);
+              // With the laptop's own word on whether it could still read it.
+              return new Stamped(m.data, m.at, this.confirmed[name]?.error ?? null);
             },
           },
         ]),
@@ -174,8 +241,8 @@ export class Edge {
     );
     this.push = new Push(
       kvStore(this.kv, "push"),
-      // Who a push service may write to about these messages: the owner.
-      () => `mailto:${this.cfg?.owners[0] ?? "owner@invalid.example"}`,
+      // The contact a push service is given: the project's page.
+      () => contact(this.cfg?.repo ?? "developing-today/code"),
       (url, init) => this.fetchImpl(url, init as RequestInit),
       this.now,
     );
@@ -185,8 +252,150 @@ export class Edge {
       link: new Limiter(30, 60_000, this.now),
       refused: new Limiter(60, 60_000, this.now),
     };
-    this.notifier = new Notifier(this.docs, this.push, kvStore(this.kv, "seen"));
+    this.notifier = new Notifier(this.docs, this.push, kvStore(this.kv, "seen"), this.now);
     this.table = ownActions(this.push, devices);
+  }
+
+  // ---- the Android build -------------------------------------------------
+
+  /** Where the release with the fixed address keeps a file. */
+  private releaseUrl(cfg: EdgeConfig, file: string): string {
+    return `https://github.com/${cfg.repo}/releases/download/${RELEASE_TAG}/${file}`;
+  }
+
+  /** The newest build GitHub Actions has released, by its own
+   * description, or null when none is published. GitHub is not asked on
+   * every request; when it cannot be asked, what was last known stands. */
+  private async androidRelease(cfg: EdgeConfig): Promise<AndroidRelease | null> {
+    const now = this.now();
+    const known = this.released;
+    if (known && now - known.at < (known.asked ? RELEASE_EVERY_MS : RELEASE_RETRY_MS)) return known.found;
+    try {
+      const res = await this.fetchImpl(this.releaseUrl(cfg, "version.json"), {
+        redirect: "follow",
+        signal: AbortSignal.timeout(RELEASE_ASK_MS),
+      });
+      if (res.status === 404) this.released = { at: now, asked: true, found: null, trouble: null };
+      else if (res.ok) this.released = { at: now, asked: true, found: androidRelease(await res.json()), trouble: null };
+      else throw new Error(`GitHub answered ${res.status}`);
+    } catch (error) {
+      // Why it could not be asked is kept, and health says it: "none
+      // published" and "could not ask" are different things, and for a
+      // day the second looked like the first.
+      const e = error as Error;
+      const trouble = `${e.name && e.name !== "Error" ? `${e.name}: ` : ""}${e.message}`.slice(0, 160);
+      this.released = { at: now, asked: false, found: known?.found ?? null, trouble };
+    }
+    return this.released.found;
+  }
+
+  /** What is said of the released build: its name, its code and when it
+   * was built. Null when none is published, or before the host has said
+   * which repository this is. */
+  private async releaseSaid(cfg: EdgeConfig | null): Promise<{ name: string; code: number; built: string } | null> {
+    const release = cfg ? await this.androidRelease(cfg) : null;
+    return release && { name: release.name, code: release.code, built: release.built };
+  }
+
+  /** The released build, as a download, or null if it did not arrive as
+   * its description says (GitHub out of reach, or the description read
+   * while a new build was being put up). */
+  private async serveRelease(cfg: EdgeConfig, release: AndroidRelease): Promise<Response | null> {
+    try {
+      const res = await this.fetchImpl(this.releaseUrl(cfg, "pm-console.apk"), {
+        redirect: "follow",
+        signal: AbortSignal.timeout(RELEASE_FETCH_MS),
+      });
+      if (!res.ok) return null;
+      const bytes = new Uint8Array(await res.arrayBuffer());
+      const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
+      const sha256 = [...digest].map((b) => b.toString(16).padStart(2, "0")).join("");
+      if (bytes.byteLength !== release.size || sha256 !== release.sha256) {
+        // The description is out of step with the file: read it again
+        // next time instead of trusting it for ten minutes.
+        this.released = null;
+        return null;
+      }
+      return new Response(bytes, {
+        headers: {
+          "Content-Type": "application/vnd.android.package-archive",
+          "Content-Disposition": 'attachment; filename="pm-console.apk"',
+          "Cache-Control": "no-store",
+          "X-Build": release.name,
+          ...SECURITY,
+        },
+      });
+    } catch {
+      return null;
+    }
+  }
+
+  /** What the app is told of the copy kept here. */
+  private async apkState(): Promise<{ at: number; current: boolean } | null> {
+    const kept = await this.apkKept();
+    if (!kept) return null;
+    const latest = await this.apkLatest();
+    return { at: kept.at, current: !latest || latest.sha256 === kept.sha256 };
+  }
+
+  /** The build the host last said it has. */
+  private async apkLatest(): Promise<ApkMeta | null> {
+    if (this.latestApk === undefined)
+      this.latestApk = ((await this.kv.get("apk:latest")) as ApkMeta | undefined) ?? null;
+    return this.latestApk;
+  }
+
+  /** The build a copy of which is kept here. */
+  private async apkKept(): Promise<(ApkMeta & { chunks: number }) | null> {
+    if (this.keptApk === undefined) {
+      this.keptApk = ((await this.kv.get("apk")) as (ApkMeta & { chunks: number }) | undefined) ?? null;
+    }
+    return this.keptApk;
+  }
+
+  /** Take in a build the host sent, if it is what the host says it is. */
+  private async keepApk(build: ApkReport): Promise<void> {
+    const bytes = Uint8Array.from(atob(build.data ?? ""), (c) => c.charCodeAt(0));
+    const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
+    const sha256 = [...digest].map((b) => b.toString(16).padStart(2, "0")).join("");
+    if (bytes.byteLength !== build.size || sha256 !== build.sha256)
+      throw new Error("the build sent is not the build described");
+    // The record of the copy kept so far goes first. Its pieces are about
+    // to be written over, and a write that stops half-way must not leave
+    // pieces of two builds under a record that describes one of them.
+    // With no record there is no copy: nothing is handed out, and the
+    // build is asked for again.
+    if (await this.apkKept()) {
+      this.keptApk = null;
+      await this.kv.delete("apk");
+    }
+    const chunks = Math.ceil(bytes.byteLength / APK_CHUNK);
+    for (let i = 0; i < chunks; i++) await this.kv.put(`apk:${i}`, bytes.slice(i * APK_CHUNK, (i + 1) * APK_CHUNK));
+    // Pieces left by a larger build, whether or not its record survived.
+    for (let i = chunks; i < APK_PIECES; i++) await this.kv.delete(`apk:${i}`);
+    this.keptApk = { sha256, size: build.size, at: build.at, chunks };
+    await this.kv.put("apk", this.keptApk);
+  }
+
+  /** The kept build, as a download. */
+  private async serveApk(kept: ApkMeta & { chunks: number }): Promise<Response> {
+    const bytes = new Uint8Array(kept.size);
+    let at = 0;
+    for (let i = 0; i < kept.chunks; i++) {
+      const part = (await this.kv.get(`apk:${i}`)) as Uint8Array | undefined;
+      if (!part) return json({ error: "the copy of the Android build kept here is incomplete" }, 503);
+      bytes.set(part, at);
+      at += part.byteLength;
+    }
+    return new Response(bytes, {
+      headers: {
+        "Content-Type": "application/vnd.android.package-archive",
+        "Content-Disposition": 'attachment; filename="pm-console.apk"',
+        "Cache-Control": "no-store",
+        "X-Build-At": String(kept.at),
+        ...SECURITY,
+      },
+    });
   }
 
   // ---- what is kept ------------------------------------------------------
@@ -295,11 +504,186 @@ export class Edge {
     if (this.ownActs === null) await this.showActs();
     if (this.hostSeen === null) {
       const host = (await this.kv.get("host")) as
-        | { seen: number; seq: number; confirmed?: Record<string, { hash: string; at: number }> }
+        | {
+            seen: number;
+            seq: number;
+            confirmed?: Record<string, { hash: string; at: number; error: string | null }>;
+            version?: string | null;
+          }
         | undefined;
       this.hostSeen = host?.seen ?? 0;
       this.hostSeq = host?.seq ?? 0;
       this.confirmed = host?.confirmed ?? {};
+      this.hostVersion = host?.version ?? null;
+    }
+  }
+
+  // ---- doing it here while the laptop is away --------------------------
+
+  /** The laptop has been quiet long enough to bypass it. */
+  private directQuiet(): boolean {
+    return this.now() - (this.hostSeen ?? 0) >= DIRECT_READ_AFTER_MS;
+  }
+
+  /** The switch is on and both tokens are here: the edge may act itself.
+   * The quiet gate is separate, so health can say the capability is
+   * ready even while the laptop is still reporting. */
+  private directCapable(): boolean {
+    return this.direct?.enabled === true && Boolean(this.direct.githubToken) && Boolean(this.direct.queueToken);
+  }
+
+  /** May act itself right now: capable, and the laptop known quiet. */
+  private directReady(cfg: EdgeConfig | null): boolean {
+    return this.directCapable() && this.directConfigReady(cfg) && this.directQuiet();
+  }
+
+  /** The config carries what direct mode needs: a config stored or
+   * reported before direct mode existed has these empty, and the edge
+   * serves the offline app from it without acting itself. */
+  private directConfigReady(cfg: EdgeConfig | null): boolean {
+    return cfg !== null && cfg.queueDbUrl !== "" && cfg.queueTokenName !== "" && cfg.promptLabel !== "";
+  }
+
+  /** The laptop's own classes, wired for the edge. Null while the
+   * capability is not there. */
+  private directClasses(cfg: EdgeConfig | null): ReturnType<typeof directClasses> | null {
+    if (cfg === null || !this.directCapable() || !this.directConfigReady(cfg)) return null;
+    return directClasses(cfg, {
+      githubToken: this.direct?.githubToken,
+      queueToken: this.direct?.queueToken,
+      fetchImpl: this.direct?.fetchImpl as never,
+    });
+  }
+
+  /** One direct read of a section, recorded in the mirror the documents
+   * are built from. A section is not read again within its own interval,
+   * and a failed read keeps the last good copy and says why. After an
+   * action of this side's own, the read is forced: the change must show
+   * at once, not when the interval runs out. */
+  private async directReadSection(name: string, cfg: EdgeConfig | null, force = false): Promise<void> {
+    const now = this.now();
+    const last = this.directAt.get(name) ?? 0;
+    if (!force && now - last < (SECTIONS[name] ?? 0)) return;
+    this.directAt.set(name, now);
+    const direct = this.directClasses(cfg);
+    if (!direct) return;
+    // After a restart the in-memory sections are empty even though the
+    // durable mirror holds the host's last copy: load it first, so a
+    // failed first read keeps last-good data instead of nothing.
+    if (this.docs.good(name) === null) await this.docs.refresh(name);
+    try {
+      this.docs.record(name, await directRead(name, direct.ops, direct.work), now);
+    } catch (error) {
+      this.docs.recordFailure(name, error);
+    }
+  }
+
+  /** The sections of one document that the edge reads itself, when it may. */
+  private async directRefresh(doc: DocName): Promise<void> {
+    const names = doc === "core" ? ["board", "asks"] : doc === "ops" ? ["prs", "priorities"] : [];
+    if (names.length === 0) return;
+    const cfg = await this.config();
+    if (!this.directReady(cfg)) return;
+    for (const name of names) await this.directReadSection(name, cfg);
+    // The notifier is told of the sections just read directly, so its
+    // refresh does not reload the laptop's mirror over them.
+    const watched = names.filter((n) => WATCHED.includes(n));
+    if (watched.length > 0) {
+      await this.notifier.tick(watched).catch(() => {});
+    }
+  }
+
+  /** The self-check: one direct read of each kind, run when the
+   * capability arrives and at most once an hour after, its result kept
+   * for health. It proves the path without taking the laptop down. */
+  private async maybeSelfCheck(cfg: EdgeConfig | null): Promise<void> {
+    const direct = this.directClasses(cfg);
+    if (!direct) return;
+    const now = this.now();
+    const stored = (await this.kv.get("selfcheck")) as
+      | { at: number; kinds: Record<string, { ok: boolean; error?: string }> }
+      | undefined;
+    if (stored && now - stored.at < SELF_CHECK_EVERY_MS) {
+      this.selfCheckResult = stored;
+      return;
+    }
+    const kinds: Record<string, { ok: boolean; error?: string }> = {};
+    for (const name of DIRECT_READ_SECTIONS) {
+      try {
+        await directRead(name, direct.ops, direct.work);
+        kinds[name] = { ok: true };
+      } catch (error) {
+        kinds[name] = { ok: false, error: (error as Error).message.slice(0, 200) };
+      }
+    }
+    this.selfCheckResult = { at: now, kinds };
+    await this.kv.put("selfcheck", this.selfCheckResult);
+  }
+
+  /** The stand-in for the queue's enqueue in a prompt the edge files or
+   * answers itself: the issue already exists on GitHub, so only its
+   * queue task is left, held for the laptop's return as prompt.enqueue.
+   * The packet carries the issue's number; the text is the owner's own. */
+  private enqueueRecorder(
+    args: Record<string, unknown>,
+    by: string,
+  ): (packet: unknown) => Promise<{ code: number; stdout: string; stderr: string }> {
+    return async (packet) => {
+      const issue = Number((packet as { payload?: { issue?: { number?: unknown } } })?.payload?.issue?.number);
+      if (!Number.isSafeInteger(issue) || issue <= 0) {
+        throw new Error("the prompt's issue could not be read from its packet");
+      }
+      const at = new Date(this.now()).toISOString();
+      const held = await this.heldList();
+      held.push({
+        id: crypto.randomUUID(),
+        kind: "prompt.enqueue",
+        args: { issue, text: String(args.text ?? ""), at },
+        who: by,
+        at,
+      });
+      await this.saveHeld();
+      return { code: 0, stdout: "", stderr: "" };
+    };
+  }
+
+  /** An action this side runs itself through the laptop's own classes,
+   * recorded before and after like own(). Only the sections it touched
+   * that the edge reads itself are read again at once. */
+  private async directAct(kind: string, args: Record<string, unknown>, by: string, via: string): Promise<Response> {
+    const cfg = await this.config();
+    const direct = this.directClasses(cfg);
+    if (!direct) throw new Error("the edge cannot act itself right now");
+    const table = actions(direct.ops, direct.work, this.push, this.phones.devices);
+    const action = table[kind];
+    const base = { at: new Date(this.now()).toISOString(), who: by, via, action: kind, args: action.audit(args) };
+    await this.audit({ ...base, phase: "start" });
+    const entry = { id: crypto.randomUUID(), kind, at: base.at, by, note: "" };
+    try {
+      let result: unknown;
+      if (kind === "ask.send") result = await direct.work.ask(args, this.enqueueRecorder(args, by));
+      else if (kind === "ask.reply") result = await direct.work.askReply(args, this.enqueueRecorder(args, by));
+      else result = await action.run(args);
+      await this.audit({ ...base, phase: "done", ok: true });
+      await this.logAct({ ...entry, status: "done" });
+      for (const name of action.touch) {
+        if ((DIRECT_READ_SECTIONS as readonly string[]).includes(name)) {
+          await this.directReadSection(name, cfg, true);
+        }
+      }
+      if (action.touch.some((n) => WATCHED.includes(n))) {
+        // The sections just read directly are not reloaded from the
+        // laptop's mirror by the notifier's refresh.
+        const refreshed = action.touch.filter(
+          (n) => (DIRECT_READ_SECTIONS as readonly string[]).includes(n) && WATCHED.includes(n),
+        );
+        await this.notifier.tick(refreshed).catch(() => {});
+      }
+      return json({ ok: true, result });
+    } catch (error) {
+      await this.audit({ ...base, phase: "done", ok: false, error: (error as Error).message });
+      await this.logAct({ ...entry, status: "failed", note: (error as Error).message.slice(0, 200) });
+      throw error;
     }
   }
 
@@ -315,24 +699,51 @@ export class Edge {
   }
 
   private async sync(req: Request): Promise<Response> {
-    if (Number(req.headers.get("content-length") ?? "0") > SYNC_LIMIT) return json({ error: "too large" }, 413);
-    const body = new Uint8Array(await req.arrayBuffer());
-    if (body.byteLength > SYNC_LIMIT) return json({ error: "too large" }, 413);
+    // The laptop cannot sign in, so this path is open to anyone, and a
+    // report may be megabytes. Every report that fails a check below
+    // counts against the address it came from, and an address with too
+    // many is refused here, before its body is read.
+    const from = req.headers.get("cf-connecting-ip") ?? "unknown";
+    if (this.syncRefused.blocked(from)) {
+      return json({ error: "too many reports from this address were not the host's; try again in a minute" }, 429);
+    }
+    const refuse = (body: unknown, status: number) => {
+      this.syncRefused.count(from);
+      return json(body, status);
+    };
+    // Too large by its own account, or not shaped like a report: refused unread.
+    if (Number(req.headers.get("content-length") ?? "0") > SYNC_LIMIT) return refuse({ error: "too large" }, 413);
     const kid = req.headers.get("x-pm-key") ?? "";
+    const signature = req.headers.get("x-pm-signature") ?? "";
+    if (kid === "" || !SIGNATURE.test(signature)) {
+      return refuse({ error: "this is not signed with the host's key" }, 401);
+    }
     const key = (await this.kv.get("key")) as { kid: string; jwk: PublicKey } | undefined;
     const now = this.now();
     if (!key || key.kid !== kid) {
       // A key this side has not seen: ask the host for its key, but not
-      // on every stranger's request.
+      // on every stranger's request. Nothing has been read yet.
       if (req.headers.get("x-pm-key-fetched") === "1" || now - this.lastKeyFetch < KEY_FETCH_EVERY_MS) {
-        return json({ error: "this is not signed with the host's key" }, 401);
+        return refuse({ error: "this is not signed with the host's key" }, 401);
       }
       this.lastKeyFetch = now;
+      // The report is sent again once the key is known, from a second
+      // copy of the same upload. This copy has to be read to its end
+      // first: in the Worker runtime the two share one stream, and a
+      // copy left unread holds the other back until the laptop gives up
+      // waiting. (It is read at most once in KEY_FETCH_EVERY_MS, and
+      // only up to what a report may be, so this is no way to make the
+      // edge read at will.)
+      await req.arrayBuffer().catch(() => {});
       return next("key", {});
     }
-    if (!(await verify(key.jwk, body, req.headers.get("x-pm-signature") ?? ""))) {
-      return json({ error: "this is not signed with the host's key" }, 401);
+    const body = new Uint8Array(await req.arrayBuffer());
+    if (body.byteLength > SYNC_LIMIT) return refuse({ error: "too large" }, 413);
+    if (!(await verify(key.jwk, body, signature))) {
+      return refuse({ error: "this is not signed with the host's key" }, 401);
     }
+    // Signed by the host from here on: what is wrong with it is the
+    // host's to hear about, and is not held against the address.
     let msg: SyncRequest;
     try {
       msg = JSON.parse(new TextDecoder().decode(body)) as SyncRequest;
@@ -350,16 +761,26 @@ export class Edge {
       await this.kv.put("cfg", cfg);
       this.cfg = cfg;
     }
-    const changed = await this.take(msg.sections);
-    // A section that has not changed is not sent again, but the host
-    // says when it last read it: the copy here is as current as that.
-    const fresher: string[] = [];
+    // What the host says of every section it has: how current it is, and
+    // whether it could still read it. Taken first, so a section that
+    // arrives in this report is shown with its health as of this report.
+    const told: { name: string; healthChanged: boolean }[] = [];
     for (const [name, theirs] of Object.entries(msg.have ?? {})) {
       if (!Object.hasOwn(SECTIONS, name) || typeof theirs?.hash !== "string" || typeof theirs.at !== "number") continue;
-      this.confirmed[name] = { hash: theirs.hash, at: Math.min(theirs.at, now) };
+      const error = typeof theirs.error === "string" && theirs.error !== "" ? theirs.error.slice(0, 300) : null;
+      told.push({ name, healthChanged: (this.confirmed[name]?.error ?? null) !== error });
+      this.confirmed[name] = { hash: theirs.hash, at: Math.min(theirs.at, now), error };
+    }
+    const changed = await this.take(msg.sections);
+    await this.phones.devices.mergeLinks(msg.phones);
+    // A section that has not changed is not sent again: the copy here is
+    // as current as the host says, and as healthy.
+    const fresher: string[] = [];
+    for (const { name, healthChanged } of told) {
       const copy = await this.mirror(name);
-      if (copy && copy.hash === theirs.hash && this.confirmed[name].at > copy.at) {
-        copy.at = this.confirmed[name].at;
+      if (!copy || copy.hash !== this.confirmed[name].hash) continue;
+      if (this.confirmed[name].at > copy.at || healthChanged) {
+        copy.at = Math.max(copy.at, this.confirmed[name].at);
         if (!changed.includes(name)) fresher.push(name);
       }
     }
@@ -412,20 +833,57 @@ export class Edge {
     // current it says each section is.
     this.hostSeen = now;
     this.hostSeq = msg.at;
-    await this.kv.put("host", { seen: now, seq: msg.at, confirmed: this.confirmed });
+    this.hostVersion = typeof msg.version === "string" && /^[0-9a-f]{7,40}$/.test(msg.version) ? msg.version : null;
+    await this.kv.put("host", { seen: now, seq: msg.at, confirmed: this.confirmed, version: this.hostVersion });
     if (wasSilent) {
-      await this.kv.delete("silent");
-      await this.push
-        .send("trouble", { title: "The laptop is back", body: "It is reporting again.", url: "/console/", tag: "host" })
-        .catch(() => {});
+      try {
+        const delivery = await this.push.send("trouble", {
+          title: "The laptop is back",
+          body: "It is reporting again.",
+          url: "/console/",
+          tag: "host",
+        });
+        if (delivery.failed === 0) await this.kv.delete("silent");
+      } catch {
+        // Keep the transition pending so the next host report can retry it.
+      }
     }
     await this.setAlarm(now + SILENT_MS + 1000);
-    if (changed.some((n) => WATCHED.includes(n))) {
+    // Something the owner is told about changed, or a unit's failing is
+    // being timed: that clock only moves when the laptop's fresh word on
+    // its units is looked at, and a unit that stays failed reads the
+    // same in every report.
+    if (changed.some((n) => WATCHED.includes(n)) || (await this.notifier.pending())) {
       await this.notifier.tick().catch((error) => console.error(`pm-edge: notify: ${(error as Error).message}`));
+    }
+
+    // The Android build: what the host has now, and the build itself
+    // when the host sent it because this side asked.
+    const build = apkReport(msg.apk);
+    if (
+      JSON.stringify(build && { sha256: build.sha256, size: build.size, at: build.at }) !==
+      JSON.stringify(await this.apkLatest())
+    ) {
+      this.latestApk = build && { sha256: build.sha256, size: build.size, at: build.at };
+      if (this.latestApk) await this.kv.put("apk:latest", this.latestApk);
+      else await this.kv.delete("apk:latest");
+    }
+    if (build?.data) {
+      await this.keepApk(build).catch((error) => {
+        // Not kept (it did not match its description, or could not be
+        // stored). It is not asked for again at once: a build that
+        // fails every time would otherwise be sent with every report.
+        this.apkFailed = { sha256: build.sha256, at: now };
+        console.error(`pm-edge: apk: ${(error as Error).message}`);
+      });
     }
 
     // What the host has and this side has lost (its storage was reset).
     const want: string[] = [];
+    const kept = await this.apkKept();
+    const failedLately =
+      this.apkFailed?.sha256 === this.latestApk?.sha256 && now - (this.apkFailed?.at ?? 0) < APK_RETRY_MS;
+    if (this.latestApk && kept?.sha256 !== this.latestApk.sha256 && !failedLately) want.push("apk");
     for (const name of Object.keys(SECTIONS)) {
       if (typeof msg.have?.[name]?.hash === "string" && !(await this.mirror(name))) want.push(name);
     }
@@ -435,6 +893,7 @@ export class Edge {
       notify: (await this.push.status()).devices > 0 || (await this.phones.devices.list()).length > 0,
       want,
       commands: held,
+      phones: await this.phones.devices.links(),
     };
     return json(answer);
   }
@@ -446,15 +905,17 @@ export class Edge {
     const now = this.now();
     if (!this.hostSeen || now - this.hostSeen < SILENT_MS) return;
     if ((await this.kv.get("silent")) === true) return;
-    await this.kv.put("silent", true);
-    await this.push
-      .send("trouble", {
+    try {
+      const delivery = await this.push.send("trouble", {
         title: "The laptop has gone quiet",
         body: "It has not reported for ten minutes. The app still opens; what you do is held until it is back.",
         url: "/console/",
         tag: "host",
-      })
-      .catch(() => {});
+      });
+      if (delivery.failed === 0) await this.kv.put("silent", true);
+    } catch {
+      // Leave the transition pending so a later alarm can retry it.
+    }
   }
 
   // ---- requests ----------------------------------------------------------
@@ -478,11 +939,35 @@ export class Edge {
     // Public: nothing here says anything about the fleet.
     if (path === `${BASE}/health` && method === "GET") {
       await this.ready();
+      // The self-check runs when the capability is there: one direct
+      // read of each kind, and how it went. Nothing here is a secret.
+      await this.maybeSelfCheck(cfg);
       return json({
         ok: true,
         edge: true,
         configured: cfg !== null,
+        directEnabled: this.direct?.enabled === true,
+        githubTokenConfigured: Boolean(this.direct?.githubToken),
+        queueTokenConfigured: Boolean(this.direct?.queueToken),
+        // Ready to act itself once the laptop is quiet: the switch and
+        // tokens are here, and the config carries what direct mode
+        // needs. The quiet gate itself is not part of this answer.
+        directReady: this.directCapable() && this.directConfigReady(cfg),
+        selfCheck: this.selfCheckResult,
         hostSeen: this.hostSeen || null,
+        // The commit the host's console is running, as it last said.
+        hostVersion: this.hostVersion,
+        // The copy of the Android build kept here: when it was built,
+        // and whether it is the host's newest. Null if there is none.
+        androidBuild: await this.apkState(),
+        // The newest build of the app GitHub has released, as last read
+        // here (within ten minutes): what a download is, when there is
+        // one. The release is public; this is how its arrival here is
+        // checked from outside. Null when none is published.
+        androidRelease: await this.releaseSaid(cfg),
+        // Why GitHub could not be asked, the last time it was tried;
+        // null when it answered (also when it answered "none").
+        androidReleaseTrouble: this.released?.trouble ?? null,
         // Since this object last started: requests it answered as the
         // owner's, and requests it left to the host to judge.
         answered: this.sure,
@@ -532,6 +1017,23 @@ export class Edge {
     if (method === "GET" && Object.hasOwn(STATIC, rest)) {
       return next("asset", { path: `${BASE}/${rest}`, type: STATIC[rest] });
     }
+    if (method === "GET" && rest === "pm-console.apk") {
+      // A build GitHub Actions has released comes first: it is the
+      // newest there is, and getting it needs nothing of the laptop.
+      const release = await this.androidRelease(cfg);
+      const released = release ? await this.serveRelease(cfg, release) : null;
+      if (released) return released;
+      // Otherwise the newest build is the laptop's. The copy here is
+      // served when it is that build, or when the laptop is not there
+      // to ask. After a restart, when the laptop was last heard from
+      // has to be read back first, or it would look as if it never had
+      // been.
+      await this.ready();
+      const kept = await this.apkKept();
+      const latest = await this.apkLatest();
+      const quiet = this.now() - (this.hostSeen ?? 0) >= HOST_QUIET_MS;
+      if (kept && (kept.sha256 === latest?.sha256 || quiet)) return this.serveApk(kept);
+    }
     if (!rest.startsWith("api/")) return next("relay", { mode: "live" });
 
     const seg = rest.slice(4).split("/");
@@ -543,19 +1045,31 @@ export class Edge {
             ...who,
             repo: cfg.repo,
             queue: cfg.queue,
-            androidApp: cfg.androidApp,
+            // There is a build to hand out if the laptop has one or a
+            // copy is kept here; `androidBuild` says of the copy when it
+            // was built and whether it is the laptop's newest.
+            androidApp: cfg.androidApp || (await this.apkKept()) !== null,
+            androidBuild: await this.apkState(),
             androidPackage: cfg.androidPackage,
             edge: true,
           });
         }
         if (seg.length === 2 && seg[0] === "doc" && DOC_NAMES.includes(seg[1] as DocName)) {
           this.lastDocAt = this.now();
+          // A document the edge reads itself: refresh its sections
+          // directly first, when the laptop has gone quiet.
+          await this.directRefresh(seg[1] as DocName);
           const res = docResponse(req, await this.docs.doc(seg[1] as DocName));
           // When the host last reported, beside the document rather than
           // in it: it changes with every report and the content does not.
           const headers = new Headers(res.headers);
           headers.set("X-Host-Seen", String(this.hostSeen ?? 0));
           return new Response(res.body, { status: res.status, headers });
+        }
+        if (seg.length === 1 && seg[0] === "android") {
+          // Where a download would come from: the build GitHub released,
+          // if there is one, and the copy of the laptop's build kept here.
+          return json({ release: await this.releaseSaid(cfg), copy: await this.apkState() });
         }
         if (seg.length === 1 && seg[0] === "push") return json(await this.push.status());
         if (seg.length === 1 && seg[0] === "devices") return json(await this.phones.devices.list());
@@ -581,9 +1095,27 @@ export class Edge {
         return json({ error: "args: expected an object" }, 400);
       }
       if (!Object.hasOwn(this.table, kind)) {
+        // One the edge does itself: while the laptop is known quiet it
+        // runs here, through the laptop's own classes, and is never
+        // sent to the laptop — so the laptop cannot do it a second
+        // time. Otherwise it is the host's to do, as before.
+        if ((DIRECT_ACTIONS as readonly string[]).includes(kind) && this.directReady(cfg)) {
+          return await this.directAct(kind, args as Record<string, unknown>, by, who.via);
+        }
         // The host's to do. The stateless part relays it, and if the
         // host cannot be reached comes back to have it held.
-        return next("relay", { mode: "act", kind, args, who: by, holdable: HOLDABLE.has(kind) });
+        // It is named here, before it goes anywhere. If the host's answer
+        // is lost on the way back, the action is held under the same
+        // name, and the host, which wrote the name down before starting,
+        // does not do it a second time.
+        return next("relay", {
+          mode: "act",
+          id: crypto.randomUUID(),
+          kind,
+          args,
+          who: by,
+          holdable: HOLDABLE.has(kind),
+        });
       }
       return await this.own(kind, args as Record<string, unknown>, by, who.via);
     } catch (error) {
@@ -618,6 +1150,7 @@ export class Edge {
    * that may be done late. */
   private async hold(req: Request): Promise<Response> {
     const body = (await req.json().catch(() => null)) as {
+      id?: unknown;
       kind?: unknown;
       args?: unknown;
       who?: unknown;
@@ -626,7 +1159,12 @@ export class Edge {
     const args = body?.args;
     if (!HOLDABLE.has(kind) || args === null || typeof args !== "object" || Array.isArray(args)) {
       return json(
-        { error: "The laptop cannot be reached, and this is not safe to do late. Try again when it is back." },
+        // No answer is not "not done": the laptop may have got it and its
+        // answer been lost. Nothing is kept to do later, and it says so.
+        {
+          error:
+            "The laptop did not answer, and this is not something to do late, so it is not kept. Check whether it happened before trying again.",
+        },
         503,
       );
     }
@@ -636,7 +1174,8 @@ export class Edge {
       return json({ error: "The laptop cannot be reached, and too much is already waiting for it." }, 503);
     }
     const item: Held = {
-      id: crypto.randomUUID(),
+      // The name it was relayed under, so the host can tell it has seen it.
+      id: typeof body?.id === "string" && ACT_ID.test(body.id) ? body.id : crypto.randomUUID(),
       kind,
       args: args as Record<string, unknown>,
       who: String(body?.who ?? "owner"),

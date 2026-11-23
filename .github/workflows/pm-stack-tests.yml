@@ -92,6 +92,28 @@ jobs:
       - name: Test pm-git-sync quarantine
         run: bash pm-stack/scripts/pm-git-sync-quarantine.test.sh
 
+      # pm-git-sync and local commits (2026-11-22): empty rebuild marker
+      # commits that block the pull are kept under tags and main follows
+      # origin; a local commit that changes a file still refuses.
+      - name: Test pm-git-sync rebuild markers
+        run: bash pm-stack/scripts/pm-git-sync-markers.test.sh
+
+      # The Android app's release (pm-stack/console/android/release.sh),
+      # against a stand-in for gh: the numbered release is made once and
+      # never changed, the fixed address always ends up on the newest
+      # build and never goes back, and a run started again changes
+      # nothing.
+      - name: Test the Android app's release script
+        run: bash pm-stack/console/android/release.test.sh
+
+      # The other half (pm-stack/console/android/release-built.sh): on
+      # the machine that holds the key, which of GitHub's builds is
+      # signed (this repository's own, on main, the newest), that
+      # nothing is released or served unless it carries the certificate
+      # the site lists, and that a failure leaves everything as it was.
+      - name: Test the Android app's sign-and-release script
+        run: bash pm-stack/console/android/release-built.test.sh
+
       # Script suite for #5993: pm-stack/scripts/
       # tailnet-bindings.test.sh (the #781 regression pin for the
       # Pad/Grist tailnet bindings) was run by no workflow. The

@@ -13,7 +13,10 @@ really holds the name.
 """
 
 import copy
+import io
+import json
 import pathlib
+import re
 import sys
 import tempfile
 import unittest
@@ -23,6 +26,9 @@ sys.path.insert(0, str(pathlib.Path(__file__).parent))
 import expose
 
 HOST = "pm.security.cab"
+OWNER = "owner@example.com"
+GOOGLE_CLIENT = "123456789012-abc123def456.apps.googleusercontent.com"
+GOOGLE_VALUE = "not-a-real-value-0123456789"
 
 
 class Account(expose.Cloudflare):
@@ -41,9 +47,21 @@ class Account(expose.Cloudflare):
         # Workers routes on the zone, and whether the edge Worker answers.
         self.routes = []
         self.worker_up = True
+        # The hostname the Worker says it is built for, and how many of
+        # its next health checks get no answer.
+        self.worker_host = HOST
+        self.health_misses = 0
+        # What the Worker holds as secrets, and how many of the next
+        # uploads Cloudflare refuses.
+        self.worker_secrets = {}
+        # Uploads made so far, and which one (counted from 1) is refused.
+        self.uploads = 0
+        self.fail_upload = 0
+        self.delete_failures = 0
 
     def call(self, method, path, body=None):
         path, _, query = path.partition("?")
+        self.asked = getattr(self, "asked", 0) + 1  # every request, reads too
         if method != "GET":
             self.order.append(f"{method} {path}")
         if path == "/accounts":
@@ -54,6 +72,10 @@ class Account(expose.Cloudflare):
             if method == "POST":
                 self.idps.append({"id": f"idp-{body['type']}", **body})
             result = self.idps[-1] if method == "POST" else self.idps
+        elif "/access/identity_providers/" in path and method == "PUT":
+            idp = next(i for i in self.idps if i["id"] == path.split("/")[-1])
+            idp.update(body)
+            result = idp
         elif "/access/apps/" in path and method == "PUT":
             app = next(a for a in self.apps if a["id"] == path.split("/")[-1])
             app.update(body)
@@ -88,6 +110,24 @@ class Account(expose.Cloudflare):
         elif path == "/zones":
             name = query.partition("name=")[2]
             result = [{"id": self.zones[name]}] if name in self.zones else []
+        elif path.endswith(f"/workers/scripts/{expose.WORKER}/secrets"):
+            # The Worker's secrets: names can be listed, values never read back.
+            if method == "PUT":
+                self.uploads += 1
+                if self.uploads == self.fail_upload:
+                    raise SystemExit("cloudflare PUT secrets: refused")
+                self.worker_secrets[body["name"]] = body["text"]
+            result = [
+                {"name": name, "type": "secret_text"} for name in self.worker_secrets
+            ]
+        elif (
+            f"/workers/scripts/{expose.WORKER}/secrets/" in path and method == "DELETE"
+        ):
+            if self.delete_failures > 0:
+                self.delete_failures -= 1
+                raise SystemExit("cloudflare DELETE secret: refused")
+            self.worker_secrets.pop(path.split("/")[-1], None)
+            result = None
         elif path.endswith("/workers/subdomain"):
             result = {"subdomain": "acct"}
         elif "/workers/routes" in path:
@@ -129,35 +169,53 @@ class Machine:
         return self.running
 
 
-def run(account, home, *args, machine=None):
-    argv = ["expose.py", *args]
+def run(
+    account,
+    home,
+    *args,
+    machine=None,
+    owner=OWNER,
+    stdin=None,
+    secrets=None,
+):
+    """One run of the script. What it printed is left in account.printed."""
+    argv = ["expose.py", *(["--owner", owner] if owner else []), *args]
     machine = machine or Machine()
+
+    def secret(name):
+        if secrets is not None and name in secrets:
+            return secrets[name]
+        return "token" if name.startswith("cloudflare.") else ""
+
+    def health(url):
+        if account.health_misses > 0:
+            account.health_misses -= 1
+            return None
+        if (
+            not account.worker_up
+            or url != f"https://{expose.WORKER}.acct.workers.dev/console/health"
+        ):
+            return None
+        return {"ok": True, "edge": True, "host": account.worker_host}
+
     with (
         mock.patch.object(expose, "Cloudflare", lambda token, check: account),
-        mock.patch.object(
-            expose,
-            "secret",
-            lambda name: "token" if name.startswith("cloudflare.") else "",
-        ),
+        mock.patch.object(expose, "secret", secret),
         mock.patch.object(expose.pathlib.Path, "home", lambda: pathlib.Path(home)),
         mock.patch.object(expose.subprocess, "run", machine.systemctl),
         mock.patch.object(expose, "console_up", machine.up),
-        mock.patch.object(
-            expose,
-            "fetch_json",
-            lambda url: (
-                {"ok": True, "edge": True}
-                if account.worker_up
-                and url == f"https://{expose.WORKER}.acct.workers.dev/console/health"
-                else None
-            ),
-        ),
+        mock.patch.object(expose, "fetch_json", health),
+        mock.patch.object(expose.time, "sleep", lambda seconds: None),
         mock.patch.object(sys, "argv", argv),
-        mock.patch("builtins.print"),
+        mock.patch.object(sys, "stdin", io.StringIO(stdin or "")),
+        mock.patch("builtins.print") as printed,
     ):
         account.check = "--check" in args
         account.changes = []
-        return expose.main()
+        try:
+            return expose.main()
+        finally:
+            account.printed = [str(c.args[0]) for c in printed.call_args_list]
 
 
 class Expose(unittest.TestCase):
@@ -179,7 +237,7 @@ class Expose(unittest.TestCase):
                 {
                     "name": "allow: PM stack",
                     "decision": "allow",
-                    "include": [{"email": {"email": "drewrypope@gmail.com"}}],
+                    "include": [{"email": {"email": OWNER}}],
                     "precedence": 1,
                 }
             ],
@@ -217,7 +275,7 @@ class Expose(unittest.TestCase):
         )
         env = (pathlib.Path(self.home) / ".local/state/pm-console/.env").read_text()
         self.assertIn("PM_CONSOLE_ACCESS_AUD=" + main["aud"], env)
-        self.assertIn("PM_CONSOLE_OWNER_EMAILS=drewrypope@gmail.com", env)
+        self.assertIn(f"PM_CONSOLE_OWNER_EMAILS={OWNER}", env)
 
     def test_a_second_run_changes_nothing(self):
         account = Account()
@@ -295,7 +353,7 @@ class Expose(unittest.TestCase):
         self.assertEqual(len(account.policies["app-x"]), 1)
 
         # The owner's own rule with a condition added is not this script's rule.
-        owner = [{"email": {"email": "drewrypope@gmail.com"}}]
+        owner = [{"email": {"email": OWNER}}]
         for extra in (
             {"exclude": owner},
             {"require": [{"geo": {"country_code": "XX"}}]},
@@ -469,7 +527,7 @@ class Expose(unittest.TestCase):
         self.assertEqual(account.routes, [])
         self.assertNotIn("PM_CONSOLE_EDGE_URL", self.env())
         # The sign-in settings are still there: only the edge's went.
-        self.assertEqual(self.env()["PM_CONSOLE_OWNER_EMAILS"], "drewrypope@gmail.com")
+        self.assertEqual(self.env()["PM_CONSOLE_OWNER_EMAILS"], OWNER)
         # A later run with no flag (the timer's) keeps it off.
         self.assertEqual(run(account, self.home), 0)
         self.assertEqual(account.changes, [])
@@ -480,6 +538,224 @@ class Expose(unittest.TestCase):
             [(f"{HOST}/*", expose.WORKER)],
         )
         self.assertEqual(self.env()["PM_CONSOLE_EDGE_URL"], f"https://{HOST}")
+
+    def test_direct_mode_gives_the_worker_its_tokens_and_takes_them_away_again(self):
+        account = Account()
+        run(account, self.home)
+        marker = pathlib.Path(self.home) / ".local/state/pm-console/edge-direct"
+        path = f"/accounts/acc/workers/scripts/{expose.WORKER}/secrets"
+        # Off by default: an ordinary run uploads nothing.
+        self.assertEqual(account.worker_secrets, {})
+        # Asked what turning it on would change: said, and nothing done.
+        account.order.clear()
+        self.assertEqual(run(account, self.home, "--check", "--edge-direct", "on"), 1)
+        self.assertEqual(len(account.changes), 1)
+        self.assertEqual(account.order, [])
+        self.assertFalse(marker.exists())
+        # The tokens cannot be read here: the run fails, and nothing is
+        # remembered, so a later run still tries to turn direct mode on.
+        with self.assertRaisesRegex(SystemExit, "is not readable here"):
+            run(account, self.home, "--edge-direct", "on")
+        self.assertFalse(marker.exists())
+        self.assertEqual(account.worker_secrets, {})
+        secrets = {
+            expose.GITHUB_TOKEN_SECRET: "gh-test-value",
+            expose.QUEUE_TOKEN_DEFAULT: "queue-test-value",
+        }
+        # Cloudflare takes the first token and refuses the second: nothing
+        # is remembered, and the one that got there is taken away again,
+        # so a failed attempt leaves the Worker holding nothing.
+        account.fail_upload = account.uploads + 2
+        with self.assertRaisesRegex(SystemExit, "refused"):
+            run(account, self.home, "--edge-direct", "on", secrets=secrets)
+        self.assertFalse(marker.exists())
+        self.assertEqual(account.worker_secrets, {})
+        # If even that tidying fails, asking for off finishes it, though
+        # the mode was never on and nothing says it was.
+        account.fail_upload = account.uploads + 2
+        account.delete_failures = 1
+        with self.assertRaisesRegex(SystemExit, "refused"):
+            run(account, self.home, "--edge-direct", "on", secrets=secrets)
+        self.assertEqual(list(account.worker_secrets), ["GITHUB_TOKEN"])
+        self.assertFalse(marker.exists())
+        self.assertEqual(
+            run(account, self.home), 0
+        )  # the timer leaves it: not its to judge
+        self.assertEqual(list(account.worker_secrets), ["GITHUB_TOKEN"])
+        self.assertEqual(run(account, self.home, "--edge-direct", "off"), 0)
+        self.assertEqual(account.worker_secrets, {})
+        self.assertEqual(
+            account.changes, ["edge direct: take GITHUB_TOKEN away from the Worker"]
+        )
+        # Readable and accepted: the two tokens and the opt-in are the
+        # Worker's, through Cloudflare's API and nothing installed here.
+        account.order.clear()
+        self.assertEqual(
+            run(account, self.home, "--edge-direct", "on", secrets=secrets), 0
+        )
+        self.assertEqual(
+            account.worker_secrets,
+            {
+                "GITHUB_TOKEN": "gh-test-value",
+                "QUEUE_TOKEN": "queue-test-value",
+                "EDGE_DIRECT": "on",
+            },
+        )
+        self.assertEqual(account.order, [f"PUT {path}"] * 3)
+        self.assertEqual(marker.read_text().strip(), "on")
+        # Neither value is in anything it printed, said it changed, or wrote.
+        said = "\n".join(account.printed + account.changes)
+        for value in secrets.values():
+            self.assertNotIn(value, said)
+            for kept in pathlib.Path(self.home).rglob("*"):
+                if kept.is_file():
+                    self.assertNotIn(value, kept.read_text())
+        # A later run with the same choice, or with none (the timer's),
+        # uploads nothing again.
+        for again in (("--edge-direct", "on"), ()):
+            account.order.clear()
+            self.assertEqual(run(account, self.home, *again, secrets=secrets), 0)
+            self.assertEqual(account.changes, [])
+            self.assertEqual(account.order, [])
+        # Off: the opt-in first, then the two tokens are taken away.
+        account.order.clear()
+        self.assertEqual(run(account, self.home, "--edge-direct", "off"), 0)
+        self.assertEqual(account.worker_secrets, {"EDGE_DIRECT": "off"})
+        self.assertEqual(
+            account.order,
+            [
+                f"PUT {path}",
+                f"DELETE {path}/GITHUB_TOKEN",
+                f"DELETE {path}/QUEUE_TOKEN",
+            ],
+        )
+        self.assertEqual(marker.read_text().strip(), "off")
+        # Off again, or the timer's run: nothing left to do.
+        account.order.clear()
+        self.assertEqual(run(account, self.home), 0)
+        self.assertEqual(account.changes, [])
+        self.assertEqual(account.order, [])
+
+    def test_turning_direct_mode_off_is_finished_by_a_later_run_if_it_stopped_part_way(
+        self,
+    ):
+        account = Account()
+        run(account, self.home)
+        marker = pathlib.Path(self.home) / ".local/state/pm-console/edge-direct"
+        secrets = {
+            expose.GITHUB_TOKEN_SECRET: "gh-test-value",
+            expose.QUEUE_TOKEN_DEFAULT: "queue-test-value",
+        }
+        run(account, self.home, "--edge-direct", "on", secrets=secrets)
+        # Cloudflare takes the opt-in off and then refuses a delete.
+        account.delete_failures = 1
+        with self.assertRaisesRegex(SystemExit, "refused"):
+            run(account, self.home, "--edge-direct", "off")
+        # The mode is off and remembered as off, so it can be turned on again.
+        self.assertEqual(account.worker_secrets["EDGE_DIRECT"], "off")
+        self.assertEqual(marker.read_text().strip(), "off")
+        self.assertIn("GITHUB_TOKEN", account.worker_secrets)
+        # Asked what the next run would do: take what was left behind away.
+        self.assertEqual(run(account, self.home, "--check"), 1)
+        self.assertEqual(
+            account.changes,
+            [
+                "edge direct: take GITHUB_TOKEN away from the Worker",
+                "edge direct: take QUEUE_TOKEN away from the Worker",
+            ],
+        )
+        self.assertIn("GITHUB_TOKEN", account.worker_secrets)
+        # The timer's next run does it.
+        self.assertEqual(run(account, self.home), 0)
+        self.assertEqual(account.worker_secrets, {"EDGE_DIRECT": "off"})
+        # Tidying that cannot be done never fails a run.
+        account.worker_secrets["QUEUE_TOKEN"] = "left behind"
+        account.delete_failures = 1
+        self.assertEqual(run(account, self.home), 0)
+        self.assertTrue(
+            any("could not look for tokens" in line for line in account.printed)
+        )
+        # And on again works from here.
+        self.assertEqual(
+            run(account, self.home, "--edge-direct", "on", secrets=secrets), 0
+        )
+        self.assertEqual(account.worker_secrets["EDGE_DIRECT"], "on")
+        self.assertEqual(marker.read_text().strip(), "on")
+
+    def test_direct_mode_that_is_on_gets_back_what_the_worker_has_lost(self):
+        account = Account()
+        run(account, self.home)
+        secrets = {
+            expose.GITHUB_TOKEN_SECRET: "gh-test-value",
+            expose.QUEUE_TOKEN_DEFAULT: "queue-test-value",
+        }
+        run(account, self.home, "--edge-direct", "on", secrets=secrets)
+        # Something took a token off the Worker (a hand in the dashboard,
+        # another run's tidying): the mode says on and cannot work.
+        del account.worker_secrets["QUEUE_TOKEN"]
+        self.assertEqual(run(account, self.home, "--check"), 1)
+        self.assertEqual(
+            account.changes,
+            ["edge direct: give the Worker back what it has lost (QUEUE_TOKEN)"],
+        )
+        self.assertNotIn("QUEUE_TOKEN", account.worker_secrets)
+        # The timer's next run puts it right, and the one after has nothing to do.
+        self.assertEqual(run(account, self.home, secrets=secrets), 0)
+        self.assertEqual(account.worker_secrets["QUEUE_TOKEN"], "queue-test-value")
+        account.order.clear()
+        self.assertEqual(run(account, self.home, secrets=secrets), 0)
+        self.assertEqual(account.changes, [])
+        self.assertEqual(account.order, [])
+        # A repair that fails part-way takes nothing away: the mode was on.
+        del account.worker_secrets["EDGE_DIRECT"]
+        account.fail_upload = account.uploads + 2
+        with self.assertRaisesRegex(SystemExit, "refused"):
+            run(account, self.home, secrets=secrets)
+        self.assertIn("GITHUB_TOKEN", account.worker_secrets)
+
+    def test_runs_that_may_change_something_take_turns(self):
+        import threading
+
+        state = pathlib.Path(self.home) / ".local/state/pm-console"
+        order = []
+        inside = threading.Event()
+        release = threading.Event()
+
+        def first():
+            with expose.one_at_a_time(state):
+                order.append("first in")
+                inside.set()
+                release.wait(5)
+                order.append("first out")
+
+        def second():
+            inside.wait(5)
+            order.append("second waiting")
+            with expose.one_at_a_time(state):
+                order.append("second in")
+
+        a = threading.Thread(target=first)
+        b = threading.Thread(target=second)
+        a.start()
+        b.start()
+        inside.wait(5)
+        # Give the second every chance to barge in; it must not.
+        for _ in range(50):
+            if "second waiting" in order:
+                break
+            threading.Event().wait(0.01)
+        threading.Event().wait(0.05)
+        self.assertNotIn("second in", order)
+        release.set()
+        a.join(5)
+        b.join(5)
+        self.assertEqual(
+            order, ["first in", "second waiting", "first out", "second in"]
+        )
+        # A run that only looks does not wait for a turn, or leave a lock.
+        fresh = tempfile.mkdtemp()
+        self.assertEqual(run(Account(), fresh, "--status", owner=None), 0)
+        self.assertFalse((pathlib.Path(fresh) / ".local").exists())
 
     def test_another_workers_route_on_the_hostname_is_left_alone(self):
         for foreign in (
@@ -501,14 +777,215 @@ class Expose(unittest.TestCase):
         self.assertEqual(run(account, self.home), 0)
         self.assertEqual(len(account.routes), 2)
 
-    def test_check_never_records_an_edge_choice(self):
+    def test_check_previews_an_edge_choice_and_keeps_nothing(self):
         account = Account()
         run(account, self.home)
-        self.assertEqual(run(account, self.home, "--check", "--edge", "off"), 0)
+        # Asked what turning the edge off would change: both things, and exit 1.
+        self.assertEqual(run(account, self.home, "--check", "--edge", "off"), 1)
+        self.assertEqual(
+            account.changes,
+            [
+                "console environment: PM_CONSOLE_EDGE_URL",
+                f"workers: take {HOST}/* off {expose.WORKER}",
+            ],
+        )
+        # Nothing was done and nothing was remembered.
         self.assertFalse(
             (pathlib.Path(self.home) / ".local/state/pm-console/edge").exists()
         )
         self.assertEqual(len(account.routes), 1)
+        self.assertEqual(self.env()["PM_CONSOLE_EDGE_URL"], f"https://{HOST}")
+        self.assertEqual(run(account, self.home, "--check"), 0)
+        # And the other way: off for real, then asked what on would change.
+        self.assertEqual(run(account, self.home, "--edge", "off"), 0)
+        self.assertEqual(run(account, self.home, "--check", "--edge", "on"), 1)
+        self.assertEqual(len(account.changes), 2)
+        self.assertEqual(account.routes, [])
+        self.assertEqual(run(account, self.home, "--check"), 0)
+
+    def test_a_worker_built_for_another_hostname_is_not_routed(self):
+        account = Account()
+        account.worker_host = "pm.other.example"
+        self.assertEqual(run(account, self.home), 0)
+        self.assertEqual(account.routes, [])
+        self.assertNotIn("PM_CONSOLE_EDGE_URL", self.env())
+        # A Worker from before it said which hostname it is built for.
+        with mock.patch.object(expose, "HEALTH_TRIES", 1):
+            account.worker_host = None
+            self.assertEqual(run(account, self.home), 0)
+        self.assertEqual(account.routes, [])
+
+    def test_one_unanswered_health_check_does_not_take_the_hostname_off_the_edge(self):
+        account = Account()
+        run(account, self.home)
+        self.assertEqual(len(account.routes), 1)
+        # Two checks in a row get no answer; the third does.
+        account.health_misses = expose.HEALTH_TRIES - 1
+        self.assertEqual(run(account, self.home), 0)
+        self.assertEqual(account.changes, [])
+        self.assertEqual(len(account.routes), 1)
+        # None of them does: the hostname goes back to this host, which is
+        # what keeps it reachable when the Worker is what is broken.
+        account.health_misses = expose.HEALTH_TRIES
+        self.assertEqual(run(account, self.home), 0)
+        self.assertEqual(
+            account.changes,
+            [
+                "console environment: PM_CONSOLE_EDGE_URL",
+                f"workers: take {HOST}/* off {expose.WORKER}",
+            ],
+        )
+        self.assertEqual(account.routes, [])
+        # And returns by itself once the Worker answers again.
+        self.assertEqual(run(account, self.home), 0)
+        self.assertEqual(len(account.routes), 1)
+
+    def test_the_owner_is_named_once_and_remembered_and_never_written_in_the_script(
+        self,
+    ):
+        # Never told, on a machine that has not been set up: refused
+        # before anything is read or changed.
+        account = Account()
+        with self.assertRaisesRegex(SystemExit, "say whose sign-in is let in"):
+            run(account, self.home, owner=None)
+        with self.assertRaisesRegex(SystemExit, "say whose sign-in"):
+            run(account, self.home, owner="not an address")
+        self.assertEqual(getattr(account, "asked", 0), 0)
+        # Told once: the console's environment file remembers, and a run
+        # that is not told (the timer's) uses that and changes nothing.
+        self.assertEqual(run(account, self.home, owner="Owner@Example.com"), 0)
+        self.assertEqual(self.env()["PM_CONSOLE_OWNER_EMAILS"], OWNER)
+        self.assertEqual(run(account, self.home, owner=None), 0)
+        self.assertEqual(account.changes, [])
+        main = next(a for a in account.apps if a["domain"] == HOST)
+        self.assertEqual(
+            account.policies[main["id"]][0]["include"], [{"email": {"email": OWNER}}]
+        )
+        # No address is written in the script itself.
+        source = pathlib.Path(expose.__file__).read_text()
+        self.assertIsNone(
+            re.search(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+\.[a-z]{2,}", source)
+        )
+
+    def test_google_sign_in_is_turned_on_from_a_client_handed_in(self):
+        account = Account()
+        run(account, self.home)
+        main = next(a for a in account.apps if a["domain"] == HOST)
+        self.assertEqual(main["allowed_idps"], ["idp-onetimepin"])
+        # Not a client: refused before Cloudflare is asked anything.
+        for bad in (
+            "",
+            f"{GOOGLE_CLIENT}\n",
+            f"not-a-client-id\n{GOOGLE_VALUE}\n",
+            f"{GOOGLE_CLIENT}\nhas a space in it\n",
+            f"{GOOGLE_CLIENT}\n{GOOGLE_VALUE}\nthird line\n",
+        ):
+            account.asked = 0
+            with self.assertRaisesRegex(SystemExit, "--google-stdin") as refused:
+                run(account, self.home, "--google-stdin", stdin=bad)
+            self.assertEqual(account.asked, 0)
+            self.assertNotIn(GOOGLE_VALUE, str(refused.exception))
+            self.assertNotIn(GOOGLE_VALUE, "\n".join(account.printed))
+        # A client: Google is added and the application lets both methods in.
+        self.assertEqual(
+            run(
+                account,
+                self.home,
+                "--google-stdin",
+                stdin=f"  {GOOGLE_CLIENT}\n{GOOGLE_VALUE}\n",
+            ),
+            0,
+        )
+        google = next(i for i in account.idps if i["type"] == "google")
+        self.assertEqual(
+            google["config"],
+            {"client_id": GOOGLE_CLIENT, "client_secret": GOOGLE_VALUE},
+        )
+        self.assertEqual(main["allowed_idps"], ["idp-onetimepin", "idp-google"])
+        self.assertEqual(account.changes[0], "access: add Google sign-in")
+        # Nothing it printed, and nothing it wrote, holds either value.
+        self.assertNotIn(GOOGLE_VALUE, "\n".join(account.printed))
+        self.assertNotIn(GOOGLE_CLIENT, "\n".join(account.printed))
+        for kept in pathlib.Path(self.home).rglob("*"):
+            if kept.is_file():
+                self.assertNotIn(GOOGLE_VALUE, kept.read_text())
+        # The timer's run, with nothing handed in, keeps it as it is.
+        self.assertEqual(run(account, self.home), 0)
+        self.assertEqual(account.changes, [])
+        # Handed a client again (a corrected one): that is the one used.
+        other = GOOGLE_VALUE[::-1]
+        self.assertEqual(
+            run(
+                account,
+                self.home,
+                "--google-stdin",
+                stdin=f"{GOOGLE_CLIENT}\n{other}\n",
+            ),
+            0,
+        )
+        self.assertEqual(
+            account.changes, ["access: give Google sign-in the client just supplied"]
+        )
+        self.assertEqual(google["config"]["client_secret"], other)
+        self.assertEqual(len([i for i in account.idps if i["type"] == "google"]), 1)
+
+    def test_status_says_which_sign_in_methods_are_on_and_changes_nothing(self):
+        account = Account()
+        # Needs no owner, and works before anything is set up.
+        self.assertEqual(run(account, self.home, "--status", owner=None), 0)
+        self.assertEqual(
+            json.loads(account.printed[-1]),
+            {"google": False, "pin": False, "team": "team.cloudflareaccess.com"},
+        )
+        self.assertEqual(account.order, [])
+        self.assertFalse((pathlib.Path(self.home) / ".local").exists())
+        run(
+            account,
+            self.home,
+            "--google-stdin",
+            stdin=f"{GOOGLE_CLIENT}\n{GOOGLE_VALUE}\n",
+        )
+        account.order.clear()
+        self.assertEqual(run(account, self.home, "--status", owner=None), 0)
+        self.assertEqual(
+            json.loads(account.printed[-1]),
+            {"google": True, "pin": True, "team": "team.cloudflareaccess.com"},
+        )
+        self.assertEqual(account.order, [])
+
+    def test_the_health_check_names_itself(self):
+        # Found live: the edge's health check answered 403 to Python's
+        # default client name, so the Worker looked undeployed.
+        seen = []
+
+        class Answer:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_):
+                return False
+
+            def read(self, *_):
+                return b'{"ok": true, "edge": true}'
+
+        def urlopen(request, timeout):
+            seen.append((request.full_url, request.get_header("User-agent"), timeout))
+            return Answer()
+
+        with mock.patch.object(expose.urllib.request, "urlopen", urlopen):
+            self.assertEqual(
+                expose.fetch_json("https://w.example/console/health"),
+                {"ok": True, "edge": True},
+            )
+        self.assertEqual(len(seen), 1)
+        self.assertEqual(seen[0][0], "https://w.example/console/health")
+        # The program's name and nothing more: no address, no contact.
+        self.assertEqual(seen[0][1], "pm-console-expose")
+        # Anything that is not a JSON object, or cannot be had, is "no answer".
+        with mock.patch.object(
+            expose.urllib.request, "urlopen", mock.Mock(side_effect=OSError("403"))
+        ):
+            self.assertIsNone(expose.fetch_json("https://w.example/x"))
 
 
 if __name__ == "__main__":

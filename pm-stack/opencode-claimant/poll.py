@@ -93,6 +93,7 @@ import tempfile
 import time
 import urllib.request
 import urllib.error
+import urllib.parse
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -554,7 +555,7 @@ def summarize_cap(sessions, active_ids, now_ms):
     return len(roots), active, max(0, CAP - active)
 
 
-def _server_get(path):
+def _server_get(path, *, include_envelope=False, raise_http_errors=False):
     """GET a JSON document from the OpenCode server, or None on any
     failure (missing auth file, server down, non-JSON body)."""
     try:
@@ -571,37 +572,44 @@ def _server_get(path):
     try:
         with urllib.request.urlopen(req, timeout=15) as res:
             data = json.loads(res.read() or "null")
+    except urllib.error.HTTPError:
+        if raise_http_errors:
+            raise
+        return None
     except Exception:
         return None
-    if isinstance(data, dict) and "data" in data:
+    if not include_envelope and isinstance(data, dict) and "data" in data:
         data = data["data"]
     return data
 
 
-SESSION_FETCH_LIMITS = (1000, 10000, 100000)
+SESSION_FETCH_LIMIT = 200
 
 
 def fetch_sessions():
     """The server's COMPLETE session list (GET /api/session), or None
     when completeness cannot be proven.
 
-    The endpoint truncates at 50 entries by default (#4757, verified
-    live 2026-11-07). It honours `limit` — ?limit=1000 returns 1000
-    rows — but NOT `offset`: an offset page repeats the first page,
-    so offset pagination cannot prove completeness here. Read with
-    an escalating limit instead: the first read whose count is
-    BELOW the requested limit is the whole list by construction.
-    If every read comes back exactly at its limit, the list may
-    still be truncated, so the fetch fails closed (None) rather
-    than let a partial list undercount the cap or make a bound
-    session read as gone."""
-    for limit in SESSION_FETCH_LIMITS:
-        data = _server_get(f"/api/session?limit={limit}")
-        if not isinstance(data, list):
+    The endpoint caps `limit` at 200 and exposes an opaque `cursor.next`
+    for subsequent pages. A failed HTTP response is raised so callers
+    cannot mistake an unreadable list for an empty or incomplete one.
+    Transport/auth failures that do not produce an HTTP response remain
+    represented by None, matching the other optional server reads."""
+    sessions = []
+    cursor = None
+    while True:
+        query = {"limit": SESSION_FETCH_LIMIT}
+        if cursor:
+            query["cursor"] = cursor
+        path = "/api/session?" + urllib.parse.urlencode(query)
+        response = _server_get(path, include_envelope=True, raise_http_errors=True)
+        if not isinstance(response, dict) or not isinstance(response.get("data"), list):
             return None
-        if len(data) < limit:
-            return data
-    return None
+        sessions.extend(response["data"])
+        page_cursor = response.get("cursor")
+        cursor = page_cursor.get("next") if isinstance(page_cursor, dict) else None
+        if not cursor:
+            return sessions
 
 
 def fetch_active_ids():

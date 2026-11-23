@@ -24,7 +24,8 @@ SRC="$PWD"
 REPO="$(git -C "$SRC" rev-parse --show-toplevel)"
 STATE="$HOME/.local/state/pm-console"
 BUN="${PM_CONSOLE_BUN:-/run/current-system/sw/bin/bun}"
-UNITS=(pm-console.service pm-console-expose.service pm-console-expose.timer pm-console-redeploy.service pm-console-redeploy.timer)
+UNITS=(pm-console.service pm-console-expose.service pm-console-expose.timer pm-console-redeploy.service pm-console-redeploy.timer
+  pm-console-android-release.service pm-console-android-release.timer)
 
 # What is in the checkout: the console's tree, and the units it runs
 # under. A checkout that is part-way through an update (files that do
@@ -45,13 +46,23 @@ if [ "$want" = "$(cat "$STATE/deploy-failed" 2>/dev/null || true)" ]; then
 fi
 
 mkdir -p "$STATE"
-# The service's own settings, one KEY=value a line, passed as they are.
+# The service's own settings, read the way systemd reads them: one
+# KEY=value a line, and one pair of quotes around a value is not part of
+# the value (install.sh reads PM_CONSOLE_PORT="4872" the same way).
 settings=()
 if [ -f "$STATE/.env" ]; then
   while IFS= read -r line || [ -n "$line" ]; do
     case "$line" in
     '' | '#'* | ';'*) continue ;;
-    *=*) settings+=("$line") ;;
+    *=*)
+      key="${line%%=*}"
+      value="${line#*=}"
+      case "$value" in
+      \"*\") value="${value#\"}" && value="${value%\"}" ;;
+      \'*\') value="${value#\'}" && value="${value%\'}" ;;
+      esac
+      settings+=("$key=$value")
+      ;;
     esac
   done <"$STATE/.env"
 fi

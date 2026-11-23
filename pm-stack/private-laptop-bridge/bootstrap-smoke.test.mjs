@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { bootstrapSmoke, CREATE_BODY, WORKER_NAME } from './bootstrap-smoke.mjs';
+import { bootstrapSmoke, createInitReceipt, verifySmokeEmptyTarget, verifySmokePostUpload, CREATE_BODY, WORKER_NAME } from './bootstrap-smoke.mjs';
 
 const accountId = `${'a'.repeat(28)}cbfa`;
 const zoneId = '1'.repeat(32);
@@ -20,11 +20,16 @@ const safeWorker = () => ({
 const ok = (result, result_info = { total_pages: 1, page: 1, per_page: 50, total_count: Array.isArray(result) ? result.length : 0 }) =>
   new Response(JSON.stringify({ success: true, result, ...(result_info === undefined ? {} : { result_info }) }), { status: 200 });
 const okNoInfo = result => new Response(JSON.stringify({ success: true, result }), { status: 200 });
-const missing = (code = 10007, message = 'Worker not found.') =>
-  new Response(JSON.stringify({ success: false, errors: [{ code, message }] }), { status: 404 });
+const missing = (code = 10007, message = 'Worker not found.', { result = undefined, includeResult = false, status = 404, responseUrl } = {}) => {
+  const body = { success: false, errors: [{ code, message }] };
+  if (includeResult) body.result = result;
+  const response = new Response(JSON.stringify(body), { status });
+  if (responseUrl !== undefined) Object.defineProperty(response, 'url', { value: responseUrl });
+  return response;
+};
 
-function fixture({ worker = null, createdWorker = safeWorker(), route = null, zones = [{ id: zoneId, account: { id: accountId } }], zoneResultInfo, zonePages, versions = [], versionResultInfo, deployments = [], deploymentResultInfo, deploymentNoInfo = false, createResult = null, authFailure = false, writeAuthFailure = false, missingCode = 10007, missingMessage = 'Worker not found.' } = {}) {
-  const state = { worker, createdWorker, route, zones, zoneResultInfo, zonePages, versions, versionResultInfo, deployments, deploymentResultInfo, deploymentNoInfo, createResult, authFailure, writeAuthFailure, missingCode, missingMessage, calls: [] };
+function fixture({ worker = null, createdWorker = safeWorker(), route = null, zones = [{ id: zoneId, account: { id: accountId } }], zoneResultInfo, zonePages, versions = [], versionResultInfo, deployments = [], deploymentResultInfo, deploymentNoInfo = false, createResult = null, authFailure = false, writeAuthFailure = false, missingCode = 10007, missingMessage = 'Worker not found.', missingResult, includeMissingResult = false, missingResponseUrl, zoneFailure = false } = {}) {
+  const state = { worker, createdWorker, route, zones, zoneResultInfo, zonePages, versions, versionResultInfo, deployments, deploymentResultInfo, deploymentNoInfo, createResult, authFailure, writeAuthFailure, missingCode, missingMessage, missingResult, includeMissingResult, missingResponseUrl, zoneFailure, calls: [] };
   const fetchImpl = async (url, init = {}) => {
     const parsed = new URL(url);
     const method = init.method ?? 'GET';
@@ -37,6 +42,7 @@ function fixture({ worker = null, createdWorker = safeWorker(), route = null, zo
       return new Response(JSON.stringify({ success: false, errors: [{ code: 10000, message: 'Authentication error' }] }), { status: 403 });
     }
     if (parsed.pathname === '/client/v4/zones') {
+      if (state.zoneFailure) return missing(10007, 'Not found');
       if (state.zonePages) {
         const page = Number(parsed.searchParams.get('page'));
         const result = state.zonePages[page - 1] ?? [];
@@ -46,13 +52,13 @@ function fixture({ worker = null, createdWorker = safeWorker(), route = null, zo
     }
     if (parsed.pathname.endsWith('/workers/routes')) return ok(state.route ? [state.route] : []);
     if (parsed.pathname.endsWith(`/workers/workers/${WORKER_NAME}`) && method === 'GET') {
-      return state.worker ? ok(state.worker, undefined) : missing(state.missingCode, state.missingMessage);
+      return state.worker ? ok(state.worker, undefined) : missing(state.missingCode, state.missingMessage, { result: state.missingResult, includeResult: state.includeMissingResult, responseUrl: state.missingResponseUrl });
     }
     if (parsed.pathname.endsWith('/workers/workers') && method === 'POST') {
       state.worker = state.createdWorker;
       return ok(state.createResult ?? state.createdWorker, undefined);
     }
-    if (parsed.pathname.endsWith(`/workers/workers/${workerId}/versions`)) return ok(state.versions, state.versionResultInfo);
+    if (parsed.pathname.endsWith(`/workers/workers/${workerId}/versions`)) return ok(state.versions, state.versionResultInfo ?? { total_pages: 0, page: 1, per_page: 100, total_count: state.versions.length });
     if (parsed.pathname.endsWith(`/workers/scripts/${WORKER_NAME}/deployments`)) {
       if (state.deploymentNoInfo) return okNoInfo({ deployments: state.deployments });
       return ok({ deployments: state.deployments }, state.deploymentResultInfo ?? { total_pages: 1, page: 1, per_page: 100, total_count: state.deployments.length });
@@ -68,7 +74,7 @@ function run({ fetchImpl, ...overrides }) {
 
 test('missing target creates exactly one metadata-only Worker and verifies exposure read-only', async () => {
   const { state, fetchImpl } = fixture();
-  assert.equal(await run({ fetchImpl }), 'created');
+  assert.deepEqual(await run({ fetchImpl }), { status: 'created', workerId });
   const writes = state.calls.filter(call => call.method !== 'GET');
   assert.equal(writes.length, 1);
   assert.equal(writes[0].method, 'POST');
@@ -80,7 +86,7 @@ test('missing target creates exactly one metadata-only Worker and verifies expos
 
 test('same protected configuration is idempotent for an existing safe target', async () => {
   const { state, fetchImpl } = fixture({ worker: safeWorker() });
-  assert.equal(await run({ fetchImpl }), 'already-present');
+  assert.deepEqual(await run({ fetchImpl }), { status: 'already-present', workerId });
   assert.equal(state.calls.some(call => call.method === 'POST'), false);
 });
 
@@ -111,13 +117,33 @@ test('missing credentials fail before any network request', async () => {
 });
 
 test('only the documented Worker-specific 404 means absent', async () => {
-  const generic = fixture({ missingCode: 10000, missingMessage: 'Resource not found' });
-  await assert.rejects(run({ fetchImpl: generic.fetchImpl }), /API request failed/);
-  assert.equal(generic.state.calls.some(call => call.method === 'POST'), false);
+  for (const options of [
+    { missingMessage: 'The worker resource does not exist for this account.' },
+    { missingMessage: 'Not found', includeMissingResult: true, missingResult: null },
+  ]) {
+    const actual = fixture(options);
+    assert.deepEqual(await run({ fetchImpl: actual.fetchImpl }), { status: 'created', workerId });
+    assert.equal(actual.state.calls.filter(call => call.method === 'POST').length, 1);
+  }
 
-  const wrongMessage = fixture({ missingCode: 10007, missingMessage: 'Not found' });
-  await assert.rejects(run({ fetchImpl: wrongMessage.fetchImpl }), /API request failed/);
-  assert.equal(wrongMessage.state.calls.some(call => call.method === 'POST'), false);
+  for (const denied of [
+    fixture({ missingCode: 10000, missingMessage: 'Resource not found' }),
+    fixture({ missingCode: '10007', missingMessage: 'Worker not found' }),
+    fixture({ includeMissingResult: true, missingResult: {} }),
+    fixture({ missingMessage: 'Worker not found', missingResponseUrl: 'https://api.cloudflare.com/client/v4/accounts/aaaaaaaaaaaaaaaaaaaaaaaaaaaacbfa/workers/workers/other' }),
+    fixture({ zoneFailure: true }),
+  ]) {
+    await assert.rejects(run({ fetchImpl: denied.fetchImpl }));
+    assert.equal(denied.state.calls.some(call => call.method === 'POST'), false);
+  }
+
+  const html = fixture();
+  const htmlFetch = html.fetchImpl;
+  html.fetchImpl = async (url, init) => new URL(url).pathname.endsWith(`/workers/workers/${WORKER_NAME}`)
+    ? new Response('<html>not found</html>', { status: 404, headers: { 'content-type': 'text/html' } })
+    : htmlFetch(url, init);
+  await assert.rejects(run({ fetchImpl: html.fetchImpl }), /invalid JSON/);
+  assert.equal(html.state.calls.some(call => call.method === 'POST'), false);
 });
 
 test('read and create authorization failures stop without retry', async () => {
@@ -134,8 +160,8 @@ test('zone scan requires owner, unique IDs and exact full-account inventory', as
   const cases = [
     { zones: [{ id: zoneId, account: { id: 'f'.repeat(32) } }], expected: /owner or ID/ },
     { zones: [{ id: zoneId, account: { id: accountId } }, { id: zoneId, account: { id: accountId } }], expected: /duplicate ID/ },
-    { zones: [], expected: /pagination metadata/ },
-    { zones: [{ id: zoneId, account: { id: accountId } }], zoneResultInfo: { total_pages: 1, page: 2, per_page: 50, total_count: 1 }, expected: /pagination metadata/ },
+      { zones: [], expected: /zone total count|does not match the approved/ },
+      { zones: [{ id: zoneId, account: { id: accountId } }], zoneResultInfo: { total_pages: 1, page: 2, per_page: 50, total_count: 1 }, expected: /zone page does not match/ },
     { zones: [{ id: '2'.repeat(32), account: { id: accountId } }], expected: /does not match the approved/ },
   ];
   for (const item of cases) {
@@ -151,14 +177,14 @@ test('complete multi-page route inventory is compared to protected zone IDs', as
   const ids = Array.from({ length: 51 }, (_, index) => index.toString(16).padStart(32, '0'));
   const zones = ids.map(id => ({ id, account: { id: accountId } }));
   const f = fixture({ zonePages: [zones.slice(0, 50), zones.slice(50)] });
-  assert.equal(await run({ fetchImpl: f.fetchImpl, expectedZoneIds: ids }), 'created');
+  assert.deepEqual(await run({ fetchImpl: f.fetchImpl, expectedZoneIds: ids }), { status: 'created', workerId });
   const zoneRequests = f.state.calls.filter(call => call.url.pathname === '/client/v4/zones');
   assert.equal(zoneRequests.length, 4); // two complete scans: before and after create
 });
 
 test('known zero-zone inventory is accepted only when explicitly configured', async () => {
   const f = fixture({ zones: [], zoneResultInfo: { total_pages: 0, page: 1, per_page: 50, total_count: 0 } });
-  assert.equal(await bootstrapSmoke({ approvedAccountId: accountId, expectedZoneIds: [], writeToken, readToken, fetchImpl: f.fetchImpl }), 'created');
+  assert.deepEqual(await bootstrapSmoke({ approvedAccountId: accountId, expectedZoneIds: [], writeToken, readToken, fetchImpl: f.fetchImpl }), { status: 'created', workerId });
   assert.equal(f.state.calls.some(call => call.method === 'POST'), true);
 });
 
@@ -189,7 +215,7 @@ test('route conflict and incomplete pagination block creation', async () => {
   assert.equal(routed.state.calls.some(call => call.method === 'POST'), false);
 
   const incomplete = fixture({ zoneResultInfo: { total_pages: 1, page: 1, per_page: 50, total_count: 2 } });
-  await assert.rejects(run({ fetchImpl: incomplete.fetchImpl }), /pagination metadata/);
+  await assert.rejects(run({ fetchImpl: incomplete.fetchImpl }), /zone total count/);
   assert.equal(incomplete.state.calls.some(call => call.method === 'POST'), false);
 });
 
@@ -202,7 +228,7 @@ test('create response identity mismatch stops after its single write', async () 
 
 test('empty deployment list is explicit evidence; missing list or conflicting metadata is denied', async t => {
   const empty = fixture({ worker: safeWorker(), deploymentNoInfo: true });
-  assert.equal(await run({ fetchImpl: empty.fetchImpl }), 'already-present');
+  assert.deepEqual(await run({ fetchImpl: empty.fetchImpl }), { status: 'already-present', workerId });
 
   for (const response of [
     { result: {}, result_info: { total_count: 0 } },
@@ -226,11 +252,33 @@ test('empty deployment list is explicit evidence; missing list or conflicting me
 
 test('zero versions and deployment history are required', async () => {
   const { state, fetchImpl } = fixture({ worker: safeWorker() });
-  assert.equal(await run({ fetchImpl }), 'already-present');
+  assert.deepEqual(await run({ fetchImpl }), { status: 'already-present', workerId });
   assert.ok(state.calls.some(call => call.url.pathname.endsWith('/versions')));
   assert.ok(state.calls.some(call => call.url.pathname.endsWith('/deployments')));
 
   const withVersion = fixture({ worker: safeWorker(), versions: [{ id: 'synthetic-version' }] });
   await assert.rejects(run({ fetchImpl: withVersion.fetchImpl }), /already has a version/);
   assert.equal(withVersion.state.calls.some(call => call.method === 'POST'), false);
+});
+
+test('read-only upload preflight binds the init Worker ID and postflight keeps it private', async () => {
+  const f = fixture({ worker: safeWorker() });
+  assert.deepEqual(await verifySmokeEmptyTarget({ approvedAccountId: accountId, expectedZoneIds, readToken, expectedWorkerId: workerId, fetchImpl: f.fetchImpl }), { workerId, workerName: WORKER_NAME });
+  assert.deepEqual(await verifySmokePostUpload({ approvedAccountId: accountId, expectedZoneIds, readToken, expectedWorkerId: workerId, fetchImpl: f.fetchImpl }), { workerId, workerName: WORKER_NAME });
+  assert.equal(f.state.calls.some(call => call.method !== 'GET'), false);
+
+  await assert.rejects(verifySmokeEmptyTarget({ approvedAccountId: accountId, expectedZoneIds, readToken, expectedWorkerId: 'f'.repeat(32), fetchImpl: f.fetchImpl }), /differs from the initialization receipt/);
+});
+
+test('init receipt binds exact trusted run, account hash and Worker without storing account ID', () => {
+  const receipt = createInitReceipt({
+    approvedAccountId: accountId, workerId, status: 'created', repository: 'developing-today/code',
+    sourceSha: 'a'.repeat(40), runId: '123456789', runAttempt: 1, event: 'workflow_dispatch', branch: 'main',
+  });
+  assert.equal(receipt.worker_name, WORKER_NAME);
+  assert.equal(receipt.worker_id, workerId);
+  assert.equal(receipt.source_sha, 'a'.repeat(40));
+  assert.equal(receipt.account_id_sha256.length, 64);
+  assert.equal(JSON.stringify(receipt).includes(accountId), false);
+  assert.throws(() => createInitReceipt({ approvedAccountId: accountId, workerId, status: 'created', repository: 'developing.today/code', sourceSha: 'a'.repeat(40), runId: '123456789', runAttempt: 1, event: 'workflow_dispatch', branch: 'main' }), /trusted workflow run metadata/);
 });

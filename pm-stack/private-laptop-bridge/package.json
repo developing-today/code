@@ -5,7 +5,7 @@
   "scripts": {
     "test": "node --test *.test.mjs",
     "rehearse": "node --test --test-concurrency=1 *.test.mjs ../aggregator/test/bridge-snapshot.test.ts ../aggregator/test/bridge-refresh.test.ts",
-    "check:staging": "WRANGLER_SEND_METRICS=false wrangler deploy --dry-run --config wrangler.staging.jsonc --outdir .wrangler/staging-dry-run"
+    "check:staging": "bash ./check-staging.sh"
   },
   "engines": {
     "node": ">=24.22.0"

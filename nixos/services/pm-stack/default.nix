@@ -413,6 +413,10 @@ in
               "QUOTA_HEARTBEAT_PATH=${aggState}/quota-gatherer-heartbeat.json"
               "QUOTA_GATHERER_STATE_PATH=${aggState}/quota-gatherer-state.json"
               "QUOTA_SNAPSHOTS_DIR=${aggState}/snapshots"
+              # #1338: the claimant babysitter's pool-state.json — pinned
+              # explicitly (the gather-quota.ts default is the same path)
+              # so the writer/reader contract survives a HOME change.
+              "POOL_STATE_PATH=${home}/.local/state/opencode-claimant/pool-state.json"
             ];
             ExecStart = "${pmAggregator}/bin/pm-aggregator-gather-quota";
           };

@@ -1,0 +1,8 @@
+[Unit]
+Description=fleet-queue-backup: export the fleet-queue Turso store to its D1 copy
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/env bash __FQ_DIR__/systemd/run-export.sh

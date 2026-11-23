@@ -9,10 +9,13 @@
     "start": "bun run src/server.ts",
     "test": "bun test",
     "report:generate": "bun run scripts/generate-report.ts",
+    "backtest:quota-forecast": "bun run scripts/quota-forecast-backtest.ts",
+    "replay:quota-anomaly": "bun run scripts/quota-anomaly-replay.ts",
     "contract:check": "bun run scripts/check-contract-corpus.ts",
     "provenance:check": "bun run scripts/check-provenance-matrix.ts",
     "typecheck": "bunx tsc --noEmit",
-    "build:css": "tailwindcss -i src/ui.css -o src/assets/app.css"
+    "build:css": "tailwindcss -i src/ui.css -o src/assets/app.css",
+    "proposals:quota-reweight": "bun run scripts/quota-reweight-proposals.ts"
   },
   "devDependencies": {
     "@playwright/test": "1.64.0",

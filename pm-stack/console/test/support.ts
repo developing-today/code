@@ -81,3 +81,18 @@ export async function signer(kid: string): Promise<Signer> {
     },
   };
 }
+
+/** A stand-in for the platform's fetch that behaves as the Worker
+ * runtime's does in one respect bun's does not: it refuses to be called
+ * as a method of some other object. There, `this.fetchImpl(url)` with
+ * the platform's fetch kept in `fetchImpl` throws "Illegal invocation",
+ * and under bun it works, so a test that hands a class a plain function
+ * cannot see the fault. Hand it this. */
+export function asThePlatformFetch<A extends unknown[], R>(answer: (...args: A) => R): (...args: A) => R {
+  return function (this: unknown, ...args: A): R {
+    if (this !== undefined && this !== globalThis) {
+      throw new TypeError("Illegal invocation: function called with incorrect `this` reference.");
+    }
+    return answer(...args);
+  };
+}

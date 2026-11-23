@@ -37,6 +37,9 @@ export class Stamped {
   constructor(
     public data: unknown,
     public at: number,
+    /** Why the place that read it could not read it again, if it could
+     * not: the data is then its last good copy. */
+    public error: string | null = null,
   ) {}
 }
 
@@ -95,8 +98,8 @@ export class Docs {
         // A copy read elsewhere is as old as that read, never newer than now.
         s.data = loaded instanceof Stamped ? loaded.data : loaded;
         s.goodAt = loaded instanceof Stamped ? Math.min(now, loaded.at) : now;
-        s.ok = true;
-        s.error = null;
+        s.error = loaded instanceof Stamped ? loaded.error : null;
+        s.ok = s.error === null;
       } catch (error) {
         s.ok = false;
         s.error = (error as Error).message.slice(0, 300);
@@ -111,6 +114,27 @@ export class Docs {
   /** After an action: read the sections it changed, so the next document shows it. */
   async touch(names: string[]): Promise<void> {
     await Promise.all(names.map((n) => this.refresh(n)));
+  }
+
+  /** Record a section read by another trusted source, such as the edge
+   * reading GitHub or the queue store while the laptop is away. */
+  record(name: string, data: unknown, at = this.now()): void {
+    const s = this.sections.get(name);
+    if (!s) return;
+    s.data = data;
+    s.at = at;
+    s.goodAt = at;
+    s.ok = true;
+    s.error = null;
+  }
+
+  /** Keep the last good value, but say that a fresh read failed. */
+  recordFailure(name: string, error: unknown): void {
+    const s = this.sections.get(name);
+    if (!s) return;
+    s.at = this.now();
+    s.ok = false;
+    s.error = (error as Error).message.slice(0, 300);
   }
 
   private stale(s: Section): boolean {
@@ -138,6 +162,13 @@ export class Docs {
   good(name: string): unknown {
     const s = this.sections.get(name);
     return s && s.goodAt > 0 ? s.data : null;
+  }
+
+  /** When that data was read from its source, or 0 if it never was. A
+   * read that failed since does not move it: the data is still the last
+   * good copy, and this is how old that copy is. */
+  goodAt(name: string): number {
+    return this.sections.get(name)?.goodAt ?? 0;
   }
 
   /** Sections brought up to date for a caller that asks rarely (a
@@ -205,12 +236,13 @@ export class Docs {
   /** Every section that has been read, with when and a fingerprint of
    * its content: what is reported to the edge, and how it tells that a
    * section has not changed. */
-  snapshot(): { name: string; at: number; hash: string; data: unknown }[] {
-    const out: { name: string; at: number; hash: string; data: unknown }[] = [];
+  snapshot(): { name: string; at: number; hash: string; data: unknown; error: string | null }[] {
+    const out: { name: string; at: number; hash: string; data: unknown; error: string | null }[] = [];
     for (const [name, s] of this.sections) {
       if (s.goodAt === 0) continue;
       const hash = createHash("sha1").update(JSON.stringify(s.data)).digest("base64url");
-      out.push({ name, at: s.goodAt, hash, data: s.data });
+      // The data is the last good copy; `error` says the latest read failed.
+      out.push({ name, at: s.goodAt, hash, data: s.data, error: s.ok ? null : s.error });
     }
     return out;
   }

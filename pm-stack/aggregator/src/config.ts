@@ -71,6 +71,11 @@ export interface Config {
   eventsFile: string;
   /** Identity-to-role registry (#9604), separate from the session registry. */
   identityRegistryFile: string;
+  /** Shared HS256 secret used only to mint short-lived brokered-write tokens. */
+  stackTokenSecret: string | null;
+  /** Break-glass owner token store (#9608) — written only by the local
+   * owner CLI (scripts/issue-break-glass-token.ts); hashes only. */
+  breakGlassFile: string;
   /** Source freshness invalidation journal, separate from #1739/#3321. */
   freshnessFile: string;
   /** Loopback-only publisher listener; never included in PM_AGG_HOSTS. */
@@ -223,6 +228,11 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     identityRegistryFile: s(
       env.PM_AGG_IDENTITY_REGISTRY_FILE,
       join(homedir(), ".local", "state", "pm-aggregator", "identity-registry.json"),
+    ),
+    stackTokenSecret: env.PM_AGG_STACK_TOKEN_SECRET?.trim() || null,
+    breakGlassFile: s(
+      env.PM_AGG_BREAK_GLASS_FILE,
+      join(homedir(), ".local", "state", "pm-aggregator", "break-glass-tokens.json"),
     ),
     freshnessFile: s(env.PM_AGG_FRESHNESS_FILE, join(homedir(), ".local", "state", "pm-aggregator", "freshness.json")),
     freshnessPort: parseAggregatorPort(env.PM_AGG_FRESHNESS_PORT, "PM_AGG_FRESHNESS_PORT", "4871"),

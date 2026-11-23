@@ -151,14 +151,21 @@ class RunBatchTests(unittest.TestCase):
                 return ""
 
             result = gate.run_batch(
-                [12470], 1, affected={12470: ["id-core"]},
-                log_path=Path(tmp) / "gate.jsonl", repo=Path(tmp),
-                git=git, shell=shell, gh=gh,
+                [12470],
+                1,
+                affected={12470: ["id-core"]},
+                log_path=Path(tmp) / "gate.jsonl",
+                repo=Path(tmp),
+                git=git,
+                shell=shell,
+                gh=gh,
             )
             self.assertEqual(result, "green")
             self.assertTrue(any(name == "shell" for name, _ in events))
-            self.assertTrue(any(name == "gh" and "merge" in args for name, args in events))
-            record, = gate.read_log(Path(tmp) / "gate.jsonl")
+            self.assertTrue(
+                any(name == "gh" and "merge" in args for name, args in events)
+            )
+            (record,) = gate.read_log(Path(tmp) / "gate.jsonl")
             self.assertEqual(record["result"], "green")
             self.assertEqual(record["prs"], [12470])
 
@@ -184,22 +191,33 @@ class RunBatchTests(unittest.TestCase):
                 return int(2 in prs)
 
             result = gate.run_batch(
-                [1, 2], 7, affected={1: ["a"], 2: ["b"]},
-                log_path=Path(tmp) / "gate.jsonl", repo=Path(tmp),
-                git=git, shell=verdict, gh=gh,
+                [1, 2],
+                7,
+                affected={1: ["a"], 2: ["b"]},
+                log_path=Path(tmp) / "gate.jsonl",
+                repo=Path(tmp),
+                git=git,
+                shell=verdict,
+                gh=gh,
             )
             self.assertEqual(result, "red")
             records = gate.read_log(Path(tmp) / "gate.jsonl")
-            self.assertEqual([(r["prs"], r["result"]) for r in records],
-                             [([1, 2], "red"), ([1], "green"), ([2], "red")])
+            self.assertEqual(
+                [(r["prs"], r["result"]) for r in records],
+                [([1, 2], "red"), ([1], "green"), ([2], "red")],
+            )
             self.assertTrue(any("merge" in args and "1" in args for args in gh_calls))
             self.assertFalse(any("merge" in args and "2" in args for args in gh_calls))
 
     def test_gate_off_runs_nothing(self) -> None:
         with mock.patch.dict(os.environ, {"ID_GATE_OFF": "1"}):
             result = gate.run_batch(
-                [1], 1, affected={}, log_path=Path("unused.jsonl"),
-                repo=Path("."), git=lambda *a, **k: self.fail("git ran"),
+                [1],
+                1,
+                affected={},
+                log_path=Path("unused.jsonl"),
+                repo=Path("."),
+                git=lambda *a, **k: self.fail("git ran"),
                 shell=lambda *a, **k: self.fail("shell ran"),
                 gh=lambda *a, **k: self.fail("gh ran"),
             )
@@ -219,13 +237,61 @@ class RunBatchTests(unittest.TestCase):
                 return ""
 
             result = gate.run_batch(
-                [1, 2], 8, affected={1: [], 2: []},
-                log_path=Path(tmp) / "gate.jsonl", repo=Path(tmp),
-                git=lambda *args, **kwargs: "", shell=shell, gh=gh,
+                [1, 2],
+                8,
+                affected={1: [], 2: []},
+                log_path=Path(tmp) / "gate.jsonl",
+                repo=Path(tmp),
+                git=lambda *args, **kwargs: "",
+                shell=shell,
+                gh=gh,
             )
             self.assertEqual(result, "red")
             self.assertEqual(merges, [])
             self.assertEqual(len(gate.read_log(Path(tmp) / "gate.jsonl")), 3)
+
+
+class DevShellRunnerTests(unittest.TestCase):
+    """Oracle: the batch-1 failure record on #12229. The fleet build shell
+    lacks the wayland client libraries, so a batch command run there dies in
+    the wayland-sys build script before any PR code is evaluated. The runner
+    must therefore enter pkgs/id's own nix dev shell — the flake that wires
+    wayland/X11 via pkgs/id/nix-common.nix — while passing the batch command
+    through verbatim (the JSONL log records that exact command)."""
+
+    def invoke(self, command: str, cwd: Path, returncode: int = 0) -> list[str]:
+        calls: list[list[str]] = []
+
+        def fake_run(argv: list[str], **kwargs: object) -> mock.Mock:
+            calls.append(argv)
+            self.assertEqual(kwargs.get("cwd"), cwd)
+            return mock.Mock(returncode=returncode)
+
+        with mock.patch.object(gate.subprocess, "run", fake_run):
+            result = gate._run_devshell(command, cwd=cwd)
+        self.assertEqual(result, returncode)
+        return calls[0]
+
+    def test_runner_enters_the_pkgs_id_dev_shell(self) -> None:
+        candidate = Path("/candidate")
+        argv = self.invoke("cargo check --workspace", candidate)
+        self.assertEqual(argv[0], "nix")
+        self.assertIn("develop", argv)
+        # The dev shell entered is pkgs/id's flake, not the repo root's.
+        self.assertIn(str(candidate / "pkgs" / "id"), argv)
+
+    def test_runner_passes_the_batch_command_verbatim_to_a_shell(self) -> None:
+        command = gate.batch_command([101], {101: ["id-core"]})
+        argv = self.invoke(command, Path("/candidate"))
+        # bash -c <command>: the && chain needs a shell, and the command the
+        # log records must be the command that ran, byte for byte.
+        self.assertEqual(argv[-3:], ["bash", "-c", command])
+
+    def test_runner_propagates_the_exit_code(self) -> None:
+        argv = self.invoke(
+            "cargo check --workspace", Path("/candidate"), returncode=101
+        )
+        self.assertEqual(argv[0], "nix")
 
 
 if __name__ == "__main__":

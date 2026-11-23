@@ -12,6 +12,8 @@
 
 pub mod agent_delegation;
 pub mod declaration;
+pub mod http_fetch_url;
+pub mod library_attach;
 pub mod library_gate;
 pub mod library_manifest;
 pub mod library_resolution;

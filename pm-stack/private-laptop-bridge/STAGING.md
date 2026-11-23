@@ -6,6 +6,39 @@ verified owner email, exact runtime/store paths and the UTC pilot window must be
 filled from read-only inventory and approved before execution. No secrets belong
 in this document. Desktop Commander remains installed and usable.
 
+## Release lifecycle and current disabled preflight
+
+The real staging release has one definition: `cloudflare.config.ts` with
+`cf --mode bridge`, pinned `cf@1.0.0-rc.1` Build Output v1, and the bridge-only
+`.github/workflows/private-laptop-bridge-release.yml`. Upload produces an
+immutable exact-UUID candidate; a separate gated promotion validates that exact
+artifact and then serves it only after explicit promotion. There is no cold
+Worker/bootstrap fallback in this release path. The already-merged
+`private-laptop-bridge-smoke-init.yml` and `private-laptop-bridge-smoke-upload.yml`
+are a separate synthetic smoke lifecycle and do not select or provision the
+bridge target. The `wrangler*.jsonc` files remain parity fixtures for offline
+contract tests; they are not release inputs.
+
+The bridge config currently has `ENABLED=false`, empty registry and Gateway
+placeholders, no routes/domains/triggers, workers.dev and preview URLs disabled,
+10 ms CPU limit, and observability/logging/traces off. It binds the staging
+Worker to its own SQLite `PrivateLaptopBridge` Durable Object export. The
+tracked `staging-preflight.json` remains `verified:false`, `exists:false`, with
+empty account, namespace and evidence IDs. Local config/build tests prove only
+that this disabled artifact is internally shaped as expected; they do not prove
+a live Worker or namespace exists, that Gateway cannot reach it, or that the
+route is private. No staging Worker was provisioned and no activation was
+approved or attempted.
+
+Before any bridge upload or promotion, an owner must supply reviewed protected
+environment evidence for the exact account/Worker, existing same-Worker SQLite
+namespace and completed migration, disabled/no-public resource inventory,
+Gateway caller inventory, protected-main/environment rules, and approved
+credential scope. Before enablement, Drew must separately approve the specific
+activation permissions and the credential-free private transport check must
+pass from the intended Aster runner and AMD laptop. Keep the fallback until the
+end-to-end authorized Fleet operations pass on Drew's laptop.
+
 ## Selected ingress and the remaining feasibility gate
 
 Use **Cloudflare Gateway Forward**, not a public Worker URL. The official guide

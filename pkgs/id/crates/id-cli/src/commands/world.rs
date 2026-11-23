@@ -606,11 +606,17 @@ pub async fn cmd_world(command: WorldCommand) -> Result<()> {
             endpoint.close().await;
             Ok(())
         }
-        WorldCommand::Contract { check: None } => {
+        WorldCommand::Contract {
+            check: None,
+            check_suite: None,
+        } => {
             print!("{}", id_worlds::shell_contract::SHELL_CONTRACT_JSON);
             Ok(())
         }
-        WorldCommand::Contract { check: Some(path) } => {
+        WorldCommand::Contract {
+            check: Some(path),
+            check_suite: None,
+        } => {
             let text = if path.as_os_str() == "-" {
                 std::io::read_to_string(std::io::stdin()).context("read transcript")?
             } else {
@@ -620,6 +626,20 @@ pub async fn cmd_world(command: WorldCommand) -> Result<()> {
             let checked = check_contract(&text)?;
             println!("{checked}");
             Ok(())
+        }
+        WorldCommand::Contract {
+            check: None,
+            check_suite: Some(path),
+        } => {
+            let report = check_suite_file(&path)?;
+            println!("{report}");
+            Ok(())
+        }
+        WorldCommand::Contract {
+            check: Some(_),
+            check_suite: Some(_),
+        } => {
+            bail!("--check and --check-suite cannot be combined");
         }
         #[cfg(feature = "sandbox")]
         WorldCommand::Measure(args) => {
@@ -1954,8 +1974,9 @@ async fn terminal_probe(
 /// Render one server frame through the TTY tier presenter when it is a
 /// view carrying a screen or text surface (F13.4). Returns `None` for
 /// every other frame — those keep the JSON-lines presentation — and
-/// `Some("")` for a view the presenter renders as no change. Form views
-/// keep the JSON-lines presentation: the pump has no form collector.
+/// `Some("")` for a view the presenter renders as no change. Form,
+/// scene and audio views keep the JSON-lines presentation: the pump
+/// has no form collector, no scene renderer and no audio player.
 fn render_view_frame(
     presenter: &mut id_worlds::world_terminal::TierPresenter,
     body: &[u8],
@@ -1981,6 +2002,8 @@ fn render_view_frame(
             Some(presenter.render_lines(&lines))
         }
         id_worlds::world_presentation::WorldSurface::Form(_) => None,
+        id_worlds::world_presentation::WorldSurface::Scene(_) => None,
+        id_worlds::world_presentation::WorldSurface::Audio(_) => None,
     }
 }
 
@@ -2184,6 +2207,89 @@ fn check_contract(text: &str) -> Result<String> {
     )
 }
 
+/// Run a conformance-suite manifest: every shell's capability
+/// statement validated, every recorded session checked, in one
+/// pass. Returns the per-shell report.
+///
+/// # Errors
+///
+/// Fails on an unreadable or invalid manifest, or with the full
+/// report as the error when any shell fails the suite.
+fn check_suite_file(path: &std::path::Path) -> Result<String> {
+    use id_worlds::shell_contract::{SessionSource, ShellSuite, SuiteEntry, check_suite};
+    let text = std::fs::read_to_string(path)
+        .with_context(|| format!("read suite manifest {}", path.display()))?;
+    let suite = ShellSuite::parse(&text).map_err(anyhow::Error::msg)?;
+    let contract =
+        id_worlds::shell_contract::ShellContract::embedded().map_err(anyhow::Error::msg)?;
+    let base = path.parent().unwrap_or_else(|| std::path::Path::new("."));
+    let loaded: Vec<Option<Result<String, String>>> = suite
+        .shells
+        .iter()
+        .map(|shell| {
+            shell.session.as_ref().map(|relative| {
+                let full = base.join(relative);
+                std::fs::read_to_string(&full)
+                    .map_err(|error| format!("read {}: {error}", full.display()))
+            })
+        })
+        .collect();
+    let entries: Vec<SuiteEntry<'_>> = suite
+        .shells
+        .iter()
+        .zip(&loaded)
+        .map(|(shell, loaded)| SuiteEntry {
+            name: &shell.name,
+            statement: shell.statement.as_ref(),
+            session: match loaded {
+                None => SessionSource::Unrecorded,
+                Some(Ok(text)) => SessionSource::Recorded(text),
+                Some(Err(why)) => SessionSource::Unreadable(why),
+            },
+        })
+        .collect();
+    let verdicts = check_suite(contract, &entries);
+    let mut lines = Vec::new();
+    let mut failed = 0_usize;
+    let mut recorded = 0_usize;
+    for verdict in &verdicts {
+        if verdict.recorded {
+            recorded += 1;
+        }
+        if verdict.passed() {
+            if verdict.recorded {
+                lines.push(format!(
+                    "{}: PASS ({} frames, recorded session)",
+                    verdict.name, verdict.frames
+                ));
+            } else {
+                lines.push(format!(
+                    "{}: UNRECORDED (capability statement ok, no recorded session yet)",
+                    verdict.name
+                ));
+            }
+        } else {
+            failed += 1;
+            lines.push(format!("{}: FAIL", verdict.name));
+            for failure in &verdict.failures {
+                lines.push(format!("  {failure}"));
+            }
+        }
+    }
+    lines.push(format!(
+        "suite: {} of {} shells pass, {recorded} recorded session(s) checked against shell contract v{}.{}",
+        verdicts.len() - failed,
+        verdicts.len(),
+        contract.version,
+        contract.revision
+    ));
+    let report = lines.join("\n");
+    if failed > 0 {
+        bail!("{report}");
+    }
+    Ok(report)
+}
+
 /// What one stdin line does in the `id world join` pump.
 #[derive(Debug, PartialEq, Eq)]
 enum PumpLine {
@@ -2307,9 +2413,9 @@ fn read_execution_profile(
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::{
-        PumpLine, check_contract, check_journal_bytes, journal_backup, local_transcript_record,
-        print_journal_check, pump_command, read_execution_profile, scaffold_world, step_is_applied,
-        world_list_plain_row, world_provenance,
+        PumpLine, check_contract, check_journal_bytes, check_suite_file, journal_backup,
+        local_transcript_record, print_journal_check, pump_command, read_execution_profile,
+        scaffold_world, step_is_applied, world_list_plain_row, world_provenance,
     };
 
     #[test]
@@ -2603,11 +2709,13 @@ mod tests {
             r#"{"from": "client", "frame": {"type": "join", "capability": "c"}}"#,
             r#"{"from": "server", "frame": {"type": "snapshot", "snapshot": {}}}"#,
             r#"{"from": "client", "frame": {"type": "resize", "width": 80, "height": 24}}"#,
+            r#"{"from": "server", "frame": {"type": "view", "sequence": 1, "data": "Harbor", "view_revision": 1, "surface": {"kind": "scene", "version": 1, "title": "Harbor", "nodes": [{"id": "boat", "label": "Boat", "shape": "box", "position": [0, 0.5, -2], "size": [2, 1, 1]}]}}}"#,
+            r#"{"from": "server", "frame": {"type": "view", "sequence": 2, "data": "Harbor Sounds", "view_revision": 2, "surface": {"kind": "audio", "version": 1, "title": "Harbor Sounds", "cues": [{"id": "rain", "label": "Rain", "format": "ogg", "duration_ms": 90000, "repeat": true}]}}}"#,
         ]
         .join("\n");
         assert_eq!(
             check_contract(&good).unwrap(),
-            "3 frames conform to shell contract v1.11"
+            "5 frames conform to shell contract v1.14"
         );
         let bad = [
             r#"{"from": "client", "frame": {"type": "chat", "text": "too early"}}"#,
@@ -2619,6 +2727,37 @@ mod tests {
         assert!(error.contains("frame 0 (client)"), "{error}");
         assert!(error.contains("frame 1 (server)"), "{error}");
         assert!(check_contract("{").is_err());
+    }
+
+    #[test]
+    fn the_suite_command_runs_every_shell_in_a_manifest() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("session.jsonl"),
+            "{\"from\": \"client\", \"frame\": {\"type\": \"join\", \"capability\": \"c\"}}\n{\"from\": \"server\", \"frame\": {\"type\": \"snapshot\", \"snapshot\": {}}}\n",
+        )
+        .unwrap();
+        let manifest = dir.path().join("suite.json");
+        std::fs::write(
+            &manifest,
+            r#"{"suite": "shell-suite", "version": 1, "shells": [
+                {"name": "recorded", "statement": {"sends": ["join"], "presents": ["snapshot"], "providers": [], "workflow": ["join"]}, "session": "session.jsonl"},
+                {"name": "pending", "statement": {"sends": ["join"], "presents": ["snapshot"], "providers": [], "workflow": ["join"]}, "session": null}
+            ]}"#,
+        )
+        .unwrap();
+        let report = check_suite_file(&manifest).unwrap();
+        assert!(report.contains("recorded: PASS"), "{report}");
+        assert!(report.contains("pending: UNRECORDED"), "{report}");
+        // A shell with no capability statement fails the whole run, loudly.
+        std::fs::write(
+            &manifest,
+            r#"{"suite": "shell-suite", "version": 1, "shells": [{"name": "silent", "statement": null, "session": null}]}"#,
+        )
+        .unwrap();
+        let error = check_suite_file(&manifest).unwrap_err().to_string();
+        assert!(error.contains("silent: FAIL"), "{error}");
+        assert!(error.contains("no capability statement"), "{error}");
     }
 
     #[test]

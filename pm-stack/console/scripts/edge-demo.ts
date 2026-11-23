@@ -72,7 +72,10 @@ const io: Io = {
   asset: async (path) => {
     try {
       const name = path.startsWith("/console/") ? path.slice("/console/".length) : "";
-      return name ? new Response(readFileSync(join(publicDir, name))) : new Response("", { status: 404 });
+      if (!name) return new Response("", { status: 404 });
+      // The platform's file store tags each file by its content; so does this.
+      const bytes = readFileSync(join(publicDir, name));
+      return new Response(bytes, { headers: { ETag: `"${Bun.hash(bytes).toString(16)}"` } });
     } catch {
       return new Response("", { status: 404 });
     }
@@ -91,6 +94,7 @@ const link = new EdgeLink({
   keys: memoryStore(),
   done: memoryStore(),
   docs: demoDocs,
+  phones: demoDeps.phones!.devices,
   config: async () => ({
     owners: [OWNER],
     certNames: [],
@@ -100,6 +104,10 @@ const link = new EdgeLink({
     androidPackage: demoDeps.cfg.androidPackage,
     androidFingerprints: [],
     androidApp: false,
+    queueDbUrl: demoDeps.cfg.queueDbUrl,
+    queueTokenName: demoDeps.cfg.queueTokenName,
+    promptLabel: demoDeps.cfg.promptLabel,
+    needsRepos: demoDeps.cfg.needsRepos,
   }),
   run: heldRunner(demoDeps),
   fetchImpl: (async (url: string, init: RequestInit) => {

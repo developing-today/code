@@ -15,7 +15,7 @@ import urllib.request
 
 HANDOFF_ORIGIN_HOST_PREFIX = "muse-agent-handoff."
 HANDOFF_ORIGIN_HOST_SUFFIX = ".workers.dev"
-RAW_ROOT = "https://raw.githubusercontent.com/developing-today/code/codex/muse-agent-enrollment-20261122/scripts/muse/"
+RAW_ROOT = "https://raw.githubusercontent.com/developing-today/code/main/scripts/muse/"
 BOOTSTRAP_URL = RAW_ROOT + "bootstrap.sh"
 
 
@@ -86,7 +86,11 @@ def get_credentials(args, config):
     request = urllib.request.Request(
         "https://" + parsed.netloc + "/api/claim",
         data=json.dumps({"id": handoff_id, "claim": claim}).encode(),
-        headers={"Content-Type": "application/json", "Cache-Control": "no-store"},
+        headers={
+            "Content-Type": "application/json",
+            "Cache-Control": "no-store",
+            "User-Agent": "muse-enroll/1.1 (fleet enrollment helper)",
+        },
         method="POST",
     )
     try:
@@ -109,7 +113,13 @@ def get_credentials(args, config):
 
 
 def download(url, destination):
-    request = urllib.request.Request(url, headers={"Cache-Control": "no-store"})
+    request = urllib.request.Request(
+        url,
+        headers={
+            "Cache-Control": "no-store",
+            "User-Agent": "muse-enroll/1.1 (fleet enrollment helper)",
+        },
+    )
     try:
         with urllib.request.urlopen(request, timeout=30) as response:
             data = response.read(2_000_001)
@@ -123,6 +133,7 @@ def download(url, destination):
 
 def run(args):
     name = validate_name(args.name)
+    kind = validate_name(args.kind)
     home = Path.home()
     config = home / ".config"
     credentials = get_credentials(args, config)
@@ -150,12 +161,22 @@ def run(args):
         else:
             download(BOOTSTRAP_URL, bootstrap)
         if args.resume:
-            print("Resuming the idempotent Muse bootstrap with saved 0600 credentials.")
+            print("Resuming the idempotent bootstrap with saved 0600 credentials.")
         else:
             print(
-                "Running the pinned Muse bootstrap (tools, restored setup, tailnet, Fleet, and checks)."
+                "Running the pinned bootstrap (tools, token, tailnet, Fleet, and checks"
+                + (", plus the Muse home restore" if kind == "muse" else "")
+                + ")."
             )
-        completed = subprocess.run(["bash", str(bootstrap), "--all"], env=env)
+        if kind == "muse":
+            bootstrap_args = ["--all"]
+        else:
+            # A non-Muse seat must never restore the Muse home: skip the
+            # restore, persist, and init phases (code#12858).
+            bootstrap_args = ["--skip", "restore,persist,init"]
+        completed = subprocess.run(
+            ["bash", str(bootstrap), *bootstrap_args], env=env
+        )
     if completed.returncode:
         print(
             "Bootstrap failed with exit " + str(completed.returncode) + ".",
@@ -165,7 +186,14 @@ def run(args):
             "Credentials are saved in 0600 files. Diagnose the named failed phase, then rerun:",
             file=sys.stderr,
         )
-        print("python3 enroll-agent.py --name " + name + " --resume", file=sys.stderr)
+        print(
+            "python3 enroll-agent.py --name "
+            + name
+            + " --kind "
+            + kind
+            + " --resume",
+            file=sys.stderr,
+        )
         raise SystemExit(completed.returncode)
 
     fleet = home / "tools/fleet"
@@ -181,7 +209,7 @@ def run(args):
         pass
     if enrolled_name != name:
         enrolled = subprocess.run(
-            [str(fleet), "agent", "enroll", "--kind", "muse", "--name", name], env=env
+            [str(fleet), "agent", "enroll", "--kind", kind, "--name", name], env=env
         )
         if enrolled.returncode:
             print(
@@ -216,6 +244,11 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--name", required=True, help="stable agent name bound to the handoff"
+    )
+    parser.add_argument(
+        "--kind",
+        default="muse",
+        help="fleet agent kind to enroll (default: muse; non-muse kinds skip the Muse home restore)",
     )
     parser.add_argument(
         "--handoff-url", help="15-minute single-use URL; omitted with --resume"

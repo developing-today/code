@@ -4,11 +4,15 @@
 // services through `systemctl --user`. Nothing here builds a shell
 // command line: each call is an argument vector, and text a person
 // typed travels on stdin or as a single argument.
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+//
+// The edge Worker imports this module and runs Ops with stand-ins for
+// `run` and `fetch`, so nothing this module needs at load time may come
+// from the filesystem: node:fs is imported lazily inside enqueue(), the
+// one method that touches the disk, and the expose script's path is
+// resolved inside expose().
 import type { Config } from "./config.ts";
 import { OpError } from "./errors.ts";
+import { plain } from "./plain.ts";
 
 export interface RunResult {
   code: number;
@@ -52,6 +56,8 @@ export type Rank = (typeof RANKS)[number] | "none";
 const PRIORITY_PAGES = 10;
 export const QUEUE_STATUSES = ["queued", "claimed", "blocked", "parked"] as const;
 const UNIT_NAME = /^[A-Za-z0-9@._-]+\.(service|timer)$/;
+/** The workflows that put the site and the app out, by what they put out. */
+const DEPLOYS = { site: "pm-console-edge-deploy.yml", app: "pm-console-android.yml" } as const;
 const UNIT_ACTIONS = ["start", "stop", "restart"] as const;
 export type UnitAction = (typeof UNIT_ACTIONS)[number];
 
@@ -167,11 +173,18 @@ function id(value: unknown, name: string): number {
 export class Ops {
   private queueToken: string | null = null;
 
+  /** How the queue store and the dashboard are reached. Kept as a plain
+   * caller: these classes also run at the edge, where the platform's
+   * fetch may not be called as a method (see `plain`). */
+  readonly fetchImpl: Fetch;
+
   constructor(
     readonly cfg: Config,
     readonly run: Run = realRun,
-    readonly fetchImpl: Fetch = fetch as unknown as Fetch,
-  ) {}
+    fetchImpl: Fetch = fetch as unknown as Fetch,
+  ) {
+    this.fetchImpl = plain(fetchImpl);
+  }
 
   async must(argv: string[], opts?: { stdin?: string; timeoutMs?: number }): Promise<string> {
     const r = await this.run(argv, opts);
@@ -395,6 +408,11 @@ export class Ops {
   /** Hand one packet to the queue. `fleet queue enqueue` reads a packet
    * file, not stdin, so the packet lives in a private file for the call. */
   async enqueue(packet: unknown): Promise<RunResult> {
+    // The filesystem is the laptop's only: this import is lazy so the
+    // edge Worker, which never calls this, can import this module.
+    const { mkdtempSync, rmSync, writeFileSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
     const dir = mkdtempSync(join(tmpdir(), "pm-console-"));
     const file = join(dir, "packet.json");
     try {
@@ -448,11 +466,13 @@ export class Ops {
 
   async messages(limit: unknown) {
     const n = limit === undefined || limit === null || limit === "" ? 30 : Math.min(id(limit, "limit"), 200);
-    return (
+    const log = (
       JSON.parse(await this.must([this.cfg.fleetBin, "bridge", "log", "--limit", String(n), "--order", "desc"])) as {
-        messages: unknown[];
-      }
-    ).messages;
+        messages?: unknown;
+      } | null
+    )?.messages;
+    // A log with nothing in it is an empty list, never no answer at all.
+    return Array.isArray(log) ? log : [];
   }
 
   /** Send a message or a command to agents, groups, or everyone. */
@@ -469,6 +489,89 @@ export class Ops {
     argv.push("-");
     await this.must(argv, { stdin: text(body, "text", 16_000) });
     return { to: targets, command: command === true };
+  }
+
+  // ---- sign-in ------------------------------------------------------------
+
+  /** The script that keeps the public address as declared. It is the one
+   * place that talks to the sign-in gate, so sign-in is read and changed
+   * through it. */
+  private async expose(args: string[], stdin?: string) {
+    // Resolved here, not at load: the edge imports this module and never
+    // calls this, and import.meta.dir is the laptop's.
+    const { join } = await import("node:path");
+    const script = join(import.meta.dir, "..", "scripts", "expose.py");
+    return this.run(["python3", script, ...args], { stdin, timeoutMs: 120_000 });
+  }
+
+  /** Which sign-in methods are on, and what Google has to be told to
+   * let this gate use it. */
+  async signin() {
+    const r = await this.expose(["--status"]);
+    let status: { google?: unknown; pin?: unknown; team?: unknown } | null = null;
+    try {
+      status = JSON.parse(r.stdout.trim().split("\n").pop() ?? "");
+    } catch {
+      status = null;
+    }
+    if (r.code !== 0 || !status || typeof status.team !== "string" || !/^[a-z0-9.-]+$/.test(status.team)) {
+      throw new OpError(502, "could not read the sign-in settings from Cloudflare");
+    }
+    return {
+      google: status.google === true,
+      pin: status.pin === true,
+      // What goes into the Google client: where sign-ins come from, and
+      // where Google sends them back.
+      origin: `https://${status.team}`,
+      redirect: `https://${status.team}/cdn-cgi/access/callback`,
+    };
+  }
+
+  /** Turn Google sign-in on with an OAuth client the owner made. The two
+   * values go to the script on its standard input and from there to
+   * Cloudflare; they are not kept here, logged, or returned. */
+  async googleSignin(clientId: unknown, clientSecret: unknown) {
+    const id = text(clientId, "client ID", 200);
+    const value = text(clientSecret, "client secret", 200);
+    if (!/^[0-9]+-[0-9a-z]+\.apps\.googleusercontent\.com$/.test(id)) {
+      throw new OpError(400, "client ID: one from Google ends in .apps.googleusercontent.com");
+    }
+    if (!/^[\x21-\x7e]{8,200}$/.test(value)) throw new OpError(400, "client secret: not a client secret");
+    const r = await this.expose(["--google-stdin"], `${id}\n${value}\n`);
+    // What the script prints is never one of the two values, but nothing
+    // is passed on that could hold one.
+    const said = `${r.stdout}\n${r.stderr}`
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((line) => line && !line.includes(value) && !line.includes(id));
+    if (r.code !== 0) {
+      throw new OpError(
+        502,
+        `Google sign-in was not turned on: ${(said.pop() ?? "the setup script failed").slice(0, 300)}`,
+      );
+    }
+    return { google: true, changed: said.filter((line) => line.startsWith("changed: ")).map((line) => line.slice(9)) };
+  }
+
+  /** Let the edge act by itself while this host is away, or stop it.
+   * Turning it on gives the Worker the repository automation token and
+   * the queue store token, read from the secret store by the setup
+   * script and sent to Cloudflare; turning it off takes them away. It
+   * can only be done here, where the secret store is. */
+  async edgeDirect(on: unknown) {
+    if (typeof on !== "boolean") throw new OpError(400, "on: true or false");
+    const r = await this.expose(["--edge-direct", on ? "on" : "off"]);
+    const said = `${r.stdout}\n${r.stderr}`
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((line) => line !== "");
+    if (r.code !== 0) {
+      throw new OpError(
+        502,
+        `Cloudflare was not ${on ? "given" : "relieved of"} the tokens: ${(said.pop() ?? "the setup script failed").slice(0, 300)}`,
+      );
+    }
+    return { on, changed: said.filter((line) => line.startsWith("changed: ")).map((line) => line.slice(9)) };
   }
 
   // ---- services ----------------------------------------------------------
@@ -572,6 +675,56 @@ export class Ops {
       "merge_method=merge",
     ])) as { merged: boolean; sha: string };
     return { number: n, merged: done.merged, sha: done.sha };
+  }
+
+  // ---- deploys and releases ---------------------------------------------
+
+  /** What GitHub's own record says of the site's deploys and the app's
+   * builds: the last few runs of each on main, newest first. One that
+   * could not be read says so by itself; the other still shows. */
+  async releases() {
+    const runs = async (workflow: string) => {
+      const got = (await this.gh([
+        `repos/${this.cfg.repo}/actions/workflows/${workflow}/runs?branch=main&per_page=5`,
+      ])) as {
+        workflow_runs?: {
+          id: number;
+          head_sha: string;
+          status: string;
+          conclusion: string | null;
+          event: string;
+          created_at: string;
+          html_url: string;
+        }[];
+      } | null;
+      return (got?.workflow_runs ?? []).map((r) => ({
+        id: r.id,
+        commit: r.head_sha.slice(0, 12),
+        // Once it is over, how it ended; before that, where it is.
+        state: r.status === "completed" ? (r.conclusion ?? "unknown") : r.status,
+        byHand: r.event === "workflow_dispatch",
+        at: r.created_at,
+        url: r.html_url,
+      }));
+    };
+    const part = async <T>(p: Promise<T>): Promise<T | { error: string }> =>
+      p.catch((e: Error) => ({ error: e.message }));
+    const [site, app] = await Promise.all([part(runs(DEPLOYS.site)), part(runs(DEPLOYS.app))]);
+    return { site, app };
+  }
+
+  /** Start the site's deploy, or the app's build, again from main: the
+   * same workflow a merge starts. `scratch` asks the site's deploy to
+   * first stand a throwaway copy up from nothing and remove it. */
+  async deploy(what: unknown, scratch: unknown) {
+    if (what !== "site" && what !== "app") throw new OpError(400, "what: site or app");
+    const fromNothing = what === "site" && scratch === true;
+    await this.gh(["-X", "POST", `repos/${this.cfg.repo}/actions/workflows/${DEPLOYS[what]}/dispatches`], {
+      ref: "main",
+      // GitHub takes a workflow's inputs as text.
+      ...(fromNothing ? { inputs: { scratch: "true" } } : {}),
+    });
+    return { started: what, scratch: fromNothing };
   }
 
   // ---- one screen --------------------------------------------------------

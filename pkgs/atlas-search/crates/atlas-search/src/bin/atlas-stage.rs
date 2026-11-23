@@ -13,9 +13,13 @@
 //!   in a lifecycle state (what the aggregator's poll reads).
 //! * `atlas-stage ingest --db <path> --unit <id> --repo <r>
 //!   --path <p> --file <f> --commit <sha> [--kind config]
-//!   [--language yaml] [--sensitivity internal]` — stage one
+//!   [--language yaml] [--sensitivity internal]
+//!   [--segments <segments.json>]` — stage one
 //!   code/config artifact as an embedding entry (#1518): one
 //!   `items` row plus its `chunks_raw` in the unit's staging DB.
+//!   With `--segments`, the artifact is staged classified (#12628):
+//!   boundary-safe chunks from the declared classification segments,
+//!   with one persisted classification record per chunk.
 //! * `atlas-stage items --db <path> [--unit <id>]` — list the
 //!   items staged in a unit's DB, with chunk counts.
 //!
@@ -106,6 +110,15 @@ enum Command {
         /// Physical sensitivity level (public|internal|secret; default internal).
         #[arg(long, default_value = "internal")]
         sensitivity: String,
+        /// Optional JSON file declaring the artifact's source-native
+        /// classification segments (#12628): an array of
+        /// {"start": <byte>, "end": <byte>, "sensitivity":
+        /// shareable|personal|local-only|secret-bearing,
+        /// "certain": <bool, default true>}. When given, the
+        /// artifact is staged classified: boundary-safe chunks plus
+        /// one persisted classification record per chunk.
+        #[arg(long)]
+        segments: Option<PathBuf>,
     },
     /// List the items staged in a unit's staging DB.
     Items {
@@ -175,6 +188,62 @@ fn parse_state(s: &str) -> Result<UnitState, String> {
     UnitState::parse(s).ok_or_else(|| format!("unknown state {s:?} (want open|closing|merged)"))
 }
 
+/// Load the declared classification segments for `ingest
+/// --segments`: a JSON array of {"start", "end", "sensitivity",
+/// "certain"?} objects over the artifact's byte offsets. Parsed
+/// strictly — a missing or mistyped field, or an unknown sensitivity
+/// name, is a usage error, never a silent default.
+fn load_segments(
+    path: &PathBuf,
+) -> Result<Vec<atlas_core::boundary::ClassificationSegment>, String> {
+    let raw = std::fs::read_to_string(path)
+        .map_err(|e| format!("reading segments {}: {e}", path.display()))?;
+    let value: serde_json::Value = serde_json::from_str(&raw)
+        .map_err(|e| format!("parsing segments {}: {e}", path.display()))?;
+    let array = value
+        .as_array()
+        .ok_or("segments file must be a JSON array of segment objects")?;
+    let mut out = Vec::with_capacity(array.len());
+    for (i, entry) in array.iter().enumerate() {
+        let field = |name: &str| {
+            entry
+                .get(name)
+                .ok_or_else(|| format!("segments[{i}]: missing field {name:?}"))
+        };
+        let start = field("start")?
+            .as_u64()
+            .ok_or_else(|| format!("segments[{i}]: \"start\" must be an unsigned integer"))?
+            as usize;
+        let end = field("end")?
+            .as_u64()
+            .ok_or_else(|| format!("segments[{i}]: \"end\" must be an unsigned integer"))?
+            as usize;
+        let sensitivity_name = field("sensitivity")?
+            .as_str()
+            .ok_or_else(|| format!("segments[{i}]: \"sensitivity\" must be a string"))?;
+        let sensitivity = atlas_core::filters::Sensitivity::from_name(sensitivity_name)
+            .ok_or_else(|| {
+                format!(
+                    "segments[{i}]: unknown sensitivity {sensitivity_name:?} \
+                     (want shareable|personal|local-only|secret-bearing)"
+                )
+            })?;
+        let certain = match entry.get("certain") {
+            None => true,
+            Some(v) => v
+                .as_bool()
+                .ok_or_else(|| format!("segments[{i}]: \"certain\" must be a boolean"))?,
+        };
+        out.push(atlas_core::boundary::ClassificationSegment {
+            start,
+            end,
+            sensitivity,
+            certain,
+        });
+    }
+    Ok(out)
+}
+
 fn run(cli: Cli) -> Result<(), String> {
     match cli.command {
         Command::Provision {
@@ -212,6 +281,7 @@ fn run(cli: Cli) -> Result<(), String> {
             kind,
             language,
             sensitivity,
+            segments,
         } => {
             let sensitivity = parse_tier(&sensitivity)?;
             let text = std::fs::read_to_string(&file)
@@ -233,8 +303,21 @@ fn run(cli: Cli) -> Result<(), String> {
                 sensitivity,
                 text,
             };
-            let item_id = atlas_core::stage::stage_artifact_in_db(&db, &unit, &entry, &now_utc())
-                .map_err(|e| e.to_string())?;
+            let item_id = match &segments {
+                Some(segments_path) => {
+                    let declared = load_segments(segments_path)?;
+                    atlas_core::stage::stage_classified_artifact_in_db(
+                        &db,
+                        &unit,
+                        &entry,
+                        &declared,
+                        &now_utc(),
+                    )
+                    .map_err(|e| e.to_string())?
+                }
+                None => atlas_core::stage::stage_artifact_in_db(&db, &unit, &entry, &now_utc())
+                    .map_err(|e| e.to_string())?,
+            };
             println!(
                 "{{\"item_id\":{item_id},\"unit\":{},\"source\":{}}}",
                 json_str(&unit),

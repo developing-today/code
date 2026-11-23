@@ -10,6 +10,21 @@ import type { Store } from "./store.ts";
 
 const enc = new TextEncoder();
 const b64u = (bytes: Uint8Array | ArrayBuffer) => Buffer.from(bytes as ArrayBuffer).toString("base64url");
+
+/** The contact a push service is given with every message (the "sub" a
+ * sender must name): the project's page. It is not a person's address:
+ * it goes to Google, Mozilla or Apple each time, and nothing about
+ * delivery depends on whose it is. */
+export const contact = (repo: string): string => `https://github.com/${repo}`;
+
+/** A short mark for a push address. The app compares its own with the
+ * marks of the addresses held here, and so can tell that this sender has
+ * lost it, without any address being sent back. The app computes the
+ * same (public/app.js, endpointMark). */
+export async function endpointMark(endpoint: string): Promise<string> {
+  const hash = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(endpoint));
+  return b64u(hash).slice(0, 16);
+}
 const unb64u = (text: string) => new Uint8Array(Buffer.from(text, "base64url"));
 const concat = (...parts: Uint8Array[]) => {
   const out = new Uint8Array(parts.reduce((n, p) => n + p.length, 0));
@@ -22,9 +37,16 @@ const concat = (...parts: Uint8Array[]) => {
 };
 
 /** Push services a subscription may name. This server posts to the
- * endpoint a browser gives it, so the endpoint has to be one of these. */
+ * endpoint a browser gives it, so the endpoint has to be one of these.
+ *
+ * Chrome names one of two Google hosts: a released Chrome the first, and
+ * a Chrome that is not on the stable channel (Beta, Dev, Canary, a build
+ * of one's own) the second. Both are in Chromium's
+ * components/push_messaging/push_messaging_constants.cc. Leaving the
+ * second out refuses every such browser when it turns notifications on. */
 const PUSH_HOSTS = [
   /^fcm\.googleapis\.com$/,
+  /^jmt17\.google\.com$/,
   /^([a-z0-9-]+\.)*push\.services\.mozilla\.com$/,
   /^([a-z0-9-]+\.)*notify\.windows\.com$/,
   /^([a-z0-9-]+\.)*push\.apple\.com$/,
@@ -41,10 +63,26 @@ export interface Subscription {
 export const CLASSES = ["replies", "needs", "questions", "trouble"] as const;
 export type Class = (typeof CLASSES)[number];
 
+/** What came of the last notification that was sent: how many devices
+ * the push services took it for, and what a service that refused said.
+ * It is how the owner can tell that notifications arrive without
+ * waiting for one. */
+export interface Delivery {
+  at: string;
+  class: Class | "test";
+  sent: number;
+  gone: number;
+  failed: number;
+  /** The push service's host and its HTTP status (0: it did not answer),
+   * for each device it was not taken for. Never the device's address. */
+  refused: { host: string; status: number }[];
+}
+
 interface PushFile {
   vapid: { publicKey: string; privateJwk: JsonWebKey } | null;
   subscriptions: Subscription[];
   off: Class[];
+  last?: Delivery | null;
 }
 
 export function validSubscription(value: unknown): Subscription | null {
@@ -148,7 +186,9 @@ export class Push {
     return {
       key: s.vapid?.publicKey ?? "",
       devices: s.subscriptions.length,
+      known: await Promise.all(s.subscriptions.map((x) => endpointMark(x.endpoint))),
       classes: Object.fromEntries(CLASSES.map((c) => [c, !s.off.includes(c)])),
+      last: s.last ?? null,
     };
   }
 
@@ -215,7 +255,10 @@ export class Push {
     let sent = 0;
     let failed = 0;
     const gone: string[] = [];
+    const refused: Delivery["refused"] = [];
+    const attempted = s.subscriptions.length;
     for (const sub of s.subscriptions) {
+      const host = new URL(sub.endpoint).hostname;
       try {
         const res = await this.post(sub.endpoint, {
           method: "POST",
@@ -231,13 +274,25 @@ export class Push {
         });
         if (res.status === 404 || res.status === 410) gone.push(sub.endpoint);
         else if (res.status >= 200 && res.status < 300) sent++;
-        else failed++;
+        else {
+          failed++;
+          refused.push({ host, status: res.status });
+        }
       } catch {
         failed++;
+        refused.push({ host, status: 0 });
       }
     }
-    if (gone.length) {
-      s.subscriptions = s.subscriptions.filter((x) => !gone.includes(x.endpoint));
+    if (gone.length) s.subscriptions = s.subscriptions.filter((x) => !gone.includes(x.endpoint));
+    if (attempted > 0) {
+      s.last = {
+        at: new Date(this.now()).toISOString(),
+        class: cls,
+        sent,
+        gone: gone.length,
+        failed,
+        refused: refused.slice(0, 5),
+      };
       await this.save();
     }
     return { sent, gone: gone.length, failed };

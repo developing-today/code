@@ -20,7 +20,14 @@
 import type { Issuer } from "./config.ts";
 
 /** What the edge needs to know to recognise the owner. It comes from the
- * host in every sync, so there is one place it is set. */
+ * host in every sync, so there is one place it is set. The last four
+ * fields are what the edge needs to read and write by itself while the
+ * laptop is away: where the queue store is and which token opens it, how
+ * the owner's prompts are marked, and which repositories hold his
+ * needs-me items. They are absent from configs stored or reported
+ * before direct mode existed: those still validate, with the fields
+ * empty, and direct capabilities stay off until a config carries them
+ * (see Edge.directConfigReady). */
 export interface EdgeConfig {
   owners: string[];
   certNames: string[];
@@ -31,6 +38,10 @@ export interface EdgeConfig {
   androidFingerprints: string[];
   /** Whether the host has a signed Android build to hand out. */
   androidApp: boolean;
+  queueDbUrl: string;
+  queueTokenName: string;
+  promptLabel: string;
+  needsRepos: string[];
 }
 
 export interface SyncSection {
@@ -46,16 +57,33 @@ export interface SyncRequest {
   v: 1;
   /** Milliseconds, later than every sync before it. */
   at: number;
+  /** The signed Android build the host has, if it has one: its
+   * fingerprint, size and date, and the build itself (base64) only in a
+   * report that follows the edge asking for it. The edge keeps a copy,
+   * so the app can be downloaded while the host is away. */
+  apk?: ApkReport;
+  /** The commit the host's console is running. The edge says it in its
+   * health answer, so whether a merge has reached the host can be seen
+   * from anywhere, without reaching the host. */
+  version?: string;
   config: EdgeConfig;
   /** Sections that changed since the edge last had them. */
   sections: SyncSection[];
-  /** Every section the host has: its fingerprint and when the host last
-   * read it. A section that has not changed is not sent again, and this
-   * is how the edge knows its copy is still current as of that read, and
-   * how it asks for one it has lost. */
-  have: Record<string, { hash: string; at: number }>;
+  /** Every section the host has: its fingerprint, when the host last
+   * read it, and why its latest read failed if it did. A section that
+   * has not changed is not sent again, and this is how the edge knows
+   * its copy is still current as of that read, shows the same "could
+   * not read" notice the host would, and asks for a copy it has lost. */
+  have: Record<string, { hash: string; at: number; error?: string | null }>;
   /** What became of the held actions the host was given. */
   acks: { id: string; ok: boolean; error?: string }[];
+  /** Linked-phone hashes and metadata only; never phone tokens. */
+  phones: PhoneLinks;
+}
+
+export interface PhoneLinks {
+  devices: { id: string; name: string; hash: string; createdAt: string; seenAt: string | null }[];
+  removed: { hash: string; at: string }[];
 }
 
 /** An action the owner took while the host could not be reached. */
@@ -68,6 +96,69 @@ export interface Held {
   at: string;
 }
 
+export interface ApkReport {
+  sha256: string;
+  size: number;
+  /** When the build was put in place on the host, in milliseconds. */
+  at: number;
+  data?: string;
+}
+
+/** The largest Android build that is carried in a report. */
+export const APK_LIMIT = 5 * 1024 * 1024;
+/** What the host keeps a report under, with room to spare below what
+ * the edge refuses as too large (8 MiB). A report that would carry the
+ * build past this carries the build alone, and the sections follow in
+ * the next one. */
+export const REPORT_ROOM = 7.5 * 1024 * 1024;
+
+/** A build's description as a report may give it, or null. */
+export function apkReport(value: unknown): ApkReport | null {
+  const v = value as Record<string, unknown> | null;
+  if (!v || typeof v !== "object") return null;
+  if (typeof v.sha256 !== "string" || !/^[0-9a-f]{64}$/.test(v.sha256)) return null;
+  if (typeof v.size !== "number" || !Number.isSafeInteger(v.size) || v.size <= 0 || v.size > APK_LIMIT) return null;
+  if (typeof v.at !== "number" || !Number.isFinite(v.at)) return null;
+  return {
+    sha256: v.sha256,
+    size: v.size,
+    at: v.at,
+    ...(typeof v.data === "string" ? { data: v.data } : {}),
+  };
+}
+
+/** A released build of the Android app, as the version.json beside it
+ * in the GitHub release describes it (android/release.sh writes it). */
+export interface AndroidRelease {
+  name: string;
+  code: number;
+  sha256: string;
+  size: number;
+  /** When it was released, as an ISO time. */
+  built: string;
+}
+
+/** The largest released build that is passed on. */
+export const RELEASE_LIMIT = 32 * 1024 * 1024;
+
+/** A release's description as GitHub may serve it, or null. */
+export function androidRelease(value: unknown): AndroidRelease | null {
+  const v = value as Record<string, unknown> | null;
+  if (!v || typeof v !== "object") return null;
+  if (typeof v.name !== "string" || !/^[0-9A-Za-z][0-9A-Za-z.+-]{0,63}$/.test(v.name)) return null;
+  if (typeof v.code !== "number" || !Number.isSafeInteger(v.code) || v.code <= 0) return null;
+  if (typeof v.sha256 !== "string" || !/^[0-9a-f]{64}$/.test(v.sha256)) return null;
+  if (typeof v.size !== "number" || !Number.isSafeInteger(v.size) || v.size <= 0 || v.size > RELEASE_LIMIT) return null;
+  if (typeof v.built !== "string" || Number.isNaN(Date.parse(v.built))) return null;
+  return {
+    name: v.name,
+    code: v.code,
+    sha256: v.sha256,
+    size: v.size,
+    built: new Date(Date.parse(v.built)).toISOString(),
+  };
+}
+
 export interface SyncResponse {
   ok: true;
   /** Someone has the app open: keep every section fresh. */
@@ -78,11 +169,15 @@ export interface SyncResponse {
   /** Sections the edge lacks and wants sent whole. */
   want: string[];
   commands: Held[];
+  /** The edge's merged phone-link state, containing hashes only. */
+  phones: PhoneLinks;
 }
 
 /** Actions that may be done late, when the host is back. The rest act on
  * something that may have changed by then (a merge, a unit, a task's
- * state), so they are refused while the host cannot be reached. */
+ * state), so they are refused while the host cannot be reached.
+ * `prompt.enqueue` is the second half of a prompt the edge filed itself:
+ * the issue already exists, so only the queue task is left to do. */
 export const HOLDABLE = new Set([
   "ask.send",
   "ask.reply",
@@ -96,6 +191,7 @@ export const HOLDABLE = new Set([
   "issue.rank",
   "task.move",
   "message.send",
+  "prompt.enqueue",
 ]);
 /** A held action older than this is dropped, and said to have been. */
 export const HELD_FOR_MS = 24 * 60 * 60_000;
@@ -188,6 +284,13 @@ export function edgeConfig(value: unknown): EdgeConfig | null {
     });
   }
   if (typeof v.repo !== "string" || typeof v.queue !== "string" || typeof v.androidPackage !== "string") return null;
+  // The direct fields: present ones must be well-formed, absent ones
+  // are a config from before direct mode, which still validates.
+  if (v.queueDbUrl !== undefined && (typeof v.queueDbUrl !== "string" || !/^https:\/\//.test(v.queueDbUrl)))
+    return null;
+  if (v.queueTokenName !== undefined && typeof v.queueTokenName !== "string") return null;
+  if (v.promptLabel !== undefined && typeof v.promptLabel !== "string") return null;
+  if (v.needsRepos !== undefined && !strings(v.needsRepos)) return null;
   return {
     owners: v.owners.map((o) => o.toLowerCase()),
     certNames: v.certNames,
@@ -197,5 +300,9 @@ export function edgeConfig(value: unknown): EdgeConfig | null {
     androidPackage: v.androidPackage,
     androidFingerprints: v.androidFingerprints,
     androidApp: v.androidApp === true,
+    queueDbUrl: typeof v.queueDbUrl === "string" ? v.queueDbUrl : "",
+    queueTokenName: typeof v.queueTokenName === "string" ? v.queueTokenName : "",
+    promptLabel: typeof v.promptLabel === "string" ? v.promptLabel : "",
+    needsRepos: strings(v.needsRepos) ? v.needsRepos : [],
   };
 }

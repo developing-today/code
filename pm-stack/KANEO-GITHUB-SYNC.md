@@ -88,13 +88,17 @@ in v2.47.0 deleting the rule falls back to
 
 ### Safety net
 
-The closure watchdog (#10105, script in
-`~/workspace/closure-watchdog/` on the Muse sandbox, cron every
-15 minutes) polls issue-close events in the app-covered repos and
-auto-reopens any automation close where the issue still has open
-sub-issues or the closing PR carried no closing keyword. It stays
-useful even with the rule fixed: it catches regressions of this rule
-and task moves to Done made inside Kaneo itself.
+The closure watchdog (#10105, `pm-stack/closure-watchdog.py` in
+this repo, run every 15 minutes by a Muse sandbox cron job) polls
+issue-close events in the app-covered repos and auto-reopens any
+automation close where the issue still has open sub-issues or the
+closing PR carried no closing keyword. It stays useful even with
+the rule fixed: it catches regressions of this rule and task moves
+to Done made inside Kaneo itself. The original 2026-11-14 script
+lived only in the Muse sandbox and was lost in the 2026-11-21
+sandbox recovery; the repo-owned copy (with tests in
+`pm-stack/tests/test_closure_watchdog.py`) is the durable
+replacement — see #10105.
 
 ## Enforcement — the sync guard (2026-11-14, #10137)
 

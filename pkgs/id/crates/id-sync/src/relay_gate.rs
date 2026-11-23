@@ -37,9 +37,10 @@
 //! post-hoc ingest checks would propagate unsigned or unauthorized
 //! traffic before validation (#2035). The multi-node bridge test is
 //! in this module's tests (two gates chained origin -> bridge ->
-//! leaf, plus the unauthorized-at-bridge stop). The remaining
-//! follow-on slice is the live call-site wiring: feeding gossip/
-//! ingest arrivals through this gate and backing
+//! leaf, plus the unauthorized-at-bridge stop). The live call-site
+//! wiring has since landed in [`crate::relay_ingest`]: arrivals on
+//! the chained-relay ALPN run through this gate before delivery or
+//! forwarding. The remaining follow-on is backing
 //! [`MembershipFrontier`] with the signed-graph membership state.
 //!
 //! # Membership frontier
