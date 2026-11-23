@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { enforcePlacementGuard, type PlacementCommand } from "../src/placement-guard.ts";
 
 describe("pm-dispatch placement guard (issue #2732; oracle = placement-record argv and JSON contract)", () => {
-  test("OpenCode Go runs placement-record before seating", () => {
+  test("bare OpenCode Go resolves and pins the active account before seating", () => {
     const calls: PlacementCommand[] = [];
     const result = enforcePlacementGuard(
       {
@@ -11,14 +11,22 @@ describe("pm-dispatch placement guard (issue #2732; oracle = placement-record ar
         policyFile: "/policy/placement-policy.yaml",
         quotaCurrentFile: "/state/quota-current.json",
       },
-      { taskId: 14492, repo: "developing-today/code", model: { providerID: "opencode-go", id: "gpt-5.6-luna" } },
+      {
+        taskId: 14492,
+        repo: "developing-today/code",
+        model: { providerID: "opencode-go", id: "gpt-5.6-luna" },
+        activeGoAccountLabel: "popesdrew",
+      },
       (command) => {
         calls.push(command);
         return { status: 0, stdout: "{\"option\":\"opencode-session\",\"rule\":\"R4\"}\n", stderr: "" };
       },
     );
 
-    expect(result).toBe("opencode-go");
+    expect(result).toEqual({
+      poolId: "opencode-go.popesdrew",
+      sessionModel: { providerID: "opencode-go.popesdrew", id: "gpt-5.6-luna" },
+    });
     expect(calls).toHaveLength(1);
     expect(calls[0]).toEqual({
       args: [
@@ -29,7 +37,7 @@ describe("pm-dispatch placement guard (issue #2732; oracle = placement-record ar
         "--quota-current",
         "/state/quota-current.json",
         "--pool",
-        "opencode-go",
+        "opencode-go.popesdrew",
       ],
       input: JSON.stringify({
         task: "queue task 14492 / developing-today/code",
@@ -40,7 +48,7 @@ describe("pm-dispatch placement guard (issue #2732; oracle = placement-record ar
 
   test("monthly guard refusal is logged verbatim and prevents seating (oracle = placement-record stderr)", () => {
     const refusal =
-      'placement-record: monthly-guard refusal: option "opencode-session" on pool "opencode-go" refused (monthly 98.4% at/above 97% threshold [source: monthly-guard])';
+      'placement-record: monthly-guard refusal: option "opencode-session" on pool "opencode-go.popesdrew" refused (monthly 98.4% at/above 97% threshold [source: monthly-guard])';
     const errors: string[] = [];
     expect(() =>
       enforcePlacementGuard(
@@ -51,7 +59,12 @@ describe("pm-dispatch placement guard (issue #2732; oracle = placement-record ar
           quotaCurrentFile: "/state/quota-current.json",
           logError: (line) => errors.push(line),
         },
-        { taskId: 8, repo: "developing-today/code", model: { providerID: "opencode-go", id: "gpt-5.6-luna" } },
+        {
+          taskId: 8,
+          repo: "developing-today/code",
+          model: { providerID: "opencode-go", id: "gpt-5.6-luna" },
+          activeGoAccountLabel: "popesdrew",
+        },
         () => ({ status: 1, stdout: "", stderr: `${refusal}\n` }),
       ),
     ).toThrow(refusal);
@@ -73,7 +86,10 @@ describe("pm-dispatch placement guard (issue #2732; oracle = placement-record ar
         return { status: 0, stdout: "{\"option\":\"opencode-session\",\"rule\":\"R4\"}", stderr: "" };
       },
     );
-    expect(result).toBe("cline-pass");
+    expect(result).toEqual({
+      poolId: "cline-pass",
+      sessionModel: { providerID: "cline-pass", id: "claude-sonnet" },
+    });
     expect(calls[0]?.args.at(-1)).toBe("cline-pass");
   });
 
@@ -100,6 +116,26 @@ describe("pm-dispatch placement guard (issue #2732; oracle = placement-record ar
         command,
       ),
     ).toBeNull();
+    expect(calls).toBe(0);
+  });
+
+  test("bare Go fails closed when its active console account cannot be mapped", () => {
+    let calls = 0;
+    expect(() =>
+      enforcePlacementGuard(
+        {
+          enabled: true,
+          executable: "placement-record",
+          policyFile: "/policy/placement-policy.yaml",
+          quotaCurrentFile: "/state/quota-current.json",
+        },
+        { taskId: 3, repo: "developing-today/code", model: { providerID: "opencode-go", id: "gpt-5.6-luna" } },
+        () => {
+          calls += 1;
+          return { status: 0, stdout: "{}", stderr: "" };
+        },
+      ),
+    ).toThrow("cannot identify the active OpenCode Go account");
     expect(calls).toBe(0);
   });
 });

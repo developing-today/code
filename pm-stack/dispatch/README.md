@@ -67,14 +67,19 @@ Repo <repo>` so the session knows its tracking ids.
    `work/assigned`.
 
 Before step 3, the packaged service runs `placement-record` for explicit
-`opencode-go` and `cline-pass` model hints. It reads the policy shipped with
-the package and the quota gatherer's `QUOTA_CURRENT_PATH` snapshot (default
+OpenCode Go account routes and `cline-pass` model hints. For the bare
+`opencode-go` provider it reads the active OpenCode Console account, checks
+that account's quota row, and pins the session to that explicit account
+provider so a concurrent account switch cannot change the result. It reads
+the policy shipped with the package and the quota gatherer's
+`QUOTA_CURRENT_PATH` snapshot (default
 `~/.local/state/pm-aggregator/quota-current.json`). A refusal is written to
 the dispatcher journal verbatim and fails the pre-commit launch, so the
 existing failure path cancels the queue task and records the reason on its
 issue before any worktree or OpenCode session is created. Requests with no
-model hint or a provider outside those two mappings are not covered by this
-slice; the remaining model-to-pool map is still needed for full rollout.
+model hint or a provider outside the account-specific Go/Zen and ClinePass
+mappings are not covered by this slice; the remaining model-to-pool map is
+still needed for full rollout.
 
 Stage/failure semantics (design #2668): step 4's claim PATCH is the
 launch's commit point. Steps before it are pre-commit — a failure

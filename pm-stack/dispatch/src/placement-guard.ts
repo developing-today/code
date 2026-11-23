@@ -25,23 +25,56 @@ export interface PlacementRequest {
   taskId: number;
   repo: string;
   model: ModelRef | null;
+  activeGoAccountLabel?: string;
 }
 
+export interface PlacementGuardResult {
+  poolId: string;
+  sessionModel: ModelRef;
+}
+
+const GO_ACCOUNT_SUFFIXES = new Set(["drewrypope", "popesdrew", "developing-today-0", "0x111dev"]);
 const POOL_BY_PROVIDER: Readonly<Record<string, string>> = {
-  "opencode-go": "opencode-go",
+  "opencode-go.drewrypope": "opencode-go.drewrypope",
+  "opencode-go.popesdrew": "opencode-go.popesdrew",
+  "opencode-go.developing-today-0": "opencode-go.developing-today-0",
+  "opencode-go.0x111dev": "opencode-go.0x111dev",
+  "opencode.drewrypope": "opencode-go.drewrypope",
+  "opencode.popesdrew": "opencode-go.popesdrew",
+  "opencode.developing-today-0": "opencode-go.developing-today-0",
+  "opencode.0x111dev": "opencode-go.0x111dev",
   "cline-pass": "cline-pass",
 };
 
-/** Resolve the serviceId used by quota-current for this explicit model. */
-export function poolForModel(model: ModelRef | null): string | null {
+/** Resolve an explicit model to its quota serviceId and session provider. */
+export function placementForModel(
+  model: ModelRef | null,
+  activeGoAccountLabel?: string,
+): PlacementGuardResult | null {
   if (!model) return null;
-  if (Object.hasOwn(POOL_BY_PROVIDER, model.providerID)) return POOL_BY_PROVIDER[model.providerID]!;
+  if (model.providerID === "opencode-go" || model.providerID === "opencode") {
+    if (!activeGoAccountLabel || !GO_ACCOUNT_SUFFIXES.has(activeGoAccountLabel)) {
+      throw new Error("placement-record: cannot identify the active OpenCode Go account");
+    }
+    const poolId = `opencode-go.${activeGoAccountLabel}`;
+    const providerPrefix = model.providerID === "opencode" ? "opencode" : "opencode-go";
+    return {
+      poolId,
+      // Bind the session to the account just checked so a concurrent
+      // Console-account switch cannot change which quota the session uses.
+      sessionModel: { ...model, providerID: `${providerPrefix}.${activeGoAccountLabel}` },
+    };
+  }
+  if (Object.hasOwn(POOL_BY_PROVIDER, model.providerID)) {
+    return { poolId: POOL_BY_PROVIDER[model.providerID]!, sessionModel: model };
+  }
   return null;
 }
 
 /**
  * Run placement-record before this dispatch creates an OpenCode session.
- * This first wiring slice covers explicit OpenCode Go and ClinePass hints;
+ * This first wiring slice covers explicit Go/Zen account routes, a bare Go
+ * route resolved to its active account, and ClinePass hints;
  * unknown/default routes remain for the follow-up mapping slice.
  */
 export function enforcePlacementGuard(
@@ -49,10 +82,10 @@ export function enforcePlacementGuard(
   request: PlacementRequest,
   run: (command: PlacementCommand) => PlacementCommandResult = (command) =>
     runPlacementCommand(config.executable, command),
-): string | null {
+): PlacementGuardResult | null {
   if (!config.enabled) return null;
-  const pool = poolForModel(request.model);
-  if (!pool) return null;
+  const placement = placementForModel(request.model, request.activeGoAccountLabel);
+  if (!placement) return null;
   if (!config.policyFile.trim()) throw new Error("placement-record: policy file is not configured");
   if (!config.quotaCurrentFile.trim()) throw new Error("placement-record: quota-current file is not configured");
 
@@ -65,7 +98,7 @@ export function enforcePlacementGuard(
       "--quota-current",
       config.quotaCurrentFile,
       "--pool",
-      pool,
+      placement.poolId,
     ],
     input: JSON.stringify({
       task: `queue task ${request.taskId} / ${request.repo}`,
@@ -98,7 +131,7 @@ export function enforcePlacementGuard(
   ) {
     throw new Error("placement-record: expected the default R4 opencode-session record");
   }
-  return pool;
+  return placement;
 }
 
 function runPlacementCommand(executable: string, command: PlacementCommand): PlacementCommandResult {

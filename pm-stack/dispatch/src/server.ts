@@ -273,16 +273,21 @@ async function launchSession(
   // session. A refusal is a pre-commit launch failure: the caller's
   // existing compensation path cancels the enqueued task and records the
   // reason on its tracking issue.
-  const guardedPool = enforcePlacementGuard(
+  const needsActiveGoAccount =
+    cfg.placementGuardEnabled && (req.model?.providerID === "opencode-go" || req.model?.providerID === "opencode");
+  const activeGoAccountLabel = needsActiveGoAccount
+    ? await opencode.activeIntegrationCredentialLabel("opencode", directory)
+    : undefined;
+  const placement = enforcePlacementGuard(
     {
       enabled: cfg.placementGuardEnabled,
       executable: cfg.placementRecordExecutable,
       policyFile: cfg.placementPolicyFile,
       quotaCurrentFile: cfg.quotaCurrentFile,
     },
-    { taskId: task.id, repo: req.repo, model: req.model },
+    { taskId: task.id, repo: req.repo, model: req.model, activeGoAccountLabel },
   );
-  if (guardedPool) log.leg("placement");
+  if (placement) log.leg("placement");
 
   // code#12213: never run a dispatched session in the primary clone.
   // A worktree failure throws here, before any session exists, so the
@@ -323,7 +328,7 @@ async function launchSession(
   const session = await opencode.createSession({
     directory: sessionDirectory,
     title: req.title ?? titleFromPrompt(req.prompt),
-    model: req.model,
+    model: placement?.sessionModel ?? req.model,
   });
   if (createdWorktree) {
     try {
