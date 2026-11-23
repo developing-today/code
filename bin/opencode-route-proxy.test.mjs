@@ -81,6 +81,51 @@ const makeLeaf = (name, expectedKey) => {
           }),
         );
       }
+      if (leaf.mode === "rate-http-date") {
+        // Retry-After as an HTTP-date, ~1h out (#13693 RC-1).
+        res.writeHead(429, {
+          "content-type": "application/json",
+          "retry-after": new Date(Date.now() + 3600 * 1000).toUTCString(),
+        });
+        return res.end(JSON.stringify({ error: { message: "quota" } }));
+      }
+      if (leaf.mode === "rate-prose") {
+        // No header; the body names only a duration in prose (#13693).
+        res.writeHead(429, { "content-type": "application/json" });
+        return res.end(
+          JSON.stringify({
+            error: {
+              message: "Quota exceeded. Please try again in 20 minutes.",
+            },
+          }),
+        );
+      }
+      if (leaf.mode === "rate-json-retry-after") {
+        // No header; the body carries {"retry_after": 30} (#13693).
+        res.writeHead(429, { "content-type": "application/json" });
+        return res.end(
+          JSON.stringify({ error: { message: "quota", retry_after: 30 } }),
+        );
+      }
+      if (leaf.mode === "rate-json-retry-delay") {
+        // No header; the body carries {"retryDelay": "30s"}, the
+        // Google-style pure-duration string (#13693).
+        res.writeHead(429, { "content-type": "application/json" });
+        return res.end(
+          JSON.stringify({ error: { message: "quota", retryDelay: "30s" } }),
+        );
+      }
+      if (leaf.mode === "rate-x-reset") {
+        // No Retry-After; an x-ratelimit-reset epoch-seconds header
+        // ~1h out carries the reset (#13693 RC-1).
+        res.writeHead(429, {
+          "content-type": "application/json",
+          "x-ratelimit-reset": String(
+            Math.floor((Date.now() + 3600 * 1000) / 1000),
+          ),
+        });
+        return res.end(JSON.stringify({ error: { message: "quota" } }));
+      }
       if (leaf.mode === "sse-rate") {
         res.writeHead(200, {
           "content-type": "text/event-stream",
@@ -1381,6 +1426,44 @@ const seedQuotaFailure = (dbPath, { provider, model, atMs, retryAfterMs, endedMs
   db.close();
 };
 
+// Seed one quota-class failure carrying NO parseable reset (a
+// reset-less 429 shape, or a 402 paymentRequired record), as the
+// inferred-wall fixtures need (#13693). Written straight into the
+// fixture ledger the proxy reads.
+const seedQuotaClassFailure = (
+  dbPath,
+  { provider, model, atMs, endedMs, quota, status = 429 },
+) => {
+  const db = new DatabaseSync(dbPath);
+  db.prepare(
+    `INSERT INTO route_attempt (
+       time_started, time_ended, session_id, assistant_message_id,
+       route_id, provider_id, model_id, variant, outcome,
+       error_tag, error_code, error_status, error_message, retryable,
+       output_started, failed_over_to, quota
+     ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+  ).run(
+    atMs,
+    endedMs ?? atMs + 50,
+    null,
+    null,
+    "seed",
+    provider,
+    model,
+    null,
+    "failure",
+    "RateLimit",
+    null,
+    status,
+    "leaf HTTP 429: quota",
+    1,
+    0,
+    null,
+    JSON.stringify(quota),
+  );
+  db.close();
+};
+
 // Seed one authentication failure for a (provider, model) pair, as if
 // the leaf had answered 403 (or 401) at `atMs`. Written straight into
 // the fixture ledger the proxy reads.
@@ -1755,6 +1838,320 @@ test("when every candidate is auth-benched, the route still walks in order (#122
       p.log().includes("auth bench gate bypassed"),
       `all-benched fallback should be explicit: ${p.log()}`,
     );
+  } finally {
+    await p.cleanup();
+  }
+});
+
+// ------------------------------------------------------------ #13693 walls
+
+test("429 with an HTTP-date Retry-After gates the pair until that date (#13693)", async () => {
+  // Oracle: #13693 RC-1(a) — an HTTP-date Retry-After is a reset
+  // shape; the pair must gate until that date, not record
+  // retryAfterMs: null and stay walkable.
+  const p = await startProxy();
+  try {
+    p.leafA.mode = "rate-http-date";
+    const first = await p.post({ model: "opencode-route/t-ordered", messages: MSGS });
+    assert.equal(first.status, 200);
+    assert.equal((await first.json()).choices[0].message.content, "LEAF-B");
+    const rows = await waitForAttempts(p, 2);
+    const quota = JSON.parse(rows[0].quota);
+    assert.ok(
+      Number.isFinite(quota.retryAfterMs) &&
+        quota.retryAfterMs > 0 &&
+        quota.retryAfterMs <= 3600_000,
+      `HTTP-date Retry-After not recorded as a positive delta: ${rows[0].quota}`,
+    );
+    const second = await p.post({ model: "opencode-route/t-ordered", messages: MSGS });
+    assert.equal(second.status, 200);
+    assert.equal((await second.json()).choices[0].message.content, "LEAF-B");
+    assert.equal(p.leafA.hits, 1, "the date-gated leaf must not be re-attempted");
+  } finally {
+    await p.cleanup();
+  }
+});
+
+test("429 with duration-prose body gates the pair (#13693)", async () => {
+  // Oracle: #13693 RC-1(a) — "try again in 20 minutes" in the body,
+  // with no header, is a reset shape (receipt + duration).
+  const p = await startProxy();
+  try {
+    p.leafA.mode = "rate-prose";
+    const first = await p.post({ model: "opencode-route/t-ordered", messages: MSGS });
+    assert.equal(first.status, 200);
+    assert.equal((await first.json()).choices[0].message.content, "LEAF-B");
+    const rows = await waitForAttempts(p, 2);
+    const quota = JSON.parse(rows[0].quota);
+    const resetMs = Date.parse(quota.resetsAt ?? quota.resetAt ?? NaN);
+    assert.ok(
+      Number.isFinite(resetMs) && resetMs > Date.now() + 10 * 60_000,
+      `duration prose not recorded as a ~20-minute reset: ${rows[0].quota}`,
+    );
+    const second = await p.post({ model: "opencode-route/t-ordered", messages: MSGS });
+    assert.equal(second.status, 200);
+    assert.equal((await second.json()).choices[0].message.content, "LEAF-B");
+    assert.equal(p.leafA.hits, 1);
+  } finally {
+    await p.cleanup();
+  }
+});
+
+test("429 with {\"retry_after\": 30} JSON gates the pair (#13693)", async () => {
+  // Oracle: #13693 RC-1(a) — a small number under an after key is
+  // seconds-from-receipt, not an epoch (which parsed as NaN before).
+  const p = await startProxy();
+  try {
+    p.leafA.mode = "rate-json-retry-after";
+    const first = await p.post({ model: "opencode-route/t-ordered", messages: MSGS });
+    assert.equal(first.status, 200);
+    assert.equal((await first.json()).choices[0].message.content, "LEAF-B");
+    const rows = await waitForAttempts(p, 2);
+    const quota = JSON.parse(rows[0].quota);
+    const resetMs = Date.parse(quota.resetsAt ?? quota.resetAt ?? NaN);
+    assert.ok(
+      Number.isFinite(resetMs) &&
+        resetMs > Date.now() &&
+        resetMs <= Date.now() + 60_000,
+      `retry_after seconds not recorded as a near reset: ${rows[0].quota}`,
+    );
+    const second = await p.post({ model: "opencode-route/t-ordered", messages: MSGS });
+    assert.equal(second.status, 200);
+    assert.equal((await second.json()).choices[0].message.content, "LEAF-B");
+    assert.equal(p.leafA.hits, 1);
+  } finally {
+    await p.cleanup();
+  }
+});
+
+test("429 with an x-ratelimit-reset header gates the pair (#13693)", async () => {
+  // Oracle: #13693 RC-1(d) — x-ratelimit-reset (epoch seconds here)
+  // is recorded as resetsAtMs in the quota detail and gates.
+  const p = await startProxy();
+  try {
+    p.leafA.mode = "rate-x-reset";
+    const first = await p.post({ model: "opencode-route/t-ordered", messages: MSGS });
+    assert.equal(first.status, 200);
+    assert.equal((await first.json()).choices[0].message.content, "LEAF-B");
+    const rows = await waitForAttempts(p, 2);
+    const quota = JSON.parse(rows[0].quota);
+    assert.ok(
+      Number.isFinite(quota.resetsAtMs) &&
+        quota.resetsAtMs > Date.now() + 30 * 60_000,
+      `x-ratelimit-reset not recorded as resetsAtMs: ${rows[0].quota}`,
+    );
+    const second = await p.post({ model: "opencode-route/t-ordered", messages: MSGS });
+    assert.equal(second.status, 200);
+    assert.equal((await second.json()).choices[0].message.content, "LEAF-B");
+    assert.equal(p.leafA.hits, 1);
+  } finally {
+    await p.cleanup();
+  }
+});
+
+test("a reset-less failure after a reset-carrying one keeps the gate (#13693)", async () => {
+  // Oracle: #13693 RC-2 — the gate judges the pair's current failure
+  // RUN: a later reset-less quota failure must not dissolve the
+  // wall the earlier failure recorded.
+  const p = await startProxy({ nowMs: GATE_NOW });
+  try {
+    seedQuotaFailure(p.dbPath, {
+      provider: "leafA",
+      model: "m-a",
+      atMs: GATE_NOW - 120_000,
+      retryAfterMs: 3_600_000,
+    });
+    seedQuotaClassFailure(p.dbPath, {
+      provider: "leafA",
+      model: "m-a",
+      atMs: GATE_NOW - 60_000,
+      quota: { status: 429 },
+    });
+    const res = await p.post({ model: "opencode-route/t-ordered", messages: MSGS });
+    assert.equal(res.status, 200);
+    assert.equal((await res.json()).choices[0].message.content, "LEAF-B");
+    assert.equal(p.leafA.hits, 0, "the run's recorded reset must still gate");
+    assert.ok(
+      p.log().includes("known-exhausted gate excluded leafA/m-a"),
+      `run gate decision should be in the proxy diagnostics: ${p.log()}`,
+    );
+  } finally {
+    await p.cleanup();
+  }
+});
+
+test("three reset-less quota failures infer a bounded wall (#13693)", async () => {
+  // Oracle: #13693 RC-1(c) — >=3 quota-class failures in the
+  // demotion window with no success since the run began exclude
+  // the pair while a live pair exists, even with no stated reset.
+  const p = await startProxy({ nowMs: GATE_NOW });
+  try {
+    for (const atMs of [GATE_NOW - 180_000, GATE_NOW - 120_000, GATE_NOW - 60_000])
+      seedQuotaClassFailure(p.dbPath, {
+        provider: "leafA",
+        model: "m-a",
+        atMs,
+        quota: { status: 429 },
+      });
+    const res = await p.post({ model: "opencode-route/t-ordered", messages: MSGS });
+    assert.equal(res.status, 200);
+    assert.equal((await res.json()).choices[0].message.content, "LEAF-B");
+    assert.equal(p.leafA.hits, 0, "the inferred-walled leaf must not be attempted");
+    assert.ok(
+      p.log().includes("inferred wall excluded leafA/m-a"),
+      `inferred exclusion should be in the proxy diagnostics: ${p.log()}`,
+    );
+  } finally {
+    await p.cleanup();
+  }
+});
+
+test("an inferred wall expires and the pair is seated again (#13693)", async () => {
+  // Oracle: #13693 RC-1(c) — the inferred wall is BOUNDED (15 min
+  // from the run's latest failure for a first inference): once it
+  // passes, the pair is no longer excluded; the next seating is
+  // the probe. (Demotion may still reorder the pair — this test
+  // oracles the gate's own decision, recorded in the diagnostics.)
+  const p = await startProxy({ nowMs: GATE_NOW + 16 * 60_000 });
+  try {
+    for (const atMs of [GATE_NOW - 180_000, GATE_NOW - 120_000, GATE_NOW - 60_000])
+      seedQuotaClassFailure(p.dbPath, {
+        provider: "leafA",
+        model: "m-a",
+        atMs,
+        quota: { status: 429 },
+      });
+    const res = await p.post({ model: "opencode-route/t-ordered", messages: MSGS });
+    assert.equal(res.status, 200);
+    await res.json();
+    assert.ok(
+      !p.log().includes("inferred wall excluded leafA/m-a"),
+      `expired inferred wall must not exclude: ${p.log()}`,
+    );
+  } finally {
+    await p.cleanup();
+  }
+});
+
+test("a 402-only run also infers a wall (balance wall) (#13693)", async () => {
+  // Oracle: #13693 RC-1(c) — 402 paymentRequired records are
+  // quota-class failures for the inferred wall.
+  const p = await startProxy({ nowMs: GATE_NOW });
+  try {
+    for (const atMs of [GATE_NOW - 180_000, GATE_NOW - 120_000, GATE_NOW - 60_000])
+      seedQuotaClassFailure(p.dbPath, {
+        provider: "leafA",
+        model: "m-a",
+        atMs,
+        quota: { paymentRequired: true },
+        status: 402,
+      });
+    const res = await p.post({ model: "opencode-route/t-ordered", messages: MSGS });
+    assert.equal(res.status, 200);
+    assert.equal((await res.json()).choices[0].message.content, "LEAF-B");
+    assert.equal(p.leafA.hits, 0);
+    assert.ok(
+      p.log().includes("inferred wall excluded leafA/m-a"),
+      `402 inference should be in the proxy diagnostics: ${p.log()}`,
+    );
+  } finally {
+    await p.cleanup();
+  }
+});
+
+test("all candidates reset-gated with a recent attempt: 503 + Retry-After (#13693)", async () => {
+  // Oracle: #13693 RC-4 — when every candidate is gated on a known
+  // future reset >60s away and a walk already paid attempts within
+  // the last 60s, the proxy paces with 503 + Retry-After instead of
+  // walking into the wall again.
+  const p = await startProxy({ nowMs: GATE_NOW });
+  try {
+    seedQuotaFailure(p.dbPath, {
+      provider: "leafA",
+      model: "m-a",
+      atMs: GATE_NOW - 30_000,
+      retryAfterMs: 3_600_000,
+    });
+    seedQuotaFailure(p.dbPath, {
+      provider: "leafB",
+      model: "m-b",
+      atMs: GATE_NOW - 30_000,
+      retryAfterMs: 3_600_000,
+    });
+    const res = await p.post({ model: "opencode-route/t-ordered", messages: MSGS });
+    assert.equal(res.status, 503);
+    const retryAfter = Number(res.headers.get("retry-after"));
+    assert.ok(
+      Number.isFinite(retryAfter) && retryAfter > 3500 && retryAfter <= 3600,
+      `Retry-After should run to the earliest reset: ${res.headers.get("retry-after")}`,
+    );
+    const body = await res.json();
+    assert.match(body.error.message, /quota-walled/);
+    assert.equal(p.leafA.hits + p.leafB.hits, 0, "a paced request must not walk");
+    assert.ok(
+      p.log().includes("wall pacing"),
+      `pacing decision should be in the proxy diagnostics: ${p.log()}`,
+    );
+  } finally {
+    await p.cleanup();
+  }
+});
+
+test("all candidates inferred-gated: route still walks, fail-safe preserved (#13693)", async () => {
+  // Oracle: #13693 RC-4 — pacing applies ONLY to reset-carrying
+  // known-exhausted exclusions; soft (inferred) gates keep the
+  // walk-anyway fail-safe byte-for-byte.
+  const p = await startProxy({ nowMs: GATE_NOW });
+  try {
+    for (const atMs of [GATE_NOW - 180_000, GATE_NOW - 120_000, GATE_NOW - 60_000]) {
+      seedQuotaClassFailure(p.dbPath, {
+        provider: "leafA",
+        model: "m-a",
+        atMs,
+        quota: { status: 429 },
+      });
+      seedQuotaClassFailure(p.dbPath, {
+        provider: "leafB",
+        model: "m-b",
+        atMs,
+        quota: { status: 429 },
+      });
+    }
+    const res = await p.post({ model: "opencode-route/t-ordered", messages: MSGS });
+    assert.equal(res.status, 200);
+    assert.equal((await res.json()).choices[0].message.content, "LEAF-A");
+    assert.ok(
+      p.log().includes("gate bypassed"),
+      `inferred bypass should be in the proxy diagnostics: ${p.log()}`,
+    );
+  } finally {
+    await p.cleanup();
+  }
+});
+
+test("429 with {\"retryDelay\": \"30s\"} JSON gates the pair (#13693)", async () => {
+  // Oracle: #13693 RC-1(a) — a pure-duration string under a retry
+  // key (Google-style retryDelay) is a duration from receipt, not
+  // an instant to Date.parse.
+  const p = await startProxy();
+  try {
+    p.leafA.mode = "rate-json-retry-delay";
+    const first = await p.post({ model: "opencode-route/t-ordered", messages: MSGS });
+    assert.equal(first.status, 200);
+    assert.equal((await first.json()).choices[0].message.content, "LEAF-B");
+    const rows = await waitForAttempts(p, 2);
+    const quota = JSON.parse(rows[0].quota);
+    const resetMs = Date.parse(quota.resetsAt ?? quota.resetAt ?? NaN);
+    assert.ok(
+      Number.isFinite(resetMs) &&
+        resetMs > Date.now() &&
+        resetMs <= Date.now() + 60_000,
+      `retryDelay duration not recorded as a near reset: ${rows[0].quota}`,
+    );
+    const second = await p.post({ model: "opencode-route/t-ordered", messages: MSGS });
+    assert.equal(second.status, 200);
+    assert.equal((await second.json()).choices[0].message.content, "LEAF-B");
+    assert.equal(p.leafA.hits, 1);
   } finally {
     await p.cleanup();
   }
