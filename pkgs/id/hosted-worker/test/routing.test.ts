@@ -41,11 +41,12 @@ test("hosted account metadata requires an explicit supported jurisdiction", () =
 test("hosted account creation fails closed before metadata exists for absent or invalid jurisdiction", () => {
   for (const jurisdiction of [null, "", "apac"]) {
     assert.throws(
-      () => createHostedAccountRecord({
-        subjectKey: "provider-subject-hash",
-        bindingId: BINDING,
-        jurisdiction,
-      }),
+      () =>
+        createHostedAccountRecord({
+          subjectKey: "provider-subject-hash",
+          bindingId: BINDING,
+          jurisdiction,
+        }),
       (error: unknown) => error instanceof FailClosed,
     );
   }
@@ -57,7 +58,8 @@ test("hosted account metadata rejects invalid identity inputs", () => {
     (error: unknown) => error instanceof FailClosed,
   );
   assert.throws(
-    () => createHostedAccountRecord({ subjectKey: "provider-subject-hash", bindingId: "google:sub", jurisdiction: "us" }),
+    () =>
+      createHostedAccountRecord({ subjectKey: "provider-subject-hash", bindingId: "google:sub", jurisdiction: "us" }),
     (error: unknown) => error instanceof FailClosed,
   );
 });

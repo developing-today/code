@@ -27,8 +27,8 @@ First local-only vertical slice of the hosted data plane (slice 3 of
   `GET|DELETE /v1/blobs/<64-hex>` (content-addressed blobs in R2,
   deduplicated across users; DELETE drops only this user's
   reference); and the signed-object bridge routes (`GET
-  /v1/bridge/challenge`, `GET /v1/bridge/heads`, `POST
-  /v1/bridge/push`, `POST /v1/bridge/pull`, `GET /v1/bridge/export`,
+/v1/bridge/challenge`, `GET /v1/bridge/heads`, `POST
+/v1/bridge/push`, `POST /v1/bridge/pull`, `GET /v1/bridge/export`,
   `GET /v1/bridge/ws`), covered in the bridge section below. Storage
   metering and the per-user ceiling (`USER_CEILING_BYTES`) are
   implemented, not later steps.

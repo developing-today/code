@@ -695,7 +695,11 @@ impl RegistryState {
             (text("generation"), Value::UInt(self.generation)),
             (
                 text("definitions"),
-                Value::Array(self.definitions().map(NamespaceDefinition::to_value).collect()),
+                Value::Array(
+                    self.definitions()
+                        .map(NamespaceDefinition::to_value)
+                        .collect(),
+                ),
             ),
             (
                 text("audit"),

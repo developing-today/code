@@ -178,7 +178,6 @@ impl<S: EventStoreBackend> SharedEventStore<S> {
         }
     }
 
-
     /// Verifies and applies one received event, with its body. `body` is the bytes the header
     /// commits to, or `None` when the event arrived without one. The action of a group operation
     /// comes from the body. See [`EventStore::ingest_with_body`].

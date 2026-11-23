@@ -24,45 +24,45 @@ Two local nodes that the user runs are recorded in the standing record, not in t
 
 The global flags decide where a node lives, and they apply to every command, not only to `serve`:
 
-| Flag | Effect |
-|---|---|
-| `-d, --data-dir <DIR>` | Use `<DIR>` as the base directory for `.iroh-store`, `.iroh-key` and `.iroh-serve.lock`. The directory is created if missing. The process changes directory into it at startup. Conflicts with `--new`. |
-| `--new [<NAME>]` | Create `.iroh/<NAME>/` under the current directory and use it as the data directory. With no name, a random 8-hex name is used. Startup fails if the directory already exists. The name must not contain `/`, `\` or `..`. |
+| Flag                   | Effect                                                                                                                                                                                                                     |
+| ---------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `-d, --data-dir <DIR>` | Use `<DIR>` as the base directory for `.iroh-store`, `.iroh-key` and `.iroh-serve.lock`. The directory is created if missing. The process changes directory into it at startup. Conflicts with `--new`.                    |
+| `--new [<NAME>]`       | Create `.iroh/<NAME>/` under the current directory and use it as the data directory. With no name, a random 8-hex name is used. Startup fails if the directory already exists. The name must not contain `/`, `\` or `..`. |
 
 Running two nodes on one machine means two data directories. Two serves in one data directory do not work; the second one meets the serve lock and the single-opener store lock (see [Troubleshooting](troubleshooting.md)).
 
 ## The web UI
 
-| Flag | Default | Effect |
-|---|---|---|
-| `--web` | off | Start the HTTP web UI. Startup fails on a build without the `web` feature; see [Troubleshooting](troubleshooting.md). |
-| `--port <PORT>` | `3000` | Web port. `0` lets the operating system assign the port. |
-| `--bind <IP>` | `127.0.0.1` | Web bind address. The default binds loopback only. |
-| `--web-listen <IP:PORT>` | none | Repeatable. Replaces the `web_bindings` list from `defaults.json`. Startup fails if `--web-listen` is combined with an explicitly set `--bind` or `--port`. |
-| `--web-token <TOKEN>` | unset | Gate token for the web UI, accepted as the `id_token` cookie, as `Authorization: Bearer`, or as a `?token=` query parameter that sets the cookie and redirects. The environment variable `ID_WEB_TOKEN` sets the same value. The value is never printed in this book. |
-| `--web-cookie-secure` | off | Mark web cookies `Secure`. The environment variable `ID_WEB_COOKIE_SECURE` sets the same flag. |
+| Flag                     | Default     | Effect                                                                                                                                                                                                                                                                |
+| ------------------------ | ----------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--web`                  | off         | Start the HTTP web UI. Startup fails on a build without the `web` feature; see [Troubleshooting](troubleshooting.md).                                                                                                                                                 |
+| `--port <PORT>`          | `3000`      | Web port. `0` lets the operating system assign the port.                                                                                                                                                                                                              |
+| `--bind <IP>`            | `127.0.0.1` | Web bind address. The default binds loopback only.                                                                                                                                                                                                                    |
+| `--web-listen <IP:PORT>` | none        | Repeatable. Replaces the `web_bindings` list from `defaults.json`. Startup fails if `--web-listen` is combined with an explicitly set `--bind` or `--port`.                                                                                                           |
+| `--web-token <TOKEN>`    | unset       | Gate token for the web UI, accepted as the `id_token` cookie, as `Authorization: Bearer`, or as a `?token=` query parameter that sets the cookie and redirects. The environment variable `ID_WEB_TOKEN` sets the same value. The value is never printed in this book. |
+| `--web-cookie-secure`    | off         | Mark web cookies `Secure`. The environment variable `ID_WEB_COOKIE_SECURE` sets the same flag.                                                                                                                                                                        |
 
 Startup prints a warning when a web listener is bound without `--web-token`. On a loopback bind the web layer also enforces a Host allow-list (`localhost`, `127.0.0.1`, `::1`, plus operator extras) and a same-origin check on requests that carry an `Origin` header. Binding to a non-loopback address without a token removes the loopback protection and leaves the token as the only gate; the book states the mechanism and makes no recommendation beyond that fact. The pages and routes themselves are in [The web UI: pages and HTTP API](../reference/web-ui.md).
 
 ## Hosting a world
 
-| Flag | Default | Effect |
-|---|---|---|
-| `--world` | off | Host a multiplayer world. Requires `--world-admin-token <TOKEN>`. |
-| `--world-admin-token <TOKEN>` | unset | The admin token for the hosted world. The environment variable `ID_WORLD_ADMIN_TOKEN` sets the same value. The value is never printed in this book. |
-| `--world-name <NAME>` | `lobby` | Name of the default world. Its files live in `.id-worlds/<NAME>/` inside the data directory. The name uses the characters `a-z`, `0-9`, `-` and `_`. |
-| `--world-module <FILE>` | none | A precompiled Wasm module (Roc ABI) to load into the world. Requires `--world` and a build with the `sandbox` feature. |
-| `--world-checkpoint-every <N>` | `1000` | Journal events between checkpoints. `0` never trims the journal. |
-| `--world-max-open <N>` | `256` | Maximum open worlds. |
-| `--world-max-sessions <N>` | `1024` | Maximum world sessions. |
-| `--world-idle-secs <N>` | `600` | Seconds before an idle world is closed. `0` keeps worlds open. |
-| `--world-boot-window-secs <N>` | `600` | Replay-refusal window after startup, in seconds. `0` disables it. |
-| `--world-cap-policy <POLICY>` | `deny` | Capability policy for the default world's program. The other documented value is `grant-on-use`. |
-| `--world-allowed-caps <NAMES>` | none | Comma-separated server-wide capability ceiling. The value `*` is refused here. |
-| `--world-cap <NAME>` | none | Repeatable. One capability for the default world's program. `*` means the whole catalog. |
-| `--world-ssh-port <PORT>` | none | Serve the world over SSH, bound to the `--bind` address. Requires `--world`. Actual SSH serving exists only in a build with the `ssh` feature. |
-| `--world-native` | off | Accept native (ELF) module installs, in the OS-sandbox tier. |
-| `--world-source-only` | off | Accept Roc-source installs only. Conflicts with `--world-module`. The environment variable `ID_WORLD_SOURCE_ONLY` sets the same flag. |
+| Flag                           | Default | Effect                                                                                                                                               |
+| ------------------------------ | ------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--world`                      | off     | Host a multiplayer world. Requires `--world-admin-token <TOKEN>`.                                                                                    |
+| `--world-admin-token <TOKEN>`  | unset   | The admin token for the hosted world. The environment variable `ID_WORLD_ADMIN_TOKEN` sets the same value. The value is never printed in this book.  |
+| `--world-name <NAME>`          | `lobby` | Name of the default world. Its files live in `.id-worlds/<NAME>/` inside the data directory. The name uses the characters `a-z`, `0-9`, `-` and `_`. |
+| `--world-module <FILE>`        | none    | A precompiled Wasm module (Roc ABI) to load into the world. Requires `--world` and a build with the `sandbox` feature.                               |
+| `--world-checkpoint-every <N>` | `1000`  | Journal events between checkpoints. `0` never trims the journal.                                                                                     |
+| `--world-max-open <N>`         | `256`   | Maximum open worlds.                                                                                                                                 |
+| `--world-max-sessions <N>`     | `1024`  | Maximum world sessions.                                                                                                                              |
+| `--world-idle-secs <N>`        | `600`   | Seconds before an idle world is closed. `0` keeps worlds open.                                                                                       |
+| `--world-boot-window-secs <N>` | `600`   | Replay-refusal window after startup, in seconds. `0` disables it.                                                                                    |
+| `--world-cap-policy <POLICY>`  | `deny`  | Capability policy for the default world's program. The other documented value is `grant-on-use`.                                                     |
+| `--world-allowed-caps <NAMES>` | none    | Comma-separated server-wide capability ceiling. The value `*` is refused here.                                                                       |
+| `--world-cap <NAME>`           | none    | Repeatable. One capability for the default world's program. `*` means the whole catalog.                                                             |
+| `--world-ssh-port <PORT>`      | none    | Serve the world over SSH, bound to the `--bind` address. Requires `--world`. Actual SSH serving exists only in a build with the `ssh` feature.       |
+| `--world-native`               | off     | Accept native (ELF) module installs, in the OS-sandbox tier.                                                                                         |
+| `--world-source-only`          | off     | Accept Roc-source installs only. Conflicts with `--world-module`. The environment variable `ID_WORLD_SOURCE_ONLY` sets the same flag.                |
 
 The runtime limits for guest execution are flags in the same family: `--world-fuel <UNITS>` (default `10000000`), `--world-memory-mib <MIB>` (default `16`), `--world-message-kib <KIB>` (default `1024`), `--world-total-memory-mib <MIB>` (default `64`), and the native-tier limits `--world-native-memory-mib <MIB>` (default `256`), `--world-native-cpu-secs <SECS>` (default `10`) and `--world-native-deadline-ms <MS>` (default `10000`). Confirmation mail for world sign-up has three mutually conflicting sinks, all requiring `--world`: `--world-mail-outbox <DIR>`, `--world-mail-command <PROG>` and `--world-mail-smtp <IP:PORT>` (SMTP also requires `--world-mail-from <ADDR>` and must be loopback).
 
@@ -76,45 +76,45 @@ Clients then join with the commands in [World commands: joining and playing](../
 
 ## Discovery: relay, gossip, mDNS and DHT
 
-| Flag | Default | Effect |
-|---|---|---|
-| `--no-relay` | relay on | Direct connections only; no relay is used. |
-| `--no-gossip` | gossip on | No gossip discovery or announcement. |
-| `--gossip` | — | Force gossip on. Conflicts with `--no-gossip`. |
-| `--no-mdns` | mDNS on | Disable mDNS local discovery. |
-| `--dht` | off | Enable mainline DHT address lookup and publishing. The flag parses in every build; the `dht` cargo feature controls the underlying behaviour in `id-sync`. |
-| `--bootstrap <IDS>` | from `defaults.json` | Comma-separated bootstrap node IDs. Repeatable through the comma delimiter. |
-| `--no-default-bootstrap` | — | Ignore bootstrap IDs from `defaults.json`. |
-| `--topic <TOPIC>` | see below | Gossip topic. |
-| `--topic-secret <SECRET>` | see below | Gossip topic secret. The value is never printed in this book. |
-| `--no-default-topic` | — | Ignore topic and secret from `defaults.json`; fall back to the hardcoded constants. |
+| Flag                      | Default              | Effect                                                                                                                                                     |
+| ------------------------- | -------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--no-relay`              | relay on             | Direct connections only; no relay is used.                                                                                                                 |
+| `--no-gossip`             | gossip on            | No gossip discovery or announcement.                                                                                                                       |
+| `--gossip`                | —                    | Force gossip on. Conflicts with `--no-gossip`.                                                                                                             |
+| `--no-mdns`               | mDNS on              | Disable mDNS local discovery.                                                                                                                              |
+| `--dht`                   | off                  | Enable mainline DHT address lookup and publishing. The flag parses in every build; the `dht` cargo feature controls the underlying behaviour in `id-sync`. |
+| `--bootstrap <IDS>`       | from `defaults.json` | Comma-separated bootstrap node IDs. Repeatable through the comma delimiter.                                                                                |
+| `--no-default-bootstrap`  | —                    | Ignore bootstrap IDs from `defaults.json`.                                                                                                                 |
+| `--topic <TOPIC>`         | see below            | Gossip topic.                                                                                                                                              |
+| `--topic-secret <SECRET>` | see below            | Gossip topic secret. The value is never printed in this book.                                                                                              |
+| `--no-default-topic`      | —                    | Ignore topic and secret from `defaults.json`; fall back to the hardcoded constants.                                                                        |
 
 The topic defaults need care, because `--help` states them in a way that misleads. The help text gives `--topic` a default of `id-peer-discovery-v1` and `--topic-secret` a default of `id-public-discovery-v1`. Those two strings are the hardcoded fallback constants. The operative default on a stock build comes first from the embedded `defaults.json`, whose shipped content sets `topic` to `id-peer-discovery-v1` and `topic_secret` to `id-public-discovery-v1` — the same strings today, by coincidence of the shipped file, not by the help text's logic. If `defaults.json` changes, serve follows the file, not the constants, unless `--no-default-topic` is passed. The `--version` output reports which defaults source is in force, as a second line naming the file hash and mode (`append` or the built-in equivalent). This is disagreement CLI-6 in the survey record. The full configuration precedence is in [Configuration and environment](../reference/configuration.md).
 
 ## Who may write
 
-| Flag | Default | Effect |
-|---|---|---|
-| `--allow-node <IDS>` | none | Repeatable, comma-separated. Node IDs allowed to write the store. The file `.iroh-allowed` in the data directory (one node ID per line) adds more, and this machine's own keys are always allowed. |
-| `--open-writes` | off | Any peer may write the store. The help text documents this as insecure. |
+| Flag                 | Default | Effect                                                                                                                                                                                             |
+| -------------------- | ------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--allow-node <IDS>` | none    | Repeatable, comma-separated. Node IDs allowed to write the store. The file `.iroh-allowed` in the data directory (one node ID per line) adds more, and this machine's own keys are always allowed. |
+| `--open-writes`      | off     | Any peer may write the store. The help text documents this as insecure.                                                                                                                            |
 
 With neither flag, writes from other nodes are not accepted beyond this machine's own keys and the `.iroh-allowed` list.
 
 ## The gallery
 
-| Flag | Default | Effect |
-|---|---|---|
-| `--gallery-dir <DIR>` | unset | Serve a program gallery from `<DIR>`: the Iroh registry plus the `/api/gallery/*` routes when `--web` is on. Every bundle file in the directory is verified at startup. The environment variable `ID_GALLERY_DIR` sets the same value. |
-| `--gallery-accept-publish` | off | Accept gallery publishes. Requires `--gallery-dir`. The environment variable `ID_GALLERY_ACCEPT_PUBLISH` sets the same flag. |
+| Flag                       | Default | Effect                                                                                                                                                                                                                                 |
+| -------------------------- | ------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--gallery-dir <DIR>`      | unset   | Serve a program gallery from `<DIR>`: the Iroh registry plus the `/api/gallery/*` routes when `--web` is on. Every bundle file in the directory is verified at startup. The environment variable `ID_GALLERY_DIR` sets the same value. |
+| `--gallery-accept-publish` | off     | Accept gallery publishes. Requires `--gallery-dir`. The environment variable `ID_GALLERY_ACCEPT_PUBLISH` sets the same flag.                                                                                                           |
 
 Without a gallery directory, the gallery routes answer 404. Operating the gallery (approval, removal, reinstatement) is in [Gallery, match-audit and walk](../reference/cli-gallery-walk.md).
 
 ## Server config and ephemeral mode
 
-| Flag | Default | Effect |
-|---|---|---|
-| `--server-config <FILE>` | none | Load an operator server-config TOML file: provisioned users and groups, create policy, pull policy, budgets, residency and boundaries. A malformed file fails startup and names the parse error. Loading requires a build with the `world` feature. The key list is in [Configuration and environment](../reference/configuration.md). |
-| `--ephemeral` | off | Use an in-memory store. All content is lost when the process exits. No `.iroh-store` on disk is the record for an ephemeral node. |
+| Flag                     | Default | Effect                                                                                                                                                                                                                                                                                                                                 |
+| ------------------------ | ------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--server-config <FILE>` | none    | Load an operator server-config TOML file: provisioned users and groups, create policy, pull policy, budgets, residency and boundaries. A malformed file fails startup and names the parse error. Loading requires a build with the `world` feature. The key list is in [Configuration and environment](../reference/configuration.md). |
+| `--ephemeral`            | off     | Use an in-memory store. All content is lost when the process exits. No `.iroh-store` on disk is the record for an ephemeral node.                                                                                                                                                                                                      |
 
 An ephemeral node is the right shape for a throwaway test peer and the wrong shape for anything whose files must survive the terminal closing. Nothing about `--ephemeral` is written to the data directory's store, because there is no store.
 
@@ -122,11 +122,11 @@ An ephemeral node is the right shape for a throwaway test peer and the wrong sha
 
 Serve reads three environment variables outside the flag parser:
 
-| Variable | Effect when set |
-|---|---|
-| `ID_WORLD_COMPILE_CACHE_DIR` | Directory for the shared compiled-world cache. Unset or empty disables that cache. |
+| Variable                           | Effect when set                                                                    |
+| ---------------------------------- | ---------------------------------------------------------------------------------- |
+| `ID_WORLD_COMPILE_CACHE_DIR`       | Directory for the shared compiled-world cache. Unset or empty disables that cache. |
 | `ID_WORLD_COMPILE_CACHE_LRU_BYTES` | Size limit for that cache. An unparsable value falls back to the default of 2 GiB. |
-| `ID_APPS_DIR` | Apps root for host app discovery. Unset falls back to the built-in apps root. |
+| `ID_APPS_DIR`                      | Apps root for host app discovery. Unset falls back to the built-in apps root.      |
 
 For `--world-mail-command`, serve sets `ID_MAIL_TO`, `ID_MAIL_SUBJECT` and `ID_MAIL_BODY` in the child process environment. Those are outputs of serve, not settings an operator provides.
 
@@ -161,10 +161,10 @@ A second package, `pkgs/id/worker-poc`, is a proof of concept that runs one exam
 
 Serve has no special exit codes of its own. The `id` binary's contract, from [The id command line](../reference/cli.md), is:
 
-| Exit | Meaning |
-|---|---|
-| `0` | Success, including `--help` and `--version`. |
-| `1` | A handler error. The error chain is printed to stderr as `Error: <message>`. Startup failures (malformed `--server-config`, the `--web-listen` conflict, a build without a required feature) are in this class. |
-| `2` | A command-line parse error: unknown flag, missing required argument, conflicting flags, bad value. Usage is printed to stderr. |
+| Exit | Meaning                                                                                                                                                                                                         |
+| ---- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `0`  | Success, including `--help` and `--version`.                                                                                                                                                                    |
+| `1`  | A handler error. The error chain is printed to stderr as `Error: <message>`. Startup failures (malformed `--server-config`, the `--web-listen` conflict, a build without a required feature) are in this class. |
+| `2`  | A command-line parse error: unknown flag, missing required argument, conflicting flags, bad value. Usage is printed to stderr.                                                                                  |
 
 A script that supervises serve should treat exit `1` at startup as a configuration fault to fix, not a transient fault to retry unchanged.

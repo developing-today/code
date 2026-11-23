@@ -43,9 +43,12 @@ export const DEFAULT_RANGE_PARAMS: RangeParams = {
 
 export function checkParams(params: RangeParams): RangeParams {
   if (params.k < 2) throw new Error(`K must be at least 2, or a split makes no progress (got ${params.k})`);
-  if (params.t < 1) throw new Error(`T must be at least 1, or one mismatched key never ends the sync (got ${params.t})`);
+  if (params.t < 1)
+    throw new Error(`T must be at least 1, or one mismatched key never ends the sync (got ${params.t})`);
   if (params.frameBudget < MIN_FRAME_BUDGET || params.frameBudget > FRAME_CAP) {
-    throw new Error(`the frame budget must be from ${MIN_FRAME_BUDGET} bytes to the ${FRAME_CAP}-byte frame cap (got ${params.frameBudget})`);
+    throw new Error(
+      `the frame budget must be from ${MIN_FRAME_BUDGET} bytes to the ${FRAME_CAP}-byte frame cap (got ${params.frameBudget})`,
+    );
   }
   if (params.sessionBudget < MIN_FRAME_BUDGET) {
     throw new Error(`the session budget must be at least ${MIN_FRAME_BUDGET} bytes (got ${params.sessionBudget})`);
@@ -224,8 +227,7 @@ export class RangeParty {
         case "fp": {
           const mine = this.fp(lo, hi);
           const equal =
-            mine.count === entry.mode.count &&
-            mine.fp.every((v, i) => v === (entry.mode as { fp: Uint8Array }).fp[i]);
+            mine.count === entry.mode.count && mine.fp.every((v, i) => v === (entry.mode as { fp: Uint8Array }).fp[i]);
           if (equal) {
             pushSkip(entry.upper);
           } else if (mine.count <= params.t) {
@@ -489,9 +491,7 @@ export function simulateExchange(
     else bytesB += bytes;
     const incoming = decodeFlight(wire);
     if (allSkip(incoming)) break;
-    msg = aSends
-      ? b.respond(incoming, receiverParams, learnedB)
-      : a.respond(incoming, receiverParams, learnedA);
+    msg = aSends ? b.respond(incoming, receiverParams, learnedB) : a.respond(incoming, receiverParams, learnedA);
     aSends = !aSends;
   }
   return { flights, bytesA, bytesB, learnedA, learnedB, maxFrame };

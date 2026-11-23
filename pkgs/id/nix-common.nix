@@ -62,7 +62,7 @@ let
       version = "1.4.5";
       src = pkgs.fetchzip {
         url = "https://github.com/oven-sh/bun/releases/download/bun-v1.4.5/${zip.file}";
-        hash = zip.hash;
+        inherit (zip) hash;
       };
       installPhase = ''
         runHook preInstall

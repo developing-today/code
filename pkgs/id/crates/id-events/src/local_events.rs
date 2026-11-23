@@ -344,7 +344,9 @@ impl LocalEvents {
     /// gives for the identity event itself.
     pub fn ensure_identity_event(&mut self) -> Result<Option<Hash>> {
         let author = self.author();
-        let chain = self.read_store(|store| store.chain(&author))?.unwrap_or_default();
+        let chain = self
+            .read_store(|store| store.chain(&author))?
+            .unwrap_or_default();
         for seq in 0..chain.next_seq {
             if let Some(event) = self.read_store(|store| store.event(&author, seq))? {
                 if is_identity_kind(&event.header.extensions.kind) {
@@ -468,7 +470,10 @@ impl LocalEvents {
     pub fn send_chat(&mut self, group: Hash, message: ChatMessage) -> Result<Hash> {
         message.check()?;
         let author = self.author();
-        if !self.read_store(|store| store.roster(&group))?.contains(&author) {
+        if !self
+            .read_store(|store| store.roster(&group))?
+            .contains(&author)
+        {
             bail!(
                 "the node's key is not a member of the channel group, so its chat write is refused at admission"
             );
@@ -508,7 +513,10 @@ impl LocalEvents {
     pub fn send_anchor(&mut self, group: Hash, anchor: ChatAnchor) -> Result<Hash> {
         anchor.check()?;
         let author = self.author();
-        if !self.read_store(|store| store.roster(&group))?.contains(&author) {
+        if !self
+            .read_store(|store| store.roster(&group))?
+            .contains(&author)
+        {
             bail!(
                 "the node's key is not a member of the channel group, so its anchor write is refused at admission"
             );
@@ -1160,7 +1168,9 @@ impl LocalEvents {
     ) -> Result<Hash> {
         let author = self.author();
         let after = self.bounded_after(required)?;
-        let chain = self.read_store(|store| store.chain(&author))?.unwrap_or_default();
+        let chain = self
+            .read_store(|store| store.chain(&author))?
+            .unwrap_or_default();
         let ext = ChainExt {
             kind: kind.to_owned(),
             group,
@@ -1671,8 +1681,16 @@ mod tests {
         assert_eq!(visible.len(), 1);
         assert_eq!(visible[0].id, id);
         assert_eq!(visible[0].scope, TagScope::Local);
-        assert!(events.read_store(|store| store.tag_claims()).unwrap().is_empty());
-        assert_eq!(events.read_store(|store| store.sync_entries()).unwrap(), before);
+        assert!(
+            events
+                .read_store(|store| store.tag_claims())
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            events.read_store(|store| store.sync_entries()).unwrap(),
+            before
+        );
         assert_eq!(events.review_tags().unwrap(), visible);
         assert_eq!(
             events.search("city", Some("Oslo")).unwrap()[0].claims,
@@ -1748,7 +1766,10 @@ mod tests {
         assert_eq!(shared[0].scope, TagScope::Shared);
         assert_ne!(shared[0].id, local_id);
         assert!(events.local.claims().is_empty());
-        assert_eq!(events.read_store(|store| store.tag_claims()).unwrap(), shared);
+        assert_eq!(
+            events.read_store(|store| store.tag_claims()).unwrap(),
+            shared
+        );
 
         assert_eq!(
             events
@@ -1759,7 +1780,12 @@ mod tests {
         let local = events.tags_on(subject).unwrap();
         assert_eq!(local.len(), 1);
         assert_eq!(local[0].scope, TagScope::Local);
-        assert!(events.read_store(|store| store.tag_claims()).unwrap().is_empty());
+        assert!(
+            events
+                .read_store(|store| store.tag_claims())
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]
@@ -1809,7 +1835,10 @@ mod tests {
 
         assert_eq!(count, 1);
         assert!(events.tags_on(subject).unwrap().is_empty());
-        assert_eq!(events.read_store(|store| store.sync_entries()).unwrap(), before);
+        assert_eq!(
+            events.read_store(|store| store.sync_entries()).unwrap(),
+            before
+        );
     }
 
     fn open_events() -> (tempfile::TempDir, LocalEvents) {
@@ -1869,9 +1898,10 @@ mod tests {
         assert!(matches!(ingested, Ingest::Accepted { .. }), "{ingested:?}");
         let frontier = events.frontier().unwrap();
         assert!(
-            frontier.iter().any(|head| head.author
-                == *key(9).verifying_key().as_bytes()
-                && head.event == foreign.id),
+            frontier
+                .iter()
+                .any(|head| head.author == *key(9).verifying_key().as_bytes()
+                    && head.event == foreign.id),
             "the foreign event is missing from the frontier: {frontier:?}"
         );
     }
@@ -2014,9 +2044,7 @@ mod chat_tests {
     /// A node whose store already holds the channel create, as sync would have brought it.
     fn node(dir: &Path, key: SigningKey, create: &Event, body: &[u8]) -> LocalEvents {
         let mut node = LocalEvents::open(dir, key).unwrap();
-        node.store
-            .ingest(&create.bytes, Some(body), 0)
-            .unwrap();
+        node.store.ingest(&create.bytes, Some(body), 0).unwrap();
         node
     }
 
@@ -2066,7 +2094,12 @@ mod chat_tests {
         // A non-member's write is refused at admission: nothing is signed or recorded.
         let refused = node_c.send_chat(group, ChatMessage::new("carol here", Vec::new()).unwrap());
         assert!(refused.is_err());
-        assert!(node_c.read_store(|store| store.chat_records(&group)).unwrap().is_empty());
+        assert!(
+            node_c
+                .read_store(|store| store.chat_records(&group))
+                .unwrap()
+                .is_empty()
+        );
 
         let first = node_a
             .send_chat(

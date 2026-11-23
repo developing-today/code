@@ -6,10 +6,10 @@ This chapter covers the event-backed identity surface of `id`: `group` with `del
 
 Two global flags place the stores (see [The id command line](cli.md) and [Configuration and environment](configuration.md)):
 
-| Flag | Argument | Default | Meaning |
-|---|---|---|---|
-| `--groups-log` | file path | `groups.jsonl` in the data dir | The group log for `group`, `delegate` and `revoke`. A relative path is relative to the data dir. |
-| `--event-store` | directory path | `events` in the data dir | The event store for `doc`, `claim` and `writer-sets`. A relative path is relative to the data dir. |
+| Flag            | Argument       | Default                        | Meaning                                                                                            |
+| --------------- | -------------- | ------------------------------ | -------------------------------------------------------------------------------------------------- |
+| `--groups-log`  | file path      | `groups.jsonl` in the data dir | The group log for `group`, `delegate` and `revoke`. A relative path is relative to the data dir.   |
+| `--event-store` | directory path | `events` in the data dir       | The event store for `doc`, `claim` and `writer-sets`. A relative path is relative to the data dir. |
 
 `group`, `doc`, `claim` and `writer-sets` each take a `--json` flag that is global to that parent command: it may appear before or after the subcommand. With `--json`, an action prints one JSON object; `group list`, `doc` lists, `claim list`/`search` and `writer-sets discover` print one JSON array. `delegate` and `revoke` are top-level commands with their own `--json` flag.
 
@@ -29,13 +29,13 @@ Creates a group. A normal group makes its creator Admin. A friendship names its 
 id group create [--template <normal|friendship>] [--with <ACCOUNT>] [--max <N>] [--admins-on-create]
 ```
 
-| Flag | Argument | Default | Meaning |
-|---|---|---|---|
-| `--template` | `normal\|friendship` | `normal` | The kind of group to create. |
-| `--with` | account (64 hex) | — (none) | The other side of a friendship. Required for `--template friendship`. |
-| `--max` | integer | — (none; no cap) | The most members the group may have, counting the creator. Normal groups only. |
-| `--admins-on-create` | switch | off | Make both friends Admin (friendships). |
-| `--json` | switch | off | Parent flag: print one JSON object instead of a line. |
+| Flag                 | Argument             | Default          | Meaning                                                                        |
+| -------------------- | -------------------- | ---------------- | ------------------------------------------------------------------------------ |
+| `--template`         | `normal\|friendship` | `normal`         | The kind of group to create.                                                   |
+| `--with`             | account (64 hex)     | — (none)         | The other side of a friendship. Required for `--template friendship`.          |
+| `--max`              | integer              | — (none; no cap) | The most members the group may have, counting the creator. Normal groups only. |
+| `--admins-on-create` | switch               | off              | Make both friends Admin (friendships).                                         |
+| `--json`             | switch               | off              | Parent flag: print one JSON object instead of a line.                          |
 
 Example — a normal toy group capped at 8 members, and a toy friendship:
 
@@ -55,10 +55,10 @@ Shows a group's policy record.
 id group policy <GROUP>
 ```
 
-| Flag | Argument | Default | Meaning |
-|---|---|---|---|
-| `<GROUP>` | group ID (64 hex) | required positional | The group. |
-| `--json` | switch | off | Parent flag: print one JSON object instead of a line. |
+| Flag      | Argument          | Default             | Meaning                                               |
+| --------- | ----------------- | ------------------- | ----------------------------------------------------- |
+| `<GROUP>` | group ID (64 hex) | required positional | The group.                                            |
+| `--json`  | switch            | off                 | Parent flag: print one JSON object instead of a line. |
 
 This subcommand takes no flags of its own.
 
@@ -78,9 +78,9 @@ Lists the groups in the log, one line each, or one JSON array with `--json`.
 id group list
 ```
 
-| Flag | Argument | Default | Meaning |
-|---|---|---|---|
-| `--json` | switch | off | Parent flag: print one JSON array instead of one line per group. |
+| Flag     | Argument | Default | Meaning                                                          |
+| -------- | -------- | ------- | ---------------------------------------------------------------- |
+| `--json` | switch   | off     | Parent flag: print one JSON array instead of one line per group. |
 
 This subcommand takes no arguments and no flags of its own.
 
@@ -100,12 +100,12 @@ Adds a member with a role. The author must be a manager of the group.
 id group add <GROUP> <MEMBER> [--role <ROLE>]
 ```
 
-| Flag | Argument | Default | Meaning |
-|---|---|---|---|
-| `<GROUP>` | group ID (64 hex) | required positional | The group. |
-| `<MEMBER>` | account (64 hex) | required positional | The account to add. |
-| `--role` | `pull\|read\|write\|manage\|admin` | `read` | The member's role. |
-| `--json` | switch | off | Parent flag: print one JSON object instead of a line. |
+| Flag       | Argument                           | Default             | Meaning                                               |
+| ---------- | ---------------------------------- | ------------------- | ----------------------------------------------------- |
+| `<GROUP>`  | group ID (64 hex)                  | required positional | The group.                                            |
+| `<MEMBER>` | account (64 hex)                   | required positional | The account to add.                                   |
+| `--role`   | `pull\|read\|write\|manage\|admin` | `read`              | The member's role.                                    |
+| `--json`   | switch                             | off                 | Parent flag: print one JSON object instead of a line. |
 
 Example:
 
@@ -124,14 +124,14 @@ Removes a member. Removing yourself is leaving. The group's default mode is used
 id group remove <GROUP> <MEMBER> [--mode <MODE>] [--successor-kind <KIND>] [--successor <ACCOUNT>]
 ```
 
-| Flag | Argument | Default | Meaning |
-|---|---|---|---|
-| `<GROUP>` | group ID (64 hex) | required positional | The group. |
-| `<MEMBER>` | account (64 hex) | required positional | The account to remove. |
-| `--mode` | `server-default\|revoke\|transfer\|keep-prior\|reassign-to-group` | the group's configured remove default | Grant-disposition mode. `server-default` is resolved to the group's configured default before the event is recorded. `revoke` ends the removed member's grants. `transfer` reissues the grants to a successor. `keep-prior` retains grants under their original grantor (a re-add starts clean: pre-removal grants do not revive and must be re-issued). `reassign-to-group` re-anchors grants at the group. |
-| `--successor-kind` | `member\|admin\|designated\|actor` | `member` | The successor category for `--mode transfer`: a named member, a group administrator, a designated account, or the account performing the removal. The successor flags require `--mode transfer`. |
-| `--successor` | account (64 hex) | — (none) | The account for a `member` or `designated` transfer successor. Requires `--mode transfer`. |
-| `--json` | switch | off | Parent flag: print one JSON object instead of a line. |
+| Flag               | Argument                                                          | Default                               | Meaning                                                                                                                                                                                                                                                                                                                                                                                                      |
+| ------------------ | ----------------------------------------------------------------- | ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `<GROUP>`          | group ID (64 hex)                                                 | required positional                   | The group.                                                                                                                                                                                                                                                                                                                                                                                                   |
+| `<MEMBER>`         | account (64 hex)                                                  | required positional                   | The account to remove.                                                                                                                                                                                                                                                                                                                                                                                       |
+| `--mode`           | `server-default\|revoke\|transfer\|keep-prior\|reassign-to-group` | the group's configured remove default | Grant-disposition mode. `server-default` is resolved to the group's configured default before the event is recorded. `revoke` ends the removed member's grants. `transfer` reissues the grants to a successor. `keep-prior` retains grants under their original grantor (a re-add starts clean: pre-removal grants do not revive and must be re-issued). `reassign-to-group` re-anchors grants at the group. |
+| `--successor-kind` | `member\|admin\|designated\|actor`                                | `member`                              | The successor category for `--mode transfer`: a named member, a group administrator, a designated account, or the account performing the removal. The successor flags require `--mode transfer`.                                                                                                                                                                                                             |
+| `--successor`      | account (64 hex)                                                  | — (none)                              | The account for a `member` or `designated` transfer successor. Requires `--mode transfer`.                                                                                                                                                                                                                                                                                                                   |
+| `--json`           | switch                                                            | off                                   | Parent flag: print one JSON object instead of a line.                                                                                                                                                                                                                                                                                                                                                        |
 
 Example — remove a toy member and transfer the member's grants to a named successor:
 
@@ -152,12 +152,12 @@ Sets a member's role. The subcommand name is `role`. Only an Admin may use it.
 id group role <GROUP> <MEMBER> <ROLE>
 ```
 
-| Flag | Argument | Default | Meaning |
-|---|---|---|---|
-| `<GROUP>` | group ID (64 hex) | required positional | The group. |
-| `<MEMBER>` | account (64 hex) | required positional | The member whose role changes. |
-| `<ROLE>` | `pull\|read\|write\|manage\|admin` | required positional | Its new role. |
-| `--json` | switch | off | Parent flag: print one JSON object instead of a line. |
+| Flag       | Argument                           | Default             | Meaning                                               |
+| ---------- | ---------------------------------- | ------------------- | ----------------------------------------------------- |
+| `<GROUP>`  | group ID (64 hex)                  | required positional | The group.                                            |
+| `<MEMBER>` | account (64 hex)                   | required positional | The member whose role changes.                        |
+| `<ROLE>`   | `pull\|read\|write\|manage\|admin` | required positional | Its new role.                                         |
+| `--json`   | switch                             | off                 | Parent flag: print one JSON object instead of a line. |
 
 Example:
 
@@ -176,10 +176,10 @@ Parses an invitation ticket, then always fails. Group admission and network join
 id group join <INVITE>
 ```
 
-| Flag | Argument | Default | Meaning |
-|---|---|---|---|
+| Flag       | Argument              | Default             | Meaning                                                               |
+| ---------- | --------------------- | ------------------- | --------------------------------------------------------------------- |
 | `<INVITE>` | ticket or link string | required positional | The pasted ticket or link. It is parsed, and nothing further happens. |
-| `--json` | switch | off | Parent flag. It does not change the outcome: the command still fails. |
+| `--json`   | switch                | off                 | Parent flag. It does not change the outcome: the command still fails. |
 
 Example — the outcome is the same for every well-formed ticket (`<ticket>` stands for one):
 
@@ -200,14 +200,14 @@ Grants a delegate a scope in a group, with the group's delegation mode. It print
 id delegate <GROUP> <GRANTEE> [--scope <ROLE>] [--redelegate] [--mode <MODE>] [--json]
 ```
 
-| Flag | Argument | Default | Meaning |
-|---|---|---|---|
-| `<GROUP>` | group ID (64 hex) | required positional | The group. |
-| `<GRANTEE>` | account (64 hex) | required positional | The account that is granted the scope. |
-| `--scope` | `pull\|read\|write\|manage\|admin` | `read` | The scope to grant. |
-| `--redelegate` | switch | off | Let the grantee pass the scope on to others. Only a redelegatable grant extends a chain. |
-| `--mode` | `keep_prior\|cascade\|transfer` | — (none) | The group's delegation mode, set first if it differs. The spellings use underscores. `cascade` is the delegation default in the group policy layer. |
-| `--json` | switch | off | Print JSON instead of a line. |
+| Flag           | Argument                           | Default             | Meaning                                                                                                                                             |
+| -------------- | ---------------------------------- | ------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `<GROUP>`      | group ID (64 hex)                  | required positional | The group.                                                                                                                                          |
+| `<GRANTEE>`    | account (64 hex)                   | required positional | The account that is granted the scope.                                                                                                              |
+| `--scope`      | `pull\|read\|write\|manage\|admin` | `read`              | The scope to grant.                                                                                                                                 |
+| `--redelegate` | switch                             | off                 | Let the grantee pass the scope on to others. Only a redelegatable grant extends a chain.                                                            |
+| `--mode`       | `keep_prior\|cascade\|transfer`    | — (none)            | The group's delegation mode, set first if it differs. The spellings use underscores. `cascade` is the delegation default in the group policy layer. |
+| `--json`       | switch                             | off                 | Print JSON instead of a line.                                                                                                                       |
 
 Example:
 
@@ -227,11 +227,11 @@ Revokes a delegation by its grant's event ID, as `delegate` printed it.
 id revoke <GROUP> <GRANT> [--json]
 ```
 
-| Flag | Argument | Default | Meaning |
-|---|---|---|---|
-| `<GROUP>` | group ID (64 hex) | required positional | The group. |
-| `<GRANT>` | event ID | required positional | The grant's event ID, as `id delegate` printed it. |
-| `--json` | switch | off | Print JSON instead of a line. |
+| Flag      | Argument          | Default             | Meaning                                            |
+| --------- | ----------------- | ------------------- | -------------------------------------------------- |
+| `<GROUP>` | group ID (64 hex) | required positional | The group.                                         |
+| `<GRANT>` | event ID          | required positional | The grant's event ID, as `id delegate` printed it. |
+| `--json`  | switch            | off                 | Print JSON instead of a line.                      |
 
 Example:
 
@@ -256,12 +256,12 @@ Publishes a file as a document, and sets a tag for each `--tag`.
 id doc publish <FILE> --media-type <TYPE> [--tag <NAME[=VALUE]>]...
 ```
 
-| Flag | Argument | Default | Meaning |
-|---|---|---|---|
-| `<FILE>` | file path | required positional | The file to publish. |
-| `--media-type` | media type string, e.g. `text/markdown` | required | The media type of the file. Omitting it is a clap error, exit `2`. |
-| `--tag` | `NAME` or `NAME=VALUE` | — (none) | A tag to set on the document; repeatable. The flag name is `--tag`. |
-| `--json` | switch | off | Parent flag: print one JSON object instead of a line. |
+| Flag           | Argument                                | Default             | Meaning                                                             |
+| -------------- | --------------------------------------- | ------------------- | ------------------------------------------------------------------- |
+| `<FILE>`       | file path                               | required positional | The file to publish.                                                |
+| `--media-type` | media type string, e.g. `text/markdown` | required            | The media type of the file. Omitting it is a clap error, exit `2`.  |
+| `--tag`        | `NAME` or `NAME=VALUE`                  | — (none)            | A tag to set on the document; repeatable. The flag name is `--tag`. |
+| `--json`       | switch                                  | off                 | Parent flag: print one JSON object instead of a line.               |
 
 Behaviour: prints `publish document=<ID>`, the document's event ID. The file's bytes are hashed, and the event names their hash and size. The bytes are not stored in the event: publish stores them in the blob store under their hash, so `doc content` can fetch them back.
 
@@ -284,10 +284,10 @@ Lists the tags and removal on a document, in causal order.
 id doc events <DOCUMENT>
 ```
 
-| Flag | Argument | Default | Meaning |
-|---|---|---|---|
-| `<DOCUMENT>` | event ID | required positional | The document's event ID, as `publish` printed it. |
-| `--json` | switch | off | Parent flag: print one JSON object instead of lines. |
+| Flag         | Argument | Default             | Meaning                                              |
+| ------------ | -------- | ------------------- | ---------------------------------------------------- |
+| `<DOCUMENT>` | event ID | required positional | The document's event ID, as `publish` printed it.    |
+| `--json`     | switch   | off                 | Parent flag: print one JSON object instead of lines. |
 
 Example:
 
@@ -305,9 +305,9 @@ Lists the head of each author's chain: the latest event each author has recorded
 id doc frontier
 ```
 
-| Flag | Argument | Default | Meaning |
-|---|---|---|---|
-| `--json` | switch | off | Parent flag: print one JSON object instead of lines. |
+| Flag     | Argument | Default | Meaning                                              |
+| -------- | -------- | ------- | ---------------------------------------------------- |
+| `--json` | switch   | off     | Parent flag: print one JSON object instead of lines. |
 
 Example:
 
@@ -325,10 +325,10 @@ Lists a document's events in causal order, its `document.put` first.
 id doc history <DOCUMENT>
 ```
 
-| Flag | Argument | Default | Meaning |
-|---|---|---|---|
-| `<DOCUMENT>` | event ID | required positional | The document's event ID, as `publish` printed it. |
-| `--json` | switch | off | Parent flag: print one JSON object instead of lines. |
+| Flag         | Argument | Default             | Meaning                                              |
+| ------------ | -------- | ------------------- | ---------------------------------------------------- |
+| `<DOCUMENT>` | event ID | required positional | The document's event ID, as `publish` printed it.    |
+| `--json`     | switch   | off                 | Parent flag: print one JSON object instead of lines. |
 
 Example:
 
@@ -346,11 +346,11 @@ Prints a document's blob bytes, by document event ID. It resolves the `document.
 id doc content <DOCUMENT> [OUTPUT]
 ```
 
-| Flag | Argument | Default | Meaning |
-|---|---|---|---|
-| `<DOCUMENT>` | event ID | required positional | The document's event ID, as `publish` printed it. |
-| `[OUTPUT]` | file path, or `-` | `-` (stdout) | Output path, or `-` for stdout. |
-| `--json` | switch | off | Parent flag (effect on this subcommand's byte output: unverified). |
+| Flag         | Argument          | Default             | Meaning                                                            |
+| ------------ | ----------------- | ------------------- | ------------------------------------------------------------------ |
+| `<DOCUMENT>` | event ID          | required positional | The document's event ID, as `publish` printed it.                  |
+| `[OUTPUT]`   | file path, or `-` | `-` (stdout)        | Output path, or `-` for stdout.                                    |
+| `--json`     | switch            | off                 | Parent flag (effect on this subcommand's byte output: unverified). |
 
 Example — write a toy document back out to a file, and to stdout:
 
@@ -375,13 +375,13 @@ Sets a tag on a subject.
 id claim set <SUBJECT> <NAME> [VALUE] [--scope <shared|local>]
 ```
 
-| Flag | Argument | Default | Meaning |
-|---|---|---|---|
-| `<SUBJECT>` | event ID | required positional | The subject's event ID. |
-| `<NAME>` | tag name | required positional | The tag name. A `local:` prefix is shorthand for `--scope local` when `--scope` is absent. |
-| `[VALUE]` | string | — (none) | The tag value. Without one, the tag is bare. |
-| `--scope` | `shared\|local` | `shared` | Whether the claim is shared with peers or stays on this node. An explicit `--scope` wins over a `local:` name prefix: with `--scope shared`, a name written `local:NAME` is a shared claim whose name keeps the prefix. |
-| `--json` | switch | off | Parent flag: print one JSON object instead of a line. |
+| Flag        | Argument        | Default             | Meaning                                                                                                                                                                                                                 |
+| ----------- | --------------- | ------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `<SUBJECT>` | event ID        | required positional | The subject's event ID.                                                                                                                                                                                                 |
+| `<NAME>`    | tag name        | required positional | The tag name. A `local:` prefix is shorthand for `--scope local` when `--scope` is absent.                                                                                                                              |
+| `[VALUE]`   | string          | — (none)            | The tag value. Without one, the tag is bare.                                                                                                                                                                            |
+| `--scope`   | `shared\|local` | `shared`            | Whether the claim is shared with peers or stays on this node. An explicit `--scope` wins over a `local:` name prefix: with `--scope shared`, a name written `local:NAME` is a shared claim whose name keeps the prefix. |
+| `--json`    | switch          | off                 | Parent flag: print one JSON object instead of a line.                                                                                                                                                                   |
 
 Example — a shared toy claim, and the same claim kept local by the prefix shorthand:
 
@@ -400,11 +400,11 @@ Clears the live claims with this name on a subject, whoever set them.
 id claim clear <SUBJECT> <NAME>
 ```
 
-| Flag | Argument | Default | Meaning |
-|---|---|---|---|
-| `<SUBJECT>` | event ID | required positional | The subject's event ID. |
-| `<NAME>` | tag name | required positional | The tag name. |
-| `--json` | switch | off | Parent flag: print one JSON object instead of a line. |
+| Flag        | Argument | Default             | Meaning                                               |
+| ----------- | -------- | ------------------- | ----------------------------------------------------- |
+| `<SUBJECT>` | event ID | required positional | The subject's event ID.                               |
+| `<NAME>`    | tag name | required positional | The tag name.                                         |
+| `--json`    | switch   | off                 | Parent flag: print one JSON object instead of a line. |
 
 Behaviour: clearing stops future replication. It cannot unsend copies peers already hold.
 
@@ -424,11 +424,11 @@ Lists the live claims with this name, and value if given, on any subject.
 id claim search <NAME> [VALUE]
 ```
 
-| Flag | Argument | Default | Meaning |
-|---|---|---|---|
-| `<NAME>` | tag name | required positional | The tag name. |
-| `[VALUE]` | string | — (none) | The tag value to match as a whole. Without one, any value and a bare tag match. |
-| `--json` | switch | off | Parent flag: print one JSON array instead of lines. |
+| Flag      | Argument | Default             | Meaning                                                                         |
+| --------- | -------- | ------------------- | ------------------------------------------------------------------------------- |
+| `<NAME>`  | tag name | required positional | The tag name.                                                                   |
+| `[VALUE]` | string   | — (none)            | The tag value to match as a whole. Without one, any value and a bare tag match. |
+| `--json`  | switch   | off                 | Parent flag: print one JSON array instead of lines.                             |
 
 Example:
 
@@ -446,13 +446,13 @@ Changes the scope of this node's claims with this name on a subject.
 id claim scope <SUBJECT> <NAME> <shared|local> [--yes]
 ```
 
-| Flag | Argument | Default | Meaning |
-|---|---|---|---|
-| `<SUBJECT>` | event ID | required positional | The subject's event ID. |
-| `<NAME>` | tag name | required positional | The tag name. |
-| `<SCOPE>` | `shared\|local` | required positional | The target scope. It is explicit, so it wins over any `local:` prefix shorthand used when a claim was set. |
-| `--yes` | switch | off | Confirm publishing local claims as shared. Required when the move would publish a local claim: publishing cannot be undone. |
-| `--json` | switch | off | Parent flag: print one JSON object instead of a line. |
+| Flag        | Argument        | Default             | Meaning                                                                                                                     |
+| ----------- | --------------- | ------------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| `<SUBJECT>` | event ID        | required positional | The subject's event ID.                                                                                                     |
+| `<NAME>`    | tag name        | required positional | The tag name.                                                                                                               |
+| `<SCOPE>`   | `shared\|local` | required positional | The target scope. It is explicit, so it wins over any `local:` prefix shorthand used when a claim was set.                  |
+| `--yes`     | switch          | off                 | Confirm publishing local claims as shared. Required when the move would publish a local claim: publishing cannot be undone. |
+| `--json`    | switch          | off                 | Parent flag: print one JSON object instead of a line.                                                                       |
 
 Behaviour: moving to `local` stops future replication but cannot unsend copies peers already hold. Moving to `shared` publishes this node's local claims and cannot be undone.
 
@@ -472,9 +472,9 @@ Reviews every live claim visible to this node, with its scope. It takes no argum
 id claim review
 ```
 
-| Flag | Argument | Default | Meaning |
-|---|---|---|---|
-| `--json` | switch | off | Parent flag: print one JSON object instead of lines. |
+| Flag     | Argument | Default | Meaning                                              |
+| -------- | -------- | ------- | ---------------------------------------------------- |
+| `--json` | switch   | off     | Parent flag: print one JSON object instead of lines. |
 
 Example:
 
@@ -492,10 +492,10 @@ Lists the live claims on a subject.
 id claim list <SUBJECT>
 ```
 
-| Flag | Argument | Default | Meaning |
-|---|---|---|---|
-| `<SUBJECT>` | event ID | required positional | The subject's event ID. |
-| `--json` | switch | off | Parent flag: print one JSON array instead of lines. |
+| Flag        | Argument | Default             | Meaning                                             |
+| ----------- | -------- | ------------------- | --------------------------------------------------- |
+| `<SUBJECT>` | event ID | required positional | The subject's event ID.                             |
+| `--json`    | switch   | off                 | Parent flag: print one JSON array instead of lines. |
 
 Example:
 
@@ -517,10 +517,10 @@ Shows one stored writer set: its ID, version, owner, scope, and the counts of it
 id writer-sets show <EVENT>
 ```
 
-| Flag | Argument | Default | Meaning |
-|---|---|---|---|
-| `<EVENT>` | event ID | required positional | The publishing event's ID. |
-| `--json` | switch | off | Parent flag: print one JSON object instead of lines. |
+| Flag      | Argument | Default             | Meaning                                              |
+| --------- | -------- | ------------------- | ---------------------------------------------------- |
+| `<EVENT>` | event ID | required positional | The publishing event's ID.                           |
+| `--json`  | switch   | off                 | Parent flag: print one JSON object instead of lines. |
 
 Example:
 
@@ -538,12 +538,12 @@ Expands one stored writer set at its publishing frontier: whether the expansion 
 id writer-sets expand <EVENT> [--resolution <HEX>] [--retro]
 ```
 
-| Flag | Argument | Default | Meaning |
-|---|---|---|---|
-| `<EVENT>` | event ID | required positional | The publishing event's ID. |
+| Flag           | Argument   | Default                 | Meaning                                                                                                                           |
+| -------------- | ---------- | ----------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| `<EVENT>`      | event ID   | required positional     | The publishing event's ID.                                                                                                        |
 | `--resolution` | hex string | — (none; the zero hash) | The resolution snapshot to pin the projection under, as hex. Without one, the zero hash names the store's current resolved state. |
-| `--retro` | switch | off | Expand retroactively: only entries marked include-history contribute. Exclusions always apply. |
-| `--json` | switch | off | Parent flag: print one JSON object instead of lines. |
+| `--retro`      | switch     | off                     | Expand retroactively: only entries marked include-history contribute. Exclusions always apply.                                    |
+| `--json`       | switch     | off                     | Parent flag: print one JSON object instead of lines.                                                                              |
 
 Example:
 
@@ -561,11 +561,11 @@ Discovers stored writer sets by scope: one row per set, with the writers it expa
 id writer-sets discover [--scope <SCOPE>] [--resolution <HEX>]
 ```
 
-| Flag | Argument | Default | Meaning |
-|---|---|---|---|
-| `--scope` | string | — (none; all sets) | The scope (subject) to match, exactly. Without `--scope`, every stored set matches. |
+| Flag           | Argument   | Default                 | Meaning                                                                                                                           |
+| -------------- | ---------- | ----------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| `--scope`      | string     | — (none; all sets)      | The scope (subject) to match, exactly. Without `--scope`, every stored set matches.                                               |
 | `--resolution` | hex string | — (none; the zero hash) | The resolution snapshot to pin each expansion under, as hex. Without one, the zero hash names the store's current resolved state. |
-| `--json` | switch | off | Parent flag: print one JSON array instead of lines. |
+| `--json`       | switch     | off                     | Parent flag: print one JSON array instead of lines.                                                                               |
 
 Example:
 
@@ -583,9 +583,9 @@ Prints the local node's public ID. The command name collides with the binary nam
 id id [--client]
 ```
 
-| Flag | Argument | Default | Meaning |
-|---|---|---|---|
-| `--client` | switch | off | Print the client identity instead of the server identity. The client identity is the one this machine uses when connecting to other nodes; a server owner adds it with `id serve --allow-node <ID>` so this machine may write to that server. |
+| Flag       | Argument | Default | Meaning                                                                                                                                                                                                                                       |
+| ---------- | -------- | ------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--client` | switch   | off     | Print the client identity instead of the server identity. The client identity is the one this machine uses when connecting to other nodes; a server owner adds it with `id serve --allow-node <ID>` so this machine may write to that server. |
 
 Example:
 
@@ -610,10 +610,10 @@ Exports the server identity (or, with `--client`, the client identity) to an enc
 id key export <OUTPUT> [--client]
 ```
 
-| Flag | Argument | Default | Meaning |
-|---|---|---|---|
-| `<OUTPUT>` | file path | required positional | Destination for the encrypted key envelope. |
-| `--client` | switch | off | Export the client identity instead of the server identity. |
+| Flag       | Argument  | Default             | Meaning                                                    |
+| ---------- | --------- | ------------------- | ---------------------------------------------------------- |
+| `<OUTPUT>` | file path | required positional | Destination for the encrypted key envelope.                |
+| `--client` | switch    | off                 | Export the client identity instead of the server identity. |
 
 Example:
 
@@ -632,11 +632,11 @@ Imports an encrypted key envelope as the server or client identity. The passphra
 id key import <INPUT> [--client] [--replace]
 ```
 
-| Flag | Argument | Default | Meaning |
-|---|---|---|---|
-| `<INPUT>` | file path | required positional | The encrypted key envelope to import. |
-| `--client` | switch | off | Import as the client identity instead of the server identity. |
-| `--replace` | switch | off | Replace an existing identity key file atomically. |
+| Flag        | Argument  | Default             | Meaning                                                       |
+| ----------- | --------- | ------------------- | ------------------------------------------------------------- |
+| `<INPUT>`   | file path | required positional | The encrypted key envelope to import.                         |
+| `--client`  | switch    | off                 | Import as the client identity instead of the server identity. |
+| `--replace` | switch    | off                 | Replace an existing identity key file atomically.             |
 
 Example:
 
@@ -655,9 +655,9 @@ Prints the server identity (or, with `--client`, the client identity) as a 24-wo
 id key export-seed [--client]
 ```
 
-| Flag | Argument | Default | Meaning |
-|---|---|---|---|
-| `--client` | switch | off | Export the client identity instead of the server identity. |
+| Flag       | Argument | Default | Meaning                                                    |
+| ---------- | -------- | ------- | ---------------------------------------------------------- |
+| `--client` | switch   | off     | Export the client identity instead of the server identity. |
 
 Example:
 
@@ -677,10 +677,10 @@ Restores the server or client identity from a 24-word seed phrase entered at a h
 id key import-seed [--client] [--replace]
 ```
 
-| Flag | Argument | Default | Meaning |
-|---|---|---|---|
-| `--client` | switch | off | Import as the client identity instead of the server identity. |
-| `--replace` | switch | off | Replace an existing identity key file atomically. |
+| Flag        | Argument | Default | Meaning                                                       |
+| ----------- | -------- | ------- | ------------------------------------------------------------- |
+| `--client`  | switch   | off     | Import as the client identity instead of the server identity. |
+| `--replace` | switch   | off     | Replace an existing identity key file atomically.             |
 
 Example:
 
@@ -707,9 +707,9 @@ Prints the identity ID, admin keys and device keys.
 id keyset show [--client]
 ```
 
-| Flag | Argument | Default | Meaning |
-|---|---|---|---|
-| `--client` | switch | off | Show the client identity's keyset instead of the server's. |
+| Flag       | Argument | Default | Meaning                                                    |
+| ---------- | -------- | ------- | ---------------------------------------------------------- |
+| `--client` | switch   | off     | Show the client identity's keyset instead of the server's. |
 
 Example:
 
@@ -727,11 +727,11 @@ Enrols another device key. The device's 32-byte key file is read to countersign 
 id keyset enrol <DEVICE_KEY_FILE> --label <NAME> [--client]
 ```
 
-| Flag | Argument | Default | Meaning |
-|---|---|---|---|
-| `<DEVICE_KEY_FILE>` | file path | required positional | The new device's key file (the `.iroh-key` it was created with). |
-| `--label` | string | required | A name for the device, shown by `id keyset show`. Omitting it is a clap error, exit `2`. |
-| `--client` | switch | off | Change the client identity's keyset instead of the server's. |
+| Flag                | Argument  | Default             | Meaning                                                                                  |
+| ------------------- | --------- | ------------------- | ---------------------------------------------------------------------------------------- |
+| `<DEVICE_KEY_FILE>` | file path | required positional | The new device's key file (the `.iroh-key` it was created with).                         |
+| `--label`           | string    | required            | A name for the device, shown by `id keyset show`. Omitting it is a clap error, exit `2`. |
+| `--client`          | switch    | off                 | Change the client identity's keyset instead of the server's.                             |
 
 Example:
 
@@ -749,11 +749,11 @@ Revokes a device key, given as its hex public key. Records it signed before the 
 id keyset revoke <DEVICE_KEY> [--reason <TEXT>] [--client]
 ```
 
-| Flag | Argument | Default | Meaning |
-|---|---|---|---|
-| `<DEVICE_KEY>` | hex public key | required positional | The device's hex public key, as `id keyset show` prints it. |
-| `--reason` | text | `revoked` | Why it was revoked, kept in the record. |
-| `--client` | switch | off | Change the client identity's keyset instead of the server's. |
+| Flag           | Argument       | Default             | Meaning                                                      |
+| -------------- | -------------- | ------------------- | ------------------------------------------------------------ |
+| `<DEVICE_KEY>` | hex public key | required positional | The device's hex public key, as `id keyset show` prints it.  |
+| `--reason`     | text           | `revoked`           | Why it was revoked, kept in the record.                      |
+| `--client`     | switch         | off                 | Change the client identity's keyset instead of the server's. |
 
 Example:
 
@@ -772,10 +772,10 @@ Hands admin power to another key. The new key's 32-byte key file is read to coun
 id keyset rotate <NEW_ADMIN_KEY_FILE> [--client]
 ```
 
-| Flag | Argument | Default | Meaning |
-|---|---|---|---|
-| `<NEW_ADMIN_KEY_FILE>` | file path | required positional | The new admin key's key file. |
-| `--client` | switch | off | Change the client identity's keyset instead of the server's. |
+| Flag                   | Argument  | Default             | Meaning                                                      |
+| ---------------------- | --------- | ------------------- | ------------------------------------------------------------ |
+| `<NEW_ADMIN_KEY_FILE>` | file path | required positional | The new admin key's key file.                                |
+| `--client`             | switch    | off                 | Change the client identity's keyset instead of the server's. |
 
 Example:
 
@@ -793,11 +793,11 @@ Names the guardians who can approve a recovery of this identity, and how many mu
 id keyset guardians <GUARDIANS>... --threshold <N> [--client]
 ```
 
-| Flag | Argument | Default | Meaning |
-|---|---|---|---|
-| `<GUARDIANS>...` | identity IDs (hex public keys) | required positional, at least one | Each guardian's identity ID. |
-| `--threshold` | integer | required | How many of the guardians must approve a recovery. Omitting it is a clap error, exit `2`. |
-| `--client` | switch | off | Change the client identity's keyset instead of the server's. |
+| Flag             | Argument                       | Default                           | Meaning                                                                                   |
+| ---------------- | ------------------------------ | --------------------------------- | ----------------------------------------------------------------------------------------- |
+| `<GUARDIANS>...` | identity IDs (hex public keys) | required positional, at least one | Each guardian's identity ID.                                                              |
+| `--threshold`    | integer                        | required                          | How many of the guardians must approve a recovery. Omitting it is a clap error, exit `2`. |
+| `--client`       | switch                         | off                               | Change the client identity's keyset instead of the server's.                              |
 
 Behaviour: adding guardians or raising the threshold takes effect at once. Removing a guardian or lowering the threshold waits out the recovery delay, so a stolen admin key cannot swap in guardians of its own.
 
@@ -820,9 +820,9 @@ Checkpoints the current keyset head with this identity's key, which must be an a
 id keyset checkpoint [--client]
 ```
 
-| Flag | Argument | Default | Meaning |
-|---|---|---|---|
-| `--client` | switch | off | Checkpoint the client identity's keyset instead of the server's. |
+| Flag       | Argument | Default | Meaning                                                          |
+| ---------- | -------- | ------- | ---------------------------------------------------------------- |
+| `--client` | switch   | off     | Checkpoint the client identity's keyset instead of the server's. |
 
 Example:
 
@@ -844,10 +844,10 @@ Copies this identity's keyset records into the relay, so a successor can pin its
 id keyset recovery publish --relay <FILE> [--client]
 ```
 
-| Flag | Argument | Default | Meaning |
-|---|---|---|---|
-| `--relay` | file path | required | The recovery relay file. |
-| `--client` | switch | off | Publish the client identity's keyset instead of the server's. |
+| Flag       | Argument  | Default  | Meaning                                                       |
+| ---------- | --------- | -------- | ------------------------------------------------------------- |
+| `--relay`  | file path | required | The recovery relay file.                                      |
+| `--client` | switch    | off      | Publish the client identity's keyset instead of the server's. |
 
 Example:
 
@@ -865,12 +865,12 @@ From a new device, asks the guardians of an identity to recover it. This device'
 id keyset recovery request <IDENTITY> --relay <FILE> [--reason <TEXT>] [--client]
 ```
 
-| Flag | Argument | Default | Meaning |
-|---|---|---|---|
-| `<IDENTITY>` | hex identity ID | required positional | The identity to recover (its hex identity ID). |
-| `--relay` | file path | required | The recovery relay file. |
-| `--reason` | text | `lost every key` | Why, shown to every device and guardian told of the request. |
-| `--client` | switch | off | Sign with the client key instead of the server key. |
+| Flag         | Argument        | Default             | Meaning                                                      |
+| ------------ | --------------- | ------------------- | ------------------------------------------------------------ |
+| `<IDENTITY>` | hex identity ID | required positional | The identity to recover (its hex identity ID).               |
+| `--relay`    | file path       | required            | The recovery relay file.                                     |
+| `--reason`   | text            | `lost every key`    | Why, shown to every device and guardian told of the request. |
+| `--client`   | switch          | off                 | Sign with the client key instead of the server key.          |
 
 The command prints the request ID; that ID is the `<REQUEST>` argument of `approve`, `cancel`, `status` and `complete`.
 
@@ -892,11 +892,11 @@ As a guardian, approves a recovery request. Also publishes this guardian identit
 id keyset recovery approve <REQUEST> --relay <FILE> [--client]
 ```
 
-| Flag | Argument | Default | Meaning |
-|---|---|---|---|
-| `<REQUEST>` | request ID | required positional | The request ID, as `request` printed it. |
-| `--relay` | file path | required | The recovery relay file. |
-| `--client` | switch | off | Approve as the client identity instead of the server's. |
+| Flag        | Argument   | Default             | Meaning                                                 |
+| ----------- | ---------- | ------------------- | ------------------------------------------------------- |
+| `<REQUEST>` | request ID | required positional | The request ID, as `request` printed it.                |
+| `--relay`   | file path  | required            | The recovery relay file.                                |
+| `--client`  | switch     | off                 | Approve as the client identity instead of the server's. |
 
 Example:
 
@@ -914,11 +914,11 @@ Cancels a recovery request with any surviving admin or device key of the identit
 id keyset recovery cancel <REQUEST> --relay <FILE> [--client]
 ```
 
-| Flag | Argument | Default | Meaning |
-|---|---|---|---|
-| `<REQUEST>` | request ID | required positional | The request ID. |
-| `--relay` | file path | required | The recovery relay file. |
-| `--client` | switch | off | Sign with the client key instead of the server key. |
+| Flag        | Argument   | Default             | Meaning                                             |
+| ----------- | ---------- | ------------------- | --------------------------------------------------- |
+| `<REQUEST>` | request ID | required positional | The request ID.                                     |
+| `--relay`   | file path  | required            | The recovery relay file.                            |
+| `--client`  | switch     | off                 | Sign with the client key instead of the server key. |
 
 Example:
 
@@ -936,10 +936,10 @@ Shows where a recovery request stands. This is the one keyset subcommand with no
 id keyset recovery status <REQUEST> --relay <FILE>
 ```
 
-| Flag | Argument | Default | Meaning |
-|---|---|---|---|
-| `<REQUEST>` | request ID | required positional | The request ID. |
-| `--relay` | file path | required | The recovery relay file. |
+| Flag        | Argument   | Default             | Meaning                  |
+| ----------- | ---------- | ------------------- | ------------------------ |
+| `<REQUEST>` | request ID | required positional | The request ID.          |
+| `--relay`   | file path  | required            | The recovery relay file. |
 
 Example:
 
@@ -957,11 +957,11 @@ On the requesting device, completes a recovery that is ready by relaying the rot
 id keyset recovery complete <REQUEST> --relay <FILE> [--client]
 ```
 
-| Flag | Argument | Default | Meaning |
-|---|---|---|---|
-| `<REQUEST>` | request ID | required positional | The request ID. |
-| `--relay` | file path | required | The recovery relay file. |
-| `--client` | switch | off | Sign with the client key instead of the server key. |
+| Flag        | Argument   | Default             | Meaning                                             |
+| ----------- | ---------- | ------------------- | --------------------------------------------------- |
+| `<REQUEST>` | request ID | required positional | The request ID.                                     |
+| `--relay`   | file path  | required            | The recovery relay file.                            |
+| `--client`  | switch     | off                 | Sign with the client key instead of the server key. |
 
 Example:
 
@@ -979,22 +979,22 @@ Discovers and lists known peers. It discovers other `id` servers via gossip-base
 id peers [NODE] [OPTIONS]
 ```
 
-| Flag | Argument | Default | Meaning |
-|---|---|---|---|
-| `[NODE]` | 64 hex characters | — (none; the local serve) | Remote node ID to query. When set, queries this specific node instead of the local serve instance. |
-| `--gossip` | switch | off | Gossip-only discovery: join the topic and collect announcements, bypassing RPC entirely. Useful when no local serve is running. |
-| `--rpc` | switch | off | RPC-only discovery: query the server's `ListPeers` RPC. Fails if no local serve is running, unless a node ID is given. |
-| `--depth` | integer, `0..` | `1` | Recursive depth for peer-of-peer crawling. `0` = no crawl, `1` = query direct peers, `N` = recursively query up to `N` levels deep. A negative value fails: clap's value parser rejects it (the handler also refuses a negative depth). |
-| `--max-peers` | integer | `1000` | Maximum total peers to discover. A hard cap to prevent unbounded crawling. |
-| `--timeout` | integer (seconds) | `30` | Per-crawl timeout in seconds. |
-| `--bootstrap` | comma-separated node IDs | — (none) | Node IDs for gossip bootstrapping, supplementary to DHT auto-discovery. These nodes are contacted first when joining the gossip topic. |
-| `--topic` | string | from `defaults.json`, else the constant `id-peer-discovery-v1` | Gossip topic name for peer discovery. Use a custom topic for private networks. |
-| `--topic-secret` | string | from `defaults.json`, else the constant `id-public-discovery-v1` | Shared secret for topic access control, used to encrypt DHT bootstrap records. The value is never echoed. |
-| `--no-default-bootstrap` | switch | off | Skip default bootstrap node IDs from `defaults.json`; only CLI-provided `--bootstrap` nodes are used. |
-| `--no-default-topic` | switch | off | Skip the topic and secret from `defaults.json`; fall back to the hardcoded constant values. |
-| `--no-relay` | switch | off | Disable relay servers and use direct connections only. |
-| `--no-mdns` | switch | off | Disable mDNS local peer discovery, which is on by default. |
-| `--abuse` | switch | off | Show the local serve instance's per-peer abuse counters instead of listing peers: frames and bytes admitted by the abuse evaluator, split by direction, with the policy rates shown alongside. Read-only. Local serve only; cannot be combined with `--gossip` or a remote `[NODE]`. The counters cover world-protocol traffic only: a serve running without `--world` records none and the report is empty. |
+| Flag                     | Argument                 | Default                                                          | Meaning                                                                                                                                                                                                                                                                                                                                                                                                      |
+| ------------------------ | ------------------------ | ---------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `[NODE]`                 | 64 hex characters        | — (none; the local serve)                                        | Remote node ID to query. When set, queries this specific node instead of the local serve instance.                                                                                                                                                                                                                                                                                                           |
+| `--gossip`               | switch                   | off                                                              | Gossip-only discovery: join the topic and collect announcements, bypassing RPC entirely. Useful when no local serve is running.                                                                                                                                                                                                                                                                              |
+| `--rpc`                  | switch                   | off                                                              | RPC-only discovery: query the server's `ListPeers` RPC. Fails if no local serve is running, unless a node ID is given.                                                                                                                                                                                                                                                                                       |
+| `--depth`                | integer, `0..`           | `1`                                                              | Recursive depth for peer-of-peer crawling. `0` = no crawl, `1` = query direct peers, `N` = recursively query up to `N` levels deep. A negative value fails: clap's value parser rejects it (the handler also refuses a negative depth).                                                                                                                                                                      |
+| `--max-peers`            | integer                  | `1000`                                                           | Maximum total peers to discover. A hard cap to prevent unbounded crawling.                                                                                                                                                                                                                                                                                                                                   |
+| `--timeout`              | integer (seconds)        | `30`                                                             | Per-crawl timeout in seconds.                                                                                                                                                                                                                                                                                                                                                                                |
+| `--bootstrap`            | comma-separated node IDs | — (none)                                                         | Node IDs for gossip bootstrapping, supplementary to DHT auto-discovery. These nodes are contacted first when joining the gossip topic.                                                                                                                                                                                                                                                                       |
+| `--topic`                | string                   | from `defaults.json`, else the constant `id-peer-discovery-v1`   | Gossip topic name for peer discovery. Use a custom topic for private networks.                                                                                                                                                                                                                                                                                                                               |
+| `--topic-secret`         | string                   | from `defaults.json`, else the constant `id-public-discovery-v1` | Shared secret for topic access control, used to encrypt DHT bootstrap records. The value is never echoed.                                                                                                                                                                                                                                                                                                    |
+| `--no-default-bootstrap` | switch                   | off                                                              | Skip default bootstrap node IDs from `defaults.json`; only CLI-provided `--bootstrap` nodes are used.                                                                                                                                                                                                                                                                                                        |
+| `--no-default-topic`     | switch                   | off                                                              | Skip the topic and secret from `defaults.json`; fall back to the hardcoded constant values.                                                                                                                                                                                                                                                                                                                  |
+| `--no-relay`             | switch                   | off                                                              | Disable relay servers and use direct connections only.                                                                                                                                                                                                                                                                                                                                                       |
+| `--no-mdns`              | switch                   | off                                                              | Disable mDNS local peer discovery, which is on by default.                                                                                                                                                                                                                                                                                                                                                   |
+| `--abuse`                | switch                   | off                                                              | Show the local serve instance's per-peer abuse counters instead of listing peers: frames and bytes admitted by the abuse evaluator, split by direction, with the policy rates shown alongside. Read-only. Local serve only; cannot be combined with `--gossip` or a remote `[NODE]`. The counters cover world-protocol traffic only: a serve running without `--world` records none and the report is empty. |
 
 Behaviour: the default mode is RPC-then-gossip: try RPC (query the local serve), then gossip as fallback. `--rpc` and `--gossip` each pin one mode. The topic and topic-secret defaults follow the same resolution as `serve`: file defaults from `defaults.json` are consulted first and the named constants are the fallback, which is why `--no-default-topic` exists (the same pattern as disagreement CLI-6 for `serve`).
 

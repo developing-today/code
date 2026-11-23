@@ -4,10 +4,10 @@ Source: https://github.com/developing-today/code/blob/main/pkgs/id/hosted-worker
 
 This chapter documents the hosted Worker **as it stands**. Two packages exist, and neither is a live service:
 
-| Package | Status |
-|---|---|
-| `pkgs/id/hosted-worker` | A local-only scaffold. Not deployed. |
-| `pkgs/id/worker-poc` | A completed proof of concept. Not a production path. |
+| Package                 | Status                                               |
+| ----------------------- | ---------------------------------------------------- |
+| `pkgs/id/hosted-worker` | A local-only scaffold. Not deployed.                 |
+| `pkgs/id/worker-poc`    | A completed proof of concept. Not a production path. |
 
 ## Disposition: local-only scaffold, not deployed
 
@@ -28,11 +28,11 @@ The hosted data plane for bound hosted-edition users. There is one `UserDO` Dura
 
 - per-user key/value store,
 - blob references (the bytes live in R2),
-- a signed-object bridge store that acts as a *sync peer*: it holds signed objects and fork evidence, assigns no order, re-signs nothing, and serves no authoritative snapshot.
+- a signed-object bridge store that acts as a _sync peer_: it holds signed objects and fork evidence, assigns no order, re-signs nothing, and serves no authoritative snapshot.
 
 ## The front door
 
-`src/worker.ts` (73 lines) is the entry point. It does not authenticate users itself. It consumes an *already-authenticated* resolved context set by an authenticated internal caller; the binding ceremony that produces that context is native code, in `pkgs/id/src/hosted_binding.rs`.
+`src/worker.ts` (73 lines) is the entry point. It does not authenticate users itself. It consumes an _already-authenticated_ resolved context set by an authenticated internal caller; the binding ceremony that produces that context is native code, in `pkgs/id/src/hosted_binding.rs`.
 
 Request handling, in order:
 
@@ -52,14 +52,14 @@ Routing rules in `src/routing.ts` — the only module that touches the raw `USER
 
 From `wrangler.toml`: Worker name `id-hosted-worker`, `compatibility_date` `2025-06-01`.
 
-| Binding / var | Type | Notes |
-|---|---|---|
-| `USERS` | Durable Object namespace → `UserDO` | Migration tag `v1`, `new_sqlite_classes = ["UserDO"]`. |
-| `BLOBS` | R2 bucket `id-hosted-blobs` | Content-addressed blob bytes. Local emulation only. In the `UserDO` interface the binding is optional, and the code that needs it fails closed without it. |
-| `USER_CEILING_BYTES` | String var, optional | Per-user storage ceiling. Absent or empty means no ceiling. A malformed value fails writes closed. Also read by the front door for the body limit: `MAX_BODY_BYTES` is a 100 MiB cap. |
-| `BRIDGE_WAITING_PER_AUTHOR` | String var, optional | Bridge waiting-pool bound, per author. Absent means the native default in `bridge-store.ts`. A malformed value fails bridge writes closed. |
-| `BRIDGE_WAITING_TOTAL` | String var, optional | Bridge waiting-pool bound, total. Same default and failure rule. |
-| `BRIDGE_WAITING_MAX_AGE_MS` | String var, optional | Bridge waiting-pool bound, maximum age in milliseconds. Same default and failure rule. |
+| Binding / var               | Type                                | Notes                                                                                                                                                                                 |
+| --------------------------- | ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `USERS`                     | Durable Object namespace → `UserDO` | Migration tag `v1`, `new_sqlite_classes = ["UserDO"]`.                                                                                                                                |
+| `BLOBS`                     | R2 bucket `id-hosted-blobs`         | Content-addressed blob bytes. Local emulation only. In the `UserDO` interface the binding is optional, and the code that needs it fails closed without it.                            |
+| `USER_CEILING_BYTES`        | String var, optional                | Per-user storage ceiling. Absent or empty means no ceiling. A malformed value fails writes closed. Also read by the front door for the body limit: `MAX_BODY_BYTES` is a 100 MiB cap. |
+| `BRIDGE_WAITING_PER_AUTHOR` | String var, optional                | Bridge waiting-pool bound, per author. Absent means the native default in `bridge-store.ts`. A malformed value fails bridge writes closed.                                            |
+| `BRIDGE_WAITING_TOTAL`      | String var, optional                | Bridge waiting-pool bound, total. Same default and failure rule.                                                                                                                      |
+| `BRIDGE_WAITING_MAX_AGE_MS` | String var, optional                | Bridge waiting-pool bound, maximum age in milliseconds. Same default and failure rule.                                                                                                |
 
 Test harness: `wrangler.test.toml` defines a separate Worker, name `id-hosted-worker-test`, main `src/test-harness.ts`, with binding `TEST_USERS` → `UserDO`, bucket `id-hosted-blobs-test`, and `USER_CEILING_BYTES = "1073741824"`. It is test-only and is never an application entry point.
 
@@ -75,23 +75,23 @@ Every route first runs a common guard:
 
 The object's SQLite schema is `SCHEMA_VERSION = 3`, with tables `meta`, `kv` and `blobs`, plus the bridge schema listed in [Data stores and schemas](data-stores.md).
 
-| Method | Path | Purpose |
-|---|---|---|
-| GET | `/v1/state` | `binding_id`, `jurisdiction`, `schema_version`, object name. |
-| GET | `/v1/usage` | Usage, ceiling, and `at_cap`. |
-| GET | `/v1/export` | Full KV plus blob index export. Stays available at cap, by design. |
-| PUT | `/v1/kv/{key}` | Per-user KV write. The key must match `[A-Za-z0-9._-]{1,128}`. |
-| GET | `/v1/kv/{key}` | KV read. |
-| DELETE | `/v1/kv/{key}` | KV delete. Available at cap. |
-| PUT | `/v1/blobs` | Store a content-addressed blob. The key is the SHA-256 hex of the content. Bytes are deduplicated across users in R2; each user gets a per-user reference row. |
-| GET | `/v1/blobs/{64-hex}` | Fetch a blob this user references. |
-| DELETE | `/v1/blobs/{64-hex}` | Drop this user's reference only. The R2 bytes are deliberately not deleted; garbage collection is a separate, unimplemented family of work. |
-| GET | `/v1/bridge/challenge` | Issue a single-use ID-key proof nonce for the bridge. |
-| GET | `/v1/bridge/heads` | Bridge chain heads. Requires a fresh ID-key proof per call. |
-| POST | `/v1/bridge/push` | Ingest a batch of signed events. Per-event outcomes: `accepted`, `duplicate`, `fork`, `waiting`, `refused`. |
-| POST | `/v1/bridge/pull` | Pull events beyond per-author positions. Returns a binary batch, with `x-bridge-more` and `x-bridge-heads` headers. |
-| GET | `/v1/bridge/export` | Export sets for the native `build_export`. Answers `502` naming the hash if R2 cannot produce a cited blob. |
-| WS | `/v1/bridge/ws` | Bridge session: in-band `CHALLENGE`/`AUTH`, binary frames only. |
+| Method | Path                   | Purpose                                                                                                                                                        |
+| ------ | ---------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| GET    | `/v1/state`            | `binding_id`, `jurisdiction`, `schema_version`, object name.                                                                                                   |
+| GET    | `/v1/usage`            | Usage, ceiling, and `at_cap`.                                                                                                                                  |
+| GET    | `/v1/export`           | Full KV plus blob index export. Stays available at cap, by design.                                                                                             |
+| PUT    | `/v1/kv/{key}`         | Per-user KV write. The key must match `[A-Za-z0-9._-]{1,128}`.                                                                                                 |
+| GET    | `/v1/kv/{key}`         | KV read.                                                                                                                                                       |
+| DELETE | `/v1/kv/{key}`         | KV delete. Available at cap.                                                                                                                                   |
+| PUT    | `/v1/blobs`            | Store a content-addressed blob. The key is the SHA-256 hex of the content. Bytes are deduplicated across users in R2; each user gets a per-user reference row. |
+| GET    | `/v1/blobs/{64-hex}`   | Fetch a blob this user references.                                                                                                                             |
+| DELETE | `/v1/blobs/{64-hex}`   | Drop this user's reference only. The R2 bytes are deliberately not deleted; garbage collection is a separate, unimplemented family of work.                    |
+| GET    | `/v1/bridge/challenge` | Issue a single-use ID-key proof nonce for the bridge.                                                                                                          |
+| GET    | `/v1/bridge/heads`     | Bridge chain heads. Requires a fresh ID-key proof per call.                                                                                                    |
+| POST   | `/v1/bridge/push`      | Ingest a batch of signed events. Per-event outcomes: `accepted`, `duplicate`, `fork`, `waiting`, `refused`.                                                    |
+| POST   | `/v1/bridge/pull`      | Pull events beyond per-author positions. Returns a binary batch, with `x-bridge-more` and `x-bridge-heads` headers.                                            |
+| GET    | `/v1/bridge/export`    | Export sets for the native `build_export`. Answers `502` naming the hash if R2 cannot produce a cited blob.                                                    |
+| WS     | `/v1/bridge/ws`        | Bridge session: in-band `CHALLENGE`/`AUTH`, binary frames only.                                                                                                |
 
 Failure shapes:
 
@@ -109,13 +109,13 @@ The `hosted-worker` README describes the UserDO routes as `GET /v1/state` and `P
 
 These modules exist in the package but are not routed by `worker.ts`:
 
-| Module | What it is |
-|---|---|
-| `src/provisioning.ts`, `src/provisioning-surface.ts` | The provisioning surface. |
-| `src/account-directory.ts` | Account directory. |
-| `src/admission-gate.ts` | Admission gate. |
-| `src/export.ts` | Export support behind `/v1/bridge/export`. |
-| `src/currency/{gateway,ledger,relay,crypto}.ts` | A currency gateway proof of concept. Its own documentation states it is "not the permanent currency service": an in-process ledger stub modelled on TigerBeetle, gateway-signed balance snapshots, and a UserDO relay that reconciles by request-ID lookup. |
+| Module                                               | What it is                                                                                                                                                                                                                                                  |
+| ---------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `src/provisioning.ts`, `src/provisioning-surface.ts` | The provisioning surface.                                                                                                                                                                                                                                   |
+| `src/account-directory.ts`                           | Account directory.                                                                                                                                                                                                                                          |
+| `src/admission-gate.ts`                              | Admission gate.                                                                                                                                                                                                                                             |
+| `src/export.ts`                                      | Export support behind `/v1/bridge/export`.                                                                                                                                                                                                                  |
+| `src/currency/{gateway,ledger,relay,crypto}.ts`      | A currency gateway proof of concept. Its own documentation states it is "not the permanent currency service": an in-process ledger stub modelled on TigerBeetle, gateway-signed balance snapshots, and a UserDO relay that reconciles by request-ID lookup. |
 
 ## worker-poc: a completed proof, not live
 
@@ -123,22 +123,22 @@ These modules exist in the package but are not routed by `worker.ts`:
 
 Its Worker (`src/worker.ts`) exposes a `WorldObject` Durable Object (binding `WORLD`, migration `v1-sqlite`, with a CompiledWasm rule for the prebuilt guest):
 
-| Method | Path | Purpose |
-|---|---|---|
-| POST | `/step` | Apply one step. Body: `{participant, event}`. |
-| POST | `/cold-start` | Cold-start the object. |
-| GET | `/state` | Read the state. |
+| Method | Path          | Purpose                                       |
+| ------ | ------------- | --------------------------------------------- |
+| POST   | `/step`       | Apply one step. Body: `{participant, event}`. |
+| POST   | `/cold-start` | Cold-start the object.                        |
+| GET    | `/state`      | Read the state.                               |
 
 The SQLite `journal` table is the source of truth. The hosted loader (`src/manifest.ts`) refuses a manifest with `portability=native`, and refuses a manifest declaring more than 64 MB of memory, up front.
 
 The `d1-journal-poc/` subfolder is a second, local-only D1 fit probe. It uses a placeholder database ID and always runs `--local`. Binding `DB` (D1):
 
-| Method | Path | Purpose |
-|---|---|---|
-| GET | `/health` | Health check. |
-| POST | `/append` | Append a journal entry. |
-| GET | `/snapshot` | Read a snapshot. |
-| GET | `/tail` | Read the journal tail. Journal header version is `1`; entries include `created` and `caps_granted`. A D1 bookmark is not a stream cursor. |
+| Method | Path        | Purpose                                                                                                                                   |
+| ------ | ----------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| GET    | `/health`   | Health check.                                                                                                                             |
+| POST   | `/append`   | Append a journal entry.                                                                                                                   |
+| GET    | `/snapshot` | Read a snapshot.                                                                                                                          |
+| GET    | `/tail`     | Read the journal tail. Journal header version is `1`; entries include `created` and `caps_granted`. A D1 bookmark is not a stream cursor. |
 
 ## Worked example
 

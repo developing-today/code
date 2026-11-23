@@ -169,12 +169,7 @@ pub trait ConversionControl {
     /// The LP tier `issuer` holds for conversions from
     /// `source_ledger` to `dest_ledger`, or `None` when the
     /// issuer is not an eligible LP for the pair.
-    fn lp_tier(
-        &self,
-        issuer: &IssuerId,
-        source_ledger: &str,
-        dest_ledger: &str,
-    ) -> Option<LpTier>;
+    fn lp_tier(&self, issuer: &IssuerId, source_ledger: &str, dest_ledger: &str) -> Option<LpTier>;
 
     /// The binding record for `issuer`'s liquidity account on
     /// `ledger`, or `None` when no account is bound.
@@ -218,18 +213,9 @@ impl FixedConversionControl {
 }
 
 impl ConversionControl for FixedConversionControl {
-    fn lp_tier(
-        &self,
-        issuer: &IssuerId,
-        source_ledger: &str,
-        dest_ledger: &str,
-    ) -> Option<LpTier> {
+    fn lp_tier(&self, issuer: &IssuerId, source_ledger: &str, dest_ledger: &str) -> Option<LpTier> {
         self.tiers
-            .get(&(
-                *issuer,
-                source_ledger.to_owned(),
-                dest_ledger.to_owned(),
-            ))
+            .get(&(*issuer, source_ledger.to_owned(), dest_ledger.to_owned()))
             .copied()
     }
 
@@ -412,7 +398,9 @@ pub enum FailedPreSubmit {
     /// re-issued since the quote was issued — the live fold is
     /// a different version, or a different event, than the one
     /// the quote pins, so the quote no longer binds.
-    #[error("quote pins authorisation version {quoted_version}, but version {live_version} is live")]
+    #[error(
+        "quote pins authorisation version {quoted_version}, but version {live_version} is live"
+    )]
     QuoteStale {
         /// The version the quote was issued against.
         quoted_version: u64,
@@ -879,8 +867,7 @@ impl ConversionVerifier {
                 quote_expires_at: quote.quote_expires_at,
             });
         }
-        if quote.authorisation_id != submission.authorisation_id || quote.x != submission.amount
-        {
+        if quote.authorisation_id != submission.authorisation_id || quote.x != submission.amount {
             return Err(FailedPreSubmit::QuoteMismatch);
         }
         let folded = self.verify_folded(control, submission)?;
@@ -1086,10 +1073,7 @@ mod tests {
         );
         for ledger_id in [SOURCE_LEDGER_ID, DEST_LEDGER_ID] {
             assert!(
-                ledger
-                    .try_accounts_on_ledger(ledger_id)
-                    .unwrap()
-                    .is_empty(),
+                ledger.try_accounts_on_ledger(ledger_id).unwrap().is_empty(),
                 "zero TigerBeetle account writes"
             );
             assert!(
@@ -1323,8 +1307,7 @@ mod tests {
         // ledger writes. The authorisation names a single
         // counterparty who is not the caller.
         let mut auth = authorisation();
-        auth.authorised_callers =
-            AuthorisedCallers::Single(super::super::issuer_id(&other_key()));
+        auth.authorised_callers = AuthorisedCallers::Single(super::super::issuer_id(&other_key()));
         let mut submission = valid_submission();
         submission.authorisations = vec![presented_auth(&auth)];
         assert_pre_submit(
@@ -1386,14 +1369,7 @@ mod tests {
         let mut submission = valid_submission();
         let v1 = presented_auth(&authorisation());
         let v2_event = {
-            let event = sign_authorisation(
-                &lp_key(),
-                1,
-                Some(v1.event.id),
-                &v2,
-                vec![],
-            )
-            .unwrap();
+            let event = sign_authorisation(&lp_key(), 1, Some(v1.event.id), &v2, vec![]).unwrap();
             PresentedObject {
                 event,
                 body: v2.body().unwrap(),
@@ -1448,10 +1424,7 @@ mod tests {
         );
         for ledger_id in [SOURCE_LEDGER_ID, DEST_LEDGER_ID] {
             assert!(
-                ledger
-                    .try_accounts_on_ledger(ledger_id)
-                    .unwrap()
-                    .is_empty(),
+                ledger.try_accounts_on_ledger(ledger_id).unwrap().is_empty(),
                 "zero TigerBeetle account writes"
             );
             assert!(

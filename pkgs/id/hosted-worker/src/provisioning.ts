@@ -101,10 +101,7 @@ export function validateEnablement(config: EnablementConfig, evidence: AccountEv
     );
   }
   if (!(SUPPORTED_JURISDICTIONS as readonly string[]).includes(rawJurisdiction)) {
-    refuse(
-      "unsupported_jurisdiction",
-      `configured jurisdiction "${rawJurisdiction}" is not supported; failing closed`,
-    );
+    refuse("unsupported_jurisdiction", `configured jurisdiction "${rawJurisdiction}" is not supported; failing closed`);
   }
   const jurisdiction = rawJurisdiction as Jurisdiction;
 
@@ -164,10 +161,7 @@ export function validateEnablement(config: EnablementConfig, evidence: AccountEv
   // binding's declared field — must match the configured one.
   const bucket = config.bucket;
   if (!bucket) {
-    refuse(
-      "bucket_missing",
-      `no R2 bucket is configured for jurisdiction "${jurisdiction}"; failing closed`,
-    );
+    refuse("bucket_missing", `no R2 bucket is configured for jurisdiction "${jurisdiction}"; failing closed`);
   }
   if (bucket.declaredJurisdiction !== undefined && bucket.declaredJurisdiction !== jurisdiction) {
     refuse(
