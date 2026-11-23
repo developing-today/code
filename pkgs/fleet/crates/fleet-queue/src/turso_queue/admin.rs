@@ -1655,9 +1655,13 @@ pub(crate) fn verb_health(t: &TursoBackend, req: &Value) -> Value {
         apply_dep_blocked(&mut by_queue, &drows);
         // Malformed parked rows (#9179 hygiene): fetched as raw
         // values because the failure test is the shared validator,
-        // not a SQL predicate; parked counts are small.
+        // not a SQL predicate; parked counts are small. NULL
+        // not_before rows are fetched too (#9179 class (c)2): such a
+        // park has no lapse term at all, so the claim predicate's
+        // parked branch can never release it — the same hand-wake
+        // bind as a malformed timestamp, and health must name it.
         let mut hsql = "SELECT queue, not_before FROM tasks \
-             WHERE status = 'parked' AND not_before IS NOT NULL"
+             WHERE status = 'parked'"
             .to_string();
         let mut hargs: Vec<Arg> = Vec::new();
         if let Some(q) = &queue_filter {
