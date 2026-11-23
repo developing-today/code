@@ -1,3 +1,4 @@
+import { env } from "cloudflare:test";
 import { beforeAll, describe, expect, it } from "vitest";
 import { HotCacheStore } from "../src/hot_cache";
 import {
