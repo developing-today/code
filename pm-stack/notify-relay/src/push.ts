@@ -158,10 +158,11 @@ export async function sendPush(targets: PushTarget[], payload: unknown, opts: Se
       }
     })();
     try {
+      const authorization = await vapidAuthorization(target.endpoint, signer, now());
       const res = await poster(target.endpoint, {
         method: "POST",
         headers: {
-          Authorization: <redacted>
+          Authorization: authorization,
           "Content-Encoding": "aes128gcm",
           "Content-Type": "application/octet-stream",
           TTL: String(opts.ttlSeconds ?? 3600),

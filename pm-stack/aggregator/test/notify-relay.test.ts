@@ -115,7 +115,7 @@ describe("the client's contact discipline", () => {
   test("first beat: snapshot seq 1 lands before the heartbeat, both Bearer-authed; the seq persists", async () => {
     const { client, calls, stateFile } = await makeClient(okHandler);
     await client.start();
-    expect(calls.map((c) => c.url.split("/").slice(-2).join("/"))).toEqual(["mirror/subscriptions", "heartbeat"]);
+    expect(calls.map((c) => new URL(c.url).pathname)).toEqual(["/mirror/subscriptions", "/heartbeat"]);
     expect(calls[0].body?.snapshotSeq).toBe(1);
     expect(calls[0].authorization).toBe("Bearer test-secret");
     expect(calls[1].body).toEqual({ stackEpoch: "epoch-test", seq: 1, at: "2026-11-23T12:00:00.000Z" });
