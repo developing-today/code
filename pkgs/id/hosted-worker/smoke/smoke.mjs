@@ -79,7 +79,7 @@ async function waitUp(port, tries) {
     check("harness + DO start, lazy create", up);
     let r = await fetch(base + q(A, A, "us"));
     let body = await r.json();
-    check("state reports binding, jurisdiction, schema v2", body.binding_id === A && body.jurisdiction === "us" && body.schema_version === 2, JSON.stringify(body));
+    check("state reports binding, jurisdiction, schema v3", body.binding_id === A && body.jurisdiction === "us" && body.schema_version === 3, JSON.stringify(body));
 
     const many = await Promise.all(Array.from({ length: 8 }, () => fetch(base + q("cccccccccccccccccccccccccccccccc", "cccccccccccccccccccccccccccccccc", "eu"))));
     check("concurrent first requests all 200 (idempotent bootstrap)", many.every((x) => x.status === 200));
