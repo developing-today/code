@@ -38,7 +38,20 @@ that cannot produce a record does not proceed unrecorded.
 checked-in `placement-policy.yaml`; they skip only if it is absent): every
 rule path, first-match-wins, the guard's exclusion of R8 and unreachability
 of R3, the B5 gate (missing read, stale read, B4 reliance), the `"n/a"`
-non-pool case, and the exception path.
+non-pool case, the exception path, and the monthly pace guard (refuse at
+≥97% / >1pp/h / hard-stop; B4, missing data, and non-pool seatings
+proceed).
+
+## Monthly pace guard (issue #2732, slice 1)
+
+A pool-drawn seating is refused — exit non-zero with the pool, the % read,
+and the guard source on stderr — when the fresh quota read behind it shows
+`pool_monthly_pct` at/above 97%, `pool_pace_pph` above 1pp/h, or
+`pool_hard_stop` set (the steward hard-stop in machine-readable form).
+Unknown state never refuses: a B4 reliance proceeds, absent monthly data
+seats on the fresh read, and non-pool options ignore the guard inputs.
+An E1 exception bypasses the guard — the exception record itself is the
+required log line.
 
 ## Demonstration
 
