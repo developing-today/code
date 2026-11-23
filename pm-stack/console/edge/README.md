@@ -36,6 +36,16 @@ action is the laptop's, relayed at once or held.
 The list of actions that may be done late is `HOLDABLE` in
 `../src/edge-proto.ts`.
 
+"A machine" above is whatever reports under the key the edge holds. It
+says what it is called and what it can do in each report (`machine` in
+the report: its name, the kinds of action it has, the sections it
+reads), and the edge keeps what it last said beside when it last
+reported. `GET /console/api/machines` answers from that with no machine
+asked: what the edge does itself right now (its own actions always, the
+core when it has the means, less what it was turned away for), each
+machine, and what is held. `held.drop` takes one held action back
+before a machine has it, and records it as not sent under its name.
+
 ## How it is put together
 
 ```

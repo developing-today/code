@@ -1790,6 +1790,13 @@ describe("actions", () => {
     expect((await machines()).machines[0]).toMatchObject({ name: "amd", actions: ["ask.send", "task.move"] });
   });
 
+  test("machines: a machine says every section it has a reader for from its first report, before it has read any", async () => {
+    const w = await setup();
+    await w.link.now.once();
+    const said = (await (await w.browse("/console/api/machines")).json()) as MachinesAnswer;
+    expect(said.machines.map((m) => [m.name, m.sections])).toEqual([["nixos", [...SECTION_NAMES].sort()]]);
+  });
+
   test("held twice under one name, an action waits once", async () => {
     const w = await setup();
     await w.hostReads();
