@@ -60,7 +60,9 @@ and `issued/<name>/` for leaves.
   `idp.ca-passphrase`.
 - Only public material is published: `trust/` in this directory holds the
   root certificate, the issuing certificate, and the chain, exactly as
-  generated. Verify any copy against the fingerprints recorded on the story
+  generated, plus the provider signing certificates issued under Slice 2
+  of the IdP story (`oidc-signing.crt.pem`, `saml-signing.crt.pem`) —
+  public certificates only; their private keys live in the vault, by name. Verify any copy against the fingerprints recorded on the story
   issue before trusting it.
 
 ## Verification recipe
