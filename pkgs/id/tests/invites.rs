@@ -391,6 +391,37 @@ fn an_invite_with_terms_round_trips_and_still_checks_the_route() {
 
 #[test]
 #[allow(clippy::unwrap_used)]
+fn sign_terms_refuses_a_child_deeper_than_the_cap() {
+    let ticket = ticket(7);
+    // Terms constructed directly, bypassing `child_terms` (#13217): a parent
+    // digest with a depth far above the cap must not sign — the cap is the
+    // only bound `sign_terms` can enforce on a child, and it applies there too.
+    let forged = InviteTerms {
+        target: InviteTarget::Group([0xaa; 32]),
+        role: Role::Write,
+        expires_ms: EXPIRES,
+        uses_cap: None,
+        depth_remaining: 255,
+        parent_digest: Some([9; 32]),
+        redeemer: None,
+        capability_pin: None,
+    };
+    let error = InviteEvent::sign_terms(&inviter(), &ticket, forged).unwrap_err();
+    assert!(format!("{error:#}").contains("cap"), "{error:#}");
+
+    // A valid child — parent digest set, depth within the cap — still signs,
+    // and its terms land in the body unchanged.
+    let child = InviteTerms {
+        depth_remaining: 2,
+        ..forged
+    };
+    let event = InviteEvent::sign_terms(&inviter(), &ticket, child).unwrap();
+    assert_eq!(event.body.depth_remaining, 2);
+    assert_eq!(event.body.parent_digest, Some([9; 32]));
+}
+
+#[test]
+#[allow(clippy::unwrap_used)]
 fn a_mint_whose_paste_form_is_over_budget_is_refused() {
     // A ticket carrying many direct addresses outgrows the 512-character
     // paste budget; the minter refuses rather than emitting a mangled link.

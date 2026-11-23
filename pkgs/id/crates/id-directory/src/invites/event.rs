@@ -327,7 +327,9 @@ impl InviteEvent {
     ///
     /// # Errors
     ///
-    /// Fails if a source invite's depth exceeds [`MAX_SOURCE_DEPTH`] (§2), or the
+    /// Fails if the depth exceeds [`MAX_SOURCE_DEPTH`] (§2) — for a source
+    /// invite and for a child alike: terms constructed directly, bypassing
+    /// [`InviteBody::child_terms`], get no exemption from the cap — or the
     /// encoded body exceeds [`MAX_BODY_LEN`] (§1).
     pub fn sign_terms(
         key: &SigningKey,
@@ -338,6 +340,12 @@ impl InviteEvent {
             ensure!(
                 terms.depth_remaining <= MAX_SOURCE_DEPTH,
                 "a source invite's depth is {}, over the cap of {MAX_SOURCE_DEPTH}",
+                terms.depth_remaining
+            );
+        } else {
+            ensure!(
+                terms.depth_remaining <= MAX_SOURCE_DEPTH,
+                "a child invite's depth is {}, over the cap of {MAX_SOURCE_DEPTH}",
                 terms.depth_remaining
             );
         }
