@@ -84,7 +84,10 @@ fn location_ref() -> LocationRef {
     let locator = TypedLocator::from(
         R2Locator::new("acct-1", "bucket-1", "objects/thing-1").unwrap(),
     );
-    LocationRef::new(locator, NamespaceId::new(NAMESPACE).unwrap(), TENANT).unwrap()
+    // A NamespaceId has its own grammar (a letter followed by
+    // letters, digits or hyphens) — unlike the sidecar body's
+    // free-text namespace label above.
+    LocationRef::new(locator, NamespaceId::new("ns-alpha").unwrap(), TENANT).unwrap()
 }
 
 fn sample_links() -> Vec<RelatedLink> {
