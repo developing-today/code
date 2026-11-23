@@ -566,6 +566,7 @@ mod tests {
             vec_table: "v".into(),
             discovery_ceiling: TierCeiling(Tier::Secret),
             rejections: vec![],
+            catalog: None,
         };
         let stmt = Stmt::new("SELECT 1", vec![]);
         let err = scan_one(&set, &info, TierCeiling(Tier::Internal), &stmt).unwrap_err();

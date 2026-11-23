@@ -7,7 +7,10 @@
 //!   databases, each candidate's `atlas_manifest` table is the
 //!   self-description that is read and cross-checked against the
 //!   name (manifest fan-out at startup). New shards join by
-//!   existing, never by code change. The registry-of-record
+//!   existing, never by code change. Physical enumeration is
+//!   candidate discovery only: with [`DiscoveryOptions::catalog`]
+//!   set, the #6057 §6.3 gate serves exactly the committed
+//!   generation's manifest list (see [`catalog`]). The registry-of-record
 //!   alternative (a registry DB) is deliberately not used: the pilot
 //!   registry DB was deleted in the 2026-11-06 spike cleanup and the
 //!   staging-tier registry (#5669) tracks *staging units*, not scan
@@ -23,6 +26,7 @@
 //! * **Fan-out** ([`scan`]): exact cosine scan, top-k per shard, in
 //!   parallel, merged by distance with internal shards winning ties.
 
+pub mod catalog;
 pub mod content;
 pub mod local;
 pub mod scan;
@@ -34,6 +38,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
+use serde::{Deserialize, Serialize};
 use serde_json::Value as Json;
 use sha2::{Digest, Sha256};
 
@@ -42,6 +47,7 @@ use crate::filters::Sensitivity;
 use crate::turso::{HttpTransport, PipelineTransport};
 use crate::types::Stmt;
 
+pub use catalog::{CATALOG_FORMAT, CommittedCatalog, CommittedShard};
 pub use content::{
     ContentStore, ContentStores, content_store_name, discover_content_stores,
     parse_content_store_name,
@@ -57,7 +63,8 @@ pub const SHARD_PREFIX: &str = "atlas-core-";
 
 /// A physical sensitivity level (design 4.2): separate databases,
 /// separate credentials.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Tier {
     Public,
     Internal,
@@ -493,6 +500,10 @@ pub struct ShardSet {
     /// service's maximum). Per-caller ceilings can only narrow it.
     discovery_ceiling: TierCeiling,
     pub rejections: Vec<Rejection>,
+    /// The committed catalog generation this set is pinned to, if
+    /// discovery ran through the #6057 §6.3 visibility gate. `None`
+    /// means physical enumeration only (ungated legacy path).
+    catalog: Option<CommittedCatalog>,
 }
 
 impl ShardSet {
@@ -558,6 +569,20 @@ impl ShardSet {
         h.update(self.snapshot_material().as_bytes());
         h.finalize().iter().map(|b| format!("{b:02x}")).collect()
     }
+
+    /// The committed generation this set is pinned to (`None` when
+    /// discovery ran ungated).
+    pub fn catalog_generation(&self) -> Option<u64> {
+        self.catalog.as_ref().map(|c| c.generation)
+    }
+
+    /// The committed-generation snapshot id (design #6057 §6.3): the
+    /// id a fresh fan-out pins at query start and result-cache keying
+    /// must consume. `None` when discovery ran ungated, in which case
+    /// only the physical [`ShardSet::snapshot_id`] exists.
+    pub fn catalog_snapshot_id(&self) -> Option<String> {
+        self.catalog.as_ref().map(|c| c.snapshot_id())
+    }
 }
 
 // ---------------------------------------------------------- discovery ---
@@ -577,6 +602,14 @@ pub struct DiscoveryOptions {
     /// so a search never silently covers fewer shards than the
     /// corpus has. `lenient` records them as [`Rejection`]s instead.
     pub lenient: bool,
+    /// Opt-in #6057 §6.3 visibility gate: when set, discovery serves
+    /// exactly this generation's committed manifest list. A physical
+    /// shard absent from the catalog is refused before probing, a
+    /// committed shard missing from the listing is reported, and a
+    /// manifest disagreeing with its committed entry is refused.
+    /// `None` (the default) keeps the legacy physical-enumeration
+    /// behavior unchanged.
+    pub catalog: Option<CommittedCatalog>,
 }
 
 impl DiscoveryOptions {
@@ -586,6 +619,7 @@ impl DiscoveryOptions {
             embedding_model: EMBEDDING_MODEL_ID.to_string(),
             vec_table: crate::types::DEFAULT_VEC_TABLE.to_string(),
             lenient: false,
+            catalog: None,
         }
     }
 }
@@ -601,6 +635,7 @@ fn probe(
     connector: &dyn ShardConnector,
     c: &Candidate,
     expected_embedding_model: &str,
+    committed: Option<&CommittedShard>,
 ) -> Result<(ShardInfo, Arc<dyn ShardTransport>)> {
     let t = connector.connect(&c.endpoint, c.tier)?;
     let m = Manifest::read(t.as_ref())
@@ -644,6 +679,33 @@ fn probe(
             )));
         }
         _ => {}
+    }
+    // #6057 §6.3 gate: the manifest must agree with the committed
+    // generation entry. A mismatch means the prepare and the commit
+    // disagree, so reconciliation (§6.4) must quarantine first; the
+    // shard is refused rather than served or silently dropped.
+    if let Some(entry) = committed {
+        if entry.expected_chunks != m.expected_chunks {
+            return Err(Error::fatal(format!(
+                "shard {}: manifest expected_chunks `{}` disagrees with committed generation entry `{}`",
+                c.endpoint.name,
+                m.expected_chunks
+                    .map(|n| n.to_string())
+                    .unwrap_or_else(|| "-".to_string()),
+                entry
+                    .expected_chunks
+                    .map(|n| n.to_string())
+                    .unwrap_or_else(|| "-".to_string()),
+            )));
+        }
+        if entry.embedding_model != m.embedding_model {
+            return Err(Error::fatal(format!(
+                "shard {}: manifest embedding_model `{}` disagrees with committed generation entry `{}`",
+                c.endpoint.name,
+                m.embedding_model.as_deref().unwrap_or("-"),
+                entry.embedding_model.as_deref().unwrap_or("-"),
+            )));
+        }
     }
     let n = t
         .pipeline(&[Stmt::new("SELECT COUNT(*) AS n FROM chunks", vec![])])?
@@ -733,10 +795,69 @@ pub fn discover(
         ))
     });
 
+    // #6057 §6.3 visibility gate: physical enumeration above is
+    // candidate discovery only. When a committed catalog is pinned,
+    // an uncommitted physical shard is refused before probing (an
+    // incomplete prepare has no commit record and stays invisible),
+    // and a committed shard absent from the listing is reported
+    // rather than silently skipped (never serve fewer shards than
+    // the committed generation names).
+    if let Some(cat) = &opts.catalog {
+        let mut gated = Vec::with_capacity(candidates.len());
+        for c in candidates {
+            if cat.lookup(&c.endpoint.name).is_none() {
+                let reason = format!(
+                    "not in committed catalog generation {}; physical existence is not a visibility commit",
+                    cat.generation
+                );
+                if opts.lenient {
+                    rejections.push(Rejection {
+                        name: c.endpoint.name.clone(),
+                        reason,
+                    });
+                } else {
+                    return Err(Error::fatal(format!("shard {}: {reason}", c.endpoint.name)));
+                }
+            } else {
+                gated.push(c);
+            }
+        }
+        candidates = gated;
+        for entry in &cat.shards {
+            if !opts.ceiling.admits(entry.tier) || !connector.can_open(entry.tier) {
+                continue;
+            }
+            let seen = candidates.iter().any(|c| c.endpoint.name == entry.name)
+                || rejections.iter().any(|r| r.name == entry.name);
+            if !seen {
+                let reason = format!(
+                    "committed in catalog generation {} but not listed; refusing a fan-out over fewer shards than committed",
+                    cat.generation
+                );
+                if opts.lenient {
+                    rejections.push(Rejection {
+                        name: entry.name.clone(),
+                        reason,
+                    });
+                } else {
+                    return Err(Error::fatal(format!("shard {}: {reason}", entry.name)));
+                }
+            }
+        }
+    }
+
     let probed: Vec<Result<(ShardInfo, Arc<dyn ShardTransport>)>> = std::thread::scope(|scope| {
         let handles: Vec<_> = candidates
             .iter()
-            .map(|c| scope.spawn(move || probe(connector, c, &opts.embedding_model)))
+            .map(|c| {
+                scope.spawn(move || {
+                    let entry = opts
+                        .catalog
+                        .as_ref()
+                        .and_then(|cat| cat.lookup(&c.endpoint.name));
+                    probe(connector, c, &opts.embedding_model, entry)
+                })
+            })
             .collect();
         handles
             .into_iter()
@@ -768,6 +889,7 @@ pub fn discover(
         vec_table: opts.vec_table.clone(),
         discovery_ceiling: opts.ceiling,
         rejections,
+        catalog: opts.catalog.clone(),
     })
 }
 
