@@ -752,6 +752,39 @@ mod tests {
     }
 
     #[test]
+    fn served_lifecycle_verbs_report_normal_cloud() {
+        // #8581 acceptance remainder: every task-row lifecycle
+        // verb whose served path prints the broker's row carries
+        // the contract mode line — a broker-served verb on a
+        // healthy store reports normal/cloud under its own CLI
+        // verb name (claim/heartbeat/checkpoint wire their legs
+        // explicitly and are covered above).
+        for verb in [
+            "release",
+            "lane",
+            "bind",
+            "park",
+            "wake",
+            "block",
+            "unblock",
+            "dep-recheck",
+            "quarantine-recheck",
+            "cancel",
+            "revive",
+            "fail",
+            "complete",
+        ] {
+            let row = served_row(json!({"id": 7, "status": "claimed"}), verb);
+            assert_eq!(
+                row["mode_line"],
+                json!({"verb": verb, "mode": "normal", "route": "cloud"}),
+                "served_row for {verb}"
+            );
+            assert_eq!(row["id"], json!(7));
+        }
+    }
+
+    #[test]
     fn guard_decision_holds_only_live_or_contested_others() {
         let live_other = json!({"state": "live", "worker": "lane-b"});
         assert_eq!(
