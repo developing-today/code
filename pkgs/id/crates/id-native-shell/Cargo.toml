@@ -17,7 +17,7 @@ license = "MIT OR Apache-2.0"
 
 [dependencies]
 anyhow = "1"
-bevy = { version = "0.17", default-features = false, features = [
+bevy = { version = "0.19", default-features = false, features = [
   "std",
   "bevy_core_pipeline",
   "bevy_render",
@@ -33,6 +33,10 @@ id = { path = "../..", default-features = false, features = ["world"] }
 iroh = "1"
 serde_json = "1"
 tokio = { version = "1", features = ["full"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# Linux `openat2(2)` with RESOLVE_BENEATH for the file-read open (#11420).
+libc = "0.2"
 
 [dev-dependencies]
 # The live-session tests serve a real host in-process, the same way

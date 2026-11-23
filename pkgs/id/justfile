@@ -294,6 +294,16 @@ test-unit:
     cargo nextest run --all-features --lib
 alias test-lib := test-unit
 
+# Run workspace-member integration targets not covered by --lib or the
+# root-package integration shards (#10329).
+[group('test')]
+test-crate-integration:
+    cargo nextest run --all-features -p id-caps --test roc_import_policy
+    cargo nextest run --all-features -p id-cli --test aliases
+    cargo nextest run --all-features -p id-core --test probe_petname_load
+    cargo nextest run --all-features -p id-store --test store_traits
+    cargo nextest run --all-features -p id-web --test web_router_security
+
 # Run the id-native-shell unit + contract transcript tests (#5582): non-default workspace member, so the default-member test recipes never run it.
 [group('test')]
 test-native-shell:
@@ -354,6 +364,7 @@ test-web-sandbox: test-sandbox test-web-unit test-web-typecheck
 [group('test')]
 test-web-unit:
     cd web && bun run test
+    sh web/scripts/build-manifest.test.sh
 
 # [bun] Run TypeScript type checking only
 [group('test')]

@@ -23,6 +23,7 @@ a usage error with exit 2.
 
 import argparse
 import base64
+import fcntl
 import json
 import os
 import subprocess
@@ -33,6 +34,7 @@ import urllib.error
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Any
+
 
 def _required_home() -> Path:
     """Home per the #5762 home-resolution contract (code#8221): a
@@ -186,6 +188,22 @@ CONCURRENCY_CAP = 36
 # Recovery launched_by values
 LAUNCHED_BY_RECOVERY_ZERO_MESSAGE = "opencode-claimant-recovery:zero-message-deleted"
 LAUNCHED_BY_RECOVERY_GONE_SESSION = "opencode-claimant-recovery:gone-session"
+LAUNCHED_BY_RECOVERY_ERROR_STOPPED = "opencode-claimant-recovery:error-stopped"
+ERROR_STOPPED_OUTCOMES = frozenset(("error", "failed", "failure", "timeout", "timed_out"))
+
+
+# Where this process's mode came from (#10332): the file's path and
+# state, and the mtimes that let a later reader date a flip. Set by
+# read_mode(), written into every fires.jsonl entry by log_fire().
+_mode_source: "Dict[str, Any] | None" = None
+
+
+def _mtime(path: Path) -> "str | None":
+    """An ISO UTC mtime for path, or None when it cannot be read."""
+    try:
+        return datetime.fromtimestamp(path.stat().st_mtime, timezone.utc).isoformat()
+    except OSError:
+        return None
 
 
 def read_mode() -> str:
@@ -200,19 +218,40 @@ def read_mode() -> str:
     every such read logs a loud CLAIMANT-MODE-WARNING line, and the
     aggregator's host-health watchdog surfaces the same fact as a
     needs-attention tier item.
+
+    Every read also records where the mode came from (#10332) in
+    _mode_source, which log_fire() writes into fires.jsonl: the path,
+    whether the file was ok, missing, unreadable or invalid, the
+    file's mtime when it exists, and the state directory's mtime. A
+    deletion changes the directory's mtime, so when a fire reads
+    "missing", the directory mtime bounds when the file went.
     """
+    global _mode_source
+    source: Dict[str, Any] = {
+        "path": str(MODE_FILE),
+        "state": "ok",
+        "file_mtime": None,
+        "dir_mtime": _mtime(MODE_FILE.parent),
+        "pid": os.getpid(),
+    }
+    _mode_source = source
+
     if not MODE_FILE.exists():
+        source["state"] = "missing"
         print(
             f"CLAIMANT-MODE-WARNING (#10141): mode file {MODE_FILE} is MISSING "
             "- defaulting to shadow; dispatch will return mode_not_live and "
-            "stall until the file is restored with the intended mode.",
+            "stall until the file is restored with the intended mode. "
+            f"State directory last changed {source['dir_mtime']}.",
             file=sys.stderr,
         )
         return "shadow"
 
+    source["file_mtime"] = _mtime(MODE_FILE)
     try:
         raw = MODE_FILE.read_text()
     except Exception as exc:
+        source["state"] = "unreadable"
         print(
             f"CLAIMANT-MODE-WARNING (#10141): mode file {MODE_FILE} is "
             f"UNREADABLE ({exc}) - defaulting to shadow.",
@@ -222,12 +261,70 @@ def read_mode() -> str:
     mode = raw.strip().lower()
     if mode in ("shadow", "live"):
         return mode
+    source["state"] = "invalid"
     print(
         f"CLAIMANT-MODE-WARNING (#10141): mode file {MODE_FILE} content "
         f"{raw.strip()[:40]!r} is not live|shadow - defaulting to shadow.",
         file=sys.stderr,
     )
     return "shadow"
+
+
+# Which code this fire is running (#12813): the primary clone's
+# checked-out branch and commit, read once per process by
+# read_code_source() and written into every fires.jsonl entry by
+# log_fire(). The 2026-11-23 incident was the primary clone silently
+# sitting on a stale branch: every fire aborted cap_unknown and the
+# fire log named neither the branch nor the commit, so the cause had
+# to be reconstructed from the clone's reflog after the fact.
+# Recording both makes the next such incident name itself in the
+# first fire that hits it.
+_code_source: "Dict[str, Any] | None" = None
+
+
+def read_code_source() -> "Dict[str, Any]":
+    """Read the primary clone's checked-out branch and commit.
+
+    Fail-open by design: this is provenance for the fire log, never
+    a gate. Any git failure (no git binary, not a checkout, timeout)
+    yields state "unreadable" with branch/commit None rather than
+    raising - a fire must never abort because its own provenance
+    read failed. The result is cached per process: one fire is one
+    process, and the checkout does not change under a running fire.
+    """
+    global _code_source
+    if _code_source is not None:
+        return _code_source
+    source: Dict[str, Any] = {
+        "path": str(PRIMARY_CLONE),
+        "state": "ok",
+        "branch": None,
+        "commit": None,
+    }
+    _code_source = source
+    try:
+        branch = subprocess.run(
+            ["git", "-C", str(PRIMARY_CLONE), "rev-parse", "--abbrev-ref", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        commit = subprocess.run(
+            ["git", "-C", str(PRIMARY_CLONE), "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if branch.returncode != 0 or commit.returncode != 0:
+            source["state"] = "unreadable"
+            return source
+        source["branch"] = branch.stdout.strip() or None
+        source["commit"] = commit.stdout.strip() or None
+        if source["branch"] is None or source["commit"] is None:
+            source["state"] = "unreadable"
+    except Exception:
+        source["state"] = "unreadable"
+    return source
 
 
 def ensure_state_dir() -> None:
@@ -243,6 +340,10 @@ def log_fire(
     skips: List[Dict],
     health: "str | None" = None,
     provider_wall: "Dict | None" = None,
+    hand_back: "Dict | None" = None,
+    supervision: "List[Dict] | None" = None,
+    babysitter: "Dict | None" = None,
+    nudges: "Dict | None" = None,
 ) -> None:
     """Append a fire log entry to fires.jsonl.
 
@@ -261,12 +362,18 @@ def log_fire(
     fire_entry = {
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "mode": mode,
+        "mode_source": _mode_source,
+        "code_source": read_code_source(),
         "candidates_seen": candidates,
         "sessions_launched": launched,
         "cap_room": cap_room,
         "skips": skips,
         "queue_health": health,
         "provider_wall": provider_wall,
+        "hand_back": hand_back,
+        "supervision": supervision,
+        "babysitter": babysitter,
+        "nudges": nudges,
     }
 
     with FIRES_FILE.open("a") as f:
@@ -320,6 +427,48 @@ def _load_poll_module():
         spec.loader.exec_module(module)
         _poll_module = module
     return _poll_module
+
+
+_babysitter_module = None
+
+
+def _load_babysitter_module():
+    """Load the sibling babysitter.py as a module (cached), the
+    same pattern as poll.py: the babysitter's verdict rounds
+    (#1338) ride the claimant fire, and babysitter.py owns the
+    round engine so the fire only carries its record."""
+    global _babysitter_module
+    if _babysitter_module is None:
+        import importlib.util
+
+        babysitter_path = Path(__file__).resolve().parent / "babysitter.py"
+        spec = importlib.util.spec_from_file_location(
+            "claimant_babysitter", babysitter_path
+        )
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        _babysitter_module = module
+    return _babysitter_module
+
+
+_nudges_module = None
+
+
+def _load_nudges_module():
+    """Load the sibling nudges.py as a module (cached), the same
+    pattern as babysitter.py: the stall-nudge/escalation step
+    (#1187) rides the claimant fire right after the babysitter
+    round whose confirmed stalls it consumes."""
+    global _nudges_module
+    if _nudges_module is None:
+        import importlib.util
+
+        nudges_path = Path(__file__).resolve().parent / "nudges.py"
+        spec = importlib.util.spec_from_file_location("claimant_nudges", nudges_path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        _nudges_module = module
+    return _nudges_module
 
 
 def get_active_root_session_count() -> int:
@@ -431,6 +580,69 @@ def _fail_attempts_exhausted(task, session_id) -> bool:
     return result.returncode == 0
 
 
+def _recover_error_stopped(session_id, task_id, _binding=None) -> bool:
+    """Delete an error-stopped session, then atomically clear its
+    queue binding so the next claimant fire retries the task.
+
+    The compare-and-clear bind preserves the task's route and packet;
+    the normal launch path then applies the route's standard retry and
+    failover ladder. A failed delete or bind leaves the binding in place.
+    """
+    if not session_id or task_id is None:
+        return False
+    if not _delete_session(session_id):
+        return False
+    try:
+        result = subprocess.run(
+            [
+                str(REPO_QUEUE_CMD),
+                "bind",
+                str(task_id),
+                "--worker",
+                "opencode-claimant",
+                "--session-id",
+                str(session_id),
+                "--launched-by",
+                LAUNCHED_BY_RECOVERY_ERROR_STOPPED,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except Exception as e:
+        print(f"Failed to recover error-stopped task {task_id}: {e}")
+        return False
+    if result.returncode != 0:
+        print(f"Failed to clear error-stopped task {task_id}: {result.stderr}")
+        return False
+    return True
+
+
+def _session_error_outcome(session):
+    outcome = session.get("outcome") if isinstance(session, dict) else None
+    if not isinstance(outcome, str):
+        return None
+    normalized = outcome.strip().lower()
+    return normalized if normalized in ERROR_STOPPED_OUTCOMES else None
+
+
+def _recovery_binding(task, queue):
+    progress = task.get("progress") or {}
+    packet = task.get("packet")
+    if not isinstance(packet, dict):
+        packet = task.get("payload") if isinstance(task.get("payload"), dict) else {}
+    issue = progress.get("issue_number") or progress.get("issue")
+    packet_issue = packet.get("issue")
+    if issue is None and isinstance(packet_issue, dict):
+        issue = packet_issue.get("number")
+    return {
+        "task_id": task.get("id"),
+        "queue": queue,
+        "issue_number": issue,
+        "repo": packet.get("repo") or task.get("repo"),
+    }
+
+
 def supervision_step(mode: str) -> List[Dict]:
     """
     Step 1: Supervision - check bound sessions for recovery candidates.
@@ -445,10 +657,13 @@ def supervision_step(mode: str) -> List[Dict]:
     (terminal marker, active-set membership, recent activity, live
     lease, any unreadable read) leaves the task bound.
 
-    A bound task with attempts >= max_attempts is never skipped
-    silently (step 1e): a stuck zero-message session is deleted
-    first, a gone session's absence is already verified, and the
-    task is terminally failed with the
+    A terminal error outcome is handled after the lease expires by
+    deleting the failed session and compare-clearing its binding; the
+    next fire relaunches the task through its recorded route. A bound
+    task with attempts >= max_attempts is never skipped silently
+    (step 1e): a stuck zero-message or error-stopped session is
+    deleted first, a gone session's absence is already verified, and
+    the task is terminally failed with the
     launch_failed_attempts_exhausted execution record.
 
     Returns the list of tasks acted on (recovery candidates and
@@ -493,6 +708,38 @@ def supervision_step(mode: str) -> List[Dict]:
                 attempts = task.get("attempts", 0)
                 max_attempts = task.get("max_attempts", 5)
                 exhausted = attempts >= max_attempts
+                error_outcome = _session_error_outcome(_session)
+                if error_outcome:
+                    # A terminal provider/session error is safe to retry
+                    # only after the lease has expired; until then the
+                    # owning worker may still be reconciling it.
+                    lease_ms = poll.parse_lease_ms(task.get("lease_until"))
+                    if lease_ms is None or lease_ms > now_ms:
+                        continue
+                    if exhausted:
+                        if _delete_session(session_id) and _fail_attempts_exhausted(
+                            task, session_id
+                        ):
+                            recovery_candidates.append(
+                                {
+                                    "task_id": task["id"],
+                                    "session_id": session_id,
+                                    "reason": "attempts_exhausted",
+                                    "outcome": error_outcome,
+                                    "binding": _recovery_binding(task, queue),
+                                }
+                            )
+                        continue
+                    recovery_candidates.append(
+                        {
+                            "task_id": task["id"],
+                            "session_id": session_id,
+                            "reason": "error_stopped",
+                            "outcome": error_outcome,
+                            "binding": _recovery_binding(task, queue),
+                        }
+                    )
+                    continue
                 if verdict == "ok":
                     # Present session: poll.py is the only selector.
                     # A session absent from the verified list cannot
@@ -586,6 +833,14 @@ def supervision_step(mode: str) -> List[Dict]:
     # Process zero-message recovery candidates (attempts-exhausted
     # candidates were already terminally failed above).
     for candidate in recovery_candidates:
+        if candidate["reason"] == "error_stopped":
+            recovered = _recover_error_stopped(
+                candidate["session_id"],
+                candidate["task_id"],
+                candidate.get("binding"),
+            )
+            candidate["action"] = "requeued_retry" if recovered else "recovery_failed"
+            continue
         if candidate["reason"] != "zero_message":
             continue
         task_id = candidate["task_id"]
@@ -702,6 +957,27 @@ def cap_step() -> int:
 
     cap_room = max(0, CONCURRENCY_CAP - active_count)
     return cap_room
+
+
+OPENCODE_WORKING_HOOK = (
+    Path(__file__).resolve().parent.parent / "health-hooks" / "opencode-working.sh"
+)
+
+
+def fire_opencode_working_hook(caller: str, detail: str) -> None:
+    """C3 health hook (#9571): fire-and-forget opencode-working when a
+    launch cannot read OpenCode's session state. Never raises and never
+    waits; the hook owns probing, dedup and recording."""
+    try:
+        subprocess.Popen(
+            [str(OPENCODE_WORKING_HOOK), "--caller", caller, "--detail", detail],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    except OSError as e:
+        print(f"Warning: could not fire opencode-working hook: {e}")
 
 
 def _post_prompt(session_id: str, prompt: str) -> bool:
@@ -1004,6 +1280,227 @@ def _post_launch_agent_note(task_id, session_id, candidate, packet) -> bool:
     return result.returncode == 0
 
 
+HANDBACK_REASON_CLASS = "executor-saturated"
+
+HANDBACK_PARK_REASON = (
+    "executor-saturated: the opencode session cap is saturated "
+    f"({CONCURRENCY_CAP} active sessions), so no slot was available "
+    "this round; handed back by opencode-claimant (#1187) - releases "
+    "when capacity returns (the queue wake verb) or on an owner's "
+    "explicit order; a Claude lane can still claim it if urgent"
+)
+
+
+def _claim_for_handback(candidate) -> bool:
+    """Targeted-claim one candidate as the claimant so the
+    hand-back park has a live claim to act on (the broker's park
+    verb only parks a task its caller holds). True iff the claim
+    answer names this candidate's id - a claim that lands on a
+    different row, or no row, hands nothing back."""
+    argv = [str(REPO_QUEUE_CMD), "claim"]
+    if candidate.get("queue"):
+        argv += ["--queue", str(candidate["queue"])]
+    argv += [
+        "--worker",
+        CLAIMANT_WORKER,
+        "--platform",
+        "openchamber",
+        "--task",
+        str(candidate["id"]),
+    ]
+    try:
+        result = subprocess.run(argv, capture_output=True, text=True, timeout=15)
+        data = json.loads(result.stdout) if result.stdout.strip() else None
+    except Exception:
+        return False
+    return isinstance(data, dict) and data.get("id") == candidate["id"]
+
+
+def _park_handback(task_id) -> bool:
+    """Park a claimed task as a capacity wait: reason class
+    `executor-saturated` (#1187) plus the broker's capacity
+    ready-condition, which floors the wait at the capacity scale
+    and lets the pick take the task early when a slot frees -
+    the hand-back is a pause with a named release, not a failure."""
+    try:
+        result = subprocess.run(
+            [
+                str(REPO_QUEUE_CMD),
+                "park",
+                str(task_id),
+                "--worker",
+                CLAIMANT_WORKER,
+                "--reason",
+                HANDBACK_PARK_REASON,
+                "--ready-condition",
+                json.dumps({"kind": "capacity"}),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+    except Exception:
+        return False
+    return result.returncode == 0
+
+
+def _post_handback_agent_note(task_id, candidate) -> bool:
+    """Post the agent-note:v1 handed-back note on the task's issue
+    (#1187: a hand-back is noted on the issue, never only in the
+    local fire log). Mirrors _post_launch_agent_note's repo/issue
+    resolution and failure contract: a failed note never undoes
+    the park - the caller records it in the hand-back record.
+    Returns True iff the post is confirmed by the gh CLI's exit
+    code."""
+    packet = (
+        candidate.get("packet") if isinstance(candidate.get("packet"), dict) else {}
+    )
+    repo = packet.get("repo") or ""
+    issue_no = candidate.get("issue_number")
+    if issue_no is None and isinstance(packet.get("issue"), dict):
+        issue_no = packet["issue"].get("number")
+    if issue_no is None:
+        raw_issue = candidate.get("issue") or ""
+        digits = "".join(ch for ch in str(raw_issue) if ch.isdigit())
+        issue_no = digits or None
+    if not repo or not issue_no:
+        return False
+    note = (
+        "<!-- agent-note:v1 agent=opencode-claimant state=handed back "
+        f"task={task_id} -->\n\n"
+        f"Agent note - handed back: queue task {task_id} was handed "
+        "back by the opencode claimant (#1187): the opencode session "
+        f"cap is saturated ({CONCURRENCY_CAP} active sessions), so no "
+        "slot was available this round. The task is parked with reason "
+        "`executor-saturated` and a capacity ready-condition - it "
+        "releases when capacity returns (the queue's `wake` verb) or "
+        "on an owner's explicit order. Saturation is a success state, "
+        "not a failure: a Claude lane can still claim the task if "
+        "urgent."
+    )
+    try:
+        result = subprocess.run(
+            [
+                "gh",
+                "issue",
+                "comment",
+                str(int(str(issue_no).lstrip("#"))),
+                "--repo",
+                str(repo),
+                "--body",
+                note,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+    except Exception:
+        return False
+    return result.returncode == 0
+
+
+def _post_stuck_holder_agent_note(
+    *, task_id, session_id, repo, issue_number, nudges_sent
+) -> bool:
+    """Post the stuck-holder escalation note on a stalled task's
+    issue (#1187: a confirmed stall that spent its nudges is
+    escalated to the fleet as a stuck-holder case, on the issue -
+    never only in the local fire log). Mirrors
+    _post_handback_agent_note's failure contract: a failed note
+    does not mark the episode escalated, so nudges.py retries the
+    escalation next round. Returns True iff the post is confirmed
+    by the gh CLI's exit code."""
+    if not repo or not issue_number:
+        return False
+    note = (
+        "<!-- agent-note:v1 agent=opencode-claimant state=stuck-holder "
+        f"task={task_id} session={session_id} -->\n\n"
+        f"Agent note - stuck holder: queue task {task_id}'s OpenCode "
+        f"session {session_id} is in a confirmed stall (silent past "
+        "the stall threshold with no live CI on its bound PR), and "
+        f"the babysitter's {nudges_sent} nudges went unanswered "
+        "(#1187/#1338). The case is escalated to the fleet as a "
+        "stuck holder: the task stays claimed by the session's "
+        "lane, and a live lane should take over, resume, or "
+        "release it. The babysitter sends no further nudges for "
+        "this stall episode."
+    )
+    try:
+        result = subprocess.run(
+            [
+                "gh",
+                "issue",
+                "comment",
+                str(int(str(issue_number).lstrip("#"))),
+                "--repo",
+                str(repo),
+                "--body",
+                note,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+    except Exception:
+        return False
+    return result.returncode == 0
+
+
+def hand_back_step(mode, candidates, exclude_task_ids=None):
+    """Hand-back (#1187 criterion 2): when the cap step finds the
+    location saturated with launchable candidates waiting, hand
+    the NEXT candidate back within the same fire - claim it, park
+    it as an `executor-saturated` capacity wait, and note it on
+    its issue - instead of leaving it silently queued with the
+    only record in the local fire log.
+
+    Live mode only: shadow fires mutate nothing and return None,
+    as do fires with no launchable candidate waiting. The
+    candidate is the first launchable one in the fire-start
+    snapshot (launch_step's filter), skipping any task this
+    fire's supervision recovered (next-fire-only, #8038 item 7).
+    One hand-back per fire: the criterion is the next candidate,
+    and a park per candidate per fire would churn the queue.
+    Returns the hand-back record for the fire log."""
+    if mode != "live":
+        return None
+    excluded = set(exclude_task_ids or ())
+    candidate = None
+    for c in candidates or []:
+        if (
+            c.get("lane") == "opencode"
+            and not c.get("session_id")
+            and c.get("stage") in ("handed_off", "launch_failed")
+            and c.get("id") not in excluded
+        ):
+            candidate = c
+            break
+    if candidate is None:
+        return None
+    task_id = candidate["id"]
+    if not _claim_for_handback(candidate):
+        return {
+            "task_id": task_id,
+            "parked": False,
+            "noted": False,
+            "reason": "handback_claim_failed",
+        }
+    if not _park_handback(task_id):
+        return {
+            "task_id": task_id,
+            "parked": False,
+            "noted": False,
+            "reason": "handback_park_failed",
+        }
+    noted = _post_handback_agent_note(task_id, candidate)
+    return {
+        "task_id": task_id,
+        "parked": True,
+        "noted": noted,
+        "reason": HANDBACK_REASON_CLASS,
+    }
+
+
 def launch_step(
     mode: str,
     cap_room: int,
@@ -1117,9 +1614,7 @@ def launch_step(
                 # #8166: the provider wall is route-wide - no later
                 # launch this fire can succeed, and each attempt
                 # would burn shared provider rpm against the wall.
-                skips.append(
-                    {"task_id": candidate["id"], "reason": "provider_wall"}
-                )
+                skips.append({"task_id": candidate["id"], "reason": "provider_wall"})
                 continue
 
             if cap_room <= 0:
@@ -1271,10 +1766,18 @@ def launch_step(
                 )
 
                 if bind_result.returncode != 0:
-                    # Bind failed - delete session and skip. Record
-                    # WHY (#8042): bind's stderr names the exact
-                    # failed precondition (lease lapsed / ledger row
-                    # missing / already bound / task gone), and a
+                    # Bind failed - delete the session and skip. The
+                    # delete is not optional: bind refused, so this
+                    # session is bound to nothing, and leaving it on
+                    # the server orphans a created-but-unowned root
+                    # (and leaks a cap slot until it ages out). #8042
+                    # added the error text below; it must not drop
+                    # this cleanup (a rewrite of this branch removed
+                    # it once already).
+                    _delete_session(session_id)
+                    # Record WHY (#8042): bind's stderr names the
+                    # exact failed precondition (lease lapsed / ledger
+                    # row missing / already bound / task gone), and a
                     # repeat bind loop is undiagnosable without it.
                     # First non-empty line only, truncated — the bind
                     # verb's precondition texts carry no credentials.
@@ -1404,20 +1907,90 @@ Finish with a queue terminal verb (complete, park, block, or fail) carrying --wo
     return launched, skips
 
 
+def acquire_fire_lock():
+    """Take the single-instance fire lock, or return None if held (#8039).
+
+    Two overlapping fires (the scheduled task plus an ad-hoc run) each
+    computed cap_room from the same active-root count and could spend
+    the same free slots or race one candidate. An exclusive,
+    non-blocking flock on STATE_DIR/claimant.lock makes a second fire
+    exit at once. The lock is released when the returned file is closed,
+    or by the kernel when the process exits, so a crashed fire never
+    leaves a stale lock.
+    """
+    ensure_state_dir()
+    handle = (STATE_DIR / "claimant.lock").open("a")
+    try:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        handle.close()
+        return None
+    return handle
+
+
 def main():
     """Main entry point for the claimant/executor."""
     mode = read_mode()
+    lock = acquire_fire_lock()
+    if lock is None:
+        print("Another claimant fire is running. Exiting.")
+        log_fire(mode, None, [], None, [{"reason": "already_running"}])
+        return 0
+    try:
+        return _fire(mode)
+    finally:
+        lock.close()
 
-    print(f"OpenCode claimant starting in {mode} mode")
+
+def _fire(mode: str):
+    """One claimant fire, run under the single-instance lock."""
+    source = _mode_source or {}
+    print(
+        f"OpenCode claimant starting in {mode} mode "
+        f"(mode file {source.get('path', MODE_FILE)}: {source.get('state', 'unknown')}, "
+        f"modified {source.get('file_mtime')})"
+    )
 
     # Step 1: Supervision (always runs in live mode). Tasks it
     # recovers are eligible on the NEXT fire, not this one (#8038
     # item 7): their ids are excluded from this fire's launch set.
     recovered_ids = []
+    supervision_records = []
     if mode == "live":
         print("Running supervision step...")
         recovered = supervision_step(mode)
+        supervision_records = recovered
         recovered_ids = [c["task_id"] for c in recovered]
+
+    # Babysitter round (#1338): one verdict round over ALL sessions
+    # per fire, whatever the launch outcome below - rounds are
+    # about sessions, not candidates, so the round runs before the
+    # gate and its record rides every fire-log entry from here on.
+    # A failed round never breaks dispatch: the record says so.
+    babysitter_record = None
+    try:
+        babysitter_record = _load_babysitter_module().babysitter_step(mode)
+    except Exception as e:
+        print(f"Warning: babysitter round failed: {e}")
+        babysitter_record = {"error": f"babysitter round failed: {e}"}
+
+    # Stall nudges (#1187): the actuation half of the babysitter
+    # loop - consume this round's confirmed stalls (at most two
+    # nudges per episode, then a stuck-holder escalation on the
+    # bound issue). Like the round, it is about sessions, not
+    # candidates, so it runs before the gate; a failed step never
+    # breaks dispatch: the record says so.
+    nudges_record = None
+    try:
+        nudges_record = _load_nudges_module().nudge_step(
+            mode,
+            babysitter_record,
+            send_prompt=_send_prompt,
+            post_note=_post_stuck_holder_agent_note,
+        )
+    except Exception as e:
+        print(f"Warning: stall-nudge step failed: {e}")
+        nudges_record = {"error": f"stall-nudge step failed: {e}"}
 
     # Step 2: Gate (records the fire-start candidate snapshot and
     # the queue-health line in _fire_candidates / _fire_health).
@@ -1428,7 +2001,17 @@ def main():
 
     if has_candidates is None:
         print("Gate check failed: candidate discovery unknown. Exiting.")
-        log_fire(mode, None, [], None, [{"reason": "gate_unknown"}], health=fire_health)
+        log_fire(
+            mode,
+            None,
+            [],
+            None,
+            [{"reason": "gate_unknown"}],
+            health=fire_health,
+            supervision=supervision_records,
+            babysitter=babysitter_record,
+            nudges=nudges_record,
+        )
         return 1
 
     if not has_candidates:
@@ -1440,6 +2023,9 @@ def main():
             None,
             [{"reason": "no_candidates"}],
             health=fire_health,
+            supervision=supervision_records,
+            babysitter=babysitter_record,
+            nudges=nudges_record,
         )
         return 0
 
@@ -1449,6 +2035,9 @@ def main():
 
     if cap_room == -1:
         print("Warning: Could not determine cap room. Exiting.")
+        fire_opencode_working_hook(
+            "lane-launch", "claimant cap step could not read OpenCode sessions"
+        )
         log_fire(
             mode,
             fire_candidates,
@@ -1456,11 +2045,21 @@ def main():
             None,
             [{"reason": "cap_unknown"}],
             health=fire_health,
+            supervision=supervision_records,
+            babysitter=babysitter_record,
+            nudges=nudges_record,
         )
         return 1
 
     if cap_room <= 0:
         print(f"Cap saturated ({CONCURRENCY_CAP} active sessions). Exiting.")
+        # #1187 criterion 2: saturation is reported on the task and
+        # its issue, never only in this log - hand the next waiting
+        # candidate back (live mode only; the step itself refuses
+        # every other mode).
+        hand_back = hand_back_step(
+            mode, fire_candidates, exclude_task_ids=recovered_ids
+        )
         log_fire(
             mode,
             fire_candidates,
@@ -1468,6 +2067,10 @@ def main():
             cap_room,
             [{"reason": "cap_saturated"}],
             health=fire_health,
+            hand_back=hand_back,
+            supervision=supervision_records,
+            babysitter=babysitter_record,
+            nudges=nudges_record,
         )
         return 0
 
@@ -1496,6 +2099,9 @@ def main():
         skips,
         health=fire_health,
         provider_wall=_fire_provider_wall,
+        supervision=supervision_records,
+        babysitter=babysitter_record,
+        nudges=nudges_record,
     )
 
     return 0

@@ -103,9 +103,16 @@ describe("listResource pagination", () => {
 describe("listResource pagination bound (#9010)", () => {
   test("a stream that keeps minting next links errors at the bound, naming the listing", async () => {
     let calls = 0;
+    const seen = new Set<string>();
     const fetchFn = async (url: string) => {
       calls += 1;
-      const next = url + (url.includes("page=") ? "" : "?page=2");
+      seen.add(url);
+      // #11229: every response mints a fresh next link (page = calls + 1),
+      // so this pins the bound against an endless stream of distinct
+      // pages, not a loop that keeps pointing back at the same URL.
+      const nextUrl = new URL(url);
+      nextUrl.searchParams.set("page", String(calls + 1));
+      const next = nextUrl.toString();
       return new Response(JSON.stringify([{ n: calls }]), {
         status: 200,
         headers: { link: "<" + next + '>; rel="next"' },
@@ -120,6 +127,7 @@ describe("listResource pagination bound (#9010)", () => {
     expect((result as Error).message).toContain("github_api_pagination_bound");
     expect((result as Error).message).toContain("repos/o/r/issues?per_page=100");
     expect(calls).toBe(MAX_LIST_PAGES);
+    expect(seen.size).toBe(MAX_LIST_PAGES);
   });
 
   test("a legitimate read of exactly the bound completes when the last page has no next link", async () => {

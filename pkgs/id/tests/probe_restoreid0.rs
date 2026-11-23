@@ -42,6 +42,7 @@ fn issued(id: u64, name: &str) -> JournalEntry {
         uses: None,
         used: 0,
         subject: None,
+        issued_at: None,
     }
 }
 

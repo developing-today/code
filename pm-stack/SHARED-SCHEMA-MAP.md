@@ -61,6 +61,8 @@ backend, and the local JSON is then only a rebuildable cache):
 | `activity-ingestion.json`       | `public.agg_activity_ingestion`, `public.agg_activity_gaps` | `20261116_0001_aggregator_remote_stores` |
 | `snapshots/usage-YYYY-MM.jsonl` | `public.agg_usage_snapshots`                                | `20261116_0001_aggregator_remote_stores` |
 | `aa-last-good.json`             | `public.agg_store_documents` (key `aa-last-good`)           | `20261116_0001_aggregator_remote_stores` |
+| `comments.json`                 | `public.shared_comments`                                    | `20261122_0001_shared_comments`          |
+| C7 report events                | `public.agg_store_documents` (keys `c7-report:v1:*`)        | `20261116_0001_aggregator_remote_stores` |
 
 The sibling stores (`freshness.json`, `notifications.jsonl`,
 `needs-drew.json`, `decisions.json`, `decision-events*.jsonl`,

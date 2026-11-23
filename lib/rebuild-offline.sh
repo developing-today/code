@@ -1,5 +1,10 @@
 #!/usr/bin/env bash
 set -Eexuo pipefail # https://vaneyckt.io/posts/safer_bash_scripts_with_set_euxo_pipefail
+# Log this run (see lib/rebuild-log.sh): re-runs this script with its output
+# teed into the user's rebuild log; nom's display stays on the terminal only.
+# shellcheck source=rebuild-log.sh
+source "$(dirname "${BASH_SOURCE[0]}")/rebuild-log.sh"
+rebuild_log_wrap "$@"
 
 #ulimit -n $(ulimit -Hn)
 #sudo prlimit --pid $$ --nofile=1000000:1000000
@@ -31,7 +36,7 @@ fi
 # --use-substitutes
 # --no-net
 # -vvvv
-nixos-rebuild --use-remote-sudo --offline --no-net --accept-flake-config --json switch --json --upgrade --json --print-build-logs --verbose --keep-going --log-format internal-json --fallback --show-trace --flake '.' |& nom --json
+nixos-rebuild --use-remote-sudo --offline --no-net --accept-flake-config --json switch --json --upgrade --json --print-build-logs --verbose --keep-going --log-format internal-json --fallback --show-trace --flake '.' |& rebuild_log_nom --json
 current=$(nixos-rebuild list-generations | grep current)
 echo "current: $current"
 hostname=$(hostname)

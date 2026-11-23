@@ -20,7 +20,7 @@ type OpSpec = {
   response: "json" | "response"
 }
 
-export const OPERATION_FINGERPRINT = "8560a42def5f8ce8a9e4c2d50d8aef3f0380caffd0b81b7f07bfac75f9a0aced"
+export const OPERATION_FINGERPRINT = "da584569030ee496cfdaba3e7bb83a68741d79c2278e7e137e0db3e622e7d008"
 
 /** Every /v1 operation, by name. */
 export const OPS: Record<string, OpSpec> = {
@@ -189,6 +189,22 @@ export const OPS: Record<string, OpSpec> = {
       task: { in: "body" },
       session: { in: "body" },
       context: { in: "body" },
+    },
+    response: "json",
+  },
+  call_history: {
+    method: "GET",
+    path: "/v1/calls/{run}",
+    params: {
+      run: { in: "path", required: true },
+    },
+    response: "json",
+  },
+  call_history_begin: {
+    method: "POST",
+    path: "/v1/calls/{run}",
+    params: {
+      run: { in: "path", required: true },
     },
     response: "json",
   },
@@ -539,6 +555,14 @@ export const OPS: Record<string, OpSpec> = {
   },
   recipe_get: {
     method: "GET",
+    path: "/v1/recipes/{name}",
+    params: {
+      name: { in: "path", required: true },
+    },
+    response: "json",
+  },
+  recipe_remove: {
+    method: "DELETE",
     path: "/v1/recipes/{name}",
     params: {
       name: { in: "path", required: true },
@@ -1097,6 +1121,20 @@ export class DaemonOps {
   }
 
   /**
+   * The tool calls one run has made. `GET /v1/calls/{run}`.
+   */
+  callHistory(args: { run: string }, opts: CallOptions = {}): Promise<unknown> {
+    return this.invoke("call_history", args, opts) as Promise<unknown>
+  }
+
+  /**
+   * Start keeping the tool calls of one run. `POST /v1/calls/{run}`.
+   */
+  callHistoryBegin(args: { run: string }, opts: CallOptions = {}): Promise<unknown> {
+    return this.invoke("call_history_begin", args, opts) as Promise<unknown>
+  }
+
+  /**
    * Call one tool, with the pair in the URL. `POST /v1/call/{server}/{tool}`.
    */
   callPath(args: { server: string; tool: string; session?: string; arguments?: Record<string, unknown> }, opts: CallOptions = {}): Promise<unknown> {
@@ -1366,6 +1404,15 @@ export class DaemonOps {
    */
   recipeGet(args: { name: string }, opts: CallOptions = {}): Promise<unknown> {
     return this.invoke("recipe_get", args, opts) as Promise<unknown>
+  }
+
+  /**
+   * Remove a saved recipe. `DELETE /v1/recipes/{name}`.
+   * Privileged: it changes the daemon rather than reading it.
+   * Destructive: it cannot be undone, and other callers are affected.
+   */
+  recipeRemove(args: { name: string }, opts: CallOptions = {}): Promise<unknown> {
+    return this.invoke("recipe_remove", args, opts) as Promise<unknown>
   }
 
   /**

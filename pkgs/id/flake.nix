@@ -33,7 +33,7 @@
   };
 
   outputs =
-    {
+    args@{
       self,
       nixpkgs,
       rust-overlay,
@@ -42,6 +42,11 @@
       # TODO: consider use systems here?
       ...
     }:
+    let
+      # Root runtime packages can skip duplicate tests; named flake checks
+      # keep the same coverage. Standalone builds remain checked by default.
+      checkRuntimePackages = args.checkRuntimePackages or true;
+    in
     flake-utils.lib.eachDefaultSystem (
       system:
       let
@@ -62,6 +67,7 @@
           fmtBins
           rocCompiler
           buildWasmHost
+          testSslCertFile
           ;
         inherit (nixCommon) nativeBuildInputs;
 
@@ -191,6 +197,11 @@
             # Fake-compiler probe tests need a real interpreter for their
             # shebang in the sandbox, where /bin/sh does not exist (#5926).
             ID_TEST_FAKE_SH = "${pkgs.stdenv.shell}";
+            # The sandbox has no system CA store, so a reqwest client
+            # constructed by a test loads zero root certificates and
+            # the http_fetch schedule tests panic (#12608);
+            # rustls-native-certs honours SSL_CERT_FILE.
+            SSL_CERT_FILE = testSslCertFile;
             src = ./.;
             inherit buildInputs;
             nativeBuildInputs =
@@ -355,7 +366,7 @@
         # Uses 'ci' command (read-only, no auto-fix modifications)
         # =======================================================================
         checks = {
-          # CI-safe checks (read-only): cargo-fmt-check web-fmt-check clippy-lint web-lint test-sandbox test-web-unit test-web-typecheck roc-test roc-examples doc build release
+          # CI-safe checks (read-only): cargo-fmt-check web-fmt-check clippy-lint web-lint test-sandbox test-crate-integration test-web-unit test-web-typecheck roc-test roc-examples doc build release
           # NixOS VM integration tests (Linux only): nixos-serve nixos-e2e
           default = mkCheck "ci" "ci";
 
@@ -369,6 +380,7 @@
           web-lint = mkCheck "web-lint" "web-lint";
           test = mkCheck "test" "test-sandbox";
           test-unit = mkCheck "test-unit" "test-unit";
+          test-crate-integration = mkCheck "test-crate-integration" "test-crate-integration";
           test-native-shell = mkCheck "test-native-shell" "test-native-shell";
           # Rust example guests (#7904): plaza-sdk (examples/rust-world)
           # and rust-counter (examples/rust-counter) are standalone
@@ -464,6 +476,33 @@
           # noise (absolute source path, body serialisation), so this is
           # green on any correctly regenerated file.
           just-recipes-drift = mkCheck "just-recipes-drift" "just-recipes-check && bash scripts/just-recipes-check-test.sh";
+
+          # Planted-bug mutation proof (#8037, plan #1395): the script
+          # plants one named mutation at a time and requires the
+          # voiding/frontier suites to FAIL on each, after a green
+          # unmutated baseline. It drives git (rev-parse / apply /
+          # checkout) against repo-root-relative paths, and a flake
+          # check's src is pkgs/id alone with no .git, so the check
+          # stages a throwaway repo whose pkgs/id is this source tree,
+          # commits it, and runs the script there; the cargo vendor
+          # config the setup hook put in CARGO_HOME carries over, so
+          # the staged suites build offline like every other check.
+          # Nightly-only (full flake check): it runs the judged suites
+          # five times over, so it is excluded from the fast PR list
+          # in check-id-pr-checks.sh.
+          planted-bug-check = mkCheckWith {
+            name = "planted-bug-check";
+            extraNativeBuildInputs = [ pkgs.git ];
+            checkCommand = ''
+              stage=$(mktemp -d)
+              mkdir -p "$stage/pkgs/id"
+              tar --exclude=./target --exclude=./web/node_modules --exclude=./web/dist -cf - . | tar -xf - -C "$stage/pkgs/id"
+              git -C "$stage" init -q
+              git -C "$stage" add -A
+              git -C "$stage" -c user.email=ci@example.invalid -c user.name=ci commit -qm "stage pkgs/id for planted-bug-check"
+              bash "$stage/pkgs/id/tests/planted-bug-check.sh"
+            '';
+          };
 
           # Regression pins for scripts/build.sh variant handling (#6869):
           # the fixture suite stubs cargo and exercises every variant, so a
@@ -861,7 +900,7 @@
               ${buildWasmHost}
             '';
 
-            doCheck = true;
+            doCheck = checkRuntimePackages;
             # Test phase under the ci-check profile (#3195), not release.
             checkType = "ci-check";
             # serve_tests require networking (bind/listen), unavailable in nix sandbox
@@ -871,6 +910,12 @@
             ];
             preCheck = ''
               export ID_TEST_FAKE_SH="${pkgs.stdenv.shell}"
+              # CA bundle for the check phase (#12608): the sandbox
+              # has no system CA store, so the reqwest client the
+              # http_fetch schedule tests construct loads zero root
+              # certificates and panics; rustls-native-certs honours
+              # SSL_CERT_FILE.
+              export SSL_CERT_FILE="${testSslCertFile}"
             '';
 
             meta = commonMeta // {
@@ -913,7 +958,7 @@
 
             preBuild = buildWasmHost;
 
-            doCheck = true;
+            doCheck = checkRuntimePackages;
             # Test phase under the ci-check profile (#3195), not release.
             checkType = "ci-check";
             # serve_tests require networking (bind/listen), unavailable in nix sandbox
@@ -923,6 +968,12 @@
             ];
             preCheck = ''
               export ID_TEST_FAKE_SH="${pkgs.stdenv.shell}"
+              # CA bundle for the check phase (#12608): the sandbox
+              # has no system CA store, so the reqwest client the
+              # http_fetch schedule tests construct loads zero root
+              # certificates and panics; rustls-native-certs honours
+              # SSL_CERT_FILE.
+              export SSL_CERT_FILE="${testSslCertFile}"
             '';
 
             meta = commonMeta // {

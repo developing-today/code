@@ -39,6 +39,7 @@ pub mod local_events {
     pub use id_events::local_events::LocalEvents;
 }
 pub mod app_manifest;
+pub mod boundary_evidence;
 pub mod chat_presence;
 pub mod cli;
 pub mod commands;
@@ -64,7 +65,7 @@ pub use id_core::{is_format_char, is_node_id};
 pub use id_store::STORE_PATH;
 pub use id_sync::protocol::META_ALPN;
 
-pub use crate::cli::{Cli, Command, KeyCommand, TagCommand};
+pub use crate::cli::{Cli, Command, KeyCommand, KeysetCommand, TagCommand};
 pub use crate::commands::{
     PeekOptions, PeersOptions, ReplContext, ReplContextInner, SearchOptions, ServeInfo,
     ServeOptions, cmd_find, cmd_find_matches, cmd_get_local, cmd_get_multi, cmd_get_one,
@@ -83,9 +84,10 @@ pub use crate::protocol::{
 };
 pub use crate::repl::run_repl;
 pub use id_core::discovery::{
-    ANNOUNCE_INTERVAL, DEFAULT_TOPIC, DEFAULT_TOPIC_SECRET, Defaults, MAX_PEER_NAME_BYTES,
-    MAX_PEERS, PeerAnnouncement, PeerDiscovery, PeerInfo, ResolvedConfig, STALE_CHECK_INTERVAL,
-    STALE_THRESHOLD, defaults, parse_defaults, resolve_config,
+    ANNOUNCE_INTERVAL, DEFAULT_TOPIC, DEFAULT_TOPIC_SECRET, Defaults, DefaultsMode,
+    DefaultsProvenance, DefaultsSource, MAX_PEER_NAME_BYTES, MAX_PEERS, PeerAnnouncement,
+    PeerDiscovery, PeerInfo, ResolvedConfig, STALE_CHECK_INTERVAL, STALE_THRESHOLD, defaults,
+    defaults_provenance, resolve_config,
 };
 pub use id_store::store::{StoreType, load_or_create_keypair, open_store};
 

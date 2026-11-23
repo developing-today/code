@@ -43,9 +43,17 @@ pub mod graph;
 /// Deterministic graph-native currency fold over the graph contracts.
 pub mod fold;
 
+/// Issuer snapshots over the fold: balance roots, frontier, recomputation.
+pub mod snapshot;
+
 /// The currency gateway's signed request envelope (#2319).
 #[cfg(feature = "world")]
 pub mod gateway;
+
+/// The F5 proof of concept composing registry, factory, and gateway
+/// over a single currency (#2321).
+#[cfg(feature = "world")]
+pub mod gateway_poc;
 
 /// The event kind carrying a rate authorisation body.
 pub const RATE_AUTHORISATION_KIND: &str = "currency.rate_authorisation";
@@ -138,9 +146,10 @@ impl RateAuthorisation {
     ///
     /// # Errors
     ///
-    /// Returns a JSON error if the bytes are not an authorisation object.
+    /// Returns a JSON error if the bytes are not an authorisation object, or
+    /// if they repeat an object key (#8794).
     pub fn from_body(bytes: &[u8]) -> Result<Self, serde_json::Error> {
-        serde_json::from_slice(bytes)
+        id_core::json_unique::from_slice_without_duplicate_keys(bytes)
     }
 
     /// Checks this body against its event's verified author.
@@ -236,7 +245,7 @@ impl RateAuthorisationRevoke {
     ///
     /// As [`RateAuthorisation::from_body`].
     pub fn from_body(bytes: &[u8]) -> Result<Self, serde_json::Error> {
-        serde_json::from_slice(bytes)
+        id_core::json_unique::from_slice_without_duplicate_keys(bytes)
     }
 }
 
@@ -565,6 +574,33 @@ mod tests {
             reversal_window_secs: Some(3600),
             fee_bps: Some(25),
         }
+    }
+
+    /// #8794: a signed body with a repeated key is refused by name, and a
+    /// full-width id still decodes.
+    #[test]
+    fn bodies_with_a_repeated_key_are_refused_by_name() {
+        let mut wide = forward();
+        wide.authorisation_id = u128::MAX;
+        let body = wide.body().unwrap();
+        assert_eq!(RateAuthorisation::from_body(&body).unwrap(), wide);
+        let mut repeated = br#"{"rate_num":1,"#.to_vec();
+        repeated.extend_from_slice(&body[1..]);
+        let error = RateAuthorisation::from_body(&repeated).unwrap_err();
+        assert!(error.to_string().contains(r#""rate_num""#), "{error}");
+
+        let revoke = RateAuthorisationRevoke {
+            authorisation_id: u128::MAX,
+            revoked_version_from: 1,
+            effective_at: 0,
+            reason: None,
+        };
+        let body = revoke.body().unwrap();
+        assert_eq!(RateAuthorisationRevoke::from_body(&body).unwrap(), revoke);
+        let mut repeated = br#"{"effective_at":5,"#.to_vec();
+        repeated.extend_from_slice(&body[1..]);
+        let error = RateAuthorisationRevoke::from_body(&repeated).unwrap_err();
+        assert!(error.to_string().contains(r#""effective_at""#), "{error}");
     }
 
     #[test]

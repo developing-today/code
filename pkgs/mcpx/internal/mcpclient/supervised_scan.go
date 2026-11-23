@@ -3,12 +3,14 @@ package mcpclient
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -52,7 +54,7 @@ func ScanSupervisorSockets(stateDir string, configured []string, logf func(strin
 	for _, name := range configured {
 		expected[SupervisorSocketPath(stateDir, name)] = name
 	}
-	matches, _ := filepath.Glob(filepath.Join(stateDir, "sup-*.sock"))
+	matches, _ := filepath.Glob(filepath.Join(SupervisorSocketDir(stateDir), "sup-*.sock"))
 	sort.Strings(matches)
 	var out []SupervisorScanOutcome
 	for _, sock := range matches {
@@ -87,6 +89,13 @@ func isStaleSocketErr(err error) bool {
 		return false
 	}
 	if os.IsNotExist(err) {
+		return true
+	}
+	// ENOTSOCK: a non-socket file under a sup-*.sock name (a crashed
+	// write, or a test's stand-in). Linux reports dialing one as
+	// connection refused; macOS as "socket operation on non-socket".
+	// Either way nobody can be listening on it.
+	if errors.Is(err, syscall.ECONNREFUSED) || errors.Is(err, syscall.ENOTSOCK) {
 		return true
 	}
 	return strings.Contains(err.Error(), "connection refused") ||

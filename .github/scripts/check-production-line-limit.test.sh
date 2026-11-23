@@ -38,15 +38,24 @@ grep -q "GRANDFATHERED pkgs/id/src/boards.rs: 3000 production lines (limit 2500)
 echo "pass: grandfathered file passes with a warning naming its split issue"
 
 # A grandfathered file that MOVED keeps its exemption only when the
-# key names its current path (#8894): directory.rs moved again from
-# id-worlds to pkgs/id/crates/id-directory/src/; with a stale key
-# this fixture would report OVER LIMIT instead of GRANDFATHERED.
-mkdir -p "$TMP/moved/pkgs/id/crates/id-directory/src"
-gen "$TMP/moved/pkgs/id/crates/id-directory/src/directory.rs" 3000
+# key names its current path (#8894). The fixture takes its key from
+# the script's own list, the deepest path still grandfathered, so it
+# survives splits: fixtures pinned to directory.rs (#8591), then to
+# fleet-queue's turso_queue.rs (#8589), turned this test red when
+# those files were split and left the list.
+moved_entry="$(grep -oE '^ *\["[^"]+"\]="#[0-9]+"' "$SCRIPT" | sed -E 's/^ *\["([^"]+)"\]="(#[0-9]+)"/\1 \2/' | awk '{ print gsub("/", "/", $1), $0 }' | sort -rn | head -n 1 | cut -d' ' -f2-)"
+moved_key="${moved_entry% *}"
+moved_issue="${moved_entry##* }"
+[ -n "$moved_key" ] && [ -n "$moved_issue" ] || {
+  echo "FAIL: no grandfather entry to build the moved-path fixture from" >&2
+  exit 1
+}
+mkdir -p "$TMP/moved/$(dirname "$moved_key")"
+gen "$TMP/moved/$moved_key" 3000
 bash "$SCRIPT" "$TMP/moved" >"$TMP/moved.out"
 grep -q "production-line-guard: OK" "$TMP/moved.out"
-grep -q "GRANDFATHERED pkgs/id/crates/id-directory/src/directory.rs: 3000 production lines (limit 2500) - split tracked by #8591" "$TMP/moved.out"
-echo "pass: grandfather entry matches the file at its moved (crates/id-directory) path"
+grep -qF "GRANDFATHERED $moved_key: 3000 production lines (limit 2500) - split tracked by $moved_issue" "$TMP/moved.out"
+echo "pass: grandfather entry matches the file at its nested crate path"
 
 # Violating tree: one synthetic over-limit production file.
 mkdir -p "$TMP/bad/pkgs/id/src"
@@ -197,6 +206,39 @@ if grep -q "generated.rs" "$TMP/targetmask.out"; then
   exit 1
 fi
 echo "pass: target/ exclusion does not mask over-limit sources"
+
+# pm-stack TypeScript (#12671): every line of a production .ts file
+# under a src/ directory counts against the same limit, and the
+# guard names the offender. Oracle: the fixture's line counts.
+gen_ts() { # gen_ts <path> <lines>
+  mkdir -p "$(dirname "$1")"
+  for i in $(seq 1 "$2"); do echo "export const v$i = $i;"; done >"$1"
+}
+gen_ts "$TMP/ts/pm-stack/demo/src/small.ts" 100
+gen_ts "$TMP/ts/pm-stack/demo/src/views/huge.ts" 2501
+if bash "$SCRIPT" "$TMP/ts" >"$TMP/ts.out" 2>&1; then
+  echo "FAIL: guard accepted an over-limit TypeScript file" >&2
+  exit 1
+fi
+grep -q "OVER LIMIT pm-stack/demo/src/views/huge.ts: 2501 production lines" "$TMP/ts.out"
+grep -q "checked 0 production .rs files and 2 production .ts files" "$TMP/ts.out"
+echo "pass: an over-limit pm-stack TypeScript file fails and is named"
+
+# Out-of-scope TypeScript is not counted: tests, declarations,
+# test directories, dependencies, build output, and files outside a
+# src/ directory. Oracle: only the one in-scope file is checked.
+gen_ts "$TMP/tsskip/pm-stack/demo/src/ok.ts" 10
+gen_ts "$TMP/tsskip/pm-stack/demo/src/big.test.ts" 3000
+gen_ts "$TMP/tsskip/pm-stack/demo/src/big.d.ts" 3000
+gen_ts "$TMP/tsskip/pm-stack/demo/src/__tests__/big.ts" 3000
+gen_ts "$TMP/tsskip/pm-stack/demo/test/src/big.ts" 3000
+gen_ts "$TMP/tsskip/pm-stack/demo/node_modules/dep/src/big.ts" 3000
+gen_ts "$TMP/tsskip/pm-stack/demo/dist/src/big.ts" 3000
+gen_ts "$TMP/tsskip/pm-stack/demo/scripts/big.ts" 3000
+bash "$SCRIPT" "$TMP/tsskip" >"$TMP/tsskip.out"
+grep -q "production-line-guard: OK" "$TMP/tsskip.out"
+grep -q "checked 0 production .rs files and 1 production .ts files" "$TMP/tsskip.out"
+echo "pass: TypeScript tests, declarations, dependencies and build output are not counted"
 
 # Every grandfather key in the guard must name a file that exists
 # in this repo (#8894): when pkgs/id's world files moved under

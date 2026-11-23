@@ -3,8 +3,6 @@
 // this process at all (#9028): dispatch talks to the fleet queue broker
 // with the broker token, which stays in its token file
 // (~/.config/queue-broker/token) and is read at client construction.
-// The previous config required SUPABASE_URL and carried the Supabase
-// service-role key — the direct-PostgREST producer that #9028 removed.
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -73,6 +71,18 @@ export interface Config {
   githubAppId: string | null;
   /** Decoded PEM for the GitHub App private key (memory only). */
   githubAppPrivateKeyPem: string | null;
+  /** Where launches into a primary clone get their own worktree
+   * (PM_DISPATCH_WORKTREE_ROOT, default ~/git/fleet; "off" runs in the
+   * requested directory as before). code#12213. */
+  worktreeRoot: string | null;
+  /** Registry file holding the worktree <-> task/session association
+   * the cleanup lifecycle retires trees from (code#12217). Only
+   * meaningful when worktreeRoot is set. */
+  worktreeRegistryFile: string;
+  /** Seconds between worktree cleanup sweeps (PM_DISPATCH_WORKTREE_
+   * SWEEP_SECONDS, default 900; "off" disables the timer — the
+   * failure-path cleanup still runs). code#12217. */
+  worktreeSweepSeconds: number | null;
 }
 
 export function loadConfig(env: Record<string, string | undefined> = process.env): Config {
@@ -117,5 +127,23 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     opencodeAuthFile: s(env.OPENCODE_AUTH_FILE, join(homedir(), ".local", "state", "opencode", "service-prod.json")),
     githubAppId: env.GITHUB_APP_ID?.trim() ? env.GITHUB_APP_ID.trim() : null,
     githubAppPrivateKeyPem: appPem,
+    worktreeRoot:
+      env.PM_DISPATCH_WORKTREE_ROOT?.trim().toLowerCase() === "off"
+        ? null
+        : s(env.PM_DISPATCH_WORKTREE_ROOT, join(homedir(), "git", "fleet")),
+    worktreeRegistryFile: s(
+      env.PM_DISPATCH_WORKTREE_REGISTRY,
+      join(homedir(), ".local", "state", "pm-dispatch", "worktree-registry.json"),
+    ),
+    worktreeSweepSeconds: (() => {
+      const v = s(env.PM_DISPATCH_WORKTREE_SWEEP_SECONDS, "900");
+      if (v.toLowerCase() === "off") return null;
+      if (!/^\d+$/.test(v) || Number(v) < 1 || Number(v) > 2_147_483) {
+        throw new Error(
+          `Invalid PM_DISPATCH_WORKTREE_SWEEP_SECONDS "${v}": expected a positive integer from 1 to 2147483, or "off"`,
+        );
+      }
+      return Number(v);
+    })(),
   };
 }

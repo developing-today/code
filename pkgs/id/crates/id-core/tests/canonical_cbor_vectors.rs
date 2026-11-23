@@ -187,6 +187,40 @@ fn nesting_deeper_than_the_limit_rejects() {
     assert_eq!(decode_canonical(&deeper), Err(CborError::TooDeeplyNested));
 }
 
+/// `levels` nested arrays around a `0` leaf, built as a value.
+fn nested_arrays(levels: usize) -> Value {
+    let mut value = Value::UInt(0);
+    for _ in 0..levels {
+        value = Value::Array(vec![value]);
+    }
+    value
+}
+
+#[test]
+fn encoder_applies_the_decoders_depth_limit() {
+    use id_core::canonical_cbor::MAX_NESTING_DEPTH;
+
+    // #11315: at the limit the encoder succeeds and the bytes decode back.
+    let at_limit = nested_arrays(MAX_NESTING_DEPTH as usize);
+    let bytes = encode_canonical(&at_limit).unwrap();
+    assert_eq!(decode_canonical(&bytes).unwrap(), at_limit);
+
+    // One level deeper is refused by the encoder with the decoder's error,
+    // instead of producing bytes the decoder rejects.
+    let deeper = nested_arrays(MAX_NESTING_DEPTH as usize + 1);
+    assert_eq!(encode_canonical(&deeper), Err(CborError::TooDeeplyNested));
+
+    // The same rule through a map value.
+    let in_map = Value::Map(vec![(text("k"), nested_arrays(MAX_NESTING_DEPTH as usize))]);
+    assert_eq!(encode_canonical(&in_map), Err(CborError::TooDeeplyNested));
+
+    // Far deeper caller-built values fail fast instead of recursing without bound.
+    assert_eq!(
+        encode_canonical(&nested_arrays(10_000)),
+        Err(CborError::TooDeeplyNested)
+    );
+}
+
 #[test]
 fn unknown_critical_fields_reject_and_others_tolerate() {
     let record = Value::Map(vec![

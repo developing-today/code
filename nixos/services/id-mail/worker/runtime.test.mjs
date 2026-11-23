@@ -229,3 +229,83 @@ test("template mode with no templates configured refuses instead of throwing (#6
   assert.equal(response.status, 400);
   assert.deepEqual(fx.sent, []);
 });
+
+function countingBody(chunk, count) {
+  const seen = { bytes: 0 };
+  let i = 0;
+  const body = new ReadableStream(
+    {
+      pull(c) {
+        if (i++ >= count) return c.close();
+        seen.bytes += chunk.byteLength;
+        c.enqueue(chunk);
+      },
+    },
+    { highWaterMark: 0 },
+  );
+  return { body, seen };
+}
+
+test("an oversized declared body is refused with 413 without being read (#11331)", async () => {
+  const harness = makeEnv();
+  const env = harness.build();
+  const { body, seen } = countingBody(new Uint8Array(64), 1);
+  const response = await worker.fetch(
+    new Request("https://mail.example/", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${TOKEN}`,
+        "content-type": "application/json",
+        "content-length": String(65 * 1024),
+      },
+      body,
+      duplex: "half",
+    }),
+    env,
+  );
+  assert.equal(response.status, 413);
+  assert.deepEqual(await response.json(), { error: "body is too large" });
+  assert.equal(seen.bytes, 0);
+  assert.deepEqual(harness.sent, []);
+});
+
+test("a drip-fed oversized body stops being read at the cap (#11331)", async () => {
+  const harness = makeEnv();
+  const env = harness.build();
+  const chunk = new Uint8Array(4096).fill(0x20);
+  const { body, seen } = countingBody(chunk, 1000);
+  const response = await worker.fetch(
+    new Request("https://mail.example/", {
+      method: "POST",
+      headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+      body,
+      duplex: "half",
+    }),
+    env,
+  );
+  assert.equal(response.status, 413);
+  assert.ok(seen.bytes <= 64 * 1024 + 2 * chunk.byteLength, `read ${seen.bytes} bytes`);
+  assert.deepEqual(harness.sent, []);
+});
+
+test("bad JSON and non-object bodies keep their 400 envelopes after the bounded read (#11331)", async () => {
+  const harness = makeEnv();
+  const env = harness.build();
+  const post = (body) =>
+    worker.fetch(
+      new Request("https://mail.example/", {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body,
+      }),
+      env,
+    );
+  const bad = await post("{nope");
+  assert.equal(bad.status, 400);
+  assert.deepEqual(await bad.json(), { error: "body is not JSON" });
+  const nul = await post("null");
+  assert.equal(nul.status, 400);
+  assert.deepEqual(await nul.json(), { error: "body must be a JSON object" });
+  const ok = await worker.fetch(mailRequest("bob@example.com"), env);
+  assert.equal(ok.status, 200);
+});

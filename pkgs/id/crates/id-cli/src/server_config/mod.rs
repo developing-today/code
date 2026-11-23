@@ -42,12 +42,16 @@
 //! bytes_per_window = 1048576       # 1 MiB per window for this peer only
 //! window_seconds = 86400           # the override window (here: a day)
 //! messages_per_window = 1000       # optional message cap inside the window
+//!
+//! [residency]                      # optional; see `boundaries` for this table
+//! [[boundaries]]                   # optional; see `boundaries` for these entries (#8851)
 //! ```
 //!
 //! [`ServerConfig::parse`] checks the whole file and translates every key to its ID, so a bad file
 //! fails at startup. [`Provisioned::apply`] creates what the config names through the same paths a
 //! user action takes, and a second run creates nothing.
 
+mod boundaries;
 mod parse;
 pub mod provision;
 
@@ -64,6 +68,7 @@ use id_events::pull_policy::PullPolicy;
 /// Re-exported so `crate::server_config::Object` keeps working: the type now lives in
 /// [`crate::aliases`] so alias display builds without the `world` feature.
 pub use crate::aliases::Object;
+pub use boundaries::{Boundaries, BoundaryInputs, ScopesInPlay};
 pub use parse::ConfigError;
 pub use provision::{ProvisionError, Provisioned, Report};
 
@@ -77,6 +82,8 @@ pub struct ServerConfig {
     /// The #2247 rolling-window abuse budgets. Defaults apply when
     /// the file has no `[budgets]` table.
     budgets: id_core::abuse::BudgetPolicy,
+    /// The `[[boundaries]]` declarations in force and the `[residency]` policy (#8851).
+    boundaries: Boundaries,
     /// Every local key, for users and groups alike. Keys are unique within the config.
     names: BTreeMap<String, Object>,
     /// The primary alias of each object that has one.
@@ -231,6 +238,13 @@ impl ServerConfig {
     #[must_use]
     pub const fn budgets(&self) -> &id_core::abuse::BudgetPolicy {
         &self.budgets
+    }
+
+    /// The boundary declarations in force and the residency policy (#8851). A config with
+    /// neither table declares no boundary, so every surface check is the no-op allow.
+    #[must_use]
+    pub const fn boundaries(&self) -> &Boundaries {
+        &self.boundaries
     }
 
     /// The public key a user key names.

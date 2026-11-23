@@ -1,6 +1,20 @@
 {
   "$id": "repo-task/v1",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "allOf": [
+    {
+      "if": {
+        "required": ["risk"],
+        "properties": {
+          "risk": {
+            "required": ["flags"],
+            "properties": { "flags": { "contains": { "const": "cross-repo-change" } } }
+          }
+        }
+      },
+      "then": { "required": ["implementation_repo"] }
+    }
+  ],
   "$defs": {
     "completion_telemetry": {
       "type": "object",
@@ -31,7 +45,7 @@
     { "required": ["set"] },
     { "required": ["source"] }
   ],
-  "description": "Structured payload stored in agent.tasks.payload for repo-health queue tasks. The task-row envelope fields (title, body, dedupe_key, priority, not_before, max_attempts) live outside this payload and are validated by repo-queue.py together with the cross-field dedupe rules.",
+  "description": "Structured payload stored in agent.tasks.payload for repo-health queue tasks. The task-row envelope fields (title, body, dedupe_key, priority, not_before, max_attempts) live outside this payload and are validated by the fleet queue validator (pkgs/fleet/crates/fleet-queue validate.rs, ceiling MAX_ATTEMPTS_CEILING) together with the cross-field dedupe rules.",
   "properties": {
     "acceptance": { "items": { "minLength": 1, "type": "string" }, "minItems": 1, "type": "array" },
     "context_refs": { "items": { "type": "string" }, "type": "array" },
@@ -57,7 +71,7 @@
       "type": "object"
     },
     "kind": { "enum": ["pr_shepherd", "triage", "small_fix", "ci_investigation"], "type": "string" },
-    "max_attempts": { "maximum": 10, "minimum": 1, "type": "integer" },
+    "max_attempts": { "maximum": 1000, "minimum": 1, "type": "integer" },
     "priority_reason": { "minLength": 1, "type": "string" },
     "problem": { "minLength": 1, "type": "string" },
     "prs": {
@@ -72,6 +86,11 @@
         "type": "object"
       },
       "type": "array"
+    },
+    "implementation_repo": {
+      "description": "Repository receiving the implementation when different from the issue-tracking repo. Claim repo filters use this field first; issue/dedupe identity remains repo. Explicit owner/name, not a URL.",
+      "type": "string",
+      "pattern": "^(?![.]{1,2}/)[A-Za-z0-9_.-]+/(?![.]{1,2}$)[A-Za-z0-9_.-]+$"
     },
     "repo": {
       "enum": [

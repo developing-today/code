@@ -96,6 +96,30 @@ pub struct WorldCore {
     /// fires remaining. A schedule occupies one slot however many fires
     /// remain.
     pub(crate) schedules: BTreeMap<String, PendingSchedule>,
+    /// The world's `kv` store (#1062): key to the value's JSON
+    /// encoding. Bounded by the `MAX_KV_*` caps; every mutation is
+    /// journaled before its result is delivered, and replay rebuilds
+    /// the store from the journal.
+    pub(crate) kv: BTreeMap<String, String>,
+    /// The world's blob set (#1062): content address (the blob's
+    /// iroh-blobs hash as lowercase hex) to content bytes. Bounded
+    /// by the `MAX_BLOB_*` caps; every mutation is journaled before
+    /// its result is delivered, and replay rebuilds the set from the
+    /// journal, verifying each blob against its address.
+    pub(crate) blobs: BTreeMap<String, Vec<u8>>,
+    /// `http.fetch` attempt timestamps (#1062), world-clock
+    /// milliseconds, oldest first: the rolling rate window
+    /// (`MAX_HTTP_FETCH_BURST` per `HTTP_FETCH_RATE_WINDOW_MS`).
+    /// Ephemeral by design — the rate window is not journaled,
+    /// and a restart resets it.
+    pub(crate) http_fetch_attempts: VecDeque<u64>,
+    /// `notify` attempt timestamps (#1062), world-clock
+    /// milliseconds, oldest first: the rolling rate window
+    /// (`MAX_NOTIFY_BURST` per `NOTIFY_RATE_WINDOW_MS`).
+    /// Ephemeral by design, like the fetch window — the bound
+    /// shapes a live program's interruptions, and a restart
+    /// resets it.
+    pub(crate) notify_attempts: VecDeque<u64>,
     /// Schedule-delivery consent by peer world (#1355 part 2): this
     /// world's half of the reciprocal F12.14 grant pair.
     pub(crate) schedule_grants: BTreeMap<String, ScheduleGrant>,
@@ -295,7 +319,7 @@ fn validate_import_envelope(event: &WorldEvent, payload_digest: &str) -> Result<
             ));
         }
     };
-    let envelope: serde_json::Value = serde_json::from_str(text)
+    let envelope = id_core::json_unique::parse_json_without_duplicate_keys(text)
         .map_err(|_| anyhow::anyhow!("journal import event is not a transfer envelope"))?;
     ensure!(
         envelope["protocol"] == "world.entity-transfer.v1" && envelope["direction"] == "import",
@@ -383,6 +407,10 @@ impl WorldCore {
             memory_budget: crate::world_limits::WorldMemoryBudget::default(),
             caps_ceiling: crate::world_caps::default_ceiling_names(),
             schedules: BTreeMap::new(),
+            kv: BTreeMap::new(),
+            blobs: BTreeMap::new(),
+            http_fetch_attempts: VecDeque::new(),
+            notify_attempts: VecDeque::new(),
             schedule_grants: BTreeMap::new(),
             portal_grants: id_caps::portal::PortalGrants::new(),
             schedule_receipts: BTreeSet::new(),
@@ -623,6 +651,7 @@ impl WorldCore {
                     uses,
                     used,
                     subject,
+                    issued_at,
                 } => {
                     let digest = hex_decode_32(&digest).context("malformed capability digest")?;
                     // #2972: participant 0 is the reserved host/system
@@ -699,6 +728,7 @@ impl WorldCore {
                     }
                     let mut ancestor = parent;
                     let mut revoked_by_ancestor = false;
+                    let mut ancestor_revoked_at = None;
                     while let Some(ancestor_id) = ancestor {
                         let ancestor_record = core
                             .capabilities
@@ -706,6 +736,7 @@ impl WorldCore {
                             .context("delegated capability ancestor disappeared during restore")?;
                         if ancestor_record.revoked {
                             revoked_by_ancestor = true;
+                            ancestor_revoked_at = ancestor_record.revoked_at;
                             break;
                         }
                         ancestor = ancestor_record.parent;
@@ -740,19 +771,34 @@ impl WorldCore {
                             scopes: validated_scopes,
                             parent,
                             revoked: revoked_by_ancestor,
+                            revoked_by: None,
                             bounds: CapabilityBounds { expires_at, uses },
                             used,
                             subject,
+                            issued_at,
+                            revoked_at: ancestor_revoked_at,
                         },
                     );
                     if revoked_by_ancestor {
                         inherited_revocations.insert(issued_participant_id);
                     }
                 }
-                JournalEntry::Revoked { participant_id, .. } => {
-                    if !inherited_revocations.remove(&participant_id) {
+                JournalEntry::Revoked {
+                    participant_id,
+                    by,
+                    revoked_at,
+                } => {
+                    if inherited_revocations.remove(&participant_id) {
+                        // Revoked with an ancestor before this checkpointed
+                        // entry was read: keep the time the entry carries.
+                        if let Some(record) = core.capabilities.get_mut(&participant_id) {
+                            record.revoked_at = revoked_at;
+                        }
+                    } else {
                         ensure!(
-                            !core.revoke_tree(participant_id).is_empty(),
+                            !core
+                                .revoke_tree_at(participant_id, by, revoked_at)
+                                .is_empty(),
                             "journal revokes unknown or revoked participant {participant_id}"
                         );
                     }
@@ -1003,6 +1049,80 @@ impl WorldCore {
                     ensure!(
                         core.apply_schedule_fired(&id),
                         "journal fires schedule {id:?}, which is not pending"
+                    );
+                }
+                JournalEntry::KvSet { key, value } => {
+                    // The bounds the writer holds are re-checked here:
+                    // a journal that would widen the store past them
+                    // refuses the restore instead (#1062).
+                    crate::world_caps::validate_kv_key(&key)
+                        .context("invalid kv key in journal")?;
+                    ensure!(
+                        value.len() <= crate::world_caps::MAX_KV_VALUE_BYTES,
+                        "journal kv value for {key:?} exceeds {} bytes",
+                        crate::world_caps::MAX_KV_VALUE_BYTES
+                    );
+                    ensure!(
+                        core.kv.contains_key(&key)
+                            || core.kv.len() < crate::world_caps::MAX_KV_ENTRIES,
+                        "journal holds more than {} kv entries",
+                        crate::world_caps::MAX_KV_ENTRIES
+                    );
+                    id_core::json_unique::parse_json_without_duplicate_keys(&value)
+                        .context("invalid kv value in journal")?;
+                    core.kv.insert(key, value);
+                    ensure!(
+                        core.kv_bytes() <= crate::world_caps::MAX_KV_TOTAL_BYTES,
+                        "journal kv store exceeds {} total bytes",
+                        crate::world_caps::MAX_KV_TOTAL_BYTES
+                    );
+                }
+                JournalEntry::KvDeleted { key } => {
+                    crate::world_caps::validate_kv_key(&key)
+                        .context("invalid kv key in journal")?;
+                    ensure!(
+                        core.kv.remove(&key).is_some(),
+                        "journal deletes kv key {key:?}, which is not stored"
+                    );
+                }
+                JournalEntry::BlobStored { hash, data } => {
+                    // The bounds the writer holds are re-checked here,
+                    // and content addressing adds one the writer
+                    // cannot break but a corrupt or tampered journal
+                    // can: the decoded content must hash back to the
+                    // address the entry claims (#1062).
+                    crate::world_caps::validate_blob_hash(&hash)
+                        .context("invalid blob hash in journal")?;
+                    let bytes =
+                        super::blob_decode(&data).context("journal blob content is not base64")?;
+                    ensure!(
+                        super::blob_id(&bytes) == hash,
+                        "journal blob content does not hash to its address {hash}"
+                    );
+                    ensure!(
+                        bytes.len() <= crate::world_caps::MAX_BLOB_BYTES,
+                        "journal blob {hash} exceeds {} bytes",
+                        crate::world_caps::MAX_BLOB_BYTES
+                    );
+                    ensure!(
+                        core.blobs.contains_key(&hash)
+                            || core.blobs.len() < crate::world_caps::MAX_BLOBS,
+                        "journal holds more than {} blobs",
+                        crate::world_caps::MAX_BLOBS
+                    );
+                    core.blobs.insert(hash, bytes);
+                    ensure!(
+                        core.blob_bytes() <= crate::world_caps::MAX_BLOB_TOTAL_BYTES,
+                        "journal blob set exceeds {} total bytes",
+                        crate::world_caps::MAX_BLOB_TOTAL_BYTES
+                    );
+                }
+                JournalEntry::BlobRemoved { hash } => {
+                    crate::world_caps::validate_blob_hash(&hash)
+                        .context("invalid blob hash in journal")?;
+                    ensure!(
+                        core.blobs.remove(&hash).is_some(),
+                        "journal removes blob {hash}, which is not stored"
                     );
                 }
                 JournalEntry::EntityExported {
@@ -1289,6 +1409,10 @@ impl WorldCore {
                             "host system events must use the unsequenced system journal entry"
                         ),
                         WorldEventKind::Chat(_) => {}
+                        // A notification is history, not program input:
+                        // it is retained by `commit_prepared` below and
+                        // never fed to the program's replay (#1062).
+                        WorldEventKind::Notification { .. } => {}
                     }
                     core.commit_prepared(event)?;
                 }
@@ -1300,6 +1424,8 @@ impl WorldCore {
                     execution_profile,
                     caps_ceiling,
                     schedules,
+                    kv,
+                    blobs,
                     transfers,
                     lease,
                     mut snapshot,
@@ -1487,6 +1613,38 @@ impl WorldCore {
                         declared.len() == listed.len() && declared == core.schedules,
                         "journal checkpoint's pending schedules disagree with its schedule entries"
                     );
+                    // The same agreement for the `kv` store: the writer
+                    // emits one `KvSet` per live entry before the
+                    // checkpoint, so the two must agree exactly.
+                    let listed_kv = kv.unwrap_or_default();
+                    let declared_kv: BTreeMap<String, String> = listed_kv
+                        .iter()
+                        .map(|entry| (entry.key.clone(), entry.value.clone()))
+                        .collect();
+                    ensure!(
+                        declared_kv.len() == listed_kv.len() && declared_kv == core.kv,
+                        "journal checkpoint's kv entries disagree with its kv set entries"
+                    );
+                    // The same agreement for the blob set, over the
+                    // declared index: the writer emits one `BlobStored`
+                    // per live blob before the checkpoint, so the
+                    // declared (hash, size) pairs must equal the
+                    // replayed set exactly.
+                    let listed_blobs = blobs.unwrap_or_default();
+                    let declared_blobs: BTreeMap<String, usize> = listed_blobs
+                        .iter()
+                        .map(|entry| (entry.hash.clone(), entry.size))
+                        .collect();
+                    let replayed_blobs: BTreeMap<String, usize> = core
+                        .blobs
+                        .iter()
+                        .map(|(hash, bytes)| (hash.clone(), bytes.len()))
+                        .collect();
+                    ensure!(
+                        declared_blobs.len() == listed_blobs.len()
+                            && declared_blobs == replayed_blobs,
+                        "journal checkpoint's blob index disagrees with its blob stored entries"
+                    );
                     program = Some(RestoredProgram {
                         module_hash,
                         seed,
@@ -1587,7 +1745,9 @@ impl WorldCore {
                 Some((WorldScopes::INPUT, "INPUT"))
             }
             WorldEventKind::Chat(_) => Some((WorldScopes::CHAT, "CHAT")),
-            WorldEventKind::System { .. } | WorldEventKind::ProgramInstalled { .. } => None,
+            WorldEventKind::System { .. }
+            | WorldEventKind::ProgramInstalled { .. }
+            | WorldEventKind::Notification { .. } => None,
         };
         if let Some((scope, name)) = required_scope {
             ensure!(
@@ -1639,7 +1799,14 @@ impl WorldCore {
             {
                 entries.push(JournalEntry::Revoked {
                     participant_id: id,
-                    by: None,
+                    by: self
+                        .capabilities
+                        .get(&id)
+                        .and_then(|record| record.revoked_by),
+                    revoked_at: self
+                        .capabilities
+                        .get(&id)
+                        .and_then(|record| record.revoked_at),
                 });
             }
         }
@@ -1721,6 +1888,46 @@ impl WorldCore {
                 at_ms: *at_ms,
             });
         }
+        // One entry per live `kv` entry, before the checkpoint, like
+        // the schedules: without them compaction would forget the
+        // store, and an older binary refuses the journal at the
+        // version check instead of restoring without it.
+        for (key, value) in &self.kv {
+            entries.push(JournalEntry::KvSet {
+                key: key.clone(),
+                value: value.clone(),
+            });
+        }
+        let kv: Option<Vec<CheckpointKvEntry>> = (!self.kv.is_empty()).then(|| {
+            self.kv
+                .iter()
+                .map(|(key, value)| CheckpointKvEntry {
+                    key: key.clone(),
+                    value: value.clone(),
+                })
+                .collect()
+        });
+        // One entry per live blob, before the checkpoint, like the
+        // `kv` entries: without them compaction would forget the
+        // content, and an older binary refuses the journal at the
+        // version check instead of restoring without it. The
+        // checkpoint itself declares only the index (hash + size) —
+        // the entries carry the bytes.
+        for (hash, bytes) in &self.blobs {
+            entries.push(JournalEntry::BlobStored {
+                hash: hash.clone(),
+                data: super::blob_encode(bytes),
+            });
+        }
+        let blobs: Option<Vec<CheckpointBlobEntry>> = (!self.blobs.is_empty()).then(|| {
+            self.blobs
+                .iter()
+                .map(|(hash, bytes)| CheckpointBlobEntry {
+                    hash: hash.clone(),
+                    size: bytes.len(),
+                })
+                .collect()
+        });
         let schedules: Option<Vec<CheckpointSchedule>> = (!self.schedules.is_empty()).then(|| {
             self.schedules
                 .iter()
@@ -1765,6 +1972,8 @@ impl WorldCore {
                     execution_profile: Some(self.execution_profile),
                     caps_ceiling: caps_ceiling.clone(),
                     schedules: schedules.clone(),
+                    kv: kv.clone(),
+                    blobs: blobs.clone(),
                     transfers: transfers.clone(),
                     lease: (!self.write_lease.is_bootstrap()).then(|| self.write_lease.clone()),
                     snapshot,
@@ -1842,5 +2051,33 @@ impl WorldCore {
             *version = required;
         }
         Ok(entries)
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod duplicate_key_tests {
+    use super::*;
+
+    fn import_event(envelope: String) -> WorldEvent {
+        WorldEvent {
+            sequence: 1,
+            participant_id: 0,
+            kind: WorldEventKind::System { event: envelope },
+        }
+    }
+
+    #[test]
+    fn an_import_envelope_with_a_duplicated_key_is_refused() {
+        let payload = b"entity";
+        let digest = hex_encode(blake3::hash(payload).as_bytes());
+        let body = format!(
+            r#""protocol":"world.entity-transfer.v1","direction":"import","payload_digest":"{digest}","payload_hex":"{}"}}"#,
+            hex_encode(payload)
+        );
+        validate_import_envelope(&import_event(format!("{{{body}")), &digest).unwrap();
+        // A lenient parse keeps the last "direction" and passes the check.
+        let duplicated = format!(r#"{{"direction":"export",{body}"#);
+        assert!(validate_import_envelope(&import_event(duplicated), &digest).is_err());
     }
 }

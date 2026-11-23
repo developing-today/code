@@ -1,4 +1,4 @@
-//! Stage 2, vocabulary half — validate (#5855 §2.1).
+//! Stage 2 — validate (#5855 §2.1).
 //!
 //! Checks a parsed document against the #5849 vocabulary, consumed as
 //! data from [`crate::vocabulary`]: required and allowed attributes,
@@ -8,11 +8,16 @@
 //! Every violation is a build error with a source location; all
 //! violations are collected before the build fails.
 //!
-//! Not checked here, by design: the content of the `assert` slot. Its
-//! grammar and role vocabulary are #5850's and unsettled; #5855
-//! assumption A2 has the pipeline carry assertions opaquely until the
-//! vocabulary lands as versioned data.
+//! The assertion half of the stage checks the `assert` slot against
+//! the #5850 assertion vocabulary, consumed as versioned data from
+//! [`crate::assertion_vocabulary`]: the slot's (dimension,
+//! role-value) grammar, the closed dimension set and token domains,
+//! the no-raw-values rule (#5850 invariant 1), and the
+//! one-pair-per-dimension rule (#5854 §2.2). #5855 assumption A2
+//! carried the slot opaquely until #5850 settled; it has settled,
+//! so the slot is checked here like every other vocabulary input.
 
+use crate::assertion_vocabulary;
 use crate::vocabulary::{self, ElementSpec, FIELD_CONSTRAINT_KINDS};
 use crate::{BuildError, Document, Element, Node};
 
@@ -56,6 +61,7 @@ fn validate_element(
     };
 
     check_attributes(el, spec, parent, siblings, errors);
+    check_assert_slot(el, errors);
     check_enums(el, spec, errors);
     check_constraint_applicability(el, errors);
     check_child_rules(el, parent, errors);
@@ -154,6 +160,44 @@ fn check_attributes(
             el.span.line,
             el.span.col,
         ));
+    }
+}
+
+/// The assertion half of stage 2: the `assert` slot checked
+/// against the #5850 vocabulary (consumed as data from
+/// [`crate::assertion_vocabulary`]). Unknown dimensions and tokens
+/// fail with suggestions, in the #5849 idiom; raw values fail
+/// under #5850 invariant 1; a dimension asserted twice in one
+/// slot fails under #5854 §2.2. The slot does not apply to a
+/// `<raw>` region: raw content is verbatim authored source, not
+/// a rendered registry element (#5849 §3.1), so an assertion
+/// there could never be honoured — it is an error, not a silent
+/// drop.
+fn check_assert_slot(el: &Element, errors: &mut Vec<BuildError>) {
+    if !el.has_attr("assert") {
+        return;
+    }
+    if el.name == "raw" {
+        errors.push(BuildError::new(
+            "the `assert` slot does not apply to a <raw> region: raw content is \
+             verbatim authored source, not a rendered element (#5849 §3.1)",
+            el.span.line,
+            el.span.col,
+        ));
+        return;
+    }
+    let Some(value) = el.attr("assert") else {
+        errors.push(BuildError::new(
+            format!("attribute `assert` on <{}> requires a value", el.name),
+            el.span.line,
+            el.span.col,
+        ));
+        return;
+    };
+    if let Err(problems) = assertion_vocabulary::parse_assert_slot(value) {
+        for problem in problems {
+            errors.push(BuildError::new(problem, el.span.line, el.span.col));
+        }
     }
 }
 

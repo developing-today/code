@@ -31,6 +31,71 @@
 //! version is refused with `bad_args`, never silently interpreted. A
 //! host that cannot describe its device refuses with `unknown_cap`.
 //!
+//! The `kv` store (#1062, F12.5) is three requests over one bounded,
+//! durable, per-world key-value store: `kv.set`
+//! (`{"key":"k","value":...}`) stores a JSON value and answers
+//! `{"key":"k","value_bytes":N}`; `kv.get` (`{"key":"k"}`) answers
+//! `{"key":"k","value":...}` with `null` when the key is absent;
+//! `kv.delete` (`{"key":"k"}`) answers `{"key":"k","deleted":bool}`.
+//! Writes are journaled before their result is delivered, so the
+//! store survives restarts and checkpoint compaction. Keys, values,
+//! entry count and total bytes are bounded ([`MAX_KV_KEY_BYTES`],
+//! [`MAX_KV_VALUE_BYTES`], [`MAX_KV_ENTRIES`], [`MAX_KV_TOTAL_BYTES`]);
+//! a write past a bound is refused with `bad_args` and a reason, and
+//! stores nothing.
+//!
+//! The `blob` store (#1062, F12.5) is three requests over one bounded,
+//! durable, per-world set of content-addressed blobs: `blob.put`
+//! (`{"data":"<base64>"}`) stores content and answers
+//! `{"hash":H,"size":N}`, where `H` is the content's iroh-blobs
+//! address (its BLAKE3 hash as 64 lowercase hex characters);
+//! `blob.get` (`{"hash":H}`) answers `{"hash":H,"data":"<base64>"}`
+//! with `null` data when the world holds no such blob; `blob.delete`
+//! (`{"hash":H}`) answers `{"hash":H,"deleted":bool}`. Putting content
+//! the world already holds is a no-op — the address is the same.
+//! Writes are journaled before their result is delivered, and replay
+//! verifies each stored blob against its address, so the store
+//! survives restarts and checkpoint compaction. Content size, blob
+//! count and total bytes are bounded ([`MAX_BLOB_BYTES`],
+//! [`MAX_BLOBS`], [`MAX_BLOB_TOTAL_BYTES`]); a write past a bound is
+//! refused with `bad_args` and a reason, and stores nothing.
+//!
+//! `http.fetch` (#1062, F12.5) is one request, `{"url":U}`, answered
+//! with `{"url":U2,"status":N,"body":"<base64>","body_bytes":N}`
+//! where `U2` is the URL that produced the response after any
+//! followed redirects and the body travels base64 like `blob`
+//! content. It is the first outward-facing provider and is **off by
+//! default**: it registers [`DefaultCeiling::Excluded`], so no
+//! default ceiling names it, and the executor additionally refuses
+//! any host outside the admin allowlist
+//! (`WorldLimits::http_fetch_hosts` in the worlds crate, empty by
+//! default) before connecting. Redirects are followed manually, at
+//! most [`MAX_HTTP_FETCH_REDIRECTS`] hops, and every hop must pass
+//! the same allowlist check — no redirects off the list. URL,
+//! response, timeout and rate bounds are
+//! [`MAX_HTTP_FETCH_URL_BYTES`], [`MAX_HTTP_FETCH_RESPONSE_BYTES`],
+//! [`MAX_HTTP_FETCH_TIMEOUT_MS`] and [`MAX_HTTP_FETCH_BURST`] per
+//! [`HTTP_FETCH_RATE_WINDOW_MS`]. A fetch is an effect, not world
+//! state: it journals nothing, and replay never sees one.
+//!
+//! `notify` (#1062, F12.5) is one request, `{"text":T}`, answered
+//! with `{"sequence":N}`: a user-visible outbound notification,
+//! committed to the world's event stream as a `Notification`
+//! event (host-authored, participant 0) and broadcast to the
+//! world's sessions — not a chat line: it never enters chat
+//! history, and the join projection shows it to every participant,
+//! not only chat readers. Like `http.fetch` it is **off by
+//! default** ([`DefaultCeiling::Excluded`]); unlike a fetch its
+//! target is fixed — the world's own users — so there is no
+//! allowlist, and the volume control is a rate bound instead:
+//! at most [`MAX_NOTIFY_BURST`] attempts per
+//! [`NOTIFY_RATE_WINDOW_MS`] per world. The text takes the
+//! `chat.say` bound (the world's `chat_bytes` limit) and the chat
+//! sanitizer. The notification is journaled before its result is
+//! delivered, as the ordinary committed event it is, so it
+//! survives restarts at its sequence and is never delivered twice
+//! across a reopen.
+//!
 //! The server answers each new request with
 //! `{"cap":"result","id":"r1","ok":true,"value":...}` (or `"ok":false` with an
 //! `"error"`), and each subscription with its own events
@@ -67,8 +132,11 @@
 //! `os_permission_denied` (the OS refused the permission), `outside_ceiling`
 //! with reason `precision_ceiling` (the fix is less precise than the
 //! ceiling allows), and `failed` with reason `no_fix` (no fix available).
+//! Speech refusals also reuse these codes: `unknown_cap` with
+//! `device_lacks_affordance`, and `failed` with `asr_unavailable` (#2344).
 //!
-//! **Sensor caps are per-use.** The `loc.*` capabilities are sensor caps:
+//! **Sensor caps are per-use.** The `loc.*` capabilities and microphone
+//! input capabilities are sensor caps:
 //! a wildcard (`*`) grant never reaches them and grant-on-use never mints
 //! a durable grant for them — a world needs an explicit ceiling entry
 //! *and* an explicit grant, and each use still passes the consent seam.
@@ -83,6 +151,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use anyhow::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
+
+use crate::cap_class;
 
 /// Version of the `wants` document the host understands.
 pub const WANTS_VERSION: u64 = 1;
@@ -264,6 +334,14 @@ pub struct ProviderManifest {
     /// namespace with an excluded default ceiling (see
     /// [`ProviderManifest::side_contract_violation`]).
     pub side: ProviderSide,
+    /// The capability class this provider's name maps to for
+    /// change-notice disclosure: an id in the shipped class table
+    /// ([`crate::cap_class::CAP_CLASSES`]), carried as registry data —
+    /// never derived from the name (#5999 §2.4). A name whose class
+    /// assignment has not been designed yet carries
+    /// [`crate::cap_class::CLASS_UNKNOWN`] and so always discloses,
+    /// until a design pass assigns it a class.
+    pub class: &'static str,
 }
 
 /// Existing catalog entries as full manifests. The macro generates the
@@ -277,6 +355,7 @@ macro_rules! define_provider_registry {
             bounds: $bounds:expr,
             required_scope: $required_scope:expr,
             default_ceiling: $default_ceiling:expr,
+            class: $class:expr,
         },
     )+) => {
         /// All statically registered production providers, in stable catalog
@@ -293,6 +372,7 @@ macro_rules! define_provider_registry {
                 required_scope: $required_scope,
                 default_ceiling: $default_ceiling,
                 side: ProviderSide::Host,
+                class: $class,
             }),+
         ];
 
@@ -382,6 +462,110 @@ const RECORDS_READ_BOUNDS: &[ProviderBound] = &[
     ProviderBound::ArgsBytes(MAX_ARGS_BYTES),
     ProviderBound::ResponseBytes(MAX_RECORDS_RESULT_PAGE_BYTES),
 ];
+/// Argument schema for `kv.get` and `kv.delete`: one required `key`.
+const KV_KEY_ARGUMENTS: &[ProviderArgument] = &[ProviderArgument {
+    name: "key",
+    value_type: ArgumentType::String,
+    required: true,
+}];
+/// Argument schema for `kv.set`: a required `key` and `value`. Values
+/// are arbitrary JSON; the schema's `Object` kind names the
+/// structured-payload slot, and the executor accepts any JSON value
+/// while bounding its serialized size ([`MAX_KV_VALUE_BYTES`]).
+const KV_SET_ARGUMENTS: &[ProviderArgument] = &[
+    ProviderArgument {
+        name: "key",
+        value_type: ArgumentType::String,
+        required: true,
+    },
+    ProviderArgument {
+        name: "value",
+        value_type: ArgumentType::Object,
+        required: true,
+    },
+];
+/// Bounds for `kv.get`: argument bytes, the key cap, and the value cap
+/// the single returned value must fit.
+const KV_GET_BOUNDS: &[ProviderBound] = &[
+    ProviderBound::ArgsBytes(MAX_ARGS_BYTES),
+    ProviderBound::IdentifierBytes(MAX_KV_KEY_BYTES),
+    ProviderBound::ResponseBytes(MAX_KV_VALUE_BYTES),
+];
+/// Bounds for `kv.set`: argument bytes, the key cap, and the entry cap.
+const KV_SET_BOUNDS: &[ProviderBound] = &[
+    ProviderBound::ArgsBytes(MAX_ARGS_BYTES),
+    ProviderBound::IdentifierBytes(MAX_KV_KEY_BYTES),
+    ProviderBound::Items(MAX_KV_ENTRIES),
+];
+/// Bounds for `kv.delete`: argument bytes plus the key cap.
+const KV_DELETE_BOUNDS: &[ProviderBound] = &[
+    ProviderBound::ArgsBytes(MAX_ARGS_BYTES),
+    ProviderBound::IdentifierBytes(MAX_KV_KEY_BYTES),
+];
+/// Argument schema for `blob.get` and `blob.delete`: one required
+/// `hash`, the blob's content address.
+const BLOB_HASH_ARGUMENTS: &[ProviderArgument] = &[ProviderArgument {
+    name: "hash",
+    value_type: ArgumentType::String,
+    required: true,
+}];
+/// Argument schema for `blob.put`: a required `data`, the content as
+/// a base64 string. The executor decodes it and bounds the decoded
+/// size ([`MAX_BLOB_BYTES`]).
+const BLOB_PUT_ARGUMENTS: &[ProviderArgument] = &[ProviderArgument {
+    name: "data",
+    value_type: ArgumentType::String,
+    required: true,
+}];
+/// Bounds for `blob.put`: argument bytes and the blob-count cap. The
+/// content cap is on the decoded bytes, which the argument byte cap
+/// already over-bounds (base64 is longer than the content).
+const BLOB_PUT_BOUNDS: &[ProviderBound] = &[
+    ProviderBound::ArgsBytes(MAX_ARGS_BYTES),
+    ProviderBound::Items(MAX_BLOBS),
+];
+/// Bounds for `blob.get`: argument bytes, the address cap, and the
+/// encoded-content cap the single returned blob must fit.
+const BLOB_GET_BOUNDS: &[ProviderBound] = &[
+    ProviderBound::ArgsBytes(MAX_ARGS_BYTES),
+    ProviderBound::IdentifierBytes(MAX_BLOB_ID_BYTES),
+    ProviderBound::ResponseBytes(MAX_BLOB_ENCODED_BYTES),
+];
+/// Bounds for `blob.delete`: argument bytes plus the address cap.
+const BLOB_DELETE_BOUNDS: &[ProviderBound] = &[
+    ProviderBound::ArgsBytes(MAX_ARGS_BYTES),
+    ProviderBound::IdentifierBytes(MAX_BLOB_ID_BYTES),
+];
+/// Argument schema for `http.fetch`: one required `url`. A fetch
+/// names no method and sends no body — GET only — so the URL is
+/// the whole request.
+const HTTP_FETCH_ARGUMENTS: &[ProviderArgument] = &[ProviderArgument {
+    name: "url",
+    value_type: ArgumentType::String,
+    required: true,
+}];
+/// Bounds for `http.fetch`: argument bytes, the URL cap as the
+/// identifier bound, and the response body cap.
+const HTTP_FETCH_BOUNDS: &[ProviderBound] = &[
+    ProviderBound::ArgsBytes(MAX_ARGS_BYTES),
+    ProviderBound::IdentifierBytes(MAX_HTTP_FETCH_URL_BYTES),
+    ProviderBound::ResponseBytes(MAX_HTTP_FETCH_RESPONSE_BYTES),
+];
+/// Argument schema for `notify`: one required `text` — the
+/// `chat.say` argument. A notification is one bounded line; a
+/// title or level is not part of the v1 shape.
+const NOTIFY_ARGUMENTS: &[ProviderArgument] = &[ProviderArgument {
+    name: "text",
+    value_type: ArgumentType::String,
+    required: true,
+}];
+/// Bounds for `notify`: argument bytes plus the world chat byte
+/// limit — the bound the host applies to its own user-visible
+/// lines, declared exactly as `chat.say` declares it.
+const NOTIFY_BOUNDS: &[ProviderBound] = &[
+    ProviderBound::ArgsBytes(MAX_ARGS_BYTES),
+    ProviderBound::WorldLimit("chat_bytes"),
+];
 /// Bounds for `schedule.at`: argument bytes, id bytes, pending cap, and horizon.
 const SCHEDULE_AT_BOUNDS: &[ProviderBound] = &[
     ProviderBound::ArgsBytes(MAX_ARGS_BYTES),
@@ -440,6 +624,14 @@ const LOC_POSITION_BOUNDS: &[ProviderBound] = &[ProviderBound::ArgsBytes(MAX_ARG
 /// floor ([`MIN_LOC_WATCH_INTERVAL_MS`]) is enforced by
 /// [`parse_loc_watch_interval_ms`].
 const LOC_WATCH_BOUNDS: &[ProviderBound] = &[ProviderBound::Items(MAX_LOC_WATCHES)];
+/// `speech.capture` frames use the same event-sized ceiling as `media.stream`.
+const SPEECH_CAPTURE_BOUNDS: &[ProviderBound] = &[ProviderBound::ResponseBytes(MAX_EVENT_BYTES)];
+/// `speech.synthesize` accepts text; voice selection is a runtime concern.
+const SPEECH_SYNTHESIZE_ARGUMENTS: &[ProviderArgument] = &[ProviderArgument {
+    name: "text",
+    value_type: ArgumentType::String,
+    required: true,
+}];
 /// Forms share the request argument bound and have a bounded pending set.
 const FORM_BOUNDS: &[ProviderBound] = &[
     ProviderBound::ArgsBytes(MAX_ARGS_BYTES),
@@ -454,6 +646,7 @@ define_provider_registry! {
         bounds: COMMON_REQUEST_BOUNDS,
         required_scope: RequiredScope::Join,
         default_ceiling: DefaultCeiling::Included,
+        class: cap_class::CLASS_NONE,
     },
     "time.tick" => {
         version: 1,
@@ -462,6 +655,7 @@ define_provider_registry! {
         bounds: TICK_BOUNDS,
         required_scope: RequiredScope::Join,
         default_ceiling: DefaultCeiling::Included,
+        class: cap_class::CLASS_NONE,
     },
     "random.u64" => {
         version: 1,
@@ -470,6 +664,7 @@ define_provider_registry! {
         bounds: COMMON_REQUEST_BOUNDS,
         required_scope: RequiredScope::Join,
         default_ceiling: DefaultCeiling::Included,
+        class: cap_class::CLASS_NONE,
     },
     "players" => {
         version: 1,
@@ -478,6 +673,7 @@ define_provider_registry! {
         bounds: &[],
         required_scope: RequiredScope::Join,
         default_ceiling: DefaultCeiling::Included,
+        class: cap_class::CLASS_WORLD_PRESENCE,
     },
     "players.list" => {
         version: 1,
@@ -486,6 +682,7 @@ define_provider_registry! {
         bounds: COMMON_REQUEST_BOUNDS,
         required_scope: RequiredScope::Join,
         default_ceiling: DefaultCeiling::Included,
+        class: cap_class::CLASS_WORLD_PRESENCE,
     },
     "chat.say" => {
         version: 1,
@@ -494,6 +691,7 @@ define_provider_registry! {
         bounds: CHAT_SAY_BOUNDS,
         required_scope: RequiredScope::Chat,
         default_ceiling: DefaultCeiling::Included,
+        class: cap_class::CLASS_CHAT_WRITE,
     },
     "chat.history" => {
         version: 1,
@@ -502,6 +700,7 @@ define_provider_registry! {
         bounds: CHAT_HISTORY_BOUNDS,
         required_scope: RequiredScope::ChatRead,
         default_ceiling: DefaultCeiling::Included,
+        class: cap_class::CLASS_CHAT_READ,
     },
     "records.read" => {
         version: 1,
@@ -510,6 +709,101 @@ define_provider_registry! {
         bounds: RECORDS_READ_BOUNDS,
         required_scope: RequiredScope::Join,
         default_ceiling: DefaultCeiling::Included,
+        class: cap_class::CLASS_WORLD_RECORDS,
+    },
+    // The F12.5 `kv` store (#1062): a bounded, durable, per-world
+    // key-value store. Inward-facing like `records.read` and
+    // `schedule.*`, so it joins default ceilings; every use still
+    // passes the grant/ceiling decision and its audit entry.
+    "kv.get" => {
+        version: 1,
+        kind: ProviderKind::Request,
+        argument_schema: ArgumentSchema::JsonObject(KV_KEY_ARGUMENTS),
+        bounds: KV_GET_BOUNDS,
+        required_scope: RequiredScope::Join,
+        default_ceiling: DefaultCeiling::Included,
+        class: cap_class::CLASS_UNKNOWN,
+    },
+    "kv.set" => {
+        version: 1,
+        kind: ProviderKind::Request,
+        argument_schema: ArgumentSchema::JsonObject(KV_SET_ARGUMENTS),
+        bounds: KV_SET_BOUNDS,
+        required_scope: RequiredScope::Join,
+        default_ceiling: DefaultCeiling::Included,
+        class: cap_class::CLASS_UNKNOWN,
+    },
+    "kv.delete" => {
+        version: 1,
+        kind: ProviderKind::Request,
+        argument_schema: ArgumentSchema::JsonObject(KV_KEY_ARGUMENTS),
+        bounds: KV_DELETE_BOUNDS,
+        required_scope: RequiredScope::Join,
+        default_ceiling: DefaultCeiling::Included,
+        class: cap_class::CLASS_UNKNOWN,
+    },
+    // The F12.5 `blob` store (#1062): a bounded, durable, per-world
+    // set of content-addressed blobs. Inward-facing like `kv.*` and
+    // `records.read`, so it joins default ceilings; every use still
+    // passes the grant/ceiling decision and its audit entry.
+    "blob.put" => {
+        version: 1,
+        kind: ProviderKind::Request,
+        argument_schema: ArgumentSchema::JsonObject(BLOB_PUT_ARGUMENTS),
+        bounds: BLOB_PUT_BOUNDS,
+        required_scope: RequiredScope::Join,
+        default_ceiling: DefaultCeiling::Included,
+        class: cap_class::CLASS_UNKNOWN,
+    },
+    "blob.get" => {
+        version: 1,
+        kind: ProviderKind::Request,
+        argument_schema: ArgumentSchema::JsonObject(BLOB_HASH_ARGUMENTS),
+        bounds: BLOB_GET_BOUNDS,
+        required_scope: RequiredScope::Join,
+        default_ceiling: DefaultCeiling::Included,
+        class: cap_class::CLASS_UNKNOWN,
+    },
+    "blob.delete" => {
+        version: 1,
+        kind: ProviderKind::Request,
+        argument_schema: ArgumentSchema::JsonObject(BLOB_HASH_ARGUMENTS),
+        bounds: BLOB_DELETE_BOUNDS,
+        required_scope: RequiredScope::Join,
+        default_ceiling: DefaultCeiling::Included,
+        class: cap_class::CLASS_UNKNOWN,
+    },
+    // The F12.5 `http.fetch` provider (#1062): an outbound GET
+    // against an admin allowlist. Outward-facing, unlike `kv.*`
+    // and `blob.*`, so it is off by default — excluded from every
+    // default ceiling, and the executor refuses any host outside
+    // the admin allowlist before connecting. Every use still
+    // passes the grant/ceiling decision and its audit entry.
+    "http.fetch" => {
+        version: 1,
+        kind: ProviderKind::Request,
+        argument_schema: ArgumentSchema::JsonObject(HTTP_FETCH_ARGUMENTS),
+        bounds: HTTP_FETCH_BOUNDS,
+        required_scope: RequiredScope::Join,
+        default_ceiling: DefaultCeiling::Excluded,
+        class: cap_class::CLASS_NET_OUT,
+    },
+    // The F12.5 `notify` provider (#1062): a user-visible outbound
+    // notification, committed to the world's event stream as a
+    // `Notification` event. Outward-facing like `http.fetch` — its
+    // effect lands on users who asked it nothing — so it is off by
+    // default, excluded from every default ceiling, and the
+    // executor rate-limits it per world. Its target is fixed (the
+    // world's own users), so there is no allowlist gate. Every use
+    // still passes the grant/ceiling decision and its audit entry.
+    "notify" => {
+        version: 1,
+        kind: ProviderKind::Request,
+        argument_schema: ArgumentSchema::JsonObject(NOTIFY_ARGUMENTS),
+        bounds: NOTIFY_BOUNDS,
+        required_scope: RequiredScope::Join,
+        default_ceiling: DefaultCeiling::Excluded,
+        class: cap_class::CLASS_UNKNOWN,
     },
     "schedule.at" => {
         version: 1,
@@ -518,6 +812,7 @@ define_provider_registry! {
         bounds: SCHEDULE_AT_BOUNDS,
         required_scope: RequiredScope::Join,
         default_ceiling: DefaultCeiling::Included,
+        class: cap_class::CLASS_WORLD_SCHEDULE,
     },
     "schedule.cancel" => {
         version: 1,
@@ -526,6 +821,7 @@ define_provider_registry! {
         bounds: SCHEDULE_CANCEL_BOUNDS,
         required_scope: RequiredScope::Join,
         default_ceiling: DefaultCeiling::Included,
+        class: cap_class::CLASS_WORLD_SCHEDULE,
     },
     "world.info" => {
         version: 1,
@@ -534,6 +830,7 @@ define_provider_registry! {
         bounds: COMMON_REQUEST_BOUNDS,
         required_scope: RequiredScope::Join,
         default_ceiling: DefaultCeiling::Included,
+        class: cap_class::CLASS_NONE,
     },
     "device.info" => {
         version: 1,
@@ -542,6 +839,7 @@ define_provider_registry! {
         bounds: COMMON_REQUEST_BOUNDS,
         required_scope: RequiredScope::Join,
         default_ceiling: DefaultCeiling::Included,
+        class: cap_class::CLASS_UNKNOWN,
     },
     "form.present" => {
         version: 1,
@@ -550,6 +848,7 @@ define_provider_registry! {
         bounds: FORM_BOUNDS,
         required_scope: RequiredScope::Join,
         default_ceiling: DefaultCeiling::Included,
+        class: cap_class::CLASS_UNKNOWN,
     },
     "form.result" => {
         version: 1,
@@ -558,6 +857,7 @@ define_provider_registry! {
         bounds: &[ProviderBound::ResponseBytes(MAX_EVENT_BYTES)],
         required_scope: RequiredScope::Join,
         default_ceiling: DefaultCeiling::Included,
+        class: cap_class::CLASS_UNKNOWN,
     },
     "form.cancel" => {
         version: 1,
@@ -566,6 +866,7 @@ define_provider_registry! {
         bounds: FORM_BOUNDS,
         required_scope: RequiredScope::Join,
         default_ceiling: DefaultCeiling::Included,
+        class: cap_class::CLASS_UNKNOWN,
     },
     // Sensor caps (#2341): excluded from default ceilings, so a world
     // reaches them only through an explicit ceiling entry and an
@@ -577,6 +878,7 @@ define_provider_registry! {
         bounds: LOC_POSITION_BOUNDS,
         required_scope: RequiredScope::Join,
         default_ceiling: DefaultCeiling::Excluded,
+        class: cap_class::CLASS_DEVICE_LOCATION,
     },
     "loc.watch" => {
         version: 1,
@@ -585,6 +887,36 @@ define_provider_registry! {
         bounds: LOC_WATCH_BOUNDS,
         required_scope: RequiredScope::Join,
         default_ceiling: DefaultCeiling::Excluded,
+        class: cap_class::CLASS_DEVICE_LOCATION,
+    },
+    // Microphone capabilities require an explicit ceiling/grant and a
+    // per-use consent decision. Capture frames share the media event ceiling.
+    "speech.transcribe" => {
+        version: 1,
+        kind: ProviderKind::Request,
+        argument_schema: ArgumentSchema::JsonObject(NO_ARGUMENTS),
+        bounds: COMMON_REQUEST_BOUNDS,
+        required_scope: RequiredScope::Join,
+        default_ceiling: DefaultCeiling::Excluded,
+        class: cap_class::CLASS_UNKNOWN,
+    },
+    "speech.capture" => {
+        version: 1,
+        kind: ProviderKind::Subscription,
+        argument_schema: ArgumentSchema::Subscription("speech.capture"),
+        bounds: SPEECH_CAPTURE_BOUNDS,
+        required_scope: RequiredScope::Join,
+        default_ceiling: DefaultCeiling::Excluded,
+        class: cap_class::CLASS_UNKNOWN,
+    },
+    "speech.synthesize" => {
+        version: 1,
+        kind: ProviderKind::Request,
+        argument_schema: ArgumentSchema::JsonObject(SPEECH_SYNTHESIZE_ARGUMENTS),
+        bounds: COMMON_REQUEST_BOUNDS,
+        required_scope: RequiredScope::Join,
+        default_ceiling: DefaultCeiling::Included,
+        class: cap_class::CLASS_UNKNOWN,
     },
     "Key" => {
         version: 1,
@@ -593,6 +925,7 @@ define_provider_registry! {
         bounds: &[],
         required_scope: RequiredScope::Join,
         default_ceiling: DefaultCeiling::Included,
+        class: cap_class::CLASS_DEVICE_KEYBOARD,
     },
     "Screen" => {
         version: 1,
@@ -601,6 +934,7 @@ define_provider_registry! {
         bounds: &[],
         required_scope: RequiredScope::Join,
         default_ceiling: DefaultCeiling::Included,
+        class: cap_class::CLASS_DEVICE_SCREEN,
     },
     "RocJson" => {
         version: 1,
@@ -609,6 +943,7 @@ define_provider_registry! {
         bounds: &[],
         required_scope: RequiredScope::Join,
         default_ceiling: DefaultCeiling::Included,
+        class: cap_class::CLASS_NONE,
     },
     "RocGrid" => {
         version: 1,
@@ -617,6 +952,7 @@ define_provider_registry! {
         bounds: &[],
         required_scope: RequiredScope::Join,
         default_ceiling: DefaultCeiling::Included,
+        class: cap_class::CLASS_NONE,
     },
     "RocCap" => {
         version: 1,
@@ -625,6 +961,7 @@ define_provider_registry! {
         bounds: &[],
         required_scope: RequiredScope::Join,
         default_ceiling: DefaultCeiling::Included,
+        class: cap_class::CLASS_NONE,
     },
     "RocText" => {
         version: 1,
@@ -633,6 +970,7 @@ define_provider_registry! {
         bounds: &[],
         required_scope: RequiredScope::Join,
         default_ceiling: DefaultCeiling::Included,
+        class: cap_class::CLASS_NONE,
     },
 }
 
@@ -659,6 +997,7 @@ const TEST_PROVIDER_MANIFEST: ProviderManifest = ProviderManifest {
     required_scope: RequiredScope::Join,
     default_ceiling: DefaultCeiling::Excluded,
     side: ProviderSide::Host,
+    class: cap_class::CLASS_NONE,
 };
 
 /// The name of the first client-side provider (F13.7 step 5).
@@ -700,6 +1039,61 @@ pub const CLIENT_FILE_READ_MANIFEST: ProviderManifest = ProviderManifest {
     required_scope: RequiredScope::Join,
     default_ceiling: DefaultCeiling::Excluded,
     side: ProviderSide::Client,
+    class: cap_class::CLASS_UNKNOWN,
+};
+
+/// The name of the client-side notification provider for the mobile
+/// shell (#10930, shells v1 slice 4; design
+/// `doc/2026-11-10T20-40-00Z_design_more_shells_v1` §1 and
+/// §"Capability providers").
+pub const CLIENT_NOTIFY_NAME: &str = "client.notify";
+
+/// Argument schema for `client.notify`: one optional `head` — the
+/// journal head sequence the re-sync hint refers to. The schema
+/// deliberately carries no text or content field: a notification
+/// under this provider is a hint to re-sync, never a data channel
+/// (the shells record: "a notification is a hint to re-sync,
+/// carrying no world content of its own"), and the shell renders
+/// its own local wording. A shell already past `head` can ignore
+/// the hint; a shell behind it re-syncs on return.
+const CLIENT_NOTIFY_ARGUMENTS: &[ProviderArgument] = &[ProviderArgument {
+    name: "head",
+    value_type: ArgumentType::UnsignedInteger,
+    required: false,
+}];
+
+/// Largest reply `client.notify` may return, in bytes: the
+/// executor's answer is a fixed-shape acknowledgment carrying no
+/// content, so the bound is a small constant rather than a
+/// content-sized cap.
+pub const MAX_CLIENT_NOTIFY_RESPONSE_BYTES: usize = 1024;
+
+/// Bounds for `client.notify`: argument bytes plus the
+/// acknowledgment response cap.
+const CLIENT_NOTIFY_BOUNDS: &[ProviderBound] = &[
+    ProviderBound::ArgsBytes(MAX_ARGS_BYTES),
+    ProviderBound::ResponseBytes(MAX_CLIENT_NOTIFY_RESPONSE_BYTES),
+];
+
+/// The `client.notify` manifest (#10930): the mobile shell's
+/// notification power, declared in the F12.4 registry shape like
+/// every v1 shell power (provider declaration in v1 rides the
+/// registry/manifest out of band — the `join` frame has no
+/// declaration field). It registers exactly like `client.file.read`
+/// — one manifest entry, client-side, excluded from every default
+/// ceiling — so registration alone widens no world's authority:
+/// the world ceiling/grant and the local user grant must both
+/// permit it before any hint can be delivered.
+pub const CLIENT_NOTIFY_MANIFEST: ProviderManifest = ProviderManifest {
+    name: CLIENT_NOTIFY_NAME,
+    version: 1,
+    kind: ProviderKind::Request,
+    argument_schema: ArgumentSchema::JsonObject(CLIENT_NOTIFY_ARGUMENTS),
+    bounds: CLIENT_NOTIFY_BOUNDS,
+    required_scope: RequiredScope::Join,
+    default_ceiling: DefaultCeiling::Excluded,
+    side: ProviderSide::Client,
+    class: cap_class::CLASS_UNKNOWN,
 };
 
 /// Production client-side entries, assembled into the registry after
@@ -713,7 +1107,8 @@ pub const CLIENT_FILE_READ_MANIFEST: ProviderManifest = ProviderManifest {
 /// registry exit proofs assert against: the assembled registry is
 /// exactly the legacy [`CATALOG`] entries, then these entries, then
 /// any feature-gated registry-only additions — nothing else.
-pub const CLIENT_CATALOG_ENTRIES: &[ProviderManifest] = &[CLIENT_FILE_READ_MANIFEST];
+pub const CLIENT_CATALOG_ENTRIES: &[ProviderManifest] =
+    &[CLIENT_FILE_READ_MANIFEST, CLIENT_NOTIFY_MANIFEST];
 
 /// Registry-only entries added on top of [`PRODUCTION_CATALOG_ENTRIES`].
 #[cfg(feature = "test-provider")]
@@ -881,6 +1276,102 @@ pub const MAX_SCHEDULE_FIRES_PER_WAKEUP: usize = 64;
 /// Most fires one recurring schedule may name (#1355): recurrence is always
 /// finite, so a series cannot live forever without a bound.
 pub const MAX_SCHEDULE_RECURRENCES: u32 = 1024;
+
+/// Longest `kv` key, in bytes. Keys are printable ASCII (the
+/// [`validate_schedule_id`] rule shape), so no control characters
+/// reach the journal.
+pub const MAX_KV_KEY_BYTES: usize = 256;
+/// Largest `kv` value, serialized, in bytes: the records precedent
+/// (`MAX_RECORD_VALUE_BYTES` in the worlds crate).
+pub const MAX_KV_VALUE_BYTES: usize = 8 * 1024;
+/// Most entries one world's `kv` store may hold at once.
+pub const MAX_KV_ENTRIES: usize = 1024;
+/// Largest total `kv` store per world, in bytes, charged as key bytes
+/// plus serialized value bytes per entry. Sized so a full store's
+/// checkpoint declaration — the entries JSON-escaped into the
+/// checkpoint's scalar remainder — still fits the checkpoint part
+/// bound (`MAX_CHECKPOINT_PART_BYTES`, 192 KiB in the worlds crate)
+/// alongside the other scalar fields: at most twice the charge in
+/// escaping, plus per-entry framing, stays under it, so a world can
+/// always compact its journal no matter what it stored.
+pub const MAX_KV_TOTAL_BYTES: usize = 64 * 1024;
+
+/// Length of a blob id, in bytes: an iroh-blobs `Hash` spelled as
+/// lowercase hex (32 bytes, two characters each).
+pub const MAX_BLOB_ID_BYTES: usize = 64;
+/// Largest single blob, in content bytes. Sized by the channel:
+/// content travels base64 inside request args (capped by
+/// [`MAX_ARGS_BYTES`]) and result events (capped by
+/// [`MAX_EVENT_BYTES`]); 4 KiB is the largest power-of-two content
+/// whose encoding fits a maximal args document with its framing —
+/// 6 KiB of content encodes to 8,192 characters, the whole args
+/// budget before framing.
+pub const MAX_BLOB_BYTES: usize = 4 * 1024;
+/// Length of a maximal blob's base64 encoding, in characters: the
+/// response cap a `blob.get` result's content must fit.
+pub const MAX_BLOB_ENCODED_BYTES: usize = 4 * ((MAX_BLOB_BYTES + 2) / 3);
+/// Most blobs one world may hold at once. Sized against the
+/// checkpoint: a checkpoint declares the blob index (hash plus size
+/// per blob, about 85 bytes of JSON), so a full index declares in
+/// about 22 KiB — inside the checkpoint part bound
+/// (`MAX_CHECKPOINT_PART_BYTES`, 192 KiB in the worlds crate)
+/// alongside a full `kv` declaration and the pending schedules.
+pub const MAX_BLOBS: usize = 256;
+/// Largest total blob content per world, in bytes, charged as
+/// content bytes per blob. Keeps a world's journaled content
+/// bounded independently of the count and size caps, whose product
+/// would allow 1 MiB.
+pub const MAX_BLOB_TOTAL_BYTES: usize = 256 * 1024;
+
+/// Longest `http.fetch` URL, in bytes: the de-facto interoperable
+/// URL length, and a quarter of [`MAX_ARGS_BYTES`], so a maximal
+/// URL leaves the args document its framing.
+pub const MAX_HTTP_FETCH_URL_BYTES: usize = 2048;
+/// Largest `http.fetch` response body, in bytes. The result
+/// travels in a result event capped by [`MAX_EVENT_BYTES`]; the
+/// body rides base64 (4/3 expansion), so 32 KiB of body is 43,691
+/// characters — inside the event cap alongside the final URL (at
+/// most [`MAX_HTTP_FETCH_URL_BYTES`]), the status and the
+/// envelope, with slack. The next power of two, 48 KiB, encodes
+/// to 65,536 characters — the entire event budget before any
+/// other field — so 32 KiB is the largest power of two that fits.
+/// A longer body is refused, never silently truncated.
+pub const MAX_HTTP_FETCH_RESPONSE_BYTES: usize = 32 * 1024;
+/// Most redirects one `http.fetch` follows. Each hop is resolved
+/// against the current URL and must pass the same validation and
+/// allowlist check as a fresh request; a hop off the list refuses
+/// the fetch, and so does a redirect past this count.
+pub const MAX_HTTP_FETCH_REDIRECTS: usize = 3;
+/// Total time budget for one `http.fetch`, in milliseconds, all
+/// redirect hops together. The client-provider deadline precedent
+/// is 30 s; a fetch is a single round trip, and the budget also
+/// bounds how long one fetch can occupy the synchronous actor.
+pub const MAX_HTTP_FETCH_TIMEOUT_MS: u64 = 10_000;
+/// Most `http.fetch` attempts one world may make per rate window.
+/// Attempts are counted when made — refused and failed fetches
+/// spend the budget too — because the bound is on traffic
+/// attempted under the host's name, not on responses received.
+pub const MAX_HTTP_FETCH_BURST: usize = 10;
+/// The `http.fetch` rate window, in milliseconds: a burst of
+/// [`MAX_HTTP_FETCH_BURST`] per minute lets a program poll one
+/// endpoint every six seconds while capping its worst-case actor
+/// occupancy at ten timeouts per minute.
+pub const HTTP_FETCH_RATE_WINDOW_MS: u64 = 60_000;
+
+/// Most `notify` attempts one world may make per rate window.
+/// Attempts are counted when made — once the check passes, before
+/// the event is committed — because the bound is on interruptions
+/// attempted, not on notifications that happened to commit.
+pub const MAX_NOTIFY_BURST: usize = 5;
+/// The `notify` rate window, in milliseconds: the `http.fetch`
+/// window at half its burst. A fetch is invisible to users; a
+/// notification interrupts every one of them and occupies a slot
+/// in the retained event window, so it is costlier per use. A
+/// burst of [`MAX_NOTIFY_BURST`] per minute is a sustained one
+/// notification per twelve seconds — room for event-driven
+/// alerts, and a program that needs a faster channel to users
+/// already has `chat.say` under its own abuse limits.
+pub const NOTIFY_RATE_WINDOW_MS: u64 = 60_000;
 /// Largest page of records served over the session protocol and the
 /// host view, in bytes. Cap results are not served this way: a
 /// `records.read` result is delivered through `result_event` and is
@@ -951,6 +1442,49 @@ pub fn validate_schedule_id(id: &str) -> Result<()> {
     );
     Ok(())
 }
+
+/// Check a `kv` key: 1 to [`MAX_KV_KEY_BYTES`] bytes, all printable
+/// ASCII (space through `~`), so no control characters reach the
+/// journal.
+///
+/// # Errors
+///
+/// Names the rule the key breaks.
+pub fn validate_kv_key(key: &str) -> Result<()> {
+    ensure!(
+        !key.is_empty() && key.len() <= MAX_KV_KEY_BYTES,
+        "kv key must be 1 to {MAX_KV_KEY_BYTES} bytes"
+    );
+    ensure!(
+        key.bytes().all(|byte| (0x20..=0x7e).contains(&byte)),
+        "kv key must be printable ASCII"
+    );
+    Ok(())
+}
+
+/// Check a blob id: exactly [`MAX_BLOB_ID_BYTES`] lowercase hex
+/// characters — an iroh-blobs `Hash` in its canonical spelling, so
+/// no other string reaches the journal as a blob id.
+///
+/// # Errors
+///
+/// Names the rule the id breaks.
+pub fn validate_blob_hash(hash: &str) -> Result<()> {
+    ensure!(
+        hash.len() == MAX_BLOB_ID_BYTES,
+        "blob hash must be {MAX_BLOB_ID_BYTES} hex characters"
+    );
+    ensure!(
+        hash.bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)),
+        "blob hash must be lowercase hex"
+    );
+    Ok(())
+}
+
+pub use crate::http_fetch_url::{
+    http_fetch_entry_admits, normalize_http_fetch_host, validate_http_fetch_url,
+};
 
 /// Whether `name` is a capability the server can provide.
 #[must_use]
@@ -1269,6 +1803,15 @@ impl CapError {
         }
     }
 
+    /// The device lacks the requested capability affordance.
+    #[must_use]
+    pub fn unknown_with(reason: impl Into<String>) -> Self {
+        Self {
+            code: CapErrorCode::Unknown,
+            reason: Some(reason.into()),
+        }
+    }
+
     /// The request's arguments were not acceptable.
     #[must_use]
     pub const fn bad_args() -> Self {
@@ -1312,6 +1855,18 @@ impl CapError {
             code: CapErrorCode::Failed,
             reason: Some(reason.into()),
         }
+    }
+
+    /// The device has no microphone affordance: `unknown_cap`.
+    #[must_use]
+    pub fn device_lacks_affordance() -> Self {
+        Self::unknown_with("device_lacks_affordance")
+    }
+
+    /// The selected automatic speech recognition provider is unavailable.
+    #[must_use]
+    pub fn asr_unavailable() -> Self {
+        Self::failed_with("asr_unavailable")
     }
 
     /// Location use without per-use consent (#2341): `cap_denied`.
@@ -1406,14 +1961,13 @@ impl CapError {
     }
 }
 
-/// Whether `cap` is a sensor capability (#2341). Sensor caps are
-/// per-use by default: a wildcard grant never reaches them, and
-/// grant-on-use never mints a durable grant for them. Today the sensor
-/// caps are the `loc.*` family; naming the prefix here keeps the ledger
-/// rule in one place when more sensor families land.
+/// Whether `cap` is a sensor capability. Sensor caps are per-use by default:
+/// a wildcard grant never reaches them, and grant-on-use never mints a
+/// durable grant for them. Microphone input (`speech.transcribe` and
+/// `speech.capture`) follows the same rule as the `loc.*` family.
 #[must_use]
 pub fn is_sensor_cap(cap: &str) -> bool {
-    cap.starts_with("loc.")
+    cap.starts_with("loc.") || matches!(cap, "speech.transcribe" | "speech.capture")
 }
 
 /// Where a location reading came from (#2341). The source is part of
@@ -1670,6 +2224,48 @@ impl LocationConsent {
     }
 }
 
+/// Per-use consent for sending microphone audio to a server provider.
+/// The host supplies this state; the pure capability layer only maps it to
+/// the stable refusal vocabulary.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SpeechCaptureConsent {
+    /// Consent granted for this app and use.
+    Granted,
+    /// The app has not received per-use consent.
+    ConsentRequired,
+}
+
+impl SpeechCaptureConsent {
+    /// The refusal for this consent state, or `None` when capture may proceed.
+    #[must_use]
+    pub fn refusal(&self) -> Option<CapError> {
+        match self {
+            Self::Granted => None,
+            Self::ConsentRequired => Some(CapError::consent_required()),
+        }
+    }
+}
+
+/// Whether a device exposes a microphone to its speech adapter.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SpeechMicrophone {
+    /// A microphone affordance is available.
+    Available,
+    /// The device has no microphone affordance.
+    Unavailable,
+}
+
+impl SpeechMicrophone {
+    /// The refusal for a device without a microphone, or `None` when present.
+    #[must_use]
+    pub fn refusal(&self) -> Option<CapError> {
+        match self {
+            Self::Available => None,
+            Self::Unavailable => Some(CapError::device_lacks_affordance()),
+        }
+    }
+}
+
 /// Parse a `loc.watch` subscription spec (#2341): `loc.watch` alone
 /// takes the interval floor, `loc.watch:<milliseconds>` names an
 /// interval at or above the floor.
@@ -1821,9 +2417,10 @@ impl CapLedger {
             return Decision::Allow;
         }
         if is_sensor_cap(cap) {
-            // Sensor caps are per-use (#2341): neither a wildcard grant
-            // nor grant-on-use reaches them, so an ungranted use is a
-            // consent refusal — never a silently minted durable grant.
+            // Sensor caps and microphone input are per-use: neither a
+            // wildcard grant nor grant-on-use reaches them, so an
+            // ungranted use is a consent refusal — never a silently
+            // minted durable grant.
             entry.denied += 1;
             return Decision::Deny(CapError::consent_required());
         }
@@ -2236,6 +2833,277 @@ mod tests {
     }
 
     #[test]
+    fn kv_keys_are_bounded_printable_ascii() {
+        validate_kv_key("a").unwrap();
+        validate_kv_key("player/7 score: best!").unwrap();
+        validate_kv_key(&"x".repeat(MAX_KV_KEY_BYTES)).unwrap();
+        let long = "x".repeat(MAX_KV_KEY_BYTES + 1);
+        for bad in [
+            "",
+            "a\nb",
+            "tab\there",
+            "del\u{7f}",
+            "caf\u{e9}",
+            long.as_str(),
+        ] {
+            assert!(validate_kv_key(bad).is_err(), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn blob_hashes_are_64_lowercase_hex() {
+        validate_blob_hash(&"0".repeat(MAX_BLOB_ID_BYTES)).unwrap();
+        validate_blob_hash(&"0123456789abcdef".repeat(4)).unwrap();
+        let long = "a".repeat(MAX_BLOB_ID_BYTES + 1);
+        let short = "a".repeat(MAX_BLOB_ID_BYTES - 1);
+        for bad in [
+            "",
+            "A".repeat(MAX_BLOB_ID_BYTES).as_str(),
+            "g".repeat(MAX_BLOB_ID_BYTES).as_str(),
+            "z0".repeat(32).as_str(),
+            long.as_str(),
+            short.as_str(),
+        ] {
+            assert!(validate_blob_hash(bad).is_err(), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn http_fetch_urls_validate_and_yield_their_host() {
+        // The host comes back normalized: lowercase, no trailing
+        // root dot — the spelling the allowlist is matched against.
+        assert_eq!(
+            validate_http_fetch_url("https://Example.COM/a/b?x=1").unwrap(),
+            "example.com"
+        );
+        assert_eq!(
+            validate_http_fetch_url("http://example.com./").unwrap(),
+            "example.com"
+        );
+        assert_eq!(
+            validate_http_fetch_url("http://127.0.0.1:8080/x").unwrap(),
+            "127.0.0.1"
+        );
+        assert_eq!(
+            validate_http_fetch_url("https://[2001:db8::1]/x").unwrap(),
+            "[2001:db8::1]"
+        );
+        let long = format!(
+            "https://example.com/{}",
+            "a".repeat(MAX_HTTP_FETCH_URL_BYTES)
+        );
+        for bad in [
+            "",
+            "example.com/no-scheme",
+            "ftp://example.com/file",
+            "file:///etc/passwd",
+            "https://user@example.com/",
+            "https://user:secret@example.com/",
+            "https://",
+            "http://exa mple.com/",
+            long.as_str(),
+        ] {
+            assert!(validate_http_fetch_url(bad).is_err(), "{bad:?}");
+        }
+        assert_eq!(
+            normalize_http_fetch_host("EXAMPLE.com."),
+            "example.com",
+            "allowlist entries normalize the same way"
+        );
+    }
+
+    #[test]
+    fn http_fetch_allowlist_entries_constrain_ports() {
+        // (entry, url, admitted)
+        let cases = [
+            // A bare host admits the scheme's default port only,
+            // whether the URL spells it out or not.
+            ("example.com", "https://example.com/", true),
+            ("example.com", "http://example.com/", true),
+            ("example.com", "https://example.com:443/", true),
+            ("EXAMPLE.com.", "http://example.com:80/x", true),
+            ("example.com", "https://example.com:8443/", false),
+            ("example.com", "http://example.com:443/", false),
+            ("example.com", "https://example.com:80/", false),
+            // An entry with a port admits that port only, under
+            // either scheme, and still matches the host exactly.
+            ("example.com:8443", "https://example.com:8443/", true),
+            ("example.com:8443", "http://example.com:8443/", true),
+            ("example.com:443", "https://example.com/", true),
+            ("example.com:8443", "https://example.com/", false),
+            ("example.com:8443", "https://example.com:8444/", false),
+            ("example.com:8443", "https://api.example.com:8443/", false),
+            // IPv4 and bracketed IPv6 hosts, with and without a port.
+            ("127.0.0.1:8080", "http://127.0.0.1:8080/x", true),
+            ("127.0.0.1", "http://127.0.0.1:8080/x", false),
+            ("[2001:db8::1]", "https://[2001:db8::1]/x", true),
+            ("[2001:db8::1]:8443", "https://[2001:db8::1]:8443/x", true),
+            ("[2001:db8::1]", "https://[2001:db8::1]:8443/x", false),
+            // Malformed entries and URLs admit nothing.
+            ("example.com:99999", "https://example.com:9999/", false),
+            ("example.com:", "https://example.com/", false),
+            ("example.com", "ftp://example.com/", false),
+            ("example.com", "https://user@example.com/", false),
+        ];
+        for (entry, url, admitted) in cases {
+            assert_eq!(
+                http_fetch_entry_admits(entry, url),
+                admitted,
+                "{entry:?} admitting {url:?}"
+            );
+        }
+    }
+
+    mod http_fetch_allowlist_properties {
+        //! Property tests for the `http.fetch` allowlist's port rule
+        //! (#12659). The oracle is the rule itself: an entry with a
+        //! port admits exactly that port, a bare host admits exactly
+        //! the scheme's default port, and an entry whose port suffix
+        //! is not a valid port admits nothing.
+        use super::super::http_fetch_entry_admits;
+        use proptest::prelude::*;
+
+        fn host() -> impl Strategy<Value = String> {
+            prop_oneof![
+                "[a-z][a-z0-9]{0,8}(\\.[a-z][a-z0-9]{0,8}){0,2}",
+                (any::<u8>(), any::<u8>(), any::<u8>(), any::<u8>())
+                    .prop_map(|(a, b, c, d)| format!("{a}.{b}.{c}.{d}")),
+                // Nonzero groups keep the spelling canonical, the
+                // form the URL parser gives back.
+                (1u16.., 1u16..).prop_map(|(a, b)| format!("[2001:db8::{a:x}:{b:x}]")),
+            ]
+        }
+
+        fn scheme() -> impl Strategy<Value = (&'static str, u16)> {
+            prop_oneof![Just(("http", 80u16)), Just(("https", 443u16))]
+        }
+
+        proptest! {
+            #[test]
+            fn a_port_entry_admits_exactly_its_port(
+                host in host(),
+                (scheme, _default) in scheme(),
+                listed in 1u16..,
+                requested in 1u16..,
+            ) {
+                let entry = format!("{host}:{listed}");
+                let url = format!("{scheme}://{host}:{requested}/x");
+                prop_assert_eq!(http_fetch_entry_admits(&entry, &url), listed == requested);
+            }
+
+            #[test]
+            fn a_bare_entry_admits_exactly_the_default_port(
+                host in host(),
+                (scheme, default) in scheme(),
+                requested in 1u16..,
+            ) {
+                let url = format!("{scheme}://{host}:{requested}/x");
+                prop_assert_eq!(http_fetch_entry_admits(&host, &url), requested == default);
+                let unported = format!("{scheme}://{host}/x");
+                prop_assert!(http_fetch_entry_admits(&host, &unported));
+            }
+
+            #[test]
+            fn a_malformed_port_suffix_admits_nothing(
+                host in host(),
+                (scheme, _default) in scheme(),
+                suffix in prop_oneof![
+                    Just(String::new()),
+                    (65_536u32..10_000_000).prop_map(|port| port.to_string()),
+                ],
+                requested in 1u16..,
+            ) {
+                let entry = format!("{host}:{suffix}");
+                let ported = format!("{scheme}://{host}:{requested}/x");
+                let unported = format!("{scheme}://{host}/x");
+                prop_assert!(!http_fetch_entry_admits(&entry, &ported));
+                prop_assert!(!http_fetch_entry_admits(&entry, &unported));
+            }
+
+            #[test]
+            fn another_host_is_never_admitted(
+                listed in host(),
+                requested in host(),
+                (scheme, _default) in scheme(),
+                port in 1u16..,
+            ) {
+                prop_assume!(listed != requested);
+                let url = format!("{scheme}://{requested}:{port}/x");
+                let ported_entry = format!("{listed}:{port}");
+                prop_assert!(!http_fetch_entry_admits(&listed, &url));
+                prop_assert!(!http_fetch_entry_admits(&ported_entry, &url));
+            }
+        }
+    }
+
+    #[test]
+    fn notify_is_registered_but_off_by_default() {
+        // The provider exists in the catalog (an operator can name
+        // it in a ceiling) but joins no default ceiling: the
+        // registry half of the #1062 off-by-default rule. The rate
+        // half is the executor's.
+        assert!(catalog_names().contains("notify"));
+        assert!(!default_ceiling_names().contains("notify"));
+        let manifest = PROVIDER_REGISTRY.get("notify").unwrap();
+        assert_eq!(manifest.default_ceiling, DefaultCeiling::Excluded);
+        assert_eq!(manifest.required_scope, RequiredScope::Join);
+        assert!(
+            manifest
+                .bounds
+                .contains(&ProviderBound::WorldLimit("chat_bytes"))
+        );
+    }
+
+    #[test]
+    fn client_notify_is_registered_but_off_by_default() {
+        // #10930 (shells v1 slice 4): the mobile shell's
+        // notification power exists in the registry in the F12.4
+        // manifest shape — an operator can name it in an explicit
+        // ceiling — but it is client-side and joins no default
+        // ceiling: the registry half of the off-by-default rule
+        // for client providers. The executor half (local grant,
+        // bounds, revoke, audit) is the shell adapter's, in the
+        // follow-on slice.
+        let manifest = PROVIDER_REGISTRY.get(CLIENT_NOTIFY_NAME).unwrap();
+        assert_eq!(manifest.side, ProviderSide::Client);
+        assert_eq!(manifest.default_ceiling, DefaultCeiling::Excluded);
+        assert_eq!(manifest.required_scope, RequiredScope::Join);
+        assert_eq!(manifest.side_contract_violation(), None);
+        assert!(catalog_names().contains(CLIENT_NOTIFY_NAME));
+        assert!(!CATALOG.contains(&CLIENT_NOTIFY_NAME));
+        assert!(!default_ceiling_names().contains(CLIENT_NOTIFY_NAME));
+        // The schema is a re-sync hint only: the single optional
+        // `head` field, and no content-bearing field — a
+        // notification under this provider carries no world
+        // content of its own (shells v1 record §1).
+        match manifest.argument_schema {
+            ArgumentSchema::JsonObject(fields) => {
+                assert_eq!(fields.len(), 1);
+                assert_eq!(fields[0].name, "head");
+                assert_eq!(fields[0].value_type, ArgumentType::UnsignedInteger);
+                assert!(!fields[0].required);
+            }
+            other => panic!("client.notify schema must be a JSON object, got {other:?}"),
+        }
+        assert!(manifest.bounds.contains(&ProviderBound::ResponseBytes(
+            MAX_CLIENT_NOTIFY_RESPONSE_BYTES
+        )));
+    }
+
+    #[test]
+    fn http_fetch_is_registered_but_off_by_default() {
+        // The provider exists in the catalog (an operator can name
+        // it in a ceiling) but joins no default ceiling: the
+        // registry half of the #1062 off-by-default rule. The
+        // allowlist half is the executor's.
+        assert!(catalog_names().contains("http.fetch"));
+        assert!(!default_ceiling_names().contains("http.fetch"));
+        let manifest = PROVIDER_REGISTRY.get("http.fetch").unwrap();
+        assert_eq!(manifest.default_ceiling, DefaultCeiling::Excluded);
+        assert_eq!(manifest.required_scope, RequiredScope::Join);
+    }
+
+    #[test]
     fn result_events_are_bounded_and_carry_codes() {
         let ok: serde_json::Value =
             serde_json::from_str(&result_event("a", Ok(serde_json::json!({"n":1})))).unwrap();
@@ -2312,6 +3180,7 @@ mod tests {
             required_scope: RequiredScope::Join,
             default_ceiling,
             side: ProviderSide::Host,
+            class: cap_class::CLASS_UNKNOWN,
         }
     }
 
@@ -2321,19 +3190,24 @@ mod tests {
             assert_eq!(entry.side_contract_violation(), None, "{}", entry.name);
         }
         // F13.7 step 5 registers the first client provider,
-        // client.file.read. Every other catalog entry is still
-        // host-side, and the legacy host catalog view is unchanged:
-        // the client provider joins the registry without joining
-        // CATALOG or any default ceiling.
+        // client.file.read; #10930 adds the second, client.notify.
+        // Every other catalog entry is still host-side, and the
+        // legacy host catalog view is unchanged: the client
+        // providers join the registry without joining CATALOG or
+        // any default ceiling.
         let client_entries: Vec<&ProviderManifest> = CATALOG_ENTRIES
             .iter()
             .filter(|entry| entry.side == ProviderSide::Client)
             .collect();
-        assert_eq!(client_entries.len(), 1);
+        assert_eq!(client_entries.len(), 2);
         assert_eq!(client_entries[0].name, CLIENT_FILE_READ_NAME);
+        assert_eq!(client_entries[1].name, CLIENT_NOTIFY_NAME);
         assert_eq!(client_entries[0].default_ceiling, DefaultCeiling::Excluded);
+        assert_eq!(client_entries[1].default_ceiling, DefaultCeiling::Excluded);
         assert!(!CATALOG.contains(&CLIENT_FILE_READ_NAME));
+        assert!(!CATALOG.contains(&CLIENT_NOTIFY_NAME));
         assert!(!default_ceiling_names().contains(CLIENT_FILE_READ_NAME));
+        assert!(!default_ceiling_names().contains(CLIENT_NOTIFY_NAME));
     }
 
     #[test]
@@ -2382,12 +3256,13 @@ mod tests {
         #[cfg(not(feature = "test-provider"))]
         let production_names: Vec<&str> = entry_names.clone();
         // F13.7 step 5: the registry also carries the production
-        // client-side entries (client.file.read), which are
-        // deliberately not part of the legacy catalog view this test
-        // pins — registration without a host catalog edit.
+        // client-side entries (client.file.read, and client.notify
+        // since #10930), which are deliberately not part of the
+        // legacy catalog view this test pins — registration without
+        // a host catalog edit.
         let production_names: Vec<&str> = production_names
             .into_iter()
-            .filter(|name| *name != CLIENT_FILE_READ_NAME)
+            .filter(|name| *name != CLIENT_FILE_READ_NAME && *name != CLIENT_NOTIFY_NAME)
             .collect();
         assert_eq!(
             production_names, CATALOG,
@@ -2404,6 +3279,14 @@ mod tests {
                 "chat.say",
                 "chat.history",
                 "records.read",
+                "kv.get",
+                "kv.set",
+                "kv.delete",
+                "blob.put",
+                "blob.get",
+                "blob.delete",
+                "http.fetch",
+                "notify",
                 "schedule.at",
                 "schedule.cancel",
                 "world.info",
@@ -2413,6 +3296,9 @@ mod tests {
                 "form.cancel",
                 "loc.position",
                 "loc.watch",
+                "speech.transcribe",
+                "speech.capture",
+                "speech.synthesize",
                 "Key",
                 "Screen",
                 "RocJson",
@@ -2420,7 +3306,7 @@ mod tests {
                 "RocCap",
                 "RocText",
             ],
-            "registry retains the catalog names and order (plus form.* and loc.*)"
+            "registry retains the catalog names and order (plus form.*, loc.* and speech.*)"
         );
         assert_eq!(
             PROVIDER_REGISTRY.entries().len(),
@@ -2464,17 +3350,38 @@ mod tests {
                 .contains(&ProviderBound::ResponseBytes(MAX_RECORDS_RESULT_PAGE_BYTES))
         );
         // Every non-sensor provider opted in explicitly. The sensor
-        // caps (#2341) registered as Excluded, so the default ceiling
-        // is the catalog minus loc.* — registering them widened no
-        // existing world's authority. The RegistryProbe is Excluded
+        // caps (#2341) and microphone input caps register as Excluded,
+        // so the default ceiling is the catalog minus loc.* and speech
+        // input — registering them widened no existing world's authority.
+        // The RegistryProbe is Excluded
         // for the same reason (#838), so under `test-provider` it is
         // subtracted the same way.
         // client.file.read (F13.7 step 5) is likewise Excluded: it is
         // in the registry's name set but joins no default ceiling.
-        let mut excluded_from_ceiling =
-            names(&["loc.position", "loc.watch", CLIENT_FILE_READ_NAME]);
+        // client.notify (#10930) is Excluded for the same reason: a
+        // client-side provider the local user grants per world.
+        // http.fetch (#1062) is Excluded for the same reason: an
+        // outward-facing provider joins no default ceiling, and its
+        // executor additionally enforces the admin host allowlist.
+        // notify (#1062) is Excluded likewise: an outward-facing
+        // provider whose effect lands on the world's users, with a
+        // per-world rate bound in its executor instead of a list.
+        let excluded_from_ceiling = names(&[
+            "loc.position",
+            "loc.watch",
+            "speech.transcribe",
+            "speech.capture",
+            "http.fetch",
+            "notify",
+            CLIENT_FILE_READ_NAME,
+            CLIENT_NOTIFY_NAME,
+        ]);
         #[cfg(feature = "test-provider")]
-        excluded_from_ceiling.insert(TEST_PROVIDER_NAME.to_owned());
+        let excluded_from_ceiling = {
+            let mut excluded = excluded_from_ceiling;
+            excluded.insert(TEST_PROVIDER_NAME.to_owned());
+            excluded
+        };
         assert_eq!(
             default_ceiling_names(),
             catalog_names()
@@ -2492,6 +3399,49 @@ mod tests {
         assert_eq!(
             PROVIDER_REGISTRY.get("loc.watch").unwrap().default_ceiling,
             DefaultCeiling::Excluded
+        );
+        assert_eq!(
+            PROVIDER_REGISTRY.get("speech.capture").unwrap().bounds,
+            SPEECH_CAPTURE_BOUNDS
+        );
+        assert!(SPEECH_CAPTURE_BOUNDS.contains(&ProviderBound::ResponseBytes(MAX_EVENT_BYTES)));
+        assert_eq!(
+            PROVIDER_REGISTRY
+                .get("speech.capture")
+                .unwrap()
+                .default_ceiling,
+            DefaultCeiling::Excluded
+        );
+        assert_eq!(
+            PROVIDER_REGISTRY
+                .get("speech.synthesize")
+                .unwrap()
+                .default_ceiling,
+            DefaultCeiling::Included
+        );
+    }
+
+    #[test]
+    fn speech_refusals_reuse_stable_codes_and_reasons() {
+        let no_consent = SpeechCaptureConsent::ConsentRequired.refusal().unwrap();
+        assert_eq!(no_consent.code(), "cap_denied");
+        assert_eq!(
+            no_consent.reason().map(String::as_str),
+            Some("consent_required")
+        );
+
+        let no_microphone = SpeechMicrophone::Unavailable.refusal().unwrap();
+        assert_eq!(no_microphone.code(), "unknown_cap");
+        assert_eq!(
+            no_microphone.reason().map(String::as_str),
+            Some("device_lacks_affordance")
+        );
+
+        let asr_unavailable = CapError::asr_unavailable();
+        assert_eq!(asr_unavailable.code(), "failed");
+        assert_eq!(
+            asr_unavailable.reason().map(String::as_str),
+            Some("asr_unavailable")
         );
     }
 
@@ -2764,6 +3714,27 @@ mod tests {
         );
         // The same wildcard still reaches ordinary caps.
         assert_eq!(ledger.decide("time.now"), Decision::Allow);
+    }
+
+    #[test]
+    fn microphone_caps_require_explicit_grants_even_with_a_wildcard() {
+        let mut ledger = CapLedger::new(names(&["*"]), false);
+        let mut allowed = default_ceiling_names();
+        allowed.extend(names(&["speech.transcribe", "speech.capture"]));
+        ledger.set_allowed(allowed);
+
+        for cap in ["speech.transcribe", "speech.capture"] {
+            assert!(!ledger.is_granted(cap));
+            assert_eq!(
+                ledger.decide(cap),
+                Decision::Deny(CapError::consent_required()),
+                "a wildcard grant must not reach {cap}"
+            );
+            assert!(!ledger.effective().contains(cap));
+        }
+
+        ledger.set_granted(names(&["speech.capture"]));
+        assert_eq!(ledger.decide("speech.capture"), Decision::Allow);
     }
 
     #[test]

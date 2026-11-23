@@ -1,5 +1,11 @@
 Hello!
 
+## Start here
+
+- [Architecture index](planning/architecture/README.md): the architecture and design records, and the ADRs.
+- [`CONTRIBUTING.md`](CONTRIBUTING.md): how a change lands in this repository.
+- [Documentation catalog](doc/README.md): every dated record and topic, in one map.
+
 ## Contributing Information
 
 By submitting patches to this project you agree to allow them to be redistributed under the project's license,

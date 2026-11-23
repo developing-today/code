@@ -54,7 +54,7 @@ use crate::directory_auth::Caller;
 use crate::directory_view::{
     DirectoryAction, DirectoryOutcome, HELP, Line, parse_line, render_text,
 };
-use crate::frames::{Decoded, FrameBuffer, encode_frame};
+use crate::frames::{Decoded, FrameBuffer, encode_frame, mark_binary_frame, unmark_binary_frame};
 use crate::world::hex_encode;
 use crate::world_hub::{ResolveError, WorldHub};
 #[cfg(test)]
@@ -705,6 +705,14 @@ fn command_frame(command: &WorldCommand, capability: &str) -> Option<String> {
         WorldCommand::Stats => json!({ "type": "info", "capability": capability }),
         WorldCommand::Caps => json!({ "type": "caps", "capability": capability }),
         WorldCommand::Logs { .. }
+        | WorldCommand::Anchor { .. }
+        | WorldCommand::AnchorConfirm { .. }
+        | WorldCommand::AnchorList
+        | WorldCommand::Talk { .. }
+        | WorldCommand::Anchors { .. }
+        | WorldCommand::Resolve { .. }
+        | WorldCommand::Queue
+        | WorldCommand::Flush
         | WorldCommand::Help
         | WorldCommand::Message(_)
         | WorldCommand::Quit => return None,
@@ -736,6 +744,9 @@ impl SessionIo for SshFrameIo {
         loop {
             match self.buffer.next_frame() {
                 Some(Decoded::Frame(body)) => {
+                    if let Some(payload) = unmark_binary_frame(&body) {
+                        return Inbound::Bytes(payload.to_vec());
+                    }
                     return String::from_utf8(body).map_or(Inbound::Unsupported, Inbound::Text);
                 }
                 // As on iroh, an oversized length ends the stream unread.
@@ -752,6 +763,19 @@ impl SessionIo for SshFrameIo {
 
     async fn send(&mut self, frame: String) -> bool {
         match encode_frame(frame.as_bytes()) {
+            Ok(bytes) => self.handle.data(self.channel, bytes).await.is_ok(),
+            Err(_) => false,
+        }
+    }
+
+    fn supports_bytes(&self) -> bool {
+        true
+    }
+
+    async fn send_bytes(&mut self, frame: Vec<u8>) -> bool {
+        // Same envelope as a text frame; the body carries the binary
+        // marker so the peer's reader reports it as bytes.
+        match encode_frame(&mark_binary_frame(&frame)) {
             Ok(bytes) => self.handle.data(self.channel, bytes).await.is_ok(),
             Err(_) => false,
         }
@@ -882,11 +906,13 @@ fn prepend_dropped_input_notice(counter: &AtomicUsize, out: &mut Vec<u8>) -> Opt
 }
 
 mod form_io;
+mod form_prompt;
 use form_io::{
     FormBytes, FormInputProgress, consume_form_input, discard_form_input_line,
     discard_form_lf_after_cr, form_closed_aliases, form_retry_alias, form_view_is_unchanged,
     recv_bytes_through_probe, take_pending_form_answer,
 };
+use form_prompt::{terminal_form_answer_frame, terminal_form_input_manifest, terminal_form_prompt};
 
 impl SshIo {
     /// Remember every token that may still appear in a guest's stale view.
@@ -1200,7 +1226,7 @@ impl SessionIo for SshIo {
                     // Everything else is answered by the shell itself.
                     match command {
                         WorldCommand::Help => {
-                            let help = "World chat: type a line to chat. Commands: /input <hex>, /records [prefix], /stats, /logs, /caps, /documents [prefix], /document <name>, /help, /quit\r\nworld> ";
+                            let help = "World chat: type a line to chat. Commands: /input <hex>, /records [prefix], /stats, /logs, /caps, /documents [prefix], /document <name>, /anchor <target> [type], /anchor confirm <n>, /anchor list, /talk <target>, /anchors <target>, /resolve <thread> [into <target>], /queue, /flush, /help, /quit\r\nworld> ";
                             if self.handle.data(self.channel, help).await.is_err() {
                                 return Inbound::Closed;
                             }
@@ -1227,6 +1253,25 @@ impl SessionIo for SshIo {
                         }
                         WorldCommand::Message(message) => {
                             let text = format!("{message}\r\nworld> ");
+                            if self.handle.data(self.channel, text).await.is_err() {
+                                return Inbound::Closed;
+                            }
+                        }
+                        WorldCommand::Anchor { .. }
+                        | WorldCommand::AnchorConfirm { .. }
+                        | WorldCommand::AnchorList
+                        | WorldCommand::Talk { .. }
+                        | WorldCommand::Anchors { .. }
+                        | WorldCommand::Resolve { .. }
+                        | WorldCommand::Queue
+                        | WorldCommand::Flush => {
+                            // The flow verbs parse identically on every
+                            // surface (#5873 section 3), but their
+                            // operations (chat.anchor.v1, talk bindings,
+                            // the outbox) are not wired into the SSH
+                            // session yet; say so rather than forwarding
+                            // a frame the world program cannot mean.
+                            let text = "that command is recognised, but its operation is not available in this session yet\r\nworld> ";
                             if self.handle.data(self.channel, text).await.is_err() {
                                 return Inbound::Closed;
                             }
@@ -1269,7 +1314,7 @@ impl SessionIo for SshIo {
             }
             self.previous_screen = None;
         }
-        let Ok(value) = serde_json::from_str::<serde_json::Value>(&frame) else {
+        let Ok(value) = id_core::json_unique::parse_json_without_duplicate_keys(&frame) else {
             return true;
         };
         if value["type"] == "form_result_status" {
@@ -1832,6 +1877,26 @@ enum WorldCommand {
         seconds: Option<u64>,
     },
     Caps,
+    Anchor {
+        target: String,
+        relation: Option<String>,
+    },
+    AnchorConfirm {
+        proposal: u64,
+    },
+    AnchorList,
+    Talk {
+        target: String,
+    },
+    Anchors {
+        target: String,
+    },
+    Resolve {
+        thread: String,
+        into: Option<String>,
+    },
+    Queue,
+    Flush,
     Help,
     Message(String),
     Quit,
@@ -1848,6 +1913,14 @@ fn world_command(line: &str) -> Option<WorldCommand> {
         WorldLine::Stats => WorldCommand::Stats,
         WorldLine::Logs { seconds } => WorldCommand::Logs { seconds },
         WorldLine::Caps => WorldCommand::Caps,
+        WorldLine::Anchor { target, relation } => WorldCommand::Anchor { target, relation },
+        WorldLine::AnchorConfirm { proposal } => WorldCommand::AnchorConfirm { proposal },
+        WorldLine::AnchorList => WorldCommand::AnchorList,
+        WorldLine::Talk { target } => WorldCommand::Talk { target },
+        WorldLine::Anchors { target } => WorldCommand::Anchors { target },
+        WorldLine::Resolve { thread, into } => WorldCommand::Resolve { thread, into },
+        WorldLine::Queue => WorldCommand::Queue,
+        WorldLine::Flush => WorldCommand::Flush,
         WorldLine::Help => WorldCommand::Help,
         WorldLine::Quit => WorldCommand::Quit,
         WorldLine::Message(message) => WorldCommand::Message(message),
@@ -2324,180 +2397,6 @@ fn terminal_text(data: &str) -> String {
         .filter(|ch| (!ch.is_control() || matches!(ch, '\n' | '\t')) && !crate::is_format_char(*ch))
         .collect::<String>()
         .replace('\n', "\r\n")
-}
-
-/// Local input affordances of the SSH terminal presenter. This is deliberately
-/// distinct from the headless server's `device.info` manifest.
-fn terminal_form_input_manifest() -> serde_json::Value {
-    json!({
-        "keys": 128,
-        "encoder": false,
-        "pointer": false,
-        "text_entry": "keyboard",
-    })
-}
-
-/// Safe, line-oriented prompt for the SSH presenter. The user's response is
-/// parsed as JSON data and sent in a typed session frame; it is never shell or
-/// markup input.
-fn terminal_form_prompt(form: &crate::world_presentation::FormSurface) -> String {
-    use crate::world_presentation::FormActionKind;
-    use crate::world_presentation::FormField;
-
-    let actions = form
-        .actions
-        .iter()
-        .map(|action| {
-            let kind = match action.kind {
-                FormActionKind::Submit => "submit",
-                FormActionKind::Cancel => "cancel",
-            };
-            format!("{} — {} ({kind})", action.id, action.label)
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-    let fields = form
-        .fields
-        .iter()
-        .map(|field| {
-            let (id, label, details) = match field {
-                FormField::Text {
-                    id,
-                    label,
-                    required,
-                    max_length,
-                } => (
-                    id,
-                    label,
-                    format!("text; required={required}; max_length={max_length}"),
-                ),
-                FormField::Choice {
-                    id,
-                    label,
-                    required,
-                    options,
-                } => {
-                    let options = options
-                        .iter()
-                        .map(|option| terminal_json_string(option))
-                        .collect::<Vec<_>>()
-                        .join(", ");
-                    (
-                        id,
-                        label,
-                        format!("choice; required={required}; options=[{options}]"),
-                    )
-                }
-                FormField::Number {
-                    id,
-                    label,
-                    required,
-                    min,
-                    max,
-                } => (
-                    id,
-                    label,
-                    format!("number; required={required}; min={min}; max={max}"),
-                ),
-                FormField::Date {
-                    id,
-                    label,
-                    required,
-                    min,
-                    max,
-                } => (
-                    id,
-                    label,
-                    format!("date; required={required}; min={min:?}; max={max:?}"),
-                ),
-                FormField::Confirm {
-                    id,
-                    label,
-                    required,
-                } => (id, label, format!("confirm; required={required}")),
-            };
-            format!(
-                "{} — {} [{}]",
-                terminal_text(label),
-                terminal_text(id),
-                terminal_text(&details)
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-    format!(
-        "{}\nFields (values are keyed by field ID):\n{}\nActions:\n{}\nEnter {{\"action\":\"<id>\",\"values\":{{...}}}} or /cancel.\nform> ",
-        terminal_text(&form.title),
-        fields,
-        actions
-    )
-}
-
-/// JSON-quote an option while escaping terminal-invisible format characters,
-/// so the displayed value remains copyable and compares exactly on submit.
-fn terminal_json_string(value: &str) -> String {
-    let quoted = serde_json::to_string(value).unwrap_or_else(|_| "\"\"".to_owned());
-    let mut escaped = String::with_capacity(quoted.len());
-    for ch in quoted.chars() {
-        if crate::is_format_char(ch) {
-            let mut units = [0; 2];
-            for unit in ch.encode_utf16(&mut units).iter() {
-                use std::fmt::Write as _;
-                let _ = write!(escaped, "\\u{unit:04x}");
-            }
-        } else {
-            escaped.push(ch);
-        }
-    }
-    escaped
-}
-
-/// Validate one complete JSON response line and encode it as a typed session frame.
-fn terminal_form_answer_frame(
-    form: &crate::world_presentation::FormSurface,
-    line: &str,
-) -> Result<String, String> {
-    let (action, values) = if line.trim() == "/cancel" {
-        let action = form
-            .actions
-            .iter()
-            .find(|action| action.kind == crate::world_presentation::FormActionKind::Cancel)
-            .ok_or_else(|| "this form has no cancel action".to_owned())?;
-        (action.id.clone(), serde_json::Map::new())
-    } else {
-        let value: serde_json::Value = serde_json::from_str(line)
-            .map_err(|_| "enter a JSON object with action and values".to_owned())?;
-        let object = value
-            .as_object()
-            .ok_or_else(|| "form response must be a JSON object".to_owned())?;
-        if object.len() != 2 || !object.contains_key("action") || !object.contains_key("values") {
-            return Err("form response requires exactly action and values".to_owned());
-        }
-        let action = object["action"]
-            .as_str()
-            .ok_or_else(|| "form response action must be a string".to_owned())?;
-        let values = object["values"]
-            .as_object()
-            .cloned()
-            .ok_or_else(|| "form response values must be an object".to_owned())?;
-        (action.to_owned(), values)
-    };
-    let token = form
-        .presentation_token
-        .as_deref()
-        .ok_or_else(|| "form has no active presentation token".to_owned())?;
-    let frame = serde_json::json!({
-        "type": "form_result",
-        "form_id": form.form_id,
-        "presentation_token": token,
-        "action": action,
-        "values": values,
-    })
-    .to_string();
-    if frame.len() > crate::frames::MAX_FRAME_BYTES {
-        return Err("form response exceeds the frame size limit".to_owned());
-    }
-    Ok(frame)
 }
 
 #[cfg(test)]
@@ -3269,7 +3168,7 @@ mod tests {
 
         let session = connect(port, &"0".repeat(64)).await;
         let mut channel = shell(&session).await;
-        let mut terminal = vt100::Parser::new(24, 80, 0);
+        let mut terminal = vt100::Parser::default();
         read_until(&mut channel, &mut terminal, "join denied").await;
         server.abort();
     }
@@ -3300,7 +3199,7 @@ mod tests {
         let (port, server) = start(hub).await;
         let session = connect_as(port, "cmd:", &capability).await;
         let mut channel = shell(&session).await;
-        let mut terminal = vt100::Parser::new(24, 80, 0);
+        let mut terminal = vt100::Parser::default();
         read_until(&mut channel, &mut terminal, "world>").await;
 
         channel.data(&b"hello from SSH\r"[..]).await.unwrap();
@@ -4234,6 +4133,52 @@ mod tests {
         );
     }
 
+    /// #5873 section 3 / #7616 acceptance: the flow verbs reach every surface
+    /// through the same shared parser, so the SSH command mode sees exactly
+    /// the actions the parser produced — and none of them is emitted as a
+    /// chat message or a shell frame the world program cannot mean.
+    #[test]
+    fn the_flow_verbs_map_identically_on_the_ssh_surface() {
+        use crate::world_line::parse_line;
+        for line in [
+            "/anchor id://abc",
+            "/anchor id://abc anchored-to-part",
+            "/anchor confirm 2",
+            "/anchor list",
+            "/talk id://abc",
+            "/anchors the design doc",
+            "/resolve thread-9",
+            "/resolve thread-9 into id://abc",
+            "/queue",
+            "/flush",
+        ] {
+            let command = world_command(line).unwrap_or_else(|| panic!("{line}: no command"));
+            // The surface is a faithful mirror of the shared parse.
+            let expected = match parse_line(line).unwrap() {
+                crate::world_line::WorldLine::Anchor { target, relation } => {
+                    WorldCommand::Anchor { target, relation }
+                }
+                crate::world_line::WorldLine::AnchorConfirm { proposal } => {
+                    WorldCommand::AnchorConfirm { proposal }
+                }
+                crate::world_line::WorldLine::AnchorList => WorldCommand::AnchorList,
+                crate::world_line::WorldLine::Talk { target } => WorldCommand::Talk { target },
+                crate::world_line::WorldLine::Anchors { target } => {
+                    WorldCommand::Anchors { target }
+                }
+                crate::world_line::WorldLine::Resolve { thread, into } => {
+                    WorldCommand::Resolve { thread, into }
+                }
+                crate::world_line::WorldLine::Queue => WorldCommand::Queue,
+                crate::world_line::WorldLine::Flush => WorldCommand::Flush,
+                other => panic!("{line}: parser produced {other:?}"),
+            };
+            assert_eq!(command, expected, "{line}");
+            // And no flow verb is forwarded to the world program as a frame.
+            assert_eq!(command_frame(&command, "cap"), None, "{line}");
+        }
+    }
+
     #[test]
     fn world_line_buffer_discards_overlong_line_until_newline() {
         let mut input = WorldLineBuffer::default();
@@ -4442,7 +4387,7 @@ mod tests {
         let (port, server) = start_with_store(hub, store).await;
         let session = connect_as(port, "cmd:", &capability).await;
         let mut channel = shell(&session).await;
-        let mut terminal = vt100::Parser::new(24, 80, 0);
+        let mut terminal = vt100::Parser::default();
         read_until(&mut channel, &mut terminal, "world>").await;
         channel.data(&b"/documents guide\r"[..]).await.unwrap();
         read_until(&mut channel, &mut terminal, "guide.md").await;
@@ -4484,7 +4429,7 @@ mod tests {
 
         let session = connect(port, &capability).await;
         let mut channel = shell(&session).await;
-        let mut terminal = vt100::Parser::new(24, 80, 0);
+        let mut terminal = vt100::Parser::default();
         let initial = read_until_bytes(&mut channel, &mut terminal, "count=0").await;
         assert!(initial.windows(3).any(|window| window == b"[2J"));
         channel.data(&b"inc"[..]).await.unwrap();
@@ -4540,7 +4485,7 @@ mod tests {
         let (port, server) = start(hub).await;
         let session = connect(port, capability.expose()).await;
         let mut channel = shell(&session).await;
-        let mut terminal = vt100::Parser::new(24, 80, 0);
+        let mut terminal = vt100::Parser::default();
         // The pty opens at 80x24, so the whole 4x2 screen is shown first.
         read_until(&mut channel, &mut terminal, "wxyz").await;
         assert!(terminal.screen().contents().contains("abcd"));
@@ -4600,7 +4545,7 @@ mod tests {
 
         let session = connect_as(port, "cmd:", &capability).await;
         let mut channel = shell(&session).await;
-        let mut terminal = vt100::Parser::new(24, 80, 0);
+        let mut terminal = vt100::Parser::default();
         read_until(&mut channel, &mut terminal, "count=0").await;
         channel.data(&b"/input 696e63\r"[..]).await.unwrap();
         read_until(&mut channel, &mut terminal, "count=1").await;

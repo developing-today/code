@@ -8,7 +8,7 @@ license = "MIT OR Apache-2.0"
 
 [features]
 default = ["world", "sandbox"]
-world = []
+world = ["dep:rmp-serde"]
 sandbox = []
 web = ["dep:qrcode"]
 test-utils = []
@@ -20,7 +20,7 @@ test-provider = []
 [dependencies]
 anyhow = "1"
 argon2 = "0.6"
-chacha20poly1305 = "0.10"
+chacha20poly1305 = "0.11"
 # Signed transport advertisements (transport_advertisement.rs, #8214).
 ed25519-dalek = { version = "3", features = ["rand_core"] }
 rand = "0.10"
@@ -29,7 +29,11 @@ zeroize = "1"
 # Content address of a boundary declaration (boundary.rs, #7782).
 blake3 = "1"
 cbor-core = { version = "=0.10.1", features = ["serde"] }
+# base64url path segments for b64 namespaces (id_namespace.rs, #10981).
+base64 = "0.23"
 futures-lite = "2"
+# IDNA host normalisation for id:// URLs (id_uri.rs, #10980).
+idna = "1"
 iroh = "1"
 iroh-base = "1"
 iroh-blobs = "0.103"
@@ -41,6 +45,7 @@ postcard = { version = "1", features = ["alloc"] }
 qrcode = { version = "0.14.1", default-features = false, optional = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+rmp-serde = { version = "1", optional = true }
 tempfile = "3"
 thiserror = "2"
 tokio = { version = "1", features = ["full"] }
@@ -57,7 +62,7 @@ rqrr = { version = "0.11.0", default-features = false }
 # but their test-only dependencies stayed behind in the parent crate's
 # dev-dependencies, so this crate's test targets did not compile on
 # their own. Same pins as the parent crate. Dev only; no runtime effect.
-vt100 = "=0.16.2"
+vt100 = "=0.18.1"
 iroh = { version = "1", features = ["test-utils"] }
 # Narrowing-only property test for boundary composition (boundary.rs, #7782).
 proptest = "1.12"

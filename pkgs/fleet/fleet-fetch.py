@@ -242,9 +242,8 @@ def fetch_repo(repo):
 
 
 def write_sql(statements):
-    """Kept name, new home (#5693): statements run against the
-    fleet-queue Turso DB (agent_repo_snapshots / agent_watermarks /
-    events), not Supabase."""
+    """Statements run against the fleet-queue Turso DB
+    (agent_repo_snapshots / agent_watermarks / events)."""
     turso_pipeline(statements)
 
 
@@ -304,7 +303,7 @@ def main():
             except Exception as exc:
                 results[repo] = {"ok": False, "error": str(exc)[:300]}
 
-    # Write each snapshot in its own supabase-exec call so one bad write
+    # Write each snapshot in its own pipeline call so one bad write
     # cannot sink the repos that fetched fine.
     write_errors = []
     for repo, snap in snapshots.items():

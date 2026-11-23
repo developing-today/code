@@ -119,6 +119,9 @@ func newEnv(t *testing.T, cfgBody string) *env {
 			// fails is how the leak went unnoticed for so long.
 			t.Logf("cleanup: mcpx stop --all failed: %v\n%s", err, out)
 		}
+		if err := testsupport.StopSupervisors(filepath.Join(e.dir, "state")); err != nil {
+			t.Errorf("cleanup: stop supervised servers: %v", err)
+		}
 	})
 	return e
 }
@@ -1336,7 +1339,16 @@ export default function main() { return "done"; }
 `), 0o644)
 	// A static import would be hoisted and run the module first whatever the
 	// prefix said; the launcher imports dynamically so ordering is real.
-	out := e.run("run", "--format", "bare", "--prefix", `log.info("PREFIX");`, script)
+	//
+	// The marker rides console.log, the module's own channel. A log record
+	// would cross channels: records leave the script on stderr and reach
+	// the terminal through a relay goroutine in the parent, so their merged
+	// order against stdout is a scheduling race -- on a loaded builder the
+	// record landed after the module and its result even though the prefix
+	// had executed first (the amd system build, 2026-11-21). Execution
+	// order is what this test is about, so it is observed on the one
+	// channel where execution order is the only thing that can produce it.
+	out := e.run("run", "--format", "bare", "--prefix", `console.log("PREFIX");`, script)
 	pi, ti := strings.Index(out, "PREFIX"), strings.Index(out, "TOP-LEVEL")
 	if pi < 0 || ti < 0 {
 		t.Fatalf("both should appear:\n%s", out)
@@ -1440,6 +1452,7 @@ func TestPermissionsDefaultWideOpen(t *testing.T) {
 }
 
 func TestPermissionsCanBeNarrowed(t *testing.T) {
+	testsupport.RequireBinary(t, "deno")
 	e := newEnv(t, oneServer)
 	out := e.run("exec", "--permissions", "strict",
 		`try { await Deno.readTextFile("/etc/hosts"); console.log("ALLOWED"); }
@@ -1666,6 +1679,40 @@ func TestErrorsCarryStructuredFramesAndAString(t *testing.T) {
 	}
 }
 
+// Bun fidelity for the emitted shim (#8350). Two gaps closed in emit.go:
+// captureConsole picked the Deno inspect branch under Bun (Bun exposes a
+// Deno compatibility global), rendering values in Deno's format instead of
+// Bun's own; and captureFrames trusted Bun's V8 CallSite shim, which can
+// return a single unnamed frame for a stack Bun's default stack string
+// names correctly. The caller below is deliberately not a one-liner:
+// JavaScriptCore inlines trivial wrappers, and a frame that was inlined
+// away exists in no stack representation on any runtime -- that is the
+// documented Bun exception, and it is why TestCaptureFramesIsAvailableTo
+// Scripts keeps its one-liner assertion on the default runtime only.
+func TestBunCaptureFramesAndConsoleMatchTheRuntime(t *testing.T) {
+	testsupport.RequireBinary(t, "bun")
+	e := newEnv(t, oneServer)
+	out := e.run("exec", "--runtime", "bun", "--format", "bare",
+		`function worker(n) { let acc = 0; for (let i = 0; i < n; i++) acc += i * 3;
+		   const f = captureFrames(0, 4); return { acc, top: f[0]?.function }; }
+		 console.log(JSON.stringify(worker(5)));`)
+	if !strings.Contains(out, `"top":"worker"`) {
+		t.Errorf("captureFrames should name its caller under Bun:\n%s", out)
+	}
+	// Bun's console renders an object multi-line with a trailing comma and
+	// collapses values deeper than depth 2 to [Object ...]; the captured
+	// record must read the same way.
+	out = e.run("exec", "--runtime", "bun", "--format", "compact",
+		`console.info("shaped", { a: 1, b: [1, 2] });
+		 console.info("obj", { nested: { deep: [1, { x: 2 }] } });`)
+	if !strings.Contains(out, "b: [ 1, 2 ],") {
+		t.Errorf("console records under Bun should use Bun's own formatting:\n%s", out)
+	}
+	if !strings.Contains(out, "[Object ...]") {
+		t.Errorf("console records under Bun should collapse past depth 2 like Bun's console:\n%s", out)
+	}
+}
+
 func TestConsoleTraceCapturesFrames(t *testing.T) {
 	e := newEnv(t, oneServer)
 	out := e.run("exec", "--format", "json", "--log-level", "debug",
@@ -1693,6 +1740,7 @@ func TestConsoleTraceCapturesFrames(t *testing.T) {
 }
 
 func TestCaptureFramesIsAvailableToScripts(t *testing.T) {
+	testsupport.RequireBinary(t, "deno")
 	e := newEnv(t, oneServer)
 	out := e.run("exec", "--format", "bare",
 		`function a() { return captureFrames(0, 4); }
@@ -1704,6 +1752,7 @@ func TestCaptureFramesIsAvailableToScripts(t *testing.T) {
 }
 
 func TestEveryConsoleMethodIsCoveredAndNameIsKept(t *testing.T) {
+	testsupport.RequireBinary(t, "deno")
 	e := newEnv(t, oneServer)
 	// Deno ships 25 console members. Anything mcpx replaces must keep its
 	// name, because losing it breaks introspection for no gain, and anything
@@ -1738,6 +1787,7 @@ func TestEveryConsoleMethodIsCoveredAndNameIsKept(t *testing.T) {
 }
 
 func TestConsoleInfoFormatsLikeTheRuntimeNotLikeJSON(t *testing.T) {
+	testsupport.RequireBinary(t, "deno")
 	e := newEnv(t, oneServer)
 	// A caller who writes console.info({a:1}) expects to read what the
 	// runtime would have printed. The structured copy is already in args, so
@@ -1883,6 +1933,7 @@ func TestAPhaseCanBeAFileInsteadOfAString(t *testing.T) {
 // change what the script sees or produces? Every line is compared against the
 // same script run with no launcher at all.
 func TestCapturedConsoleMatchesTheRuntimeExactly(t *testing.T) {
+	testsupport.RequireBinary(t, "deno")
 	e := newEnv(t, oneServer)
 	dir := t.TempDir()
 	script := filepath.Join(dir, "fmt.ts")
@@ -2897,6 +2948,7 @@ func TestResolveTellsAPluginWhichDaemonServesADirectory(t *testing.T) {
 }
 
 func TestTypeCheckCatchesAnUnknownNamespaceBeforeAnythingRuns(t *testing.T) {
+	testsupport.RequireBinary(t, "deno")
 	// Three separate faults let a typo'd namespace run half a script:
 	// preflight ignores unknown namespaces on purpose, --typecheck was
 	// silently dropped on the exec path, and when it did run it failed on
@@ -3246,7 +3298,9 @@ func TestConcurrentRunsOfOneScriptKeepTheirOwnLauncher(t *testing.T) {
 	for i := 0; i < n; i++ {
 		go func(i int) {
 			mark := fmt.Sprintf("LAUNCHER-%d", i)
-			o, err := e.try("run", "--launcher",
+			// The launcher is deliberately headerless, so it does not
+			// type check; run checks by default (#1868 point 4).
+			o, err := e.try("run", "--script-check", "off", "--launcher",
 				fmt.Sprintf("console.log(%q); @entry", mark), script)
 			out <- res{mark, o, err}
 		}(i)

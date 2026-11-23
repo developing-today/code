@@ -528,7 +528,7 @@ pub fn chain_payload(
         // A line that does not decode as a journal entry is not an entry,
         // however the chain arithmetic treats its bytes: refuse it here so
         // a verified cursor never covers data the restore path cannot read.
-        serde_json::from_slice::<JournalEntry>(entry)
+        id_core::json_unique::from_slice_without_duplicate_keys::<JournalEntry>(entry)
             .map_err(|_| ReplicationError::MalformedPayload)?;
         cursor = advance_cursor(cursor, entry);
     }
@@ -579,7 +579,7 @@ fn validate_payload_journal_header(envelope: &ReplicationEnvelope) -> Result<(),
     let mut entries = Vec::new();
     for line in envelope.payload.split_inclusive(|byte| *byte == b'\n') {
         entries.push(
-            serde_json::from_slice::<JournalEntry>(line)
+            id_core::json_unique::from_slice_without_duplicate_keys::<JournalEntry>(line)
                 .map_err(|_| ReplicationError::MalformedPayload)?,
         );
     }
@@ -653,7 +653,7 @@ fn validate_payload_entry_versions(envelope: &ReplicationEnvelope) -> Result<(),
         return Err(ReplicationError::MalformedPayload);
     }
     for line in envelope.payload.split_inclusive(|byte| *byte == b'\n') {
-        let entry = serde_json::from_slice::<JournalEntry>(line)
+        let entry = id_core::json_unique::from_slice_without_duplicate_keys::<JournalEntry>(line)
             .map_err(|_| ReplicationError::MalformedPayload)?;
         let required = journal_version_required_by(&entry);
         if required > envelope.header_version {
@@ -1169,6 +1169,23 @@ mod tests {
 
     fn hex(bytes: &[u8]) -> String {
         bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+    }
+
+    #[test]
+    fn a_payload_line_with_a_duplicated_key_is_malformed() {
+        // An unknown key given twice: a lenient decode collapses and
+        // ignores it, so only the duplicate-key refusal catches it (#8794).
+        let base = chain_base_cursor(WORLD, &source_of(&signing_key(1)), 1);
+        let line = journal_entry_line(&JournalEntry::CapsGranted {
+            granted: vec!["chat".to_string()],
+        });
+        assert!(chain_payload(base, &line).is_ok());
+        let mut duplicated = br#"{"x":1,"x":2,"#.to_vec();
+        duplicated.extend_from_slice(&line[1..]);
+        assert_eq!(
+            chain_payload(base, &duplicated),
+            Err(ReplicationError::MalformedPayload)
+        );
     }
 
     /// Three real journal entries as their exact replicated line bytes.
@@ -2483,6 +2500,25 @@ mod tests {
             payload[first_line_end..].to_vec(),
         )
         .unwrap();
+        assert!(SignedReplicationEnvelope::sign(env, &key).is_none());
+        // 9. Claimed journal header version disagreeing with the
+        //    payload's own Created header (#12218): both versions are
+        //    supported, so only the header-agreement rule can refuse
+        //    it. The control signs the same claim over a payload whose
+        //    header matches it, proving the refusal is the mismatch
+        //    and not the claim itself.
+        let control = ReplicationEnvelope::snapshot(
+            WORLD,
+            source,
+            2,
+            NONCE,
+            [0; 32],
+            entry_payload_with_version(2),
+        )
+        .unwrap();
+        assert!(SignedReplicationEnvelope::sign(control, &key).is_some());
+        let env = ReplicationEnvelope::snapshot(WORLD, source, 2, NONCE, [0; 32], payload.clone())
+            .unwrap();
         assert!(SignedReplicationEnvelope::sign(env, &key).is_none());
     }
 }

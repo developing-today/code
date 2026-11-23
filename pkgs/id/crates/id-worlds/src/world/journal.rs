@@ -14,9 +14,9 @@ use serde::{Deserialize, Serialize};
 
 use super::signed;
 use super::{
-    CheckpointSchedule, FileScope, HandoffTransferState, Isolation, LeaseRejectionReason,
-    ModuleProvenance, Participant, WorldEvent, WorldEventKind, WriteLease, hex_decode, hex_encode,
-    replication,
+    CheckpointBlobEntry, CheckpointKvEntry, CheckpointSchedule, FileScope, HandoffTransferState,
+    Isolation, LeaseRejectionReason, ModuleProvenance, Participant, WorldEvent, WorldEventKind,
+    WriteLease, hex_decode, hex_encode, replication,
 };
 
 /// One durable fact in the region coordinator's own journal (#3870 phase 1,
@@ -229,6 +229,12 @@ pub enum JournalEntry {
         /// Account the capability acts for; its ceiling and friendships bound it.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         subject: Option<String>,
+        /// Unix milliseconds at which the world issued the capability, from
+        /// the world clock (#11960). `None` for capabilities issued before
+        /// times were recorded; never inferred. Requires
+        /// [`JOURNAL_VERSION_JOIN_TIMES`].
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        issued_at: Option<u64>,
     },
     /// A capability was revoked, with every capability delegated from it.
     /// Replay revokes the same tree.
@@ -239,6 +245,11 @@ pub enum JournalEntry {
         /// from a moderator scope rather than the admin. `None` means admin.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         by: Option<u64>,
+        /// Unix milliseconds at which the revoke took effect, from the world
+        /// clock (#11960). `None` for revokes recorded before times were.
+        /// Requires [`JOURNAL_VERSION_JOIN_TIMES`].
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        revoked_at: Option<u64>,
     },
     /// A builder-scoped participant installed a program. Journal-only: it is
     /// the audit record for the builder authority, written alongside the
@@ -393,6 +404,45 @@ pub enum JournalEntry {
     ScheduleFired {
         /// The fired schedule's id.
         id: String,
+    },
+    /// A `kv.set` request was accepted (#1062): `key` now holds
+    /// `value`, the stored value's JSON encoding. Written before the
+    /// request's result is delivered. Setting an existing key replaces
+    /// its value; replay applies entries in order, so the last write
+    /// to a key is the store's state.
+    KvSet {
+        /// The key being set.
+        key: String,
+        /// The value's JSON encoding.
+        value: String,
+    },
+    /// A `kv.delete` request removed a live entry (#1062). Written
+    /// only when the key was present, before the request's result is
+    /// delivered.
+    KvDeleted {
+        /// The key that was removed.
+        key: String,
+    },
+    /// A `blob.put` request stored new content (#1062): the blob
+    /// addressed by `hash` — the content's iroh-blobs hash, as
+    /// lowercase hex — now holds `data`, the content as base64.
+    /// Written before the request's result is delivered, and only
+    /// when the world did not already hold the blob: putting content
+    /// the world already holds is a no-op and journals nothing.
+    /// Replay decodes `data` and refuses the entry unless it hashes
+    /// back to `hash`, so the journal is self-verifying.
+    BlobStored {
+        /// The blob's content address: its hash as lowercase hex.
+        hash: String,
+        /// The content, as base64.
+        data: String,
+    },
+    /// A `blob.delete` request removed a live blob (#1062). Written
+    /// only when the blob was present, before the request's result
+    /// is delivered.
+    BlobRemoved {
+        /// The hash of the blob that was removed.
+        hash: String,
     },
     /// A participant's author key was bound for signed play (#2814,
     /// #4346). Written when the binding is first made; replaying it
@@ -603,6 +653,17 @@ pub enum JournalEntry {
         /// interval and remaining fires.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         schedules: Option<Vec<CheckpointSchedule>>,
+        /// Live `kv` store entries (#1062). Absent when the store is
+        /// empty, and it must match the `KvSet` entries before it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        kv: Option<Vec<CheckpointKvEntry>>,
+        /// Live blob index (#1062): hash and content size per live
+        /// blob. Absent when the world holds no blobs, and it must
+        /// match the `BlobStored` entries before it. Only the index
+        /// is declared, never the content — the entries carry the
+        /// bytes, and each is hash-verified as it replays.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        blobs: Option<Vec<CheckpointBlobEntry>>,
         /// Active region-seam handoffs (#3870 phase 1, design #2818 §3):
         /// export fences/payloads, import receipts/dedupe keys and owner
         /// epochs, so compaction cannot resurrect an exported entity or
@@ -727,10 +788,51 @@ pub const JOURNAL_VERSION_SIGNED_PLAY: u32 = 9;
 /// the journal at the header check.
 pub const JOURNAL_VERSION_PORTALS: u32 = 10;
 
+/// Header version of a journal that records a program-bundle install.
+///
+/// That is a `ProgramInstalled` event, or a checkpoint, whose provenance is
+/// [`ModuleProvenance::Bundle`] (#8280). Version-10 binaries cannot parse
+/// that provenance and would fail mid-replay, so they must refuse the
+/// journal at the header check.
+pub const JOURNAL_VERSION_PROGRAM_BUNDLE: u32 = 11;
+
+/// Journal version 12 (#11960): `Issued` entries carry `issued_at` and
+/// `Revoked` entries carry `revoked_at`. The fields are optional, so a
+/// version-11 reader would parse such an entry, drop the time and lose it
+/// at its next checkpoint; an entry that carries a time therefore requires
+/// this version, and an older binary refuses the journal at the header
+/// check instead.
+pub const JOURNAL_VERSION_JOIN_TIMES: u32 = 12;
+
+/// Journal version 13 (#1062): the `kv` store entries
+/// ([`JournalEntry::KvSet`] / [`JournalEntry::KvDeleted`]) and a
+/// checkpoint carrying a `kv` field. A version-12 binary cannot parse
+/// the new entry kinds and would fail mid-replay, so a journal
+/// containing them must be refused at the header check instead.
+pub const JOURNAL_VERSION_KV: u32 = 13;
+
+/// Journal version 14 (#1062): the `blob` store entries
+/// ([`JournalEntry::BlobStored`] / [`JournalEntry::BlobRemoved`])
+/// and a checkpoint carrying a `blobs` field. A version-13 binary
+/// cannot parse the new entry kinds and would fail mid-replay, so a
+/// journal containing them must be refused at the header check
+/// instead.
+pub const JOURNAL_VERSION_BLOB: u32 = 14;
+
+/// Journal version 15 (#1062): a journal that carries a
+/// `notify` provider event — a committed (or retained) event of
+/// kind [`WorldEventKind::Notification`]. The entry kinds are the
+/// old ones; the *event* kind is new, exactly as an
+/// entity-addressed input event required
+/// [`JOURNAL_VERSION_REGION_HANDOFF`]. A version-14 binary cannot
+/// parse the event kind and would fail mid-replay, so a journal
+/// containing one must be refused at the header check instead.
+pub const JOURNAL_VERSION_NOTIFY: u32 = 15;
+
 /// Newest journal version this binary can read. Journals with a higher
 /// header version are refused at the header check, before any entry is
 /// applied.
-pub const MAX_JOURNAL_VERSION: u32 = JOURNAL_VERSION_PORTALS;
+pub const MAX_JOURNAL_VERSION: u32 = JOURNAL_VERSION_NOTIFY;
 
 /// The header version a journal must carry once it contains `entry`: version 2
 /// for execution-profile entries, version 3 for region-handoff entries,
@@ -738,8 +840,60 @@ pub const MAX_JOURNAL_VERSION: u32 = JOURNAL_VERSION_PORTALS;
 /// for checkpoints with open-presence metadata, and version 6 for checkpoint
 /// part entries. Checkpoints combine the requirements of their transfers,
 /// retained events, profile and presence field.
+///
+/// Any entry that records a program-bundle install additionally requires
+/// [`JOURNAL_VERSION_PROGRAM_BUNDLE`].
 #[must_use]
 pub fn journal_version_required_by(entry: &JournalEntry) -> u32 {
+    let kind = entry_kind_version(entry);
+    if records_bundle_install(entry) {
+        kind.max(JOURNAL_VERSION_PROGRAM_BUNDLE)
+    } else {
+        kind
+    }
+}
+
+/// Whether `event` installs a program from a bundle.
+const fn is_bundle_install(event: &WorldEvent) -> bool {
+    matches!(
+        &event.kind,
+        WorldEventKind::ProgramInstalled {
+            provenance: Some(provenance),
+            ..
+        } if provenance.is_bundle()
+    )
+}
+
+/// Whether `entry` carries bundle provenance anywhere a reader must parse it.
+fn records_bundle_install(entry: &JournalEntry) -> bool {
+    match entry {
+        JournalEntry::Committed { event } | JournalEntry::System { event } => {
+            is_bundle_install(event)
+        }
+        JournalEntry::EntityExported { source_event, .. } => is_bundle_install(source_event),
+        JournalEntry::EntityImported {
+            destination_event, ..
+        } => is_bundle_install(destination_event),
+        JournalEntry::CheckpointEventsPart { events, .. }
+        | JournalEntry::CheckpointAdminPart { events, .. } => events.iter().any(is_bundle_install),
+        JournalEntry::Checkpoint {
+            provenance,
+            events,
+            admin_history,
+            ..
+        } => {
+            provenance.as_ref().is_some_and(ModuleProvenance::is_bundle)
+                || events.iter().any(is_bundle_install)
+                || admin_history
+                    .as_ref()
+                    .is_some_and(|history| history.events.iter().any(is_bundle_install))
+        }
+        _ => false,
+    }
+}
+
+/// The version `entry`'s own kind and fields require, before provenance.
+fn entry_kind_version(entry: &JournalEntry) -> u32 {
     // A persisted budget always requires the budget version, on top of any
     // version the entry kind itself already requires.
     let budget_version = |profile: Option<&crate::world_limits::WorldExecutionProfile>| {
@@ -766,6 +920,7 @@ pub fn journal_version_required_by(entry: &JournalEntry) -> u32 {
         | JournalEntry::CheckpointAdminPart { .. } => JOURNAL_VERSION_CHECKPOINT_PARTS,
         JournalEntry::Committed { event } | JournalEntry::System { event } => match &event.kind {
             WorldEventKind::EntityInput { .. } => JOURNAL_VERSION_REGION_HANDOFF,
+            WorldEventKind::Notification { .. } => JOURNAL_VERSION_NOTIFY,
             _ => JOURNAL_VERSION,
         },
         // A checkpoint stands in for the entries it compacted, so it must
@@ -784,6 +939,8 @@ pub fn journal_version_required_by(entry: &JournalEntry) -> u32 {
         JournalEntry::ScheduleGrantSet { .. } | JournalEntry::ScheduleReceived { .. } => {
             JOURNAL_VERSION_SCHEDULE_RECURRENCE
         }
+        JournalEntry::KvSet { .. } | JournalEntry::KvDeleted { .. } => JOURNAL_VERSION_KV,
+        JournalEntry::BlobStored { .. } | JournalEntry::BlobRemoved { .. } => JOURNAL_VERSION_BLOB,
         JournalEntry::PortalGrantSet { .. } => JOURNAL_VERSION_PORTALS,
         JournalEntry::Checkpoint {
             transfers,
@@ -792,9 +949,30 @@ pub fn journal_version_required_by(entry: &JournalEntry) -> u32 {
             open_presence,
             execution_profile,
             schedules,
+            kv,
+            blobs,
+            admin_history,
             ..
         } => {
-            let base = if schedules.as_ref().is_some_and(|declared| {
+            // A retained `Notification` event is a version-15 kind
+            // wherever the checkpoint carries it — the retained
+            // events or the admin history (the both-places check
+            // the bundle-provenance rule uses).
+            let base = if events
+                .iter()
+                .any(|event| matches!(event.kind, WorldEventKind::Notification { .. }))
+                || admin_history.as_ref().is_some_and(|history| {
+                    history
+                        .events
+                        .iter()
+                        .any(|event| matches!(event.kind, WorldEventKind::Notification { .. }))
+                }) {
+                JOURNAL_VERSION_NOTIFY
+            } else if blobs.is_some() {
+                JOURNAL_VERSION_BLOB
+            } else if kv.is_some() {
+                JOURNAL_VERSION_KV
+            } else if schedules.as_ref().is_some_and(|declared| {
                 declared
                     .iter()
                     .any(|schedule| schedule.interval_ms.is_some() || schedule.remaining != 1)
@@ -819,29 +997,152 @@ pub fn journal_version_required_by(entry: &JournalEntry) -> u32 {
             JOURNAL_VERSION_EXECUTION_PROFILE.max(budget_version(Some(profile)))
         }
         JournalEntry::BuilderInstalled { .. } => JOURNAL_VERSION_EXECUTION_PROFILE,
+        JournalEntry::Issued {
+            issued_at: Some(_), ..
+        }
+        | JournalEntry::Revoked {
+            revoked_at: Some(_),
+            ..
+        } => JOURNAL_VERSION_JOIN_TIMES,
         _ => JOURNAL_VERSION,
     }
+}
+
+/// When a journal acknowledges an append relative to the sync that
+/// makes it durable (#557; design record
+/// `doc/2026-11-23T00-24-00Z_design_journal_ack_modes`).
+///
+/// The mode is a property of the journal, chosen per world at open
+/// time (see `WorldLimits::journal_ack_mode`). It is runtime
+/// configuration, never journaled state: the entry bytes, the journal
+/// format and the recovery scan are identical in every mode, so
+/// reopening a journal under a different mode re-reads exactly the
+/// entries that survived — a mode changes what a *future*
+/// acknowledgement promises, never what existing bytes mean.
+///
+/// The three durability levers, side by side:
+///
+/// - **The sync primitive** is `fdatasync` per sync, in every mode.
+///   Sharing one `syncfs` across journals was measured on three
+///   filesystems and lost to `fdatasync` on all of them (fleet runner
+///   ~2.5x, sandbox btrfs ~1.26x, reference-laptop ext4 1.07x median /
+///   1.44x p99), so it is not used; the question reopens only if
+///   `syncfs` gets cheaper than `fdatasync`.
+/// - **Sync sharing** (group commit) needs appends to queue behind an
+///   in-flight sync; a journal's only producer is its owning actor,
+///   blocked until the in-flight append returns, so per-journal
+///   concurrency is 1 by construction and the measured batching
+///   headroom at the F12.12 operating point is zero. `append_batch`
+///   already lands a caller-formed batch with a single sync.
+/// - **Ack timing** — this enum — is the remaining lever: how much
+///   durability an acknowledgement waits for. It is a semantics
+///   choice, so it is opt-in per world and the default does not move.
+///
+/// Guarantees that hold in **every** mode: appends land in call order
+/// and a completed sync always covers a prefix of the history, so
+/// recovery never sees a later entry without its predecessors; a
+/// *process* crash loses nothing already written (the bytes are in the
+/// OS page cache) — the loss window below is an OS crash or power
+/// loss; transactions and compaction always build, sync and rename a
+/// complete journal, regardless of mode. One honesty note for the
+/// relaxed modes: the replication feed reads written journal bytes,
+/// so a replica can receive an entry before it is durable on the
+/// source, and after a source OS crash can hold an entry the source's
+/// recovered journal no longer has. Worlds that replicate for
+/// durability rather than liveness should stay in `Sync` mode.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum JournalAckMode {
+    /// Acknowledge only after a sync covering the entry completes:
+    /// one `write_all` + one `sync_data` per append, one sync per
+    /// batch. Acknowledged means durable, unconditionally — the
+    /// original `WorldJournal` contract, byte-for-byte.
+    ///
+    /// Cost: one sync latency on every input's ack path (the #557
+    /// profile: the ack essentially *is* the sync wait). Choose this
+    /// unless a world has a measured reason not to; it is the default
+    /// because it is the only mode that never loses an acknowledged
+    /// input.
+    #[default]
+    Sync,
+    /// Acknowledge after the write; sync once per
+    /// `crate::world_store::JOURNAL_ACK_BATCH_SIZE` appends. An
+    /// acknowledged append is durable once its batch's sync completes;
+    /// until then it is written but not durable.
+    ///
+    /// Guarantee: recovery after a crash sees a prefix of the
+    /// acknowledged history — loss is bounded to the unsynced tail,
+    /// at most `JOURNAL_ACK_BATCH_SIZE - 1` acknowledged appends plus
+    /// the one in flight, never a hole in the middle. Choose this for
+    /// high-rate worlds whose inputs are individually cheap to lose in
+    /// a bounded tail and whose bottleneck is sync latency: it pays
+    /// one sync per batch of inputs instead of one per input. (With a
+    /// single sequential producer the win is sync *count*, not sync
+    /// sharing.)
+    Batched,
+    /// Acknowledge after the write, with no sync on the append path at
+    /// all. Durability arrives only at sync points: an explicit
+    /// [`WorldJournal::sync`], a checkpoint/compaction, or a
+    /// transaction.
+    ///
+    /// Guarantee: acknowledged means written to the OS, in order —
+    /// nothing more. An OS crash can lose every input since the last
+    /// sync point (in practice bounded by checkpoint cadence, since a
+    /// checkpoint compaction syncs in full). Choose this only for
+    /// worlds whose journal is a rebuildable cache — throwaway or dev
+    /// worlds — never for history anyone will audit.
+    Async,
 }
 
 /// Durable, append-only record of a world's history.
 ///
 /// The actor calls `append` before acknowledging or broadcasting a mutation.
 /// If `append` fails, the world turns read-only: acknowledged history must
-/// never get ahead of durable history.
+/// never get ahead of durable history — in the journal's
+/// [`JournalAckMode`] the ack may get ahead of *durability* only as far
+/// as that mode's documented bound, and never ahead of the journal
+/// itself.
 pub trait WorldJournal: Send + 'static {
-    /// Durably append one entry.
+    /// The acknowledgement mode this journal runs (see
+    /// [`JournalAckMode`]). The default is [`JournalAckMode::Sync`],
+    /// the original durability-before-ack contract; a journal that
+    /// relaxes it says so here, where any reader can see it.
+    fn ack_mode(&self) -> JournalAckMode {
+        JournalAckMode::Sync
+    }
+
+    /// Make every append acknowledged so far durable. In
+    /// [`JournalAckMode::Sync`] this is a no-op by construction (each
+    /// append synced before it returned); relaxed modes flush their
+    /// unsynced tail here. Checkpoints, transactions and compaction
+    /// are also sync points and never need this call first.
+    ///
+    /// # Errors
+    ///
+    /// Any I/O failure from the flush; the actor then refuses further
+    /// mutations, as for a failed append.
+    fn sync(&mut self) -> Result<()> {
+        Ok(())
+    }
+
+    /// Append one entry, acknowledging it under this journal's
+    /// [`JournalAckMode`](Self::ack_mode): in the default
+    /// [`JournalAckMode::Sync`] the entry is durable before this
+    /// returns.
     ///
     /// # Errors
     ///
     /// Any I/O failure; the actor then refuses further mutations.
     fn append(&mut self, entry: &JournalEntry) -> Result<()>;
 
-    /// Durably append a batch of entries in order (group commit, #8239):
-    /// where the journal can, the batch lands with a single sync, and
-    /// durability-before-ack applies to the batch as a whole - either
-    /// every entry is durable or the batch has failed and none may be
-    /// acknowledged. The default is the per-entry append loop, which is
-    /// always correct, just slower.
+    /// Append a batch of entries in order (group commit, #8239):
+    /// where the journal can, the batch lands with a single sync. In
+    /// [`JournalAckMode::Sync`] durability-before-ack applies to the
+    /// batch as a whole - either every entry is durable or the batch
+    /// has failed and none may be acknowledged; relaxed modes count
+    /// the batch's entries toward their own sync accounting (see
+    /// [`JournalAckMode`]). The default is the per-entry append loop,
+    /// which is always correct, just slower.
     ///
     /// # Errors
     ///

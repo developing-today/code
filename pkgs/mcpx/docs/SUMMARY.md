@@ -44,6 +44,7 @@
 - [Research and incidental findings](research-and-findings.md)
 - [Script runtimes, permission profiles and presets](runtimes.md)
 - [Schema validation (`internal/schemaval`)](schema-validation.md)
+- [MCP tool reference](tool-reference.md)
 - [Scripts](scripts.md)
 - [mcpx](story.md)
 - [mcpx Development Strategies & Lessons Learned](work-strategies.md)

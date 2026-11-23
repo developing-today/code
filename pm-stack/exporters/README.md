@@ -26,6 +26,71 @@ deliberate — the ladder is the part worth testing exhaustively, and the
 testing doctrine (AGENTS.md) asks for property- and model-based coverage
 of exactly this kind of state machine.
 
+`src/watchdog-escalation.ts` — the **rung-4 hand-off** (#6033): plans the
+deduped queue-task + incident-issue effects behind injected effectors,
+records the refs on the incident, plans recovery comments without
+disposing of the issue or queue task, and renders the NEEDS DREW
+surfacing line (immediate when human-blocked, after 24 h unresolved
+otherwise). The hand-off creates
+the incident issue **first**: fleet queue validation only accepts a
+`small_fix` packet whose fix-family dedupe key names an existing issue
+(`repo-health:v1:fix:<repo>:issue:<n>`, payload.issue.number matching),
+so `buildQueueTaskWrapper` translates the escalation packet into the
+validated repo-task/v1 envelope — full escalation context riding inside
+the payload — once the issue number is confirmed.
+
+`src/adapters.ts` + `adapters/` — the **adapter loader**. An adapter is a
+per-provider JSON file (origins allowlist, CDP port, producer document
+path and/or gatherer heartbeat key, cookie names — names only, login
+hints, class/rung map overrides, thresholds, owning repo). The loader
+validates structurally and reports defects per file instead of throwing:
+a broken adapter degrades to "that source is unobserved", never to a
+crashed tick. `adapters/fixture.json` is the synthetic adapter the
+acceptance tests and demos run on; real provider adapters are follow-ons
+(Mistral's is the openchamber-side follow-on named in #6032).
+
+`src/watchdog.ts` — the **oneshot entry point**. One tick: load adapters,
+read the state file back through `coerceHealth`, observe each source
+(producer document + gatherer heartbeat + a live CDP liveness probe),
+classify — including the classes the producer cannot see itself (missing
+document, stale read while the browser lives, dead CDP endpoint) — call
+`decide`, execute the chosen rung, run rung-4 escalation/recovery effects,
+write the state file back atomically (tmp+rename), and append one line per
+source to `quota-watchdog-history.jsonl`. Nothing decision-relevant lives
+in process memory (#5928). Rung executors:
+
+- rung 2 — CDP session re-validation: `/json/version` + `/json/list`, an
+  allowlist origin open, adapter cookies present **by name** via the CDP
+  websocket (values never enter the process); a dead endpoint gets one
+  bounded supervised restart of the adapter's browser unit;
+- rung 3 — re-login driver: opens the adapter's login URL (allowlist
+  origins only), stops dead at a human-only challenge marker and marks
+  the incident human-blocked via `recordRungOutcome`, otherwise confirms
+  the session by cookie presence.
+
+Browser repairs run only with `QUOTA_WATCHDOG_LIVE_REPAIRS=1` and the
+rung-4 production effectors (fleet queue enqueue / `gh`) only with
+`QUOTA_WATCHDOG_LIVE=1`; without them the tick journals its plans as dry
+runs and creates nothing. The systemd unit sets both.
+
+`producers/producer-template.mjs` — the forkable producer scaffold
+distilled from the retired Meta producer: timeout-bounded CDP plumbing,
+tab ownership (a producer closes only tabs it created), failure-class
+exit codes with a written failure document, atomic `latest.json` +
+`history.jsonl`. Registering a fork with the gatherer means adding its
+document to the aggregator's file-export inputs (`FILE_EXPORTS` in the
+pm-aggregator package); the watchdog watches the document directly either
+way. `test/fixtures/fixture-producer.mjs` is the scenario-driven stub the
+acceptance tests use in place of a browser producer.
+
+`../systemd/pm-quota-watchdog.service` + `.timer` — the oneshot + timer,
+on the gatherer's 15-minute rhythm offset to `*:3/15` so each tick judges
+fresh producer documents. Installed on the laptop as user units; the
+service runs this directory as deployed under `~/pm-stack/exporters/`
+with adapters from `~/.config/quota-watchdog/adapters/`.
+
+## Tests
+
 `test/watchdog-state.test.ts` names its oracles: PBT invariants over
 generated tick sequences (attempt caps, log bound, monotonic failure
 counts, cooldown honored, no secret survives), an MBT reference model of
@@ -33,25 +98,16 @@ the ladder stepped in lockstep with the implementation, and the four
 acceptance fixtures (broken-source walk, rate-limited cooldown, human
 challenge, quiet-when-healthy).
 
+`test/watchdog.test.ts` covers the entry point end to end against a
+scratch tree: the same four acceptance fixtures driven through `runTick`
+(the ladder walk escalates exactly once and dedupes on later ticks;
+recovery comments without disposing of the hand-off), cross-invocation
+persistence (every tick re-reads the state file from disk — the #5928
+oracle), the classification of missing-document / stale-read / dead-CDP
+observations, and the adapter loader's defect handling.
+
 Run them:
 
 ```bash
-cd pm-stack/aggregator && bun test ../exporters/test/watchdog-state.test.ts
+cd pm-stack/aggregator && bun test ../exporters/test/
 ```
-
-## What is NOT here yet (#6032 remainder)
-
-- `src/watchdog.ts` — the oneshot entry point: read the state file, read
-  each source's `~/atlas/<provider>-export/latest.json` plus the gatherer
-  heartbeat, classify, call `decide`, run the chosen rung, write the state
-  file atomically (tmp+rename), append `quota-watchdog-history.jsonl`.
-- `src/adapters.ts` — the adapter loader (origins allowlist, CDP port,
-  data-path order, cookie names, login hints, class map, thresholds) and
-  `adapters/` itself.
-- The repair executors for rungs 2 and 3 (CDP session re-validation,
-  browser re-login driver), which stop dead at a human-only challenge and
-  hand off to `recordRungOutcome`.
-- The rung-4 escalation hand-off module (#6033): plans the deduped queue-task + incident-issue effects behind injected effectors, records the refs on the incident, plans recovery (comment + close + complete), and renders the NEEDS DREW surfacing line (immediate when human-blocked, after 24 h unresolved otherwise). Production effectors (fleet CLI / gh) are wired by the entry point below.
-- Producer scaffolding under `pm-stack/exporters/` from the retired Meta
-  producer pattern, and the gatherer `FILE_EXPORTS` registration.
-- `pm-stack/systemd/` oneshot + timer units on the gatherer cadence.

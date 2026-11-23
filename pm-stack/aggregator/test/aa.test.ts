@@ -16,7 +16,7 @@ import {
   caiFamily,
   num,
   aaApplyPriceOverlay,
-  aaSectionFromSupabase,
+  aaSectionFromPayload,
   computeAaCoverage,
   effortRank,
   isAaSection,
@@ -273,7 +273,7 @@ function rawPayload(): AaRawPayload {
 
 describe("payload assembly + section shape", () => {
   test("string numerics from the Management API are coerced; coverage computed when config parses", () => {
-    const section = aaSectionFromSupabase(rawPayload(), CONFIG_SNIPPET, "2026-10-26T18:05:00Z");
+    const section = aaSectionFromPayload(rawPayload(), CONFIG_SNIPPET, "2026-10-26T18:05:00Z");
     expect(section).not.toBeNull();
     expect(section!.status).toBe("ok");
     expect(section!.rankings[0].costTask).toBe(0.07);
@@ -285,7 +285,7 @@ describe("payload assembly + section shape", () => {
   });
 
   test("the same config read also builds the Model Explorer catalog", () => {
-    const section = aaSectionFromSupabase(rawPayload(), CONFIG_SNIPPET, "2026-10-26T18:05:00Z");
+    const section = aaSectionFromPayload(rawPayload(), CONFIG_SNIPPET, "2026-10-26T18:05:00Z");
     const catalog = section!.catalog;
     expect(catalog).toBeDefined();
     const luna = catalog!.find((e) => e.id === "openai/gpt-6-luna")!;
@@ -300,19 +300,19 @@ describe("payload assembly + section shape", () => {
   });
 
   test("unparseable config omits the catalog with the coverage", () => {
-    const section = aaSectionFromSupabase(rawPayload(), "{ nope", "2026-10-26T18:05:00Z");
+    const section = aaSectionFromPayload(rawPayload(), "{ nope", "2026-10-26T18:05:00Z");
     expect(section?.catalog).toBeUndefined();
   });
 
   test("unparseable config omits coverage but keeps the section", () => {
-    const section = aaSectionFromSupabase(rawPayload(), "{ nope", "2026-10-26T18:05:00Z");
+    const section = aaSectionFromPayload(rawPayload(), "{ nope", "2026-10-26T18:05:00Z");
     expect(section?.status).toBe("ok");
     expect(section?.coverage).toBeUndefined();
     expect(isAaSection(section)).toBe(true);
   });
 
   test("isAaSection accepts the absent form, rejects junk", () => {
-    expect(isAaSection(aaAbsent("Supabase unreachable", "2026-10-26T18:05:00Z"))).toBe(true);
+    expect(isAaSection(aaAbsent("Turso unreachable", "2026-10-26T18:05:00Z"))).toBe(true);
     expect(isAaSection(null)).toBe(false);
     expect(isAaSection({ status: "ok" })).toBe(false);
     expect(isAaSection({ status: "absent", reason: 42 })).toBe(false);
@@ -320,9 +320,9 @@ describe("payload assembly + section shape", () => {
   });
 
   test("isAaSection rejects the absent form with impossible generatedAt dates (#3441)", () => {
-    expect(isAaSection(aaAbsent("Supabase unreachable", "2026-10-26T18:05:00Z"))).toBe(true);
+    expect(isAaSection(aaAbsent("Turso unreachable", "2026-10-26T18:05:00Z"))).toBe(true);
     for (const generatedAt of ["2026-02-30T00:00:00Z", "2026-02-29T00:00:00Z", "2026-04-31T00:00:00Z"]) {
-      expect(isAaSection(aaAbsent("Supabase unreachable", generatedAt))).toBe(false);
+      expect(isAaSection(aaAbsent("Turso unreachable", generatedAt))).toBe(false);
     }
   });
 
@@ -339,7 +339,9 @@ describe("explorer points (charts + perspectives)", () => {
   // cost frontier, off the time frontier, beaten by nobody on all
   // three axes at once (A costs more). The reference design's exact
   // semantics, in data form.
-  function sectionWith(rows: { family: string; score: number; cost: number; time: number }[]): AaSection {
+  type FixtureRow = { family: string; score: number | null; cost: number | null; time: number | null };
+
+  function sectionWith(rows: FixtureRow[]): AaSection {
     const rankings: AaRanking[] = rows.map((r, i) => ({
       rowIndex: i,
       testRunKey: `k${i}`,
@@ -433,6 +435,105 @@ describe("explorer points (charts + perspectives)", () => {
     expect(ghost.frontierTime).toBe(false);
     expect(ghost.frontierCostTime).toBe(false);
     expect(ghost.beatenBy).toEqual([]);
+  });
+
+  test("Pareto sweep preserves equal-coordinate duplicates and same-axis domination", () => {
+    const pts = aaPoints(
+      sectionWith([
+        { family: "higher-y", score: 50, cost: 1, time: 5 },
+        { family: "same-x-min", score: 50, cost: 1, time: 3 },
+        { family: "duplicate", score: 50, cost: 1, time: 3 },
+        { family: "same-y-later-x", score: 50, cost: 2, time: 3 },
+        { family: "dominated", score: 50, cost: 2, time: 4 },
+        { family: "lower-y", score: 50, cost: 3, time: 2 },
+      ]),
+    );
+    expect(pts.filter((p) => p.frontierCostTime).map((p) => p.family)).toEqual(["same-x-min", "duplicate", "lower-y"]);
+  });
+
+  test("AA and CAI Pareto flags match the all-pairs dominance oracle under generated inputs", () => {
+    // Independent model: a point is dominated iff another point is no
+    // worse on either axis and strictly better on at least one axis.
+    type Pair = readonly [number | null, number | null];
+    const nonDominated = (pairs: Pair[], i: number): boolean => {
+      const [x, y] = pairs[i];
+      if (x === null || y === null) return false;
+      return !pairs.some(([a, b]) => a !== null && b !== null && a <= x && b <= y && (a < x || b < y));
+    };
+
+    let state = 0x50415245; // fixed seed; a failure names its generated case
+    const draw = (limit: number): number => {
+      state = (Math.imul(state, 1_664_525) + 1_013_904_223) >>> 0;
+      return Math.floor((state / 2 ** 32) * limit);
+    };
+    // A small domain makes ties common. Non-finite numbers exercise the
+    // pure projection APIs directly (feed decoding normalizes them to null).
+    const values = [null, -0, 0, 1, 2, 3, 5, 8, NaN, -Infinity, Infinity];
+    const value = () => values[draw(values.length)];
+    const negated = (n: number | null) => (n === null ? null : -n);
+
+    for (let sample = 0; sample < 2_048; sample++) {
+      const rows: FixtureRow[] = Array.from({ length: draw(24) }, (_, i) => ({
+        family: `row-${i}`,
+        score: value(),
+        cost: value(),
+        time: value(),
+      }));
+      for (let i = rows.length - 1; i > 0; i--) {
+        const j = draw(i + 1);
+        [rows[i], rows[j]] = [rows[j], rows[i]];
+      }
+
+      const costScore = rows.map((r): Pair => [r.cost, negated(r.score)]);
+      const timeScore = rows.map((r): Pair => [r.time, negated(r.score)]);
+      const costTime = rows.map((r): Pair => [r.cost, r.time]);
+      const expected = rows.map((r, i) => ({
+        family: r.family,
+        frontierCost: nonDominated(costScore, i),
+        frontierTime: nonDominated(timeScore, i),
+        frontierCostTime: nonDominated(costTime, i),
+      }));
+
+      const aa = sectionWith(rows);
+      // Exercise AA's joined cost/time fallback as well as direct metrics.
+      for (let i = 0; i < rows.length; i++) {
+        if (i % 2 === 0) aa.rankings[i].costTask = null;
+        if (i % 3 === 0) aa.rankings[i].timeTaskSec = null;
+      }
+
+      const cai = rows.map(
+        (r): AaCaiRow => ({
+          modelName: r.family,
+          family: r.family,
+          creator: "Test",
+          effort: null,
+          version: "v1.5",
+          score: r.score,
+          cost: r.cost,
+          wallSec: r.time,
+          tokensPerTask: null,
+          harness: null,
+          deepSwe: null,
+          terminalBench: null,
+          sweAtlas: null,
+          snapshotDate: null,
+          sourceUrl: null,
+        }),
+      );
+
+      for (const [source, points] of [
+        ["AA", aaPoints(aa)],
+        ["CAI", aaCaiPoints(cai)],
+      ] as const) {
+        const flags = points.map(({ family, frontierCost, frontierTime, frontierCostTime }) => ({
+          family,
+          frontierCost,
+          frontierTime,
+          frontierCostTime,
+        }));
+        expect(flags, `${source} generated case ${sample}`).toEqual(expected);
+      }
+    }
   });
 });
 
@@ -619,7 +720,7 @@ describe("price overlay re-derivation (#8211)", () => {
     const raw = rawPayload();
     raw.batch = batch;
     raw.prices = prices;
-    return aaSectionFromSupabase(raw, CONFIG_SNIPPET, "2026-10-26T18:05:00Z")!;
+    return aaSectionFromPayload(raw, CONFIG_SNIPPET, "2026-10-26T18:05:00Z")!;
   };
 
   test("two cached batches with differing prices both report the refreshed overlay's rates", () => {
@@ -736,8 +837,8 @@ describe("aa-explorer manifest + render", () => {
   test("null and absent sections render honest banners, no tables", () => {
     const missing = renderAa(null, PROV);
     expect(missing).toContain("has not reached the dashboard yet");
-    const absent = renderAa(aaAbsent("Supabase query failed (HTTP 500)", "2026-10-26T18:05:00Z"), PROV);
-    expect(absent).toContain("Supabase query failed (HTTP 500)");
+    const absent = renderAa(aaAbsent("Turso store query failed (HTTP 500)", "2026-10-26T18:05:00Z"), PROV);
+    expect(absent).toContain("Turso store query failed (HTTP 500)");
     expect(absent).not.toContain("Rankings");
   });
 
@@ -778,6 +879,9 @@ let proc: Subprocess<"ignore", "pipe", "inherit"> | null = null;
 let port = 0;
 const tmp = mkdtempSync(join(tmpdir(), "agg-aa-"));
 
+// #10467: starting the aggregator subprocess can take longer than bun's
+// default 5 s hook budget on a loaded machine; give the hook room to
+// reach its own readiness deadline and fail with that message instead.
 beforeAll(async () => {
   port = 6100 + Math.floor(Math.random() * 700);
   const commentsFile = join(tmp, "comments.json");
@@ -810,7 +914,7 @@ beforeAll(async () => {
     await Bun.sleep(120);
   }
   expect(ready).toBe(true);
-});
+}, 60_000);
 
 afterAll(() => {
   proc?.kill();
@@ -1001,7 +1105,7 @@ describe("prototype-key lookups in aa maps (#3056)", () => {
       cost: "1",
       wallSec: "60",
     });
-    const section = aaSectionFromSupabase(
+    const section = aaSectionFromPayload(
       { ...rawPayload(), cai: [caiRow("constructor"), caiRow("__proto__"), caiRow("deepseek"), caiRow("acme")] },
       null,
       "2026-10-26T18:05:00Z",

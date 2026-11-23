@@ -299,3 +299,49 @@ test("POST /github fails closed naming the config when the webhook secret is uns
   }
   assert.equal(puts, 0);
 });
+
+function countingBody(chunk, count) {
+  const seen = { bytes: 0 };
+  let i = 0;
+  const body = new ReadableStream({
+    pull(c) {
+      if (i++ >= count) return c.close();
+      seen.bytes += chunk.byteLength;
+      c.enqueue(chunk);
+    },
+  }, { highWaterMark: 0 });
+  return { body, seen };
+}
+
+test("POST /github refuses a declared oversized body with 413 without reading it (#11335)", async () => {
+  let puts = 0;
+  const env = { GHB_EVENTS: { async put() { puts++; } }, GITHUB_WEBHOOK_SECRET: "whsec" };
+  const { body, seen } = countingBody(new Uint8Array(64), 1);
+  const req = new Request("https://worker.test/github", {
+    method: "POST",
+    headers: { "X-GitHub-Event": "push", "Content-Length": String(26 * 1024 * 1024) },
+    body,
+    duplex: "half",
+  });
+  const response = await worker.fetch(req, env);
+  assert.equal(response.status, 413);
+  assert.equal(seen.bytes, 0);
+  assert.equal(puts, 0);
+});
+
+test("POST /github stops reading a chunked oversized body at the 25 MB cap (#11335)", async () => {
+  let puts = 0;
+  const env = { GHB_EVENTS: { async put() { puts++; } }, GITHUB_WEBHOOK_SECRET: "whsec" };
+  const chunk = new Uint8Array(1024 * 1024);
+  const { body, seen } = countingBody(chunk, 30);
+  const req = new Request("https://worker.test/github", {
+    method: "POST",
+    headers: { "X-GitHub-Event": "push", "X-Hub-Signature-256": "sha256=00" },
+    body,
+    duplex: "half",
+  });
+  const response = await worker.fetch(req, env);
+  assert.equal(response.status, 413);
+  assert.ok(seen.bytes <= 25 * 1024 * 1024 + 2 * chunk.byteLength, `read ${seen.bytes} bytes`);
+  assert.equal(puts, 0);
+});

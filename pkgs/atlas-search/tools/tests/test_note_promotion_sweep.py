@@ -45,8 +45,9 @@ class PromotionFixture(unittest.TestCase):
         self.tmp.cleanup()
 
     def promote(self, **kw):
-        return sweep.promote(self.old, self.new, self.db,
-                             new_home_id="zettel/finding", now=NOW, **kw)
+        return sweep.promote(
+            self.old, self.new, self.db, new_home_id="zettel/finding", now=NOW, **kw
+        )
 
     def test_promotion_leaves_stub_record_and_unchanged_note(self):
         receipt = self.promote()
@@ -66,9 +67,19 @@ class PromotionFixture(unittest.TestCase):
         with sqlite3.connect(self.db) as conn:
             rows = conn.execute(
                 "SELECT old_path, new_path, new_home_id, content_sha256"
-                " FROM note_promotions").fetchall()
-        self.assertEqual(rows, [(str(self.old), str(self.new), "zettel/finding",
-                                 hashlib.sha256(NOTE.encode()).hexdigest())])
+                " FROM note_promotions"
+            ).fetchall()
+        self.assertEqual(
+            rows,
+            [
+                (
+                    str(self.old),
+                    str(self.new),
+                    "zettel/finding",
+                    hashlib.sha256(NOTE.encode()).hexdigest(),
+                )
+            ],
+        )
 
     def test_rerun_is_a_noop(self):
         self.promote()
@@ -87,14 +98,26 @@ class PromotionFixture(unittest.TestCase):
 
     def test_refuses_missing_old_note(self):
         with self.assertRaises(sweep.Refusal):
-            sweep.promote(self.old.with_name("nope.md"), self.new, self.db,
-                          now=NOW)
+            sweep.promote(self.old.with_name("nope.md"), self.new, self.db, now=NOW)
 
     def test_cli_promote_and_sweep_map(self):
         out = subprocess.run(
-            [sys.executable, str(TOOL), "promote", "--old", str(self.old),
-             "--new", str(self.new), "--db", str(self.db), "--now", NOW],
-            capture_output=True, text=True)
+            [
+                sys.executable,
+                str(TOOL),
+                "promote",
+                "--old",
+                str(self.old),
+                "--new",
+                str(self.new),
+                "--db",
+                str(self.db),
+                "--now",
+                NOW,
+            ],
+            capture_output=True,
+            text=True,
+        )
         self.assertEqual(out.returncode, 0, out.stderr)
         self.assertEqual(json.loads(out.stdout)["status"], "promoted")
 
@@ -102,12 +125,24 @@ class PromotionFixture(unittest.TestCase):
         old2.write_text(NOTE, encoding="utf-8")
         new2 = self.new.parent / "second.md"
         mapfile = Path(self.tmp.name) / "map.json"
-        mapfile.write_text(json.dumps(
-            [{"old": str(old2), "new": str(new2)}]), encoding="utf-8")
+        mapfile.write_text(
+            json.dumps([{"old": str(old2), "new": str(new2)}]), encoding="utf-8"
+        )
         out = subprocess.run(
-            [sys.executable, str(TOOL), "sweep", "--map", str(mapfile),
-             "--db", str(self.db), "--now", NOW],
-            capture_output=True, text=True)
+            [
+                sys.executable,
+                str(TOOL),
+                "sweep",
+                "--map",
+                str(mapfile),
+                "--db",
+                str(self.db),
+                "--now",
+                NOW,
+            ],
+            capture_output=True,
+            text=True,
+        )
         self.assertEqual(out.returncode, 0, out.stderr)
         self.assertEqual(json.loads(out.stdout)[0]["status"], "promoted")
         self.assertEqual(new2.read_bytes(), NOTE.encode())

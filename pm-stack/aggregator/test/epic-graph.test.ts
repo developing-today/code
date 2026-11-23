@@ -57,8 +57,43 @@ describe("epicSelector", () => {
     expect(entries.some((e) => e.ref === R(7))).toBe(false);
   });
 
+  test("deduplicates epics with memberships on multiple boards", () => {
+    const pool = [
+      item({ number: 1, title: "Epic", kind: "Epic", boardId: "devtoday-main" }),
+      item({ number: 1, title: "Epic", kind: "Epic", boardId: "forks-main" }),
+      item({ number: 2, epicRef: R(1) }),
+    ];
+
+    expect(epicSelector(pool).map((entry) => entry.ref)).toEqual([R(1)]);
+  });
+
   test("no epics in the pool yields an empty selector", () => {
     expect(epicSelector([item({ number: 1 }), item({ number: 2 })])).toEqual([]);
+  });
+
+  test("a satellite copy without Kind does not hide the canonical epic's graph", () => {
+    const pool = [
+      item({ number: 1, title: "Epic", kind: "Epic", boardId: "devtoday-main" }),
+      item({ number: 1, title: "Epic", kind: null, boardId: "forks-main" }),
+      item({ number: 2, epicRef: R(1) }),
+    ];
+    const graph = epicGraph(pool, R(1));
+    expect(graph.status).toBe("ok");
+    expect(graph.nodes.map((n) => n.ref)).toContain(R(2));
+  });
+
+  test("deduplicates member refs before applying the graph cap", () => {
+    const pool = [
+      item({ number: 1, title: "Epic", kind: "Epic" }),
+      item({ number: 2, epicRef: R(1), boardId: "devtoday-main" }),
+      item({ number: 2, epicRef: R(1), boardId: "forks-main" }),
+      item({ number: 3, epicRef: R(1) }),
+    ];
+    const graph = epicGraph(pool, R(1), 3);
+    expect(graph.status).toBe("ok");
+    expect(graph.memberCount).toBe(2);
+    expect(graph.nodes.map((node) => node.ref)).toEqual([R(1), R(2), R(3)]);
+    expect(graph.truncated).toBe(0);
   });
 
   test("invalid-only blockers do not inflate selector or graph blocked counts", () => {

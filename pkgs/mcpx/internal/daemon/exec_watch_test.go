@@ -174,7 +174,10 @@ func TestExecChangeRestartsThatPoolAndNoOther(t *testing.T) {
 	replaceProgram(t, fake, bin, []byte("new build"))
 	changed := time.Now()
 	var pidB2 int
-	waitFor(t, 2*time.Second, "pool b kept its child after its executable was replaced", func() bool {
+	// An upper bound, not the expected time: on an unloaded machine the
+	// restart lands within a few ticks, but a darwin nix build at load
+	// average ~40 missed 2s (dezren39/darwin-nix, 2026-11-18).
+	waitFor(t, 10*time.Second, "pool b kept its child after its executable was replaced", func() bool {
 		pidB2 = livePID(pb)
 		return pidB2 != 0 && pidB2 != pidB
 	})

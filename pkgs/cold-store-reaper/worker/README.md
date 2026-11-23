@@ -45,8 +45,12 @@ test/run-local-proof.mjs   npm test: packs a real bundle with the Python
                            reaper, decodes a member frame with src/decoder.js,
                            asserts the sha256 (the decoder that ships is the
                            decoder that is tested)
-dist/worker.js    esbuild bundle — this is what gets deployed
-wrangler.toml.example      binding reference (deploy is API-driven, see below)
+dist/worker.js    esbuild bundle — local build output; the deploy
+                  artifact is the flake package build (package.nix)
+wrangler.toml     binding configuration the deploy app stages with
+                  the built bundle (ids are not secrets)
+package.nix       the bundle as a flake package (lockfile-pinned deps)
+deploy.sh/.mjs    the deploy app: wrangler versions flow (see Deploy)
 ```
 
 ## Build
@@ -57,23 +61,32 @@ npm run build     # esbuild -> dist/worker.js (single self-contained file)
 npm test          # local frame-decode proof (needs python3 + the zstd CLI)
 ```
 
-Commit `package.json`, `package-lock.json`, `src/`, and the built `dist/`
-together — the operator deploys `dist/worker.js` as-is.
+Commit `package.json`, `package-lock.json`, and `src/` together. The
+committed `dist/` is a convenience copy for local inspection only —
+deploys upload the flake-built bundle, never the committed one.
 
-## Deploy (operator, via the Cloudflare REST API)
+## Deploy (the deploy app — issue #5767 phase 2)
 
-Wrangler does not deploy this in the current environment; the operator:
+```sh
+nix run .#cold-store-rehydrator-deploy            # upload + deploy HEAD
+nix run .#cold-store-rehydrator-deploy -- --dry-run
+nix run .#cold-store-rehydrator-deploy -- --deploy-version <id>   # rollback
+```
 
-1. Uploads `dist/worker.js` as the Worker script (PUT
-   `/accounts/<acct>/workers/scripts/cold-store-rehydrator` with the D1 and
-   DO bindings from `wrangler.toml.example` in the metadata), including the
-   DO migration `new_sqlite_classes = ["BundleFlight"]` on first deploy.
-2. Sets the secrets as `secret_text` bindings: `REHYDRATOR_API_KEY`
-   (operator-chosen), `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`,
-   `GOOGLE_REFRESH_TOKEN` (values from Bitwarden — see the reaper README's
-   credential notes; the Google pair/refresh token are the same grant the
-   reaper uses).
-3. Enables the workers.dev subdomain for the script, or attaches a route.
+The deploy app (deploy.sh + deploy.mjs, registered as the
+`cold-store-rehydrator` target of the `deploy` CLI) replaces the old
+manual REST PUT of the committed bundle: it stages the flake-built
+bundle (`nix build .#cold-store-rehydrator`) with `wrangler.toml`,
+uploads it as a git-SHA-tagged version through the wrangler versions
+flow, creates the deployment at 100%, and (re)sets the Worker's
+secrets from Bitwarden by name — `REHYDRATOR_API_KEY`
+(`cold-store.rehydrator-api-key`), `GOOGLE_CLIENT_ID`,
+`GOOGLE_CLIENT_SECRET`, `GOOGLE_REFRESH_TOKEN`
+(`google.cold-store-reaper.client-id` / `.client-secret` /
+`.refresh-token`; the Google pair/refresh token are the same grant
+the reaper uses). The D1/DO bindings and the `BundleFlight` migration
+come from `wrangler.toml`. The manual REST PUT remains possible in an
+emergency but is no longer the deploy path.
 
 Until `sync-manifest` has run at least once against a manifest containing
 verified bundles, every `/fetch/<sha>` is a well-formed 404.

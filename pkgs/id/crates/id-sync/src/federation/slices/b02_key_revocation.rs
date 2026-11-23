@@ -15,8 +15,10 @@
 //! subject: records admitted at or after the effective start are
 //! `quarantined` (withheld from release pending explicit
 //! revalidation); records admitted before it are `flagged` (still
-//! releasable, but marked historically `indeterminate`). Quarantine is
-//! sticky: only explicit revalidation — an independent good-through
+//! releasable, but marked historically `indeterminate`). A later
+//! revocation whose effective start covers a flagged record's admission
+//! escalates it to `quarantined`, so the widest suspicion wins; nothing
+//! ever de-escalates. Quarantine is sticky: only explicit revalidation — an independent good-through
 //! witness or a fresh attestation signature under a currently
 //! unrevoked key — clears it. Signed bytes and admission-time evidence
 //! are preserved untouched by every transition. Issuer wall-clock
@@ -167,7 +169,9 @@ pub enum AffectCause {
 }
 
 /// Lifecycle status of one previously accepted record. Transitions go
-/// one way: `Accepted -> {Flagged, Quarantined} -> Revalidated`.
+/// one way: `Accepted -> Flagged -> Quarantined -> Revalidated`, where
+/// `Accepted` may go straight to `Quarantined` and either suspect state
+/// straight to `Revalidated`.
 /// Bytes and admission evidence never change.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RecordStatus {
@@ -477,9 +481,11 @@ impl RevocationRegistry {
     /// Record an emergency revocation/disable and sweep previously
     /// accepted records for its subject: records admitted at or after
     /// the effective start are `quarantined`; records admitted before
-    /// it are `flagged`. Records of other subjects, and records
-    /// already quarantined, flagged, or revalidated, are untouched —
-    /// quarantine is sticky and only explicit revalidation exits it.
+    /// it are `flagged`. A flagged record of the subject admitted at or
+    /// after the start is escalated to `quarantined`. Records of other
+    /// subjects, and records already quarantined or revalidated, are
+    /// untouched — quarantine is sticky and only explicit revalidation
+    /// exits it.
     /// Returns the affected record ids in admission order.
     pub fn apply_revocation(
         &mut self,
@@ -500,13 +506,23 @@ impl RevocationRegistry {
         }
         let recorded_at = record.recorded_at;
         let from = record.effective_from;
+        let until = record.effective_until;
         let subject = record.subject.clone();
         self.revocations.push(record);
         let mut affected = Vec::new();
         for rec in &mut self.records {
-            if !matches!(rec.status, RecordStatus::Accepted)
-                || !subject_matches(&subject, &rec.key, &rec.peer_id)
-            {
+            if !subject_matches(&subject, &rec.key, &rec.peer_id) {
+                continue;
+            }
+            // A bounded interval ends at its exclusive `until`: a record
+            // admitted then or later was admitted after the revocation
+            // stopped applying, so the sweep leaves it alone.
+            if until.is_some_and(|until| rec.admitted_at >= until) {
+                continue;
+            }
+            let escalate =
+                matches!(rec.status, RecordStatus::Flagged { .. }) && rec.admitted_at >= from;
+            if !matches!(rec.status, RecordStatus::Accepted) && !escalate {
                 continue;
             }
             rec.status = if rec.admitted_at >= from {

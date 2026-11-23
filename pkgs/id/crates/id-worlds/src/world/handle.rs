@@ -321,6 +321,7 @@ impl WorldHandle {
             stale_wants_at_open,
             acting: None,
             acting_session: None,
+            acting_device_input: None,
             device_manifest,
             location_consent: crate::world_caps::LocationConsent::ConsentRequired,
             location_fix: None,
@@ -1381,6 +1382,24 @@ impl WorldHandle {
             .context("world actor dropped directory apply response")?
     }
 
+    /// Whether this world's directory holds `account` — `None` when it
+    /// does not, otherwise whether the account is verified (#8538). This
+    /// is the directory capability authorization consults. Fails on a
+    /// read-only replica, which never applies a local directory entry.
+    pub async fn directory_account(&self, account: impl Into<String>) -> Result<Option<bool>> {
+        let (reply, response) = oneshot::channel();
+        self.commands
+            .send(WorldCommand::DirectoryAccount {
+                account: account.into(),
+                reply,
+            })
+            .await
+            .map_err(|_| anyhow::anyhow!("world actor is closed"))?;
+        response
+            .await
+            .context("world actor dropped directory account response")?
+    }
+
     /// Revoke an active capability and everything delegated from it.
     pub async fn revoke(&self, participant_id: u64) -> Result<bool> {
         self.revoke_by(participant_id, None).await
@@ -1446,7 +1465,7 @@ impl WorldHandle {
 
     /// Submit bounded opaque game input.
     pub async fn input(&self, token: JoinCapability, input: Vec<u8>) -> Result<WorldEvent> {
-        self.input_with_session(token, input, None).await
+        self.input_with_session(token, input, None, None).await
     }
 
     /// Submit bounded opaque game input from a live session connection.
@@ -1455,8 +1474,9 @@ impl WorldHandle {
         token: JoinCapability,
         input: Vec<u8>,
         session_id: SessionId,
+        device_input: Option<serde_json::Value>,
     ) -> Result<WorldEvent> {
-        self.input_with_session(token, input, Some(session_id))
+        self.input_with_session(token, input, Some(session_id), device_input)
             .await
     }
 
@@ -1465,6 +1485,7 @@ impl WorldHandle {
         token: JoinCapability,
         input: Vec<u8>,
         session_id: Option<SessionId>,
+        device_input: Option<serde_json::Value>,
     ) -> Result<WorldEvent> {
         let (reply, response) = oneshot::channel();
         self.commands
@@ -1472,6 +1493,7 @@ impl WorldHandle {
                 token,
                 input,
                 session_id,
+                device_input,
                 signed_move: None,
                 reply,
             })
@@ -1518,6 +1540,7 @@ impl WorldHandle {
                 token,
                 input,
                 session_id: None,
+                device_input: None,
                 signed_move: Some(signed_move),
                 reply,
             })

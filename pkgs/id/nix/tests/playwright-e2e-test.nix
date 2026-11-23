@@ -156,10 +156,75 @@ in
     # (nightly 40457980141: curl exit code 7 ~53s after VM start).
     # wait_until_succeeds retries until success or its timeout, covering
     # virtual-network/firewall bring-up skew.
-    chromium_client.wait_until_succeeds("curl -sf http://chromium_server:4173/")
-    chromium_client.wait_until_succeeds("curl -sf http://chromium_server:4175/")
-    firefox_client.wait_until_succeeds("curl -sf http://firefox_server:4174/")
-    firefox_client.wait_until_succeeds("curl -sf http://firefox_server:4176/")
+    #
+    # Each probe is a named, bounded wait (#1374; the #4913 legibility
+    # pattern from integration-test.nix): the target and deadline are
+    # logged before waiting, and a timeout fails with the server unit's
+    # status and journal tail attached, instead of the driver's bare
+    # "action timed out after N seconds" — the 40457980141 failure could
+    # only be diagnosed from pkarr/DNS noise in the same window, because
+    # the failure itself carried none of the server's state.
+    # The deadline is 120 s: the server-side unit/port waits above have
+    # already passed, so a probe only covers cross-VM network/firewall
+    # bring-up skew (the observed refusal fired ~53 s after VM start).
+    # A failed probe aborts the test, so one dead probe costs one
+    # deadline — not the driver's implicit 900 s default, which would
+    # eat most of this test's 1200 s globalTimeout before any
+    # Playwright suite ran.
+    READINESS_PROBE_DEADLINE_SECONDS = 120
+
+    def wait_for_cross_vm_server(client, server, target, unit):
+        print(
+            f"[id-playwright-e2e] waiting on {target} "
+            f"(probe from {client.name}, unit {unit} on {server.name}); "
+            f"deadline {READINESS_PROBE_DEADLINE_SECONDS}s",
+            flush=True,
+        )
+        try:
+            client.wait_until_succeeds(
+                f"curl -sf {target}",
+                timeout=READINESS_PROBE_DEADLINE_SECONDS,
+            )
+        except Exception:
+            unit_status = server.execute(
+                f"systemctl status {unit} --no-pager", check_return=False
+            )[1]
+            unit_journal = server.execute(
+                f"journalctl -u {unit} --no-pager -n 50", check_return=False
+            )[1]
+            raise AssertionError(
+                f"[id-playwright-e2e] {target} not reachable from "
+                f"{client.name} after {READINESS_PROBE_DEADLINE_SECONDS}s\n"
+                f"--- systemctl status {unit} (on {server.name}) ---\n"
+                f"{unit_status}\n"
+                f"--- journalctl -u {unit} -n 50 (on {server.name}) ---\n"
+                f"{unit_journal}"
+            )
+
+    wait_for_cross_vm_server(
+        chromium_client,
+        chromium_server,
+        "http://chromium_server:4173/",
+        "id-primary.service",
+    )
+    wait_for_cross_vm_server(
+        chromium_client,
+        chromium_server,
+        "http://chromium_server:4175/",
+        "id-secondary.service",
+    )
+    wait_for_cross_vm_server(
+        firefox_client,
+        firefox_server,
+        "http://firefox_server:4174/",
+        "id-primary.service",
+    )
+    wait_for_cross_vm_server(
+        firefox_client,
+        firefox_server,
+        "http://firefox_server:4176/",
+        "id-secondary.service",
+    )
 
     # ── Helper: copy test runner to writable dir and run Playwright ────────
     # The e2eTestRunner is a read-only nix store path; Playwright needs to

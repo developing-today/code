@@ -582,6 +582,85 @@ else
   echo "PASS symlink-refused"
 fi
 
+# Case 9 (#11836): the atomic replace must carry the original file's
+# POSIX access ACL over to the new inode, and must not pass off entries
+# inherited from a directory default ACL as the original's. ACLs are
+# set and read as the raw system.posix_acl_access xattr (numeric ids),
+# so no acl tooling is needed; on a platform or filesystem without
+# POSIX ACLs the case reports an explicit SKIP.
+acl() {
+  python3 - "$@" <<'PY'
+import os, struct, sys
+U = 0xFFFFFFFF
+TAGS = {'u': 1, 'U': 2, 'g': 4, 'G': 8, 'm': 0x10, 'o': 0x20}
+def pack(spec):
+    out = [struct.pack('<I', 2)]
+    for item in spec.split(','):
+        tag, ident, perm = item.split(':')
+        out.append(struct.pack('<HHI', TAGS[tag], int(perm, 8), int(ident) if ident else U))
+    return b''.join(out)
+op, path = sys.argv[1], sys.argv[2]
+name = 'system.posix_acl_default' if op == 'set-default' else 'system.posix_acl_access'
+try:
+    if op in ('set', 'set-default'):
+        os.setxattr(path, name, pack(sys.argv[3]))
+    else:
+        try:
+            print(os.getxattr(path, name).hex())
+        except OSError as e:
+            if e.errno == getattr(__import__('errno'), 'ENODATA', -1):
+                print('none')
+            else:
+                raise
+except (OSError, AttributeError) as e:
+    print(f'unsupported: {e}', file=sys.stderr)
+    sys.exit(77)
+PY
+}
+acl_dir="$tmp/acl"
+mkdir -p "$acl_dir"
+printf '{\n  "plugin": ["opencode-plugin-x"]\n}\n' >"$acl_dir/with-acl.jsonc"
+chmod 0640 "$acl_dir/with-acl.jsonc"
+if ! acl set "$acl_dir/with-acl.jsonc" 'u::6,U:65533:4,g::0,m::4,o::0' 2>/dev/null ||
+  ! acl set-default "$acl_dir" 'u::6,U:65534:4,g::0,m::4,o::0' 2>/dev/null; then
+  echo "SKIP acl-preserved: no POSIX ACL support on this platform or filesystem"
+  echo "SKIP acl-not-inherited: no POSIX ACL support on this platform or filesystem"
+else
+  acl_before="$(acl get "$acl_dir/with-acl.jsonc")"
+  OPENCODE_CONFIG="$acl_dir/with-acl.jsonc" bash "$script" 2>/dev/null
+  acl_exit=$?
+  acl_after="$(acl get "$acl_dir/with-acl.jsonc")"
+  acl_mode="$(stat -c %a "$acl_dir/with-acl.jsonc")"
+  acl_doc="$(parsed_doc "$acl_dir/with-acl.jsonc")"
+  if [ "$acl_exit" -ne 0 ] || [ "$acl_before" = none ] ||
+    [ "$acl_after" != "$acl_before" ] || [ "$acl_mode" != 640 ] ||
+    [ "$acl_doc" != '{"plugins": ["opencode-plugin-x"]}' ]; then
+    echo "FAIL acl-preserved: exit=$acl_exit mode=$acl_mode acl before=$acl_before after=$acl_after"
+    failures=$((failures + 1))
+  else
+    echo "PASS acl-preserved"
+  fi
+
+  # The original has no extended ACL; the directory's default ACL must
+  # not appear on the repaired file as if it were the original's.
+  printf '{\n  "plugin": ["opencode-plugin-x"]\n}\n' >"$acl_dir/no-acl.jsonc.src"
+  cp "$acl_dir/no-acl.jsonc.src" "$tmp/no-acl.jsonc"
+  chmod 0600 "$tmp/no-acl.jsonc"
+  mv "$tmp/no-acl.jsonc" "$acl_dir/no-acl.jsonc"
+  noacl_before="$(acl get "$acl_dir/no-acl.jsonc")"
+  OPENCODE_CONFIG="$acl_dir/no-acl.jsonc" bash "$script" 2>/dev/null
+  noacl_exit=$?
+  noacl_after="$(acl get "$acl_dir/no-acl.jsonc")"
+  noacl_mode="$(stat -c %a "$acl_dir/no-acl.jsonc")"
+  if [ "$noacl_exit" -ne 0 ] || [ "$noacl_before" != none ] ||
+    [ "$noacl_after" != none ] || [ "$noacl_mode" != 600 ]; then
+    echo "FAIL acl-not-inherited: exit=$noacl_exit mode=$noacl_mode acl before=$noacl_before after=$noacl_after"
+    failures=$((failures + 1))
+  else
+    echo "PASS acl-not-inherited"
+  fi
+fi
+
 if [ "$failures" -ne 0 ]; then
   echo "normalize_test: $failures failure(s)"
   exit 1

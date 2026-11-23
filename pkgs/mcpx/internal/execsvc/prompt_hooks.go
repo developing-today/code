@@ -124,8 +124,10 @@ func promptValues(hctx hookContext, ropts runner.Options, res *Result) map[strin
 	} else {
 		put("diagnostic", nil)
 	}
-	calls := hctx.Calls
-	if calls == nil {
+	var calls any = hctx.Calls
+	if hctx.CallsError != "" {
+		calls = map[string]any{"available": false, "error": hctx.CallsError}
+	} else if hctx.Calls == nil {
 		calls = []CallInfo{}
 	}
 	put("calls", calls)

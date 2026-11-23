@@ -1,0 +1,24 @@
+[package]
+name = "fleet-bridge"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "The fleet bridge domain: send and receive through the message bridge's fleet mailboxes — central commands one agent, a group or all; agents read, answer and ack."
+
+[dependencies]
+fleet-config = { workspace = true }
+fleet-secrets = { workspace = true }
+# preserve_order: the bridge's JSON key order is the output shape.
+serde_json = { version = "1", features = ["preserve_order"] }
+# HMAC-SHA256 for the derived fleet token (no extra hmac crate).
+sha2 = { workspace = true }
+# Same pin as the gh domain: rustls with the platform root store, so a
+# TLS-intercepting egress proxy's CA (the sandbox) validates.
+ureq = { version = "3", default-features = false, features = [
+  "rustls",
+  "platform-verifier",
+] }
+
+[dev-dependencies]
+tiny_http = "0.12"

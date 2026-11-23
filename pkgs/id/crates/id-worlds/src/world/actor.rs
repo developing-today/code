@@ -80,6 +80,7 @@ impl WorldCommand {
             Self::DelegateToFriend { .. } => "DelegateToFriend",
             Self::Directory { .. } => "Directory",
             Self::ApplyDirectory { .. } => "ApplyDirectory",
+            Self::DirectoryAccount { .. } => "DirectoryAccount",
             Self::Revoke { .. } => "Revoke",
             Self::RevokeAuthorized { .. } => "RevokeAuthorized",
             Self::ParticipantId { .. } => "ParticipantId",
@@ -173,6 +174,14 @@ pub(crate) enum WorldCommand {
         entry: crate::directory::DirectoryEntry,
         reply: oneshot::Sender<Result<()>>,
     },
+    /// Whether the world's directory holds `account`, and if so
+    /// whether it is verified (#8538). Refused on a replica, like
+    /// `ApplyDirectory`: the answer exists so a caller can apply an
+    /// entry next, and a replica never applies one.
+    DirectoryAccount {
+        account: String,
+        reply: oneshot::Sender<Result<Option<bool>>>,
+    },
     Revoke {
         participant_id: u64,
         /// The moderator participant who ordered the revoke, for the audit
@@ -214,6 +223,7 @@ pub(crate) enum WorldCommand {
         token: JoinCapability,
         input: Vec<u8>,
         session_id: Option<SessionId>,
+        device_input: Option<serde_json::Value>,
         /// The player-signed move event bytes for this input (#2814), when
         /// the participant plays signed. `None` is the unsigned path,
         /// which refuses participants with a bound author key.
@@ -641,6 +651,10 @@ pub(crate) struct WorldActor {
     /// device re-enumeration. `None` when the host cannot describe
     /// its device — `device.info` then refuses with `unknown_cap`.
     pub(crate) device_manifest: Option<crate::world_caps::DeviceManifest>,
+    /// Input affordances of the session whose input is currently being
+    /// processed. Unlike `device_manifest`, this describes the presenter,
+    /// not the hosting device, and is only used for this actor turn.
+    pub(crate) acting_device_input: Option<serde_json::Value>,
     /// The host's current location consent (#2341 slice 2): the seam a
     /// host fills from its permission prompt / OS state. The default
     /// host records no consent, so sensor caps refuse
@@ -795,6 +809,7 @@ impl WorldActor {
                 command.as_ref(),
                 Some(WorldCommand::Input {
                     signed_move: None,
+                    device_input: None,
                     ..
                 })
             ) {
@@ -808,6 +823,7 @@ impl WorldActor {
                                 next,
                                 WorldCommand::Input {
                                     signed_move: None,
+                                    device_input: None,
                                     ..
                                 }
                             ) =>
@@ -848,6 +864,7 @@ impl WorldActor {
             self.drain_provider_completions().await;
             self.acting = None;
             self.acting_session = None;
+            self.acting_device_input = None;
         }
     }
 
@@ -1126,6 +1143,15 @@ impl WorldActor {
                     .and_then(|()| self.core.directory_mut().apply(&entry));
                 let _ = reply.send(result);
             }
+            WorldCommand::DirectoryAccount { account, reply } => {
+                let result = self.check_not_replica().map(|()| {
+                    let directory = self.core.directory();
+                    directory
+                        .account(&account)
+                        .map(|_| directory.is_verified(&account))
+                });
+                let _ = reply.send(result);
+            }
             WorldCommand::Revoke {
                 participant_id,
                 by,
@@ -1150,12 +1176,17 @@ impl WorldActor {
                     let _ = reply.send(false);
                     return;
                 }
-                let revoked = self.core.revoke_tree(participant_id);
+                let revoked_at = Some(self.core.clock().now_ms());
+                let revoked = self.core.revoke_tree_at(participant_id, by, revoked_at);
                 let was_active = !revoked.is_empty();
                 if was_active {
                     // Fail-closed: surface a persist failure rather than
                     // reporting an audited success (design #835 phase 2).
-                    let persisted = self.persist(JournalEntry::Revoked { participant_id, by });
+                    let persisted = self.persist(JournalEntry::Revoked {
+                        participant_id,
+                        by,
+                        revoked_at,
+                    });
                     for id in revoked {
                         let _ = self.revocation_sender.send(id);
                     }
@@ -1193,7 +1224,10 @@ impl WorldActor {
                             );
                             Ok(false)
                         } else {
-                            let revoked = self.core.revoke_tree(participant_id);
+                            let revoked_at = Some(self.core.clock().now_ms());
+                            let revoked =
+                                self.core
+                                    .revoke_tree_at(participant_id, Some(by), revoked_at);
                             let was_active = !revoked.is_empty();
                             if was_active {
                                 // Fail-closed: the in-memory revocation and
@@ -1204,6 +1238,7 @@ impl WorldActor {
                                 let persisted = self.persist(JournalEntry::Revoked {
                                     participant_id,
                                     by: Some(by),
+                                    revoked_at,
                                 });
                                 for id in revoked {
                                     let _ = self.revocation_sender.send(id);
@@ -1306,6 +1341,7 @@ impl WorldActor {
                 token,
                 input,
                 session_id,
+                device_input,
                 signed_move,
                 reply,
             } => {
@@ -1332,6 +1368,7 @@ impl WorldActor {
                     Ok((candidate, signed)) if self.program_healthy => {
                         self.acting = Some(candidate.participant_id);
                         self.acting_session = session_id;
+                        self.acting_device_input = device_input;
                         match self
                             .program
                             .update(&candidate)
@@ -2203,7 +2240,10 @@ impl WorldActor {
             }
             WorldCommand::Metrics { reply } => {
                 let sessions = self.presence.values().sum::<usize>() as u64;
-                let metrics = self.metrics.snapshot(sessions);
+                let participants = self.presence.values().filter(|n| **n > 0).count() as u64;
+                let metrics = self
+                    .metrics
+                    .snapshot_with_participants(sessions, participants);
                 // No audit record: metrics are readable by any joined
                 // participant holding a capability (the session layer's
                 // Metrics frame), so recording the read as admin would
@@ -2524,6 +2564,8 @@ mod replication_feed_tests {
                 execution_profile: None,
                 caps_ceiling: None,
                 schedules: None,
+                kv: None,
+                blobs: None,
                 transfers: None,
                 lease: None,
                 snapshot: "x".repeat(super::super::replication::MAX_REPLICATION_PAYLOAD_BYTES),
@@ -2566,6 +2608,8 @@ mod replication_feed_tests {
             execution_profile: None,
             caps_ceiling: None,
             schedules: None,
+            kv: None,
+            blobs: None,
             transfers: None,
             lease: None,
             snapshot,
@@ -2579,6 +2623,7 @@ mod replication_feed_tests {
         use proptest::prelude::*;
         prop_oneof![
             any::<u64>().prop_map(|participant_id| JournalEntry::Revoked {
+                revoked_at: None,
                 participant_id,
                 by: None,
             }),
@@ -2614,6 +2659,7 @@ mod replication_feed_tests {
         // the journal TOTAL still ranges past it via the entry count.
         prop_oneof![
             any::<u64>().prop_map(|participant_id| JournalEntry::Revoked {
+                revoked_at: None,
                 participant_id,
                 by: None,
             }),
@@ -3240,7 +3286,7 @@ mod replication_feed_tests {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod device_info_tests {
     use super::*;
-    use crate::world_caps::{CapError, DeviceManifest};
+    use crate::world_caps::{CapError, DeviceManifest, Request};
 
     struct DeviceInfoProgram;
 
@@ -3407,6 +3453,7 @@ mod device_info_tests {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod form_tests {
     use super::*;
+    use crate::world_caps::{CapError, Request};
     use id_core::world_presentation::{
         FormAction, FormActionKind, FormField, FormResult, FormSurface,
     };
@@ -3481,6 +3528,7 @@ mod form_tests {
             audio: serde_json::json!({}),
             network: serde_json::json!({}),
         });
+        actor.acting_device_input = None;
         (actor, events)
     }
 
@@ -3550,6 +3598,9 @@ mod form_tests {
         let (mut actor, _) = form_actor();
         let headless = crate::world::WorldHandle::host_device_manifest();
         actor.device_manifest = Some(headless.clone());
+        actor.acting_device_input = Some(serde_json::json!({
+            "keys": 128, "text_entry": "keyboard", "encoder": false, "pointer": true
+        }));
         let form = form(vec![FormField::Text {
             id: "name".to_owned(),
             label: "Name".to_owned(),
@@ -3563,6 +3614,27 @@ mod form_tests {
                 "keys": 128, "text_entry": "keyboard", "encoder": false, "pointer": false
             }))
             .is_ok()
+        );
+    }
+
+    #[test]
+    fn presenter_without_text_entry_is_refused_even_when_host_can_type() {
+        let (mut actor, _) = form_actor();
+        actor.acting_device_input = Some(serde_json::json!({
+            "keys": 0, "text_entry": "none", "encoder": false, "pointer": false
+        }));
+        let text_form = form(vec![FormField::Text {
+            id: "name".to_owned(),
+            label: "Name".to_owned(),
+            required: true,
+            max_length: 32,
+        }]);
+        assert_eq!(
+            present(&mut actor, &text_form)
+                .unwrap_err()
+                .reason()
+                .map(String::as_str),
+            Some("text_entry_unavailable")
         );
     }
 
@@ -4060,6 +4132,7 @@ impl WorldActor {
             stale_wants_at_open: BTreeSet::new(),
             acting: None,
             acting_session: None,
+            acting_device_input: None,
             device_manifest: None,
             location_consent: crate::world_caps::LocationConsent::ConsentRequired,
             location_fix: None,

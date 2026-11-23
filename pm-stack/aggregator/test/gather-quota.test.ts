@@ -107,7 +107,7 @@ test("an ok-but-null provider result retains the last good quota row", async () 
         QUOTA_SUBCOMMAND_TIMEOUT_MS: "5000",
         OPENDESIGN_RENEWAL_DISABLED: "1",
         META_RENEWAL_DISABLED: "1",
-        SUPABASE_QUOTA_SINK: "0",
+        TURSO_QUOTA_SINK: "0",
         OPENCHAMBER_LIB_DIR: libDir,
       },
     });
@@ -231,7 +231,6 @@ test("a lapsed Meta session retains the last good windows and reports lapsed, no
         QUOTA_SUBCOMMAND_TIMEOUT_MS: "5000",
         OPENDESIGN_RENEWAL_DISABLED: "1",
         META_RENEWAL_DISABLED: "1",
-        SUPABASE_QUOTA_SINK: "0",
         TURSO_QUOTA_SINK: "0",
       },
     });
@@ -346,7 +345,6 @@ test("a lapsed Go workspace survives ingest instead of being replaced by last-kn
         QUOTA_SUBCOMMAND_TIMEOUT_MS: "5000",
         OPENDESIGN_RENEWAL_DISABLED: "1",
         META_RENEWAL_DISABLED: "1",
-        SUPABASE_QUOTA_SINK: "0",
         TURSO_QUOTA_SINK: "0",
       },
     });
@@ -474,7 +472,6 @@ test("a lapsed Go workspace survives retention when a sibling workspace fails", 
         QUOTA_SUBCOMMAND_TIMEOUT_MS: "5000",
         OPENDESIGN_RENEWAL_DISABLED: "1",
         META_RENEWAL_DISABLED: "1",
-        SUPABASE_QUOTA_SINK: "0",
         TURSO_QUOTA_SINK: "0",
       },
     });
@@ -562,7 +559,10 @@ test("an uninstalled lib checkout dependency is installed and the OpenDesign kee
     );
     await writeFile(join(checkoutRoot, ".gitignore"), "node_modules/\n", "utf8");
     const git = (...args: string[]) => {
-      const r = spawnSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", ...args], { cwd: checkoutRoot, encoding: "utf8" });
+      const r = spawnSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", ...args], {
+        cwd: checkoutRoot,
+        encoding: "utf8",
+      });
       if (r.status !== 0) throw new Error(`git ${args.join(" ")} failed: ${r.stderr}`);
     };
     git("init", "-q", "-b", "main");
@@ -598,7 +598,7 @@ test("an uninstalled lib checkout dependency is installed and the OpenDesign kee
         QUOTA_SUBCOMMAND: process.execPath + " " + subcommandPath,
         QUOTA_SUBCOMMAND_TIMEOUT_MS: "5000",
         META_RENEWAL_DISABLED: "1",
-        SUPABASE_QUOTA_SINK: "0",
+        TURSO_QUOTA_SINK: "0",
         OPENCHAMBER_LIB_DIR: libDir,
         OPENCHAMBER_LIB_INSTALL_CMD: process.execPath + " " + installerPath,
         OPENDESIGN_RENEWAL_STATE_PATH: renewalStatePath,
@@ -703,7 +703,7 @@ test("a folded OpenAI answer under the pre-rename 'codex' spelling keys its hear
         QUOTA_SUBCOMMAND_TIMEOUT_MS: "5000",
         OPENDESIGN_RENEWAL_DISABLED: "1",
         META_RENEWAL_DISABLED: "1",
-        SUPABASE_QUOTA_SINK: "0",
+        TURSO_QUOTA_SINK: "0",
         OPENCHAMBER_LIB_DIR: join(dir, "fake-openchamber-lib"),
       },
     });
@@ -724,6 +724,286 @@ test("a folded OpenAI answer under the pre-rename 'codex' spelling keys its hear
     // The folded entries themselves file under the two doors, as before.
     const folded = output.providers.filter((e: { providerId: string }) => e.providerId === "_openai");
     expect(folded.map((e: { serviceId: string }) => e.serviceId).sort()).toEqual(["_openai.alt", "_openai.main"]);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a Claude 429 that clears within the tick lands a fresh row, not a retained one (#8725)", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gather-quota-claude-retry-"));
+
+  try {
+    const currentPath = join(dir, "quota-current.json");
+    const heartbeatPath = join(dir, "quota-gatherer-heartbeat.json");
+    const statePath = join(dir, "quota-gatherer-state.json");
+    const snapshotsDir = join(dir, "snapshots");
+    const outboxPath = join(dir, "snapshots.outbox.jsonl");
+    const subcommandPath = join(dir, "quota-subcommand.mjs");
+    const counterPath = join(dir, "stub-counter.txt");
+
+    // The stub 429s the Claude leg on the listing and the explicit
+    // ask (invocations 0 and 1); the gatherer's within-tick retry
+    // (invocation 2) gets a healthy read.
+    const stub = [
+      'import { readFileSync, writeFileSync } from "node:fs";',
+      "let n = 0;",
+      'try { n = parseInt(readFileSync(process.env.STUB_COUNTER_PATH, "utf8"), 10) || 0; } catch {}',
+      "writeFileSync(process.env.STUB_COUNTER_PATH, String(n + 1));",
+      "const now = Date.now();",
+      'const ok = { providerId: "_claude", providerName: "Claude", ok: true, configured: true, fetchedAt: now, usage: { windows: { "5h": { usedPercent: 42, windowSeconds: 18000, resetAt: now + 3600000 } } } };',
+      'const limited = { providerId: "_claude", providerName: "Claude", ok: false, configured: true, fetchedAt: now, error: "Rate limited. Retrying soon." };',
+      'const result = process.env.STUB_MODE === "always429" ? limited : n >= 2 ? ok : limited;',
+      "console.log(JSON.stringify([result]));",
+      "",
+    ].join("\n");
+    await writeFile(subcommandPath, stub, "utf8");
+
+    const result = spawnSync(process.execPath, [GATHERER_SCRIPT], {
+      cwd: dir,
+      encoding: "utf8",
+      timeout: 30_000,
+      env: {
+        PATH: process.env.PATH ?? "",
+        HOME: dir,
+        QUOTA_CURRENT_PATH: currentPath,
+        QUOTA_HEARTBEAT_PATH: heartbeatPath,
+        QUOTA_GATHERER_STATE_PATH: statePath,
+        QUOTA_SNAPSHOTS_DIR: snapshotsDir,
+        USAGE_SNAPSHOT_OUTBOX_PATH: outboxPath,
+        QUOTA_SUBCOMMAND: `${process.execPath} ${subcommandPath}`,
+        QUOTA_SUBCOMMAND_TIMEOUT_MS: "5000",
+        QUOTA_CLAUDE_RETRY_BASE_MS: "1",
+        STUB_COUNTER_PATH: counterPath,
+        STUB_MODE: "clear429",
+        OPENDESIGN_RENEWAL_DISABLED: "1",
+        META_RENEWAL_DISABLED: "1",
+        TURSO_QUOTA_SINK: "0",
+        OPENCHAMBER_LIB_DIR: join(dir, "fake-openchamber-lib"),
+      },
+    });
+
+    if (result.error || result.status !== 0) {
+      throw new Error(`gatherer failed: ${result.error?.message ?? result.stderr}\n${result.stdout}`);
+    }
+    expect(result.stdout).toContain("_claude rate-limited - retry 1/3");
+    expect(result.stdout).toContain("recovered=true");
+
+    const output = JSON.parse(await readFile(currentPath, "utf8"));
+    const claude = output.providers.find((entry: { providerId: string }) => entry.providerId === "_claude");
+    expect(claude).toMatchObject({ providerId: "_claude", state: "ok" });
+    expect(claude.retainedFromFailedTick).toBeUndefined();
+    expect(claude.windows[0].pctOfLimit).toBe(42);
+    expect(output.heartbeat.perProvider._claude).toMatchObject({ state: "ok" });
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a persistent Claude 429 retains the last good row marked rate_limited, never session-expired (#8725)", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gather-quota-claude-429-retained-"));
+
+  try {
+    const currentPath = join(dir, "quota-current.json");
+    const heartbeatPath = join(dir, "quota-gatherer-heartbeat.json");
+    const statePath = join(dir, "quota-gatherer-state.json");
+    const snapshotsDir = join(dir, "snapshots");
+    const outboxPath = join(dir, "snapshots.outbox.jsonl");
+    const subcommandPath = join(dir, "quota-subcommand.mjs");
+    const counterPath = join(dir, "stub-counter.txt");
+    const measuredAt = "2026-11-17T10:00:00.000Z";
+    const lastGood = {
+      providerId: "_claude",
+      providerName: "Claude",
+      serviceId: "anthropic:claude-pro",
+      state: "ok",
+      measuredAt,
+      source: "opencode-quota",
+      windows: [
+        {
+          name: "5h",
+          value: 42,
+          pctOfLimit: 42,
+          valueLabel: null,
+          windowSeconds: 18000,
+          resetsAt: "2026-11-17T15:00:00.000Z",
+          measuredAt,
+          source: "opencode-quota",
+          state: "ok",
+        },
+      ],
+    };
+
+    await writeFile(
+      currentPath,
+      `${JSON.stringify(
+        {
+          version: 1,
+          generatedAt: measuredAt,
+          source: "opencode-quota",
+          heartbeat: {
+            tickAt: measuredAt,
+            ok: true,
+            durationMs: 1,
+            perProvider: { _claude: { state: "ok", ms: 1, rows: 1 } },
+          },
+          providers: [lastGood],
+        },
+        null,
+        2,
+      )}\n`,
+      "utf8",
+    );
+    // Cross-tick memory (#5928) holds the same last-good entry, no
+    // cooldown in force: the persistent 429 engages retention.
+    await writeFile(
+      statePath,
+      `${JSON.stringify({ "claudeCrossTick:v1": JSON.stringify({ lastGoodEntry: lastGood, cooldownUntil: 0 }) })}\n`,
+      "utf8",
+    );
+
+    const stub = [
+      'import { readFileSync, writeFileSync } from "node:fs";',
+      "let n = 0;",
+      'try { n = parseInt(readFileSync(process.env.STUB_COUNTER_PATH, "utf8"), 10) || 0; } catch {}',
+      "writeFileSync(process.env.STUB_COUNTER_PATH, String(n + 1));",
+      "const now = Date.now();",
+      'const limited = { providerId: "_claude", providerName: "Claude", ok: false, configured: true, fetchedAt: now, error: "Rate limited. Retrying soon." };',
+      "console.log(JSON.stringify([limited]));",
+      "",
+    ].join("\n");
+    await writeFile(subcommandPath, stub, "utf8");
+
+    const result = spawnSync(process.execPath, [GATHERER_SCRIPT], {
+      cwd: dir,
+      encoding: "utf8",
+      timeout: 30_000,
+      env: {
+        PATH: process.env.PATH ?? "",
+        HOME: dir,
+        QUOTA_CURRENT_PATH: currentPath,
+        QUOTA_HEARTBEAT_PATH: heartbeatPath,
+        QUOTA_GATHERER_STATE_PATH: statePath,
+        QUOTA_SNAPSHOTS_DIR: snapshotsDir,
+        USAGE_SNAPSHOT_OUTBOX_PATH: outboxPath,
+        QUOTA_SUBCOMMAND: `${process.execPath} ${subcommandPath}`,
+        QUOTA_SUBCOMMAND_TIMEOUT_MS: "5000",
+        QUOTA_CLAUDE_RETRY_BASE_MS: "1",
+        STUB_COUNTER_PATH: counterPath,
+        STUB_MODE: "always429",
+        OPENDESIGN_RENEWAL_DISABLED: "1",
+        META_RENEWAL_DISABLED: "1",
+        TURSO_QUOTA_SINK: "0",
+        OPENCHAMBER_LIB_DIR: join(dir, "fake-openchamber-lib"),
+      },
+    });
+
+    if (result.error || result.status !== 0) {
+      throw new Error(`gatherer failed: ${result.error?.message ?? result.stderr}\n${result.stdout}`);
+    }
+    expect(result.stdout).toContain("recovered=false");
+
+    const output = JSON.parse(await readFile(currentPath, "utf8"));
+    const claude = output.providers.find((entry: { providerId: string }) => entry.providerId === "_claude");
+    expect(claude).toMatchObject({
+      providerId: "_claude",
+      state: "ok",
+      measuredAt,
+      retainedFromFailedTick: output.generatedAt,
+      retentionFailureKind: "rate_limited",
+    });
+    expect(output.heartbeat.perProvider._claude.errorKind).toBe("rate_limited");
+    expect(output.heartbeat.perProvider._claude.error).toContain("Rate limited");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("the tick publishes the Stage-3 forecast product beside quota-current.json (#12695)", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gather-quota-forecast-"));
+
+  try {
+    const currentPath = join(dir, "quota-current.json");
+    const heartbeatPath = join(dir, "quota-gatherer-heartbeat.json");
+    const statePath = join(dir, "quota-gatherer-state.json");
+    const snapshotsDir = join(dir, "snapshots");
+    const subcommandPath = join(dir, "quota-subcommand.mjs");
+    const now = Date.now();
+    const HOUR = 3_600_000;
+    const resetMs = now + 10 * HOUR;
+    const resetIso = new Date(resetMs).toISOString();
+
+    // Seed the snapshot store with a clean 10 pts/h burn for
+    // cline-pass/weekly in the same reset period: 40/50/60 at
+    // 3/2/1 h ago. The tick's own read (70) completes the series.
+    await mkdir(snapshotsDir, { recursive: true });
+    const month = new Date(now).toISOString().slice(0, 7);
+    const seed = [3, 2, 1]
+      .map((h) =>
+        JSON.stringify({
+          ts: new Date(now - h * HOUR).toISOString(),
+          serviceId: "cline-pass",
+          metricId: "weekly",
+          value: 70 - h * 10,
+          unit: "pct",
+          limit: 100,
+          resetsAt: resetIso,
+          source: "api",
+          observedBy: "quota-gatherer",
+        }),
+      )
+      .join("\n");
+    await writeFile(join(snapshotsDir, `usage-${month}.jsonl`), `${seed}\n`, "utf8");
+
+    const providerResult = {
+      providerId: "cline-pass",
+      providerName: "ClinePass",
+      ok: true,
+      configured: true,
+      fetchedAt: now,
+      usage: { windows: { weekly: { usedPercent: 70, windowSeconds: 604_800, resetAt: resetMs } } },
+    };
+    await writeFile(subcommandPath, `console.log(${JSON.stringify(JSON.stringify([providerResult]))});\n`, "utf8");
+
+    const result = spawnSync(process.execPath, [GATHERER_SCRIPT], {
+      cwd: dir,
+      encoding: "utf8",
+      timeout: 30_000,
+      env: {
+        PATH: process.env.PATH ?? "",
+        HOME: dir,
+        QUOTA_CURRENT_PATH: currentPath,
+        QUOTA_HEARTBEAT_PATH: heartbeatPath,
+        QUOTA_GATHERER_STATE_PATH: statePath,
+        QUOTA_SNAPSHOTS_DIR: snapshotsDir,
+        QUOTA_SUBCOMMAND: `${process.execPath} ${subcommandPath}`,
+        QUOTA_SUBCOMMAND_TIMEOUT_MS: "5000",
+        OPENDESIGN_RENEWAL_DISABLED: "1",
+        META_RENEWAL_DISABLED: "1",
+        TURSO_QUOTA_SINK: "0",
+      },
+    });
+
+    if (result.error || result.status !== 0) {
+      throw new Error(`gatherer failed: ${result.error?.message ?? result.stderr}\n${result.stdout}`);
+    }
+    expect(result.stdout).toContain("forecast wrote");
+
+    const forecast = JSON.parse(await readFile(join(dir, "quota-forecast.json"), "utf8"));
+    expect(forecast.version).toBe(1);
+    expect(forecast.source).toBe("gather-quota");
+    const pool = forecast.pools["cline-pass"]?.find((p: { serviceId: string }) => p.serviceId === "cline-pass");
+    expect(pool).toBeDefined();
+    const weekly = pool.windows.find((w: { name: string }) => w.name === "weekly");
+    // The oracle's verdict on this series: 10 pts/h from 70% walls
+    // in ~3 h, before the reset 10 h out.
+    expect(weekly.state).toBe("projected");
+    expect(weekly.samples).toBeGreaterThanOrEqual(3);
+    expect(weekly.ratePtsPerHour).toBeGreaterThan(5);
+    expect(weekly.pctNow).toBe(70);
+    expect(weekly.resetsAt).toBe(resetIso);
+    expect(weekly.projectedWallAt).toBeGreaterThan(now - 60_000);
+    expect(weekly.projectedWallAt).toBeLessThan(resetMs);
+    expect(weekly.wallsBeforeReset).toBe(true);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

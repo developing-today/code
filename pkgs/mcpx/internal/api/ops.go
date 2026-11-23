@@ -594,6 +594,31 @@ func Ops() []Op {
 			}, callContextParams()...),
 		},
 		{
+			Name: "call_history_begin", Method: "POST", Path: "/v1/calls/{run}",
+			CLI:        "calls begin",
+			Permission: PermissionRun,
+			Summary:    "Start keeping the tool calls of one run",
+			Description: "Opens the call history for a run id, so the calls that run makes " +
+				"through this daemon are kept for its outcome hooks to read back from " +
+				"GET /v1/calls/{run}.",
+			Mutating: true,
+			Params: []Param{
+				{Name: "run", In: InPath, Type: "string", Required: true, Desc: "the run id whose calls are kept"},
+			},
+		},
+		{
+			Name: "call_history", Method: "GET", Path: "/v1/calls/{run}",
+			CLI:        "calls get",
+			Permission: PermissionRead,
+			Summary:    "The tool calls one run has made",
+			Description: "The calls kept for a run id since its history was opened, or a 404 " +
+				"when the history was never opened or has expired. truncated is true " +
+				"when older calls were dropped.",
+			Params: []Param{
+				{Name: "run", In: InPath, Type: "string", Required: true, Desc: "the run id whose calls are read"},
+			},
+		},
+		{
 			Name: "batch", Method: "POST", Path: "/v1/batch",
 			Permission:  PermissionRun,
 			Command:     "batch",

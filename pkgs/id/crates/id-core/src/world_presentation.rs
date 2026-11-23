@@ -14,6 +14,21 @@
 //! match there is exhaustive, so adding a variant without a projection is a
 //! compile-time error.
 //!
+//! A program may instead return a versioned `kind: scene` JSON document
+//! (`scene/1`, #12657): a bounded list of named nodes with a closed shape
+//! set, positions and sizes — the portable rich-presentation surface a
+//! native shell renders in 3D. A shell without a scene renderer uses the
+//! scene's text projection; a host that does not know the kind at all
+//! drops the document to the legacy text path (see [`parse_surface`]).
+//!
+//! A program may instead return a versioned `kind: audio` JSON document
+//! (`audio/1`, #12657): a bounded list of descriptive audio cues — named
+//! references with a closed format set, durations and repeat flags. Cues
+//! carry no embedded bytes, URLs or scripts: a presenter resolves each
+//! cue id against the world's own assets. A shell without an audio
+//! player uses the audio text projection; a host that does not know the
+//! kind at all drops the document to the legacy text path.
+//!
 //! Semantic token adapter contract (xterm-256 foreground, bold; 1-bit):
 //! | token | terminal | 1-bit | text |
 //! |---|---|---|---|
@@ -53,8 +68,27 @@ pub const MAX_TEXT_LINES: usize = 1000;
 pub const MAX_FORM_BYTES: usize = 8 * 1024;
 /// Maximum fields, options, or actions in one form.
 pub const MAX_FORM_ITEMS: usize = 64;
+/// Maximum nodes accepted in one world scene document.
+pub const MAX_SCENE_NODES: usize = 256;
+/// Maximum serialized scene document size in bytes.
+pub const MAX_SCENE_BYTES: usize = 64 * 1024;
+/// Maximum absolute value of a scene position or size component, in world
+/// units. Keeps scene geometry in a range every presenter can scale
+/// without overflow.
+pub const MAX_SCENE_EXTENT: f64 = 1_000_000.0;
+/// Maximum cues accepted in one world audio document.
+pub const MAX_AUDIO_CUES: usize = 64;
+/// Maximum serialized audio document size in bytes.
+pub const MAX_AUDIO_BYTES: usize = 64 * 1024;
+/// Maximum duration of one audio cue, in milliseconds (one hour). Keeps
+/// a cue's stated length in a range every presenter can schedule
+/// without overflow.
+pub const MAX_AUDIO_DURATION_MS: u32 = 3_600_000;
 
 /// A validated view understood by more than one transport presenter.
+///
+/// `Eq` holds for every variant: scene geometry compares bit-exactly
+/// (see [`SceneNode`]'s `PartialEq`), not by `f64` value equality.
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum WorldSurface {
@@ -64,6 +98,14 @@ pub enum WorldSurface {
     Text(TextSurface),
     /// Structured input rendered by trusted adapters.
     Form(FormSurface),
+    /// A 3D scene (`scene/1`): named nodes with shapes, positions and
+    /// sizes, rendered by native shells; other shells use its text
+    /// projection.
+    Scene(SceneSurface),
+    /// An audio cue list (`audio/1`): named sound references with
+    /// formats, durations and repeat flags, played by shells with an
+    /// audio player; other shells use its text projection.
+    Audio(AudioSurface),
 }
 
 impl WorldSurface {
@@ -77,6 +119,8 @@ impl WorldSurface {
             Self::Screen(screen) => screen.text_projection(),
             Self::Text(text) => text.render_text(),
             Self::Form(form) => form.text_projection(),
+            Self::Scene(scene) => scene.text_projection(),
+            Self::Audio(audio) => audio.text_projection(),
         }
     }
 }
@@ -758,6 +802,312 @@ impl ScreenSurface {
     }
 }
 
+/// A versioned `scene/1` document: a bounded, flat list of named nodes
+/// with a closed shape set, positions and sizes. Guest input is data
+/// only: there are no mesh, material, script or URL fields — a renderer
+/// derives everything visual from the shape, position and size. The
+/// document shape is the struct shape, so a parsed scene round-trips
+/// through [`parse_surface`].
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct SceneSurface {
+    /// Scene format version. `scene/1` defines version 1.
+    pub version: u8,
+    /// Optional caption naming the scene; the text projection's first
+    /// line.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    /// The scene's nodes, in document order. Ids are unique.
+    pub nodes: Vec<SceneNode>,
+}
+
+/// One named object in a [`SceneSurface`].
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct SceneNode {
+    /// Stable identifier, unique within the scene.
+    pub id: String,
+    /// Human-readable name, used by the text projection and by
+    /// renderers that label nodes.
+    pub label: String,
+    /// The node's geometry from the closed shape set.
+    pub shape: SceneShape,
+    /// Position in world units (x, y, z).
+    pub position: [f64; 3],
+    /// Extents in world units (x, y, z); every component is positive.
+    /// For a sphere the components are its diameters; for a point, its
+    /// nominal diameter.
+    pub size: [f64; 3],
+}
+
+/// The closed set of node geometries in a `scene/1` document. Guest
+/// documents reject unknown shapes.
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SceneShape {
+    /// An axis-aligned box.
+    Box,
+    /// A sphere.
+    Sphere,
+    /// A flat rectangular plane.
+    Plane,
+    /// A point marker.
+    Point,
+}
+
+impl SceneShape {
+    /// The document spelling of the shape, used by the text projection.
+    #[must_use]
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::Box => "box",
+            Self::Sphere => "sphere",
+            Self::Plane => "plane",
+            Self::Point => "point",
+        }
+    }
+}
+
+/// Bit-exact comparison of 3-component scene geometry.
+fn scene_floats_bit_eq(left: &[f64; 3], right: &[f64; 3]) -> bool {
+    left.iter()
+        .zip(right.iter())
+        .all(|(a, b)| a.to_bits() == b.to_bits())
+}
+
+impl PartialEq for SceneNode {
+    /// Bit-exact equality: two nodes are equal only when every geometry
+    /// component has identical bits. Unlike `f64` value equality, bit
+    /// equality is a true equivalence (reflexive even for NaN, which
+    /// [`SceneSurface::validate`] refuses before a scene is presented),
+    /// so `Eq` is honest and `WorldSurface` keeps the `Eq` bound
+    /// session-state structs rely on.
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id
+            && self.label == other.label
+            && self.shape == other.shape
+            && scene_floats_bit_eq(&self.position, &other.position)
+            && scene_floats_bit_eq(&self.size, &other.size)
+    }
+}
+
+impl Eq for SceneNode {}
+
+impl PartialEq for SceneSurface {
+    fn eq(&self, other: &Self) -> bool {
+        self.version == other.version && self.title == other.title && self.nodes == other.nodes
+    }
+}
+
+impl Eq for SceneSurface {}
+
+impl SceneSurface {
+    /// Validate the version, node set, identifiers, safe text, geometry
+    /// bounds and total size. Hosts run this before any presenter sees
+    /// the scene (via [`parse_surface`]).
+    ///
+    /// # Errors
+    ///
+    /// Rejects unsupported versions, unsafe titles, empty or oversized
+    /// node sets, duplicate ids, unsafe labels, non-finite or
+    /// out-of-extent geometry, non-positive sizes, and oversize
+    /// documents.
+    pub fn validate(&self) -> Result<()> {
+        ensure!(
+            self.version == 1,
+            "unsupported world scene version {}",
+            self.version
+        );
+        ensure!(
+            self.title.as_deref().is_none_or(safe_form_text),
+            "invalid scene title"
+        );
+        ensure!(
+            !self.nodes.is_empty() && self.nodes.len() <= MAX_SCENE_NODES,
+            "invalid scene node count"
+        );
+        let mut ids = std::collections::HashSet::new();
+        for node in &self.nodes {
+            ensure!(
+                safe_form_id(&node.id) && safe_form_text(&node.label),
+                "invalid scene node id or label"
+            );
+            ensure!(ids.insert(node.id.as_str()), "duplicate scene node id");
+            ensure!(
+                node.position
+                    .iter()
+                    .chain(node.size.iter())
+                    .all(|component| component.is_finite()
+                        && component.abs() <= MAX_SCENE_EXTENT),
+                "scene geometry out of bounds"
+            );
+            ensure!(
+                node.size.iter().all(|component| *component > 0.0),
+                "scene node size must be positive"
+            );
+        }
+        ensure!(
+            serde_json::to_vec(self)?.len() <= MAX_SCENE_BYTES,
+            "scene exceeds {MAX_SCENE_BYTES} bytes"
+        );
+        Ok(())
+    }
+
+    /// Deterministic escape-free projection: the title (or `Scene`),
+    /// then one numbered line per node naming its label, shape,
+    /// position and size. This is what a shell without a scene
+    /// renderer shows, so it is designed here, with the kind, not
+    /// discovered by the renderer slice.
+    #[must_use]
+    pub fn text_projection(&self) -> String {
+        let mut lines = vec![self.title.clone().unwrap_or_else(|| "Scene".to_owned())];
+        for (index, node) in self.nodes.iter().enumerate() {
+            lines.push(format!(
+                "{}. {} ({} at {}, {}, {}; size {}, {}, {})",
+                index + 1,
+                node.label,
+                node.shape.as_str(),
+                node.position[0],
+                node.position[1],
+                node.position[2],
+                node.size[0],
+                node.size[1],
+                node.size[2],
+            ));
+        }
+        lines.join("\n")
+    }
+}
+
+/// A versioned `audio/1` document: a bounded list of descriptive audio
+/// cues. Guest input is data only: a cue names a sound and describes it
+/// (format, duration, repeat) — there are no embedded bytes, URL,
+/// script or gain fields, so a presenter resolves each cue id against
+/// the world's own assets and derives everything audible from the
+/// description. The document shape is the struct shape, so a parsed
+/// audio document round-trips through [`parse_surface`].
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct AudioSurface {
+    /// Audio format version. `audio/1` defines version 1.
+    pub version: u8,
+    /// Optional caption naming the cue list; the text projection's
+    /// first line.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    /// The document's cues, in document order. Ids are unique.
+    pub cues: Vec<AudioCue>,
+}
+
+/// One named sound in an [`AudioSurface`].
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct AudioCue {
+    /// Stable identifier, unique within the document. A presenter
+    /// resolves it against the world's own assets.
+    pub id: String,
+    /// Human-readable name, used by the text projection and by
+    /// presenters that label cues.
+    pub label: String,
+    /// The referenced sound's encoding, from the closed format set.
+    pub format: AudioFormat,
+    /// The sound's length in milliseconds.
+    pub duration_ms: u32,
+    /// Whether the sound repeats until the view changes.
+    pub repeat: bool,
+}
+
+/// The closed set of sound encodings an `audio/1` cue may name. Guest
+/// documents reject unknown formats.
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AudioFormat {
+    /// Waveform audio (PCM WAV).
+    Wav,
+    /// Ogg container (Vorbis/Opus).
+    Ogg,
+    /// MP3 audio.
+    Mp3,
+}
+
+impl AudioFormat {
+    /// The document spelling of the format, used by the text projection.
+    #[must_use]
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::Wav => "wav",
+            Self::Ogg => "ogg",
+            Self::Mp3 => "mp3",
+        }
+    }
+}
+
+impl AudioSurface {
+    /// Validate the version, cue set, identifiers, safe text, duration
+    /// bounds and total size. Hosts run this before any presenter sees
+    /// the document (via [`parse_surface`]).
+    ///
+    /// # Errors
+    ///
+    /// Rejects unsupported versions, unsafe titles, empty or oversized
+    /// cue sets, duplicate ids, unsafe labels, out-of-bound durations,
+    /// and oversize documents.
+    pub fn validate(&self) -> Result<()> {
+        ensure!(
+            self.version == 1,
+            "unsupported world audio version {}",
+            self.version
+        );
+        ensure!(
+            self.title.as_deref().is_none_or(safe_form_text),
+            "invalid audio title"
+        );
+        ensure!(
+            !self.cues.is_empty() && self.cues.len() <= MAX_AUDIO_CUES,
+            "invalid audio cue count"
+        );
+        let mut ids = std::collections::HashSet::new();
+        for cue in &self.cues {
+            ensure!(
+                safe_form_id(&cue.id) && safe_form_text(&cue.label),
+                "invalid audio cue id or label"
+            );
+            ensure!(ids.insert(cue.id.as_str()), "duplicate audio cue id");
+            ensure!(
+                (1..=MAX_AUDIO_DURATION_MS).contains(&cue.duration_ms),
+                "audio cue duration out of bounds"
+            );
+        }
+        ensure!(
+            serde_json::to_vec(self)?.len() <= MAX_AUDIO_BYTES,
+            "audio exceeds {MAX_AUDIO_BYTES} bytes"
+        );
+        Ok(())
+    }
+
+    /// Deterministic escape-free projection: the title (or `Audio`),
+    /// then one numbered line per cue naming its label, format and
+    /// duration, with a `repeats` marker for looping cues. This is what
+    /// a shell without an audio player shows, so it is designed here,
+    /// with the kind, not discovered by the renderer slice.
+    #[must_use]
+    pub fn text_projection(&self) -> String {
+        let mut lines = vec![self.title.clone().unwrap_or_else(|| "Audio".to_owned())];
+        for (index, cue) in self.cues.iter().enumerate() {
+            let repeat = if cue.repeat { "; repeats" } else { "" };
+            lines.push(format!(
+                "{}. {} ({}; {} ms{})",
+                index + 1,
+                cue.label,
+                cue.format.as_str(),
+                cue.duration_ms,
+                repeat,
+            ));
+        }
+        lines.join("\n")
+    }
+}
+
 /// A cell-run delta between two consecutive screens (F12.11, first slice).
 ///
 /// A patch carries only the cells that changed, grouped into maximal runs of
@@ -1024,7 +1374,7 @@ pub fn parse_surface(data: &str) -> Result<Option<WorldSurface>> {
                     .as_ref()
                     .and_then(|value| value.get("kind"))
                     .and_then(Value::as_str);
-                if matches!(kind, Some("screen" | "text" | "form"))
+                if matches!(kind, Some("screen" | "text" | "form" | "scene" | "audio"))
                     || top_level_kind_is_duplicated(data)
                 {
                     return Err(err).context("duplicate JSON object key in world presentation");
@@ -1044,6 +1394,26 @@ pub fn parse_surface(data: &str) -> Result<Option<WorldSurface>> {
                 serde_json::from_value(value).context("decode world form presentation")?;
             form.validate()?;
             return Ok(Some(WorldSurface::Form(form)));
+        }
+        Some("scene") => {
+            let mut value = value;
+            if let Some(object) = value.as_object_mut() {
+                object.remove("kind");
+            }
+            let scene: SceneSurface =
+                serde_json::from_value(value).context("decode world scene presentation")?;
+            scene.validate()?;
+            return Ok(Some(WorldSurface::Scene(scene)));
+        }
+        Some("audio") => {
+            let mut value = value;
+            if let Some(object) = value.as_object_mut() {
+                object.remove("kind");
+            }
+            let audio: AudioSurface =
+                serde_json::from_value(value).context("decode world audio presentation")?;
+            audio.validate()?;
+            return Ok(Some(WorldSurface::Audio(audio)));
         }
         Some("text") => {
             let payload: TextPayload =
@@ -1502,6 +1872,66 @@ mod tests {
         ScreenSurface::from_cells(width, height, vec![cell(fill); width * height]).unwrap()
     }
 
+    fn codec_patch() -> ScreenPatch {
+        ScreenPatch {
+            version: 1,
+            width: 2,
+            height: 1,
+            runs: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn screen_codec_matches_versioned_messagepack_golden_vector() {
+        let golden = [
+            0x82, 0xa7, b'v', b'e', b'r', b's', b'i', b'o', b'n', 0x01, 0xa5, b'p', b'a', b't',
+            b'c', b'h', 0x84, 0xa7, b'v', b'e', b'r', b's', b'i', b'o', b'n', 0x01, 0xa5, b'w',
+            b'i', b'd', b't', b'h', 0x02, 0xa6, b'h', b'e', b'i', b'g', b'h', b't', 0x01, 0xa4,
+            b'r', b'u', b'n', b's', 0x90,
+        ];
+
+        let encoded = crate::screen_codec::encode_patch(&codec_patch()).unwrap();
+        assert_eq!(encoded, golden);
+        assert_eq!(
+            crate::screen_codec::decode_patch(&golden).unwrap(),
+            codec_patch()
+        );
+    }
+
+    #[test]
+    fn screen_codec_rejects_unsupported_version_and_malformed_frames() {
+        use crate::screen_codec::{ScreenCodecError, decode_patch};
+
+        let mut unsupported = crate::screen_codec::encode_patch(&codec_patch()).unwrap();
+        unsupported[9] = 2;
+        assert!(matches!(
+            decode_patch(&unsupported),
+            Err(ScreenCodecError::UnsupportedVersion(2))
+        ));
+        assert!(matches!(
+            decode_patch(&[0xc1]),
+            Err(ScreenCodecError::Invalid(_))
+        ));
+
+        let mut trailing = crate::screen_codec::encode_patch(&codec_patch()).unwrap();
+        trailing.push(0xc0);
+        assert!(matches!(
+            decode_patch(&trailing),
+            Err(ScreenCodecError::TrailingBytes)
+        ));
+    }
+
+    #[test]
+    fn screen_codec_rejects_frames_over_one_mibibyte() {
+        use crate::screen_codec::{MAX_SCREEN_FRAME_BYTES, ScreenCodecError, decode_patch};
+
+        let oversized = vec![0; MAX_SCREEN_FRAME_BYTES + 1];
+        assert!(matches!(
+            decode_patch(&oversized),
+            Err(ScreenCodecError::TooLarge)
+        ));
+    }
+
     #[test]
     fn test_rust_screen_presenter_matches_the_shared_web_parity_corpus() {
         let corpus: ScreenCellParityCorpus = serde_json::from_str(include_str!(
@@ -1728,10 +2158,10 @@ mod tests {
             "diff {diff:?} vs full repaint"
         );
 
-        let mut patched = vt100::Parser::new(24, 80, 0);
+        let mut patched = vt100::Parser::default();
         patched.process(previous.render_ansi().unwrap().as_bytes());
         patched.process(diff.as_bytes());
-        let mut repainted = vt100::Parser::new(24, 80, 0);
+        let mut repainted = vt100::Parser::default();
         repainted.process(full.as_bytes());
         assert_eq!(patched.screen().contents(), repainted.screen().contents());
     }
@@ -1757,10 +2187,18 @@ mod tests {
 
         let diff = next.render_ansi_diff(&previous).unwrap();
         assert!(diff.contains("\x1b[0;1;38;5;2m"));
-        let mut patched = vt100::Parser::new(1, 6, 0);
+        let mut patched = vt100::Parser::new(
+            std::num::NonZeroU16::MIN,
+            std::num::NonZeroU16::new(6).unwrap(),
+            0,
+        );
         patched.process(previous.render_ansi().unwrap().as_bytes());
         patched.process(diff.as_bytes());
-        let mut repainted = vt100::Parser::new(1, 6, 0);
+        let mut repainted = vt100::Parser::new(
+            std::num::NonZeroU16::MIN,
+            std::num::NonZeroU16::new(6).unwrap(),
+            0,
+        );
         repainted.process(next.render_ansi().unwrap().as_bytes());
         assert_eq!(patched.screen().contents(), repainted.screen().contents());
         assert_eq!(patched.screen().cell(0, 1), repainted.screen().cell(0, 1));
@@ -1939,6 +2377,276 @@ mod tests {
     }
 
     #[test]
+    fn scene_surface_parses_projects_and_round_trips() {
+        // Oracle: #12657 slice 1a — a versioned scene document is accepted
+        // by host validation, projects deterministically to text (the
+        // old-shell fallback), and round-trips through serialization.
+        let document = serde_json::json!({
+            "kind": "scene", "version": 1, "title": "Harbor",
+            "nodes": [
+                {"id": "boat", "label": "Boat", "shape": "box",
+                 "position": [0, 0.5, -2], "size": [2, 1, 1]},
+                {"id": "sun", "label": "Sun", "shape": "sphere",
+                 "position": [10, 8, -20], "size": [3, 3, 3]}
+            ]
+        });
+        let parsed = parse_surface(&document.to_string()).unwrap().unwrap();
+        assert_eq!(
+            parsed.text_projection(),
+            "Harbor\n1. Boat (box at 0, 0.5, -2; size 2, 1, 1)\n2. Sun (sphere at 10, 8, -20; size 3, 3, 3)"
+        );
+        let serialized = serde_json::to_string(&parsed).unwrap();
+        assert_eq!(parse_surface(&serialized).unwrap(), Some(parsed));
+
+        // Without a title the projection still names what the view is.
+        let untitled = parse_surface(
+            r#"{"kind":"scene","version":1,"nodes":[{"id":"a","label":"A","shape":"point","position":[1,2,3],"size":[1,1,1]}]}"#,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            untitled.text_projection(),
+            "Scene\n1. A (point at 1, 2, 3; size 1, 1, 1)"
+        );
+    }
+
+    #[test]
+    fn scene_surface_rejects_unsafe_or_oversize_documents() {
+        // Oracle: #12657 criterion — malformed or oversized rich surfaces
+        // are refused by host validation (an Err from parse_surface, which
+        // the host turns into an error frame), never silently dropped to
+        // the legacy text path and never accepted.
+        let node = |id: &str| {
+            serde_json::json!({"id": id, "label": "A", "shape": "box",
+                "position": [0, 0, 0], "size": [1, 1, 1]})
+        };
+        let scene = |nodes: Value| {
+            serde_json::json!({"kind": "scene", "version": 1, "nodes": nodes}).to_string()
+        };
+        // Bad versions.
+        assert!(parse_surface(
+            &serde_json::json!({"kind": "scene", "version": 2, "nodes": [node("a")]})
+                .to_string()
+        )
+        .is_err());
+        assert!(parse_surface(
+            &serde_json::json!({"kind": "scene", "version": 0, "nodes": [node("a")]})
+                .to_string()
+        )
+        .is_err());
+        // Unknown fields, top level and per node (deny_unknown_fields).
+        assert!(parse_surface(
+            &serde_json::json!({"kind": "scene", "version": 1, "html": "<b>x</b>", "nodes": [node("a")]})
+                .to_string()
+        )
+        .is_err());
+        assert!(parse_surface(&scene(serde_json::json!([
+            {"id": "a", "label": "A", "shape": "box", "position": [0, 0, 0],
+             "size": [1, 1, 1], "onclick": "run()"}
+        ])))
+        .is_err());
+        // Unknown shape: the shape set is closed.
+        assert!(parse_surface(&scene(serde_json::json!([
+            {"id": "a", "label": "A", "shape": "mesh", "position": [0, 0, 0], "size": [1, 1, 1]}
+        ])))
+        .is_err());
+        // Empty and duplicate-id node sets.
+        assert!(parse_surface(&scene(serde_json::json!([]))).is_err());
+        assert!(parse_surface(&scene(serde_json::json!([node("a"), node("a")]))).is_err());
+        // Too many nodes: the bound is 256 (MAX_SCENE_NODES).
+        let many: Vec<Value> = (0..257)
+            .map(|index| node(&format!("n{index}")))
+            .collect();
+        assert!(parse_surface(&scene(Value::Array(many))).is_err());
+        // Unsafe label text (a JSON-escaped ESC).
+        assert!(parse_surface(&scene(serde_json::json!([
+            {"id": "a", "label": "A\u{001b}[2J", "shape": "box", "position": [0, 0, 0], "size": [1, 1, 1]}
+        ])))
+        .is_err());
+        // Geometry bounds: size must be positive, position and size
+        // components stay within 1_000_000 (MAX_SCENE_EXTENT).
+        assert!(parse_surface(&scene(serde_json::json!([
+            {"id": "a", "label": "A", "shape": "box", "position": [0, 0, 0], "size": [0, 1, 1]}
+        ])))
+        .is_err());
+        assert!(parse_surface(&scene(serde_json::json!([
+            {"id": "a", "label": "A", "shape": "box", "position": [0, 0, 0], "size": [-1, 1, 1]}
+        ])))
+        .is_err());
+        assert!(parse_surface(&scene(serde_json::json!([
+            {"id": "a", "label": "A", "shape": "box", "position": [1000001, 0, 0], "size": [1, 1, 1]}
+        ])))
+        .is_err());
+        // Oversize document: the serialized cap is 65536 bytes
+        // (MAX_SCENE_BYTES); a single huge label trips it.
+        assert!(parse_surface(&scene(serde_json::json!([
+            {"id": "a", "label": "x".repeat(70_000), "shape": "box", "position": [0, 0, 0], "size": [1, 1, 1]}
+        ])))
+        .is_err());
+    }
+
+    #[test]
+    fn scene_validate_rejects_non_finite_geometry() {
+        // A scene built in Rust (not parsed from JSON, where non-finite
+        // numbers cannot be represented) must still refuse NaN and
+        // infinite geometry: presenters scale positions and sizes
+        // without re-checking them.
+        let node = |position: [f64; 3]| SceneNode {
+            id: "a".into(),
+            label: "A".into(),
+            shape: SceneShape::Box,
+            position,
+            size: [1.0, 1.0, 1.0],
+        };
+        let scene = |position: [f64; 3]| SceneSurface {
+            version: 1,
+            title: None,
+            nodes: vec![node(position)],
+        };
+        assert!(scene([0.0, 0.0, 0.0]).validate().is_ok());
+        assert!(scene([f64::NAN, 0.0, 0.0]).validate().is_err());
+        assert!(scene([0.0, f64::INFINITY, 0.0]).validate().is_err());
+        assert!(scene([0.0, 0.0, f64::NEG_INFINITY]).validate().is_err());
+    }
+
+    #[test]
+    fn scene_equality_is_bit_exact() {
+        // WorldSurface keeps its Eq derive (session-state structs rely
+        // on it), so scene equality is bit-exact: 0.0 and -0.0 differ.
+        let scene = |x: f64| SceneSurface {
+            version: 1,
+            title: None,
+            nodes: vec![SceneNode {
+                id: "a".into(),
+                label: "A".into(),
+                shape: SceneShape::Point,
+                position: [x, 0.0, 0.0],
+                size: [1.0, 1.0, 1.0],
+            }],
+        };
+        assert_eq!(scene(0.0), scene(0.0));
+        assert_ne!(scene(0.0), scene(-0.0));
+    }
+
+    #[test]
+    fn audio_surface_parses_projects_and_round_trips() {
+        // Oracle: #12657 slice 1b — a versioned audio document is accepted
+        // by host validation, projects deterministically to text (the
+        // old-shell fallback), and round-trips through serialization.
+        let document = serde_json::json!({
+            "kind": "audio", "version": 1, "title": "Harbor Sounds",
+            "cues": [
+                {"id": "rain", "label": "Rain", "format": "ogg",
+                 "duration_ms": 90000, "repeat": true},
+                {"id": "bell", "label": "Bell", "format": "wav",
+                 "duration_ms": 2500, "repeat": false}
+            ]
+        });
+        let parsed = parse_surface(&document.to_string()).unwrap().unwrap();
+        assert_eq!(
+            parsed.text_projection(),
+            "Harbor Sounds\n1. Rain (ogg; 90000 ms; repeats)\n2. Bell (wav; 2500 ms)"
+        );
+        let serialized = serde_json::to_string(&parsed).unwrap();
+        assert_eq!(parse_surface(&serialized).unwrap(), Some(parsed));
+
+        // Without a title the projection still names what the view is.
+        let untitled = parse_surface(
+            r#"{"kind":"audio","version":1,"cues":[{"id":"a","label":"A","format":"mp3","duration_ms":1000,"repeat":false}]}"#,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(untitled.text_projection(), "Audio\n1. A (mp3; 1000 ms)");
+    }
+
+    #[test]
+    fn audio_surface_rejects_unsafe_or_oversize_documents() {
+        // Oracle: #12657 criterion — malformed or oversized rich surfaces
+        // are refused by host validation (an Err from parse_surface, which
+        // the host turns into an error frame), never silently dropped to
+        // the legacy text path and never accepted.
+        let cue = |id: &str| {
+            serde_json::json!({"id": id, "label": "A", "format": "ogg",
+                "duration_ms": 1000, "repeat": false})
+        };
+        let audio = |cues: Value| {
+            serde_json::json!({"kind": "audio", "version": 1, "cues": cues}).to_string()
+        };
+        // Bad versions.
+        assert!(parse_surface(
+            &serde_json::json!({"kind": "audio", "version": 2, "cues": [cue("a")]})
+                .to_string()
+        )
+        .is_err());
+        assert!(parse_surface(
+            &serde_json::json!({"kind": "audio", "version": 0, "cues": [cue("a")]})
+                .to_string()
+        )
+        .is_err());
+        // Unknown fields, top level and per cue (deny_unknown_fields) —
+        // in particular a cue carries no embedded bytes or URL.
+        assert!(parse_surface(
+            &serde_json::json!({"kind": "audio", "version": 1, "src": "x.ogg", "cues": [cue("a")]})
+                .to_string()
+        )
+        .is_err());
+        assert!(parse_surface(&audio(serde_json::json!([
+            {"id": "a", "label": "A", "format": "ogg", "duration_ms": 1000,
+             "repeat": false, "data": "AAAB"}
+        ])))
+        .is_err());
+        // Unknown format: the format set is closed.
+        assert!(parse_surface(&audio(serde_json::json!([
+            {"id": "a", "label": "A", "format": "flac", "duration_ms": 1000, "repeat": false}
+        ])))
+        .is_err());
+        // Empty and duplicate-id cue sets.
+        assert!(parse_surface(&audio(serde_json::json!([]))).is_err());
+        assert!(parse_surface(&audio(serde_json::json!([cue("a"), cue("a")]))).is_err());
+        // Too many cues: the bound is 64 (MAX_AUDIO_CUES).
+        let many: Vec<Value> = (0..65).map(|index| cue(&format!("c{index}"))).collect();
+        assert!(parse_surface(&audio(Value::Array(many))).is_err());
+        // Unsafe label text (a JSON-escaped ESC).
+        assert!(parse_surface(&audio(serde_json::json!([
+            {"id": "a", "label": "A\u{001b}[2J", "format": "ogg", "duration_ms": 1000, "repeat": false}
+        ])))
+        .is_err());
+        // Duration bounds: a cue lasts 1..=3_600_000 ms
+        // (MAX_AUDIO_DURATION_MS, one hour).
+        assert!(parse_surface(&audio(serde_json::json!([
+            {"id": "a", "label": "A", "format": "ogg", "duration_ms": 0, "repeat": false}
+        ])))
+        .is_err());
+        assert!(parse_surface(&audio(serde_json::json!([
+            {"id": "a", "label": "A", "format": "ogg", "duration_ms": 3600001, "repeat": false}
+        ])))
+        .is_err());
+        // Oversize document: the serialized cap is 65536 bytes
+        // (MAX_AUDIO_BYTES); a single huge label trips it.
+        assert!(parse_surface(&audio(serde_json::json!([
+            {"id": "a", "label": "x".repeat(70_000), "format": "ogg", "duration_ms": 1000, "repeat": false}
+        ])))
+        .is_err());
+    }
+
+    #[test]
+    fn unknown_rich_surface_kinds_stay_on_the_legacy_path() {
+        // Forward-compat seam (#12657 triage): a rich kind this host does
+        // not know is not an error — the document drops to the legacy
+        // plain-text path, so a new-kind document is safe on an old host.
+        // (The widget kind lands in slice 1c; today it is unknown here,
+        // as is any kind no slice has named.)
+        assert_eq!(
+            parse_surface(r#"{"kind":"widget","version":1}"#).unwrap(),
+            None
+        );
+        assert_eq!(
+            parse_surface(r#"{"kind":"hologram","version":1}"#).unwrap(),
+            None
+        );
+    }
+
+    #[test]
     fn form_date_bounds_are_canonical_and_cancel_skips_required_fields() {
         let invalid_bound = serde_json::json!({
             "kind": "form", "version": 1, "form_id": "date-1", "title": "Date",
@@ -2101,6 +2809,10 @@ mod tests {
             r#"{"kind":"text","version":1,"lines":["\u001b[31mred"],"lines":["clean"]}"#,
             // Duplicate rows: an over-wide row hidden behind a fitting one.
             r#"{"kind":"screen","version":1,"width":2,"height":1,"rows":["toolong"],"rows":["hi"]}"#,
+            // Duplicate version, scene: unsupported version first.
+            r#"{"kind":"scene","version":99,"version":1,"nodes":[]}"#,
+            // Duplicate kind naming scene: dispatch must not be last-wins.
+            r#"{"kind":"scene","kind":"text","version":1,"lines":["hi"]}"#,
             // Duplicate kind: the dispatch itself must not be last-wins.
             r#"{"kind":"screen","kind":"text","version":1,"lines":["hi"]}"#,
             // Duplicate kind whose survivor is NOT a surface kind, with

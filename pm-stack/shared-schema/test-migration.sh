@@ -7,6 +7,8 @@ up="$migrations/20261105_0001_action_event_store.up.sql"
 down="$migrations/20261105_0001_action_event_store.down.sql"
 up2="$migrations/20261116_0001_aggregator_remote_stores.up.sql"
 down2="$migrations/20261116_0001_aggregator_remote_stores.down.sql"
+up3="$migrations/20261122_0001_shared_comments.up.sql"
+down3="$migrations/20261122_0001_shared_comments.down.sql"
 container="pm-action-schema-test-$$"
 
 if ! command -v docker >/dev/null 2>&1; then
@@ -46,13 +48,17 @@ psql_test() {
   docker exec -i "$container" psql -X -v ON_ERROR_STOP=1 -U postgres -d pm_actions_test "$@"
 }
 
-# Supabase's service_role carries BYPASSRLS; model that so the test proves
+# The migrations' service_role is a BYPASSRLS role (the hosted-Postgres
+# convention the DDL was written for); model that so the test proves
 # the role can actually operate under the RLS model, not just hold grants.
 psql_test -c 'CREATE ROLE service_role BYPASSRLS LOGIN;'
 psql_test <"$up"
 # #6815: the add-on stores depend on the action contract above, so the
 # test applies them in the documented order and rolls them back in reverse.
 psql_test <"$up2"
+# #1744: shared_comments depends on no earlier table; it applies after
+# the #6815 stores and rolls back before them (reverse order).
+psql_test <"$up3"
 
 # A pre-token action is valid, as are modern actions and the source's JSON
 # object payload/author contracts.
@@ -82,8 +88,8 @@ if [[ $privileges != "true:true:true:false:true" ]]; then
 fi
 echo "ok - RLS and service_role privileges"
 
-# The service_role must actually be able to operate under RLS (Supabase's
-# service_role carries BYPASSRLS); a role that only holds grants but is
+# The service_role must actually be able to operate under RLS (it is
+# modelled as BYPASSRLS above); a role that only holds grants but is
 # blocked by RLS would pass the privilege probe above while being
 # unusable in production.
 svc_hash="$(printf '%064d' 7)"
@@ -312,6 +318,63 @@ if [[ $agg_remaining != true ]]; then
   exit 1
 fi
 echo "ok - #6815 store tables created and removed by the paired migrations"
+
+# --- #1744 shared_comments: shape, grants, and constraints ------------------
+psql_test -c "INSERT INTO public.shared_comments
+  (id, object_ref, kind, author, body, created_at, triage_state)
+  VALUES ('dc-1', 'orch:item-1', 'message',
+    '{\"kind\":\"drew\",\"id\":\"drew\",\"label\":\"Drew\"}', 'hello',
+    '2026-11-01T00:00:00Z', 'new');"
+psql_test -c "INSERT INTO public.shared_comments
+  (id, object_ref, kind, author, body, created_at, github_ref, github_state)
+  VALUES ('dc-2', 'orch:item-2', 'github',
+    '{\"kind\":\"agent\",\"id\":\"session-1\",\"label\":\"agent\"}', 'post me',
+    '2026-11-01T01:00:00Z', 'developing-today/code#7', 'pending');"
+
+cm_privs="$(psql_test -Atc "SELECT concat(
+  (SELECT relrowsecurity::text FROM pg_class WHERE oid = 'public.shared_comments'::regclass), ':',
+  has_table_privilege('service_role', 'public.shared_comments', 'UPDATE')::text, ':',
+  has_table_privilege('service_role', 'public.shared_comments', 'DELETE')::text)")"
+if [[ $cm_privs != "true:true:false" ]]; then
+  echo "unexpected RLS/service_role privileges on shared_comments: $cm_privs" >&2
+  exit 1
+fi
+echo "ok - shared_comments has RLS enabled and service_role grants"
+
+expect_rejected "#1744 unknown comment kind" "INSERT INTO public.shared_comments
+  (id, object_ref, kind, author, body, created_at)
+  VALUES ('dc-bad-kind', 'orch:item-3', 'memo',
+    '{\"kind\":\"drew\",\"id\":\"drew\",\"label\":\"Drew\"}', 'x', now())"
+expect_rejected "#1744 incomplete comment author" "INSERT INTO public.shared_comments
+  (id, object_ref, kind, author, body, created_at)
+  VALUES ('dc-bad-author', 'orch:item-3', 'note',
+    '{\"kind\":\"drew\",\"id\":\"drew\"}', 'x', now())"
+expect_rejected "#1744 pending github comment without a ref" "INSERT INTO public.shared_comments
+  (id, object_ref, kind, author, body, created_at, github_state)
+  VALUES ('dc-bad-pending', 'orch:item-3', 'github',
+    '{\"kind\":\"drew\",\"id\":\"drew\",\"label\":\"Drew\"}', 'x', now(), 'pending')"
+expect_rejected "#1744 malformed github ref" "INSERT INTO public.shared_comments
+  (id, object_ref, kind, author, body, created_at, github_ref, github_state)
+  VALUES ('dc-bad-ref', 'orch:item-3', 'github',
+    '{\"kind\":\"drew\",\"id\":\"drew\",\"label\":\"Drew\"}', 'x', now(), 'not-a-ref', 'pending')"
+expect_rejected "#1744 unknown triage state" "INSERT INTO public.shared_comments
+  (id, object_ref, kind, author, body, created_at, triage_state)
+  VALUES ('dc-bad-triage', 'orch:item-3', 'message',
+    '{\"kind\":\"drew\",\"id\":\"drew\",\"label\":\"Drew\"}', 'x', now(), 'later')"
+
+if psql_test <"$down3" >/dev/null 2>&1; then
+  echo "#1744 down migration should refuse populated tables" >&2
+  exit 1
+fi
+echo "ok - #1744 down migration protects non-empty tables"
+psql_test -c 'DELETE FROM public.shared_comments;'
+psql_test <"$down3"
+cm_remaining="$(psql_test -Atc "SELECT (to_regclass('public.shared_comments') IS NULL)::text")"
+if [[ $cm_remaining != true ]]; then
+  echo "#1744 down migration left schema objects behind" >&2
+  exit 1
+fi
+echo "ok - shared_comments created and removed by the paired migrations"
 
 psql_test -c 'DELETE FROM public.shared_events; DELETE FROM public.agg_actions;'
 psql_test <"$down"

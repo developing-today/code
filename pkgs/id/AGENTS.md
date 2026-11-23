@@ -147,7 +147,7 @@ tests/cli_integration.rs       # Integration tests
 
 ## Adding Features
 
-1. Add docstrings (`///` for items, `//!` for modules)
+1. Add docstrings (`///` for items, `//!` for modules); declare a new module in its parent (`lib.rs`, `mod.rs`) in the same change — an undeclared file is not in the crate, and `bash .github/scripts/check-rust-module-reach.sh` fails on it
 2. Add unit tests in `#[cfg(test)] mod tests`
 3. Add integration tests in `tests/cli_integration.rs` for CLI behavior
 4. Run `just check` before completing

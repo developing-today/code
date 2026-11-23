@@ -319,6 +319,23 @@ description:  ls, search and types answer from an on-disk cache without
 schema cache keyed to the config file's fingerprint, so a cold daemon answers
 in about 10 ms and a warm one in about 1 ms.
 
+Generated TypeScript and Python clients keep configured namespaces present
+when some schemas are still cold. Cached members retain their signatures;
+uncached members accept dynamic arguments and resolve against the caller's
+scoped schema on invocation. A successfully cached empty namespace stays
+empty. A failed fetch, hidden tool, unknown name or normalized-name collision
+fails rather than guessing a target. Explicit tool selectors still restrict
+calls (their cold static types are intentionally wider until schemas arrive).
+Python cold members accept keyword arguments or one positional argument
+dictionary. TypeScript object/promise machinery such as an unknown `then`
+is not synthesized; use the existing raw `call` escape hatch for such names.
+
+This is a correctness fallback, not a change to eager startup waits. Discovery
+and generation still perform no per-namespace network fetch; only a requested
+cold-member invocation refreshes its target. Virtual namespaces refresh the
+selected mount's source, not every unrelated source. Existing visibility,
+capability, argument and confirmation policies still apply.
+
 The cache is written to `$XDG_CACHE_HOME/mcpx/schemas-<hash>.json` and survives
 daemon restarts, machine reboots, and the MCP server binary being deleted —
 there is a regression test that moves the binary away and checks `mcpx types`

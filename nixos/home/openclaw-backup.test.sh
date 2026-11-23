@@ -26,6 +26,8 @@
 #   * happy path — exit 0, verified local archive containing the
 #     staged files (sqlite snapshot included, scratch tree excluded),
 #     both offsite copies in the stub store, marker advances.
+#   * dangling links — absolute links into the excluded tmp/ tree
+#     are archived and verified as links; the run succeeds.
 #   * invalid DATE — a nonexistent calendar date and a malformed date
 #     are both rejected non-zero with the value named, nothing
 #     uploaded, marker unchanged.
@@ -326,6 +328,49 @@ if [[ $MARKER_AFTER =~ ^[0-9]+$ ]] && [[ $MARKER_AFTER -gt $PRESET ]]; then
   ok "happy: journal marker advanced past $PRESET (now $MARKER_AFTER)"
 else
   fail "happy: marker did not advance on a fully successful run — was $PRESET, now $MARKER_AFTER"
+fi
+
+# --- dangling symlinks into the excluded tmp/ tree (2026-11-17) ----------------
+# Plugin build vendor dirs keep absolute links into ~/.openclaw/tmp/.
+# Once tmp/ is cleaned the links dangle; the manifest step used to open
+# them, crash, and leave an archive with no manifest.json (VERIFY
+# FAILED every night from 2026-11-15). Links must be archived as links,
+# recorded in the manifest by target, and verified, and the run must
+# succeed.
+setup_home dangling-link
+mkdir -p "$RUN_HOME/.openclaw/acpx/vendor/bin" "$RUN_HOME/.openclaw/acpx/libdir"
+ln -s "$RUN_HOME/.openclaw/tmp/plugin-captures/gone/bin/codex" \
+  "$RUN_HOME/.openclaw/acpx/vendor/bin/codex"
+ln -s "$RUN_HOME/.openclaw/tmp/plugin-captures/gone/lib" \
+  "$RUN_HOME/.openclaw/acpx/vendor/lib"
+ln -s ../libdir "$RUN_HOME/.openclaw/acpx/vendor/live-dir-link"
+ln -s ../../session.log "$RUN_HOME/.openclaw/acpx/vendor/live-file-link"
+run_backup dangling-link
+DL_ARCHIVE="$RUN_HOME/backups/openclaw/$RUN_DATE/openclaw-$RUN_DATE.tar.zst"
+if [[ $RC -eq 0 ]] && grep -q "OK openclaw $RUN_DATE backed up to local + R2 + Drive" "$TMP_ROOT/dangling-link.log"; then
+  ok "dangling-link: run with dangling links into tmp/ succeeded"
+else
+  fail "dangling-link: expected exit 0 and the full OK line, got rc=$RC; log: $(cat "$TMP_ROOT/dangling-link.log")"
+fi
+if [[ -f $DL_ARCHIVE ]] &&
+  "$REAL_TAR" -I zstd -xOf "$DL_ARCHIVE" ./manifest.json 2>/dev/null | python3 -c '
+import json, sys
+m = {f["path"]: f for f in json.load(sys.stdin)["files"]}
+want = {
+    "acpx/vendor/bin/codex": None,
+    "acpx/vendor/lib": None,
+    "acpx/vendor/live-dir-link": "../libdir",
+    "acpx/vendor/live-file-link": "../../session.log",
+}
+for path, target in want.items():
+    f = m.get(path)
+    assert f is not None and "symlink" in f and "sha256" not in f, path
+    assert target is None or f["symlink"] == target, path
+assert "session.log" in m and "sha256" in m["session.log"]
+'; then
+  ok "dangling-link: manifest records each link by target, files by hash"
+else
+  fail "dangling-link: manifest missing or links not recorded as links; log: $(cat "$TMP_ROOT/dangling-link.log")"
 fi
 
 # --- invalid DATE is rejected ------------------------------------------------

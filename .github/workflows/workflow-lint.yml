@@ -50,6 +50,8 @@ jobs:
             || python3 -m pip install --break-system-packages --quiet 'pyyaml>=6,<7' \
             || python3 -m pip install --quiet 'pyyaml>=6,<7' \
             || echo "PyYAML unavailable; check-workflows.sh uses its structural fallback"
+      - name: Contract tests for the fleet sync probe (#12235)
+        run: bash .github/scripts/fleet-sync-probe.test.sh
       - name: Contract tests for the workflow validator (#5743)
         run: bash .github/scripts/check-workflows.test.sh
       - name: Contract tests for pm-dispatch retry safety (#8950)
@@ -64,3 +66,19 @@ jobs:
         run: bash .github/scripts/check-suite-registry.test.sh
       - name: Coverage ratchet — registry vs tree and venues (#6188)
         run: bash .github/scripts/check-suite-registry.sh
+      - name: Contract tests for the CI queue snapshot harness (#2605)
+        run: bash .github/scripts/ci-queue-snapshot.test.sh
+
+  # Its own job: the steps above stop at the first failing check, and the
+  # suite-registry ratchet has a standing backlog. A file that is in no
+  # crate must be reported whatever else is red.
+  rust-module-reach:
+    name: "basic: every Rust source file is in its crate"
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - name: Contract tests for the Rust module-reach check (#12232)
+        run: bash .github/scripts/check-rust-module-reach.test.sh
+      - name: Every Rust source file is compiled into its crate (#12232)
+        run: bash .github/scripts/check-rust-module-reach.sh

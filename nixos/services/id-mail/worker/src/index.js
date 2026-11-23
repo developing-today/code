@@ -22,9 +22,16 @@ export default {
       return json({ error: "unauthorized" }, 401);
     }
 
+    // #11331: bounded read. A mail request is a few addresses, a
+    // subject and at most MAX_TEXT characters, so anything over
+    // MAX_BODY_BYTES is refused before it is buffered or parsed.
+    const raw = await readTextUpTo(request, MAX_BODY_BYTES);
+    if (raw === null) {
+      return json({ error: "body is too large" }, 413);
+    }
     let body;
     try {
-      body = await request.json();
+      body = JSON.parse(raw);
     } catch {
       return json({ error: "body is not JSON" }, 400);
     }
@@ -195,6 +202,36 @@ function sameText(a, b) {
     diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
   }
   return diff === 0;
+}
+
+const MAX_BODY_BYTES = 64 * 1024;
+
+/** The body as text, or null when it declares or streams more than
+ * `limit` bytes; an oversized body is never buffered whole. */
+async function readTextUpTo(request, limit) {
+  const declared = request.headers.get("content-length");
+  if (declared !== null && Number(declared) > limit) return null;
+  if (!request.body) return "";
+  const reader = request.body.getReader();
+  const chunks = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > limit) {
+      await reader.cancel();
+      return null;
+    }
+    chunks.push(value);
+  }
+  const bytes = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return new TextDecoder().decode(bytes);
 }
 
 function json(value, status = 200) {

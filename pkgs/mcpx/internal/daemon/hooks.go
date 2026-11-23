@@ -9,7 +9,6 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
-	"time"
 
 	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
 	"github.com/developing-today/code/pkgs/mcpx/internal/elicit"
@@ -286,14 +285,13 @@ func (r *Registry) elicitViaBroker(ctx context.Context, server, key string, para
 	// migrated; they expire by TTL.
 	brokerID := brokerRowID(server, p.ElicitationID)
 	req := elicit.Request{
-		ID:        brokerID,
-		Server:    server,
-		Mode:      mode,
-		Message:   p.Message,
-		Schema:    p.RequestedSchema,
-		URL:       p.URL,
-		Trace:     r.askIDFor(ctx, server, key),
-		ExpiresAt: time.Now().Add(defaults.ElicitTTL),
+		ID:      brokerID,
+		Server:  server,
+		Mode:    mode,
+		Message: p.Message,
+		Schema:  p.RequestedSchema,
+		URL:     p.URL,
+		Trace:   r.askIDFor(ctx, server, key),
 	}
 	if !r.hasAnswerer(req) {
 		return nil, noAudience("elicitation/create", req)
@@ -388,11 +386,10 @@ func (r *Registry) sampleViaBroker(ctx context.Context, server, key string, para
 		// A sampling request has no question as such. The system prompt is
 		// the closest thing to one, and it is what a human reading the
 		// queue needs to see first.
-		Message:   firstNonEmptyStr(p.SystemPrompt, server+" asks for a model completion"),
-		Schema:    params,
-		Audience:  elicit.ToAgent,
-		Reason:    "sampling asks a model, and the agent driving mcpx has one",
-		ExpiresAt: time.Now().Add(defaults.ElicitTTL),
+		Message:  firstNonEmptyStr(p.SystemPrompt, server+" asks for a model completion"),
+		Schema:   params,
+		Audience: elicit.ToAgent,
+		Reason:   "sampling asks a model, and the agent driving mcpx has one",
 	}
 	if !r.hasAnswerer(req) {
 		return nil, noAudience("sampling/createMessage", req)
@@ -461,13 +458,12 @@ func (r *Registry) rootsViaBroker(ctx context.Context, server, key string, param
 		return nil, mcpclient.ErrNotRelayed
 	}
 	req, err := r.broker.OpenRequest(elicit.Request{
-		Server:    server,
-		Trace:     r.askIDFor(ctx, server, key),
-		Mode:      elicit.Roots,
-		Message:   server + " asks for the client's roots",
-		Audience:  elicit.ToAgent,
-		Reason:    "roots are the client's own, and only it can list them",
-		ExpiresAt: time.Now().Add(defaults.ElicitTTL),
+		Server:   server,
+		Trace:    r.askIDFor(ctx, server, key),
+		Mode:     elicit.Roots,
+		Message:  server + " asks for the client's roots",
+		Audience: elicit.ToAgent,
+		Reason:   "roots are the client's own, and only it can list them",
 	})
 	if err != nil {
 		return nil, err

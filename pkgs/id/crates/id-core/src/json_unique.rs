@@ -181,10 +181,32 @@ pub fn parse_json_without_duplicate_keys(
     Ok(value)
 }
 
+/// Decode `bytes` into `T`, refusing any duplicated object key.
+///
+/// This is the lossless way the contract prescribes: validate with
+/// [`parse_json_without_duplicate_keys`], discard its value, and run the typed
+/// decode over the original bytes, so a duplicated key is refused by name and
+/// every value the typed decode accepts (full-width integers included) still
+/// decodes. It is the typed gates' single conversion point (#8794).
+///
+/// # Errors
+///
+/// A duplicated object key at any depth, or anything `serde_json::from_slice`
+/// refuses, including bytes that are not UTF-8.
+pub fn from_slice_without_duplicate_keys<T: serde::de::DeserializeOwned>(
+    bytes: &[u8],
+) -> Result<T, serde_json::Error> {
+    let Ok(text) = std::str::from_utf8(bytes) else {
+        return serde_json::from_slice(bytes);
+    };
+    parse_json_without_duplicate_keys(text)?;
+    serde_json::from_str(text)
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
-    use super::parse_json_without_duplicate_keys;
+    use super::{from_slice_without_duplicate_keys, parse_json_without_duplicate_keys};
 
     #[test]
     fn distinct_keys_parse_as_before() {
@@ -205,5 +227,23 @@ mod tests {
                 "{err}"
             );
         }
+    }
+
+    #[derive(Debug, PartialEq, Eq, serde::Deserialize)]
+    struct Wide {
+        amount: u128,
+    }
+
+    #[test]
+    fn typed_decode_refuses_duplicates_and_keeps_full_width_integers() {
+        let error =
+            from_slice_without_duplicate_keys::<Wide>(br#"{"amount":1,"amount":2}"#).unwrap_err();
+        assert!(error.to_string().contains(r#""amount""#), "{error}");
+        let wide: Wide = from_slice_without_duplicate_keys(
+            br#"{"amount":340282366920938463463374607431768211455}"#,
+        )
+        .unwrap();
+        assert_eq!(wide.amount, u128::MAX);
+        assert!(from_slice_without_duplicate_keys::<Wide>(b"{\"amount\":\"\xff\"}").is_err());
     }
 }

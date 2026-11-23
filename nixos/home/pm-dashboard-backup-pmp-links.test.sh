@@ -138,7 +138,8 @@ setup_home() {
   local f
   for f in actions.json comments.json fleet-feed.json quota-current.json \
     registry.json quota-gatherer-state.json quota-gatherer-heartbeat.json \
-    events.json coverage-snapshot.json aa-last-good.json; do
+    events.json coverage-snapshot.json aa-last-good.json \
+    decisions.json decision-events.jsonl; do
     printf '{}\n' >"$RUN_HOME/.local/state/pm-aggregator/$f"
   done
   printf '{}\n' >"$RUN_HOME/atlas/meta-quota-export/latest.json"

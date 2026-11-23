@@ -6,4 +6,11 @@
 
 pub mod authority;
 pub mod completion;
+pub mod contracts;
+pub mod degraded;
+pub mod lifecycle;
+pub mod operations;
+pub mod routing;
 pub mod selection;
+#[cfg(feature = "queue-broker")]
+pub mod sqlite_replica;

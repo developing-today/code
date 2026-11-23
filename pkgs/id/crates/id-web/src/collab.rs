@@ -55,6 +55,7 @@ use futures::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
+    path::PathBuf,
     sync::{
         Arc,
         atomic::{AtomicU64, AtomicUsize},
@@ -71,7 +72,9 @@ use super::markdown::{
 use id_core::frames::MAX_FRAME_BYTES;
 use id_core::waiting::AuthorKey;
 use id_store::documents::{DocumentError, DocumentRef};
-use id_store::note_checkpoints::{CheckpointError, GroupRoles, NoteAccess, NoteCheckpoints};
+use id_store::note_checkpoints::{
+    CheckpointError, GroupRoles, NoteAccess, NoteCheckpoints, NotePolicyRecord,
+};
 use id_store::notes::{AppliedNote, NoteRecord};
 use p2panda_core::Hash;
 
@@ -148,7 +151,10 @@ fn content_to_document(
     let doc = match mode {
         ContentMode::Rich => {
             // Already ProseMirror JSON - parse it directly
-            serde_json::from_str(&text).unwrap_or_else(|_| {
+            // A duplicated key would collapse to its last value here and
+            // differ from the bytes stored, so it falls back like any
+            // other unparseable content (#8794).
+            id_core::json_unique::parse_json_without_duplicate_keys(&text).unwrap_or_else(|_| {
                 serde_json::json!({
                     "type": "doc",
                     "content": [{"type": "paragraph"}]
@@ -168,6 +174,12 @@ fn content_to_document(
     };
 
     (doc, mode)
+}
+
+fn desynchronized_message(lost: u64) -> CollabMessage {
+    CollabMessage::Error {
+        error: format!("Session desynchronized: {lost} messages lost"),
+    }
 }
 
 /// A step in the `ProseMirror` document history.
@@ -390,6 +402,110 @@ impl From<DocumentError> for PublishCheckpointError {
     }
 }
 
+/// The file name of the persisted note checkpoint snapshot (#3819):
+/// the serving host keeps it beside the identity store
+/// (`.identity.redb`), the node's other durable local state.
+pub const NOTE_CHECKPOINT_SNAPSHOT_FILE_NAME: &str = ".note-checkpoints.json";
+
+/// The durable snapshot of the note checkpoint log (#3819): the
+/// applied events and the per-note policies in one document — the
+/// form a host persists across a restart. The events alone rebuild
+/// every note as public; the policies are what keep a scoped note
+/// scoped, so the two are always written and read together.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NoteCheckpointSnapshot {
+    /// The applied note events, in the order they were recorded.
+    pub events: Vec<AppliedNote>,
+    /// The effective policy of every note in the log, in note ID order.
+    pub policies: Vec<NotePolicyRecord>,
+}
+
+/// Why restoring a persisted note checkpoint snapshot failed (#3819).
+#[derive(Debug)]
+pub enum NoteSnapshotError {
+    /// The snapshot file could not be read or written.
+    Io {
+        /// The snapshot's path.
+        path: PathBuf,
+        /// The underlying I/O failure.
+        source: std::io::Error,
+    },
+    /// The snapshot file is not a well-formed snapshot.
+    Corrupt {
+        /// The snapshot's path.
+        path: PathBuf,
+        /// The underlying decoding failure.
+        source: serde_json::Error,
+    },
+    /// The snapshot's events or policies were refused by the
+    /// checkpoint core: the events do not fold, or a policy names
+    /// an unknown note or the wrong owner.
+    Checkpoint(CheckpointError),
+}
+
+impl std::fmt::Display for NoteSnapshotError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Io { path, source } => {
+                write!(
+                    f,
+                    "note checkpoint snapshot at {}: {source}",
+                    path.display()
+                )
+            }
+            Self::Corrupt { path, source } => write!(
+                f,
+                "note checkpoint snapshot at {} is corrupt: {source}",
+                path.display()
+            ),
+            Self::Checkpoint(err) => write!(f, "{err}"),
+        }
+    }
+}
+
+impl std::error::Error for NoteSnapshotError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Io { source, .. } => Some(source),
+            Self::Corrupt { source, .. } => Some(source),
+            Self::Checkpoint(err) => Some(err),
+        }
+    }
+}
+
+impl From<CheckpointError> for NoteSnapshotError {
+    fn from(err: CheckpointError) -> Self {
+        Self::Checkpoint(err)
+    }
+}
+
+/// Writes a snapshot to `path` atomically: the new document lands
+/// under a temporary name in the same directory and is renamed over
+/// the old one, so a crash mid-write leaves the previous snapshot
+/// (or none), never a torn one for the next restart to read.
+fn write_note_snapshot_file(
+    path: &std::path::Path,
+    snapshot: &NoteCheckpointSnapshot,
+) -> Result<(), NoteSnapshotError> {
+    let bytes =
+        serde_json::to_vec_pretty(snapshot).map_err(|source| NoteSnapshotError::Corrupt {
+            path: path.to_path_buf(),
+            source,
+        })?;
+    let mut tmp_os = path.as_os_str().to_owned();
+    tmp_os.push(".tmp");
+    let tmp = PathBuf::from(tmp_os);
+    std::fs::write(&tmp, bytes).map_err(|source| NoteSnapshotError::Io {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    std::fs::rename(&tmp, path).map_err(|source| NoteSnapshotError::Io {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    Ok(())
+}
+
 /// Mints the event ID for a checkpoint published from a live session:
 /// a digest of everything the revision is — its note, its author, the
 /// heads it builds on, its content, and the session version that
@@ -434,6 +550,14 @@ pub struct CollabState {
     /// ([`CollabState::seed_note_events`]); read back with
     /// [`CollabState::note_events`] for persistence and sync.
     note_log: Arc<Mutex<NoteCheckpoints>>,
+    /// Where the host persists the checkpoint log's snapshot
+    /// (events + policies) so notes survive a restart (#3819):
+    /// installed with [`CollabState::with_note_snapshot_path`], the
+    /// snapshot is rewritten after every mutation that leaves the
+    /// log in a complete state, and the host restores it on startup
+    /// with [`CollabState::restore_persisted_note_snapshot`]. `None`
+    /// keeps the log memory-only, exactly as before.
+    note_snapshot_path: Option<PathBuf>,
     /// Which note each note session serves, by session key: recorded
     /// when a session is opened through
     /// [`CollabState::get_or_create_for_note`], so publishing a
@@ -464,6 +588,19 @@ impl CollabState {
         self
     }
 
+    /// Installs the path the checkpoint log's snapshot is persisted
+    /// to (#3819): after every mutation that leaves the log in a
+    /// complete state (a publication, a policy change, a full
+    /// restore) the snapshot is rewritten there, and the host
+    /// restores it on startup with
+    /// [`Self::restore_persisted_note_snapshot`]. Without a path the
+    /// log is memory-only.
+    #[must_use]
+    pub fn with_note_snapshot_path(mut self, path: PathBuf) -> Self {
+        self.note_snapshot_path = Some(path);
+        self
+    }
+
     /// Replaces a note's access policy in the checkpoint log
     /// (#3819 slice 3): only an author holding Admin on the note —
     /// its owner, or an admin grant — may re-scope it.
@@ -479,10 +616,15 @@ impl CollabState {
         by: AuthorKey,
         access: NoteAccess,
     ) -> Result<(), CheckpointError> {
-        self.note_log
-            .lock()
-            .await
-            .set_access(note, by, access, &self.note_group_roles)
+        let result =
+            self.note_log
+                .lock()
+                .await
+                .set_access(note, by, access, &self.note_group_roles);
+        if result.is_ok() {
+            self.persist_note_snapshot().await;
+        }
+        result
     }
 
     /// Get or create a document for editing.
@@ -562,7 +704,10 @@ impl CollabState {
     /// events — the restart/sync entry (#3819): the events are the
     /// durable state, and the rebuilt log folds to the heads the live
     /// log had. The events are validated as a whole; a set that does
-    /// not fold leaves the current log untouched.
+    /// not fold leaves the current log untouched. Policies do NOT
+    /// travel with the events: seed them alongside with
+    /// [`Self::seed_note_policies`], or the rebuilt log treats every
+    /// note as public.
     ///
     /// # Errors
     ///
@@ -575,9 +720,144 @@ impl CollabState {
 
     /// The applied note events in the checkpoint log, in the order
     /// they were recorded: persist or sync these and
-    /// [`Self::seed_note_events`] rebuilds the rest.
+    /// [`Self::seed_note_events`] rebuilds the rest. Persist
+    /// [`Self::note_policies`] alongside them — the events alone
+    /// rebuild every note as public.
     pub async fn note_events(&self) -> Vec<AppliedNote> {
         self.note_log.lock().await.events().to_vec()
+    }
+
+    /// The effective access policy of every note in the checkpoint
+    /// log, in note ID order (#3819): the durable form of the
+    /// policies, to persist alongside [`Self::note_events`] and
+    /// re-state with [`Self::seed_note_policies`] after a rebuild.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CheckpointError`] when the recorded events do not
+    /// fold (a log built through this type's methods does not).
+    pub async fn note_policies(&self) -> Result<Vec<NotePolicyRecord>, CheckpointError> {
+        self.note_log.lock().await.policies()
+    }
+
+    /// Re-states policies after a rebuild from events (the
+    /// restart/sync path): each record replaces the note's policy.
+    /// Seed the events first — a record for a note the log does not
+    /// have is refused — and treat a refusal as a failed restart,
+    /// never as a note silently reopened to public.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CheckpointError::UnknownNote`] for a record naming
+    /// a note with no create event in the log, and
+    /// [`CheckpointError::Note`] for a record naming the wrong owner.
+    pub async fn seed_note_policies(
+        &self,
+        policies: Vec<NotePolicyRecord>,
+    ) -> Result<(), CheckpointError> {
+        self.note_log.lock().await.seed_policies(policies)
+    }
+
+    /// The checkpoint log's durable snapshot: the applied events
+    /// and the per-note policies together (#3819) — the document
+    /// [`Self::restore_note_snapshot`] rebuilds from, and the form
+    /// persisted at the installed snapshot path.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CheckpointError`] when the recorded events do not
+    /// fold (a log built through this type's methods does not).
+    pub async fn note_snapshot(&self) -> Result<NoteCheckpointSnapshot, CheckpointError> {
+        let log = self.note_log.lock().await;
+        Ok(NoteCheckpointSnapshot {
+            events: log.events().to_vec(),
+            policies: log.policies()?,
+        })
+    }
+
+    /// Rebuilds the checkpoint log from a snapshot: the events
+    /// first, then the policies over them, validated as a whole — a
+    /// snapshot that does not fold, or whose policies name an
+    /// unknown note or the wrong owner, leaves the current log
+    /// untouched. This is the restore the serving host runs on
+    /// startup; see [`Self::restore_persisted_note_snapshot`].
+    ///
+    /// # Errors
+    ///
+    /// Returns the checkpoint core's refusal unchanged.
+    pub async fn restore_note_snapshot(
+        &self,
+        snapshot: NoteCheckpointSnapshot,
+    ) -> Result<(), CheckpointError> {
+        let rebuilt =
+            NoteCheckpoints::from_events_with_policies(snapshot.events, snapshot.policies)?;
+        *self.note_log.lock().await = rebuilt;
+        self.persist_note_snapshot().await;
+        Ok(())
+    }
+
+    /// Restores the snapshot persisted at the installed path, if
+    /// one is there (#3819): the serving host calls this on
+    /// startup, before it serves. A missing file is a fresh host
+    /// (`Ok(false)`); a file that does not parse or does not fold
+    /// is a failed restart (`Err`) — never a host that silently
+    /// reopens scoped notes to public. Without an installed path
+    /// this is a no-op (`Ok(false)`).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NoteSnapshotError::Io`] when the file cannot be
+    /// read, [`NoteSnapshotError::Corrupt`] when it is not a
+    /// well-formed snapshot, and [`NoteSnapshotError::Checkpoint`]
+    /// when its events or policies are refused.
+    pub async fn restore_persisted_note_snapshot(&self) -> Result<bool, NoteSnapshotError> {
+        let Some(path) = &self.note_snapshot_path else {
+            return Ok(false);
+        };
+        let bytes = match std::fs::read(path) {
+            Ok(bytes) => bytes,
+            Err(source) if source.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+            Err(source) => {
+                return Err(NoteSnapshotError::Io {
+                    path: path.clone(),
+                    source,
+                });
+            }
+        };
+        let snapshot: NoteCheckpointSnapshot =
+            serde_json::from_slice(&bytes).map_err(|source| NoteSnapshotError::Corrupt {
+                path: path.clone(),
+                source,
+            })?;
+        self.restore_note_snapshot(snapshot).await?;
+        Ok(true)
+    }
+
+    /// Rewrites the persisted snapshot from the current log, when a
+    /// snapshot path is installed. Called only at points where the
+    /// log is in a complete state — never between seeding events
+    /// and seeding their policies — so the file always holds one
+    /// whole snapshot. A write failure is logged, not propagated:
+    /// the mutation already landed in memory, and reporting it as
+    /// failed would misstate the log; the next mutation rewrites
+    /// the file.
+    async fn persist_note_snapshot(&self) {
+        let Some(path) = &self.note_snapshot_path else {
+            return;
+        };
+        match self.note_snapshot().await {
+            Ok(snapshot) => {
+                if let Err(err) = write_note_snapshot_file(path, &snapshot) {
+                    tracing::warn!(
+                        "[collab] could not persist the note checkpoint snapshot to {}: {err}",
+                        path.display()
+                    );
+                }
+            }
+            Err(err) => {
+                tracing::warn!("[collab] could not snapshot the note checkpoint log: {err}");
+            }
+        }
     }
 
     /// The current heads of a note in the checkpoint log.
@@ -655,19 +935,25 @@ impl CollabState {
             return Err(PublishCheckpointError::NotNoteSession(key.to_owned()));
         };
         let content = DocumentRef::for_bytes("text/markdown", text.as_bytes())?;
-        let mut log = self.note_log.lock().await;
-        if log.record(note)?.is_none() {
-            return Ok(log.create(note, author, content)?);
-        }
-        let heads = log.heads(note)?;
-        let event_id = mint_checkpoint_event_id(&note, &author, &heads, &content, doc.version());
-        Ok(log.checkpoint_on_heads_checked(
-            note,
-            event_id,
-            author,
-            content,
-            &self.note_group_roles,
-        )?)
+        let published = {
+            let mut log = self.note_log.lock().await;
+            if log.record(note)?.is_none() {
+                log.create(note, author, content)?
+            } else {
+                let heads = log.heads(note)?;
+                let event_id =
+                    mint_checkpoint_event_id(&note, &author, &heads, &content, doc.version());
+                log.checkpoint_on_heads_checked(
+                    note,
+                    event_id,
+                    author,
+                    content,
+                    &self.note_group_roles,
+                )?
+            }
+        };
+        self.persist_note_snapshot().await;
+        Ok(published)
     }
 
     /// The content reference a reopened note session hydrates from:
@@ -1437,9 +1723,7 @@ async fn handle_collab_socket(
                     );
                     // Tell the client to reconnect for a fresh state.
                     // The client will close the WS → reconnect → get Init + catch-up.
-                    let error_msg = CollabMessage::Error {
-                        error: format!("Session desynchronized: {n} messages lost"),
-                    };
+                    let error_msg = desynchronized_message(n);
                     let mut sender = sender_for_broadcast.lock().await;
                     let _ = sender
                         .send(Message::Binary(error_msg.encode().into()))
@@ -2373,6 +2657,15 @@ mod tests {
         assert!(doc["content"].as_array().is_some());
     }
 
+    #[test]
+    fn rich_content_with_a_duplicated_key_falls_back_to_an_empty_document() {
+        let content = br#"{"type":"doc","type":"paragraph","content":[]}"#;
+        let (doc, mode) = content_to_document(Some(content), Some("note.pm.json"));
+        assert_eq!(mode, ContentMode::Rich);
+        assert_eq!(doc["type"], "doc");
+        assert_eq!(doc["content"][0]["type"], "paragraph");
+    }
+
     #[allow(clippy::unwrap_used)]
     #[test]
     fn test_content_to_document_markdown() {
@@ -2495,6 +2788,29 @@ mod tests {
                 assert!(error.contains("desynchronized"));
             }
             _ => panic!("Expected Error message"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_lagged_broadcast_produces_recoverable_desync_error() {
+        let (tx, mut rx) = broadcast::channel(1);
+        // Keep the receiver behind until the bounded channel has overwritten
+        // its first item; this induces Lagged deterministically, without sleeps.
+        tx.send(CollabMessage::CursorRemove { client_id: 1 })
+            .unwrap();
+        tx.send(CollabMessage::CursorRemove { client_id: 2 })
+            .unwrap();
+
+        let lost = match rx.recv().await {
+            Err(broadcast::error::RecvError::Lagged(lost)) => lost,
+            other => panic!("expected lagged receiver, got {other:?}"),
+        };
+        match desynchronized_message(lost) {
+            CollabMessage::Error { error } => {
+                assert_eq!(error, "Session desynchronized: 1 messages lost");
+                assert!(error.contains("desynchronized"));
+            }
+            other => panic!("expected recoverable error, got {other:?}"),
         }
     }
 
@@ -2783,6 +3099,253 @@ mod tests {
             .unwrap();
         assert_eq!(chained.revisions.len(), 2);
         assert_eq!(chained.revisions[1].parents, heads_before);
+    }
+
+    #[tokio::test]
+    async fn test_note_policies_survive_a_restart_rebuild() {
+        use id_store::note_checkpoints::{GroupRoles, NoteGrant, NotePrincipal, NoteRole};
+
+        // Author 5 is a Write member of group 9; author 6 is not.
+        fn group_roles() -> GroupRoles {
+            GroupRoles::new(|group, member| {
+                if group == Hash::from_bytes([9u8; 32]) && member == [5u8; 32] {
+                    Some(NoteRole::Write)
+                } else {
+                    None
+                }
+            })
+        }
+
+        // The owner creates the note, then scopes it to one
+        // write-grant user and one write-grant group.
+        let note = Hash::from_bytes([41u8; 32]);
+        let key = note_session_key(&note);
+        let owner: AuthorKey = [7u8; 32];
+        let granted: AuthorKey = [8u8; 32];
+        let member: AuthorKey = [5u8; 32];
+        let stranger: AuthorKey = [9u8; 32];
+        let live = CollabState::new().with_note_group_roles(group_roles());
+        live.get_or_create_for_note(&note, "", Some(b"# First"), Some("n.md"))
+            .await;
+        live.publish_note_checkpoint(&key, owner).await.unwrap();
+        live.set_note_access(
+            note,
+            owner,
+            NoteAccess::Scoped(vec![
+                NoteGrant {
+                    principal: NotePrincipal::User(granted),
+                    role: NoteRole::Write,
+                },
+                NoteGrant {
+                    principal: NotePrincipal::Group(Hash::from_bytes([9u8; 32])),
+                    role: NoteRole::Write,
+                },
+            ]),
+        )
+        .await
+        .unwrap();
+
+        // Restart: the events and the policies, in that order.
+        let events = live.note_events().await;
+        let policies = live.note_policies().await.unwrap();
+        let restarted = CollabState::new().with_note_group_roles(group_roles());
+        restarted.seed_note_events(events).await.unwrap();
+        restarted.seed_note_policies(policies).await.unwrap();
+
+        // The boundary holds after the restart: the granted user and
+        // the group member chain on; the stranger is refused and the
+        // refusal records nothing.
+        let doc = restarted
+            .get_or_create_for_note(&note, "", Some(b"# Second"), Some("n.md"))
+            .await;
+        let chained = restarted
+            .publish_note_checkpoint(&key, granted)
+            .await
+            .unwrap();
+        assert_eq!(chained.revisions.len(), 2);
+        *doc.doc.write().await = plain_text_to_prosemirror("# Third");
+        let chained = restarted
+            .publish_note_checkpoint(&key, member)
+            .await
+            .unwrap();
+        assert_eq!(chained.revisions.len(), 3);
+
+        *doc.doc.write().await = plain_text_to_prosemirror("# Nope");
+        let err = restarted
+            .publish_note_checkpoint(&key, stranger)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(
+                err,
+                PublishCheckpointError::Checkpoint(CheckpointError::NotAuthorized { .. })
+            ),
+            "a stranger's publication is refused after the restart: {err}"
+        );
+        assert_eq!(
+            restarted.note_events().await.len(),
+            3,
+            "the refusal recorded nothing"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_note_policies_survive_a_host_restart_through_the_snapshot_file() {
+        use id_store::note_checkpoints::{GroupRoles, NoteGrant, NotePrincipal, NoteRole};
+
+        // Author 5 is a Write member of group 9; author 6 is not.
+        fn group_roles() -> GroupRoles {
+            GroupRoles::new(|group, member| {
+                if group == Hash::from_bytes([9u8; 32]) && member == [5u8; 32] {
+                    Some(NoteRole::Write)
+                } else {
+                    None
+                }
+            })
+        }
+
+        // The host restart drill (#3819): the live state persists
+        // its checkpoint log to the snapshot file as it mutates; a
+        // fresh state over the same file restores events and
+        // policies, so the access boundary — not just the log —
+        // survives the restart.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(".note-checkpoints.json");
+        let note = Hash::from_bytes([47u8; 32]);
+        let key = note_session_key(&note);
+        let public_note = Hash::from_bytes([49u8; 32]);
+        let public_key = note_session_key(&public_note);
+        let owner: AuthorKey = [7u8; 32];
+        let granted: AuthorKey = [8u8; 32];
+        let member: AuthorKey = [5u8; 32];
+        let stranger: AuthorKey = [9u8; 32];
+
+        let live = CollabState::new()
+            .with_note_group_roles(group_roles())
+            .with_note_snapshot_path(path.clone());
+        live.get_or_create_for_note(&note, "", Some(b"# First"), Some("n.md"))
+            .await;
+        live.publish_note_checkpoint(&key, owner).await.unwrap();
+        live.set_note_access(
+            note,
+            owner,
+            NoteAccess::Scoped(vec![
+                NoteGrant {
+                    principal: NotePrincipal::User(granted),
+                    role: NoteRole::Write,
+                },
+                NoteGrant {
+                    principal: NotePrincipal::Group(Hash::from_bytes([9u8; 32])),
+                    role: NoteRole::Write,
+                },
+            ]),
+        )
+        .await
+        .unwrap();
+        live.get_or_create_for_note(&public_note, "", Some(b"# Open"), Some("p.md"))
+            .await;
+        live.publish_note_checkpoint(&public_key, owner)
+            .await
+            .unwrap();
+
+        // The mutations reached the file: it parses as a snapshot
+        // holding both notes' events and both policies.
+        let persisted: NoteCheckpointSnapshot =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(persisted.events.len(), 2);
+        assert_eq!(persisted.policies.len(), 2);
+        let heads_before = live.note_heads(note).await.unwrap();
+
+        // Restart: a fresh state over the same file.
+        let restarted = CollabState::new()
+            .with_note_group_roles(group_roles())
+            .with_note_snapshot_path(path.clone());
+        assert!(restarted.restore_persisted_note_snapshot().await.unwrap());
+        assert_eq!(restarted.note_events().await, live.note_events().await);
+        assert_eq!(restarted.note_heads(note).await.unwrap(), heads_before);
+
+        // The boundary holds after the restart: the granted user and
+        // the group member chain on; the stranger is refused and the
+        // refusal records nothing.
+        let doc = restarted
+            .get_or_create_for_note(&note, "", Some(b"# Second"), Some("n.md"))
+            .await;
+        let chained = restarted
+            .publish_note_checkpoint(&key, granted)
+            .await
+            .unwrap();
+        assert_eq!(chained.revisions.len(), 2);
+        *doc.doc.write().await = plain_text_to_prosemirror("# Third");
+        let chained = restarted
+            .publish_note_checkpoint(&key, member)
+            .await
+            .unwrap();
+        assert_eq!(chained.revisions.len(), 3);
+        *doc.doc.write().await = plain_text_to_prosemirror("# Nope");
+        let err = restarted
+            .publish_note_checkpoint(&key, stranger)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(
+                err,
+                PublishCheckpointError::Checkpoint(CheckpointError::NotAuthorized { .. })
+            ),
+            "a stranger's publication is refused after the restart: {err}"
+        );
+        assert_eq!(
+            restarted.note_events().await.len(),
+            4,
+            "the refusal recorded nothing"
+        );
+
+        // And the public note stayed public: the same stranger
+        // appends to it without any grant.
+        restarted
+            .get_or_create_for_note(&public_note, "", Some(b"# Open two"), Some("p.md"))
+            .await;
+        let appended = restarted
+            .publish_note_checkpoint(&public_key, stranger)
+            .await
+            .unwrap();
+        assert_eq!(appended.revisions.len(), 2);
+        assert_eq!(restarted.note_events().await.len(), 5);
+    }
+
+    #[tokio::test]
+    async fn test_a_corrupt_note_snapshot_fails_the_restart_not_opens_notes() {
+        // A snapshot that does not parse is a failed restart, never
+        // a host that silently reopens scoped notes to public; a
+        // missing snapshot is a fresh host, not an error.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(".note-checkpoints.json");
+        std::fs::write(&path, b"{\"events\":").unwrap();
+        let state = CollabState::new().with_note_snapshot_path(path);
+        assert!(state.restore_persisted_note_snapshot().await.is_err());
+
+        let fresh = CollabState::new().with_note_snapshot_path(dir.path().join("absent.json"));
+        assert!(!fresh.restore_persisted_note_snapshot().await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_seed_note_policies_before_events_is_refused() {
+        // Policies name notes; a policy for a note the log has no
+        // create event for is a failed restart, never a note
+        // silently reopened to public.
+        let note = Hash::from_bytes([43u8; 32]);
+        let key = note_session_key(&note);
+        let owner: AuthorKey = [7u8; 32];
+        let live = CollabState::new();
+        live.get_or_create_for_note(&note, "", Some(b"# First"), Some("n.md"))
+            .await;
+        live.publish_note_checkpoint(&key, owner).await.unwrap();
+        let policies = live.note_policies().await.unwrap();
+
+        let restarted = CollabState::new();
+        assert!(matches!(
+            restarted.seed_note_policies(policies).await.unwrap_err(),
+            CheckpointError::UnknownNote(_)
+        ));
     }
 
     #[tokio::test]

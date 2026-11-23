@@ -66,9 +66,16 @@
 //! request before processing it — rate-limit rejections (the limiter
 //! answers before the mutation runs) and permission/scope rejections
 //! (INSUFFICIENT_SCOPES, "Resource not accessible by …") are both
-//! pre-execution refusals. Any other failure of a write is returned
-//! as-is: the request may have landed, and repeating it could
-//! double-post. Reads repeat on any failure class.
+//! pre-execution refusals. A "Could not resolve to a node" error is
+//! NOT one: GraphQL executes mutation fields serially, so a batched
+//! mutation may already have run an earlier field (e.g. an
+//! `addComment`) before a later field's node fails to resolve — the
+//! response can carry partial results alongside the error. Replaying
+//! the whole mutation would duplicate the part that landed, so
+//! node-resolution failures repeat only read-only calls, like any
+//! other failure. Any other failure of a write is returned as-is:
+//! the request may have landed, and repeating it could double-post.
+//! Reads repeat on any failure class.
 //!
 //! Tokens are never printed, logged, or written to a file: provider
 //! errors name the source and stage only, never values. Attempts
@@ -98,11 +105,36 @@
 //!                       beating fleet config's `[gh]` table
 //!   FLEET_GH_CACHE_BIND bind address for `cache-serve`
 //!                       (default 127.0.0.1:4802)
+//!
+//! Close guard (#9177): `issue close` and `issue edit` with an
+//! `--add-label status:done` are refused when the queue broker has a
+//! claimed or parked task bound to that repo#issue, unless the bound
+//! task's completion record (a `fleet-closure/v1` close record
+//! carrying its task id) is presented with
+//! `--completion-record <path>` — a wrapper-only flag, stripped
+//! before gh runs. An issue without a live bound task is unaffected.
+//! A guard refusal exits 2 and never reaches the token rotation.
+//! The queue query fails open (a broker outage must not block every
+//! close — the queue sweep's detective check is the net), and a
+//! build without the queue client skips the guard the same way.
+//!
+//! Metadata create path (#9073, design §12–§15): `issue create` and
+//! `pr create` bodies are stamped with the fleet Metadata block
+//! (gh_metadata.rs) before the rotation runs, and the full record
+//! is inserted into the metadata store after a successful create.
+//! A malformed caller block refuses the create before any write;
+//! a failed insert never loses the item (the miss is reported on
+//! stderr and ingestion heals it). Controls: FLEET_METADATA_DB
+//! (store path), FLEET_GH_STAMP_KEY_ID (stamp signing key id; the
+//! key material is resolved by name from the secrets broker).
 
 use crate::gh_cache;
+use crate::gh_closure;
+use crate::gh_guard;
+use crate::gh_metadata;
 use fleet_config::{Config, DEFAULT_GH_CACHE_PORT};
 use fleet_secrets::Resolver;
-use std::io::Write;
+use std::io::{IsTerminal, Write};
 use std::process::{Command, Stdio};
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -254,6 +286,13 @@ enum FailureClass {
     /// Authorization refused the request before processing it
     /// (missing scope, resource not accessible to this identity).
     Permission,
+    /// A node the identity cannot see failed to resolve ("Could not
+    /// resolve to a node"). GitHub hides inaccessible nodes this
+    /// way, but resolution is per-field, not a whole-operation
+    /// pre-execution check: in a batched mutation an earlier field
+    /// may already have executed, so this class repeats only
+    /// read-only calls (#12154 review).
+    NodeResolution,
     /// Anything else: the request may or may not have landed.
     Other,
 }
@@ -272,6 +311,14 @@ fn classify_failure(output: &str) -> FailureClass {
     {
         return FailureClass::RateLimit;
     }
+    // GraphQL hides nodes the identity cannot see as unresolvable
+    // rather than inaccessible — but resolution is per-field, not a
+    // whole-operation pre-execution check, so a batched mutation may
+    // already have partially executed (#12154 review). This class
+    // repeats read-only calls only; see may_retry.
+    if lower.contains("could not resolve to a node") {
+        return FailureClass::NodeResolution;
+    }
     if lower.contains("missing required scopes")
         || lower.contains("insufficient_scopes")
         || lower.contains("resource not accessible")
@@ -286,6 +333,123 @@ fn classify_failure(output: &str) -> FailureClass {
     FailureClass::Other
 }
 
+/// The `gh` command word, past any inherited flags given before it
+/// (`gh -R o/r secret set ...`). `-R`/`--repo` take a value.
+fn command_word(args: &[String]) -> Option<&str> {
+    let mut i = 0;
+    while let Some(a) = args.get(i) {
+        let a = a.as_str();
+        if a == "-R" || a == "--repo" {
+            i += 2;
+        } else if a.starts_with('-') {
+            i += 1;
+        } else {
+            return Some(a);
+        }
+    }
+    None
+}
+
+/// The call's arguments as they go into the audit log, with the
+/// values that are themselves secrets replaced: `gh secret set`
+/// bodies and `Authorization` headers. Only the logged copy changes;
+/// `gh` still gets the real arguments.
+fn audit_args(args: &[String]) -> Vec<String> {
+    const REDACTED: &str = "[redacted]";
+    let is_secret = command_word(args) == Some("secret");
+    // A header is redacted when its name can carry a credential: the
+    // standard auth and cookie headers, and any custom header whose name
+    // mentions a token, key, secret, password, session or auth.
+    let redact_header = |v: &str| -> Option<String> {
+        let (name, _) = v.split_once(':')?;
+        let name = name.trim();
+        let lower = name.to_ascii_lowercase();
+        let sensitive = [
+            "auth",
+            "cookie",
+            "token",
+            "secret",
+            "key",
+            "password",
+            "session",
+            "credential",
+        ]
+        .iter()
+        .any(|w| lower.contains(w));
+        sensitive.then(|| format!("{name}: {REDACTED}"))
+    };
+    let mut out = Vec::with_capacity(args.len());
+    let mut i = 0;
+    while i < args.len() {
+        let a = args[i].as_str();
+        if is_secret && (a == "--body" || a == "-b") {
+            out.push(a.to_string());
+            if i + 1 < args.len() {
+                out.push(REDACTED.to_string());
+            }
+            i += 2;
+            continue;
+        }
+        if is_secret && (a.starts_with("--body=") || (a.starts_with("-b") && a.len() > 2)) {
+            let flag = if a.starts_with("--body=") {
+                "--body="
+            } else {
+                "-b"
+            };
+            out.push(format!("{flag}{REDACTED}"));
+            i += 1;
+            continue;
+        }
+        if a == "-H" || a == "--header" {
+            if let Some(r) = args.get(i + 1).and_then(|v| redact_header(v)) {
+                out.push(a.to_string());
+                out.push(r);
+                i += 2;
+                continue;
+            }
+        }
+        // Attached spellings: --header=V, -HV and -H=V all send V.
+        let attached = a
+            .strip_prefix("--header=")
+            .map(|v| ("--header=", v))
+            .or_else(|| a.strip_prefix("-H=").map(|v| ("-H=", v)))
+            .or_else(|| a.strip_prefix("-H").map(|v| ("-H", v)));
+        if let Some((flag, v)) = attached {
+            if let Some(r) = redact_header(v) {
+                out.push(format!("{flag}{r}"));
+                i += 1;
+                continue;
+            }
+        }
+        out.push(a.to_string());
+        i += 1;
+    }
+    out
+}
+
+/// Append one audit record as a single locked write, so records from
+/// concurrent fleet processes sharing the file never interleave.
+fn append_audit_record(path: &std::path::Path, entry: &serde_json::Value) -> std::io::Result<()> {
+    use std::io::Write;
+    use std::os::fd::AsRawFd;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let mut f = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)?;
+    let line = format!("{entry}\n");
+    // SAFETY: flock on an fd this function owns for its whole lifetime.
+    if unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX) } != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    let written = f.write_all(line.as_bytes()).and_then(|()| f.flush());
+    // Closing the file releases the lock too; unlock explicitly anyway.
+    unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_UN) };
+    written
+}
+
 /// Is this `gh` invocation read-only? Only the shapes the fleet
 /// actually scripts are whitelisted; anything unrecognized is a
 /// write (the safe default: writes repeat only on pre-execution
@@ -297,14 +461,21 @@ fn is_read_call(args: &[String]) -> bool {
         return false;
     };
     match verb {
+        // A clustered short option such as `-it VALUE` hides which
+        // token is the endpoint and which is a value, so it is never
+        // trusted as a read (#12157 review).
+        "api" if args[1..].iter().any(|a| is_short_option_cluster(a)) => false,
+        "api" if api_endpoint(&args[1..]) == Some("graphql") => is_graphql_read(&args[1..]),
         "api" => {
             // gh api: GET unless --method says otherwise or a field
             // flag (-f/-F/--field/--raw-field/--input) implies POST.
             let mut i = 1;
             while i < args.len() {
                 let a = args[i].as_str();
-                if a == "-f"
-                    || a == "-F"
+                // `-fkey=value` / `-Fkey=value` are the same field
+                // flags with the value attached.
+                if a.starts_with("-f")
+                    || a.starts_with("-F")
                     || a == "--field"
                     || a == "--raw-field"
                     || a == "--input"
@@ -339,6 +510,152 @@ fn is_read_call(args: &[String]) -> bool {
         }
         "auth" => matches!(args.get(1).map(|s| s.as_str()), Some("status" | "token")),
         _ => false,
+    }
+}
+
+/// `gh api` flags that take the next argument as their value
+/// (`gh api --help`), so that value is not mistaken for the endpoint.
+const GH_API_VALUE_FLAGS: [&str; 17] = [
+    "-f",
+    "-F",
+    "--field",
+    "--raw-field",
+    "--input",
+    "-X",
+    "--method",
+    "-H",
+    "--header",
+    "-q",
+    "--jq",
+    "-t",
+    "--template",
+    "-p",
+    "--preview",
+    "--hostname",
+    "--cache",
+];
+
+/// The endpoint argument of a `gh api` call (the first positional),
+/// given the arguments after `api`.
+/// Is `a` several short flags run together, like `-it`? gh api's
+/// short options that take a value (`-f -F -H -X -p -q -t`) may carry
+/// it attached (`-tTEMPLATE`), which is one option, not a cluster.
+/// Any other short option longer than two characters starts with a
+/// boolean flag (`-i`) followed by more flags.
+fn is_short_option_cluster(a: &str) -> bool {
+    let mut chars = a.chars();
+    chars.next() == Some('-')
+        && a.len() > 2
+        && !a.starts_with("--")
+        && !matches!(chars.next(), Some('f' | 'F' | 'H' | 'X' | 'p' | 'q' | 't'))
+}
+
+fn api_endpoint(args: &[String]) -> Option<&str> {
+    let mut i = 0;
+    while i < args.len() {
+        let a = args[i].as_str();
+        if GH_API_VALUE_FLAGS.contains(&a) {
+            i += 2;
+            continue;
+        }
+        if !a.starts_with('-') {
+            return Some(a);
+        }
+        i += 1;
+    }
+    None
+}
+
+/// Is this `gh api graphql` call a query rather than a mutation?
+/// GraphQL always POSTs, so the field flags say nothing; the
+/// operation does. Read-only only when the `query` field is given
+/// inline and its operation is an anonymous `{ ... }` selection or a
+/// named `query`. A query read from a file (`query=@path`) or stdin
+/// (`--input`), or any operation that cannot be told apart, counts
+/// as a write (#12154).
+fn is_graphql_read(args: &[String]) -> bool {
+    let mut query: Option<&str> = None;
+    let mut queries = 0;
+    let mut typed = false;
+    let mut i = 0;
+    while i < args.len() {
+        let a = args[i].as_str();
+        if a == "--input" || a.starts_with("--input=") {
+            return false;
+        }
+        let is_field_flag = a == "-f" || a == "-F" || a == "--field" || a == "--raw-field";
+        if !is_field_flag && GH_API_VALUE_FLAGS.contains(&a) {
+            // Another option's value (a --template, --jq, header...) is
+            // never a field, even when it looks like `-fquery=...`.
+            i += 2;
+            continue;
+        }
+        // `-F`/`--field` values are typed: gh fills `{owner}`, `{repo}`
+        // and `{branch}` in them before sending.
+        let is_typed = a == "-F"
+            || a == "--field"
+            || a.starts_with("--field=")
+            || (a.starts_with("-F") && a.len() > 2);
+        let field = if is_field_flag {
+            i += 1;
+            args.get(i).map(|s| s.as_str())
+        } else {
+            a.strip_prefix("--field=")
+                .or(a.strip_prefix("--raw-field="))
+                .or(a.strip_prefix("-f").filter(|v| !v.is_empty()))
+                .or(a.strip_prefix("-F").filter(|v| !v.is_empty()))
+        };
+        if let Some(v) = field.and_then(|f| f.strip_prefix("query=")) {
+            query = Some(v);
+            typed = is_typed;
+            queries += 1;
+        }
+        i += 1;
+    }
+    let Some(query) = query else {
+        return false;
+    };
+    // Which of several query fields gh sends is not ours to guess.
+    if queries > 1 {
+        return false;
+    }
+    if query.starts_with('@') {
+        return false;
+    }
+    // A typed field's placeholders are expanded by gh, so the text we
+    // see is not the operation gh sends; `{repo}` could become
+    // `mutation`. Treat any expandable placeholder as a write.
+    if typed
+        && ["{owner}", "{repo}", "{branch}"]
+            .iter()
+            .any(|p| query.contains(p))
+    {
+        return false;
+    }
+    // A document can hold several operations and `operationName` picks
+    // one, so a mutation or subscription anywhere in it makes the call
+    // a write. The word scan is coarse on purpose: a `mutation` inside
+    // a string or comment only errs toward treating a read as a write.
+    let has_write_operation = query
+        .split(|c: char| !(c.is_alphanumeric() || c == '_'))
+        .any(|word| word == "mutation" || word == "subscription");
+    if has_write_operation {
+        return false;
+    }
+    let mut rest = query.trim_start();
+    // Skip leading `#` comments.
+    while let Some(after) = rest.strip_prefix('#') {
+        rest = after
+            .split_once('\n')
+            .map_or("", |(_, tail)| tail)
+            .trim_start();
+    }
+    if rest.starts_with('{') {
+        return true;
+    }
+    match rest.strip_prefix("query") {
+        Some(tail) => !tail.starts_with(|c: char| c.is_alphanumeric() || c == '_'),
+        None => false,
     }
 }
 
@@ -486,7 +803,9 @@ fn may_retry(class: FailureClass, read_only: bool, attempts_left: bool) -> bool 
     }
     match class {
         FailureClass::RateLimit | FailureClass::Permission => true,
-        FailureClass::Other => read_only,
+        // Node resolution (and anything else) may have partially
+        // executed: repeat only when the call cannot have landed.
+        FailureClass::NodeResolution | FailureClass::Other => read_only,
     }
 }
 
@@ -733,13 +1052,22 @@ impl TokenProvider for FleetTokenProvider {
     fn token_for(&mut self, source: &TokenSource) -> Result<String, String> {
         match source {
             TokenSource::Personal => {
+                // The `personal` op resolves the hosts.yml SECRET,
+                // not a finished token: the daemon is a dumb secret
+                // cache for this op (it never learns which secret
+                // personal means), and the process-local cache
+                // returns the same secret. Parse the token out of
+                // whichever copy answered. Parsing only the local
+                // copy once handed gh the whole hosts.yml as
+                // GH_TOKEN whenever a daemon answered, and gh
+                // refused it client-side: net/http: invalid header
+                // field value for "Authorization" — reads failed
+                // over to an App token and masked it; writes, which
+                // repeat only on pre-execution refusals, surfaced
+                // it (2026-11-22).
                 let req = gh_cache::request("personal", None, None, Some(PERSONAL_SECRET_NAME));
-                self.via(req, |cache| {
-                    let hosts = cache.secret(PERSONAL_SECRET_NAME)?;
-                    parse_hosts_yml_token(&hosts).ok_or_else(|| {
-                        format!("secret '{PERSONAL_SECRET_NAME}' carries no oauth_token")
-                    })
-                })
+                let hosts = self.via(req, |cache| cache.secret(PERSONAL_SECRET_NAME))?;
+                personal_token(&hosts)
             }
             TokenSource::AppInstallation { app, owner } => {
                 let req = gh_cache::request("token", Some(app.slug()), Some(owner), None);
@@ -747,6 +1075,14 @@ impl TokenProvider for FleetTokenProvider {
             }
         }
     }
+}
+
+/// The personal rotation token inside its hosts.yml secret: the
+/// one place daemon-resolved and locally-resolved copies of the
+/// secret converge, so neither path can skip the parse.
+fn personal_token(hosts_yml: &str) -> Result<String, String> {
+    parse_hosts_yml_token(hosts_yml)
+        .ok_or_else(|| format!("secret '{PERSONAL_SECRET_NAME}' carries no oauth_token"))
 }
 
 /// Extract the `oauth_token` value from gh's hosts.yml content.
@@ -920,6 +1256,22 @@ fn run_with_provider<P: TokenProvider>(
     sources: &[TokenSource],
     trace: bool,
 ) -> i32 {
+    run_with_provider_capturing(provider, gh_bin, args, sources, trace, false).0
+}
+
+/// run_with_provider, additionally handing back the final attempt's
+/// stdout when `capture_stdout` is set (the Metadata create path
+/// reads the created item's URL from it, #9073). The capture is a
+/// clone taken only on the path that asked for it, so the hot
+/// passthrough pays nothing.
+fn run_with_provider_capturing<P: TokenProvider>(
+    provider: &mut P,
+    gh_bin: &str,
+    args: &[String],
+    sources: &[TokenSource],
+    trace: bool,
+    capture_stdout: bool,
+) -> (i32, Option<Vec<u8>>) {
     let read_only = is_read_call(args);
     let mut last: Option<Attempt> = None;
     let mut provider_errors: Vec<String> = Vec::new();
@@ -941,12 +1293,13 @@ fn run_with_provider<P: TokenProvider>(
             Ok(a) => a,
             Err(e) => {
                 eprintln!("fleet gh: failed to run '{gh_bin}': {e}");
-                return EXIT_UNRESOLVED;
+                return (EXIT_UNRESOLVED, None);
             }
         };
         if attempt.code == 0 {
+            let captured = capture_stdout.then(|| attempt.stdout.clone());
             emit(&attempt);
-            return EXIT_OK;
+            return (EXIT_OK, captured);
         }
         let combined = format!(
             "{}{}",
@@ -963,6 +1316,7 @@ fn run_with_provider<P: TokenProvider>(
                     match class {
                         FailureClass::RateLimit => "rate limit",
                         FailureClass::Permission => "permission/scope refusal",
+                        FailureClass::NodeResolution => "node-resolution error on a read-only call",
                         FailureClass::Other => "error on a read-only call",
                     }
                 );
@@ -970,22 +1324,24 @@ fn run_with_provider<P: TokenProvider>(
             last = Some(attempt);
             continue;
         }
+        let captured = capture_stdout.then(|| attempt.stdout.clone());
         emit(&attempt);
-        return attempt.code;
+        return (attempt.code, captured);
     }
     // No attempt produced output: either every source failed to
     // resolve, or the last failover had no successor. Prefer showing
     // the caller the real gh failure over our own summary.
     if let Some(attempt) = last {
         let code = attempt.code;
+        let captured = capture_stdout.then(|| attempt.stdout.clone());
         emit(&attempt);
-        return code;
+        return (code, captured);
     }
     for e in &provider_errors {
         eprintln!("fleet gh: {e}");
     }
     eprintln!("fleet gh: no token source could be resolved");
-    EXIT_UNRESOLVED
+    (EXIT_UNRESOLVED, None)
 }
 
 /// Write an attempt's captured bytes to the real stdout/stderr,
@@ -1087,6 +1443,19 @@ fn run_raw(gh_bin: &str, args: &[String]) -> i32 {
     }
 }
 
+fn closure_binding(
+    initialize: impl FnOnce() -> Result<Option<String>, String>,
+) -> gh_closure::Binding {
+    let resolved_session_id = match initialize() {
+        Ok(id) => id,
+        Err(error) => {
+            eprintln!("fleet gh: {error}; closure record will omit the session id");
+            return gh_closure::Binding::from_failed_session_resolution();
+        }
+    };
+    gh_closure::Binding::from_resolved_session_id(resolved_session_id)
+}
+
 pub fn run(config: &Config, args: &[String]) -> i32 {
     // Cache flags come first: leading `--cache-addr` (repeatable)
     // and `--no-cache` are fleet's own, stripped before anything
@@ -1128,11 +1497,169 @@ pub fn run(config: &Config, args: &[String]) -> i32 {
     if args.first().is_some_and(|a| a == "cache-status") {
         return run_cache_status(&args[1..], &cache_addrs(config, &flags));
     }
+    if args.first().is_some_and(|a| a == "closures") {
+        return run_closures(&args[1..]);
+    }
+    let guard_intent = match gh_guard::parse(args) {
+        Ok(intent) => intent,
+        Err(e) => {
+            eprintln!("{e}");
+            return EXIT_USAGE;
+        }
+    };
+    if let Some(intent) = &guard_intent {
+        if let Err(e) = gh_guard::check(intent) {
+            eprintln!("fleet gh close guard: {e}");
+            return EXIT_USAGE;
+        }
+    }
+    let parsed_args = guard_intent
+        .as_ref()
+        .map(|intent| intent.gh_args.as_slice())
+        .unwrap_or(args);
+    let intent = match gh_closure::parse(parsed_args) {
+        Ok(intent) => intent,
+        Err(e) => {
+            eprintln!("{e}");
+            return EXIT_USAGE;
+        }
+    };
+    let call_args = match &intent {
+        Some(i) => i.gh_args_with_reason(),
+        None => parsed_args.to_vec(),
+    };
+    // Metadata create path (#9073): stamp an issue/pr create's body
+    // before the rotation runs and remember the stamped block for
+    // the post-create record insert. A refusal (a malformed caller
+    // Metadata block, an unreadable --body-file) happens before any
+    // GitHub write and never reaches the rotation.
+    let prepared_create = match gh_metadata::prepare_create(
+        config,
+        &call_args,
+        std::io::stdin().is_terminal(),
+    ) {
+        Ok(prepared) => prepared,
+        Err(e) => {
+            eprintln!("fleet gh: {e}");
+            return EXIT_USAGE;
+        }
+    };
+    let call_args = match &prepared_create {
+        Some(prepared) => prepared.args.clone(),
+        None => call_args,
+    };
     let gh_bin = std::env::var("FLEET_GH_BIN").unwrap_or_else(|_| "gh".to_string());
-    let sources = rotation(args);
+    let sources = rotation(&call_args);
     let trace = std::env::var("FLEET_GH_TRACE").is_ok_and(|v| v == "1");
     let mut provider = FleetTokenProvider::new(config, cache_addrs(config, &flags));
-    run_with_provider(&mut provider, &gh_bin, args, &sources, trace)
+    let (code, final_stdout) = run_with_provider_capturing(
+        &mut provider,
+        &gh_bin,
+        &call_args,
+        &sources,
+        trace,
+        prepared_create.is_some(),
+    );
+    // Durable audit trail for App-token writes (#9177 control 3):
+    // record the caller/session identity, the call, and its outcome
+    // so an App-identity write is attributable to a component. Gated
+    // on FLEET_GH_TRACE=1 or FLEET_GH_AUDIT=1; default off to keep
+    // the hot path quiet, but any fleet job that wants attribution
+    // sets one of them (and FLEET_GH_CALLER for its identity).
+    let audit_enabled = std::env::var("FLEET_GH_TRACE").is_ok_and(|v| v == "1")
+        || std::env::var("FLEET_GH_AUDIT").is_ok_and(|v| v == "1");
+    if audit_enabled && !is_read_call(&call_args) {
+        let caller = std::env::var("FLEET_GH_CALLER").unwrap_or_else(|_| "unknown".to_string());
+        let path = std::env::var("FLEET_GH_AUDIT_FILE").unwrap_or_else(|_| {
+            let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+            format!("{home}/.fleet/gh-audit.jsonl")
+        });
+        let entry = serde_json::json!({
+            "ts": gh_closure::now_unix(),
+            "caller": caller,
+            "read_only": false,
+            "args": audit_args(&call_args),
+            "exit_code": code,
+        });
+        // The call already ran; a lost record must not change its
+        // outcome or repeat it, so report the gap and carry on.
+        if let Err(e) = append_audit_record(std::path::Path::new(&path), &entry) {
+            eprintln!(
+                "fleet gh: the call finished (exit {code}), but its audit record was not written to {path}: {e}"
+            );
+        }
+    }
+    if let Some(i) = intent.filter(|_| code == EXIT_OK) {
+        // Only a successfully parsed and completed Fleet-owned closure
+        // operation consumes recovered worktree identity. This is deliberately
+        // not a global startup hook or a scan of passthrough `gh` arguments.
+        let binding = closure_binding(|| crate::session_state::initialize(None));
+        let record = i.record(&binding, gh_closure::now_unix());
+        if let Err(e) = gh_closure::append(&gh_closure::log_path(), &record) {
+            eprintln!(
+                "fleet gh: {} done, but the closure record was not written: {e}",
+                i.action
+            );
+            return EXIT_UNRESOLVED;
+        }
+    }
+    // Metadata create path (#9073): the create succeeded, so insert
+    // the full record into the metadata store. The item already
+    // exists and gh's exit code stands either way — a failed insert
+    // is reported on stderr and ingestion (§16) heals the miss.
+    if let Some(prepared) = &prepared_create {
+        if code == EXIT_OK {
+            let store = gh_metadata::SqliteMetadataStore::new(
+                gh_metadata::SqliteMetadataStore::default_path(),
+            );
+            let stdout = final_stdout
+                .as_deref()
+                .map(|bytes| String::from_utf8_lossy(bytes).into_owned())
+                .unwrap_or_default();
+            match gh_metadata::finish_create(&store, &stdout, &prepared.block) {
+                gh_metadata::CreateOutcome::Inserted(_) => {}
+                gh_metadata::CreateOutcome::InsertFailed { item, error } => {
+                    eprintln!(
+                        "fleet gh: created {}, but its Metadata record was not \
+                         inserted ({error}); the ingestion sweeper will heal the miss",
+                        item.url
+                    );
+                }
+                gh_metadata::CreateOutcome::NoUrl => {
+                    eprintln!(
+                        "fleet gh: the create succeeded but gh's output carried \
+                         no item URL; its Metadata record was not inserted; \
+                         the ingestion sweeper will heal the miss"
+                    );
+                }
+            }
+        }
+    }
+    code
+}
+
+/// `fleet gh closures [<item>]`: print closure records, one JSON
+/// object per line, optionally only those for one item number.
+fn run_closures(tail: &[String]) -> i32 {
+    if tail.len() > 1 {
+        return usage_error(&format!(
+            "unexpected argument '{}' for 'fleet gh closures'",
+            tail[1]
+        ));
+    }
+    let log = match std::fs::read_to_string(gh_closure::log_path()) {
+        Ok(s) => s,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => {
+            eprintln!("fleet gh closures: cannot read the closure log: {e}");
+            return EXIT_UNRESOLVED;
+        }
+    };
+    let item = tail.first().map(|s| s.trim_start_matches('#'));
+    for r in gh_closure::query(&log, item) {
+        println!("{r}");
+    }
+    EXIT_OK
 }
 
 /// Leading cache flags (code#10742): `--cache-addr <addr>`
@@ -1350,6 +1877,48 @@ fn summarize_status(resp: &serde_json::Value) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn successful_closure_binding_consumes_resolved_worktree_session() {
+        let mut initialized = false;
+        let binding = closure_binding(|| {
+            initialized = true;
+            Ok(Some("ses_from_worktree".to_owned()))
+        });
+        assert!(
+            initialized,
+            "closure binding initializes session resolution"
+        );
+        assert_eq!(
+            binding.session_id.as_deref(),
+            Some("ses_from_worktree"),
+            "the resolved worktree identity reaches the closure binding"
+        );
+    }
+
+    #[test]
+    fn clustered_short_options_are_never_reads() {
+        let v = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        // -i then -t (which takes "graphql"): the endpoint is the issues URL.
+        assert!(!is_read_call(&v(&[
+            "api",
+            "-it",
+            "graphql",
+            "repos/o/r/issues",
+            "-f",
+            "title=x",
+            "-f",
+            "query={viewer{login}}"
+        ])));
+        assert!(!is_read_call(&v(&["api", "-it", "x", "repos/o/r/issues"])));
+        // An attached value is one option, not a cluster.
+        assert!(is_read_call(&v(&["api", "repos/o/r/issues", "-q.[]"])));
+        assert!(is_read_call(&v(&["api", "repos/o/r/issues", "-tx", "-i"])));
+        assert!(is_short_option_cluster("-it"));
+        assert!(!is_short_option_cluster("-i"));
+        assert!(!is_short_option_cluster("-tfoo"));
+        assert!(!is_short_option_cluster("--paginate"));
+    }
+
     use super::*;
 
     // oracle: GitHub's refusal strings as observed in fleet logs
@@ -1379,6 +1948,12 @@ mod tests {
             FailureClass::Permission
         );
         assert_eq!(
+            classify_failure(
+                "GraphQL: Could not resolve to a node with the global id of 'PVT_kwHOA123'"
+            ),
+            FailureClass::NodeResolution
+        );
+        assert_eq!(
             classify_failure("gh: Not Found (HTTP 404)"),
             FailureClass::Other
         );
@@ -1395,6 +1970,9 @@ mod tests {
     fn retry_gate_matches_the_rule() {
         assert!(may_retry(FailureClass::RateLimit, false, true));
         assert!(may_retry(FailureClass::Permission, false, true));
+        assert!(!may_retry(FailureClass::NodeResolution, false, true));
+        assert!(may_retry(FailureClass::NodeResolution, true, true));
+        assert!(!may_retry(FailureClass::NodeResolution, true, false));
         assert!(!may_retry(FailureClass::Other, false, true));
         assert!(may_retry(FailureClass::Other, true, true));
         assert!(!may_retry(FailureClass::RateLimit, false, false));
@@ -1404,6 +1982,143 @@ mod tests {
     // oracle: `gh <verb> --help` — list/view/status surfaces mutate
     // nothing; create/comment/edit surfaces mutate; `api` mutates
     // only with field flags or a non-GET method.
+    #[test]
+    fn audit_args_redact_secret_values() {
+        let v = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(
+            audit_args(&v(&[
+                "secret", "set", "TOKEN", "--body", "hunter2", "--repo", "o/r"
+            ])),
+            v(&[
+                "secret",
+                "set",
+                "TOKEN",
+                "--body",
+                "[redacted]",
+                "--repo",
+                "o/r"
+            ])
+        );
+        assert_eq!(
+            audit_args(&v(&["secret", "set", "TOKEN", "-bhunter2"])),
+            v(&["secret", "set", "TOKEN", "-b[redacted]"])
+        );
+        assert_eq!(
+            audit_args(&v(&["secret", "set", "TOKEN", "--body=hunter2"])),
+            v(&["secret", "set", "TOKEN", "--body=[redacted]"])
+        );
+        // Inherited flags before the command word.
+        assert_eq!(
+            audit_args(&v(&[
+                "-R", "o/r", "secret", "set", "TOKEN", "--body", "hunter2"
+            ])),
+            v(&[
+                "-R",
+                "o/r",
+                "secret",
+                "set",
+                "TOKEN",
+                "--body",
+                "[redacted]"
+            ])
+        );
+        assert_eq!(
+            audit_args(&v(&["--repo=o/r", "secret", "set", "TOKEN", "-bhunter2"])),
+            v(&["--repo=o/r", "secret", "set", "TOKEN", "-b[redacted]"])
+        );
+        assert_eq!(
+            audit_args(&v(&[
+                "api",
+                "user",
+                "-X",
+                "PATCH",
+                "-H",
+                "authorization: token abc"
+            ])),
+            v(&[
+                "api",
+                "user",
+                "-X",
+                "PATCH",
+                "-H",
+                "authorization: [redacted]"
+            ])
+        );
+        assert_eq!(
+            audit_args(&v(&["api", "user", "--header=Authorization: bearer abc"])),
+            v(&["api", "user", "--header=Authorization: [redacted]"])
+        );
+        assert_eq!(
+            audit_args(&v(&["api", "user", "-H=Authorization: bearer abc"])),
+            v(&["api", "user", "-H=Authorization: [redacted]"])
+        );
+        assert_eq!(
+            audit_args(&v(&[
+                "api",
+                "user",
+                "-X",
+                "POST",
+                "-H",
+                "Cookie: session=SECRET"
+            ])),
+            v(&["api", "user", "-X", "POST", "-H", "Cookie: [redacted]"])
+        );
+        assert_eq!(
+            audit_args(&v(&[
+                "api",
+                "user",
+                "-HX-Api-Key: k1",
+                "--header",
+                "Accept: json"
+            ])),
+            v(&[
+                "api",
+                "user",
+                "-HX-Api-Key: [redacted]",
+                "--header",
+                "Accept: json"
+            ])
+        );
+        // Ordinary bodies and headers stay readable.
+        let plain = v(&[
+            "issue",
+            "comment",
+            "1",
+            "--body",
+            "hello",
+            "-H",
+            "Accept: x",
+        ]);
+        assert_eq!(audit_args(&plain), plain);
+    }
+
+    #[test]
+    fn audit_records_append_whole_lines() {
+        let dir = std::env::temp_dir().join(format!("fleet-audit-{}", std::process::id()));
+        let path = dir.join("nested").join("gh-audit.jsonl");
+        let _ = std::fs::remove_dir_all(&dir);
+        let threads: Vec<_> = (0..8)
+            .map(|n| {
+                let path = path.clone();
+                std::thread::spawn(move || {
+                    for k in 0..50 {
+                        let entry = serde_json::json!({"n": n, "k": k, "pad": "x".repeat(2000)});
+                        append_audit_record(&path, &entry).unwrap();
+                    }
+                })
+            })
+            .collect();
+        for t in threads {
+            t.join().unwrap();
+        }
+        let log = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(log.lines().count(), 400);
+        for line in log.lines() {
+            serde_json::from_str::<serde_json::Value>(line).unwrap();
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn read_call_whitelist() {
         let read = |a: &[&str]| is_read_call(&a.iter().map(|s| s.to_string()).collect::<Vec<_>>());
@@ -1423,7 +2138,100 @@ mod tests {
         ]));
         assert!(read(&["issue", "list", "--repo", "developing-today/code"]));
         assert!(read(&["api", "repos/developing-today/code"]));
-        assert!(read(&["api", "graphql", "-f", "query={viewer{login}}"]) == false);
+        // GraphQL: the operation decides, not the field flags (#12154).
+        assert!(read(&["api", "graphql", "-f", "query={viewer{login}}"]));
+        assert!(read(&[
+            "api",
+            "graphql",
+            "-f",
+            "query=query($o:String!){organization(login:$o){projectV2(number:4){id}}}",
+            "-F",
+            "o=developing-today"
+        ]));
+        assert!(read(&[
+            "api",
+            "-H",
+            "X: y",
+            "graphql",
+            "--raw-field=query= # board\n query Q { viewer { login } }"
+        ]));
+        assert!(!read(&[
+            "api",
+            "graphql",
+            "-f",
+            "query=mutation{addStar(input:{starrableId:\"x\"}){clientMutationId}}"
+        ]));
+        assert!(!read(&["api", "graphql", "-f", "query= mutation M { x }"]));
+        // operationName can select a mutation from a document that opens
+        // with a query.
+        assert!(!read(&[
+            "api",
+            "graphql",
+            "-f",
+            "query=query Q { viewer { login } } mutation M { x }",
+            "-f",
+            "operationName=M"
+        ]));
+        assert!(!read(&[
+            "api",
+            "graphql",
+            "-f",
+            "query={ a } subscription S { b }"
+        ]));
+        assert!(!read(&["api", "graphql", "-f", "query=queryish { x }"]));
+        // Another option's value that looks like a query field is not one.
+        assert!(!read(&[
+            "api",
+            "graphql",
+            "-f",
+            "query=mutation { x }",
+            "--template",
+            "-fquery={viewer{login}}"
+        ]));
+        assert!(read(&[
+            "api",
+            "graphql",
+            "--jq",
+            "-fquery=mutation{x}",
+            "-f",
+            "query={viewer{login}}"
+        ]));
+        assert!(!read(&[
+            "api",
+            "graphql",
+            "-f",
+            "query={ a }",
+            "-f",
+            "query={ b }"
+        ]));
+        assert!(!read(&["api", "graphql", "-F", "query=@board.graphql"]));
+        // gh expands placeholders in typed fields, so what it sends is
+        // unknown; raw fields keep them literally.
+        assert!(!read(&[
+            "api",
+            "graphql",
+            "-F",
+            "query={repo} {addComment(input:{}){x}}"
+        ]));
+        assert!(!read(&[
+            "api",
+            "graphql",
+            "--field=query={owner} { viewer { login } }"
+        ]));
+        assert!(!read(&["api", "graphql", "-Fquery={branch} { x }"]));
+        assert!(read(&[
+            "api",
+            "graphql",
+            "-f",
+            "query={ viewer { login } } # {repo}"
+        ]));
+        assert!(!read(&["api", "graphql", "--input", "body.json"]));
+        assert!(!read(&["api", "graphql"]));
+        // A field named query on a REST call is still a POST-class write.
+        assert!(!read(&["api", "repos/o/r/issues", "-f", "query=x"]));
+        // A field value attached to its flag still makes the call POST.
+        assert!(!read(&["api", "repos/o/r/issues", "-ftitle=x"]));
+        assert!(!read(&["api", "repos/o/r/labels", "-Fname=x"]));
         assert!(read(&["api", "user", "--method", "GET"]));
         assert!(!read(&["api", "user", "--method", "PATCH"]));
         assert!(!read(&["issue", "comment", "1", "--body", "x"]));
@@ -1508,6 +2316,24 @@ mod tests {
         assert_eq!(parse_hosts_yml_token("oauth_token: \n"), None);
     }
 
+    // oracle: the 2026-11-22 write-path break — a daemon answering
+    // the `personal` op returns the hosts.yml secret itself, and
+    // the value that reaches GH_TOKEN must be the parsed token:
+    // header-safe (no whitespace or control characters), never the
+    // multi-line file. A secret with no oauth_token is an error
+    // naming the secret, on either resolution path.
+    #[test]
+    fn personal_token_is_the_parsed_token_not_the_secret() {
+        let yml = "github.com:\n    git_protocol: https\n    users:\n        dezren39:\n            oauth_token: gho_0123456789abcdefghijklmnopqrstuv\n    user: dezren39\n";
+        let token = personal_token(yml).expect("token parses");
+        assert_eq!(token, "gho_0123456789abcdefghijklmnopqrstuv");
+        assert!(
+            token.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'),
+            "token must be a valid Authorization header value: {token:?}"
+        );
+        assert!(personal_token("github.com:\n    user: x\n").is_err());
+    }
+
     // oracle: RFC 4648 base64url test vectors (padding dropped).
     #[test]
     fn base64url_vectors() {
@@ -1555,11 +2381,32 @@ mod tests {
              \techo 'some unclassifiable failure' >&2\n\
              \texit 7\n\
              fi\n\
+             if [ \"$GH_TOKEN\" = \"tok-node\" ]; then\n\
+             \techo 'GraphQL: Could not resolve to a node with the global id of PVT_kwHOA123' >&2\n\
+             \texit 1\n\
+             fi\n\
              echo 'fake gh output'\n\
              exit 0\n",
             log = log.display()
         );
-        std::fs::write(&script, script_text).unwrap();
+        // The script must never be open for writing in this process.
+        // Tests run on parallel threads, and any of them may fork to
+        // spawn a child; until that child execs it holds a copy of
+        // every descriptor this process has open, including one we are
+        // writing the script through. Exec'ing the script in that
+        // window fails with ETXTBSY (#11834, seen under the Nix build
+        // sandbox). So the text goes to a side file this test never
+        // runs, and a separate `cp` process, which has exited by the
+        // time we go on, writes the file that is executed.
+        let source = dir.join("fake-gh.src");
+        std::fs::write(&source, script_text).unwrap();
+        let _ = std::fs::remove_file(&script);
+        let copied = std::process::Command::new("cp")
+            .arg(&source)
+            .arg(&script)
+            .status()
+            .expect("run cp to place the fake gh");
+        assert!(copied.success(), "cp of the fake gh failed: {copied}");
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -1628,6 +2475,62 @@ mod tests {
         );
     }
 
+    // oracle: the #12154 review — a batched GraphQL mutation whose
+    // later field fails node resolution may already have executed an
+    // earlier field, so the mutation is NOT replayed under the next
+    // token; the same failure on a read IS retried.
+    #[test]
+    fn write_not_repeated_on_node_resolution_failure() {
+        struct NodeProvider;
+        impl TokenProvider for NodeProvider {
+            fn token_for(&mut self, source: &TokenSource) -> Result<String, String> {
+                match source {
+                    TokenSource::Personal => Ok("tok-node".to_string()),
+                    other => Ok(format!("tok-{}", other.label())),
+                }
+            }
+        }
+        let sources = vec![
+            TokenSource::Personal,
+            TokenSource::app(GhApp::Fleet, "developing-today"),
+        ];
+        // A batched mutation: addComment first, a node reference second.
+        let mutation: Vec<String> = [
+            "api",
+            "graphql",
+            "-f",
+            "query=mutation{addComment(input:{subjectId:\"x\",body:\"y\"}){clientMutationId} node(id:\"PVT_kwHOA123\"){id}}",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        assert!(!is_read_call(&mutation));
+        let (dir, script) = fake_gh("write-node");
+        let log = format!("{dir}/calls.log");
+        let mut provider = NodeProvider;
+        let code = run_with_provider(&mut provider, &script, &mutation, &sources, false);
+        assert_eq!(code, 1, "the first attempt's exit code is propagated");
+        let calls = std::fs::read_to_string(&log).unwrap();
+        assert_eq!(
+            calls.lines().count(),
+            1,
+            "mutation attempted exactly once: {calls}"
+        );
+        // The same failure on a read fails over to the next token.
+        let query: Vec<String> = ["api", "graphql", "-f", "query=query{viewer{login}}"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert!(is_read_call(&query));
+        let (dir2, script2) = fake_gh("read-node");
+        let log2 = format!("{dir2}/calls.log");
+        let mut provider = NodeProvider;
+        let code = run_with_provider(&mut provider, &script2, &query, &sources, false);
+        assert_eq!(code, 0);
+        let calls = std::fs::read_to_string(&log2).unwrap();
+        assert_eq!(calls.lines().count(), 2, "both tokens attempted: {calls}");
+    }
+
     // oracle: Drew's 2026-11-14 raw-mode contract — a LEADING
     // `--raw` is fleet's and is stripped; `--raw` anywhere else
     // is gh's own argument and must not trigger the bypass;
@@ -1651,8 +2554,8 @@ mod tests {
     // oracle: the same contract, at the exec boundary — raw mode
     // runs the real gh exactly once and hands it NO token: the
     // fake gh logs the GH_TOKEN it saw, and raw must log an empty
-    // one (ambient test env carries no GH_TOKEN), where every
-    // rotated call above logs a tok-* value.
+    // one, or the ambient GH_TOKEN untouched when the test runner
+    // carries one, where every rotated call above logs a tok-* value.
     #[test]
     fn raw_mode_runs_gh_without_token() {
         let (dir, script) = fake_gh("raw");
@@ -1661,9 +2564,151 @@ mod tests {
         let code = run_raw(&script, &args);
         assert_eq!(code, 0);
         let calls = std::fs::read_to_string(&log).unwrap();
+        let ambient = std::env::var("GH_TOKEN").unwrap_or_default();
         assert_eq!(
-            calls, "\n",
+            calls,
+            format!("{ambient}\n"),
             "exactly one call, with no token injected: {calls:?}"
         );
+    }
+}
+
+/// Property tests for the read classifier behind arbitrary-error
+/// retries. Oracle: the invariant that a call able to mutate (a
+/// mutation or subscription anywhere in the document, a typed field
+/// gh may rewrite, more than one query field, or a body from
+/// `--input`) is never a read; and, in the other direction, that a
+/// plain read document sent as a raw field is one.
+#[cfg(test)]
+mod graphql_read_props {
+    use super::is_read_call;
+    use proptest::prelude::*;
+
+    fn comment() -> impl Strategy<Value = String> {
+        prop_oneof![
+            Just(String::new()),
+            Just("# note\n".to_string()),
+            Just("  # a\n# b\n".to_string())
+        ]
+    }
+
+    fn name() -> impl Strategy<Value = String> {
+        "[A-Z][a-z]{0,5}"
+    }
+
+    fn read_doc() -> impl Strategy<Value = String> {
+        (comment(), name()).prop_flat_map(|(c, n)| {
+            prop_oneof![
+                Just(format!("{c}{{ viewer {{ login }} }}")),
+                Just(format!("{c}query {{ x }}")),
+                Just(format!("{c}query {n} {{ x }}")),
+                Just(format!("{c}query($n: Int) {{ x(n: $n) }}")),
+            ]
+        })
+    }
+
+    fn write_doc() -> impl Strategy<Value = String> {
+        (comment(), name(), name()).prop_flat_map(|(c, a, b)| {
+            prop_oneof![
+                Just(format!("{c}mutation {{ addStar(input: {{}}) {{ x }} }}")),
+                Just(format!("{c}mutation {a} {{ x }}")),
+                Just(format!("{c}subscription {{ x }}")),
+                Just(format!("{c}subscription {a} {{ x }}")),
+                Just(format!("{c}query {a} {{ x }} mutation {b} {{ y }}")),
+                Just(format!("{c}{{ x }}\nmutation {b} {{ y }}")),
+                Just(format!("{c}query {a} {{ x }}\nsubscription {b} {{ y }}")),
+            ]
+        })
+    }
+
+    /// How the query field is written: (args, typed).
+    fn field(doc: String) -> impl Strategy<Value = (Vec<String>, bool)> {
+        let q = format!("query={doc}");
+        prop_oneof![
+            Just((vec!["-f".to_string(), q.clone()], false)),
+            Just((vec!["--raw-field".to_string(), q.clone()], false)),
+            Just((vec![format!("-f{q}")], false)),
+            Just((vec![format!("--raw-field={q}")], false)),
+            Just((vec!["-F".to_string(), q.clone()], true)),
+            Just((vec!["--field".to_string(), q.clone()], true)),
+            Just((vec![format!("-F{q}")], true)),
+            Just((vec![format!("--field={q}")], true)),
+        ]
+    }
+
+    /// Options that neither carry a query nor change the method.
+    fn noise() -> impl Strategy<Value = Vec<String>> {
+        let one = prop_oneof![
+            Just(vec!["--paginate".to_string()]),
+            Just(vec![
+                "-H".to_string(),
+                "Accept: application/json".to_string()
+            ]),
+            Just(vec!["--header=X-Y: z".to_string()]),
+            Just(vec!["--jq".to_string(), ".data".to_string()]),
+            Just(vec!["-f".to_string(), "owner=o".to_string()]),
+            Just(vec!["-F".to_string(), "n=1".to_string()]),
+        ];
+        prop::collection::vec(one, 0..3).prop_map(|v| v.concat())
+    }
+
+    fn call(before: Vec<String>, field: Vec<String>, after: Vec<String>) -> Vec<String> {
+        let mut v = vec!["api".to_string(), "graphql".to_string()];
+        v.extend(before);
+        v.extend(field);
+        v.extend(after);
+        v
+    }
+
+    proptest! {
+        #[test]
+        fn generated_writes_are_never_reads(
+            (f, _) in write_doc().prop_flat_map(field),
+            before in noise(),
+            after in noise(),
+        ) {
+            let args = call(before, f, after);
+            prop_assert!(!is_read_call(&args), "write classified as read: {args:?}");
+        }
+
+        #[test]
+        fn raw_read_documents_are_reads(
+            // No placeholder in these documents, so typed fields are reads too.
+            (f, _) in read_doc().prop_flat_map(field),
+            before in noise(),
+            after in noise(),
+        ) {
+            let args = call(before, f, after);
+            prop_assert!(is_read_call(&args), "read classified as write: {args:?}");
+        }
+
+        #[test]
+        fn typed_placeholders_are_never_reads(
+            doc in read_doc(),
+            p in prop_oneof![Just("{owner}"), Just("{repo}"), Just("{branch}")],
+            before in noise(),
+            after in noise(),
+        ) {
+            let doc = format!("{doc} # {p}");
+            for flag in ["-F", "--field"] {
+                let args = call(before.clone(), vec![flag.to_string(), format!("query={doc}")], after.clone());
+                prop_assert!(!is_read_call(&args), "typed placeholder classified as read: {args:?}");
+            }
+        }
+
+        #[test]
+        fn a_second_query_field_or_input_is_never_a_read(
+            (f1, _) in read_doc().prop_flat_map(field),
+            (f2, _) in read_doc().prop_flat_map(field),
+            before in noise(),
+            input in any::<bool>(),
+        ) {
+            let args = if input {
+                call(before, f1, vec!["--input".to_string(), "body.json".to_string()])
+            } else {
+                call(before, f1, f2)
+            };
+            prop_assert!(!is_read_call(&args), "ambiguous call classified as read: {args:?}");
+        }
     }
 }

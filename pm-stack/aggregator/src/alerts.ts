@@ -1,7 +1,7 @@
 // The alert throat (#3676; design #3450 as amended by Drew
 // 2026-11-01): every sentinel posts incidents to ONE intake; this
 // module owns dedupe, delivery, escalation, and ack state; every
-// transition lands in the Supabase muse-dev2 `alerts` ledger
+// transition lands in the Turso `alerts_*` ledger tables
 // (incidents / incident_events / push_subscriptions /
 // notification_sends). Delivery is Web Push per the #1254 design
 // (doc/2026-11-01T03-54-00Z_design_pwa_push_notifications.md): the
@@ -22,7 +22,8 @@
 // reinterpreted.
 import type { Config } from "./config.ts";
 import { sendPush, type PushOutcome, type PushTarget } from "./push.ts";
-import { getSupabaseClient, sqlInt, sqlJson, sqlStr, type SupabaseClient } from "./supabase.ts";
+import { getTursoStoreClient } from "./turso-stores.ts";
+import { sqlInt, sqlJson, sqlStr, type SqlClient } from "./sql-client.ts";
 import {
   buildNotificationCandidates,
   classTestObjectRef,
@@ -380,7 +381,7 @@ export function validateNewSubscription(
   };
 }
 
-// --- The store (Supabase `alerts` schema) ------------------------------------
+// --- The store (Turso `alerts_*` tables) ------------------------------------
 
 interface PendingIncidentCursor {
   timestamp: string;
@@ -395,7 +396,7 @@ export class AlertsStore {
   private readonly deliveryCursor: { last: PendingIncidentCursor | null } = { last: null };
   private readonly escalationCursor: { last: PendingIncidentCursor | null } = { last: null };
 
-  constructor(private readonly db: SupabaseClient) {}
+  constructor(private readonly db: SqlClient) {}
 
   private async pendingBatch(
     eligibility: string,
@@ -496,9 +497,15 @@ export class AlertsStore {
    * incident_key) WHERE status <> 'closed': a fresh insert opens the
    * incident (+ `opened` event); a conflict bumps occurrences /
    * last_seen_at (+ `duplicate_suppressed` event only when a delivery
-   * would otherwise repeat).
+   * would otherwise repeat). `openedEventDetail` merges extra members
+   * into the `opened` event's detail — the `healthHook` incident
+   * record rides there (#12602: the ledger is the C3 record of
+   * detail, so the down record lands on the event that opens it).
    */
-  async postIncident(input: NewIncident): Promise<{ incident: Incident; created: boolean }> {
+  async postIncident(
+    input: NewIncident,
+    openedEventDetail?: Record<string, unknown>,
+  ): Promise<{ incident: Incident; created: boolean }> {
     const inserted = await this.db.query<Incident>(
       `insert into alerts.incidents (source, incident_key, severity, title, body)
        values (${sqlStr(input.source)}, ${sqlStr(input.key)}, ${sqlStr(input.severity)}, ${sqlStr(input.title)}, ${
@@ -508,7 +515,12 @@ export class AlertsStore {
        returning *`,
     );
     if (inserted[0]) {
-      await this.addEvent(inserted[0].id, "opened", { source: input.source, key: input.key, severity: input.severity });
+      await this.addEvent(inserted[0].id, "opened", {
+        source: input.source,
+        key: input.key,
+        severity: input.severity,
+        ...openedEventDetail,
+      });
       return { incident: inserted[0], created: true };
     }
     const bumped = await this.db.query<Incident>(
@@ -562,29 +574,44 @@ export class AlertsStore {
 
   /** #8568: close the open incident for a (source, key) pair — the
    * sentinel's "up" transition resolves the incident its "down" post
-   * opened. Reuses closeIncident for the transition + event. */
+   * opened. Reuses closeIncident for the transition + event.
+   * `closedEventDetail` becomes the `closed` event's detail — the
+   * `healthHook` recovery record rides there (#12602). */
   async closeOpenIncidentByKey(
     source: string,
     key: string,
+    closedEventDetail?: Record<string, unknown>,
   ): Promise<{ incident: Incident | null; transitioned: boolean }> {
     const rows = await this.db.query<Incident>(
       `select * from alerts.incidents where source = ${sqlStr(source)} and incident_key = ${sqlStr(key)} and status <> 'closed' order by first_seen_at limit 1`,
     );
     const open = rows[0];
     if (!open) return { incident: null, transitioned: false };
-    return this.closeIncident(open.id);
+    return this.closeIncident(open.id, closedEventDetail);
   }
 
-  async closeIncident(id: string): Promise<{ incident: Incident | null; transitioned: boolean }> {
+  async closeIncident(
+    id: string,
+    closedEventDetail?: Record<string, unknown>,
+  ): Promise<{ incident: Incident | null; transitioned: boolean }> {
     const rows = await this.db.query<Incident>(
       `update alerts.incidents set status = 'closed', closed_at = now()
        where id = ${sqlStr(id)} and status <> 'closed' returning *`,
     );
     if (rows[0]) {
-      await this.addEvent(id, "closed", {});
+      await this.addEvent(id, "closed", closedEventDetail ?? {});
       return { incident: rows[0], transitioned: true };
     }
     return { incident: await this.getIncident(id), transitioned: false };
+  }
+
+  /** Every ledger event for one incident, oldest first — the
+   * per-incident read behind GET /api/alerts/:id, C6's detail path
+   * for health-hook incident records (#12602). */
+  async listIncidentEvents(incidentId: string): Promise<IncidentEvent[]> {
+    return this.db.query<IncidentEvent>(
+      `select * from alerts.incident_events where incident_id = ${sqlStr(incidentId)} order by id`,
+    );
   }
 
   async pendingDeliveries(limit = 20): Promise<Incident[]> {
@@ -785,7 +812,7 @@ export async function sendTestPush(
  * Lazy-init contract (success-only memoization): README "Lazy-initialization contract" (#3879).
  */
 export function createAlertsStoreGetter(
-  getClient: typeof getSupabaseClient = getSupabaseClient,
+  getClient: () => Promise<SqlClient | null> = getTursoStoreClient,
 ): () => Promise<AlertsStore | null> {
   let storePromise: Promise<AlertsStore | null> | null = null;
 
@@ -806,7 +833,7 @@ export function createAlertsStoreGetter(
   };
 }
 
-/** The shared store; null when the Supabase path is unavailable. */
+/** The shared store; null when the Turso store client is unavailable. */
 export const getAlertsStore = createAlertsStoreGetter();
 
 // --- The engine ---------------------------------------------------------------

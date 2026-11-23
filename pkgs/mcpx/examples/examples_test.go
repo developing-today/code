@@ -249,7 +249,7 @@ func mustGetwd(t *testing.T) string {
 // configTemplate) would put its socket and terminate that too.
 func terminateSupervisors(t *testing.T, stateDir string) {
 	t.Helper()
-	socks, err := filepath.Glob(filepath.Join(stateDir, "sup-*.sock"))
+	socks, err := filepath.Glob(filepath.Join(mcpclient.SupervisorSocketDir(stateDir), "sup-*.sock"))
 	if err != nil {
 		t.Logf("cleanup: glob supervisor sockets: %v", err)
 		return

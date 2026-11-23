@@ -16,7 +16,9 @@ differ: "main push" venues are nightly venues, and post-merge evidence for
 a commit is the next nightly run whose head contains it.
 
 Deploys are not CI and keep their push trigger: `container-images` (image
-publish) and `mcpx docs` (GitHub Pages). Jobs that only ran on `push`
+publish), `mcpx docs` (GitHub Pages), and `pm-console android` (the app's
+release, on pushes that touch the app; owner's instruction of 2026-11-22
+that the app is built and released by Actions without a person). Jobs that only ran on `push`
 were widened to `schedule` where the nightly run must do the same work:
 the id arm64 world-snapshot job, the mcpx `basic: test` job, the mcpx and
 mcpx-conformance `ON_MAIN` recording, and the Go module tidy commit. To
@@ -98,6 +100,7 @@ never a state that persists by default.
 | Workflow                  | Automatic venue       | Manual |
 | ------------------------- | --------------------- | ------ |
 | workflow-lint             | none                  | yes    |
+| pm-console-android        | main push, path gated | yes    |
 | proxy-port-fallbacks      | none                  | yes    |
 | fleet-search-parity-guard | none                  | yes    |
 | fleet-rust-tests          | nightly schedule      | yes    |

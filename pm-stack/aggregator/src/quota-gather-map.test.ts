@@ -3,8 +3,14 @@ import {
   CLAUDE_COOLDOWN_CAP_MS,
   CLAUDE_COOLDOWN_FALLBACK_MS,
   CLAUDE_CROSS_TICK_STATE_KEY,
+  CLAUDE_RETRY_BASE_MS,
+  CLAUDE_RETRY_CAP_MS,
+  CLAUDE_RETRY_MAX_ATTEMPTS,
   claudeCooldownMs,
+  claudeFailureKind,
+  claudeRetryDelayMs,
   isClaudeRateLimitFailure,
+  markRetained,
   parseClaudeCrossTick,
   retryAfterMsFromFailure,
   serializeClaudeCrossTick,
@@ -69,5 +75,46 @@ describe("claude cross-tick memory (#5928)", () => {
     expect(CLAUDE_COOLDOWN_FALLBACK_MS).toBe(5 * 60_000);
     expect(claudeCooldownMs("Retry-After: 7200")).toBe(CLAUDE_COOLDOWN_CAP_MS);
     expect(CLAUDE_COOLDOWN_CAP_MS).toBe(60 * 60_000);
+  });
+});
+
+describe("claude within-tick retry and failure kind (#8725)", () => {
+  test("failure kind: rate limit, credential, and other are distinct", () => {
+    expect(claudeFailureKind("HTTP 429 from api.anthropic.com")).toBe("rate_limited");
+    expect(claudeFailureKind("Rate limited. Retrying soon.")).toBe("rate_limited");
+    expect(claudeFailureKind("Claude session expired")).toBe("credential");
+    expect(claudeFailureKind("HTTP 401 unauthorized")).toBe("credential");
+    expect(claudeFailureKind("connection reset by peer")).toBe("other");
+  });
+
+  test("retry budget is bounded", () => {
+    expect(CLAUDE_RETRY_MAX_ATTEMPTS).toBe(3);
+    expect(CLAUDE_RETRY_BASE_MS).toBe(5_000);
+    expect(CLAUDE_RETRY_CAP_MS).toBe(30_000);
+  });
+
+  test("retry delay: exponential from base, jittered to [50%, 100%]", () => {
+    const hi = () => 1;
+    const lo = () => 0;
+    expect(claudeRetryDelayMs(0, "Rate limited.", hi, 5_000)).toBe(5_000);
+    expect(claudeRetryDelayMs(1, "Rate limited.", hi, 5_000)).toBe(10_000);
+    expect(claudeRetryDelayMs(2, "Rate limited.", hi, 5_000)).toBe(20_000);
+    expect(claudeRetryDelayMs(0, "Rate limited.", lo, 5_000)).toBe(2_500);
+  });
+
+  test("retry delay: Retry-After wins over the exponential base and is capped", () => {
+    const hi = () => 1;
+    expect(claudeRetryDelayMs(0, "Retry-After: 12", hi, 5_000)).toBe(12_000);
+    expect(claudeRetryDelayMs(0, "Retry-After: 7200", hi, 5_000)).toBe(CLAUDE_RETRY_CAP_MS);
+    expect(claudeRetryDelayMs(9, "Rate limited.", hi, 5_000)).toBe(CLAUDE_RETRY_CAP_MS);
+  });
+
+  test("markRetained stamps the failure kind only when one is given", () => {
+    const tick = "2026-11-17T12:00:00.000Z";
+    const [stamped] = markRetained([goodEntry], tick, "rate_limited");
+    expect(stamped.retainedFromFailedTick).toBe(tick);
+    expect(stamped.retentionFailureKind).toBe("rate_limited");
+    const [unstamped] = markRetained([goodEntry], tick);
+    expect(unstamped.retentionFailureKind).toBeUndefined();
   });
 });

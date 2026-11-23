@@ -3,10 +3,11 @@ import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadConfig } from "../src/config.ts";
-import type { OrchestrationSection } from "../src/model.ts";
+import type { OrchestrationSection, RefKey } from "../src/model.ts";
 import {
   derivedProjectState,
   fetchProjectSnapshot,
+  fetchProjectBoardsSnapshot,
   isProjectAudit,
   parseProjectAudit,
   fetchProjectPool,
@@ -16,9 +17,11 @@ import {
   projectDisagreement,
   PROJECT_QUERY,
   resolveEpicRefs,
+  resolveSpawnRollups,
 } from "../src/projects.ts";
 import { renderProjects } from "../src/render.ts";
 import { liveSource } from "../src/sources/live.ts";
+import { PROJECT_BOARDS, validateBoardRegistry } from "../src/board-registry.ts";
 
 // A fixture GraphQL Projects v2 response, shaped exactly like the
 // live read of org Project #4 (one Todo Task, one closed item, one
@@ -95,6 +98,87 @@ const GQL = {
     },
   },
 };
+
+describe("project board registry and attribution", () => {
+  test("ships a valid, unique hierarchy for the three collected boards", () => {
+    expect(validateBoardRegistry(PROJECT_BOARDS)).toEqual([]);
+    expect(PROJECT_BOARDS.map((board) => board.id)).toEqual(["devtoday-main", "forks-main", "lab-cluster"]);
+  });
+
+  test("rejects duplicate identities and dangling parents", () => {
+    const board = PROJECT_BOARDS[0]!;
+    expect(validateBoardRegistry([board, { ...board, id: "duplicate", parentBoardId: "missing" }])).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining("duplicate project identity"),
+        expect.stringContaining("unknown parent"),
+      ]),
+    );
+  });
+
+  test("tags parsed items with their source board id", () => {
+    const items = parseProjectItems(GQL, undefined, "forks-main");
+    expect(items).toHaveLength(2);
+    expect(items.every((item) => item.boardId === "forks-main")).toBe(true);
+  });
+
+  test("keeps healthy board items and attribution when one board read fails", async () => {
+    const fetchFn: typeof fetch = Object.assign(
+      async (_input: RequestInfo | URL, init?: RequestInit) => {
+        const request = JSON.parse(String(init?.body)) as { variables: { id: string } };
+        if (request.variables.id === PROJECT_BOARDS[2]!.nodeId) return new Response("unavailable", { status: 503 });
+        return new Response(JSON.stringify(GQL));
+      },
+      { preconnect: () => {} },
+    );
+
+    const result = await fetchProjectBoardsSnapshot("test-token", fetchFn, "2026-11-01T21:00:00.000Z");
+    expect(result.failedBoardIds).toEqual(["lab-cluster"]);
+    expect(result.items).toHaveLength(4);
+    expect(result.items.map((item) => item.boardId)).toEqual([
+      "devtoday-main",
+      "devtoday-main",
+      "forks-main",
+      "forks-main",
+    ]);
+    expect(Object.keys(result.audits)).toEqual(["devtoday-main", "forks-main"]);
+  });
+
+  test("preserves successful empty satellite board snapshots and audits", async () => {
+    const empty = structuredClone(GQL);
+    empty.data.node.items.totalCount = 0;
+    empty.data.node.items.nodes = [];
+    const fetchFn: typeof fetch = Object.assign(
+      async (_input: RequestInfo | URL, init?: RequestInit) => {
+        const request = JSON.parse(String(init?.body)) as { variables: { id: string } };
+        return new Response(JSON.stringify(request.variables.id === PROJECT_BOARDS[1]!.nodeId ? empty : GQL));
+      },
+      { preconnect: () => {} },
+    );
+
+    const result = await fetchProjectBoardsSnapshot("test-token", fetchFn, "2026-11-01T21:00:00.000Z");
+    expect(result.failedBoardIds).toEqual([]);
+    expect(result.items).toHaveLength(4);
+    expect(Object.keys(result.audits)).toEqual(["devtoday-main", "forks-main", "lab-cluster"]);
+    expect(result.boards).toHaveLength(3);
+  });
+
+  test("still treats an empty overall board as a failed source", async () => {
+    const empty = structuredClone(GQL);
+    empty.data.node.items.totalCount = 0;
+    empty.data.node.items.nodes = [];
+    const fetchFn: typeof fetch = Object.assign(
+      async (_input: RequestInfo | URL, init?: RequestInit) => {
+        const request = JSON.parse(String(init?.body)) as { variables: { id: string } };
+        return new Response(JSON.stringify(request.variables.id === PROJECT_BOARDS[0]!.nodeId ? empty : GQL));
+      },
+      { preconnect: () => {} },
+    );
+
+    const result = await fetchProjectBoardsSnapshot("test-token", fetchFn, "2026-11-01T21:00:00.000Z");
+    expect(result.failedBoardIds).toEqual(["devtoday-main"]);
+    expect(Object.keys(result.audits)).toEqual(["forks-main", "lab-cluster"]);
+  });
+});
 
 function projectPage(hasNextPage: boolean, endCursor: string | null, totalCount = 25) {
   return {
@@ -611,6 +695,33 @@ describe("collector graph edges (#2399 contract)", () => {
     expect(byRef.get("developing-today/code#2405")?.parentRef).toBe("developing-today/opencode#1");
   });
 
+  test("resolveEpicRefs clears stale membership and resolves duplicate parents deterministically", () => {
+    const base = {
+      url: "u",
+      projectUrl: "p",
+      repo: "o/r",
+      issueUrl: "i",
+      title: "item",
+      state: "open" as const,
+      contentKind: "issue" as const,
+      status: null,
+      area: null,
+      horizon: null,
+    };
+    const refs = resolveEpicRefs([
+      { ...base, id: "child", ref: "o/r#3", number: 3, kind: "Task", parentRef: "o/r#2", epicRef: "o/r#99" },
+      { ...base, id: "parent-z", ref: "o/r#2", number: 2, kind: "Task", parentRef: "o/r#9" },
+      { ...base, id: "parent-a", ref: "o/r#2", number: 2, kind: "Task", parentRef: "o/r#1" },
+      { ...base, id: "epic", ref: "o/r#1", number: 1, kind: "Epic", epicRef: "o/r#99" },
+      { ...base, id: "orphan", ref: "o/r#4", number: 4, kind: "Task", epicRef: "o/r#99" },
+    ]);
+    expect(refs[0]?.epicRef).toBe("o/r#1");
+    expect(refs[3]?.epicRef).toBeUndefined();
+    expect(refs[4]?.epicRef).toBeUndefined();
+    const reversed = resolveEpicRefs([...refs].reverse());
+    expect(reversed.find((p) => p.ref === "o/r#3")?.epicRef).toBe("o/r#1");
+  });
+
   test("resolveEpicRefs is cycle-safe and never invents membership", () => {
     const loop = resolveEpicRefs([
       {
@@ -650,6 +761,122 @@ describe("collector graph edges (#2399 contract)", () => {
     ]);
     expect(loop[0]?.epicRef).toBeUndefined();
     expect(loop[1]?.epicRef).toBeUndefined();
+  });
+
+  test("resolveSpawnRollups uses direct native children, summary completion, Status, and blocking edges", () => {
+    const base = parseProjectItems(GQL)[0]!;
+    const parent = {
+      ...base,
+      id: "design-parent",
+      ref: "developing-today/code#3000",
+      number: 3000,
+      title: "Design parent",
+      labels: ["design", "design/parent"],
+      subIssuesSummary: { total: 3, completed: 1 },
+      blockedBy: ["developing-today/code#3003", "developing-today/code#3004"],
+    };
+    const children = [
+      {
+        ...base,
+        id: "done",
+        ref: "developing-today/code#3001",
+        number: 3001,
+        parentRef: parent.ref,
+        state: "closed" as const,
+        status: "Done",
+      },
+      {
+        ...base,
+        id: "active",
+        ref: "developing-today/code#3002",
+        number: 3002,
+        parentRef: parent.ref,
+        status: "In Progress",
+      },
+      {
+        ...base,
+        id: "blocking",
+        ref: "developing-today/code#3003",
+        number: 3003,
+        parentRef: parent.ref,
+        status: "Todo",
+      },
+      {
+        ...base,
+        id: "resolved-blocker",
+        ref: "developing-today/code#3004",
+        number: 3004,
+        parentRef: parent.ref,
+        state: "closed" as const,
+        status: "Done",
+      },
+    ];
+
+    const resolved = resolveSpawnRollups([parent, ...children]);
+    expect(resolved[0]?.spawnRollup).toEqual({
+      total: 3,
+      done: 1,
+      inProgress: 1,
+      blocking: ["developing-today/code#3003"],
+    });
+    expect(resolved[1]?.spawnRollup).toBeUndefined();
+  });
+
+  test("resolveSpawnRollups deduplicates children across boards and recognizes existing design markers", () => {
+    const base = parseProjectItems(GQL)[0]!;
+    const parent = {
+      ...base,
+      id: "design-parent",
+      ref: "developing-today/code#3100",
+      number: 3100,
+      labels: ["kind/design"],
+      kind: "Task",
+      subIssuesSummary: { total: 1, completed: 0 },
+    };
+    const child = {
+      ...base,
+      id: "active-board-a",
+      ref: "developing-today/code#3101",
+      number: 3101,
+      parentRef: parent.ref,
+      status: "In Progress",
+    };
+    const duplicate = { ...child, id: "active-board-b", boardId: "another-board" };
+
+    expect(resolveSpawnRollups([parent, child, duplicate])[0]?.spawnRollup).toEqual({
+      total: 1,
+      done: 0,
+      inProgress: 1,
+      blocking: [],
+    });
+
+    const projectKindDesign = {
+      ...parent,
+      id: "project-kind-design",
+      ref: "developing-today/code#3102",
+      number: 3102,
+      labels: [],
+      kind: "Design",
+    };
+    expect(resolveSpawnRollups([projectKindDesign])[0]?.spawnRollup).toEqual({
+      total: 1,
+      done: 0,
+      inProgress: 0,
+      blocking: [],
+    });
+  });
+
+  test("PROJECT_QUERY and parser carry GitHub sub-issue summary without fabricating missing counts", () => {
+    expect(PROJECT_QUERY).toContain("subIssuesSummary { total completed }");
+    const response = structuredClone(GQL) as unknown as {
+      data: { node: { items: { nodes: Array<{ content: Record<string, unknown> }> } } };
+    };
+    const item = response.data.node.items.nodes[0];
+    if (!item) throw new Error("fixture has no project item");
+    item.content.subIssuesSummary = { total: 4, completed: 2 };
+    const [parent] = parseProjectItems(response);
+    expect(parent?.subIssuesSummary).toEqual({ total: 4, completed: 2 });
+    expect(parseProjectItems(GQL)[0]?.subIssuesSummary).toBeUndefined();
   });
 });
 
@@ -723,6 +950,9 @@ describe("Project #4 audit snapshot (#1218)", () => {
       },
     });
     expect(isProjectAudit(audit)).toBe(true);
+    expect(isProjectAudit({ ...audit, poolTotalItems: 4 })).toBe(true);
+    expect(isProjectAudit({ ...audit, poolTotalItems: 2 })).toBe(false);
+    expect(isProjectAudit({ ...audit, poolTotalItems: "4" })).toBe(false);
     expect(isProjectAudit({ ...audit, counts: { ...audit.counts, status: { Done: -1 } } })).toBe(false);
     expect(isProjectAudit({ ...audit, counts: { ...audit.counts, area: { lab: 2 } } })).toBe(false);
   });
@@ -789,6 +1019,28 @@ describe("renderProjects", () => {
     const none = renderProjects(pool, PROV, { area: "lab-cluster", status: "Done" });
     expect(none).not.toContain("EPIC: Basement cluster");
     expect(none).toContain("Filters show 0 of 2 pool items.");
+  });
+
+  test("Area weighted progress counts duplicate board memberships once", () => {
+    const base = parseProjectItems(GQL);
+    const closed = {
+      ...base[0]!,
+      ref: "developing-today/code#500" as RefKey,
+      state: "closed" as const,
+      area: "lab-cluster",
+      labels: ["effort/s"],
+    };
+    const open = {
+      ...base[1]!,
+      ref: "developing-today/code#501" as RefKey,
+      state: "open" as const,
+      area: "lab-cluster",
+      labels: ["effort/s"],
+    };
+    const html = renderProjects([closed, { ...closed, boardId: "satellite" }, open], PROV, {});
+
+    expect(html).toContain("<strong>lab-cluster</strong> — 50% weighted");
+    expect(html).toContain("3 items"); // raw membership count is unchanged
   });
 
   test("audit gap renders the draft/unlinked caveat instead of dropping it silently (#1208)", () => {

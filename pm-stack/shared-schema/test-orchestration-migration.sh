@@ -44,7 +44,8 @@ psql_test() {
   docker exec -i "$container" psql -X -v ON_ERROR_STOP=1 -U postgres -d pm_orch_test "$@"
 }
 
-# Supabase's service_role carries BYPASSRLS; model that so the test proves
+# The migrations' service_role is a BYPASSRLS role (the hosted-Postgres
+# convention the DDL was written for); model that so the test proves
 # the role can actually operate under the RLS model, not just hold grants.
 psql_test -c 'CREATE ROLE service_role BYPASSRLS LOGIN;'
 psql_test <"$up"
@@ -88,8 +89,8 @@ if [[ $privileges != "true:true:true:false:false:true" ]]; then
 fi
 echo "ok - RLS enabled; run log is append-only for service_role; state table is replaceable"
 
-# The service_role must actually be able to operate under RLS (Supabase's
-# service_role carries BYPASSRLS): append a run and read state back.
+# The service_role must actually be able to operate under RLS (it is
+# modelled as BYPASSRLS above): append a run and read state back.
 docker exec -i "$container" psql -X -v ON_ERROR_STOP=1 -U service_role -d pm_orch_test -c "INSERT INTO public.orch_runs
   (run_id, generated_at, document_version, provenance, document, item_count)
   VALUES ('orch-2026-11-11T01:00:00Z', '2026-11-11T01:00:00Z', 1,

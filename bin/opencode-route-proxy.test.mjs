@@ -325,6 +325,10 @@ const startProxy = async (arg = {}) => {
       "bad-end-2500": { "start": "09:00", "end": "25:00", "timezone": "UTC" },
       "edge-early": { "start": "00:00", "end": "00:02", "timezone": "UTC" },
       "edge-late": { "start": "23:58", "end": "23:59", "timezone": "UTC" },
+      "bad-tz": { "start": "00:00", "end": "23:59", "timezone": "America/Chicagoo" },
+      "bad-days-string": { "daysOfWeek": "fri", "start": "00:00", "end": "23:59", "timezone": "UTC" },
+      "bad-days-name": { "daysOfWeek": ["wed", "funday"], "start": "00:00", "end": "23:59", "timezone": "UTC" },
+      "full-day-names": { "daysOfWeek": ["Wednesday"], "start": "00:00", "end": "23:59", "timezone": "UTC" },
     },
     "model_routes": {
       "t-ordered": { "selection": "ordered", "targets": ["leafA/m-a", "leafB/m-b"] },
@@ -345,6 +349,10 @@ const startProxy = async (arg = {}) => {
       "t-window-bad-end2500": { "selection": "ordered", "targets": [ { "model": "leafA/m-a", "window": "bad-end-2500" }, "leafB/m-b" ] },
       "t-window-edge-early": { "selection": "ordered", "targets": [ { "model": "leafA/m-a", "window": "edge-early" }, "leafB/m-b" ] },
       "t-window-edge-late": { "selection": "ordered", "targets": [ { "model": "leafA/m-a", "window": "edge-late" }, "leafB/m-b" ] },
+      "t-window-bad-tz": { "selection": "ordered", "targets": [ { "model": "leafA/m-a", "window": "bad-tz" }, "leafB/m-b" ] },
+      "t-window-bad-days-string": { "selection": "ordered", "targets": [ { "model": "leafA/m-a", "window": "bad-days-string" }, "leafB/m-b" ] },
+      "t-window-bad-days-name": { "selection": "ordered", "targets": [ { "model": "leafA/m-a", "window": "bad-days-name" }, "leafB/m-b" ] },
+      "t-window-full-day-names": { "selection": "ordered", "targets": [ { "model": "leafA/m-a", "window": "full-day-names" }, "leafB/m-b" ] },
       "t-group": { "selection": "ordered", "targets": ["grp-ordered/m-g"] },
       "t-group-rr": { "selection": "ordered", "targets": ["grp-rr/m-g"] },
       "t-group-weighted": { "selection": "ordered", "targets": ["grp-weighted/m-g"] },
@@ -1204,6 +1212,12 @@ test("out-of-range window times fail closed as start and as end", async () => {
     ["t-window-bad-end", AT_1200],
     ["t-window-bad-end2500", AT_1200],
     ["t-window-bad-end2500", AT_2330],
+    // #11176: an unknown timezone and a malformed daysOfWeek also never
+    // match. A string daysOfWeek used to widen to every day, and an
+    // unknown name beside a real one (Wed 12:00 here) used to match.
+    ["t-window-bad-tz", AT_1200],
+    ["t-window-bad-days-string", AT_1200],
+    ["t-window-bad-days-name", AT_1200],
   ];
   for (const [route, nowMs] of cases) {
     const p = await startProxy({ nowMs });
@@ -1251,6 +1265,17 @@ test("boundary times 00:00 and 23:59 remain valid windows", async () => {
   }
 });
 
+test("full weekday names still match their day (#11176)", async () => {
+  // 2026-11-04 is a Wednesday; ["Wednesday"] normalizes to "wed".
+  const p = await startProxy({ nowMs: Date.UTC(2026, 10, 4, 12, 0) });
+  try {
+    const res = await p.post({ model: "opencode-route/t-window-full-day-names", messages: MSGS });
+    assert.equal((await res.json()).choices[0].message.content, "LEAF-A");
+  } finally {
+    await p.cleanup();
+  }
+});
+
 test("config load names invalid windows instead of silently evaluating them", async () => {
   const p = await startProxy({ nowMs: Date.UTC(2026, 10, 4, 2, 30) });
   try {
@@ -1264,6 +1289,11 @@ test("config load names invalid windows instead of silently evaluating them", as
     assert.ok(log.includes("bad-wrap-99"), `log names the window:\n${log}`);
     assert.ok(log.includes("99:99"), `log names the bad value:\n${log}`);
     assert.ok(log.includes("bad-start-2400"), `log names each bad window:\n${log}`);
+    // #11176: a bad timezone or daysOfWeek is named with its value too.
+    assert.ok(log.includes("bad-tz") && log.includes("America/Chicagoo"), `log names a bad timezone:\n${log}`);
+    assert.ok(log.includes("bad-days-string") && log.includes('daysOfWeek="fri"'), `log names a string daysOfWeek:\n${log}`);
+    assert.ok(log.includes("bad-days-name") && log.includes("funday"), `log names a bad weekday:\n${log}`);
+    assert.ok(!log.includes('model_route_windows["full-day-names"]'), `full weekday names are valid:\n${log}`);
   } finally {
     await p.cleanup();
   }

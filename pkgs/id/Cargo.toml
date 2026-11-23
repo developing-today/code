@@ -18,6 +18,7 @@ categories = ["command-line-utilities", "network-programming"]
 [workspace]
 members = [
   "crates/id-core",
+  "crates/id-config",
   "crates/id-caps",
   "crates/id-store",
   "crates/id-events",
@@ -29,7 +30,9 @@ members = [
   "crates/id-web",
   "crates/id-render",
   "crates/id-native-shell",
+  "crates/id-hw-shell",
   "crates/id-cli",
+  "crates/id-import-notion",
 ]
 # The vendored crates stay OUT of the workspace: as path dependencies inside
 # this directory Cargo would otherwise treat them as members, and a member's
@@ -40,6 +43,7 @@ exclude = ["vendor/p2panda-sync", "vendor/p2panda-encryption"]
 default-members = [
   ".",
   "crates/id-core",
+  "crates/id-config",
   "crates/id-caps",
   "crates/id-store",
   "crates/id-events",
@@ -51,6 +55,7 @@ default-members = [
   "crates/id-web",
   "crates/id-render",
   "crates/id-cli",
+  "crates/id-import-notion",
 ]
 
 # =============================================================================
@@ -110,6 +115,9 @@ id-cli = { path = "crates/id-cli", default-features = false }
 # Directory-family modules extracted in step 6b of the crate split
 # (#4409). Re-exported at their historical crate:: paths in src/lib.rs.
 id-directory = { path = "crates/id-directory", default-features = false }
+# Currency registry + account factory (F1 #2317, F2 #2318); composed
+# with the gateway envelope by the #2321 PoC (src/currency/gateway_poc.rs).
+id-currency-registry = { path = "crates/id-currency-registry", default-features = false }
 anyhow = "1"
 cbor-core = { version = "=0.10.1", features = ["serde"] }
 # Calendar arithmetic and the IANA time-zone database for the did-it tracker's
@@ -127,6 +135,10 @@ iroh = "1"
 iroh-mdns-address-lookup = "0.6"
 iroh-base = "1"
 iroh-tickets = "1"
+# iroh-blobs and iroh-gossip stay on the versions iroh-docs is built
+# against: Docs::spawn takes their Store and Gossip types, so a newer
+# release cannot be mixed in until iroh-docs moves to it (iroh-docs 0.101
+# needs iroh-blobs 0.103 and iroh-gossip 0.101).
 iroh-blobs = "0.103"
 iroh-docs = "0.101"
 iroh-gossip = { version = "0.101", features = ["net"] }
@@ -146,8 +158,8 @@ p2panda-auth = { git = "https://github.com/p2panda/p2panda", rev = "da80c05b9526
 # declared there now, with the same features.
 postcard = { version = "1", features = ["alloc"] }
 rand = "0.10"
-redb = "=4.3.0"
-rustyline = "18"
+redb = "=4.6.0"
+rustyline = "19"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tempfile = "3"
@@ -164,10 +176,10 @@ unicode-width = "0.2"
 
 # Web feature dependencies (optional)
 argon2 = "0.6"
-chacha20poly1305 = "0.10"
+chacha20poly1305 = "0.11"
 zeroize = "1"
 rpassword = "7"
-base64 = "0.22"
+base64 = "0.23"
 blake3 = "1"
 # Turso/libsql HTTP adapter v1 (#7577, decision record #5806): raw HTTP
 # pipeline client in src/foreign_libsql.rs. rustls, tokio-rustls and
@@ -206,14 +218,17 @@ id-core = { path = "crates/id-core", default-features = false, features = [
 id-caps = { path = "crates/id-caps", default-features = false, features = [
   "test-provider",
 ] }
+# The versioned config contract (slice 9111-01, #10178); its invariant
+# tests live in tests/config_invariants.rs.
+id-config = { path = "crates/id-config" }
 # The artifact/envelope test seams live in id-sync since step 3c (#4406).
 id-sync = { path = "crates/id-sync", default-features = false, features = [
   "test-utils",
 ] }
 # SQLite for the bridge PoC's DO-shaped hosted store (#2276). Bundled, so no system SQLite is needed.
-rusqlite = { version = "0.32", features = ["bundled"] }
-wat = "=1.261.0"
-tokio-tungstenite = "0.29"
+rusqlite = { version = "0.42", features = ["bundled"] }
+wat = "=1.263.0"
+tokio-tungstenite = "0.30"
 # vt100 moved to id-worlds (dev) with world_ssh in step 5c (#4408).
 # The CLI integration tests drive an SSH client against the world SSH
 # server; the server side (and its russh) lives in id-worlds since
@@ -236,7 +251,7 @@ crypto_secretbox = "0.1"
 # Reads the vector's msgpack byte strings (P6.1 known-answer test). Dev only; already in the lock.
 serde_bytes = "0.11"
 # Decodes the Keybase vector constants as published (P6.1 known-answer test). Dev only; already in the lock.
-base64 = "0.22"
+base64 = "0.23"
 
 # The DHT testnet test needs the `dht` feature (P7.3).
 [[test]]

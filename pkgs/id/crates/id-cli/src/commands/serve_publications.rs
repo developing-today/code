@@ -125,8 +125,12 @@ impl MountSink for ServeMountSink {
     }
 
     fn mount(&mut self, world: &str, path: &str) -> Result<()> {
-        self.mounts.mount(world, path);
-        Ok(())
+        // PublicationMounts::mount validates the path and refuses
+        // reserved-route shadows and different-world conflicts
+        // (#2146 phase 4); the error propagates so the manager
+        // reverts the persisted registry entry it had already
+        // saved away, keeping the durable and live sets in agreement.
+        self.mounts.mount(world, path)
     }
 
     fn unmount(&mut self, path: &str) -> Result<()> {
@@ -156,6 +160,25 @@ mod tests {
         assert_eq!(mounts.lookup("/prog"), None);
         // Contract: unmounting an absent mount errors.
         assert!(sink.unmount("/prog").is_err());
+    }
+
+    #[test]
+    fn sink_propagates_table_validation_and_conflicts() {
+        let mounts = id_web::PublicationMounts::new();
+        let mut sink = ServeMountSink::new(mounts.clone(), true);
+        // Non-canonical paths: refused by the table, nothing mounted.
+        assert!(sink.mount("arena", "prog").is_err());
+        assert!(sink.mount("arena", "/prog/").is_err());
+        // A reserved Explorer route: refused, not silently shadowed.
+        assert!(sink.mount("arena", "/world").is_err());
+        assert_eq!(mounts.lookup("/world"), None);
+        // A different world at a taken path: refused, original kept.
+        sink.mount("arena", "/prog").unwrap();
+        assert!(sink.mount("deep", "/prog").is_err());
+        assert_eq!(
+            mounts.lookup("/prog"),
+            Some(("/prog".to_owned(), "arena".to_owned()))
+        );
     }
 
     #[test]

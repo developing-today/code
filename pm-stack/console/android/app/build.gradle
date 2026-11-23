@@ -1,0 +1,73 @@
+// The PM console for Android. The screens are the site itself, shown by
+// Chrome without browser chrome (a Trusted Web Activity), so sign-in is
+// Chrome's and the app never falls behind the site. Around that, the
+// app uses what only an installed app has: it receives shared and
+// selected text, starts dictation with the phone's own recogniser from
+// a shortcut or a quick-settings tile, offers its main screens on a long
+// press of the icon, shows the site's notifications as its own, and puts
+// a widget on the home screen that reads a short summary by itself.
+plugins {
+    id 'com.android.application'
+}
+
+def site = 'https://pm.security.cab'
+def keystore = System.getenv('PM_ANDROID_KEYSTORE')
+// A release names its own version (build.sh works both out from the
+// commit, so a later build always installs over an earlier one). A
+// build with neither set is a check that the project builds.
+def releaseCode = System.getenv('PM_ANDROID_VERSION_CODE')
+def releaseName = System.getenv('PM_ANDROID_VERSION_NAME')
+
+android {
+    namespace 'today.developing.pmconsole'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId 'today.developing.pmconsole'
+        minSdk 24
+        targetSdk 34
+        versionCode releaseCode ? releaseCode.toInteger() : 3
+        versionName releaseName ?: '0.3.0'
+        manifestPlaceholders = [hostName: 'pm.security.cab', defaultUrl: "${site}/console/"]
+        // The app's half of the link to the site. The site's half is
+        // /.well-known/assetlinks.json, served by pm-console.
+        resValue 'string', 'console_url', "${site}/console/"
+        resValue 'string', 'site_url', "${site}"
+        resValue 'string', 'asset_statements', "[{\\\"relation\\\": [\\\"delegate_permission/common.handle_all_urls\\\"], \\\"target\\\": {\\\"namespace\\\": \\\"web\\\", \\\"site\\\": \\\"${site}\\\"}}]"
+    }
+
+    // The sources live in src/twa, not src/main: the repository ignores
+    // every directory named "main".
+    sourceSets {
+        main {
+            manifest.srcFile 'src/twa/AndroidManifest.xml'
+            res.srcDirs = ['src/twa/res']
+            java.srcDirs = ['src/twa/java']
+        }
+    }
+
+    signingConfigs {
+        release {
+            if (keystore) {
+                storeFile file(keystore)
+                storeType 'pkcs12'
+                storePassword System.getenv('PM_ANDROID_KEYSTORE_PASSWORD')
+                keyAlias 'pmconsole'
+                keyPassword System.getenv('PM_ANDROID_KEYSTORE_PASSWORD')
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            if (keystore) {
+                signingConfig signingConfigs.release
+            }
+        }
+    }
+}
+
+dependencies {
+    implementation 'com.google.androidbrowserhelper:androidbrowserhelper:2.5.0'
+}

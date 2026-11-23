@@ -125,7 +125,8 @@ async fn serve_stream(
             .context("timed out waiting for replication request")??
             .context("replication stream closed before request")?;
     let request: ReplicationRequest =
-        serde_json::from_slice(&request_bytes).context("decode replication request")?;
+        id_core::json_unique::from_slice_without_duplicate_keys(&request_bytes)
+            .context("decode replication request")?;
     let _ = recv.stop(0_u32.into());
     ensure_nonce(&request.session_nonce)?;
     if request.admin_token.len() > MAX_ADMIN_TOKEN_BYTES {
@@ -751,6 +752,11 @@ mod tests {
     // exactly where it stood.
     #[tokio::test]
     async fn sync_replica_once_absorbs_the_writer_snapshot() {
+        if crate::test_transport::skip_if_no_udp_loopback(
+            "world_replication_net::tests::sync_replica_once_absorbs_the_writer_snapshot",
+        ) {
+            return;
+        }
         let dir = TempDir::new().unwrap();
         let (service, _) = open_world(
             dir.path(),
@@ -863,6 +869,11 @@ mod tests {
     // verified cursor with no journal drift.
     #[tokio::test]
     async fn writer_outage_and_restart_resync_without_journal_drift() {
+        if crate::test_transport::skip_if_no_udp_loopback(
+            "world_replication_net::tests::writer_outage_and_restart_resync_without_journal_drift",
+        ) {
+            return;
+        }
         let writer_dir = TempDir::new().unwrap();
         let writer = start_writer(writer_dir.path()).await;
         let signing_key = SigningKey::from_bytes(&[7; 32]);
@@ -934,6 +945,11 @@ mod tests {
     // verified cursor and journal bytes do not drift).
     #[tokio::test]
     async fn replica_restart_reopens_synced_state_and_resync_is_idempotent() {
+        if crate::test_transport::skip_if_no_udp_loopback(
+            "world_replication_net::tests::replica_restart_reopens_synced_state_and_resync_is_idempotent",
+        ) {
+            return;
+        }
         let writer_dir = TempDir::new().unwrap();
         let writer = start_writer(writer_dir.path()).await;
         let signing_key = SigningKey::from_bytes(&[7; 32]);
@@ -994,6 +1010,11 @@ mod tests {
     // verified cursor with no journal drift.
     #[tokio::test]
     async fn follow_session_reconnects_after_a_writer_restart() {
+        if crate::test_transport::skip_if_no_udp_loopback(
+            "world_replication_net::tests::follow_session_reconnects_after_a_writer_restart",
+        ) {
+            return;
+        }
         let writer_dir = TempDir::new().unwrap();
         let writer = start_writer(writer_dir.path()).await;
         let signing_key = SigningKey::from_bytes(&[7; 32]);
@@ -1121,6 +1142,11 @@ mod tests {
 
     #[tokio::test]
     async fn default_world_requires_admin_before_replication_frames() {
+        if crate::test_transport::skip_if_no_udp_loopback(
+            "world_replication_net::tests::default_world_requires_admin_before_replication_frames",
+        ) {
+            return;
+        }
         let dir = TempDir::new().unwrap();
         let (service, _) = open_world(
             dir.path(),

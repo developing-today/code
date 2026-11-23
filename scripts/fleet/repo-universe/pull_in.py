@@ -25,6 +25,12 @@ diff) and ACTS on the delta, per the surface Drew confirmed on
 - A `reopened` delta reopens a resolved mirror (with a comment).
 - A first run for a repo BASELINES it (the checker's rule): no
   mirrors are created for pre-existing history.
+- The target repo itself is never mirrored. Its issues already live
+  there, and mirroring it would mirror every mirror created in it,
+  one level deeper each cycle. Its state is still recorded.
+- A `new` issue that is already closed gets no mirror (an open
+  mirror found for it is resolved), so a mirror never opens for
+  finished work.
 - A failed fetch is an explicit ERROR line and a non-zero exit; the
   repo's persisted state is left untouched and no mirror action is
   taken for it, so a failure never masquerades as an empty repo or
@@ -428,7 +434,14 @@ class DryRunStore:
         self.planned.append(f"ensure-label {name}")
 
 
-def run_pull_in(inventory_text: str, state: dict, fetch, store, now: str):
+def run_pull_in(
+    inventory_text: str,
+    state: dict,
+    fetch,
+    store,
+    now: str,
+    target_repo: str = TARGET_REPO_DEFAULT,
+):
     """Run one pull-in cycle over all watched repos.
 
     Returns (new_state, report_lines, had_error, actions). Pure
@@ -484,6 +497,10 @@ def run_pull_in(inventory_text: str, state: dict, fetch, store, now: str):
             )
             lines.append("")
             continue
+        if repo == target_repo:
+            lines.append("- target repo: its issues live here already; never mirrored")
+            lines.append("")
+            continue
         repo_actions = _act_on_delta(repo, repo_class, result, store)
         actions.extend(repo_actions)
         if repo_actions:
@@ -505,6 +522,10 @@ def _act_on_delta(repo: str, repo_class: str, result: dict, store) -> list[str]:
     for issue in sorted(result["new"], key=lambda i: i["number"]):
         key = source_key(repo, issue["number"])
         existing = store.find_mirror(key)
+        if issue["state"] == "closed":
+            if existing is not None and existing["state"] == "open":
+                actions.append(_resolve(store, existing, key, issue))
+            continue
         if existing is not None:
             if existing["state"] == "closed":
                 store.comment(
@@ -556,15 +577,17 @@ def _act_on_delta(repo: str, repo_class: str, result: dict, store) -> list[str]:
             continue
         if existing["state"] == "closed":
             continue
-        store.comment(
-            existing["number"],
-            f"Source {key} closed ({issue['html_url']}); resolving this mirror.",
-        )
-        store.close(existing["number"])
-        actions.append(
-            f"resolved mirror #{existing['number']} for {key} (source closed)"
-        )
+        actions.append(_resolve(store, existing, key, issue))
     return actions
+
+
+def _resolve(store, existing: dict, key: str, issue: dict) -> str:
+    store.comment(
+        existing["number"],
+        f"Source {key} closed ({issue['html_url']}); resolving this mirror.",
+    )
+    store.close(existing["number"])
+    return f"resolved mirror #{existing['number']} for {key} (source closed)"
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -620,7 +643,7 @@ def main(argv: list[str] | None = None) -> int:
             store.ensure_label(name, color, description)
         try:
             new_state, lines, had_error, actions = run_pull_in(
-                inventory_text, state, fetch, store, now
+                inventory_text, state, fetch, store, now, args.target_repo
             )
         except check_issues.FetchError as exc:
             print(f"error: {exc}; no report or state written", file=sys.stderr)

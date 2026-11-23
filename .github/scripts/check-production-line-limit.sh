@@ -23,6 +23,13 @@
 # guard landed. Each entry names the issue that removes it; when the
 # file drops under the limit, delete its entry in the same PR.
 #
+# TypeScript (#12671): production .ts files under a src/ directory
+# in pm-stack/ get the same limit. A TypeScript file's tests live in
+# their own files, so every line of a production .ts file counts;
+# *.test.ts, *.d.ts, files under test/, tests/ or __tests__/, and
+# node_modules/ and dist/ are out of scope. Oversize files that
+# predate this extension share the grandfather list below.
+#
 # Usage: check-production-line-limit.sh [ROOT]   (default: repo root)
 set -euo pipefail
 
@@ -36,9 +43,13 @@ declare -A GRANDFATHERED=(
   # restored, so it is grandfathered with a linked split issue,
   # per this guard's convention. The entry is deleted in the same
   # PR that lands the split.
-  ["pkgs/fleet/crates/fleet-queue/src/client.rs"]="#8588"
-  ["pkgs/fleet/crates/fleet-queue/src/turso_queue.rs"]="#8589"
   ["pkgs/id/src/boards.rs"]="#8891"
+  # Grandfathered 2026-11-22 when the guard was extended to pm-stack
+  # TypeScript (#12671): each was already over the limit, and the
+  # split is tracked there.
+  ["pm-stack/aggregator/src/render.ts"]="#12671"
+  ["pm-stack/aggregator/src/server.ts"]="#12671"
+  ["pm-stack/aggregator/src/sources/live.ts"]="#12671"
   # The id-worlds files below moved from pkgs/id/src/ to
   # pkgs/id/crates/id-worlds/src/ in the id crate restructure; a key
   # must name the file's CURRENT path or the entry silently stops
@@ -46,7 +57,6 @@ declare -A GRANDFATHERED=(
   # serve.rs and directory.rs moved again in that restructure - to
   # pkgs/id/crates/id-cli/ and pkgs/id/crates/id-directory/ - and
   # their keys were re-pointed in the #9526 fix; same rule.
-  ["pkgs/id/crates/id-directory/src/directory.rs"]="#8591"
 )
 
 # Count production lines of one file: every line that is not part of
@@ -186,6 +196,22 @@ production_lines() {
 
 fail=0
 checked=0
+
+# check_count <rel> <production-lines>: report one file against the
+# limit and the grandfather list.
+check_count() {
+  local rel="$1" prod="$2"
+  checked=$((checked + 1))
+  if [ "$prod" -gt "$LIMIT" ]; then
+    if [ -n "${GRANDFATHERED[$rel]:-}" ]; then
+      echo "::warning::GRANDFATHERED $rel: $prod production lines (limit $LIMIT) - split tracked by ${GRANDFATHERED[$rel]}"
+    else
+      echo "::error::OVER LIMIT $rel: $prod production lines (limit $LIMIT) - split the module or, if it predates this guard, grandfather it with a linked split issue (#1411)"
+      fail=1
+    fi
+  fi
+}
+
 for base in pkgs apps; do
   [ -d "$ROOT/$base" ] || continue
   while IFS= read -r -d "" file; do
@@ -196,20 +222,31 @@ for base in pkgs apps; do
     case "$(basename "$file")" in
     tests.rs) continue ;;
     esac
-    prod=$(production_lines "$file")
-    checked=$((checked + 1))
-    if [ "$prod" -gt "$LIMIT" ]; then
-      if [ -n "${GRANDFATHERED[$rel]:-}" ]; then
-        echo "::warning::GRANDFATHERED $rel: $prod production lines (limit $LIMIT) - split tracked by ${GRANDFATHERED[$rel]}"
-      else
-        echo "::error::OVER LIMIT $rel: $prod production lines (limit $LIMIT) - split the module or, if it predates this guard, grandfather it with a linked split issue (#1411)"
-        fail=1
-      fi
-    fi
+    check_count "$rel" "$(production_lines "$file")"
   done < <(find "$ROOT/$base" -type d -name target -prune -o -name "*.rs" -type f -print0 | sort -z)
 done
+rs_checked=$checked
 
-echo "production-line-guard: checked $checked production .rs files, limit $LIMIT"
+# TypeScript (#12671): every line of a production .ts file counts.
+if [ -d "$ROOT/pm-stack" ]; then
+  while IFS= read -r -d "" file; do
+    rel="${file#"$ROOT"/}"
+    case "/$rel" in
+    */src/*) ;;
+    *) continue ;;
+    esac
+    case "/$rel" in
+    */test/* | */tests/* | */__tests__/*) continue ;;
+    esac
+    case "$(basename "$file")" in
+    *.test.ts | *.d.ts) continue ;;
+    esac
+    check_count "$rel" "$(wc -l <"$file" | tr -d '[:space:]')"
+  done < <(find "$ROOT/pm-stack" -type d \( -name node_modules -o -name dist -o -name target \) -prune -o -name "*.ts" -type f -print0 | sort -z)
+fi
+ts_checked=$((checked - rs_checked))
+
+echo "production-line-guard: checked $rs_checked production .rs files and $ts_checked production .ts files, limit $LIMIT"
 if [ "$fail" -ne 0 ]; then
   echo "production-line-guard: FAILED - file(s) over the $LIMIT production-line limit listed above"
   exit 1

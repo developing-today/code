@@ -157,15 +157,29 @@ journalctl --user -u "openclaw-gateway.service" --since "$SINCE_STR" --no-pager 
   echo "(journal unavailable for openclaw-gateway)" >"$STAGE/journals/openclaw-gateway.log"
 
 # --- manifest ---
-python3 - "$STAGE" "$DATE" "$CREATED_AT" <<'PYEOF'
+# Symlinks are recorded as links (path + target), never opened: the
+# state dir holds absolute links into the excluded tmp/ tree (plugin
+# build vendor dirs under acpx/), and once tmp/ is cleaned those links
+# dangle. Opening one crashed this step with FileNotFoundError, the
+# archive was then built without manifest.json, and every run from
+# 2026-11-15 failed verification. tar archives the links as links, so
+# the verifier below checks them by target, not by content. The
+# `|| fail` makes any other crash here fail the run on the spot
+# instead of surfacing later as a missing manifest.
+python3 - "$STAGE" "$DATE" "$CREATED_AT" <<'PYEOF' || fail "manifest generation failed"
 import hashlib, json, os, sys
 stage, date, created = sys.argv[1], sys.argv[2], sys.argv[3]
 files = []
-for root, _dirs, names in os.walk(stage):
-    for n in sorted(names):
+for root, dirs, names in os.walk(stage):
+    # os.walk lists a symlink to a directory under dirs and does not
+    # descend into it; record it as a link like any other.
+    for n in sorted(names) + sorted(d for d in dirs if os.path.islink(os.path.join(root, d))):
         p = os.path.join(root, n)
         rel = os.path.relpath(p, stage)
         if rel == "manifest.json":
+            continue
+        if os.path.islink(p):
+            files.append({"path": rel, "symlink": os.readlink(p)})
             continue
         h = hashlib.sha256()
         with open(p, "rb") as fh:
@@ -182,8 +196,8 @@ PYEOF
 
 # --- tarball (atomic replace) + verify against manifest ---
 TMPARC="$OUTDIR/.openclaw-$DATE.tar.zst.tmp"
-tar -I zstd -cf "$TMPARC" -C "$STAGE" .
-mv "$TMPARC" "$ARCHIVE"
+tar -I zstd -cf "$TMPARC" -C "$STAGE" . || fail "archive creation failed for $TMPARC"
+mv "$TMPARC" "$ARCHIVE" || fail "could not move $TMPARC into place"
 VDIR="$(mktemp -d)"
 tar -I zstd -xf "$ARCHIVE" -C "$VDIR"
 if ! (
@@ -196,7 +210,13 @@ if required not in {f["path"] for f in m["files"]} or not os.path.isfile(require
     print("MISSING REQUIRED", required); bad += 1
 for f in m["files"]:
     p = f["path"]
-    if not os.path.isfile(p):
+    if "symlink" in f:
+        if not os.path.islink(p):
+            print("MISSING LINK", p); bad += 1
+        elif os.readlink(p) != f["symlink"]:
+            print("LINK MISMATCH", p); bad += 1
+        continue
+    if os.path.islink(p) or not os.path.isfile(p):
         print("MISSING", p); bad += 1; continue
     if hashlib.sha256(open(p, "rb").read()).hexdigest() != f["sha256"] \
        or os.path.getsize(p) != f["size"]:

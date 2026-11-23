@@ -28,10 +28,13 @@
 //!   list       List all stored files
 //!   id         Print node ID
 //!   key        Export or import a local identity key
+//!   keyset     Show or change this identity's keyset (admin key and devices)
 //!   peers      Discover and list known peers
 //!   tag        Manage metadata tags (set, del, list, search) (aliases: label, link)
 //!   world        Mint invites for, and join, multiplayer worlds hosted over Iroh
+//!   gallery      Administer a program gallery directory (removals, appeals, review)
 //!   match-audit Export and verify signed match-audit v0 logs
+//!   walk       The #9106 walking skeleton, driven by hand (stored nodes, sync, reports)
 //!   group        Groups: create, policy, add, remove, set roles, list, join
 //!   delegate     Grant a delegate a scope in a group
 //!   revoke       Revoke a delegation by its grant's event ID
@@ -104,19 +107,23 @@ use clap::{Args, CommandFactory, Parser, Subcommand};
 
 pub mod claim;
 pub mod doc;
+pub mod gallery;
 pub mod groups;
 #[cfg(feature = "sandbox")]
 pub mod match_audit;
 pub mod tag;
+pub mod walk;
 pub mod world;
 pub mod writer_sets;
 
 pub use claim::{ClaimCommand, ClaimScope};
 pub use doc::DocCommand;
+pub use gallery::{GalleryArgs, GalleryCommand};
 pub use groups::{DelegateArgs, GroupCommand, GroupRemoveMode, GroupTemplate, RevokeArgs};
 #[cfg(feature = "sandbox")]
 pub use match_audit::MatchAuditCommand;
 pub use tag::TagCommand;
+pub use walk::WalkCommand;
 pub use world::{
     JournalCommand, WorldApplyArgs, WorldCapsArgs, WorldCommand, WorldCompileArgs,
     WorldCrossWorldWriteArgs, WorldDevArgs, WorldDiffArgs, WorldDoctorArgs, WorldDownloadArgs,
@@ -371,6 +378,9 @@ pub struct ServeArgs {
     /// discover peers. Useful for isolated servers.
     #[arg(long)]
     pub no_gossip: bool,
+    /// Enable gossip peer discovery, overriding a build-time disabled default.
+    #[arg(long, conflicts_with = "no_gossip")]
+    pub gossip: bool,
     /// Start web interface.
     ///
     /// Enables an HTTP server with a browser-based UI for
@@ -403,23 +413,17 @@ pub struct ServeArgs {
     /// Default: "id-public-discovery-v1" (public network).
     #[arg(long)]
     pub topic_secret: Option<String>,
-    /// Skip default bootstrap node IDs from `defaults.conf`.
+    /// Skip default bootstrap node IDs from `defaults.json`.
     ///
     /// Only CLI-provided `--bootstrap` nodes are used.
     #[arg(long)]
     pub no_default_bootstrap: bool,
-    /// Skip default topic and secret from `defaults.conf`.
+    /// Skip default topic and secret from `defaults.json`.
     ///
     /// Falls back to the hardcoded constant values. CLI-provided
     /// `--topic` and `--topic-secret` still take precedence.
     #[arg(long)]
     pub no_default_topic: bool,
-    /// Use only `defaults.conf` values, ignoring hardcoded fallbacks.
-    ///
-    /// Useful when you want to fully control defaults via the
-    /// embedded configuration file at build time.
-    #[arg(long)]
-    pub replace_defaults: bool,
     /// Disable mDNS local peer discovery.
     ///
     /// By default, the server uses mDNS to discover peers on the
@@ -452,7 +456,7 @@ pub struct ServeArgs {
     /// Web listener to bind, as `IP:PORT` (repeatable; #2145).
     ///
     /// Each occurrence adds one listener; the set replaces any
-    /// `[web_bindings]` entries from `defaults.conf` entirely.
+    /// `web_bindings` entries from `defaults.json` entirely.
     /// Combining `--web-listen` with an explicitly-set `--bind` or
     /// `--port` is a startup error naming the conflict. IPv6
     /// addresses use the bracket form, e.g. `[::1]:3001`.
@@ -470,6 +474,23 @@ pub struct ServeArgs {
     /// Browsers drop `Secure` cookies over plain HTTP, except on localhost.
     #[arg(long, env = "ID_WEB_COOKIE_SECURE")]
     pub web_cookie_secure: bool,
+    /// Serve the program gallery stored in this directory (#10003, #8281).
+    ///
+    /// The node serves it as a program registry over Iroh
+    /// (`/id-program-registry/1`: list, fetch and author-signed unpublish),
+    /// and with `--web` also answers `/api/gallery/records`,
+    /// `/api/gallery/bundles/<hash>`, `/api/gallery/search`,
+    /// `/api/gallery/authors/<key>`, `/api/gallery/collections` and
+    /// `/api/gallery/transparency`, from the verified bundle files
+    /// (`<content-hash>.idpb`) in the directory and the operator's
+    /// collections, tags and admission decisions under `operator/` (managed
+    /// with `id gallery`). Every file is verified when the server starts.
+    #[arg(long, env = "ID_GALLERY_DIR")]
+    pub gallery_dir: Option<std::path::PathBuf>,
+    /// Accept bundle publishes from any peer over Iroh. Each is verified and
+    /// then goes through the gallery's admission like any other.
+    #[arg(long, env = "ID_GALLERY_ACCEPT_PUBLISH", requires = "gallery_dir")]
+    pub gallery_accept_publish: bool,
     /// Host a multiplayer world over Iroh (and `/ws/world` with `--web`).
     #[arg(long, requires = "world_admin_token")]
     pub world: bool,
@@ -646,8 +667,6 @@ pub enum Command {
     /// # Skip built-in topic/secret (use hardcoded constants)
     /// id serve --no-default-topic
     ///
-    /// # Use only defaults.conf values (ignore hardcoded fallbacks)
-    /// id serve --replace-defaults
     /// ```
     Serve(ServeArgs),
     /// Publish a program (world) on the RUNNING `id serve` (#2147).
@@ -1364,10 +1383,18 @@ pub enum Command {
     /// ```
     #[command(subcommand)]
     World(Box<WorldCommand>),
+    /// Administer a program gallery directory: removals, appeals, review,
+    /// posture and operator tags, all on the public transparency list.
+    Gallery(GalleryArgs),
     /// Export and verify signed match-audit v0 logs.
     #[cfg(feature = "sandbox")]
     #[command(subcommand)]
     MatchAudit(MatchAuditCommand),
+    /// The #9106 walking skeleton, driven by hand: stored nodes,
+    /// a signed record at an id:// address, sync over the
+    /// federation exchange protocol, conflict reports (#12232).
+    #[command(subcommand)]
+    Walk(WalkCommand),
     /// Groups: create, show the policy, add, remove, set roles, list, and join (P6.7a).
     ///
     /// Each action records one event in the group log and prints one line, or one JSON object with
@@ -1503,6 +1530,14 @@ pub enum Command {
         #[command(subcommand)]
         command: KeyCommand,
     },
+    /// Show or change this identity's keyset: its admin key and the
+    /// device keys allowed to act for it (#2380). The first use migrates
+    /// a single-key account by writing a genesis record signed by the
+    /// existing key; the identity ID does not change.
+    Keyset {
+        #[command(subcommand)]
+        command: KeysetCommand,
+    },
     /// Discover and list known peers.
     ///
     /// Discovers other `id` servers via gossip-based networking, RPC
@@ -1578,19 +1613,16 @@ pub enum Command {
         /// Used to encrypt DHT bootstrap records.
         #[arg(long)]
         topic_secret: Option<String>,
-        /// Skip default bootstrap node IDs from `defaults.conf`.
+        /// Skip default bootstrap node IDs from `defaults.json`.
         ///
         /// Only CLI-provided `--bootstrap` nodes are used.
         #[arg(long)]
         no_default_bootstrap: bool,
-        /// Skip default topic and secret from `defaults.conf`.
+        /// Skip default topic and secret from `defaults.json`.
         ///
         /// Falls back to the hardcoded constant values.
         #[arg(long)]
         no_default_topic: bool,
-        /// Use only `defaults.conf` values, ignoring hardcoded fallbacks.
-        #[arg(long)]
-        replace_defaults: bool,
         /// Disable relay servers and use direct connections only.
         #[arg(long)]
         no_relay: bool,
@@ -1662,6 +1694,163 @@ pub enum KeyCommand {
         /// Replace an existing identity key file atomically.
         #[arg(long)]
         replace: bool,
+    },
+}
+
+/// Subcommands for `id keyset`. Each acts on the server identity, or
+/// the client identity with `--client`, and signs with that identity's
+/// key, which must be an active admin key of the keyset to change it.
+#[derive(Subcommand, Debug)]
+pub enum KeysetCommand {
+    /// Print the identity ID, admin keys and device keys.
+    Show {
+        /// Show the client identity's keyset instead of the server's.
+        #[arg(long)]
+        client: bool,
+    },
+    /// Enrol another device key. The device's 32-byte key file is read
+    /// to countersign the enrolment, proving the device holds the key.
+    Enrol {
+        /// The new device's key file (the `.iroh-key` it was created with).
+        device_key_file: PathBuf,
+        /// A name for the device, shown by `id keyset show`.
+        #[arg(long)]
+        label: String,
+        /// Change the client identity's keyset instead of the server's.
+        #[arg(long)]
+        client: bool,
+    },
+    /// Revoke a device key, given as its hex public key. Records it signed
+    /// before the revocation stay valid history.
+    Revoke {
+        /// The device's hex public key, as `id keyset show` prints it.
+        device_key: String,
+        /// Why it was revoked, kept in the record.
+        #[arg(long, default_value = "revoked")]
+        reason: String,
+        /// Change the client identity's keyset instead of the server's.
+        #[arg(long)]
+        client: bool,
+    },
+    /// Hand admin power to another key. The new key's 32-byte key file is
+    /// read to countersign the rotation; afterwards this key can no
+    /// longer change the keyset.
+    Rotate {
+        /// The new admin key's key file.
+        new_admin_key_file: PathBuf,
+        /// Change the client identity's keyset instead of the server's.
+        #[arg(long)]
+        client: bool,
+    },
+    /// Name the guardians who can approve a recovery of this identity,
+    /// and how many must approve. Adding guardians or raising the
+    /// threshold takes effect at once; removing one or lowering the
+    /// threshold waits out the recovery delay, so a stolen admin key
+    /// cannot swap in guardians of its own.
+    Guardians {
+        /// Each guardian's identity ID (hex public key).
+        #[arg(required = true)]
+        guardians: Vec<String>,
+        /// How many of the guardians must approve a recovery.
+        #[arg(long)]
+        threshold: u32,
+        /// Change the client identity's keyset instead of the server's.
+        #[arg(long)]
+        client: bool,
+    },
+    /// Guardian recovery of an identity whose keys are all lost. Records
+    /// go through a recovery relay file, which attests when it first saw
+    /// each one; share that file among the devices and guardians taking
+    /// part.
+    Recovery {
+        /// The recovery step.
+        #[command(subcommand)]
+        command: RecoveryCommand,
+    },
+    /// Checkpoint the current keyset head with this identity's key, which
+    /// must be an active device key. The head becomes final here: a
+    /// fork that later arrives can no longer displace it.
+    Checkpoint {
+        /// Checkpoint the client identity's keyset instead of the server's.
+        #[arg(long)]
+        client: bool,
+    },
+}
+
+/// Subcommands for `id keyset recovery` (#2382). Each signs with this
+/// device's identity key, or the client key with `--client`.
+#[derive(Subcommand, Debug)]
+pub enum RecoveryCommand {
+    /// Copy this identity's keyset records into the relay, so a
+    /// successor can pin its head and its approvals can be checked.
+    /// Owners and guardians both publish.
+    Publish {
+        /// The recovery relay file.
+        #[arg(long)]
+        relay: PathBuf,
+        /// Publish the client identity's keyset instead of the server's.
+        #[arg(long)]
+        client: bool,
+    },
+    /// From a new device, ask the guardians of `identity` to recover it.
+    /// This device's key becomes the identity's admin and device key
+    /// once enough guardians approve and the recovery delay has passed.
+    Request {
+        /// The identity to recover (its hex identity ID).
+        identity: String,
+        /// The recovery relay file.
+        #[arg(long)]
+        relay: PathBuf,
+        /// Why, shown to every device and guardian told of the request.
+        #[arg(long, default_value = "lost every key")]
+        reason: String,
+        /// Sign with the client key instead of the server key.
+        #[arg(long)]
+        client: bool,
+    },
+    /// As a guardian, approve a recovery request. Also publishes this
+    /// guardian identity's keyset, so the approval can be checked.
+    Approve {
+        /// The request ID, as `request` printed it.
+        request: String,
+        /// The recovery relay file.
+        #[arg(long)]
+        relay: PathBuf,
+        /// Approve as the client identity instead of the server's.
+        #[arg(long)]
+        client: bool,
+    },
+    /// Cancel a recovery request with any surviving admin or device key
+    /// of the identity being recovered.
+    Cancel {
+        /// The request ID.
+        request: String,
+        /// The recovery relay file.
+        #[arg(long)]
+        relay: PathBuf,
+        /// Sign with the client key instead of the server key.
+        #[arg(long)]
+        client: bool,
+    },
+    /// Show where a recovery request stands.
+    Status {
+        /// The request ID.
+        request: String,
+        /// The recovery relay file.
+        #[arg(long)]
+        relay: PathBuf,
+    },
+    /// On the requesting device, complete a recovery that is ready by
+    /// relaying the rotation to the successor keys.
+    Complete {
+        /// The request ID.
+        request: String,
+        /// The recovery relay file.
+        #[arg(long)]
+        relay: PathBuf,
+        /// Sign with the client key instead of the server key.
+        #[arg(long)]
+        client: bool,
     },
 }
 

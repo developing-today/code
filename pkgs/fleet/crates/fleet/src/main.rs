@@ -50,6 +50,14 @@ mod gh;
 
 #[cfg(feature = "gh")]
 mod gh_cache;
+#[cfg(feature = "gh")]
+mod gh_closure;
+#[cfg(feature = "gh")]
+mod gh_guard;
+#[cfg(feature = "gh")]
+mod gh_metadata;
+mod invocation_ledger;
+mod session_state;
 
 #[allow(dead_code)]
 // the derivation runs in build.rs (which includes this module by path); the binary itself consumes only the baked FLEET_DERIVED_VERSION value, plus these unit tests
@@ -105,6 +113,12 @@ fn compiled_capabilities() -> CapabilitySet {
     }
     if cfg!(feature = "gh") {
         caps.insert(Capability::Gh);
+    }
+    if cfg!(feature = "bridge") {
+        caps.insert(Capability::Bridge);
+    }
+    if cfg!(feature = "agent") {
+        caps.insert(Capability::Agent);
     }
     caps
 }
@@ -363,6 +377,9 @@ fn help_text(surface: &Surface) -> String {
     out.push_str(
         "  init           Autostart this host's roles per the [host] manifest (no-op when running)\n",
     );
+    out.push_str(
+        "  session bind   Validate and persist an explicit or inherited session identity\n",
+    );
     out.push_str("  version        Print version, enabled capabilities, and source rev\n");
     out.push_str("  capabilities   Print the registry and this build's capabilities as JSON\n");
     out.push_str("  help [domain]  Show this help, or one domain's help\n\n");
@@ -388,8 +405,11 @@ fn print_domain_help(surface: &Surface, d: &Domain) {
             "dispatch" => "included in this build",
             "dispatch-test" => "included in this build",
             "secrets" => "included in this build",
-            "search" => "included in this build",
+            "search" => "included in this build (options: fleet search --help)",
             "proxy" => "included in this build",
+            "bridge" => "included in this build (options: fleet bridge <command> --help)",
+            "agent" => "included in this build (options: fleet agent --help)",
+            "shell" => "included in this build (options: fleet shell --help)",
             "serve" => {
                 "included in this build (queue-broker, secrets-broker, search and proxy roles)"
             }
@@ -721,6 +741,16 @@ fn run_serve_list(surface: &Surface, roles: &[ServeRole], invoked_as: &str) -> i
 
 /// Run one domain invocation (also the argv0-alias landing pad).
 fn run_domain(surface: &Surface, d: &Domain, args: &[String], invoked_as: &str) -> i32 {
+    run_domain_with_initializer(surface, d, args, invoked_as, session_state::initialize)
+}
+
+fn run_domain_with_initializer(
+    surface: &Surface,
+    d: &Domain,
+    args: &[String],
+    invoked_as: &str,
+    initialize: impl FnOnce(Option<&str>) -> Result<Option<String>, String>,
+) -> i32 {
     // The search role takes real flags, so its own usage answers
     // `--help` wherever the role is actually usable; elsewhere the
     // flag falls through to the registry's domain help below.
@@ -730,6 +760,19 @@ fn run_domain(surface: &Surface, d: &Domain, args: &[String], invoked_as: &str) 
         && surface.cap_state(Capability::SearchServe, d.name) == CapState::Available
     {
         println!("{}", fleet_search::serve::SERVE_USAGE);
+        return EXIT_OK;
+    }
+    // The search client's own usage answers `fleet search --help`
+    // (#12782): the registry's domain help names the verbs but not
+    // the flags a cold session needs, and the client surface is
+    // the documented one — the same carve-out the search serve
+    // role gets above (#6400).
+    #[cfg(feature = "search")]
+    if d.name == "search"
+        && args.first().is_some_and(|a| is_help_flag(a))
+        && surface.cap_state(Capability::Search, d.name) == CapState::Available
+    {
+        println!("{}", fleet_search::SEARCH_USAGE);
         return EXIT_OK;
     }
     // The proxy role under its serve spelling has its own usage
@@ -757,19 +800,45 @@ fn run_domain(surface: &Surface, d: &Domain, args: &[String], invoked_as: &str) 
         Ok(c) => c,
         Err(code) => return code,
     };
+    // These dispatcher-owned forms are validated before session resolution:
+    // malformed invocations must not inspect (or update) the worktree marker.
+    let serve_list = if d.name == "serve" {
+        match parse_serve_list(args) {
+            Some(Ok(roles)) => Some(roles),
+            Some(Err(message)) => return usage_error(&message),
+            None => None,
+        }
+    } else {
+        None
+    };
+    #[cfg(feature = "queue")]
+    if d.name == "queue"
+        && matches!(
+            args.first().map(|s| s.as_str()),
+            Some("--version") | Some("-V")
+        )
+        && let Some(extra) = args.get(1)
+    {
+        return usage_error(&format!(
+            "unexpected argument '{extra}' for 'fleet queue {}'",
+            args.first().map(|s| s.as_str()).unwrap_or("--version")
+        ));
+    }
     match surface.cap_state(cap, d.name) {
         CapState::Available => {
+            // proxy init is dispatched through run_init_call, which validates
+            // its leaf arguments and resolves session identity exactly once.
+            let init_leaf = d.name == "proxy" && args.first().is_some_and(|arg| arg == "init");
+            if !init_leaf && let Err(error) = initialize(None) {
+                eprintln!("fleet {}: {error}", d.name);
+                return EXIT_USAGE;
+            }
             // #6264 (design #5698 option (i)): a multi-role serve
             // list runs every listed role in this one process. The
             // parse returns None for single-role invocations, which
             // keep the paths below unchanged.
-            if d.name == "serve" {
-                if let Some(list) = parse_serve_list(args) {
-                    match list {
-                        Ok(roles) => return run_serve_list(surface, &roles, invoked_as),
-                        Err(message) => return usage_error(&message),
-                    }
-                }
+            if let Some(roles) = serve_list {
+                return run_serve_list(surface, &roles, invoked_as);
             }
             // Step 2 (#5430): the queue domain runs for real — the
             // repo-queue client surface and the two broker roles.
@@ -785,12 +854,6 @@ fn run_domain(surface: &Surface, d: &Domain, args: &[String], invoked_as: &str) 
                     // like the root built-ins (#5572), a trailing argument
                     // is a usage error naming it, not silently discarded
                     // success (#5603).
-                    if let Some(extra) = args.get(1) {
-                        return usage_error(&format!(
-                            "unexpected argument '{extra}' for 'fleet queue {}'",
-                            args.first().map(|s| s.as_str()).unwrap_or("--version")
-                        ));
-                    }
                     println!(
                         "{} {VERSION}",
                         if invoked_as == "repo-queue" {
@@ -846,12 +909,36 @@ fn run_domain(surface: &Surface, d: &Domain, args: &[String], invoked_as: &str) 
             if d.name == "secrets" {
                 return secrets::run(&surface.config, args);
             }
+            // developing-today/code#10796: the laptop-agent domain runs for
+            // real — the transport ladder and the verbs over the laptop daemon.
+            #[cfg(feature = "laptop-agent")]
+            if d.name == "laptop-agent" {
+                return fleet_laptop_agent::cli::run(&surface.config, args);
+            }
             // code#8887: the gh domain runs for real — the real
             // `gh` binary as a passthrough under the token
             // rotation (personal, then App installations).
             #[cfg(feature = "gh")]
             if d.name == "gh" {
                 return gh::run(&surface.config, args);
+            }
+            // The bridge domain runs for real: fleet mailboxes on the
+            // message bridge (central send/agents/log; agent
+            // hello/inbox/post/ack).
+            #[cfg(feature = "bridge")]
+            if d.name == "bridge" {
+                return fleet_bridge::run(&surface.config, args);
+            }
+            // The agent's front door: enrolment, the intake ladder and
+            // `fleet shell`. Both domains compose the verbs above
+            // through this same binary.
+            #[cfg(feature = "agent")]
+            if d.name == "agent" {
+                return fleet_agent::run(&surface.config, args);
+            }
+            #[cfg(feature = "agent")]
+            if d.name == "shell" {
+                return fleet_agent::run_shell(&surface.config, args);
             }
             // Step 5 (#5433): the search domain runs for real —
             // the atlas-search client surface over the live Atlas
@@ -1265,6 +1352,17 @@ fn run_proxy_ssh(tail: &[String], config: &fleet_config::Config) -> i32 {
 }
 
 fn run_init_call(surface: &Surface, argv: &[String]) -> i32 {
+    if argv.iter().any(|arg| is_help_flag(arg)) {
+        println!("{}", fleet_proxy::client::INIT_USAGE);
+        return EXIT_OK;
+    }
+    if let Some(extra) = argv.first() {
+        return usage_error(&format!("fleet init takes no arguments (got {extra:?})"));
+    }
+    if let Err(error) = session_state::initialize(None) {
+        eprintln!("fleet init: {error}");
+        return EXIT_USAGE;
+    }
     let client = format!("fleet {} ({})", VERSION, build_name(&surface.compiled));
     let capabilities = fleet_proxy_proto::capability_ids(&surface.usable());
     match fleet_proxy::client::run_init(argv, &surface.config, &client, &capabilities) {
@@ -1356,6 +1454,7 @@ fn run_root(surface: &Surface, args: &[String], invoked_as: &str) -> i32 {
             EXIT_OK
         }
         Some("init") => cmd_init(surface, &args[1..], invoked_as),
+        Some("session") => session_state::run(&args[1..]),
         Some(name) => match domain(name) {
             Some(d) => run_domain(surface, d, &args[1..], invoked_as),
             None => usage_error(&format!("unrecognized subcommand '{name}'")),
@@ -1384,6 +1483,7 @@ fn restore_default_sigpipe() {
 fn restore_default_sigpipe() {}
 
 fn main() {
+    let started = std::time::Instant::now();
     restore_default_sigpipe();
     let argv: Vec<String> = std::env::args().collect();
     let invoked_as = argv
@@ -1400,40 +1500,46 @@ fn main() {
     // Config decides the disable table; a malformed config is a loud
     // error on every path (a silently ignored disable would defeat
     // the §7 incident lever).
-    let config = match fleet_config::Config::load() {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("{e}");
-            std::process::exit(EXIT_USAGE);
-        }
-    };
-
-    let code = if invoked_as == "fleet" {
-        let surface = Surface::new(None, config);
-        run_root(&surface, &args, &invoked_as)
-    } else if let Some(variant) = Variant::from_invocation_name(&invoked_as) {
-        // Refinement A: the hyphenated name narrows (never widens).
-        let surface = Surface::new(Some(variant), config);
-        run_root(&surface, &args, &invoked_as)
-    } else if let Some(route) = alias_route(&invoked_as) {
-        let surface = Surface::new(None, config);
-        let d = domain(route.domain).expect("registry aliases route to real domains");
-        let mut routed: Vec<String> = Vec::new();
-        if let Some(implied) = route.implied_arg {
-            routed.push(implied.to_string());
-        }
-        routed.extend(args);
-        run_domain(&surface, d, &routed, &invoked_as)
-    } else if is_known_invocation_name(&invoked_as) {
-        unreachable!("known names are handled above");
-    } else {
-        eprintln!(
-            "fleet: invoked under unknown name '{invoked_as}'; expected 'fleet', a variant \
+    let code = match fleet_config::Config::load() {
+        Ok(config) => {
+            if invoked_as == "fleet" {
+                let surface = Surface::new(None, config);
+                run_root(&surface, &args, &invoked_as)
+            } else if let Some(variant) = Variant::from_invocation_name(&invoked_as) {
+                // Refinement A: the hyphenated name narrows (never widens).
+                let surface = Surface::new(Some(variant), config);
+                run_root(&surface, &args, &invoked_as)
+            } else if let Some(route) = alias_route(&invoked_as) {
+                let surface = Surface::new(None, config);
+                let d = domain(route.domain).expect("registry aliases route to real domains");
+                let mut routed: Vec<String> = Vec::new();
+                if let Some(implied) = route.implied_arg {
+                    routed.push(implied.to_string());
+                }
+                routed.extend(args.iter().cloned());
+                run_domain(&surface, d, &routed, &invoked_as)
+            } else if is_known_invocation_name(&invoked_as) {
+                unreachable!("known names are handled above");
+            } else {
+                eprintln!(
+                    "fleet: invoked under unknown name '{invoked_as}'; expected 'fleet', a variant \
              name ('fleet-serve', 'fleet-connect'), or a known alias (repo-queue, queue-broker, \
              secrets-broker, laptop-agent, laptop-agent-broker, atlas-search)"
-        );
-        EXIT_USAGE
+                );
+                EXIT_USAGE
+            }
+        }
+        Err(e) => {
+            eprintln!("{e}");
+            EXIT_USAGE
+        }
     };
+    // Telemetry is local, payload-free and best-effort: failure to write
+    // the ledger must never alter the command's result.
+    let _ = invocation_ledger::append(
+        &invocation_ledger::path(),
+        &invocation_ledger::record(&invoked_as, &args, code, started.elapsed().as_millis()),
+    );
     std::process::exit(code);
 }
 
@@ -1846,6 +1952,65 @@ mod tests {
     }
 
     #[test]
+    fn malformed_serve_list_does_not_resolve_session_state() {
+        let surface = Surface::new(None, fleet_config::Config::default());
+        let serve = domain("serve").expect("serve domain exists");
+        let initialized = std::cell::Cell::new(false);
+        let code = run_domain_with_initializer(
+            &surface,
+            serve,
+            &args(&["queue-broker", "queue-broker"]),
+            "fleet",
+            |_| {
+                initialized.set(true);
+                Ok(None)
+            },
+        );
+        assert_eq!(code, EXIT_USAGE);
+        assert!(
+            !initialized.get(),
+            "invalid argv must not inspect the marker"
+        );
+    }
+
+    #[test]
+    fn malformed_proxy_init_does_not_resolve_session_state_twice() {
+        let surface = Surface::new(None, fleet_config::Config::default());
+        let proxy = domain("proxy").expect("proxy domain exists");
+        let initialized = std::cell::Cell::new(false);
+        let code = run_domain_with_initializer(
+            &surface,
+            proxy,
+            &args(&["init", "--bogus"]),
+            "fleet",
+            |_| {
+                initialized.set(true);
+                Ok(None)
+            },
+        );
+        assert_eq!(code, EXIT_USAGE, "proxy init rejects leaf arguments");
+        assert!(
+            !initialized.get(),
+            "proxy init validates its leaf before session resolution"
+        );
+    }
+
+    #[test]
+    fn root_init_help_and_extra_args_return_before_session_resolution() {
+        let surface = Surface::new(None, fleet_config::Config::default());
+        assert_eq!(
+            run_init_call(&surface, &args(&["--help"])),
+            EXIT_OK,
+            "help must be available even with a stale marker"
+        );
+        assert_eq!(
+            run_init_call(&surface, &args(&["--bogus"])),
+            EXIT_USAGE,
+            "extra arguments must be rejected before marker access"
+        );
+    }
+
+    #[test]
     fn serve_list_leaves_single_role_invocations_alone() {
         // One role: not a list.
         assert!(parse_serve_list(&args(&["queue-broker"])).is_none());
@@ -1881,10 +2046,24 @@ mod tests {
         let surface = Surface::new(None, fleet_config::Config::default());
         let queue = domain("queue").expect("queue domain exists");
         for flag in ["--version", "-V"] {
+            let initialized = std::cell::Cell::new(false);
             assert_eq!(
-                run_domain(&surface, queue, &args(&[flag, "--bogus"]), "fleet"),
+                run_domain_with_initializer(
+                    &surface,
+                    queue,
+                    &args(&[flag, "--bogus"]),
+                    "fleet",
+                    |_| {
+                        initialized.set(true);
+                        Ok(None)
+                    },
+                ),
                 EXIT_USAGE,
                 "{flag} must reject a trailing argument"
+            );
+            assert!(
+                !initialized.get(),
+                "malformed {flag} must not inspect marker"
             );
             assert_eq!(
                 run_domain(&surface, queue, &args(&[flag]), "fleet"),

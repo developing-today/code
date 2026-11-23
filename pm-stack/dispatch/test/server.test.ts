@@ -106,7 +106,7 @@ describe("POST /v1/sessions directory scoping (issue #2903)", () => {
   });
 
   test("OIDC + omitted directory passes validation (fails later at the unconfigured queue)", async () => {
-    // No SUPABASE_SERVICE_ROLE_KEY in test env, so a request that clears
+    // No broker token in test env, so a request that clears
     // validation reaches requireQueue() and maps to 502 — proving the
     // directory gate let it through. Any network beyond JWKS throws.
     const token = signOidc("developing-today/code");

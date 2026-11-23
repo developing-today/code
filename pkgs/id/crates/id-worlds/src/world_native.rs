@@ -274,8 +274,11 @@ impl crate::world::WorldProgram for NativeProgram {
                 self.deliver(0, event.as_bytes())?;
                 Ok(())
             }
+            // A notification is addressed to the world's users, not
+            // to the program that originated it (#1062).
             crate::world::WorldEventKind::Chat(_)
-            | crate::world::WorldEventKind::ProgramInstalled { .. } => Ok(()),
+            | crate::world::WorldEventKind::ProgramInstalled { .. }
+            | crate::world::WorldEventKind::Notification { .. } => Ok(()),
         }
     }
 

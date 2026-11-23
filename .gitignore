@@ -25,6 +25,7 @@ out
 **/out
 result*
 **/result*
+/mcpx-images*
 !test/result*
 !**/test/result*
 !tests/result*
@@ -111,6 +112,8 @@ terraform.rc
 .env.local
 .claude/settings.local.json
 .opencode/worktree-session-state.json
+# Fleet's per-worktree session marker is runtime state, not source.
+.fleet-session-id
 *_ses_*.json
 ses_*.json
 **/*_ses_*.json

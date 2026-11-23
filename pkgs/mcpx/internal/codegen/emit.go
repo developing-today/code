@@ -27,7 +27,11 @@ func Declarations(nss []Namespace) string {
 	sort.Slice(nss, func(i, j int) bool { return nss[i].Name < nss[j].Name })
 	for _, ns := range nss {
 		b.WriteString(namespaceDoc(ns))
-		fmt.Fprintf(&b, "declare namespace %s {\n", ns.Name)
+		if ns.Cold {
+			fmt.Fprintf(&b, "declare const %s: Record<string, (args?: any) => Promise<any>> & {\n", ns.Name)
+		} else {
+			fmt.Fprintf(&b, "declare namespace %s {\n", ns.Name)
+		}
 		tools := append([]Tool(nil), ns.Tools...)
 		sort.Slice(tools, func(i, j int) bool { return tools[i].Name < tools[j].Name })
 		clash := funcCollisions(tools)
@@ -45,7 +49,11 @@ func Declarations(nss []Namespace) string {
 			// The form a script calls it in, and the name it has as a native
 			// tool once projected. Both spelled from the same identifier.
 			fmt.Fprintf(&b, "  // Called as tools.%s.%s(args); native name %s_%s.\n", ns.Name, fn, ns.Name, fn)
-			b.WriteString(toolDecl(t, "  "))
+			decl := toolDecl(t, "  ")
+			if ns.Cold {
+				decl = strings.Replace(decl, "function ", "", 1)
+			}
+			b.WriteString(decl)
 		}
 		b.WriteString("}\n\n")
 	}
@@ -160,7 +168,11 @@ func ModuleWithRecipes(nss []Namespace, endpoint, session string, recipes []Reci
 		sort.Slice(tools, func(i, j int) bool { return tools[i].Name < tools[j].Name })
 
 		b.WriteString(namespaceDoc(ns))
-		fmt.Fprintf(&b, "export const %s = {\n", ns.Name)
+		if ns.Cold {
+			fmt.Fprintf(&b, "export const %s = __lazyNamespace({\n", ns.Name)
+		} else {
+			fmt.Fprintf(&b, "export const %s = {\n", ns.Name)
+		}
 		clash := funcCollisions(tools)
 		done := map[string]bool{}
 		for i, t := range tools {
@@ -184,7 +196,20 @@ func ModuleWithRecipes(nss []Namespace, endpoint, session string, recipes []Reci
 			}
 			b.WriteString(toolImpl(ns.Server, t, "  "))
 		}
-		b.WriteString("};\n\n")
+		if ns.Cold {
+			var allowed map[string]string
+			if ns.LazyTools != nil {
+				allowed = map[string]string{}
+			}
+			for _, name := range ns.LazyTools {
+				fn := ToolFuncName(name)
+				allowed[fn] = lazySelector(ns, "typescript", fn)
+			}
+			encoded, _ := json.Marshal(allowed)
+			fmt.Fprintf(&b, "}, %s, %s);\n\n", quote(ns.Server), encoded)
+		} else {
+			b.WriteString("};\n\n")
+		}
 	}
 
 	b.WriteString("export const tools = {\n")
@@ -760,7 +785,22 @@ function unwrap(server: string, tool: string, raw: RawToolResult): ToolResult {
   return attachRaw(blocks as ToolResult, raw);
 }
 
-async function __call(server: string, tool: string, args: unknown): Promise<ToolResult> {
+function __lazyNamespace<T extends object>(known: T, server: string, allowed: Record<string,string> | null): T & Record<string, (args?: any) => Promise<any>> {
+  return new Proxy(known, {
+    get(target, prop, receiver) {
+      if (typeof prop !== "string") return Reflect.get(target, prop, receiver);
+      // Do not turn namespaces into promises or synthesize object machinery.
+      if (!Object.prototype.hasOwnProperty.call(target, prop) &&
+          (prop === "then" || prop === "catch" || prop === "toJSON" || prop in Object.prototype)) return undefined;
+      if (allowed && !Object.prototype.hasOwnProperty.call(allowed, prop)) return Reflect.get(target, prop, receiver);
+      // Read known getters first so existing collision stubs keep refusing.
+      if (Object.prototype.hasOwnProperty.call(target, prop)) Reflect.get(target, prop, receiver);
+      return (args?: any) => __call(server, prop, args ?? {}, "typescript", allowed?.[prop]);
+    }
+  }) as T & Record<string, (args?: any) => Promise<any>>;
+}
+
+async function __call(server: string, tool: string, args: unknown, lazyLanguage?: string, lazySelector?: string): Promise<ToolResult> {
   let resp: Response;
   try {
     resp = await TRANSPORT.fetch(base() + "/v1/call", {
@@ -777,7 +817,7 @@ async function __call(server: string, tool: string, args: unknown): Promise<Tool
         "x-mcpx-settings": asciiHeader(env("MCPX_SETTINGS")),
         "x-mcpx-input": env("MCPX_INPUT"),
       },
-      body: JSON.stringify({ server, tool, args: args ?? {} }),
+      body: JSON.stringify({ server, tool, args: args ?? {}, ...(lazyLanguage ? {lazyLanguage} : {}), ...(lazySelector ? {lazySelector} : {}) }),
     });
   } catch (e) {
     throw new ToolError(
@@ -901,6 +941,69 @@ export interface Frame {
 }
 
 /**
+ * The best name a CallSite can give its frame.
+ *
+ * getFunctionName is the primary source, but it is not the only one: a
+ * method frame may only answer to getMethodName, and some shims populate
+ * getFunction (whose .name is the same string) while leaving both name
+ * getters empty. Trying all three costs nothing on runtimes where the
+ * first already answers.
+ */
+function frameName(s: any): string | undefined {
+  const fn = s.getFunctionName?.();
+  if (fn) return fn;
+  const mn = s.getMethodName?.();
+  if (mn) return mn;
+  const f = s.getFunction?.();
+  if (f && typeof f.name === "string" && f.name) return f.name;
+  return undefined;
+}
+
+/**
+ * Parse a runtime's default stack string into frames.
+ *
+ * Bun's V8 CallSite shim is lossy: for frames the string form names, the
+ * CallSite getters can all come back empty, and captureStackTrace may
+ * collapse the stack to a single unnamed frame (verified on Bun 1.4.2).
+ * The string is strictly worse where CallSites work -- it carries no
+ * async/native/type flags -- so this is a fallback for the case where
+ * the CallSite path produced no names at all, never a replacement.
+ * Handles both "at name (file:line:col)" and "at file:line:col" lines.
+ */
+function parseStackString(stack: unknown): Frame[] {
+  if (typeof stack !== "string") return [];
+  const frames: Frame[] = [];
+  for (const raw of stack.split("\n")) {
+    const line = raw.trim();
+    if (!line.startsWith("at ")) continue;
+    const rest = line.slice(3);
+    const f: Frame = {};
+    let loc = rest;
+    const open = rest.lastIndexOf(" (");
+    if (open > 0 && rest.endsWith(")")) {
+      const name = rest.slice(0, open);
+      if (name) f.function = name;
+      loc = rest.slice(open + 2, -1);
+    }
+    const m = /^(.*):(\d+):(\d+)$/.exec(loc);
+    if (m) {
+      f.file = m[1].replace(/^file:\/\//, "");
+      f.line = Number(m[2]);
+      f.column = Number(m[3]);
+    } else if (loc) {
+      f.file = loc;
+    }
+    frames.push(f);
+  }
+  return frames;
+}
+
+/** True when no frame carries a function name. */
+function nameless(frames: Frame[]): boolean {
+  return frames.every((f) => !f.function);
+}
+
+/**
  * Capture a stack as structured frames.
  *
  * V8 exposes Error.prepareStackTrace, which hands back CallSite objects
@@ -925,10 +1028,10 @@ export function captureFrames(skip = 0, limit = 32): Frame[] {
         if (typeof line === "number") f.line = line;
         const col = s.getColumnNumber?.();
         if (typeof col === "number") f.column = col;
-        const fn = s.getFunctionName?.();
+        const fn = frameName(s);
         if (fn) f.function = fn;
         const tn = s.getTypeName?.();
-        if (tn) f.type = tn;
+        if (tn && tn !== "undefined") f.type = tn;
         if (s.isAsync?.()) f.async = true;
         if (s.isNative?.()) f.native = true;
         return f;
@@ -936,7 +1039,24 @@ export function captureFrames(skip = 0, limit = 32): Frame[] {
     const holder: any = {};
     E.captureStackTrace?.(holder, captureFrames);
     const frames: Frame[] = holder.stack ?? (new Error() as any).stack ?? [];
-    return Array.isArray(frames) ? frames.slice(skip, skip + limit) : [];
+    if (!Array.isArray(frames)) return [];
+    const sliced = frames.slice(skip, skip + limit);
+    // Under Bun the CallSite shim can return frames with no names at all
+    // (or a single collapsed frame) for a stack the default string form
+    // names correctly. When that happens, read the string form of a
+    // fresh error -- captured with the caller's own prepareStackTrace
+    // restored, so it is the runtime's default rendering -- and parse
+    // it. The first parsed frame is captureFrames itself, which the
+    // CallSite path excludes via captureStackTrace's second argument.
+    if (typeof (globalThis as any).Bun !== "undefined" && nameless(sliced)) {
+      E.prepareStackTrace = previous;
+      const parsed = parseStackString((new Error() as any).stack);
+      if (parsed.length > 1) {
+        const named = parsed.slice(1).slice(skip, skip + limit);
+        if (!nameless(named)) return named;
+      }
+    }
+    return sliced;
   } catch {
     return [];
   } finally {
@@ -957,14 +1077,26 @@ export function errorFrames(err: Error, limit = 32): Frame[] {
         if (file) f.file = String(file).replace(/^file:\/\//, "");
         const line = s.getLineNumber?.();
         if (typeof line === "number") f.line = line;
-        const fn = s.getFunctionName?.();
+        const fn = frameName(s);
         if (fn) f.function = fn;
         if (s.isAsync?.()) f.async = true;
         return f;
       });
     // Reading .stack re-runs prepareStackTrace against the captured sites.
     const frames = (err as any).stack;
-    return Array.isArray(frames) ? frames.slice(0, limit) : [];
+    if (!Array.isArray(frames)) return [];
+    const sliced = frames.slice(0, limit);
+    // Same Bun shim gap as captureFrames: if the CallSite form names
+    // nothing, the error's own default string form may still name the
+    // throwing function. It is only readable if .stack has not already
+    // been memoised in CallSite form; when it has, keep the CallSite
+    // frames rather than failing.
+    if (typeof (globalThis as any).Bun !== "undefined" && nameless(sliced)) {
+      E.prepareStackTrace = previous;
+      const parsed = parseStackString((err as any).stack);
+      if (parsed.length && !nameless(parsed)) return parsed.slice(0, limit);
+    }
+    return sliced;
   } catch {
     return [];
   } finally {
@@ -1193,13 +1325,18 @@ export function captureConsole(): void {
   // free to be the human form.
   const g = globalThis as any;
   const nodeInspect = builtin("node:util")?.inspect;
+  // Bun must be checked before Deno: Bun exposes a Deno compatibility
+  // global, so under Bun the Deno branch would otherwise win and values
+  // would render in Deno's format instead of the runtime's own. Bun's
+  // console renders with Bun.inspect at depth 2 (deeper values collapse
+  // to [Object ...]), so match both the function and the depth.
   const native: ((v: unknown) => string) | undefined =
     env("MCPX_RUNTIME") === "node" && typeof nodeInspect === "function"
       ? (v) => nodeInspect(v)
+      : typeof g.Bun?.inspect === "function"
+      ? (v) => g.Bun.inspect(v, { depth: 2 })
       : typeof g.Deno?.inspect === "function"
       ? (v) => g.Deno.inspect(v, { colors: false, depth: 4 })
-      : typeof g.Bun?.inspect === "function"
-      ? (v) => g.Bun.inspect(v)
       : typeof nodeInspect === "function"
       ? (v) => nodeInspect(v)
       : undefined;

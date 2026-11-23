@@ -159,6 +159,41 @@ $GB/systemd/install-units.sh
 
 ## 8. Restore from a mirror
 
+Create and locally verify a cold bundle for a planned mirror:
+
+```sh
+python3 ~/git/code/infra/github-backup/bin/bundle_cold.py \
+  --repo developing-today/code --root ~/backups/github
+git clone ~/backups/github/cold-bundles/developing-today/code.bundle ./code-cold
+```
+
+The local command verifies the bundle in an empty repository and confirms the
+restored HEAD matches the mirror before publishing the bundle. It writes only
+to the local backup tree; use the separate uploader below for R2.
+
+To upload one planned mirror to an existing R2 bucket, configure rclone's
+`r2bak` remote using the runtime-only credentials pattern in
+`nixos/home/atlas-backup.sh`, then run:
+
+```sh
+python3 ~/git/code/infra/github-backup/bin/bundle_r2.py \
+  --repo developing-today/code --bucket supabase-backups \
+  --root ~/backups/github
+```
+
+The uploader first completes the local empty-repository verification and
+clone-HEAD comparison, then uploads with `rclone copyto`, downloads that exact
+remote object with a second `rclone copyto`, and compares its SHA-256 against
+the local bundle. The content-addressed key is under
+`github-backup/cold-bundles/<owner>/<repo>/<head>-<sha256>.bundle`, so a newer
+artifact does not replace an earlier one. A non-zero upload or read-back check
+is a failed run. This command handles one repository only; the daily
+`github-backup-r2.timer` runs the four-fleet-repository uploader through the
+existing runtime-only Bitwarden/R2 credential path. A failed fleet repository makes
+the scheduled run fail; disable the timer until the cause is fixed and a full
+run succeeds. This does not provide a freshness/lag status record or automatic
+issue filing.
+
 ```sh
 # normal repo:
 git clone ~/backups/github/<owner>/<repo>.git ./<repo>
@@ -168,7 +203,25 @@ git bundle verify /tmp/<repo>.bundle
 git clone /tmp/<repo>.bundle ./<repo>
 ```
 
-## 9. Disaster recovery (tree lost, GitHub intact)
+## 9. Synchronize a plain Git mirror
+
+The plain mirror target for `OWNER/REPO` is the pre-created
+`developing-today/<repo>-mirror` repository. Create it under the approved
+organization before the first sync, then run:
+
+```sh
+python3 ~/git/code/infra/github-backup/bin/plain_mirror.py \
+  --repo developing-today/code --root ~/backups/github
+```
+
+The command pushes all branches and tags from the valid local mirror, prunes
+branches/tags removed from the source, then compares remote ref names and
+object IDs with the local source. GitHub's reserved `refs/pull/*` namespace is
+not pushed. It never creates or deletes a GitHub repository. The sync command
+is not scheduled yet; target creation and recurring scheduling remain separate
+work.
+
+## 10. Disaster recovery (tree lost, GitHub intact)
 
 Config (this repo) + Bitwarden are the only inputs. §7 Option B rebuilds
 the entire tree; MANIFEST.json regenerates at the end. Exclusions and
@@ -182,7 +235,7 @@ copy, and a failed owner's repos stay planned rather than silently
 dropping out of the manifest. Read that section before treating any
 status surface here as coverage.
 
-## 10. Health checks
+## 11. Health checks
 
 ```sh
 systemctl --user list-timers 'github-backup-*'

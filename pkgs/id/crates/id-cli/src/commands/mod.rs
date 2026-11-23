@@ -59,10 +59,13 @@ pub mod claim;
 pub mod client;
 pub mod doc;
 pub mod find;
+pub mod gallery;
 pub mod get;
 pub mod group;
 pub mod id;
 pub mod key;
+pub mod keyset;
+pub mod keyset_recovery;
 pub mod list;
 #[cfg(feature = "sandbox")]
 pub mod match_audit;
@@ -76,6 +79,7 @@ pub mod serve;
 pub mod serve_publications;
 pub mod tag;
 pub mod text;
+pub mod walk;
 #[cfg(feature = "world")]
 pub mod world;
 pub mod writer_set;
@@ -86,10 +90,12 @@ pub use doc::cmd_doc;
 pub use find::{
     PeekOptions, SearchOptions, cmd_find, cmd_find_matches, cmd_peek, cmd_search, cmd_show,
 };
+pub use gallery::cmd_gallery;
 pub use get::{cmd_get_local, cmd_get_multi, cmd_get_one, cmd_get_one_remote, cmd_gethash};
 pub use group::{cmd_delegate, cmd_group, cmd_revoke};
 pub use id::cmd_id;
 pub use key::cmd_key;
+pub use keyset::cmd_keyset;
 pub use list::{cmd_list, cmd_list_remote};
 #[cfg(feature = "sandbox")]
 pub use match_audit::cmd_match_audit;
@@ -106,6 +112,7 @@ pub use serve::{
     is_process_alive, remove_serve_lock,
 };
 pub use tag::{cmd_migrate_tags, cmd_tag};
+pub use walk::cmd_walk;
 #[cfg(feature = "world")]
 pub use world::cmd_world;
 pub use writer_set::cmd_writer_sets;

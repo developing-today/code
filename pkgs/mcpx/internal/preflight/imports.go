@@ -14,8 +14,10 @@
 // --node-modules-dir=none are appended after any forwarded resolution
 // options, so a project configured with nodeModulesDir "auto" or a stale
 // lockfile is neither installed into nor edited (Codex review, PR #2575).
-// The prepare stage of #1915 stays out until the cache mechanism (#1908)
-// and the resolved dependency set (#1913) exist to build on.
+// Stage 3 builds on both -- the cache mechanism (#1908) and the resolved
+// dependency set (#1913) -- in prepare.go. It runs only in prepare mode
+// and never through this invocation: computing a graph still installs
+// nothing by itself, whatever the mode.
 //
 // The two edges a static graph cannot decide are computed dynamic imports:
 // import("./" + name) and require(v). deno's graph simply omits them, so
@@ -42,8 +44,8 @@ type ImportsMode string
 const (
 	ImportsOff    ImportsMode = "off"
 	ImportsReport ImportsMode = "report"
-	// ImportsPrepare requests resolution for a future materialisation step.
-	// Resolve can build the dependency set, but this stage never installs it.
+	// ImportsPrepare resolves the dependency set and materialises it
+	// into the content-addressed cache (stage 3, prepare.go).
 	ImportsPrepare ImportsMode = "prepare"
 )
 
@@ -540,12 +542,9 @@ func CheckImportsResolved(ctx context.Context, denoBin, entry string, mode Impor
 		dynamics = append(dynamics, ScanDynamicImports(f, string(b))...)
 	}
 	if len(resolve) > 0 {
-		_, report := ResolveGraph(cctx, g, resolve[0], dynamics, dynamicMode)
+		set, report := ResolveGraph(cctx, g, resolve[0], dynamics, dynamicMode)
 		if mode == ImportsPrepare {
-			report.Add(Problem{
-				What:  "the dependency set was resolved, but materialising it is stage 3 and is not part of this build",
-				Where: "script.imports",
-			})
+			prepareResolved(cctx, report, set, resolve[0])
 		}
 		return report
 	}

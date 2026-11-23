@@ -124,6 +124,31 @@ test("nesting deeper than the limit rejects", () => {
   );
 });
 
+/** `levels` nested arrays around a `0` leaf, built as a value. */
+function nestedArrays(levels: number): CborValue {
+  let value: CborValue = uint(0n);
+  for (let i = 0; i < levels; i++) value = { kind: "array", value: [value] };
+  return value;
+}
+
+const tooDeep = (err: unknown) => err instanceof CborError && err.code === "TooDeeplyNested";
+
+test("the encoder applies the decoder's depth limit", () => {
+  // #11315: at the limit the encoder succeeds and the bytes decode back.
+  const atLimit = nestedArrays(MAX_NESTING_DEPTH);
+  assert.deepEqual(decodeCanonical(encodeCanonical(atLimit)), atLimit);
+
+  // One level deeper is refused by the encoder with the decoder's error.
+  assert.throws(() => encodeCanonical(nestedArrays(MAX_NESTING_DEPTH + 1)), tooDeep);
+
+  // The same rule through a map value.
+  const inMap: CborValue = { kind: "map", value: [[text("k"), nestedArrays(MAX_NESTING_DEPTH)]] };
+  assert.throws(() => encodeCanonical(inMap), tooDeep);
+
+  // Far deeper values fail fast instead of overflowing the stack.
+  assert.throws(() => encodeCanonical(nestedArrays(100_000)), tooDeep);
+});
+
 test("unknown critical fields reject and others tolerate", () => {
   const record: CborValue = {
     kind: "map",

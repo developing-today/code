@@ -93,6 +93,17 @@ func PythonModule(nss []Namespace, endpoint, session string) string {
 		fmt.Fprintf(&b, "class %s:\n", plan.ClassNames[i])
 		b.WriteString(pyNamespaceDoc(ns))
 		tools := sortedTools(ns)
+		if ns.Cold {
+			var allowed []string
+			for _, name := range ns.LazyTools {
+				allowed = append(allowed, pyQuote(pyMethodName(name))+": "+pyQuote(lazySelector(ns, "python", pyMethodName(name))))
+			}
+			allowExpr := "None"
+			if ns.LazyTools != nil {
+				allowExpr = "{" + strings.Join(allowed, ", ") + "}"
+			}
+			fmt.Fprintf(&b, "    def __getattr__(self, name: str) -> Any:\n        allowed = %s\n        if (name.startswith(\"__\") and not name.endswith(\"___\")) or (allowed is not None and name not in allowed):\n            raise AttributeError(name)\n        def invoke(args=None, /, **kwargs):\n            if args is not None and kwargs:\n                raise TypeError(\"use a dictionary or keyword arguments, not both\")\n            payload = kwargs if args is None else args\n            return _unwrap(%s, name, _call_raw(%s, name, payload, \"python\", allowed.get(name) if allowed is not None else None))\n        return invoke\n\n", allowExpr, pyQuote(ns.Server), pyQuote(ns.Server))
+		}
 		if len(tools) == 0 {
 			b.WriteString("    \"\"\"No tools.\"\"\"\n\n")
 			continue
@@ -150,9 +161,9 @@ func PythonModule(nss []Namespace, endpoint, session string) string {
 	b.WriteString("        # call keeps its server and original tool name; only unknown\n")
 	b.WriteString("        # names fall back to a generic call by bare name.\n")
 	b.WriteString("        for _ns in self.__dict__.get(\"_namespaces\", []):\n")
-	b.WriteString("            _method = getattr(_ns, name, None)\n")
+	b.WriteString("            _method = vars(type(_ns)).get(name)\n")
 	b.WriteString("            if callable(_method):\n")
-	b.WriteString("                return _method\n")
+	b.WriteString("                return _method.__get__(_ns, type(_ns))\n")
 	b.WriteString("        def _by_name(args: Optional[Dict[str, Any]] = None) -> Any:\n")
 	b.WriteString("            return call(name, args or {})\n")
 	b.WriteString("        return _by_name\n\n")
@@ -282,9 +293,9 @@ def _unwrap(server: str, tool: str, raw: Any) -> Any:
     return blocks
 
 
-def _call_raw(server: str, tool: str, args: Any = None) -> Any:
+def _call_raw(server: str, tool: str, args: Any = None, lazy_language: Optional[str] = None, lazy_selector: Optional[str] = None) -> Any:
     global LAST_RESULT
-    body = json.dumps({"server": server, "tool": tool, "args": args or {}}).encode("utf-8")
+    body = json.dumps({"server": server, "tool": tool, "args": args or {}, **({"lazyLanguage": lazy_language} if lazy_language else {}), **({"lazySelector": lazy_selector} if lazy_selector else {})}).encode("utf-8")
     try:
         status, body_obj = _post("/v1/call", body)
     except OSError as exc:
@@ -532,8 +543,13 @@ func pyToolMethod(ns Namespace, nsClass string, typeNames map[string]pyTypeNameS
 				argNames[p], local, pyQuote(p), argNames[p])
 		}
 	}
-	fmt.Fprintf(&b, "        return _unwrap(%s, %s, _call_raw(%s, %s, %s))\n",
-		pyQuote(ns.Server), pyQuote(t.Name), pyQuote(ns.Server), pyQuote(t.Name), local)
+	if ns.Cold {
+		fmt.Fprintf(&b, "        return _unwrap(%s, %s, _call_raw(%s, %s, %s, \"python\", %s))\n",
+			pyQuote(ns.Server), pyQuote(t.Name), pyQuote(ns.Server), pyQuote(pyMethodName(t.Name)), local, pyQuote(lazySelector(ns, "python", pyMethodName(t.Name))))
+	} else {
+		fmt.Fprintf(&b, "        return _unwrap(%s, %s, _call_raw(%s, %s, %s))\n",
+			pyQuote(ns.Server), pyQuote(t.Name), pyQuote(ns.Server), pyQuote(t.Name), local)
+	}
 	return b.String()
 }
 
@@ -1237,6 +1253,9 @@ func PythonDeclarations(nss []Namespace) string {
 		if d := strings.TrimSpace(ns.Description); d != "" {
 			b.WriteString("    # " + sanitizeComment(d) + "\n")
 		}
+		if ns.Cold {
+			b.WriteString("    def __getattr__(self, name: str) -> Any: ...  # schema resolves on first call\n")
+		}
 		tools := sortedTools(ns)
 		if len(tools) == 0 {
 			b.WriteString("    pass\n\n")
@@ -1339,4 +1358,16 @@ func sortedTools(ns Namespace) []Tool {
 	tools := append([]Tool(nil), ns.Tools...)
 	sort.Slice(tools, func(i, j int) bool { return tools[i].Name < tools[j].Name })
 	return tools
+}
+
+// GeneratedToolName is the exact spelling used by each generated client.
+func GeneratedToolName(language, name string) (string, bool) {
+	switch language {
+	case "typescript":
+		return ToolFuncName(name), true
+	case "python":
+		return pyMethodName(name), true
+	default:
+		return "", false
+	}
 }

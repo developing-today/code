@@ -465,6 +465,57 @@ describe("overlayTursoUsage (#1049)", () => {
       ["storage", 1.053323, "gb", 21.066],
     ]);
   });
+  test("the card's plan label and limits follow the read's plan (#10436)", () => {
+    const at = iso(5 * 60_000);
+    const out = overlayTursoUsage(
+      [tursoSvc()],
+      file([
+        entry({
+          serviceId: "turso",
+          providerId: "turso",
+          source: "turso-api",
+          planLabel: "scaler",
+          measuredAt: at,
+          windows: [
+            tursoWin("storage", 10.92672, 45.528, at),
+            tursoWin("rows-read", 2_849_000_000, 2.849, at),
+            tursoWin("rows-written", 6_670_000, 6.67, at),
+            tursoWin("sync", 1.22112, 5.088, at),
+          ],
+        }),
+      ]),
+      NOW,
+    );
+    const svc = out[0];
+    expect(svc.plan).toBe("Scaler (live read)");
+    expect(svc.sourceNote).toContain("plan and limits from the read (scaler)");
+    expect(svc.metrics.map((m) => [m.id, m.limit, m.percent])).toEqual([
+      ["storage", 24, 45.528],
+      ["rows-read", 100_000_000_000, 2.849],
+      ["rows-written", 100_000_000, 6.67],
+      ["sync", 24, 5.088],
+      // Absent from the fresh read: kept as a stale dated value with its own limit.
+      ["databases", 100, 1],
+    ]);
+  });
+  test("a read without a plan keeps the record's label and the Starter limits", () => {
+    const at = iso(5 * 60_000);
+    const out = overlayTursoUsage(
+      [tursoSvc()],
+      file([
+        entry({
+          serviceId: "turso",
+          providerId: "turso",
+          source: "turso-api",
+          measuredAt: at,
+          windows: [tursoWin("storage", 1.053323, 21.066, at)],
+        }),
+      ]),
+      NOW,
+    );
+    expect(out[0].plan).toBe("Starter Free $0");
+    expect(out[0].metrics[0].limit).toBe(5);
+  });
   test("prototype-spelling Turso windows are ignored like unknown names", () => {
     const at = iso(5 * 60_000);
     const names = ["databases", "constructor", "__proto__", "toString", "hasOwnProperty", "valueOf", "unknown-window"];
@@ -1323,6 +1374,37 @@ describe("shell-pool stale/retained path (#6942)", () => {
     expect(cline.state).toBe("stale");
     expect(cline.freshness).toEqual({ measuredAt: iso(5 * 60_000), source: "openchamber-quota", state: "stale" });
     expect(cline.windows[0].percent).toBe(69); // dated read, not the retained gatherer value
+  });
+
+  test("meta retained errored-leg read replaces its fallback windows but stays stale (#9358)", () => {
+    const f = legErrorFile([
+      entry({
+        providerId: "_muse",
+        serviceId: "meta",
+        source: "opencode-quota",
+        measuredAt: iso(45 * 60_000),
+        retainedFromFailedTick: iso(4 * 60_000),
+        windows: [win("5h", 0, iso(45 * 60_000)), win("weekly", 100, iso(45 * 60_000))],
+      }),
+    ]);
+    f.heartbeat.perProvider = { _muse: { state: "error", ms: 12, rows: 1, error: LEG_ERROR } };
+    const view = baseView();
+    view.pools.find((p) => p.id === "meta")!.windows = [
+      { name: "weekly", unit: "other", limit: 100, used: 98, percent: 98, resetsAt: null },
+    ];
+
+    const out = overlayQuotaCurrent(view, f, NOW);
+    const meta = out.pools.find((p) => p.id === "meta")!;
+    expect(meta.windows.map((w) => [w.name, w.percent])).toEqual([
+      ["5-hour", 0],
+      ["weekly", 100],
+    ]);
+    expect(meta.freshness).toEqual({
+      measuredAt: iso(45 * 60_000),
+      source: "opencode-quota",
+      state: "stale",
+    });
+    expect(meta.state).toBe("stale");
   });
 });
 

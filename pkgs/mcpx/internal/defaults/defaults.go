@@ -110,6 +110,9 @@ type Defaults struct {
 		// state and are never pruned.
 		RetentionMaxAge          string `json:"retentionMaxAge"`
 		RetentionMaxTerminalRows int    `json:"retentionMaxTerminalRows"`
+		// AudienceWindow is how recent an answerer heartbeat must be for
+		// an audience to count as present (#2438).
+		AudienceWindow string `json:"audienceWindow"`
 	} `json:"elicit"`
 	// Proto governs how mcpx speaks the protocol to its own clients: which
 	// era mechanisms it offers, and how long it will hold a call open while
@@ -200,14 +203,17 @@ type Defaults struct {
 		// build of a large flake can legitimately take minutes.
 		ResolveTimeout   string `json:"resolveTimeout"`
 		ResolveWaitDelay string `json:"resolveWaitDelay"`
-		WorkDirs         int    `json:"workDirs"`
-		Programs         int    `json:"programs"`
-		Entries          int    `json:"entries"`
-		StderrLimit      int    `json:"stderrLimit"`
-		StdoutLimit      int    `json:"stdoutLimit"`
-		Output           string `json:"output"`
-		RemoteOutput     string `json:"remoteOutput"`
-		Delivery         string `json:"delivery"`
+		// CallHistoryTTL is how long a finished run's call history stays
+		// fetchable from execsvc after the run ends.
+		CallHistoryTTL string `json:"callHistoryTtl"`
+		WorkDirs       int    `json:"workDirs"`
+		Programs       int    `json:"programs"`
+		Entries        int    `json:"entries"`
+		StderrLimit    int    `json:"stderrLimit"`
+		StdoutLimit    int    `json:"stdoutLimit"`
+		Output         string `json:"output"`
+		RemoteOutput   string `json:"remoteOutput"`
+		Delivery       string `json:"delivery"`
 	} `json:"exec"`
 	// Cache governs the one content-addressed cache mechanism (#1908):
 	// the byte and age bounds every kind is evicted against, and how old
@@ -657,6 +663,13 @@ var (
 	// question is kept in the broker store before an open prunes it
 	// (#1677, design #1675 Phase 2: the recorded 30 days).
 	ElicitRetentionMaxAge = mustDur(builtin.Elicit.RetentionMaxAge, "elicit.retentionMaxAge")
+	// ElicitAudienceWindow is how recent an answerer heartbeat must be
+	// for an audience to count as present (#2438). Answerer surfaces
+	// poll on a one-second cadence (mcpx elicit watch) or per user
+	// refresh, so two minutes is generous without letting a long-gone
+	// answerer count. An internal bound: defaults.json only, absent
+	// from the settings registry.
+	ElicitAudienceWindow = mustDur(builtin.Elicit.AudienceWindow, "elicit.audienceWindow")
 	// ElicitRetentionMaxTerminalRows caps how many terminal questions
 	// the broker store keeps, oldest first out (#1677).
 	ElicitRetentionMaxTerminalRows = builtin.Elicit.RetentionMaxTerminalRows
@@ -787,7 +800,9 @@ var (
 	// ExecResolveWaitDelay bounds how long a timed-out resolution's Run
 	// waits for the child's output pipes to close (progspec cmd.WaitDelay).
 	ExecResolveWaitDelay = mustDur(builtin.Exec.ResolveWaitDelay, "exec.resolveWaitDelay")
-	ExecOutput           = builtin.Exec.Output
+	// ExecCallHistoryTTL is how long execsvc keeps a finished run's calls.
+	ExecCallHistoryTTL = mustDur(builtin.Exec.CallHistoryTTL, "exec.callHistoryTtl")
+	ExecOutput         = builtin.Exec.Output
 	// ExecStderrLimit bounds how much of a failed script's stderr is kept to
 	// explain the failure. Unbounded, a script looping on stderr would be
 	// held in memory in full, by the daemon, on someone else's behalf.

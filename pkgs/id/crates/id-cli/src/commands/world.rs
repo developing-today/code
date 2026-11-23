@@ -26,6 +26,7 @@ use crate::{
 };
 
 mod journal;
+mod owner;
 #[cfg(test)]
 use journal::check_journal_bytes;
 use journal::{journal_backup, print_journal_check, print_world_provenance, world_provenance};
@@ -505,19 +506,7 @@ pub async fn cmd_world(command: WorldCommand) -> Result<()> {
             // --ceiling / --profile flags; without them the checks report
             // that none is configured (they are not silently passed off as
             // a live world's values).
-            let profile = match profile {
-                Some(path) => {
-                    let text = std::fs::read_to_string(&path)
-                        .with_context(|| format!("read execution profile {}", path.display()))?;
-                    Some(
-                        serde_json::from_str::<id_caps::world_limits::WorldExecutionProfile>(&text)
-                            .with_context(|| {
-                                format!("parse execution profile {}", path.display())
-                            })?,
-                    )
-                }
-                None => None,
-            };
+            let profile = profile.as_deref().map(read_execution_profile).transpose()?;
             let inputs = id_worlds::world_doctor::DoctorInputs {
                 roc_bin,
                 roc_resolved: None,
@@ -617,11 +606,17 @@ pub async fn cmd_world(command: WorldCommand) -> Result<()> {
             endpoint.close().await;
             Ok(())
         }
-        WorldCommand::Contract { check: None } => {
+        WorldCommand::Contract {
+            check: None,
+            check_suite: None,
+        } => {
             print!("{}", id_worlds::shell_contract::SHELL_CONTRACT_JSON);
             Ok(())
         }
-        WorldCommand::Contract { check: Some(path) } => {
+        WorldCommand::Contract {
+            check: Some(path),
+            check_suite: None,
+        } => {
             let text = if path.as_os_str() == "-" {
                 std::io::read_to_string(std::io::stdin()).context("read transcript")?
             } else {
@@ -631,6 +626,20 @@ pub async fn cmd_world(command: WorldCommand) -> Result<()> {
             let checked = check_contract(&text)?;
             println!("{checked}");
             Ok(())
+        }
+        WorldCommand::Contract {
+            check: None,
+            check_suite: Some(path),
+        } => {
+            let report = check_suite_file(&path)?;
+            println!("{report}");
+            Ok(())
+        }
+        WorldCommand::Contract {
+            check: Some(_),
+            check_suite: Some(_),
+        } => {
+            bail!("--check and --check-suite cannot be combined");
         }
         #[cfg(feature = "sandbox")]
         WorldCommand::Measure(args) => {
@@ -1003,6 +1012,7 @@ pub async fn cmd_world(command: WorldCommand) -> Result<()> {
             json,
         } => fork_world_on_disk(&source, &dir, name.as_deref(), template, json),
         WorldCommand::Provenance { dir, json } => print_world_provenance(&dir, json),
+        WorldCommand::Owner { dir, since, json } => owner::print_world_owner(&dir, since, json),
         WorldCommand::Journal(args) => match args.action {
             JournalCommand::Check { dir, json } => print_journal_check(&dir, json),
             JournalCommand::Backup { dir, out } => journal_backup(&dir, &out),
@@ -1964,8 +1974,9 @@ async fn terminal_probe(
 /// Render one server frame through the TTY tier presenter when it is a
 /// view carrying a screen or text surface (F13.4). Returns `None` for
 /// every other frame — those keep the JSON-lines presentation — and
-/// `Some("")` for a view the presenter renders as no change. Form views
-/// keep the JSON-lines presentation: the pump has no form collector.
+/// `Some("")` for a view the presenter renders as no change. Form,
+/// scene and audio views keep the JSON-lines presentation: the pump
+/// has no form collector, no scene renderer and no audio player.
 fn render_view_frame(
     presenter: &mut id_worlds::world_terminal::TierPresenter,
     body: &[u8],
@@ -1991,6 +2002,8 @@ fn render_view_frame(
             Some(presenter.render_lines(&lines))
         }
         id_worlds::world_presentation::WorldSurface::Form(_) => None,
+        id_worlds::world_presentation::WorldSurface::Scene(_) => None,
+        id_worlds::world_presentation::WorldSurface::Audio(_) => None,
     }
 }
 
@@ -2194,6 +2207,89 @@ fn check_contract(text: &str) -> Result<String> {
     )
 }
 
+/// Run a conformance-suite manifest: every shell's capability
+/// statement validated, every recorded session checked, in one
+/// pass. Returns the per-shell report.
+///
+/// # Errors
+///
+/// Fails on an unreadable or invalid manifest, or with the full
+/// report as the error when any shell fails the suite.
+fn check_suite_file(path: &std::path::Path) -> Result<String> {
+    use id_worlds::shell_contract::{SessionSource, ShellSuite, SuiteEntry, check_suite};
+    let text = std::fs::read_to_string(path)
+        .with_context(|| format!("read suite manifest {}", path.display()))?;
+    let suite = ShellSuite::parse(&text).map_err(anyhow::Error::msg)?;
+    let contract =
+        id_worlds::shell_contract::ShellContract::embedded().map_err(anyhow::Error::msg)?;
+    let base = path.parent().unwrap_or_else(|| std::path::Path::new("."));
+    let loaded: Vec<Option<Result<String, String>>> = suite
+        .shells
+        .iter()
+        .map(|shell| {
+            shell.session.as_ref().map(|relative| {
+                let full = base.join(relative);
+                std::fs::read_to_string(&full)
+                    .map_err(|error| format!("read {}: {error}", full.display()))
+            })
+        })
+        .collect();
+    let entries: Vec<SuiteEntry<'_>> = suite
+        .shells
+        .iter()
+        .zip(&loaded)
+        .map(|(shell, loaded)| SuiteEntry {
+            name: &shell.name,
+            statement: shell.statement.as_ref(),
+            session: match loaded {
+                None => SessionSource::Unrecorded,
+                Some(Ok(text)) => SessionSource::Recorded(text),
+                Some(Err(why)) => SessionSource::Unreadable(why),
+            },
+        })
+        .collect();
+    let verdicts = check_suite(contract, &entries);
+    let mut lines = Vec::new();
+    let mut failed = 0_usize;
+    let mut recorded = 0_usize;
+    for verdict in &verdicts {
+        if verdict.recorded {
+            recorded += 1;
+        }
+        if verdict.passed() {
+            if verdict.recorded {
+                lines.push(format!(
+                    "{}: PASS ({} frames, recorded session)",
+                    verdict.name, verdict.frames
+                ));
+            } else {
+                lines.push(format!(
+                    "{}: UNRECORDED (capability statement ok, no recorded session yet)",
+                    verdict.name
+                ));
+            }
+        } else {
+            failed += 1;
+            lines.push(format!("{}: FAIL", verdict.name));
+            for failure in &verdict.failures {
+                lines.push(format!("  {failure}"));
+            }
+        }
+    }
+    lines.push(format!(
+        "suite: {} of {} shells pass, {recorded} recorded session(s) checked against shell contract v{}.{}",
+        verdicts.len() - failed,
+        verdicts.len(),
+        contract.version,
+        contract.revision
+    ));
+    let report = lines.join("\n");
+    if failed > 0 {
+        bail!("{report}");
+    }
+    Ok(report)
+}
+
 /// What one stdin line does in the `id world join` pump.
 #[derive(Debug, PartialEq, Eq)]
 enum PumpLine {
@@ -2208,7 +2304,7 @@ enum PumpLine {
     Quit,
 }
 
-const PUMP_HELP: &str = "Commands: a line is chat; /input <hex>, /records [prefix], /stats, /caps, /logs, /help, /quit. Server frames print to stdout as JSON lines.";
+const PUMP_HELP: &str = "Commands: a line is chat; /input <hex>, /records [prefix], /stats, /caps, /logs, /anchor <target> [type], /anchor confirm <n>, /anchor list, /talk <target>, /anchors <target>, /resolve <thread> [into <target>], /queue, /flush, /help, /quit. Server frames print to stdout as JSON lines.";
 
 /// Stable JSONL record for a response that the join client handles locally.
 fn local_transcript_record(level: &str, message: &str) -> serde_json::Value {
@@ -2242,6 +2338,23 @@ fn pump_command(line: &str, capability: &str) -> PumpLine {
             return PumpLine::Say {
                 level: "info",
                 message: "events already print live here as JSON lines; use `id world logs` for a bounded tail".to_owned(),
+            };
+        }
+        WorldLine::Anchor { .. }
+        | WorldLine::AnchorConfirm { .. }
+        | WorldLine::AnchorList
+        | WorldLine::Talk { .. }
+        | WorldLine::Anchors { .. }
+        | WorldLine::Resolve { .. }
+        | WorldLine::Queue
+        | WorldLine::Flush => {
+            // The flow verbs parse identically on every surface (#5873
+            // section 3), but their operations (chat.anchor.v1, talk
+            // bindings, the outbox) are not wired into the join pump yet;
+            // say so rather than sending a frame the host cannot mean.
+            return PumpLine::Say {
+                level: "error",
+                message: "that command is recognised, but its operation is not available in `id world join` yet".to_owned(),
             };
         }
         WorldLine::Help => {
@@ -2283,14 +2396,39 @@ fn pump_plain(line: &str) -> PumpLine {
     }
 }
 
+/// The execution profile in the file at `path`, for `id world doctor`.
+///
+/// A duplicated key is refused rather than read as its last value
+/// (#8794).
+fn read_execution_profile(
+    path: &std::path::Path,
+) -> Result<id_caps::world_limits::WorldExecutionProfile> {
+    let text = std::fs::read_to_string(path)
+        .with_context(|| format!("read execution profile {}", path.display()))?;
+    id_core::json_unique::from_slice_without_duplicate_keys(text.as_bytes())
+        .with_context(|| format!("parse execution profile {}", path.display()))
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::{
-        PumpLine, check_contract, check_journal_bytes, journal_backup, local_transcript_record,
-        print_journal_check, pump_command, scaffold_world, step_is_applied, world_list_plain_row,
-        world_provenance,
+        PumpLine, check_contract, check_journal_bytes, check_suite_file, journal_backup,
+        local_transcript_record, print_journal_check, pump_command, read_execution_profile,
+        scaffold_world, step_is_applied, world_list_plain_row, world_provenance,
     };
+
+    #[test]
+    fn an_execution_profile_with_a_duplicated_key_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("profile.json");
+        std::fs::write(&path, r#"{"wasm_fuel":1000000}"#).unwrap();
+        assert!(read_execution_profile(&path).is_ok());
+        // A lenient decode would keep the last value of the key.
+        std::fs::write(&path, r#"{"x":1,"x":2,"wasm_fuel":1000000}"#).unwrap();
+        let error = format!("{:#}", read_execution_profile(&path).unwrap_err());
+        assert!(error.contains("parse execution profile"), "{error}");
+    }
 
     /// #3089: a world name containing LF must not forge an extra row in
     /// plain output — the rendered row is one physical line with exactly
@@ -2489,6 +2627,29 @@ mod tests {
                 "{line}"
             );
         }
+        // #7616 / #5873 section 3: the flow verbs are recognised on the pump
+        // too, and they answer locally rather than sending a frame the host
+        // cannot mean — identical grammar, surface-appropriate answer.
+        for line in [
+            "/anchor id://abc",
+            "/anchor id://abc about",
+            "/anchor confirm 1",
+            "/anchor list",
+            "/talk id://abc",
+            "/anchors the design doc",
+            "/resolve thread-9",
+            "/resolve thread-9 into id://abc",
+            "/queue",
+            "/flush",
+        ] {
+            assert!(
+                matches!(
+                    pump_command(line, "cap"),
+                    PumpLine::Say { level: "error", .. }
+                ),
+                "{line}"
+            );
+        }
         assert_eq!(pump_command("/quit", "cap"), PumpLine::Quit);
     }
 
@@ -2548,11 +2709,13 @@ mod tests {
             r#"{"from": "client", "frame": {"type": "join", "capability": "c"}}"#,
             r#"{"from": "server", "frame": {"type": "snapshot", "snapshot": {}}}"#,
             r#"{"from": "client", "frame": {"type": "resize", "width": 80, "height": 24}}"#,
+            r#"{"from": "server", "frame": {"type": "view", "sequence": 1, "data": "Harbor", "view_revision": 1, "surface": {"kind": "scene", "version": 1, "title": "Harbor", "nodes": [{"id": "boat", "label": "Boat", "shape": "box", "position": [0, 0.5, -2], "size": [2, 1, 1]}]}}}"#,
+            r#"{"from": "server", "frame": {"type": "view", "sequence": 2, "data": "Harbor Sounds", "view_revision": 2, "surface": {"kind": "audio", "version": 1, "title": "Harbor Sounds", "cues": [{"id": "rain", "label": "Rain", "format": "ogg", "duration_ms": 90000, "repeat": true}]}}}"#,
         ]
         .join("\n");
         assert_eq!(
             check_contract(&good).unwrap(),
-            "3 frames conform to shell contract v1.9"
+            "5 frames conform to shell contract v1.14"
         );
         let bad = [
             r#"{"from": "client", "frame": {"type": "chat", "text": "too early"}}"#,
@@ -2564,6 +2727,37 @@ mod tests {
         assert!(error.contains("frame 0 (client)"), "{error}");
         assert!(error.contains("frame 1 (server)"), "{error}");
         assert!(check_contract("{").is_err());
+    }
+
+    #[test]
+    fn the_suite_command_runs_every_shell_in_a_manifest() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("session.jsonl"),
+            "{\"from\": \"client\", \"frame\": {\"type\": \"join\", \"capability\": \"c\"}}\n{\"from\": \"server\", \"frame\": {\"type\": \"snapshot\", \"snapshot\": {}}}\n",
+        )
+        .unwrap();
+        let manifest = dir.path().join("suite.json");
+        std::fs::write(
+            &manifest,
+            r#"{"suite": "shell-suite", "version": 1, "shells": [
+                {"name": "recorded", "statement": {"sends": ["join"], "presents": ["snapshot"], "providers": [], "workflow": ["join"]}, "session": "session.jsonl"},
+                {"name": "pending", "statement": {"sends": ["join"], "presents": ["snapshot"], "providers": [], "workflow": ["join"]}, "session": null}
+            ]}"#,
+        )
+        .unwrap();
+        let report = check_suite_file(&manifest).unwrap();
+        assert!(report.contains("recorded: PASS"), "{report}");
+        assert!(report.contains("pending: UNRECORDED"), "{report}");
+        // A shell with no capability statement fails the whole run, loudly.
+        std::fs::write(
+            &manifest,
+            r#"{"suite": "shell-suite", "version": 1, "shells": [{"name": "silent", "statement": null, "session": null}]}"#,
+        )
+        .unwrap();
+        let error = check_suite_file(&manifest).unwrap_err().to_string();
+        assert!(error.contains("silent: FAIL"), "{error}");
+        assert!(error.contains("no capability statement"), "{error}");
     }
 
     #[test]

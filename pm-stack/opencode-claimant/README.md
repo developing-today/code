@@ -119,6 +119,46 @@ The claimant monitors four queues:
 - Only root sessions without terminal markers count toward cap
 - Cap room = 36 - active_count
 
+## Hand-Back on Saturation (#1187)
+
+When a live fire finds the cap saturated with launchable
+candidates waiting, it hands the **next** candidate back in the
+same fire instead of leaving it silently queued:
+
+1. The claimant targeted-claims the candidate (the broker's park
+   verb only parks a task its caller holds).
+2. It parks the task with reason class `executor-saturated` and
+   the broker's capacity ready-condition (`{"kind": "capacity"}` —
+   a capacity wait: floored at the capacity scale, and the pick
+   may take it early when a slot frees).
+3. It posts a hand-back agent-note on the candidate's issue
+   naming the release path (the queue `wake` verb, or an owner's
+   explicit order).
+
+One hand-back per fire. Shadow fires mutate nothing. The fire
+log records the outcome under its `hand_back` key; a hand-back
+whose claim does not land parks nothing. Saturation is a success
+state, not a failure — a Claude lane can still claim the task if
+urgent.
+
+## Babysitter Rounds (#1338)
+
+Every fire also runs one babysitter round (`babysitter.py`):
+every root session at the location — bound or unbound; unbound
+sessions are observed, never driven — gets a verdict
+(progressing / stalled / done-unreported / blocked / walled /
+idle) under #1338's stall rule (suspect at ≥20 min silent with
+no live CI on the bound PR; confirmed on a second suspect round
+or on expiry-equivalent silence). The round record rides the
+fire log under its `babysitter` key; live fires also append it
+to `babysitter-rounds.jsonl` in the claimant state dir and
+persist the round state (`babysitter-state.json`) that stall
+confirmation reads next fire. Shadow fires compute the round
+and mutate nothing. Pool wall state is read from
+`pool-state.json` in the state dir (operator/tooling-written;
+unread is recorded, never invented). Nudges are not here — they
+are #1187's next slice, consuming this round's confirmed stalls.
+
 ## Recovery Rules (#4758, Phase 3 of #4912)
 
 ### Zero-Message Recovery
@@ -417,12 +457,25 @@ Logs written to `~/.local/state/opencode-claimant/fires.jsonl`:
 {
   "timestamp": "2026-11-06T23:35:00Z",
   "mode": "shadow",
+  "mode_source": {
+    "path": "/home/user/.local/state/opencode-claimant/mode",
+    "state": "missing",
+    "file_mtime": null,
+    "dir_mtime": "2026-11-14T14:45:12+00:00",
+    "pid": 41234
+  },
   "candidates_seen": [...],
   "sessions_launched": [...],
   "cap_room": 36,
   "skips": [...]
 }
 ```
+
+`mode_source` (#10332) says where the fire's mode came from. `state` is
+`ok`, `missing`, `unreadable` or `invalid`; every state but `ok` means the
+fire fell back to shadow. A deletion changes the state directory's mtime,
+so for a `missing` read `dir_mtime` bounds when the file went, and a
+live-to-shadow flip can be dated from the log alone.
 
 ## Constants
 
@@ -468,3 +521,26 @@ Slice 3+: Additional features and optimizations (future work)
 - Defect: #5857 - Session creation request shape
 - Migration: 0021 - bind_repo_task_lane_session
 - Migration: 0022 - Atomic recovery operations
+
+### Broker Unix transport (#11980)
+
+The read-only poll uses the same configured broker and token resolution for
+both transports: `REPO_QUEUE_BROKER_URL` or
+`~/.config/repo-queue/broker-url`, and `REPO_QUEUE_TOKEN_FILE` or
+`~/.config/queue-broker/token`. An explicit
+`unix:///absolute/path/to/queue-broker.sock` sends HTTP `POST /list`
+over that literal filesystem socket with the usual `X-Agent-Token` header.
+It does not append the API path to the socket filename, probe TCP, or
+redirect to another broker. HTTP(S) URLs retain the existing urllib path.
+Both paths use the existing 30-second socket timeout. Transport, HTTP,
+JSON and broker application errors remain failed reads, not successful
+empty queues; no configuration changes or claimant launches are implied.
+
+Run the ordinary no-network suite unchanged:
+`python3 -I pm-stack/opencode-claimant/run_hermetic_tests.py`.
+
+Run the separate bounded local transport fixtures:
+`python3 -I pm-stack/opencode-claimant/test_poll_transport.py`.
+They serve only `/list` on a temporary Unix socket, use a dummy token,
+guard connections to that fixture path, and mock the TCP regression seam.
+They never run the live poll entry point, claim work, or launch sessions.

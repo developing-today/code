@@ -45,6 +45,12 @@ pub(crate) const MAX_CONCURRENT_MODULE_UPLOADS: usize = 2;
 pub enum Inbound {
     /// A complete text frame no larger than [`MAX_FRAME_BYTES`].
     Text(String),
+    /// A complete binary frame no larger than [`MAX_FRAME_BYTES`], on a
+    /// transport that carries bytes. Client frames are text by protocol,
+    /// so the driver fails a binary frame safely, exactly like
+    /// [`Inbound::Unsupported`]; the variant exists so byte-capable
+    /// transports can report the frame instead of discarding it.
+    Bytes(Vec<u8>),
     /// A frame larger than [`MAX_FRAME_BYTES`] (its contents are discarded).
     Oversized,
     /// A frame that is not UTF-8 text.
@@ -53,15 +59,28 @@ pub enum Inbound {
     Closed,
 }
 
-/// Moves whole text frames for one session.
+/// Moves whole frames for one session.
 ///
 /// `recv` must be cancel-safe: the driver races it against world events and a
 /// cancelled call must not lose or split a frame.
 pub trait SessionIo: Send {
     /// Next inbound frame.
     fn recv(&mut self) -> impl Future<Output = Inbound> + Send;
-    /// Send one frame. Returns `false` when the peer is gone.
+    /// Send one text frame. Returns `false` when the peer is gone.
     fn send(&mut self, frame: String) -> impl Future<Output = bool> + Send;
+    /// Whether this transport can carry binary frames. Only a session
+    /// on a byte-capable transport may negotiate binary screen patches
+    /// (F12.11 phase 3); on any other transport the negotiation falls
+    /// back to the JSON patch path.
+    fn supports_bytes(&self) -> bool {
+        false
+    }
+    /// Send one binary frame. Returns `false` when the peer is gone —
+    /// and on transports that cannot carry bytes, which never send.
+    fn send_bytes(&mut self, frame: Vec<u8>) -> impl Future<Output = bool> + Send {
+        let _ = frame;
+        std::future::ready(false)
+    }
     /// Mark this session authorized after its application-level
     /// capability or admin credential has been validated.
     fn mark_authorized(&mut self) {}
@@ -153,6 +172,34 @@ pub(crate) enum InputRefusalReason {
     UnknownOrUnsupportedEvent,
 }
 
+/// One screen rectangle in cells, origin at the top-left — the region a
+/// `screen_subscribe` frame names (contract revision 11, #6300 section
+/// 4.2). Bounds are the transport's: the same 500x200 ceiling `resize`
+/// accepts; the host clamps views to the presentation maximum itself.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub(crate) struct ScreenRegion {
+    /// Leftmost column, zero-based.
+    pub(crate) x: u16,
+    /// Topmost row, zero-based.
+    pub(crate) y: u16,
+    /// Width in cells, at least 1.
+    pub(crate) width: u16,
+    /// Height in rows, at least 1.
+    pub(crate) height: u16,
+}
+
+/// The semantic change kinds a `screen_subscribe` may name and a
+/// `semantic_diff` may carry for world events (contract revision 11).
+/// Region diffs use `region_changed` and are scoped by the subscription's
+/// region instead, so that kind is not subscribable.
+pub(crate) const SEMANTIC_EVENT_CLASSES: &[&str] = &[
+    "chat_posted",
+    "input_applied",
+    "object_changed",
+    "system_event",
+    "program_changed",
+];
+
 // Install frames are only produced/consumed with the `sandbox` feature.
 #[cfg_attr(not(feature = "sandbox"), allow(dead_code))]
 #[derive(Debug, Deserialize)]
@@ -164,11 +211,31 @@ pub(crate) enum ClientFrame {
         /// Opt in to revisioned JSON screen patches. Omitted by v1 clients.
         #[serde(default)]
         screen_patches: bool,
+        /// Opt in to negotiated binary screen patches (F12.11 phase 3,
+        /// contract revision 12): when `screen_patches` is also set and
+        /// the transport carries bytes, patch frames arrive as versioned
+        /// MessagePack binary frames instead of JSON `view` frames.
+        /// Anywhere else — no patch opt-in, a text-only transport — the
+        /// session keeps the JSON patch path unchanged. Omitted by
+        /// clients that predate the revision.
+        #[serde(default)]
+        screen_msgpack: bool,
         /// Resume token from this client's last applied view. A cursor, not a
         /// credential: the join capability above still authorizes the session,
         /// and an unknown, stale or foreign token simply gets a full view.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         resume_token: Option<String>,
+        /// Opt in to the agent profile (contract revision 11, #6300
+        /// section 4.2): the capability flag advertising that this shell
+        /// consumes semantic diffs and may send `screen_subscribe`.
+        /// Omitted by human shells; a host without the revision ignores
+        /// it and serves full views at reduced fidelity, same authority.
+        #[serde(default)]
+        agent_profile: bool,
+        /// Input affordances of this presenter. This is descriptive session
+        /// metadata, not an authority grant; omitted by older clients.
+        #[serde(default)]
+        device_input: Option<serde_json::Value>,
     },
     Info {
         capability: String,
@@ -337,6 +404,10 @@ pub(crate) enum ClientFrame {
     },
     Chat {
         text: String,
+        /// Stale-decision token (contract revision 11, #6300 section
+        /// 4.3): the screen revision this input was decided against.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        screen_revision: Option<u64>,
     },
     /// Submit an answer from a trusted form presenter on this joined session.
     /// The actor checks session authority, the pending form id, and its
@@ -346,6 +417,9 @@ pub(crate) enum ClientFrame {
         presentation_token: String,
         action: String,
         values: serde_json::Map<String, serde_json::Value>,
+        /// Stale-decision token; see [`ClientFrame::Chat`].
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        screen_revision: Option<u64>,
     },
     /// Joined: mint a capability with a subset of this session's scopes. A
     /// delegation carries no use count.
@@ -364,6 +438,9 @@ pub(crate) enum ClientFrame {
     },
     Input {
         data_hex: String,
+        /// Stale-decision token; see [`ClientFrame::Chat`].
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        screen_revision: Option<u64>,
     },
     /// Ephemeral dimensions for this connection's presentation only. Never journaled.
     Resize {
@@ -373,6 +450,21 @@ pub(crate) enum ClientFrame {
     /// Explicit bounded clipboard text, delivered as one durable input event.
     Paste {
         text: String,
+        /// Stale-decision token; see [`ClientFrame::Chat`].
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        screen_revision: Option<u64>,
+    },
+    /// Agent profile (contract revision 11, #6300 section 4.2): subscribe
+    /// this session to a screen region and/or semantic event classes.
+    /// Ephemeral like `Resize`: connection-local presentation context,
+    /// never journaled and never seen by other sessions. At least one of
+    /// the two fields must be present; an empty `event_classes` list
+    /// means all classes, an absent one means no event diffs.
+    ScreenSubscribe {
+        /// Screen rectangle in cells, origin at the top-left.
+        region: Option<ScreenRegion>,
+        /// Semantic change kinds to receive as `semantic_diff` frames.
+        event_classes: Option<Vec<String>>,
     },
     /// Pointer activation input (#1831 slice S2, input event model design):
     /// journaled and replayed like `Input`. Coordinates are cells in the
@@ -403,6 +495,9 @@ pub(crate) enum ClientFrame {
         /// Cell delta; `scroll` only.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         dy: Option<i64>,
+        /// Stale-decision token; see [`ClientFrame::Chat`].
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        screen_revision: Option<u64>,
     },
     /// Pointer hover (#1831 slice S2): connection-local presentation
     /// context, ephemeral like `Resize` — never journaled and never seen
@@ -541,6 +636,42 @@ pub(crate) enum ServerFrame<'a> {
         /// to resume instead of taking a full view.
         #[serde(skip_serializing_if = "Option::is_none")]
         resume_token: Option<&'a str>,
+    },
+    /// Agent profile (contract revision 11, #6300 section 4.2): what
+    /// changed, in world terms, scoped to this session's
+    /// `screen_subscribe` subscription — never a repaint instruction.
+    /// Ephemeral: a diff is derived presentation for one session, built
+    /// from the durable event or the screens the session already holds.
+    SemanticDiff {
+        /// World sequence this diff follows.
+        sequence: u64,
+        /// Screen revision this diff was computed at.
+        view_revision: u64,
+        /// Screen revision the diff was computed against, when the host
+        /// diffed two screens (region diffs); absent for event diffs.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        base_view_revision: Option<u64>,
+        /// The changes, each an object with a `kind` naming what happened
+        /// (`chat_posted`, `region_changed`, ...).
+        changes: Vec<serde_json::Value>,
+        /// The subscribed region these changes are scoped to, for region
+        /// diffs; absent for event diffs.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        region: Option<ScreenRegion>,
+    },
+    /// Agent profile (contract revision 11): the session's now-active
+    /// screen subscription, answering a `screen_subscribe` frame.
+    ScreenSubscription {
+        /// The subscribed region, echoed; absent for event-only
+        /// subscriptions.
+        region: Option<ScreenRegion>,
+        /// The subscribed semantic event classes, echoed; absent for
+        /// region-only subscriptions.
+        event_classes: Option<Vec<String>>,
+        /// The session's current screen revision at subscribe time —
+        /// the revision a following input's stale-decision token is
+        /// judged against.
+        view_revision: u64,
     },
     ModuleInfo {
         world_id: String,

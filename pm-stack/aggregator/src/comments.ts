@@ -4,7 +4,10 @@
 // so a thread survives feed republishes. Storage is one JSON file in
 // the aggregator's data directory (PM_AGG_COMMENTS_FILE); writes are
 // atomic (temp file + rename) and the in-memory copy is authoritative
-// for the process.
+// for the process. Under PM_AGG_STORE_BACKEND=turso the store instead
+// reads/writes public.shared_comments through a CommentsRemote
+// (#1744 Move 1) and the file is never touched — exactly one backend
+// is active, as with the #6815 stores.
 //
 // Trust model: comment writes bind a privileged Drew/Muse author to the
 // operator token `pm-aggregator.comments-operator-token`. Until that
@@ -30,7 +33,7 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { timingSafeEqual } from "node:crypto";
 import { dirname } from "node:path";
-import type { DashAuthor, DashComment, DashCommentKind, RefKey } from "./model.ts";
+import type { CommentProvenance, DashAuthor, DashComment, DashCommentKind, RefKey } from "./model.ts";
 import { isValidRef, refUrl } from "./model.ts";
 import {
   archiveStoreBytes,
@@ -44,6 +47,19 @@ import { isNonEmptyString, isRecord, parseIsoDate } from "./validate.ts";
 export interface CommentsFile {
   version: 1;
   comments: DashComment[];
+}
+
+/** #1744 (Move 1, step 2): the remote backing store for dashboard
+ *  comments, implemented over public.shared_comments by
+ *  createTursoCommentsRemote in remote-stores.ts. Mirrors the
+ *  ActionsRemote contract from #6815: the store keeps the in-memory
+ *  copy authoritative for the process and persists the full record
+ *  set; state transitions ride the same rows, history is never
+ *  deleted. */
+export interface CommentsRemote {
+  loadAll(): Promise<DashComment[]>;
+  /** Upsert the store's full current record set. */
+  saveAll(comments: readonly DashComment[]): Promise<void>;
 }
 
 // Result URLs are rendered as link hrefs on the dashboard (#950):
@@ -84,6 +100,7 @@ export function authorizeCommentAuthor(
 
 const GH_REF = /^[\w.-]+\/[\w.-]+#\d+$/;
 const COMMENT_KINDS = new Set<DashCommentKind>(["message", "note", "github"]);
+const REGISTRY_SOURCES = new Set(["opencode-sandbox", "opencode-laptop", "jules", "claude-code", "cron"]);
 
 function commentRecordProblem(value: unknown): string | null {
   if (!isRecord(value)) return "record must be an object";
@@ -96,6 +113,19 @@ function commentRecordProblem(value: unknown): string | null {
   if (!validateAuthor(value.author)) return "author must have a supported kind, id, and label";
   if (value.authorVerified !== undefined && typeof value.authorVerified !== "boolean") {
     return "authorVerified must be a boolean";
+  }
+  if (value.provenance !== undefined && value.provenance !== "verified" && value.provenance !== "asserted-legacy") {
+    return "provenance must be verified or asserted-legacy";
+  }
+  if (value.linkedIdentity !== undefined) {
+    if (
+      !isRecord(value.linkedIdentity) ||
+      typeof value.linkedIdentity.source !== "string" ||
+      !REGISTRY_SOURCES.has(value.linkedIdentity.source) ||
+      !isNonEmptyString(value.linkedIdentity.id)
+    ) {
+      return "linkedIdentity must have a source and non-empty id";
+    }
   }
   if (typeof value.body !== "string") return "body must be a string";
   if (
@@ -122,6 +152,15 @@ function commentRecordProblem(value: unknown): string | null {
       return "pending github comments require githubRef";
   }
   return null;
+}
+
+/**
+ * A comment's author provenance (#1253 §5). Records written before the
+ * marker existed carry an author that was only ever the caller's claim,
+ * so a missing marker reads as asserted-legacy, never as verified.
+ */
+export function commentProvenance(comment: Pick<DashComment, "provenance">): CommentProvenance {
+  return comment.provenance === "verified" ? "verified" : "asserted-legacy";
 }
 
 export function isObjectRef(s: unknown): s is string {
@@ -208,6 +247,10 @@ export class CommentsStore {
   constructor(
     private readonly file: string,
     private readonly archive: StoreArchive = archiveStoreBytes,
+    /** #1744: when set, the store uses this backend instead of the
+     *  file. The file is then never read or written (no dual write),
+     *  exactly as with the #6815 stores. */
+    private readonly remote?: CommentsRemote,
   ) {}
 
   // The load is memoized as a single promise (#1509): the old
@@ -220,6 +263,11 @@ export class CommentsStore {
   }
 
   private async doLoad(): Promise<void> {
+    if (this.remote) {
+      this.comments = await this.remote.loadAll();
+      this.fileExtras = {};
+      return;
+    }
     // #1452: a missing file is the only silent empty start ("no store
     // yet"). An unparseable or wrongly-shaped file is NOT an empty
     // store: it is the append-only audit history, so quarantine the
@@ -310,6 +358,15 @@ export class CommentsStore {
       valid.push(comment as DashComment);
     });
     this.comments = valid;
+    // #9607: persist the legacy marker once, without deriving identity or
+    // changing any author string. Existing explicit markers are untouched.
+    let migrated = false;
+    for (const comment of this.comments) {
+      if (comment.provenance === undefined) {
+        comment.provenance = "asserted-legacy";
+        migrated = true;
+      }
+    }
     if (invalid.length > 0) {
       const quarantined = await this.archive(this.file, raw, invalid);
       console.error(
@@ -318,6 +375,8 @@ export class CommentsStore {
       );
       // The exact source bytes and diagnostics are durable before this
       // atomic rewrite removes malformed rows from the active store.
+      await this.persist();
+    } else if (migrated) {
       await this.persist();
     }
   }
@@ -332,6 +391,10 @@ export class CommentsStore {
   // does not poison the chain for later writes.
   private persist(): Promise<void> {
     const run = this.writeChain.then(async () => {
+      if (this.remote) {
+        await this.remote.saveAll([...this.comments]);
+        return;
+      }
       const data = { ...this.fileExtras, version: 1 as const, comments: this.comments };
       await mkdir(dirname(this.file), { recursive: true });
       const tmp = `${this.file}.tmp-${process.pid}-${++this.writeSeq}`;
@@ -366,7 +429,10 @@ export class CommentsStore {
     return out;
   }
 
-  async add(input: NewComment, options: { authorVerified?: boolean } = {}): Promise<DashComment> {
+  async add(
+    input: NewComment,
+    options: { authorVerified?: boolean; provenance?: CommentProvenance } = {},
+  ): Promise<DashComment> {
     await this.load();
     const comment: DashComment = {
       id: newCommentId(),
@@ -374,6 +440,7 @@ export class CommentsStore {
       kind: input.kind,
       author: input.author,
       authorVerified: options.authorVerified === true,
+      provenance: options.provenance === "verified" ? "verified" : "asserted-legacy",
       body: input.body,
       createdAt: new Date().toISOString(),
       ...(input.kind === "message" ? { triageState: "new" as const } : {}),

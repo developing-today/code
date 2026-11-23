@@ -14,9 +14,15 @@
  *   GET  /health                    (open; liveness only)
  *   POST /v1/search  {query, k?}    (gated) -> miss or hit envelope
  *   GET  /v1/cache/inspect?query=&k= (gated) -> DO metadata readback
+ *   POST /v1/cache/purge {query, k?} (gated) -> delete one cached query
+ *   POST /mcp                       (gated) -> MCP endpoint (#8625; src/mcp.ts)
  */
+import { readTextUpTo } from "./body";
 import { QueryCache } from "./cache_do";
 import { normalizeQuery, queryKey } from "./key";
+import { handleMcp } from "./mcp";
+import { clampK, executeSearch, DEFAULT_K } from "./search";
+import { CONTEXT } from "./space";
 
 export { QueryCache };
 
@@ -28,9 +34,6 @@ export interface Env {
   ACCESS_CLIENT_ID: string;
   ACCESS_CLIENT_SECRET: string;
 }
-
-const DEFAULT_K = 10;
-const MAX_K = 50;
 
 function errorJson(status: number, code: string, message: string): Response {
   return Response.json({ error: { code, message } }, { status });
@@ -53,11 +56,6 @@ async function gateOk(env: Env, req: Request): Promise<boolean> {
   return diff === 0;
 }
 
-function clampK(raw: unknown): number {
-  const n = typeof raw === "number" ? Math.floor(raw) : DEFAULT_K;
-  return Math.min(MAX_K, Math.max(1, Number.isFinite(n) ? n : DEFAULT_K));
-}
-
 export default {
   async fetch(req: Request, env: Env): Promise<Response> {
     const url = new URL(req.url);
@@ -70,9 +68,14 @@ export default {
       if (!(await gateOk(env, req))) {
         return errorJson(401, "unauthorized", "missing or invalid gate token");
       }
+      // #11331: bounded read; the route only needs { query, k }.
+      const raw = await readTextUpTo(req);
+      if (raw === null) {
+        return errorJson(413, "payload_too_large", "body is larger than the 64 KiB limit");
+      }
       let body: { query?: unknown; k?: unknown };
       try {
-        body = (await req.json()) as typeof body;
+        body = JSON.parse(raw) as typeof body;
       } catch {
         return errorJson(400, "bad_request", "body must be JSON");
       }
@@ -89,17 +92,8 @@ export default {
       const query = normalizeQuery(body.query);
       if (!query) return errorJson(400, "bad_request", "query must not be empty");
       const k = clampK(body.k);
-      const key = await queryKey({ q: query, k });
-      const stub = env.QUERY_CACHE.get(env.QUERY_CACHE.idFromName(key));
-      const resp = await stub.fetch("https://do/query", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ query, k }),
-      });
-      const payload = (await resp.json()) as Record<string, unknown>;
-      if (!resp.ok) return Response.json(payload, { status: resp.status });
-      const { outcome, ...rest } = payload as { outcome: string };
-      return Response.json({ cache: outcome, key, query, ...rest });
+      const { status, payload } = await executeSearch(env, query, k);
+      return Response.json(payload, { status });
     }
 
     if (req.method === "GET" && url.pathname === "/v1/cache/inspect") {
@@ -114,11 +108,56 @@ export default {
       // keyed or reach a Durable Object.
       if (!query) return errorJson(400, "bad_request", "query must not be empty");
       const k = clampK(Number(url.searchParams.get("k") ?? DEFAULT_K));
-      const key = await queryKey({ q: query, k });
+      const key = await queryKey({ q: query, k, context: CONTEXT });
       const stub = env.QUERY_CACHE.get(env.QUERY_CACHE.idFromName(key));
       const resp = await stub.fetch("https://do/inspect");
       const meta = (await resp.json()) as Record<string, unknown>;
       return Response.json({ key, query, ...meta });
+    }
+
+    if (req.method === "POST" && url.pathname === "/v1/cache/purge") {
+      if (!(await gateOk(env, req))) {
+        return errorJson(401, "unauthorized", "missing or invalid gate token");
+      }
+      const raw = await readTextUpTo(req);
+      if (raw === null) {
+        return errorJson(413, "payload_too_large", "body is larger than the 64 KiB limit");
+      }
+      let body: { query?: unknown; k?: unknown };
+      try {
+        body = JSON.parse(raw) as typeof body;
+      } catch {
+        return errorJson(400, "bad_request", "body must be JSON");
+      }
+      if (typeof body !== "object" || body === null) {
+        return errorJson(400, "bad_request", "body must be a JSON object");
+      }
+      if (typeof body.query !== "string") {
+        return errorJson(400, "bad_request", "query must be a string");
+      }
+      const query = normalizeQuery(body.query);
+      if (!query) return errorJson(400, "bad_request", "query must not be empty");
+      const k = clampK(body.k);
+      const key = await queryKey({ q: query, k, context: CONTEXT });
+      const stub = env.QUERY_CACHE.get(env.QUERY_CACHE.idFromName(key));
+      const resp = await stub.fetch("https://do/purge", { method: "POST" });
+      const result = (await resp.json()) as { purged: boolean };
+      return Response.json({ key, query, ...result });
+    }
+
+    if (url.pathname === "/mcp") {
+      // The MCP endpoint (#8625; src/mcp.ts) is POST-only and
+      // sits behind the same gate as /v1/*. The gate runs here
+      // so mcp.ts owns the JSON-RPC layer only.
+      if (req.method !== "POST") {
+        const resp = errorJson(405, "method_not_allowed", "the MCP endpoint accepts POST only");
+        resp.headers.set("Allow", "POST");
+        return resp;
+      }
+      if (!(await gateOk(env, req))) {
+        return errorJson(401, "unauthorized", "missing or invalid gate token");
+      }
+      return handleMcp(req, env);
     }
 
     return errorJson(404, "not_found", "no route");

@@ -15,6 +15,15 @@ import type { EditorView, NodeView } from "prosemirror-view";
 // ImageNodeView
 // ============================================================================
 
+/**
+ * Accessible name for the image's edit button. A button's children are
+ * presentational, so the image's own description has to be carried in
+ * the button's name or screen readers lose it.
+ */
+function editLabel(alt: unknown): string {
+  return typeof alt === "string" && alt.trim() !== "" ? `Edit image alt text: ${alt}` : "Edit image alt text";
+}
+
 export class ImageNodeView implements NodeView {
   dom: HTMLElement;
   private img: HTMLImageElement;
@@ -50,6 +59,9 @@ export class ImageNodeView implements NodeView {
     const figure = document.createElement("figure");
     figure.className = "pm-image-view";
     figure.contentEditable = "false";
+    figure.setAttribute("role", "button");
+    figure.setAttribute("aria-label", editLabel(node.attrs.alt));
+    figure.tabIndex = 0;
 
     const img = document.createElement("img");
     img.src = node.attrs.src || "";
@@ -66,6 +78,21 @@ export class ImageNodeView implements NodeView {
 
     // Click to show popover
     figure.addEventListener("click", (e) => {
+      e.stopPropagation();
+      this.showPopover();
+    });
+    // Only keys aimed at the figure itself activate it: keys typed in
+    // the alt-text input bubble up through the figure too.
+    figure.addEventListener("keydown", (e) => {
+      if (e.target !== figure) return;
+      if (e.key !== "Enter" && e.key !== " ") return;
+      e.preventDefault();
+      e.stopPropagation();
+      if (e.key === "Enter") this.showPopover();
+    });
+    figure.addEventListener("keyup", (e) => {
+      if (e.target !== figure) return;
+      if (e.key !== " ") return;
       e.stopPropagation();
       this.showPopover();
     });
@@ -118,6 +145,9 @@ export class ImageNodeView implements NodeView {
     input.className = "pm-image-popover-input";
     input.value = this.node.attrs.alt || "";
     input.placeholder = "Describe this image…";
+    // Nesting the input in its visible label gives assistive technology a
+    // programmatic name without a page-global id that could be duplicated.
+    label.appendChild(input);
 
     // Commit on Enter or blur
     const commit = () => {
@@ -147,7 +177,6 @@ export class ImageNodeView implements NodeView {
     sizeInfo.textContent = `${w} × ${h}`;
 
     popover.appendChild(label);
-    popover.appendChild(input);
     popover.appendChild(sizeInfo);
 
     this.dom.appendChild(popover);
@@ -252,6 +281,7 @@ export class ImageNodeView implements NodeView {
     const nextSrc = node.attrs.src || "";
     if (this.img.getAttribute("src") !== nextSrc) this.img.src = nextSrc;
     if (node.attrs.alt != null) this.img.alt = node.attrs.alt;
+    this.dom.setAttribute("aria-label", editLabel(node.attrs.alt));
     if (node.attrs.title != null) this.img.title = node.attrs.title;
 
     if (node.attrs.width) {
