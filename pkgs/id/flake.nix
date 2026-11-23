@@ -342,7 +342,9 @@
         # Development shell: nix develop
         devShells.default = pkgs.mkShell {
           inherit buildInputs;
-          inherit nativeBuildInputs;
+          # Pristine bun for the shell (#13337); the shared set carries
+          # the patchelf'd nixpkgs bun for the sandbox (#13751).
+          nativeBuildInputs = nixCommon.shellNativeBuildInputs;
           inherit (nixCommon) shellHook TREEFMT_TREE_ROOT_CMD;
 
           inherit (opensslEnv) OPENSSL_DIR;
