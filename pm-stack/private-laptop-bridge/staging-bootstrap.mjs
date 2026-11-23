@@ -261,7 +261,7 @@ function verifyWorkerReferences(worker, domains, {routed, zoneIds}) {
   const expected=routed?domains.filter(domain=>domain?.service===WORKER_NAME&&domain?.hostname===BRIDGE_HOST):[];
   if(expected.length!==(routed?1:0)||referencedDomains.length!==expected.length) fail('Worker reverse domain references do not match the stage ingress state');
   for(const ref of referencedDomains) {
-    if(!ref||typeof ref!=='object'||!ID.test(ref.id??'')||ref.hostname!==BRIDGE_HOST||!ID.test(ref.zone_id??'')||
+    if(!ref||typeof ref!=='object'||!(ID.test(ref.id??'')||UUID.test(ref.id??''))||ref.hostname!==BRIDGE_HOST||!ID.test(ref.zone_id??'')||
       !zoneIds.includes(ref.zone_id.toLowerCase())||!expected.some(domain=>domain.id===ref.id&&domain.zone_id===ref.zone_id&&domain.hostname===ref.hostname)) {
       fail('Worker reverse domain reference does not match the exact approved account domain');
     }
