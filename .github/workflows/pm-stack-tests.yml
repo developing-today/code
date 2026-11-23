@@ -206,6 +206,12 @@ jobs:
           fi
           echo "scheduled-history collector suite passed."
 
+      # Host-health collector projection and backup restore-point reader
+      # (#3989 criterion 6). Run explicitly: this suite is not otherwise
+      # discovered by the aggregator or Python test jobs.
+      - name: Test host-health collector Python suite
+        run: python3 -m unittest discover -s pm-stack/tests -p 'test_host_health_collector.py'
+
       # Required inputs are explicit so discovery cannot silently drop a suite.
       - name: Test claimant launch, handoff, and batch dispatch (#9877)
         working-directory: pm-stack/opencode-claimant

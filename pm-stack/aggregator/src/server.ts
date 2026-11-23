@@ -5101,8 +5101,19 @@ async function handler(req: Request, remoteAddress?: string): Promise<Response> 
     // #1147 extends the shape in place (services/feed/pages/jobs
     // added from the same assembly /health renders; the existing
     // status/source/sections keys are unchanged).
-    const view = await healthContext();
+    const [view, hostHealth] = await Promise.all([
+      healthContext(),
+      // #3989 criterion 6: expose the collector's active host and the
+      // newest verified backup generation (date / finish time / hash /
+      // destinations) on the existing machine health surface. A failed
+      // or unreadable generation remains explicit; never synthesize a
+      // healthy restore point from missing data.
+      readHostHealthSnapshot(cfg.hostHealthFile).catch(() => null),
+    ]);
     const body: Record<string, unknown> = { status: "ok", source: prov(), version: view.version };
+    body.hostHealth = hostHealth
+      ? { host: hostHealth.host, backup: hostHealth.backup }
+      : { host: null, backup: null, state: "unavailable" };
     const diag = source.diagnostics?.();
     if (diag) body.sections = diag;
     body.services = view.services.map((s) => ({
