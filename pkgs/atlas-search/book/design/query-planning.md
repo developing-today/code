@@ -97,6 +97,20 @@ The minimum viable planner also includes the classifier that selects among these
 
 **Second wave.** HyDE (with its underspecification gate), decomposition, multi-query / RAG-Fusion, step-back, and term expansion — each adopted individually, on its own slice, in no fixed order beyond its evidence. Second-wave status is not a judgement that these are worth less; it is a judgement that their value is conditional in ways the first wave's is not, and conditional value is exactly what per-class evaluation exists to settle.
 
+## Compiling restrictions and rewriting a follow-up
+
+The core derives an authority envelope from the authenticated principal, current grants, eligible publications and policy epoch. Explicit request restrictions and recognized query filters intersect that envelope. The classifier may prefer a source inside it. A query token naming a client cannot establish identity. Each branch receives the same compiled restrictions before candidate generation, including fallback and any generated variant. The existing raw/rewritten controls give a place to report requested versus executed transforms. [Planner](https://github.com/developing-today/code/issues/5773) · [Raw and rewritten modes](https://github.com/developing-today/code/issues/5774)
+
+| Synthetic input or event | Proposed observable outcome |
+|---|---|
+| Two explicit, disjoint project restrictions | Empty eligible set, with no broad fallback. An unrecognized token remains lexical text. |
+| Quoted path or identifier containing a filter delimiter | Preserve literal spelling. Extract a date only where the filter grammar permits it. Resolve a relative date using an explicit timezone and request time into a half-open interval. |
+| Follow-up with one authorized antecedent | Resolve against bounded, same-conversation history reauthorized at request time. Keep an original lexical arm and record the effective variant in local evaluation. |
+| Follow-up after the antecedent loses access, or with two plausible antecedents | Retain raw search. Compare ranks and result content with an otherwise identical conversation lacking the inaccessible turn. |
+| Multiple generated queries | Bound generated branches and divide the variant family's voting weight to avoid counting one branch repeatedly in RRF. Preserve the initial authority envelope and a measurable fallback on timeout. |
+
+Measure classifier p95 on named hardware separately from end-to-end p95. Register success criteria per query family before tuning. Entity-resolution accuracy on a follow-up, evidence recall for both clauses of a decomposed query and no-answer behavior test different decisions. Test expansion, conditional local HyDE, decomposition and step-back independently against the MVP on the same eligible snapshot.
+
 ## What exists today
 
 Grounding, so the design above is never mistaken for the present:
