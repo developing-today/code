@@ -131,6 +131,11 @@ self-review or admin bypass, and only the `main` branch. Use an environment-only
 `QTA_WORKER_PRODUCTION_CF_API_TOKEN` scoped to the existing Worker and set that
 environment's `QTA_WORKER_PRODUCTION_ACCOUNT_ID` variable. Do not put this token
 at repository or organization scope or supply runtime secret values to CI.
+The REST environment response need not expose administrator bypass. Before
+dispatch, the environment owner must inspect the environment settings
+separately and tick `attest_admin_bypass_disabled` only if it is disabled.
+Stop if that fact cannot be verified. If GitHub returns the field and it is
+not false, the preflight rejects the dispatch regardless of attestation.
 
 Upload is code only; it requires the latest uploaded version to be the current
 single 100% serving version so binding inheritance cannot silently use an

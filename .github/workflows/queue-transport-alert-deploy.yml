@@ -13,6 +13,11 @@ on:
         required: true
         type: boolean
         default: false
+      attest_admin_bypass_disabled:
+        description: Owner attests the environment was checked separately and administrator bypass is disabled
+        required: true
+        type: boolean
+        default: false
       upload_run_id:
         description: Successful upload workflow run ID for promotion
         required: false
@@ -28,7 +33,7 @@ concurrency:
 
 jobs:
   verify-environment:
-    if: github.repository == 'developing-today/code' && github.ref == 'refs/heads/main' && inputs.confirm
+    if: github.repository == 'developing-today/code' && github.ref == 'refs/heads/main' && inputs.confirm && inputs.attest_admin_bypass_disabled
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -40,6 +45,7 @@ jobs:
           endpoint="repos/$GITHUB_REPOSITORY/environments/cloudflare-queue-transport-alert"
           gh api "$endpoint" | jq -e '
             .name == "cloudflare-queue-transport-alert"
+            and ((has("can_admins_bypass") | not) or .can_admins_bypass == false)
             and .deployment_branch_policy.custom_branch_policies == true
             and .deployment_branch_policy.protected_branches == false
             and any(.protection_rules[];
@@ -103,6 +109,7 @@ jobs:
         uses: actions/checkout@v7
         with:
           ref: ${{ steps.handoff.outputs.source_sha }}
+          persist-credentials: false
       - name: Check out trusted dispatch source
         if: inputs.action == 'upload'
         uses: actions/checkout@v7
