@@ -33,6 +33,7 @@ import (
 // every child, or a test's withEnv/append for its own.
 var harnessSetMCPX = map[string]struct{}{
 	"MCPX_ARTIFACTS_MAX_BYTES":          {},
+	"MCPX_ADAPTERS_ALLOW_BARE":          {},
 	"MCPX_AUTONOMY_MAX":                 {},
 	"MCPX_AUTOSTART_ARGS":               {},
 	"MCPX_AUTOSTART_IDLE_EXIT":          {},
@@ -95,7 +96,6 @@ var harnessSetMCPX = map[string]struct{}{
 // one. A variable the harness must control belongs in harnessSetMCPX, not
 // here.
 var safeMCPX = map[string]struct{}{
-	"MCPX_ADAPTERS_ALLOW_BARE":                  {},
 	"MCPX_ARTIFACTS_CHUNK_BYTES":                {},
 	"MCPX_ARTIFACTS_DELIVERY":                   {},
 	"MCPX_ARTIFACTS_DIR":                        {},
