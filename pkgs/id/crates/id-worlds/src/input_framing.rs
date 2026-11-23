@@ -7,10 +7,13 @@
 //! token per complete key, independent of how the transport split the stream.
 //! Plain text emits one token per Unicode scalar.
 //!
-//! The module is deliberately **inert**: `world_ssh` does not call it, the
-//! durable `Input(Vec<u8>)` event is unchanged and no transport behaviour moves
-//! yet. Slice E owns activation after F13.4 supplies detection and the reply
-//! demultiplexer; [`ReplyFilter`] is the interface that demultiplexer plugs into.
+//! Activation is Slice E: `world_ssh` runs one assembler per opted-in raw
+//! connection whose terminal reported kitty keyboard support to the F13.4
+//! probe, after the push is verified (see `world_ssh::kitty`). Sessions that
+//! are not opted in, or whose terminal did not report support, never touch
+//! this module and keep the legacy chunk forwarding exactly. The durable
+//! `Input(Vec<u8>)` event is unchanged either way; [`ReplyFilter`] is the
+//! interface the connection-local reply classifier plugs into.
 //!
 //! Token bytes are never rewritten: what the assembler emits is exactly the
 //! bytes the transport received. Framing failures are fatal by design, because

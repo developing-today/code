@@ -2352,8 +2352,22 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
         status!(
             "world ssh over iroh: `id world ssh-tunnel <node-id>` then `ssh -p 2222 <world>@127.0.0.1`"
         );
+        // #787 Slice E: kitty keyboard negotiation is opt-in per server,
+        // for worlds compiled with the extended Key module; every other
+        // world keeps the legacy input semantics by default.
+        let kitty_keyboard = std::env::var("ID_WORLD_SSH_KITTY_KEYBOARD")
+            .is_ok_and(|value| value == "1" || value.eq_ignore_ascii_case("true"));
+        if kitty_keyboard {
+            status!(
+                "world ssh kitty keyboard: enabled (kitty-disambiguate-v1, negotiated per session)"
+            );
+        }
+        let options = id_worlds::world_ssh::SshServeOptions { kitty_keyboard };
         tokio::spawn(async move {
-            if let Err(e) = id_worlds::world_ssh::serve(listener, hub, host_key, blobs).await {
+            if let Err(e) =
+                id_worlds::world_ssh::serve_with_options(listener, hub, host_key, blobs, options)
+                    .await
+            {
                 tracing::error!("world ssh server error: {}", e);
             }
         })
