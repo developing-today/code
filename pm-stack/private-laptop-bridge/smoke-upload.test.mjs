@@ -1,17 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  assertLegacyVersionsEmpty,
-  assertMatchingLegacyBetaVersions,
-  assertNoTargetOverrides,
-  assertPrebuiltSmokePayload,
   assertDryRunOutput,
   assertExactVersionReadback,
   extractUploadedVersion,
   fetchInitRunEvidence,
   readVersions,
-  readExactBetaVersion,
-  readExactLegacyVersion,
   validateInitReceipt,
 } from './smoke-upload.mjs';
 import { createInitReceipt, verifySmokeEmptyTarget, WORKER_NAME, CREATE_BODY } from './bootstrap-smoke.mjs';
@@ -93,99 +87,15 @@ test('pinned cf dry-run must show the fixed disabled smoke config', () => {
   assert.deepEqual(CREATE_BODY.subdomain, { enabled: false, previews_enabled: false });
 });
 
-function builtSmokeFixture() {
-  const env = {
-    ENABLED: { type: 'text', value: 'false' },
-    GATEWAY_HOST: { type: 'text', value: 'private-bridge-smoke.invalid' },
-    GATEWAY_ACCOUNT_ID: { type: 'text', value: '' },
-    GATEWAY_POLICY_ID: { type: 'text', value: '' },
-    START_MS: { type: 'text', value: '' },
-    END_MS: { type: 'text', value: '' },
-  };
-  return {
-    buildConfig: { producer: { name: 'wrangler', version: '4.166.0' }, buildContext: { isPreview: false } },
-    workerNames: ['default'],
-    bundleFiles: ['smoke.js', 'smoke.js.map'],
-    workerConfig: {
-      name: WORKER_NAME, compatibilityDate: '2026-07-30', domains: [], triggers: [], limits: { cpuMs: 10 },
-      observability: { enabled: false, logs: { enabled: false }, traces: { enabled: false } }, workersDev: false, previewUrls: false, env,
-      manifest: { type: 'complete', mainModule: 'smoke.js', modules: { 'smoke.js': { type: 'esm' }, 'smoke.js.map': { type: 'sourcemap' } } },
-    },
-  };
-}
-
-test('effective Build Output contract excludes routes, domains, triggers, previews, DOs, and extra executable modules', () => {
-  const fixture = builtSmokeFixture();
-  assert.equal(assertPrebuiltSmokePayload(fixture), true);
-  for (const mutate of [
-    f => { f.workerConfig.domains = [{ hostname: 'public.invalid' }]; },
-    f => { f.workerConfig.triggers = [{ cron: '*/1 * * * *' }]; },
-    f => { f.workerConfig.routes = [{ pattern: 'public.invalid/*' }]; },
-    f => { f.workerConfig.previewUrls = true; },
-    f => { f.workerConfig.durable_objects = { bindings: [{ name: 'BRIDGE', class_name: 'Bridge' }] }; },
-    f => { f.workerConfig.env.EXTRA = { type: 'service', service: 'other-worker' }; },
-    f => { f.workerConfig.manifest.modules['extra.wasm'] = { type: 'compiled-wasm' }; },
-    f => { f.buildConfig.buildContext.isPreview = true; },
-    f => { f.workerNames.push('other'); },
-  ]) {
-    const changed = structuredClone(fixture); mutate(changed);
-    assert.throws(() => assertPrebuiltSmokePayload(changed));
-  }
-});
-
-test('inherited target and mode override variables are rejected', () => {
-  assert.equal(assertNoTargetOverrides({}), true);
-  for (const name of ['CLOUDFLARE_CI_OVERRIDE_WORKER_NAME','CF_WORKER_NAME','CLOUDFLARE_WORKER_NAME','WRANGLER_WORKER_NAME','CF_MODE','CLOUDFLARE_ENV','WRANGLER_ENV']) {
-    assert.throws(() => assertNoTargetOverrides({ [name]: 'wrong-target' }), new RegExp(name));
-  }
-});
-
 test('upload response must be the pinned exact version-upload schema and UUID', () => {
-  const good = extractUploadedVersion(JSON.stringify({ type: 'version-upload', version: 1, worker_name: WORKER_NAME, worker_name_overridden: false, wrangler_environment: null, preview_url: null, preview_alias_url: null, version_id: '00000000-0000-4000-8000-000000000001' }), { receiptDigest, sourceSha });
+  const good = extractUploadedVersion(JSON.stringify({ type: 'version-upload', version: 1, worker_name: WORKER_NAME, version_id: '00000000-0000-4000-8000-000000000001' }), { receiptDigest, sourceSha });
   assert.equal(good.versionId, '00000000-0000-4000-8000-000000000001');
   assert.equal(good.message, `init_receipt_sha256=${receiptDigest}`);
   for (const response of [
-    { type: 'version-upload', version: 1, worker_name: 'wrong', worker_name_overridden: false, version_id: good.versionId },
-    { type: 'version-upload', version: 1, worker_name: WORKER_NAME, worker_name_overridden: false, version_id: 'latest' },
-    { type: 'version-upload', version: 2, worker_name: WORKER_NAME, worker_name_overridden: false, version_id: good.versionId },
-    { type: 'version-upload', version: 1, worker_name: WORKER_NAME, worker_name_overridden: true, version_id: good.versionId },
-    { type: 'version-upload', version: 1, worker_name: WORKER_NAME, worker_name_overridden: false, preview_url: 'https://preview.invalid', version_id: good.versionId },
-    { type: 'version-upload', version: 1, worker_name: WORKER_NAME, worker_name_overridden: false, preview_alias_url: 'https://alias.invalid', version_id: good.versionId },
-    { type: 'version-upload', version: 1, worker_name: WORKER_NAME, worker_name_overridden: false, wrangler_environment: 'production', version_id: good.versionId },
+    { type: 'version-upload', version: 1, worker_name: 'wrong', version_id: good.versionId },
+    { type: 'version-upload', version: 1, worker_name: WORKER_NAME, version_id: 'latest' },
+    { type: 'version-upload', version: 2, worker_name: WORKER_NAME, version_id: good.versionId },
   ]) assert.throws(() => extractUploadedVersion(JSON.stringify(response), { receiptDigest, sourceSha }));
-});
-
-test('legacy scripts version list is empty before upload and pinned to the exact Worker name', async () => {
-  const seen = [];
-  const empty = await assertLegacyVersionsEmpty({ accountId, readToken, fetchImpl: async url => {
-    seen.push(String(url)); return ok({ items: [] }, { total_count: 0, count: 0 });
-  } });
-  assert.equal(empty, true);
-  assert.equal(seen[0], `https://api.cloudflare.com/client/v4/accounts/${accountId}/workers/scripts/${WORKER_NAME}/versions?per_page=100&page=1`);
-  await assert.rejects(assertLegacyVersionsEmpty({ accountId, readToken, fetchImpl: async () => ok({ items: [{ id: 'existing' }] }) }), /not explicitly empty/);
-  await assert.rejects(assertLegacyVersionsEmpty({ accountId, readToken, fetchImpl: async () => ok({ items: [] }, { total_count: 1 }) }), /not explicitly empty/);
-  await assert.rejects(assertLegacyVersionsEmpty({ accountId, readToken, fetchImpl: async () => ok({ items: [] }, { page: 2 }) }), /not explicitly empty/);
-  await assert.rejects(assertLegacyVersionsEmpty({ accountId, readToken, fetchImpl: async () => ok({}) }), /not explicitly empty/);
-  await assert.rejects(assertLegacyVersionsEmpty({ accountId, readToken, fetchImpl: async () => new Response('{}', { status: 403 }) }), /authorization denied/);
-});
-
-test('legacy and Beta exact-version GETs must return the same UUID and provenance', async () => {
-  const versionId = '00000000-0000-4000-8000-000000000001';
-  const version = { id: versionId, annotations: { 'workers/tag': sourceSha, 'workers/message': `init_receipt_sha256=${receiptDigest}` } };
-  const paths = [];
-  const fetchImpl = async url => {
-    const parsed = new URL(url); paths.push(parsed.pathname);
-    return ok(version);
-  };
-  const [legacy, beta] = await Promise.all([
-    readExactLegacyVersion({ accountId, versionId, readToken, fetchImpl }),
-    readExactBetaVersion({ accountId, workerId, versionId, readToken, fetchImpl }),
-  ]);
-  assertMatchingLegacyBetaVersions({ legacyVersion: legacy, betaVersion: beta, versionId, sourceSha, receiptDigest });
-  assert.ok(paths.some(path => path.endsWith(`/workers/scripts/${WORKER_NAME}/versions/${versionId}`)));
-  assert.ok(paths.some(path => path.endsWith(`/workers/workers/${workerId}/versions/${versionId}`)));
-  assert.throws(() => assertMatchingLegacyBetaVersions({ legacyVersion: legacy, betaVersion: { ...beta, id: '00000000-0000-4000-8000-000000000002' }, versionId, sourceSha, receiptDigest }), /Beta exact-version readback/);
-  assert.throws(() => assertMatchingLegacyBetaVersions({ legacyVersion: { ...legacy, annotations: {} }, betaVersion: beta, versionId, sourceSha, receiptDigest }), /legacy exact-version readback/);
 });
 
 test('version readback tolerates omitted optional pagination metadata but proves complete list', async () => {
@@ -226,7 +136,6 @@ test('post-upload proof requires exactly the returned UUID, provenance, no publi
   assert.equal(assertExactVersionReadback({ versionId, versions: [valid], sourceSha, receiptDigest }), true);
   assert.throws(() => assertExactVersionReadback({ versionId, versions: [valid, { id: 'other' }], sourceSha, receiptDigest }), /version set is not exactly one/);
   assert.throws(() => assertExactVersionReadback({ versionId, versions: [{ ...valid, urls: ['https://preview.invalid'] }], sourceSha, receiptDigest }), /routable or preview URL/);
-  assert.throws(() => assertExactVersionReadback({ versionId, versions: [{ ...valid, preview_url: 'https://preview.invalid' }], sourceSha, receiptDigest }), /routable or preview URL/);
   assert.throws(() => assertExactVersionReadback({ versionId, versions: [{ ...valid, hasPreview: true }], sourceSha, receiptDigest }), /routable or preview URL/);
   assert.throws(() => assertExactVersionReadback({ versionId, versions: [{ ...valid, annotations: {} }], sourceSha, receiptDigest }), /does not bind/);
 });

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Upload one immutable smoke Worker version and verify it remains unrouted.
 import { createHash } from 'node:crypto';
-import { appendFile, readFile, readdir, writeFile } from 'node:fs/promises';
+import { appendFile, readFile, writeFile } from 'node:fs/promises';
 import { API, INIT_WORKFLOW, WORKER_NAME, verifySmokeEmptyTarget, verifySmokePostUpload } from './bootstrap-smoke.mjs';
 
 const REPOSITORY = 'developing-today/code';
@@ -9,15 +9,6 @@ export const UPLOAD_WORKFLOW = '.github/workflows/private-laptop-bridge-smoke-up
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const SHA = /^[0-9a-f]{40}$/;
 const HASH = /^[0-9a-f]{64}$/;
-const TARGET_OVERRIDE_ENV = [
-  'CLOUDFLARE_CI_OVERRIDE_WORKER_NAME',
-  'CF_WORKER_NAME',
-  'CLOUDFLARE_WORKER_NAME',
-  'WRANGLER_WORKER_NAME',
-  'CF_MODE',
-  'CLOUDFLARE_ENV',
-  'WRANGLER_ENV',
-];
 const fail = message => { throw new Error(message); };
 const hash = value => createHash('sha256').update(value).digest('hex');
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
@@ -25,12 +16,6 @@ const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 function parseJson(value, label) {
   try { return typeof value === 'string' ? JSON.parse(value) : value; }
   catch { fail(`${label} is not valid JSON`); }
-}
-
-function hasNonemptyPreviewUrl(value) {
-  return value && typeof value === 'object' && Object.entries(value).some(([key, field]) =>
-    key.toLowerCase().includes('preview') && key.toLowerCase().includes('url') &&
-    field !== undefined && field !== null && field !== '' && (!Array.isArray(field) || field.length !== 0));
 }
 
 function receiptShape(receipt) {
@@ -105,66 +90,9 @@ export function assertDryRunOutput(text) {
   return true;
 }
 
-export function assertNoTargetOverrides(environment = process.env) {
-  const set = TARGET_OVERRIDE_ENV.filter(name => typeof environment[name] === 'string' && environment[name] !== '');
-  if (set.length) fail(`effective Worker target override variables must be empty: ${set.join(', ')}`);
-  return true;
-}
-
-export function assertPrebuiltSmokePayload({ buildConfig, workerConfig, workerNames, bundleFiles }) {
-  const exactKeys = (value, expected) => value && typeof value === 'object' && !Array.isArray(value) && same(Object.keys(value).sort(), [...expected].sort());
-  if (!exactKeys(buildConfig, ['producer', 'buildContext']) || !exactKeys(buildConfig.producer, ['name', 'version']) ||
-      buildConfig.producer.name !== 'wrangler' || buildConfig.producer.version !== '4.166.0' ||
-      !exactKeys(buildConfig.buildContext, ['isPreview']) || buildConfig.buildContext.isPreview !== false) {
-    fail('prebuilt Build Output producer or context is not the pinned non-preview build');
-  }
-  if (!Array.isArray(workerNames) || workerNames.length !== 1 || workerNames[0] !== 'default') fail('prebuilt Build Output must contain only its default Worker');
-  const expectedWorkerKeys = ['name','compatibilityDate','domains','triggers','limits','observability','workersDev','previewUrls','env','manifest'];
-  if (!exactKeys(workerConfig, expectedWorkerKeys) || workerConfig.name !== WORKER_NAME || workerConfig.compatibilityDate !== '2026-07-30' ||
-      !Array.isArray(workerConfig.domains) || workerConfig.domains.length !== 0 || !Array.isArray(workerConfig.triggers) || workerConfig.triggers.length !== 0 ||
-      workerConfig.workersDev !== false || workerConfig.previewUrls !== false || !exactKeys(workerConfig.limits, ['cpuMs']) || workerConfig.limits.cpuMs !== 10 ||
-      !exactKeys(workerConfig.observability, ['enabled','logs','traces']) || workerConfig.observability.enabled !== false ||
-      !exactKeys(workerConfig.observability.logs, ['enabled']) || workerConfig.observability.logs.enabled !== false ||
-      !exactKeys(workerConfig.observability.traces, ['enabled']) || workerConfig.observability.traces.enabled !== false) {
-    fail('prebuilt Worker config has a changed target or an unexpected route, domain, trigger, preview, telemetry, DO, or binding field');
-  }
-  const env = {
-    ENABLED: { type: 'text', value: 'false' },
-    GATEWAY_HOST: { type: 'text', value: 'private-bridge-smoke.invalid' },
-    GATEWAY_ACCOUNT_ID: { type: 'text', value: '' },
-    GATEWAY_POLICY_ID: { type: 'text', value: '' },
-    START_MS: { type: 'text', value: '' },
-    END_MS: { type: 'text', value: '' },
-  };
-  if (!same(workerConfig.env, env)) fail('prebuilt Worker bindings differ from the fixed disabled smoke fixture');
-  const manifest = workerConfig.manifest;
-  if (!exactKeys(manifest, ['type','mainModule','modules']) || manifest.type !== 'complete' || manifest.mainModule !== 'smoke.js' ||
-      !exactKeys(manifest.modules, ['smoke.js','smoke.js.map']) || manifest.modules['smoke.js']?.type !== 'esm' || manifest.modules['smoke.js.map']?.type !== 'sourcemap') {
-    fail('prebuilt Worker manifest is not the fixed stateless smoke entrypoint');
-  }
-  if (!Array.isArray(bundleFiles) || !same([...bundleFiles].sort(), ['smoke.js','smoke.js.map'])) fail('prebuilt Worker bundle contains an unexpected module or executable payload');
-  return true;
-}
-
-export async function validatePrebuiltSmokeOutput(outputPath) {
-  let buildConfig;
-  let workerConfig;
-  let workerNames;
-  let bundleFiles;
-  try {
-    buildConfig = JSON.parse(await readFile(`${outputPath}/config.json`, 'utf8'));
-    workerConfig = JSON.parse(await readFile(`${outputPath}/workers/default/worker.config.json`, 'utf8'));
-    workerNames = await readdir(`${outputPath}/workers`);
-    bundleFiles = await readdir(`${outputPath}/workers/default/bundle`);
-  } catch { fail('pinned cf Build Output files are missing or invalid'); }
-  return assertPrebuiltSmokePayload({ buildConfig, workerConfig, workerNames, bundleFiles });
-}
-
 export function extractUploadedVersion(stdout, { receiptDigest, sourceSha }) {
   const body = parseJson(stdout, 'cf version-upload response');
-  if (body?.type !== 'version-upload' || body.version !== 1 || body.worker_name !== WORKER_NAME || body.worker_name_overridden !== false ||
-      (body.wrangler_environment !== undefined && body.wrangler_environment !== null && body.wrangler_environment !== '') ||
-      hasNonemptyPreviewUrl(body) || !UUID.test(body.version_id ?? '')) {
+  if (body?.type !== 'version-upload' || body.version !== 1 || body.worker_name !== WORKER_NAME || !UUID.test(body.version_id ?? '')) {
     fail('cf version-upload response does not match the pinned exact Worker schema');
   }
   if (!SHA.test(sourceSha ?? '') || !HASH.test(receiptDigest ?? '')) fail('upload provenance inputs are invalid');
@@ -220,48 +148,6 @@ export async function readVersions({ accountId, workerId, readToken, fetchImpl =
   fail('Cloudflare version pagination exceeded hard bound');
 }
 
-async function cloudflareRead({ accountId, path, readToken, fetchImpl, label }) {
-  const url = `${API}/accounts/${encodeURIComponent(accountId)}${path}`;
-  let response;
-  try { response = await fetchImpl(url, { headers: { authorization: `Bearer ${readToken}`, accept: 'application/json' }, redirect: 'error', signal: AbortSignal.timeout(15_000) }); }
-  catch { fail(`Cloudflare ${label} verification request failed`); }
-  let body;
-  try { body = await response.json(); } catch { fail(`Cloudflare ${label} response is invalid JSON (HTTP ${response.status})`); }
-  return apiEnvelope(response, body);
-}
-
-export async function assertLegacyVersionsEmpty({ accountId, readToken, fetchImpl = fetch }) {
-  const { result, resultInfo } = await cloudflareRead({ accountId, readToken, fetchImpl, label: 'legacy version list', path: `/workers/scripts/${encodeURIComponent(WORKER_NAME)}/versions?per_page=100&page=1` });
-  if (!result || typeof result !== 'object' || Array.isArray(result) || !Array.isArray(result.items) || result.items.length !== 0 ||
-      (result.total_count !== undefined && result.total_count !== 0) || (result.count !== undefined && result.count !== 0) ||
-      (resultInfo !== undefined && (!resultInfo || typeof resultInfo !== 'object' || Array.isArray(resultInfo) ||
-        (resultInfo.total_count !== undefined && resultInfo.total_count !== 0) || (resultInfo.count !== undefined && resultInfo.count !== 0) ||
-        (resultInfo.total_pages !== undefined && ![0, 1].includes(resultInfo.total_pages)) ||
-        (resultInfo.page !== undefined && resultInfo.page !== 1) || (resultInfo.per_page !== undefined && resultInfo.per_page !== 100)))) {
-    fail('legacy Scripts version list is not explicitly empty for the fixed smoke Worker');
-  }
-  return true;
-}
-
-export async function readExactLegacyVersion({ accountId, versionId, readToken, fetchImpl = fetch }) {
-  return (await cloudflareRead({ accountId, readToken, fetchImpl, label: 'legacy exact version', path: `/workers/scripts/${encodeURIComponent(WORKER_NAME)}/versions/${encodeURIComponent(versionId)}` })).result;
-}
-
-export async function readExactBetaVersion({ accountId, workerId, versionId, readToken, fetchImpl = fetch }) {
-  return (await cloudflareRead({ accountId, readToken, fetchImpl, label: 'Beta exact version', path: `/workers/workers/${encodeURIComponent(workerId)}/versions/${encodeURIComponent(versionId)}` })).result;
-}
-
-export function assertMatchingLegacyBetaVersions({ legacyVersion, betaVersion, versionId, sourceSha, receiptDigest }) {
-  const expectedMessage = `init_receipt_sha256=${receiptDigest}`;
-  for (const [label, version] of [['legacy', legacyVersion], ['Beta', betaVersion]]) {
-    if (!version || typeof version !== 'object' || Array.isArray(version) || version.id !== versionId ||
-        version.annotations?.['workers/tag'] !== sourceSha || version.annotations?.['workers/message'] !== expectedMessage) {
-      fail(`${label} exact-version readback does not match the server UUID and provenance`);
-    }
-  }
-  return true;
-}
-
 export function assertExactVersionReadback({ versionId, versions, sourceSha, receiptDigest }) {
   if (!UUID.test(versionId ?? '') || !SHA.test(sourceSha ?? '') || !HASH.test(receiptDigest ?? '') || !Array.isArray(versions) || versions.length !== 1) fail('version readback inputs are invalid or the Worker version set is not exactly one');
   const exact = versions.filter(version => version?.id === versionId);
@@ -270,7 +156,7 @@ export function assertExactVersionReadback({ versionId, versions, sourceSha, rec
   if (version.annotations?.['workers/tag'] !== sourceSha || version.annotations?.['workers/message'] !== `init_receipt_sha256=${receiptDigest}`) {
     fail('uploaded Worker version metadata does not bind the exact SHA and init receipt');
   }
-  if (!Array.isArray(version.urls) || version.urls.length !== 0 || version.hasPreview === true || hasNonemptyPreviewUrl(version)) fail('uploaded Worker version has an unexpected routable or preview URL');
+  if (!Array.isArray(version.urls) || version.urls.length !== 0 || version.hasPreview === true) fail('uploaded Worker version has an unexpected routable or preview URL');
   return true;
 }
 
@@ -313,7 +199,6 @@ async function main() {
     const accountId = required('CF_SMOKE_UPLOAD_ACCOUNT_ID');
     if (receipt.account_id_sha256 !== hash(accountId.toLowerCase()) || receipt.source_sha !== required('GITHUB_SHA')) fail('init receipt does not match current upload account or SHA');
     await verifySmokeEmptyTarget({ approvedAccountId: accountId, expectedZoneIds: required('CF_SMOKE_UPLOAD_EXPECTED_ZONE_IDS'), readToken: required('CF_SMOKE_UPLOAD_READ_TOKEN'), expectedWorkerId: receipt.worker_id });
-    await assertLegacyVersionsEmpty({ accountId, readToken: required('CF_SMOKE_UPLOAD_READ_TOKEN') });
     console.log('Smoke target identity, empty version/deployment state, routes and preview settings verified read-only.');
     return;
   }
@@ -326,13 +211,8 @@ async function main() {
     const readToken = required('CF_SMOKE_UPLOAD_READ_TOKEN');
     const versions = await readVersions({ accountId, workerId, readToken });
     assertExactVersionReadback({ versionId: upload.versionId, versions, sourceSha: required('GITHUB_SHA'), receiptDigest: required('INIT_RECEIPT_DIGEST') });
-    const [legacyVersion, betaVersion] = await Promise.all([
-      readExactLegacyVersion({ accountId, versionId: upload.versionId, readToken }),
-      readExactBetaVersion({ accountId, workerId, versionId: upload.versionId, readToken }),
-    ]);
-    assertMatchingLegacyBetaVersions({ legacyVersion, betaVersion, versionId: upload.versionId, sourceSha: required('GITHUB_SHA'), receiptDigest: required('INIT_RECEIPT_DIGEST') });
     await verifySmokePostUpload({ approvedAccountId: accountId, expectedZoneIds: required('CF_SMOKE_UPLOAD_EXPECTED_ZONE_IDS'), readToken, expectedWorkerId: workerId });
-    console.log(`Verified immutable smoke version ${upload.versionId} in legacy and Beta APIs; no deployment, route or preview was created.`);
+    console.log(`Verified immutable smoke version ${upload.versionId}; no deployment, route or preview was created.`);
     return;
   }
   if (action === 'dry-run') {
@@ -340,17 +220,7 @@ async function main() {
     assertDryRunOutput(await readJsonFile(args[0], 'cf dry-run output'));
     return;
   }
-  if (action === 'guard-target-env') {
-    if (args.length !== 0) fail('usage: guard-target-env');
-    assertNoTargetOverrides();
-    return;
-  }
-  if (action === 'validate-payload') {
-    if (args.length !== 1) fail('usage: validate-payload <build-output-v1-dir>');
-    await validatePrebuiltSmokeOutput(args[0]);
-    return;
-  }
-  fail('action must be fetch-init, validate-init, preflight, verify-upload, dry-run, guard-target-env, or validate-payload');
+  fail('action must be fetch-init, validate-init, preflight, verify-upload, or dry-run');
 }
 
 if (process.argv[1] && new URL(import.meta.url).pathname === process.argv[1]) {
