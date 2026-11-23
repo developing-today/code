@@ -15,7 +15,7 @@ import { createQuotaRefresher, systemdTrigger } from "./quota-refresh.ts";
 import { buildQuotaAnalytics, primeAttemptAggregates, type QuotaAnalytics } from "./analytics-store.ts";
 import { decodePathSegment } from "./path-segment.ts";
 import { errorBoundaryResponse, notFoundResponse } from "./error-boundary.ts";
-import { ACTION_STATES, ActionsStore, validateNewAction, type DashAction } from "./actions.ts";
+import { ACTION_STATES, ActionsStore, validateNewAction, type DashAction, type NewAction } from "./actions.ts";
 import {
   checkActionAgainstItem,
   effectiveNeedsOrder,
@@ -38,6 +38,13 @@ import {
   type PromptStatus,
 } from "./prompts.ts";
 import { createPromptWsSession, type PromptWsSession } from "./prompt-ws.ts";
+import {
+  PromptAttachmentsStore,
+  readMultipartForm,
+  submissionFieldsFromForm,
+  uploadedFilesFromForm,
+  type PromptAttachment,
+} from "./prompt-attachments.ts";
 import type { SavedView, ViewFilters, ViewItemLike } from "./views.ts";
 import { ViewsStore, filtersFromQuery, itemMatchesView, ownerKey } from "./views.ts";
 import { filterBoardForView, filterRoadmapForView, fragBoardUrl, linkedLike } from "./board-view.ts";
@@ -65,6 +72,15 @@ import { RoadmapAnnotationsStore, validateNewRoadmapAnnotation } from "./roadmap
 import { createAccessAuthorEnforcer, enforceAccessAuthor } from "./access-identity.ts";
 import { IdentityRegistryStore, identityMappingAuditEvent, validateIdentityMapping } from "./identity-registry.ts";
 import { BreakGlassTokenStore, authorizeWithBreakGlassToken, presentedBreakGlassToken } from "./break-glass.ts";
+import {
+  OutageQueueStore,
+  confirmOutageWrite,
+  isStackLocalAddress,
+  outageQueueEligible,
+  queueOutageWrite,
+  rejectOutageWrite,
+  type OutageQueuedWrite,
+} from "./outage-queue.ts";
 import { STACK_TOKEN_TTL_SECONDS, mintStackToken, type StackTokenRole } from "./stack-token.ts";
 import { healthHookAuditEvent } from "./health-hook-audit-event.ts";
 import {
@@ -193,6 +209,7 @@ import {
   renderOverview,
   renderOverviewBody,
   renderOverviewShell,
+  renderChat,
   renderCommentsQueue,
   renderPages,
   renderProgram,
@@ -229,6 +246,7 @@ import {
   type PushPayload,
 } from "./alerts.ts";
 import { recordSwProbe, sendPush, swProbeSummary, VAPID_PUBLIC_KEY } from "./push.ts";
+import { notifyPromptCompletion, promptCompletionTransition } from "./prompt-notify.ts";
 import { resolveBwsSecret, resolveBwsSecretLookup } from "./secrets.ts";
 import { openMetadataStore, type EpicSlugMap, type IngestionItem } from "./metadata-ingestion.ts";
 import { createMetadataWebhookHandler } from "./webhook-listener.ts";
@@ -304,6 +322,7 @@ const cfg = loadConfig();
 // the first request after a deploy serves it instead of a 503.
 const dashboardResponseWithinDeadline = createDashboardResponseDeadline({ persistDir: cfg.lastGoodDir });
 const promptsStore = new PromptsStore(cfg.promptsFile);
+const promptAttachmentsStore = new PromptAttachmentsStore(cfg.promptAttachmentsDir);
 const roadmapAnnotationsStore = new RoadmapAnnotationsStore(cfg.roadmapAnnotationsFile);
 const coverageStore = new CoverageSnapshotStore(cfg.coverageSnapshotFile);
 const itemHistoryStore = new ItemHistoryStore(cfg.itemHistoryFile);
@@ -405,6 +424,28 @@ const eventsStore = new EventsStore(cfg.eventsFile);
 const reportRecordsLocation = storeRemotes?.aaLastGood ?? defaultReportRecordsFile();
 const identityRegistryStore = new IdentityRegistryStore(cfg.identityRegistryFile);
 const breakGlassTokenStore = new BreakGlassTokenStore(cfg.breakGlassFile);
+const outageQueueStore = new OutageQueueStore(cfg.outageQueueFile);
+
+/**
+ * #9608 (design #1253 section 6): the outage-queueing gate for action
+ * writes whose Access verification failed. Queueing engages only on
+ * the enforcer's 401 (verification failed — a 403 is a verified
+ * identity contradicting the claim, not an outage), only from a
+ * stack-local peer address, and only for eligible writes; anything
+ * else returns null and the caller serves the enforcer's refusal
+ * exactly as before. Throws when the queue/audit write itself fails —
+ * callers map that to a 500 (fail closed: nothing was queued).
+ */
+async function tryQueueOutageAction(
+  action: NewAction,
+  accessStatus: number,
+  remoteAddress: string | undefined,
+): Promise<{ record: OutageQueuedWrite; created: boolean } | null> {
+  if (accessStatus !== 401) return null;
+  if (!isStackLocalAddress(remoteAddress)) return null;
+  if (!outageQueueEligible(action)) return null;
+  return queueOutageWrite({ store: outageQueueStore, events: eventsStore, action });
+}
 const freshnessStore = new FreshnessStore(cfg.freshnessFile);
 
 /** #3976: the 5-minute anti-entropy reconciler over the freshness
@@ -2263,7 +2304,7 @@ const metadataWebhookHandler = createMetadataWebhookHandler({
   },
 });
 
-async function handler(req: Request): Promise<Response> {
+async function handler(req: Request, remoteAddress?: string): Promise<Response> {
   const url = new URL(req.url);
   const path = url.pathname;
   const prov = () => source.provenance();
@@ -2649,8 +2690,37 @@ async function handler(req: Request): Promise<Response> {
   }
 
   if (req.method === "POST" && path === "/api/prompt") {
-    const parsed = validateNewPrompt(await readJsonBody(req).catch(() => null));
-    if (!parsed.ok) return json({ error: parsed.error }, 400);
+    // #10036 S7 (design #9539 §3.2/§6): a multipart submission carries
+    // file parts under "attachments"; its text fields are shaped into
+    // the same JSON body the validator accepts, the files are persisted
+    // to the attachments dir first, and the record carries their
+    // storage refs. The JSON path is unchanged.
+    let savedAttachments: PromptAttachment[] = [];
+    let parsed: ReturnType<typeof validateNewPrompt>;
+    if ((req.headers.get("content-type") ?? "").startsWith("multipart/form-data")) {
+      let form: FormData;
+      try {
+        form = await readMultipartForm(req);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        return json({ error: `invalid multipart body: ${message}` }, message === "body too large" ? 413 : 400);
+      }
+      try {
+        parsed = validateNewPrompt(submissionFieldsFromForm(form));
+      } catch (err) {
+        return json({ error: err instanceof Error ? err.message : String(err) }, 400);
+      }
+      if (!parsed.ok) return json({ error: parsed.error }, 400);
+      try {
+        savedAttachments = await promptAttachmentsStore.saveAll(await uploadedFilesFromForm(form));
+      } catch (err) {
+        return json({ error: err instanceof Error ? err.message : String(err) }, 400);
+      }
+      if (savedAttachments.length > 0) parsed.value.attachments = savedAttachments;
+    } else {
+      parsed = validateNewPrompt(await readJsonBody(req).catch(() => null));
+      if (!parsed.ok) return json({ error: parsed.error }, 400);
+    }
     try {
       const record = await promptsStore.add(parsed.value);
       // #10033 S3 (design §3.5/§3.7): a sync-block submission waits
@@ -2665,6 +2735,10 @@ async function handler(req: Request): Promise<Response> {
       }
       return json({ prompt: record }, 201);
     } catch (err) {
+      // A submission that failed to persist must not orphan its blobs.
+      for (const attachment of savedAttachments) {
+        await promptAttachmentsStore.remove(attachment.ref).catch(() => {});
+      }
       return json({ error: `prompt persistence failed: ${err instanceof Error ? err.message : err}` }, 500);
     }
   }
@@ -2701,6 +2775,35 @@ async function handler(req: Request): Promise<Response> {
     prompts.sort((a, b) => (a.createdAt < b.createdAt ? 1 : a.createdAt > b.createdAt ? -1 : 0));
     return json({ prompts });
   }
+  if (req.method === "GET" && path.startsWith("/api/prompt/") && path.includes("/attachments/")) {
+    // #10036 S7: fetch one attachment blob by its storage ref. The ref
+    // must be carried by the named prompt's record — a ref alone is not
+    // a capability — and the store revalidates the ref's shape before
+    // resolving it. Served as a download (never inline) with nosniff,
+    // so an uploaded HTML file cannot render as a stack page.
+    const rest = decodeURIComponent(path.slice("/api/prompt/".length));
+    const segments = rest.split("/");
+    if (segments.length !== 3 || segments[1] !== "attachments") {
+      return json({ error: "prompt not found" }, 404);
+    }
+    const [id, , ref] = segments;
+    const prompt = await promptsStore.get(id);
+    if (!prompt) return json({ error: "prompt not found" }, 404);
+    if (!prompt.attachments.some((a) => a.ref === ref)) {
+      return json({ error: "attachment not found" }, 404);
+    }
+    const found = await promptAttachmentsStore.read(ref);
+    if (!found) return json({ error: "attachment not found" }, 404);
+    return new Response(found.bytes, {
+      headers: {
+        "content-type": found.meta.contentType,
+        "content-length": String(found.bytes.byteLength),
+        "content-disposition": `attachment; filename="${found.meta.name.replace(/"/g, "")}"; filename*=UTF-8''${encodeURIComponent(found.meta.name)}`,
+        "x-content-type-options": "nosniff",
+        "cache-control": "private, no-store",
+      },
+    });
+  }
   if (req.method === "GET" && path.startsWith("/api/prompt/")) {
     const rest = decodeURIComponent(path.slice("/api/prompt/".length));
     if (rest === "thread" || rest.startsWith("thread/")) {
@@ -2719,6 +2822,7 @@ async function handler(req: Request): Promise<Response> {
       read: prompt.read,
       replyTo: prompt.replyTo,
       refs: prompt.refs,
+      attachments: prompt.attachments,
     });
   }
   if (req.method === "PATCH" && path.startsWith("/api/prompt/")) {
@@ -2739,8 +2843,24 @@ async function handler(req: Request): Promise<Response> {
     if (typeof b.read === "boolean") patch.read = b.read;
     if (Array.isArray(b.refs) && b.refs.every((x) => typeof x === "string")) patch.refs = b.refs as string[];
     if (b.replyTo === null || typeof b.replyTo === "string") patch.replyTo = b.replyTo as string | null;
+    const before = await promptsStore.get(id);
     const updated = await promptsStore.update(id, patch);
     if (!updated) return json({ error: "prompt not found" }, 404);
+    // #10035 S6 (design #9539 §4): push on async completion, opt-in
+    // per submission (the record's notify flag). Answers land only
+    // through this route, so the terminal transition is detected
+    // here; the send is fire-and-forget — a push failure must never
+    // fail the answer itself.
+    if (promptCompletionTransition(before, updated)) {
+      void (async () => {
+        const store = await getAlertsStore();
+        if (store) await notifyPromptCompletion(store, updated, cfg.publicOrigin);
+      })().catch((err) => {
+        console.error(
+          `[prompt-notify] completion push failed for ${updated.id}: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      });
+    }
     return json({ prompt: updated });
   }
   if (req.method === "POST" && path === "/api/comments") {
@@ -2815,7 +2935,34 @@ async function handler(req: Request): Promise<Response> {
       // #1253 slice: gate every action write, including non-triage and
       // preference actions, on the configured Access identity.
       const actionAccess = await enforceAccessAuthor(req, parsed.value.author);
-      if (!actionAccess.ok) return json({ error: actionAccess.error }, actionAccess.status);
+      if (!actionAccess.ok) {
+        // #9608 (design #1253 section 6): during an Access/IdP outage
+        // an eligible write from the stack-local network queues as an
+        // unverified claim (provenance: outage-queued) instead of
+        // failing — held out of the actions store until its claimant
+        // confirms it with a fresh login. Anything else keeps the
+        // enforcer's refusal, byte-identical to before.
+        try {
+          const queued = await tryQueueOutageAction(parsed.value, actionAccess.status, remoteAddress);
+          if (queued) {
+            return json(
+              {
+                queued: true,
+                provenance: "outage-queued",
+                queue: queued.record,
+                ...(queued.created ? {} : { deduped: true }),
+              },
+              202,
+            );
+          }
+        } catch (err) {
+          return json(
+            { error: `outage queueing failed: ${err instanceof Error ? err.message : err}` },
+            500,
+          );
+        }
+        return json({ error: actionAccess.error }, actionAccess.status);
+      }
       parsed.value.author = actionAccess.author;
       // #1291/#1293: checks that need the currently published item —
       // option/survey membership, required-question coverage, proposal
@@ -2927,6 +3074,9 @@ async function handler(req: Request): Promise<Response> {
         ok: boolean;
         action?: unknown;
         deduped?: boolean;
+        // #9608: set when the item outage-queued instead of recording.
+        queued?: boolean;
+        queueId?: string;
         error?: string;
       }[] = [];
       // One enforcer for the whole batch: the request's JWT is
@@ -2944,6 +3094,31 @@ async function handler(req: Request): Promise<Response> {
         }
         const batchAccess = await enforceBatchAuthor(parsed.value.author);
         if (!batchAccess.ok) {
+          // #9608: the single-action outage posture, per item — an
+          // eligible item queues as an unverified claim; the rest of
+          // the batch is unaffected.
+          try {
+            const queued = await tryQueueOutageAction(parsed.value, batchAccess.status, remoteAddress);
+            if (queued) {
+              results.push({
+                index,
+                objectRef,
+                ok: true,
+                queued: true,
+                queueId: queued.record.id,
+                ...(queued.created ? {} : { deduped: true }),
+              });
+              continue;
+            }
+          } catch (err) {
+            results.push({
+              index,
+              objectRef,
+              ok: false,
+              error: `outage queueing failed: ${err instanceof Error ? err.message : err}`,
+            });
+            continue;
+          }
           results.push({ index, objectRef, ok: false, error: batchAccess.error });
           continue;
         }
@@ -3011,6 +3186,106 @@ async function handler(req: Request): Promise<Response> {
       return updated ? json({ action: updated }) : json({ error: "no such action" }, 404);
     } catch (err) {
       return json({ error: `invalid result: ${err instanceof Error ? err.message : err}` }, 400);
+    }
+  }
+  // --- Outage-queued action writes (#9608, design #1253 section 6) ---
+  // Queued writes appear ONLY on this read surface, stamped
+  // outage-queued with the claimed author kept a claim — never in
+  // /api/actions.json — until the claimant confirms one with a fresh
+  // verified login (confirm) or it is rejected (reject).
+  if (path === "/api/actions/outage-queue.json") {
+    const state = url.searchParams.get("state");
+    if (state && state !== "queued" && state !== "confirmed" && state !== "rejected") {
+      return json({ error: "state must be one of: queued, confirmed, rejected" }, 400);
+    }
+    let list = await outageQueueStore.list();
+    if (state) list = list.filter((w) => w.state === state);
+    return json({ queue: list });
+  }
+  if (req.method === "POST" && path === "/api/actions/outage-queue/confirm") {
+    try {
+      const body = (await readJsonBody(req)) as { id?: unknown };
+      if (typeof body.id !== "string" || body.id === "") return json({ error: "id required" }, 400);
+      const record = await outageQueueStore.get(body.id);
+      if (!record) return json({ error: "no such outage-queued write" }, 404);
+      // Confirmation IS a fresh login: the enforcer must succeed with
+      // a verified identity. The claimed author rides as the asserted
+      // author, so a verified non-owner presenting an owner claim is
+      // refused by the enforcer itself, exactly as on a fresh write.
+      const access = await enforceAccessAuthor(req, record.claimedAuthor);
+      if (!access.ok) return json({ error: access.error }, access.status);
+      if (!access.verified) {
+        return json({ error: "identity confirmation requires a fresh verified login" }, 403);
+      }
+      const result = await confirmOutageWrite({
+        store: outageQueueStore,
+        events: eventsStore,
+        id: record.id,
+        derivedAuthor: access.author,
+        release: async (action) => {
+          // The released write passes the same published-item checks
+          // as a fresh POST /api/actions (see that route): the item
+          // may have changed while the write sat in the queue.
+          if (action.kind === "triage") {
+            const section = await source.orchestration().catch(() => null);
+            let item: ReturnType<typeof findTierItem>;
+            if (section) {
+              item = findTierItem(section, action.objectRef);
+              const problem = checkActionAgainstItem(action, item, Date.now());
+              if (problem) return { ok: false as const, status: 400, error: problem };
+            }
+            if (action.verb === "answer" && action.payload.optionId) {
+              action.payload.questionId = questionIdForOption(item, action.payload.optionId) ?? "$options";
+            }
+          }
+          try {
+            const added = await actionsStore.add(action);
+            if (added.duplicateOf) {
+              return {
+                ok: false as const,
+                status: 409,
+                error: `duplicate answer recorded as ${added.action.id}; it points to existing answer action ${added.duplicateOf}`,
+              };
+            }
+            return { ok: true as const, actionId: added.action.id };
+          } catch (err) {
+            return {
+              ok: false as const,
+              status: 500,
+              error: `action persistence failed: ${err instanceof Error ? err.message : err}`,
+            };
+          }
+        },
+      });
+      if (!result.ok) return json({ error: result.error }, result.status);
+      return json({ confirmed: true, queue: result.record, actionId: result.actionId });
+    } catch (err) {
+      return json({ error: `invalid confirmation: ${err instanceof Error ? err.message : err}` }, 400);
+    }
+  }
+  if (req.method === "POST" && path === "/api/actions/outage-queue/reject") {
+    try {
+      const body = (await readJsonBody(req)) as { id?: unknown };
+      if (typeof body.id !== "string" || body.id === "") return json({ error: "id required" }, 400);
+      const record = await outageQueueStore.get(body.id);
+      if (!record) return json({ error: "no such outage-queued write" }, 404);
+      // Same fresh-login gate as confirm; rejectOutageWrite owns the
+      // claimant/owner authorization for the rejection itself.
+      const access = await enforceAccessAuthor(req, record.claimedAuthor);
+      if (!access.ok) return json({ error: access.error }, access.status);
+      if (!access.verified) {
+        return json({ error: "rejecting a queued write requires a fresh verified login" }, 403);
+      }
+      const result = await rejectOutageWrite({
+        store: outageQueueStore,
+        events: eventsStore,
+        id: record.id,
+        derivedAuthor: access.author,
+      });
+      if (!result.ok) return json({ error: result.error }, result.status);
+      return json({ rejected: true, queue: result.record, byOwner: result.byOwner });
+    } catch (err) {
+      return json({ error: `invalid rejection: ${err instanceof Error ? err.message : err}` }, 400);
     }
   }
   if (path === "/api/events.json") {
@@ -3908,6 +4183,14 @@ async function handler(req: Request): Promise<Response> {
     return html(renderCommentsQueue(await commentsStore.all(), prov()));
   }
 
+  if (path === "/chat") {
+    // #10035 S6: the threaded chat/session view over the prompt
+    // store. list() with includeArchived returns every record; the
+    // render hides archived unless ?archived=1 asks for them.
+    const showArchived = url.searchParams.get("archived") === "1";
+    return html(renderChat(await promptsStore.list({ includeArchived: true }), prov(), { showArchived }));
+  }
+
   if (path === "/api/comments/queue.json") {
     const all = await commentsStore.all();
     return json({ comments: queuedComments(all), counts: commentKindCounts(all) });
@@ -4152,6 +4435,13 @@ async function handler(req: Request): Promise<Response> {
   }
   if (path === "/assets/push-client.js") {
     const file = Bun.file(new URL("./assets/push-client.js", import.meta.url));
+    if (!(await file.exists())) return json({ error: "asset missing" }, 404);
+    return new Response(file, {
+      headers: { "content-type": "text/javascript; charset=utf-8", "cache-control": "public, max-age=3600" },
+    });
+  }
+  if (path === "/assets/prompt-badge.js") {
+    const file = Bun.file(new URL("./assets/prompt-badge.js", import.meta.url));
     if (!(await file.exists())) return json({ error: "asset missing" }, 404);
     return new Response(file, {
       headers: { "content-type": "text/javascript; charset=utf-8", "cache-control": "public, max-age=3600" },
@@ -5059,14 +5349,14 @@ async function handler(req: Request): Promise<Response> {
  * attribution can never disagree.
  */
 
-async function fetchHandler(req: Request): Promise<Response> {
+async function fetchHandler(req: Request, remoteAddress?: string): Promise<Response> {
   // #1211: the top-level error boundary. A throwing handler degrades
   // to a styled 500 page (JSON for /api) instead of rejecting the
   // fetch; the render-health record below still runs, accounting the
   // failure as an unsuccessful render.
   let res: Response;
   try {
-    res = await dashboardResponseWithinDeadline(req, () => handler(req));
+    res = await dashboardResponseWithinDeadline(req, () => handler(req, remoteAddress));
   } catch (err) {
     console.error(`aggregator: handler failed for ${req.method} ${req.url}:`, err);
     res = errorBoundaryResponse(new URL(req.url).pathname, err);
@@ -5128,7 +5418,9 @@ const servers = cfg.hosts.map((hostname) =>
         // the wait plus margin (Bun caps the value at 255).
         server.timeout(req, Math.min(255, Math.ceil(cfg.promptSyncTimeoutMs / 1000) + 5));
       }
-      return fetchHandler(req);
+      // #9608: the peer address rides along so the outage-queueing
+      // path can require a stack-local origin (design #1253 §6).
+      return fetchHandler(req, server.requestIP(req)?.address);
     },
     websocket: {
       open(ws) {

@@ -366,7 +366,6 @@
    * "not done": it is offered again under its name, and the platform
    * does it once. */
   const SEND_WAIT_MS = 60_000;
-  const gaveUp = (error) => error?.name === "TimeoutError" || error?.name === "AbortError";
 
   /** One try at sending an entry to the platform. */
   async function httpSend(entry, fetchImpl = root.fetch.bind(root)) {
@@ -390,8 +389,12 @@
     try {
       body = await res.json();
     } catch (error) {
-      // Given up on part-way through the answer: no answer at all.
-      if (gaveUp(error)) return { network: true };
+      // An answer that is not JSON is not the platform's own (a sign-in
+      // page, something in between), and is read below as that. Any
+      // other failure is the answer not arriving whole: the connection
+      // went part-way through it, or the try was given up on. That is
+      // no answer at all, and it is offered again.
+      if (error?.name !== "SyntaxError") return { network: true };
       body = null;
     }
     // No sign-in, whoever says so; or refused by something in between

@@ -61,6 +61,14 @@ pub mod gateway_poc;
 #[cfg(feature = "world")]
 pub mod reconcile;
 
+/// The production currency gateway service (#5522, remainder of
+/// #10070 item 1): the single logical writer (design §4.5)
+/// running the §4.3 pipeline over the F1 registry, F2 factory,
+/// and F3 envelope, with durable write-ahead intents and the
+/// invariant-7 intent↔ledger join.
+#[cfg(feature = "world")]
+pub mod gateway_service;
+
 /// The event kind carrying a rate authorisation body.
 pub const RATE_AUTHORISATION_KIND: &str = "currency.rate_authorisation";
 

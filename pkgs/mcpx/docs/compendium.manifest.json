@@ -1081,6 +1081,27 @@
       "role": "not-compendium",
       "lines": 197,
       "note": "the docs site home page (id: mcpx-home): level-1 site content (#1878), rendered by the generator chosen in #1939 \u2014 not a compendium (level-3) chapter"
+    },
+    {
+      "path": "docs/coverage.md",
+      "chapter": "maintaining-these-docs",
+      "role": "chapter-source",
+      "lines": 213,
+      "note": "the mechanical coverage proof: the binary's dumped surface set against the book, dimension by dimension (bookwright coverage run, 2026-11-23)"
+    },
+    {
+      "path": "docs/deploying.md",
+      "chapter": "maintaining-these-docs",
+      "role": "chapter-source",
+      "lines": 95,
+      "note": "how this book is deployed: the repository's single Pages site, the four books it carries, and the build gates (bookwright coverage run, 2026-11-23)"
+    },
+    {
+      "path": "docs/glossary.md",
+      "chapter": "maintaining-these-docs",
+      "role": "chapter-source",
+      "lines": 126,
+      "note": "the book's vocabulary in one place: reader reference apparatus, kept with the docs-maintenance chapter (bookwright coverage run, 2026-11-23)"
     }
   ]
 }

@@ -6,7 +6,11 @@ import { readFile } from "node:fs/promises";
 import type { ModelRef } from "./validate.ts";
 import { outboundTimeout } from "./fetchTimeout.ts";
 
-const SESSION_LIST_LIMITS = [1_000, 10_000, 100_000] as const;
+// The OpenCode server caps `limit` at 200 and rejects a larger probe
+// with HTTP 400 (#13149), so the cap itself is the only usable
+// completeness probe: a response below 200 is complete; a response at
+// 200 is unprovable and listSessions fails closed.
+const SESSION_LIST_LIMITS = [200] as const;
 
 export class OpenCodeError extends Error {
   status = 502;

@@ -824,7 +824,7 @@ test("one try at sending: what goes out, and how each kind of answer is read", a
     status,
     type,
     json: async () => {
-      if (body === undefined) throw new Error("not json");
+      if (body === undefined) throw new SyntaxError("Unexpected token '<', \"<html>\" is not valid JSON");
       return body;
     },
   });
@@ -855,15 +855,23 @@ test("one try at sending: what goes out, and how each kind of answer is read", a
       throw late("TimeoutError");
     }),
   ).toEqual({ network: true });
-  for (const name of ["TimeoutError", "AbortError"]) {
+  // So is an answer that stops arriving part-way (the connection went
+  // after its first lines): whatever is thrown that is not "this is
+  // not JSON" is no answer, never a reason to ask for a sign-in.
+  for (const failure of [
+    late("TimeoutError"),
+    late("AbortError"),
+    new TypeError("network error"),
+    new Error("terminated"),
+  ]) {
     const cut = {
       status: 200,
       type: "basic",
       json: async () => {
-        throw late(name);
+        throw failure;
       },
     };
-    expect(await O.httpSend(entry, answering(cut))).toEqual({ network: true });
+    expect([failure.name, await O.httpSend(entry, answering(cut))]).toEqual([failure.name, { network: true }]);
   }
   // No answer.
   expect(

@@ -318,7 +318,7 @@ pub const DOMAINS: &[Domain] = &[
     },
     Domain {
         name: "gh",
-        summary: "The real `gh` CLI, passed through under a rotating fleet token (personal, then the developing.today App's installations); rate-limit and permission failures fail over to the next token.",
+        summary: "The real `gh` CLI, passed through under a rotating fleet token (the developing.today App's installations, then personal last); rate-limit and permission failures fail over to the next token.",
         capabilities: &[Capability::Gh],
         primary: Capability::Gh,
         aliases: &[],

@@ -301,6 +301,9 @@ fn next_uses_the_registered_worker_for_a_known_lane() {
         ("not-code-e", "repo-worker-opencode"),
         ("not-code-f", "repo-worker-code"),
         ("not-code-g", "repo-worker-nix"),
+        ("oc-code-01", "repo-worker-code"),
+        ("oc-code-04", "repo-worker-code"),
+        ("oc-code-08", "repo-worker-code"),
     ] {
         let fake = Fake::new();
         fake.on(INBOX, vec![empty_inbox()]).on(

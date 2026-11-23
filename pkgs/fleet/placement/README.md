@@ -38,9 +38,11 @@ that cannot produce a record does not proceed unrecorded.
 checked-in `placement-policy.yaml`; they skip only if it is absent): every
 rule path, first-match-wins, the guard's exclusion of R8 and unreachability
 of R3, the B5 gate (missing read, stale read, B4 reliance), the `"n/a"`
-non-pool case, the exception path, and the monthly pace guard (refuse at
+non-pool case, the exception path, the monthly pace guard (refuse at
 ≥97% / >1pp/h / hard-stop; B4, missing data, and non-pool seatings
-proceed).
+proceed), and the weekly audit sample (emitted records re-checked against
+the table, tampered records named by finding kind, deterministic
+sampling, refusal counting).
 
 ## Monthly pace guard (issue #2732, slice 1)
 
@@ -52,6 +54,26 @@ Unknown state never refuses: a B4 reliance proceeds, absent monthly data
 seats on the fresh read, and non-pool options ignore the guard inputs.
 An E1 exception bypasses the guard — the exception record itself is the
 required log line.
+
+## Weekly audit sample (issue #2732, slice 2)
+
+`placement-audit --policy <placement-policy.yaml> --records <records.json>`
+re-checks emitted placement records against the policy table — the named
+rule must select the recorded option, supervision must be the option's
+own, exception records must carry their exception id, `pool_read_at`
+must be a timestamp exactly for pool-drawn options and `"n/a"`
+otherwise, and the record's policy version must match — lists every
+exception record in the sample, and prints the audit as JSON.
+`--sample N` audits N evenly spaced records (deterministically); the
+command exits non-zero when any sampled record disagrees with the
+table. With `--log <dispatcher.log>` it also counts the monthly pace
+guard's refusal lines — total, per pool, per guard source — so the
+steward daily pass can cite refusal counts from data (the issue's
+second acceptance criterion) instead of reconstructing seatings after
+a wall. Refusals are counted, never treated as disagreements: they are
+the guard working. The audit runs on records wherever they are
+emitted; today that is `placement-record` output, and the same audit
+covers production records once the wiring below lands.
 
 ## Demonstration
 
@@ -77,5 +99,3 @@ review decision, not something the PoC pre-judges.
 - Wiring into the live fleet queue client or the OpenChamber dispatcher
   (the second named path) — that is the permanent rollout, gated on review
   of this PoC per the #2024 program rule.
-- The weekly audit sample (placements vs. the table, exceptions listed) —
-  it audits records once dispatches emit them in production.

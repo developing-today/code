@@ -1,6 +1,8 @@
 //! atlas-eval — the offline ranking-evaluation runner (#5741).
 //!
-//! Usage: `atlas-eval <eval.json> <dev|test>`
+//! Usage: `atlas-eval <eval.json> <dev|test>`; `atlas-eval
+//! --help` prints the usage line and `--version` the version,
+//! both exit 0.
 //!
 //! Reads an `atlas-eval/v1` document (queries, qrels, and saved
 //! rankings from any signals) and prints the `atlas-eval-report/v1`
@@ -21,6 +23,14 @@ use atlas_core::eval::{EvalData, Split, evaluate};
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().collect();
     let (path, split) = match args.as_slice() {
+        [_, flag] if flag == "--help" || flag == "-h" => {
+            println!("usage: atlas-eval <eval.json> <dev|test>");
+            return ExitCode::SUCCESS;
+        }
+        [_, flag] if flag == "--version" || flag == "-V" => {
+            println!("atlas-eval {}", env!("CARGO_PKG_VERSION"));
+            return ExitCode::SUCCESS;
+        }
         [_, path, split] => {
             let split = match split.as_str() {
                 "dev" => Split::Dev,

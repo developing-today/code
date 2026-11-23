@@ -100,9 +100,13 @@ pub struct PromoteReport {
 struct StagedChunk {
     item_id: i64,
     item_source: Option<String>,
+    observed_at: String,
     item_sensitivity: String,
     text: String,
     content_hash: String,
+    /// Byte offsets in the original staged item, not the embed-time
+    /// piece. These are accumulated in staging chunk order below.
+    span_start: i64,
     /// The chunk's persisted effective sensitivity (#12628), for
     /// items staged with classification records: `Some` whenever the
     /// item carries records — a chunk whose record is missing from a
@@ -142,7 +146,7 @@ fn read_staged_chunks(db_path: &Path, unit_id: &str) -> Result<Vec<StagedChunk>>
     }
     let mut stmt = conn
         .prepare(
-            "SELECT i.id, i.source, i.sensitivity, c.text, c.content_hash, c.idx \
+            "SELECT i.id, i.source, i.created_at, i.sensitivity, c.text, c.content_hash, c.idx \
              FROM chunks_raw c JOIN items i ON i.id = c.item_id \
              WHERE i.unit_id = ?1 ORDER BY i.id, c.idx",
         )
@@ -153,19 +157,26 @@ fn read_staged_chunks(db_path: &Path, unit_id: &str) -> Result<Vec<StagedChunk>>
                 StagedChunk {
                     item_id: r.get(0)?,
                     item_source: r.get(1)?,
-                    item_sensitivity: r.get(2)?,
-                    text: r.get(3)?,
-                    content_hash: r.get(4)?,
+                    observed_at: r.get(2)?,
+                    item_sensitivity: r.get(3)?,
+                    text: r.get(4)?,
+                    content_hash: r.get(5)?,
                     effective_sensitivity: None,
+                    span_start: 0,
                 },
-                r.get::<_, i64>(5)?,
+                r.get::<_, i64>(6)?,
             ))
         })
         .map_err(|e| Error::backend(format!("aggregator: reading staged chunks: {e}")))?;
     let mut out = Vec::new();
+    let mut item_offsets = std::collections::HashMap::<i64, i64>::new();
     for row in rows {
         let (mut chunk, idx) =
             row.map_err(|e| Error::backend(format!("aggregator: reading staged chunks: {e}")))?;
+        chunk.span_start = *item_offsets.entry(chunk.item_id).or_default();
+        *item_offsets
+            .get_mut(&chunk.item_id)
+            .expect("inserted above") += chunk.text.len() as i64;
         chunk.effective_sensitivity = match classifications.get(&chunk.item_id) {
             // Classified item: the chunk's own record governs; a
             // chunk with no record in a classified item fails closed.
@@ -218,6 +229,7 @@ fn next_shard_part(shard_dir: &Path, tier: Tier, topic: &str) -> Result<u32> {
 /// the embed-time context split.
 struct ShardChunk {
     item_source: Option<String>,
+    observed_at: String,
     item_sensitivity: String,
     /// The staged chunk's persisted effective sensitivity (#12628),
     /// inherited by every embed-time piece of that chunk: pieces are
@@ -225,6 +237,8 @@ struct ShardChunk {
     /// boundary the chunk was cut on and keep its classification.
     effective_sensitivity: Option<Sensitivity>,
     chunk_idx: i64,
+    span_start: i64,
+    span_end: i64,
     text: String,
     content_hash: String,
 }
@@ -407,6 +421,7 @@ pub fn embed_unit_into_shard(
     // text), so a repeat gets a hash derived from its position (#10836).
     let mut used_hashes: std::collections::HashSet<String> = std::collections::HashSet::new();
     for c in &chunks {
+        let mut piece_offset = c.span_start;
         for piece in split_for_embed(&c.text, embedder)? {
             let ordinal = item_piece_ordinals.entry(c.item_id).or_insert(0);
             let chunk_idx = *ordinal;
@@ -419,12 +434,16 @@ pub fn embed_unit_into_shard(
             let content_hash = unique_piece_hash(&mut used_hashes, text_hash, c.item_id, chunk_idx);
             pieces.push(ShardChunk {
                 item_source: c.item_source.clone(),
+                observed_at: c.observed_at.clone(),
                 item_sensitivity: c.item_sensitivity.clone(),
                 effective_sensitivity: c.effective_sensitivity,
                 chunk_idx,
+                span_start: piece_offset,
+                span_end: piece_offset + piece.len() as i64,
                 content_hash,
                 text: piece,
             });
+            piece_offset = pieces.last().expect("piece just pushed").span_end;
         }
     }
     // Embed each distinct text once (#12628): a document vector is a
@@ -486,6 +505,12 @@ pub fn embed_unit_into_shard(
                chunk_idx INTEGER, text TEXT NOT NULL, content_hash TEXT UNIQUE NOT NULL, \
                sensitivity TEXT); \
              CREATE TABLE {DEFAULT_VEC_TABLE} (chunk_id INTEGER PRIMARY KEY, vec BLOB NOT NULL); \
+             CREATE TABLE chunk_occurrences ( \
+               shard_chunk_id INTEGER NOT NULL REFERENCES chunks(id) ON DELETE CASCADE, \
+               canonical_hash TEXT NOT NULL, source TEXT NOT NULL, \
+               span_start INTEGER NOT NULL, span_end INTEGER NOT NULL, observed_at TEXT NOT NULL, \
+               PRIMARY KEY (shard_chunk_id, source, span_start)); \
+             CREATE INDEX chunk_occurrences_hash ON chunk_occurrences (canonical_hash); \
              CREATE TABLE atlas_manifest (\"key\" TEXT PRIMARY KEY, value TEXT);"
         ))
         .map_err(|e| Error::backend(format!("aggregator: shard schema: {e}")))?;
@@ -520,6 +545,25 @@ pub fn embed_unit_into_shard(
                 params![id, vec_blob(v)],
             )
             .map_err(|e| Error::backend(format!("aggregator: shard vector {id}: {e}")))?;
+            let source = c
+                .item_source
+                .as_deref()
+                .map(str::to_owned)
+                .unwrap_or_else(|| format!("unit:{unit_id}"));
+            conn.execute(
+                "INSERT INTO chunk_occurrences \
+                 (shard_chunk_id, canonical_hash, source, span_start, span_end, observed_at) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![
+                    id,
+                    sha256_hex(&c.text),
+                    source,
+                    c.span_start,
+                    c.span_end,
+                    c.observed_at
+                ],
+            )
+            .map_err(|e| Error::backend(format!("aggregator: shard occurrence {id}: {e}")))?;
         }
         let manifest: [(&str, String); 9] = [
             ("shard", shard_name.clone()),
